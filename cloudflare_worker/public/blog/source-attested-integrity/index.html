@@ -48,7 +48,7 @@
           <p>Source-attested integrity gives ForkMesh a concrete mechanism for fallback mirrors proving they match the state published by the source. Fallback serving is checked against integrity pins attested by the source of truth, so a mirror can prove it's handing you the same history the author published.</p>
           <p>Code disappears from a network when one hosted account, one VM, or one storage path becomes the only way to reach it. In ForkMesh, source-attested integrity addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
-          <p>ForkMesh handles source-attested integrity through the same split it uses across the product: desktop nodes keep real Git mirrors, while mainnodes coordinate discovery, relay tunnels, presence, account lookup, and clone routing.</p>
+          <p>ForkMesh handles source-attested integrity through the same split it uses across the product: nodes keep real Git mirrors, while the Worker coordinates signed HTTPS health, owner state pins, account lookup, and clone routing.</p>
           <p>The behavior is intentionally narrow: Fallback serving is checked against integrity pins attested by the source of truth, so a mirror can prove it's handing you the same history the author published. The Worker helps find and route a live host, but it is not canonical Git storage.</p>
           <div class="note">Title focus: Source-attested integrity stays tied to fallback mirrors proving they match the state published by the source and the local-first repository model.</div>
           <h2>Where it fits</h2>

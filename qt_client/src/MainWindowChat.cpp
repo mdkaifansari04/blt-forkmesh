@@ -8,12 +8,16 @@
 #include "ForkMeshVersion.h"
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "ControlNode.h"
 #include "CurrentPageStack.h"
 #include "KebabHeaderView.h"
+#include "PrivateMirrorStore.h"
 #include "RepoSecurity.h"
+#include "RewardPoolSigner.h"
 #include "ScreenCaptureOverlay.h"
 #include "ScreenDrawOverlay.h"
 #include "ScreenshotMarkupWindow.h"
+#include "WorldSpeechBridge.h"
 
 #include <QBrush>
 #include <QNetworkInformation>
@@ -288,43 +292,24 @@ QWidget *MainWindow::buildChatPage()
     // section any more.
     m_sectionStack->addWidget(buildHomeSection());       // 0 Home (nodes + repos + detail)
     logStartup(QStringLiteral("  buildChatPage: home section built"));
-    auto *settingsScroll = new QScrollArea;
-    settingsScroll->setObjectName("settingsScroll");
-    settingsScroll->setFrameShape(QFrame::NoFrame);
-    settingsScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    settingsScroll->setWidgetResizable(true);
-    // Settings content can be tall; keep it out of the section stack minimum.
-    settingsScroll->setMinimumHeight(0);
-    settingsScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
-    settingsScroll->setWidget(buildSettingsSection());
-    logStartup(QStringLiteral("  buildChatPage: settings section built"));
-    m_sectionStack->addWidget(settingsScroll);           // 1 Settings
-    // Chat is its own top-level place now (no longer a page buried in the repo
-    // detail stack), so it survives switching between repos and stays reachable
-    // from the always-visible nav.
-    m_sectionStack->addWidget(buildChatSection());       // 2 Chat
-    logStartup(QStringLiteral("  buildChatPage: chat section built"));
-    m_sectionStack->addWidget(buildNotificationsSection()); // 3 Notifications
-    logStartup(QStringLiteral("  buildChatPage: notifications section built"));
-    m_sectionStack->addWidget(buildLogSection());        // 4 Log
-    logStartup(QStringLiteral("  buildChatPage: log section built"));
-    m_sectionStack->addWidget(buildLeaderboardsSection()); // 5 Leaderboards
-    logStartup(QStringLiteral("  buildChatPage: leaderboards section built"));
-    m_sectionStack->addWidget(buildSearchResultsSection()); // 6 Search results
-    logStartup(QStringLiteral("  buildChatPage: search section built"));
-    m_sectionStack->addWidget(buildHostsSection());      // 7 Hosts (adhoc #263)
-    logStartup(QStringLiteral("  buildChatPage: hosts section built"));
-    m_sectionStack->addWidget(buildRelaysSection());     // 8 Relays
-    logStartup(QStringLiteral("  buildChatPage: relays section built"));
+    auto addDeferredSection = [this] {
+        auto *placeholder = new QWidget;
+        placeholder->setProperty("forkmeshDeferredSection", true);
+        m_sectionStack->addWidget(placeholder);
+    };
+    // Only Home participates in the first frame. The other substantial pages
+    // are built on their first navigation; their fixed stack indexes remain
+    // unchanged, and showSection() performs the replacement before display.
+    addDeferredSection();                              // 1 Settings
+    // Session startup resets the chat widgets immediately after first paint,
+    // so keep this comparatively small page ready.
+    m_sectionStack->addWidget(buildChatSection());      // 2 Chat
+    for (int index = 3; index <= 8; ++index)
+        addDeferredSection();
     m_sectionStack->addWidget(new QWidget);              // 9 retired Firewall redirect
-    logStartup(QStringLiteral("  buildChatPage: firewall redirect section built"));
-    m_sectionStack->addWidget(buildNodeProfileSection()); // 10 Node profile (full page)
-    logStartup(QStringLiteral("  buildChatPage: node profile section built"));
-    m_sectionStack->addWidget(buildNetworkReposSection()); // 11 Repos (network catalog)
-    logStartup(QStringLiteral("  buildChatPage: network repos section built"));
-    m_sectionStack->addWidget(buildNetworkDiagnosticsSection()); // 12 Network diagnostics
-    m_sectionStack->addWidget(buildNodesSection());      // 13 Nodes (adhoc #9)
-    logStartup(QStringLiteral("  buildChatPage: network diagnostics section built"));
+    for (int index = 10; index <= 14; ++index)
+        addDeferredSection();
+    logStartup(QStringLiteral("  buildChatPage: secondary sections deferred"));
 
     // No left rails any more: relays and nodes are top-bar dropdowns, so the
     // section fills the whole width.
@@ -334,8 +319,8 @@ QWidget *MainWindow::buildChatPage()
     contentLayout->setSpacing(0);
     contentLayout->addWidget(m_sectionStack, 1);
 
-    // Global donation nudge: shown across the whole app until this node sets a
-    // Solana address, so the network stays open to donations.
+    // Optional public payout-address notice. It is hidden outside explicit
+    // reward settings and never gates entry or core repository features.
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
@@ -1532,6 +1517,180 @@ void MainWindow::mentionProjectFileInQuickAdd()
     m_issueQuickAdd->setFocus();
 }
 
+// ---------------------------------------------------------------- World voice
+
+void MainWindow::initializeWorldSpeechBridge()
+{
+    if (m_worldSpeechBridge)
+        return;
+    m_worldSpeechBridge = new WorldSpeechBridge(this);
+    m_worldSpeechDraftEdit = new QPlainTextEdit(this);
+    m_worldSpeechDraftEdit->setVisible(false);
+    m_worldSpeechDraftEdit->setObjectName(
+        QStringLiteral("worldSpeechTranscriptDraft"));
+    m_worldSpeechHiddenMicButton = new QPushButton(this);
+    m_worldSpeechHiddenMicButton->setVisible(false);
+
+    connect(m_worldSpeechBridge, &WorldSpeechBridge::auditEvent, this,
+            [this](const QString &event) {
+                // Events are generalized by the bridge: no capability,
+                // transcript, microphone, or browsing data reaches this log.
+                logSystem(QStringLiteral("World voice: ") + event);
+            });
+    connect(m_worldSpeechBridge, &WorldSpeechBridge::captureRequested, this,
+            [this](const QString &captureId, const QString &destination) {
+                if (!m_worldSpeechBridge || captureId.isEmpty())
+                    return;
+                if ((m_voiceRecordProc &&
+                     m_voiceRecordProc->state() != QProcess::NotRunning) ||
+                    (m_voiceTranscribeProc &&
+                     m_voiceTranscribeProc->state() != QProcess::NotRunning) ||
+                    m_voiceRecording) {
+                    m_worldSpeechBridge->publishError(
+                        captureId,
+                        QStringLiteral("Desktop microphone is already in use."));
+                    return;
+                }
+                if (!voiceInputReady()) {
+                    m_worldSpeechBridge->publishError(
+                        captureId,
+                        QStringLiteral("Set up a local speech-to-text engine in "
+                                       "Qt Settings > Voice."));
+                    return;
+                }
+                const AudioRecorderCommand recorder =
+                    audioRecorderFor(QStringLiteral("probe.wav"));
+                if (recorder.program.isEmpty()) {
+                    m_worldSpeechBridge->publishError(
+                        captureId,
+                        QStringLiteral("No supported local microphone recorder "
+                                       "is installed."));
+                    return;
+                }
+                m_worldSpeechCancelPending = false;
+                m_worldSpeechCaptureId = captureId;
+                m_worldSpeechDraftEdit->clear();
+                m_worldSpeechDraftEdit->setPlaceholderText(
+                    QStringLiteral("World %1 transcript").arg(destination));
+                startVoiceCaptureFor(m_worldSpeechDraftEdit,
+                                     m_worldSpeechHiddenMicButton);
+                if (!m_voiceRecording) {
+                    m_worldSpeechBridge->publishError(
+                        captureId,
+                        QStringLiteral("The local microphone could not start."));
+                    m_worldSpeechCaptureId.clear();
+                } else if (m_worldSpeechStatusLabel) {
+                    m_worldSpeechStatusLabel->setText(
+                        QStringLiteral("World is recording locally for the %1 "
+                                       "composer. Use Stop or Cancel in the "
+                                       "browser.")
+                            .arg(destination));
+                }
+            });
+    connect(m_worldSpeechBridge, &WorldSpeechBridge::stopRequested, this,
+            [this](const QString &captureId) {
+                if (captureId != m_worldSpeechCaptureId)
+                    return;
+                stopVoiceCapture();
+                if (m_worldSpeechStatusLabel)
+                    m_worldSpeechStatusLabel->setText(
+                        QStringLiteral("World capture stopped; transcribing "
+                                       "locally."));
+            });
+    connect(m_worldSpeechBridge, &WorldSpeechBridge::cancelRequested, this,
+            [this](const QString &captureId) {
+                if (captureId == m_worldSpeechCaptureId)
+                    cancelWorldVoiceCapture();
+            });
+}
+
+void MainWindow::createWorldSpeechPairing()
+{
+    if (!m_worldSpeechBridge)
+        initializeWorldSpeechBridge();
+    if (!m_worldSpeechBridge || !m_worldSpeechOriginEdit)
+        return;
+    const QString origin = m_worldSpeechOriginEdit->text().trimmed();
+    const QJsonObject capability =
+        m_worldSpeechBridge->issuePairing(origin, 120);
+    if (capability.isEmpty()) {
+        if (m_worldSpeechStatusLabel)
+            m_worldSpeechStatusLabel->setText(
+                QStringLiteral("Pairing refused. Enter one exact http(s) origin "
+                               "without a path, wildcard, query, or fragment."));
+        return;
+    }
+    QSettings().setValue(kWorldSpeechOriginSetting, origin);
+    const QString secret =
+        capability.value(QStringLiteral("secret")).toString();
+    if (m_worldSpeechPairCodeEdit) {
+        m_worldSpeechPairCodeEdit->setText(secret);
+        m_worldSpeechPairCodeEdit->selectAll();
+        m_worldSpeechPairCodeEdit->setFocus();
+    }
+    if (m_worldSpeechPairButton)
+        m_worldSpeechPairButton->setEnabled(false);
+    if (m_worldSpeechRevokeButton)
+        m_worldSpeechRevokeButton->setEnabled(true);
+    if (m_worldSpeechStatusLabel)
+        m_worldSpeechStatusLabel->setText(
+            QStringLiteral("Listening on 127.0.0.1:%1. This one-time code "
+                           "expires at %2 and is valid only for %3.")
+                .arg(capability.value(QStringLiteral("port")).toInt())
+                .arg(capability.value(QStringLiteral("expiresAt")).toString(),
+                     capability.value(QStringLiteral("origin")).toString()));
+
+    // Open only the public World URL. The port and capability are intentionally
+    // absent from the URL, query, fragment, argv, and process environment.
+    QUrl world(capability.value(QStringLiteral("origin")).toString());
+    world.setPath(QStringLiteral("/world/"));
+    QDesktopServices::openUrl(world);
+}
+
+void MainWindow::revokeWorldSpeechPairing()
+{
+    if (m_worldSpeechBridge)
+        m_worldSpeechBridge->revokeAll();
+    if (m_worldSpeechPairCodeEdit)
+        m_worldSpeechPairCodeEdit->clear();
+    if (m_worldSpeechPairButton)
+        m_worldSpeechPairButton->setEnabled(true);
+    if (m_worldSpeechRevokeButton)
+        m_worldSpeechRevokeButton->setEnabled(false);
+    if (m_worldSpeechStatusLabel)
+        m_worldSpeechStatusLabel->setText(
+            QStringLiteral("Bridge capabilities revoked. No browser can "
+                           "control the microphone."));
+}
+
+void MainWindow::cancelWorldVoiceCapture()
+{
+    m_worldSpeechCancelPending = true;
+    if (m_voiceLiveTimer)
+        m_voiceLiveTimer->stop();
+    stopVoiceLevelMeter();
+    if (m_voiceRecordProc &&
+        m_voiceRecordProc->state() != QProcess::NotRunning)
+        m_voiceRecordProc->kill();
+    if (m_voiceTranscribeProc &&
+        m_voiceTranscribeProc->state() != QProcess::NotRunning)
+        m_voiceTranscribeProc->kill();
+    m_voiceRecording = false;
+    hideVoiceTranscribeSpinner();
+    QFile::remove(m_voiceWavPath);
+    QFile::remove(m_voiceWavPath + QStringLiteral(".out.txt"));
+    m_voiceInsertPos = -1;
+    m_voiceInsertLen = 0;
+    m_voiceLastPreview.clear();
+    if (m_worldSpeechDraftEdit)
+        m_worldSpeechDraftEdit->clear();
+    m_worldSpeechCaptureId.clear();
+    updateVoiceInputButton();
+    if (m_worldSpeechStatusLabel)
+        m_worldSpeechStatusLabel->setText(
+            QStringLiteral("World microphone capture cancelled locally."));
+}
+
 // Show the mic only once a voice engine is installed; reset its idle look. Called
 // when the bar is built and again after a successful install from Settings. Also
 // syncs the comment-composer mics (m_voiceButtons), which share the same engine.
@@ -1700,6 +1859,13 @@ void MainWindow::startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *butto
                     QString::fromUtf8(proc->readAllStandardError()).trimmed();
                 proc->deleteLater();
                 updateVoiceInputButton();
+                if (m_worldSpeechCancelPending &&
+                    m_voiceTargetEdit == m_worldSpeechDraftEdit) {
+                    QFile::remove(m_voiceWavPath);
+                    QFile::remove(m_voiceWavPath +
+                                  QStringLiteral(".out.txt"));
+                    return;
+                }
                 // The recorder may have failed to open the device at all (no
                 // WAV, or just a header) — don't bother transcribing then.
                 if (!QFileInfo::exists(m_voiceWavPath) ||
@@ -1711,6 +1877,19 @@ void MainWindow::startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *butto
                     m_voiceInsertPos = -1;
                     m_voiceInsertLen = 0;
                     QFile::remove(m_voiceWavPath);
+                    if (m_worldSpeechBridge &&
+                        m_voiceTargetEdit == m_worldSpeechDraftEdit &&
+                        !m_worldSpeechCaptureId.isEmpty()) {
+                        if (err.isEmpty())
+                            m_worldSpeechBridge->publishFinal(
+                                m_worldSpeechCaptureId, QString());
+                        else
+                            m_worldSpeechBridge->publishError(
+                                m_worldSpeechCaptureId,
+                                QStringLiteral("Local microphone capture "
+                                               "failed."));
+                        m_worldSpeechCaptureId.clear();
+                    }
                     return;
                 }
                 startVoiceTranscription(/*finalPass=*/true);
@@ -1731,6 +1910,15 @@ void MainWindow::startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *butto
                 logSystem("Could not start the microphone recorder.");
                 if (m_voiceTargetEdit)
                     m_voiceTargetEdit->setPlaceholderText(m_voiceIdlePlaceholder);
+                if (m_worldSpeechBridge &&
+                    m_voiceTargetEdit == m_worldSpeechDraftEdit &&
+                    !m_worldSpeechCaptureId.isEmpty()) {
+                    m_worldSpeechBridge->publishError(
+                        m_worldSpeechCaptureId,
+                        QStringLiteral("The local microphone recorder could "
+                                       "not start."));
+                    m_worldSpeechCaptureId.clear();
+                }
             });
 
     proc->start(rec.program, rec.args);
@@ -1747,6 +1935,14 @@ void MainWindow::startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *butto
             logSystem("Couldn't start the microphone recorder \xE2\x80\x94 the "
                       "audio device may be busy. Try again.");
             target->setPlaceholderText(m_voiceIdlePlaceholder);
+            if (m_worldSpeechBridge &&
+                target == m_worldSpeechDraftEdit &&
+                !m_worldSpeechCaptureId.isEmpty()) {
+                m_worldSpeechBridge->publishError(
+                    m_worldSpeechCaptureId,
+                    QStringLiteral("The local microphone is busy."));
+                m_worldSpeechCaptureId.clear();
+            }
         }
         return;
     }
@@ -1838,6 +2034,13 @@ void MainWindow::startVoiceTranscription(bool finalPass)
         m_voiceInsertPos = -1;
         m_voiceInsertLen = 0;
         QFile::remove(m_voiceWavPath);
+        if (m_worldSpeechBridge &&
+            m_voiceTargetEdit == m_worldSpeechDraftEdit &&
+            !m_worldSpeechCaptureId.isEmpty()) {
+            m_worldSpeechBridge->publishFinal(m_worldSpeechCaptureId,
+                                               QString());
+            m_worldSpeechCaptureId.clear();
+        }
     };
 
     const bool parakeet = voiceEngine() == QStringLiteral("parakeet");
@@ -1887,6 +2090,13 @@ void MainWindow::startVoiceTranscription(bool finalPass)
                 proc->deleteLater();
                 if (m_voiceTranscribeProc == proc)
                     m_voiceTranscribeProc = nullptr;
+                if (m_worldSpeechCancelPending &&
+                    m_voiceTargetEdit == m_worldSpeechDraftEdit) {
+                    QFile::remove(base + QStringLiteral(".txt"));
+                    QFile::remove(wav);
+                    hideVoiceTranscribeSpinner();
+                    return;
+                }
 
                 QString text;
                 QFile txt(base + QStringLiteral(".txt"));
@@ -1922,6 +2132,15 @@ void MainWindow::startVoiceTranscription(bool finalPass)
                 if (m_voiceTargetEdit)
                     m_voiceTargetEdit->setPlaceholderText(m_voiceIdlePlaceholder);
                 QFile::remove(wav);
+                if (text.isEmpty() && exitCode != 0 &&
+                    m_worldSpeechBridge &&
+                    m_voiceTargetEdit == m_worldSpeechDraftEdit &&
+                    !m_worldSpeechCaptureId.isEmpty()) {
+                    m_worldSpeechBridge->publishError(
+                        m_worldSpeechCaptureId,
+                        QStringLiteral("Local speech-to-text failed."));
+                    m_worldSpeechCaptureId.clear();
+                }
                 applyVoiceTranscript(text, /*finalPass=*/true);
                 if (text.isEmpty() && exitCode != 0)
                     logSystem("Transcription failed" +
@@ -1966,6 +2185,12 @@ void MainWindow::startVoiceTranscription(bool finalPass)
 void MainWindow::applyVoiceTranscript(const QString &text, bool finalPass)
 {
     if (!m_voiceTargetEdit || m_voiceInsertPos < 0) {
+        if (finalPass && m_worldSpeechBridge &&
+            m_voiceTargetEdit == m_worldSpeechDraftEdit &&
+            !m_worldSpeechCaptureId.isEmpty()) {
+            m_worldSpeechBridge->publishFinal(m_worldSpeechCaptureId, text);
+            m_worldSpeechCaptureId.clear();
+        }
         if (finalPass) {
             m_voiceInsertPos = -1;
             m_voiceInsertLen = 0;
@@ -1987,11 +2212,28 @@ void MainWindow::applyVoiceTranscript(const QString &text, bool finalPass)
     cur.insertText(ins);
     m_voiceInsertLen = ins.size();
 
+    if (m_worldSpeechBridge &&
+        m_voiceTargetEdit == m_worldSpeechDraftEdit &&
+        !m_worldSpeechCaptureId.isEmpty()) {
+        if (finalPass) {
+            m_worldSpeechBridge->publishFinal(m_worldSpeechCaptureId, text);
+            m_worldSpeechCaptureId.clear();
+            if (m_worldSpeechStatusLabel)
+                m_worldSpeechStatusLabel->setText(
+                    QStringLiteral("World transcript completed locally. "
+                                   "Review it in the selected browser "
+                                   "composer."));
+        } else {
+            m_worldSpeechBridge->publishPartial(m_worldSpeechCaptureId, text);
+        }
+    }
+
     if (finalPass) {
         m_voiceInsertPos = -1;
         m_voiceInsertLen = 0;
         m_voiceTargetEdit->setTextCursor(cur);
-        m_voiceTargetEdit->setFocus();
+        if (m_voiceTargetEdit != m_worldSpeechDraftEdit)
+            m_voiceTargetEdit->setFocus();
     }
 }
 
@@ -2299,6 +2541,12 @@ void MainWindow::onUiStall(qint64 peakMs, const QString &blockingCall,
 // can't spawn an unbounded pile of tasks (adhoc #205).
 void MainWindow::maybeAutoFileStallAgent(qint64 peakMs, const QString &backtrace)
 {
+#ifdef FORKMESH_WINDOW_TESTS
+    // Window tests deliberately hold the GUI thread while checking worker and
+    // responsive-layout states. Keep the watchdog coverage/logging active, but
+    // never turn those synthetic stalls into real CLI agent processes.
+    return;
+#endif
     if (!QSettings().value(kAutoAgentOnStallSetting, true).toBool())
         return;
     // The watchdog now *records* everything past 500 ms (sub-second jank matters
@@ -2608,37 +2856,83 @@ void MainWindow::showDiagnosticsDialog()
 
 void MainWindow::showTreasuryDonateDialog()
 {
-    // Pull the central-fund address from the relay (a wallet the relay custodies
-    // and sweeps out to online nodes hourly, issue #308) and render a Solana QR
-    // so anyone can donate without us embedding the address.
-    int status = 0;
-    const QJsonObject resp = getAccountSync("central-fund", &status);
-    const QString address = resp.value("address").toString().trimmed();
-    if (address.isEmpty()) {
+    // Read only the Worker's public pool state. The Worker never creates,
+    // receives, decrypts, or signs with the pool key; that key is imported into
+    // the first-instance owner's encrypted local Qt vault.
+    const QUrl endpoint =
+        rewardPoolWorkerEndpoint(QStringLiteral("/api/rewards/pool"));
+    if (endpoint.isEmpty() || !m_networkAccess) {
         QMessageBox::information(
-            this, "Donate to ForkMesh",
-            "The central fund isn't accepting donations right now. Please try "
-            "again later.");
+            this, QStringLiteral("Community reward pool"),
+            QStringLiteral("A secure HTTPS reward-pool endpoint is not "
+                           "available for the active ForkMesh server."));
         return;
     }
-    // The endpoint returns a proper Solana Pay URI (label + message); fall back
-    // to a bare address URI if an older relay omits it.
+
+    QNetworkRequest request(endpoint);
+    request.setRawHeader("Accept", "application/json");
+    request.setRawHeader("Cache-Control", "no-store");
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QNetworkRequest::SameOriginRedirectPolicy);
+    request.setTransferTimeout(15000);
+    QNetworkReply *reply = m_networkAccess->get(request);
+    QEventLoop loop;
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    constexpr qsizetype kMaximumPoolResponse = 1024 * 1024;
+    const int httpStatus =
+        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QNetworkReply::NetworkError networkError = reply->error();
+    QByteArray body = reply->read(kMaximumPoolResponse + 1);
+    reply->deleteLater();
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(body, &parseError);
+    const QJsonObject resp =
+        parseError.error == QJsonParseError::NoError && document.isObject()
+            ? document.object()
+            : QJsonObject();
+    const QString address = resp.value("address").toString().trimmed();
+    const bool validAddress =
+        forkmesh::rewards::decodeBase58(address, 32).size() == 32;
+    const bool externalSigner =
+        resp.value("custody").toString() ==
+            QLatin1String("external-local-signer") &&
+        resp.value("privateKeyStoredByWorker").isBool() &&
+        !resp.value("privateKeyStoredByWorker").toBool(true);
+    if (networkError != QNetworkReply::NoError || httpStatus != 200 ||
+        body.size() > kMaximumPoolResponse || !validAddress ||
+        !externalSigner) {
+        QMessageBox::information(
+            this, QStringLiteral("Community reward pool"),
+            QStringLiteral(
+                "ForkMesh could not verify a non-custodial community-pool "
+                "address from this server. No transfer has been requested."));
+        return;
+    }
+
+    // Only accept a Solana URI that visibly targets the verified public pool.
+    // A bare URI is safer than following an unverified server-supplied target.
     QString uri = resp.value("uri").toString().trimmed();
-    if (uri.isEmpty())
+    if (!uri.startsWith(QStringLiteral("solana:%1").arg(address)))
         uri = QStringLiteral("solana:%1").arg(address);
 
     QDialog dialog(this);
-    dialog.setWindowTitle("Donate to the ForkMesh central fund");
+    dialog.setWindowTitle(QStringLiteral("Community reward pool"));
     auto *l = new QVBoxLayout(&dialog);
     l->setContentsMargins(20, 20, 20, 20);
     l->setSpacing(12);
 
     auto *intro = new QLabel(
-        "Scan this Solana QR or copy the address below to donate to the ForkMesh "
-        "central fund. The relay distributes the fund to every online node once "
-        "an hour, so your donation goes straight to the people keeping the "
-        "network alive.");
+        QStringLiteral(
+            "<b>Non-custodial:</b> this is a voluntary transfer from your "
+            "self-custodial wallet to the transparent public community reward "
+            "pool. ForkMesh never receives your private key. The pool signer "
+            "key remains in the first-instance owner's encrypted local desktop "
+            "vault; the Worker stores public plans only. Rewards are community "
+            "incentives, not investments, and no return is guaranteed."));
     intro->setWordWrap(true);
+    intro->setTextFormat(Qt::RichText);
     l->addWidget(intro);
 
     auto *qrLabel = new QLabel;
@@ -2654,6 +2948,22 @@ void MainWindow::showTreasuryDonateDialog()
     addrLabel->setWordWrap(true);
     addrLabel->setAlignment(Qt::AlignCenter);
     l->addWidget(addrLabel);
+
+    const QString network =
+        resp.value("network").toString(QStringLiteral("unknown"));
+    const QString balance =
+        resp.value("balanceSol").toString(QStringLiteral("0"));
+    auto *poolState = new QLabel(
+        QStringLiteral(
+            "Network: %1 · Public on-chain pool balance: %2 SOL\n"
+            "Pending rewards are ledger allocations only; funds remain in the "
+            "source wallet until the local owner reviews, signs, broadcasts, "
+            "and finalizes the exact transfer. Completed rewards have a "
+            "finalized on-chain signature.")
+            .arg(network.toHtmlEscaped(), balance.toHtmlEscaped()));
+    poolState->setObjectName(QStringLiteral("modeHint"));
+    poolState->setWordWrap(true);
+    l->addWidget(poolState);
 
     auto *row = new QHBoxLayout;
     auto *copyBtn = new QPushButton("Copy address");
@@ -2776,7 +3086,9 @@ QWidget *MainWindow::buildBreadcrumb()
     m_relayOpenButton->setCursor(Qt::PointingHandCursor);
     m_relayOpenButton->setFixedSize(30, 30);
     setOcticon(m_relayOpenButton, "link", 16);
-    m_relayOpenButton->setToolTip("Open this relay in your browser");
+    // The relay root is the ForkMesh World, so this always-visible main-nav
+    // control is the desktop node's direct portal into the browser experience.
+    m_relayOpenButton->setToolTip("Open ForkMesh World in your browser");
     connect(m_relayOpenButton, &QPushButton::clicked, this,
             [this] { openServerWebsite(m_activeServer); });
 
@@ -2801,17 +3113,19 @@ QWidget *MainWindow::buildBreadcrumb()
     m_navSolanaBalance->setCursor(Qt::PointingHandCursor);
     m_navSolanaBalance->setToolTip(
         "Your Solana wallet balance \xE2\x80\x94 click to switch "
-        "currency (SOL / USD / INR)");
+        "currency (SOL / USD / INR).\n"
+        "Non-custodial payout address: this client only shares its public "
+        "address; its private key stays in the wallet you control.");
     // Clicking the balance itself cycles its display currency, so the control
     // sits right on the value instead of needing a separate swap icon.
     m_navSolanaBalance->installEventFilter(this);
 
     // The reward-availability toggle (online/offline switch, status line, uptime)
     // used to live here beside the balance; it's now built in
-    // buildNodeProfilePanel(), right under "Get paid to mirror", as a clear
+    // buildNodeProfilePanel(), right under Mirror reward settings, as a clear
     // on/off switch for the whole node rather than a small top-bar pill.
 
-    // Tiny Claude Code usage chart that rides beside the earnings/avatar (issue
+    // Tiny Claude Code usage chart that rides beside the wallet balance/avatar (issue
     // #266): a 5-hour and a weekly horizontal gauge. Seed it from the last cached
     // utilisation so it renders immediately; from there it only updates when the
     // user hovers the chart to check it (adhoc #20) — no background poll and no
@@ -3142,6 +3456,30 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_leaderboardNavButton, &QPushButton::clicked, this,
             [this] { showSection(5); });
 
+    // Control node: this desktop's operational surface for local mirrors,
+    // permissions, keys, wallet public address, Cloudflare, and connected hosts.
+    m_controlNodeNavButton = new QPushButton(QStringLiteral("Control"));
+    m_controlNodeNavButton->setObjectName("topNavButton");
+    m_controlNodeNavButton->setCheckable(true);
+    m_controlNodeNavButton->setCursor(Qt::PointingHandCursor);
+    m_controlNodeNavButton->setToolTip(
+        QStringLiteral("Control node - mirrors, health, keys, Cloudflare and hosts"));
+    setOcticon(m_controlNodeNavButton, "server", 16);
+    m_navGroup->addButton(m_controlNodeNavButton, kControlNodeSectionIndex);
+    connect(m_controlNodeNavButton, &QPushButton::clicked, this,
+            [this] { showSection(kControlNodeSectionIndex); });
+
+    // The browser World is a destination rather than a local stacked section, so
+    // it stays out of the exclusive button group and opens the active relay.
+    m_worldNavButton = new QPushButton(QStringLiteral("World"));
+    m_worldNavButton->setObjectName("topNavButton");
+    m_worldNavButton->setCursor(Qt::PointingHandCursor);
+    m_worldNavButton->setToolTip(
+        QStringLiteral("Open ForkMesh World in your browser"));
+    setOcticon(m_worldNavButton, "home", 16);
+    connect(m_worldNavButton, &QPushButton::clicked, this,
+            &MainWindow::openForkMeshWorld);
+
     // Hosts (adhoc #263): provision a remote machine by SSHing in and running the
     // ForkMesh installer over ansible. Sits right next to Leaderboards, section 7.
     m_hostsNavButton = new QPushButton(QStringLiteral("Hosts"));
@@ -3250,15 +3588,15 @@ QWidget *MainWindow::buildBreadcrumb()
     });
 
     // Donate + social cluster, moved up out of the footer (adhoc #117). A standout
-    // donate button (opens the central-fund QR) sits beside a compact row of two
+    // donate button (opens the public reward-pool QR) sits beside a compact row of two
     // icon-only social buttons — the ForkMesh Reddit and Twitter/X links —
     // matched to the donate button height so the whole cluster reads as one line.
     auto *donateButton = new QPushButton(QString::fromUtf8("\xE2\x99\xA5 Donate"));
     donateButton->setObjectName("donateButton");
     donateButton->setCursor(Qt::PointingHandCursor);
     donateButton->setToolTip(
-        "Donate SOL to the ForkMesh central fund (distributed to online nodes "
-        "hourly)");
+        "Voluntarily send SOL from your own wallet to the transparent community "
+        "reward pool. ForkMesh never receives your wallet key.");
     connect(donateButton, &QPushButton::clicked, this,
             &MainWindow::showTreasuryDonateDialog);
     constexpr int kSocialButtonSize = 34;
@@ -3425,9 +3763,9 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addSpacing(4);
     mainRow->addLayout(socialRow);
     mainRow->addSpacing(10);
-    // Stack the node name above the wallet balance — "this is your money". The
+    // Stack the node name above the user-owned public wallet balance. The
     // online/reward toggle that used to sit here now lives in the node profile
-    // panel, under "Get paid to mirror".
+    // panel, under Mirror reward settings.
     auto *balanceColumn = new QVBoxLayout;
     balanceColumn->setContentsMargins(0, 0, 0, 0);
     balanceColumn->setSpacing(0);
@@ -3483,6 +3821,8 @@ QWidget *MainWindow::buildBreadcrumb()
     // sits in the right-hand utility cluster next to the rebuild button. Log is
     // now a floating button on the live-log strip.
     navRow->addWidget(m_leaderboardNavButton);
+    navRow->addWidget(m_controlNodeNavButton);
+    navRow->addWidget(m_worldNavButton);
     navRow->addWidget(m_hostsNavButton);
     navRow->addWidget(m_nodesNavButton);
     navRow->addWidget(m_relaysNavButton);
@@ -3509,14 +3849,17 @@ QWidget *MainWindow::buildBreadcrumb()
     // Keep the screen tools anchored at the right edge while the growing set of
     // section links scrolls independently. Otherwise adding one section can push
     // every utility button beyond the viewport even on a laptop-width window.
+    // Settings/rebuild come first so the three directly manipulated screen tools
+    // remain the right-edge cluster even when the optional rebuild button is
+    // hidden; putting Settings after them left a misleading 70px dead tail.
     auto *navUtilityRow = new QHBoxLayout;
     navUtilityRow->setContentsMargins(8, 0, 16, 0);
     navUtilityRow->setSpacing(8);
+    navUtilityRow->addWidget(m_settingsNavButton);
+    navUtilityRow->addWidget(m_navRebuildButton);
     navUtilityRow->addWidget(m_navDrawButton);
     navUtilityRow->addWidget(m_navScreenshotButton);
     navUtilityRow->addWidget(m_navResizeButton);
-    navUtilityRow->addWidget(m_settingsNavButton); // gear, next to rebuild (adhoc #137)
-    navUtilityRow->addWidget(m_navRebuildButton);
     auto *navUtilityHost = new QWidget;
     navUtilityHost->setLayout(navUtilityRow);
     navUtilityHost->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
@@ -3681,12 +4024,12 @@ void MainWindow::updateConnectionStatus()
         QStringLiteral("background:%1; border-radius:6px;").arg(color));
 }
 
-// Flip this node online/offline from the top-bar toggle. "Offline" keeps the user
-// in the app but stops the two things that earn rewards — the once-a-minute reward
-// heartbeat and live repo serving — and folds the open session into the saved
-// uptime total. "Online" resumes both and restarts the uptime clock. The choice is
-// persisted so a node the user deliberately parked offline doesn't silently start
-// collecting rewards again on the next launch.
+// Flip this node online/offline from the profile toggle. "Offline" keeps the user
+// in the app but stops two reward-eligibility signals — the heartbeat and live
+// repo serving — and folds the open session into the saved uptime total.
+// "Online" resumes both and restarts the uptime clock. Eligibility never
+// guarantees selection or payment. The choice is persisted so a node the user
+// deliberately parked offline does not silently resume serving after restart.
 void MainWindow::setNodeOffline(bool offline)
 {
     if (offline == m_nodeOffline) {
@@ -3708,7 +4051,7 @@ void MainWindow::setNodeOffline(bool offline)
             m_heartbeatTimer->stop();
         stopRepoHosts();
         logSystem("Node taken offline \xE2\x80\x94 no longer serving repos or "
-                  "collecting rewards.");
+                  "publishing reward-eligibility signals.");
     } else {
         // Restart the uptime clock only if we are actually attached to a relay.
         if (m_backend && m_connectedAtMs <= 0)
@@ -3724,8 +4067,8 @@ void MainWindow::setNodeOffline(bool offline)
             m_heartbeatTimer->start();
             sendNodeHeartbeat();
         }
-        logSystem("Node back online \xE2\x80\x94 serving repos and collecting "
-                  "rewards.");
+        logSystem("Node back online \xE2\x80\x94 serving repos and publishing "
+                  "reward-eligibility signals; selection is not guaranteed.");
     }
     updateNodeOnlineControls();
     updateConnectionStatus();
@@ -3741,10 +4084,13 @@ void MainWindow::updateNodeOnlineControls()
     if (m_nodeOnlineToggle->isChecked() != online)
         m_nodeOnlineToggle->setChecked(online);
     m_nodeOnlineToggle->setToolTip(
-        online ? QStringLiteral("This machine is online and collecting rewards. "
-                                "Click to take it offline.")
-               : QStringLiteral("This machine is offline and not collecting "
-                                "rewards. Click to bring it back online."));
+        online ? QStringLiteral(
+                     "This machine is online and may be considered by community "
+                     "reward policies; selection is not guaranteed. Click to "
+                     "take it offline.")
+               : QStringLiteral(
+                     "This machine is offline and is not publishing reward-"
+                     "eligibility signals. Click to bring it back online."));
 
     if (m_nodeOnlineStatusLabel) {
         m_nodeOnlineStatusLabel->setText(online ? QStringLiteral("Online")
@@ -3756,9 +4102,12 @@ void MainWindow::updateNodeOnlineControls()
 
     if (m_nodeRewardStatus) {
         m_nodeRewardStatus->setText(online
-                                        ? QStringLiteral("available for rewards")
-                                        : QStringLiteral("offline \xC2\xB7 not "
-                                                         "collecting rewards"));
+                                        ? QStringLiteral(
+                                              "may be eligible \xC2\xB7 selection "
+                                              "not guaranteed")
+                                        : QStringLiteral(
+                                              "offline \xC2\xB7 not publishing "
+                                              "eligibility"));
         m_nodeRewardStatus->setStyleSheet(
             online ? QStringLiteral("color:#3fb950; font-size:10px; font-weight:700;")
                    : QStringLiteral("color:#d29922; font-size:10px; font-weight:700;"));
@@ -4088,6 +4437,14 @@ QString lastSolanaBalanceSetting(const QString &address)
 {
     return kSolanaLastBalanceSettingPrefix + address.trimmed();
 }
+
+QString externalWalletBalanceTooltip(const QString &detail)
+{
+    return detail +
+           QStringLiteral(
+               "\nNon-custodial: this is a public external-wallet balance. "
+               "ForkMesh never receives or stores its private key.");
+}
 }  // namespace
 
 void MainWindow::updateNodeSwitcher()
@@ -4186,18 +4543,22 @@ void MainWindow::updateNavSolanaBalance()
     if (addr.isEmpty()) {
         m_navSolanaLamports = -1;
         m_navSolanaBalance->setText(QStringLiteral("SOL --"));
-        m_navSolanaBalance->setToolTip("Add a Solana address to show your balance");
+        m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
+            QStringLiteral(
+                "Add a public self-custodial Solana address to show its balance.")));
         return;
     }
     if (!isLikelySolanaAddress(addr)) {
         m_navSolanaLamports = -1;
         m_navSolanaBalance->setText(QStringLiteral("SOL invalid"));
-        m_navSolanaBalance->setToolTip("Saved Solana address is invalid");
+        m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
+            QStringLiteral("Saved public Solana address is invalid.")));
         return;
     }
 
     m_navSolanaBalance->setText(QStringLiteral("SOL ..."));
-    m_navSolanaBalance->setToolTip(QStringLiteral("Checking your Solana balance"));
+    m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
+        QStringLiteral("Checking your public Solana balance.")));
     queryNavSolanaBalance(addr, 0);
 }
 
@@ -4217,7 +4578,9 @@ void MainWindow::renderNavSolanaBalance()
     if (cur == QLatin1String("sol")) {
         m_navSolanaBalance->setText(solBalance);
         m_navSolanaBalance->setToolTip(
-            QStringLiteral("Your Solana balance: %1").arg(solBalance));
+            externalWalletBalanceTooltip(
+                QStringLiteral("Your public Solana balance: %1")
+                    .arg(solBalance)));
         return;
     }
     const auto it = m_navFiatRates.constFind(cur);
@@ -4229,14 +4592,17 @@ void MainWindow::renderNavSolanaBalance()
             formatFiatBalance(m_navSolanaLamports, it->first, cur);
         m_navSolanaBalance->setText(fiatBalance);
         m_navSolanaBalance->setToolTip(
-            QStringLiteral("Your balance: %1 (%2)")
-                .arg(fiatBalance, solBalance));
+            externalWalletBalanceTooltip(
+                QStringLiteral("Your public wallet balance: %1 (%2)")
+                    .arg(fiatBalance, solBalance)));
         return;
     }
     // No fresh rate cached: show the SOL figure with a hint and fetch one rate.
     m_navSolanaBalance->setText(QStringLiteral("%1 ...").arg(fiatCurrencySymbol(cur)));
     m_navSolanaBalance->setToolTip(
-        QStringLiteral("Checking SOL/%1 price for %2").arg(cur.toUpper(), solBalance));
+        externalWalletBalanceTooltip(
+            QStringLiteral("Checking SOL/%1 price for %2")
+                .arg(cur.toUpper(), solBalance)));
     queryNavSolanaUsdPrice(m_navSolanaBalanceAddress, m_navSolanaLamports);
 }
 
@@ -4246,7 +4612,8 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
     if (endpointIndex >= count) {
         if (m_navSolanaBalance && m_navSolanaBalanceAddress == addr) {
             m_navSolanaBalance->setText(QStringLiteral("SOL unavailable"));
-            m_navSolanaBalance->setToolTip("Solana balance is temporarily unavailable");
+            m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
+                QStringLiteral("Public Solana balance is temporarily unavailable.")));
         }
         return;
     }
@@ -4286,9 +4653,10 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
             QSettings().value(kDisbursementAlertSetting, false).toBool()) {
             const QString amount = formatSolanaBalance(lamports - previousLamports);
             QApplication::alert(this, 0);
-            postNotification(QStringLiteral("New disbursement received"),
-                             QStringLiteral("%1 added to your wallet. "
-                                            "New balance: %2")
+            postNotification(QStringLiteral("Public wallet balance increased"),
+                             QStringLiteral(
+                                 "%1 received by your external self-custodial "
+                                 "wallet. New public balance: %2")
                                  .arg(amount, balance),
                              false, QStringLiteral("emblem-default"));
         }
@@ -4298,14 +4666,17 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
             m_navSolanaBalance->setText(
                 QStringLiteral("%1 ...").arg(fiatCurrencySymbol(cur)));
             m_navSolanaBalance->setToolTip(
-                QStringLiteral("Checking SOL/%1 price for %2")
-                    .arg(cur.toUpper(), balance));
+                externalWalletBalanceTooltip(
+                    QStringLiteral("Checking SOL/%1 price for %2")
+                        .arg(cur.toUpper(), balance)));
             queryNavSolanaUsdPrice(addr, lamports);
             return;
         }
         m_navSolanaBalance->setText(balance);
         m_navSolanaBalance->setToolTip(
-            QStringLiteral("Your Solana balance: %1").arg(balance));
+            externalWalletBalanceTooltip(
+                QStringLiteral("Your public Solana balance: %1")
+                    .arg(balance)));
     });
 }
 
@@ -4335,8 +4706,9 @@ void MainWindow::queryNavSolanaUsdPrice(const QString &addr, qint64 lamports)
         if (netError != QNetworkReply::NoError || rate <= 0.0) {
             m_navSolanaBalance->setText(solBalance);
             m_navSolanaBalance->setToolTip(
-                QStringLiteral("SOL/%1 price unavailable. Balance: %2")
-                    .arg(cur.toUpper(), solBalance));
+                externalWalletBalanceTooltip(
+                    QStringLiteral("SOL/%1 price unavailable. Public balance: %2")
+                        .arg(cur.toUpper(), solBalance)));
             return;
         }
 
@@ -4344,9 +4716,11 @@ void MainWindow::queryNavSolanaUsdPrice(const QString &addr, qint64 lamports)
         const QString fiatBalance = formatFiatBalance(lamports, rate, cur);
         m_navSolanaBalance->setText(fiatBalance);
         m_navSolanaBalance->setToolTip(
-            QStringLiteral("Your balance: %1 (%2 at %3%4/SOL)")
-                .arg(fiatBalance, solBalance, fiatCurrencySymbol(cur),
-                     QString::number(rate, 'f', 2)));
+            externalWalletBalanceTooltip(
+                QStringLiteral("Your public wallet balance: %1 "
+                               "(%2 at %3%4/SOL)")
+                    .arg(fiatBalance, solBalance, fiatCurrencySymbol(cur),
+                         QString::number(rate, 'f', 2))));
     });
 }
 
@@ -4526,7 +4900,7 @@ void MainWindow::showNodesWindow()
                 lines << QStringLiteral("Platform: %1").arg(node.platform.toHtmlEscaped());
             if (!node.version.isEmpty())
                 lines << QStringLiteral("Version: %1").arg(node.version.toHtmlEscaped());
-            lines << QStringLiteral("Earnings: %1")
+            lines << QStringLiteral("Public wallet balance: %1")
                          .arg(node.solanaBalance.trimmed().isEmpty()
                                   ? QString::fromUtf8("\xE2\x80\x94")
                                   : node.solanaBalance.trimmed().toHtmlEscaped() +
@@ -5772,8 +6146,8 @@ QWidget *MainWindow::buildSolanaNotice()
     m_solanaBanner = new QWidget;
     m_solanaBanner->setObjectName("solanaBanner");
     m_solanaBannerLabel = new QLabel(
-        "Add a Solana address so others can sponsor your hosting — it keeps "
-        "the network open to donations and more sustainable.");
+        "Add a public self-custodial Solana payout address if you want this "
+        "mirror to be considered by community reward policies.");
     m_solanaBannerLabel->setObjectName("solanaBannerLabel");
     m_solanaBannerLabel->setWordWrap(true);
 
@@ -5805,8 +6179,8 @@ void MainWindow::updateSolanaNotice()
     if (!m_solanaBanner)
         return;
     // Crypto is strictly opt-in, so we no longer nag every account-less node to
-    // add a payout address. The only prompt to set one is the explicit "Get paid
-    // to mirror" button on the node profile; the banner stays hidden here.
+    // add a payout address. The only prompt to set one is the explicit mirror
+    // reward-settings button on the node profile; the banner stays hidden here.
     m_solanaBanner->setVisible(false);
     updateWalletVerifyNotice();
     updateNavSolanaBalance();
@@ -5821,13 +6195,15 @@ QWidget *MainWindow::buildWalletVerifyNotice()
     icon->setObjectName("walletVerifyIcon");
     icon->setPixmap(themedOcticon("alert", QColor("#d29922"), 22).pixmap(22, 22));
 
-    auto *title = new QLabel("Verify your payout wallet to receive payouts");
+    auto *title = new QLabel("Check payout-address eligibility");
     title->setObjectName("walletVerifyTitle");
     auto *body = new QLabel(
-        "Your payout wallet isn't verified yet, so it can't receive "
-        "payouts. Make a small deposit (\xE2\x89\xA5 0.001 SOL) to your wallet "
-        "to prove you control it \xE2\x80\x94 then you start earning your "
-        "share of the network rewards.");
+        "Some community reward policies require an active public address. "
+        "ForkMesh can validate its format and publish the existing signed node "
+        "heartbeat, but neither proves wallet control nor guarantees selection "
+        "or payment.<br><b>Non-custodial:</b> ForkMesh accepts only the public "
+        "address here. Never enter a private key or recovery phrase; seeds and "
+        "mnemonics are also prohibited.");
     body->setObjectName("walletVerifyBody");
     body->setWordWrap(true);
     body->setTextFormat(Qt::RichText);
@@ -5838,7 +6214,7 @@ QWidget *MainWindow::buildWalletVerifyNotice()
     textCol->addWidget(title);
     textCol->addWidget(body);
 
-    auto *verifyButton = new QPushButton("Verify wallet");
+    auto *verifyButton = new QPushButton("Check settings");
     verifyButton->setObjectName("primaryButton");
     verifyButton->setCursor(Qt::PointingHandCursor);
     setOcticon(verifyButton, "shield-check", 16);
@@ -5879,19 +6255,30 @@ void MainWindow::promptSetSolanaAddress()
     bool ok = false;
     const QString current = savedSolanaAddress();
     const QString address = QInputDialog::getText(
-        this, "Solana address",
-        "Enter a Solana address to receive donations:", QLineEdit::Normal,
+        this, "Self-custodial payout address",
+        "Enter your public Solana payout address only. Never enter a private "
+        "key, seed, mnemonic, or recovery phrase:",
+        QLineEdit::Normal,
         current, &ok);
     if (!ok)
         return;
     const QString trimmed = address.trimmed();
+    if (!trimmed.isEmpty() &&
+        !forkmesh::control::isValidSolanaPublicAddress(trimmed)) {
+        flashMessage(
+            QStringLiteral(
+                "That is not a valid Solana public address. No private key or "
+                "recovery phrase was accepted."),
+            /*error=*/true);
+        return;
+    }
     saveSolanaAddress(trimmed);
     if (m_solanaEdit)
         m_solanaEdit->setText(trimmed);
     if (m_settingsSolanaEdit)
         m_settingsSolanaEdit->setText(trimmed);
-    // The address is shared with peers on the next connect; the sponsor button
-    // and donation notice pick it up immediately.
+    // The public address is shared with peers on the next connect; the reward
+    // settings and wallet-balance displays pick it up immediately.
     updateSolanaNotice();
     updateHomeStats();
 }
@@ -5899,10 +6286,9 @@ void MainWindow::promptSetSolanaAddress()
 void MainWindow::enablePaidMirroring()
 {
     // Crypto is strictly opt-in: the core flow (clone, mirror, issues, PRs, chat)
-    // never routes here. This is the one place a user chooses to host their
-    // mirrors on the network and earn donations, which needs two things the core
-    // flow does not: (1) a Solana payout address and (2) an active account the
-    // relay can verify before it accepts hosting/publishing.
+    // never routes here. This page only configures a public payout address for
+    // an already registered, locally signable mirror identity. It must never
+    // launch the historical reserve/donation/finalize funnel.
     QString address = savedSolanaAddress().trimmed();
     if (address.isEmpty()) {
         promptSetSolanaAddress();
@@ -5910,26 +6296,27 @@ void MainWindow::enablePaidMirroring()
         if (address.isEmpty())
             return; // user cancelled the address prompt — stay opted out
     }
-
-    if (!hasOwnerSigningCapability(accountOwner())) {
-        // Reuse the established join/activate path (reserve -> donate -> set
-        // login, or log in to an existing account). On cancel/failure it surfaces
-        // the reason itself; we simply stay opted out.
-        if (!ensureNodeAccount(accountOwner(), address))
-            return;
-        if (!hasOwnerSigningCapability(accountOwner())) {
-            flashMessage(
-                QStringLiteral(
-                    "This account is signed in, but this desktop cannot host or "
-                    "publish for it. Use the primary desktop identity or import "
-                    "that identity before enabling paid mirroring."),
-                /*error=*/true);
-            return;
-        }
+    if (!forkmesh::control::isValidSolanaPublicAddress(address)) {
+        flashMessage(
+            QStringLiteral(
+                "That saved value is not a valid Solana public address. No "
+                "private key, seed, mnemonic, or recovery phrase can be used."),
+            /*error=*/true);
+        return;
     }
 
-    // Active now: bring the live hosts up and (re)publish existing mirrors so the
-    // network can clone from this node and route donations to its wallet.
+    if (!hasOwnerSigningCapability(accountOwner())) {
+        flashMessage(
+            QStringLiteral(
+                "Register or sign in to this node from Account settings first. "
+                "Mirror reward settings never create a deposit wallet, reserve "
+                "a paid account, or run a donation flow."),
+            /*error=*/true);
+        return;
+    }
+
+    // Bring the update channels up and (re)publish existing mirrors. A configured
+    // address is only one eligibility input; it does not promise a reward.
     startRepoHosts();
     for (int i = 0; i < m_repositories.size(); ++i) {
         if (m_repositories.at(i).publishToNetwork)
@@ -5938,17 +6325,63 @@ void MainWindow::enablePaidMirroring()
 
     updateSolanaNotice();
     updateHomeStats();
-    // Refresh the open profile so the button flips to its "earning" state and the
-    // Solana address/QR/balance section appears next to the username.
+    // Refresh the open profile so the button shows its configured state and the
+    // public address/QR/balance section appears next to the username.
     if (m_nodeProfilePanel && m_nodeProfilePanel->isVisible())
         showNodeProfile(m_profileNodeId, m_profileNodeName);
-    flashMessage(QStringLiteral("You're set up to get paid to mirror."));
+    flashMessage(QStringLiteral(
+        "Reward eligibility configured. Selection and payment are not guaranteed."));
+}
+
+void MainWindow::ensureSectionBuilt(int index)
+{
+    if (!m_sectionStack || index < 0 || index >= m_sectionStack->count())
+        return;
+    QWidget *placeholder = m_sectionStack->widget(index);
+    if (!placeholder ||
+        !placeholder->property("forkmeshDeferredSection").toBool())
+        return;
+
+    QWidget *section = nullptr;
+    switch (index) {
+    case 1: {
+        auto *scroll = new QScrollArea;
+        scroll->setObjectName("settingsScroll");
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        scroll->setWidgetResizable(true);
+        scroll->setMinimumHeight(0);
+        scroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
+        scroll->setWidget(buildSettingsSection());
+        section = scroll;
+        break;
+    }
+    case 2: section = buildChatSection(); break;
+    case 3: section = buildNotificationsSection(); break;
+    case 4: section = buildLogSection(); break;
+    case 5: section = buildLeaderboardsSection(); break;
+    case 6: section = buildSearchResultsSection(); break;
+    case 7: section = buildHostsSection(); break;
+    case 8: section = buildRelaysSection(); break;
+    case 10: section = buildNodeProfileSection(); break;
+    case 11: section = buildNetworkReposSection(); break;
+    case 12: section = buildNetworkDiagnosticsSection(); break;
+    case 13: section = buildNodesSection(); break;
+    case 14: section = buildControlNodeSection(); break;
+    default: break;
+    }
+    if (!section)
+        return;
+    m_sectionStack->insertWidget(index, section);
+    m_sectionStack->removeWidget(placeholder);
+    placeholder->deleteLater();
 }
 
 void MainWindow::showSection(int index)
 {
     if (index == 9)
         index = kNetworkDiagnosticsSectionIndex;
+    ensureSectionBuilt(index);
     // Leaving Settings (index 1) while the mic test is recording would otherwise
     // leave the recorder holding the microphone open in the background; stop it.
     if (index != 1 && m_voiceTestRecording)
@@ -5997,6 +6430,8 @@ void MainWindow::showSection(int index)
     } else if (index == kNetworkDiagnosticsSectionIndex) {
         refreshFirewallTables();
         refreshNetworkDiagnostics();
+    } else if (index == kControlNodeSectionIndex) {
+        refreshControlNode();
     }
 }
 
@@ -6173,6 +6608,9 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
 
     QList<QJsonObject> rows;
     QSet<QString> seen;
+    m_privateCatalogAccessIds.clear();
+    static const QRegularExpression opaqueAccessIdPattern(
+        QStringLiteral("^[0-9a-f]{64}$"));
     for (const QJsonValue &value : repos) {
         QJsonObject repo = value.toObject();
         const QString owner =
@@ -6185,9 +6623,31 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         if (seen.contains(key))
             continue;
         seen.insert(key);
+        const bool isPrivate =
+            repo.value("private").toBool(false) ||
+            repo.value("isPrivate").toBool(false);
         const QString source = repo.value("source").toString().trimmed();
-        if (!source.isEmpty() && source != QLatin1String("local-node"))
+        if (!source.isEmpty() && source != QLatin1String("local-node") &&
+            !(isPrivate &&
+              source == QLatin1String("owner-sealed-opaque")))
             continue;
+        if (isPrivate) {
+            const QString accessId =
+                repo.value(QStringLiteral("privateAccessId"))
+                    .toString()
+                    .trimmed()
+                    .toLower();
+            const QString accessPath =
+                repo.value(QStringLiteral("privateAccessPath"))
+                    .toString()
+                    .trimmed();
+            const QString expectedPath =
+                QStringLiteral("/api/private-replicas/") + accessId;
+            if (opaqueAccessIdPattern.match(accessId).hasMatch() &&
+                (accessPath.isEmpty() || accessPath == expectedPath)) {
+                m_privateCatalogAccessIds.insert(key, accessId);
+            }
+        }
         QString cloneUrl = repo.value("cloneUrl").toString().trimmed();
         if (cloneUrl.isEmpty())
             cloneUrl = repo.value("clone_url").toString().trimmed();
@@ -6452,6 +6912,12 @@ void MainWindow::openNetworkRepo(const QString &owner, const QString &name,
 
     int index = findNetworkRepoIndex(owner, name, true);
     if (index >= 0) {
+        if (m_repositories.at(index).isPrivate &&
+            PrivateMirrorStore::isOpaqueId(
+                m_privateCatalogAccessIds.value(owner + "/" + name))) {
+            m_repositories[index].privateReplicaId =
+                m_privateCatalogAccessIds.value(owner + "/" + name);
+        }
         openRepoDetail(index);
         const RepositoryRecord &repo = m_repositories.at(index);
         if (repo.previewOnly && !m_syncingRepos.contains(index) &&
@@ -6465,6 +6931,12 @@ void MainWindow::openNetworkRepo(const QString &owner, const QString &name,
     repo.name = name;
     repo.cloneUrl = cloneUrl.isEmpty() ? hostedCloneUrl(owner, name) : cloneUrl;
     repo.isPrivate = isPrivate;
+    if (isPrivate) {
+        const QString accessId =
+            m_privateCatalogAccessIds.value(owner + "/" + name);
+        if (PrivateMirrorStore::isOpaqueId(accessId))
+            repo.privateReplicaId = accessId;
+    }
     repo.previewOnly = true;
     repo.actionsEnabled = false;
     repo.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
@@ -7123,8 +7595,8 @@ void MainWindow::refreshHostsTable()
 // Selecting a row opens a detail panel with the node's full details, the repos
 // it hosts and the repos it mirrors.
 //
-// Online state trusts the relay's /api/network/stats "onlineNodes" list (a live
-// host tunnel or a fresh signed heartbeat) as the network-canonical live set —
+// Online state trusts the relay's /api/network/stats "onlineNodes" list (a
+// repository update channel or a fresh signed heartbeat) as the canonical set —
 // the same signal the Mirror nodes list and the Network page use. This lets
 // headless mirror nodes that serve via the relay without joining this client's
 // chat room show online (adhoc #27), and, once the relay set is fetched, stops a
@@ -7167,7 +7639,7 @@ QWidget *MainWindow::buildNodesSection()
         "Every node this client knows about \xE2\x80\x94 the same nodes in the "
         "top-bar node dropdown. Click a column header to sort. Select a node to "
         "see its details and the repositories it hosts and mirrors. \"Online "
-        "(serving)\" means the relay reports the node live (host tunnel or "
+        "(serving)\" means the relay reports the node live (update channel or "
         "signed heartbeat) even though it isn't in this client's chat room."));
     subtitle->setObjectName("mutedLabel");
     subtitle->setWordWrap(true);
@@ -7373,7 +7845,7 @@ void MainWindow::refreshNodesTable()
         const NodeMenuEntry &e = visible.at(i);
         const MemberInfo &mi = visibleRoster.at(i);
         // The relay's /api/network/stats "onlineNodes" is the network-canonical
-        // live set (a live host tunnel or a fresh signed heartbeat) — the same
+        // live set (an update channel or a fresh signed heartbeat) — the same
         // signal the Mirror nodes list and the Network page trust. Once we have
         // fetched it, it is authoritative even over a roster entry that still
         // says "online": a node whose chat socket lingers after the machine
@@ -7409,7 +7881,7 @@ void MainWindow::refreshNodesTable()
                                  : QStringLiteral("Online")));
         if (serving)
             statusItem->setToolTip(QStringLiteral(
-                "The relay reports this node live (host tunnel / signed "
+                "The relay reports this node live (update channel / signed "
                 "heartbeat) even though it isn't in this client's chat room."));
         m_nodesTable->setItem(i, kNodeColStatus, statusItem);
 
@@ -10497,9 +10969,16 @@ void MainWindow::submitHostLinkCode(const QString &code)
 QWidget *MainWindow::buildHomeSection()
 {
     auto *page = new QWidget;
-    // Node profile is now its own section (index 10), so home just holds the repo
-    // detail panel filling the full width.
-    m_repoDetailSection = buildRepoDetailSection();
+    // Building every repository tab creates several large tables, editors and
+    // delegates. On a cold launch that work used to consume more than a second
+    // before the first frame even when no repository was selected. Keep Home
+    // lightweight and build the full detail tree on the first real repo open.
+    auto *empty = new QLabel(
+        QStringLiteral("Select a repository to explore its code and activity."));
+    empty->setObjectName(QStringLiteral("emptyState"));
+    empty->setAlignment(Qt::AlignCenter);
+    empty->setWordWrap(true);
+    m_repoDetailSection = empty;
     auto *layout = new QHBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
@@ -10644,24 +11123,24 @@ QWidget *MainWindow::buildNodeProfilePanel()
     connect(m_profileTakeOwnershipButton, &QPushButton::clicked, this,
             &MainWindow::requestNodeOwnership);
 
-    // --- "Get paid to mirror": the one opt-in entry into the crypto side, sitting
-    // directly under the username on your own profile. The core flow never shows
-    // it; clicking sets a Solana payout address (if unset) and activates this node
-    // so it can host its mirrors and earn donations (see enablePaidMirroring).
-    m_profileGetPaidButton = new QPushButton(QString::fromUtf8("Get paid to mirror"));
+    // --- Mirror reward settings: opt-in public payout configuration under the
+    // username on your own profile. It does not create a wallet or promise that
+    // an eligible node will be selected.
+    m_profileGetPaidButton = new QPushButton(
+        QString::fromUtf8("Mirror reward settings"));
     m_profileGetPaidButton->setObjectName("primaryButton");
     m_profileGetPaidButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_profileGetPaidButton, "credit-card", 16);
     m_profileGetPaidButton->setToolTip(
-        "Opt in to hosting your mirrors on the network and earning donations. "
-        "Sets a Solana payout address and activates this node. Entirely optional "
-        "\xE2\x80\x94 cloning, mirroring, issues and PRs work without it.");
+        "Configure a public self-custodial payout address. A healthy mirror may "
+        "be eligible for voluntary community rewards; selection and payment are "
+        "not guaranteed. Cloning, mirroring, issues and PRs work without it.");
     connect(m_profileGetPaidButton, &QPushButton::clicked, this,
             &MainWindow::enablePaidMirroring);
 
-    // --- Node power switch: a plain on/off toggle sitting right under "Get paid
-    // to mirror", since that's exactly what it controls — whether this whole
-    // node is online and serving/collecting rewards, or parked offline. Used to
+    // --- Node power switch: a plain on/off toggle sitting under the reward
+    // settings, since that's exactly what it controls — whether this whole
+    // node is online and publishing eligibility signals, or parked offline. Used to
     // be a small pill in the top-right nav cluster; moved here so it reads as
     // the node's power switch rather than a stray status badge.
     m_profileOnlineSection = new QWidget;
@@ -10875,6 +11354,12 @@ QWidget *MainWindow::buildNodeProfilePanel()
     // --- Solana section: address, QR, on-demand balance.
     m_profileSolanaSection = new QWidget;
     auto *solanaLabel = makeProfileSection("SOLANA");
+    auto *custodyNotice = new QLabel(
+        "Non-custodial payout address \xE2\x80\x94 ForkMesh reads the public "
+        "address and on-chain balance only. Private keys stay in the external "
+        "wallet you control.");
+    custodyNotice->setObjectName("statusLine");
+    custodyNotice->setWordWrap(true);
     m_profileSolanaAddr = new QLabel;
     m_profileSolanaAddr->setObjectName("profileMono");
     m_profileSolanaAddr->setWordWrap(true);
@@ -10914,6 +11399,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     solanaLayout->setContentsMargins(0, 8, 0, 0);
     solanaLayout->setSpacing(6);
     solanaLayout->addWidget(solanaLabel);
+    solanaLayout->addWidget(custodyNotice);
     solanaLayout->addWidget(m_profileSolanaAddr);
     solanaLayout->addWidget(copyAddr, 0, Qt::AlignLeft);
     solanaLayout->addWidget(m_profileQr, 0, Qt::AlignCenter);
@@ -10921,13 +11407,16 @@ QWidget *MainWindow::buildNodeProfilePanel()
     solanaLayout->addWidget(balLabel);
     solanaLayout->addLayout(balanceRow);
 
-    // Revenue-sharing eligibility (self only): verify >=0.001 SOL has reached
-    // this wallet so the network knows the address is active.
+    // Public reward configuration (self only). A balance or deposit is neither
+    // requested nor treated as proof of wallet custody.
     m_profileEligibility = new QLabel;
     m_profileEligibility->setObjectName("statusLine");
     m_profileEligibility->setWordWrap(true);
     m_profileEligibility->setTextFormat(Qt::RichText);
-    m_profileVerifyButton = new QPushButton("Verify wallet (deposit >= 0.001 SOL)");
+    m_profileVerifyButton = new QPushButton("Check reward settings");
+    m_profileVerifyButton->setToolTip(
+        "Validate the public payout address and publish the existing signed "
+        "heartbeat. This never requests a deposit or guarantees a reward.");
     m_profileVerifyButton->setObjectName("ghostButton");
     m_profileVerifyButton->setCursor(Qt::PointingHandCursor);
     connect(m_profileVerifyButton, &QPushButton::clicked, this,
@@ -11216,16 +11705,18 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     if (m_profileOnlineSection)
         m_profileOnlineSection->setVisible(info.self);
 
-    // "Get paid to mirror" is a self-only opt-in CTA. Once this node is activated
-    // (active account + a payout address set) it flips to an "earning" label so
-    // the button doubles as a status line; it stays clickable to re-arm hosting.
+    // Reward settings are self-only. Once an active, locally signable account
+    // and public payout address are configured, the label reports configuration
+    // only—not selection, a transfer, or guaranteed earnings.
     if (m_profileGetPaidButton) {
         const bool earning = hasOwnerSigningCapability(accountOwner()) &&
                              !solana.isEmpty();
         m_profileGetPaidButton->setVisible(info.self);
         m_profileGetPaidButton->setText(
-            earning ? QString::fromUtf8("\xE2\x9C\x93 Getting paid to mirror")
-                    : QString::fromUtf8("Get paid to mirror"));
+            earning
+                ? QString::fromUtf8(
+                      "\xE2\x9C\x93 Reward eligibility configured")
+                : QString::fromUtf8("Mirror reward settings"));
     }
 
     // Wallet verification + eligibility badge are shown only on your own profile.
@@ -11236,11 +11727,13 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
         if (info.self)
             m_profileEligibility->setText(
                 m_accountSolanaVerified
-                    ? QString::fromUtf8("<span style='color:#3fb950'>Active "
-                                     "\xC2\xB7 revenue-sharing eligible</span>")
-                    : QString::fromUtf8("<span style='color:#d29922'>Not yet eligible "
-                                     "\xE2\x80\x94 deposit >= 0.001 SOL and "
-                                     "verify.</span>"));
+                    ? QString::fromUtf8(
+                          "<span style='color:#3fb950'>Reward eligibility "
+                          "configured \xC2\xB7 may be eligible</span>")
+                    : QString::fromUtf8(
+                          "<span style='color:#d29922'>Not yet eligible "
+                          "\xE2\x80\x94 configure and verify a public "
+                          "self-custodial address.</span>"));
     }
 
     // Solana address + QR + reset balance.
@@ -11536,7 +12029,7 @@ void MainWindow::refreshProfileAccountStatus()
             m_profileUserNodesList->setVisible(false);
         }
         m_profileAccountStatus->setText(QString::fromUtf8(
-            "Register this machine's node first (see \"Get paid to mirror\") to "
+            "Register this machine's node first (see Account settings) to "
             "link it to a user account."));
         m_profileAccountStatus->setVisible(true);
         m_profileLinkUserButton->setText("Log in as a user");
@@ -11737,7 +12230,7 @@ void MainWindow::openLinkNodeInBrowser()
     const QString node = accountOwner();
     if (node.isEmpty() || !hasOwnerSigningCapability(node) ||
         (!m_profileIdentity.isValid() && !m_profileIdentity.load())) {
-        logSystem("Register this node first (see \"Get paid to mirror\") to "
+        logSystem("Register this node first (see Account settings) to "
                   "link it to a user account.");
         return;
     }

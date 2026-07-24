@@ -2,9 +2,9 @@
 
 **ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider.**
 
-ForkMesh is a peer-to-peer developer platform for hosting, browsing, discussing, and shipping software without handing your code, identity, or community to one central company. A developer can run a node, any permitted node can mirror a repository, and verified mirrors keep the project available when its source host goes offline.
+ForkMesh is a peer-to-peer developer platform for hosting, browsing, discussing, and shipping software without handing your code, identity, or community to one central company. A developer can run a node, any permitted node can mirror a repository, and an eligible, healthy, integrity-matching mirror can keep the project available when its source host goes offline.
 
-It is open source, free-plan-hostable at the edge, and already doing real work today — issues, pull requests, CI-style actions, AI coding agents, on-chain bounties, and a live public website — all running on the network right now.
+It is open source, free-plan-hostable at the edge, and already doing real work today — issues, pull requests, CI-style actions, AI coding agents, non-custodial reward coordination, and a live public website — all running on the network right now.
 
 > **This is early, and that's the point.** The foundation is built and working. The people who show up now help shape the protocol, earn recognition for the repositories they preserve, and get their nodes on the leaderboards before the mesh fills up. Build a node, mirror a project you care about, and you're already part of it.
 
@@ -23,29 +23,29 @@ ForkMesh is well past "prototype." Here's what you can do right now:
 
 **Hosting & mirroring**
 - Local bare Git mirrors via `git clone --mirror` / `git fetch --prune`.
-- A public, Worker-served **website** and repository catalog — every repo a node publishes is browsable on the web.
+- A public, Worker-served **website** and repository catalog — explicitly public repositories are browsable on the web; authorized private entries stay session-gated.
 - **Browse before you mirror:** explore any repository's files, commits, and diffs on demand, streamed from a live host with nothing stored on the relay.
-- **Mirror failover:** when the source machine goes offline, another node that holds the mirror serves clones and browsing in its place — the URL never changes.
+- **Mirror failover:** when the source machine goes offline and an eligible, healthy, integrity-matching mirror exists, the Worker can serve clones and browsing in its place without changing the public URL.
 - Content-addressed **release** artifacts and tags, with a sha256-verified one-line installer.
 
 **Collaboration**
 - **Issues** with open/closed states, priorities, custom fields, and signed, append-only history that syncs and stays editable across nodes.
 - **Pull requests** as signed patch submissions, browsable on the web and in the desktop client, with mergeability checks and AI-assisted review.
 - **Actions:** run real workflows on push, with the latest live log always one click away, rendered in a native in-app terminal with full color and emoji.
-- **Encrypted room chat**, per-repository — messages are AES-256-GCM encrypted client-side, so the relay only ever stores and forwards ciphertext and never keeps plaintext. A default room derives its key from a shared, app-wide constant: that keeps the relay from reading messages at rest, but it is *not* confidential between ForkMesh users — set a room passphrase (shared out of band) when you need a key only the participants know.
+- **Authenticated shared-key room chat**, per repository — the Town Square compatibility room derives `SHA-256(DATA_KEY + ":room-chat-passphrase-v1")`; every other repository derives `SHA-256(DATA_KEY + ":room-chat-passphrase-v2:" + lower(owner + "/" + repo))`. The endpoint releases a scoped passphrase only to an authenticated account or signed node authorized for that repository. Clients derive the AES-256-GCM room key with PBKDF2-HMAC-SHA256 (210,000 rounds and a room-scoped salt). This encrypts frames in transit and at rest, but it is *not* end-to-end encryption: the relay operator can derive the default key and read messages. Persisted frames are capped at the newest 500 per room and expire after 7 days. Use an out-of-band participant passphrase in clients that support it when the relay must not know the key.
 
 **AI agents, built in**
 - Assign any issue to **Claude Code** or **Codex** straight from the issue view. The agent works on a connected fork and opens a real pull request when it's done.
 - Run **multiple agents in parallel**, resume past sessions, and watch live activity indicators as they work.
 - Kick off agents from your editor with the **IDE extension**.
-- **No desktop client required:** repo owners can create agent sessions, send prompts, and assign issues to an agent straight from the website.
+- **Owner-device agent privacy:** agent sessions, transcripts, results, and steering prompts are hybrid-encrypted before relay storage. Starting, inspecting, and steering private agent work requires the owner’s desktop key; the browser and platform administrators receive no decryption override.
 
 **Funding**
-- **Solana bounties:** fund any issue with one click. ForkMesh watches the chain, confirms the deposit, and pays out to the contributor when their PR is merged.
+- **Legacy issue bounties are frozen:** historical Worker-custodied deposit and automatic payout paths are read-only pending explicit offline reconciliation. New incentives use owner-controlled external wallets and reviewed, non-custodial signing.
 - Profiles and repositories can publish Solana donation addresses.
 
 **Reach**
-- A **Flutter mobile app** — carry the mesh in your pocket and mirror on your phone.
+- A **Flutter mobile app** — browse repositories, follow activity, chat, and submit signed issue and pull-request updates. It is an access client, not a Git mirror host; durable mirroring stays on desktop/headless nodes.
 - QR handoffs, node profile pages, and network presence throughout.
 
 The mesh currently runs on a Cloudflare Python Worker relay (Durable Objects, no npm/TypeScript project dependencies in the repo) and a Qt 6 desktop node — see the [changelog](https://forkmesh.com/changelog) for the full release-by-release story.
@@ -101,7 +101,7 @@ The relay hosts encrypted room WebSockets and the signed repository catalog:
 /api/repositories                            # signed catalog records
 ```
 
-The Durable Object only relays ciphertext to connected clients and never persists message bodies. (`/api/room/{room}/ws` remains as a temporary compatibility route.)
+The Durable Object relays AES-GCM ciphertext and retains only frames marked for persistence, capped at the newest 500 per room for 7 days. Default passphrases are repository-scoped and derived from the relay's `DATA_KEY` (with a v1 compatibility derivation for `mainnode/forkmesh`), so this is authenticated shared-key transport and the relay operator can decrypt it. Private and missing repository rooms are rejected before Durable Object access. (`/api/room/{room}/ws` remains as a temporary public compatibility route.)
 
 Run and deploy with Cloudflare's Python Worker tooling:
 
@@ -146,11 +146,11 @@ Developer docs (protocol spec, per-project build notes, changelog) live on the w
 
 - **Identity:** local Ed25519 keys for signed protocol actions, with email/password login for web and cross-device account access.
 - **Repositories:** signed metadata plus Git remotes.
-- **Mirrors:** any node can host a bare mirror of any repository, and serve it when the source is offline.
-- **Chat:** repository communities talk through encrypted mainnode relay rooms.
-- **Funding:** profiles, repositories, and issues carry Solana addresses and bounties.
+- **Mirrors:** a permitted node can host a bare mirror; it can serve a public repository during a source outage only while it is eligible, healthy, and integrity-matching.
+- **Chat:** repository communities talk through authenticated shared-key mainnode rooms; default-room keys are relay-derived and relay-readable.
+- **Funding:** profiles and repositories can publish self-custodial Solana addresses; legacy issue-bounty custody is frozen.
 - **Federation:** relay nodes run independently, in the spirit of Matrix or Mastodon.
-- **Mainnodes:** hosted nodes provide encrypted relay rooms, repository catalogs, mirror-health indexing, Solana metadata, and leaderboards — without ever owning user identity or repository history.
+- **Mainnodes:** hosted nodes provide authenticated shared-key relay rooms, repository catalogs, mirror-health indexing, Solana metadata, and leaderboards — without owning user identity or repository history.
 
 ## Design Principles
 
@@ -161,7 +161,7 @@ Developer docs (protocol spec, per-project build notes, changelog) live on the w
 
 ## Security Notes
 
-- Relay chat payloads are encrypted client-side with AES-256-GCM; the relay only ever stores and forwards ciphertext envelopes. Default rooms use a shared, app-wide key, so this protects message contents at rest on the relay but is not confidential between users — use a room passphrase for participant-only confidentiality.
+- Relay chat payloads use AES-256-GCM, but default rooms are not end-to-end encrypted: the relay derives and distributes a repository-scoped passphrase, so its operator can derive the room key and read messages. The Town Square keeps the v1 compatibility derivation; other repositories use the v2 owner/repository derivation above. Clients use PBKDF2-HMAC-SHA256 with 210,000 rounds and the first 16 bytes of `SHA-256("ForkMesh room:" + roomName)` as salt. The relay retains at most 500 persisted frames per room for 7 days. Use an out-of-band participant passphrase in clients that support it for confidentiality from the relay.
 - Profile and repository metadata are signed by the local Ed25519 identity.
 
 ## Roadmap

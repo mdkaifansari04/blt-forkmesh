@@ -111,32 +111,45 @@
         <article class="legal-card rounded-[2rem] px-6 py-8 sm:px-10 lg:px-14 lg:py-12">
           <p class="font-favorit-mono text-sm uppercase tracking-[0.34em] text-muted-foreground">Privacy</p>
           <h1 class="font-domine mt-5 text-balance text-5xl leading-[1] tracking-tight text-foreground sm:text-7xl">ForkMesh Privacy</h1>
-          <p class="mt-5 text-sm text-muted-foreground">Last updated June 20, 2026.</p>
+          <p class="mt-5 text-sm text-muted-foreground">Last updated July 23, 2026.</p>
           <div class="legal-content mt-8 text-base">
             <div class="legal-note">
               <strong class="text-foreground">Short version:</strong>
-              We try our best not to use third parties or collect extra data. ForkMesh still needs some account, node, repository, and payment data to run the network.
+              ForkMesh minimizes public and stored data, never displays raw IP addresses, and does not store community members’ payout- or contribution-wallet private keys. The first instance operator’s separate community-pool signer stays encrypted in that operator’s local Qt client. Optional public identity, mirror, and reward metadata remains under user control.
             </div>
             <h2>What is public</h2>
-            <p>Your node name, public key, advertised repositories, public profile details, issue and pull-request records, online presence, and any payout Solana address you publish may be visible to other users or visitors.</p>
+            <p>Your node name, public identity key, explicitly public repositories, chosen profile fields, public issue and pull-request records, generalized presence, and any self-custodial payout address you publish may be visible to other users or visitors. Approximate IP-derived country is shown only as a flag or general region; raw IP addresses and precise location are never public.</p>
             <h2>What is stored</h2>
-            <p>ForkMesh stores account records, encrypted account details, repository catalog data, relay presence data, pending verification records, and operational logs needed to keep the service working. Join payment addresses are temporary: unpaid addresses expire after one hour, are hidden with a warning, and are removed after a five-minute grace period.</p>
+            <p>ForkMesh stores bounded account records, encrypted private profile fields, repository catalog and blind-index metadata, generalized presence, pending verification records, and minimized operational/security logs. Room frames marked for persistence are retained for up to 7 days, with at most 500 replayable frames per room. Default room keys are derived and distributed by the relay, so its operator can decrypt that history; default rooms are not end-to-end encrypted. Private repository names reach the Worker on authenticated control-plane requests and are encrypted at rest under the instance data key. Private repository content and new private-agent payloads use separate client-side owner-sealed boundaries; platform administrators do not automatically receive those recipient private keys. An upgraded deployment cannot report its D1-backed API ready while any historical wallet key remains: the explicit offline process must first export recoverable keys, reconcile every public address at zero, scrub the key fields, and leave only key-free public reconciliation evidence.</p>
             <h2>Install diagnostics</h2>
             <p>The desktop installer reports anonymous, aggregate diagnostics about each install — which step it reached, whether that step succeeded, and coarse platform facts. Each run uses a fresh random id that is never linked to your account, email, node name, or IP address. Opt out by setting <code>FORKMESH_NO_DIAG=1</code> before running the installer.</p>
-            <h2>Payments</h2>
-            <p>Solana transactions are public on the Solana network. ForkMesh checks whether a join payment reference has received enough SOL to activate the next signup step. Do not send funds once the signup page says the payment request is expiring.</p>
+            <h2>Documentation feedback</h2>
+            <p>If you use a documentation helpfulness control, ForkMesh stores the like/dislike choice, a generalized <code>/docs/</code> section anchor, an optional message you deliberately submit, a broad client category, and a keyed network token used for abuse control. It does not retain the raw IP, browser user-agent, query string, search value, or a repository path in that record.</p>
+            <h2>Wallets and community rewards</h2>
+            <p>Joining ForkMesh does not require a payment. Solana transactions and public addresses are visible on the configured network. For community members, ForkMesh stores only a payout address you choose to publish; payout- and contribution-wallet private keys, seed phrases, mnemonics, and transaction approval remain on your device. Separately, the first instance operator may keep the community-pool signer encrypted in that operator’s local Qt client. Direct contributions go from the contributor’s wallet to the displayed public community-pool address. Pending reward allocations are ledger reservations, not custodial balances, and expire after 24 hours if the recipient does not provide a self-custodial address.</p>
             <h2>Third parties</h2>
             <p>We try our best not to use third parties. Today, these are involved:</p>
             <ul>
               <li>Cloudflare hosts the public website, Worker APIs, D1 data, cache, and relay infrastructure.</li>
-              <li>A Solana JSON-RPC endpoint is queried for payment-reference status.</li>
+              <li>PostHog product analytics is disabled by default. If you explicitly enable it below, ForkMesh loads it through <code>b.forkmesh.com</code> and sends one coarse page-category event. It does not send raw paths, query strings, referrers, clicks, form values, element text, account identifiers, or repository identifiers; it disables recording, automatic capture, person profiles, and persistent analytics storage.</li>
+              <li>An instance operator may configure Sentry for server-error reporting. ForkMesh then sends a generalized/redacted route, method, status, service host, Cloudflare incident id and coarse edge colo, transport versions, and code stack location. The structured request envelope excludes raw IPs, country, timezone, browser/OS user-agent, cookies, authorization, and query strings; private-repository routes replace both identity and error detail with a fixed redaction.</li>
+              <li>A configured Solana JSON-RPC endpoint is queried for public pool balances and finalized transaction verification.</li>
               <li>Bundled open-source font files are served locally by ForkMesh; no remote font service is used.</li>
               <li>Tailwind Play CDN is loaded by the current home page.</li>
               <li>The Solana network processes payment transactions.</li>
               <li>Git remotes you choose may receive network requests when you mirror or sync repositories.</li>
             </ul>
             <h2>Your choices</h2>
-            <p>You can avoid adding optional profile fields, avoid publishing a payout address, stop running the desktop node, use your own repository mirrors, or skip install diagnostics with <code>FORKMESH_NO_DIAG=1</code>. Public blockchain transactions cannot be made private by ForkMesh after they are sent.</p>
+            <p>You can hide or generalize country, browser, operating system, activity, local time, device, and inactivity status where those controls are available; avoid optional profile fields and payout addresses; restrict private repositories to their owner and explicitly authorized collaborators; stop presence or the desktop node; operate your own mirror; disable optional analytics below; or skip install diagnostics with <code>FORKMESH_NO_DIAG=1</code>. Public blockchain transactions cannot be made private by ForkMesh after they are sent.</p>
+            <section class="mt-6 rounded-2xl border border-white/10 bg-black/15 p-5" aria-labelledby="analytics-choice-heading">
+              <h3 id="analytics-choice-heading" class="mt-0 text-lg font-semibold text-foreground">Optional coarse analytics</h3>
+              <p class="mt-2">This device has not opted in unless the status below says enabled. Global Privacy Control or Do Not Track always keeps analytics off.</p>
+              <p class="mt-3 font-favorit-mono text-sm">Status: <strong id="analytics-consent-status" class="text-foreground">checking…</strong></p>
+              <div class="mt-4 flex flex-wrap gap-3">
+                <button id="analytics-consent-deny" class="rounded-full border border-white/15 px-4 py-2 text-sm font-semibold text-foreground hover:bg-white/5" type="button">Keep analytics off</button>
+                <button id="analytics-consent-grant" class="rounded-full border border-emerald-300/30 bg-emerald-300/10 px-4 py-2 text-sm font-semibold text-foreground hover:bg-emerald-300/15" type="button">Enable coarse analytics</button>
+              </div>
+            </section>
             <p class="mt-8"><a class="text-foreground underline decoration-white/25 underline-offset-4 hover:decoration-white" href="/terms">Read the terms</a></p>
           </div>
         </article>
@@ -144,5 +157,34 @@
 
       <div data-forkmesh-footer="standard"></div>
     </main>
+    <script>
+      (() => {
+        const statusElement = document.getElementById("analytics-consent-status");
+        const grant = document.getElementById("analytics-consent-grant");
+        const deny = document.getElementById("analytics-consent-deny");
+        const labels = {
+          granted: "enabled on this device",
+          denied: "disabled on this device",
+          unset: "disabled by default",
+          "blocked-by-privacy-signal": "disabled by browser privacy signal",
+        };
+        function render() {
+          const status = window.ForkMeshAnalytics?.status?.() || "unset";
+          statusElement.textContent = labels[status] || labels.unset;
+          grant.disabled = status === "blocked-by-privacy-signal";
+          grant.setAttribute("aria-disabled", grant.disabled ? "true" : "false");
+        }
+        grant.addEventListener("click", () => {
+          window.ForkMeshAnalytics?.setConsent?.(true);
+          render();
+        });
+        deny.addEventListener("click", () => {
+          window.ForkMeshAnalytics?.setConsent?.(false);
+          render();
+        });
+        window.addEventListener("forkmesh:analytics-consent", render);
+        render();
+      })();
+    </script>
   </body>
 </html>

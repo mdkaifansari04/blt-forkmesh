@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -31,6 +32,7 @@ class ApiService {
     if (token.isEmpty) return headers;
     return {...headers, 'Authorization': 'Bearer $token'};
   }
+
   _CacheEntry<List<Repository>>? _repositoriesCache;
   _CacheEntry<NetworkStats>? _networkStatsCache;
   _CacheEntry<NetworkLeaderboards>? _networkLeaderboardsCache;
@@ -102,10 +104,18 @@ class ApiService {
     }
     final future = load();
     cache[key] = _CacheEntry(future, now);
-    future.catchError((Object error, StackTrace stackTrace) {
-      if (identical(cache[key]?.future, future)) cache.remove(key);
-      return Future<T>.error(error, stackTrace);
-    });
+    // Observe failures only to evict the cache entry. Returning a second
+    // Future.error from an ignored catchError chain created an unhandled
+    // asynchronous exception even when the actual caller correctly caught the
+    // original request failure.
+    unawaited(
+      future.then<void>(
+        (_) {},
+        onError: (Object _, StackTrace _) {
+          if (identical(cache[key]?.future, future)) cache.remove(key);
+        },
+      ),
+    );
     return future;
   }
 
@@ -265,10 +275,11 @@ class ApiService {
 
     final monitor = _performanceMonitor;
     if (monitor == null) return load();
-    return monitor.track('api.$method ${uri.path}', load, details: {
-      'host': uri.host,
-      'path': uri.path,
-    });
+    return monitor.track(
+      'api.$method ${uri.path}',
+      load,
+      details: {'host': uri.host, 'path': uri.path},
+    );
   }
 
   /// The organizations the signed-in account belongs to (`GET /api/orgs`).
@@ -334,16 +345,16 @@ class ApiService {
     String org,
     String member, {
     String role = 'member',
-  }) =>
-      _orgRequest('POST', _base('/api/orgs/${_orgSeg(org)}/members'), {
-        'member': member.trim().toLowerCase(),
-        'role': role.trim().toLowerCase(),
-      });
+  }) => _orgRequest('POST', _base('/api/orgs/${_orgSeg(org)}/members'), {
+    'member': member.trim().toLowerCase(),
+    'role': role.trim().toLowerCase(),
+  });
 
-  Future<void> removeOrgMember(String org, String member) =>
-      _orgRequest('DELETE', _base('/api/orgs/${_orgSeg(org)}/members'), {
-        'member': member.trim().toLowerCase(),
-      });
+  Future<void> removeOrgMember(String org, String member) => _orgRequest(
+    'DELETE',
+    _base('/api/orgs/${_orgSeg(org)}/members'),
+    {'member': member.trim().toLowerCase()},
+  );
 
   Future<List<OrgTeam>> orgTeams(String org) async {
     final data = await _orgRequest(
@@ -365,16 +376,16 @@ class ApiService {
     String org,
     String team, {
     String permission = 'read',
-  }) =>
-      _orgRequest('POST', _base('/api/orgs/${_orgSeg(org)}/teams'), {
-        'team': team.trim().toLowerCase(),
-        'permission': permission.trim().toLowerCase(),
-      });
+  }) => _orgRequest('POST', _base('/api/orgs/${_orgSeg(org)}/teams'), {
+    'team': team.trim().toLowerCase(),
+    'permission': permission.trim().toLowerCase(),
+  });
 
-  Future<void> deleteOrgTeam(String org, String team) =>
-      _orgRequest('DELETE', _base('/api/orgs/${_orgSeg(org)}/teams'), {
-        'team': team.trim().toLowerCase(),
-      });
+  Future<void> deleteOrgTeam(String org, String team) => _orgRequest(
+    'DELETE',
+    _base('/api/orgs/${_orgSeg(org)}/teams'),
+    {'team': team.trim().toLowerCase()},
+  );
 
   /// The org members on one team (`GET /api/orgs/<org>/teams/<team>/members`).
   Future<List<OrgMember>> orgTeamMembers(String org, String team) async {
@@ -430,10 +441,11 @@ class ApiService {
         if (node.trim().isNotEmpty) 'node': node.trim().toLowerCase(),
       });
 
-  Future<void> unlinkOrgRepo(String org, String repo) =>
-      _orgRequest('DELETE', _base('/api/orgs/${_orgSeg(org)}/repos'), {
-        'repo': repo.trim().toLowerCase(),
-      });
+  Future<void> unlinkOrgRepo(String org, String repo) => _orgRequest(
+    'DELETE',
+    _base('/api/orgs/${_orgSeg(org)}/repos'),
+    {'repo': repo.trim().toLowerCase()},
+  );
 
   Future<List<AgentSession>> agentSessions(
     String owner,
@@ -560,16 +572,10 @@ class ApiService {
     required String ts,
     required String sig,
   }) async {
-    final data = await _postJson(_base('/api/repo/$owner/$repo/bounty'), {
-      'action': 'create',
-      'number': number,
-      'amountUsd': amountUsd,
-      if (payee.trim().isNotEmpty) 'payee': payee.trim(),
-      if (payeeNode.trim().isNotEmpty) 'payeeNode': payeeNode.trim(),
-      'ts': ts.trim(),
-      'sig': sig.trim(),
-    });
-    return IssueBounty.fromJson(data);
+    throw UnsupportedError(
+      'Worker-held issue-bounty wallets are retired. Use an external '
+      'self-custodial wallet, reviewed program, or multisig.',
+    );
   }
 
   Future<BountyWallet> bountyWallet(
@@ -578,12 +584,10 @@ class ApiService {
     required String ts,
     required String sig,
   }) async {
-    final data = await _postJson(_base('/api/repo/$owner/$repo/bounty'), {
-      'action': 'wallet',
-      'ts': ts.trim(),
-      'sig': sig.trim(),
-    });
-    return BountyWallet.fromJson(data);
+    throw UnsupportedError(
+      'Worker-held bounty wallets are retired and cannot be created or '
+      'prepared by this client.',
+    );
   }
 
   Future<List<Issue>> issues(String owner, String name) async {
@@ -598,6 +602,36 @@ class ApiService {
     return _asList(
       data,
     ).whereType<Map<String, dynamic>>().map(PullRequest.fromJson).toList();
+  }
+
+  /// Remote ActivityPub replies for a native thread. These are fetched from a
+  /// dedicated Worker projection and never merged into signed repository event
+  /// records.
+  Future<List<FederatedReply>> federatedReplies(
+    String owner,
+    String name, {
+    required String kind,
+    required int number,
+  }) async {
+    if (!const {'issue', 'pull', 'discussion'}.contains(kind) || number <= 0) {
+      return const <FederatedReply>[];
+    }
+    final data = await _getJson(
+      _base('/api/repo/$owner/$name/fedi-comments', {
+        'kind': kind,
+        'number': '$number',
+      }),
+    );
+    final raw = data is Map && data['comments'] is List
+        ? data['comments'] as List
+        : data is Map && data['items'] is List
+        ? data['items'] as List
+        : const [];
+    return raw
+        .whereType<Map>()
+        .map((item) => FederatedReply.fromJson(Map<String, dynamic>.from(item)))
+        .where((item) => item.remoteId.isNotEmpty || item.backlink.isNotEmpty)
+        .toList();
   }
 
   Future<List<Map<String, dynamic>>> commits(String owner, String name) {
@@ -773,7 +807,11 @@ class ApiService {
       // the root), one signed-event issue-<n>.json record per folder. A split
       // copy of a number wins over a stale legacy one.
       final dirByNumber = <String, String>{};
-      for (final dir in await _numberedFolders(owner, name, '.forkmesh/issues')) {
+      for (final dir in await _numberedFolders(
+        owner,
+        name,
+        '.forkmesh/issues',
+      )) {
         dirByNumber[dir] = '.forkmesh/issues/$dir';
       }
       for (final sub in const ['open', 'closed']) {
@@ -942,7 +980,11 @@ class ApiService {
       final items = await Future.wait(
         dirs.map((dir) async {
           try {
-            final b = await blob(owner, name, '.forkmesh/discussions/$dir/discussion.md');
+            final b = await blob(
+              owner,
+              name,
+              '.forkmesh/discussions/$dir/discussion.md',
+            );
             final events = await _discussionEvents(owner, name, dir);
             return _discussionFromMarkdown(dir, b.content, events: events);
           } catch (_) {

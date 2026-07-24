@@ -4,12 +4,65 @@
 
 (() => {
   const ROOM_NAME = "general";
-  // The room key is fetched from the relay (derived server-side from DATA_KEY)
-  // rather than baked in as a public constant; see chat.js for the rationale.
-  const ROOM_KEY_ENDPOINT = "/api/chat/room-key";
   let roomPassphrase = null;
-  const CHANNEL = "#general";
-  const CHAT_WS_PATH = "/api/repo/mainnode/forkmesh/rooms/general/ws";
+  const SPACE_CHANNELS = Object.freeze({
+    "sky-campus": "#world-sky-campus",
+    "space-station": "#world-space-station",
+    "code-planet": "#world-code-planet",
+    "organization-region": "#world-organization-region",
+    "planet-atlas": "#world-planet-atlas",
+    neighborhood: "#world-neighborhood",
+    broadcast: "#world-broadcast",
+    workshop: "#world-workshop",
+  });
+  const requestedParams = new URLSearchParams(location.search);
+  const requestedSpace = requestedParams.get("space") || "";
+  const requestedWorkshopRepo = String(requestedParams.get("repo") || "");
+  const requestedWorkshopRun = String(requestedParams.get("run") || "");
+  const scopedWorkshop =
+    requestedSpace === "workshop" &&
+    /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?\/[A-Za-z0-9._-]{1,100}$/.test(
+      requestedWorkshopRepo,
+    ) &&
+    /^[A-Za-z0-9_-]{16,80}$/.test(requestedWorkshopRun);
+  const workshopRepoParts = scopedWorkshop
+    ? requestedWorkshopRepo.split("/")
+    : ["mainnode", "forkmesh"];
+  const ROOM_OWNER = workshopRepoParts[0];
+  const ROOM_REPO = workshopRepoParts[1];
+  // A workshop uses its repository's own relay-derived passphrase and Durable
+  // Object room. Never multiplex a private repo/run channel into the Town
+  // Square ciphertext: every registered account can obtain that public room's
+  // key. The scoped key endpoint applies the repository ACL before release,
+  // and the scoped WebSocket route fails closed before Durable Object access.
+  const ROOM_KEY_ENDPOINT =
+    `/api/chat/room-key?owner=${encodeURIComponent(ROOM_OWNER)}` +
+    `&repo=${encodeURIComponent(ROOM_REPO)}`;
+  const ACTIVE_SPACE = Object.hasOwn(SPACE_CHANNELS, requestedSpace)
+    ? requestedSpace
+    : "";
+  const workshopChannelSuffix = scopedWorkshop
+    ? `${requestedWorkshopRepo}/${requestedWorkshopRun}`
+        .toLowerCase()
+        .replace(/[^a-z0-9._/-]+/g, "-")
+        .slice(0, 180)
+    : "";
+  const CHANNEL = scopedWorkshop
+    ? `#world-workshop/${workshopChannelSuffix}`
+    : ACTIVE_SPACE
+      ? SPACE_CHANNELS[ACTIVE_SPACE]
+      : "#general";
+  const CHANNEL_LABEL = scopedWorkshop
+    ? `${requestedWorkshopRepo} · run ${requestedWorkshopRun.slice(0, 12)}`
+    : ACTIVE_SPACE
+    ? ACTIVE_SPACE
+        .split("-")
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ")
+    : "General";
+  const CHAT_WS_PATH =
+    `/api/repo/${encodeURIComponent(ROOM_OWNER)}` +
+    `/${encodeURIComponent(ROOM_REPO)}/rooms/general/ws`;
   const FORKBOT_ENDPOINT = "/api/forkbot/chat";
   const FORKBOT_SENDER_ID = "forkbot";
   const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
@@ -60,8 +113,9 @@
   const rows = new Map();
   const sideEntries = [];
   // Rolling buffer of recent decrypted messages, forwarded to ForkBot so it can
-  // resolve references like "that bug" from the conversation. The room is E2E
-  // encrypted, so the relay only sees what we choose to send here.
+  // resolve references like "that bug" from the conversation. The relay can
+  // decrypt the default shared-key room; this controls only the narrower
+  // context explicitly sent to ForkBot.
   const recentContext = [];
   const RECENT_CONTEXT_MAX = 20;
   function rememberContext(sender, text) {
@@ -415,15 +469,15 @@
   }
 
   function fullEmptyHtml() {
-    return '<div class="mt-3 rounded-lg border border-border bg-background px-4 py-3 text-sm text-muted-foreground">Type below to join the encrypted #general room.</div>';
+    return `<div class="mt-3 rounded-lg border border-border bg-background px-4 py-3 text-sm text-muted-foreground">Type below to join the encrypted ${escapeHtml(CHANNEL)} collaboration channel.</div>`;
   }
 
   function sideEmptyHtml() {
-    return '<div class="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">Type to join #general.</div>';
+    return `<div class="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">Type to join ${escapeHtml(CHANNEL)}.</div>`;
   }
 
   function fullUserOnlyHtml() {
-    return '<div class="mt-3 rounded-lg border border-border bg-background px-4 py-3 text-sm text-muted-foreground">Log in as a user to join the encrypted #general room.</div>';
+    return `<div class="mt-3 rounded-lg border border-border bg-background px-4 py-3 text-sm text-muted-foreground">Log in as a user to join the encrypted ${escapeHtml(CHANNEL)} channel.</div>`;
   }
 
   function sideUserOnlyHtml() {
@@ -650,10 +704,16 @@
     if (type !== "history" && plain.accountKind !== "user") return;
     const sender = String(plain.sender || "peer").slice(0, MAX_NAME);
     if (type === "chat") {
-      renderChatEntry(plain, "peer");
+      if (plain.channel === CHANNEL) renderChatEntry(plain, "peer");
     } else if (type === "history") {
       for (const entry of plain.entries || []) {
-        if (entry && (entry.channel || entry.text || entry.fileName)) renderChatEntry(entry, "peer");
+        if (
+          entry &&
+          entry.channel === CHANNEL &&
+          (entry.channel || entry.text || entry.fileName)
+        ) {
+          renderChatEntry(entry, "peer");
+        }
       }
     } else if (type === "edit") {
       const rec = rows.get(plain.target);
@@ -761,7 +821,7 @@
     socket.addEventListener("open", () => {
       connecting = false;
       reconnectDelayMs = 2000;
-      setStatus("Connected · end-to-end encrypted");
+      setStatus("Connected · authenticated shared key");
       send(makePlain("hello", { channels: [CHANNEL] }));
       const callbacks = openCallbacks;
       openCallbacks = [];
@@ -822,7 +882,12 @@
       const response = await fetch(FORKBOT_ENDPOINT, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message: text, sender: displayName(), room: ROOM_NAME, context }),
+        body: JSON.stringify({
+          message: text,
+          sender: displayName(),
+          room: ACTIVE_SPACE || ROOM_NAME,
+          context,
+        }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data || !data.botMessage) return;
@@ -862,6 +927,14 @@
   }
 
   async function initChat() {
+    if (ACTIVE_SPACE) {
+      document.title = `${CHANNEL_LABEL} collaboration · ForkMesh`;
+      document
+        .querySelectorAll("[data-dashboard-chat-status]")
+        .forEach((element) => {
+          element.title = `Dedicated ${CHANNEL} channel inside the encrypted ForkMesh room`;
+        });
+    }
     await hydrateUserSession();
     ensureEmptyState();
     wireInput(fullInput, fullSend);

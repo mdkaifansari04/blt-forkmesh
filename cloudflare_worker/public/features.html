@@ -7,7 +7,7 @@
     <title>ForkMesh Features — everything the mesh can do</title>
     <meta
       name="description"
-      content="The complete ForkMesh feature catalog: distributed Git mirrors with live clone routing and failover, signed issues and patch PRs, built-in AI coding agents, encrypted chat and coves, CI, releases, Solana bounties and payouts, mobile and IDE apps."
+      content="The complete ForkMesh feature catalog: distributed Git mirrors with live clone routing and failover, signed issues and patch PRs, built-in AI coding agents, encrypted chat and coves, CI, releases, non-custodial community rewards, mobile and IDE apps."
     />
     <meta name="application-name" content="ForkMesh" />
     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
@@ -159,53 +159,54 @@
         <p class="feature-section-lede">
           The core bet: a repository should survive any single machine, company,
           or account. ForkMesh keeps real Git mirrors on real desktops and
-          coordinates them through a relay that never holds your objects.
+          coordinates them through a routing layer that never becomes permanent
+          repository storage.
         </p>
         <div class="feature-grid">
           <article class="feature-item">
             <h3>Desktop-node mirrors</h3>
             <p>
-              Every published repository lives as a full bare Git mirror on the
-              nodes that host it — created with <code>git clone --mirror</code>
-              and kept fresh automatically. Your history is always physically
-              yours.
+              Actively mirrored repositories live on independently operated
+              nodes and refresh while their configured synchronization is
+              healthy. External stubs are clearly labeled until a mirror
+              accepts them; private replicas are opaque client-encrypted
+              archives.
             </p>
             <a class="feature-post-link" href="/blog/desktop-node-mirrors/">Read the blog post →</a>
           </article>
           <article class="feature-item">
-            <h3>Zero-custody relay</h3>
+            <h3>Packfile-free routing relay</h3>
             <p>
-              The mainnode coordinates discovery, presence, and routing with
-              Cloudflare Durable Objects — but it stores no packfiles and no
-              message bodies. Objects stream between peers; the relay just
-              connects them.
+              The Worker stores signed discovery and generalized health
+              metadata, not packfiles. Repository bytes stream from a selected
+              independent origin over ordinary HTTPS.
             </p>
             <a class="feature-post-link" href="/blog/zero-custody-relay/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Live clone routing</h3>
             <p>
-              <code>git clone https://forkmesh.com/owner/repo</code> just works.
-              Smart-HTTP requests are routed over an outbound tunnel to the
-              hosting desktop node, which serves the pack directly.
+              <code>git clone https://forkmesh.com/owner/repo</code> uses normal
+              Smart HTTP while the Worker selects a fresh, healthy,
+              integrity-verified mirror behind the unchanged public URL.
             </p>
             <a class="feature-post-link" href="/blog/live-clone-routing/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Streaming transfers</h3>
             <p>
-              Packs stream end-to-end through the relay, so multi-gigabyte
-              clones never buffer in the cloud — the mesh scales to big
-              repositories without a big server.
+              Packs stream over HTTPS from the selected read-only gateway. The
+              Worker proxies the response but never retains it as Worker or D1
+              repository storage.
             </p>
             <a class="feature-post-link" href="/blog/streaming-transfers/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Mirror failover</h3>
             <p>
-              Host offline? Any mirror node serves browsing and clones at the
-              exact same URL — no redirects, no broken links. Sticky routing
-              keeps a clone pinned to one mirror for consistency.
+              When an eligible, healthy, integrity-matching mirror exists,
+              ForkMesh can fail over behind the same public URL. Sticky routing
+              keeps one clone exchange on one mirror.
             </p>
             <a class="feature-post-link" href="/blog/mirror-failover/">Read the blog post →</a>
           </article>
@@ -221,9 +222,8 @@
           <article class="feature-item">
             <h3>Root-commit identity</h3>
             <p>
-              Mirrors are grouped network-wide by the repository's root commit,
-              so the mesh always knows which nodes carry copies of the same
-              project — whatever they named it.
+              Reported mirrors can be grouped by a signed repository root
+              commit, independent of the local name each host chose.
             </p>
             <a class="feature-post-link" href="/blog/root-commit-identity/">Read the blog post →</a>
           </article>
@@ -239,18 +239,17 @@
           <article class="feature-item">
             <h3>Public network map</h3>
             <p>
-              A live network page shows every online node, what it mirrors, how
-              in-sync it is, and its platform, version, and optional CPU, RAM,
-              and disk telemetry.
+              The network page shows recently verified public nodes,
+              generalized mirror health, and only optional telemetry each
+              operator chose to publish.
             </p>
             <a class="feature-post-link" href="/blog/public-network-map/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Presence done right</h3>
             <p>
-              Heartbeats, presence expiry on disconnect, and live host probes
-              mean the network's view of who is online is accurate — failover
-              kicks in the moment a host actually drops.
+              Bounded heartbeats, expiry, and live probes reduce stale presence
+              while allowing the deliberately minimal real-time layer to lag.
             </p>
             <a class="feature-post-link" href="/blog/presence-done-right/">Read the blog post →</a>
           </article>
@@ -621,18 +620,19 @@
         </p>
         <div class="feature-grid">
           <article class="feature-item">
-            <h3>Encrypted repo rooms <span class="feature-tag">E2E</span></h3>
+            <h3>Encrypted repo rooms <span class="feature-tag">Shared key</span></h3>
             <p>
-              Every repository gets chat rooms encrypted end-to-end. The relay
-              sees only ciphertext and persists no message bodies — ever.
+              Default rooms use a relay-derived AES-256-GCM shared key. They
+              are authenticated and encrypted on the wire, but relay-readable;
+              up to 500 persisted frames remain for 7 days.
             </p>
             <a class="feature-post-link" href="/blog/encrypted-repo-rooms/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Direct messages</h3>
             <p>
-              Message any node operator directly, with the same
-              encrypt-before-send guarantee as rooms.
+              Message any node operator directly over the same relay-readable
+              authenticated shared-key transport as rooms.
             </p>
             <a class="feature-post-link" href="/blog/direct-messages/">Read the blog post →</a>
           </article>
@@ -755,25 +755,31 @@
       <section id="money" class="feature-section">
         <h2>Accounts, money &amp; rewards</h2>
         <p class="feature-section-lede">
-          The people who keep the network alive deserve to get paid. Payments
-          are crypto-native, priced live, and wired into the same signed
-          identity as everything else.
+          Community incentives are transparent and non-custodial. ForkMesh
+          does not hold or control user funds; for community members it stores
+          only an optional public payout address, while wallet keys and transfer
+          approval remain on their owners’ devices. The first instance
+          operator’s separate community-pool signer stays encrypted in that
+          operator’s local Qt client. User-owned funds, the community-funded
+          public pool, pending allocations, and completed on-chain transfers
+          are separate states.
         </p>
         <div class="feature-grid">
           <article class="feature-item">
-            <h3>Anonymous accounts</h3>
+            <h3>Guest-first access</h3>
             <p>
-              Sign up with nothing but a key and a password — no email, no
-              phone. Optional 2FA and optional email recovery if you want them.
+              Enter the world immediately as a guest. Registration uses an
+              email, password, and email verification; optional public identity
+              and device fields remain configurable.
             </p>
             <a class="feature-post-link" href="/blog/anonymous-accounts/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Public node profiles</h3>
             <p>
-              Every node has a public profile: its repositories, identity key,
-              and the version it runs — click any node on the network page to
-              see it.
+              Registered nodes can publish a generalized profile and public
+              repositories. Optional platform, device, status, and activity
+              fields follow the owner’s visibility controls.
             </p>
             <a class="feature-post-link" href="/blog/public-node-profiles/">Read the blog post →</a>
           </article>
@@ -781,35 +787,38 @@
             <h3>Solana donations <span class="feature-tag">SOL · USDT</span></h3>
             <p>
               Publish a Solana address and accept donations with on-chain
-              confirmation, priced live via Pyth. Per-node deposit keys mean no
-              shared custodial wallet.
+              confirmation. Contributors sign direct transfers from their own
+              wallet; ForkMesh never creates or stores a deposit key.
             </p>
             <a class="feature-post-link" href="/blog/solana-donations/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Make it rain</h3>
             <p>
-              Donate to a single node — or spray a contribution across every
-              node in the federation at once.
+              Contribute directly from a self-custodial wallet, then choose an
+              immediate split across the current eligible nodes or fund the
+              transparent pool for later randomized incentives.
             </p>
             <a class="feature-post-link" href="/blog/make-it-rain/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Issue bounties</h3>
             <p>
-              Fund any issue with a one-click Solana bounty. ForkMesh watches
-              the chain, confirms the deposit, and pays the contributor when
-              their pull request merges — 90% to the author, 10% to the network.
+              Legacy Worker-custodied bounty funding is frozen for migration.
+              New bounty flows require an owner-controlled external wallet,
+              program, or multisig and independently verified public transfers.
             </p>
             <a class="feature-post-link" href="/blog/issue-bounties/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Mirror rewards</h3>
             <p>
-              Nodes that preserve code get recognized and rewarded for it, with
-              a payouts page tracking what mirroring has earned.
+              The production mainnet-beta community pool may reward eligible,
+              integrity-verified nodes through the first instance owner’s
+              local signer. Test networks require explicit development
+              configuration; selection and payment are never guaranteed.
             </p>
-            <a class="feature-post-link" href="/blog/mirror-rewards/">Read the blog post →</a>
+            <a class="feature-post-link" href="/world?landmark=fountain">Join or fund the reward program →</a>
           </article>
         </div>
       </section>
@@ -834,8 +843,9 @@
             <h3>Clean repo URLs</h3>
             <p>
               <code>forkmesh.com/owner/repo</code> takes you straight to the
-              repository — shareable links that keep working even when the
-              original host is offline.
+              repository. During an origin outage, the same link can keep
+              working when an eligible, healthy, integrity-matching mirror is
+              online.
             </p>
             <a class="feature-post-link" href="/blog/clean-repo-urls/">Read the blog post →</a>
           </article>
@@ -859,8 +869,8 @@
           <article class="feature-item">
             <h3>Docs with search</h3>
             <p>
-              Searchable documentation covering the repository model, host
-              tunnels, cloning, and the collaboration protocol.
+              Searchable documentation covering encrypted mirrors,
+              direct-HTTPS routing, cloning, and the collaboration protocol.
             </p>
             <a class="feature-post-link" href="/blog/docs-with-search/">Read the blog post →</a>
           </article>

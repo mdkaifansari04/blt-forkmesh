@@ -3,7 +3,7 @@
 // (except the home page, which keeps its own hero header), styled to match
 // the dashboard chrome: a hamburger menu holding every site link (grouped,
 // fully expanded), the brand mark with the live release version, the current
-// page title, a "Get paid to mirror" shortcut, the theme toggle, and a
+// page title, a mirror-reward settings shortcut, the theme toggle, and a
 // session-aware account area — a logged-in visitor sees their account chip
 // (Dashboard / Profile / Log out) instead of hardcoded "Sign Up / Log In".
 (() => {
@@ -115,9 +115,9 @@
       </a>
       <span class="fm-header-context"></span>
       <div class="fm-header-right">
-        <a class="fm-header-payout" href="/mirror-payouts" title="Get paid to mirror code" aria-label="Get paid to mirror code">
+        <a class="fm-header-payout" href="/mirror-payouts" title="Mirror reward settings" aria-label="Mirror reward settings">
           <img src="/assets/sol.png" alt="" aria-hidden="true" />
-          <span>Get paid to mirror</span>
+          <span>Mirror rewards</span>
         </a>
         <a class="fm-header-chat" href="/chat" title="Community chat" aria-label="Community chat">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

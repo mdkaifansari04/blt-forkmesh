@@ -3,7 +3,6 @@
 #include "../src/AgentStore.h"
 #include "../src/BackoffNetworkAccessManager.h"
 #include "../src/ChatHistoryLimits.h"
-#include "../src/ClaudeAccountTransfer.h"
 #include "../src/CommitCommentStore.h"
 #include "../src/CoveCrypto.h"
 #include "../src/CoveStore.h"
@@ -13,6 +12,7 @@
 #include "../src/IssueBurnup.h"
 #include "../src/IssueStore.h"
 #include "../src/MirrorCrypto.h"
+#include "../src/PrivateMirrorStore.h"
 #include "../src/NetworkBackoff.h"
 #include "../src/ProjectStore.h"
 #include "../src/PullAiReview.h"
@@ -49,6 +49,7 @@
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <thread>
@@ -275,6 +276,33 @@ QByteArray legacyPullCanonical(const PullRequest &pull)
 
 int main(int argc, char *argv[])
 {
+    // A small machine-readable mode used by the cross-runtime CTest.  It emits
+    // the exact random envelope produced by Qt; the Python side passes that
+    // object verbatim through the Worker's real validator.
+    if (argc == 2 &&
+        QByteArray(argv[1]) == QByteArrayLiteral("--emit-owner-envelope")) {
+        const MirrorCrypto::Identity owner =
+            MirrorCrypto::generateIdentity();
+        const QByteArray plaintext =
+            QByteArrayLiteral("agent E2EE cross-runtime contract payload");
+        const QJsonObject envelope = MirrorCrypto::sealOwnerPayload(
+            plaintext, owner.publicBundle());
+        if (!owner.isValid() || envelope.isEmpty())
+            return 2;
+        const QByteArray output =
+            QJsonDocument(QJsonObject{
+                              {"envelope", envelope},
+                              {"keyId", owner.keyId()},
+                              {"plaintext",
+                               QString::fromLatin1(plaintext.toBase64())},
+                          })
+                .toJson(QJsonDocument::Compact);
+        if (std::fwrite(output.constData(), 1, size_t(output.size()), stdout) !=
+            size_t(output.size()))
+            return 3;
+        return 0;
+    }
+
     QTemporaryDir dataDir;
     if (!dataDir.isValid()) {
         qCritical("FAIL: could not create temporary data directory");
@@ -555,6 +583,67 @@ int main(int argc, char *argv[])
                   owner.keyId() != alice.keyId(),
               "public bundle yields a stable, identity-specific key id");
 
+        const QByteArray privateAgentPayload =
+            QJsonDocument(QJsonObject{
+                              {"id", 42},
+                              {"prompt", "private owner-only steering prompt"},
+                              {"transcript", "private transcript tail"},
+                          })
+                .toJson(QJsonDocument::Compact);
+        QString ownerSealError;
+        const QJsonObject ownerEnvelope = MirrorCrypto::sealOwnerPayload(
+            privateAgentPayload, owner.publicBundle(), &ownerSealError);
+        const QJsonArray ownerRecipients =
+            ownerEnvelope.value("recipients").toArray();
+        const QJsonObject ownerWrap =
+            ownerRecipients.isEmpty() ? QJsonObject{}
+                                      : ownerRecipients.first().toObject();
+        auto fromUrl = [](const QJsonValue &value) {
+            return QByteArray::fromBase64(
+                value.toString().toLatin1(),
+                QByteArray::Base64UrlEncoding |
+                    QByteArray::AbortOnBase64DecodingErrors);
+        };
+        check(!ownerEnvelope.isEmpty() && ownerSealError.isEmpty() &&
+                  ownerEnvelope.value("kind").toString() ==
+                      "forkmesh.owner-sealed" &&
+                  ownerEnvelope.value("alg").toString() ==
+                      "x25519+mlkem768/aes256gcm" &&
+                  !ownerEnvelope.contains("kid") &&
+                  ownerRecipients.size() == 1 &&
+                  ownerWrap.value("kid").toString() == owner.keyId(),
+              "owner control payload uses the single-recipient Worker contract");
+        check(fromUrl(ownerEnvelope.value("nonce")).size() == 12 &&
+                  fromUrl(ownerEnvelope.value("tag")).size() == 16 &&
+                  fromUrl(ownerWrap.value("x25519")).size() == 32 &&
+                  fromUrl(ownerWrap.value("mlkem768")).size() == 1088 &&
+                  fromUrl(ownerWrap.value("nonce")).size() == 12 &&
+                  fromUrl(ownerWrap.value("tag")).size() == 16 &&
+                  fromUrl(ownerWrap.value("key")).size() == 32,
+              "owner envelope carries complete bounded X25519, ML-KEM and GCM framing");
+        check(MirrorCrypto::ownerPayloadKeyId(ownerEnvelope) == owner.keyId() &&
+                  MirrorCrypto::openOwnerPayload(
+                      ownerEnvelope, owner, &ownerSealError) ==
+                      privateAgentPayload &&
+                  ownerSealError.isEmpty(),
+              "owner payload seal/open round-trips on the desktop identity");
+        check(MirrorCrypto::openOwnerPayload(
+                  ownerEnvelope, alice, &ownerSealError).isEmpty() &&
+                  !ownerSealError.isEmpty(),
+              "another local identity cannot open owner-only agent data");
+        QJsonObject tamperedOwnerEnvelope = ownerEnvelope;
+        QByteArray ownerBody =
+            fromUrl(ownerEnvelope.value("body"));
+        ownerBody[0] = char(ownerBody.at(0) ^ 0x01);
+        tamperedOwnerEnvelope["body"] =
+            QString::fromLatin1(
+                ownerBody.toBase64(
+                    QByteArray::Base64UrlEncoding |
+                    QByteArray::OmitTrailingEquals));
+        check(MirrorCrypto::openOwnerPayload(
+                  tamperedOwnerEnvelope, owner).isEmpty(),
+              "tampered owner-only agent ciphertext fails authentication");
+
         const QByteArray archive =
             QByteArrayLiteral("PACK\x00\x02") + QByteArray(50000, '\x7f') +
             QByteArrayLiteral("private repo pack bytes");
@@ -615,20 +704,114 @@ int main(int argc, char *argv[])
         check(MirrorCrypto::sealArchive(archive, {}, &sealErr).isEmpty() &&
                   !sealErr.isEmpty(),
               "sealing to zero recipients is rejected");
+        check(MirrorCrypto::sealArchive(
+                  archive,
+                  {owner.publicBundle(), owner.publicBundle()},
+                  &sealErr).isEmpty(),
+              "sealing rejects duplicate private-mirror recipients");
+        QJsonObject malformedBundle = owner.publicBundle();
+        malformedBundle["v"] = 9;
+        check(MirrorCrypto::publicKeyId(malformedBundle).isEmpty(),
+              "malformed recipient bundles do not produce a key id");
     }
 
-    // --- Host-auth token canonical (must match the worker's verify_host_token).
-    const QByteArray hostCanonical = "forkmesh-host-v1\nalice\nmyrepo\n1000";
-    check(hostCanonical ==
-              QByteArray("forkmesh-host-v1\nalice\nmyrepo\n1000"),
-          "host-token canonical matches the cross-language vector");
-    const QString hostSig = identity.signData(hostCanonical);
-    check(!hostSig.isEmpty(), "host token is signed by the node key");
-    check(verifyEd25519(identity.publicKey(), hostSig, hostCanonical),
-          "host-token signature verifies against the node public key");
-    check(!verifyEd25519(identity.publicKey(), hostSig,
-                         QByteArray("forkmesh-host-v1\nalice\nmyrepo\n2000")),
-          "host-token signature is bound to its timestamp");
+    // --- Durable opaque private-mirror replicas -------------------------
+    // Ciphertext is stored under a random id with owner-only permissions. A
+    // recipient removal rotates the content key and prevents that identity
+    // from opening the new epoch; private identity halves are never persisted
+    // alongside the replica.
+    {
+        QTemporaryDir store;
+        MirrorCrypto::Identity owner = MirrorCrypto::generateIdentity();
+        MirrorCrypto::Identity alice = MirrorCrypto::generateIdentity();
+        MirrorCrypto::Identity bob = MirrorCrypto::generateIdentity();
+        const QByteArray archive =
+            QByteArrayLiteral("super-private-project-name\0PACK") +
+            QByteArray(8192, '\x4a');
+        QString error;
+        const QString opaqueId = PrivateMirrorStore::createReplica(
+            store.path(), archive,
+            {owner.publicBundle(), alice.publicBundle()}, &error);
+        check(PrivateMirrorStore::isOpaqueId(opaqueId) && error.isEmpty(),
+              "private replica is created under an unguessable opaque id");
+
+        const QStringList files =
+            QDir(store.path()).entryList(QDir::Files | QDir::NoDotAndDotDot);
+        check(files == QStringList{opaqueId + ".fm-private"} &&
+                  !files.value(0).contains("private-project"),
+              "private replica filename discloses no owner or repository name");
+        QFile encryptedFile(
+            QDir(store.path()).filePath(opaqueId + ".fm-private"));
+        check(encryptedFile.open(QIODevice::ReadOnly),
+              "encrypted private replica can be read as ciphertext");
+        QByteArray storedBytes = encryptedFile.readAll();
+        encryptedFile.close();
+        check(!storedBytes.contains("super-private-project-name") &&
+                  !storedBytes.contains(owner.x25519Priv.toBase64()) &&
+                  !storedBytes.contains(owner.mlkemPriv.toBase64()),
+              "replica storage contains no plaintext name or private identity keys");
+        const QFileDevice::Permissions permissions =
+            QFileInfo(encryptedFile).permissions();
+        check(!(permissions &
+                (QFileDevice::ReadGroup | QFileDevice::WriteGroup |
+                 QFileDevice::ExeGroup | QFileDevice::ReadOther |
+                 QFileDevice::WriteOther | QFileDevice::ExeOther)),
+              "private replica file permissions exclude group and other users");
+
+        PrivateMirrorStore::Metadata before;
+        QStringList expectedRecipients{alice.keyId(), owner.keyId()};
+        expectedRecipients.sort();
+        check(PrivateMirrorStore::inspectReplica(
+                  store.path(), opaqueId, &before, &error) &&
+                  before.keyEpoch == 1 &&
+                  before.recipientKeyIds == expectedRecipients,
+              "private replica metadata authenticates epoch and recipients");
+        check(PrivateMirrorStore::openReplica(
+                  store.path(), opaqueId, owner, nullptr, &error) == archive &&
+                  PrivateMirrorStore::openReplica(
+                      store.path(), opaqueId, alice, nullptr, &error) == archive,
+              "only configured recipients decrypt the persisted private replica");
+
+        check(PrivateMirrorStore::rotateRecipients(
+                  store.path(), opaqueId, owner,
+                  {owner.publicBundle(), bob.publicBundle()}, &error),
+              "recipient revocation atomically rotates the private replica key");
+        PrivateMirrorStore::Metadata after;
+        check(PrivateMirrorStore::inspectReplica(
+                  store.path(), opaqueId, &after, &error) &&
+                  after.keyEpoch == 2 &&
+                  after.ciphertextSha256 != before.ciphertextSha256,
+              "private replica rotation advances its authenticated key epoch");
+        check(PrivateMirrorStore::openReplica(
+                  store.path(), opaqueId, alice, nullptr, &error).isEmpty() &&
+                  !error.isEmpty(),
+              "a revoked recipient cannot decrypt the rotated replica");
+        check(PrivateMirrorStore::openReplica(
+                  store.path(), opaqueId, bob, nullptr, &error) == archive,
+              "a newly authorized recipient decrypts the rotated replica");
+        check(PrivateMirrorStore::openReplica(
+                  store.path(), "../not-an-id", owner, nullptr, &error).isEmpty(),
+              "private replica lookup rejects path traversal");
+
+        QFile corrupt(
+            QDir(store.path()).filePath(opaqueId + ".fm-private"));
+        check(corrupt.open(QIODevice::ReadWrite),
+              "private replica opens for local corruption test");
+        QJsonObject stored =
+            QJsonDocument::fromJson(corrupt.readAll()).object();
+        QJsonObject envelope = stored.value("envelope").toObject();
+        QByteArray body =
+            QByteArray::fromBase64(envelope.value("body").toString().toLatin1());
+        body[0] = char(body.at(0) ^ 0x20);
+        envelope["body"] = QString::fromLatin1(body.toBase64());
+        stored["envelope"] = envelope;
+        corrupt.resize(0);
+        corrupt.write(QJsonDocument(stored).toJson(QJsonDocument::Compact));
+        corrupt.close();
+        check(!PrivateMirrorStore::inspectReplica(
+                  store.path(), opaqueId, &after, &error),
+              "ciphertext corruption is rejected before private-replica decryption");
+    }
 
     const QString deviceProofKey = QStringLiteral(
         "ERERERERERERERERERERERERERERERERERERERERERE");
@@ -2036,6 +2219,115 @@ int main(int argc, char *argv[])
                           !firstDependency.contains(
                               QStringLiteral("first@example.test")),
                       "dependency fingerprint tracks pull metadata and effective Git identity privately");
+            }
+
+            QTemporaryDir logoRepo;
+            const QByteArray privateSourceMarker =
+                QByteArrayLiteral("PRIVATE_SOURCE_BODY_MUST_NOT_BE_PUBLISHED");
+            const bool logoRepoSetup =
+                logoRepo.isValid() &&
+                runTestGit(logoRepo.path(),
+                           {QStringLiteral("init"), QStringLiteral("-q"),
+                            QStringLiteral("-b"), QStringLiteral("main")}) &&
+                runTestGit(logoRepo.path(),
+                           {QStringLiteral("config"),
+                            QStringLiteral("user.name"),
+                            QStringLiteral("Logo Metadata Owner")}) &&
+                runTestGit(logoRepo.path(),
+                           {QStringLiteral("config"),
+                            QStringLiteral("user.email"),
+                            QStringLiteral("logo@example.test")}) &&
+                writeTestFile(logoRepo.path() +
+                                  QStringLiteral("/src/main.cpp"),
+                              privateSourceMarker) &&
+                writeTestFile(logoRepo.path() +
+                                  QStringLiteral("/web/app.ts"),
+                              QByteArrayLiteral("export const app = true;")) &&
+                writeTestFile(logoRepo.path() +
+                                  QStringLiteral("/CMakeLists.txt"),
+                              QByteArrayLiteral("project(LogoFixture)")) &&
+                writeTestFile(logoRepo.path() +
+                                  QStringLiteral("/package.json"),
+                              QByteArrayLiteral("{\"private\":true}")) &&
+                writeTestFile(logoRepo.path() +
+                                  QStringLiteral("/wrangler.toml"),
+                              QByteArrayLiteral("name='logo-fixture'")) &&
+                commitTestTree(logoRepo.path(),
+                               QStringLiteral("logo metadata fixture"),
+                               QStringLiteral("2026-07-20T09:00:00Z"),
+                               QStringLiteral("Logo Metadata Owner"),
+                               QStringLiteral("logo@example.test"));
+            check(logoRepoSetup,
+                  "native logo metadata fixture is a real committed repository");
+            if (logoRepoSetup) {
+                RepoContributionSnapshotInput logoSnapshotInput;
+                logoSnapshotInput.workTreePath = logoRepo.path();
+                logoSnapshotInput.branch = QStringLiteral("main");
+                logoSnapshotInput.head = testGitHead(logoRepo.path());
+                logoSnapshotInput.publishingKey = identity.publicKey();
+                logoSnapshotInput.capturedAtMs =
+                    utcMs("2026-07-21T12:00:00Z");
+                const RepoContributionSnapshot logoSnapshot =
+                    buildRepoContributionSnapshot(logoSnapshotInput);
+
+                RepoLogoMetadataInput logoInput;
+                logoInput.workTreePath = logoRepo.path();
+                logoInput.head = logoSnapshotInput.head;
+                logoInput.description =
+                    QStringLiteral("A three-dimensional developer platform");
+                logoInput.topics = {
+                    QStringLiteral("developer-platform"),
+                    QStringLiteral("threejs"),
+                };
+                logoInput.contributionPayload = logoSnapshot.payload;
+                const QJsonObject publicLogoMetadata =
+                    buildRepoLogoMetadata(logoInput);
+                const QJsonObject publicLanguages =
+                    publicLogoMetadata.value(QStringLiteral("languages"))
+                        .toObject();
+                const QJsonArray publicStructure =
+                    publicLogoMetadata.value(QStringLiteral("fileStructure"))
+                        .toArray();
+                const QJsonArray publicFrameworks =
+                    publicLogoMetadata.value(QStringLiteral("frameworks"))
+                        .toArray();
+                check(logoSnapshot.complete &&
+                          publicLanguages.contains(QStringLiteral("C++")) &&
+                          publicLanguages.contains(
+                              QStringLiteral("TypeScript")) &&
+                          publicStructure.contains(
+                              QStringLiteral("src/")) &&
+                          publicStructure.contains(
+                              QStringLiteral("web/")) &&
+                          publicFrameworks.contains(
+                              QStringLiteral("CMake")) &&
+                          publicFrameworks.contains(
+                              QStringLiteral("Node.js")) &&
+                          publicFrameworks.contains(
+                              QStringLiteral("Cloudflare Workers")) &&
+                          publicLogoMetadata
+                                  .value(QStringLiteral("projectCategory"))
+                                  .toString() ==
+                              QStringLiteral("developer platform"),
+                      "native public logo factors reuse a real contribution snapshot and bounded git metadata");
+
+                logoInput.contributionPayload = QJsonObject();
+                const QJsonObject privateLogoMetadata =
+                    buildRepoLogoMetadata(logoInput);
+                const QByteArray serializedPrivateFactors =
+                    QJsonDocument(privateLogoMetadata)
+                        .toJson(QJsonDocument::Compact);
+                check(privateLogoMetadata
+                              .value(QStringLiteral("languages"))
+                              .toObject()
+                              .contains(QStringLiteral("C++")) &&
+                          privateLogoMetadata
+                              .value(QStringLiteral("fileStructure"))
+                              .toArray()
+                              .contains(QStringLiteral("src/")) &&
+                          !serializedPrivateFactors.contains(
+                              privateSourceMarker),
+                      "native private logo factors use git tree metadata without publishing source contents");
             }
 
             RepoContributionSnapshotInput mismatched = input;
@@ -5557,76 +5849,29 @@ int main(int argc, char *argv[])
     }
 
     {
-        // Claude Code account transfer: bundle round-trips and installs onto a
-        // host's ~/.claude/.credentials.json (issue: move the owner's login onto
-        // hosts so they can take agent requests).
-        QJsonObject oauth;
-        oauth.insert("accessToken", "tok-secret-1234");
-        oauth.insert("refreshToken", "refresh-abcd");
-        oauth.insert("subscriptionType", "max");
-        oauth.insert("expiresAt", double(4102444800000LL));
-
-        const QString encoded =
-            ClaudeAccountTransfer::encodeBundle(oauth, "sk-ant-key", "owner-node");
-        check(!encoded.contains("tok-secret-1234"),
-              "encoded bundle is base64, not plaintext token");
-
-        QJsonObject roundOauth;
-        QString roundKey, err;
-        check(ClaudeAccountTransfer::parseBundle(encoded.toUtf8(), roundOauth,
-                                                 roundKey, err),
-              "base64 bundle parses back");
-        check(roundOauth.value("accessToken").toString() == "tok-secret-1234" &&
-                  roundKey == "sk-ant-key",
-              "bundle round-trips the oauth token and API key");
-
-        // Raw JSON (an exported keyfile) is accepted too.
-        const QByteArray rawJson =
-            ClaudeAccountTransfer::buildBundle(oauth, "sk-ant-key", "owner-node");
-        QJsonObject jsonOauth;
-        QString jsonKey, jsonErr;
-        check(ClaudeAccountTransfer::parseBundle(rawJson, jsonOauth, jsonKey,
-                                                 jsonErr) &&
-                  jsonOauth.value("accessToken").toString() == "tok-secret-1234",
-              "raw-JSON bundle parses too");
-
-        // Junk / foreign JSON is rejected.
-        QJsonObject junkOauth;
-        QString junkKey, junkErr;
-        check(!ClaudeAccountTransfer::parseBundle("{\"kind\":\"nope\"}", junkOauth,
-                                                  junkKey, junkErr),
-              "a non-ForkMesh bundle is rejected");
-
-        // Install writes ~/.claude/.credentials.json under a temp home and
-        // preserves any sibling keys already there.
-        QTemporaryDir homeDir;
-        check(homeDir.isValid(), "temp home for install test");
-        QDir().mkpath(homeDir.path() + "/.claude");
-        QFile pre(homeDir.path() + "/.claude/.credentials.json");
-        check(pre.open(QIODevice::WriteOnly), "seed an existing creds file");
-        pre.write("{\"other\":\"keep-me\"}");
-        pre.close();
-
-        QString installErr;
-        check(ClaudeAccountTransfer::installOauth(homeDir.path(), roundOauth,
-                                                  installErr),
-              "installOauth writes credentials.json");
-        check(ClaudeAccountTransfer::hasCredentials(homeDir.path()),
-              "installed home now reports a Claude Code login");
-        QFile post(homeDir.path() + "/.claude/.credentials.json");
-        check(post.open(QIODevice::ReadOnly), "read back installed creds");
-        const QJsonObject installed =
-            QJsonDocument::fromJson(post.readAll()).object();
-        post.close();
-        check(installed.value("claudeAiOauth").toObject().value("accessToken")
-                      .toString() == "tok-secret-1234",
-              "installed creds carry the transferred token");
-        check(installed.value("other").toString() == "keep-me",
-              "install merges rather than clobbering sibling keys");
-
-        const QString desc = ClaudeAccountTransfer::describeOauth(oauth);
-        check(!desc.contains("tok-secret-1234") && desc.contains("1234"),
-              "describeOauth masks the token to its tail");
+        // Agent metadata is the only unsealed local session state. Provider
+        // credentials are launch-time config and can never become workspace
+        // metadata or a shared owner-sealed session payload by field alias.
+        AgentSession session;
+        session.id = 42;
+        session.owner = QStringLiteral("alice");
+        session.name = QStringLiteral("project");
+        session.prompt = QStringLiteral("review the owner-sealed task");
+        session.provider = QStringLiteral("claude-code");
+        const QJsonObject serialized = session.toJson();
+        for (const QString &forbidden :
+             {QStringLiteral("accessToken"),
+              QStringLiteral("refreshToken"),
+              QStringLiteral("oauth"),
+              QStringLiteral("apiKey"),
+              QStringLiteral("anthropicApiKey"),
+              QStringLiteral("openAiApiKey"),
+              QStringLiteral("credentials")}) {
+            check(!serialized.contains(forbidden),
+                  qPrintable(QStringLiteral(
+                      "agent metadata excludes provider credential field %1")
+                                 .arg(forbidden)));
+        }
     }
 
     if (failures) {

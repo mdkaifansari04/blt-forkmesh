@@ -239,9 +239,8 @@ class _OrgDetailScreenState extends State<OrgDetailScreen> {
             onChangeRole: (role) => _run(
               () => _api.setOrgMember(widget.orgName, member.name, role: role),
             ),
-            onRemove: () => _run(
-              () => _api.removeOrgMember(widget.orgName, member.name),
-            ),
+            onRemove: () =>
+                _run(() => _api.removeOrgMember(widget.orgName, member.name)),
           ),
       ],
     );
@@ -251,11 +250,7 @@ class _OrgDetailScreenState extends State<OrgDetailScreen> {
     final result = await _promptMember(context);
     if (result == null) return;
     await _run(
-      () => _api.setOrgMember(
-        widget.orgName,
-        result.name,
-        role: result.role,
-      ),
+      () => _api.setOrgMember(widget.orgName, result.name, role: result.role),
     );
   }
 
@@ -336,15 +331,12 @@ class _OrgDetailScreenState extends State<OrgDetailScreen> {
 
   Future<void> _linkRepo() async {
     final account =
-        context.read<AuthService>().session?.nodeName.trim().toLowerCase() ?? '';
+        context.read<AuthService>().session?.nodeName.trim().toLowerCase() ??
+        '';
     final result = await _promptRepo(context, defaultNode: account);
     if (result == null) return;
     await _run(
-      () => _api.linkOrgRepo(
-        widget.orgName,
-        result.repo,
-        node: result.node,
-      ),
+      () => _api.linkOrgRepo(widget.orgName, result.repo, node: result.node),
     );
   }
 
@@ -424,7 +416,10 @@ class _TeamDetailScreenState extends State<_TeamDetailScreen> {
       _error = '';
     });
     try {
-      final members = await _api.orgTeamMembers(widget.orgName, widget.team.team);
+      final members = await _api.orgTeamMembers(
+        widget.orgName,
+        widget.team.team,
+      );
       if (!mounted) return;
       setState(() {
         _members = members;
@@ -454,11 +449,14 @@ class _TeamDetailScreenState extends State<_TeamDetailScreen> {
 
   Future<void> _addToTeam() async {
     final onTeam = _members.map((m) => m.name).toSet();
-    final candidates =
-        widget.orgMembers.where((m) => !onTeam.contains(m.name)).toList();
+    final candidates = widget.orgMembers
+        .where((m) => !onTeam.contains(m.name))
+        .toList();
     if (candidates.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Every org member is already on this team.')),
+        const SnackBar(
+          content: Text('Every org member is already on this team.'),
+        ),
       );
       return;
     }
@@ -487,7 +485,10 @@ class _TeamDetailScreenState extends State<_TeamDetailScreen> {
                   ? IconButton(
                       tooltip: 'Add member to team',
                       onPressed: _addToTeam,
-                      icon: Icon(Icons.add, color: FmTheme.textPrimary(context)),
+                      icon: Icon(
+                        Icons.add,
+                        color: FmTheme.textPrimary(context),
+                      ),
                     )
                   : null,
             ),
@@ -746,7 +747,10 @@ class _TeamRow extends StatelessWidget {
                     child: Text('Permission: $permission'),
                   ),
                 const PopupMenuDivider(),
-                const PopupMenuItem(value: 'delete', child: Text('Delete team')),
+                const PopupMenuItem(
+                  value: 'delete',
+                  child: Text('Delete team'),
+                ),
               ],
             ),
         ],
@@ -1045,7 +1049,8 @@ class _RepoPromptSheetState extends State<_RepoPromptSheet> {
   Widget build(BuildContext context) {
     return _PromptScaffold(
       title: 'Link a repo',
-      helper: 'Link one of your own node\'s published repos to serve it at '
+      helper:
+          'Link one of your own node\'s published repos to serve it at '
           '/<org>/<repo>.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,

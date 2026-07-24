@@ -143,7 +143,9 @@ void main() {
     });
   });
 
-  testWidgets('mark all read clears every conversation at once', (tester) async {
+  testWidgets('mark all read clears every conversation at once', (
+    tester,
+  ) async {
     await tester.runAsync(() async {
       final harness = await _RelayHarness.start();
       addTearDown(harness.close);
@@ -270,6 +272,7 @@ class _RelayHarness {
     await settings.setServerUrl(
       'ws://${server.address.host}:${server.port}/ws',
     );
+    await settings.setPassphrase('forkmesh-chat-screen-test-key');
     final identity = await Identity.loadOrCreate();
     final relay = RelayService(settings, identity);
     await relay.connect().timeout(
@@ -281,7 +284,10 @@ class _RelayHarness {
       onTimeout: () =>
           throw TimeoutException('test WebSocket was not accepted'),
     );
-    final crypto = await RoomCrypto.shared(settings.room);
+    final crypto = await RoomCrypto.withPassphrase(
+      settings.room,
+      settings.passphrase,
+    );
 
     final harness = _RelayHarness._(
       server: server,

@@ -5,11 +5,12 @@
 // the class itself is declared in MainWindow.h. Shared helpers live in
 // MainWindowInternal.h / MainWindowShared.cpp (namespace forkmesh::ui).
 
-#include "ClaudeAccountTransfer.h"
+#include "ControlNode.h"
 #include "ForkMeshVersion.h"
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 #include "QrCode.h"
+#include "WorldSpeechBridge.h"
 
 #include <QClipboard>
 #include <QColor>
@@ -87,15 +88,37 @@ QWidget *MainWindow::buildSettingsSection()
     avatarRow->addWidget(generateButton);
     avatarRow->addStretch();
 
-    // #66: let the node's Solana donation/payout address be set right here in
-    // Settings, not only during setup or from the profile panel.
+    // This is a public payout address only. It is not a wallet-import field and
+    // must never persist private key material, a seed, or a recovery phrase.
     m_settingsSolanaEdit = new QLineEdit;
     m_settingsSolanaEdit->setMaxLength(64);
     m_settingsSolanaEdit->setPlaceholderText(
-        "Solana address (for donations / payouts, optional)");
-    m_settingsSolanaEdit->setText(savedSolanaAddress());
+        "Public self-custodial Solana payout address (optional)");
+    m_settingsSolanaEdit->setToolTip(
+        "Enter one public Solana address only. Never enter a private key, seed, "
+        "mnemonic, or recovery phrase; ForkMesh does not store wallet keys.");
+    const QString savedAddress = savedSolanaAddress();
+    m_settingsSolanaEdit->setText(
+        savedAddress.isEmpty() ||
+                forkmesh::control::isValidSolanaPublicAddress(savedAddress)
+            ? savedAddress
+            : QString());
     connect(m_settingsSolanaEdit, &QLineEdit::editingFinished, this, [this] {
         const QString addr = m_settingsSolanaEdit->text().trimmed();
+        if (!addr.isEmpty() &&
+            !forkmesh::control::isValidSolanaPublicAddress(addr)) {
+            const QString previous = savedSolanaAddress();
+            m_settingsSolanaEdit->setText(
+                forkmesh::control::isValidSolanaPublicAddress(previous)
+                    ? previous
+                    : QString());
+            flashMessage(
+                QStringLiteral(
+                    "That is not a valid Solana public address. No private key, "
+                    "seed, mnemonic, or recovery phrase was saved."),
+                true);
+            return;
+        }
         m_settingsSolanaEdit->setText(addr);
         saveSolanaAddress(addr);
         if (m_solanaEdit && m_solanaEdit->text().trimmed() != addr)
@@ -272,14 +295,15 @@ QWidget *MainWindow::buildSettingsSection()
     });
 
     auto *publishAgentsToWebCheck =
-        new QCheckBox("Publish agents started here to the web");
+        new QCheckBox("Relay owner-encrypted agent snapshots");
     publishAgentsToWebCheck->setChecked(
         QSettings().value(kPublishAgentsToWebSetting, false).toBool());
     publishAgentsToWebCheck->setToolTip(
-        "When on, agent sessions you start in the desktop are pushed to the web "
-        "catalog so a repo's website page lists them and the owner can steer "
-        "them from the browser. Off by default so locally-started agents stay "
-        "private to this machine.");
+        "When on, agent sessions you start here are hybrid-encrypted to this "
+        "owner device before their snapshots reach the relay. The browser and "
+        "platform administrators cannot decrypt transcripts or prompts; use "
+        "the owner desktop to inspect or steer them. Off by default so no "
+        "agent metadata leaves this machine.");
     connect(publishAgentsToWebCheck, &QCheckBox::toggled, this, [](bool enabled) {
         QSettings().setValue(kPublishAgentsToWebSetting, enabled);
     });
@@ -325,12 +349,13 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kNodeConnectAlertSetting, enabled);
     });
     auto *disbursementAlertCheck =
-        new QCheckBox("Show a system alert when you receive a disbursement");
+        new QCheckBox(
+            "Show a system alert when your public wallet balance increases");
     disbursementAlertCheck->setChecked(
         QSettings().value(kDisbursementAlertSetting, false).toBool());
     disbursementAlertCheck->setToolTip(
-        "Pop up a desktop notification when your Solana wallet balance "
-        "increases after a refresh.");
+        "Pop up a desktop notification when the read-only balance of your "
+        "external self-custodial Solana address increases after a refresh.");
     connect(disbursementAlertCheck, &QCheckBox::toggled, this, [](bool enabled) {
         QSettings().setValue(kDisbursementAlertSetting, enabled);
     });
@@ -428,11 +453,11 @@ QWidget *MainWindow::buildSettingsSection()
         "out of email.");
     auto *emailHostOnlineCheck = emailPrefCheck(
         "Email me when a desktop host is reachable", kEmailNotifyHostOnlineSetting,
-        false, "Email digest entry when a hosted repository has a reachable desktop host.");
+        false, "Email digest entry when a mirror endpoint has a recent signed check-in.");
     auto *emailHostOfflineCheck = emailPrefCheck(
-        "Email me when no live host has checked in",
+        "Email me when no mirror endpoint has checked in",
         kEmailNotifyHostOfflineSetting, false,
-        "Email digest entry when a hosted repository has no recent live host check-in.");
+        "Email digest entry when a repository has no recent signed mirror-endpoint check-in.");
 
     auto *ideLabel = new QLabel("IDE INTEGRATION");
     ideLabel->setObjectName("sectionLabel");
@@ -621,6 +646,61 @@ QWidget *MainWindow::buildSettingsSection()
     voiceTestRow->addWidget(m_voiceTestMicButton);
     voiceTestRow->addWidget(m_voiceTestMeter, 1);
 
+    // Hosted World -> local speech-to-text pairing. The exact public origin is
+    // safe to persist; the one-use capability and browser-session capability
+    // remain memory-only and are revoked when the bridge/client stops.
+    auto *worldVoiceLabel = new QLabel("WORLD VOICE BRIDGE");
+    worldVoiceLabel->setObjectName("sectionLabel");
+    auto *worldVoiceHint = new QLabel(
+        "Let one exact ForkMesh World origin control this local microphone and "
+        "speech engine. Audio never enters the browser, Worker, relay, or mirror. "
+        "Create a short-lived code, paste it into the World voice panel, and "
+        "revoke it at any time.");
+    worldVoiceHint->setObjectName("statusLine");
+    worldVoiceHint->setWordWrap(true);
+    m_worldSpeechOriginEdit = new QLineEdit;
+    m_worldSpeechOriginEdit->setMaxLength(2048);
+    m_worldSpeechOriginEdit->setPlaceholderText("https://forkmesh.com");
+    m_worldSpeechOriginEdit->setText(
+        QSettings()
+            .value(kWorldSpeechOriginSetting,
+                   QStringLiteral("https://forkmesh.com"))
+            .toString());
+    m_worldSpeechOriginEdit->setToolTip(
+        "Exact http(s) origin allowed to pair. Paths, wildcards, query strings, "
+        "and null origins are rejected.");
+    m_worldSpeechPairCodeEdit = new QLineEdit;
+    m_worldSpeechPairCodeEdit->setReadOnly(true);
+    m_worldSpeechPairCodeEdit->setPlaceholderText(
+        "One-time code appears here");
+    m_worldSpeechPairCodeEdit->setToolTip(
+        "One-use capability. It expires in two minutes and is never saved.");
+    m_worldSpeechPairButton =
+        new QPushButton(QStringLiteral("Open World + create code"));
+    m_worldSpeechPairButton->setObjectName("ghostButton");
+    m_worldSpeechPairButton->setCursor(Qt::PointingHandCursor);
+    connect(m_worldSpeechPairButton, &QPushButton::clicked, this,
+            &MainWindow::createWorldSpeechPairing);
+    m_worldSpeechRevokeButton = new QPushButton(QStringLiteral("Revoke"));
+    m_worldSpeechRevokeButton->setObjectName("ghostButton");
+    m_worldSpeechRevokeButton->setCursor(Qt::PointingHandCursor);
+    m_worldSpeechRevokeButton->setEnabled(false);
+    connect(m_worldSpeechRevokeButton, &QPushButton::clicked, this,
+            &MainWindow::revokeWorldSpeechPairing);
+    auto *worldVoiceOriginRow = new QHBoxLayout;
+    worldVoiceOriginRow->setSpacing(8);
+    worldVoiceOriginRow->addWidget(new QLabel(QStringLiteral("Exact origin")));
+    worldVoiceOriginRow->addWidget(m_worldSpeechOriginEdit, 1);
+    auto *worldVoicePairRow = new QHBoxLayout;
+    worldVoicePairRow->setSpacing(8);
+    worldVoicePairRow->addWidget(m_worldSpeechPairCodeEdit, 1);
+    worldVoicePairRow->addWidget(m_worldSpeechPairButton);
+    worldVoicePairRow->addWidget(m_worldSpeechRevokeButton);
+    m_worldSpeechStatusLabel = new QLabel(
+        QStringLiteral("Bridge off. No browser can control the microphone."));
+    m_worldSpeechStatusLabel->setObjectName("statusLine");
+    m_worldSpeechStatusLabel->setWordWrap(true);
+
     auto *appearanceLabel = new QLabel("APPEARANCE");
     appearanceLabel->setObjectName("sectionLabel");
     m_themeCombo = new QComboBox;
@@ -692,20 +772,25 @@ QWidget *MainWindow::buildSettingsSection()
     });
 
     // Per-PR bounties (issue #347): reward every merged pull request's author
-    // with a fixed bounty, funded either per-merge (a QR) or from a pre-funded
-    // inbuilt wallet. Off by default.
+    // with a fixed bounty through a one-time funding QR. The removed legacy
+    // "wallet" mode put signing authority in the Worker and must never be
+    // selectable for new rewards.
     auto *bountyLabel = new QLabel("PR BOUNTIES");
     bountyLabel->setObjectName("sectionLabel");
     auto *autoBountyCheck =
         new QCheckBox("Reward every merged pull request");
-    autoBountyCheck->setChecked(
-        QSettings().value(kAutoPrBountyEnabledSetting, false).toBool());
+    autoBountyCheck->setObjectName(
+        QStringLiteral("legacyAutoPrBountyDisabled"));
+    QSettings().setValue(kAutoPrBountyEnabledSetting, false);
+    autoBountyCheck->setChecked(false);
+    autoBountyCheck->setEnabled(false);
     autoBountyCheck->setToolTip(
-        "When on, merging a pull request you own rewards its author with the "
-        "bounty below. Off by default.");
+        "Disabled: the historical implementation required Worker-held escrow "
+        "keys. A reviewed non-custodial replacement has not been implemented.");
     auto *bountyHint = new QLabel(
-        "Only applies to repositories you own. Amounts reuse the SOL-priced "
-        "bounty flow (minimum $1).");
+        "Automatic PR bounty funding is unavailable while the historical "
+        "Worker-held escrow is retired. Existing records are retained only for "
+        "audit and operator-assisted migration; no new funds are accepted.");
     bountyHint->setObjectName("modeHint");
     bountyHint->setWordWrap(true);
 
@@ -715,6 +800,7 @@ QWidget *MainWindow::buildSettingsSection()
     bountyAmount->setPrefix("$");
     bountyAmount->setValue(
         QSettings().value(kAutoPrBountyAmountSetting, 1.0).toDouble());
+    bountyAmount->setEnabled(false);
     bountyAmount->setToolTip(
         "Reward paid to each merged pull request's author (USD, priced to SOL "
         "at payout).");
@@ -727,40 +813,40 @@ QWidget *MainWindow::buildSettingsSection()
     bountyAmountRow->addStretch();
 
     auto *bountyModeCombo = new QComboBox;
-    bountyModeCombo->addItem("Pay per PR (funding QR at each merge)",
+    bountyModeCombo->setObjectName(QStringLiteral("prBountyFundingMode"));
+    bountyModeCombo->addItem("Legacy per-PR mode (disabled)",
                              QStringLiteral("perPr"));
-    bountyModeCombo->addItem("Pay from the inbuilt bounty wallet",
-                             QStringLiteral("wallet"));
-    {
-        const QString mode =
-            QSettings().value(kAutoPrBountyModeSetting,
-                              QStringLiteral("perPr")).toString();
-        const int mi = bountyModeCombo->findData(mode);
-        bountyModeCombo->setCurrentIndex(mi < 0 ? 0 : mi);
-    }
+    QSettings bountySettings;
+    // One-way local migration: never silently reactivate the removed Worker-held
+    // signing path from an older preference.
+    if (bountySettings
+            .value(kAutoPrBountyModeSetting, QStringLiteral("perPr"))
+            .toString() != QLatin1String("perPr"))
+        bountySettings.setValue(kAutoPrBountyModeSetting,
+                                QStringLiteral("perPr"));
+    bountyModeCombo->setCurrentIndex(0);
+    bountyModeCombo->setEnabled(false);
     bountyModeCombo->setToolTip(
-        "\"Pay per PR\" shows a funding QR each time you merge. \"Inbuilt wallet\" "
-        "pays automatically from a wallet you pre-fund with a little SOL.");
-    auto *fundWalletBtn = new QPushButton("Fund inbuilt wallet…");
-    fundWalletBtn->setObjectName("ghostButton");
-    fundWalletBtn->setCursor(Qt::PointingHandCursor);
-    fundWalletBtn->setToolTip(
-        "Show the inbuilt bounty wallet's deposit address and balance so you can "
-        "top it up with SOL.");
+        "Reserved for a future reviewed self-custodial payment flow. It cannot "
+        "be selected in this release.");
+    auto *legacyWalletNotice = new QLabel(
+        "Legacy Worker-held bounty wallets are disabled and migration-only. "
+        "Do not send new funds to an old address.");
+    legacyWalletNotice->setObjectName(
+        QStringLiteral("legacyBountyWalletDisabled"));
+    legacyWalletNotice->setWordWrap(true);
     auto *bountyModeRow = new QHBoxLayout;
     bountyModeRow->setSpacing(8);
     bountyModeRow->addWidget(bountyModeCombo);
-    bountyModeRow->addWidget(fundWalletBtn);
     bountyModeRow->addStretch();
 
     const auto syncBountyEnabled = [autoBountyCheck, bountyAmount,
-                                    bountyModeCombo, fundWalletBtn] {
-        const bool on = autoBountyCheck->isChecked();
-        bountyAmount->setEnabled(on);
-        bountyModeCombo->setEnabled(on);
-        fundWalletBtn->setEnabled(
-            on && bountyModeCombo->currentData().toString() ==
-                      QLatin1String("wallet"));
+                                    bountyModeCombo] {
+        // The Worker-held escrow implementation is frozen. This deliberately
+        // remains disabled even if an old settings file had the feature on.
+        autoBountyCheck->setChecked(false);
+        bountyAmount->setEnabled(false);
+        bountyModeCombo->setEnabled(false);
     };
     connect(autoBountyCheck, &QCheckBox::toggled, this,
             [this, syncBountyEnabled](bool enabled) {
@@ -777,8 +863,6 @@ QWidget *MainWindow::buildSettingsSection()
                                      bountyModeCombo->currentData().toString());
                 syncBountyEnabled();
             });
-    connect(fundWalletBtn, &QPushButton::clicked, this,
-            &MainWindow::showBountyWalletDialog);
     syncBountyEnabled();
 
     // Per-metric toggles for this node's host stats (CPU/RAM/disk) shown in the
@@ -1042,17 +1126,17 @@ QWidget *MainWindow::buildSettingsSection()
     agentForm->addRow("OpenAI command", m_codexCommandEdit);
     agentForm->addRow("Claude command", m_claudeCommandEdit);
 
-    // Move this owner's Claude Code login (+ Claude API key) onto a host node so
-    // it can run "claude-code" agents on the owner's behalf. The desktop is where
-    // the `claude` CLI login lives; hosts start out signed-out.
-    auto *claudeAccountBtn = new QPushButton("Transfer Claude Code account…");
+    // Provider credentials are device-local. A host signs in through Claude's
+    // own flow on that host; ForkMesh never makes a portable account bundle.
+    auto *claudeAccountBtn =
+        new QPushButton("Set up Claude Code on this device…");
     claudeAccountBtn->setObjectName("ghostButton");
     claudeAccountBtn->setCursor(Qt::PointingHandCursor);
     claudeAccountBtn->setToolTip(
-        "Export your Claude Code login and API key to a bundle, or import one on a "
-        "host so it can take agent requests as you.");
+        "Use Claude's provider-owned login on this device. ForkMesh never "
+        "exports, imports, copies, or shares OAuth tokens or API keys.");
     connect(claudeAccountBtn, &QPushButton::clicked, this,
-            &MainWindow::transferClaudeCodeAccount);
+            &MainWindow::showClaudeCodeDeviceSetup);
     auto *claudeAccountRow = new QHBoxLayout;
     claudeAccountRow->addWidget(claudeAccountBtn);
     claudeAccountRow->addStretch();
@@ -1530,6 +1614,7 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addWidget(bountyHint);
     generalCol->addLayout(bountyAmountRow);
     generalCol->addLayout(bountyModeRow);
+    generalCol->addWidget(legacyWalletNotice);
     generalCol->addSpacing(6);
     generalCol->addWidget(nodeStatsLabel);
     generalCol->addWidget(nodeStatsHint);
@@ -1649,6 +1734,12 @@ QWidget *MainWindow::buildSettingsSection()
     voiceCol->addLayout(voiceDeviceRow);
     voiceCol->addLayout(voiceTestRow);
     voiceCol->addWidget(m_whisperStatusLabel);
+    voiceCol->addSpacing(8);
+    voiceCol->addWidget(worldVoiceLabel);
+    voiceCol->addWidget(worldVoiceHint);
+    voiceCol->addLayout(worldVoiceOriginRow);
+    voiceCol->addLayout(worldVoicePairRow);
+    voiceCol->addWidget(m_worldSpeechStatusLabel);
     voiceCol->addStretch();
     m_voiceSettingsTabIndex = tabs->count();
     addTab(voiceTab, "Voice");
@@ -1850,146 +1941,46 @@ void MainWindow::backUpIdentityKey()
     dialog.exec();
 }
 
-void MainWindow::transferClaudeCodeAccount()
+void MainWindow::showClaudeCodeDeviceSetup()
 {
-    const QString home = QDir::homePath();
-    const QString exportedFrom =
-        QSettings().value(kAccountNameSetting).toString();
-
     QDialog dialog(this);
-    dialog.setWindowTitle("Transfer Claude Code account");
+    dialog.setWindowTitle("Claude Code device login");
     auto *l = new QVBoxLayout(&dialog);
 
+    const bool claudeCodeSignedIn =
+        !claudeCodeOAuthToken().isEmpty();
     auto *intro = new QLabel(
-        "Move your Claude Code login (and any Claude API key) onto a host node so "
-        "it can run \"claude-code\" agents as you. Export a bundle here, copy it to "
-        "the host (scp / paste over SSH), then Import it there. The bundle carries a "
-        "live subscription token — treat it like a password and only put it on hosts "
-        "you trust.\n\nThis machine: " +
-        ClaudeAccountTransfer::describeOauth(
-            ClaudeAccountTransfer::readOauthObject(home)));
+        QStringLiteral(
+            "<b>This device: %1</b><br><br>"
+            "ForkMesh does not export, import, copy, upload, or serialize Claude "
+            "Code OAuth credentials. To use Claude Code here, open a terminal on "
+            "this device, run <code>claude</code>, and complete Claude's own "
+            "provider login. Repeat that provider-owned login separately on each "
+            "device you control; never send a credential file or token through a "
+            "ForkMesh workspace, chat, host deployment, clipboard, or account "
+            "bundle.<br><br>"
+            "<b>Shared agent boundary:</b> optional web/team synchronization "
+            "contains only owner-sealed task, session-state, transcript, and "
+            "artifact metadata. The relay, organization administrators, teammates, "
+            "and agent worktree files do not receive provider credentials. A "
+            "locally launched provider client may use device-local authentication "
+            "inside its process boundary, but Claude and Codex logins remain isolated "
+            "to the owner device that runs the agent.")
+            .arg(claudeCodeSignedIn
+                     ? QStringLiteral("Claude Code login detected")
+                     : QStringLiteral("Claude Code is not signed in")));
     intro->setWordWrap(true);
-    intro->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    intro->setTextFormat(Qt::RichText);
+    intro->setTextInteractionFlags(Qt::TextSelectableByMouse |
+                                   Qt::LinksAccessibleByMouse);
     l->addWidget(intro);
 
-    auto currentApiKey = [] {
-        return QSettings().value(kClaudeApiKeySetting).toString().trimmed();
-    };
-
-    auto *saveBtn = new QPushButton("Save bundle…");
-    saveBtn->setObjectName("primaryButton");
-    saveBtn->setCursor(Qt::PointingHandCursor);
-    connect(saveBtn, &QPushButton::clicked, &dialog,
-            [this, &dialog, home, exportedFrom, currentApiKey] {
-                const QJsonObject oauth =
-                    ClaudeAccountTransfer::readOauthObject(home);
-                if (oauth.value("accessToken").toString().isEmpty() &&
-                    currentApiKey().isEmpty()) {
-                    QMessageBox::warning(
-                        &dialog, "Nothing to export",
-                        "No Claude Code login or Claude API key on this machine. "
-                        "Run `claude` and sign in, or set a Claude API key first.");
-                    return;
-                }
-                const QString path = QFileDialog::getSaveFileName(
-                    &dialog, "Save Claude account bundle",
-                    "forkmesh-claude-account.txt",
-                    "ForkMesh Claude account (*.txt);;All files (*)");
-                if (path.isEmpty())
-                    return;
-                QFile f(path);
-                if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-                    QMessageBox::warning(&dialog, "Save failed",
-                                         "Could not write " + path);
-                    return;
-                }
-                f.write(ClaudeAccountTransfer::encodeBundle(
-                            oauth, currentApiKey(), exportedFrom)
-                            .toUtf8());
-                f.close();
-                QFile::setPermissions(
-                    path, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
-                QMessageBox::information(
-                    &dialog, "Exported",
-                    "Claude account bundle saved to " + path +
-                        ".\nImport it on a host with \"Transfer Claude Code "
-                        "account\" or `claude-auth import`.");
-            });
-
-    auto *copyBtn = new QPushButton("Copy bundle");
-    copyBtn->setObjectName("ghostButton");
-    copyBtn->setCursor(Qt::PointingHandCursor);
-    connect(copyBtn, &QPushButton::clicked, &dialog,
-            [this, &dialog, home, exportedFrom, currentApiKey] {
-                const QJsonObject oauth =
-                    ClaudeAccountTransfer::readOauthObject(home);
-                if (oauth.value("accessToken").toString().isEmpty() &&
-                    currentApiKey().isEmpty()) {
-                    QMessageBox::warning(
-                        &dialog, "Nothing to export",
-                        "No Claude Code login or Claude API key on this machine.");
-                    return;
-                }
-                QApplication::clipboard()->setText(
-                    ClaudeAccountTransfer::encodeBundle(oauth, currentApiKey(),
-                                                        exportedFrom));
-                QMessageBox::information(
-                    &dialog, "Copied",
-                    "Bundle copied to the clipboard. Paste it into `claude-auth "
-                    "import -` on the host.");
-            });
-
-    auto *importBtn = new QPushButton("Import bundle…");
-    importBtn->setObjectName("ghostButton");
-    importBtn->setCursor(Qt::PointingHandCursor);
-    connect(importBtn, &QPushButton::clicked, &dialog, [this, &dialog, home] {
-        const QString path = QFileDialog::getOpenFileName(
-            &dialog, "Import Claude account bundle", QString(),
-            "ForkMesh Claude account (*.txt *.json);;All files (*)");
-        if (path.isEmpty())
-            return;
-        QFile f(path);
-        if (!f.open(QIODevice::ReadOnly)) {
-            QMessageBox::warning(&dialog, "Import failed",
-                                 "Could not read " + path);
-            return;
-        }
-        const QByteArray raw = f.readAll();
-        f.close();
-        QJsonObject oauth;
-        QString apiKey, err;
-        if (!ClaudeAccountTransfer::parseBundle(raw, oauth, apiKey, err)) {
-            QMessageBox::warning(&dialog, "Import failed", err);
-            return;
-        }
-        if (!ClaudeAccountTransfer::installOauth(home, oauth, err)) {
-            QMessageBox::warning(&dialog, "Import failed", err);
-            return;
-        }
-        QStringList installed;
-        if (!oauth.value("accessToken").toString().isEmpty())
-            installed << "Claude Code login";
-        if (!apiKey.isEmpty()) {
-            QSettings().setValue(kClaudeApiKeySetting, apiKey);
-            if (m_claudeApiKeyEdit)
-                m_claudeApiKeyEdit->setText(apiKey);
-            installed << "Claude API key";
-        }
-        QMessageBox::information(
-            &dialog, "Imported",
-            "Installed " + installed.join(" + ") +
-                " on this machine. It can now take agent requests as the "
-                "exporting owner.");
-    });
-
     auto *closeBtn = new QPushButton("Close");
+    closeBtn->setObjectName("primaryButton");
     closeBtn->setCursor(Qt::PointingHandCursor);
     connect(closeBtn, &QPushButton::clicked, &dialog, &QDialog::accept);
 
     auto *row = new QHBoxLayout;
-    row->addWidget(saveBtn);
-    row->addWidget(copyBtn);
-    row->addWidget(importBtn);
     row->addStretch(1);
     row->addWidget(closeBtn);
     l->addLayout(row);
@@ -1999,86 +1990,38 @@ void MainWindow::transferClaudeCodeAccount()
 
 QStringList MainWindow::headlessClaudeAuth(const QStringList &args)
 {
-    const QString home = QDir::homePath();
     const QString sub = args.value(0).toLower();
-    auto apiKey = [] {
-        return QSettings().value(kClaudeApiKeySetting).toString().trimmed();
-    };
 
     if (sub.isEmpty() || sub == QLatin1String("status")) {
-        QStringList out;
-        out << ClaudeAccountTransfer::describeOauth(
-            ClaudeAccountTransfer::readOauthObject(home));
-        out << (apiKey().isEmpty() ? QStringLiteral("Claude API key: not set")
-                                   : QStringLiteral("Claude API key: set"));
-        out << QStringLiteral(
-            "Use `claude-auth export [path]` to bundle this account, "
-            "`claude-auth import <path>` to install one from an owner.");
-        return out;
+        return {
+            claudeCodeOAuthToken().isEmpty()
+                ? QStringLiteral("Claude Code login: not detected on this device")
+                : QStringLiteral("Claude Code login: detected on this device"),
+            QStringLiteral(
+                "Provider credentials are owner-device-only and are never "
+                "exported, copied, serialized, uploaded, or placed in an agent "
+                "workspace."),
+            QStringLiteral(
+                "To sign in, run `claude` on this device and complete Claude's "
+                "provider-owned login flow."),
+        };
     }
 
-    if (sub == QLatin1String("export")) {
-        const QJsonObject oauth = ClaudeAccountTransfer::readOauthObject(home);
-        if (oauth.value("accessToken").toString().isEmpty() && apiKey().isEmpty())
-            return {QStringLiteral(
-                "Nothing to export: no Claude Code login or Claude API key on "
-                "this machine. Run `claude` and sign in first.")};
-        const QString exportedFrom =
-            QSettings().value(kAccountNameSetting).toString();
-        const QString encoded =
-            ClaudeAccountTransfer::encodeBundle(oauth, apiKey(), exportedFrom);
-        // `export -` (or no path) prints the bundle so it can be piped/copied;
-        // otherwise write a keyfile with owner-only permissions.
-        const QString path = args.value(1);
-        if (path.isEmpty() || path == QLatin1String("-"))
-            return {QStringLiteral("--- ForkMesh Claude account bundle ---"),
-                    encoded};
-        QFile f(path);
-        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
-            return {QStringLiteral("export failed: could not write ") + path};
-        f.write(encoded.toUtf8());
-        f.close();
-        QFile::setPermissions(path,
-                              QFileDevice::ReadOwner | QFileDevice::WriteOwner);
-        return {QStringLiteral("exported Claude account bundle to ") + path};
+    if (sub == QLatin1String("export") ||
+        sub == QLatin1String("import")) {
+        return {
+            QStringLiteral(
+                "Refused: ForkMesh does not export or import Claude OAuth "
+                "tokens, API keys, credential files, or account bundles."),
+            QStringLiteral(
+                "Run `claude` and complete the provider-owned login separately "
+                "on this device."),
+        };
     }
 
-    if (sub == QLatin1String("import")) {
-        const QString path = args.value(1);
-        if (path.isEmpty())
-            return {QStringLiteral("usage: claude-auth import <path>  "
-                                   "(use - to read the bundle from stdin/paste)")};
-        QByteArray raw;
-        if (path == QLatin1String("-")) {
-            // The remaining args are the pasted bundle (base64 has no spaces, so
-            // this also tolerates accidental splitting).
-            raw = args.mid(1).join(QString()).toUtf8();
-        } else {
-            QFile f(path);
-            if (!f.open(QIODevice::ReadOnly))
-                return {QStringLiteral("import failed: could not read ") + path};
-            raw = f.readAll();
-            f.close();
-        }
-        QJsonObject oauth;
-        QString key, err;
-        if (!ClaudeAccountTransfer::parseBundle(raw, oauth, key, err))
-            return {QStringLiteral("import failed: ") + err};
-        if (!ClaudeAccountTransfer::installOauth(home, oauth, err))
-            return {QStringLiteral("import failed: ") + err};
-        QStringList installed;
-        if (!oauth.value("accessToken").toString().isEmpty())
-            installed << QStringLiteral("Claude Code login");
-        if (!key.isEmpty()) {
-            QSettings().setValue(kClaudeApiKeySetting, key);
-            installed << QStringLiteral("Claude API key");
-        }
-        return {QStringLiteral("imported ") + installed.join(" + ") +
-                QStringLiteral("; this machine can now take agent requests as "
-                               "the exporting owner")};
-    }
-
-    return {QStringLiteral("usage: claude-auth status|export [path]|import <path>")};
+    return {QStringLiteral("usage: claude-auth status"),
+            QStringLiteral(
+                "Claude login is device-local; credential transfer is unsupported.")};
 }
 
 QByteArray MainWindow::effectiveAvatar()
@@ -2520,8 +2463,18 @@ void MainWindow::headlessStart(const QString &name, const QString &solana)
     const QString trimmed = name.trimmed().toLower();
     if (m_nameEdit)
         m_nameEdit->setText(trimmed);
-    if (m_solanaEdit && !solana.trimmed().isEmpty())
-        m_solanaEdit->setText(solana.trimmed());
+    if (m_solanaEdit && !solana.trimmed().isEmpty()) {
+        if (forkmesh::control::isValidSolanaPublicAddress(solana)) {
+            m_solanaEdit->setText(solana.trimmed());
+        } else {
+            // Do not echo the rejected value: it may be private wallet material
+            // accidentally supplied where only a public address is allowed.
+            m_solanaEdit->clear();
+            logSystem(QStringLiteral(
+                "Ignored an invalid headless payout address; only a public "
+                "Solana address is accepted."));
+        }
+    }
     if (m_serverUrlEdit && m_serverUrlEdit->text().trimmed().isEmpty())
         m_serverUrlEdit->setText(serverHostDisplay(kDefaultServerUrl));
     startSession();
@@ -2576,7 +2529,7 @@ QStringList MainWindow::headlessStatusLines() const
                  .arg(online)
                  .arg(m_homeRoster.size());
     lines << QStringLiteral("Repos:     %1").arg(m_repositories.size());
-    lines << QStringLiteral("Serving:   %1 live host(s)").arg(m_repoHosts.size());
+    lines << QStringLiteral("Repository signals: bounded HTTPS sync");
 
     // Aggregate the collaboration totals across every permanent repo this node
     // holds, so an operator can see at a glance how much is on the node without

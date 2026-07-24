@@ -923,7 +923,7 @@ private:
 };
 
 // A super-tiny two-row usage meter for the top bar, sized to tuck in next to the
-// node's earnings/avatar (issue #266). The top row is the rolling 5-hour window,
+// node's public-wallet balance/avatar (issue #266). The top row is the rolling 5-hour window,
 // the bottom row the weekly window; each draws a horizontal track that fills
 // 0..100% of that window's utilisation and is tinted green/amber/red as it nears
 // the cap. Values are fed from Claude Code rate-limit events (see usageChanged);
@@ -2689,11 +2689,10 @@ inline bool notifyEnabled(const QString &key)
 {
     return QSettings().value(key, false).toBool();
 }
-// Per-PR bounty (issue #347): when enabled, every merged pull request rewards
-// its author with a fixed bounty. The amount is USD-priced (reusing the same
-// SOL pricing pipeline as issue bounties). Mode selects how it's funded:
-// "perPr" shows a funding QR at each merge; "wallet" auto-pays by debiting the
-// owner's pre-funded inbuilt bounty wallet (worker action "wallet").
+// Historical per-PR bounty settings (issue #347). The Worker-held wallet and
+// escrow path is frozen; startup forces enabled=false and mode="perPr" so an
+// older preferences file cannot reactivate custody. Keys remain only to support
+// that one-way local migration.
 const QString kAutoPrBountyEnabledSetting =
     QStringLiteral("bounty/autoPrEnabled");
 const QString kAutoPrBountyAmountSetting =
@@ -2809,6 +2808,10 @@ const QString kIdeIntegrationSetting = QStringLiteral("ide/integrationEnabled");
 // was fetched (tiny.en/base.en/small.en).
 const QString kWhisperDirSetting = QStringLiteral("voice/whisperDir");
 const QString kWhisperModelSetting = QStringLiteral("voice/whisperModel");
+// Public World origin allowed to control local speech-to-text. This is not a
+// capability; one-use/session secrets are memory-only inside WorldSpeechBridge.
+const QString kWorldSpeechOriginSetting =
+    QStringLiteral("voice/worldExactOrigin");
 // Which speech-to-text engine the mic uses: "whisper" (whisper.cpp, the default)
 // or "parakeet" (NVIDIA Parakeet via a local Python env). The Parakeet model name
 // picks which checkpoint the runner pulls (parakeet-mlx on Apple Silicon, NeMo
@@ -2974,10 +2977,10 @@ const QString kClaudeFallbackModelSetting =
 // Agents tab and select the new session so the user can watch it run.
 // Default on; can be disabled in Settings.
 const QString kAutoSwitchToAgentSetting = QStringLiteral("agents/autoSwitchToAgent");
-// When on, agent sessions started here in the desktop are published to the web
-// catalog so a repo's website page shows them (and the owner can steer them).
-// Off by default so a locally-started agent stays private to this machine
-// unless the user opts in.
+// When on, agent sessions started here are owner-encrypted before their opaque
+// snapshots reach the relay. The browser deliberately has no recipient private
+// key; inspection and steering remain on the owner desktop. Off by default so
+// no agent metadata leaves this machine unless the user opts in.
 const QString kPublishAgentsToWebSetting =
     QStringLiteral("agents/publishToWeb");
 // When an idle agent session's branch would conflict with base (the same

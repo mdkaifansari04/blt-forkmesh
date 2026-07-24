@@ -1,22 +1,18 @@
 #!/usr/bin/env python3
-"""Fediverse repo-mention -> issue flow (adhoc #21).
+"""Fediverse repo-mention -> manual World review flow.
 
 Mentioning a repo actor on Mastodon ("@forkmesh.forkmesh@forkmesh.com the
-save button is broken") runs the post through Workers AI; an issue-shaped
-request becomes an issue-inbox submission (with the post's images riding
-along as attachmentData) and the repo actor replies to the author with the
-outcome. These pin the contracts:
+save button is broken") enters a verified-public activity feed. It does not
+run AI, create an issue, fetch attachments, or publish a reply during inbox
+handling. These pin the contracts:
 
   * only Mention tags pointing at OUR repo actors open the gate (and the
     inbox lets such a Create through to signature verification);
-  * dedup: a redelivered note never files twice, and a confident AI "none"
-    is remembered so redeliveries don't re-run the model;
-  * AI-unreachable degradation mirrors ForkBot: obviously issue-shaped text
-    still files, anything ambiguous stays unmarked for a later retry;
+  * legacy auto-created mention ids remain deduplicated;
   * privacy/settings gates (private repo, federate/acceptComments off) drop
-    before any AI or D1 write;
-  * the reply Note is addressed to the author (Mention tag, inReplyTo) and
-    carries the new issue's thread context.
+    before activity recording;
+  * the consented post-materialization reply Note is addressed to the author,
+    deduplicated, and carries the confirmed issue thread context.
 
 These load the real handlers out of src/entry.py (same pattern as
 test_ap_inbox_load.py) with the real activitypub.py protocol module.
@@ -73,6 +69,25 @@ def _run(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
 
+def test_public_feed_requires_explicit_activitystreams_public_audience():
+    is_public = _load(
+        "_ap_activity_is_public", extra_globals={"ap": ap}
+    )["_ap_activity_is_public"]
+    private = {
+        "type": "Create",
+        "to": [ORIGIN + "/ap/repos/forkmesh/forkmesh"],
+        "object": {"type": "Note", "cc": [REMOTE["actor_id"]]},
+    }
+    assert is_public(private) is False
+    public_activity = dict(private, cc=[ap.AS_PUBLIC])
+    assert is_public(public_activity) is True
+    public_object = dict(
+        private,
+        object={"type": "Note", "to": [{"id": ap.AS_PUBLIC}]},
+    )
+    assert is_public(public_object) is True
+
+
 async def _passthrough_alias(env, owner, repo):
     # Non-org repos resolve to themselves; org-alias resolution is pinned in
     # test_orgs_teams.py.
@@ -121,6 +136,9 @@ def _mention_env(log, *, is_private=0, has_repo=True, seen=False,
     async def d1_run(env, sql, *args):
         log.append(("d1_run", sql, args))
 
+    async def _repo_is_private(env, owner, repo):
+        return not has_repo or bool(is_private)
+
     async def _ap_repo_settings_get(env, owner, repo):
         return dict(settings or {"federate": True, "broadcastEvents": True,
                                  "acceptComments": True})
@@ -149,6 +167,17 @@ def _mention_env(log, *, is_private=0, has_repo=True, seen=False,
     async def _best_effort_inbox_side_effect(coro):
         await coro
 
+    class MentionAPI:
+        @staticmethod
+        async def record_verified(runtime, **kwargs):
+            log.append(("record", kwargs))
+            return "01" * 16
+
+    class WorldRuntime:
+        def __init__(self, env, request):
+            self.env = env
+            self.request = request
+
     return _load(
         "_ap_handle_repo_mention", "_ap_note_repo_mention",
         "_forkbot_command_hints_issue", "_forkbot_fallback_issue_fields",
@@ -160,6 +189,7 @@ def _mention_env(log, *, is_private=0, has_repo=True, seen=False,
             "blind_index": blind_index,
             "d1_first": d1_first,
             "d1_run": d1_run,
+            "_repo_is_private": _repo_is_private,
             "_ap_org_alias_owner": _passthrough_alias,
             "_ap_repo_settings_get": _ap_repo_settings_get,
             "_ap_mention_ai_intent": _ap_mention_ai_intent,
@@ -167,6 +197,8 @@ def _mention_env(log, *, is_private=0, has_repo=True, seen=False,
             "_forkbot_enqueue_issue": _forkbot_enqueue_issue,
             "_ap_send_mention_reply": _ap_send_mention_reply,
             "_best_effort_inbox_side_effect": _best_effort_inbox_side_effect,
+            "fediverse_mentions_api": MentionAPI,
+            "_WorldCommunityRuntime": WorldRuntime,
             "_ap_origin": lambda env, request=None: ORIGIN,
             "repo_web_href": lambda owner, repo: "/%s/%s" % (owner, repo),
             "clean_string": lambda value, cap: str(value or "")[:cap],
@@ -193,116 +225,77 @@ def test_note_repo_mention_maps_only_local_repo_actors():
         ("forkmesh", "forkmesh")
 
 
-# --- Happy path ---------------------------------------------------------------
+# --- Verified activity recording ---------------------------------------------
 
-def test_mention_with_issue_intent_files_and_replies():
+def test_verified_mention_records_for_manual_review_only():
     log = []
-    ns = _mention_env(log, ai_result={
-        "intent": "create_issue", "title": "Save button crashes",
-        "body": "The save button crashes the app."})
+    ns = _mention_env(log)
     resp = _run(ns["_ap_handle_repo_mention"](
         None, None, _note(), REMOTE, "forkmesh", "forkmesh"))
     assert resp.status == 202
-    enqueue = next(e for e in log if e[0] == "enqueue")
-    _, owner, repo, title, body, requester, source, labels, attachments = \
-        enqueue
-    assert (owner, repo) == ("forkmesh", "forkmesh")
-    assert title == "Save button crashes"
-    assert "The save button crashes the app." in body
-    # Provenance footer credits the fediverse author and links the post.
-    assert "@alice@mastodon.example" in body
-    assert "https://mastodon.example/@alice/1" in body
-    assert source == "fediverse" and labels == ["fediverse"]
-    assert requester == "@alice@mastodon.example"
-    # The note id is remembered so a redelivery can't file twice.
-    assert any(e[0] == "d1_run" and "ap_mentions" in e[1] for e in log)
-    reply = next(e for e in log if e[0] == "reply")
-    assert reply[4] == 7
-    assert "#7" in reply[3] and "@alice@mastodon.example" in reply[3]
-    assert ORIGIN + "/forkmesh/forkmesh/issues" in reply[3]
+    recorded = next(entry for entry in log if entry[0] == "record")[1]
+    assert recorded["signature_verified"] is True
+    assert recorded["public_repository"] is True
+    assert recorded["kind"] == "mention"
+    assert recorded["actor_owner"] == "forkmesh"
+    assert recorded["data_owner"] == "forkmesh"
+    assert "save button crashes" in recorded["note"]["content"]
+    assert not any(
+        entry[0] in ("ai", "fetch_images", "enqueue", "reply")
+        for entry in log
+    )
 
 
-def test_mention_strips_handle_before_ai_sees_text():
+def test_mention_strips_addressing_handle_before_public_review():
     log = []
-    ns = _mention_env(log, ai_result={"intent": "none"})
+    ns = _mention_env(log)
     _run(ns["_ap_handle_repo_mention"](
         None, None,
         _note(content="<p>@forkmesh.forkmesh@forkmesh.com "
                       "love the project!</p>"),
         REMOTE, "forkmesh", "forkmesh"))
-    ai_text = next(e for e in log if e[0] == "ai")[1]
-    assert "forkmesh.forkmesh" not in ai_text
-    assert "love the project!" in ai_text
+    content = next(e for e in log if e[0] == "record")[1]["note"]["content"]
+    assert "forkmesh.forkmesh" not in content
+    assert "love the project!" in content
 
 
-def test_mention_images_ride_along_and_body_references_them():
+def test_inbox_does_not_fetch_attachments_or_auto_create():
     log = []
-    ns = _mention_env(
-        log,
-        ai_result={"intent": "create_issue", "title": "T", "body": "B"},
-        images=[{"name": "a1b2c3d4.png", "data": "aGk=",
-                 "alt": "screenshot"}])
+    ns = _mention_env(log)
     _run(ns["_ap_handle_repo_mention"](
         None, None,
         _note(images=[{"url": "https://files.example/1.png",
                        "mediaType": "image/png", "name": "screenshot"}]),
         REMOTE, "forkmesh", "forkmesh"))
-    enqueue = next(e for e in log if e[0] == "enqueue")
-    body, attachments = enqueue[4], enqueue[8]
-    assert "![screenshot](a1b2c3d4.png)" in body
-    assert attachments == [{"name": "a1b2c3d4.png", "data": "aGk=",
-                            "alt": "screenshot"}]
+    assert any(e[0] == "record" for e in log)
+    assert not any(
+        e[0] in ("fetch_images", "enqueue", "reply", "ai") for e in log)
 
 
-# --- Not-an-issue / degraded-AI paths -----------------------------------------
-
-def test_confident_none_is_remembered_but_files_nothing():
+def test_non_issue_shaped_public_feedback_is_still_reviewable_not_filed():
     log = []
-    ns = _mention_env(log, ai_result={"intent": "none"})
+    ns = _mention_env(log)
     resp = _run(ns["_ap_handle_repo_mention"](
         None, None, _note(content="@forkmesh.forkmesh great work!"),
         REMOTE, "forkmesh", "forkmesh"))
     assert resp.status == 202
-    assert not any(e[0] == "enqueue" for e in log)
-    assert not any(e[0] == "reply" for e in log)
-    assert any(e[0] == "d1_run" and "ap_mentions" in e[1] for e in log)
-
-
-def test_ai_unreachable_with_issue_hint_still_files():
-    log = []
-    ns = _mention_env(log, ai_result=None)
-    _run(ns["_ap_handle_repo_mention"](
-        None, None, _note(content="@forkmesh.forkmesh please open an issue: "
-                                  "dark mode renders white text on white"),
-        REMOTE, "forkmesh", "forkmesh"))
-    enqueue = next(e for e in log if e[0] == "enqueue")
-    assert "dark mode" in enqueue[4]
-
-
-def test_ai_unreachable_without_hint_stays_unmarked_for_retry():
-    log = []
-    ns = _mention_env(log, ai_result=None)
-    resp = _run(ns["_ap_handle_repo_mention"](
-        None, None, _note(content="@forkmesh.forkmesh hello there"),
-        REMOTE, "forkmesh", "forkmesh"))
-    assert resp.status == 202
-    assert not any(e[0] == "enqueue" for e in log)
-    # NOT remembered: a redelivery retries once the model is back.
-    assert not any(e[0] == "d1_run" and "ap_mentions" in e[1] for e in log)
+    assert any(e[0] == "record" for e in log)
+    assert not any(e[0] in ("ai", "enqueue", "reply") for e in log)
 
 
 # --- Gates --------------------------------------------------------------------
 
-def test_seen_note_drops_before_ai():
+def test_legacy_seen_note_drops_before_new_review_record():
     log = []
     ns = _mention_env(log, seen=True)
     resp = _run(ns["_ap_handle_repo_mention"](
         None, None, _note(), REMOTE, "forkmesh", "forkmesh"))
     assert resp.status == 202
-    assert not any(e[0] in ("ai", "enqueue", "reply") for e in log)
+    assert not any(
+        e[0] in ("record", "ai", "enqueue", "reply") for e in log)
 
 
-def test_private_missing_or_defederated_repo_drops_before_ai():
+def test_private_missing_or_defederated_repo_drops_before_recording():
     for kwargs in ({"is_private": 1}, {"has_repo": False},
                    {"settings": {"federate": False, "acceptComments": True}},
                    {"settings": {"federate": True, "acceptComments": False}}):
@@ -312,54 +305,20 @@ def test_private_missing_or_defederated_repo_drops_before_ai():
             None, None, _note(), REMOTE, "forkmesh", "forkmesh"))
         assert resp.status == 202, kwargs
         assert not any(
-            e[0] in ("ai", "enqueue", "reply") for e in log), kwargs
+            e[0] in ("record", "ai", "enqueue", "reply") for e in log), kwargs
         assert not any(
             e[0] == "d1_run" and "ap_mentions" in e[1] for e in log), kwargs
 
 
-def test_full_inbox_marks_handled_but_sends_no_reply():
+def test_inbox_capacity_is_not_consulted_until_manual_create():
     log = []
     ns = _mention_env(log, enqueue_ok=False, ai_result={
         "intent": "create_issue", "title": "T", "body": "B"})
     resp = _run(ns["_ap_handle_repo_mention"](
         None, None, _note(), REMOTE, "forkmesh", "forkmesh"))
     assert resp.status == 202
-    assert not any(e[0] == "reply" for e in log)
-    assert any(e[0] == "d1_run" and "ap_mentions" in e[1] for e in log)
-
-
-# --- The AI wrapper -----------------------------------------------------------
-
-def test_mention_ai_intent_parsing_contract():
-    def env_for(ai_reply):
-        async def _forkbot_run_ai(env, system_prompt, user_prompt,
-                                  schema=None):
-            return ai_reply
-
-        return _load(
-            "_ap_mention_ai_intent", "_forkbot_json_object_from_text",
-            "_forkbot_clean_ai_issue_fields", "_forkbot_issue_title",
-            extra_globals={
-                "json": json,
-                "re": re,
-                "_forkbot_run_ai": _forkbot_run_ai,
-                "clean_string": lambda value, cap: str(value or "")[:cap],
-                "AP_MENTION_INTENT_SCHEMA": {},
-                "FORKBOT_MAX_COMMAND": 4000,
-                "MAX_ISSUE_BYTES": 64 * 1024,
-            })["_ap_mention_ai_intent"]
-
-    # JSON-mode dict, plain-text JSON, confident none, unusable output.
-    good = {"intent": "create_issue", "title": "Fix save crash",
-            "body": "Save crashes."}
-    assert _run(env_for(good)(None, "text")) == good
-    assert _run(env_for(json.dumps(good))(None, "text")) == good
-    assert _run(env_for({"intent": "none"})(None, "text")) == \
-        {"intent": "none"}
-    assert _run(env_for(None)(None, "text")) is None
-    assert _run(env_for("chatty non-JSON reply")(None, "text")) is None
-    # create_issue without a usable draft degrades to the caller's heuristic.
-    assert _run(env_for({"intent": "create_issue"})(None, "text")) is None
+    assert any(e[0] == "record" for e in log)
+    assert not any(e[0] in ("enqueue", "reply", "ai") for e in log)
 
 
 # --- The reply Note -----------------------------------------------------------
@@ -386,6 +345,7 @@ def _reply_env(log):
 
     return _load("_ap_send_mention_reply", extra_globals={
         "json": json,
+        "re": re,
         "ap": ap,
         "_ap_origin": lambda env, request=None: ORIGIN,
         "_ap_actor_url": lambda origin, kind, handle:
@@ -408,7 +368,7 @@ def test_reply_note_addresses_author_and_carries_issue_context():
     ns = _reply_env(log)
     _run(ns["_ap_send_mention_reply"](
         None, None, "forkmesh", "forkmesh", REMOTE, _note(),
-        "@alice@mastodon.example I've opened issue #7", 7))
+        "The owner node confirmed issue #7", 7))
     inserts = [e for e in log if e[0] == "d1_run"]
     object_insert = next(e for e in inserts if "ap_objects" in e[1])
     rec = json.loads(object_insert[2][3])
@@ -418,7 +378,7 @@ def test_reply_note_addresses_author_and_carries_issue_context():
     assert ap.AS_PUBLIC in note["cc"]
     assert note["tag"] == [{"type": "Mention", "href": REMOTE["actor_id"],
                             "name": "@alice@mastodon.example"}]
-    assert "opened issue #7" in note["content"]
+    assert "confirmed issue #7" in note["content"]
     # Replies to our reply thread into the new issue as federated comments.
     assert rec["context"] == {"owner": "forkmesh", "repo": "forkmesh",
                               "kind": "issue", "ref": "7",

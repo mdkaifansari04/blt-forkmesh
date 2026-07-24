@@ -4,6 +4,7 @@ import gzip
 import hashlib
 import hmac
 import io
+import ipaddress
 import json
 import re
 import struct
@@ -23,19 +24,13 @@ from js import crypto as js_crypto
 from pyodide.ffi import to_js as _to_js
 from workers import DurableObject, Response, WorkerEntrypoint
 
-# Solana custody plumbing (base58/base64url codecs, JSON-RPC client, transfer
-# signing, Pyth price read) lives in its own module — see solana.py (adhoc #215).
+# Solana read-only plumbing (address/base64url codecs, JSON-RPC, price reads)
+# lives in its own module. Wallet signing is intentionally not imported into the
+# Worker: reward transfers are prepared as intents for a local external signer.
 from solana import (
     _base58_encode,
     _b64url_encode,
-    _shortvec,
-    _sol_usd_from_http,
-    _sol_usd_from_pyth,
-    _solana_latest_blockhash,
     _solana_rpc,
-    _solana_send_transaction,
-    _solana_sign_message,
-    _solana_transfer_message,
 )
 
 MAX_ROOM_NAME = 80
@@ -54,8 +49,8 @@ ROOM_CLIENT_STALE_MS = 3 * 60 * 1000
 # Catalog write throttle per owner, and a hard cap on records an owner may hold.
 CATALOG_WRITE_COOLDOWN_MS = 5 * 1000
 CATALOG_MAX_RECORDS_PER_OWNER = 50
-# Per-repo host tunnel/git request rate limit (generous: real clones make a
-# handful of requests; this only blunts floods).
+# Per-repository control-channel request rate limit. Repository bytes use the
+# direct-HTTPS gateway and never consume this socket budget.
 HOST_RATE_WINDOW_MS = 10 * 1000
 HOST_RATE_MAX_PER_WINDOW = 200
 SENTRY_CLIENT = "forkmesh-cloudflare-python/1.0"
@@ -84,13 +79,22 @@ TELEMETRY_MAX_SUMMARY = 8000    # per-event scrubbed report text
 TELEMETRY_KINDS = frozenset({"crash", "stall"})
 # Private vulnerability reports: bounded so the open endpoint can't grow D1.
 MAX_SECURITY_REPORTS = 1000
+# Abuse/quarantine records retain only generalized evidence and keyed tokens.
+# Automatic restrictions are short and require repeated high-signal events.
+SECURITY_SIGNAL_WINDOW_MS = 15 * 60 * 1000
+SECURITY_AUTO_QUARANTINE_MS = 15 * 60 * 1000
+SECURITY_SIGNAL_RETAIN_MS = 30 * 24 * 60 * 60 * 1000
+SECURITY_RESTRICTION_RETAIN_MS = 90 * 24 * 60 * 60 * 1000
+SECURITY_APPEAL_RETAIN_MS = 180 * 24 * 60 * 60 * 1000
+SECURITY_AUDIT_RETAIN_MS = 365 * 24 * 60 * 60 * 1000
+SECURITY_PUBLIC_JAIL_LIMIT = 100
+_SECURITY_RESTRICTION_MEMO = {}
 # Anonymous website feedback from static pages. Bounded like telemetry and
 # install diagnostics so the unauthenticated endpoint cannot grow D1 forever.
 MAX_FEEDBACK = 5000
 FEEDBACK_MAX_BODY = 16 * 1024
 FEEDBACK_MAX_MESSAGE = 2000
 FEEDBACK_MAX_PATH = 300
-FEEDBACK_MAX_USER_AGENT = 300
 FEEDBACK_SOURCES = frozenset({"docs"})
 FEEDBACK_VOTES = frozenset({"like", "dislike"})
 MAX_PROFILE_BIO = 500
@@ -165,16 +169,15 @@ FORKBOT_CONTEXT_MAX_MESSAGES = 12
 FORKBOT_CONTEXT_MAX_CHARS = 600
 # Issue listing from chat ("forkbot list the last N issues"): default when the
 # user gives no count, and a hard cap so one chat line can't request a page-size
-# blob fan-out over the live tunnel.
+# direct-HTTPS blob fan-out.
 FORKBOT_LIST_DEFAULT = 5
 FORKBOT_LIST_MAX = 20
-# How many search hits ForkBot echoes into the chat (the host's git-grep reply
+# How many search hits ForkBot echoes into the chat (the gateway's git-grep reply
 # is already capped much higher; chat just wants the top of it).
 FORKBOT_SEARCH_MAX = 5
-# Internal fetch to the repo's host Durable Object (tree/blobs/search over the
-# live tunnel). Longer than HOST_COUNT_TIMEOUT_MS because the host runs real
-# git commands (git grep is allowed 8s host-side).
-FORKBOT_HOST_TIMEOUT_MS = 10000
+# Internal fetch through the normal direct-HTTPS repository route. The timeout
+# accommodates real Git work such as a bounded grep.
+FORKBOT_GATEWAY_TIMEOUT_MS = 10000
 # Notification inbox: Worker indexes public-safe notification state while the
 # canonical issue/PR/discussion/release records remain in signed repo files or
 # pending inboxes. Stored rows are encrypted and bounded per recipient.
@@ -195,6 +198,8 @@ NOTIFICATION_KINDS = frozenset({
     "credits_refilled",
     "pending_inbox",
     "mirror_request",
+    "pending_reward",
+    "org_succession",
 })
 NOTIFICATION_EMAIL_KINDS = (
     "mention",
@@ -211,6 +216,8 @@ NOTIFICATION_EMAIL_KINDS = (
     "host_online",
     "host_offline",
     "mirror_request",
+    "pending_reward",
+    "org_succession",
 )
 NOTIFICATION_EMAIL_DEFAULTS = {
     "mention": True,
@@ -227,6 +234,8 @@ NOTIFICATION_EMAIL_DEFAULTS = {
     "host_online": False,
     "host_offline": False,
     "mirror_request": True,
+    "pending_reward": True,
+    "org_succession": True,
 }
 # Email digest bridge (issue #361): the cron rolls a recipient's unread
 # notifications into one email so a reply reaches people who don't have the app
@@ -258,12 +267,18 @@ from urls import (  # noqa: E402
     REPO_SUBSCRIBE_RE,
     REPO_BOUNTY_RE,
     REPO_SHARES_RE,
+    REPO_SECURITY_SCANS_RE,
     REPO_MIRRORS_RE,
     REPO_ABOUT_RE,
+    REPO_LOGO_RE,
+    REPO_LOGO_SUGGESTIONS_RE,
     REPO_AGENTS_RE,
     REPO_AGENTS_LIST_RE,
+    REPO_AGENTS_ACK_RE,
     REPO_AGENTS_PROMPT_RE,
     REPO_AGENTS_TRANSCRIPT_RE,
+    REPO_PRIVACY_RE,
+    PRIVATE_REPLICA_ACCESS_RE,
     REPO_HOST_RE,
     RELEASE_BLOB_RE,
     REPO_RELEASE_DOWNLOADS_RE,
@@ -279,6 +294,8 @@ from urls import (  # noqa: E402
     ORG_TEAMS_RE,
     ORG_TEAM_MEMBERS_RE,
     ORG_REPOS_RE,
+    ORG_SUCCESSION_RE,
+    ORG_FEDIVERSE_RE,
     REPO_API_PREFIX_RE,
     AP_USER_RE,
     AP_USER_SUB_RE,
@@ -288,6 +305,7 @@ from urls import (  # noqa: E402
     AP_OBJECT_MEDIA_RE,
     REPO_FEDI_COMMENTS_RE,
     REPO_AP_PUBLISH_RE,
+    REPO_AP_DIGEST_RE,
     REPO_AP_POSTS_RE,
     REPO_CARD_RE,
     REPO_MEDIA_RE,
@@ -339,6 +357,12 @@ from git_http import (  # noqa: E402
     repo_blob_content_type,
     repo_blob_filename,
 )
+
+# SSH key parsing and URL construction are deliberately pure helpers. Raw SSH
+# is terminated by an independently operated node-side gateway, never by this
+# HTTP Worker; the Worker only stores encrypted public keys and answers the
+# gateway's authenticated authorization checks.
+import ssh_keys as ssh_auth  # noqa: E402
 
 # Mirror grouping, clone-fallback selection, and state-pin helpers are a
 # self-contained, builtin-only cluster — see mirrors.py.
@@ -406,6 +430,44 @@ from events import (  # noqa: E402
 # sibling module the test suite imports directly. Only the WebCrypto RSA glue,
 # the D1-backed actor/follower/delivery state and the HTTP handlers live below.
 import activitypub as ap  # noqa: E402
+import activitypub_threads as ap_threads  # noqa: E402
+import edge_routing as https_routing  # noqa: E402
+import fediverse_digest as fedi_digest  # noqa: E402
+import repository_imports as repository_import  # noqa: E402
+import reward_policy  # noqa: E402
+# Objective evidence, one-account-one-vote governance, and contextual-only
+# community placement policy live outside the route spine.
+import community_ads_api  # noqa: E402
+# Verified public fediverse feedback remains review-only until an authorized
+# owner explicitly queues it and the owner node confirms materialization.
+import fediverse_mentions_api  # noqa: E402
+# Non-custodial organization succession is isolated from account, repository,
+# device, agent, and financial handlers. The API receives no platform-admin
+# authorization primitive and can mutate only organization membership roles.
+import organization_succession_api  # noqa: E402
+# Least-privilege roles, owner-sealed envelope validation, and generalized
+# abuse-record projections live in a pure sibling module. Keeping these
+# allowlists out of the route handlers makes them independently testable.
+import security_controls as security_control  # noqa: E402
+_SECURITY_TRAFFIC_DETECTOR = security_control.BoundedTrafficDetector()
+# Strict public-artifact validation and bounded encrypted D1 history for daily
+# repository security scans lives in a pure sibling module.
+import security_scan_ingest  # noqa: E402
+# Transient multiplayer protocol sanitization. This pure module owns the
+# allowlist for every public world-presence field; the Durable Object below
+# never relays arbitrary client JSON.
+import world as world_protocol  # noqa: E402
+# Public-only Fediverse directory and authenticated media-space orchestration
+# live behind a small adapter so they reuse this Worker's established sessions,
+# blind indexes, D1 helpers, and metadata-only audit trail.
+import world_community_api  # noqa: E402
+# Community announcements are UTC D1 records with public cached reads and
+# platform-admin-only audited mutations; no production event is hardcoded in
+# the Three.js client.
+import world_events_api  # noqa: E402
+# Persisted Code Workshop reports and participant events use the same narrow
+# authenticated/encrypted D1 adapter as the other World collaboration APIs.
+import world_workshops  # noqa: E402
 # Pull-request badge (adhoc #44/#83): a pure, js-free generator for the visual
 # "fingerprint" attached to federated PR-opened notes. The federated copy is a
 # square PNG — fediverse clients won't preview an SVG attachment.
@@ -439,6 +501,10 @@ FLAGSHIP_ROOM_KEY = "repo:mainnode/forkmesh:room:general"
 # active hosts refresh their row at most once per HOST_PRESENCE_REFRESH_MS.
 HOST_PRESENCE_STALE_MS = 10 * 60 * 1000
 HOST_PRESENCE_REFRESH_MS = 60 * 1000
+# Public Git availability is now proven by signed, server-observed direct HTTPS
+# endpoint checks. This window intentionally matches the old presence headline
+# so the status page's semantics remain stable while its evidence gets stronger.
+HTTPS_MIRROR_STATUS_FRESH_MS = 10 * 60 * 1000
 # Registered desktop/headless node accounts that have not been seen for this
 # long are treated as abandoned: their physical node row and public repo catalog
 # namespace are pruned so old one-off registrations stop participating in
@@ -629,6 +695,13 @@ def new_socket_id():
                       (rnd[0] << 24) | (rnd[1] << 16) | (rnd[2] << 8) | rnd[3])
 
 
+def new_world_peer_id():
+    # World ids are random per connection and deliberately contain no account,
+    # node, address, timestamp, or device identifier.
+    rnd = js_crypto.getRandomValues(Uint8Array.new(8))
+    return "".join("%02x" % int(rnd[index]) for index in range(8))
+
+
 def _ws_attachment(ws):
     try:
         return ws.deserializeAttachment()
@@ -660,6 +733,23 @@ def json_response(data, status=200, cache_seconds=None, cache_control=None,
     # in the 2026-07-11 free-plan 1102 overload.
     return Response(json.dumps(data, separators=(",", ":")),
                     status=status, headers=headers)
+
+
+def _legacy_custody_not_ready_response():
+    """Public, identity-free readiness failure for an upgraded legacy D1."""
+    return json_response({
+        "ok": False,
+        "status": "not_ready",
+        "error": "legacy_custody_migration_required",
+        "custody": "offline-reconciliation-required",
+        "notice": (
+            "This upgraded instance cannot enable its D1-backed API while "
+            "historical wallet material remains. The operator must use the "
+            "documented offline export, finalized zero-balance reconciliation "
+            "and explicit scrub; this response exposes no key, address, "
+            "account, repository or balance."
+        ),
+    }, status=503, cache_control="no-store, max-age=0, must-revalidate")
 
 
 # --- Edge cache (Cache API) helpers -----------------------------------------
@@ -788,7 +878,9 @@ async def purge_catalog_related_caches():
         )), return_exceptions=True)
 
 
-CATALOG_CACHE_KEY = "https://forkmesh.internal/api/repositories"
+# Versioned so the fail-closed visibility contract never reuses an edge entry
+# produced by the historical plaintext-flag-only catalog.
+CATALOG_CACHE_KEY = "https://forkmesh.internal/api/repositories?privacy=v2"
 # Guest (viewer-less) GET /api/accounts/<name> payloads, keyed by name.
 ACCOUNT_LOOKUP_CACHE_PREFIX = "https://forkmesh.internal/api/accounts/"
 PROFILE_CONTRIBUTION_CACHE_PREFIX = (
@@ -804,83 +896,32 @@ NETWORK_OVERVIEW_CACHE_KEY = "https://forkmesh.internal/api/network/overview"
 CATALOG_TTL = 30
 
 
-async def touch_host_presence(env, repo_bi):
-    # Mark a repo's tunnel as live (or refresh its timestamp). Called when a host
-    # connects and, throttled, while it serves traffic.
-    await ensure_schema(env)
-    now = int(Date.now())
-    notify_online = False
-    try:
-        existing = await d1_first(env, "SELECT ts FROM host_presence WHERE repo_bi=?", repo_bi)
-        previous = int((existing or {}).get("ts") or 0)
-        notify_online = not previous or now - previous > HOST_PRESENCE_STALE_MS
-    except Exception:
-        notify_online = False
-    await d1_run(
-        env,
-        "INSERT INTO host_presence (repo_bi, ts) VALUES (?, ?) "
-        "ON CONFLICT(repo_bi) DO UPDATE SET ts=excluded.ts",
-        repo_bi, now,
-    )
-    if notify_online:
-        await notify_host_status(env, repo_bi, "host_online")
-    # Stamp the first time this repo was ever hosted (for the "longest hosted"
-    # leaderboard). INSERT OR IGNORE keeps the earliest timestamp forever.
-    try:
-        await d1_run(
-            env,
-            "INSERT OR IGNORE INTO repo_first_hosted (repo_bi, ts) VALUES (?, ?)",
-            repo_bi, now,
-        )
-    except Exception:
-        pass
-
-
 async def repo_live_host_count(env, owner, repo):
     owner = safe_segment(owner)
     repo = safe_segment(repo)
     if not owner or not repo:
         return None
     try:
-        host_id = env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
-        host_object = env.FORKMESH_HOST.get(host_id)
-        response = await asyncio.wait_for(
-            host_object.fetch(
-                f"https://forkmesh.internal/api/repo/{owner}/{repo}/host"
-            ),
-            timeout=HOST_COUNT_TIMEOUT_MS / 1000,
+        await ensure_schema(env)
+        now = int(Date.now())
+        row = await d1_first(
+            env,
+            "SELECT COUNT(*) AS total FROM mirror_https_endpoints "
+            "WHERE lower(node_name)=lower(?) AND healthy=1 "
+            "AND abuse_blocked=0 AND integrity='verified' "
+            "AND checked_at>=?",
+            owner,
+            now - HOST_PRESENCE_STALE_MS,
         )
-        status = await response.json()
-        hosts = (status.get("hosts", 0) if isinstance(status, dict)
-                 else getattr(status, "hosts", 0))
-        return max(0, int(hosts or 0))
+        return max(0, int((row or {}).get("total") or 0))
     except Exception:
         return None
 
 
 async def notify_repo_host(env, owner, repo, topic):
-    # Push a minimal "something changed" event frame to the repo's connected
-    # desktop host(s) over the existing tunnel WebSocket. The frame carries no
-    # payload — just a topic — and the node responds with one signed GET
-    # /api/sync, which replaces its old fast polling of the per-topic inbox
-    # endpoints. Best-effort: an offline host simply picks the change up from
-    # its slow fallback sync, so a failure here must never fail the write.
-    owner = safe_segment(owner)
-    repo = safe_segment(repo)
-    if not owner or not repo:
-        return
-    try:
-        host_id = env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
-        host_object = env.FORKMESH_HOST.get(host_id)
-        await asyncio.wait_for(
-            host_object.fetch(
-                f"https://forkmesh.internal/api/repo/{owner}/{repo}/notify"
-                f"?topic={topic}"
-            ),
-            timeout=HOST_COUNT_TIMEOUT_MS / 1000,
-        )
-    except Exception:
-        pass
+    # Repository control sockets were retired. Clients discover changes with
+    # bounded HTTPS polling; repository bytes always use the mirror gateway.
+    del env, owner, repo, topic
 
 
 # Per-isolate memo of recent DO live-host probes: key_bi -> {"ts", "hosts"}
@@ -1052,17 +1093,34 @@ async def network_stats(env, include_payouts=False):
     clients = await _flagship_client_count(env)
     payout_nodes = await _network_payout_nodes(env) if include_payouts else None
 
-    # Live minimum join donation (~$1, from the on-chain price) so the signup
-    # page can show the real figure before requesting a deposit address.
-    min_lamports = await _min_join_lamports(env)
-    price = await _sol_usd_price(env)
     resp = json_response(
         {"ok": True, "repos": repos, "hosts": hosts, "clients": clients,
          "onlineNodes": online_nodes,
-         "minLamports": min_lamports, "minSol": _amount_sol(min_lamports),
-         "minUsd": round((min_lamports / LAMPORTS_PER_SOL) * price, 2) if price else 0,
-         "solUsd": price or 0,
-         **({"payoutNodes": payout_nodes} if include_payouts else {})},
+         **({
+             "payoutNodes": payout_nodes,
+             "payoutCustody": "external-self-custodial-addresses",
+             "payoutFundStates": {
+                 "userOwnedFunds": (
+                     "Balances belong to each external wallet owner."
+                 ),
+                 "communityFundedPool": (
+                     "Separate public pool metadata is available from "
+                     "/api/rewards/pool."
+                 ),
+                 "pendingRewards": (
+                     "Ledger allocations only; funds remain in the external "
+                     "source wallet."
+                 ),
+                 "completedOnChainTransfers": (
+                     "Complete only after a finalized public signature."
+                 ),
+             },
+             "payoutNotice": (
+                 "Non-custodial: payout nodes publish public addresses only. "
+                 "ForkMesh does not hold their funds or wallet keys, and a "
+                 "listed balance or eligible state does not guarantee payment."
+             ),
+         } if include_payouts else {})},
         cache_seconds=NETWORK_STATS_TTL,
     )
     await edge_cache_put(cache_key, resp)
@@ -1096,12 +1154,13 @@ async def _network_payout_nodes(env):
         has_wallet = bool(wallet and SOLANA_RE.match(wallet))
         online = bool(row.get("online_ts"))
         first_wallet = has_wallet and wallet not in seen_wallets
+        # Balance is public display metadata only. Funding a payout address is
+        # never an eligibility or wallet-verification requirement.
         balance = await _solana_balance_lamports(env, wallet) if has_wallet else None
-        verified_wallet = bool(balance is not None and balance >= MIN_ACTIVE_LAMPORTS)
         # A node only shares the split if it mirrors a repo for another node, so
         # its eligibility on /network/ must reflect that too (issue #94).
         mirrors_repo = mirroring is None or bool(name and name.lower() in mirroring)
-        eligible = bool(online and first_wallet and verified_wallet and mirrors_repo)
+        eligible = bool(online and first_wallet and mirrors_repo)
         if has_wallet:
             seen_wallets.add(wallet)
         reason = "eligible"
@@ -1111,8 +1170,6 @@ async def _network_payout_nodes(env):
             reason = "missing_wallet"
         elif not first_wallet:
             reason = "duplicate_wallet"
-        elif not verified_wallet:
-            reason = "wallet_unverified"
         elif not mirrors_repo:
             reason = "no_mirrors"
         nodes.append({
@@ -1124,21 +1181,61 @@ async def _network_payout_nodes(env):
             "payoutEligible": eligible,
             "eligibilityReason": reason,
         })
-    # Main relay: surface online nodes federated in from approved relays too, so
-    # /network/ reflects everyone sharing the disbursement.
+    # Main relay: surface only federated candidates whose original node-signed
+    # evidence still verifies and is fresh. Historical wallet-only rows never
+    # appear payout-eligible.
     if _is_main_relay(env):
         try:
+            now = int(Date.now())
+            freshness = _reward_config(env)["healthFreshMs"]
+            expected_refs = await _https_mirror_expected_forkmesh_refs(env)
             fed = await d1_all(
                 env,
-                "SELECT fp.wallet AS wallet, fp.name AS name, r.label AS label "
+                "SELECT fp.*, r.label AS label "
                 "FROM federated_presence fp "
                 "JOIN relays r ON r.relay_bi = fp.relay_bi "
-                "WHERE fp.ts >= ? AND r.status = 'approved' ORDER BY fp.ts DESC",
-                cutoff)
+                "WHERE fp.ts >= ? AND r.status = 'approved' "
+                "AND fp.checked_at>=? AND fp.forkmesh_verified_at>=? "
+                "ORDER BY fp.ts DESC",
+                cutoff,
+                now - freshness,
+                now - freshness,
+            )
             for r in (fed or []):
-                wallet = (r.get("wallet") or "").strip()
-                if not wallet or not SOLANA_RE.match(wallet):
+                attested = await _verified_federated_reward_attestation(
+                    env,
+                    {
+                        "name": r.get("name"),
+                        "operator": r.get("name"),
+                        "wallet": r.get("wallet"),
+                        "publicKey": r.get("public_key"),
+                        "baseUrl": r.get("base_url"),
+                        "registrationSignature": r.get("registration_sig"),
+                        "registrationIssuedAt": r.get(
+                            "registration_issued_at"),
+                        "healthMessage": r.get("health_message"),
+                        "healthSignature": r.get("health_sig"),
+                        "checkedAt": r.get("checked_at"),
+                        "healthy": bool(int(r.get("healthy") or 0)),
+                        "integrity": r.get("integrity"),
+                        "mirrorsForkMesh": bool(
+                            int(r.get("forkmesh_active") or 0)),
+                        "forkmeshVerifiedAt": r.get(
+                            "forkmesh_verified_at"),
+                        "refsSha256": r.get("forkmesh_refs_sha256"),
+                        "operationsSha256": r.get(
+                            "forkmesh_operations_sha256"),
+                        "requiredOperationsVerified": True,
+                        "abuseFlagged": bool(
+                            int(r.get("abuse_blocked") or 0)),
+                    },
+                    now,
+                    expected_refs,
+                    freshness,
+                )
+                if not attested:
                     continue
+                wallet = attested["wallet"]
                 eligible = wallet not in seen_wallets
                 seen_wallets.add(wallet)
                 relay_label = clean_string(r.get("label", ""), 80) or "relay"
@@ -1149,6 +1246,7 @@ async def _network_payout_nodes(env):
                     "online": True, "payoutEligible": eligible,
                     "eligibilityReason": "eligible" if eligible else "duplicate_wallet",
                     "relay": relay_label,
+                    "attestation": "signed-fresh-forkmesh-mirror",
                 })
         except Exception:
             pass
@@ -1192,12 +1290,29 @@ async def _live_online_nodes(env, now):
         rec = await decrypt_row(env, row["data"])
         if not rec:
             continue
+        if rec.get("visibility") != "public":
+            continue
         if _is_blocked_catalog_identity(env, rec.get("owner"), rec.get("name")):
             continue
         label = clean_string(rec.get("owner", ""), MAX_NODE_NAME)
         if not label:
             continue
         nodes[owner_bi] = label
+
+    endpoint_rows = await d1_all(
+        env,
+        """SELECT n.node_bi, n.name
+             FROM mirror_https_endpoints e
+             JOIN nodes n ON lower(n.name)=lower(e.node_name)
+            WHERE e.healthy=1 AND e.abuse_blocked=0
+              AND e.integrity='verified' AND e.checked_at>=?""",
+        now - ONLINE_SAMPLE_WINDOW_MS,
+    )
+    for row in endpoint_rows:
+        node_key = str(row.get("node_bi") or "")
+        label = clean_string(row.get("name", ""), MAX_NODE_NAME)
+        if node_key and label:
+            nodes[node_key] = label
 
     acct_rows = await d1_all(
         env,
@@ -1222,11 +1337,8 @@ async def _live_online_nodes(env, now):
 
 async def record_online_sample(env):
     # Called once a minute by the scheduled (cron) handler. "Online nodes" is the
-    # number of live host tunnels (host_presence) — the signal that actually
-    # reflects desktop nodes being up — taken together with any account
-    # heartbeats. The account funnel is currently disabled, so sampling only
-    # account_presence left the activity graph permanently empty even while a
-    # host was online; counting hosts fixes that.
+    # set of fresh signed direct-HTTPS endpoints together with account
+    # heartbeats and bounded legacy presence rows.
     await ensure_schema(env)
     now = int(Date.now())
     nodes = await _live_online_nodes(env, now)
@@ -1372,7 +1484,8 @@ async def network_overview(env):
 # (statuspage.io style) without any extra always-on monitoring infra. Every
 # system reuses a signal the relay already tracks:
 #   - database: a trivial D1 round trip.
-#   - git_hosting: at least one desktop host tunnel is live (host_presence).
+#   - git_hosting: at least one identity-bound direct HTTPS mirror has a fresh,
+#     signed ForkMesh repository integrity proof.
 #   - website / api / realtime: unhandled/5xx errors logged this minute
 #     (log_error, see Default.fetch) bucketed by the path they hit, so an
 #     incident in one area doesn't paint the whole site down.
@@ -1401,21 +1514,22 @@ STATUS_SYSTEM_CHECKS = {
     "api": (
         "Scans the last minute of the worker error log for unhandled "
         "exceptions or 5xx responses on /api/* routes. 502/503/504 on "
-        "host-tunnel content paths (release blobs, repo browse, git clone) "
-        "are excluded — those mean one desktop node is offline, which the "
-        "Git hosting network check tracks instead."),
+        "direct-mirror content paths (release blobs, repo browse, git clone) "
+        "are excluded — those mean an upstream mirror is unavailable, which "
+        "the Git hosting network check tracks instead."),
     "database": (
         "Runs a real SELECT round trip against the D1 database once a "
         "minute. Passes when the query returns a row; fails on any query "
         "error."),
     "git_hosting": (
-        "Checks the host_presence table for at least one desktop host "
-        "tunnel heartbeat within the last 10 minutes. Passes while any "
-        "host is live; fails when no host has checked in."),
+        "Checks for at least one account-bound direct HTTPS endpoint with a "
+        "signed, integrity-matching ForkMesh repository proof observed within "
+        "the last 10 minutes. Repository bytes are not sampled into D1."),
     "realtime": (
         "Scans the last minute of the worker error log for failures on "
-        "chat room / WebSocket paths and git smart-HTTP paths (info/refs, "
-        "upload-pack, receive-pack). Passes when none were logged."),
+        "chat room / WebSocket paths and repository smart-HTTP request paths. "
+        "Repository bytes use direct HTTPS, not Durable Object sockets. Passes "
+        "when no realtime failures were logged."),
     "durable_objects": (
         "Counts requests killed by Cloudflare's free-tier Durable Object "
         "duration cap (\"Exceeded allowed duration\") in the last minute. "
@@ -1543,16 +1657,24 @@ async def record_status_sample(env):
         reason["database"] = "Database query failed: " + str(exc)[:160]
 
     try:
-        cutoff = now - HOST_PRESENCE_STALE_MS
+        cutoff = now - HTTPS_MIRROR_STATUS_FRESH_MS
         row = await d1_first(
-            env, "SELECT COUNT(*) AS n FROM host_presence WHERE ts >= ?", cutoff,
+            env,
+            "SELECT COUNT(*) AS n FROM mirror_https_endpoints "
+            "WHERE checked_at>=? AND forkmesh_verified_at>=? "
+            "AND healthy=1 AND forkmesh_active=1 "
+            "AND integrity IN ('ok','verified') AND abuse_blocked=0",
+            cutoff, cutoff,
         )
         ok["git_hosting"] = int((row or {}).get("n", 0) or 0) > 0
         if not ok["git_hosting"]:
-            reason["git_hosting"] = "No desktop hosts have checked in within the last 10 minutes"
+            reason["git_hosting"] = (
+                "No healthy direct HTTPS mirror has supplied a valid ForkMesh "
+                "repository proof within the last 10 minutes")
     except Exception as exc:
         ok["git_hosting"] = False
-        reason["git_hosting"] = "Host presence query failed: " + str(exc)[:160]
+        reason["git_hosting"] = (
+            "Direct HTTPS mirror health query failed: " + str(exc)[:160])
 
     try:
         rows = await d1_all(
@@ -1582,18 +1704,19 @@ async def record_status_sample(env):
                 hit_count["durable_objects"] += 1
                 if first_hit["durable_objects"] is None:
                     first_hit["durable_objects"] = (row.get("status"), path, message.strip())
-            # 502/503/504 on a host-tunnel content path (release blob, repo
-            # browse, git clone) means the one desktop node holding that
-            # content is unreachable — node availability, which host_presence
+            # 502/503/504 on a direct-mirror content path (release blob, repo
+            # browse, git clone) means the selected endpoint is unreachable —
+            # upstream availability, which the signed HTTPS health check
             # (the git_hosting signal) already tracks. It is not evidence the
-            # worker/API is down, and a single offline node's blob being
+            # Worker/API is down, and a single offline node's blob being
             # re-requested every few minutes used to paint the whole "api"
             # system red on /status. A 500 on the same path still counts.
             if row_status in (502, 503, 504) and (
                     RELEASE_BLOB_RE.match(path) or REPO_HOST_RE.match(path) or
                     GIT_INFO_RE.match(path) or GIT_PACK_RE.match(path)):
                 continue
-            if (ROOM_RE.match(path) or REPO_ROOM_RE.match(path) or
+            if (path.rstrip("/") == "/api/world/ws" or
+                    ROOM_RE.match(path) or REPO_ROOM_RE.match(path) or
                     GIT_INFO_RE.match(path) or GIT_PACK_RE.match(path)):
                 bucket = "realtime"
             elif path.startswith("/api/"):
@@ -1842,9 +1965,9 @@ async def status_history(env):
         })
 
     # Current-state snapshot (issue #356): the headline health metrics rendered
-    # at the top of the page — mainnode host reachable, the distinct online node
-    # count (same signal as the /network/ headline, NOT raw host_presence rows,
-    # which over-count), catalog size, and errors logged in the last 24h. Each
+    # at the top of the page — flagship repository directly reachable, the
+    # distinct online node count (same signal as the /network/ headline),
+    # catalog size, and errors logged in the last 24h. Each
     # read is best-effort so one failing query can't blank the summary, and it
     # all rides on the single /api/status fetch a page view already makes.
     current = {}
@@ -1891,48 +2014,28 @@ async def status_history(env):
     except Exception:
         current["doDurationAborts24h"] = None
     try:
-        # host_presence is keyed one-row-per-repo (upserted on each heartbeat),
-        # so reading it with no staleness filter gives the mainnode's true last
-        # heartbeat even while offline — lets the banner say "last seen 42m
-        # ago" instead of just a bare "Offline" with no technical detail.
-        mainnode_bi = await blind_index(env, "mainnode/forkmesh")
-        host_row = await d1_first(
-            env, "SELECT ts FROM host_presence WHERE repo_bi = ?", mainnode_bi,
+        # forkmesh_verified_at is written only after an account-bound endpoint
+        # signs a fresh challenge whose refs hash matches the owner-attested
+        # public forkmesh/forkmesh catalog state. This avoids treating a
+        # control WebSocket heartbeat as proof that Git bytes are available.
+        endpoint_row = await d1_first(
+            env,
+            "SELECT MAX(forkmesh_verified_at) AS ts "
+            "FROM mirror_https_endpoints WHERE healthy=1 "
+            "AND forkmesh_active=1 AND integrity IN ('ok','verified') "
+            "AND abuse_blocked=0",
         )
-        last_ts = int(host_row["ts"]) if host_row else None
-
-        # Regression (adhoc #189): there is no reserved "mainnode" owner
-        # account — "mainnode/forkmesh" is just the fixed path the flagship
-        # chat room happens to use (FLAGSHIP_ROOM_KEY), not a real repo
-        # identity any desktop host ever registers under, so the check above
-        # never sees a heartbeat even with a live self-hosted instance. Fold
-        # in the real signal too: repositories.key_bi is computed the same
-        # way as host_presence.repo_bi (blind_index of "owner/name"), so join
-        # the two directly to find whichever real owner is actually hosting a
-        # repo named "forkmesh".
-        repo_rows = await d1_all(env, "SELECT key_bi, data FROM repositories")
-        presence_rows = await d1_all(
-            env, "SELECT repo_bi, ts FROM host_presence")
-        presence = {r["repo_bi"]: int(r["ts"]) for r in presence_rows}
-        for row in repo_rows:
-            rec = await decrypt_row(env, row.get("data"))
-            if not rec or safe_segment(rec.get("name", "")) != "forkmesh":
-                continue
-            if _is_blocked_catalog_identity(
-                    env, rec.get("owner"), rec.get("name")):
-                continue
-            ts = presence.get(row.get("key_bi"))
-            if ts is not None and (last_ts is None or ts > last_ts):
-                last_ts = ts
+        last_ts = int((endpoint_row or {}).get("ts") or 0) or None
         current["mainnodeLastSeenTs"] = last_ts
         current["mainnodeOnline"] = (
-            last_ts is not None and now - last_ts < HOST_PRESENCE_STALE_MS
+            last_ts is not None
+            and now - last_ts < HTTPS_MIRROR_STATUS_FRESH_MS
         )
-        current["mainnodeStaleMs"] = HOST_PRESENCE_STALE_MS
+        current["mainnodeStaleMs"] = HTTPS_MIRROR_STATUS_FRESH_MS
     except Exception:
         current["mainnodeOnline"] = None
         current["mainnodeLastSeenTs"] = None
-        current["mainnodeStaleMs"] = HOST_PRESENCE_STALE_MS
+        current["mainnodeStaleMs"] = HTTPS_MIRROR_STATUS_FRESH_MS
 
     return json_response(
         {"ok": True, "now": now, "systems": systems, "current": current},
@@ -1945,8 +2048,8 @@ async def status_history(env):
 # source: node uptime (online_hourly_nodes), public repos per owner + most-
 # mirrored project + longest-hosted repo (repositories / repo_first_hosted),
 # contributor activity (contributor_activity, tallied as issues/PRs/commits are
-# submitted), and funds received (funds_received, accumulated as donations are
-# swept and bounties paid out).
+# submitted), and historical completed-transfer totals (funds_received). The
+# Worker cannot sign or sweep a wallet.
 
 LEADERBOARD_LIMIT = 10  # rows returned per board
 
@@ -1993,23 +2096,6 @@ async def _record_funds_received(env, scope, key, name, lamports):
         )
     except Exception:
         pass
-
-
-async def _record_bounty_payout(env, rec, transfers):
-    # After a bounty escrow is split, credit the payee (contributor) and the
-    # owner/repo the bounty belonged to (project) with the payee's share. The
-    # treasury cut is intentionally not recorded.
-    treasury = _treasury_address(env)
-    payee = rec.get("payee", "")
-    owner = clean_string(rec.get("owner", ""), MAX_NODE_NAME)
-    repo = clean_string(rec.get("repo", ""), 120)
-    for addr, lamports in transfers:
-        if addr == treasury or addr != payee:
-            continue
-        await _record_funds_received(env, "contributor", addr, "", lamports)
-        if owner and repo:
-            await _record_funds_received(
-                env, "project", owner + "/" + repo, owner + "/" + repo, lamports)
 
 
 def _catalog_updated_ms(rec):
@@ -2087,6 +2173,8 @@ async def network_leaderboards(env):
             continue
         rec = await decrypt_row(env, row.get("data"))
         if not rec:
+            continue
+        if rec.get("visibility") != "public":
             continue
         if _is_blocked_catalog_identity(env, rec.get("owner"), rec.get("name")):
             continue
@@ -2193,7 +2281,15 @@ async def network_leaderboards(env):
          "contributors": contrib_board,
          "fundsMainnodes": funds["mainnode"][:LEADERBOARD_LIMIT],
          "fundsContributors": funds["contributor"][:LEADERBOARD_LIMIT],
-         "fundsProjects": funds["project"][:LEADERBOARD_LIMIT]},
+         "fundsProjects": funds["project"][:LEADERBOARD_LIMIT],
+         "fundsState": "historical-reporting-aggregate",
+         "fundsCustody": "no-wallet-custody",
+         "fundsNotice": (
+             "These are reporting aggregates, not wallet balances or proof of "
+             "payment. ForkMesh holds no recipient key or funds; only a "
+             "finalized public transaction signature establishes a completed "
+             "on-chain transfer."
+         )},
         cache_seconds=NETWORK_STATS_TTL,
     )
     await edge_cache_put(NETWORK_LEADERBOARDS_CACHE_KEY, resp)
@@ -2269,68 +2365,59 @@ async def _funds_received_boards(env):
 async def install_source(env):
     await ensure_schema(env)
     now = int(Date.now())
-    # The installer needs an exact answer: a host WebSocket can still be live
-    # after an older desktop client's D1 presence row ages out. Decode the small
-    # set of catalog entries named "forkmesh", then ask each repository's
-    # Durable Object for its real connected-host count. This also avoids ever
-    # selecting a stale presence row left by an unclean disconnect.
+    # Install candidates must be able to serve the flagship over the same
+    # direct-HTTPS path the clone will actually use. A control/presence socket
+    # says nothing about repository-byte availability, so require a fresh,
+    # signed forkmesh/forkmesh proof from a healthy non-abuse-blocked endpoint.
+    endpoint_rows = await d1_all(
+        env,
+        """SELECT node_bi,node_name,checked_at,latency_ms
+             FROM mirror_https_endpoints
+            WHERE healthy=1 AND integrity='ok' AND abuse_blocked=0
+              AND forkmesh_active=1 AND checked_at>=?
+              AND forkmesh_verified_at>=?""",
+        now - https_routing.ENDPOINT_STALE_MS,
+        now - https_routing.ENDPOINT_STALE_MS,
+    )
+    endpoints = {
+        clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower(): row
+        for row in endpoint_rows or []
+        if valid_node_name(
+            clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower())
+    }
     rows = await d1_all(
         env,
         "SELECT owner_bi, data FROM repositories",
     )
-    try:
-        active_nodes = await active_registered_node_bis(env, now)
-    except Exception:
-        active_nodes = None
 
     candidates = {}
     for row in rows:
-        if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
-            continue
         rec = await decrypt_row(env, row.get("data"))
-        if not rec or safe_segment(rec.get("name", "")) != "forkmesh":
+        if (
+            not rec
+            or rec.get("visibility") != "public"
+            or safe_segment(rec.get("name", "")) != "forkmesh"
+        ):
             continue
         owner = safe_segment(rec.get("owner", ""))
         owner_bi = row.get("owner_bi")
-        if not owner or not owner_bi:
+        endpoint = endpoints.get(owner)
+        if not owner or not owner_bi or not endpoint:
             continue
+        source_kind = str(rec.get("source") or "local-node").strip()
         try:
-            host_id = env.FORKMESH_HOST.idFromName(f"host:{owner}/forkmesh")
-            host_object = env.FORKMESH_HOST.get(host_id)
-            response = await asyncio.wait_for(
-                host_object.fetch(
-                    f"https://forkmesh.internal/api/repo/{owner}/forkmesh/host"
-                ),
-                timeout=HOST_COUNT_TIMEOUT_MS / 1000,
-            )
-            status = await response.json()
-            # workers.Response.json() may cross the Python/JS boundary as either
-            # a native dict or a JsProxy depending on where the response was
-            # created; accept both shapes.
-            hosts = (status.get("hosts", 0) if isinstance(status, dict)
-                     else getattr(status, "hosts", 0))
-            if int(hosts or 0) > 0:
-                source_kind = str(rec.get("source") or "local-node").strip()
-                try:
-                    last_sync = int(rec.get("lastSync") or 0)
-                except (TypeError, ValueError):
-                    last_sync = 0
-                # Prefer the canonical source of truth for installs, then any
-                # other working-copy source, then mirrors. Uptime only breaks ties
-                # inside those buckets; otherwise a stale long-running mirror can
-                # beat forkmesh/forkmesh and fresh hosts clone old code.
-                priority = 2
-                if source_kind == "local-node":
-                    priority = 0 if owner == "forkmesh" else 1
-                candidates[owner_bi] = {
-                    "node": owner,
-                    "priority": priority,
-                    "lastSync": last_sync,
-                }
-        except Exception:
-            # A single unavailable DO must not stop another live mirror from
-            # being selected.
-            continue
+            last_sync = int(rec.get("lastSync") or 0)
+        except (TypeError, ValueError):
+            last_sync = 0
+        priority = 2
+        if source_kind == "local-node":
+            priority = 0 if owner == "forkmesh" else 1
+        candidates[owner_bi] = {
+            "node": owner,
+            "priority": priority,
+            "lastSync": last_sync,
+            "latencyMs": int(endpoint.get("latency_ms") or 60_000),
+        }
 
     if not candidates:
         return json_response({"ok": False, "error": "no_online_install_source"},
@@ -2355,15 +2442,11 @@ async def install_source(env):
         ),
         key=lambda item: (
             item["priority"], -item["lastSync"],
-            -item["totalMinutes"], item["node"]),
+            item["latencyMs"], -item["totalMinutes"], item["node"]),
     )
     best = ranked[0]
-    # Hand the installer the whole ranked list (capped), not just the top pick,
-    # so it can fall back to the next online mirror when the best one's git
-    # tunnel is unreachable. A node can hold a live host WebSocket — which is all
-    # the "hosts > 0" check above proves, so it counts as online here — yet still
-    # time out the clone proxy with a 504, which would otherwise dead-end the
-    # install. "node" stays for older installers that read only the single best.
+    # Health can change after selection, so hand the installer a bounded
+    # failover list. "node" stays for older installers that read one value.
     node_list = [item["node"] for item in ranked[:8]]
     return json_response(
         {"ok": True, "node": best["node"], "nodes": node_list,
@@ -2382,8 +2465,8 @@ async def durable_object_request(request, target_url=None, include_body=False,
     # DurableObject.fetch may outlive the Python call frame. Passing the Python
     # Request proxy directly across that JS boundary can trip Pyodide's
     # "PyProxy when Python GIL not held" crash under load. Rebuild a JS-owned
-    # Request from primitive strings/bytes for the no-body paths (including
-    # WebSocket upgrades) and for small buffered POSTs such as upload-pack.
+    # Request from primitive strings/bytes for control/no-body paths, including
+    # WebSocket upgrades. Repository payloads do not use Durable Objects.
     headers = {}
     for name in (
         "upgrade", "connection", "sec-websocket-version", "sec-websocket-key",
@@ -2403,6 +2486,702 @@ async def durable_object_request(request, target_url=None, include_body=False,
         payload = bytes(await request.bytes()) if body is None else bytes(body)
         init["body"] = Uint8Array.new(_to_js(payload))
     return JsRequest.new(str(target_url or request.url), to_js(init))
+
+
+def world_request_country(request):
+    """Trusted coarse country from request.cf, with a local-dev fallback."""
+    try:
+        cf = getattr(request, "cf", None)
+    except Exception:
+        cf = None
+    if cf is not None:
+        raw_country = None
+        if isinstance(cf, dict):
+            raw_country = cf.get("country")
+        else:
+            try:
+                raw_country = getattr(cf, "country", None)
+            except Exception:
+                raw_country = None
+            if raw_country is None:
+                try:
+                    raw_country = cf.get("country")
+                except Exception:
+                    raw_country = None
+        if raw_country is not None:
+            return world_protocol.approximate_country_code(raw_country)
+    # pywrangler/local test requests may not expose request.cf. Cloudflare
+    # overwrites CF-IPCountry at the edge when IP Geolocation is enabled.
+    try:
+        raw_country = request.headers.get("cf-ipcountry") or ""
+    except Exception:
+        raw_country = ""
+    return world_protocol.approximate_country_code(raw_country)
+
+
+def world_context_handler(request):
+    """Return the visitor's coarse country code and the shared world clock.
+
+    This endpoint reads only ``request.cf.country`` (or ``cf-ipcountry`` in
+    local/dev environments). It never reads or returns an IP address,
+    user-agent, precise location, account, repository, or wallet information.
+    """
+    if method_name(request) != "GET":
+        return json_response(
+            {"error": "method_not_allowed"},
+            status=405,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"allow": "GET"},
+        )
+    return json_response(
+        world_protocol.context_payload(
+            world_request_country(request), int(Date.now())),
+        cache_control="no-store, max-age=0, must-revalidate",
+        extra_headers={"x-content-type-options": "nosniff"},
+    )
+
+
+def world_websocket_origin_allowed(request):
+    """Accept browser WebSockets only from the exact request origin."""
+    try:
+        origin = (request.headers.get("origin") or "").strip()
+    except Exception:
+        origin = ""
+    if not origin:
+        return False
+    try:
+        request_url = urlparse(request.url)
+        origin_url = urlparse(origin)
+    except Exception:
+        return False
+    if origin_url.scheme not in ("http", "https"):
+        return False
+    if (origin_url.username is not None or origin_url.password is not None
+            or origin_url.path not in ("", "/")
+            or origin_url.query or origin_url.fragment):
+        return False
+
+    def origin_key(parsed):
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if not host:
+            return None
+        try:
+            port = parsed.port
+        except ValueError:
+            return None
+        if port is None:
+            port = 443 if parsed.scheme == "https" else 80
+        return parsed.scheme, host, port
+
+    return origin_key(origin_url) == origin_key(request_url)
+
+
+async def world_durable_object_request(request, trusted_claim=None):
+    """Rebuild the world upgrade with no identifying connection headers.
+
+    The general tunnel helper forwards Authorization and User-Agent because Git
+    hosts need them. World presence does not. It receives only WebSocket
+    handshake headers plus the already-sanitized, approximate country code.
+    """
+    headers = {}
+    for name in (
+        "upgrade", "connection", "sec-websocket-version", "sec-websocket-key",
+    ):
+        try:
+            value = request.headers.get(name)
+        except Exception:
+            value = None
+        if value:
+            headers[name] = value
+    country = world_request_country(request)
+    if country:
+        # Clients cannot spoof this internal header: the incoming request is
+        # rebuilt from the explicit allowlist above.
+        headers["x-forkmesh-country"] = country
+    claim = trusted_claim if isinstance(trusted_claim, dict) else {}
+    if claim:
+        # This compact public claim is constructed by this Worker only after a
+        # short-lived HMAC ticket has been verified. The incoming request's
+        # similarly named headers are deliberately never copied.
+        public_claim = world_protocol.trusted_presence_claim(
+            claim.get("name", ""), claim.get("accountStatus", "Guest"),
+            claim.get("nodeCount", 0))
+        encoded_claim = base64.urlsafe_b64encode(
+            json.dumps(public_claim, separators=(",", ":")).encode()
+        ).decode().rstrip("=")
+        headers["x-forkmesh-world-claim"] = encoded_claim
+    source_url = urlparse(request.url)
+    # Strip query/fragment data as an additional privacy boundary. The world
+    # protocol has no tokens or user-selected URL state.
+    target_url = (
+        source_url.scheme + "://" + source_url.netloc + source_url.path)
+    return JsRequest.new(
+        target_url,
+        to_js({"method": "GET", "headers": headers}),
+    )
+
+
+WORLD_TICKET_TTL_MS = 60 * 1000
+WORLD_INACTIVE_RETAIN_MS = 30 * 24 * 60 * 60 * 1000
+# An opted-in seating card represents somebody who has actually been away, not
+# somebody who selected "Away" while still walking around the world. A fresh
+# authenticated world visit resets this quiet-period clock.
+WORLD_INACTIVE_DELAY_MS = 15 * 60 * 1000
+
+
+def _world_ticket_signature(env, payload):
+    return hmac.new(
+        _account_session_secret(env),
+        b"forkmesh-world-ticket-v1\n" + payload.encode(),
+        "sha256",
+    ).hexdigest()
+
+
+def _world_ticket_encode(env, claim):
+    payload = base64.urlsafe_b64encode(
+        json.dumps(claim, separators=(",", ":"), sort_keys=True).encode()
+    ).decode().rstrip("=")
+    return payload + "." + _world_ticket_signature(env, payload)
+
+
+def _world_ticket_decode(env, ticket):
+    value = clean_string(ticket or "", 2048).strip()
+    if "." not in value:
+        return None
+    payload, signature = value.rsplit(".", 1)
+    if not payload or not re.fullmatch(r"[A-Za-z0-9_-]+", payload):
+        return None
+    if not hmac.compare_digest(
+            signature, _world_ticket_signature(env, payload)):
+        return None
+    try:
+        padded = payload + "=" * ((4 - len(payload) % 4) % 4)
+        claim = json.loads(base64.urlsafe_b64decode(padded).decode())
+    except Exception:
+        return None
+    if not isinstance(claim, dict):
+        return None
+    now = int(Date.now())
+    try:
+        issued = int(claim.get("issuedAt", 0) or 0)
+        expires = int(claim.get("expiresAt", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    if issued <= 0 or expires <= now or expires - issued > WORLD_TICKET_TTL_MS:
+        return None
+    if issued > now + 5000:
+        return None
+    public = world_protocol.trusted_presence_claim(
+        claim.get("name", ""), claim.get("accountStatus", "Guest"),
+        claim.get("nodeCount", 0))
+    if not public["name"] or public["accountStatus"] == "Guest":
+        return None
+    return public
+
+
+async def _world_account_claim(env, request, data=None):
+    """Return a server-derived public world role for a valid user session."""
+    account_bi, rec = await _account_session_record(env, request, data)
+    if not rec:
+        return None
+    name = clean_string(rec.get("name", ""), MAX_NODE_NAME).strip().lower()
+    if not name:
+        return None
+    roles = set()
+    try:
+        now = int(Date.now())
+        rows = await d1_all(
+            env,
+            "SELECT role FROM role_grants WHERE account_bi=? "
+            "AND role IN ('supporting_member','mirror_operator',"
+            "'organization_administrator','automated_agent') "
+            "AND revoked_at=0 AND (expires_at=0 OR expires_at>?)",
+            account_bi, now,
+        )
+        roles = {
+            str(row.get("role") or "") for row in (rows or [])
+        }
+    except Exception:
+        roles = set()
+    try:
+        org_admin = await d1_first(
+            env,
+            "SELECT 1 AS ok FROM org_members WHERE member_bi=? "
+            "AND role IN ('owner','admin') LIMIT 1",
+            account_bi,
+        )
+    except Exception:
+        org_admin = None
+    node_count = len(_owned_nodes(rec))
+    if "automated_agent" in roles or (
+            _account_kind(rec) in ("bot", "agent")
+            and bool(rec.get("verified"))):
+        account_status = "Verified bot"
+    elif org_admin or "organization_administrator" in roles:
+        account_status = "Organization admin"
+    elif node_count or "mirror_operator" in roles:
+        account_status = "Mirror operator"
+    elif (
+        "supporting_member" in roles
+        or bool(rec.get("supporting_member"))
+        or str(rec.get("account_tier") or "").lower()
+            in ("supporter", "supporting", "paid")
+    ):
+        account_status = "Supporting member"
+    elif bool(rec.get("email_verified")):
+        account_status = "Registered"
+    else:
+        # An active but unverified account receives no elevated public badge.
+        account_status = "Guest"
+    if account_status == "Guest":
+        return None
+    return world_protocol.trusted_presence_claim(
+        name, account_status, node_count)
+
+
+async def world_ticket_handler(env, request):
+    if method_name(request) != "GET":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"allow": "GET"})
+    claim = await _world_account_claim(env, request)
+    if not claim:
+        return json_response(
+            {
+                "ok": True,
+                "authenticated": False,
+                "accountStatus": "Guest",
+                "nodeCount": 0,
+                "ticket": "",
+            },
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    now = int(Date.now())
+    # If this account previously opted into the inactive seating area, a fresh
+    # authenticated world visit makes that card ineligible immediately. Keep
+    # the consent/configuration record so it can reappear after the account has
+    # actually been away; do not require the user to opt in on every visit.
+    try:
+        await ensure_schema(env)
+        account_bi = await blind_index(env, claim["name"])
+        await d1_run(
+            env,
+            "UPDATE world_inactive_presence SET updated_at=?, expires_at=? "
+            "WHERE account_bi=?",
+            now, now + WORLD_INACTIVE_RETAIN_MS, account_bi,
+        )
+    except Exception:
+        # Presence tickets must still work if a rolling deployment has not yet
+        # installed the optional inactivity table.
+        pass
+    ticket_claim = {
+        **claim,
+        "issuedAt": now,
+        "expiresAt": now + WORLD_TICKET_TTL_MS,
+    }
+    return json_response(
+        {
+            "ok": True,
+            "authenticated": True,
+            **claim,
+            "expiresAt": ticket_claim["expiresAt"],
+            "ticket": _world_ticket_encode(env, ticket_claim),
+        },
+        cache_control="no-store, max-age=0, must-revalidate",
+        extra_headers={"x-content-type-options": "nosniff"},
+    )
+
+
+def _world_inactive_public_id(account_bi):
+    return hashlib.sha256(
+        ("forkmesh-world-inactive-v1:" + str(account_bi or "")).encode()
+    ).hexdigest()[:20]
+
+
+def _world_inactive_recency(updated_at, now):
+    try:
+        age = max(0, int(now) - int(updated_at or 0))
+    except (TypeError, ValueError):
+        age = WORLD_INACTIVE_RETAIN_MS
+    if age < 24 * 60 * 60 * 1000:
+        return "Last active recently"
+    if age < 7 * 24 * 60 * 60 * 1000:
+        return "Away this week"
+    return "Returning contributor"
+
+
+async def world_inactive_handler(env, request):
+    """Manage the user's optional, generalized Town Square seating card."""
+    await ensure_schema(env)
+    method = method_name(request)
+    now = int(Date.now())
+    await d1_run(
+        env, "DELETE FROM world_inactive_presence WHERE expires_at<=?", now)
+    if method == "GET":
+        rows = await d1_all(
+            env,
+            "SELECT account_bi, data, updated_at FROM world_inactive_presence "
+            "WHERE expires_at>? AND updated_at<=? "
+            "ORDER BY updated_at DESC LIMIT 64",
+            now, now - WORLD_INACTIVE_DELAY_MS,
+        )
+        people = []
+        for row in rows or []:
+            try:
+                rec = await decrypt_row(env, row.get("data"))
+            except Exception:
+                rec = None
+            if not isinstance(rec, dict):
+                continue
+            status = str(rec.get("status") or "")
+            if status not in world_protocol.WORLD_INACTIVITY_VALUES:
+                continue
+            claim = world_protocol.trusted_presence_claim(
+                rec.get("name", ""), rec.get("accountStatus", "Guest"),
+                rec.get("nodeCount", 0))
+            people.append({
+                "id": _world_inactive_public_id(row.get("account_bi")),
+                "name": claim["name"] or "Private contributor",
+                "accountStatus": claim["accountStatus"],
+                "nodeCount": claim["nodeCount"],
+                "availability": status,
+                "lastActive": _world_inactive_recency(
+                    row.get("updated_at"), now),
+            })
+        return json_response(
+            {
+                "ok": True,
+                "people": people,
+                "retentionDays": 30,
+                "visibilityDelayMinutes": (
+                    WORLD_INACTIVE_DELAY_MS // (60 * 1000)),
+            },
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"x-content-type-options": "nosniff"},
+        )
+    if method == "DELETE":
+        account_bi, rec = await _account_session_record(env, request)
+        if not rec:
+            return json_response({"error": "invalid_session"}, status=401)
+        await d1_run(
+            env, "DELETE FROM world_inactive_presence WHERE account_bi=?",
+            account_bi)
+        return json_response(
+            {"ok": True, "visible": False},
+            cache_control="no-store, max-age=0, must-revalidate")
+    if method != "POST":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            extra_headers={"allow": "GET, POST, DELETE"})
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    account_bi, rec = await _account_session_record(env, request, data)
+    if not rec:
+        return json_response({"error": "invalid_session"}, status=401)
+    selection = world_protocol.sanitize_inactivity_record(data)
+    if selection is None:
+        # A false/absent consent flag is an explicit removal, never a hidden
+        # retained record.
+        await d1_run(
+            env, "DELETE FROM world_inactive_presence WHERE account_bi=?",
+            account_bi)
+        return json_response(
+            {"ok": True, "visible": False},
+            cache_control="no-store, max-age=0, must-revalidate")
+    claim = await _world_account_claim(env, request, data)
+    if not claim:
+        return json_response({"error": "verified_account_required"}, status=403)
+    public_rec = {
+        "name": claim["name"] if selection["shareName"]
+                else "Private contributor",
+        "status": selection["status"],
+        "accountStatus": claim["accountStatus"],
+        "nodeCount": claim["nodeCount"] if selection["shareNodes"] else 0,
+    }
+    encrypted = await encrypt_row(env, public_rec)
+    expires = now + WORLD_INACTIVE_RETAIN_MS
+    await d1_run(
+        env,
+        "INSERT INTO world_inactive_presence "
+        "(account_bi,data,updated_at,expires_at) VALUES (?,?,?,?) "
+        "ON CONFLICT(account_bi) DO UPDATE SET "
+        "data=excluded.data,updated_at=excluded.updated_at,"
+        "expires_at=excluded.expires_at",
+        account_bi, encrypted, now, expires,
+    )
+    return json_response(
+        {
+            "ok": True,
+            "visible": False,
+            "enrolled": True,
+            "availability": selection["status"],
+            "visibleAfter": now + WORLD_INACTIVE_DELAY_MS,
+            "expiresAt": expires,
+        },
+        cache_control="no-store, max-age=0, must-revalidate",
+    )
+
+
+class _WorldCommunityRuntime:
+    """Narrow adapter from isolated world APIs to established Worker helpers."""
+
+    def __init__(self, env, request=None):
+        self.env = env
+        self.request = request
+
+    def method(self):
+        return method_name(self.request) if self.request is not None else "GET"
+
+    def now(self):
+        return int(Date.now())
+
+    def new_id(self):
+        # The random id contains no account, address, time, path, or provider
+        # information and is safe to use as the public resource identifier.
+        return _ap_uuid()
+
+    def instance_id(self):
+        """Stable public instance identifier with no account/device material."""
+        base = str(getattr(self.env, "PUBLIC_BASE_URL", "") or "").strip()
+        try:
+            host = str(urlparse(base).hostname or "").strip().lower()
+        except Exception:
+            host = ""
+        if host:
+            return host[:253]
+        label = clean_string(
+            getattr(self.env, "NODE_NAME", "") or "", MAX_NODE_NAME
+        ).strip().lower()
+        return label or "forkmesh.com"
+
+    def public_origin(self):
+        if self.request is not None:
+            return _ap_origin(self.env, self.request)
+        configured = str(
+            getattr(self.env, "PUBLIC_BASE_URL", "") or ""
+        ).strip().rstrip("/")
+        return configured or "https://forkmesh.com"
+
+    def query_params(self):
+        if self.request is None:
+            return {}
+        values = parse_qs(urlparse(self.request.url).query)
+        return {
+            str(key): str(items[0])
+            for key, items in values.items()
+            if isinstance(items, list) and items
+        }
+
+    def response(self, data, status=200, cache_control=None,
+                 extra_headers=None):
+        return json_response(
+            data,
+            status=status,
+            cache_control=cache_control,
+            extra_headers=extra_headers,
+        )
+
+    async def ensure_schema(self):
+        await ensure_schema(self.env)
+
+    async def json_body(self, limit):
+        """Read one bounded JSON object; an empty mutation body becomes {}."""
+        if self.request is None:
+            return None, "invalid_json"
+        try:
+            raw_length = self.request.headers.get("content-length") or ""
+            if raw_length and int(raw_length) > int(limit):
+                return None, "payload_too_large"
+        except (TypeError, ValueError):
+            return None, "invalid_content_length"
+        try:
+            raw = await self.request.text()
+        except Exception:
+            return None, "invalid_json"
+        if len(str(raw or "").encode("utf-8")) > int(limit):
+            return None, "payload_too_large"
+        if not str(raw or "").strip():
+            return {}, ""
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return None, "invalid_json"
+        return (data, "") if isinstance(data, dict) else (None, "invalid_json")
+
+    async def session(self, data=None):
+        return await _account_session_record(
+            self.env, self.request, data if isinstance(data, dict) else {})
+
+    async def is_admin(self, name):
+        return await _is_admin(self.env, name)
+
+    async def account(self, name):
+        name = clean_string(name or "", MAX_NODE_NAME).strip().lower()
+        if not valid_node_name(name):
+            return "", ""
+        account_bi, rec = await _account_row(self.env, name)
+        if (
+            not rec
+            or rec.get("status") != "active"
+            or _account_kind(rec) != "user"
+        ):
+            return "", ""
+        return account_bi, clean_string(
+            rec.get("name") or name, MAX_NODE_NAME).strip().lower()
+
+    async def blind(self, value):
+        return await blind_index(self.env, str(value or ""))
+
+    async def seal(self, value):
+        return await encrypt_row(self.env, value)
+
+    async def open(self, value):
+        return await decrypt_row(self.env, value)
+
+    async def repository_access(self, owner, repo, _actor):
+        # Named public repository reads are available to signed-in workshop
+        # participants. Private/missing names fail closed and require the same
+        # owner-session authorization as every other named owner surface.
+        _repo_bi, row = await _security_scan_repository_row(
+            self.env, owner, repo)
+        if not row:
+            return False
+        if not await _repo_is_private(self.env, owner, repo):
+            return True
+        ok, _response = await _authorize_owner_account(
+            self.env, owner, {}, self.request, allow_admin=False)
+        return bool(ok)
+
+    async def authorize_repository_owner(self, owner, data=None):
+        account_bi, rec = await _account_session_record(
+            self.env,
+            self.request,
+            data if isinstance(data, dict) else {},
+        )
+        actor = clean_string(
+            (rec or {}).get("name") or "", MAX_NODE_NAME
+        ).strip().lower()
+        if (
+            not account_bi
+            or not actor
+            or not await _account_owns_node(self.env, actor, owner)
+        ):
+            return "", ""
+        return account_bi, actor
+
+    async def authorize_owner_node(self, owner):
+        return bool(
+            self.request is not None
+            and await _authorize_owner(self.env, self.request, owner)
+        )
+
+    async def enqueue_issue(
+        self, owner, repo, title, body, requester, mention_id, remote_url
+    ):
+        provenance = (
+            "\n\nReviewed public fediverse source: " + str(remote_url)
+            if remote_url else ""
+        )
+        return await _forkbot_enqueue_issue(
+            self.env,
+            owner,
+            repo,
+            title,
+            str(body).rstrip() + provenance,
+            requester,
+            source="fediverse-review",
+            labels=["fediverse", "manually-reviewed"],
+            federated_mention_id=mention_id,
+            federated_remote_url=remote_url,
+        )
+
+    async def publish_followup(self, mention_id, record, message, number):
+        remote = {
+            "actor_id": record.get("actorUrl", ""),
+            "url": record.get("actorUrl", ""),
+            "handle": record.get("author", ""),
+            "inbox": record.get("inbox", ""),
+            "shared_inbox": record.get("sharedInbox", ""),
+        }
+        note = {
+            "id": record.get("remoteId", ""),
+            "url": record.get("remoteUrl", ""),
+        }
+        return bool(await _ap_send_mention_reply(
+            self.env,
+            self.request,
+            record.get("actorOwner", ""),
+            record.get("repo", ""),
+            remote,
+            note,
+            message,
+            number,
+            dedupe_id=mention_id,
+            object_uuid=mention_id,
+        ))
+
+    async def audit(self, actor, action, target_type="", target="",
+                    outcome="success", details=None):
+        await _audit_sensitive_action(
+            self.env,
+            actor,
+            action,
+            target_type,
+            target,
+            outcome=outcome,
+            details=details,
+        )
+
+    async def d1_all(self, sql, *args):
+        return await d1_all(self.env, sql, *args)
+
+    async def d1_first(self, sql, *args):
+        return await d1_first(self.env, sql, *args)
+
+    async def d1_run(self, sql, *args):
+        return await d1_run(self.env, sql, *args)
+
+
+async def world_fediverse_directory_handler(env, request, path):
+    return await world_community_api.handle_fediverse(
+        _WorldCommunityRuntime(env, request), path)
+
+
+async def world_media_handler(env, request, path):
+    return await world_community_api.handle_media(
+        _WorldCommunityRuntime(env, request), path)
+
+
+async def world_events_handler(env, request, path):
+    return await world_events_api.handle(
+        _WorldCommunityRuntime(env, request), path)
+
+
+async def world_workshops_handler(env, request, path):
+    return await world_workshops.handle(
+        _WorldCommunityRuntime(env, request), path)
+
+
+async def world_community_ads_handler(env, request, path):
+    return await community_ads_api.handle(
+        _WorldCommunityRuntime(env, request), path)
+
+
+async def world_fediverse_mentions_handler(env, request, path):
+    return await fediverse_mentions_api.handle(
+        _WorldCommunityRuntime(env, request), path)
+
+
+async def cleanup_world_media_records(env):
+    runtime = _WorldCommunityRuntime(env)
+    media = await world_community_api.cleanup_media_records(runtime)
+    await world_events_api.cleanup_records(runtime)
+    await community_ads_api.cleanup(runtime)
+    await fediverse_mentions_api.cleanup(runtime)
+    return media
 
 
 
@@ -2553,9 +3332,8 @@ async def purge_stale_account_devices(env):
 
 async def active_registered_node_bis(env, now=None):
     # A node is active if either its physical node row has recent activity, its
-    # signed account heartbeat is recent, or it is currently serving at least one
-    # repo host tunnel. The host-presence arm keeps older clients from being
-    # purged before they have written nodes.last_seen.
+    # signed account heartbeat is recent, or its signed direct-HTTPS endpoint is
+    # fresh and healthy. The last union preserves bounded upgrade compatibility.
     await ensure_schema(env)
     now = int(now if now is not None else Date.now())
     cutoff = now - REGISTERED_NODE_ACTIVE_MS
@@ -2566,11 +3344,17 @@ async def active_registered_node_bis(env, now=None):
            UNION
            SELECT name_bi AS key FROM account_presence WHERE ts >= ?
            UNION
+           SELECT n.node_bi AS key
+             FROM mirror_https_endpoints e
+             JOIN nodes n ON lower(n.name)=lower(e.node_name)
+            WHERE e.healthy=1 AND e.abuse_blocked=0
+              AND e.integrity='verified' AND e.checked_at >= ?
+           UNION
            SELECT r.owner_bi AS key
              FROM host_presence hp
              JOIN repositories r ON r.key_bi = hp.repo_bi
             WHERE hp.ts >= ?""",
-        cutoff, cutoff, cutoff,
+        cutoff, cutoff, cutoff, cutoff,
     )
     for row in rows or []:
         key = str(row.get("key") or "")
@@ -2622,6 +3406,8 @@ async def _decrypted_public_catalog(env, now):
                 rec = await decrypt_row(env, blob)
                 if not rec:
                     continue
+            if rec.get("visibility") != "public":
+                continue
             if len(decrypted) < CATALOG_ROW_DECRYPT_MEMO_MAX:
                 decrypted[blob] = rec
             catalog_rows.append({
@@ -2693,29 +3479,15 @@ async def purge_stale_registered_nodes(env, force=False):
 # holds DATA_KEY, so this protects data at rest but is not zero-knowledge.
 
 PBKDF2_ITERS = 100000
-MIN_ACTIVE_LAMPORTS = 1000000  # 0.001 SOL proves the wallet is active/funded
 SOLANA_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 
-# Donation funnel: each signup gets its OWN freshly generated Solana deposit
-# address so we can watch that single address go from a zero balance to the
-# required amount (low-level getBalance, no transaction indexer needed). The
-# worker holds the deposit key (encrypted at rest) so funds can later be swept
-# to the treasury.
+# Legacy deposit-record constants remain only for read-only historical status
+# and the offline migration tool. Signup is free; no deployed Worker creates
+# deposit wallets, holds a wallet signing key, or sweeps funds.
 LAMPORTS_PER_SOL = 1000000000
-# The minimum join donation targets ~$1, derived from the live SOL/USD rate and
-# rounded up (see _min_join_lamports). These bound that calculation so a bad
-# price read can never set an absurd minimum, and act as the fallback when no
-# price is available.
-MIN_JOIN_USD = 1.0
-MIN_JOIN_LAMPORTS_FLOOR = 2_000_000      # 0.002 SOL — never ask for less
-MIN_JOIN_LAMPORTS_CEILING = 200_000_000  # 0.2 SOL — never ask for more
-MIN_JOIN_LAMPORTS = 5_000_000            # 0.005 SOL — used only if pricing fails
-# Sane bounds for a fetched SOL/USD price (USD per 1 SOL).
-SOL_USD_MIN = 1.0
-SOL_USD_MAX = 100_000.0
-# Process-local price cache so we don't refetch on every signup poll.
-_SOL_USD_CACHE = {"usd": 0.0, "ts": 0}
-_SOL_USD_CACHE_TTL_MS = 5 * 60 * 1000
+# Historical records without an explicit amount use this compatibility value
+# for display/reconciliation only. No live endpoint requests it.
+MIN_JOIN_LAMPORTS = 5_000_000
 # Per-isolate memo of the decrypted public repo catalog. _select_browse_mirror
 # runs on EVERY public info/refs request (git clone's round-robin mirror
 # pick) and previously re-ran a full D1 scan plus a sequential AES-GCM
@@ -2745,41 +3517,54 @@ PUBLIC_CATALOG_MEMO_TTL_MS = 5000
 _CATALOG_ROW_DECRYPT_MEMO = {}
 CATALOG_ROW_DECRYPT_MEMO_MAX = 4096
 DONATION_ADDRESS_TTL_MS = 60 * 60 * 1000
-# After the address expires (hidden, no longer usable) keep it parked for one
-# more hour before deleting it outright, so a late payment can still be matched
-# during the grace window.
+# Historical expiry metadata is retained for migration/reconciliation only.
 DONATION_ADDRESS_DELETE_GRACE_MS = 60 * 60 * 1000
-# Foundational reward split: half of each confirmed donation goes to the
-# treasury, the other half is accounted to online nodes that have a payout
-# Solana address on file. On-chain payout batching is intentionally separate
-# from signup confirmation now that signup payments go directly to treasury.
-TREASURY_SPLIT_NUMERATOR = 1
-TREASURY_SPLIT_DENOMINATOR = 2
-# The node half is split over every online node with a payout wallet that
-# actually mirrors a repo for another node (issue #94) — single-repo-only nodes
-# add no redundancy, so they don't share the pool. See _mirroring_owners.
-SOLANA_SWEEP_FEE_RESERVE_LAMPORTS = 5000
+# Reserve one approximate transaction fee when checking whether the external
+# community pool can support a locally reviewed transfer plan.
+REWARD_POOL_FEE_RESERVE_LAMPORTS = 5000
 # A node counts as online for payouts if it has sent a heartbeat within this
 # window (reuses the host-presence staleness window).
 ACCOUNT_PRESENCE_STALE_MS = 10 * 60 * 1000
 HEARTBEAT_SOLANA_BALANCE_TIMEOUT_MS = 1500
-# Per-isolate throttle for the heartbeat's external Solana balance probe:
-# wallet -> last probe ms. 5 minutes keeps donation detection prompt without
-# an RPC subrequest on every single 60s heartbeat.
+# Per-isolate throttle for the heartbeat's optional public balance probe:
+# wallet -> last probe ms. Five minutes avoids an RPC subrequest on every
+# 60-second heartbeat. Balance never gates eligibility.
 HEARTBEAT_SOLANA_BALANCE_MIN_MS = 5 * 60 * 1000
 _HEARTBEAT_BALANCE_PROBES = {}
-# Central donation fund (issue #308): a single worker-custodied Solana wallet
-# that anyone can donate to. A cron sweeps its whole balance out to the
-# currently-online nodes once an hour, so one donation address fans out to every
-# node keeping the network alive.
-CENTRAL_FUND_DISTRIBUTION_INTERVAL_MS = 60 * 60 * 1000  # distribute hourly
-# Don't distribute dust: wait until the fund holds at least this much over the
-# fee reserve before sweeping, so a cycle doesn't burn a transaction fee to hand
-# out a few lamports each.
-CENTRAL_FUND_MIN_DISTRIBUTION_LAMPORTS = 100_000
+# Community reward-pool planning (issue #308): the Worker may read one configured
+# public address and create unsigned distribution intents. Its owner signs those
+# intents on their own device; no Worker secret or cron path can sign or sweep.
+CENTRAL_FUND_DISTRIBUTION_INTERVAL_MS = 60 * 60 * 1000  # plan hourly
+# Reward timing, amount, observed uptime, and optional contribution threshold
+# are operator-configurable within conservative bounds. Randomized rounds pay
+# one eligible node; "instant" voluntary contributions use a separate all-node
+# intent and never bypass these eligibility checks.
+REWARD_DEFAULT_AMOUNT_LAMPORTS = 100_000
+REWARD_DEFAULT_JITTER_MS = 45 * 60 * 1000
+REWARD_DEFAULT_MIN_UPTIME_MS = 30 * 60 * 1000
+REWARD_ENDPOINT_FRESH_MS = 10 * 60 * 1000
+REWARD_OBSERVATION_GAP_MS = 20 * 60 * 1000
+REWARD_CONTRIBUTION_MIN_LAMPORTS = 10_000
+REWARD_CONTRIBUTION_MAX_LAMPORTS = 100 * LAMPORTS_PER_SOL
+REWARD_CONTRIBUTION_EXPIRES_MS = 60 * 60 * 1000
+REWARD_PENDING_EXPIRES_MS = 24 * 60 * 60 * 1000
+# Legacy Solana messages are size-bounded. Eight ordinary System transfers per
+# transaction leaves headroom for signatures/account metadata; larger all-node
+# distributions become an explicitly numbered multi-intent batch.
+REWARD_TRANSFERS_PER_INTENT = 8
 
 _schema_ready = False
 _stale_node_purge = {"ts": 0}
+LEGACY_WALLET_CUSTODY_MARKER = "legacy_wallet_custody_v2"
+LEGACY_WALLET_CUSTODY_TABLES = (
+    "accounts",
+    "users",
+    "nodes",
+    "federated_signup",
+    "issue_bounty",
+    "bounty_wallet",
+    "central_fund",
+)
 
 # Derived WebCrypto keys are pure functions of the DATA_KEY secret, which is
 # constant for an isolate's lifetime. Deriving them (SHA-256 digest + importKey,
@@ -2833,6 +3618,42 @@ async def ensure_schema(env):
     await _apply_schema(env)
 
 
+async def _assert_legacy_wallet_custody_ready(env):
+    """Refuse D1-backed service while a historical wallet key remains.
+
+    Migration 0057 invalidates the marker on every upgraded deployment. The
+    first matching Worker then decrypts every row in every historical
+    key-bearing shape. A missing/invalid ciphertext or any recognized wallet
+    secret fails closed; only a complete clean scan writes the fast-path
+    marker. The explicit offline scrub writes the same marker after its guarded
+    updates, so a quiesced migrated database starts without another full scan.
+    """
+    marker = await d1_first(
+        env, "SELECT v FROM schema_meta WHERE k=?", LEGACY_WALLET_CUSTODY_MARKER)
+    if marker and str(marker.get("v") or "").startswith("clean-v2:"):
+        return
+    for table in LEGACY_WALLET_CUSTODY_TABLES:
+        try:
+            rows = await d1_all(env, "SELECT data FROM " + table)
+        except Exception as error:
+            if "no such table" in str(error).lower():
+                continue
+            raise
+        for row in rows or []:
+            decoded = await decrypt_row(env, row.get("data", ""))
+            if not isinstance(decoded, dict):
+                raise RuntimeError("legacy_custody_migration_required")
+            if _admin_contains_wallet_key(decoded):
+                raise RuntimeError("legacy_custody_migration_required")
+    await d1_run(
+        env,
+        "INSERT INTO schema_meta (k,v) VALUES (?,?) "
+        "ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+        LEGACY_WALLET_CUSTODY_MARKER,
+        "clean-v2:" + _SCHEMA_FINGERPRINT,
+    )
+
+
 async def _apply_schema(env):
     global _schema_ready
     # Fast path: the deploy's migrate.sh (and any prior isolate's full apply)
@@ -2845,6 +3666,7 @@ async def _apply_schema(env):
         row = await d1_first(
             env, "SELECT v FROM schema_meta WHERE k='fingerprint'")
         if row and row.get("v") == _SCHEMA_FINGERPRINT:
+            await _assert_legacy_wallet_custody_ready(env)
             _schema_ready = True
             return
     except Exception as exc:
@@ -2868,6 +3690,7 @@ async def _apply_schema(env):
         "ON CONFLICT(k) DO UPDATE SET v=excluded.v",
         _SCHEMA_FINGERPRINT,
     )
+    await _assert_legacy_wallet_custody_ready(env)
     _schema_ready = True
 
 
@@ -2918,8 +3741,9 @@ async def d1_run(env, sql, *args):
 
 # --- Encryption-at-rest + blind index ---------------------------------------
 
-# Known placeholder values that must never reach production: encrypting custody
-# key material under a publicly known key is equivalent to storing it in plaintext.
+# Known placeholder values that must never reach production: application rows
+# include credentials and historical migration records, and publicly known
+# at-rest encryption would be equivalent to storing those values in plaintext.
 _INSECURE_DATA_KEYS = frozenset({
     "", "forkmesh-dev-data-key", "forkmesh-dev-data-key-change-me",
 })
@@ -2927,7 +3751,7 @@ _INSECURE_DATA_KEYS = frozenset({
 
 def _require_data_secret(env):
     # Fail closed: a missing or placeholder DATA_KEY would silently encrypt every
-    # custody seed under a public key. Set a real secret (deploy.sh pushes it):
+    # protected application row under a public key. Set a real Worker secret:
     #   uvx --from workers-py pywrangler secret put DATA_KEY
     secret = (getattr(env, "DATA_KEY", "") or "").strip()
     if secret in _INSECURE_DATA_KEYS:
@@ -2992,20 +3816,33 @@ async def _hmac_key(env):
     return key
 
 
-async def _room_chat_passphrase(env):
-    # The shared room-chat key, derived ONE-WAY from DATA_KEY with its own domain
-    # separation (same pattern as the blind-index HMAC key). Returned as a hex
-    # string that every client feeds into the existing PBKDF2(passphrase, room
-    # salt) room-key derivation, so it drops in for the old public app constant
-    # ("forkmesh-shared-room-key-v1") without changing the wire crypto.
+async def _room_chat_passphrase(
+        env, owner="mainnode", repo="forkmesh"):
+    # A repository-scoped room-chat passphrase, derived ONE-WAY from DATA_KEY
+    # with its own domain separation (same pattern as the blind-index HMAC key).
+    # The well-known mainnode/forkmesh room deliberately retains the v1
+    # derivation so retained public chat remains readable across this rollout.
+    # Every other repository gets a distinct v2 passphrase; having the public
+    # Town Square key therefore cannot decrypt a private repository room.
     #
     # Why this is a real improvement: the key is no longer a constant anyone can
     # read straight out of the open-source client — only an authenticated
     # ForkMesh account can fetch it. It is NOT confidentiality from the relay:
     # the relay operator holds DATA_KEY and can derive this too (as they always
     # could derive the old constant). SHA-256 is preimage-resistant, so exposing
-    # this passphrase never exposes DATA_KEY or the custody seeds it also guards.
-    secret = _require_data_secret(env) + ":room-chat-passphrase-v1"
+    # this passphrase never exposes DATA_KEY or other protected legacy/application
+    # records guarded by the same at-rest key.
+    owner = safe_segment(owner)
+    repo = safe_segment(repo)
+    if not owner or not repo:
+        raise ValueError("invalid repository room scope")
+    scope = owner.lower() + "/" + repo.lower()
+    suffix = (
+        ":room-chat-passphrase-v1"
+        if scope == "mainnode/forkmesh"
+        else ":room-chat-passphrase-v2:" + scope
+    )
+    secret = _require_data_secret(env) + suffix
     if _room_key_cache["secret"] == secret and _room_key_cache["value"]:
         return _room_key_cache["value"]
     digest = await js_crypto.subtle.digest("SHA-256", _to_js(secret.encode()))
@@ -3015,38 +3852,72 @@ async def _room_chat_passphrase(env):
     return value
 
 
-async def _room_key_authorized(env, request):
-    # Any registered ForkMesh account may fetch the shared room-chat key: prove it
-    # with a web/mobile account session token (bearer/body), or — for a desktop
-    # node that authenticates with its Ed25519 key rather than a session — a fresh
-    # ts + signature over "forkmesh-room-key-v1\n<node>\n<ts>" verified against the
-    # node's registered pubkey.
-    if await _authed_account_name(env, request):
-        return True
+async def _room_key_requester(env, request, owner, repo):
+    # Resolve the authenticated account/node requesting one repository-scoped
+    # passphrase. Browser/mobile callers use their bearer session. A desktop
+    # node signs a v2 canonical string that binds the proof to this exact
+    # repository. The v1 proof remains accepted only for the well-known public
+    # mainnode/forkmesh room so already-installed clients can upgrade cleanly.
+    actor = await _authed_account_name(env, request)
+    if actor:
+        return actor
     params = parse_qs(urlparse(request.url).query)
     node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
     ts = clean_string(params.get("ts", [""])[0], 20)
     sig = clean_string(params.get("sig", [""])[0], 200)
     if not node or not sig or not _ts_ok(ts):
-        return False
+        return ""
     pubkey = await _owner_pubkey(env, node)
     if not pubkey:
-        return False
-    canonical = ("forkmesh-room-key-v1\n" + node + "\n" + str(ts)).encode()
-    return await ed25519_verify(pubkey, sig, canonical)
+        return ""
+    canonical = (
+        "forkmesh-room-key-v2\n" + node + "\n" + owner.lower() + "\n"
+        + repo.lower() + "\n" + str(ts)
+    ).encode()
+    if await ed25519_verify(pubkey, sig, canonical):
+        return node
+    if owner.lower() == "mainnode" and repo.lower() == "forkmesh":
+        legacy = (
+            "forkmesh-room-key-v1\n" + node + "\n" + str(ts)
+        ).encode()
+        if await ed25519_verify(pubkey, sig, legacy):
+            return node
+    return ""
+
+
+async def _room_key_authorized(env, request):
+    # Compatibility wrapper retained for isolated callers/tests. Authorization
+    # for the endpoint itself is repository-scoped in chat_room_key_handler.
+    return bool(await _room_key_requester(
+        env, request, "mainnode", "forkmesh"))
 
 
 async def chat_room_key_handler(env, request):
-    # Serve the shared room-chat passphrase to authenticated clients only. This is
-    # what lets the room key live server-side (derived from DATA_KEY) instead of
-    # as a public constant baked into every client build.
+    # Serve a repository-scoped room passphrase to an authenticated participant.
+    # Missing and unauthorized private repositories share one 404 response, and
+    # the private catalog record is not decrypted until its blind-index ACL gate
+    # has passed.
     await ensure_schema(env)
     if method_name(request) != "GET":
         return json_response({"error": "method_not_allowed"}, status=405)
-    if not await _room_key_authorized(env, request):
+    params = parse_qs(urlparse(request.url).query)
+    owner = safe_segment(params.get("owner", ["mainnode"])[0])
+    repo = safe_segment(params.get("repo", ["forkmesh"])[0])
+    if not owner or not repo:
+        return _private_replica_not_found()
+    requester = await _room_key_requester(env, request, owner, repo)
+    if not requester:
         return json_response({"error": "unauthorized"}, status=401)
+    context = await _repository_access_context(
+        env, request, owner, repo, viewer=requester)
+    if context is None:
+        return _private_replica_not_found()
     return json_response(
-        {"ok": True, "passphrase": await _room_chat_passphrase(env)},
+        {
+            "ok": True,
+            "scope": owner.lower() + "/" + repo.lower(),
+            "passphrase": await _room_chat_passphrase(env, owner, repo),
+        },
         cache_control="no-store, max-age=0, must-revalidate",
     )
 
@@ -3358,6 +4229,14 @@ async def _contribution_write_catalog_state(
             ),
         ))
     await _contribution_run_batch(env, statements)
+    if is_private:
+        # A repository that becomes private must not retain even an encrypted
+        # automatic-publication queue. Keep the compatibility guard for the
+        # isolated contribution test harness, which loads this helper alone.
+        purge_digests = globals().get("_ap_purge_repo_digest_queues")
+        if callable(purge_digests):
+            await purge_digests(
+                env, record.get("owner", ""), record.get("name", ""))
 
 
 async def _contribution_move_repo_namespace(
@@ -4296,10 +5175,37 @@ async def catalog_handler(env, request):
         )
         live = {r["repo_bi"] for r in live_rows}
         repos = []
+        ssh_gateway = _ssh_gateway_settings(env)
         for r in rows:
             rec = await decrypt_row(env, r["data"])
             if rec:
                 owner_bi = r.get("owner_bi")
+                visibility = rec.get("visibility")
+                # Never trust the historical plaintext flag by itself:
+                # migration 0011 defaulted pre-existing rows to public. Only a
+                # signed record explicitly marked public is anonymous catalog
+                # data. A private record selected through a stale flag still
+                # requires an owner/share ACL recheck.
+                if visibility not in ("public", "private"):
+                    continue
+                if visibility == "private":
+                    if not authed_viewer:
+                        continue
+                    if not owner_bi:
+                        rec_owner = clean_string(
+                            rec.get("owner", ""), MAX_NODE_NAME).lower()
+                        owner_bi = (
+                            await blind_index(env, rec_owner)
+                            if rec_owner else "")
+                    if str(owner_bi or "") != str(viewer_bi):
+                        shared = await d1_first(
+                            env,
+                            "SELECT 1 AS one FROM repo_shares "
+                            "WHERE repo_bi=? AND grantee_bi=?",
+                            r.get("key_bi"), viewer_bi,
+                        )
+                        if not shared:
+                            continue
                 if active_nodes is not None:
                     if not owner_bi:
                         owner = clean_string(rec.get("owner", ""), MAX_NODE_NAME).lower()
@@ -4322,6 +5228,27 @@ async def catalog_handler(env, request):
                 rec["sharedWithMe"] = bool(
                     authed_viewer and rec["isPrivate"]
                     and rec.get("owner") != authed_viewer)
+                # Publish an SSH clone/push URL only when a separate gateway
+                # host and its Worker authorization token are both configured.
+                # The URL is never a claim that this HTTP Worker terminates SSH.
+                if ssh_gateway["configured"]:
+                    ssh_url = _ssh_repository_url(
+                        env, rec.get("owner", ""), rec.get("name", ""))
+                    if ssh_url:
+                        rec["sshUrl"] = ssh_url
+                # Only this ACL-authorized, no-store catalog response may reveal
+                # the random client locator for an encrypted private archive.
+                # Anonymous/public catalog rows never reach this branch for a
+                # private repository, and the locator itself contains no owner
+                # or repository name. It is still not a bearer credential:
+                # archive reads independently require the owner/share signature.
+                if rec["isPrivate"]:
+                    access_id = await _https_mirror_private_catalog_access_id(
+                        env, r["key_bi"], int(rec.get("keyEpoch") or 0))
+                    if access_id:
+                        rec["privateAccessId"] = access_id
+                        rec["privateAccessPath"] = (
+                            "/api/private-replicas/" + access_id)
                 repos.append(rec)
         # Second pass: mark each repo cloneable when its own host is offline but a
         # peer mirroring the same logical repo is online — the relay serves that
@@ -4333,7 +5260,20 @@ async def catalog_handler(env, request):
         for rec in repos:
             rec["cloneOnline"] = repo_clone_online(rec, served)
         repos.sort(key=lambda x: x.get("updatedAt", ""), reverse=True)
-        payload = {"ok": True, "repositories": repos[:MAX_CATALOG_REPOS]}
+        payload = {
+            "ok": True,
+            "repositories": repos[:MAX_CATALOG_REPOS],
+            "sshGatewayConfigured": ssh_gateway["configured"],
+            "sshTransport": (
+                "node-side-forced-command"
+                if ssh_gateway["configured"] else "not-configured"),
+            "payoutCustody": "external-self-custodial-public-addresses",
+            "payoutNotice": (
+                "Repository records may include an operator's optional public "
+                "payout address only. ForkMesh holds no wallet key or user "
+                "funds, and publication does not guarantee a reward."
+            ),
+        }
         # Per-viewer responses (with private repos) must never touch the shared
         # public cache — and must say no-store themselves so no downstream cache
         # holds them either; only the public-only list is cacheable.
@@ -4373,10 +5313,65 @@ async def catalog_handler(env, request):
         if record["maintainer"] != owner_pub:
             return json_response({"error": "maintainer_mismatch"}, status=403)
         catalog_sig = clean_string(data.get("catalogSig", ""), 200)
-        canonical = ("forkmesh-catalog-v1\n" + owner + "\n" + record["name"] +
-                     "\n" + record["updatedAt"]).encode()
+        try:
+            catalog_sig_version = int(data.get("catalogSigVersion", 1) or 1)
+        except (TypeError, ValueError):
+            catalog_sig_version = 0
+        if catalog_sig_version == 2:
+            # V2 binds every normalized record field, including visibility and
+            # the served-ref fingerprint. A relay or replay holder cannot turn
+            # a private publication into a public one while reusing a signature.
+            signed_record = dict(record)
+            signed_record.pop("signature", None)
+            record_hash = hashlib.sha256(json.dumps(
+                signed_record, sort_keys=True,
+                separators=(",", ":")).encode()).hexdigest()
+            canonical = ("forkmesh-catalog-v2\n" + record_hash).encode()
+        else:
+            # Legacy signatures did not bind visibility. They remain accepted
+            # only for explicitly public repositories; private publication must
+            # upgrade before the relay stores any confidential metadata.
+            if record["visibility"] != "public":
+                return json_response(
+                    {
+                        "error": "client_upgrade_required",
+                        "requiredCatalogSigVersion": 2,
+                    },
+                    status=426,
+                )
+            canonical = (
+                "forkmesh-catalog-v1\n" + owner + "\n" + record["name"] +
+                "\n" + record["updatedAt"]
+            ).encode()
         if not await ed25519_verify(owner_pub, catalog_sig, canonical):
             return json_response({"error": "bad_signature"}, status=401)
+        if record["visibility"] == "private":
+            opaque_repo_id = record.get("opaqueRepoId", "")
+            manifest_hash = record.get("encryptedManifestHash", "")
+            manifest_sig = record.get("encryptedManifestSig", "")
+            key_epoch = int(record.get("keyEpoch") or 0)
+            if (record.get("mirrorEncryption") != "owner-sealed-v1"
+                    or not re.fullmatch(r"[a-f0-9]{32}", opaque_repo_id)
+                    or key_epoch < 1
+                    or not re.fullmatch(r"[a-f0-9]{64}", manifest_hash)
+                    or not manifest_sig):
+                return json_response({
+                    "error": "private_mirror_encryption_required",
+                    "required": (
+                        "owner-sealed-v1 encrypted archive, opaque repository "
+                        "id, key epoch, and owner-signed manifest hash"
+                    ),
+                }, status=426)
+            manifest_canonical = (
+                "forkmesh-private-manifest-v1\n" + owner + "\n"
+                + record["name"] + "\n" + opaque_repo_id + "\n"
+                + str(key_epoch) + "\n" + manifest_hash + "\n"
+                + record["updatedAt"]
+            ).encode()
+            if not await ed25519_verify(
+                    owner_pub, manifest_sig, manifest_canonical):
+                return json_response(
+                    {"error": "bad_private_manifest_signature"}, status=401)
         owner_bi = await blind_index(env, owner)
         try:
             await touch_registered_node(env, owner_bi, publish_owner_rec)
@@ -4499,6 +5494,7 @@ async def catalog_handler(env, request):
         name = safe_segment(params.get("name", [""])[0])
         ts = clean_string(params.get("ts", [""])[0], 20)
         sig = clean_string(params.get("sig", [""])[0], 200)
+        audit_target = owner + "/" + name if owner and name else ""
         if not owner or not name or not ts or not sig:
             return json_response({"error": "owner_name_ts_sig_required"}, status=400)
         try:
@@ -4509,34 +5505,78 @@ async def catalog_handler(env, request):
             return json_response({"error": "stale_request"}, status=401)
 
         key_bi = await blind_index(env, owner + "/" + name)
-        row = await d1_first(env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
+        try:
+            row = await d1_first(
+                env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
+        except Exception:
+            await _audit_sensitive_action(
+                env, owner, "repository.delete", "repository",
+                audit_target, "failed", {"reason": "storage_error"})
+            raise
         if not row:
             return json_response({"ok": True, "deleted": False})
-        existing = await decrypt_row(env, row["data"])
+        try:
+            existing = await decrypt_row(env, row["data"])
+        except Exception:
+            await _audit_sensitive_action(
+                env, owner, "repository.delete", "repository",
+                audit_target, "failed", {"reason": "record_unreadable"})
+            raise
         if not existing:
+            await _audit_sensitive_action(
+                env, owner, "repository.delete", "repository",
+                audit_target, "failed", {"reason": "record_unreadable"})
             return json_response({"error": "catalog_record_unreadable"}, status=500)
-        owner_pub = await _owner_pubkey(env, owner)
+        try:
+            owner_pub = await _owner_pubkey(env, owner)
+        except Exception:
+            await _audit_sensitive_action(
+                env, owner, "repository.delete", "repository",
+                audit_target, "failed", {"reason": "identity_lookup_error"})
+            raise
         if not owner_pub:
+            await _audit_sensitive_action(
+                env, owner, "repository.delete", "repository",
+                audit_target, "denied", {"reason": "account_required"})
             return json_response({"error": "account_required"}, status=403)
         canonical = ("forkmesh-catalog-delete-v1\n" + owner + "\n" + name +
                      "\n" + ts).encode()
-        if not await ed25519_verify(owner_pub, sig, canonical):
+        try:
+            authorized = await ed25519_verify(owner_pub, sig, canonical)
+        except Exception:
+            await _audit_sensitive_action(
+                env, owner, "repository.delete", "repository",
+                audit_target, "failed", {"reason": "signature_check_error"})
+            raise
+        if not authorized:
+            await _audit_sensitive_action(
+                env, owner, "repository.delete", "repository",
+                audit_target, "denied", {"reason": "bad_signature"})
             return json_response({"error": "bad_signature"}, status=401)
         # Deleting a single repo must purge it as completely as the
         # whole-account teardown does, or leftover scoped state (inboxes,
         # host presence, agent state, bounties, chat history) keeps the repo
         # alive in practice even though its catalog row is gone.
-        await _delete_repo_scoped_state(env, key_bi)
-        await d1_run(env, "DELETE FROM repositories WHERE key_bi=?", key_bi)
-        await _delete_bounties_namespace(env, owner, name)
-        await d1_run(
-            env, "DELETE FROM chat_history WHERE room_key LIKE ?",
-            "repo:" + owner + "/" + name + ":room:%")
-        await d1_run(
-            env,
-            "DELETE FROM funds_received WHERE scope='project' AND key=?",
-            owner + "/" + name)
-        await purge_catalog_related_caches()
+        try:
+            await _delete_repo_scoped_state(env, key_bi)
+            await d1_run(env, "DELETE FROM repositories WHERE key_bi=?", key_bi)
+            await _delete_bounties_namespace(env, owner, name)
+            await d1_run(
+                env, "DELETE FROM chat_history WHERE room_key LIKE ?",
+                "repo:" + owner + "/" + name + ":room:%")
+            await d1_run(
+                env,
+                "DELETE FROM funds_received WHERE scope='project' AND key=?",
+                owner + "/" + name)
+            await purge_catalog_related_caches()
+        except Exception:
+            await _audit_sensitive_action(
+                env, owner, "repository.delete", "repository",
+                audit_target, "failed", {"reason": "mutation_error"})
+            raise
+        await _audit_sensitive_action(
+            env, owner, "repository.delete", "repository",
+            audit_target, "success", {"deleted": True})
         return json_response({"ok": True, "deleted": True})
 
     return json_response({"error": "method_not_allowed"}, status=405)
@@ -4577,11 +5617,90 @@ def _catalog_record_matches_identity(record, owner, repo):
     return clone_owner.lower() == owner_l and clone_repo.lower() == repo_l
 
 
+def _native_repository_logo_id(owner, repo):
+    canonical = (
+        "forkmesh-native-repository-logo-v1\n"
+        + str(owner or "").strip().lower() + "\n"
+        + str(repo or "").strip().lower()
+    ).encode()
+    return "native_" + hashlib.sha256(canonical).hexdigest()[:24]
+
+
+def _native_repository_logo_record(record, owner, repo):
+    source = record if isinstance(record, dict) else {}
+    metadata = source.get("logoMetadata")
+    metadata = dict(metadata) if isinstance(metadata, dict) else {}
+    metadata["description"] = clean_string(
+        source.get("description", ""), 500)
+    topics = source.get("topics")
+    if isinstance(topics, list) and "topics" not in metadata:
+        metadata["topics"] = topics
+    return {
+        "id": _native_repository_logo_id(owner, repo),
+        "provider": "forkmesh",
+        "providerOwner": str(owner or "").lower(),
+        "name": str(repo or ""),
+        "fullName": str(owner or "") + "/" + str(repo or ""),
+        "metadata": metadata,
+        # Missing or malformed visibility stays private/fail-closed.
+        "isPrivate": source.get("visibility") != "public",
+    }
+
+
+async def _native_repository_logo_context(env, request, owner, repo):
+    # Reuse the normal repository read boundary so logo GETs have exactly the
+    # same owner/share behavior as repository content. The shared gate rejects
+    # plaintext-private rows before decryption, treats the encrypted signed
+    # visibility as authoritative, and normalizes missing and unauthorized
+    # names to the same empty result.
+    context = await _repository_access_context(
+        env, request, owner, repo)
+    if not isinstance(context, dict):
+        return None, "", ""
+    record = context.get("record")
+    actor = clean_string(context.get("viewer"), MAX_NODE_NAME).lower()
+    return (
+        _native_repository_logo_record(record, owner, repo),
+        _native_repository_logo_id(owner, repo),
+        actor,
+    )
+
+
+async def native_repository_logo_handler(
+        env, request, owner, repo, suggestions=False):
+    await ensure_schema(env)
+    record, repository_id, actor = await _native_repository_logo_context(
+        env, request, owner, repo)
+    if not record:
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+    service = _repository_import_service()
+    if not suggestions:
+        if method_name(request) != "GET":
+            return json_response({"error": "method_not_allowed"}, status=405)
+        response = await service.logo_for_record(env, repository_id, record)
+        return response
+
+    async def can_admin(candidate):
+        candidate = str(candidate or actor or "").strip().lower()
+        return bool(
+            candidate
+            and (
+                await _repository_import_moderator(env, candidate)
+                or await _account_owns_node(env, candidate, owner)
+            )
+        )
+
+    return await service.native_logo_suggestions(
+        env, request, repository_id, record, can_admin)
+
+
 async def _repo_about_public(env, request, owner, repo):
     # Public About/branding card + fediverse stats: the repo page's social
     # badge header and Watch button read this. No auth — same visibility as
     # the catalog entry itself.
-    if await _repo_is_private(env, owner, repo):
+    privacy_reader = globals().get("_repo_is_private")
+    if callable(privacy_reader) and await privacy_reader(env, owner, repo):
         return json_response({"error": "not_found"}, status=404)
     key_bi = await blind_index(env, owner + "/" + repo)
     repo_row = await d1_first(
@@ -4603,6 +5722,23 @@ async def _repo_about_public(env, request, owner, repo):
             logo_url = media_url
         elif media.get("kind") == "banner":
             banner_url = media_url
+    generated_logo = {}
+    resolved_logo = {}
+    logo_record_builder = globals().get("_native_repository_logo_record")
+    logo_service_factory = globals().get("_repository_import_service")
+    repository_import_module = globals().get("repository_import")
+    if (callable(logo_record_builder)
+            and callable(logo_service_factory)
+            and repository_import_module is not None):
+        logo_record = logo_record_builder(rec, owner, repo)
+        logo_service = logo_service_factory()
+        approved_logo = await logo_service._official_logo(
+            env, logo_record["id"])
+        generated_logo = repository_import_module.deterministic_logo(
+            logo_record)
+        resolved_logo = approved_logo or generated_logo
+    if not logo_url:
+        logo_url = str(resolved_logo.get("dataUrl") or "")
     followers = 0
     followers_list = []
     fedi_enabled = await _ap_enabled(env)
@@ -4642,8 +5778,9 @@ async def _repo_about_public(env, request, owner, repo):
             (rec or {}).get("description", "") or "", 240),
         "website": clean_string((rec or {}).get("website", "") or "", 240),
         "logoUrl": logo_url,
+        "logo": resolved_logo,
         "bannerUrl": banner_url,
-        "defaultLogoUrl": AP_AVATAR_PATH,
+        "defaultLogoUrl": generated_logo.get("dataUrl") or AP_AVATAR_PATH,
         "defaultBannerUrl": AP_BANNER_PATH,
         "fediverse": {
             # enabled = "this repo currently federates": the instance switch
@@ -4669,7 +5806,8 @@ async def repo_about_handler(env, request, owner, repo):
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     # Only the repo owner (proven by their session token, not a self-asserted
-    # ownerAccount string) or a network admin may edit repo metadata. The Qt
+    # ownerAccount string) may edit repo metadata. A platform role is not a
+    # decryption/content-management grant. The Qt
     # desktop has no browser session; it proves the owner account's registered
     # Ed25519 key instead (same trust gate as ap-publish / the inbox drains,
     # with a distinct canonical so its tokens can't be replayed elsewhere).
@@ -4685,8 +5823,7 @@ async def repo_about_handler(env, request, owner, repo):
             actor = str(owner).lower()
             owner_key_authed = True
     if not actor or (not owner_key_authed
-                     and not await _account_owns_node(env, actor, owner)
-                     and not await _is_admin(env, actor)):
+                     and not await _account_owns_node(env, actor, owner)):
         return json_response({"error": "not_authorized"}, status=403)
     if not await _owner_pubkey(env, owner):
         return json_response({"error": "account_required"}, status=403)
@@ -4815,6 +5952,14 @@ async def repo_about_handler(env, request, owner, repo):
                     "%s/.well-known/webfinger?resource=acct:%s@%s"
                     % (origin, ap_handle, _ap_domain_of(origin))):
                 await edge_cache_delete(cache_key)
+            if not (ap_settings["federate"]
+                    and ap_settings["broadcastEvents"]):
+                # Opt-out is immediate and destructive: queued public metadata
+                # cannot later leak in a stale digest after settings change.
+                purge_digests = globals().get(
+                    "_ap_purge_repo_digest_queues")
+                if callable(purge_digests):
+                    await purge_digests(env, owner, repo)
     if text_changed:
         # Queue the edit for the owner's desktop node, which writes it into the
         # repo's committed .forkmesh/info.json (the same file the desktop app's
@@ -4867,6 +6012,11 @@ async def repo_mirrors_handler(env, request, owner, repo):
     if method_name(request) != "GET":
         return json_response({"error": "method_not_allowed"}, status=405)
     await ensure_schema(env)
+    privacy_reader = globals().get("_repo_is_private")
+    if (callable(privacy_reader)
+            and await privacy_reader(env, owner, repo)):
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
     # Public, poll-heavy payload (repo page + desktop mirror panel): serve
     # from the edge for a few seconds so a burst of viewers costs one build.
     cache_key = ("https://forkmesh.internal/api/repo/%s/%s/mirrors"
@@ -4888,6 +6038,8 @@ async def repo_mirrors_handler(env, request, owner, repo):
             continue
         rec = await decrypt_row(env, row.get("data"))
         if not rec:
+            continue
+        if rec.get("visibility") != "public":
             continue
         if _is_blocked_catalog_identity(env, rec.get("owner"), rec.get("name")):
             continue
@@ -4977,6 +6129,9 @@ async def release_download_counts(env, repo_bi):
 async def release_downloads_handler(env, request, owner, repo):
     if method_name(request) != "GET":
         return json_response({"error": "method_not_allowed"}, status=405)
+    privacy_reader = globals().get("_repo_is_private")
+    if callable(privacy_reader) and await privacy_reader(env, owner, repo):
+        return json_response({"error": "not_found"}, status=404)
     repo_bi = await blind_index(env, owner + "/" + repo)
     counts = await release_download_counts(env, repo_bi)
     return json_response({"ok": True, "counts": counts})
@@ -5020,6 +6175,13 @@ def _account_kind(rec):
     return "user" if rec.get("pass_hash") else "node"
 
 
+def _account_has_legacy_wallet_key(rec):
+    # Compatibility detector only. A historical account blob can still contain
+    # a donation wallet seed until the offline migration scrubs it. No active
+    # Worker write may copy that seed into a new ciphertext.
+    return isinstance(rec, dict) and bool(rec.get("donation_secret"))
+
+
 async def _mirror_account_identity_tables(env, name_bi, rec, email_bi=None,
                                           ip_bi=None, is_admin=None,
                                           touch_seen=False):
@@ -5027,6 +6189,8 @@ async def _mirror_account_identity_tables(env, name_bi, rec, email_bi=None,
     # (migration 0025). The legacy accounts table these once mirrored was
     # dropped by migration 0042; old clients keep using /api/accounts/* but
     # every record lives here now, keyed by blind_index(name) on both tables.
+    if _account_has_legacy_wallet_key(rec):
+        raise RuntimeError("legacy_custody_migration_required")
     name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
     if not name:
         return
@@ -5085,7 +6249,8 @@ async def touch_registered_node(env, name_bi, rec=None):
     # merely browsing stale profiles would keep abandoned nodes alive forever.
     if not name_bi:
         return
-    if (rec and clean_string(rec.get("pubkey", ""), 120)
+    if (rec and not _account_has_legacy_wallet_key(rec)
+            and clean_string(rec.get("pubkey", ""), 120)
             and name_bi not in _MIRRORED_ACCOUNT_BIS):
         # First touch this isolate: full mirror repair (also stamps last_seen).
         await _mirror_account_identity_tables(
@@ -5171,24 +6336,8 @@ def _ts_ok(ts):
         return False
 
 
-async def verify_host_token(env, owner, repo, ts, sig):
-    # Only the holder of the owner account's registered key may register as a host
-    # for owner/repo. Mirrors _account_heartbeat: fresh ts + ed25519 over an
-    # explicit canonical string, verified against the account's pubkey. Returns
-    # False when there is no registered account (hard gate — no self-assert).
-    if not owner or not repo or not sig or not _ts_ok(ts):
-        return False
-    pubkey = await _owner_pubkey(env, owner)
-    if not pubkey:
-        return False
-    canonical = ("forkmesh-host-v1\n" + owner + "\n" + repo + "\n" + str(ts)).encode()
-    return await ed25519_verify(pubkey, sig, canonical)
-
-
 async def verify_view_token(env, owner, repo, ts, sig):
-    # Read gate for private repos: same shape as verify_host_token but a distinct
-    # canonical string so a host token can't be replayed as a view token (and vice
-    # versa). Only the owner account's key holder can browse/clone a private repo.
+    # Only the owner account's key holder can browse/clone a private repo.
     if not owner or not repo or not sig or not _ts_ok(ts):
         return False
     pubkey = await _owner_pubkey(env, owner)
@@ -5201,10 +6350,9 @@ async def verify_view_token(env, owner, repo, ts, sig):
 async def verify_push_token(env, owner, repo, ts, sig):
     # Write gate for git push over the relay (issue #358): only the owner
     # account's registered key may run receive-pack against the served mirror
-    # (collaborator keys are a later extension). Same shape as verify_host_token /
-    # verify_view_token — fresh ts + ed25519 over an explicit canonical string —
-    # but a distinct prefix so a host or view token can never be replayed as a
-    # push token, and vice versa. This ts-signed binding is deliberately the
+    # (collaborator keys are a later extension). It uses a fresh timestamp and
+    # Ed25519 over an explicit canonical string with a distinct prefix. This
+    # timestamp-signed binding is deliberately the
     # simplest thing that stays in the existing trust model (no server-side nonce
     # state); the freshness window is the short-lived element.
     if not owner or not repo or not sig or not _ts_ok(ts):
@@ -5298,18 +6446,111 @@ async def verify_share_view_token(env, viewer, owner, repo, ts, sig):
 
 
 async def _repo_is_private(env, owner, repo):
-    # Plaintext is_private flag for owner/repo. A missing catalog row means the
-    # repo was never published (e.g. an ad-hoc host) and stays public, preserving
-    # the pre-private-repos behavior. Best-effort: any error => treat as public so
-    # a transient DB hiccup can't lock everyone out of public repos.
+    # Anonymous serving is permitted only by an explicit public catalog row.
+    # Missing/malformed records and database failures fail closed. This makes a
+    # private repository indistinguishable from an unpublished repository to
+    # unauthenticated callers and prevents an outage from becoming a data leak.
     try:
         await ensure_schema(env)
         key_bi = await blind_index(env, owner + "/" + repo)
         row = await d1_first(
-            env, "SELECT is_private FROM repositories WHERE key_bi=?", key_bi)
-        return bool(row and row.get("is_private"))
-    except Exception:
+            env,
+            "SELECT is_private, data FROM repositories WHERE key_bi=?",
+            key_bi,
+        )
+        if not row or int(row.get("is_private", 1) or 0) != 0:
+            return True
+        # Migration 0011 historically defaulted existing rows to public.
+        # Validate that the signed encrypted record itself explicitly says
+        # public before serving; an old row with missing/garbled visibility is
+        # hidden until its owner republishes it under the v2 catalog contract.
+        decryptor = globals().get("decrypt_row")
+        if callable(decryptor):
+            record = await decryptor(env, row.get("data"))
+            return not record or record.get("visibility") != "public"
+        # Isolated compatibility harnesses may omit decrypt_row. Production
+        # always has it, so this fallback cannot reopen the deployed boundary.
         return False
+    except Exception:
+        return True
+
+
+async def _repository_access_context(
+        env, request, owner, repo, viewer=""):
+    """Resolve a repository only after applying its normal read boundary.
+
+    Public records must be explicitly public in both the plaintext routing flag
+    and the encrypted catalog record. Private/malformed records are gated by
+    blind-index owner/share checks before decryption. Missing and unauthorized
+    callers both receive ``None`` so named control endpoints cannot become
+    repository-existence or decryption oracles.
+    """
+    try:
+        await ensure_schema(env)
+        owner = safe_segment(owner)
+        repo = safe_segment(repo)
+        if not owner or not repo:
+            return None
+        repo_bi = await blind_index(env, owner + "/" + repo)
+        row = await d1_first(
+            env,
+            "SELECT owner_bi, is_private, data FROM repositories "
+            "WHERE key_bi=?",
+            repo_bi,
+        )
+        if not row:
+            return None
+        plaintext_value = row.get("is_private")
+        try:
+            plaintext_private = (
+                plaintext_value is None
+                or str(plaintext_value).strip() == ""
+                or int(plaintext_value) != 0
+            )
+        except (TypeError, ValueError):
+            plaintext_private = True
+
+        actor = clean_string(viewer, MAX_NODE_NAME).strip().lower()
+        if not actor:
+            actor = await _authed_account_name(env, request)
+        authorized = False
+
+        async def authorize_private():
+            if actor and (
+                await _account_owns_node(env, actor, owner)
+                or await _repo_shared_with(env, owner, repo, actor)
+            ):
+                return True
+            return await _basic_auth_view_ok(env, owner, repo, request)
+
+        # owner_bi is a non-reversible blind index. Check it before decrypting a
+        # plaintext-private row so a corrupt/mismatched row remains invisible.
+        if plaintext_private:
+            expected_owner_bi = await blind_index(env, owner)
+            if str(row.get("owner_bi") or "") != str(expected_owner_bi):
+                return None
+            authorized = await authorize_private()
+            if not authorized:
+                return None
+
+        record = await decrypt_row(env, row.get("data"))
+        if not _catalog_record_matches_identity(record, owner, repo):
+            return None
+        signed_public = record.get("visibility") == "public"
+        explicit_public = signed_public and not plaintext_private
+        if not explicit_public:
+            if not authorized:
+                authorized = await authorize_private()
+            if not authorized:
+                return None
+        return {
+            "repoBi": repo_bi,
+            "visibility": "public" if explicit_public else "private",
+            "record": record,
+            "viewer": actor,
+        }
+    except Exception:
+        return None
 
 
 async def _basic_auth_view_ok(env, owner, repo, request):
@@ -5346,7 +6587,7 @@ async def _save_account(env, name_bi, rec, email_bi=None, ip_bi=None):
     # Persist the encrypted record into the users/nodes tables; pass email_bi to
     # (re)index for email login and ip_bi to (re)index the signup IP for
     # duplicate detection. Both are only written when supplied, so a caller that
-    # doesn't have them in hand (e.g. a donation-poll save) never clobbers a
+    # doesn't have them in hand never clobbers a
     # value set at finalize. is_admin is never written here, so a value set
     # directly in the DB survives ordinary account updates.
     await _mirror_account_identity_tables(
@@ -5385,6 +6626,11 @@ async def _move_bounties_namespace(env, old_owner, new_owner, repo,
         rec = await decrypt_row(env, row.get("data", "")) or {}
         if (rec.get("owner") != old_owner or rec.get("repo") != repo):
             continue
+        # Namespace migration re-encrypts the whole record. Refuse to do that
+        # while a historical escrow key is still present; the offline custody
+        # migration must export, reconcile, and scrub it first.
+        if rec.get("secret") or not rec.get("legacy_custody_migrated_at"):
+            return "legacy_custody_migration_required"
         try:
             number = int(rec.get("number", 0))
         except (TypeError, ValueError):
@@ -5608,6 +6854,9 @@ async def _rename_account_namespace(env, name_bi, rec, new_name):
     await d1_run(
         env, "UPDATE account_devices SET account_bi=? WHERE account_bi=?",
         new_name_bi, name_bi)
+    await d1_run(
+        env, "UPDATE account_ssh_keys SET account_bi=? WHERE account_bi=?",
+        new_name_bi, name_bi)
     await d1_run(env, "DELETE FROM users WHERE user_bi=?", name_bi)
     await d1_run(env, "DELETE FROM nodes WHERE node_bi=?", name_bi)
     await purge_catalog_related_caches()
@@ -5646,6 +6895,10 @@ async def _delete_repo_scoped_state(env, repo_bi):
     await d1_run(env, "DELETE FROM clone_rr WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM repo_first_hosted WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM repo_agents WHERE repo_bi=?", repo_bi)
+    await d1_run(
+        env, "DELETE FROM repo_security_scans WHERE repo_bi=?", repo_bi)
+    await d1_run(
+        env, "DELETE FROM repo_security_scan_reviews WHERE repo_bi=?", repo_bi)
     # Invalidate the per-isolate agent-snapshot digest: a re-published repo
     # gets the same deterministic repo_bi back, and a memoized digest would
     # otherwise make the desktop's identical re-push a silent no-op forever
@@ -5715,6 +6968,8 @@ async def _delete_account_namespace(env, name_bi, rec):
         name_bi)
     await d1_run(
         env, "DELETE FROM account_devices WHERE account_bi=?", name_bi)
+    await d1_run(
+        env, "DELETE FROM account_ssh_keys WHERE account_bi=?", name_bi)
     if email:
         email_bi = await blind_index(env, email)
         await d1_run(env, "DELETE FROM login_attempts WHERE id_bi=?", email_bi)
@@ -5779,15 +7034,16 @@ async def _account_mirror_count(env, name):
     total = 0
     for owner in await _profile_catalog_owner_names(env, name):
         owner_bi = await blind_index(env, owner)
-        row = await d1_first(
+        rows = await d1_all(
             env,
-            "SELECT COUNT(*) AS n FROM repositories WHERE owner_bi=? AND is_private = 0",
+            "SELECT data FROM repositories "
+            "WHERE owner_bi=? AND is_private=0",
             owner_bi,
         )
-        try:
-            total += int((row or {}).get("n", 0) or 0)
-        except (TypeError, ValueError):
-            pass
+        for row in rows or []:
+            record = await decrypt_row(env, row.get("data"))
+            if record and record.get("visibility") == "public":
+                total += 1
     return total
 
 
@@ -6005,6 +7261,13 @@ async def _account_public_payload(env, rec):
         "isAdmin": is_admin,
         "solana": solana if has_payout else "",
         "hasPayoutAddress": has_payout,
+        "payoutCustody": "external-self-custodial-public-address",
+        "payoutNotice": (
+            "ForkMesh stores only the optional public payout address. Wallet "
+            "keys, transaction approval, and user-owned funds remain with the "
+            "external wallet owner; reward selection and payment are not "
+            "guaranteed."
+        ),
         "sessionToken": _account_session_token(env, name),
         "avatarPng": rec.get("avatar_png", ""),
         "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
@@ -6062,7 +7325,9 @@ async def _account_users_directory(env, request):
     )
     for row in rows or []:
         rec = await decrypt_row(env, row.get("data", ""))
-        if not rec or _account_kind(rec) != "user" or rec.get("status") != "active":
+        if (not rec or _account_kind(rec) != "user"
+                or rec.get("status") != "active"
+                or rec.get("profile_private")):
             continue
         name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
         if not name or name in seen:
@@ -6092,32 +7357,6 @@ def _donation_expiry_fields(rec, now):
     except (TypeError, ValueError):
         delete_after = expires + DONATION_ADDRESS_DELETE_GRACE_MS
     return created, expires, delete_after
-
-
-def _ensure_donation_expiry_fields(rec, now):
-    if not rec.get("donation_address"):
-        return False
-    created, expires, delete_after = _donation_expiry_fields(rec, now)
-    before = (
-        rec.get("donation_created_at"),
-        rec.get("donation_expires_at"),
-        rec.get("donation_delete_after"),
-    )
-    rec["donation_created_at"] = created
-    rec["donation_expires_at"] = expires
-    rec["donation_delete_after"] = delete_after
-    return before != (created, expires, delete_after)
-
-
-def _clear_donation_address(rec):
-    for key in (
-        "donation_address", "donation_reference", "donation_required_lamports",
-        "donation_confirmed", "donation_created_at", "donation_expires_at",
-        "donation_delete_after", "donation_received_lamports", "donation_secret",
-    ):
-        rec.pop(key, None)
-    if rec.get("status") != "active":
-        rec["status"] = "reserved"
 
 
 def _account_session_secret(env):
@@ -6182,9 +7421,8 @@ async def _authed_account_name(env, request, data=None):
     return (rec.get("name", "") if rec else "").strip().lower()
 
 
-# A bare reservation only holds the name while a signup is genuinely in flight:
-# the holder has an open, unpaid, unexpired donation request. Once that lapses
-# (or never existed) the reservation is abandoned and the name is free again.
+# Legacy reservations may still carry an unexpired historical deposit record.
+# This helper recognizes only that migration-era state; new signup is free.
 def _donation_in_progress(rec):
     if not rec.get("donation_address") or rec.get("donation_confirmed"):
         return False
@@ -6227,7 +7465,7 @@ async def _account_signup(env, request):
 
     # Per-IP account-creation throttle (checked only once the name/email are
     # otherwise creatable, so a rejected duplicate doesn't burn the quota).
-    signup_ip = (_signup_metadata(request).get("ip") or "").strip()
+    signup_ip = _security_request_network_identifier(request)
     throttled = await signup_rate_check(
         env, await blind_index(env, signup_ip) if signup_ip else None)
     if throttled is not None:
@@ -6245,8 +7483,12 @@ async def _account_signup(env, request):
     rec["status"] = "active"
     rec["email_verified"] = bool(rec.get("email_verified", False))
     rec.setdefault("created_at", int(Date.now()))
-    rec.setdefault("signup", _signup_metadata(request))
-    signup_ip = (rec.get("signup") or {}).get("ip") or ""
+    signup_meta = _signup_metadata(request)
+    old_signup = rec.get("signup")
+    if isinstance(old_signup, dict) and old_signup.get("at"):
+        signup_meta["at"] = int(old_signup.get("at") or signup_meta["at"])
+    # Overwrite any legacy raw ip/ua keys the next time an account is saved.
+    rec["signup"] = signup_meta
     ip_bi = await blind_index(env, signup_ip) if signup_ip else None
     await _save_account(env, name_bi, rec, email_bi=email_bi, ip_bi=ip_bi)
     if rec.get("email") and not rec["email_verified"]:
@@ -6331,9 +7573,9 @@ async def _account_follow(env, request, target_name, method):
     return json_response({"ok": True, "name": target, **social})
 
 
-# Step 1 of the funnel: claim a public node name. The desktop client signs the
-# claim with its Ed25519 identity (binding the name to a key); the website may
-# reserve without a key. A name is only "taken" once it is finalized/paid.
+# Claim a public node name. The desktop client signs the claim with its Ed25519
+# identity (binding the name to a key); the website may reserve without a key.
+# Legacy confirmed-deposit flags are honored only to avoid reclaiming old names.
 async def _account_reserve(env, request):
     try:
         data = await request.json()
@@ -6358,11 +7600,9 @@ async def _account_reserve(env, request):
         if existing.get("status") == "active" or existing.get("donation_confirmed"):
             return json_response({"error": "node_name_taken"}, status=409)
         held_by_other = bool(ex_pub) and (not pubkey or ex_pub != pubkey)
-        # A reservation bound to a different key only blocks the name while that
-        # holder's signup is still live (an open, unexpired donation). Otherwise
-        # it's an abandoned reservation — a fresh install on a new key (the common
-        # case) must be able to reclaim its own name instead of forever hitting
-        # "node_name_taken" for a name nobody actually paid for.
+        # A reservation bound to a different key only blocks the name while its
+        # migration-era expiry window is still live. Otherwise it is abandoned,
+        # so a fresh install can reclaim the name.
         if held_by_other and _donation_in_progress(existing):
             return json_response({"error": "node_name_taken"}, status=409)
         if held_by_other:
@@ -6397,11 +7637,9 @@ async def _account_reserve(env, request):
         {"ok": True, "nodeName": name, "status": "reserved"}, status=201)
 
 
-# Step 2 (the "Join" step): create a Solana payment request for this signup.
-# Signup payments land in unique per-account deposit wallets; the worker sweeps
-# confirmed deposits to the treasury and currently-online node payout addresses.
-# The base58/base64url codecs, JSON-RPC client, transfer-message assembly and
-# Ed25519 signing all live in solana.py (imported at the top of this module).
+# Legacy step-2 helpers remain below as unreachable migration documentation.
+# The live endpoint returns 410: signup is free, and reward/fund transfers are
+# unsigned plans completed by an explicitly configured owner-device signer.
 
 
 def _amount_sol(lamports):
@@ -6438,242 +7676,27 @@ async def _solana_balance_lamports(env, address):
         return None
 
 
-async def _solana_send_transfers(env, from_addr, seed_b64url, transfers):
-    transfers = [(to, int(lamports)) for to, lamports in transfers
-                 if SOLANA_RE.match(to or "") and int(lamports) > 0]
-    if not transfers:
-        return ""
-    blockhash = await _solana_latest_blockhash(env)
-    if not blockhash:
-        return ""
-    message = _solana_transfer_message(from_addr, transfers, blockhash)
-    sig = await _solana_sign_message(from_addr, seed_b64url, message)
-    if len(sig) != 64:
-        return ""
-    tx = _shortvec(1) + sig + message
-    return await _solana_send_transaction(env, tx)
-
-
-async def _solana_sign_transfers(env, from_addr, seed_b64url, transfers):
-    # Build and sign a transfer transaction WITHOUT broadcasting it, returning
-    # (signature_base58, tx_base64). The signature is fully determined by the
-    # (from, transfers, blockhash) tuple and computed locally, so it can be
-    # persisted BEFORE the transaction ever hits the network. That is the linchpin
-    # of an idempotent payout: a retry rebroadcasts these exact bytes (identical
-    # signature), which the cluster dedupes, rather than minting a second transfer.
-    transfers = [(to, int(lamports)) for to, lamports in transfers
-                 if SOLANA_RE.match(to or "") and int(lamports) > 0]
-    if not transfers:
-        return "", ""
-    blockhash = await _solana_latest_blockhash(env)
-    if not blockhash:
-        return "", ""
-    message = _solana_transfer_message(from_addr, transfers, blockhash)
-    if not message:
-        return "", ""
-    sig = await _solana_sign_message(from_addr, seed_b64url, message)
-    if len(sig) != 64:
-        return "", ""
-    tx = _shortvec(1) + sig + message
-    return _base58_encode(sig), base64.b64encode(tx).decode()
-
-
-async def _solana_broadcast_raw(env, tx_b64):
-    # Broadcast an already-signed transaction (base64, from _solana_sign_transfers).
-    # Retry-safe: sending the same bytes twice yields the same signature, which the
-    # network dedupes, so this can never produce a second on-chain transfer.
-    if not tx_b64:
-        return ""
-    try:
-        tx = base64.b64decode(tx_b64)
-    except Exception:
-        return ""
-    return await _solana_send_transaction(env, tx)
-
-
-async def _solana_signature_landed(env, signature):
-    # True iff the cluster knows this signature AND it did not fail. Lets a payout
-    # that crashed mid-broadcast tell whether the recorded transfer already settled
-    # (must NOT re-pay) or never landed (safe to rebroadcast the same bytes).
-    if not signature:
-        return False
-    resp = await _solana_rpc(
-        env, "getSignatureStatuses",
-        [[signature], {"searchTransactionHistory": True}])
-    if not isinstance(resp, dict):
-        return False
-    try:
-        value = resp["result"]["value"][0]
-    except Exception:
-        return False
-    if not isinstance(value, dict):
-        return False
-    if value.get("err") is not None:
-        return False
-    return (value.get("confirmationStatus") in ("confirmed", "finalized") or
-            value.get("slot") is not None)
-
-
-# --- Per-node deposit keypair -----------------------------------------------
-# A Solana address is an Ed25519 public key. We generate a fresh keypair per
-# signup with the runtime's WebCrypto so each node gets a unique deposit
-# address; the 32-byte seed (base64url, from the JWK "d" field) is stored
-# encrypted so the funds can later be swept to the treasury.
-async def _new_solana_keypair():
-    pair = await js_crypto.subtle.generateKey(
-        to_js({"name": "Ed25519"}), True, _to_js(["sign", "verify"]))
-    pub_raw = await js_crypto.subtle.exportKey("raw", pair.publicKey)
-    pub = bytes(Uint8Array.new(pub_raw).to_py())
-    jwk = await js_crypto.subtle.exportKey("jwk", pair.privateKey)
-    seed_b64url = str(getattr(jwk, "d", "") or "")
-    if len(pub) != 32 or not seed_b64url:
-        return None, None
-    return _base58_encode(pub), seed_b64url
-
-
-# --- SOL/USD price + dynamic minimum ----------------------------------------
-async def _sol_usd_price(env):
-    now = int(Date.now())
-    if (_SOL_USD_CACHE["usd"] > 0 and
-            now - _SOL_USD_CACHE["ts"] < _SOL_USD_CACHE_TTL_MS):
-        return _SOL_USD_CACHE["usd"]
-    # Prefer the on-chain Pyth oracle (no third party beyond the RPC we already
-    # use); fall back to an HTTP price API only if that fails.
-    price = await _sol_usd_from_pyth(env)
-    if not (SOL_USD_MIN <= price <= SOL_USD_MAX):
-        price = await _sol_usd_from_http(env)
-    if not (SOL_USD_MIN <= price <= SOL_USD_MAX):
-        return 0.0
-    _SOL_USD_CACHE["usd"] = price
-    _SOL_USD_CACHE["ts"] = now
-    return price
-
-
-async def _min_join_lamports(env):
-    # Target ~$1, rounded UP. Falls back to a fixed floor if no price is known,
-    # and is always clamped to [FLOOR, CEILING].
-    price = await _sol_usd_price(env)
-    if price <= 0:
-        return MIN_JOIN_LAMPORTS
-    exact = (MIN_JOIN_USD / price) * LAMPORTS_PER_SOL  # lamports for ~$1
-    lamports = int(exact)
-    if exact > lamports:  # ceil
-        lamports += 1
-    # Round up to the nearest 0.0001 SOL so the displayed amount stays tidy.
-    step = 100_000
-    lamports = ((lamports + step - 1) // step) * step
-    return max(MIN_JOIN_LAMPORTS_FLOOR, min(MIN_JOIN_LAMPORTS_CEILING, lamports))
-
-
 async def _account_donation_address(env, request):
-    # Federated relay: route signup custody through the main relay rather than
-    # minting/holding a deposit key locally.
-    if not _is_main_relay(env):
-        return await _federated_donation_address(env, request)
-    try:
-        data = await request.json()
-    except Exception:
-        return json_response({"error": "invalid_json"}, status=400)
-    name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
-    try:
-        amount = int(data.get("amountLamports", 0) or 0)
-    except (TypeError, ValueError):
-        amount = 0
-    name_bi, rec = await _account_row(env, name)
-    if not rec:
-        return json_response({"error": "reserve_node_name_first"}, status=404)
-    if rec.get("status") == "active":
-        return json_response({"error": "already_active"}, status=409)
-    # The treasury is where per-node deposits are later swept; require it so we
-    # never collect funds we have nowhere to forward.
-    treasury = _treasury_address(env)
-    if not treasury:
-        return json_response({"error": "treasury_not_configured"}, status=503)
-
-    now = int(Date.now())
-    renew_expired = bool(data.get("renewExpired") or data.get("generateNew"))
-    # Migration guard: records created before per-node deposits used the shared
-    # treasury address (no donation_secret). Never balance-check that — the
-    # treasury's own balance would falsely confirm everyone. Recycle it so the
-    # user gets a fresh dedicated address below.
-    if (rec.get("donation_address") and not rec.get("donation_confirmed") and
-            not rec.get("donation_secret")):
-        _clear_donation_address(rec)
-        await _save_account(env, name_bi, rec)
-
-    if rec.get("donation_address") and not rec.get("donation_confirmed"):
-        changed = _ensure_donation_expiry_fields(rec, now)
-        required = int(rec.get("donation_required_lamports", MIN_JOIN_LAMPORTS))
-        _, expires_at, delete_at = _donation_expiry_fields(rec, now)
-        # Low-level balance read of this node's own deposit address. None means
-        # the RPC was unreachable — we keep the address rather than blocking the
-        # whole signup, and just let the user keep paying / polling.
-        balance = await _solana_balance_lamports(env, rec.get("donation_address", ""))
-        if balance is not None and balance >= required:
-            rec["donation_confirmed"] = True
-            rec["donation_received_lamports"] = balance
-            await _sweep_confirmed_donation(env, name_bi, rec, balance)
-            changed = True
-        elif now >= expires_at and balance == 0:
-            # Expired with nothing received: hide it, and recycle the address
-            # once the user asks to renew or the delete grace passes.
-            if renew_expired or now >= delete_at:
-                _clear_donation_address(rec)
-                changed = True
-            else:
-                if changed:
-                    await _save_account(env, name_bi, rec)
-                return json_response({
-                    "ok": True, "expired": True, "hidden": True,
-                    "canRenew": True, "receivedLamports": 0,
-                    "requiredLamports": required,
-                    "amountSol": _amount_sol(required),
-                    "expiresAt": expires_at, "deleteAt": delete_at,
-                })
-        if changed:
-            await _save_account(env, name_bi, rec)
-
-    if not rec.get("donation_address"):
-        addr, secret = await _new_solana_keypair()
-        if not addr:
-            return json_response({"error": "keypair_failed"}, status=500)
-        rec["donation_address"] = addr
-        rec["donation_secret"] = secret  # encrypted at rest via _save_account
-        rec["donation_reference"] = ""    # a unique address needs no reference
-        rec["donation_required_lamports"] = max(amount, await _min_join_lamports(env))
-        rec["donation_confirmed"] = False
-        rec["donation_received_lamports"] = 0
-        rec["donation_created_at"] = now
-        rec["donation_expires_at"] = now + DONATION_ADDRESS_TTL_MS
-        rec["donation_delete_after"] = (
-            rec["donation_expires_at"] + DONATION_ADDRESS_DELETE_GRACE_MS)
-        rec["status"] = "pending_payment"
-        await _save_account(env, name_bi, rec)
-
-    addr = rec["donation_address"]
-    required = int(rec.get("donation_required_lamports", MIN_JOIN_LAMPORTS))
-    _, expires_at, delete_at = _donation_expiry_fields(rec, int(Date.now()))
-    amount_sol = _amount_sol(required)
-    price = await _sol_usd_price(env)
+    del env, request
     return json_response({
-        "ok": True, "address": addr,
-        "reference": "",
-        "uri": _solana_pay_uri(addr, required),
-        "requiredLamports": required, "amountSol": amount_sol,
-        "solUsd": price or 0,
-        "amountUsd": round((required / LAMPORTS_PER_SOL) * price, 2) if price else 0,
-        "expiresAt": expires_at, "deleteAt": delete_at,
-    })
+        "error": "legacy_custody_disabled",
+        "notice": (
+            "ForkMesh signup is free. The Worker no longer creates or holds "
+            "deposit-wallet keys."
+        ),
+        "custody": "self-custodial-only",
+    }, status=410, cache_control="no-store")
 
 
-# Polled while the user waits to pay. When the per-account deposit address has
-# the required balance, the account is marked confirmed and swept.
+# Read-only compatibility view for a historical deposit. It projects public
+# status and may read the public on-chain balance, but never rewrites the row,
+# inspects its retained key field, signs, or broadcasts.
 async def _account_donation_status(env, request):
     if not _is_main_relay(env):
         return await _federated_donation_status(env, request)
     params = parse_qs(urlparse(request.url).query)
     name = clean_string(params.get("nodeName", [""])[0], MAX_NODE_NAME).lower()
-    name_bi, rec = await _account_row(env, name)
+    _, rec = await _account_row(env, name)
     if not rec:
         return json_response({"error": "no_such_account"}, status=404)
     addr = rec.get("donation_address", "")
@@ -6681,87 +7704,39 @@ async def _account_donation_status(env, request):
         return json_response({"error": "no_donation_address"}, status=400)
     required = int(rec.get("donation_required_lamports", MIN_JOIN_LAMPORTS))
     now = int(Date.now())
-    changed = _ensure_donation_expiry_fields(rec, now)
     _, expires_at, delete_at = _donation_expiry_fields(rec, now)
     already_confirmed = bool(rec.get("donation_confirmed"))
-
-    # Migration guard: a legacy shared-treasury address (no donation_secret) must
-    # not be balance-checked — ask the client to generate a fresh per-node one.
-    if not already_confirmed and not rec.get("donation_secret"):
-        return json_response({
-            "ok": True, "paid": False, "hidden": True, "canRenew": True,
-            "receivedLamports": 0, "requiredLamports": required,
-            "expiresAt": expires_at, "deleteAt": delete_at,
-        })
-
-    # Low-level balance check on this node's own deposit address.
     balance = await _solana_balance_lamports(env, addr)
-    if balance is None:
-        # RPC unreachable: report a soft "still checking" state instead of a hard
-        # error so the user can keep waiting (and paying) rather than being told
-        # signup is broken. Fall back to the last balance we recorded.
-        received = int(rec.get("donation_received_lamports", 0) or 0)
-        return json_response({
-            "ok": True, "paid": already_confirmed, "checking": True,
-            "receivedLamports": received, "requiredLamports": required,
-            "expiresAt": expires_at, "deleteAt": delete_at,
-        })
-
-    received = int(balance)
-    if not already_confirmed and received == 0 and now >= delete_at:
-        _clear_donation_address(rec)
-        await _save_account(env, name_bi, rec)
-        return json_response({
-            "ok": True, "paid": False, "expired": True, "hidden": True,
-            "deleted": True, "canRenew": True, "receivedLamports": 0,
-            "requiredLamports": required, "expiresAt": expires_at,
-            "deleteAt": delete_at,
-        })
-    if received != rec.get("donation_received_lamports"):
-        rec["donation_received_lamports"] = received
-        changed = True
-    if received >= required and not already_confirmed:
-        rec["donation_confirmed"] = True
-        await _sweep_confirmed_donation(env, name_bi, rec, received)
-        changed = True
-    elif rec.get("donation_confirmed") and not rec.get("donation_sweep_sig"):
-        if await _sweep_confirmed_donation(env, name_bi, rec, received):
-            changed = True
-
-    if changed:
-        await _save_account(env, name_bi, rec)
-    # Only "expire" an address that received nothing — once any SOL lands we keep
-    # waiting for the rest rather than recycling under the user's payment.
-    expired = (not rec.get("donation_confirmed") and received == 0 and
-               now >= expires_at)
+    checking = balance is None
+    received = (
+        int(rec.get("donation_received_lamports", 0) or 0)
+        if checking else int(balance)
+    )
+    paid = already_confirmed or (received >= required and required > 0)
+    expired = not paid and received == 0 and now >= expires_at
     return json_response({
-        "ok": True, "paid": bool(rec.get("donation_confirmed")),
+        "ok": True, "paid": paid, "checking": checking,
         "receivedLamports": received, "requiredLamports": required,
         "expired": expired, "hidden": expired, "canRenew": expired,
         "expiresAt": expires_at, "deleteAt": delete_at,
-    })
+        "status": "legacy_custody_frozen",
+        "custody": "migration-required",
+        "completedTransfer": rec.get("donation_sweep_sig", ""),
+        "notice": (
+            "This is a read-only historical status. The Worker cannot access "
+            "the retained wallet for signing or move its funds."
+        ),
+    }, cache_control="no-store")
 
 
 def _signup_metadata(request):
-    # Uniqueness/anti-abuse signals captured at signup. Cloudflare sets these on
-    # every inbound request. They are PRIVACY-SENSITIVE, so the values only ever
-    # live inside the AES-GCM-encrypted `data` blob (decryptable solely with
-    # DATA_KEY); the IP additionally gets a one-way blind index (see ip_bi) so
-    # duplicate signups can be counted without storing a reversible address.
-    try:
-        headers = request.headers
-    except Exception:
-        return {"ip": "", "ua": "", "country": "", "at": int(Date.now())}
-    ip = (headers.get("cf-connecting-ip") or "").strip()
-    if not ip:
-        # Fall back to the first hop of X-Forwarded-For only if CF's header is
-        # somehow absent (e.g. a non-CF test/proxy path).
-        fwd = (headers.get("x-forwarded-for") or "").strip()
-        ip = fwd.split(",")[0].strip() if fwd else ""
+    # The raw address is used transiently to derive users.ip_bi for duplicate
+    # signup throttling; it is never copied into the encrypted account blob.
+    # User-agent is reduced to a broad client category, and country to an
+    # approximate two-letter edge-derived code.
     return {
-        "ip": ip[:64],
-        "ua": (headers.get("user-agent") or "").strip()[:256],
-        "country": (headers.get("cf-ipcountry") or "").strip()[:8],
+        "country": world_request_country(request),
+        "clientCategory": _security_client_category(request),
         "at": int(Date.now()),
     }
 
@@ -6826,17 +7801,19 @@ async def _account_finalize(env, request):
     else:
         rec["kind"] = "user"
     rec["status"] = "active"
-    # Optional payout address (where this node receives its share of the split).
+    # Optional public self-custodial payout address for reward consideration.
     if solana and SOLANA_RE.match(solana):
         rec["solana"] = solana
     rec["email_verified"] = bool(rec.get("email_verified", False))
     rec.setdefault("created_at", int(Date.now()))
-    # Capture the signup IP (encrypted in the record) plus a blind index of it for
-    # privacy-respecting duplicate-signup detection. The first finalize wins: keep
-    # the original signup fingerprint rather than overwriting it on a re-finalize,
-    # and derive the blind index from the IP we actually store so the two agree.
-    rec.setdefault("signup", _signup_metadata(request))
-    signup_ip = (rec.get("signup") or {}).get("ip") or ""
+    # Keep only coarse signup metadata; the transient address is converted to a
+    # keyed blind index and never persisted in the account's decryptable blob.
+    signup_ip = _security_request_network_identifier(request)
+    signup_meta = _signup_metadata(request)
+    old_signup = rec.get("signup")
+    if isinstance(old_signup, dict) and old_signup.get("at"):
+        signup_meta["at"] = int(old_signup.get("at") or signup_meta["at"])
+    rec["signup"] = signup_meta
     ip_bi = await blind_index(env, signup_ip) if signup_ip else None
     await _save_account(env, name_bi, rec, email_bi=email_bi, ip_bi=ip_bi)
     if rec.get("pubkey"):
@@ -7093,6 +8070,17 @@ async def _account_profile(env, request):
 
     if changed:
         await _save_account(env, name_bi, rec)
+        # Public-profile and chat-directory caches carry avatar/profile/device
+        # metadata. Purge them on every profile edit; in particular, a privacy
+        # opt-out must stop new public reads immediately in this colo.
+        profile_name = clean_string(
+            rec.get("name", ""), MAX_NODE_NAME).lower()
+        await asyncio.gather(
+            edge_cache_delete(
+                ACCOUNT_LOOKUP_CACHE_PREFIX + quote(profile_name)),
+            edge_cache_delete(USERS_DIRECTORY_CACHE_KEY),
+            return_exceptions=True,
+        )
         # Fediverse followers of this profile get an Update(Person) so bio
         # changes propagate to remote servers immediately — but only when a
         # federated field actually changed (see fed_before above).
@@ -8029,12 +9017,6 @@ def _random_bytes(n):
     return bytes(js_crypto.getRandomValues(Uint8Array.new(n)).to_py())
 
 
-def _treasury_address(env):
-    addr = (getattr(env, "TREASURY_SOLANA_ADDRESS", "") or
-            getattr(env, "NODE_SOLANA_ADDRESS", "") or "").strip()
-    return addr if SOLANA_RE.match(addr) else ""
-
-
 # A running node calls this on an interval to stay eligible for the reward
 # split. Signed with the account's key so only the key holder can mark its node
 # online; optionally updates the payout Solana address.
@@ -8057,7 +9039,23 @@ async def _account_heartbeat(env, request):
     pubkey = rec.get("pubkey", "")
     if not pubkey or not _ts_ok(ts):
         return json_response({"error": "unauthorized"}, status=401)
-    canonical = ("forkmesh-heartbeat-v1\n" + name + "\n" + ts).encode()
+    try:
+        signature_version = int(data.get("signatureVersion", 1) or 1)
+    except (TypeError, ValueError):
+        signature_version = 0
+    wallet_mutation = bool(
+        solana and SOLANA_RE.match(solana)
+        and rec.get("solana") != solana)
+    if wallet_mutation and signature_version != 2:
+        return json_response({
+            "error": "wallet_binding_signature_required",
+            "requiredSignatureVersion": 2,
+        }, status=426)
+    canonical = (
+        ("forkmesh-heartbeat-v2\n" + name + "\n" + solana + "\n" + ts)
+        if signature_version == 2
+        else ("forkmesh-heartbeat-v1\n" + name + "\n" + ts)
+    ).encode()
     if not await ed25519_verify(pubkey, signature, canonical):
         return json_response({"error": "bad_signature"}, status=401)
 
@@ -8116,9 +9114,12 @@ async def _account_heartbeat(env, request):
             rec = prefs_rec
 
     # Keep the payout address current if the node sent a valid one.
-    if solana and SOLANA_RE.match(solana) and rec.get("solana") != solana:
+    if wallet_mutation:
         rec["solana"] = solana
         await _save_account(env, name_bi, rec)
+        await _audit_sensitive_action(
+            env, name, "wallet.payout_address_bind", "account", name,
+            "success", {"signatureVersion": signature_version})
     if avatar_png and rec.get("avatar_png") != avatar_png:
         rec["avatar_png"] = avatar_png
         rec["avatar_updated_at"] = int(Date.now())
@@ -8136,18 +9137,18 @@ async def _account_heartbeat(env, request):
         pass
 
     # Report this node's payout-wallet balance in the heartbeat reply so the
-    # client doesn't have to poll Solana itself. We track the last balance we
-    # saw for this account; an increase since then means a donation/disbursement
-    # arrived, which the client surfaces (and only then refreshes its display).
+    # client doesn't have to poll Solana itself. We track the last public balance
+    # seen; an increase means an incoming transfer arrived. This user-owned
+    # balance is display metadata and never gates reward eligibility.
     wallet = rec.get("solana", "")
     balance_lamports = None
-    donation_received = False
+    balance_increased = False
     # Throttle the external Solana RPC to once per wallet per 5 minutes per
     # isolate: one subrequest on EVERY 60s heartbeat from every node was pure
     # overhead (donations are surfaced within minutes either way).
     now_ms = int(Date.now())
     # Keyed by account+wallet: accounts sharing a payout wallet must each
-    # keep their own donation-detection baseline.
+    # keep their own balance-change baseline.
     probe_key = str(name_bi) + ":" + wallet
     last_probe = _HEARTBEAT_BALANCE_PROBES.get(probe_key, 0)
     if (wallet and SOLANA_RE.match(wallet)
@@ -8165,7 +9166,7 @@ async def _account_heartbeat(env, request):
         if balance_lamports is not None:
             prev = rec.get("last_balance_lamports")
             if isinstance(prev, int) and balance_lamports > prev:
-                donation_received = True
+                balance_increased = True
             if prev != balance_lamports:
                 rec["last_balance_lamports"] = balance_lamports
                 await _save_account(env, name_bi, rec)
@@ -8178,12 +9179,19 @@ async def _account_heartbeat(env, request):
             prefs_rec.get("notification_preferences") or {})
     response = {"ok": True, "online": True,
                 "hasPayoutAddress": bool(rec.get("solana")),
+                "payoutCustody": "external-self-custodial-public-address",
+                "payoutNotice": (
+                    "The heartbeat shares a public payout address and optional "
+                    "public balance only. ForkMesh holds no wallet key or user "
+                    "funds, and balance never gates reward eligibility."
+                ),
                 "isAdmin": await _is_admin(env, name),
                 "emailNotifications": prefs_rec.get("email_notifications") is not False,
                 "notificationPreferences": notification_preferences}
     if balance_lamports is not None:
         response["balanceLamports"] = balance_lamports
-        response["donationReceived"] = donation_received
+        response["balanceFundsState"] = "user-owned-external-wallet"
+        response["balanceIncreased"] = balance_increased
     # A pending website claim (adhoc #53) rides back on the signed heartbeat:
     # only the node's key holder ever sees the confirmation code, and the node
     # shows it on its own screen for the claiming user to type into the site.
@@ -8224,7 +9232,7 @@ async def _account_heartbeat(env, request):
 
 async def _mirroring_owners(env):
     # Set of owner names that actually mirror a repo for another node, used to
-    # keep single-repo-only nodes out of the donation split (issue #94). Best
+    # keep single-repo-only nodes out of reward consideration (issue #94). Best
     # effort: on any read error return None so callers keep their prior behaviour
     # (fail open) rather than starving every node of its share.
     try:
@@ -8237,6 +9245,8 @@ async def _mirroring_owners(env):
         rec = await decrypt_row(env, row.get("data"))
         if not rec:
             continue
+        if rec.get("visibility") != "public":
+            continue
         if _is_blocked_catalog_identity(env, rec.get("owner"), rec.get("name")):
             continue
         records.append(rec)
@@ -8246,7 +9256,7 @@ async def _mirroring_owners(env):
 async def _online_payout_addresses(env):
     # Deduplicated payout addresses of currently-online, active accounts that
     # actually mirror a repo for another node. A node hosting only its own
-    # un-mirrored repos adds no redundancy, so it is left out of the split
+    # un-mirrored repos adds no redundancy, so it is left out of consideration
     # (issue #94). Stale presence rows self-heal here so the table stays bounded.
     cutoff = int(Date.now()) - ACCOUNT_PRESENCE_STALE_MS
     try:
@@ -8275,214 +9285,2061 @@ async def _online_payout_addresses(env):
         solana = (rec.get("solana") or "").strip()
         if not solana or not SOLANA_RE.match(solana) or solana in seen:
             continue
-        balance = await _solana_balance_lamports(env, solana)
-        if balance is None or balance < MIN_ACTIVE_LAMPORTS:
-            continue
         seen.add(solana)
         addresses.append(solana)
-    # Main relay: also disburse to every online node on every approved federated
-    # relay (fresh federated_presence rows), so the node split spans all relays.
-    if _is_main_relay(env):
-        try:
-            fed = await d1_all(
-                env,
-                "SELECT fp.wallet AS wallet FROM federated_presence fp "
-                "JOIN relays r ON r.relay_bi = fp.relay_bi "
-                "WHERE fp.ts >= ? AND r.status = 'approved'",
-                cutoff)
-            for r in (fed or []):
-                wallet = (r.get("wallet") or "").strip()
-                if wallet and SOLANA_RE.match(wallet) and wallet not in seen:
-                    balance = await _solana_balance_lamports(env, wallet)
-                    if balance is None or balance < MIN_ACTIVE_LAMPORTS:
-                        continue
-                    seen.add(wallet)
-                    addresses.append(wallet)
-        except Exception:
-            pass
+    # Federated rewards intentionally do not use this historical address-only
+    # helper. They enter both randomized and instant plans exclusively through
+    # _eligible_reward_snapshot's signed, fresh attestation path.
     return addresses
 
 
-def _set_sweep_error(rec, message):
-    if rec.get("donation_sweep_error") == message:
-        return False
-    rec["donation_sweep_error"] = message
-    rec["donation_sweep_checked_at"] = int(Date.now())
-    return True
+# --- Community reward-pool address (issue #308) ------------------------------
+# A public configured address may receive voluntary contributions. The Worker
+# reads its balance and prepares unsigned distribution intents; the instance
+# owner's self-custodial desktop signer alone can authorize a transfer.
+REWARD_CLUSTER_GENESIS_HASHES = {
+    "mainnet-beta": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+    "devnet": "EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+    "testnet": "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z",
+}
+REWARD_CANONICAL_RPC_HOSTS = {
+    "api.mainnet-beta.solana.com": "mainnet-beta",
+    "api.devnet.solana.com": "devnet",
+    "api.testnet.solana.com": "testnet",
+}
 
 
-async def _sweep_confirmed_donation(env, name_bi, rec, balance=None):
-    # Idempotent: once a transaction signature is stored, later signup polls and
-    # admin retries only report it instead of sending another transaction.
-    if rec.get("donation_sweep_sig"):
-        return False
-    from_addr = rec.get("donation_address", "")
-    secret = rec.get("donation_secret", "")
-    if not SOLANA_RE.match(from_addr or "") or not secret:
-        return False
-    treasury = _treasury_address(env)
-    if not treasury:
-        return _set_sweep_error(rec, "treasury_not_configured")
-    if balance is None:
-        balance = await _solana_balance_lamports(env, from_addr)
-    if balance is None:
-        return _set_sweep_error(rec, "balance_unavailable")
-    transferable = int(balance) - SOLANA_SWEEP_FEE_RESERVE_LAMPORTS
-    if transferable <= 0:
-        return _set_sweep_error(rec, "balance_too_low_for_fee")
-
-    payees = [p for p in await _online_payout_addresses(env) if p != from_addr]
-    treasury_lamports = transferable
-    transfers = []
-    if payees:
-        treasury_lamports = (transferable * TREASURY_SPLIT_NUMERATOR //
-                             TREASURY_SPLIT_DENOMINATOR)
-        node_pool = transferable - treasury_lamports
-        per_node = node_pool // len(payees)
-        if per_node > 0:
-            for payee in payees:
-                transfers.append((payee, per_node))
-            treasury_lamports = transferable - (per_node * len(payees))
-    transfers.insert(0, (treasury, treasury_lamports))
-
-    # Combine duplicate destinations while preserving order.
-    merged = []
-    by_addr = {}
-    for addr, lamports in transfers:
-        if addr in by_addr:
-            by_addr[addr] += int(lamports)
-        else:
-            by_addr[addr] = int(lamports)
-            merged.append(addr)
-    transfers = [(addr, by_addr[addr]) for addr in merged if by_addr[addr] > 0]
-    sig = await _solana_send_transfers(env, from_addr, secret, transfers)
-    if not sig:
-        return _set_sweep_error(rec, "send_transaction_failed")
-    rec["donation_sweep_sig"] = sig
-    rec["donation_sweep_at"] = int(Date.now())
-    rec["donation_sweep_transfers"] = [
-        {"address": addr, "lamports": lamports} for addr, lamports in transfers
-    ]
-    # Credit each online node its share for the "funds received · mainnodes"
-    # board (the treasury cut is not a leaderboard recipient).
-    for addr, lamports in transfers:
-        if addr != treasury:
-            await _record_funds_received(env, "mainnode", addr, "", lamports)
-    rec.pop("donation_sweep_error", None)
-    rec.pop("donation_sweep_checked_at", None)
-    return True
+def _reward_network(env):
+    value = clean_string(
+        getattr(env, "COMMUNITY_REWARD_NETWORK", "mainnet-beta"), 32
+    ).strip().lower()
+    return value if value in REWARD_CLUSTER_GENESIS_HASHES else ""
 
 
-# --- Central donation fund (issue #308) -------------------------------------
-# One worker-custodied Solana wallet that anyone can donate to. A cron sweeps its
-# whole balance out to the currently-online nodes once an hour, so a single
-# donation address fans out to everyone keeping the network alive. Only the main
-# relay custodies it (federated relays proxy the address lookup, like treasury).
-async def _central_fund_record(env):
-    # Load-or-create the fund keypair, kept in D1 so the operator needs no key
-    # management. Mirrors _relay_identity's single-row pattern.
-    row = await d1_first(env, "SELECT data FROM central_fund WHERE id=1")
-    if row:
-        rec = await decrypt_row(env, row.get("data"))
-        if rec and rec.get("address") and rec.get("secret"):
-            return rec
-    addr, secret = await _new_solana_keypair()
-    if not addr:
+def _reward_rpc_url(env):
+    raw = clean_string(
+        getattr(env, "COMMUNITY_REWARD_RPC_URL", ""), 500).strip()
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return ""
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        return ""
+    network = _reward_network(env)
+    canonical_network = REWARD_CANONICAL_RPC_HOSTS.get(
+        parsed.hostname.lower().rstrip("."))
+    if not network or (
+        canonical_network is not None and canonical_network != network
+    ):
+        return ""
+    return raw
+
+
+class _RewardRpcEnvironment:
+    """Narrow view that keeps the reward test network separate from legacy RPCs."""
+
+    def __init__(self, env):
+        self.SOLANA_NETWORK = _reward_network(env)
+        self.SOLANA_RPC_URL = _reward_rpc_url(env)
+
+
+async def _reward_solana_rpc(env, method, params):
+    if not _reward_network(env) or not _reward_rpc_url(env):
         return None
-    rec = {"address": addr, "secret": secret}
-    await _save_central_fund(env, rec)
-    return rec
+    return await _solana_rpc(_RewardRpcEnvironment(env), method, params)
+
+
+async def _reward_pool_network_verified(env, address):
+    """Prove the RPC cluster and configured public pool account fail closed."""
+    network = _reward_network(env)
+    rpc_url = _reward_rpc_url(env)
+    if (
+        not network
+        or not rpc_url
+        or not address
+        or not SOLANA_RE.match(address)
+    ):
+        return False
+    genesis = await _reward_solana_rpc(env, "getGenesisHash", [])
+    if (
+        not isinstance(genesis, dict)
+        or not hmac.compare_digest(
+            str(genesis.get("result") or ""),
+            REWARD_CLUSTER_GENESIS_HASHES[network],
+        )
+    ):
+        return False
+    account = await _reward_solana_rpc(
+        env,
+        "getAccountInfo",
+        [address, {"encoding": "base64", "commitment": "finalized"}],
+    )
+    if not isinstance(account, dict):
+        return False
+    result = account.get("result")
+    return bool(
+        isinstance(result, dict)
+        and isinstance(result.get("value"), dict)
+    )
+
+
+async def _reward_balance_lamports(env, address):
+    if not address or not SOLANA_RE.match(address):
+        return None
+    response = await _reward_solana_rpc(env, "getBalance", [address])
+    if not isinstance(response, dict):
+        return None
+    result = response.get("result")
+    if not isinstance(result, dict):
+        return None
+    try:
+        return int(result.get("value"))
+    except (TypeError, ValueError):
+        return None
+
+
+async def _reward_public_entropy(env):
+    response = await _reward_solana_rpc(
+        env, "getLatestBlockhash", [{"commitment": "finalized"}])
+    if not isinstance(response, dict):
+        return ""
+    try:
+        return clean_string(
+            response["result"]["value"]["blockhash"], 120).strip()
+    except Exception:
+        return ""
+
+
+def _reward_config(env):
+    return {
+        "intervalMs": reward_policy.bounded_int(
+            getattr(env, "REWARD_INTERVAL_MS", ""),
+            CENTRAL_FUND_DISTRIBUTION_INTERVAL_MS,
+            15 * 60 * 1000,
+            24 * 60 * 60 * 1000,
+        ),
+        "jitterMs": reward_policy.bounded_int(
+            getattr(env, "REWARD_JITTER_MAX_MS", ""),
+            REWARD_DEFAULT_JITTER_MS,
+            0,
+            12 * 60 * 60 * 1000,
+        ),
+        "amountLamports": reward_policy.bounded_int(
+            getattr(env, "REWARD_AMOUNT_LAMPORTS", ""),
+            REWARD_DEFAULT_AMOUNT_LAMPORTS,
+            1_000,
+            10 * LAMPORTS_PER_SOL,
+        ),
+        "minimumUptimeMs": reward_policy.bounded_int(
+            getattr(env, "REWARD_MIN_UPTIME_MS", ""),
+            REWARD_DEFAULT_MIN_UPTIME_MS,
+            0,
+            30 * 24 * 60 * 60 * 1000,
+        ),
+        "minimumContributionUnits": reward_policy.bounded_int(
+            getattr(env, "REWARD_MIN_CONTRIBUTION_UNITS", ""),
+            0,
+            0,
+            1_000_000,
+        ),
+        "healthFreshMs": reward_policy.bounded_int(
+            getattr(env, "REWARD_HEALTH_FRESH_MS", ""),
+            REWARD_ENDPOINT_FRESH_MS,
+            60 * 1000,
+            60 * 60 * 1000,
+        ),
+    }
+
+
+def _reward_explorer_url(network, signature="", address=""):
+    base = "https://explorer.solana.com/"
+    if signature:
+        base += "tx/" + quote(signature)
+    elif address:
+        base += "address/" + quote(address)
+    suffix = "" if network == "mainnet-beta" else "?cluster=" + quote(network)
+    return base + suffix
+
+
+async def _eligible_reward_snapshot(env, now=None):
+    """Build eligibility from server-observed, signed HTTPS health facts."""
+    now = int(now if now is not None else Date.now())
+    config = _reward_config(env)
+    cutoff = now - config["healthFreshMs"]
+    expected_refs = await _https_mirror_expected_forkmesh_refs(env)
+    rows = await d1_all(
+        env,
+        "SELECT e.node_bi, e.node_name, e.public_key, e.checked_at, "
+        "e.healthy, e.integrity, e.abuse_blocked, "
+        "e.forkmesh_verified_at, e.forkmesh_refs_sha256, "
+        "e.forkmesh_active, e.registration_sig, e.issued_at, "
+        "e.health_sig, e.health_message, p.ts AS presence_ts, n.data, "
+        "o.first_verified_at, o.last_verified_at, "
+        "o.consecutive_checks, o.contribution_units "
+        "FROM mirror_https_endpoints e "
+        "JOIN account_presence p ON p.name_bi=e.node_bi "
+        "JOIN nodes n ON n.node_bi=e.node_bi "
+        "LEFT JOIN reward_node_observations o ON o.node_bi=e.node_bi "
+        "WHERE p.ts>=? AND e.checked_at>=? "
+        "AND e.forkmesh_verified_at>=? "
+        "ORDER BY e.node_name ASC LIMIT 2000",
+        now - ACCOUNT_PRESENCE_STALE_MS, cutoff, cutoff,
+    )
+    candidates = []
+    for row in rows or []:
+        node_bi = str(row.get("node_bi") or "")
+        record = await decrypt_row(env, row.get("data"))
+        if not node_bi or not record or record.get("status") != "active":
+            continue
+        last_verified = int(row.get("last_verified_at") or 0)
+        if last_verified and now - last_verified <= REWARD_OBSERVATION_GAP_MS:
+            first_verified = int(row.get("first_verified_at") or now)
+            consecutive = int(row.get("consecutive_checks") or 0) + 1
+        else:
+            first_verified = now
+            consecutive = 1
+        contribution_units = max(
+            0, int(row.get("contribution_units") or 0))
+        await d1_run(
+            env,
+            "INSERT INTO reward_node_observations "
+            "(node_bi, first_verified_at, last_verified_at, "
+            "consecutive_checks, contribution_units) VALUES (?,?,?,?,?) "
+            "ON CONFLICT(node_bi) DO UPDATE SET "
+            "first_verified_at=excluded.first_verified_at, "
+            "last_verified_at=excluded.last_verified_at, "
+            "consecutive_checks=excluded.consecutive_checks, "
+            "contribution_units=MAX("
+            "reward_node_observations.contribution_units,"
+            "excluded.contribution_units)",
+            node_bi, first_verified, now, consecutive, contribution_units,
+        )
+        node_name = clean_string(
+            row.get("node_name") or record.get("name"), MAX_NODE_NAME
+        ).strip().lower()
+        owner = clean_string(
+            record.get("owner") or node_name, MAX_NODE_NAME).strip().lower()
+        operator_id = await blind_index(env, "reward-operator:" + owner)
+        public_key = clean_string(row.get("public_key"), 160).strip()
+        refs_hash = clean_string(
+            row.get("forkmesh_refs_sha256"), 64).lower()
+        endpoint_ok = bool(
+            int(row.get("healthy") or 0)
+            and int(row.get("forkmesh_active") or 0)
+            and str(row.get("integrity") or "") in ("ok", "verified")
+            and re.fullmatch(r"[0-9a-f]{64}", refs_hash)
+            and expected_refs
+            and hmac.compare_digest(refs_hash, expected_refs)
+            and re.fullmatch(
+                r"[A-Za-z0-9_-]{86}",
+                str(row.get("registration_sig") or ""))
+            and re.fullmatch(
+                r"[A-Za-z0-9_-]{86}",
+                str(row.get("health_sig") or ""))
+            and bool(row.get("health_message"))
+        )
+        candidates.append({
+            "nodeId": node_name,
+            "operatorId": operator_id,
+            "deviceId": hashlib.sha256(public_key.encode()).hexdigest(),
+            "walletAddress": str(record.get("solana") or "").strip(),
+            "attestationSourceApproved": True,
+            "identitySignatureVerified": bool(public_key),
+            "healthAttestationSignatureVerified": endpoint_ok,
+            "healthAttestationFresh": bool(
+                int(row.get("checked_at") or 0) >= cutoff
+                and int(row.get("forkmesh_verified_at") or 0) >= cutoff),
+            "online": (
+                int(row.get("presence_ts") or 0)
+                >= now - ACCOUNT_PRESENCE_STALE_MS
+            ),
+            "healthy": endpoint_ok,
+            "mirrorsForkMesh": bool(int(
+                row.get("forkmesh_active") or 0)),
+            "integrity": (
+                "signed-manifest-verified" if endpoint_ok else "unknown"
+            ),
+            "abuseFlagged": bool(int(row.get("abuse_blocked") or 0)),
+            "observedUptimeMs": max(0, now - first_verified),
+            "contributionUnits": contribution_units,
+            "healthCheckedAt": int(row.get("checked_at") or 0),
+            "attestationId": hashlib.sha256(
+                (
+                    node_bi + "\0" + refs_hash + "\0"
+                    + str(row.get("forkmesh_verified_at") or 0)
+                ).encode()
+            ).hexdigest(),
+        })
+    if _is_main_relay(env):
+        federated_rows = await d1_all(
+            env,
+            "SELECT fp.*,r.label AS relay_label "
+            "FROM federated_presence fp "
+            "JOIN relays r ON r.relay_bi=fp.relay_bi "
+            "WHERE r.status='approved' AND fp.ts>=? "
+            "AND fp.checked_at>=? AND fp.forkmesh_verified_at>=? "
+            "AND fp.healthy=1 AND fp.integrity='ok' "
+            "AND fp.forkmesh_active=1 AND fp.abuse_blocked=0 "
+            "ORDER BY fp.relay_bi,fp.name LIMIT 2000",
+            now - ACCOUNT_PRESENCE_STALE_MS, cutoff, cutoff,
+        )
+        for row in federated_rows or []:
+            item = await _verified_federated_reward_attestation(
+                env,
+                {
+                    "name": row.get("name"),
+                    "operator": row.get("name"),
+                    "wallet": row.get("wallet"),
+                    "publicKey": row.get("public_key"),
+                    "baseUrl": row.get("base_url"),
+                    "registrationSignature": row.get("registration_sig"),
+                    "registrationIssuedAt": row.get(
+                        "registration_issued_at"),
+                    "healthMessage": row.get("health_message"),
+                    "healthSignature": row.get("health_sig"),
+                    "checkedAt": row.get("checked_at"),
+                    "healthy": bool(int(row.get("healthy") or 0)),
+                    "integrity": row.get("integrity"),
+                    "mirrorsForkMesh": bool(
+                        int(row.get("forkmesh_active") or 0)),
+                    "forkmeshVerifiedAt": row.get(
+                        "forkmesh_verified_at"),
+                    "refsSha256": row.get("forkmesh_refs_sha256"),
+                    "operationsSha256": row.get(
+                        "forkmesh_operations_sha256"),
+                    "requiredOperationsVerified": True,
+                    "abuseFlagged": bool(
+                        int(row.get("abuse_blocked") or 0)),
+                },
+                now,
+                expected_refs,
+                config["healthFreshMs"],
+            )
+            operator_id = str(row.get("operator_id") or "")
+            device_id = str(row.get("device_id") or "")
+            attestation_id = str(row.get("attestation_id") or "")
+            relay_bi = str(row.get("relay_bi") or "")
+            if (
+                not item
+                or not operator_id
+                or not hmac.compare_digest(
+                    device_id, item.get("deviceId") or "")
+                or not re.fullmatch(r"[0-9a-f]{64}", attestation_id)
+                or not relay_bi
+            ):
+                continue
+            candidates.append({
+                "nodeId": (
+                    "relay-" + relay_bi[:16] + "-"
+                    + item["name"]),
+                "operatorId": operator_id,
+                "deviceId": device_id,
+                "walletAddress": item["wallet"],
+                "attestationSourceApproved": True,
+                "identitySignatureVerified": True,
+                "healthAttestationSignatureVerified": True,
+                "healthAttestationFresh": True,
+                "online": int(row.get("ts") or 0) >= (
+                    now - ACCOUNT_PRESENCE_STALE_MS),
+                "healthy": True,
+                "mirrorsForkMesh": True,
+                "integrity": "signed-manifest-verified",
+                "abuseFlagged": False,
+                "observedUptimeMs": max(
+                    0, now - int(row.get("first_verified_at") or now)),
+                "contributionUnits": 0,
+                "healthCheckedAt": item["checkedAt"],
+                "attestationId": attestation_id,
+                "relayLabel": clean_string(
+                    row.get("relay_label") or "relay", 80),
+            })
+    snapshot = reward_policy.eligibility_snapshot(
+        candidates,
+        minimum_uptime_ms=config["minimumUptimeMs"],
+        minimum_contribution_units=config["minimumContributionUnits"],
+    )
+    snapshot["generatedAt"] = now
+    snapshot["source"] = (
+        "signed HTTPS identity + fresh Cloudflare health check + "
+        "forkmesh/forkmesh refs integrity proof + server-observed presence; "
+        "approved federated relays additionally preserve and forward the "
+        "original node-signed registration and health messages"
+    )
+    if _is_main_relay(env):
+        snapshot.setdefault("limitations", []).append(
+            "An approved federated relay attests that it performed the "
+            "network challenge. Relay approval is a revocable trust boundary, "
+            "not proof of personhood or universal node trust."
+        )
+    return snapshot
+
+
+def _reward_pool_address(env):
+    """Resolve the public reward destination without loading wallet material.
+
+    COMMUNITY_REWARD_POOL_ADDRESS is the explicit modern override. Existing
+    ForkMesh deployments historically supplied the same public destination as
+    TREASURY_SOLANA_ADDRESS, so that name remains a compatibility fallback.
+    A non-empty explicit override fails closed later if it is invalid instead
+    of silently sending contributors to a different configured address.
+    """
+    primary = clean_string(
+        getattr(env, "COMMUNITY_REWARD_POOL_ADDRESS", ""), 80).strip()
+    if primary:
+        return primary
+    return clean_string(
+        getattr(env, "TREASURY_SOLANA_ADDRESS", ""), 80).strip()
+
+
+async def _central_fund_record(env):
+    # The pool address is public configuration. Its private key lives in the
+    # instance owner's local signer and is never generated, uploaded or loaded
+    # by Cloudflare.
+    address = _reward_pool_address(env)
+    if (
+        not SOLANA_RE.match(address)
+        or not await _reward_pool_network_verified(env, address)
+    ):
+        return None
+    signer_account = clean_string(
+        getattr(env, "REWARD_SIGNER_ACCOUNT", "")
+        or getattr(env, "INSTANCE_OWNER_ACCOUNT", ""),
+        MAX_NODE_NAME,
+    ).strip().lower()
+    return {
+        "address": address,
+        "signer_account": signer_account,
+        "custody": "external-local-signer",
+        "network": _reward_network(env),
+    }
 
 
 async def _save_central_fund(env, rec):
-    await d1_run(
-        env,
-        "INSERT INTO central_fund (id, data) VALUES (1, ?) "
-        "ON CONFLICT(id) DO UPDATE SET data=excluded.data",
-        await encrypt_row(env, rec))
+    # Compatibility symbol: central-fund state is now derived from public
+    # configuration + append-only signing intents, never an encrypted key row.
+    del env, rec
+    return False
 
 
 async def _central_fund_public(env):
-    # Public donation payload: the fund's address, live balance, a Solana Pay URI,
-    # and the last hourly distribution so a client can show a QR + status.
+    # Public contribution payload: configured address, selected-network balance,
+    # direct contribution choices, and independently verifiable finalized history.
     rec = await _central_fund_record(env)
     if not rec:
         return None
     addr = rec.get("address", "")
-    balance = await _solana_balance_lamports(env, addr)
+    network = rec.get("network", "mainnet-beta")
+    balance = await _reward_balance_lamports(env, addr)
+    latest = await d1_first(
+        env,
+        "SELECT intent_id, status, created_at, tx_signature, completed_at "
+        "FROM chain_intents WHERE kind IN "
+        "('community_reward_random','community_reward_instant_distribution') "
+        "ORDER BY created_at DESC LIMIT 1",
+    )
+    latest_round = await d1_first(
+        env,
+        "SELECT round_id,status,interval_start,scheduled_at,execute_after,"
+        "schedule_entropy,snapshot_data,selection_data,intent_id,"
+        "completed_at FROM reward_rounds "
+        "ORDER BY interval_start DESC LIMIT 1",
+    )
+    round_public = None
+    if latest_round:
+        try:
+            round_snapshot = json.loads(
+                str(latest_round.get("snapshot_data") or "{}"))
+        except Exception:
+            round_snapshot = {}
+        try:
+            round_selection = json.loads(
+                str(latest_round.get("selection_data") or "{}"))
+        except Exception:
+            round_selection = {}
+        rejection_counts = {}
+        for rejected in round_snapshot.get("rejected") or []:
+            reason = clean_string(
+                (rejected or {}).get("reason"), 80).strip()
+            if reason:
+                rejection_counts[reason] = (
+                    int(rejection_counts.get(reason) or 0) + 1)
+        candidate = (
+            round_selection.get("candidate")
+            if isinstance(round_selection, dict) else {}
+        ) or {}
+        round_public = {
+            "roundId": str(latest_round.get("round_id") or ""),
+            "status": str(latest_round.get("status") or ""),
+            "intervalStart": int(
+                latest_round.get("interval_start") or 0),
+            "scheduledAt": int(latest_round.get("scheduled_at") or 0),
+            "executeAfter": int(latest_round.get("execute_after") or 0),
+            "scheduleEntropy": str(
+                latest_round.get("schedule_entropy") or ""),
+            "scheduleEntropySource": (
+                network + "-finalized-solana-blockhash"
+            ),
+            "snapshotHash": str(
+                round_snapshot.get("snapshotHash") or ""),
+            "eligibleCount": len(round_snapshot.get("eligible") or []),
+            "rejectionCounts": rejection_counts,
+            "policy": round_snapshot.get("policy") or {},
+            "limitations": round_snapshot.get("limitations") or [],
+            "selection": ({
+                "algorithm": str(
+                    round_selection.get("algorithm") or ""),
+                "selectedIndex": int(
+                    round_selection.get("selectedIndex") or 0),
+                "eligibleCount": int(
+                    round_selection.get("eligibleCount") or 0),
+                "snapshotHash": str(
+                    round_selection.get("snapshotHash") or ""),
+                "entropySource": str(
+                    round_selection.get("entropySource") or ""),
+                "publicEntropy": str(
+                    round_selection.get("publicEntropy") or ""),
+                "selectedNodeId": str(candidate.get("nodeId") or ""),
+                "selectedWalletAddress": str(
+                    candidate.get("walletAddress") or ""),
+            } if round_selection else None),
+            "intentId": str(latest_round.get("intent_id") or ""),
+            "completedAt": int(latest_round.get("completed_at") or 0),
+        }
+    completed = await d1_all(
+        env,
+        "SELECT intent_id, kind, status, data, created_at, tx_signature, "
+        "completed_at FROM chain_intents WHERE kind IN "
+        "('community_reward_random','community_reward_instant_distribution') "
+        "AND status='completed' ORDER BY completed_at DESC LIMIT 20",
+    )
+    transactions = []
+    for row in completed or []:
+        try:
+            plan = json.loads(str(row.get("data") or "{}"))
+        except Exception:
+            plan = {}
+        for transfer in (plan.get("transfers") or [])[:200]:
+            if not isinstance(transfer, dict):
+                continue
+            transactions.append({
+                "eventId": (
+                    str(row.get("intent_id") or "") + ":"
+                    + str(len(transactions))
+                ),
+                "type": (
+                    "instant-all-nodes"
+                    if row.get("kind")
+                    == "community_reward_instant_distribution"
+                    else "randomized-node-reward"
+                ),
+                "recipient": str(transfer.get("address") or ""),
+                "recipientNode": str(
+                    transfer.get("nodeId")
+                    or (plan.get("selection") or {}).get("selectedNodeId")
+                    or ""
+                ),
+                "lamports": int(transfer.get("lamports") or 0),
+                "amountSol": _amount_sol(
+                    int(transfer.get("lamports") or 0)),
+                "status": "completed-on-chain",
+                "transactionSignature": str(
+                    row.get("tx_signature") or ""),
+                "completedAt": int(row.get("completed_at") or 0),
+                "explorerUrl": _reward_explorer_url(
+                    network, signature=str(row.get("tx_signature") or "")),
+            })
+    contribution_rows = await d1_all(
+        env,
+        "SELECT contribution_id, mode, amount_lamports, status, "
+        "tx_signature, confirmed_at, distribution_intent_id "
+        "FROM reward_contributions "
+        "WHERE status NOT IN ('prepared','expired') "
+        "ORDER BY confirmed_at DESC LIMIT 20",
+    )
+    contributions = [{
+        "contributionId": str(row.get("contribution_id") or ""),
+        "mode": str(row.get("mode") or ""),
+        "amountLamports": int(row.get("amount_lamports") or 0),
+        "amountSol": _amount_sol(int(row.get("amount_lamports") or 0)),
+        "status": str(row.get("status") or ""),
+        "transactionSignature": str(row.get("tx_signature") or ""),
+        "confirmedAt": int(row.get("confirmed_at") or 0),
+        "distributionIntentId": str(
+            row.get("distribution_intent_id") or ""),
+        "explorerUrl": _reward_explorer_url(
+            network, signature=str(row.get("tx_signature") or "")),
+    } for row in contribution_rows or []]
+    config = _reward_config(env)
     return {
         "address": addr,
-        "uri": _solana_pay_uri(addr, 0, message="ForkMesh central fund"),
+        "network": network,
+        "uri": _solana_pay_uri(
+            addr, 0, message="ForkMesh voluntary trickle-pool contribution"),
+        "explorerUrl": _reward_explorer_url(network, address=addr),
         "balanceLamports": balance if balance is not None else 0,
         "balanceSol": _amount_sol(balance or 0),
-        "distributionIntervalMs": CENTRAL_FUND_DISTRIBUTION_INTERVAL_MS,
-        "lastDistributionAt": int(rec.get("last_distribution_at", 0) or 0),
-        "lastDistributionSig": rec.get("last_distribution_sig", ""),
-        "lastDistributionLamports": int(rec.get("last_distribution_lamports", 0) or 0),
-        "lastDistributionPayees": int(rec.get("last_distribution_payees", 0) or 0),
+        "distributionIntervalMs": config["intervalMs"],
+        "rewardAmountLamports": config["amountLamports"],
+        "randomJitterMaxMs": config["jitterMs"],
+        "custody": "external-local-signer",
+        "privateKeyLocation": "instance-owner-device",
+        "privateKeyStoredByWorker": False,
+        "fundStates": {
+            "userOwnedFunds": (
+                "Remain in each contributor or recipient's self-custodial "
+                "wallet until that wallet signs a transaction."
+            ),
+            "communityFundedPool": (
+                "The public on-chain address and balance shown above."
+            ),
+            "pendingRewards": (
+                "Ledger allocations only; funds remain in the public source "
+                "wallet for at most 24 hours."
+            ),
+            "completedOnChainTransfers": (
+                "Finalized signatures linked in the event history."
+            ),
+        },
+        "contributionOptions": [
+            {
+                "mode": "trickle",
+                "label": "Add to the randomized funding pool",
+                "effect": (
+                    "A direct wallet-to-pool transfer remains available for "
+                    "configurable randomized eligible-node rewards."
+                ),
+            },
+            {
+                "mode": "instant_all_nodes",
+                "label": "Distribute this contribution to all eligible nodes",
+                "effect": (
+                    "After the incoming transfer is finalized, the local pool "
+                    "owner receives one reviewed unsigned all-node intent."
+                ),
+            },
+        ],
+        "contributionEndpoint": "/api/rewards/contributions",
+        "programParticipation": {
+            "type": "voluntary-community-support",
+            "userWalletSignatureRequired": True,
+            "forkMeshSignsContributorTransfer": False,
+            "ownershipInterestGranted": False,
+            "financialReturnPromised": False,
+        },
+        "transactions": transactions[:40],
+        "contributions": contributions,
+        "latestRound": round_public,
+        "notice": (
+            "Non-custodial: ForkMesh does not hold or control user funds and "
+            "never receives a private key. The private pool signing key remains "
+            "only on the instance owner's device. Voluntary contributions and "
+            "community rewards are incentives, not investments, and do not "
+            "guarantee a return."
+        ),
+        "latestIntent": ({
+            "intentId": str(latest.get("intent_id") or ""),
+            "status": str(latest.get("status") or ""),
+            "createdAt": int(latest.get("created_at") or 0),
+            "transactionSignature": str(
+                latest.get("tx_signature") or ""),
+            "completedAt": int(latest.get("completed_at") or 0),
+        } if latest else None),
     }
 
 
 async def _distribute_central_fund(env):
-    # Cron: once an hour, sweep the whole central fund out to the currently-online
-    # nodes, split evenly. Main relay only; best-effort. The interval is measured
-    # from the last SUCCESSFUL distribution, so a donation that lands after a quiet
-    # spell still goes out at the next tick.
+    # Cron first commits an auditable jittered round, then (after that public
+    # time) freezes fresh eligibility and uses a finalized Solana blockhash to
+    # select exactly one node. It only writes an unsigned plan.
     if not _is_main_relay(env):
         return False
     rec = await _central_fund_record(env)
     if not rec:
         return False
     now = int(Date.now())
-    last = int(rec.get("last_distribution_at", 0) or 0)
-    if last and now - last < CENTRAL_FUND_DISTRIBUTION_INTERVAL_MS:
+    config = _reward_config(env)
+    # Expired unsigned work cannot stall later rounds indefinitely.
+    await d1_run(
+        env,
+        "UPDATE chain_intents SET status='expired' "
+        "WHERE kind='community_reward_random' "
+        "AND status IN ('pending_signature','submitted') "
+        "AND expires_at>0 AND expires_at<=?",
+        now,
+    )
+    await d1_run(
+        env,
+        "UPDATE reward_rounds SET status='expired' "
+        "WHERE status='awaiting_signature' AND intent_id IN "
+        "(SELECT intent_id FROM chain_intents WHERE status='expired')",
+    )
+    pending = await d1_first(
+        env,
+        "SELECT intent_id FROM chain_intents "
+        "WHERE kind='community_reward_random' "
+        "AND status IN ('pending_signature','submitted') "
+        "AND (expires_at=0 OR expires_at>?) LIMIT 1",
+        now,
+    )
+    if pending:
+        return False
+    round_row = await d1_first(
+        env,
+        "SELECT * FROM reward_rounds WHERE status='scheduled' "
+        "ORDER BY execute_after ASC LIMIT 1",
+    )
+    if not round_row:
+        interval_start = now - (now % config["intervalMs"])
+        round_id = (
+            _reward_network(env) + ":" + str(interval_start)
+        )
+        existing = await d1_first(
+            env, "SELECT * FROM reward_rounds WHERE round_id=?", round_id)
+        if existing:
+            return False
+        schedule_entropy = await _reward_public_entropy(env)
+        if not schedule_entropy:
+            return False
+        initial_snapshot = await _eligible_reward_snapshot(env, now)
+        if not initial_snapshot.get("eligible"):
+            return False
+        offset = reward_policy.schedule_offset_ms(
+            round_id=round_id,
+            public_entropy=schedule_entropy,
+            jitter_window_ms=min(
+                config["jitterMs"], max(0, config["intervalMs"] - 1)),
+        )
+        execute_after = interval_start + offset
+        await d1_run(
+            env,
+            "INSERT INTO reward_rounds "
+            "(round_id,status,interval_start,scheduled_at,execute_after,"
+            "schedule_entropy,snapshot_data) "
+            "VALUES (?,'scheduled',?,?,?,?,?)",
+            round_id, interval_start, now, execute_after,
+            schedule_entropy,
+            json.dumps(
+                initial_snapshot, sort_keys=True, separators=(",", ":")),
+        )
+        await _audit_sensitive_action(
+            env, "", "reward.round_schedule", "reward_round", round_id,
+            "requested", {
+                "executeAfter": execute_after,
+                "eligibleCount": len(initial_snapshot.get("eligible") or []),
+                "snapshotHash": initial_snapshot.get("snapshotHash", ""),
+                "entropySource": (
+                    _reward_network(env)
+                    + "-finalized-solana-blockhash"
+                ),
+            })
+        if execute_after > now:
+            return True
+        round_row = {
+            "round_id": round_id,
+            "execute_after": execute_after,
+        }
+    if int(round_row.get("execute_after") or 0) > now:
+        return False
+
+    snapshot = await _eligible_reward_snapshot(env, now)
+    selection_entropy = await _reward_public_entropy(env)
+    selection = reward_policy.select_candidate(
+        snapshot,
+        round_id=str(round_row.get("round_id") or ""),
+        public_entropy=selection_entropy,
+        entropy_source=(
+            _reward_network(env) + "-finalized-solana-blockhash"),
+    )
+    if not selection:
         return False
     from_addr = rec.get("address", "")
-    secret = rec.get("secret", "")
-    if not SOLANA_RE.match(from_addr or "") or not secret:
+    if not SOLANA_RE.match(from_addr or ""):
         return False
-    balance = await _solana_balance_lamports(env, from_addr)
+    balance = await _reward_balance_lamports(env, from_addr)
     if balance is None:
         return False
-    transferable = int(balance) - SOLANA_SWEEP_FEE_RESERVE_LAMPORTS
-    if transferable < CENTRAL_FUND_MIN_DISTRIBUTION_LAMPORTS:
+    amount = config["amountLamports"]
+    if int(balance) < amount + REWARD_POOL_FEE_RESERVE_LAMPORTS:
         return False
-    payees = [p for p in await _online_payout_addresses(env) if p != from_addr]
-    if not payees:
+    selected = selection.get("candidate") or {}
+    destination = str(selected.get("walletAddress") or "")
+    if not SOLANA_RE.match(destination) or destination == from_addr:
         return False
-    per_node = transferable // len(payees)
-    if per_node <= 0:
-        return False
-    transfers = [(payee, per_node) for payee in payees]
-    sig = await _solana_send_transfers(env, from_addr, secret, transfers)
-    if not sig:
-        return False
-    rec["last_distribution_at"] = now
-    rec["last_distribution_sig"] = sig
-    rec["last_distribution_lamports"] = per_node * len(payees)
-    rec["last_distribution_payees"] = len(payees)
-    await _save_central_fund(env, rec)
-    # Credit each node its share for the "funds received · mainnodes" board.
-    for payee, lamports in transfers:
-        await _record_funds_received(env, "mainnode", payee, "", lamports)
+    intent_id = _random_bytes(16).hex()
+    plan = {
+        "v": 2,
+        "network": _reward_network(env),
+        "sourceAddress": from_addr,
+        "custody": {
+            "forkMeshHoldsUserKeys": False,
+            "fundsRemainInSourceWalletUntilSigned": True,
+        },
+        "signing": {
+            "required": True,
+            "performed": False,
+            "method": "external-local-qt",
+        },
+        "transfers": [{
+            "address": destination,
+            "lamports": amount,
+            "nodeId": str(selected.get("nodeId") or ""),
+        }],
+        "eligibility": snapshot,
+        "selection": dict(selection, selectedNodeId=str(
+            selected.get("nodeId") or "")),
+        "policy": "randomized-eligible-mirror-v2",
+        "generatedAt": now,
+        "notice": (
+            "Voluntary community incentive; not an investment and no "
+            "financial return is promised."
+        ),
+    }
+    await d1_run(
+        env,
+        "INSERT INTO chain_intents "
+        "(intent_id, kind, source_address, signer_account, status, data, "
+        "created_at, expires_at) VALUES (?,?,?,?,'pending_signature',?,?,?)",
+        intent_id, "community_reward_random", from_addr,
+        rec.get("signer_account", ""),
+        json.dumps(plan, sort_keys=True, separators=(",", ":")),
+        now, now + 4 * 60 * 60 * 1000,
+    )
+    await d1_run(
+        env,
+        "UPDATE reward_rounds SET status='awaiting_signature', "
+        "selection_data=?, intent_id=? WHERE round_id=? "
+        "AND status='scheduled'",
+        json.dumps(selection, sort_keys=True, separators=(",", ":")),
+        intent_id, round_row.get("round_id"),
+    )
+    await _audit_sensitive_action(
+        env, "", "reward.intent_create", "chain_intent", intent_id,
+        "requested", {
+            "kind": "community_reward_random",
+            "roundId": round_row.get("round_id"),
+            "selectedNodeId": selected.get("nodeId", ""),
+            "eligibleCount": selection.get("eligibleCount", 0),
+            "snapshotHash": selection.get("snapshotHash", ""),
+            "lamports": amount,
+        })
     return True
 
 
-# --- Issue bounties ---------------------------------------------------------
-# Same custody model as the signup donation funnel: each bounty gets its OWN
-# freshly generated Solana deposit address; the worker holds the key (encrypted
-# at rest) and, when the issue's pull request merges, splits the balance 90% to
-# the PR author and 10% to the treasury. Mainnet.
-BOUNTY_MIN_USD = 1.0
-BOUNTY_MAX_USD = 100000.0
-BOUNTY_TREASURY_BPS = 1000  # 10% to treasury, in basis points
+async def _solana_contribution_details(env, signature, *, pool_address,
+                                       reference_address, amount_lamports):
+    """Validate one finalized, referenced System transfer into the pool."""
+    if (not re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]{64,120}",
+                         str(signature or ""))
+            or not SOLANA_RE.match(pool_address or "")
+            or not SOLANA_RE.match(reference_address or "")
+            or int(amount_lamports or 0) <= 0):
+        return False
+    response = await _reward_solana_rpc(
+        env,
+        "getTransaction",
+        [signature, {
+            "encoding": "jsonParsed",
+            "commitment": "finalized",
+            "maxSupportedTransactionVersion": 0,
+        }],
+    )
+    if not isinstance(response, dict):
+        return None
+    result = response.get("result")
+    if result is None:
+        return None
+    if not isinstance(result, dict):
+        return False
+    meta = result.get("meta")
+    transaction = result.get("transaction")
+    if (not isinstance(meta, dict) or meta.get("err") is not None
+            or not isinstance(transaction, dict)
+            or signature not in (transaction.get("signatures") or [])):
+        return False
+    message = transaction.get("message")
+    if not isinstance(message, dict):
+        return False
+    account_keys = []
+    for key in message.get("accountKeys") or []:
+        if isinstance(key, dict):
+            account_keys.append(str(key.get("pubkey") or ""))
+        else:
+            account_keys.append(str(key or ""))
+    # The per-intent Solana Pay reference prevents one public transaction from
+    # being claimed under a different contribution choice.
+    if reference_address not in account_keys:
+        return False
+    actual = []
+    for instruction in message.get("instructions") or []:
+        if not isinstance(instruction, dict):
+            return False
+        if str(instruction.get("program") or "").lower() != "system":
+            return False
+        parsed = instruction.get("parsed")
+        if (not isinstance(parsed, dict)
+                or parsed.get("type") != "transfer"):
+            return False
+        info = parsed.get("info")
+        if not isinstance(info, dict):
+            return False
+        try:
+            lamports = int(info.get("lamports") or 0)
+        except (TypeError, ValueError):
+            return False
+        actual.append({
+            "sourceAddress": str(info.get("source") or ""),
+            "destinationAddress": str(info.get("destination") or ""),
+            "lamports": lamports,
+        })
+    if len(actual) != 1:
+        return False
+    transfer = actual[0]
+    if (not SOLANA_RE.match(transfer["sourceAddress"])
+            or transfer["sourceAddress"] == pool_address
+            or transfer["destinationAddress"] != pool_address
+            or transfer["lamports"] != int(amount_lamports)):
+        return False
+    return transfer
 
 
-async def _usd_to_lamports(env, usd):
-    price = await _sol_usd_price(env)  # USD per SOL
-    if price <= 0:
-        return 0
-    return int(round((float(usd) / price) * LAMPORTS_PER_SOL))
+async def _create_instant_distribution_intent(env, contribution):
+    """Turn one finalized contribution into a size-safe unsigned intent batch."""
+    contribution = contribution or {}
+    if contribution.get("distribution_intent_id"):
+        rows = await d1_all(
+            env,
+            "SELECT intent_id FROM reward_contribution_intents "
+            "WHERE contribution_id=? ORDER BY chunk_index ASC",
+            contribution.get("contribution_id"),
+        )
+        return [
+            str(row.get("intent_id") or "")
+            for row in rows or []
+            if row.get("intent_id")
+        ]
+    rec = await _central_fund_record(env)
+    if not rec or not rec.get("signer_account"):
+        return []
+    now = int(Date.now())
+    snapshot = await _eligible_reward_snapshot(env, now)
+    eligible = list(snapshot.get("eligible") or [])
+    if not eligible:
+        return []
+    total = int(contribution.get("amount_lamports") or 0)
+    chunk_count = (
+        len(eligible) + REWARD_TRANSFERS_PER_INTENT - 1
+    ) // REWARD_TRANSFERS_PER_INTENT
+    fee_reserve = REWARD_POOL_FEE_RESERVE_LAMPORTS * chunk_count
+    distributable = total - fee_reserve
+    per_node = distributable // len(eligible) if eligible else 0
+    if per_node <= 0:
+        return []
+    balance = await _reward_balance_lamports(env, rec.get("address"))
+    required = per_node * len(eligible) + fee_reserve
+    if balance is None or int(balance) < required:
+        return []
+    transfers = [{
+        "address": item["walletAddress"],
+        "lamports": per_node,
+        "nodeId": item["nodeId"],
+    } for item in eligible]
+    contribution_id = str(contribution.get("contribution_id") or "")
+    eligibility_summary = {
+        "snapshotHash": snapshot.get("snapshotHash", ""),
+        "eligibleCount": len(eligible),
+        "rejected": snapshot.get("rejected", []),
+        "policy": snapshot.get("policy", {}),
+        "limitations": snapshot.get("limitations", []),
+        "source": snapshot.get("source", ""),
+    }
+    statements = []
+    intent_ids = []
+    for chunk_index in range(chunk_count):
+        intent_id = _random_bytes(16).hex()
+        intent_ids.append(intent_id)
+        start = chunk_index * REWARD_TRANSFERS_PER_INTENT
+        chunk = transfers[start:start + REWARD_TRANSFERS_PER_INTENT]
+        plan = {
+            "v": 2,
+            "network": rec.get("network", "mainnet-beta"),
+            "sourceAddress": rec.get("address", ""),
+            "custody": {
+                "forkMeshHoldsUserKeys": False,
+                "fundsRemainInSourceWalletUntilSigned": True,
+            },
+            "signing": {
+                "required": True,
+                "performed": False,
+                "method": "external-local-qt",
+            },
+            "transfers": chunk,
+            "eligibility": eligibility_summary,
+            "policy": "instant-all-eligible-mirrors-v1",
+            "contributionId": contribution_id,
+            "contributionLamports": total,
+            "distributedLamports": per_node * len(eligible),
+            "retainedForNetworkFeesAndRemainder": (
+                total - per_node * len(eligible)
+            ),
+            "batch": {
+                "chunkIndex": chunk_index,
+                "chunkCount": chunk_count,
+                "maximumTransfersPerTransaction": (
+                    REWARD_TRANSFERS_PER_INTENT
+                ),
+            },
+            "generatedAt": now,
+            "notice": (
+                "Voluntary community incentive; not an investment and no "
+                "financial return is promised."
+            ),
+        }
+        statements.extend([
+            (
+                "INSERT INTO chain_intents "
+                "(intent_id,kind,source_address,signer_account,status,data,"
+                "created_at,expires_at) "
+                "VALUES (?,?,?,?,'pending_signature',?,?,?)",
+                (
+                    intent_id,
+                    "community_reward_instant_distribution",
+                    rec.get("address", ""),
+                    rec.get("signer_account", ""),
+                    json.dumps(
+                        plan, sort_keys=True, separators=(",", ":")),
+                    now,
+                    now + 4 * 60 * 60 * 1000,
+                ),
+            ),
+            (
+                "INSERT INTO reward_contribution_intents "
+                "(contribution_id,intent_id,chunk_index,chunk_count,status) "
+                "VALUES (?,?,?,?,'pending_signature')",
+                (
+                    contribution_id, intent_id, chunk_index, chunk_count,
+                ),
+            ),
+        ])
+    statements.append((
+        "UPDATE reward_contributions "
+        "SET status='awaiting_distribution', distribution_intent_id=? "
+        "WHERE contribution_id=? AND distribution_intent_id=''",
+        (intent_ids[0], contribution_id),
+    ))
+    await _contribution_run_batch(env, statements)
+    await _audit_sensitive_action(
+        env, "", "reward.instant_intent_create",
+        "reward_contribution", contribution_id,
+        "requested", {
+            "contributionId": contribution_id,
+            "eligibleCount": len(eligible),
+            "snapshotHash": snapshot.get("snapshotHash", ""),
+            "distributedLamports": per_node * len(eligible),
+            "intentCount": chunk_count,
+            "maximumTransfersPerIntent": REWARD_TRANSFERS_PER_INTENT,
+        })
+    return intent_ids
+
+
+async def _finalize_reward_contribution(env, row, signature, details):
+    now = int(Date.now())
+    mode = str(row.get("mode") or "")
+    status = (
+        "confirmed_waiting_for_nodes"
+        if mode == "instant_all_nodes"
+        else "confirmed_in_pool"
+    )
+    await d1_run(
+        env,
+        "UPDATE reward_contributions SET status=?, tx_signature=?, "
+        "source_address=?, confirmed_at=? WHERE contribution_id=? "
+        "AND status IN ('prepared','awaiting_finality')",
+        status, signature, details.get("sourceAddress", ""), now,
+        row.get("contribution_id"),
+    )
+    row = dict(row)
+    row.update({
+        "status": status,
+        "tx_signature": signature,
+        "source_address": details.get("sourceAddress", ""),
+        "confirmed_at": now,
+    })
+    if mode == "instant_all_nodes":
+        intent_ids = await _create_instant_distribution_intent(env, row)
+        if intent_ids:
+            row["status"] = "awaiting_distribution"
+            row["distribution_intent_id"] = intent_ids[0]
+            row["distribution_intent_ids"] = intent_ids
+    await _audit_sensitive_action(
+        env, "", "reward.contribution_confirm", "reward_contribution",
+        str(row.get("contribution_id") or ""), "success", {
+            "mode": mode,
+            "lamports": int(row.get("amount_lamports") or 0),
+            "transactionSignature": signature,
+        })
+    return row
+
+
+async def _process_waiting_reward_contributions(env):
+    rows = await d1_all(
+        env,
+        "SELECT * FROM reward_contributions "
+        "WHERE mode='instant_all_nodes' "
+        "AND status='confirmed_waiting_for_nodes' "
+        "AND distribution_intent_id='' "
+        "ORDER BY confirmed_at ASC LIMIT 20",
+    )
+    created = 0
+    for row in rows or []:
+        if await _create_instant_distribution_intent(env, row):
+            created += 1
+    return created
+
+
+async def verify_submitted_reward_contributions(env):
+    now = int(Date.now())
+    await d1_run(
+        env,
+        "UPDATE reward_contributions SET status='expired' "
+        "WHERE status='prepared' AND expires_at<=?",
+        now,
+    )
+    rows = await d1_all(
+        env,
+        "SELECT * FROM reward_contributions "
+        "WHERE status='awaiting_finality' "
+        "ORDER BY created_at ASC LIMIT 25",
+    )
+    rec = await _central_fund_record(env)
+    if not rec:
+        return
+    for row in rows or []:
+        details = await _solana_contribution_details(
+            env, row.get("tx_signature"),
+            pool_address=rec.get("address", ""),
+            reference_address=row.get("reference_address", ""),
+            amount_lamports=int(row.get("amount_lamports") or 0),
+        )
+        if isinstance(details, dict):
+            await _finalize_reward_contribution(
+                env, row, row.get("tx_signature"), details)
+        elif details is False:
+            await d1_run(
+                env,
+                "UPDATE reward_contributions SET status='rejected' "
+                "WHERE contribution_id=? AND status='awaiting_finality'",
+                row.get("contribution_id"),
+            )
+    await _process_waiting_reward_contributions(env)
+
+
+async def reward_contributions_handler(env, request):
+    """Prepare/confirm voluntary direct-to-pool Solana Pay transfers."""
+    await ensure_schema(env)
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    rec = await _central_fund_record(env)
+    if not rec:
+        return json_response(
+            {"error": "community_pool_not_configured"}, status=503)
+    action = clean_string(data.get("action", "prepare"), 20).lower()
+    now = int(Date.now())
+    if action == "prepare":
+        mode = clean_string(data.get("mode", ""), 32).lower()
+        try:
+            amount = int(data.get("amountLamports") or 0)
+        except (TypeError, ValueError):
+            amount = 0
+        if mode not in ("trickle", "instant_all_nodes"):
+            return json_response(
+                {"error": "invalid_contribution_mode"}, status=400)
+        if not (
+            REWARD_CONTRIBUTION_MIN_LAMPORTS
+            <= amount
+            <= REWARD_CONTRIBUTION_MAX_LAMPORTS
+        ):
+            return json_response({
+                "error": "invalid_contribution_amount",
+                "minimumLamports": REWARD_CONTRIBUTION_MIN_LAMPORTS,
+                "maximumLamports": REWARD_CONTRIBUTION_MAX_LAMPORTS,
+            }, status=400)
+        recent = await d1_first(
+            env,
+            "SELECT COUNT(*) AS c FROM reward_contributions "
+            "WHERE created_at>=?",
+            now - REWARD_CONTRIBUTION_EXPIRES_MS,
+        )
+        if int((recent or {}).get("c") or 0) >= 1000:
+            return json_response(
+                {"error": "contribution_queue_busy"}, status=429)
+        contribution_id = _random_bytes(16).hex()
+        reference = _base58_encode(_random_bytes(32))
+        expires_at = now + REWARD_CONTRIBUTION_EXPIRES_MS
+        await d1_run(
+            env,
+            "INSERT INTO reward_contributions "
+            "(contribution_id,mode,amount_lamports,reference_address,"
+            "status,created_at,expires_at) "
+            "VALUES (?,?,?,?,'prepared',?,?)",
+            contribution_id, mode, amount, reference, now, expires_at,
+        )
+        return json_response({
+            "ok": True,
+            "contributionId": contribution_id,
+            "mode": mode,
+            "amountLamports": amount,
+            "amountSol": _amount_sol(amount),
+            "poolAddress": rec.get("address", ""),
+            "network": rec.get("network", "mainnet-beta"),
+            "referenceAddress": reference,
+            "expiresAt": expires_at,
+            "uri": _solana_pay_uri(
+                rec.get("address", ""), amount, reference=reference,
+                message=(
+                    "ForkMesh instant eligible-node contribution"
+                    if mode == "instant_all_nodes"
+                    else "ForkMesh randomized reward-pool contribution"
+                ),
+            ),
+            "custody": "direct-self-custodial-wallet-to-public-pool",
+            "programParticipation": "voluntary-community-support",
+            "userWalletSignatureRequired": True,
+            "forkMeshSignsContributorTransfer": False,
+            "ownershipInterestGranted": False,
+            "financialReturnPromised": False,
+            "notice": (
+                "ForkMesh never receives your wallet key. Your wallet signs "
+                "a direct public transfer; this is a voluntary community "
+                "incentive, not an investment or guaranteed return."
+            ),
+        }, status=201, cache_control="no-store")
+    if action != "confirm":
+        return json_response({"error": "invalid_action"}, status=400)
+    contribution_id = security_control.normalize_incident_id(
+        data.get("contributionId"))
+    signature = clean_string(
+        data.get("transactionSignature", ""), 120).strip()
+    if (not contribution_id
+            or not re.fullmatch(
+                r"[1-9A-HJ-NP-Za-km-z]{64,120}", signature)):
+        return json_response(
+            {"error": "invalid_contribution_confirmation"}, status=400)
+    row = await d1_first(
+        env,
+        "SELECT * FROM reward_contributions WHERE contribution_id=?",
+        contribution_id,
+    )
+    if not row:
+        return json_response({"error": "not_found"}, status=404)
+    if row.get("status") in (
+            "confirmed_in_pool", "confirmed_waiting_for_nodes",
+            "awaiting_distribution", "distributed"):
+        if row.get("tx_signature") != signature:
+            return json_response(
+                {"error": "contribution_already_confirmed"}, status=409)
+        return json_response({
+            "ok": True,
+            "status": row.get("status"),
+            "distributionIntentId": str(
+                row.get("distribution_intent_id") or ""),
+            "custody": "public-community-pool",
+            "fundsLocation": "public-community-pool",
+            "notice": (
+                "The wallet-signed contribution is already confirmed in the "
+                "public community pool. ForkMesh retained no contributor key; "
+                "any distribution still requires the external local signer "
+                "and final on-chain verification."
+            ),
+        }, cache_control="no-store")
+    if int(row.get("expires_at") or 0) <= now:
+        await d1_run(
+            env,
+            "UPDATE reward_contributions SET status='expired' "
+            "WHERE contribution_id=? AND status='prepared'",
+            contribution_id,
+        )
+        return json_response({"error": "contribution_expired"}, status=410)
+    replay = await d1_first(
+        env,
+        "SELECT contribution_id FROM reward_contributions "
+        "WHERE tx_signature=? AND contribution_id<>?",
+        signature, contribution_id,
+    )
+    if replay:
+        return json_response({"error": "transaction_replay"}, status=409)
+    details = await _solana_contribution_details(
+        env, signature,
+        pool_address=rec.get("address", ""),
+        reference_address=row.get("reference_address", ""),
+        amount_lamports=int(row.get("amount_lamports") or 0),
+    )
+    if details is False:
+        return json_response(
+            {"error": "contribution_transaction_mismatch"}, status=409)
+    if details is None:
+        await d1_run(
+            env,
+            "UPDATE reward_contributions "
+            "SET status='awaiting_finality', tx_signature=? "
+            "WHERE contribution_id=? AND status='prepared'",
+            signature, contribution_id,
+        )
+        return json_response({
+            "ok": True,
+            "status": "awaiting_finality",
+            "custody": "direct-self-custodial-wallet-to-public-pool",
+            "fundsLocation": "awaiting-finalized-public-transfer",
+            "notice": (
+                "Non-custodial: ForkMesh retained no wallet key. No "
+                "distribution occurs until the direct public transfer's "
+                "finality is verified."
+            ),
+        }, status=202, cache_control="no-store")
+    completed = await _finalize_reward_contribution(
+        env, row, signature, details)
+    return json_response({
+        "ok": True,
+        "status": completed.get("status"),
+        "distributionIntentId": str(
+            completed.get("distribution_intent_id") or ""),
+        "distributionIntentIds": list(
+            completed.get("distribution_intent_ids") or []),
+        "transactionSignature": signature,
+        "explorerUrl": _reward_explorer_url(
+            rec.get("network", "mainnet-beta"), signature=signature),
+        "custody": "public-community-pool",
+        "fundsLocation": "public-community-pool",
+        "notice": (
+            "The direct wallet-signed contribution is finalized in the public "
+            "community pool. ForkMesh retained no contributor key. A prepared "
+            "distribution is not complete until its separate finalized "
+            "on-chain transfer is verified."
+        ),
+    }, cache_control="no-store")
+
+
+def _chain_intent_public(row, include_plan=False):
+    row = row or {}
+    result = {
+        "intentId": str(row.get("intent_id") or ""),
+        "kind": str(row.get("kind") or ""),
+        "sourceAddress": str(row.get("source_address") or ""),
+        "status": str(row.get("status") or ""),
+        "createdAt": int(row.get("created_at") or 0),
+        "expiresAt": int(row.get("expires_at") or 0),
+        "transactionSignature": str(row.get("tx_signature") or ""),
+        "completedAt": int(row.get("completed_at") or 0),
+        "custody": "external-local-signer",
+    }
+    if include_plan:
+        try:
+            plan = json.loads(str(row.get("data") or "{}"))
+        except Exception:
+            plan = {}
+        result["plan"] = plan if isinstance(plan, dict) else {}
+    return result
+
+
+async def _solana_transaction_matches_plan(env, signature, plan):
+    """Return True/False for a finalized exact System transfer, None if absent."""
+    if not signature or not isinstance(plan, dict):
+        return False
+    rpc = (
+        _reward_solana_rpc
+        if str(plan.get("network") or "") in (
+            "devnet", "testnet", "mainnet-beta")
+        else _solana_rpc
+    )
+    response = await rpc(
+        env,
+        "getTransaction",
+        [signature, {
+            "encoding": "jsonParsed",
+            "commitment": "finalized",
+            "maxSupportedTransactionVersion": 0,
+        }],
+    )
+    if not isinstance(response, dict):
+        return None
+    result = response.get("result")
+    if result is None:
+        return None
+    if not isinstance(result, dict):
+        return False
+    meta = result.get("meta")
+    transaction = result.get("transaction")
+    if (not isinstance(meta, dict) or meta.get("err") is not None
+            or not isinstance(transaction, dict)):
+        return False
+    signatures = transaction.get("signatures")
+    if not isinstance(signatures, list) or signature not in signatures:
+        return False
+    message = transaction.get("message")
+    instructions = (
+        message.get("instructions") if isinstance(message, dict) else None)
+    if not isinstance(instructions, list):
+        return False
+    actual = []
+    for instruction in instructions:
+        if not isinstance(instruction, dict):
+            return False
+        # The local signer is intentionally limited to ordinary System Program
+        # transfers. Any opaque/custom instruction makes the intent unverifiable.
+        program = str(instruction.get("program") or "").lower()
+        parsed = instruction.get("parsed")
+        if program != "system" or not isinstance(parsed, dict):
+            return False
+        if parsed.get("type") != "transfer":
+            return False
+        info = parsed.get("info")
+        if not isinstance(info, dict):
+            return False
+        source = str(info.get("source") or "")
+        destination = str(info.get("destination") or "")
+        try:
+            lamports = int(info.get("lamports") or 0)
+        except (TypeError, ValueError):
+            return False
+        if (source != plan.get("sourceAddress")
+                or not SOLANA_RE.match(destination) or lamports <= 0):
+            return False
+        actual.append((destination, lamports))
+    expected = []
+    for transfer in plan.get("transfers") or []:
+        if not isinstance(transfer, dict):
+            return False
+        destination = str(transfer.get("address") or "")
+        try:
+            lamports = int(transfer.get("lamports") or 0)
+        except (TypeError, ValueError):
+            return False
+        if not SOLANA_RE.match(destination) or lamports <= 0:
+            return False
+        expected.append((destination, lamports))
+    return bool(expected) and actual == expected
+
+
+async def _mark_chain_intent_failed(env, row, status):
+    """Propagate a rejected/expired chunk to its public contribution batch."""
+    if (row or {}).get("kind") != "community_reward_instant_distribution":
+        return
+    normalized = status if status in ("rejected", "expired") else "rejected"
+    await d1_run(
+        env,
+        "UPDATE reward_contribution_intents SET status=? "
+        "WHERE intent_id=?",
+        normalized, row.get("intent_id"),
+    )
+    link = await d1_first(
+        env,
+        "SELECT contribution_id FROM reward_contribution_intents "
+        "WHERE intent_id=?",
+        row.get("intent_id"),
+    )
+    if link:
+        await d1_run(
+            env,
+            "UPDATE reward_contributions SET status='distribution_failed' "
+            "WHERE contribution_id=? "
+            "AND status='awaiting_distribution'",
+            link.get("contribution_id"),
+        )
+
+
+async def _complete_chain_intent(env, row, signature):
+    now = int(Date.now())
+    await d1_run(
+        env,
+        "UPDATE chain_intents SET status='completed', tx_signature=?, "
+        "completed_at=? WHERE intent_id=? "
+        "AND status IN ('pending_signature','submitted')",
+        signature, now, row.get("intent_id"),
+    )
+    try:
+        plan = json.loads(str(row.get("data") or "{}"))
+    except Exception:
+        plan = {}
+    if row.get("kind") in (
+            "community_reward_random",
+            "community_reward_instant_distribution"):
+        for transfer in plan.get("transfers") or []:
+            address = str(transfer.get("address") or "")
+            try:
+                lamports = int(transfer.get("lamports") or 0)
+            except (TypeError, ValueError):
+                lamports = 0
+            if SOLANA_RE.match(address) and lamports > 0:
+                await _record_funds_received(
+                    env, "mainnode", address, "", lamports)
+        if row.get("kind") == "community_reward_random":
+            await d1_run(
+                env,
+                "UPDATE reward_rounds SET status='completed', completed_at=? "
+                "WHERE intent_id=? AND status='awaiting_signature'",
+                now, row.get("intent_id"),
+            )
+        else:
+            await d1_run(
+                env,
+                "UPDATE reward_contribution_intents SET status='completed' "
+                "WHERE intent_id=?",
+                row.get("intent_id"),
+            )
+            link = await d1_first(
+                env,
+                "SELECT contribution_id FROM reward_contribution_intents "
+                "WHERE intent_id=?",
+                row.get("intent_id"),
+            )
+            if link:
+                remaining = await d1_first(
+                    env,
+                    "SELECT COUNT(*) AS c FROM reward_contribution_intents "
+                    "WHERE contribution_id=? AND status<>'completed'",
+                    link.get("contribution_id"),
+                )
+                if int((remaining or {}).get("c") or 0) == 0:
+                    await d1_run(
+                        env,
+                        "UPDATE reward_contributions "
+                        "SET status='distributed' "
+                        "WHERE contribution_id=? "
+                        "AND status='awaiting_distribution'",
+                        link.get("contribution_id"),
+                    )
+    if row.get("kind") == "pending_reward":
+        await d1_run(
+            env,
+            "UPDATE pending_rewards SET status='completed', tx_signature=? "
+            "WHERE intent_id=? AND status='ready'",
+            signature, row.get("intent_id"),
+        )
+
+
+async def reward_signing_jobs_handler(env, request):
+    """Local-signer queue: public transfer plans in, signature receipt out."""
+    await ensure_schema(env)
+    method = method_name(request)
+    if method not in ("GET", "POST"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    if method == "GET":
+        params = parse_qs(urlparse(request.url).query)
+        signer = clean_string(
+            params.get("signer", [""])[0], MAX_NODE_NAME).strip().lower()
+        ts = clean_string(params.get("ts", [""])[0], 20)
+        sig = clean_string(params.get("sig", [""])[0], 200)
+        canonical = (
+            "forkmesh-reward-jobs-v1\n" + signer + "\n" + ts
+        ).encode()
+        configured = (
+            getattr(env, "REWARD_SIGNER_ACCOUNT", "")
+            or getattr(env, "INSTANCE_OWNER_ACCOUNT", "")
+            or ""
+        ).strip().lower()
+        if (not configured or signer != configured or not _ts_ok(ts)
+                or not await _verify_owner_signature(
+                    env, signer, sig, canonical)):
+            return json_response({"error": "unauthorized"}, status=401)
+        rows = await d1_all(
+            env,
+            "SELECT * FROM chain_intents WHERE signer_account=? "
+            "AND status IN ('pending_signature','submitted') "
+            "ORDER BY created_at ASC LIMIT 50",
+            signer,
+        )
+        return json_response({
+            "ok": True,
+            "jobs": [_chain_intent_public(row, include_plan=True)
+                     for row in rows or []],
+            "custody": "external-local-signer",
+            "notice": (
+                "Sign only after the local client validates source, network, "
+                "amount limits and every System Program transfer."
+            ),
+        }, cache_control="no-store")
+
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    signer = clean_string(
+        data.get("signer", ""), MAX_NODE_NAME).strip().lower()
+    intent_id = security_control.normalize_incident_id(data.get("intentId"))
+    tx_signature = clean_string(data.get("transactionSignature", ""), 120)
+    ts = clean_string(data.get("ts", ""), 20)
+    sig = clean_string(data.get("sig", ""), 200)
+    configured = (
+        getattr(env, "REWARD_SIGNER_ACCOUNT", "")
+        or getattr(env, "INSTANCE_OWNER_ACCOUNT", "")
+        or ""
+    ).strip().lower()
+    canonical = (
+        "forkmesh-reward-submit-v1\n" + signer + "\n" + intent_id +
+        "\n" + tx_signature + "\n" + ts
+    ).encode()
+    if (not configured or signer != configured or not intent_id
+            or not tx_signature or not _ts_ok(ts)
+            or not await _verify_owner_signature(env, signer, sig, canonical)):
+        return json_response({"error": "unauthorized"}, status=401)
+    row = await d1_first(
+        env,
+        "SELECT * FROM chain_intents WHERE intent_id=? "
+        "AND signer_account=?",
+        intent_id, signer,
+    )
+    if not row:
+        return json_response({"error": "not_found"}, status=404)
+    if row.get("status") == "completed":
+        if row.get("tx_signature") != tx_signature:
+            return json_response({"error": "intent_already_completed"},
+                                 status=409)
+        return json_response({
+            "ok": True,
+            "job": _chain_intent_public(row),
+            "custody": "external-local-signer",
+            "notice": (
+                "The completed state reflects a finalized transfer matching "
+                "the exact public plan. ForkMesh never received the local pool "
+                "private key."
+            ),
+        }, cache_control="no-store")
+    if row.get("status") not in ("pending_signature", "submitted"):
+        return json_response(
+            {"error": "intent_not_signable",
+             "status": str(row.get("status") or "")},
+            status=409,
+            cache_control="no-store",
+        )
+    now = int(Date.now())
+    if int(row.get("expires_at") or 0) <= now:
+        await d1_run(
+            env,
+            "UPDATE chain_intents SET status='expired' "
+            "WHERE intent_id=? AND status IN "
+            "('pending_signature','submitted')",
+            intent_id,
+        )
+        await _mark_chain_intent_failed(env, row, "expired")
+        return json_response(
+            {"error": "intent_expired"}, status=410,
+            cache_control="no-store",
+        )
+    existing_signature = str(row.get("tx_signature") or "")
+    if (row.get("status") == "submitted" and existing_signature
+            and existing_signature != tx_signature):
+        return json_response(
+            {"error": "intent_signature_mismatch"}, status=409,
+            cache_control="no-store",
+        )
+    replay = await d1_first(
+        env,
+        "SELECT intent_id FROM chain_intents WHERE tx_signature=? "
+        "AND intent_id<>?",
+        tx_signature, intent_id,
+    )
+    if replay:
+        return json_response({"error": "transaction_replay"}, status=409)
+    try:
+        plan = json.loads(str(row.get("data") or "{}"))
+    except Exception:
+        plan = {}
+    matches = await _solana_transaction_matches_plan(
+        env, tx_signature, plan)
+    if matches is False:
+        await d1_run(
+            env,
+            "UPDATE chain_intents SET status='rejected', tx_signature=? "
+            "WHERE intent_id=?",
+            tx_signature, intent_id,
+        )
+        await _mark_chain_intent_failed(env, row, "rejected")
+        await _audit_sensitive_action(
+            env, signer, "reward.intent_reject", "chain_intent", intent_id,
+            "denied", {"reason": "transaction_plan_mismatch"})
+        return json_response(
+            {"error": "transaction_plan_mismatch"}, status=409)
+    if matches is None:
+        await d1_run(
+            env,
+            "UPDATE chain_intents SET status='submitted', tx_signature=? "
+            "WHERE intent_id=? AND status='pending_signature'",
+            tx_signature, intent_id,
+        )
+        await _audit_sensitive_action(
+            env, signer, "reward.intent_submit", "chain_intent", intent_id,
+            "requested", {"verification": "pending_finality"})
+        return json_response({
+            "ok": True,
+            "status": "submitted",
+            "verification": "pending_finality",
+            "custody": "external-local-signer",
+            "fundsState": "pending-finality",
+            "notice": (
+                "Submission is not a completed transfer. The pool private key "
+                "remained on the owner device, and completion requires a "
+                "finalized transaction matching the exact public plan."
+            ),
+        }, status=202, cache_control="no-store")
+    await _complete_chain_intent(env, row, tx_signature)
+    await _audit_sensitive_action(
+        env, signer, "reward.intent_complete", "chain_intent", intent_id,
+        "success", {"verification": "finalized_exact_plan"})
+    row["status"] = "completed"
+    row["tx_signature"] = tx_signature
+    row["completed_at"] = int(Date.now())
+    return json_response({
+        "ok": True,
+        "job": _chain_intent_public(row),
+        "custody": "external-local-signer",
+        "notice": (
+            "The completed state reflects a finalized transfer matching the "
+            "exact public plan. ForkMesh never received the local pool private "
+            "key."
+        ),
+    }, cache_control="no-store")
+
+
+async def verify_submitted_chain_intents(env):
+    await ensure_schema(env)
+    now = int(Date.now())
+    expired = await d1_all(
+        env,
+        "SELECT * FROM chain_intents "
+        "WHERE kind='community_reward_instant_distribution' "
+        "AND status IN ('pending_signature','submitted') "
+        "AND expires_at>0 AND expires_at<=? LIMIT 50",
+        now,
+    )
+    for row in expired or []:
+        await d1_run(
+            env,
+            "UPDATE chain_intents SET status='expired' "
+            "WHERE intent_id=? "
+            "AND status IN ('pending_signature','submitted')",
+            row.get("intent_id"),
+        )
+        await _mark_chain_intent_failed(env, row, "expired")
+    rows = await d1_all(
+        env,
+        "SELECT * FROM chain_intents WHERE status='submitted' "
+        "ORDER BY created_at ASC LIMIT 25",
+    )
+    for row in rows or []:
+        try:
+            plan = json.loads(str(row.get("data") or "{}"))
+        except Exception:
+            plan = {}
+        matches = await _solana_transaction_matches_plan(
+            env, row.get("tx_signature"), plan)
+        if matches is True:
+            await _complete_chain_intent(
+                env, row, row.get("tx_signature"))
+        elif matches is False:
+            await d1_run(
+                env,
+                "UPDATE chain_intents SET status='rejected' "
+                "WHERE intent_id=?",
+                row.get("intent_id"),
+            )
+            await _mark_chain_intent_failed(env, row, "rejected")
+
+
+async def pending_reward_award_handler(env, request):
+    """Create a 24-hour ledger allocation authorized by the local signer owner."""
+    await ensure_schema(env)
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    signer = clean_string(
+        data.get("signer", ""), MAX_NODE_NAME).strip().lower()
+    recipient = clean_string(
+        data.get("recipient", ""), MAX_NODE_NAME).strip().lower()
+    ts = clean_string(data.get("ts", ""), 20)
+    sig = clean_string(data.get("sig", ""), 200)
+    try:
+        amount = int(data.get("amountLamports") or 0)
+    except (TypeError, ValueError):
+        amount = 0
+    configured = (
+        getattr(env, "REWARD_SIGNER_ACCOUNT", "")
+        or getattr(env, "INSTANCE_OWNER_ACCOUNT", "")
+        or ""
+    ).strip().lower()
+    canonical = (
+        "forkmesh-pending-award-v1\n" + signer + "\n" + recipient
+        + "\n" + str(amount) + "\n" + ts
+    ).encode()
+    if (not configured or signer != configured or not recipient
+            or not _ts_ok(ts)
+            or not await _verify_owner_signature(
+                env, signer, sig, canonical)):
+        return json_response({"error": "unauthorized"}, status=401)
+    if not (1_000 <= amount <= 10 * LAMPORTS_PER_SOL):
+        return json_response({"error": "invalid_reward_amount"}, status=400)
+    recipient_bi, recipient_rec = await _account_row(env, recipient)
+    if (not recipient_rec
+            or recipient_rec.get("status") != "active"):
+        return json_response({"error": "recipient_not_found"}, status=404)
+    if SOLANA_RE.match(str(recipient_rec.get("solana") or "")):
+        return json_response(
+            {"error": "recipient_already_has_payout_wallet"}, status=409)
+    source = await _central_fund_record(env)
+    if not source:
+        return json_response(
+            {"error": "community_pool_not_configured"}, status=503)
+    now = int(Date.now())
+    reward_id = _random_bytes(16).hex()
+    expires_at = now + REWARD_PENDING_EXPIRES_MS
+    await d1_run(
+        env,
+        "INSERT INTO pending_rewards "
+        "(reward_id,recipient_bi,recipient_name,source_address,"
+        "amount_lamports,status,created_at,expires_at) "
+        "VALUES (?,?,?, ?,?,'pending_wallet',?,?)",
+        reward_id, recipient_bi, "", source.get("address", ""),
+        amount, now, expires_at,
+    )
+    await enqueue_notification(
+        env, recipient, "pending_reward",
+        "Community reward pending",
+        body=(
+            "Add a public self-custodial Solana address within 24 hours "
+            "to claim this allocation."
+        ),
+        source="community_reward",
+        dedupe="pending_reward:" + reward_id,
+    )
+    await _audit_sensitive_action(
+        env, signer, "reward.pending_allocate", "pending_reward",
+        reward_id, "requested", {
+            "recipientToken": await blind_index(
+                env, "reward-recipient:" + recipient),
+            "amountLamports": amount,
+            "expiresAt": expires_at,
+            "fundsLocation": "external-community-pool",
+        })
+    return json_response({
+        "ok": True,
+        "rewardId": reward_id,
+        "status": "pending_wallet",
+        "amountLamports": amount,
+        "createdAt": now,
+        "expiresAt": expires_at,
+        "fundsLocation": "external-community-pool",
+        "custody": "ledger-allocation-only",
+        "notice": (
+            "No wallet was created and no funds moved. The allocation expires "
+            "after 24 hours and remains in its external source wallet unless "
+            "the recipient supplies a self-custodial public address."
+        ),
+    }, status=201, cache_control="no-store")
+
+
+async def pending_rewards_handler(env, request):
+    """Owner ledger for walletless rewards; funds stay in the source wallet."""
+    await ensure_schema(env)
+    method = method_name(request)
+    if method not in ("GET", "POST"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    data = {}
+    if method == "POST":
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+    account_bi, rec = await _account_session_record(env, request, data)
+    actor = (rec.get("name", "") if rec else "").strip().lower()
+    if not actor:
+        return json_response({"error": "invalid_session"}, status=401)
+    now = int(Date.now())
+    if method == "GET":
+        rows = await d1_all(
+            env,
+            "SELECT reward_id, source_address, amount_lamports, "
+            "wallet_address, status, created_at, expires_at, intent_id, "
+            "tx_signature FROM pending_rewards WHERE recipient_bi=? "
+            "ORDER BY created_at DESC LIMIT 100",
+            account_bi,
+        )
+        rewards = [{
+            "rewardId": str(row.get("reward_id") or ""),
+            "sourceAddress": str(row.get("source_address") or ""),
+            "amountLamports": int(row.get("amount_lamports") or 0),
+            "walletAddress": str(row.get("wallet_address") or ""),
+            "status": str(row.get("status") or ""),
+            "createdAt": int(row.get("created_at") or 0),
+            "expiresAt": int(row.get("expires_at") or 0),
+            "intentId": str(row.get("intent_id") or ""),
+            "transactionSignature": str(row.get("tx_signature") or ""),
+            "fundsLocation": (
+                "external-source-wallet"
+                if row.get("status") != "completed"
+                else "completed-on-chain-transfer"),
+        } for row in rows or []]
+        return json_response({
+            "ok": True,
+            "rewards": rewards,
+            "custody": "external-local-signer",
+            "notice": (
+                "A pending reward is a temporary ledger allocation. ForkMesh "
+                "does not create a wallet or hold funds for you."
+            ),
+        }, cache_control="no-store")
+
+    reward_id = security_control.normalize_incident_id(data.get("rewardId"))
+    wallet = clean_string(data.get("walletAddress", ""), 64).strip()
+    if not reward_id or not SOLANA_RE.match(wallet):
+        return json_response({"error": "invalid_reward_claim"}, status=400)
+    row = await d1_first(
+        env,
+        "SELECT * FROM pending_rewards WHERE reward_id=? "
+        "AND recipient_bi=?",
+        reward_id, account_bi,
+    )
+    if not row:
+        return json_response({"error": "not_found"}, status=404)
+    if row.get("status") == "completed":
+        return json_response({
+            "ok": True, "status": "completed",
+            "transactionSignature": str(row.get("tx_signature") or ""),
+            "fundsLocation": "completed-on-chain-transfer",
+            "custody": "external-self-custodial-recipient",
+            "notice": (
+                "This reward is complete only because its finalized public "
+                "transaction was verified. ForkMesh did not create or retain "
+                "a wallet or private key for the recipient."
+            ),
+        }, cache_control="no-store")
+    if row.get("status") != "pending_wallet":
+        return json_response({"error": "reward_not_claimable"}, status=409)
+    if int(row.get("expires_at") or 0) <= now:
+        await d1_run(
+            env,
+            "UPDATE pending_rewards SET status='expired' "
+            "WHERE reward_id=? AND status='pending_wallet'",
+            reward_id,
+        )
+        return json_response({
+            "error": "reward_expired",
+            "fundsLocation": "external-source-wallet",
+            "custody": "ledger-allocation-only",
+            "notice": (
+                "The ledger allocation expired without a transfer. No wallet "
+                "was created, and the funds remain in the external source "
+                "wallet."
+            ),
+        }, status=410, cache_control="no-store")
+    signer = (
+        getattr(env, "REWARD_SIGNER_ACCOUNT", "")
+        or getattr(env, "INSTANCE_OWNER_ACCOUNT", "")
+        or ""
+    ).strip().lower()
+    if not signer:
+        return json_response(
+            {"error": "external_signer_not_configured"}, status=503)
+    intent_id = _random_bytes(16).hex()
+    plan = {
+        "v": 2,
+        "network": _reward_network(env),
+        "sourceAddress": str(row.get("source_address") or ""),
+        "custody": {
+            "forkMeshHoldsUserKeys": False,
+            "fundsRemainInSourceWalletUntilSigned": True,
+        },
+        "signing": {
+            "required": True,
+            "performed": False,
+            "method": "external-local-qt",
+        },
+        "transfers": [{
+            "address": wallet,
+            "lamports": int(row.get("amount_lamports") or 0),
+        }],
+        "policy": "pending-reward-claim-v1",
+        "rewardId": reward_id,
+        "generatedAt": now,
+    }
+    await d1_run(
+        env,
+        "INSERT INTO chain_intents "
+        "(intent_id, kind, source_address, signer_account, status, data, "
+        "created_at, expires_at) VALUES "
+        "(?,?,?,?,'pending_signature',?,?,?)",
+        intent_id, "pending_reward", row.get("source_address"), signer,
+        json.dumps(plan, sort_keys=True, separators=(",", ":")),
+        now, int(row.get("expires_at") or 0),
+    )
+    await d1_run(
+        env,
+        "UPDATE pending_rewards SET wallet_address=?, status='ready', "
+        "intent_id=? WHERE reward_id=? AND recipient_bi=? "
+        "AND status='pending_wallet'",
+        wallet, intent_id, reward_id, account_bi,
+    )
+    await _audit_sensitive_action(
+        env, actor, "reward.wallet_claim", "pending_reward", reward_id,
+        "requested", {"intentId": intent_id})
+    return json_response({
+        "ok": True,
+        "status": "ready",
+        "intentId": intent_id,
+        "custody": "external-local-signer",
+        "fundsLocation": "external-source-wallet",
+        "notice": (
+            "Ready means an unsigned plan is awaiting explicit approval by the "
+            "external local signer. Funds remain in the source wallet until a "
+            "matching transfer is signed and finalized."
+        ),
+    }, status=202, cache_control="no-store")
+
+
+async def expire_pending_rewards(env):
+    await ensure_schema(env)
+    now = int(Date.now())
+    await d1_run(
+        env,
+        "UPDATE pending_rewards SET status='expired', wallet_address='' "
+        "WHERE status='pending_wallet' AND expires_at<=?",
+        now,
+    )
+    # A signing plan not completed before the allocation deadline expires too;
+    # the source wallet never sent funds, so this releases the reservation.
+    await d1_run(
+        env,
+        "UPDATE chain_intents SET status='expired' "
+        "WHERE kind='pending_reward' "
+        "AND status IN ('pending_signature','submitted') "
+        "AND expires_at>0 AND expires_at<=?",
+        now,
+    )
+    await d1_run(
+        env,
+        "UPDATE pending_rewards SET status='expired', wallet_address='' "
+        "WHERE status='ready' AND expires_at<=? "
+        "AND intent_id IN (SELECT intent_id FROM chain_intents "
+        "WHERE status='expired')",
+        now,
+    )
+
+
+# --- Disabled legacy issue-bounty storage -----------------------------------
+# Worker-created escrow wallets and automatic payouts are frozen. These helpers
+# remain solely to read/migrate historical records; new bounty funding must use
+# an external self-custodial wallet and a reviewed program or multisig.
 
 
 async def _bounty_bi(env, owner, repo, number, kind=""):
@@ -8494,30 +11351,6 @@ async def _bounty_bi(env, owner, repo, number, kind=""):
         env, owner + "/" + repo + "#" + prefix + str(int(number)))
 
 
-async def _bounty_wallet_bi(env, owner):
-    # The owner's inbuilt bounty wallet — a single custody deposit key per owner,
-    # pre-funded by the owner and debited to auto-pay per-PR bounties.
-    return await blind_index(env, "bounty-wallet:" + owner)
-
-
-async def _load_bounty_wallet(env, wallet_bi):
-    row = await d1_first(
-        env, "SELECT data FROM bounty_wallet WHERE wallet_bi=?", wallet_bi)
-    if not row:
-        return None
-    return await decrypt_row(env, row.get("data", ""))
-
-
-async def _save_bounty_wallet(env, wallet_bi, rec):
-    enc = await encrypt_row(env, rec)
-    await d1_run(
-        env,
-        """INSERT INTO bounty_wallet (wallet_bi, data) VALUES (?,?)
-           ON CONFLICT(wallet_bi) DO UPDATE SET data=excluded.data""",
-        wallet_bi, enc,
-    )
-
-
 async def _load_bounty(env, bounty_bi):
     row = await d1_first(
         env, "SELECT data FROM issue_bounty WHERE bounty_bi=?", bounty_bi)
@@ -8526,18 +11359,12 @@ async def _load_bounty(env, bounty_bi):
     return await decrypt_row(env, row.get("data", ""))
 
 
-async def _save_bounty(env, bounty_bi, rec):
-    enc = await encrypt_row(env, rec)
-    await d1_run(
-        env,
-        """INSERT INTO issue_bounty (bounty_bi, data) VALUES (?,?)
-           ON CONFLICT(bounty_bi) DO UPDATE SET data=excluded.data""",
-        bounty_bi, enc,
-    )
-
-
 def _bounty_public(rec):
     # Never leak the deposit key; only payout-safe fields go back to clients.
+    legacy_frozen = (
+        rec.get("status") != "paid"
+        and not bool(rec.get("legacy_custody_migrated_at"))
+    )
     return {
         "address": rec.get("address", ""),
         "amountUsd": rec.get("amount_usd", 0),
@@ -8545,130 +11372,23 @@ def _bounty_public(rec):
         "amountSol": _amount_sol(rec.get("required_lamports", 0)),
         "receivedLamports": rec.get("received_lamports", 0),
         "confirmed": bool(rec.get("confirmed")),
-        "status": rec.get("status", "open"),
+        "status": "legacy_frozen" if legacy_frozen
+                  else rec.get("status", "open"),
+        "custody": (
+            "migration-required" if legacy_frozen
+            else "completed-on-chain" if rec.get("status") == "paid"
+            else "external-self-custodial"),
+        "nonCustodialNotice": (
+            "New Worker-held escrow is disabled. A legacy escrow can move "
+            "only through the operator's offline migration."
+        ),
+        "featureState": "migration-only",
+        "fundsLocation": "historical-external-address",
         "payee": rec.get("payee", ""),
         "payoutSig": rec.get("payout_sig", ""),
-        "uri": _solana_pay_uri(
-            rec.get("address", ""), int(rec.get("required_lamports", 0)),
-            message="ForkMesh bounty"),
+        # Never return a payable URI for a frozen historical address.
+        "uri": "",
     }
-
-
-async def _bounty_mark_paid(env, bounty_bi, rec):
-    # Terminal transition for a payout: flip the row to "paid", drop the retained
-    # raw transaction, and run the accounting/notification side effects exactly
-    # once. Only ever called after the transfer is known to have hit the chain.
-    rec["status"] = "paid"
-    rec["paid_at"] = int(Date.now())
-    rec.pop("payout_tx", None)
-    transfers = [(t.get("address", ""), int(t.get("lamports", 0)))
-                 for t in (rec.get("payout_transfers") or [])]
-    await _save_bounty(env, bounty_bi, rec)
-    await _record_bounty_payout(env, rec, transfers)
-    await notify_bounty_event(env, rec, "bounty_paid")
-    return rec
-
-
-async def _bounty_auto_payout(env, bounty_bi, rec):
-    # Split a funded escrow to the resolved payee (the merged PR's author) and the
-    # treasury, with no second manual step. Safe to call repeatedly: it no-ops
-    # unless the escrow has a balance, a payee, and hasn't already been paid, and
-    # it never issues a second on-chain transfer for the same row.
-    if not rec or rec.get("status") == "paid":
-        return rec
-    # Only ever auto-pay a payee the repo owner explicitly authorized (set via an
-    # owner-signed create/payout). This is the gate that makes a funded escrow
-    # un-stealable by an unauthenticated caller.
-    if not rec.get("payee_authorized"):
-        return rec
-    payee = rec.get("payee", "")
-    if not SOLANA_RE.match(payee or ""):
-        return rec
-    treasury = _treasury_address(env)
-    if not treasury:
-        return rec
-    from_addr = rec.get("address", "")
-    secret = rec.get("secret", "")
-    if not SOLANA_RE.match(from_addr or "") or not secret:
-        return rec
-
-    # Idempotent resume. A previous attempt may have signed + recorded a payout
-    # (status "paying") and then died around the broadcast. Before signing anything
-    # new we ask the chain what happened to that recorded signature: if it settled
-    # we finalize without paying again; if it never landed we rebroadcast the SAME
-    # bytes (which the cluster dedupes should it have landed in a race).
-    pending_sig = rec.get("payout_sig", "")
-    pending_tx = rec.get("payout_tx", "")
-    if pending_sig:
-        if await _solana_signature_landed(env, pending_sig):
-            return await _bounty_mark_paid(env, bounty_bi, rec)
-        if pending_tx and await _solana_broadcast_raw(env, pending_tx):
-            return await _bounty_mark_paid(env, bounty_bi, rec)
-        # Otherwise the recorded blockhash likely expired without the tx ever
-        # landing; fall through and sign a fresh transaction below.
-
-    balance = await _solana_balance_lamports(env, from_addr)
-    if balance is None:
-        return rec
-    transferable = int(balance) - SOLANA_SWEEP_FEE_RESERVE_LAMPORTS
-    if transferable <= 0:
-        # Nothing left to move. If we had a recorded signature the earlier transfer
-        # must have drained the escrow, so finalize instead of looping forever.
-        if pending_sig:
-            return await _bounty_mark_paid(env, bounty_bi, rec)
-        return rec
-    treasury_lamports = transferable * BOUNTY_TREASURY_BPS // 10000
-    payee_lamports = transferable - treasury_lamports
-    transfers = []
-    if payee_lamports > 0:
-        transfers.append((payee, payee_lamports))
-    if treasury_lamports > 0:
-        transfers.append((treasury, treasury_lamports))
-
-    # Sign first, PERSIST the signature + raw bytes (status "paying"), THEN
-    # broadcast. If the worker dies between the save and a confirmed broadcast, the
-    # resume path above rebroadcasts these exact bytes — it can never sign a
-    # second, different transfer for this row, so a mid-payout RPC failure on
-    # retry cannot double-pay.
-    sig, tx_b64 = await _solana_sign_transfers(env, from_addr, secret, transfers)
-    if not sig or not tx_b64:
-        return rec
-    rec["status"] = "paying"
-    rec["payout_sig"] = sig
-    rec["payout_tx"] = tx_b64
-    rec["payout_transfers"] = [
-        {"address": a, "lamports": l} for a, l in transfers]
-    await _save_bounty(env, bounty_bi, rec)
-
-    send_sig = await _solana_broadcast_raw(env, tx_b64)
-    if not send_sig:
-        # Broadcast failed outright. Leave the row "paying" so the next tick
-        # resumes it (rechecks the signature, rebroadcasts the same bytes).
-        return rec
-    return await _bounty_mark_paid(env, bounty_bi, rec)
-
-
-async def sweep_funded_bounties(env):
-    # Cron backstop: pay out any funded bounty whose escrow holds a balance and
-    # has a resolved payee, so the author/treasury split happens even if no client
-    # ever polls status. Best-effort per row.
-    try:
-        rows = await d1_all(env, "SELECT bounty_bi, data FROM issue_bounty")
-    except Exception:
-        return
-    for row in rows:
-        try:
-            rec = await decrypt_row(env, row["data"])
-        except Exception:
-            continue
-        if (not rec or rec.get("status") == "paid" or not rec.get("payee") or
-                not rec.get("payee_authorized") or
-                not rec.get("address") or not rec.get("secret")):
-            continue
-        try:
-            await _bounty_auto_payout(env, row["bounty_bi"], rec)
-        except Exception:
-            continue
 
 
 async def bounties_handler(env, request, owner, repo):
@@ -8681,41 +11401,25 @@ async def bounties_handler(env, request, owner, repo):
         return json_response({"error": "invalid_json"}, status=400)
     action = (data.get("action") or "create").strip()
 
-    if action == "wallet":
-        # Mint (once) and report the owner's inbuilt bounty wallet: a custody
-        # deposit address the owner pre-funds and that per-PR bounties in "wallet"
-        # mode debit. Owner-signed so only the owner can learn/fund their wallet.
-        try:
-            ts = int(data.get("ts", 0))
-        except (TypeError, ValueError):
-            ts = 0
-        if not _ts_ok(ts):
-            return json_response({"error": "stale_request"}, status=401)
-        owner_pub = await _owner_pubkey(env, owner)
-        if not owner_pub:
-            return json_response({"error": "no_owner_key"}, status=403)
-        canonical = ("forkmesh-bounty-wallet-v1\n" + owner + "\n" +
-                     str(ts)).encode()
-        if not await ed25519_verify(owner_pub, data.get("sig", ""), canonical):
-            return json_response({"error": "bad_signature"}, status=401)
-        wallet_bi = await _bounty_wallet_bi(env, owner)
-        wrec = await _load_bounty_wallet(env, wallet_bi)
-        if not wrec or not wrec.get("address"):
-            addr, secret = await _new_solana_keypair()
-            if not addr:
-                return json_response({"error": "keypair_failed"}, status=500)
-            wrec = {"owner": owner, "address": addr, "secret": secret,
-                    "created_at": int(Date.now())}
-            await _save_bounty_wallet(env, wallet_bi, wrec)
-        balance = await _solana_balance_lamports(env, wrec["address"])
-        balance = int(balance) if balance is not None else 0
+    # A historical bounty row must not turn a private repository name into a
+    # probeable status oracle. Resolve the repository and its normal owner/share
+    # boundary before deriving or reading the bounty blind index; missing and
+    # unauthorized private repositories deliberately share the same 404 shape.
+    viewer = await _authed_account_name(env, request, data)
+    if await _repository_access_context(
+            env, request, owner, repo, viewer=viewer) is None:
+        return _private_replica_not_found()
+
+    if action in ("wallet", "create", "payout"):
         return json_response({
-            "address": wrec["address"],
-            "balanceLamports": balance,
-            "balanceSol": _amount_sol(balance),
-            "uri": _solana_pay_uri(wrec["address"], 0,
-                                   message="ForkMesh bounty wallet"),
-        })
+            "error": "legacy_custody_disabled",
+            "custody": "external-self-custodial",
+            "notice": (
+                "ForkMesh no longer creates inbuilt wallets or Worker-held "
+                "bounty escrow. Use a direct external-wallet payment; pooled "
+                "escrow requires a reviewed Solana program or multisig."
+            ),
+        }, status=410, cache_control="no-store")
 
     try:
         number = int(data.get("number", 0))
@@ -8731,194 +11435,21 @@ async def bounties_handler(env, request, owner, repo):
     bounty_bi = await _bounty_bi(env, owner, repo, number, kind)
     rec = await _load_bounty(env, bounty_bi)
 
-    if action == "create":
-        # "paying" means a payout is mid-flight; treat it like "paid" so a re-create
-        # can't repoint the escrow or reset its amount out from under the transfer.
-        if rec and rec.get("status") in ("paid", "paying"):
-            return json_response({"error": "already_paid"}, status=409)
-        treasury = _treasury_address(env)
-        if not treasury:
-            return json_response({"error": "treasury_not_configured"}, status=503)
-        try:
-            amount_usd = float(data.get("amountUsd", 0))
-        except (TypeError, ValueError):
-            amount_usd = 0.0
-        if not (BOUNTY_MIN_USD <= amount_usd <= BOUNTY_MAX_USD):
-            return json_response({"error": "bad_amount"}, status=400)
-        required = await _usd_to_lamports(env, amount_usd)
-        if required <= 0:
-            return json_response({"error": "price_unavailable"}, status=503)
-        # Creating/funding a bounty AND choosing who it pays out to are both
-        # owner-only: the repo owner signs the create so a funded escrow can only
-        # ever be released to an owner-approved payee. Without this gate anyone
-        # could repoint an unpaid bounty's payee to their own wallet and let the
-        # auto-payout drain it. The payee identifier (explicit address, else the
-        # PR author's node name) is bound into the signature.
-        payee_addr = clean_string(data.get("payee", ""), 64)
-        payee_node = clean_string(data.get("payeeNode", ""), MAX_NODE_NAME).lower()
-        payee_id = (payee_addr if (payee_addr and SOLANA_RE.match(payee_addr))
-                    else payee_node)
-        try:
-            ts = int(data.get("ts", 0))
-        except (TypeError, ValueError):
-            ts = 0
-        sig = data.get("sig", "")
-        if not _ts_ok(ts):
-            return json_response({"error": "stale_request"}, status=401)
-        owner_pub = await _owner_pubkey(env, owner)
-        if not owner_pub:
-            return json_response({"error": "no_owner_key"}, status=403)
-        canonical = ("forkmesh-bounty-create-v1\n" + owner + "\n" + repo + "\n" +
-                     str(number) + "\n" + payee_id + "\n" + str(ts)).encode()
-        if not await ed25519_verify(owner_pub, sig, canonical):
-            return json_response({"error": "bad_signature"}, status=401)
-        # Resolve the signed payee identifier to a Solana address. An owner-signed
-        # create with a resolvable payee marks it authorized for auto-payout.
-        payee = ""
-        if payee_addr and SOLANA_RE.match(payee_addr):
-            payee = payee_addr
-        elif payee_node:
-            _, author_rec = await _account_row(env, payee_node)
-            cand = (author_rec or {}).get("solana", "")
-            if cand and SOLANA_RE.match(cand):
-                payee = cand
-
-        # Wallet mode (issue #347): instead of minting an escrow for the owner to
-        # fund by hand, debit the owner's pre-funded inbuilt bounty wallet and pay
-        # the split directly — the bounty is settled in one step.
-        if data.get("fromWallet"):
-            if not payee:
-                return json_response({"error": "payee_unresolved"}, status=400)
-            wallet_bi = await _bounty_wallet_bi(env, owner)
-            wrec = await _load_bounty_wallet(env, wallet_bi)
-            if not wrec or not wrec.get("address") or not wrec.get("secret"):
-                return json_response({"error": "no_wallet"}, status=409)
-            balance = await _solana_balance_lamports(env, wrec["address"])
-            balance = int(balance) if balance is not None else 0
-            needed = required + SOLANA_SWEEP_FEE_RESERVE_LAMPORTS
-            if balance < needed:
-                return json_response(
-                    {"error": "insufficient_wallet_balance",
-                     "balanceLamports": balance,
-                     "requiredLamports": required}, status=402)
-            treasury_lamports = required * BOUNTY_TREASURY_BPS // 10000
-            payee_lamports = required - treasury_lamports
-            transfers = []
-            if payee_lamports > 0:
-                transfers.append((payee, payee_lamports))
-            if treasury_lamports > 0:
-                transfers.append((treasury, treasury_lamports))
-            send_sig = await _solana_send_transfers(
-                env, wrec["address"], wrec["secret"], transfers)
-            if not send_sig:
-                return json_response({"error": "wallet_transfer_failed"},
-                                     status=502)
-            rec = {
-                "owner": owner, "repo": repo, "number": number, "kind": kind,
-                "address": "", "secret": "",
-                "amount_usd": amount_usd, "required_lamports": required,
-                "received_lamports": required, "confirmed": True,
-                "status": "paid", "created_at": int(Date.now()),
-                "payee": payee, "payee_authorized": True,
-                "payout_sig": send_sig, "paid_at": int(Date.now()),
-                "paid_from_wallet": True,
-                "payout_transfers": [
-                    {"address": a, "lamports": l} for a, l in transfers],
-            }
-            await _save_bounty(env, bounty_bi, rec)
-            await _record_bounty_payout(env, rec, transfers)
-            await notify_bounty_event(env, rec, "bounty_paid")
-            return json_response(_bounty_public(rec))
-
-        # Reuse an existing unpaid address (top-ups raise the target) so a repeat
-        # call doesn't strand funds at a stale address.
-        if (rec and rec.get("address") and
-                rec.get("status") not in ("paid", "paying")):
-            rec["amount_usd"] = amount_usd
-            rec["required_lamports"] = required
-            if payee:
-                rec["payee"] = payee
-                rec["payee_authorized"] = True
-        else:
-            addr, secret = await _new_solana_keypair()
-            if not addr:
-                return json_response({"error": "keypair_failed"}, status=500)
-            rec = {
-                "owner": owner, "repo": repo, "number": number, "kind": kind,
-                "address": addr, "secret": secret,
-                "amount_usd": amount_usd, "required_lamports": required,
-                "received_lamports": 0, "confirmed": False, "status": "open",
-                "created_at": int(Date.now()), "payee": payee,
-                "payee_authorized": bool(payee), "payout_sig": "",
-            }
-        await _save_bounty(env, bounty_bi, rec)
-        return json_response(_bounty_public(rec))
-
     if rec is None:
         return json_response({"error": "no_bounty"}, status=404)
 
     if action == "status":
-        # A "paying" row has a payout mid-flight; resume it (finalize if it settled,
-        # rebroadcast the recorded bytes otherwise) rather than re-polling balance.
-        if rec.get("status") == "paying":
-            rec = await _bounty_auto_payout(env, bounty_bi, rec)
-        elif rec.get("status") != "paid" and rec.get("address"):
-            previous_status = rec.get("status", "open")
+        # Public historical status only. Work on a projection so polling never
+        # re-encrypts a retained key-bearing row.
+        rec = dict(rec)
+        if rec.get("status") != "paid" and rec.get("address"):
             balance = await _solana_balance_lamports(env, rec["address"])
             if balance is not None:
-                rec["received_lamports"] = balance
-                if balance >= int(rec.get("required_lamports", 0)) and balance > 0:
+                rec["received_lamports"] = int(balance)
+                required = int(rec.get("required_lamports", 0) or 0)
+                if balance > 0 and balance >= required:
                     rec["confirmed"] = True
-                    if rec.get("status") == "open":
-                        rec["status"] = "funded"
-                await _save_bounty(env, bounty_bi, rec)
-                if previous_status != "funded" and rec.get("status") == "funded":
-                    await notify_bounty_event(env, rec, "bounty_funded")
-                # As soon as it's funded and we have an owner-authorized payee,
-                # split it — no second manual payout step is needed.
-                if (rec.get("status") == "funded" and rec.get("payee") and
-                        rec.get("payee_authorized")):
-                    rec = await _bounty_auto_payout(env, bounty_bi, rec)
-        return json_response(_bounty_public(rec))
-
-    if action == "payout":
-        # Only the repo owner (the account that can merge the PR) may release a
-        # bounty. Signature is over a fresh, explicit canonical string.
-        payee = clean_string(data.get("payee", ""), 64)
-        try:
-            ts = int(data.get("ts", 0))
-        except (TypeError, ValueError):
-            ts = 0
-        sig = data.get("sig", "")
-        if not SOLANA_RE.match(payee or ""):
-            return json_response({"error": "bad_payee"}, status=400)
-        if not _ts_ok(ts):
-            return json_response({"error": "stale_request"}, status=400)
-        pubkey = await _owner_pubkey(env, owner)
-        if not pubkey:
-            return json_response({"error": "no_owner_key"}, status=403)
-        canonical = ("forkmesh-bounty-payout-v1\n" + owner + "\n" + repo + "\n" +
-                     str(number) + "\n" + payee + "\n" + str(ts)).encode()
-        if not await ed25519_verify(pubkey, sig, canonical):
-            return json_response({"error": "bad_signature"}, status=401)
-        if rec.get("status") == "paid" and rec.get("payout_sig"):
-            return json_response(_bounty_public(rec))  # idempotent
-        treasury = _treasury_address(env)
-        if not treasury:
-            return json_response({"error": "treasury_not_configured"}, status=503)
-        from_addr = rec.get("address", "")
-        secret = rec.get("secret", "")
-        if not SOLANA_RE.match(from_addr or "") or not secret:
-            return json_response({"error": "bounty_unfunded"}, status=409)
-        # Authorize the signed payee, then run the SAME idempotent split the
-        # on-merge path uses (sign → record → broadcast, resume-safe). Keeping one
-        # payout implementation is what guarantees a retry here can't double-pay.
-        rec["payee"] = payee
-        rec["payee_authorized"] = True
-        await _save_bounty(env, bounty_bi, rec)
-        rec = await _bounty_auto_payout(env, bounty_bi, rec)
-        if rec.get("status") != "paid":
-            return json_response({"error": "send_transaction_failed"}, status=502)
+                    rec["status"] = "funded"
         return json_response(_bounty_public(rec))
 
     return json_response({"error": "bad_action"}, status=400)
@@ -8926,6 +11457,58 @@ async def bounties_handler(env, request, owner, repo):
 
 # Cap on collaborators per repo, so one owner can't fill the table with shares.
 MAX_REPO_GRANTEES = 100
+
+
+async def _active_public_recipient_bundles(env, account_bis):
+    """Return each account's newest valid, active public-only MirrorCrypto key.
+
+    A repository owner needs these public halves to seal one ciphertext content
+    key to the exact collaborator set.  Private halves never enter this API.
+    Invalid or revoked rows are deliberately omitted so callers fail closed
+    instead of publishing ciphertext to an unverified/stale recipient.
+    """
+    unique_bis = []
+    seen = set()
+    for account_bi in account_bis or []:
+        account_bi = str(account_bi or "")
+        if account_bi and account_bi not in seen:
+            unique_bis.append(account_bi)
+            seen.add(account_bi)
+    if not unique_bis:
+        return {}
+    rows = await d1_all(
+        env,
+        "SELECT account_bi, key_id, public_bundle, created_at FROM "
+        "owner_encryption_keys WHERE revoked_at=0 AND account_bi IN (%s) "
+        "ORDER BY created_at DESC"
+        % ",".join("?" for _ in unique_bis),
+        *unique_bis,
+    )
+    bundles = {}
+    for row in rows or []:
+        account_bi = str(row.get("account_bi") or "")
+        # ORDER BY makes the first valid row the newest for this account.  If a
+        # newer malformed row exists, continue so an older *valid and active*
+        # registration can still be used.
+        if not account_bi or account_bi in bundles:
+            continue
+        try:
+            public_bundle = json.loads(str(row.get("public_bundle") or ""))
+        except Exception:
+            continue
+        valid = security_control.validate_owner_public_bundle(public_bundle)
+        if not valid or valid["kid"] != str(row.get("key_id") or ""):
+            continue
+        bundles[account_bi] = {
+            "keyId": valid["kid"],
+            "publicBundle": {
+                "v": valid["v"],
+                "x25519": valid["x25519"],
+                "mlkem768": valid["mlkem768"],
+            },
+            "createdAt": int(row.get("created_at") or 0),
+        }
+    return bundles
 
 
 async def shares_handler(env, request, owner, repo):
@@ -8937,7 +11520,11 @@ async def shares_handler(env, request, owner, repo):
     await ensure_schema(env)
     method = method_name(request)
     repo_bi = await blind_index(env, owner + "/" + repo)
-    owner_pub = await _owner_pubkey(env, owner)
+    audit_repo_target = owner + "/" + repo
+    try:
+        owner_pub = await _owner_pubkey(env, owner)
+    except Exception:
+        raise
     if not owner_pub:
         return json_response({"error": "account_required"}, status=403)
 
@@ -8952,14 +11539,42 @@ async def shares_handler(env, request, owner, repo):
         if not (_ts_ok(ts) and await ed25519_verify(owner_pub, sig, canonical)):
             return json_response({"error": "unauthorized"}, status=401)
         rows = await d1_all(
-            env, "SELECT data FROM repo_shares WHERE repo_bi=? ORDER BY ts ASC",
-            repo_bi)
+            env,
+            "SELECT grantee_bi, data FROM repo_shares "
+            "WHERE repo_bi=? ORDER BY ts ASC",
+            repo_bi,
+        )
         grantees = []
+        grantee_rows = []
         for row in rows:
             rec = await decrypt_row(env, row["data"])
             if rec and rec.get("grantee"):
-                grantees.append(rec["grantee"])
-        return json_response({"ok": True, "grantees": grantees})
+                grantee = clean_string(
+                    rec.get("grantee", ""), MAX_NODE_NAME).lower()
+                grantee_bi = str(row.get("grantee_bi") or "")
+                if grantee and grantee_bi:
+                    grantees.append(grantee)
+                    grantee_rows.append((grantee, grantee_bi))
+        bundles = await _active_public_recipient_bundles(
+            env, [grantee_bi for _, grantee_bi in grantee_rows])
+        recipients = []
+        missing = []
+        for grantee, grantee_bi in grantee_rows:
+            bundle = bundles.get(grantee_bi)
+            if not bundle:
+                missing.append(grantee)
+                continue
+            recipients.append({"grantee": grantee, **bundle})
+        return json_response({
+            "ok": True,
+            # Retain the names-only field for older owner clients.  It is still
+            # behind the owner signature and never enters a public catalog.
+            "grantees": grantees,
+            "recipients": recipients,
+            "encryptionReady": not missing,
+            "missingEncryptionKeys": missing,
+            "privateKeysStored": False,
+        }, cache_control="no-store")
 
     if method in ("POST", "DELETE"):
         try:
@@ -8972,7 +11587,13 @@ async def shares_handler(env, request, owner, repo):
             (clean_string(data.get("action", "add"), 12) or "add")
         if action not in ("add", "remove"):
             return json_response({"error": "bad_action"}, status=400)
+        audit_action = (
+            "repository.collaborator_revoke"
+            if action == "remove" else "repository.collaborator_grant")
         grantee = clean_string(data.get("grantee", ""), MAX_NODE_NAME).lower()
+        audit_target = (
+            audit_repo_target + "/" + grantee
+            if grantee else audit_repo_target)
         ts = clean_string(str(data.get("ts", "")), 20)
         sig = clean_string(data.get("sig", ""), 200)
         if not grantee:
@@ -8983,38 +11604,101 @@ async def shares_handler(env, request, owner, repo):
         # replayed as a "remove" (or vice versa).
         canonical = ("forkmesh-share-v1\n" + owner + "\n" + repo + "\n" +
                      grantee + "\n" + action + "\n" + str(ts)).encode()
-        if not (_ts_ok(ts) and await ed25519_verify(owner_pub, sig, canonical)):
+        try:
+            authorized = (
+                _ts_ok(ts)
+                and await ed25519_verify(owner_pub, sig, canonical))
+        except Exception:
+            await _audit_sensitive_action(
+                env, owner, audit_action, "repository_collaborator",
+                audit_target, "failed",
+                {"reason": "signature_check_error"})
+            raise
+        if not authorized:
+            await _audit_sensitive_action(
+                env, owner, audit_action, "repository_collaborator",
+                audit_target, "denied", {"reason": "unauthorized"})
             return json_response({"error": "unauthorized"}, status=401)
         grantee_bi = await blind_index(env, grantee)
 
         if action == "remove":
-            await d1_run(
-                env, "DELETE FROM repo_shares WHERE repo_bi=? AND grantee_bi=?",
-                repo_bi, grantee_bi)
+            try:
+                await d1_run(
+                    env,
+                    "DELETE FROM repo_shares "
+                    "WHERE repo_bi=? AND grantee_bi=?",
+                    repo_bi, grantee_bi)
+            except Exception:
+                await _audit_sensitive_action(
+                    env, owner, audit_action, "repository_collaborator",
+                    audit_target, "failed", {"reason": "mutation_error"})
+                raise
+            await _audit_sensitive_action(
+                env, owner, audit_action, "repository_collaborator",
+                audit_target, "success")
             return json_response({"ok": True, "grantee": grantee, "shared": False})
 
         # add: the grantee must be a real account (so a token signed by their key
         # can ever verify), and the per-repo cap must not be exceeded.
-        if not await _owner_pubkey(env, grantee):
-            return json_response({"error": "unknown_account"}, status=404)
-        existing = await d1_first(
-            env, "SELECT 1 AS one FROM repo_shares WHERE repo_bi=? AND grantee_bi=?",
-            repo_bi, grantee_bi)
-        if not existing:
-            count_row = await d1_first(
-                env, "SELECT COUNT(*) AS n FROM repo_shares WHERE repo_bi=?",
-                repo_bi)
-            if count_row and int(count_row.get("n") or 0) >= MAX_REPO_GRANTEES:
-                return json_response({"error": "too_many_grantees"}, status=429)
-        now = int(Date.now())
-        enc = await encrypt_row(
-            env, {"grantee": grantee, "owner": owner, "repo": repo, "ts": now})
-        await d1_run(
-            env,
-            "INSERT INTO repo_shares (repo_bi, grantee_bi, data, ts) "
-            "VALUES (?,?,?,?) ON CONFLICT(repo_bi, grantee_bi) DO UPDATE SET "
-            "data=excluded.data, ts=excluded.ts",
-            repo_bi, grantee_bi, enc, now)
+        try:
+            if not await _owner_pubkey(env, grantee):
+                await _audit_sensitive_action(
+                    env, owner, audit_action, "repository_collaborator",
+                    audit_target, "denied", {"reason": "unknown_account"})
+                return json_response({"error": "unknown_account"}, status=404)
+            recipient_bundles = await _active_public_recipient_bundles(
+                env, [grantee_bi])
+            recipient = recipient_bundles.get(grantee_bi)
+            if not recipient:
+                # Do not create an ACL that the owner cannot immediately turn
+                # into an exact encrypted recipient set.
+                await _audit_sensitive_action(
+                    env, owner, audit_action, "repository_collaborator",
+                    audit_target, "denied",
+                    {"reason": "encryption_key_required"})
+                return json_response({
+                    "error": "grantee_encryption_key_required",
+                    "grantee": grantee,
+                    "shared": False,
+                }, status=409, cache_control="no-store")
+            existing = await d1_first(
+                env,
+                "SELECT 1 AS one FROM repo_shares "
+                "WHERE repo_bi=? AND grantee_bi=?",
+                repo_bi, grantee_bi)
+            if not existing:
+                count_row = await d1_first(
+                    env,
+                    "SELECT COUNT(*) AS n FROM repo_shares WHERE repo_bi=?",
+                    repo_bi)
+                if (
+                    count_row
+                    and int(count_row.get("n") or 0) >= MAX_REPO_GRANTEES
+                ):
+                    await _audit_sensitive_action(
+                        env, owner, audit_action,
+                        "repository_collaborator", audit_target, "denied",
+                        {"reason": "collaborator_limit"})
+                    return json_response(
+                        {"error": "too_many_grantees"}, status=429)
+            now = int(Date.now())
+            enc = await encrypt_row(
+                env,
+                {"grantee": grantee, "owner": owner, "repo": repo, "ts": now})
+            await d1_run(
+                env,
+                "INSERT INTO repo_shares (repo_bi, grantee_bi, data, ts) "
+                "VALUES (?,?,?,?) ON CONFLICT(repo_bi, grantee_bi) DO UPDATE SET "
+                "data=excluded.data, ts=excluded.ts",
+                repo_bi, grantee_bi, enc, now)
+        except Exception:
+            await _audit_sensitive_action(
+                env, owner, audit_action, "repository_collaborator",
+                audit_target, "failed", {"reason": "mutation_error"})
+            raise
+        await _audit_sensitive_action(
+            env, owner, audit_action, "repository_collaborator",
+            audit_target, "success", {"alreadyPresent": bool(existing)})
         await enqueue_notification(env, grantee, "repo_shared",
                                    owner + " shared " + owner + "/" + repo + " with you",
                                    body="You can now view and clone this private repository with your own node key.",
@@ -9022,7 +11706,13 @@ async def shares_handler(env, request, owner, repo):
                                    href=repo_web_href(owner, repo),
                                    actor=owner, source="repo_share",
                                    dedupe="share:" + owner + "/" + repo + ":" + grantee)
-        return json_response({"ok": True, "grantee": grantee, "shared": True})
+        return json_response({
+            "ok": True,
+            "grantee": grantee,
+            "shared": True,
+            "recipient": {"grantee": grantee, **recipient},
+            "privateKeysStored": False,
+        }, cache_control="no-store")
 
     return json_response({"error": "method_not_allowed"}, status=405)
 
@@ -9046,6 +11736,7 @@ MAX_ORGS_PER_ACCOUNT = 10
 MAX_ORG_MEMBERS = 200
 MAX_ORG_TEAMS = 50
 MAX_ORG_REPOS = 200
+ORG_WORLD_ACCESS_VALUES = ("public", "restricted", "private")
 
 # Org repo-alias resolution memo: "org/repo" -> (node owner or "", ts),
 # per-isolate so the hot repo/git routes don't pay a D1 read per request
@@ -9055,6 +11746,55 @@ MAX_ORG_REPOS = 200
 _ORG_ALIAS_MEMO = {}
 ORG_ALIAS_MEMO_TTL_MS = 30 * 1000
 ORG_ALIAS_MEMO_MAX = 512
+
+
+def _org_logo_url(value):
+    raw = clean_string(value or "", 500).strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return ""
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+    ):
+        return ""
+    return parsed.geturl()
+
+
+def _org_world_access(value, fallback=None):
+    source = value if isinstance(value, dict) else {}
+    base = {"lobby": "public", "floors": "restricted",
+            "offices": "restricted"}
+    if isinstance(fallback, dict):
+        for field in base:
+            selected = str(fallback.get(field) or "").strip().lower()
+            if selected in ORG_WORLD_ACCESS_VALUES:
+                base[field] = selected
+    return {
+        field: (
+            str(source.get(field) or base.get(field) or "").strip().lower()
+            if str(source.get(field) or base.get(field) or "").strip().lower()
+            in ORG_WORLD_ACCESS_VALUES
+            else base[field]
+        )
+        for field in ("lobby", "floors", "offices")
+    }
+
+
+def _org_world_access_allowed(level, viewer_role):
+    level = str(level or "private").lower()
+    role = str(viewer_role or "").lower()
+    if level == "public":
+        return True
+    if level == "restricted":
+        return role in ORG_ROLES
+    return role in ("owner", "admin")
 
 
 def team_permission_rank(permission):
@@ -9189,8 +11929,8 @@ async def org_alias_rewrite(env, request, url):
     # under the organization's name. The rewrite is worker-internal — no
     # redirect, the org name stays in the address bar and clone URL — and runs
     # before any route matching, so everything downstream (auth canonicals,
-    # host DO naming, the DO's own path parsing, mirror forwarding, blind
-    # indexes) sees the canonical /<node>/<repo> path exactly as if the node
+    # direct gateway routing and blind indexes) sees the canonical
+    # /<node>/<repo> path exactly as if the node
     # URL had been requested. Org names can never collide with account names
     # (both creation paths reject the other namespace), so an existing node's
     # URL is never rewritten. Returns the rewritten (request, url) or None.
@@ -9209,6 +11949,213 @@ async def org_alias_rewrite(env, request, url):
                 url.path[match.end(1):])
     new_url = url._replace(path=new_path).geturl()
     return JsRequest.new(str(new_url), request), urlparse(new_url)
+
+
+class _OrganizationSuccessionRuntime:
+    """Least-privilege adapter for organization-role succession.
+
+    Deliberately absent: platform-admin checks, repository/account mutation,
+    encryption-key access, wallet/reward helpers, agent state, and device
+    ownership mutation. Device/node timestamps are read only to establish the
+    configured owner's most recent activity.
+    """
+
+    def __init__(self, env, request=None):
+        self.env = env
+        self.request = request
+
+    def method(self):
+        return method_name(self.request) if self.request is not None else "GET"
+
+    def now(self):
+        return int(Date.now())
+
+    def new_id(self):
+        return _ap_uuid()
+
+    def response(self, data, status=200, cache_control=None,
+                 extra_headers=None):
+        return json_response(
+            data,
+            status=status,
+            cache_control=cache_control,
+            extra_headers=extra_headers,
+        )
+
+    async def ensure_schema(self):
+        await ensure_schema(self.env)
+
+    async def json_body(self, limit):
+        if self.request is None:
+            return None, "invalid_json"
+        try:
+            raw_length = self.request.headers.get("content-length") or ""
+            if raw_length and int(raw_length) > int(limit):
+                return None, "payload_too_large"
+        except (TypeError, ValueError):
+            return None, "invalid_content_length"
+        try:
+            raw = await self.request.text()
+        except Exception:
+            return None, "invalid_json"
+        if len(str(raw or "").encode("utf-8")) > int(limit):
+            return None, "payload_too_large"
+        if not str(raw or "").strip():
+            return {}, ""
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return None, "invalid_json"
+        return (data, "") if isinstance(data, dict) else (None, "invalid_json")
+
+    async def session(self, data=None):
+        return await _account_session_record(
+            self.env, self.request,
+            data if isinstance(data, dict) else {})
+
+    async def organization(self, org):
+        return await _org_row(self.env, org)
+
+    async def org_role(self, org_bi, account):
+        return await _org_role(self.env, org_bi, account)
+
+    async def org_members(self, org_bi):
+        return await d1_all(
+            self.env,
+            "SELECT member_bi,name,role,created_at FROM org_members "
+            "WHERE org_bi=? ORDER BY created_at ASC",
+            org_bi,
+        )
+
+    async def account(self, name):
+        name = clean_string(name or "", MAX_NODE_NAME).strip().lower()
+        if not valid_node_name(name):
+            return "", ""
+        account_bi, rec = await _account_row(self.env, name)
+        if (
+            not rec
+            or rec.get("status") != "active"
+            or _account_kind(rec) != "user"
+        ):
+            return "", ""
+        return str(account_bi or ""), name
+
+    async def owner_activity(self, owner_bi, stored_at):
+        # Only generalized last-seen maxima are used; no device identifier,
+        # label, platform, location, user-agent, or personal payload enters
+        # succession storage or responses.
+        device = await d1_first(
+            self.env,
+            "SELECT COALESCE(MAX(last_seen),0) AS last_seen "
+            "FROM account_devices WHERE account_bi=? AND enabled=1 "
+            "AND revoked_at=0",
+            owner_bi,
+        )
+        node = await d1_first(
+            self.env,
+            "SELECT COALESCE(MAX(last_seen),0) AS last_seen "
+            "FROM nodes WHERE user_bi=?",
+            owner_bi,
+        )
+        return max(
+            int(stored_at or 0),
+            int((device or {}).get("last_seen") or 0),
+            int((node or {}).get("last_seen") or 0),
+        )
+
+    async def d1_all(self, sql, *args):
+        return await d1_all(self.env, sql, *args)
+
+    async def d1_first(self, sql, *args):
+        return await d1_first(self.env, sql, *args)
+
+    async def d1_run(self, sql, *args):
+        return await d1_run(self.env, sql, *args)
+
+    async def batch(self, statements):
+        return await _contribution_run_batch(self.env, statements)
+
+    async def notify(self, recipient, title, body, dedupe):
+        return await enqueue_notification(
+            self.env,
+            recipient,
+            "org_succession",
+            title,
+            body=body,
+            href="",
+            source="organization_succession",
+            dedupe=dedupe,
+        )
+
+
+async def organization_succession_handler(env, request, org, action=""):
+    return await organization_succession_api.handle(
+        _OrganizationSuccessionRuntime(env, request), org, action)
+
+
+async def process_organization_succession_warnings(env):
+    return await organization_succession_api.process_warnings(
+        _OrganizationSuccessionRuntime(env), limit=50)
+
+
+async def world_organizations_handler(env, request):
+    """List only organization lobbies this world viewer may enter.
+
+    The general ``/api/orgs`` collection is a signed-in management list. World
+    guests need a separate, deliberately narrow directory so a public lobby is
+    discoverable without making restricted/private organizations enumerable.
+    Floor repositories, team layouts, and office rosters remain behind their
+    independent organization handlers and access checks.
+    """
+    if method_name(request) != "GET":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            extra_headers={"allow": "GET"})
+    await ensure_schema(env)
+    _, viewer_rec = await _account_session_record(env, request)
+    viewer = (
+        viewer_rec.get("name", "") if viewer_rec else ""
+    ).strip().lower()
+    rows = await d1_all(
+        env,
+        "SELECT org_bi, name, data, created_at FROM orgs "
+        "ORDER BY created_at DESC LIMIT 64",
+    )
+    organizations = []
+    for row in rows or []:
+        org_bi = str(row.get("org_bi") or "")
+        rec = await decrypt_row(env, row.get("data"))
+        if not org_bi or not isinstance(rec, dict):
+            continue
+        viewer_role = (
+            await _org_role(env, org_bi, viewer) if viewer else "")
+        access = _org_world_access(rec.get("worldAccess"))
+        if not _org_world_access_allowed(access["lobby"], viewer_role):
+            continue
+        organizations.append({
+            "name": str(row.get("name") or ""),
+            "displayName": clean_string(rec.get("displayName", ""), 80),
+            "description": clean_string(rec.get("description", ""), 500),
+            "logoUrl": _org_logo_url(rec.get("logoUrl", "")),
+            "role": viewer_role,
+            "worldAccess": access,
+            "worldCapabilities": {
+                "lobby": True,
+                "floors": _org_world_access_allowed(
+                    access["floors"], viewer_role),
+                "offices": _org_world_access_allowed(
+                    access["offices"], viewer_role),
+            },
+        })
+    return json_response(
+        {
+            "ok": True,
+            "organizations": organizations,
+            "visibility": "enterable-lobbies-only",
+        },
+        cache_control="no-store, max-age=0, must-revalidate",
+        extra_headers={"x-content-type-options": "nosniff"},
+    )
 
 
 async def orgs_handler(env, request):
@@ -9265,6 +12212,8 @@ async def orgs_handler(env, request):
         "name": name,
         "displayName": clean_string(data.get("displayName", ""), 80),
         "description": clean_string(data.get("description", ""), 500),
+        "logoUrl": _org_logo_url(data.get("logoUrl", "")),
+        "worldAccess": _org_world_access(data.get("worldAccess")),
         "creator": account,
         "createdAt": now,
     })
@@ -9301,44 +12250,157 @@ async def org_handler(env, request, org):
         _, viewer_rec = await _account_session_record(env, request)
         viewer = (viewer_rec.get("name", "") if viewer_rec else "").strip().lower()
         viewer_role = await _org_role(env, org_bi, viewer) if viewer else ""
+        world_access = _org_world_access(rec.get("worldAccess"))
+        floors_visible = _org_world_access_allowed(
+            world_access["floors"], viewer_role)
+        visible_repos = []
+        for linked in (repos or []) if floors_visible else []:
+            linked_repo = safe_segment(str(linked.get("repo") or ""))
+            node_owner = clean_string(
+                linked.get("node_owner") or "", MAX_NODE_NAME).lower()
+            if not linked_repo or not node_owner:
+                continue
+            if await _repo_is_private(env, node_owner, linked_repo):
+                allowed = bool(
+                    viewer and (
+                        viewer == node_owner
+                        or await _account_owns_node(
+                            env, viewer, node_owner)
+                        or await _repo_shared_with(
+                            env, node_owner, linked_repo, viewer)
+                    )
+                )
+                if not allowed:
+                    continue
+            visible_repos.append({"repo": linked_repo, "node": node_owner})
         return json_response({
             "ok": True,
             "org": str(row.get("name") or ""),
             "displayName": rec.get("displayName", ""),
             "description": rec.get("description", ""),
+            "logoUrl": _org_logo_url(rec.get("logoUrl", "")),
+            "worldAccess": world_access,
+            "worldCapabilities": {
+                "lobby": _org_world_access_allowed(
+                    world_access["lobby"], viewer_role),
+                "floors": floors_visible,
+                "offices": _org_world_access_allowed(
+                    world_access["offices"], viewer_role),
+            },
             "createdAt": int(row.get("created_at") or 0),
             "members": int((members or {}).get("n") or 0),
             "teams": int((teams or {}).get("n") or 0),
-            "repos": [{"repo": str(r.get("repo") or ""),
-                       "node": str(r.get("node_owner") or "")}
-                      for r in repos or []],
+            "repos": visible_repos,
             "viewerRole": viewer_role,
-        })
+        }, cache_control="no-store")
+    if method == "PATCH":
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+        _, account_rec = await _account_session_record(
+            env, request, data)
+        account = (
+            account_rec.get("name", "") if account_rec else ""
+        ).strip().lower()
+        role = await _org_role(env, org_bi, account) if account else ""
+        if role not in ("owner", "admin"):
+            return json_response({"error": "forbidden"}, status=403)
+        rec = await decrypt_row(env, row.get("data")) or {}
+        if "displayName" in data:
+            rec["displayName"] = clean_string(
+                data.get("displayName", ""), 80)
+        if "description" in data:
+            rec["description"] = clean_string(
+                data.get("description", ""), 500)
+        if "logoUrl" in data:
+            logo = _org_logo_url(data.get("logoUrl", ""))
+            if str(data.get("logoUrl") or "").strip() and not logo:
+                return json_response({"error": "invalid_logo_url"}, status=400)
+            rec["logoUrl"] = logo
+        if "worldAccess" in data:
+            if not isinstance(data.get("worldAccess"), dict):
+                return json_response(
+                    {"error": "invalid_world_access"}, status=400)
+            supplied = data["worldAccess"]
+            if any(
+                str(supplied.get(field) or "").strip().lower()
+                not in ORG_WORLD_ACCESS_VALUES
+                for field in ("lobby", "floors", "offices")
+            ):
+                return json_response(
+                    {"error": "invalid_world_access"}, status=400)
+            rec["worldAccess"] = _org_world_access(
+                supplied, rec.get("worldAccess"))
+        await d1_run(
+            env, "UPDATE orgs SET data=? WHERE org_bi=?",
+            await encrypt_row(env, rec), org_bi)
+        await _audit_sensitive_action(
+            env, account, "organization_world_settings_update",
+            "organization", str(row.get("name") or ""),
+            outcome="success",
+            details={
+                "logoChanged": "logoUrl" in data,
+                "accessChanged": "worldAccess" in data,
+            })
+        return json_response({
+            "ok": True,
+            "org": str(row.get("name") or ""),
+            "logoUrl": _org_logo_url(rec.get("logoUrl", "")),
+            "worldAccess": _org_world_access(rec.get("worldAccess")),
+        }, cache_control="no-store")
     if method == "DELETE":
         try:
             data = await request.json()
         except Exception:
             data = {}
-        _, account_rec = await _account_session_record(env, request, data)
+        _, account_rec = await _account_session_record(
+            env, request, data)
         account = (account_rec.get("name", "") if account_rec else "").strip().lower()
         if not account:
             return json_response({"error": "invalid_session"}, status=401)
         if await _org_role(env, org_bi, account) != "owner":
+            await _audit_sensitive_action(
+                env, account, "organization.delete", "organization",
+                str(row.get("name") or org), "denied",
+                {"reason": "owner_role_required"})
             return json_response({"error": "forbidden"}, status=403)
-        await d1_run(env, "DELETE FROM org_repos WHERE org_bi=?", org_bi)
-        await d1_run(env, "DELETE FROM org_team_members WHERE org_bi=?", org_bi)
-        await d1_run(env, "DELETE FROM org_teams WHERE org_bi=?", org_bi)
-        await d1_run(env, "DELETE FROM org_members WHERE org_bi=?", org_bi)
-        await d1_run(env, "DELETE FROM orgs WHERE org_bi=?", org_bi)
+        try:
+            linked = await d1_all(
+                env, "SELECT repo FROM org_repos WHERE org_bi=?", org_bi)
+            for linked_repo in linked or []:
+                scope = str(org).lower() + "/" + str(
+                    linked_repo.get("repo") or "").lower()
+                await d1_run(
+                    env, "DELETE FROM ap_digest_queues WHERE scope_bi=?",
+                    await _ap_digest_scope_bi(env, scope))
+            await d1_run(env, "DELETE FROM org_repos WHERE org_bi=?", org_bi)
+            await d1_run(
+                env, "DELETE FROM org_team_members WHERE org_bi=?", org_bi)
+            await d1_run(env, "DELETE FROM org_teams WHERE org_bi=?", org_bi)
+            await d1_run(env, "DELETE FROM org_members WHERE org_bi=?", org_bi)
+            await d1_run(
+                env, "DELETE FROM ap_org_digest_settings WHERE org_bi=?", org_bi)
+            await d1_run(env, "DELETE FROM orgs WHERE org_bi=?", org_bi)
+        except Exception:
+            await _audit_sensitive_action(
+                env, account, "organization.delete", "organization",
+                str(row.get("name") or org), "failed",
+                {"reason": "mutation_error"})
+            raise
         _ORG_ALIAS_MEMO.clear()
+        await _audit_sensitive_action(
+            env, account, "organization.delete", "organization",
+            str(row.get("name") or org), "success",
+            {"linkedRepositories": len(linked or [])})
         return json_response({"ok": True, "org": str(row.get("name") or ""),
                               "deleted": True})
     return json_response({"error": "method_not_allowed"}, status=405)
 
 
 async def org_members_handler(env, request, org):
-    # GET: public roster (plaintext names/roles, the same trust level as
-    # profile_follows). POST: add an account or change its role — this is the
+    # GET: role-gated office roster according to the organization's world
+    # visibility policy. POST: add an account or change its role — this is the
     # "invite": the new member is notified, like a repo share. DELETE: remove
     # a member. Writes require an owner/admin session; only owners may grant,
     # demote, or remove owners/admins, and the last owner can never leave.
@@ -9349,16 +12411,43 @@ async def org_members_handler(env, request, org):
         return json_response({"error": "not_found"}, status=404)
     org_name = str(row.get("name") or "")
     if method == "GET":
+        _, viewer_rec = await _account_session_record(env, request)
+        viewer = (
+            viewer_rec.get("name", "") if viewer_rec else ""
+        ).strip().lower()
+        viewer_role = (
+            await _org_role(env, org_bi, viewer) if viewer else "")
+        org_rec = await decrypt_row(env, row.get("data")) or {}
+        access = _org_world_access(org_rec.get("worldAccess"))
+        if not _org_world_access_allowed(
+                access["offices"], viewer_role):
+            return json_response({"error": "forbidden"}, status=403)
+        if not viewer_role:
+            # A public office hallway does not let an organization expose each
+            # member's profile on that person's behalf. Anonymous visitors get
+            # an aggregate only; named office cards remain member-visible.
+            count = await d1_first(
+                env,
+                "SELECT COUNT(*) AS n FROM org_members WHERE org_bi=?",
+                org_bi,
+            )
+            return json_response({
+                "ok": True,
+                "visibility": "public-redacted",
+                "memberCount": int((count or {}).get("n") or 0),
+                "members": [],
+            }, cache_control="no-store")
         rows = await d1_all(
             env,
             "SELECT name, role, created_at FROM org_members WHERE org_bi=? "
             "ORDER BY created_at ASC",
             org_bi)
-        return json_response({"ok": True, "members": [
+        return json_response({"ok": True, "visibility": access["offices"],
+                              "members": [
             {"name": str(r.get("name") or ""),
              "role": str(r.get("role") or ""),
              "since": int(r.get("created_at") or 0)}
-            for r in rows or []]})
+            for r in rows or []]}, cache_control="no-store")
     if method not in ("POST", "DELETE"):
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
@@ -9369,10 +12458,16 @@ async def org_members_handler(env, request, org):
     account = (account_rec.get("name", "") if account_rec else "").strip().lower()
     if not account:
         return json_response({"error": "invalid_session"}, status=401)
+    member = clean_string(data.get("member", ""), MAX_NODE_NAME).lower()
     caller_role = await _org_role(env, org_bi, account)
     if caller_role not in ("owner", "admin"):
+        await _audit_sensitive_action(
+            env, account,
+            "organization.member_remove"
+            if method == "DELETE" else "organization.member_change",
+            "organization_member", org_name + "/" + member, "denied",
+            {"reason": "insufficient_role"})
         return json_response({"error": "forbidden"}, status=403)
-    member = clean_string(data.get("member", ""), MAX_NODE_NAME).lower()
     if not member:
         return json_response({"error": "member_required"}, status=400)
     member_bi = await blind_index(env, member)
@@ -9385,15 +12480,37 @@ async def org_members_handler(env, request, org):
         if not existing:
             return json_response({"error": "not_found"}, status=404)
         if existing_role in ("owner", "admin") and caller_role != "owner":
+            await _audit_sensitive_action(
+                env, account, "organization.member_remove",
+                "organization_member", org_name + "/" + member, "denied",
+                {"reason": "owner_role_required",
+                 "existingRole": existing_role})
             return json_response({"error": "forbidden"}, status=403)
         if existing_role == "owner" and await _org_owner_count(env, org_bi) <= 1:
+            await _audit_sensitive_action(
+                env, account, "organization.member_remove",
+                "organization_member", org_name + "/" + member, "denied",
+                {"reason": "last_owner"})
             return json_response({"error": "last_owner"}, status=400)
-        await d1_run(
-            env, "DELETE FROM org_team_members WHERE org_bi=? AND member_bi=?",
-            org_bi, member_bi)
-        await d1_run(
-            env, "DELETE FROM org_members WHERE org_bi=? AND member_bi=?",
-            org_bi, member_bi)
+        try:
+            await d1_run(
+                env,
+                "DELETE FROM org_team_members WHERE org_bi=? AND member_bi=?",
+                org_bi, member_bi)
+            await d1_run(
+                env, "DELETE FROM org_members WHERE org_bi=? AND member_bi=?",
+                org_bi, member_bi)
+        except Exception:
+            await _audit_sensitive_action(
+                env, account, "organization.member_remove",
+                "organization_member", org_name + "/" + member, "failed",
+                {"reason": "mutation_error",
+                 "existingRole": existing_role})
+            raise
+        await _audit_sensitive_action(
+            env, account, "organization.member_remove",
+            "organization_member", org_name + "/" + member, "success",
+            {"existingRole": existing_role})
         return json_response({"ok": True, "member": member, "removed": True})
 
     role = clean_string(data.get("role", "member"), 12).lower() or "member"
@@ -9402,9 +12519,19 @@ async def org_members_handler(env, request, org):
     # Only owners hand out (or take away) the administrative roles.
     if caller_role != "owner" and (role in ("owner", "admin") or
                                    existing_role in ("owner", "admin")):
+        await _audit_sensitive_action(
+            env, account, "organization.role_change",
+            "organization_member", org_name + "/" + member, "denied",
+            {"reason": "owner_role_required", "role": role,
+             "existingRole": existing_role})
         return json_response({"error": "forbidden"}, status=403)
     if (existing_role == "owner" and role != "owner" and
             await _org_owner_count(env, org_bi) <= 1):
+        await _audit_sensitive_action(
+            env, account, "organization.role_change",
+            "organization_member", org_name + "/" + member, "denied",
+            {"reason": "last_owner", "role": role,
+             "existingRole": existing_role})
         return json_response({"error": "last_owner"}, status=400)
     _, member_rec = await _account_row(env, member)
     if not member_rec:
@@ -9414,12 +12541,28 @@ async def org_members_handler(env, request, org):
             env, "SELECT COUNT(*) AS n FROM org_members WHERE org_bi=?", org_bi)
         if count_row and int(count_row.get("n") or 0) >= MAX_ORG_MEMBERS:
             return json_response({"error": "too_many_members"}, status=429)
-    await d1_run(
-        env,
-        "INSERT INTO org_members (org_bi, member_bi, role, name, created_at) "
-        "VALUES (?,?,?,?,?) ON CONFLICT(org_bi, member_bi) DO UPDATE SET "
-        "role=excluded.role",
-        org_bi, member_bi, role, member, int(Date.now()))
+    audit_action = (
+        "organization.role_change"
+        if existing else "organization.member_add")
+    try:
+        await d1_run(
+            env,
+            "INSERT INTO org_members "
+            "(org_bi, member_bi, role, name, created_at) "
+            "VALUES (?,?,?,?,?) ON CONFLICT(org_bi, member_bi) DO UPDATE SET "
+            "role=excluded.role",
+            org_bi, member_bi, role, member, int(Date.now()))
+    except Exception:
+        await _audit_sensitive_action(
+            env, account, audit_action,
+            "organization_member", org_name + "/" + member, "failed",
+            {"reason": "mutation_error", "role": role,
+             "existingRole": existing_role})
+        raise
+    await _audit_sensitive_action(
+        env, account, audit_action,
+        "organization_member", org_name + "/" + member, "success",
+        {"role": role, "existingRole": existing_role})
     if not existing:
         await enqueue_notification(
             env, member, "org_invite",
@@ -9448,10 +12591,16 @@ async def org_teams_handler(env, request, org):
     org_bi, row = await _org_row(env, org)
     if not row:
         return json_response({"error": "not_found"}, status=404)
+    org_name = str(row.get("name") or "")
     if method == "GET":
         _, viewer_rec = await _account_session_record(env, request)
         viewer = (viewer_rec.get("name", "") if viewer_rec else "").strip().lower()
-        if not viewer or not await _org_role(env, org_bi, viewer):
+        viewer_role = (
+            await _org_role(env, org_bi, viewer) if viewer else "")
+        org_rec = await decrypt_row(env, row.get("data")) or {}
+        access = _org_world_access(org_rec.get("worldAccess"))
+        if not _org_world_access_allowed(
+                access["floors"], viewer_role):
             return json_response({"error": "forbidden"}, status=403)
         rows = await d1_all(
             env,
@@ -9461,11 +12610,12 @@ async def org_teams_handler(env, request, org):
             "ON m.org_bi = t.org_bi AND m.team = t.team "
             "WHERE t.org_bi=? GROUP BY t.team, t.permission ORDER BY t.team",
             org_bi)
-        return json_response({"ok": True, "teams": [
+        return json_response({"ok": True, "visibility": access["floors"],
+                              "teams": [
             {"team": str(r.get("team") or ""),
              "permission": str(r.get("permission") or ""),
              "members": int(r.get("members") or 0)}
-            for r in rows or []]})
+            for r in rows or []]}, cache_control="no-store")
     if method not in ("POST", "DELETE"):
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
@@ -9476,17 +12626,34 @@ async def org_teams_handler(env, request, org):
     account = (account_rec.get("name", "") if account_rec else "").strip().lower()
     if not account:
         return json_response({"error": "invalid_session"}, status=401)
-    if await _org_role(env, org_bi, account) not in ("owner", "admin"):
-        return json_response({"error": "forbidden"}, status=403)
     team = clean_string(data.get("team", ""), MAX_NODE_NAME).lower()
+    if await _org_role(env, org_bi, account) not in ("owner", "admin"):
+        await _audit_sensitive_action(
+            env, account,
+            "organization.team_delete"
+            if method == "DELETE" else "organization.team_change",
+            "organization_team", org_name + "/" + team, "denied",
+            {"reason": "insufficient_role"})
+        return json_response({"error": "forbidden"}, status=403)
     if not valid_node_name(team):
         return json_response({"error": "invalid_team_name"}, status=400)
     if method == "DELETE":
-        await d1_run(
-            env, "DELETE FROM org_team_members WHERE org_bi=? AND team=?",
-            org_bi, team)
-        await d1_run(
-            env, "DELETE FROM org_teams WHERE org_bi=? AND team=?", org_bi, team)
+        try:
+            await d1_run(
+                env, "DELETE FROM org_team_members WHERE org_bi=? AND team=?",
+                org_bi, team)
+            await d1_run(
+                env, "DELETE FROM org_teams WHERE org_bi=? AND team=?",
+                org_bi, team)
+        except Exception:
+            await _audit_sensitive_action(
+                env, account, "organization.team_delete",
+                "organization_team", org_name + "/" + team, "failed",
+                {"reason": "mutation_error"})
+            raise
+        await _audit_sensitive_action(
+            env, account, "organization.team_delete",
+            "organization_team", org_name + "/" + team, "success")
         return json_response({"ok": True, "team": team, "deleted": True})
     permission = clean_string(data.get("permission", "read"), 12).lower() or "read"
     if permission not in TEAM_PERMISSIONS:
@@ -9499,12 +12666,26 @@ async def org_teams_handler(env, request, org):
             env, "SELECT COUNT(*) AS n FROM org_teams WHERE org_bi=?", org_bi)
         if count_row and int(count_row.get("n") or 0) >= MAX_ORG_TEAMS:
             return json_response({"error": "too_many_teams"}, status=429)
-    await d1_run(
-        env,
-        "INSERT INTO org_teams (org_bi, team, permission, created_at) "
-        "VALUES (?,?,?,?) ON CONFLICT(org_bi, team) DO UPDATE SET "
-        "permission=excluded.permission",
-        org_bi, team, permission, int(Date.now()))
+    audit_action = (
+        "organization.team_permission_change"
+        if existing else "organization.team_create")
+    try:
+        await d1_run(
+            env,
+            "INSERT INTO org_teams (org_bi, team, permission, created_at) "
+            "VALUES (?,?,?,?) ON CONFLICT(org_bi, team) DO UPDATE SET "
+            "permission=excluded.permission",
+            org_bi, team, permission, int(Date.now()))
+    except Exception:
+        await _audit_sensitive_action(
+            env, account, audit_action,
+            "organization_team", org_name + "/" + team, "failed",
+            {"reason": "mutation_error", "permission": permission})
+        raise
+    await _audit_sensitive_action(
+        env, account, audit_action,
+        "organization_team", org_name + "/" + team, "success",
+        {"permission": permission})
     return json_response({"ok": True, "team": team, "permission": permission})
 
 
@@ -9518,6 +12699,7 @@ async def org_team_members_handler(env, request, org, team):
     org_bi, row = await _org_row(env, org)
     if not row:
         return json_response({"error": "not_found"}, status=404)
+    org_name = str(row.get("name") or "")
     team = (team or "").strip().lower()
     team_row = await d1_first(
         env, "SELECT permission FROM org_teams WHERE org_bi=? AND team=?",
@@ -9550,26 +12732,54 @@ async def org_team_members_handler(env, request, org, team):
     account = (account_rec.get("name", "") if account_rec else "").strip().lower()
     if not account:
         return json_response({"error": "invalid_session"}, status=401)
-    if await _org_role(env, org_bi, account) not in ("owner", "admin"):
-        return json_response({"error": "forbidden"}, status=403)
     member = clean_string(data.get("member", ""), MAX_NODE_NAME).lower()
+    audit_action = (
+        "organization.team_member_revoke"
+        if method == "DELETE" else "organization.team_member_grant")
+    if await _org_role(env, org_bi, account) not in ("owner", "admin"):
+        await _audit_sensitive_action(
+            env, account, audit_action, "organization_team_member",
+            org_name + "/" + team + "/" + member, "denied",
+            {"reason": "insufficient_role"})
+        return json_response({"error": "forbidden"}, status=403)
     if not member:
         return json_response({"error": "member_required"}, status=400)
     member_bi = await blind_index(env, member)
     if method == "DELETE":
-        await d1_run(
-            env,
-            "DELETE FROM org_team_members WHERE org_bi=? AND team=? AND member_bi=?",
-            org_bi, team, member_bi)
+        try:
+            await d1_run(
+                env,
+                "DELETE FROM org_team_members "
+                "WHERE org_bi=? AND team=? AND member_bi=?",
+                org_bi, team, member_bi)
+        except Exception:
+            await _audit_sensitive_action(
+                env, account, audit_action, "organization_team_member",
+                org_name + "/" + team + "/" + member, "failed",
+                {"reason": "mutation_error"})
+            raise
+        await _audit_sensitive_action(
+            env, account, audit_action, "organization_team_member",
+            org_name + "/" + team + "/" + member, "success")
         return json_response({"ok": True, "team": team, "member": member,
                               "removed": True})
     if not await _org_role(env, org_bi, member):
         return json_response({"error": "not_a_member"}, status=400)
-    await d1_run(
-        env,
-        "INSERT OR IGNORE INTO org_team_members "
-        "(org_bi, team, member_bi, name, created_at) VALUES (?,?,?,?,?)",
-        org_bi, team, member_bi, member, int(Date.now()))
+    try:
+        await d1_run(
+            env,
+            "INSERT OR IGNORE INTO org_team_members "
+            "(org_bi, team, member_bi, name, created_at) VALUES (?,?,?,?,?)",
+            org_bi, team, member_bi, member, int(Date.now()))
+    except Exception:
+        await _audit_sensitive_action(
+            env, account, audit_action, "organization_team_member",
+            org_name + "/" + team + "/" + member, "failed",
+            {"reason": "mutation_error"})
+        raise
+    await _audit_sensitive_action(
+        env, account, audit_action, "organization_team_member",
+        org_name + "/" + team + "/" + member, "success")
     return json_response({"ok": True, "team": team, "member": member,
                           "added": True})
 
@@ -9585,15 +12795,41 @@ async def org_repos_handler(env, request, org):
     org_bi, row = await _org_row(env, org)
     if not row:
         return json_response({"error": "not_found"}, status=404)
+    org_name = str(row.get("name") or "")
     if method == "GET":
         rows = await d1_all(
             env,
             "SELECT repo, node_owner FROM org_repos WHERE org_bi=? ORDER BY repo",
             org_bi)
-        return json_response({"ok": True, "repos": [
-            {"repo": str(r.get("repo") or ""),
-             "node": str(r.get("node_owner") or "")}
-            for r in rows or []]})
+        # Organization aliases are public routing data only for explicitly
+        # public repositories. A linked private repository is omitted unless
+        # the signed-in viewer already owns it or has an explicit repo share;
+        # org membership alone is not a plaintext/decryption grant.
+        _, viewer_rec = await _account_session_record(env, request)
+        viewer = (
+            str((viewer_rec or {}).get("name") or "").strip().lower())
+        visible = []
+        for linked in rows or []:
+            linked_repo = safe_segment(str(linked.get("repo") or ""))
+            node_owner = clean_string(
+                linked.get("node_owner") or "", MAX_NODE_NAME).lower()
+            if not linked_repo or not node_owner:
+                continue
+            if await _repo_is_private(env, node_owner, linked_repo):
+                allowed = bool(
+                    viewer and (
+                        viewer == node_owner
+                        or await _account_owns_node(
+                            env, viewer, node_owner)
+                        or await _repo_shared_with(
+                            env, node_owner, linked_repo, viewer)
+                    )
+                )
+                if not allowed:
+                    continue
+            visible.append({"repo": linked_repo, "node": node_owner})
+        return json_response({"ok": True, "repos": visible},
+                             cache_control="no-store")
     if method not in ("POST", "DELETE"):
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
@@ -9604,19 +12840,45 @@ async def org_repos_handler(env, request, org):
     account = (account_rec.get("name", "") if account_rec else "").strip().lower()
     if not account:
         return json_response({"error": "invalid_session"}, status=401)
-    if await _org_role(env, org_bi, account) not in ("owner", "admin"):
-        return json_response({"error": "forbidden"}, status=403)
     repo = safe_segment(clean_string(data.get("repo", ""), MAX_REPO_SEGMENT))
     repo = (repo or "").lower()
+    audit_action = (
+        "organization.repo_unlink"
+        if method == "DELETE" else "organization.repo_link")
+    if await _org_role(env, org_bi, account) not in ("owner", "admin"):
+        await _audit_sensitive_action(
+            env, account, audit_action, "organization_repository",
+            org_name + "/" + repo, "denied",
+            {"reason": "insufficient_role"})
+        return json_response({"error": "forbidden"}, status=403)
     if not repo:
         return json_response({"error": "repo_required"}, status=400)
     if method == "DELETE":
-        await d1_run(
-            env, "DELETE FROM org_repos WHERE org_bi=? AND repo=?", org_bi, repo)
+        try:
+            await d1_run(
+                env, "DELETE FROM org_repos WHERE org_bi=? AND repo=?",
+                org_bi, repo)
+            await d1_run(
+                env, "DELETE FROM ap_digest_queues WHERE scope_bi=?",
+                await _ap_digest_scope_bi(
+                    env, str(org).lower() + "/" + repo.lower()))
+        except Exception:
+            await _audit_sensitive_action(
+                env, account, audit_action, "organization_repository",
+                org_name + "/" + repo, "failed",
+                {"reason": "mutation_error"})
+            raise
         _ORG_ALIAS_MEMO.clear()
+        await _audit_sensitive_action(
+            env, account, audit_action, "organization_repository",
+            org_name + "/" + repo, "success")
         return json_response({"ok": True, "repo": repo, "linked": False})
     node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower() or account
     if node != account:
+        await _audit_sensitive_action(
+            env, account, audit_action, "organization_repository",
+            org_name + "/" + repo, "denied",
+            {"reason": "not_your_node"})
         return json_response({"error": "not_your_node"}, status=403)
     key_bi = await blind_index(env, node + "/" + repo)
     published = await d1_first(
@@ -9631,15 +12893,160 @@ async def org_repos_handler(env, request, org):
             env, "SELECT COUNT(*) AS n FROM org_repos WHERE org_bi=?", org_bi)
         if count_row and int(count_row.get("n") or 0) >= MAX_ORG_REPOS:
             return json_response({"error": "too_many_repos"}, status=429)
-    await d1_run(
-        env,
-        "INSERT INTO org_repos (org_bi, repo, node_owner, created_at) "
-        "VALUES (?,?,?,?) ON CONFLICT(org_bi, repo) DO UPDATE SET "
-        "node_owner=excluded.node_owner",
-        org_bi, repo, node, int(Date.now()))
+    try:
+        await d1_run(
+            env,
+            "INSERT INTO org_repos (org_bi, repo, node_owner, created_at) "
+            "VALUES (?,?,?,?) ON CONFLICT(org_bi, repo) DO UPDATE SET "
+            "node_owner=excluded.node_owner",
+            org_bi, repo, node, int(Date.now()))
+    except Exception:
+        await _audit_sensitive_action(
+            env, account, audit_action, "organization_repository",
+            org_name + "/" + repo, "failed",
+            {"reason": "mutation_error"})
+        raise
     _ORG_ALIAS_MEMO.clear()
+    await _audit_sensitive_action(
+        env, account, audit_action, "organization_repository",
+        org_name + "/" + repo, "success")
     return json_response({"ok": True, "repo": repo, "node": node,
                           "linked": True})
+
+
+async def org_fediverse_handler(env, request, org):
+    """Org-owner/admin controls for org-alias daily repository digests.
+
+    This endpoint never edits the backing repository's settings. Its `enabled`
+    value is an additional AND gate for aliases under this organization, and
+    previews include only linked repositories that remain public.
+    """
+    await ensure_schema(env)
+    method = method_name(request)
+    if method not in ("GET", "POST"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    org_bi, row = await _org_row(env, org)
+    if not row:
+        return json_response({"error": "not_found"}, status=404)
+    data = {}
+    if method == "POST":
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+    _, account_rec = await _account_session_record(env, request, data)
+    account = str((account_rec or {}).get("name") or "").strip().lower()
+    if not account:
+        return json_response({"error": "invalid_session"}, status=401)
+    requested_enabled = (
+        data.get("enabled")
+        if method == "POST" and isinstance(data.get("enabled"), bool)
+        else None)
+    audit_action = (
+        "organization.fediverse_enable"
+        if requested_enabled is True
+        else "organization.fediverse_disable"
+        if requested_enabled is False
+        else "organization.fediverse_change")
+    org_name = str(row.get("name") or org)
+    if await _org_role(env, org_bi, account) not in ("owner", "admin"):
+        if method == "POST":
+            await _audit_sensitive_action(
+                env, account, audit_action, "organization",
+                org_name, "denied", {"reason": "insufficient_role"})
+        return json_response({"error": "forbidden"}, status=403)
+
+    controls = await _ap_org_digest_settings_get(env, org_bi)
+    if method == "POST":
+        if "enabled" not in data or not isinstance(data.get("enabled"), bool):
+            await _audit_sensitive_action(
+                env, account, audit_action, "organization",
+                org_name, "denied", {"reason": "enabled_required"})
+            return json_response({"error": "enabled_required"}, status=400)
+        controls = fedi_digest.normalize_controls({
+            "enabled": data["enabled"], "preview": False})
+        try:
+            await d1_run(
+                env,
+                "INSERT INTO ap_org_digest_settings "
+                "(org_bi, data, updated_at) VALUES (?,?,?) "
+                "ON CONFLICT(org_bi) DO UPDATE SET "
+                "data=excluded.data, updated_at=excluded.updated_at",
+                org_bi, json.dumps(controls, separators=(",", ":")),
+                int(Date.now()))
+        except Exception:
+            await _audit_sensitive_action(
+                env, account, audit_action, "organization",
+                org_name, "failed", {"reason": "settings_mutation_error"})
+            raise
+        await _audit_sensitive_action(
+            env, account, audit_action, "organization",
+            org_name, "success",
+            {"enabled": bool(controls["enabled"])})
+        if not controls["enabled"]:
+            try:
+                queued_scopes = await d1_all(
+                    env,
+                    "SELECT repo FROM org_repos WHERE org_bi=? "
+                    "ORDER BY repo LIMIT ?",
+                    org_bi, MAX_ORG_REPOS)
+                for item in queued_scopes or []:
+                    scope = str(org).lower() + "/" + str(
+                        item.get("repo") or "").lower()
+                    await d1_run(
+                        env, "DELETE FROM ap_digest_queues WHERE scope_bi=?",
+                        await _ap_digest_scope_bi(env, scope))
+            except Exception:
+                await _audit_sensitive_action(
+                    env, account, "organization.fediverse_queue_purge",
+                    "organization", org_name, "failed",
+                    {"reason": "queue_purge_error"})
+                raise
+            await _audit_sensitive_action(
+                env, account, "organization.fediverse_queue_purge",
+                "organization", org_name, "success",
+                {"linkedScopes": len(queued_scopes or [])})
+
+    linked = await d1_all(
+        env,
+        "SELECT repo, node_owner FROM org_repos WHERE org_bi=? "
+        "ORDER BY repo LIMIT ?",
+        org_bi, MAX_ORG_REPOS)
+    previews = []
+    for item in linked or []:
+        repo = clean_string(item.get("repo"), MAX_REPO_SEGMENT).strip()
+        source_owner = clean_string(
+            item.get("node_owner"), MAX_NODE_NAME).strip().lower()
+        if not repo or not source_owner:
+            continue
+        # Organization membership is not a private-repository content grant.
+        # Private links are omitted, exactly like the public org repo list.
+        if await _repo_is_private(env, source_owner, repo):
+            continue
+        owner_settings = await _ap_repo_settings_get(
+            env, source_owner, repo)
+        preview = await _ap_digest_preview(
+            env, str(org).lower() + "/" + repo.lower())
+        preview.update({
+            "repo": repo,
+            "sourceOwner": source_owner,
+            "ownerEnabled": bool(
+                owner_settings["federate"]
+                and owner_settings["broadcastEvents"]),
+            "enabled": bool(
+                controls["enabled"]
+                and owner_settings["federate"]
+                and owner_settings["broadcastEvents"]),
+        })
+        previews.append(preview)
+    return json_response({
+        "ok": True,
+        "org": org_name,
+        "controls": controls,
+        "repos": previews,
+        "ownerBoundary": (
+            "Organization controls cannot override repository-owner settings."),
+    }, cache_control="no-store")
 
 
 # --- Admins + manual email verification -------------------------------------
@@ -9661,6 +13068,787 @@ async def _is_admin(env, name):
     except Exception:
         return False  # column may predate migration 0006
     return bool(row and int(row.get("is_admin", 0) or 0))
+
+
+async def _has_role(env, name, role, scope_type="platform", scope=""):
+    name = clean_string(name or "", MAX_NODE_NAME).strip().lower()
+    role = security_control.normalize_role(role)
+    scope_type = security_control.normalize_scope_type(scope_type)
+    if not name or not role or not security_control.role_scope_allowed(
+            role, scope_type):
+        return False
+    # Preserve the existing administrator flag as the platform-administrator
+    # grant only. It does not imply moderator/security-reviewer/decryption roles.
+    if (role == "platform_administrator" and scope_type == "platform"
+            and await _is_admin(env, name)):
+        return True
+    await ensure_schema(env)
+    account_bi = await blind_index(env, name)
+    scope_bi = (
+        await blind_index(env, scope)
+        if scope_type != "platform" and scope else ""
+    )
+    now = int(Date.now())
+    row = await d1_first(
+        env,
+        "SELECT 1 AS one FROM role_grants WHERE account_bi=? AND role=? "
+        "AND scope_type=? AND scope_bi=? AND revoked_at=0 "
+        "AND (expires_at=0 OR expires_at>?)",
+        account_bi, role, scope_type, scope_bi, now,
+    )
+    return bool(row)
+
+
+async def _audit_sensitive_action(env, actor, action, target_type="",
+                                  target="", outcome="success", details=None):
+    """Append a metadata-only record for a sensitive state transition."""
+    await ensure_schema(env)
+    actor = clean_string(actor or "", MAX_NODE_NAME).strip().lower()
+    clean_action = re.sub(
+        r"[^a-z0-9_.-]", "", str(action or "").strip().lower())[:100]
+    clean_target_type = re.sub(
+        r"[^a-z0-9_.-]", "", str(target_type or "").strip().lower())[:40]
+    clean_outcome = (
+        str(outcome or "unknown").strip().lower()
+        if str(outcome or "").strip().lower()
+        in ("success", "denied", "failed", "requested") else "unknown"
+    )
+    actor_bi = await blind_index(env, actor) if actor else None
+    target_token = (
+        await blind_index(
+            env, "audit:" + clean_target_type + ":" + str(target or ""))
+        if target else ""
+    )
+    safe_details = security_control.sanitize_audit_details(details or {})
+    await d1_run(
+        env,
+        "INSERT INTO sensitive_audit_log "
+        "(ts, actor_bi, actor_label, action, target_type, target_token, "
+        "outcome, details) VALUES (?,?,?,?,?,?,?,?)",
+        int(Date.now()), actor_bi, actor, clean_action, clean_target_type,
+        target_token, clean_outcome,
+        json.dumps(safe_details, sort_keys=True, separators=(",", ":")),
+    )
+
+
+async def security_roles_handler(env, request):
+    await ensure_schema(env)
+    method = method_name(request)
+    data = {}
+    if method == "POST":
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+    _, actor_rec = await _account_session_record(env, request, data)
+    actor = (actor_rec.get("name", "") if actor_rec else "").strip().lower()
+    if not actor:
+        return json_response({"error": "invalid_session"}, status=401)
+    is_platform_admin = await _has_role(
+        env, actor, "platform_administrator")
+
+    if method == "GET":
+        params = parse_qs(urlparse(request.url).query)
+        target = clean_string(
+            params.get("target", [actor])[0], MAX_NODE_NAME).strip().lower()
+        if target != actor and not is_platform_admin:
+            return json_response({"error": "forbidden"}, status=403)
+        target_bi, target_rec = await _account_row(env, target)
+        if not target_rec:
+            return json_response({"error": "not_found"}, status=404)
+        now = int(Date.now())
+        rows = await d1_all(
+            env,
+            "SELECT role, scope_type, scope_bi, granted_at, expires_at "
+            "FROM role_grants WHERE account_bi=? AND revoked_at=0 "
+            "AND (expires_at=0 OR expires_at>?) ORDER BY granted_at DESC",
+            target_bi, now,
+        )
+        grants = [{
+            "role": security_control.normalize_role(row.get("role")),
+            "scopeType": security_control.normalize_scope_type(
+                row.get("scope_type")),
+            # Scope identifiers are blind indexes. Only the grantee/admin sees
+            # the token, and no private repository name is recoverable from it.
+            "scopeToken": str(row.get("scope_bi") or ""),
+            "grantedAt": int(row.get("granted_at") or 0),
+            "expiresAt": int(row.get("expires_at") or 0),
+        } for row in rows or [] if security_control.normalize_role(
+            row.get("role"))]
+        if await _is_admin(env, target):
+            grants.append({
+                "role": "platform_administrator",
+                "scopeType": "platform",
+                "scopeToken": "",
+                "grantedAt": 0,
+                "expiresAt": 0,
+                "legacyGrant": True,
+            })
+        return json_response({
+            "ok": True,
+            "target": target,
+            "grants": grants,
+        }, cache_control="no-store")
+
+    if method != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    if not is_platform_admin:
+        await _audit_sensitive_action(
+            env, actor, "role.change", "role", "", "denied",
+            {"reason": "insufficient_role"})
+        return json_response({"error": "forbidden"}, status=403)
+    target = clean_string(data.get("target", ""), MAX_NODE_NAME).strip().lower()
+    role = security_control.normalize_role(data.get("role"))
+    scope_type = security_control.normalize_scope_type(
+        data.get("scopeType", "platform"))
+    scope = clean_string(data.get("scope", ""), 240).strip().lower()
+    action = str(data.get("action") or "grant").strip().lower()
+    if (not target or not role or not scope_type
+            or not security_control.role_scope_allowed(role, scope_type)
+            or (scope_type != "platform" and not scope)):
+        return json_response({"error": "invalid_role_grant"}, status=400)
+    target_bi, target_rec = await _account_row(env, target)
+    if not target_rec:
+        return json_response({"error": "target_not_found"}, status=404)
+    scope_bi = (
+        await blind_index(env, scope) if scope_type != "platform" else ""
+    )
+    now = int(Date.now())
+    if action == "revoke":
+        await d1_run(
+            env,
+            "UPDATE role_grants SET revoked_at=? WHERE account_bi=? "
+            "AND role=? AND scope_type=? AND scope_bi=?",
+            now, target_bi, role, scope_type, scope_bi,
+        )
+    elif action == "grant":
+        try:
+            expires_at = int(data.get("expiresAt") or 0)
+        except (TypeError, ValueError):
+            expires_at = 0
+        if expires_at and expires_at <= now:
+            return json_response({"error": "invalid_expiration"}, status=400)
+        actor_bi = await blind_index(env, actor)
+        await d1_run(
+            env,
+            "INSERT INTO role_grants "
+            "(account_bi, role, scope_type, scope_bi, granted_by_bi, "
+            "granted_at, expires_at, revoked_at) VALUES (?,?,?,?,?,?,?,0) "
+            "ON CONFLICT(account_bi,role,scope_type,scope_bi) DO UPDATE SET "
+            "granted_by_bi=excluded.granted_by_bi, "
+            "granted_at=excluded.granted_at, "
+            "expires_at=excluded.expires_at, revoked_at=0",
+            target_bi, role, scope_type, scope_bi, actor_bi, now, expires_at,
+        )
+    else:
+        return json_response({"error": "invalid_action"}, status=400)
+    await _audit_sensitive_action(
+        env, actor, "role." + action, "account", target, "success",
+        {"role": role, "scopeType": scope_type})
+    return json_response({
+        "ok": True, "action": action, "target": target, "role": role,
+        "scopeType": scope_type,
+    }, cache_control="no-store")
+
+
+def _security_request_network_identifier(request):
+    """Read a network address transiently; callers must immediately HMAC it."""
+    try:
+        headers = request.headers
+    except Exception:
+        return ""
+    value = (headers.get("cf-connecting-ip") or "").strip()
+    if not value:
+        forwarded = (headers.get("x-forwarded-for") or "").strip()
+        value = forwarded.split(",")[0].strip() if forwarded else ""
+    return value[:64]
+
+
+def _security_client_category(request):
+    try:
+        ua = str(request.headers.get("user-agent") or "").lower()
+    except Exception:
+        ua = ""
+    if any(marker in ua for marker in (
+            "bot", "crawler", "spider", "curl/", "wget/", "scanner")):
+        return "automated-client"
+    if "mobile" in ua:
+        return "mobile-browser"
+    if any(marker in ua for marker in (
+            "mozilla/", "chrome/", "safari/", "firefox/", "edg/")):
+        return "browser"
+    return "other-client" if ua else ""
+
+
+async def _security_request_tokens(env, request):
+    tokens = []
+    network = _security_request_network_identifier(request)
+    if network:
+        tokens.append((
+            await blind_index(env, "security-network:" + network), "network"))
+    try:
+        auth = request.headers.get("authorization") or ""
+    except Exception:
+        auth = ""
+    if auth.lower().startswith("bearer "):
+        name = _account_session_token_name(
+            env, clean_string(auth[7:], 512).strip())
+        if name:
+            tokens.append((
+                await blind_index(env, "security-account:" + name), "account"))
+    return tokens
+
+
+def _security_restriction_record(row):
+    row = row or {}
+    return {
+        "incidentId": str(row.get("incident_id") or ""),
+        "reason": str(row.get("reason") or ""),
+        "rule": str(row.get("rule") or ""),
+        "detectedAt": int(row.get("detected_at") or 0),
+        "durationMs": int(row.get("duration_ms") or 0),
+        "expiresAt": int(row.get("expires_at") or 0),
+        "confidence": str(row.get("confidence") or ""),
+        "automatic": bool(int(row.get("automatic") or 0)),
+        "reviewed": bool(int(row.get("reviewed") or 0)),
+        "appealStatus": str(row.get("appeal_status") or "none"),
+        "status": str(row.get("status") or "quarantined"),
+        "countryCode": str(row.get("country_code") or ""),
+        "clientCategory": str(row.get("client_category") or ""),
+    }
+
+
+async def _active_security_restriction(env, subject_tokens):
+    now = int(Date.now())
+    for subject_token, _kind in subject_tokens:
+        memo = _SECURITY_RESTRICTION_MEMO.get(subject_token)
+        if memo and (not memo.get("expiresAt")
+                     or int(memo.get("expiresAt") or 0) > now):
+            return memo
+        row = await d1_first(
+            env,
+            "SELECT r.*, s.country_code, s.client_category "
+            "FROM security_restrictions r LEFT JOIN security_signals s "
+            "ON s.subject_token=r.subject_token AND s.rule=r.rule "
+            "WHERE r.subject_token=? "
+            "AND r.status IN ('quarantined','blocked') "
+            "AND (r.expires_at=0 OR r.expires_at>?) "
+            "ORDER BY r.created_at DESC LIMIT 1",
+            subject_token, now,
+        )
+        if row:
+            public = security_control.public_restriction(
+                _security_restriction_record(row), now)
+            _SECURITY_RESTRICTION_MEMO[subject_token] = public
+            return public
+    return None
+
+
+def _security_restriction_response(restriction):
+    public = security_control.public_restriction(
+        restriction, int(Date.now()))
+    return json_response({
+        "error": "temporarily_quarantined",
+        "restriction": public,
+        "appealPath": "/api/security/appeals",
+        "notice": (
+            "This is a temporary security control, not a permanent finding. "
+            "Country, browser and operating system are never treated as "
+            "evidence of malicious intent."
+        ),
+    }, status=429, cache_control="no-store",
+       extra_headers={"retry-after": str(max(
+           1, int(public.get("durationMs") or 60000) // 1000))})
+
+
+async def _record_security_signal(env, request, signal, subject_token):
+    now = int(Date.now())
+    cutoff = now - SECURITY_SIGNAL_WINDOW_MS
+    country = world_request_country(request)
+    client_category = _security_client_category(request)
+    await d1_run(
+        env,
+        "INSERT INTO security_signals "
+        "(subject_token, rule, reason, confidence, hits, first_seen, "
+        "last_seen, country_code, client_category) VALUES (?,?,?,?,1,?,?,?,?) "
+        "ON CONFLICT(subject_token,rule) DO UPDATE SET "
+        "reason=excluded.reason, confidence=excluded.confidence, "
+        "hits=CASE WHEN security_signals.last_seen<? THEN 1 "
+        "ELSE security_signals.hits+1 END, "
+        "first_seen=CASE WHEN security_signals.last_seen<? "
+        "THEN excluded.first_seen ELSE security_signals.first_seen END, "
+        "last_seen=excluded.last_seen, country_code=excluded.country_code, "
+        "client_category=excluded.client_category",
+        subject_token, signal["rule"], signal["reason"],
+        signal["confidence"], now, now, country, client_category,
+        cutoff, cutoff,
+    )
+    row = await d1_first(
+        env,
+        "SELECT hits, first_seen FROM security_signals "
+        "WHERE subject_token=? AND rule=?",
+        subject_token, signal["rule"],
+    )
+    hits = int((row or {}).get("hits") or 0)
+    threshold = {"high": 2, "medium": 3, "low": 6}.get(
+        signal.get("confidence"), 6)
+    if hits < threshold:
+        return None
+    existing = await _active_security_restriction(
+        env, [(subject_token, "network")])
+    if existing:
+        return existing
+    incident_id = _random_bytes(16).hex()
+    duration = min(
+        SECURITY_AUTO_QUARANTINE_MS,
+        security_control.AUTO_RESTRICTION_MAX_MS)
+    evidence = await encrypt_row(env, {
+        "summary": security_control.generalized_evidence_summary(
+            signal.get("summary")),
+        "hitCount": hits,
+        "windowMs": SECURITY_SIGNAL_WINDOW_MS,
+    })
+    await d1_run(
+        env,
+        "INSERT INTO security_restrictions "
+        "(incident_id, subject_token, subject_kind, reason, rule, "
+        "detected_at, duration_ms, expires_at, confidence, evidence_data, "
+        "automatic, reviewed, appeal_status, status, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,1,0,'none','quarantined',?)",
+        incident_id, subject_token, "network", signal["reason"],
+        signal["rule"], now, duration, now + duration,
+        signal["confidence"], evidence, now,
+    )
+    public = security_control.public_restriction({
+        "incidentId": incident_id,
+        "reason": signal["reason"],
+        "rule": signal["rule"],
+        "detectedAt": now,
+        "durationMs": duration,
+        "expiresAt": now + duration,
+        "confidence": signal["confidence"],
+        "automatic": True,
+        "reviewed": False,
+        "appealStatus": "none",
+        "status": "quarantined",
+        "countryCode": country,
+        "clientCategory": client_category,
+    }, now)
+    _SECURITY_RESTRICTION_MEMO[subject_token] = public
+    await _audit_sensitive_action(
+        env, "", "security.auto_quarantine", "incident", incident_id,
+        "success", {"rule": signal["rule"], "reason": signal["reason"],
+                    "hits": hits, "durationMs": duration})
+    return public
+
+
+async def _security_enforce_request(env, request, url):
+    path = str(getattr(url, "path", "") or "")
+    if path in (
+            "/health", "/api/version", "/api/version/",
+            "/api/security/appeals", "/api/security/appeals/"):
+        return None
+    signal = security_control.security_signal_for_path(
+        path + (("?" + url.query) if getattr(url, "query", "") else ""),
+        method_name(request))
+    dynamic = (
+        path.startswith("/api/") or "/git-" in path
+        or path.endswith("/info/refs"))
+    if not signal and not dynamic:
+        return None
+    tokens = await _security_request_tokens(env, request)
+    if not tokens:
+        return None
+    await ensure_schema(env)
+    active = await _active_security_restriction(env, tokens)
+    if active:
+        return _security_restriction_response(active)
+    network_token = next(
+        (token for token, kind in tokens if kind == "network"), "")
+    if signal:
+        # Automated request-derived signals are attached only to the transient
+        # network token. An account is never punished merely for sharing a
+        # network with a suspicious client.
+        if network_token:
+            active = await _record_security_signal(
+                env, request, signal, network_token)
+            if active:
+                return _security_restriction_response(active)
+    if network_token and dynamic:
+        volume_signal = _SECURITY_TRAFFIC_DETECTOR.observe(
+            network_token, method_name(request), int(Date.now()))
+        if volume_signal:
+            active = await _record_security_signal(
+                env, request, volume_signal, network_token)
+            if active:
+                return _security_restriction_response(active)
+    return None
+
+
+async def _security_observe_response(env, request, url, response):
+    """Record repeated failed authorization only after a rejection is known."""
+    try:
+        status = int(getattr(response, "status", 0) or 0)
+        authorization_present = bool(
+            request.headers.get("authorization") or "")
+    except Exception:
+        return None
+    signal = security_control.security_signal_for_response(
+        str(getattr(url, "path", "") or ""),
+        method_name(request),
+        status,
+        authorization_present=authorization_present,
+    )
+    if not signal:
+        return None
+    try:
+        tokens = await _security_request_tokens(env, request)
+        network_token = next(
+            (token for token, kind in tokens if kind == "network"), "")
+        if not network_token:
+            return None
+        await ensure_schema(env)
+        active = await _record_security_signal(
+            env, request, signal, network_token)
+        return _security_restriction_response(active) if active else None
+    except Exception:
+        # A signal-accounting outage must not turn an otherwise valid Worker
+        # response into an availability failure.
+        return None
+
+
+async def security_quarantine_handler(env, request):
+    await ensure_schema(env)
+    method = method_name(request)
+    try:
+        world_generalized = (
+            str(request.headers.get("x-forkmesh-world-view") or "")
+            .strip().lower() == "generalized"
+        )
+    except Exception:
+        world_generalized = False
+    data = {}
+    if method == "POST":
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+    _, rec = await _account_session_record(env, request, data)
+    actor = (rec.get("name", "") if rec else "").strip().lower()
+    is_moderator = bool(actor and await _has_role(
+        env, actor, "moderator"))
+    is_reviewer = bool(actor and await _has_role(
+        env, actor, "security_reviewer"))
+
+    if method == "GET":
+        now = int(Date.now())
+        if not (is_moderator or is_reviewer):
+            rows = await d1_all(
+                env,
+                "SELECT reason, status, COUNT(*) AS n "
+                "FROM security_restrictions "
+                "WHERE created_at>? GROUP BY reason,status",
+                now - SECURITY_RESTRICTION_RETAIN_MS,
+            )
+            return json_response({
+                "ok": True,
+                "visibility": "aggregate-only",
+                "allowedActions": [],
+                "summary": [{
+                    "reason": security_control.normalize_reason(
+                        row.get("reason")) or "other_security_abuse",
+                    "status": str(row.get("status") or ""),
+                    "count": int(row.get("n") or 0),
+                } for row in rows or []],
+            }, cache_seconds=60)
+        rows = await d1_all(
+            env,
+            "SELECT r.*, s.country_code, s.client_category "
+            "FROM security_restrictions r LEFT JOIN security_signals s "
+            "ON s.subject_token=r.subject_token AND s.rule=r.rule "
+            "ORDER BY r.created_at DESC LIMIT ?",
+            SECURITY_PUBLIC_JAIL_LIMIT,
+        )
+        items = []
+        summary_counts = {}
+        for row in rows or []:
+            item = security_control.public_restriction(
+                _security_restriction_record(row), now)
+            summary_key = (item["reason"], item["status"])
+            summary_counts[summary_key] = summary_counts.get(summary_key, 0) + 1
+            if (
+                is_reviewer
+                and not world_generalized
+                and row.get("evidence_data")
+            ):
+                evidence = await decrypt_row(env, row.get("evidence_data"))
+                item["privateEvidence"] = (
+                    evidence if isinstance(evidence, dict) else {})
+            items.append(item)
+        return json_response({
+            "ok": True,
+            "visibility": (
+                "reviewer-generalized-world"
+                if is_reviewer and world_generalized
+                else "reviewer"
+                if is_reviewer
+                else "moderator-generalized"),
+            "allowedActions": ["revoke"],
+            "summary": [{
+                "reason": reason,
+                "status": status,
+                "count": count,
+            } for (reason, status), count in sorted(summary_counts.items())],
+            "restrictions": items,
+        }, cache_control="no-store")
+
+    if method != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    if not (is_moderator or is_reviewer):
+        return json_response({"error": "forbidden"}, status=403)
+    action = str(data.get("action") or "").strip().lower()
+    incident_id = security_control.normalize_incident_id(
+        data.get("incidentId"))
+    now = int(Date.now())
+    if action in ("resolve", "revoke"):
+        if not incident_id:
+            return json_response({"error": "invalid_incident"}, status=400)
+        await d1_run(
+            env,
+            "UPDATE security_restrictions SET status='revoked', "
+            "reviewed=1, reviewer_bi=? WHERE incident_id=?",
+            await blind_index(env, actor), incident_id,
+        )
+        _SECURITY_RESTRICTION_MEMO.clear()
+        await _audit_sensitive_action(
+            env, actor, "security.restriction_revoke", "incident",
+            incident_id, "success", {"reviewed": True})
+        return json_response({"ok": True, "status": "revoked"})
+    if action != "restrict_account":
+        return json_response({"error": "invalid_action"}, status=400)
+    target = clean_string(
+        data.get("targetAccount", ""), MAX_NODE_NAME).strip().lower()
+    _, target_rec = await _account_row(env, target)
+    reason = security_control.normalize_reason(data.get("reason"))
+    confidence = security_control.normalize_confidence(data.get("confidence"))
+    if not target_rec or not reason or not confidence:
+        return json_response({"error": "invalid_restriction"}, status=400)
+    permanent = bool(data.get("permanent"))
+    if permanent and not (is_reviewer and confidence == "high"):
+        return json_response(
+            {"error": "permanent_requires_high_confidence_human_review"},
+            status=400)
+    try:
+        requested_duration = int(data.get("durationMs") or 0)
+    except (TypeError, ValueError):
+        requested_duration = 0
+    duration = (
+        0 if permanent else security_control.bounded_restriction_duration(
+            requested_duration or SECURITY_AUTO_QUARANTINE_MS,
+            automatic=False))
+    expires_at = 0 if permanent else now + duration
+    incident_id = _random_bytes(16).hex()
+    subject_token = await blind_index(env, "security-account:" + target)
+    summary = security_control.generalized_evidence_summary(
+        data.get("evidenceSummary"))
+    evidence = await encrypt_row(env, {
+        "summary": summary or "Human-reviewed account restriction.",
+    })
+    await d1_run(
+        env,
+        "INSERT INTO security_restrictions "
+        "(incident_id, subject_token, subject_kind, reason, rule, "
+        "detected_at, duration_ms, expires_at, confidence, evidence_data, "
+        "automatic, reviewed, reviewer_bi, appeal_status, status, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,0,1,?,'none','quarantined',?)",
+        incident_id, subject_token, "account", reason,
+        "human-review-v1", now, duration, expires_at, confidence, evidence,
+        await blind_index(env, actor), now,
+    )
+    _SECURITY_RESTRICTION_MEMO.clear()
+    await _audit_sensitive_action(
+        env, actor, "security.account_restrict", "incident", incident_id,
+        "success", {"reason": reason, "confidence": confidence,
+                    "durationMs": duration, "permanent": permanent})
+    return json_response({
+        "ok": True,
+        "restriction": security_control.public_restriction({
+            "incidentId": incident_id, "reason": reason,
+            "rule": "human-review-v1", "detectedAt": now,
+            "durationMs": duration, "expiresAt": expires_at,
+            "confidence": confidence, "automatic": False,
+            "reviewed": True, "status": "quarantined",
+        }, now),
+    }, status=201)
+
+
+async def security_appeals_handler(env, request):
+    await ensure_schema(env)
+    method = method_name(request)
+    if method == "GET":
+        _, rec = await _account_session_record(env, request)
+        actor = (rec.get("name", "") if rec else "").strip().lower()
+        if not actor or not await _has_role(
+                env, actor, "security_reviewer"):
+            return json_response({"error": "forbidden"}, status=403)
+        rows = await d1_all(
+            env,
+            "SELECT id, incident_id, data, status, created_at "
+            "FROM security_appeals WHERE status='pending' "
+            "ORDER BY created_at ASC LIMIT 100",
+        )
+        appeals = []
+        for row in rows or []:
+            private = await decrypt_row(env, row.get("data"))
+            appeals.append({
+                "id": int(row.get("id") or 0),
+                "incidentId": str(row.get("incident_id") or ""),
+                "status": str(row.get("status") or "pending"),
+                "createdAt": int(row.get("created_at") or 0),
+                "appeal": private if isinstance(private, dict) else {},
+            })
+        return json_response({"ok": True, "appeals": appeals},
+                             cache_control="no-store")
+    if method != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    _, rec = await _account_session_record(env, request, data)
+    actor = (rec.get("name", "") if rec else "").strip().lower()
+    action = str(data.get("action") or "submit").strip().lower()
+    incident_id = security_control.normalize_incident_id(
+        data.get("incidentId"))
+    if not incident_id:
+        return json_response({"error": "invalid_incident"}, status=400)
+    if action == "review":
+        if not actor or not await _has_role(
+                env, actor, "security_reviewer"):
+            return json_response({"error": "forbidden"}, status=403)
+        try:
+            appeal_id = int(data.get("appealId") or 0)
+        except (TypeError, ValueError):
+            appeal_id = 0
+        decision = security_control.normalize_appeal_status(
+            data.get("decision"))
+        if not appeal_id or decision not in (
+                "accepted", "denied", "needs_information"):
+            return json_response({"error": "invalid_review"}, status=400)
+        now = int(Date.now())
+        reviewer_bi = await blind_index(env, actor)
+        await d1_run(
+            env,
+            "UPDATE security_appeals SET status=?, reviewed_at=?, "
+            "reviewer_bi=? WHERE id=? AND incident_id=?",
+            decision, now, reviewer_bi, appeal_id, incident_id,
+        )
+        await d1_run(
+            env,
+            "UPDATE security_restrictions SET appeal_status=?, "
+            "status=CASE WHEN ?='accepted' THEN 'revoked' ELSE status END, "
+            "reviewed=1, reviewer_bi=? WHERE incident_id=?",
+            decision, decision, reviewer_bi, incident_id,
+        )
+        _SECURITY_RESTRICTION_MEMO.clear()
+        await _audit_sensitive_action(
+            env, actor, "security.appeal_review", "incident", incident_id,
+            "success", {"decision": decision, "appealId": appeal_id})
+        return json_response({"ok": True, "decision": decision})
+    text = str(data.get("appeal") or "").strip()
+    if not text or len(text) > security_control.MAX_APPEAL_TEXT:
+        return json_response({"error": "invalid_appeal"}, status=400)
+    incident = await d1_first(
+        env,
+        "SELECT 1 AS one FROM security_restrictions WHERE incident_id=?",
+        incident_id,
+    )
+    # Return the same result for an unknown high-entropy incident id so this
+    # endpoint cannot be used to enumerate restrictions.
+    if incident:
+        appellant_bi = await blind_index(env, actor) if actor else None
+        now = int(Date.now())
+        private = await encrypt_row(env, {"text": text})
+        await d1_run(
+            env,
+            "INSERT INTO security_appeals "
+            "(incident_id, appellant_bi, data, status, created_at) "
+            "VALUES (?,?,?,'pending',?)",
+            incident_id, appellant_bi, private, now,
+        )
+        await d1_run(
+            env,
+            "UPDATE security_restrictions SET appeal_status='pending' "
+            "WHERE incident_id=?",
+            incident_id,
+        )
+        await _audit_sensitive_action(
+            env, actor, "security.appeal_submit", "incident", incident_id,
+            "requested", {})
+    return json_response({
+        "ok": True,
+        "status": "received",
+    }, status=202, cache_control="no-store")
+
+
+async def security_audit_handler(env, request):
+    if method_name(request) != "GET":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    await ensure_schema(env)
+    _, rec = await _account_session_record(env, request)
+    actor = (rec.get("name", "") if rec else "").strip().lower()
+    if not actor or not await _has_role(
+            env, actor, "platform_administrator"):
+        return json_response({"error": "forbidden"}, status=403)
+    rows = await d1_all(
+        env,
+        "SELECT ts, actor_label, action, target_type, target_token, "
+        "outcome, details FROM sensitive_audit_log "
+        "ORDER BY id DESC LIMIT 500",
+    )
+    events = []
+    for row in rows or []:
+        try:
+            details = json.loads(str(row.get("details") or "{}"))
+        except Exception:
+            details = {}
+        events.append({
+            "ts": int(row.get("ts") or 0),
+            "actor": str(row.get("actor_label") or ""),
+            "action": str(row.get("action") or ""),
+            "targetType": str(row.get("target_type") or ""),
+            "targetToken": str(row.get("target_token") or ""),
+            "outcome": str(row.get("outcome") or ""),
+            "details": security_control.sanitize_audit_details(details),
+        })
+    return json_response({"ok": True, "events": events},
+                         cache_control="no-store")
+
+
+async def cleanup_security_records(env):
+    await ensure_schema(env)
+    now = int(Date.now())
+    await d1_run(
+        env, "DELETE FROM security_signals WHERE last_seen<?",
+        now - SECURITY_SIGNAL_RETAIN_MS)
+    await d1_run(
+        env,
+        "UPDATE security_restrictions SET status='expired' "
+        "WHERE status IN ('quarantined','blocked') "
+        "AND expires_at>0 AND expires_at<=?",
+        now)
+    await d1_run(
+        env,
+        "DELETE FROM security_restrictions WHERE created_at<? "
+        "AND status IN ('expired','revoked')",
+        now - SECURITY_RESTRICTION_RETAIN_MS)
+    await d1_run(
+        env, "DELETE FROM security_appeals WHERE created_at<?",
+        now - SECURITY_APPEAL_RETAIN_MS)
+    await d1_run(
+        env, "DELETE FROM sensitive_audit_log WHERE ts<?",
+        now - SECURITY_AUDIT_RETAIN_MS)
+    _SECURITY_RESTRICTION_MEMO.clear()
 
 
 async def _admin_authorized(env, node, ts, sig, canonical):
@@ -9724,6 +13912,8 @@ async def _admin_verify_email(env, request):
     trec["email_verified"] = True
     await _save_account(env, target_bi, trec)
     await d1_run(env, "DELETE FROM pending_verifications WHERE name_bi=?", target_bi)
+    await _audit_sensitive_action(
+        env, node, "admin.email_verify", "account", target, "success", {})
     return json_response({"ok": True, "target": target, "emailVerified": True})
 
 
@@ -9764,6 +13954,197 @@ async def _send_email(env, to_email, subject, text, html=None,
         return 200 <= int(getattr(resp, "status", 0)) < 300
     except Exception:
         return False
+
+
+# --- External GitHub/GitLab metadata imports --------------------------------
+#
+# Provider imports live in a separate D1 namespace from the mirror catalog.
+# repository_imports.py owns the provider-neutral policy/service layer; these
+# small adapters supply Worker HTTP, account authorization, and mirror proof.
+
+async def _repository_provider_fetch(env, provider, path, token=""):
+    from js import fetch as js_fetch
+    if provider not in repository_import.PROVIDERS:
+        return {"status": 400, "data": {}, "headers": {}}
+    if (not isinstance(path, str) or not path.startswith("/")
+            or len(path) > 2000 or "\r" in path or "\n" in path):
+        return {"status": 400, "data": {}, "headers": {}}
+    headers = {
+        "accept": "application/json",
+        "user-agent": "ForkMesh-repository-metadata/1.0",
+    }
+    if provider == "github":
+        headers["accept"] = "application/vnd.github+json"
+        headers["x-github-api-version"] = "2026-03-10"
+        if token:
+            headers["authorization"] = "Bearer " + token
+    elif token:
+        # GitLab personal/project access tokens are scoped request credentials.
+        # They are never included in a record, log, exception, or D1 write.
+        headers["private-token"] = token
+    url = repository_import.provider_api_origin(provider) + path
+    try:
+        response = await js_fetch(
+            url, to_js({"method": "GET", "headers": headers,
+                        # Never forward a request-scoped provider credential
+                        # across an HTTP redirect. Metadata endpoints are
+                        # canonical; a moved repository can be re-imported
+                        # from its new canonical web URL.
+                        "redirect": "manual"}))
+        status = int(getattr(response, "status", 0) or 0)
+        response_headers = {}
+        for name in (
+                "x-ratelimit-limit", "x-ratelimit-remaining",
+                "x-ratelimit-reset", "ratelimit-limit",
+                "ratelimit-remaining", "ratelimit-reset", "retry-after",
+                "content-length"):
+            try:
+                value = response.headers.get(name)
+            except Exception:
+                value = None
+            if value is not None:
+                response_headers[name] = str(value)
+        try:
+            announced = int(response_headers.get("content-length") or 0)
+        except (TypeError, ValueError):
+            announced = 0
+        if announced > repository_import.MAX_PROVIDER_BODY:
+            return {
+                "status": 502, "data": {}, "headers": response_headers,
+                "error": "provider_response_too_large",
+            }
+        text = str(await response.text())
+        if len(text.encode("utf-8")) > repository_import.MAX_PROVIDER_BODY:
+            return {
+                "status": 502, "data": {}, "headers": response_headers,
+                "error": "provider_response_too_large",
+            }
+        try:
+            data = json.loads(text) if text else {}
+        except Exception:
+            data = {}
+        return {
+            "status": status,
+            "data": data,
+            "headers": response_headers,
+        }
+    except Exception:
+        # Never include exception text: a provider/runtime failure can echo
+        # request headers, including the one-use authorization token.
+        return {"status": 502, "data": {}, "headers": {}}
+
+
+async def _repository_import_operator_eligible(env, actor, node):
+    actor = clean_string(actor, MAX_NODE_NAME).strip().lower()
+    node = clean_string(node, MAX_NODE_NAME).strip().lower()
+    if not actor or not node:
+        return False
+    try:
+        _, account = await _account_row(env, actor)
+        return bool(
+            account and account.get("status") == "active"
+            and await _account_owns_node(env, actor, node))
+    except Exception:
+        return False
+
+
+async def _repository_import_moderator(env, actor):
+    try:
+        return bool(
+            await _has_role(env, actor, "platform_administrator")
+            or await _has_role(env, actor, "moderator"))
+    except Exception:
+        return False
+
+
+async def _repository_import_mirror_status(
+        env, actor, external_record, target_status, data):
+    owner = clean_string(
+        data.get("mirrorOwner") or actor, MAX_NODE_NAME).strip().lower()
+    name = safe_segment(clean_string(
+        data.get("mirrorName") or external_record.get("name"),
+        MAX_REPO_SEGMENT))
+    if not owner or not name:
+        return {"verified": False}
+    try:
+        if owner != actor and not await _account_owns_node(env, actor, owner):
+            return {"verified": False}
+        repo_bi = await blind_index(env, owner + "/" + name)
+        row = await d1_first(
+            env,
+            "SELECT is_private, data FROM repositories WHERE key_bi=?",
+            repo_bi,
+        )
+        if not row:
+            return {"verified": False}
+        # Linking a public external stub to a private catalog entry would make
+        # the public status disclose that the private repo exists. Do not trust
+        # the historical plaintext flag by itself: migration 0011 defaulted
+        # old/ambiguous rows to public.
+        catalog_record = await decrypt_row(env, row.get("data"))
+        visibility = (catalog_record or {}).get("visibility")
+        if visibility not in ("public", "private"):
+            return {"verified": False}
+        if (visibility == "private") != bool(external_record.get("isPrivate")):
+            return {"verified": False}
+        cutoff = int(Date.now()) - HOST_PRESENCE_STALE_MS
+        live = await d1_first(
+            env,
+            "SELECT 1 AS one FROM host_presence WHERE repo_bi=? AND ts>=?",
+            repo_bi, cutoff,
+        )
+        return {
+            "verified": True,
+            "owner": owner,
+            "name": name,
+            "live": bool(live),
+        }
+    except Exception:
+        return {"verified": False}
+
+
+async def _repository_invitation_token(
+        env, import_id, invitation_id, email):
+    canonical = (
+        "forkmesh-contributor-invitation-v1\n" + str(import_id) + "\n"
+        + str(invitation_id) + "\n" + str(email).strip().lower()
+    ).encode()
+    return hmac.new(
+        _account_session_secret(env), canonical, "sha256").hexdigest()
+
+
+async def _repository_import_audit(
+        env, actor, action, target_type, target, outcome, details):
+    await _audit_sensitive_action(
+        env, actor, action, target_type, target, outcome, details)
+
+
+def _repository_import_service():
+    return repository_import.RepositoryImportService({
+        "json_response": json_response,
+        "ensure_schema": ensure_schema,
+        "d1_all": d1_all,
+        "d1_first": d1_first,
+        "d1_run": d1_run,
+        "encrypt_row": encrypt_row,
+        "decrypt_row": decrypt_row,
+        "blind_index": blind_index,
+        "session_record": _account_session_record,
+        "provider_fetch": _repository_provider_fetch,
+        "send_email": _send_email,
+        "audit": _repository_import_audit,
+        "invitation_token": _repository_invitation_token,
+        "operator_eligible": _repository_import_operator_eligible,
+        "is_moderator": _repository_import_moderator,
+        "mirror_status": _repository_import_mirror_status,
+        "public_origin": _public_base_url,
+        "now_ms": lambda: int(Date.now()),
+    })
+
+
+async def repository_imports_handler(env, request, path):
+    service = _repository_import_service()
+    return await service.handle(env, request, path)
 
 
 async def _email_verify_token(env, name, email):
@@ -10222,16 +14603,31 @@ async def _outreach_team_update(env, admin, data):
     if not valid_node_name(target):
         return json_response({"error": "invalid_account_name"}, status=400)
     target_bi, rec = await _account_row(env, target)
-    if action == "add":
-        if not rec or rec.get("status") != "active":
-            return json_response({"error": "no_such_account"}, status=404)
-        await d1_run(
-            env,
-            "INSERT INTO outreach_team (name_bi, name, added_by, added_at) "
-            "VALUES (?,?,?,?) ON CONFLICT(name_bi) DO NOTHING",
-            target_bi, rec.get("name", target), admin, int(Date.now()))
-    else:
-        await d1_run(env, "DELETE FROM outreach_team WHERE name_bi=?", target_bi)
+    audit_action = (
+        "admin.outreach_team_grant"
+        if action == "add" else "admin.outreach_team_revoke")
+    if action == "add" and (not rec or rec.get("status") != "active"):
+        await _audit_sensitive_action(
+            env, admin, audit_action, "account", target, "denied",
+            {"reason": "no_such_account"})
+        return json_response({"error": "no_such_account"}, status=404)
+    try:
+        if action == "add":
+            await d1_run(
+                env,
+                "INSERT INTO outreach_team (name_bi, name, added_by, added_at) "
+                "VALUES (?,?,?,?) ON CONFLICT(name_bi) DO NOTHING",
+                target_bi, rec.get("name", target), admin, int(Date.now()))
+        else:
+            await d1_run(
+                env, "DELETE FROM outreach_team WHERE name_bi=?", target_bi)
+    except Exception:
+        await _audit_sensitive_action(
+            env, admin, audit_action, "account", target, "failed",
+            {"reason": "mutation_error"})
+        raise
+    await _audit_sensitive_action(
+        env, admin, audit_action, "account", target, "success")
     return json_response({"ok": True, "members": await _outreach_team_list(env)})
 
 
@@ -10265,6 +14661,18 @@ async def outreach_handler(env, request):
         return await _outreach_send(env, name, data)
     if path == "/api/outreach/team" and method == "POST":
         if not is_admin:
+            requested_action = str(data.get("action") or "").strip().lower()
+            audit_action = (
+                "admin.outreach_team_grant"
+                if requested_action == "add"
+                else "admin.outreach_team_revoke"
+                if requested_action == "remove"
+                else "admin.outreach_team_change")
+            audit_target = clean_string(
+                data.get("name", ""), MAX_NODE_NAME).strip().lower()
+            await _audit_sensitive_action(
+                env, name, audit_action, "account", audit_target, "denied",
+                {"reason": "admin_required"})
             return json_response({"error": "admin_required"}, status=403)
         return await _outreach_team_update(env, name, data)
     return json_response({"error": "not_found"}, status=404)
@@ -10383,13 +14791,14 @@ async def _verify_email(env, request):
 
 
 # --- Relay federation -------------------------------------------------------
-# A relay with MAIN_RELAY_URL set is "federated": node signups custody their
-# Solana on the main relay (funds flow through it) and its online nodes join the
-# main relay's disbursement split. The main relay (no MAIN_RELAY_URL) holds an
-# admin-approved allowlist of relays, custodies their signups, and disburses to
-# every node on every approved relay. Relay->main calls are Ed25519-signed.
+# Relays exchange signed presence/availability metadata. Historical donation
+# proxy endpoints are hard-frozen and require offline custody migration; no
+# relay-to-relay request creates a wallet, moves funds, or exposes a seed.
 
 FEDERATION_CANON = "forkmesh-federation-v1"
+FEDERATION_NODES_MAX_BYTES = 2 * 1024 * 1024
+FEDERATED_HEALTH_MESSAGE_MAX_BYTES = 2048
+WORLD_RELAY_HEALTH_FRESH_MS = 10 * 60 * 1000
 
 
 def _main_relay_url(env):
@@ -10415,8 +14824,9 @@ async def _new_ed25519_identity():
 
 
 async def ed25519_sign(pubkey_b64url, seed_b64url, data_bytes):
-    # Sign with a raw-base64url Ed25519 keypair (mirrors _solana_sign_message but
-    # keyed by the base64url pubkey rather than a base58 address).
+    # Sign relay-federation metadata with the relay's non-wallet identity key.
+    # This key cannot authorize a Solana transaction and is domain-separated
+    # from every wallet/reward flow.
     try:
         jwk = {"kty": "OKP", "crv": "Ed25519", "x": pubkey_b64url,
                "d": seed_b64url, "ext": True, "key_ops": ["sign"]}
@@ -10528,6 +14938,107 @@ async def _relay_authorized(env, request, body_str):
     return relay_bi
 
 
+def _world_relay_public_origin(value):
+    """Return one public HTTPS relay origin without credentials or path data."""
+    raw = clean_string(value, 300).strip()
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return ""
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        return ""
+    host = parsed.hostname.lower().rstrip(".")
+    if not host or host in ("localhost",) or host.endswith(".local"):
+        return ""
+    try:
+        port = parsed.port
+    except ValueError:
+        return ""
+    authority = host if port in (None, 443) else host + ":" + str(port)
+    return "https://" + authority
+
+
+async def world_relay_instances_handler(env, request):
+    """Expose approved relay instances and generalized signed-health state.
+
+    This public World projection deliberately omits federation public keys,
+    signatures, node/account/wallet identifiers, operator tokens, exact health
+    messages, repository identities, and request telemetry.
+    """
+    if method_name(request) != "GET":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            cache_control="no-store", extra_headers={"allow": "GET"})
+    await ensure_schema(env)
+    now = int(Date.now())
+    cutoff = now - WORLD_RELAY_HEALTH_FRESH_MS
+    rows = await d1_all(
+        env,
+        "SELECT r.relay_bi,r.label,r.base_url,r.approved_at,"
+        "MAX(fp.ts) AS last_seen,"
+        "MAX(CASE WHEN fp.checked_at>=? AND fp.forkmesh_verified_at>=? "
+        "AND fp.healthy=1 AND fp.forkmesh_active=1 "
+        "AND fp.integrity IN ('ok','verified') AND fp.abuse_blocked=0 "
+        "THEN 1 ELSE 0 END) AS fresh_verified "
+        "FROM relays r LEFT JOIN federated_presence fp "
+        "ON fp.relay_bi=r.relay_bi "
+        "WHERE r.status='approved' "
+        "GROUP BY r.relay_bi,r.label,r.base_url,r.approved_at "
+        "ORDER BY r.approved_at ASC,r.relay_bi ASC",
+        cutoff, cutoff,
+    )
+    instances = []
+    for row in rows or []:
+        origin = _world_relay_public_origin(row.get("base_url"))
+        relay_bi = str(row.get("relay_bi") or "")
+        if not origin or not relay_bi:
+            continue
+        last_seen = max(0, int(row.get("last_seen") or 0))
+        verified_online = bool(int(row.get("fresh_verified") or 0))
+        health = (
+            "online"
+            if verified_online
+            else "offline"
+            if last_seen and last_seen < cutoff
+            else "awaiting_verified_health"
+        )
+        instances.append({
+            "id": hashlib.sha256(
+                ("forkmesh-world-relay-v1\0" + relay_bi).encode()
+            ).hexdigest()[:24],
+            "label": clean_string(
+                row.get("label") or "ForkMesh instance", 80),
+            "origin": origin,
+            "approved": True,
+            "health": health,
+            "online": verified_online,
+            "healthEvidence": (
+                "approved-relay-signed-fresh-node-health"
+                if verified_online
+                else "no-fresh-verified-node-health"
+            ),
+        })
+    return json_response({
+        "ok": True,
+        "instances": instances,
+        "count": len(instances),
+        "observedAt": now,
+        "privacy": (
+            "Approved public relay origins and generalized health only. "
+            "No federation keys, signatures, tokens, wallets, node identities, "
+            "IP addresses, private repositories, or exact activity are exposed."
+        ),
+    }, cache_control="public, max-age=30",
+       extra_headers={"x-content-type-options": "nosniff"})
+
+
 # --- Main-relay federation endpoints ----------------------------------------
 
 async def _federation_register(env, request):
@@ -10561,47 +15072,15 @@ async def _federation_register(env, request):
 
 
 async def _federation_donation_address(env, request):
-    if not _is_main_relay(env):
-        return json_response({"error": "not_main_relay"}, status=404)
-    body = await request.text()
-    relay_bi = await _relay_authorized(env, request, body)
-    if not relay_bi:
-        return json_response({"error": "relay_not_approved"}, status=401)
-    try:
-        data = json.loads(body or "{}")
-    except Exception:
-        return json_response({"error": "invalid_json"}, status=400)
-    name = clean_string(data.get("name", ""), MAX_NODE_NAME).lower()
-    try:
-        amount = int(data.get("amountLamports", 0) or 0)
-    except (TypeError, ValueError):
-        amount = 0
-    if not _treasury_address(env):
-        return json_response({"error": "treasury_not_configured"}, status=503)
-    addr, secret = await _new_solana_keypair()
-    if not addr:
-        return json_response({"error": "keypair_failed"}, status=500)
-    now = int(Date.now())
-    required = max(amount, await _min_join_lamports(env))
-    rec = {
-        "relay_bi": relay_bi, "name": name,
-        "donation_address": addr, "donation_secret": secret,
-        "donation_required_lamports": required, "donation_confirmed": False,
-        "donation_received_lamports": 0, "donation_created_at": now,
-    }
-    reference = bytes(_random_bytes(16)).hex()
-    await d1_run(
-        env,
-        "INSERT INTO federated_signup (reference, relay_bi, data, created_at) "
-        "VALUES (?,?,?,?)",
-        reference, relay_bi, await encrypt_row(env, rec), now)
-    price = await _sol_usd_price(env)
+    del env, request
     return json_response({
-        "ok": True, "reference": reference, "address": addr,
-        "requiredLamports": required, "amountSol": _amount_sol(required),
-        "uri": _solana_pay_uri(addr, required), "solUsd": price or 0,
-        "amountUsd": round((required / LAMPORTS_PER_SOL) * price, 2) if price else 0,
-    })
+        "error": "legacy_custody_disabled",
+        "custody": "self-custodial-only",
+        "notice": (
+            "ForkMesh signup is free. The legacy federated deposit-wallet "
+            "flow is disabled; no Worker creates or retains a wallet key."
+        ),
+    }, status=410, cache_control="no-store")
 
 
 async def _federation_donation_status(env, request):
@@ -10626,35 +15105,151 @@ async def _federation_donation_status(env, request):
         return json_response({"error": "no_such_signup"}, status=404)
     required = int(rec.get("donation_required_lamports", MIN_JOIN_LAMPORTS))
     balance = await _solana_balance_lamports(env, rec.get("donation_address", ""))
-    changed = False
-    if balance is not None:
-        if int(balance) != int(rec.get("donation_received_lamports", 0)):
-            rec["donation_received_lamports"] = int(balance)
-            changed = True
-        if int(balance) >= required and not rec.get("donation_confirmed"):
-            rec["donation_confirmed"] = True
-            await _sweep_confirmed_donation(env, reference, rec, int(balance))
-            changed = True
-        elif rec.get("donation_confirmed") and not rec.get("donation_sweep_sig"):
-            if await _sweep_confirmed_donation(env, reference, rec, int(balance)):
-                changed = True
-    if changed:
-        await d1_run(
-            env, "UPDATE federated_signup SET data=? WHERE reference=?",
-            await encrypt_row(env, rec), reference)
+    received = (
+        int(rec.get("donation_received_lamports", 0) or 0)
+        if balance is None else int(balance)
+    )
     return json_response({
-        "ok": True, "paid": bool(rec.get("donation_confirmed")),
-        "receivedLamports": int(rec.get("donation_received_lamports", 0)),
+        "ok": True,
+        "paid": bool(rec.get("donation_confirmed")) or
+                (required > 0 and received >= required),
+        "receivedLamports": received,
         "requiredLamports": required,
         "checking": balance is None,
         "sweepSig": rec.get("donation_sweep_sig", ""),
-    })
+        "status": "legacy_custody_frozen",
+        "custody": "migration-required",
+        "notice": (
+            "Read-only legacy status: no Worker can use the retained key "
+            "material to sign or move funds. Reconcile and migrate it through "
+            "the documented offline custody process."
+        ),
+    }, cache_control="no-store")
+
+
+def _federated_reward_attestation(value):
+    """Normalize one relay report carrying original node-signed evidence."""
+    if not isinstance(value, dict):
+        return None
+    name = clean_string(value.get("name", ""), MAX_NODE_NAME).strip().lower()
+    owner = clean_string(
+        value.get("operator", "") or name, MAX_NODE_NAME).strip().lower()
+    wallet = clean_string(value.get("wallet", ""), 64).strip()
+    public_key = clean_string(value.get("publicKey", ""), 120).strip()
+    base_url = https_routing.normalize_base_url(value.get("baseUrl"))
+    registration_sig = clean_string(
+        value.get("registrationSignature", ""), 200).strip()
+    health_sig = clean_string(
+        value.get("healthSignature", ""), 200).strip()
+    health_message = clean_string(
+        value.get("healthMessage", ""),
+        FEDERATED_HEALTH_MESSAGE_MAX_BYTES).strip()
+    refs_digest = clean_string(
+        value.get("refsSha256", ""), 64).strip().lower()
+    operations_digest = clean_string(
+        value.get("operationsSha256", ""), 64).strip().lower()
+    try:
+        registration_issued_at = int(
+            value.get("registrationIssuedAt") or 0)
+        checked_at = int(value.get("checkedAt") or 0)
+        verified_at = int(value.get("forkmeshVerifiedAt") or 0)
+    except (TypeError, ValueError):
+        return None
+    registration_message = https_routing.registration_message(
+        name, base_url, public_key, registration_issued_at)
+    parts = health_message.split("\n")
+    if len(parts) != 10:
+        return None
+    try:
+        message_issued_at = int(parts[3])
+    except (TypeError, ValueError):
+        return None
+    canonical_health = https_routing.repository_health_challenge(
+        parts[1], parts[2], message_issued_at, parts[4], parts[5],
+        parts[6] == "1", parts[7], parts[8], parts[9])
+    if (
+        not valid_node_name(name)
+        or not valid_node_name(owner)
+        or not SOLANA_RE.match(wallet)
+        or not valid_node_pubkey(public_key)
+        or not base_url
+        or not registration_message
+        or not re.fullmatch(r"[A-Za-z0-9_-]{86}", registration_sig)
+        or not re.fullmatch(r"[A-Za-z0-9_-]{86}", health_sig)
+        or canonical_health != health_message
+        or parts[0] != "forkmesh-https-health-repository-v1"
+        or parts[1] != name
+        or parts[4:8] != ["forkmesh", "forkmesh", "1", "ok"]
+        or parts[8] != refs_digest
+        or parts[9] != operations_digest
+        or checked_at != message_issued_at
+        or verified_at != checked_at
+        or value.get("healthy") is not True
+        or value.get("integrity") != "ok"
+        or value.get("mirrorsForkMesh") is not True
+        or value.get("requiredOperationsVerified") is not True
+        or value.get("abuseFlagged") is not False
+        or not re.fullmatch(r"[0-9a-f]{64}", refs_digest)
+        or not re.fullmatch(r"[0-9a-f]{64}", operations_digest)
+    ):
+        return None
+    return {
+        "name": name,
+        "operator": owner,
+        "wallet": wallet,
+        "publicKey": public_key,
+        "baseUrl": base_url,
+        "registrationSignature": registration_sig,
+        "registrationIssuedAt": registration_issued_at,
+        "registrationMessage": registration_message,
+        "healthMessage": health_message,
+        "healthSignature": health_sig,
+        "checkedAt": checked_at,
+        "forkmeshVerifiedAt": verified_at,
+        "refsSha256": refs_digest,
+        "operationsSha256": operations_digest,
+    }
+
+
+async def _verified_federated_reward_attestation(
+        env, value, now, expected_refs, freshness_ms):
+    """Verify freshness, flagship state and both original node signatures."""
+    item = _federated_reward_attestation(value)
+    if (
+        not item
+        or not expected_refs
+        or not hmac.compare_digest(item["refsSha256"], expected_refs)
+        or item["checkedAt"] > now
+        or now - item["checkedAt"] > freshness_ms
+        or not await ed25519_verify(
+            item["publicKey"],
+            item["registrationSignature"],
+            item["registrationMessage"].encode("utf-8"),
+        )
+        or not await ed25519_verify(
+            item["publicKey"],
+            item["healthSignature"],
+            item["healthMessage"].encode("utf-8"),
+        )
+    ):
+        return None
+    item["deviceId"] = hashlib.sha256(
+        item["publicKey"].encode("utf-8")).hexdigest()
+    return item
 
 
 async def _federation_nodes(env, request):
     if not _is_main_relay(env):
         return json_response({"error": "not_main_relay"}, status=404)
+    try:
+        announced = int(request.headers.get("content-length") or 0)
+    except Exception:
+        announced = 0
+    if announced > FEDERATION_NODES_MAX_BYTES:
+        return json_response({"error": "request_too_large"}, status=413)
     body = await request.text()
+    if len(body.encode("utf-8")) > FEDERATION_NODES_MAX_BYTES:
+        return json_response({"error": "request_too_large"}, status=413)
     relay_bi = await _relay_authorized(env, request, body)
     if not relay_bi:
         return json_response({"error": "relay_not_approved"}, status=401)
@@ -10664,22 +15259,109 @@ async def _federation_nodes(env, request):
         return json_response({"error": "invalid_json"}, status=400)
     nodes = data.get("nodes") or []
     now = int(Date.now())
+    freshness = _reward_config(env)["healthFreshMs"]
+    expected_refs = await _https_mirror_expected_forkmesh_refs(env)
     count = 0
+    rejected = 0
     for node in nodes[:500]:
-        if not isinstance(node, dict):
+        item = await _verified_federated_reward_attestation(
+            env, node, now, expected_refs, freshness)
+        if not item:
+            rejected += 1
             continue
-        wallet = (node.get("wallet") or "").strip()
-        if not SOLANA_RE.match(wallet):
-            continue
-        name = clean_string(node.get("name", ""), MAX_NODE_NAME)
+        operator_id = await blind_index(
+            env,
+            "federated-reward-operator:"
+            + str(relay_bi) + ":" + item["operator"],
+        )
+        existing = await d1_first(
+            env,
+            "SELECT first_verified_at,last_verified_at,consecutive_checks "
+            "FROM federated_presence WHERE relay_bi=? AND name=? "
+            "ORDER BY last_verified_at DESC LIMIT 1",
+            relay_bi, item["name"],
+        )
+        last_verified = int((existing or {}).get("last_verified_at") or 0)
+        if last_verified and now - last_verified <= REWARD_OBSERVATION_GAP_MS:
+            first_verified = int(
+                (existing or {}).get("first_verified_at") or now)
+            consecutive = int(
+                (existing or {}).get("consecutive_checks") or 0) + 1
+        else:
+            first_verified = now
+            consecutive = 1
+        attestation_id = hashlib.sha256(
+            (
+                str(relay_bi) + "\0" + item["healthMessage"]
+                + "\0" + item["healthSignature"]
+            ).encode("utf-8")
+        ).hexdigest()
+        # One node identity cannot retain an older wallet row alongside its
+        # current report; duplicate-wallet/operator/device checks still apply
+        # globally when the reward snapshot is frozen.
         await d1_run(
             env,
-            "INSERT INTO federated_presence (relay_bi, wallet, name, ts) "
-            "VALUES (?,?,?,?) ON CONFLICT(relay_bi, wallet) DO UPDATE SET "
-            "name=excluded.name, ts=excluded.ts",
-            relay_bi, wallet, name, now)
+            "DELETE FROM federated_presence "
+            "WHERE relay_bi=? AND name=? AND wallet<>?",
+            relay_bi, item["name"], item["wallet"],
+        )
+        await d1_run(
+            env,
+            "INSERT INTO federated_presence "
+            "(relay_bi,wallet,name,operator_id,device_id,public_key,base_url,"
+            "registration_sig,registration_issued_at,health_message,health_sig,"
+            "checked_at,healthy,integrity,forkmesh_active,forkmesh_verified_at,"
+            "forkmesh_refs_sha256,forkmesh_operations_sha256,abuse_blocked,"
+            "attestation_id,first_verified_at,last_verified_at,"
+            "consecutive_checks,ts) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,'ok',1,?,?,?,0,?,?,?,?,?,?) "
+            "ON CONFLICT(relay_bi,wallet) DO UPDATE SET "
+            "name=excluded.name,operator_id=excluded.operator_id,"
+            "device_id=excluded.device_id,public_key=excluded.public_key,"
+            "base_url=excluded.base_url,"
+            "registration_sig=excluded.registration_sig,"
+            "registration_issued_at=excluded.registration_issued_at,"
+            "health_message=excluded.health_message,"
+            "health_sig=excluded.health_sig,checked_at=excluded.checked_at,"
+            "healthy=excluded.healthy,integrity=excluded.integrity,"
+            "forkmesh_active=excluded.forkmesh_active,"
+            "forkmesh_verified_at=excluded.forkmesh_verified_at,"
+            "forkmesh_refs_sha256=excluded.forkmesh_refs_sha256,"
+            "forkmesh_operations_sha256="
+            "excluded.forkmesh_operations_sha256,"
+            "abuse_blocked=excluded.abuse_blocked,"
+            "attestation_id=excluded.attestation_id,"
+            "first_verified_at=excluded.first_verified_at,"
+            "last_verified_at=excluded.last_verified_at,"
+            "consecutive_checks=excluded.consecutive_checks,ts=excluded.ts",
+            relay_bi,
+            item["wallet"],
+            item["name"],
+            operator_id,
+            item["deviceId"],
+            item["publicKey"],
+            item["baseUrl"],
+            item["registrationSignature"],
+            item["registrationIssuedAt"],
+            item["healthMessage"],
+            item["healthSignature"],
+            item["checkedAt"],
+            item["forkmeshVerifiedAt"],
+            item["refsSha256"],
+            item["operationsSha256"],
+            attestation_id,
+            first_verified,
+            now,
+            consecutive,
+            now,
+        )
         count += 1
-    return json_response({"ok": True, "count": count})
+    return json_response({
+        "ok": True,
+        "count": count,
+        "rejected": rejected,
+        "eligibility": "signed-fresh-forkmesh-mirror-attestations-only",
+    })
 
 
 async def federation_handler(env, request):
@@ -10709,12 +15391,13 @@ async def federation_handler(env, request):
 
 
 async def _federation_treasury_address(env, request):
-    """Main relay: hand a federated relay the treasury address to display."""
-    return json_response({"address": _treasury_address(env)})
+    """Frozen alias for the removed Worker-custodied treasury flow."""
+    del env, request
+    return _legacy_treasury_disabled_response()
 
 
 async def _federation_central_fund(env, request):
-    """Main relay: hand a federated relay the central-fund donation payload."""
+    """Return only canonical non-custodial community-pool public metadata."""
     if not _is_main_relay(env):
         return json_response({"error": "not_main_relay"}, status=404)
     payload = await _central_fund_public(env)
@@ -10726,49 +15409,21 @@ async def _federation_central_fund(env, request):
 # --- Federated-relay proxy (the "flow through main relay") -------------------
 
 async def _federated_donation_address(env, request):
-    try:
-        data = await request.json()
-    except Exception:
-        return json_response({"error": "invalid_json"}, status=400)
-    name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
-    try:
-        amount = int(data.get("amountLamports", 0) or 0)
-    except (TypeError, ValueError):
-        amount = 0
-    name_bi, rec = await _account_row(env, name)
-    if not rec:
-        return json_response({"error": "reserve_node_name_first"}, status=404)
-    if rec.get("status") == "active":
-        return json_response({"error": "already_active"}, status=409)
-    reply = await _call_main_relay(
-        env, "/api/federation/donation-address",
-        {"name": name, "amountLamports": amount})
-    if not reply or not reply.get("ok") or not reply.get("address"):
-        return json_response({"error": "main_relay_unavailable"}, status=503)
-    # Mirror the main relay's deposit address locally so polling works; we hold
-    # no key here (no donation_secret) — custody lives on the main relay.
-    rec["donation_address"] = reply.get("address", "")
-    rec["donation_required_lamports"] = int(reply.get("requiredLamports", 0))
-    rec["donation_confirmed"] = False
-    rec["donation_received_lamports"] = 0
-    rec["fed_reference"] = reply.get("reference", "")
-    rec["status"] = "pending_payment"
-    rec.pop("donation_secret", None)
-    await _save_account(env, name_bi, rec)
+    del env, request
     return json_response({
-        "ok": True, "address": reply.get("address", ""),
-        "reference": reply.get("reference", ""),
-        "uri": reply.get("uri", ""),
-        "requiredLamports": int(reply.get("requiredLamports", 0)),
-        "amountSol": reply.get("amountSol", ""),
-        "solUsd": reply.get("solUsd", 0), "amountUsd": reply.get("amountUsd", 0),
-    })
+        "error": "legacy_custody_disabled",
+        "custody": "self-custodial-only",
+        "notice": (
+            "ForkMesh signup is free. The legacy federated deposit-wallet "
+            "flow is disabled; no Worker creates or retains a wallet key."
+        ),
+    }, status=410, cache_control="no-store")
 
 
 async def _federated_donation_status(env, request):
     params = parse_qs(urlparse(request.url).query)
     name = clean_string(params.get("nodeName", [""])[0], MAX_NODE_NAME).lower()
-    name_bi, rec = await _account_row(env, name)
+    _, rec = await _account_row(env, name)
     if not rec:
         return json_response({"error": "no_such_account"}, status=404)
     reference = rec.get("fed_reference", "")
@@ -10778,53 +15433,99 @@ async def _federated_donation_status(env, request):
     reply = await _call_main_relay(
         env, "/api/federation/donation-status", {"reference": reference})
     if not reply or not reply.get("ok"):
-        # Main relay unreachable: soft "still checking" so the user keeps waiting.
         return json_response({
             "ok": True, "paid": bool(rec.get("donation_confirmed")),
             "checking": True,
             "receivedLamports": int(rec.get("donation_received_lamports", 0)),
-            "requiredLamports": required})
+            "requiredLamports": required,
+            "status": "legacy_custody_frozen",
+            "custody": "migration-required",
+            "notice": (
+                "Read-only legacy status: no Worker can sign or move these "
+                "funds. The historical record requires the documented offline "
+                "custody migration."
+            ),
+        }, cache_control="no-store")
     received = int(reply.get("receivedLamports", 0))
     paid = bool(reply.get("paid"))
-    changed = False
-    if received != int(rec.get("donation_received_lamports", 0)):
-        rec["donation_received_lamports"] = received
-        changed = True
-    if paid and not rec.get("donation_confirmed"):
-        rec["donation_confirmed"] = True
-        changed = True
-    if changed:
-        await _save_account(env, name_bi, rec)
     return json_response({
         "ok": True, "paid": paid, "checking": bool(reply.get("checking")),
         "receivedLamports": received,
-        "requiredLamports": int(reply.get("requiredLamports", required))})
+        "requiredLamports": int(reply.get("requiredLamports", required)),
+        "status": "legacy_custody_frozen",
+        "custody": "migration-required",
+        "notice": (
+            "Read-only legacy status: no Worker can sign or move these funds. "
+            "The historical record requires the documented offline custody "
+            "migration."
+        ),
+    }, cache_control="no-store")
 
 
 # --- Federation cron --------------------------------------------------------
 
 async def _federation_report_nodes(env):
-    # Federated relay: report its currently-online node payout wallets to the main
-    # relay so they join the disbursement split. Reuses the presence selection.
-    cutoff = int(Date.now()) - ACCOUNT_PRESENCE_STALE_MS
+    # Federated relay: forward only evidence this relay independently verified:
+    # account-bound registration plus the exact fresh node-signed
+    # forkmesh/forkmesh health challenge. A wallet-only presence report is
+    # deliberately impossible.
+    now = int(Date.now())
+    cutoff = now - ACCOUNT_PRESENCE_STALE_MS
+    health_cutoff = now - _reward_config(env)["healthFreshMs"]
     rows = await d1_all(
-        env, "SELECT name_bi FROM account_presence WHERE ts >= ? ORDER BY ts DESC",
-        cutoff)
+        env,
+        "SELECT e.node_bi,e.node_name,e.base_url,e.public_key,"
+        "e.registration_sig,e.issued_at,e.checked_at,e.integrity,"
+        "e.health_sig,e.health_message,e.forkmesh_verified_at,"
+        "e.forkmesh_refs_sha256,e.forkmesh_operations_sha256,"
+        "e.abuse_blocked,n.data "
+        "FROM mirror_https_endpoints e "
+        "JOIN account_presence p ON p.name_bi=e.node_bi "
+        "JOIN nodes n ON n.node_bi=e.node_bi "
+        "WHERE p.ts>=? AND e.checked_at>=? "
+        "AND e.forkmesh_verified_at>=? AND e.healthy=1 "
+        "AND e.integrity='ok' AND e.forkmesh_active=1 "
+        "AND e.abuse_blocked=0 AND e.health_message<>'' "
+        "ORDER BY e.checked_at DESC LIMIT 500",
+        cutoff, health_cutoff, health_cutoff,
+    )
     nodes = []
     seen = set()
     for r in (rows or []):
-        row = await d1_first(
-            env, "SELECT data FROM nodes WHERE node_bi=?", r["name_bi"])
-        if not row:
-            continue
-        rec = await decrypt_row(env, row["data"])
+        rec = await decrypt_row(env, r.get("data"))
         if not rec or rec.get("status") != "active":
             continue
         wallet = (rec.get("solana") or "").strip()
         if not wallet or not SOLANA_RE.match(wallet) or wallet in seen:
             continue
         seen.add(wallet)
-        nodes.append({"name": rec.get("name", ""), "wallet": wallet})
+        nodes.append({
+            "name": clean_string(
+                r.get("node_name") or rec.get("name", ""),
+                MAX_NODE_NAME).lower(),
+            "operator": clean_string(
+                rec.get("owner") or rec.get("name", ""),
+                MAX_NODE_NAME).lower(),
+            "wallet": wallet,
+            "publicKey": str(r.get("public_key") or ""),
+            "baseUrl": str(r.get("base_url") or ""),
+            "registrationSignature": str(
+                r.get("registration_sig") or ""),
+            "registrationIssuedAt": int(r.get("issued_at") or 0),
+            "healthMessage": str(r.get("health_message") or ""),
+            "healthSignature": str(r.get("health_sig") or ""),
+            "checkedAt": int(r.get("checked_at") or 0),
+            "healthy": True,
+            "integrity": "ok",
+            "mirrorsForkMesh": True,
+            "forkmeshVerifiedAt": int(
+                r.get("forkmesh_verified_at") or 0),
+            "refsSha256": str(r.get("forkmesh_refs_sha256") or ""),
+            "operationsSha256": str(
+                r.get("forkmesh_operations_sha256") or ""),
+            "requiredOperationsVerified": True,
+            "abuseFlagged": False,
+        })
     if nodes:
         await _call_main_relay(env, "/api/federation/nodes", {"nodes": nodes})
 
@@ -10840,28 +15541,14 @@ async def _federation_cron(env):
                 {"label": label, "baseUrl": base})
             await _federation_report_nodes(env)
         return
-    # Main relay: expire stale federated presence, then sweep confirmed-but-
-    # unswept federated signups (mirrors _admin_disburse for local accounts).
+    # Main relay only expires stale presence. Legacy federated deposit rows are
+    # intentionally untouched: moving their funds requires the offline custody
+    # migration and no scheduled Worker path may consume their retained seeds.
     cutoff = int(Date.now()) - ACCOUNT_PRESENCE_STALE_MS
     try:
         await d1_run(env, "DELETE FROM federated_presence WHERE ts < ?", cutoff)
     except Exception:
         pass
-    rows = await d1_all(
-        env, "SELECT reference, data FROM federated_signup")
-    for row in (rows or []):
-        rec = await decrypt_row(env, row.get("data"))
-        if not rec or not rec.get("donation_confirmed"):
-            continue
-        if rec.get("donation_sweep_sig") or not rec.get("donation_secret"):
-            continue
-        bal = await _solana_balance_lamports(env, rec.get("donation_address", ""))
-        if not bal or bal <= SOLANA_SWEEP_FEE_RESERVE_LAMPORTS:
-            continue
-        if await _sweep_confirmed_donation(env, row.get("reference"), rec, bal):
-            await d1_run(
-                env, "UPDATE federated_signup SET data=? WHERE reference=?",
-                await encrypt_row(env, rec), row.get("reference"))
 
 
 # --- Admin: relay allowlist -------------------------------------------------
@@ -10907,6 +15594,9 @@ async def _admin_relay_approve(env, request):
     res = await d1_run(
         env, "UPDATE relays SET status=?, approved_at=? WHERE relay_bi=?",
         status, now if action == "approve" else None, relay_bi)
+    await _audit_sensitive_action(
+        env, node, "admin.relay_" + action, "relay", pubkey, "success",
+        {"status": status})
     return json_response({"ok": True, "status": status})
 
 
@@ -10965,6 +15655,11 @@ async def _admin_request_ownership(env, request):
         status = 404 if result == "no_such_node" else (
             403 if result == "not_a_node" else 400)
         return json_response({"error": result}, status=status)
+    audit = globals().get("_audit_sensitive_action")
+    if callable(audit):
+        await audit(
+            env, node, "admin.ownership_request", "account", target,
+            "requested", {"pending": bool(result.get("pending"))})
     return json_response(dict({"ok": True}, **result),
                          status=201 if result.get("pending") else 200)
 
@@ -11001,37 +15696,528 @@ async def _account_ownership_transfer_confirm(env, request):
     if action == "deny":
         node_rec.pop("ownership_transfer_pending", None)
         await _save_account(env, node_bi, node_rec)
+        audit = globals().get("_audit_sensitive_action")
+        if callable(audit):
+            await audit(
+                env, node_name, "ownership_transfer.deny", "account",
+                node_name, "success", {})
         return json_response({"ok": True, "denied": True, "nodeId": node_name})
     admin_name = pending.get("admin", "")
     node_rec.pop("ownership_transfer_pending", None)
     await _link_node_to_user(env, node_name, node_bi, node_rec, admin_name)
+    audit = globals().get("_audit_sensitive_action")
+    if callable(audit):
+        await audit(
+            env, node_name, "ownership_transfer.approve", "account",
+            node_name, "success", {})
     return json_response({"ok": True, "linked": True, "nodeId": node_name,
                           "owner": admin_name})
 
 
-async def _account_treasury_address(env, request):
-    """Public: the ForkMesh treasury Solana address for in-app donations.
+def _ssh_gateway_settings(env):
+    """Return publishable gateway settings only for an operable deployment."""
+    host = ssh_auth.configured_gateway_host(
+        getattr(env, "SSH_GATEWAY_HOST", ""))
+    token = ssh_auth.configured_gateway_token(
+        getattr(env, "SSH_GATEWAY_TOKEN", ""))
+    repositories = ssh_auth.parse_gateway_repository_allowlist(
+        getattr(env, "SSH_GATEWAY_REPOSITORIES", ""))
+    try:
+        port = int(getattr(env, "SSH_GATEWAY_PORT", 22) or 22)
+    except (TypeError, ValueError):
+        port = 0
+    configured = bool(host and 1 <= port <= 65535 and token and repositories)
+    return {
+        "configured": configured,
+        "host": host if configured else "",
+        "port": port if configured else 0,
+        "repositories": repositories if configured else {},
+    }
 
-    Lets clients render a "donate to the treasury" QR without embedding the
-    address. On a federated (non-main) relay the treasury lives on the main
-    relay, so proxy the lookup there.
+
+def _ssh_gateway_repository_access(env, owner, repo):
+    settings = _ssh_gateway_settings(env)
+    if not settings["configured"]:
+        return ""
+    return ssh_auth.gateway_repository_access(
+        settings["repositories"], owner, repo)
+
+
+def _ssh_repository_url(env, owner, repo):
+    settings = _ssh_gateway_settings(env)
+    if (
+        not settings["configured"]
+        or not ssh_auth.gateway_repository_access(
+            settings["repositories"], owner, repo)
+    ):
+        return ""
+    return ssh_auth.ssh_repository_url(
+        settings["host"], settings["port"], owner, repo)
+
+
+async def _ssh_json_body(request, max_bytes=32 * 1024):
+    try:
+        announced = int(request.headers.get("content-length") or 0)
+    except (TypeError, ValueError):
+        return None, "invalid_content_length"
+    if announced < 0 or announced > max_bytes:
+        return None, "payload_too_large"
+    try:
+        raw = await request.text()
+    except Exception:
+        return None, "invalid_json"
+    if len(str(raw or "").encode("utf-8")) > max_bytes:
+        return None, "payload_too_large"
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None, "invalid_json"
+    if not isinstance(data, dict):
+        return None, "invalid_json"
+    return data, ""
+
+
+def _ssh_key_public_projection(row, data=None):
+    source = data if isinstance(data, dict) else {}
+    return {
+        "id": str(row.get("key_id") or ""),
+        "label": clean_string(source.get("label", ""), ssh_auth.MAX_KEY_LABEL),
+        "keyType": str(row.get("key_type") or ""),
+        "fingerprint": str(row.get("fingerprint") or ""),
+        "createdAt": int(row.get("created_at") or 0),
+        "lastUsedAt": int(row.get("last_used_at") or 0),
+    }
+
+
+async def ssh_keys_handler(env, request, key_id=""):
+    """Register, list, and revoke the signed-in user's SSH public keys."""
+    await ensure_schema(env)
+    method = method_name(request)
+    data = {}
+    if method == "POST":
+        data, error = await _ssh_json_body(request)
+        if error:
+            return json_response({"error": error}, status=413 if (
+                error == "payload_too_large") else 400)
+    account_bi, account_rec = await _account_session_record(
+        env, request, data)
+    account = clean_string(
+        (account_rec or {}).get("name", ""), MAX_NODE_NAME).lower()
+    if (
+        not account_bi
+        or not account
+        or _account_kind(account_rec) != "user"
+    ):
+        return json_response(
+            {"error": "invalid_session"}, status=401,
+            cache_control="no-store")
+
+    if method == "GET" and not key_id:
+        rows = await d1_all(
+            env,
+            "SELECT key_id,key_type,fingerprint,data,created_at,last_used_at "
+            "FROM account_ssh_keys WHERE account_bi=? AND revoked_at=0 "
+            "ORDER BY created_at DESC",
+            account_bi,
+        )
+        keys = []
+        for row in rows or []:
+            try:
+                key_data = await decrypt_row(env, row.get("data"))
+            except Exception:
+                key_data = None
+            if not isinstance(key_data, dict):
+                continue
+            keys.append(_ssh_key_public_projection(row, key_data))
+        gateway = _ssh_gateway_settings(env)
+        return json_response({
+            "ok": True,
+            "keys": keys,
+            "maximumKeys": ssh_auth.MAX_KEYS_PER_ACCOUNT,
+            "gatewayConfigured": gateway["configured"],
+            "gatewayHost": gateway["host"],
+            "gatewayPort": gateway["port"],
+            "privateKeysStored": False,
+            "notice": (
+                "ForkMesh stores encrypted public keys only. Keep every SSH "
+                "private key and passphrase on your own device."
+            ),
+        }, cache_control="no-store")
+
+    if method == "POST" and not key_id:
+        try:
+            parsed = ssh_auth.parse_public_key(data.get("publicKey", ""))
+        except ssh_auth.SshPublicKeyError as error:
+            return json_response({"error": str(error)}, status=400)
+        label = ssh_auth.clean_key_label(
+            data.get("label", ""), parsed.get("comment", ""))
+        key_bi = await blind_index(
+            env, "ssh-public-key:" + parsed["publicKey"])
+        existing = await d1_first(
+            env,
+            "SELECT account_bi,revoked_at FROM account_ssh_keys "
+            "WHERE key_bi=?",
+            key_bi,
+        )
+        if existing:
+            # Do not disclose whether another account owns the same key or
+            # whether it was revoked; either case requires a fresh keypair.
+            return json_response(
+                {"error": "ssh_key_already_registered"}, status=409,
+                cache_control="no-store")
+        count = await d1_first(
+            env,
+            "SELECT COUNT(*) AS n FROM account_ssh_keys "
+            "WHERE account_bi=? AND revoked_at=0",
+            account_bi,
+        )
+        if int((count or {}).get("n") or 0) >= ssh_auth.MAX_KEYS_PER_ACCOUNT:
+            return json_response(
+                {"error": "ssh_key_limit_reached"}, status=429,
+                cache_control="no-store")
+        key_id = "sk_" + _b64url_encode(_random_bytes(18))
+        now = int(Date.now())
+        encrypted = await encrypt_row(env, {
+            "keyId": key_id,
+            "account": account,
+            "publicKey": parsed["publicKey"],
+            "label": label,
+            "createdAt": now,
+        })
+        try:
+            await d1_run(
+                env,
+                "INSERT INTO account_ssh_keys "
+                "(key_id,account_bi,key_bi,key_type,fingerprint,data,"
+                "created_at,last_used_at,revoked_at) "
+                "VALUES (?,?,?,?,?,?,?,0,0)",
+                key_id, account_bi, key_bi, parsed["keyType"],
+                parsed["fingerprint"], encrypted, now,
+            )
+        except Exception:
+            await _audit_sensitive_action(
+                env, account, "ssh_key.register", "ssh_public_key",
+                key_id, "failed", {"reason": "storage_error"})
+            raise
+        await _audit_sensitive_action(
+            env, account, "ssh_key.register", "ssh_public_key",
+            key_id, "success", {"keyType": parsed["keyType"]})
+        return json_response({
+            "ok": True,
+            "key": {
+                "id": key_id,
+                "label": label,
+                "keyType": parsed["keyType"],
+                "fingerprint": parsed["fingerprint"],
+                "createdAt": now,
+                "lastUsedAt": 0,
+            },
+            "privateKeysStored": False,
+        }, status=201, cache_control="no-store")
+
+    if method == "DELETE" and key_id:
+        key_id = clean_string(key_id, 96)
+        if not re.fullmatch(r"sk_[A-Za-z0-9_-]{16,80}", key_id):
+            return json_response({"error": "not_found"}, status=404)
+        row = await d1_first(
+            env,
+            "SELECT key_id FROM account_ssh_keys "
+            "WHERE key_id=? AND account_bi=? AND revoked_at=0",
+            key_id, account_bi,
+        )
+        if not row:
+            return json_response({"error": "not_found"}, status=404)
+        now = int(Date.now())
+        try:
+            await d1_run(
+                env,
+                "UPDATE account_ssh_keys SET revoked_at=? "
+                "WHERE key_id=? AND account_bi=? AND revoked_at=0",
+                now, key_id, account_bi,
+            )
+        except Exception:
+            await _audit_sensitive_action(
+                env, account, "ssh_key.revoke", "ssh_public_key",
+                key_id, "failed", {"reason": "storage_error"})
+            raise
+        await _audit_sensitive_action(
+            env, account, "ssh_key.revoke", "ssh_public_key",
+            key_id, "success")
+        return json_response(
+            {"ok": True, "revoked": True, "id": key_id},
+            cache_control="no-store")
+
+    return json_response({"error": "method_not_allowed"}, status=405)
+
+
+def _ssh_gateway_token_ok(env, request):
+    expected = ssh_auth.configured_gateway_token(
+        getattr(env, "SSH_GATEWAY_TOKEN", ""))
+    if not expected:
+        return False
+    supplied = str(request.headers.get("authorization") or "")
+    if not supplied.lower().startswith("bearer "):
+        return False
+    return hmac.compare_digest(supplied[7:].strip(), expected)
+
+
+async def _ssh_key_gateway_record(env, key_id="", public_key=""):
+    row = None
+    if key_id:
+        row = await d1_first(
+            env,
+            "SELECT key_id,account_bi,key_type,fingerprint,data,created_at,"
+            "last_used_at FROM account_ssh_keys "
+            "WHERE key_id=? AND revoked_at=0",
+            key_id,
+        )
+    elif public_key:
+        try:
+            parsed = ssh_auth.parse_public_key(public_key)
+        except ssh_auth.SshPublicKeyError:
+            return None, None
+        key_bi = await blind_index(
+            env, "ssh-public-key:" + parsed["publicKey"])
+        row = await d1_first(
+            env,
+            "SELECT key_id,account_bi,key_type,fingerprint,data,created_at,"
+            "last_used_at FROM account_ssh_keys "
+            "WHERE key_bi=? AND revoked_at=0",
+            key_bi,
+        )
+    if not row:
+        return None, None
+    try:
+        data = await decrypt_row(env, row.get("data"))
+        registered = ssh_auth.parse_public_key(data.get("publicKey", ""))
+    except Exception:
+        return None, None
+    if public_key:
+        try:
+            supplied = ssh_auth.parse_public_key(public_key)
+        except ssh_auth.SshPublicKeyError:
+            return None, None
+        if not hmac.compare_digest(
+                registered["publicKey"], supplied["publicKey"]):
+            return None, None
+    # Resolve the current account name from the indexed account row. The
+    # encrypted key envelope deliberately preserves its registration-time
+    # metadata, while account rename updates this row's account_bi.
+    account_rec = await _account_identity_rec_by_bi(
+        env, row.get("account_bi"))
+    account = clean_string(
+        (account_rec or {}).get("name", ""), MAX_NODE_NAME).lower()
+    if (
+        not account
+        or not account_rec
+        or account_rec.get("status") != "active"
+        or _account_kind(account_rec) != "user"
+    ):
+        return None, None
+    # Return a copy with the current principal. Registration-time encrypted
+    # metadata is useful evidence but must never control authorization after an
+    # account rename.
+    current = dict(data)
+    current["account"] = account
+    return row, current
+
+
+async def _ssh_org_read_allowed(env, owner, repo, reader):
+    try:
+        rows = await d1_all(
+            env, "SELECT org_bi FROM org_repos WHERE node_owner=? AND repo=?",
+            owner.lower(), repo.lower())
+        for row in rows or []:
+            permission = await _org_permission(
+                env, str(row.get("org_bi") or ""), reader)
+            if team_permission_rank(permission) >= team_permission_rank("read"):
+                return True
+    except Exception:
+        return False
+    return False
+
+
+async def ssh_gateway_authorize_handler(env, request):
+    """Authorize a configured node-side SSH forced-command gateway.
+
+    This is an HTTPS control-plane call. The raw SSH connection and Git process
+    remain on the independently operated gateway host.
     """
-    addr = _treasury_address(env)
-    if not addr and not _is_main_relay(env):
-        reply = await _call_main_relay(env, "/api/federation/treasury-address", {})
-        if reply:
-            addr = (reply.get("address") or "")
-    if not addr:
-        return json_response({"address": ""}, status=503)
-    return json_response({"address": addr})
+    await ensure_schema(env)
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    if not _ssh_gateway_token_ok(env, request):
+        return json_response(
+            {"error": "unauthorized"}, status=401,
+            cache_control="no-store")
+    data, error = await _ssh_json_body(request)
+    if error:
+        return json_response(
+            {"error": error},
+            status=413 if error == "payload_too_large" else 400,
+            cache_control="no-store")
+    action = clean_string(data.get("action", ""), 20).lower()
+    if action == "lookup":
+        row, _key_data = await _ssh_key_gateway_record(
+            env, public_key=data.get("publicKey", ""))
+        if not row:
+            return json_response(
+                {"authorized": False}, status=403,
+                cache_control="no-store")
+        return json_response({
+            "ok": True,
+            "authorized": True,
+            "keyId": row.get("key_id"),
+        }, cache_control="no-store")
+    if action != "authorize":
+        return json_response({"error": "bad_action"}, status=400)
+
+    key_id = clean_string(data.get("keyId", ""), 96)
+    owner = safe_segment(data.get("owner", ""))
+    repo = safe_segment(data.get("repository", ""))
+    operation = clean_string(data.get("operation", ""), 40)
+    if (
+        not re.fullmatch(r"sk_[A-Za-z0-9_-]{16,80}", key_id)
+        or not owner
+        or not repo
+        or operation not in ("git-upload-pack", "git-receive-pack")
+    ):
+        return json_response(
+            {"authorized": False}, status=403,
+            cache_control="no-store")
+    row, key_data = await _ssh_key_gateway_record(env, key_id=key_id)
+    if not row or not key_data:
+        return json_response(
+            {"authorized": False}, status=403,
+            cache_control="no-store")
+    account = clean_string(
+        key_data.get("account", ""), MAX_NODE_NAME).lower()
+
+    # An SSH URL may use an organization alias. Resolve it to the canonical
+    # node namespace before repository lookup, permission enforcement, and the
+    # path returned to the gateway.
+    canonical_owner = await _org_repo_node(env, owner, repo) or owner
+    gateway_access = _ssh_gateway_repository_access(
+        env, canonical_owner, repo)
+    repo_bi = await blind_index(env, canonical_owner + "/" + repo)
+    repo_row = await d1_first(
+        env,
+        "SELECT is_private,data FROM repositories WHERE key_bi=?",
+        repo_bi,
+    )
+    record = None
+    if repo_row:
+        try:
+            record = await decrypt_row(env, repo_row.get("data"))
+        except Exception:
+            record = None
+    authoritative_private = bool(
+        int((repo_row or {}).get("is_private") or 0))
+    public_record = bool(
+        isinstance(record, dict)
+        and record.get("visibility") == "public")
+    if (
+        not gateway_access
+        or (
+            operation == "git-receive-pack"
+            and gateway_access != "read-write"
+        )
+        or not _catalog_record_matches_identity(
+            record, canonical_owner, repo)
+    ):
+        allowed = False
+    else:
+        owns_repo = await _account_owns_node(
+            env, account, canonical_owner)
+        if operation == "git-receive-pack":
+            allowed = bool(
+                owns_repo
+                or await _org_write_allowed(
+                    env, canonical_owner, repo, account)
+            )
+        else:
+            allowed = bool(
+                (public_record and not authoritative_private)
+                or owns_repo
+                or await _repo_shared_with(
+                    env, canonical_owner, repo, account)
+                or await _ssh_org_read_allowed(
+                    env, canonical_owner, repo, account)
+            )
+    if not allowed:
+        if operation == "git-receive-pack":
+            await _audit_sensitive_action(
+                env, account, "ssh.git_authorize", "repository",
+                canonical_owner + "/" + repo, "denied",
+                {"operation": operation})
+        return json_response(
+            {"authorized": False}, status=403,
+            cache_control="no-store")
+
+    now = int(Date.now())
+    await d1_run(
+        env, "UPDATE account_ssh_keys SET last_used_at=? WHERE key_id=?",
+        now, key_id)
+    if operation == "git-receive-pack":
+        await _audit_sensitive_action(
+            env, account, "ssh.git_authorize", "repository",
+            canonical_owner + "/" + repo, "success",
+            {"operation": operation})
+    return json_response({
+        "ok": True,
+        "authorized": True,
+        "principal": account,
+        "operation": operation,
+        "owner": canonical_owner,
+        "repository": repo,
+        "repositoryRelativePath": canonical_owner + "/" + repo + ".git",
+    }, cache_control="no-store")
+
+
+async def _account_treasury_address(env, request):
+    """Frozen alias for the removed Worker-custodied treasury flow."""
+    del env, request
+    return _legacy_treasury_disabled_response()
+
+
+def _legacy_treasury_disabled_response():
+    """Fail closed without returning an operational legacy deposit address."""
+    return json_response({
+        "error": "legacy_custody_disabled",
+        "address": "",
+        "featureState": "migration-only",
+        "custody": "non-custodial",
+        "fundStates": {
+            "userOwnedFunds": (
+                "Remain in each user's external self-custodial wallet."
+            ),
+            "communityFundedRewardPool": (
+                "Use /api/rewards/pool for its configured public address, "
+                "balance, and finalized history."
+            ),
+            "pendingRewards": (
+                "Ledger allocations only; funds remain in their external "
+                "source wallet until a locally approved transfer."
+            ),
+            "completedOnChainTransfers": (
+                "Only finalized public transaction signatures are complete."
+            ),
+        },
+        "notice": (
+            "The legacy treasury/deposit flow is disabled. ForkMesh does not "
+            "hold a wallet key or user funds. Historical rows require the "
+            "documented offline custody migration."
+        ),
+    }, status=410, cache_control="no-store")
 
 
 async def _account_central_fund(env, request):
-    """Public: the ForkMesh central donation fund (issue #308).
+    """Compatibility alias for canonical public community reward-pool state.
 
-    Returns the one wallet anyone can donate to; a cron distributes its balance
-    evenly to the online nodes hourly. On a federated (non-main) relay the fund
-    lives on the main relay, so proxy the lookup there (like the treasury).
+    It never returns an encrypted key-bearing legacy central_fund row. On a
+    federated relay it proxies only the same public metadata produced by
+    _central_fund_public: explicit fund states, on-chain balance/history, and
+    the external-local-signer custody notice.
     """
     if not _is_main_relay(env):
         reply = await _call_main_relay(env, "/api/federation/central-fund", {})
@@ -11063,6 +16249,14 @@ async def accounts_handler(env, request):
         return await _account_treasury_address(env, request)
     if url.path == "/api/accounts/central-fund" and method == "GET":
         return await _account_central_fund(env, request)
+    if url.path.rstrip("/") == "/api/accounts/ssh-keys" and method in (
+            "GET", "POST"):
+        return await ssh_keys_handler(env, request)
+    ssh_key_prefix = "/api/accounts/ssh-keys/"
+    if url.path.startswith(ssh_key_prefix) and method == "DELETE":
+        key_id = url.path[len(ssh_key_prefix):].strip("/")
+        if "/" not in key_id:
+            return await ssh_keys_handler(env, request, key_id)
     if url.path == "/api/accounts/finalize" and method == "POST":
         return await _account_finalize(env, request)
     if url.path == "/api/accounts/heartbeat" and method == "POST":
@@ -11131,10 +16325,6 @@ async def accounts_handler(env, request):
         # cache; _ap_broadcast_actor_update purges the key on profile edits.
         viewer_less = "viewer" not in parse_qs(urlparse(request.url).query)
         lookup_cache_key = ACCOUNT_LOOKUP_CACHE_PREFIX + quote(name)
-        if viewer_less:
-            cached = await edge_cache_match(lookup_cache_key)
-            if cached is not None:
-                return cached
         # Users and nodes are separate tables: this public profile lookup reads
         # from those authoritative per-kind stores (keyless reservations live
         # in nodes too, so the signup availability check below still sees a
@@ -11146,8 +16336,49 @@ async def accounts_handler(env, request):
             # form's name check must see a just-taken name immediately.
             return json_response(
                 {"ok": True, "exists": False, "available": True, "name": name})
-        # Public lookup never returns email/secret material. A name is only
-        # unavailable once it has been paid for / finalized.
+        profile_private = bool(rec.get("profile_private"))
+        if profile_private:
+            # A query-string `viewer` is display-only and can be spoofed; only
+            # a real bearer session may reveal a private profile. Node profiles
+            # are also visible to the user account that explicitly owns them.
+            _, viewer_rec = await _account_session_record(env, request)
+            viewer_account = clean_string(
+                (viewer_rec or {}).get("name", ""),
+                MAX_NODE_NAME,
+            ).lower()
+            target_name = clean_string(
+                rec.get("name", name), MAX_NODE_NAME).lower()
+            owner_view = bool(
+                viewer_account and (
+                    viewer_account == target_name
+                    or await _account_owns_node(
+                        env, viewer_account, target_name)
+                )
+            )
+            if not owner_view:
+                # Name availability necessarily remains visible to prevent
+                # duplicate registration, but no profile, device, status,
+                # activity, social, key, or ownership fields are disclosed.
+                taken = (
+                    rec.get("status") == "active"
+                    or bool(rec.get("donation_confirmed")))
+                return json_response({
+                    "ok": True,
+                    "exists": True,
+                    "available": not taken,
+                    "name": target_name or name,
+                    "profilePrivate": True,
+                }, cache_control="no-store")
+        # Positive cache entries are consulted only after the current encrypted
+        # record has confirmed the profile is public. This prevents an old warm
+        # entry from surviving a privacy toggle.
+        cacheable_guest = viewer_less and not profile_private
+        if cacheable_guest:
+            cached = await edge_cache_match(lookup_cache_key)
+            if cached is not None:
+                return cached
+        # Public lookup never returns email/secret material. Active accounts and
+        # migration-era confirmed records keep their names unavailable.
         taken = rec.get("status") == "active" or bool(rec.get("donation_confirmed"))
         # isAdmin + pubkey let any client authenticate a signed admin-moderation
         # action (e.g. a chat admin-delete) made by this account's identity key.
@@ -11192,7 +16423,7 @@ async def accounts_handler(env, request):
             env, rec.get("name", name), viewer)
         payload = {**payload, "social": social, **social}
         payload = {**payload, **_account_profile_fields(rec)}
-        if viewer_less:
+        if cacheable_guest:
             resp = json_response(payload, cache_seconds=60)
             await edge_cache_put(lookup_cache_key, resp)
             return resp
@@ -11242,21 +16473,8 @@ AP_DATE_SKEW_MS = 12 * 60 * 60 * 1000
 # signed-inbox POST never burns its subrequest budget on fediverse fan-out.
 AP_IMMEDIATE_DELIVERIES = 5
 AP_CRON_DELIVERIES = 20
+AP_DIGEST_CRON_BATCH = 12
 AP_FEDI_KINDS = ("issue", "pull", "discussion", "commit", "release")
-# Fediverse repo mentions ("@owner.repo@host please fix X") that Workers AI
-# classifies as issue requests become issue-inbox submissions. Images from the
-# post ride along the same channel as a no-write-access node's screenshots
-# (attachmentData), so the per-file cap must stay within
-# MAX_ISSUE_ATTACHMENT_BYTES; the count cap bounds the media subrequests one
-# inbound activity can trigger.
-AP_MENTION_MAX_IMAGES = 4
-AP_MENTION_MAX_IMAGE_BYTES = 1 * 1024 * 1024
-# Media types worth attaching, mapped to the extensions
-# ISSUE_ATTACHMENT_NAME_RE accepts (the desktop materializes these files).
-AP_MENTION_IMAGE_EXTS = {
-    "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif",
-    "image/webp": "webp", "image/bmp": "bmp", "image/svg+xml": "svg",
-}
 # Brand images served from Static Assets, shown as every actor's avatar and
 # profile header on Mastodon-compatible servers.
 AP_AVATAR_PATH = "/assets/fediverse-avatar.png"
@@ -11443,11 +16661,18 @@ async def _ap_repo_federates(env, owner, repo):
     # for ad-hoc hosts), an unpublished repo has no fediverse presence. The
     # owner can also switch federation off per repo (web/Qt repo settings).
     data_owner = await _ap_org_alias_owner(env, owner, repo)
-    key_bi = await blind_index(env, data_owner + "/" + repo)
-    row = await d1_first(
-        env, "SELECT is_private FROM repositories WHERE key_bi=?", key_bi)
-    if not row or int(row.get("is_private") or 0):
-        return False
+    privacy_reader = globals().get("_repo_is_private")
+    if callable(privacy_reader):
+        if await privacy_reader(env, data_owner, repo):
+            return False
+    else:
+        # Isolated compatibility harnesses may omit _repo_is_private.
+        # Production always uses its signed-record, fail-closed decision.
+        key_bi = await blind_index(env, data_owner + "/" + repo)
+        row = await d1_first(
+            env, "SELECT is_private FROM repositories WHERE key_bi=?", key_bi)
+        if not row or int(row.get("is_private") or 0):
+            return False
     return (await _ap_repo_settings_get(env, data_owner, repo))["federate"]
 
 
@@ -11488,6 +16713,308 @@ async def _ap_repo_settings_get(env, owner, repo):
                 if key in stored:
                     settings[key] = bool(stored[key])
     return settings
+
+
+async def _ap_org_digest_settings_get(env, org_bi):
+    """Return the org-alias digest gate.
+
+    Organization controls are deliberately a second, suppress-only gate. The
+    linked repository owner's `federate` and `broadcastEvents` settings must
+    also be enabled before any org-alias event can enter a queue.
+    """
+    row = await d1_first(
+        env, "SELECT data FROM ap_org_digest_settings WHERE org_bi=?", org_bi)
+    controls = fedi_digest.normalize_controls({})
+    if row:
+        try:
+            stored = json.loads(row.get("data") or "{}")
+        except Exception:
+            stored = {}
+        if isinstance(stored, dict):
+            controls = fedi_digest.normalize_controls(stored)
+    return controls
+
+
+async def _ap_digest_scope_bi(env, scope):
+    return await blind_index(
+        env, "ap-digest:" + str(scope or "").strip().lower())
+
+
+async def _ap_digest_queue_record(env, scope):
+    scope_bi = await _ap_digest_scope_bi(env, scope)
+    row = await d1_first(
+        env,
+        "SELECT scope_bi, next_ts, last_published_at, data "
+        "FROM ap_digest_queues WHERE scope_bi=?",
+        scope_bi)
+    if not row:
+        return scope_bi, None, None
+    rec = await decrypt_row(env, row.get("data")) or {}
+    if not isinstance(rec, dict) or rec.get("scope") != scope:
+        # Fail closed if the encrypted payload does not match its blind key.
+        return scope_bi, row, None
+    return scope_bi, row, rec
+
+
+async def _ap_enqueue_digest_scope(
+        env, scope_owner, repo, source_owner, event):
+    """Insert one already-reduced public event into an encrypted scope queue."""
+    scope_owner = clean_string(scope_owner, MAX_NODE_NAME).strip().lower()
+    source_owner = clean_string(source_owner, MAX_NODE_NAME).strip().lower()
+    repo = clean_string(repo, MAX_REPO_SEGMENT).strip()
+    scope = scope_owner + "/" + repo.lower()
+    if (not valid_node_name(scope_owner) or not valid_node_name(source_owner)
+            or not repo or not event):
+        return False
+    scope_bi, row, rec = await _ap_digest_queue_record(env, scope)
+    now = int(Date.now())
+    last_published = int((row or {}).get("last_published_at") or 0)
+    events = fedi_digest.add_event(
+        (rec or {}).get("events") if rec else [], event)
+    if not events:
+        return False
+    # A new queue waits a full cadence so several meaningful events can be
+    # combined. After a prior post, the next due time remains anchored to that
+    # post rather than sliding forward with every incoming event.
+    if row:
+        next_ts = int(row.get("next_ts") or 0)
+        if next_ts <= 0:
+            next_ts = max(now, last_published + fedi_digest.DAY_MS)
+    else:
+        next_ts = now + fedi_digest.DAY_MS
+    payload = {
+        "scope": scope,
+        "scopeOwner": scope_owner,
+        "repo": repo,
+        "sourceOwner": source_owner,
+        "events": events,
+        "lastPublishedAt": last_published,
+    }
+    await d1_run(
+        env,
+        "INSERT INTO ap_digest_queues "
+        "(scope_bi, next_ts, last_published_at, data, updated_at) "
+        "VALUES (?,?,?,?,?) ON CONFLICT(scope_bi) DO UPDATE SET "
+        "next_ts=excluded.next_ts, data=excluded.data, "
+        "updated_at=excluded.updated_at",
+        scope_bi, next_ts, last_published,
+        await encrypt_row(env, payload), now)
+    return True
+
+
+async def _ap_enqueue_repo_digest(
+        env, request, owner, repo, kind, event_type, ref, title, body):
+    """Queue a safe repository event for its repo and enabled org aliases."""
+    if await _repo_is_private(env, owner, repo):
+        return False
+    settings = await _ap_repo_settings_get(env, owner, repo)
+    if not (settings["federate"] and settings["broadcastEvents"]):
+        return False
+    origin = _ap_origin(env, request)
+    timestamp = int(Date.now())
+    canonical = fedi_digest.repository_event(
+        origin, owner, repo, kind, event_type, ref, title, body, timestamp)
+    queued = await _ap_enqueue_digest_scope(
+        env, owner, repo, owner, canonical)
+
+    # An organization alias has its own repo actor/followers and therefore its
+    # own daily cadence. Org admins may suppress that alias, but cannot enable
+    # it when the backing repository owner disabled federation.
+    rows = await d1_all(
+        env,
+        "SELECT r.org_bi AS org_bi, o.name AS name, s.data AS settings "
+        "FROM org_repos r JOIN orgs o ON o.org_bi=r.org_bi "
+        "LEFT JOIN ap_org_digest_settings s ON s.org_bi=r.org_bi "
+        "WHERE r.node_owner=? AND r.repo=? ORDER BY o.name LIMIT ?",
+        str(owner).lower(), str(repo).lower(), MAX_ORGS_PER_ACCOUNT)
+    for linked in rows or []:
+        try:
+            raw_controls = json.loads(linked.get("settings") or "{}")
+        except Exception:
+            raw_controls = {}
+        controls = fedi_digest.normalize_controls(raw_controls)
+        org = clean_string(linked.get("name"), MAX_NODE_NAME).strip().lower()
+        if not controls["enabled"] or not valid_node_name(org):
+            continue
+        org_event = fedi_digest.repository_event(
+            origin, org, repo, kind, event_type, ref, title, body, timestamp)
+        queued = (await _ap_enqueue_digest_scope(
+            env, org, repo, owner, org_event)) or queued
+    return queued
+
+
+async def _ap_purge_repo_digest_queues(env, owner, repo):
+    """Drop queued automatic posts when the repository owner disables them."""
+    scopes = [str(owner).lower() + "/" + str(repo).lower()]
+    rows = await d1_all(
+        env,
+        "SELECT o.name AS name FROM org_repos r "
+        "JOIN orgs o ON o.org_bi=r.org_bi "
+        "WHERE r.node_owner=? AND r.repo=? LIMIT ?",
+        str(owner).lower(), str(repo).lower(), MAX_ORGS_PER_ACCOUNT)
+    scopes.extend(
+        str(row.get("name") or "").lower() + "/" + str(repo).lower()
+        for row in (rows or []) if row.get("name"))
+    for scope in scopes:
+        await d1_run(
+            env, "DELETE FROM ap_digest_queues WHERE scope_bi=?",
+            await _ap_digest_scope_bi(env, scope))
+
+
+async def _ap_digest_preview(env, scope):
+    _, row, rec = await _ap_digest_queue_record(env, scope)
+    events = (rec or {}).get("events") if rec else []
+    digest = fedi_digest.build_digest(events, scope)
+    return {
+        "scope": scope,
+        "pending": len(events or []),
+        "preview": digest,
+        "lastPublishedAt": int((row or {}).get("last_published_at") or 0),
+        "nextPublishAt": int((row or {}).get("next_ts") or 0),
+    }
+
+
+async def _ap_digest_scope_allowed(env, rec):
+    """Revalidate privacy/ownership controls immediately before publishing."""
+    scope_owner = clean_string(
+        (rec or {}).get("scopeOwner"), MAX_NODE_NAME).strip().lower()
+    source_owner = clean_string(
+        (rec or {}).get("sourceOwner"), MAX_NODE_NAME).strip().lower()
+    repo = clean_string((rec or {}).get("repo"), MAX_REPO_SEGMENT).strip()
+    if not scope_owner or not source_owner or not repo:
+        return False
+    if await _repo_is_private(env, source_owner, repo):
+        return False
+    settings = await _ap_repo_settings_get(env, source_owner, repo)
+    if not (settings["federate"] and settings["broadcastEvents"]):
+        return False
+    if scope_owner == source_owner:
+        return True
+    org_bi, org_row = await _org_row(env, scope_owner)
+    if not org_row:
+        return False
+    linked = await d1_first(
+        env,
+        "SELECT 1 AS one FROM org_repos "
+        "WHERE org_bi=? AND repo=? AND node_owner=?",
+        org_bi, repo.lower(), source_owner)
+    if not linked:
+        return False
+    return (await _ap_org_digest_settings_get(env, org_bi))["enabled"]
+
+
+async def _ap_publish_digest_row(env, row):
+    """Durably create one digest Note/outbox fan-out, then consume its events."""
+    scope_bi = str((row or {}).get("scope_bi") or "")
+    rec = await decrypt_row(env, (row or {}).get("data")) or {}
+    scope = str(rec.get("scope") or "")
+    if not scope_bi or not scope or not await _ap_digest_scope_allowed(env, rec):
+        # A repo made private, an owner opt-out, or an unlinked/disabled org
+        # must revoke queued metadata rather than leave it probeable.
+        if scope_bi:
+            await d1_run(
+                env, "DELETE FROM ap_digest_queues WHERE scope_bi=?", scope_bi)
+        return False
+    now = int(Date.now())
+    events = rec.get("events") if isinstance(rec.get("events"), list) else []
+    last_published = int(row.get("last_published_at") or 0)
+    if not fedi_digest.digest_due(events, last_published, now):
+        return False
+    digest = fedi_digest.build_digest(events, scope)
+    if not digest:
+        await d1_run(
+            env, "DELETE FROM ap_digest_queues WHERE scope_bi=?", scope_bi)
+        return False
+
+    origin = _ap_origin(env)
+    scope_owner = str(rec.get("scopeOwner") or "").lower()
+    repo = str(rec.get("repo") or "")
+    handle = ap.repo_handle(scope_owner, repo.lower())
+    local = await _ap_local_actor(env, AP_ACTOR_REPO, handle)
+    if not local:
+        # Preserve lazy actor creation: a repo nobody follows does not mint an
+        # RSA key merely because it had local activity.
+        return False
+    followers = await d1_all(
+        env,
+        "SELECT inbox, shared_inbox FROM ap_followers WHERE actor_bi=?",
+        local["actorBi"])
+    actor_url = _ap_actor_url(origin, AP_ACTOR_REPO, handle)
+    object_uuid = hashlib.sha256(
+        ("forkmesh-ap-digest-v1\n" + scope + "\n"
+         + "\n".join(digest["eventIds"])).encode()).hexdigest()[:32]
+    object_url = origin + "/ap/o/" + object_uuid
+    web_url = origin + repo_web_href(scope_owner, repo)
+    note = ap.note_doc(
+        object_url, actor_url, actor_url + "/followers",
+        ap.note_html_from_text(digest["text"]), now, web_url=web_url)
+    stored = {
+        "note": note,
+        "context": {
+            "owner": scope_owner, "repo": repo, "kind": "daily_digest",
+            "ref": object_uuid, "key": "digest:" + scope,
+        },
+        "media": [],
+        "automated": True,
+        "eventIds": digest["eventIds"],
+    }
+    body_str = json.dumps(ap.create_activity(note))
+    out_data = await encrypt_row(env, {
+        "body": body_str, "actorKind": AP_ACTOR_REPO,
+        "actorHandle": handle, "actorUrl": actor_url})
+
+    remaining = fedi_digest.remove_published(events, digest["eventIds"])
+    rec["events"] = remaining
+    rec["lastPublishedAt"] = now
+    next_ts = now + fedi_digest.DAY_MS
+    statements = [(
+        "INSERT OR IGNORE INTO ap_objects "
+        "(object_uuid, actor_bi, context_bi, data, published) "
+        "VALUES (?,?,NULL,?,?)",
+        (object_uuid, local["actorBi"], await encrypt_row(env, stored), now),
+    )]
+    seen = set()
+    for follower in followers or []:
+        inbox = ((follower.get("shared_inbox") or "").strip()
+                 or (follower.get("inbox") or "").strip())
+        if not inbox or inbox in seen:
+            continue
+        seen.add(inbox)
+        delivery_bi = await blind_index(
+            env, "ap-digest-delivery:" + object_uuid + ":" + inbox)
+        statements.append((
+            "INSERT OR IGNORE INTO ap_outbox "
+            "(inbox, data, attempts, next_ts, created_at, dedupe_bi) "
+            "VALUES (?,?,0,?,?,?)",
+            (inbox, out_data, now, now, delivery_bi),
+        ))
+    statements.append((
+        "UPDATE ap_digest_queues SET next_ts=?, last_published_at=?, "
+        "data=?, updated_at=? WHERE scope_bi=?",
+        (next_ts, now, await encrypt_row(env, rec), now, scope_bi),
+    ))
+    # D1 batch is transactional: event ids are removed only in the same durable
+    # commit that creates the deterministic Note and retryable outbox rows.
+    await _contribution_run_batch(env, statements)
+    return True
+
+
+async def _ap_process_digest_queues(env, limit=AP_DIGEST_CRON_BATCH):
+    """Cron: publish a bounded batch of due, non-empty daily digests."""
+    if not await _ap_enabled(env):
+        return 0
+    now = int(Date.now())
+    rows = await d1_all(
+        env,
+        "SELECT scope_bi, next_ts, last_published_at, data "
+        "FROM ap_digest_queues WHERE next_ts<=? "
+        "ORDER BY next_ts ASC LIMIT ?",
+        now, max(1, min(int(limit), AP_DIGEST_CRON_BATCH)))
+    published = 0
+    for row in rows or []:
+        if await _ap_publish_digest_row(env, row):
+            published += 1
+    return published
 
 
 # The unauthenticated ActivityPub read endpoints (webfinger, nodeinfo, actor
@@ -11555,7 +17082,11 @@ async def ap_webfinger_handler(env, request):
                  % (origin, handle, domain))
     cached = await edge_cache_match(cache_key)
     if cached is not None:
-        return cached
+        try:
+            if int(cached.status) >= 400:
+                return cached
+        except Exception:
+            pass
     await ensure_schema(env)
     if not await _ap_enabled(env):
         return _ap_disabled_response()
@@ -11576,6 +17107,11 @@ async def ap_webfinger_handler(env, request):
             kind = AP_ACTOR_REPO
             actor_handle = ap.repo_handle(parsed[1], parsed[2])
             acct_name = actor_handle
+    # Resolve visibility before reading edge cache. Otherwise a public actor
+    # document could remain discoverable after its account/repository is made
+    # private, for the remainder of the old cache entry's TTL.
+    if cached is not None:
+        return cached
     actor_url = _ap_actor_url(origin, kind, actor_handle)
     doc = ap.webfinger_doc(acct_name + "@" + our_domain, actor_url)
     resp = json_response(doc, cache_seconds=3600, extra_headers={
@@ -11656,7 +17192,13 @@ async def _ap_build_actor_doc(env, origin, kind, handle, rec):
         repo_row = await d1_first(
             env, "SELECT is_private, data FROM repositories WHERE key_bi=?",
             key_bi)
-        if not repo_row or int(repo_row.get("is_private") or 0):
+        privacy_reader = globals().get("_repo_is_private")
+        hidden = (
+            await privacy_reader(env, data_owner, repo)
+            if callable(privacy_reader)
+            else bool(int((repo_row or {}).get("is_private") or 0))
+        )
+        if not repo_row or hidden:
             return None
         actor_type, display = "Group", owner + "/" + repo
         repo_web_url = origin + repo_web_href(owner, repo)
@@ -11727,7 +17269,11 @@ async def _ap_actor_doc_response(env, request, kind, handle):
     cache_key = _ap_actor_url(origin, kind, handle)
     cached = await edge_cache_match(cache_key)
     if cached is not None:
-        return cached
+        try:
+            if int(cached.status) >= 400:
+                return cached
+        except Exception:
+            pass
     await ensure_schema(env)
     if not await _ap_enabled(env):
         return _ap_disabled_response()
@@ -11737,6 +17283,8 @@ async def _ap_actor_doc_response(env, request, kind, handle):
             env, origin, _ap_actor_url(origin, kind, handle))
         if not parsed:
             return await _ap_negative_response(cache_key)
+    if cached is not None:
+        return cached
     rec = await _ap_local_actor(env, kind, handle, create=True)
     if not rec:
         return json_response({"error": "unavailable"}, status=503)
@@ -11819,7 +17367,11 @@ async def ap_collection_handler(env, request, kind, handle, which):
     collection_url = _ap_actor_url(origin, kind, handle) + "/" + which
     cached = await edge_cache_match(collection_url)
     if cached is not None:
-        return cached
+        try:
+            if int(cached.status) >= 400:
+                return cached
+        except Exception:
+            pass
     await ensure_schema(env)
     if not await _ap_enabled(env):
         return _ap_disabled_response()
@@ -11829,6 +17381,8 @@ async def ap_collection_handler(env, request, kind, handle, which):
         owner, _, repo = handle.partition(".")
         if not await _ap_repo_federates(env, owner, repo):
             return await _ap_negative_response(collection_url)
+    if cached is not None:
+        return cached
     actor_bi = await _ap_actor_bi(env, kind, handle)
     total = 0
     items = None
@@ -11873,9 +17427,6 @@ async def ap_object_handler(env, request, object_uuid):
     if method_name(request) not in ("GET", "HEAD"):
         return json_response({"error": "method_not_allowed"}, status=405)
     cache_key = _ap_origin(env, request) + "/ap/o/" + object_uuid
-    cached = await edge_cache_match(cache_key)
-    if cached is not None:
-        return cached
     await ensure_schema(env)
     if not await _ap_enabled(env):
         return _ap_disabled_response()
@@ -11884,6 +17435,22 @@ async def ap_object_handler(env, request, object_uuid):
     rec = await decrypt_row(env, row.get("data")) if row else None
     if not rec or not isinstance(rec.get("note"), dict):
         return json_response({"error": "not_found"}, status=404)
+    context = rec.get("context") if isinstance(rec.get("context"), dict) else {}
+    segmenter = globals().get("safe_segment")
+    context_owner = (
+        segmenter(context.get("owner", ""))
+        if callable(segmenter) else str(context.get("owner", "") or ""))
+    context_repo = (
+        segmenter(context.get("repo", ""))
+        if callable(segmenter) else str(context.get("repo", "") or ""))
+    privacy_reader = globals().get("_repo_is_private")
+    if (context_owner and context_repo and callable(privacy_reader)
+            and await privacy_reader(env, context_owner, context_repo)):
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+    cached = await edge_cache_match(cache_key)
+    if cached is not None:
+        return cached
     doc = dict(rec["note"])
     doc["@context"] = ap.AS_CONTEXT
     resp = json_response(doc, cache_seconds=300, extra_headers={
@@ -11903,18 +17470,32 @@ async def ap_object_media_handler(env, request, object_uuid, index):
     idx = int(index)
     cache_key = "%s/ap/o/%s/media/%d" % (
         _ap_origin(env, request), object_uuid, idx)
-    cached = await edge_cache_match_media(cache_key, "image/png")
-    if cached is not None:
-        return cached
     await ensure_schema(env)
     if not await _ap_enabled(env):
         return _ap_disabled_response()
     row = await d1_first(
         env, "SELECT data FROM ap_objects WHERE object_uuid=?", object_uuid)
     rec = await decrypt_row(env, row.get("data")) if row else None
+    context = rec.get("context") if isinstance((rec or {}).get("context"), dict) \
+        else {}
+    segmenter = globals().get("safe_segment")
+    context_owner = (
+        segmenter(context.get("owner", ""))
+        if callable(segmenter) else str(context.get("owner", "") or ""))
+    context_repo = (
+        segmenter(context.get("repo", ""))
+        if callable(segmenter) else str(context.get("repo", "") or ""))
+    privacy_reader = globals().get("_repo_is_private")
+    if (context_owner and context_repo and callable(privacy_reader)
+            and await privacy_reader(env, context_owner, context_repo)):
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
     media = (rec or {}).get("media") or []
     if idx < 0 or idx >= len(media):
         return json_response({"error": "not_found"}, status=404)
+    cached = await edge_cache_match_media(cache_key, "image/png")
+    if cached is not None:
+        return cached
     item = media[idx]
     try:
         raw = base64.b64decode(item.get("data", ""), validate=True)
@@ -12103,30 +17684,37 @@ async def _ap_drain_outbox(env, limit):
 
 async def _ap_publish_repo_event(env, request, owner, repo, kind, event_type,
                                  ref, title, body, author_name,
-                                 extra_images=None):
-    """Federate one repo event: a Note from the repo actor to its followers,
-    plus (when the author maps to a local account with its own actor) the same
-    Note from the user actor to theirs.
+                                 extra_images=None, manual=False):
+    """Queue an automatic repo event, or immediately publish an explicit one.
 
-    Near-zero cost while unused: actor rows only exist after someone on the
-    fediverse looked the actor up, so for an unfollowed repo this is two
-    indexed SELECTs that miss."""
+    Normal issue/PR/discussion/commit/release hooks use the encrypted,
+    deterministic, at-most-daily digest queue. Only an owner-authenticated
+    caller that explicitly passes ``manual=True`` retains the immediate Note
+    path (including its historical repo/user actor fan-out).
+
+    Actor rows remain lazy. Queued digests are published only after a
+    fediverse lookup has created the corresponding repository actor."""
     owner = (owner or "").strip().lower()
     repo = (repo or "").strip()
     if not owner or not repo or kind not in AP_FEDI_KINDS:
         return
     if not await _ap_enabled(env):
         return
-    if await _repo_is_private(env, owner, repo):
+    privacy_reader = globals().get("_repo_is_private")
+    if callable(privacy_reader) and await privacy_reader(env, owner, repo):
+        return
+    if not manual:
+        await _ap_enqueue_repo_digest(
+            env, request, owner, repo, kind, event_type, ref, title, body)
         return
     origin = _ap_origin(env, request)
     web_url = origin + repo_web_href(owner, repo)
     author = clean_string(author_name or "", MAX_NODE_NAME).lower()
     # Handles (and thus actor ids) are lowercase-normalized so the same repo
     # always federates as one stable actor URL regardless of link casing.
-    # The repo actor only posts when the owner left both per-repo switches on;
-    # the author's own user actor keeps posting to ITS followers either way —
-    # those switches govern the repo's presence, not the author's.
+    # The explicit/manual compatibility path preserves its historical actor
+    # fan-out: the repo actor obeys both per-repo switches, while the author's
+    # own actor is governed by that user's federation presence.
     settings = await _ap_repo_settings_get(env, owner, repo)
     candidates = []
     if settings["federate"] and settings["broadcastEvents"]:
@@ -12308,75 +17896,210 @@ async def _ap_handle_undo(env, request, activity):
     return json_response({"ok": True}, status=202)
 
 
+async def _ap_comment_by_remote_id(env, remote_id):
+    """Return (row, decrypted record, blind index) for a remote reply."""
+    if not str(remote_id or "").startswith("https://"):
+        return None, None, ""
+    remote_id_bi = await blind_index(env, "ap-comment:" + str(remote_id))
+    row = await d1_first(
+        env,
+        "SELECT context_bi, remote_id_bi, parent_remote_id_bi, lifecycle,"
+        " data, ts FROM ap_comments WHERE remote_id_bi=?",
+        remote_id_bi)
+    rec = await decrypt_row(env, row.get("data")) if row else None
+    return row, rec, remote_id_bi
+
+
+async def _ap_reply_parent(env, origin, parent_url):
+    """Resolve a direct local-object or nested remote-reply parent.
+
+    Remote activities cannot choose a ForkMesh context themselves. Nested
+    Lemmy comments inherit the verified parent's encrypted local context.
+    """
+    parent_uuid = ap.parse_local_object_url(origin, parent_url)
+    if parent_uuid:
+        row = await d1_first(
+            env, "SELECT data, context_bi FROM ap_objects WHERE object_uuid=?",
+            parent_uuid)
+        parent = await decrypt_row(env, row.get("data")) if row else None
+        if parent and isinstance(parent.get("context"), dict):
+            return row.get("context_bi"), parent["context"], ""
+        return None, None, ""
+    row, rec, parent_bi = await _ap_comment_by_remote_id(env, parent_url)
+    if row and rec and isinstance(rec.get("context"), dict):
+        return row.get("context_bi"), rec["context"], parent_bi
+    return None, None, ""
+
+
+def _ap_activity_is_public(activity):
+    """True only when Create/Note addressing explicitly names AS Public."""
+    if not isinstance(activity, dict):
+        return False
+    candidates = [activity]
+    embedded = activity.get("object")
+    if isinstance(embedded, dict):
+        candidates.append(embedded)
+    for candidate in candidates:
+        for key in ("to", "cc", "audience"):
+            values = candidate.get(key, [])
+            if not isinstance(values, list):
+                values = [values]
+            for value in values:
+                target = ap.activity_object_id(value)
+                if target == ap.AS_PUBLIC:
+                    return True
+    return False
+
+
 async def _ap_handle_create(env, request, activity, remote):
     # A remote reply to one of our published Notes becomes a federated comment
     # on the underlying thread; a post that @-mentions one of our repo actors
-    # may become an issue-inbox submission. Anything else is acknowledged and
-    # dropped (we host repos, not timelines).
+    # becomes verified public activity awaiting optional, explicit owner
+    # review. Nothing in this inbound path files an issue automatically.
+    # Anything else is acknowledged and dropped (we host repos, not timelines).
     note = ap.note_essentials(activity.get("object"))
     if not note:
+        return json_response({"ok": True}, status=202)
+    # HTTP signatures authenticate the sender, not the intended audience.
+    # Direct/private Notes must never enter a public thread or World feed.
+    if not _ap_activity_is_public(activity):
         return json_response({"ok": True}, status=202)
     # The note's author must be the signing actor (same host is not enough:
     # one compromised account must not be able to speak for a whole server).
     if note["attributedTo"].split("#")[0].rstrip("/") != remote["actor_id"]:
         return json_response({"error": "author_mismatch"}, status=401)
     origin = _ap_origin(env, request)
-    parent_uuid = ap.parse_local_object_url(origin, note["inReplyTo"])
-    if not parent_uuid:
+    context_bi, context, parent_remote_id_bi = await _ap_reply_parent(
+        env, origin, note["inReplyTo"])
+    if not context:
         mention = _ap_note_repo_mention(origin, note)
         if mention:
             return await _ap_handle_repo_mention(
                 env, request, note, remote, mention[0], mention[1])
         return json_response({"ok": True}, status=202)
-    row = await d1_first(
-        env, "SELECT data, context_bi FROM ap_objects WHERE object_uuid=?",
-        parent_uuid)
-    parent = await decrypt_row(env, row.get("data")) if row else None
-    if not parent or not isinstance(parent.get("context"), dict):
-        return json_response({"ok": True}, status=202)
-    context = parent["context"]
     # Owner switched federated comments (or the whole actor) off: acknowledge
     # and drop, same as any non-reply — redelivery storms must not 4xx.
     reply_settings = await _ap_repo_settings_get(
         env, context.get("owner", ""), context.get("repo", ""))
     if not reply_settings["federate"] or not reply_settings["acceptComments"]:
         return json_response({"ok": True}, status=202)
-    context_bi = row.get("context_bi")
+    existing_row, existing_rec, remote_id_bi = \
+        await _ap_comment_by_remote_id(env, note["id"])
+    if existing_row and existing_rec:
+        return json_response({"ok": True, "duplicate": True}, status=202)
     count = await d1_first(
         env, "SELECT COUNT(*) AS c FROM ap_comments WHERE context_bi=?",
         context_bi)
     if ((count or {}).get("c", 0) or 0) >= AP_MAX_COMMENTS_PER_THREAD:
         return json_response({"error": "thread_full"}, status=429)
-    text = ap.sanitize_remote_html(note["content"])
-    if not text:
-        return json_response({"ok": True}, status=202)
     now = int(Date.now())
-    rec = {
-        "author": remote.get("handle") or remote.get("actor_id", ""),
-        "authorName": remote.get("display_name", ""),
-        "authorUrl": remote.get("url", "") or remote.get("actor_id", ""),
-        "content": text,
-        "remoteId": note["id"],
-        "remoteUrl": note["url"],
-        "published": note["published"],
-        "context": context,
-        "ts": now,
-    }
-    remote_id_bi = await blind_index(env, "ap-comment:" + note["id"])
+    normalized = ap_threads.apply_activity(
+        {}, activity, remote_actor=remote, context=context, received_ms=now)
+    if not normalized.get("ok"):
+        return json_response({"ok": True}, status=202)
+    rec = normalized["record"]
+    # The HTTP delivery signature was verified above, but that is explicitly
+    # not a ForkMesh Ed25519 native-event signature.
+    rec["provenance"]["deliverySignatureVerified"] = True
+    rec["provenance"]["nativeSignatureVerified"] = False
     await d1_run(
         env,
-        "INSERT OR IGNORE INTO ap_comments (context_bi, remote_id_bi, data,"
-        " ts) VALUES (?,?,?,?)",
-        context_bi, remote_id_bi, await encrypt_row(env, rec), now)
+        "INSERT OR IGNORE INTO ap_comments (context_bi, remote_id_bi,"
+        " parent_remote_id_bi, lifecycle, data, ts) VALUES (?,?,?,?,?,?)",
+        context_bi, remote_id_bi, parent_remote_id_bi or None,
+        rec["lifecycle"], await encrypt_row(env, rec), now)
+    if context.get("kind") == "issue":
+        reply_owner = context.get("owner", "")
+        reply_repo = context.get("repo", "")
+        data_owner = await _ap_org_alias_owner(
+            env, reply_owner, reply_repo)
+        if not await _repo_is_private(env, data_owner, reply_repo):
+            public_note = dict(note)
+            public_note["content"] = rec.get("body", "")
+            await fediverse_mentions_api.record_verified(
+                _WorldCommunityRuntime(env, request),
+                note=public_note,
+                remote=remote,
+                actor_owner=reply_owner,
+                data_owner=data_owner,
+                repo=reply_repo,
+                kind="reply",
+                context={
+                    "ref": context.get("ref", ""),
+                    "issueUrl": (
+                        origin
+                        + repo_web_href(reply_owner, reply_repo)
+                        + "/issues/"
+                        + str(context.get("ref", ""))
+                    ),
+                },
+                signature_verified=True,
+                public_activity=True,
+                public_repository=True,
+            )
     title = "Fediverse reply on %s/%s %s %s" % (
         context.get("owner", ""), context.get("repo", ""),
         context.get("kind", ""), context.get("ref", ""))
     await _best_effort_inbox_side_effect(enqueue_notification(
         env, context.get("owner", ""), "subscribed", title,
-        body="%s: %s" % (rec["author"], text[:280]),
+        body="%s: %s" % (rec["author"], rec["body"][:280]),
         repo="%s/%s" % (context.get("owner", ""), context.get("repo", "")),
         href=repo_web_href(context.get("owner", ""), context.get("repo", "")),
         source="fediverse", dedupe="ap-comment:" + note["id"]))
+    return json_response({"ok": True}, status=202)
+
+
+async def _ap_handle_update(env, activity, remote):
+    note = ap.note_essentials(activity.get("object"))
+    if not note:
+        return json_response({"ok": True}, status=202)
+    row, existing, _ = await _ap_comment_by_remote_id(env, note["id"])
+    if not row or not existing:
+        return json_response({"ok": True}, status=202)
+    result = ap_threads.apply_activity(
+        {note["id"]: existing}, activity, remote_actor=remote,
+        context=existing.get("context"), received_ms=int(Date.now()))
+    if not result.get("ok"):
+        status = 401 if result.get("reason") == "author_mismatch" else 202
+        return json_response({"error": result.get("reason")}, status=status)
+    if result.get("changed"):
+        rec = result["record"]
+        rec["provenance"]["deliverySignatureVerified"] = True
+        rec["provenance"]["nativeSignatureVerified"] = False
+        await d1_run(
+            env,
+            "UPDATE ap_comments SET lifecycle=?, data=?"
+            " WHERE remote_id_bi=?",
+            rec["lifecycle"], await encrypt_row(env, rec),
+            row.get("remote_id_bi"))
+    return json_response(
+        {"ok": True, "duplicate": not result.get("changed")}, status=202)
+
+
+async def _ap_handle_remove(env, activity, remote):
+    target_id = ap.activity_object_id(activity.get("object"))
+    row, existing, _ = await _ap_comment_by_remote_id(env, target_id)
+    if not row or not existing:
+        return json_response({"ok": True}, status=202)
+    # Lemmy community moderators use a different actor from the comment
+    # author. Accept moderation only from the same already-verified instance.
+    actor_host = urlparse(remote.get("actor_id", "")).hostname or ""
+    if actor_host.lower() != existing.get("sourceInstance", "").lower():
+        return json_response({"error": "moderator_instance_mismatch"},
+                             status=401)
+    result = ap_threads.apply_activity(
+        {target_id: existing}, activity, remote_actor=remote,
+        context=existing.get("context"), received_ms=int(Date.now()))
+    if result.get("changed"):
+        rec = result["record"]
+        rec["provenance"]["deliverySignatureVerified"] = True
+        rec["provenance"]["nativeSignatureVerified"] = False
+        await d1_run(
+            env,
+            "UPDATE ap_comments SET lifecycle=?, data=?"
+            " WHERE remote_id_bi=?",
+            rec["lifecycle"], await encrypt_row(env, rec),
+            row.get("remote_id_bi"))
     return json_response({"ok": True}, status=202)
 
 
@@ -12391,98 +18114,9 @@ def _ap_note_repo_mention(origin, note):
     return None
 
 
-# Workers AI JSON-mode schema for classifying a repo-actor mention. Two-way
-# (create_issue / none) on purpose: unlike ForkBot in chat, a stranger's
-# Mastodon post must never trigger list/search/agent actions.
-AP_MENTION_INTENT_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "intent": {"type": "string", "enum": ["create_issue", "none"]},
-        "title": {"type": "string"},
-        "body": {"type": "string"},
-    },
-    "required": ["intent"],
-}
-
-
-async def _ap_mention_ai_intent(env, text):
-    """Workers AI decides whether a fediverse post that mentioned a repo actor
-    is asking for work to be recorded. Returns {"intent":"create_issue",
-    "title","body"} or {"intent":"none"}, or None when the model is
-    unreachable/unparseable — callers treat None as "AI could not decide" and
-    fall back to a heuristic, the same contract as _forkbot_ai_interpret."""
-    system_prompt = (
-        "A fediverse (Mastodon) user mentioned a ForkMesh repository in a "
-        "public post. Decide whether the post reports a bug or asks for a "
-        "task/feature to be recorded as an issue on that repository. Respond "
-        "with ONLY one JSON object, no other text. A bug report, problem "
-        "description, or work request -> "
-        '{"intent":"create_issue","title":"short summary","body":"the '
-        'problem or request, restated from the post"}; praise, questions, '
-        'small talk, spam, or anything else -> {"intent":"none"}.'
-    )
-    result = await _forkbot_run_ai(
-        env, system_prompt, clean_string(text, FORKBOT_MAX_COMMAND),
-        schema=AP_MENTION_INTENT_SCHEMA)
-    if result is None:
-        return None
-    parsed = result if isinstance(result, dict) else \
-        _forkbot_json_object_from_text(result)
-    if not isinstance(parsed, dict):
-        return None
-    intent = clean_string(parsed.get("intent", ""), 40).strip().lower()
-    if intent != "create_issue":
-        return {"intent": "none"} if intent == "none" else None
-    fields = _forkbot_clean_ai_issue_fields(parsed)
-    if not fields:
-        # The model wanted an issue but produced no usable draft — let the
-        # caller's heuristic take over instead of refusing.
-        return None
-    return {"intent": "create_issue", "title": fields["title"],
-            "body": fields["body"]}
-
-
-async def _ap_fetch_note_images(env, images):
-    """Download the post's image attachments (bounded) and shape them like a
-    remote issue submission's attachmentData: content-addressed names
-    (sha256[:8] + ext — the same scheme as the desktop's attachmentNameFor)
-    that the owner's node materializes into the issue folder on merge.
-    Best-effort: an unfetchable or oversized image is skipped, never fatal."""
-    from js import fetch as js_fetch
-    out = []
-    for att in images:
-        if len(out) >= AP_MENTION_MAX_IMAGES:
-            break
-        url = str(att.get("url", "") or "")
-        ext = AP_MENTION_IMAGE_EXTS.get(att.get("mediaType", ""))
-        if not ext or not url.startswith("https://"):
-            continue
-        if await _ap_domain_blocked(env, urlparse(url).netloc):
-            continue
-        try:
-            resp = await js_fetch(url, to_js({"method": "GET"}))
-            if int(getattr(resp, "status", 0)) != 200:
-                continue
-            data = (await resp.arrayBuffer()).to_bytes()
-        except Exception:
-            continue
-        if not data or len(data) > AP_MENTION_MAX_IMAGE_BYTES:
-            continue
-        name = hashlib.sha256(data).hexdigest()[:8] + "." + ext
-        if any(entry["name"] == name for entry in out):
-            continue
-        # Alt text becomes the markdown label; brackets would break the link.
-        alt = re.sub(r"[\[\]()]+", " ", clean_string(att.get("name", ""), 120))
-        out.append({
-            "name": name,
-            "data": base64.b64encode(data).decode(),
-            "alt": re.sub(r"\s+", " ", alt).strip(),
-        })
-    return out
-
-
 async def _ap_send_mention_reply(env, request, owner, repo, remote, note,
-                                 text, issue_number):
+                                 text, issue_number, dedupe_id="",
+                                 object_uuid=""):
     """Reply to the mentioning post as the repo actor: a public Note in the
     author's thread with a Mention tag so their server notifies them. Queued
     through ap_outbox so a lost delivery retries on the cron drain. The stored
@@ -12492,10 +18126,11 @@ async def _ap_send_mention_reply(env, request, owner, repo, remote, note,
     handle = ap.repo_handle(owner, repo)
     local = await _ap_local_actor(env, AP_ACTOR_REPO, handle, create=True)
     if not local:
-        return
+        return False
     actor_url = _ap_actor_url(origin, AP_ACTOR_REPO, handle)
     now = int(Date.now())
-    object_uuid = _ap_uuid()
+    if not re.fullmatch(r"[a-f0-9]{32}", str(object_uuid or "")):
+        object_uuid = _ap_uuid()
     reply = ap.note_doc(
         origin + "/ap/o/" + object_uuid, actor_url, actor_url + "/followers",
         ap.note_html_from_text(text), now,
@@ -12516,7 +18151,8 @@ async def _ap_send_mention_reply(env, request, owner, repo, remote, note,
            "media": []}
     await d1_run(
         env,
-        "INSERT INTO ap_objects (object_uuid, actor_bi, context_bi, data,"
+        "INSERT OR IGNORE INTO ap_objects "
+        "(object_uuid, actor_bi, context_bi, data,"
         " published) VALUES (?,?,?,?,?)",
         object_uuid, await _ap_actor_bi(env, AP_ACTOR_REPO, handle),
         await blind_index(env, "ap-context:" + ckey),
@@ -12524,52 +18160,55 @@ async def _ap_send_mention_reply(env, request, owner, repo, remote, note,
     inbox = ((remote.get("inbox") or "").strip()
              or (remote.get("shared_inbox") or "").strip())
     if not inbox:
-        return
+        return False
     out_data = await encrypt_row(env, {
         "body": json.dumps(ap.create_activity(reply)),
         "actorKind": AP_ACTOR_REPO, "actorHandle": handle,
         "actorUrl": actor_url})
-    await d1_run(
-        env,
-        "INSERT INTO ap_outbox (inbox, data, attempts, next_ts, created_at)"
-        " VALUES (?,?,0,?,?)",
-        inbox, out_data, now, now)
+    if dedupe_id:
+        dedupe_bi = await blind_index(
+            env,
+            "ap-mention-followup:" + str(dedupe_id) + ":" + inbox,
+        )
+        await d1_run(
+            env,
+            "INSERT OR IGNORE INTO ap_outbox "
+            "(inbox, data, attempts, next_ts, created_at, dedupe_bi)"
+            " VALUES (?,?,0,?,?,?)",
+            inbox, out_data, now, now, dedupe_bi)
+    else:
+        await d1_run(
+            env,
+            "INSERT INTO ap_outbox "
+            "(inbox, data, attempts, next_ts, created_at)"
+            " VALUES (?,?,0,?,?)",
+            inbox, out_data, now, now)
     await _ap_drain_outbox(env, 1)
+    return True
 
 
 async def _ap_handle_repo_mention(env, request, note, remote, owner, repo):
     """A verified fediverse post that @-mentions one of our repo actors
-    ("@owner.repo@host this button is broken ..."). Workers AI reads the post;
-    when it asks for a bug/task/feature to be recorded, the request becomes an
-    issue-inbox submission (the owner's desktop node assigns the real number
-    and merges it, exactly like a ForkBot chat request), the post's image
-    attachments ride along, and the repo actor replies to the author with the
-    outcome. Anything else is acknowledged and dropped — and every path
-    answers 202, because fediverse redelivery storms must never see a 4xx."""
+    ("@owner.repo@host this button is broken ..."). It becomes sanitized
+    public activity in World's manual review feed. It never runs AI, enters an
+    issue inbox, or publishes a reply here. Only a later owner-authorized
+    preview + explicit create action may queue it, and even then it stays
+    pending until the owner node confirms the materialized issue number."""
     dropped = json_response({"ok": True}, status=202)
-    # Same visibility gate as the actor itself, plus the owner's remote-content
-    # switch: a mention-created issue is remote content entering the repo, the
-    # same trust decision acceptComments already governs (an unpublished repo
-    # has no fediverse presence, so a missing catalog row also drops).
-    # The actor is addressed by the org handle, but the repo row, AP settings
-    # and issue inbox live under the linked node (issue #388). Resolve once and
-    # use the node for every data read; the org name stays the reply author.
     data_owner = await _ap_org_alias_owner(env, owner, repo)
-    key_bi = await blind_index(env, data_owner + "/" + repo)
-    row = await d1_first(
-        env, "SELECT is_private FROM repositories WHERE key_bi=?", key_bi)
-    if not row or int(row.get("is_private") or 0):
+    if await _repo_is_private(env, data_owner, repo):
         return dropped
     settings = await _ap_repo_settings_get(env, data_owner, repo)
     if not settings["federate"] or not settings["acceptComments"]:
         return dropped
+    # A legacy deployment may already have auto-filed this note. Preserve that
+    # historical dedupe marker so a redelivery cannot reintroduce it as a new
+    # manual-review candidate.
     mention_bi = await blind_index(env, "ap-mention:" + note["id"])
     seen = await d1_first(
         env, "SELECT ts FROM ap_mentions WHERE remote_id_bi=?", mention_bi)
     if seen:
         return dropped
-    # The handle itself ("@owner.repo@host") is addressing, not content — the
-    # model should judge what remains.
     text = ap.sanitize_remote_html(note["content"])
     text = re.sub(
         r"(?i)@" + re.escape(ap.repo_handle(owner, repo))
@@ -12579,68 +18218,48 @@ async def _ap_handle_repo_mention(env, request, note, remote, owner, repo):
     text = text.strip()
     if not text:
         return dropped
-    now = int(Date.now())
-    intent = await _ap_mention_ai_intent(env, text)
-    if intent is None:
-        # AI unreachable (distinct from a confident "none"): same degradation
-        # contract as ForkBot — an obviously issue-shaped post still files,
-        # anything ambiguous stays unmarked so a redelivery can retry once
-        # the model is back.
-        if not _forkbot_command_hints_issue(text):
-            return dropped
-        fields = _forkbot_fallback_issue_fields(text)
-    elif intent.get("intent") != "create_issue":
-        # Confident "not an issue": remember the note so redeliveries don't
-        # re-run the model.
-        await d1_run(
-            env,
-            "INSERT OR IGNORE INTO ap_mentions (remote_id_bi, ts)"
-            " VALUES (?,?)", mention_bi, now)
-        return dropped
-    else:
-        fields = {"title": intent["title"], "body": intent["body"]}
-    author_label = ("@" + remote["handle"]) if remote.get("handle") \
-        else remote.get("actor_id", "")
-    images = await _ap_fetch_note_images(env, note.get("images") or [])
-    body = fields["body"]
-    for img in images:
-        body += "\n\n![%s](%s)" % (img["alt"] or "attachment", img["name"])
-    body += "\n\nFiled from a fediverse mention by %s: %s" % (
-        author_label, note["url"])
-    ok, result = await _forkbot_enqueue_issue(
-        env, data_owner, repo, fields["title"], body, author_label,
-        source="fediverse", labels=["fediverse"], attachments=images)
-    await d1_run(
-        env,
-        "INSERT OR IGNORE INTO ap_mentions (remote_id_bi, ts) VALUES (?,?)",
-        mention_bi, now)
-    if not ok:
-        return dropped
-    number = int(result.get("issueNumber", 0) or 0)
-    issue_url = _ap_origin(env, request) + repo_web_href(owner, repo) \
-        + "/issues"
-    title = result.get("titleIfNew") or fields["title"]
-    if number > 0:
-        message = (
-            '%s I\'ve opened issue #%d in %s/%s: "%s". It will appear at %s '
-            "once the maintainer's node syncs its inbox."
-        ) % (author_label, number, owner, repo, title, issue_url)
-    else:
-        message = (
-            '%s I\'ve opened an issue in %s/%s: "%s". It will appear at %s '
-            "once the maintainer's node syncs its inbox."
-        ) % (author_label, owner, repo, title, issue_url)
-    await _best_effort_inbox_side_effect(_ap_send_mention_reply(
-        env, request, owner, repo, remote, note, message, number))
+    public_note = dict(note)
+    public_note["content"] = text
+    await fediverse_mentions_api.record_verified(
+        _WorldCommunityRuntime(env, request),
+        note=public_note,
+        remote=remote,
+        actor_owner=owner,
+        data_owner=data_owner,
+        repo=repo,
+        kind="mention",
+        signature_verified=True,
+        public_activity=True,
+        public_repository=True,
+    )
     return dropped
 
 
-async def _ap_handle_delete(env, activity):
+async def _ap_handle_delete(env, activity, remote=None):
     object_id = ap.activity_object_id(activity.get("object"))
     if object_id:
-        remote_id_bi = await blind_index(env, "ap-comment:" + object_id)
+        row, existing, _ = await _ap_comment_by_remote_id(env, object_id)
+        if not row or not existing:
+            return json_response({"ok": True}, status=202)
+        remote_actor_id = (remote or {}).get("actor_id", "")
+        if remote_actor_id.rstrip("/") != \
+                str(existing.get("authorId", "")).rstrip("/"):
+            return json_response({"error": "author_mismatch"}, status=401)
+        result = ap_threads.apply_activity(
+            {object_id: existing}, activity, remote_actor=remote,
+            context=existing.get("context"), received_ms=int(Date.now()))
+        if not result.get("ok"):
+            return json_response({"error": result.get("reason")},
+                                 status=401)
+        rec = result["record"]
+        rec["provenance"]["deliverySignatureVerified"] = True
+        rec["provenance"]["nativeSignatureVerified"] = False
         await d1_run(
-            env, "DELETE FROM ap_comments WHERE remote_id_bi=?", remote_id_bi)
+            env,
+            "UPDATE ap_comments SET lifecycle=?, data=?"
+            " WHERE remote_id_bi=?",
+            rec["lifecycle"], await encrypt_row(env, rec),
+            row.get("remote_id_bi"))
     return json_response({"ok": True}, status=202)
 
 
@@ -12692,23 +18311,43 @@ async def ap_inbox_handler(env, request):
         return json_response({"ok": True}, status=202)
 
     # Anything we'd acknowledge-and-drop after verifying (Like/Announce/
-    # Update/Accept/...) is dropped before the signature dance instead: the
+    # Accept/...) is dropped before the signature dance instead: the
     # verify path costs a signed GET back to the sender's server (plus D1
     # reads/writes to cache its actor), so fediverse-wide Like/boost floods
     # both melted our origin AND hammered Mastodon with actor refetches —
     # the "too many requests" loop of issue #416.
-    if activity_type not in ("Follow", "Undo", "Create", "Delete"):
+    if activity_type not in (
+            "Follow", "Undo", "Create", "Update", "Delete", "Remove"):
         return json_response({"ok": True}, status=202)
     if activity_type == "Create":
         # Two Note shapes matter: replies to our own /ap/o/<uuid> objects
         # (federated comments) and posts whose Mention tags point at one of
         # our repo actors (candidate issue requests). Everything else is
         # dropped here, before the remote-actor fetch (the handler re-checks
-        # after verification). Both gates are pure string parsing — no D1.
+        # after verification). A nested Lemmy reply also qualifies when its
+        # parent is an already-stored remote reply; that costs one indexed D1
+        # read but avoids verifying unrelated fediverse traffic.
         note = ap.note_essentials(activity.get("object"))
-        if not note or not (
-                ap.parse_local_object_url(origin, note["inReplyTo"])
-                or _ap_note_repo_mention(origin, note)):
+        qualifies = bool(note and (
+            ap.parse_local_object_url(origin, note["inReplyTo"])
+            or _ap_note_repo_mention(origin, note)))
+        if note and not qualifies and note["inReplyTo"].startswith("https://"):
+            parent_row, _, _ = await _ap_comment_by_remote_id(
+                env, note["inReplyTo"])
+            qualifies = bool(parent_row)
+        if not qualifies:
+            return json_response({"ok": True}, status=202)
+    elif activity_type == "Update":
+        note = ap.note_essentials(activity.get("object"))
+        if not note:
+            return json_response({"ok": True}, status=202)
+        target_row, _, _ = await _ap_comment_by_remote_id(env, note["id"])
+        if not target_row:
+            return json_response({"ok": True}, status=202)
+    elif activity_type == "Remove":
+        target_id = ap.activity_object_id(activity.get("object"))
+        target_row, _, _ = await _ap_comment_by_remote_id(env, target_id)
+        if not target_row:
             return json_response({"ok": True}, status=202)
 
     parsed_sig = ap.parse_signature_header(
@@ -12773,9 +18412,13 @@ async def ap_inbox_handler(env, request):
         return await _ap_handle_undo(env, request, activity)
     if activity_type == "Create":
         return await _ap_handle_create(env, request, activity, remote)
+    if activity_type == "Update":
+        return await _ap_handle_update(env, activity, remote)
     if activity_type == "Delete":
-        return await _ap_handle_delete(env, activity)
-    # Like/Announce/Update/Accept/... are acknowledged and dropped for now.
+        return await _ap_handle_delete(env, activity, remote)
+    if activity_type == "Remove":
+        return await _ap_handle_remove(env, activity, remote)
+    # Like/Announce/Accept/... are acknowledged and dropped above.
     return json_response({"ok": True}, status=202)
 
 
@@ -12787,6 +18430,12 @@ async def repo_media_handler(env, request, owner, repo, media_kind):
     # the actor itself.
     if method_name(request) not in ("GET", "HEAD"):
         return json_response({"error": "method_not_allowed"}, status=405)
+    await ensure_schema(env)
+    # Privacy is checked before edge cache lookup: a once-public logo must not
+    # remain observable for the cache TTL after its repository becomes private.
+    if await _repo_is_private(env, owner, repo):
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
     # The repo actor's avatar/header: every remote server resolving the actor
     # fetches both images, so a federated post fans out into a burst here.
     # Key includes the ?v=<updated_at> buster from the actor document, so a
@@ -12797,9 +18446,6 @@ async def repo_media_handler(env, request, owner, repo, media_kind):
     cached = await edge_cache_match_media(cache_key, "image/png")
     if cached is not None:
         return cached
-    await ensure_schema(env)
-    if await _repo_is_private(env, owner, repo):
-        return json_response({"error": "not_found"}, status=404)
     repo_bi = await blind_index(env, owner + "/" + repo)
     row = await d1_first(
         env, "SELECT data FROM repo_media WHERE repo_bi=? AND kind=?",
@@ -12836,14 +18482,17 @@ async def repo_card_handler(env, request, owner, repo):
     # cost one render per colo per TTL.
     if method_name(request) not in ("GET", "HEAD"):
         return json_response({"error": "method_not_allowed"}, status=405)
+    await ensure_schema(env)
+    # Check the signed catalog record before cache: privacy changes must revoke
+    # cached social previews immediately rather than waiting for their TTL.
+    if await _repo_is_private(env, owner, repo):
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
     parts = urlparse(request.url)
     cache_key = _ap_origin(env, request) + parts.path
     cached = await edge_cache_match_media(cache_key, "image/png")
     if cached is not None:
         return cached
-    await ensure_schema(env)
-    if await _repo_is_private(env, owner, repo):
-        return json_response({"error": "not_found"}, status=404)
     repo_bi = await blind_index(env, owner + "/" + repo)
     row = await d1_first(
         env, "SELECT data FROM repositories WHERE key_bi=?", repo_bi)
@@ -12984,15 +18633,30 @@ async def fedi_comments_handler(env, request, owner, repo):
         env, "ap-context:" + ap.context_key(owner, repo, kind, ref))
     rows = await d1_all(
         env,
-        "SELECT data, ts FROM ap_comments WHERE context_bi=?"
+        "SELECT data, ts, lifecycle FROM ap_comments WHERE context_bi=?"
         " ORDER BY ts ASC LIMIT 200",
         context_bi)
-    comments = []
+    normalized_records = {}
+    legacy_comments = []
     for row in rows or []:
         rec = await decrypt_row(env, row.get("data"))
         if not rec:
             continue
-        comments.append({
+        source_instance = (
+            rec.get("sourceInstance", "")
+            or urlparse(rec.get("remoteId", "")).hostname
+            or urlparse(rec.get("remoteUrl", "")).hostname
+            or "")
+        if source_instance and await _ap_domain_blocked(
+                env, source_instance):
+            continue
+        if rec.get("schema") == ap_threads.THREAD_SCHEMA \
+                and rec.get("remoteId"):
+            normalized_records[rec["remoteId"]] = rec
+            continue
+        # Pre-0065 rows remain readable and explicitly non-native while normal
+        # ActivityPub redelivery gradually upgrades them to lifecycle records.
+        legacy_comments.append({
             "author": rec.get("author", ""),
             "authorName": rec.get("authorName", ""),
             "authorUrl": rec.get("authorUrl", ""),
@@ -13000,7 +18664,28 @@ async def fedi_comments_handler(env, request, owner, repo):
             "url": rec.get("remoteUrl", ""),
             "ts": int(rec.get("ts", 0) or row.get("ts", 0) or 0),
             "federated": True,
+            "nativeEvent": False,
+            "lifecycle": "active",
+            "depth": 0,
+            "sourceInstance": source_instance,
+            "sourceSoftware": "activitypub",
+            "provenance": {
+                "source": "activitypub",
+                "instance": source_instance,
+                "backlink": rec.get("remoteUrl", ""),
+                "nativeEvent": False,
+                "nativeEventId": "",
+                "separationNotice": (
+                    "Remote ActivityPub reply; not part of ForkMesh's signed "
+                    "native event log."),
+            },
         })
+    comments = legacy_comments + ap_threads.thread_projection(
+        normalized_records)
+    comments.sort(key=lambda item: (
+        int(item.get("ts", 0) or 0),
+        str(item.get("published", "")),
+        str(item.get("remoteId", ""))))
     return json_response({"ok": True, "comments": comments},
                          cache_control="public, max-age=30")
 
@@ -13014,6 +18699,9 @@ async def ap_publish_handler(env, request, owner, repo):
     await ensure_schema(env)
     if not await _authorize_owner(env, request, owner):
         return json_response({"error": "unauthorized"}, status=401)
+    privacy_reader = globals().get("_repo_is_private")
+    if callable(privacy_reader) and await privacy_reader(env, owner, repo):
+        return json_response({"error": "not_found"}, status=404)
     try:
         data = await request.json()
     except Exception:
@@ -13027,23 +18715,27 @@ async def ap_publish_handler(env, request, owner, repo):
     ref = clean_string(
         str(data.get("ref", "") or data.get("number", "")
             or data.get("tag", "")), 80)
+    manual = data.get("manual") is True
     await _ap_publish_repo_event(
         env, request, owner, repo, kind, event_type, ref,
         clean_string(data.get("title", ""), 240),
         clean_string(data.get("body", ""), 4000),
-        clean_string(data.get("author", "") or owner, MAX_NODE_NAME))
-    return json_response({"ok": True}, status=202)
+        clean_string(data.get("author", "") or owner, MAX_NODE_NAME),
+        manual=manual)
+    return json_response({
+        "ok": True,
+        "mode": "manual_immediate" if manual else "daily_digest",
+    }, status=202)
 
 
 async def _authorize_repo_owner_web(env, request, owner, repo, data):
     """True when the caller may manage this repo's fediverse presence from the
-    web: the repo owner proven by their session token (or an admin acting on
-    the owner's behalf), or the owner's desktop node proving its Ed25519 key —
+    web: the repo owner proven by their session token, or the owner's desktop
+    node proving its Ed25519 key —
     the same trust gate as the About editor / ap-publish, with a distinct
     canonical so a signed token can't be replayed onto another endpoint."""
     actor = await _authed_account_name(env, request, data)
-    if actor and (await _account_owns_node(env, actor, owner)
-                  or await _is_admin(env, actor)):
+    if actor and await _account_owns_node(env, actor, owner):
         return True
     if data.get("ownerSig") and data.get("ts"):
         ts = str(data.get("ts", "") or "")
@@ -13054,6 +18746,36 @@ async def _authorize_repo_owner_web(env, request, owner, repo, data):
                 owner_pub, str(data.get("ownerSig", "") or ""), canonical):
             return True
     return False
+
+
+async def ap_digest_handler(env, request, owner, repo):
+    """Owner-only preview of the encrypted automatic-update queue."""
+    await ensure_schema(env)
+    method = method_name(request)
+    if method not in ("GET", "POST"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    if await _repo_is_private(env, owner, repo):
+        return json_response({"error": "not_found"}, status=404)
+    data = {}
+    if method == "POST":
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+    if not await _authorize_repo_owner_web(env, request, owner, repo, data):
+        return json_response({"error": "not_authorized"}, status=403)
+    settings = await _ap_repo_settings_get(env, owner, repo)
+    preview = await _ap_digest_preview(
+        env, str(owner).lower() + "/" + str(repo).lower())
+    preview.update({
+        "ok": True,
+        "enabled": bool(
+            settings["federate"] and settings["broadcastEvents"]),
+        "cadence": "daily",
+        "minimumIntervalMs": fedi_digest.DAY_MS,
+        "automatedLabel": True,
+    })
+    return json_response(preview, cache_control="no-store")
 
 
 async def ap_posts_handler(env, request, owner, repo):
@@ -13192,19 +18914,33 @@ async def _admin_ap_update(env, request):
         return json_response({"error": "bad_action"}, status=400)
     canonical = ("forkmesh-admin-ap-update-v1\n" + node + "\n" + action +
                  "\n" + domain + "\n" + ts).encode()
+    audit_target_type = (
+        "activitypub_domain"
+        if action in ("block", "unblock") else "activitypub")
+    audit_target = domain if audit_target_type == "activitypub_domain" else "global"
     if not await _admin_authorized(env, node, ts, sig, canonical):
+        await _audit_sensitive_action(
+            # `node` is only a claimed identity until the signature verifies;
+            # do not attribute a denied request to an account an attacker named.
+            env, "", "admin.activitypub_" + action,
+            audit_target_type, audit_target, "denied",
+            {"reason": "unauthorized", "claimedActorPresent": bool(node)})
         return json_response({"error": "unauthorized"}, status=401)
     now = int(Date.now())
-    if action in ("enable", "disable"):
-        await d1_run(
-            env,
-            "INSERT INTO ap_settings (k, v) VALUES ('enabled', ?)"
-            " ON CONFLICT(k) DO UPDATE SET v=excluded.v",
-            "1" if action == "enable" else "0")
-    else:
-        if not ap.valid_domain(domain):
-            return json_response({"error": "invalid_domain"}, status=400)
-        if action == "block":
+    if action in ("block", "unblock") and not ap.valid_domain(domain):
+        await _audit_sensitive_action(
+            env, node, "admin.activitypub_" + action,
+            audit_target_type, audit_target, "denied",
+            {"reason": "invalid_domain"})
+        return json_response({"error": "invalid_domain"}, status=400)
+    try:
+        if action in ("enable", "disable"):
+            await d1_run(
+                env,
+                "INSERT INTO ap_settings (k, v) VALUES ('enabled', ?)"
+                " ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+                "1" if action == "enable" else "0")
+        elif action == "block":
             await d1_run(
                 env,
                 "INSERT OR IGNORE INTO ap_blocked_domains (domain, added_by,"
@@ -13227,6 +18963,15 @@ async def _admin_ap_update(env, request):
         else:
             await d1_run(
                 env, "DELETE FROM ap_blocked_domains WHERE domain=?", domain)
+    except Exception:
+        await _audit_sensitive_action(
+            env, node, "admin.activitypub_" + action,
+            audit_target_type, audit_target, "failed",
+            {"reason": "mutation_error"})
+        raise
+    await _audit_sensitive_action(
+        env, node, "admin.activitypub_" + action,
+        audit_target_type, audit_target, "success")
     settings = await _ap_settings(env, fresh=True)
     return json_response({
         "ok": True,
@@ -13287,7 +19032,8 @@ async def _authorize_owner(env, request, owner):
     return await _verify_owner_signature(env, owner, sig, canonical)
 
 
-async def _authorize_owner_account(env, owner, data, request=None):
+async def _authorize_owner_account(env, owner, data, request=None,
+                                   allow_admin=True):
     # Authorize the caller as the repo owner (or a network admin) via their
     # logged-in account SESSION — not a self-asserted name. Used for the website
     # agents tab (adhoc #225). This gate protects immediate, unreviewed side
@@ -13302,8 +19048,8 @@ async def _authorize_owner_account(env, owner, data, request=None):
     actor = (rec.get("name", "") if rec else "").strip().lower()
     if not actor:
         return False, json_response({"error": "not_authorized"}, status=403)
-    if (not await _account_owns_node(env, actor, owner)
-            and not await _is_admin(env, actor)):
+    owns_node = await _account_owns_node(env, actor, owner)
+    if not owns_node and not (allow_admin and await _is_admin(env, actor)):
         return False, json_response({"error": "not_authorized"}, status=403)
     return True, None
 
@@ -13804,6 +19550,34 @@ async def subscribe_handler(env, request, owner, repo):
                  "\n" + ts).encode()
     if not await ed25519_verify(pubkey, signature, canonical):
         return json_response({"error": "bad_signature"}, status=401)
+    privacy_reader = globals().get("_repo_is_private")
+    if callable(privacy_reader) and await privacy_reader(env, owner, repo):
+        viewers = {
+            node,
+            clean_string((rec or {}).get("owner", ""), MAX_NODE_NAME).lower(),
+        }
+        viewers.discard("")
+        allowed = False
+        for viewer in viewers:
+            if (viewer == str(owner).lower()
+                    or await _account_owns_node(env, viewer, owner)):
+                allowed = True
+                break
+        if not allowed:
+            repo_bi = await blind_index(env, owner + "/" + repo)
+            for viewer in viewers:
+                grantee_bi = await blind_index(env, viewer)
+                shared = await d1_first(
+                    env,
+                    "SELECT 1 AS one FROM repo_shares "
+                    "WHERE repo_bi=? AND grantee_bi=?",
+                    repo_bi, grantee_bi,
+                )
+                if shared:
+                    allowed = True
+                    break
+        if not allowed:
+            return json_response({"error": "not_found"}, status=404)
     await subscribe_thread(env, owner, repo, source, number, node,
                            muted=not subscribed)
     return json_response({"ok": True, "subscribed": subscribed})
@@ -14641,20 +20415,31 @@ async def _forkbot_ai_interpret(env, command, context_text=""):
             "body": fields["body"]}
 
 
-async def _forkbot_repo_host_json(env, owner, repo, action_query):
-    """Internal fetch to the repo's host Durable Object (the same tunnel the
-    website's issue list uses): tree/blobs/search served by the live desktop
-    host. Returns the parsed JSON dict, or None when no host is reachable —
-    callers phrase that as "no live host", never as an empty repo."""
-    try:
-        host_id = env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
-        host_object = env.FORKMESH_HOST.get(host_id)
-        response = await asyncio.wait_for(
-            host_object.fetch(
-                "https://forkmesh.internal/api/repo/%s/%s/%s"
-                % (owner, repo, action_query)),
-            timeout=FORKBOT_HOST_TIMEOUT_MS / 1000,
+async def _forkbot_repo_gateway_json(env, owner, repo, action_query):
+    """Read public repository data through the normal HTTPS mirror gateway."""
+    owner = safe_segment(owner)
+    repo = safe_segment(repo)
+    action = clean_string(action_query, 400).lstrip("/")
+    if (
+        not owner or not repo
+        or not re.match(
+            r"^(tree|blobs|blob|raw|history|commit|branches|search|stats|sizes)"
+            r"(?:\?|$)",
+            action,
         )
+    ):
+        return None
+    try:
+        origin = _public_base_url(env).rstrip("/")
+        response = await asyncio.wait_for(
+            js_fetch(
+                "%s/api/repo/%s/%s/%s"
+                % (origin, quote(owner), quote(repo), action)
+            ),
+            timeout=FORKBOT_GATEWAY_TIMEOUT_MS / 1000,
+        )
+        if int(getattr(response, "status", 0) or 0) != 200:
+            return None
         data = await response.json()
         if hasattr(data, "to_py"):
             data = data.to_py()
@@ -14742,7 +20527,7 @@ async def _forkbot_recent_issue_numbers(env, owner, repo):
     no issues folder yet. Issues are split into open/ and closed/ status
     folders (adhoc #14); numbered folders directly under the root are the
     pre-split legacy layout."""
-    root = await _forkbot_repo_host_json(
+    root = await _forkbot_repo_gateway_json(
         env, owner, repo, "tree?path=" + quote(".forkmesh/issues", safe=""))
     if root is None:
         return None
@@ -14760,7 +20545,7 @@ async def _forkbot_recent_issue_numbers(env, owner, repo):
         elif name in ("open", "closed"):
             subdirs.append(name)
     for subdir in subdirs:
-        tree = await _forkbot_repo_host_json(
+        tree = await _forkbot_repo_gateway_json(
             env, owner, repo,
             "tree?path=" + quote(".forkmesh/issues/" + subdir, safe=""))
         sub_entries = tree.get("entries") if isinstance(tree, dict) else None
@@ -14788,7 +20573,7 @@ async def _forkbot_load_issue_records(env, owner, repo, numbers):
     query = "&".join(
         "path=" + quote(path, safe="")
         for n in numbers for path in _forkbot_issue_json_candidates(n))
-    data = await _forkbot_repo_host_json(env, owner, repo, "blobs?" + query)
+    data = await _forkbot_repo_gateway_json(env, owner, repo, "blobs?" + query)
     blobs = data.get("blobs") if isinstance(data, dict) else None
     if not isinstance(blobs, dict):
         return []
@@ -14809,7 +20594,7 @@ async def _forkbot_search_issues(env, owner, repo, query):
     """One host-side git grep over the mirror (the /search tunnel op, issue
     #360); ForkBot only reads the issues bucket. Returns the matches, or None
     when no host answered."""
-    data = await _forkbot_repo_host_json(
+    data = await _forkbot_repo_gateway_json(
         env, owner, repo, "search?q=" + quote(query, safe=""))
     if not isinstance(data, dict) or not data.get("ok"):
         return None
@@ -14916,12 +20701,13 @@ def _forkbot_attributed_body(body, source, actor):
 
 async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester,
                                  source="forkbot", labels=None,
-                                 attachments=None):
+                                 attachments=None,
+                                 federated_mention_id="",
+                                 federated_remote_url=""):
     """Queue a relay-authored issue for the owner's desktop node. ForkBot chat
-    requests use the defaults; fediverse repo mentions reuse the same path
-    with source/labels "fediverse" and the post's images as attachments
-    ([{name, data(base64)}] — the attachmentData shape a no-write-access node
-    ships, which the desktop materializes into the issue folder on merge)."""
+    requests use the defaults. A manually reviewed fediverse item can reuse
+    this path with its random review id so the owner node can later confirm
+    the exact issue it materialized; inbound posts never call this directly."""
     await ensure_schema(env)
     repo_bi = await blind_index(env, owner + "/" + repo)
     count = await d1_first(
@@ -14939,9 +20725,15 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester,
     # desktop assign). Allocated before the insert so it lands in the stored
     # item and can be echoed straight back to the chat.
     number = await _forkbot_next_issue_number(env, repo_bi, owner, repo)
+    tracked_mention_id = clean_string(federated_mention_id, 32).lower()
+    if not re.fullmatch(r"[a-f0-9]{32}", tracked_mention_id):
+        tracked_mention_id = ""
     event = {
         "type": "open",
-        "id": "forkbot-%d" % now,
+        "id": (
+            "fediverse-review-" + tracked_mention_id
+            if tracked_mention_id else "forkbot-%d" % now
+        ),
         "author": FORKBOT_AUTHOR,
         "authorName": FORKBOT_NAME,
         "ts": now,
@@ -14969,6 +20761,10 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester,
         "requestedBy": actor,
         "issueNumber": number,
     }
+    if tracked_mention_id:
+        item["fediverseMentionId"] = tracked_mention_id
+        item["fediverseRemoteUrl"] = clean_string(
+            federated_remote_url, 1600)
     if attachments:
         item["attachmentData"] = [
             {"name": entry["name"], "data": entry["data"]}
@@ -15051,7 +20847,7 @@ async def _forkbot_enqueue_agent_request(env, owner, repo, number, requester):
     return True, item
 
 
-def _forkbot_host_offline_reply(owner, repo):
+def _forkbot_gateway_offline_reply(owner, repo):
     return json_response({
         "ok": True,
         "action": "issues_unavailable",
@@ -15068,7 +20864,7 @@ async def _forkbot_action_count(env, owner, repo):
     # and never actually answer the question asked.
     numbers = await _forkbot_recent_issue_numbers(env, owner, repo)
     if numbers is None:
-        return _forkbot_host_offline_reply(owner, repo)
+        return _forkbot_gateway_offline_reply(owner, repo)
     total = len(numbers)
     if not total:
         message = "No issues have been filed in %s/%s yet." % (owner, repo)
@@ -15085,7 +20881,7 @@ async def _forkbot_action_count(env, owner, repo):
 async def _forkbot_action_list(env, owner, repo, count):
     numbers = await _forkbot_recent_issue_numbers(env, owner, repo)
     if numbers is None:
-        return _forkbot_host_offline_reply(owner, repo)
+        return _forkbot_gateway_offline_reply(owner, repo)
     issue_url = repo_web_href(owner, repo) + "/issues"
     if not numbers:
         return json_response({
@@ -15096,7 +20892,7 @@ async def _forkbot_action_list(env, owner, repo, count):
     records = await _forkbot_load_issue_records(env, owner, repo,
                                                 numbers[:count])
     if not records:
-        return _forkbot_host_offline_reply(owner, repo)
+        return _forkbot_gateway_offline_reply(owner, repo)
     lines = _forkbot_issue_lines(records)
     header = "Last %d issue%s in %s/%s:" % (
         len(records), "" if len(records) == 1 else "s", owner, repo)
@@ -15117,7 +20913,7 @@ async def _forkbot_action_list(env, owner, repo, count):
 async def _forkbot_action_search(env, owner, repo, query):
     matches = await _forkbot_search_issues(env, owner, repo, query)
     if matches is None:
-        return _forkbot_host_offline_reply(owner, repo)
+        return _forkbot_gateway_offline_reply(owner, repo)
     if not matches:
         return json_response({
             "ok": True, "action": "issues_searched", "query": query,
@@ -15151,7 +20947,7 @@ async def _forkbot_action_show(env, owner, repo, number):
     if number <= 0:
         numbers = await _forkbot_recent_issue_numbers(env, owner, repo)
         if numbers is None:
-            return _forkbot_host_offline_reply(owner, repo)
+            return _forkbot_gateway_offline_reply(owner, repo)
         if not numbers:
             return json_response({
                 "ok": True, "action": "issue_shown", "issue": None,
@@ -15203,7 +20999,7 @@ async def _forkbot_action_start_agent(env, owner, repo, number, sender):
         })
     numbers = await _forkbot_recent_issue_numbers(env, owner, repo)
     if numbers is None:
-        return _forkbot_host_offline_reply(owner, repo)
+        return _forkbot_gateway_offline_reply(owner, repo)
     if not numbers:
         return json_response({
             "ok": True, "action": "agent_denied",
@@ -15444,6 +21240,32 @@ async def _drain_issue_inbox(env, request, repo_bi):
     return removed
 
 
+async def _confirm_fediverse_issue_materializations(env, request):
+    """Apply bounded owner-node confirmations carried by a signed inbox ack."""
+    values = parse_qs(urlparse(request.url).query).get("materialized", [""])
+    raw = values[0] if values else ""
+    runtime = _WorldCommunityRuntime(env, request)
+    confirmed = 0
+    for value in str(raw or "").split(",")[:MAX_PENDING_PER_AUTHOR]:
+        mention_id, separator, number_text = value.partition(":")
+        if (
+            not separator
+            or not re.fullmatch(r"[a-f0-9]{32}", mention_id)
+        ):
+            continue
+        try:
+            number = int(number_text)
+        except (TypeError, ValueError):
+            continue
+        if number <= 0:
+            continue
+        if await fediverse_mentions_api.confirm_materialized(
+            runtime, mention_id, number
+        ):
+            confirmed += 1
+    return confirmed
+
+
 async def issues_handler(env, request, owner, repo):
     await ensure_schema(env)
     method = method_name(request)
@@ -15602,8 +21424,14 @@ async def issues_handler(env, request, owner, repo):
     if method == "DELETE":
         if not await _authorize_owner(env, request, owner):
             return json_response({"error": "unauthorized"}, status=401)
+        materialized = await _confirm_fediverse_issue_materializations(
+            env, request)
         removed = await _drain_issue_inbox(env, request, repo_bi)
-        return json_response({"ok": True, "drained": removed})
+        return json_response({
+            "ok": True,
+            "drained": removed,
+            "materialized": materialized,
+        })
 
     return json_response({"error": "method_not_allowed"}, status=405)
 
@@ -15897,6 +21725,11 @@ async def repo_pending_counts_handler(env, request, owner, repo):
     # briefly so repeated page views don't re-hit D1.
     if method_name(request) != "GET":
         return json_response({"error": "method_not_allowed"}, status=405)
+    # Submission volume is still repository metadata. Private and unpublished
+    # names return the same response and never expose whether inbox rows exist.
+    privacy_reader = globals().get("_repo_is_private")
+    if callable(privacy_reader) and await privacy_reader(env, owner, repo):
+        return json_response({"error": "not_found"}, status=404)
     await ensure_schema(env)
     repo_bi = await blind_index(env, owner + "/" + repo)
     rows = await d1_all(
@@ -15926,8 +21759,7 @@ async def sync_handler(env, request):
     # (drained on read, same semantics as GET /agents), and the relay's pinned
     # repo state. This replaces the node's old fast polling (4 inbox GETs per
     # repo every 60s + agents every 30s + catalog list for pin checks): the
-    # node now calls this once whenever a minimal "event" frame arrives on its
-    # host tunnel socket (see notify_repo_host), plus a slow safety-net poll.
+    # node now calls this on a bounded HTTPS polling schedule.
     # Auth reuses the forkmesh-issues-pull-v1 drain token (_authorize_owner).
     await ensure_schema(env)
     if method_name(request) != "GET":
@@ -15965,7 +21797,28 @@ async def sync_handler(env, request):
                 f" WHERE repo_bi IN ({marks})" + order,
                 *repo_bis)
             for r in table_rows or []:
-                item = await decrypt_row(env, r.get("data"))
+                owner_crypto = globals().get("security_control")
+                sealed = (
+                    owner_crypto.decode_owner_envelope(r.get("data"))
+                    if table == "agent_prompts" and owner_crypto is not None
+                    else None
+                )
+                if sealed:
+                    routing = sealed.get("routing") or {}
+                    item = {
+                        "queueId": int(r.get("drain_id") or 0),
+                        "agentId": int(routing.get("agentId") or 0),
+                        "queuedAt": int(routing.get("queuedAt") or 0),
+                        "encrypted": True,
+                        "envelope": sealed["envelope"],
+                    }
+                elif table == "agent_prompts" and owner_crypto is not None:
+                    # Production always enforces owner-sealed agent payloads.
+                    # A legacy row cannot be safely decrypted by the relay; it
+                    # is retained for an owner-run offline migration instead.
+                    item = None
+                else:
+                    item = await decrypt_row(env, r.get("data"))
                 if item:
                     # Carry the inbox row id so a node draining from /api/sync
                     # can ack exactly what it merged (DELETE ...?ids=), leaving
@@ -15981,7 +21834,12 @@ async def sync_handler(env, request):
                 # can never be delivered, so draining them is correct) so the
                 # drain deletes below can't sweep away rows inserted while
                 # this request was still decrypting (drop-undelivered race).
-                if table in ("agent_prompts", "about_inbox"):
+                # Owner-sealed prompts are acknowledged only after the desktop
+                # decrypts and accepts them. Legacy prompts keep drain-on-read
+                # compatibility; About updates are unchanged.
+                if (table == "about_inbox"
+                        or (table == "agent_prompts" and not sealed
+                            and owner_crypto is None)):
                     drain_ids.setdefault(r.get("repo_bi"), {}) \
                         .setdefault(table, []).append(r.get("drain_id"))
     repos = []
@@ -16017,6 +21875,11 @@ async def sync_handler(env, request):
                 % ",".join("?" for _ in prompt_ids),
                 *prompt_ids)
         entry["agentPrompts"] = prompts
+        if any(bool(p.get("encrypted")) for p in prompts
+               if isinstance(p, dict)):
+            entry["agentPromptAckPath"] = (
+                "/api/repo/%s/%s/agents/ack" % (
+                    entry.get("owner", owner), entry.get("name", "")))
         # Web About edits, drained on read like agent prompts: the node writes
         # the change into the repo's committed .forkmesh/info.json.
         abouts = pending.get("aboutUpdate", [])
@@ -16032,6 +21895,236 @@ async def sync_handler(env, request):
         repos.append(entry)
     return json_response(
         {"ok": True, "serverTime": int(Date.now()), "repos": repos})
+
+
+# --- Owner-only encryption control plane -----------------------------------
+
+async def owner_encryption_keys_handler(env, request):
+    """Register or revoke public recipient bundles for the signed-in owner.
+
+    The private X25519/ML-KEM halves never cross this API. Platform
+    administrators intentionally have no read or write override.
+    """
+    await ensure_schema(env)
+    method = method_name(request)
+    data = {}
+    if method in ("POST", "DELETE"):
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+    account_bi, rec = await _account_session_record(env, request, data)
+    actor = (rec.get("name", "") if rec else "").strip().lower()
+    if not actor:
+        return json_response({"error": "invalid_session"}, status=401)
+
+    if method == "GET":
+        rows = await d1_all(
+            env,
+            "SELECT key_id, public_bundle, created_at FROM "
+            "owner_encryption_keys WHERE account_bi=? AND revoked_at=0 "
+            "ORDER BY created_at DESC",
+            account_bi,
+        )
+        keys = []
+        for row in rows or []:
+            try:
+                bundle = json.loads(str(row.get("public_bundle") or ""))
+            except Exception:
+                continue
+            valid = security_control.validate_owner_public_bundle(bundle)
+            if valid and valid["kid"] == row.get("key_id"):
+                keys.append({
+                    "keyId": valid["kid"],
+                    "publicBundle": {
+                        "v": valid["v"],
+                        "x25519": valid["x25519"],
+                        "mlkem768": valid["mlkem768"],
+                    },
+                    "createdAt": int(row.get("created_at") or 0),
+                })
+        return json_response({
+            "ok": True,
+            "keys": keys,
+            "custody": "owner-device-only",
+            "privateKeysStored": False,
+        }, cache_control="no-store")
+
+    if method == "POST":
+        valid = security_control.validate_owner_public_bundle(
+            data.get("publicBundle"))
+        if not valid:
+            return json_response({"error": "invalid_public_bundle"}, status=400)
+        now = int(Date.now())
+        public_bundle = {
+            "v": valid["v"],
+            "x25519": valid["x25519"],
+            "mlkem768": valid["mlkem768"],
+        }
+        await d1_run(
+            env,
+            "INSERT INTO owner_encryption_keys "
+            "(account_bi, key_id, public_bundle, created_at, revoked_at) "
+            "VALUES (?,?,?,?,0) ON CONFLICT(account_bi,key_id) DO UPDATE SET "
+            "public_bundle=excluded.public_bundle, revoked_at=0",
+            account_bi, valid["kid"],
+            json.dumps(public_bundle, sort_keys=True, separators=(",", ":")),
+            now,
+        )
+        await _audit_sensitive_action(
+            env, actor, "owner_encryption_key.register", "account", actor,
+            "success", {"keyId": valid["kid"], "publicOnly": True})
+        return json_response({
+            "ok": True,
+            "keyId": valid["kid"],
+            "custody": "owner-device-only",
+            "privateKeysStored": False,
+        }, status=201, cache_control="no-store")
+
+    if method == "DELETE":
+        key_id = clean_string(data.get("keyId", ""), 128)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", key_id):
+            return json_response({"error": "invalid_key_id"}, status=400)
+        now = int(Date.now())
+        await d1_run(
+            env,
+            "UPDATE owner_encryption_keys SET revoked_at=? "
+            "WHERE account_bi=? AND key_id=?",
+            now, account_bi, key_id,
+        )
+        # A policy still naming the revoked key remains strict and therefore
+        # rejects new ciphertext until the owner rotates it; it never silently
+        # falls back to Worker-readable plaintext.
+        await _audit_sensitive_action(
+            env, actor, "owner_encryption_key.revoke", "account", actor,
+            "success", {"keyId": key_id})
+        return json_response({"ok": True, "revoked": True},
+                             cache_control="no-store")
+
+    return json_response({"error": "method_not_allowed"}, status=405)
+
+
+async def _repo_privacy_policy(env, owner, repo):
+    repo_bi = await blind_index(env, owner + "/" + repo)
+    try:
+        row = await d1_first(
+            env,
+            "SELECT owner_bi, owner_key_id, require_agent_e2ee, "
+            "require_mirror_encryption, updated_at FROM repo_privacy_policy "
+            "WHERE repo_bi=?",
+            repo_bi,
+        )
+    except Exception:
+        # A control-plane outage must never reactivate a plaintext path.
+        return {
+            "repoBi": repo_bi,
+            "ownerKeyId": "",
+            "requireAgentE2EE": True,
+            "requireMirrorEncryption": True,
+            "policyUnavailable": True,
+            "updatedAt": 0,
+        }
+    if not row:
+        return {
+            "repoBi": repo_bi,
+            "ownerKeyId": "",
+            # Confidentiality is a mandatory platform boundary, not an
+            # owner-disableable preference. Until a recipient key is
+            # registered, writes fail closed with an upgrade/setup response.
+            "requireAgentE2EE": True,
+            "requireMirrorEncryption": True,
+            "policyUnavailable": False,
+            "updatedAt": 0,
+        }
+    return {
+        "repoBi": repo_bi,
+        "ownerBi": str(row.get("owner_bi") or ""),
+        "ownerKeyId": str(row.get("owner_key_id") or ""),
+        # Old rows may contain zero from the pre-E2EE rollout. Do not let that
+        # historical value reactivate a server-readable data path.
+        "requireAgentE2EE": True,
+        "requireMirrorEncryption": True,
+        "policyUnavailable": False,
+        "updatedAt": int(row.get("updated_at") or 0),
+    }
+
+
+async def repo_privacy_handler(env, request, owner, repo):
+    await ensure_schema(env)
+    method = method_name(request)
+    if method not in ("GET", "POST"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    data = {}
+    if method == "POST":
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+    ok, err = await _authorize_owner_account(
+        env, owner, data, request, allow_admin=False)
+    if not ok:
+        return err
+    actor_bi, actor_rec = await _account_session_record(env, request, data)
+    actor = (actor_rec.get("name", "") if actor_rec else "").strip().lower()
+    policy_reader = globals().get("_repo_privacy_policy")
+    policy = (
+        await policy_reader(env, owner, repo)
+        if callable(policy_reader) else {
+            # A missing policy reader is a control-plane failure, never a
+            # reason to reactivate relay-readable private data.
+            "ownerKeyId": "", "requireAgentE2EE": True,
+            "requireMirrorEncryption": True,
+        }
+    )
+
+    if method == "POST":
+        require_agent = True
+        require_mirror = True
+        key_id = clean_string(
+            data.get("ownerKeyId", "") or policy.get("ownerKeyId", ""), 128)
+        key = await d1_first(
+            env,
+            "SELECT 1 AS one FROM owner_encryption_keys "
+            "WHERE account_bi=? AND key_id=? AND revoked_at=0",
+            actor_bi, key_id,
+        )
+        if not key:
+            return json_response(
+                {"error": "active_owner_key_required"}, status=400)
+        now = int(Date.now())
+        await d1_run(
+            env,
+            "INSERT INTO repo_privacy_policy "
+            "(repo_bi, owner_bi, owner_key_id, require_agent_e2ee, "
+            "require_mirror_encryption, updated_at) VALUES (?,?,?,?,?,?) "
+            "ON CONFLICT(repo_bi) DO UPDATE SET "
+            "owner_bi=excluded.owner_bi, owner_key_id=excluded.owner_key_id, "
+            "require_agent_e2ee=excluded.require_agent_e2ee, "
+            "require_mirror_encryption=excluded.require_mirror_encryption, "
+            "updated_at=excluded.updated_at",
+            policy["repoBi"], actor_bi, key_id,
+            1 if require_agent else 0, 1 if require_mirror else 0, now,
+        )
+        await _audit_sensitive_action(
+            env, actor, "repository.privacy_policy", "repository",
+            owner + "/" + repo, "success",
+            {"agentE2EE": require_agent, "mirrorEncryption": require_mirror,
+             "keyId": key_id})
+        policy = await _repo_privacy_policy(env, owner, repo)
+
+    return json_response({
+        "ok": True,
+        "ownerKeyId": policy.get("ownerKeyId", ""),
+        "requireAgentE2EE": bool(policy.get("requireAgentE2EE")),
+        "requireMirrorEncryption": bool(
+            policy.get("requireMirrorEncryption")),
+        "agentBoundary": "owner-only-e2ee",
+        # This policy is an enforcement requirement/attestation gate. Actual
+        # encrypted-at-rest mirror storage is performed and verified locally by
+        # an upgraded Qt node; the Worker cannot inspect a node's disk.
+        "mirrorBoundary": "client-encryption-required",
+        "updatedAt": int(policy.get("updatedAt") or 0),
+    }, cache_control="no-store")
 
 
 # --- Agent-session sync (website "Agents" tab, adhoc #182) ------------------
@@ -16086,6 +22179,14 @@ async def agents_handler(env, request, owner, repo):
     await ensure_schema(env)
     method = method_name(request)
     repo_bi = await blind_index(env, owner + "/" + repo)
+    policy_reader = globals().get("_repo_privacy_policy")
+    policy = (
+        await policy_reader(env, owner, repo)
+        if callable(policy_reader) else {
+            "ownerKeyId": "", "requireAgentE2EE": True,
+            "requireMirrorEncryption": True,
+        }
+    )
 
     if method == "POST":
         if not await _authorize_owner(env, request, owner):
@@ -16094,6 +22195,85 @@ async def agents_handler(env, request, owner, repo):
             data = await request.json()
         except Exception:
             return json_response({"error": "invalid_json"}, status=400)
+        if policy.get("requireAgentE2EE") and not policy.get("ownerKeyId"):
+            return json_response({
+                "error": "active_owner_key_required",
+                "setupPath": "/api/security/owner-keys",
+            }, status=428)
+        encrypted_in = data.get("encryptedSessions")
+        encrypted_rows = []
+        if isinstance(encrypted_in, list):
+            for item in encrypted_in[:MAX_AGENT_SESSIONS]:
+                if not isinstance(item, dict):
+                    return json_response(
+                        {"error": "invalid_encrypted_session"}, status=400)
+                try:
+                    agent_id = int(item.get("id", 0))
+                except (TypeError, ValueError):
+                    agent_id = 0
+                owner_crypto = globals().get("security_control")
+                envelope = (
+                    owner_crypto.validate_owner_envelope(item.get("envelope"))
+                    if owner_crypto is not None else None)
+                if not agent_id or not envelope:
+                    return json_response(
+                        {"error": "invalid_encrypted_session"}, status=400)
+                required_kid = policy.get("ownerKeyId", "")
+                envelope_kid = owner_crypto.owner_envelope_key_id(envelope)
+                if required_kid and envelope_kid != required_kid:
+                    return json_response(
+                        {"error": "wrong_owner_key",
+                         "requiredKeyId": required_kid},
+                        status=409)
+                encoded = owner_crypto.encode_owner_envelope(
+                    envelope, {"agentId": agent_id})
+                encrypted_rows.append((str(agent_id), encoded))
+        if policy.get("requireAgentE2EE") and not isinstance(encrypted_in, list):
+            return json_response(
+                {
+                    "error": "owner_encryption_required",
+                    "requiredKeyId": policy.get("ownerKeyId", ""),
+                },
+                status=426,
+            )
+        if isinstance(encrypted_in, list):
+            # Full replacement is safe because every row remains opaque to the
+            # relay and its administrators. Duplicate ids keep the last entry.
+            by_id = {agent_id: encoded for agent_id, encoded in encrypted_rows}
+            encrypted_rows = list(by_id.items())
+            digest = hashlib.sha256(
+                "\n".join(encoded for _, encoded in encrypted_rows).encode()
+            ).hexdigest()
+            if _AGENT_PUSH_DIGESTS.get(repo_bi) == digest:
+                return json_response({
+                    "ok": True,
+                    "unchanged": True,
+                    "privacyBoundary": "owner-only-e2ee",
+                })
+            await d1_run(env, "DELETE FROM repo_agents WHERE repo_bi=?", repo_bi)
+            now = int(Date.now())
+            for start in range(0, len(encrypted_rows), 20):
+                chunk = encrypted_rows[start:start + 20]
+                placeholders = ",".join("(?,?,?,?)" for _ in chunk)
+                args = []
+                for agent_id, encoded in chunk:
+                    args.extend((repo_bi, agent_id, encoded, now))
+                if chunk:
+                    await d1_run(
+                        env,
+                        "INSERT INTO repo_agents "
+                        "(repo_bi, agent_id, data, updated_at) VALUES "
+                        + placeholders,
+                        *args)
+            _AGENT_PUSH_DIGESTS[repo_bi] = digest
+            if len(_AGENT_PUSH_DIGESTS) > 2000:
+                _AGENT_PUSH_DIGESTS.clear()
+            return json_response({
+                "ok": True,
+                "privacyBoundary": "owner-only-e2ee",
+                "serverCanDecrypt": False,
+            })
+
         sessions_in = data.get("sessions")
         if not isinstance(sessions_in, list):
             sessions_in = []
@@ -16144,27 +22324,73 @@ async def agents_handler(env, request, owner, repo):
         _AGENT_PUSH_DIGESTS[repo_bi] = digest
         if len(_AGENT_PUSH_DIGESTS) > 2000:
             _AGENT_PUSH_DIGESTS.clear()
+        # Keep the legacy response shape for older Qt nodes. The privacy
+        # boundary is advertised by the policy/list endpoints; adding fields
+        # here broke clients that compare this acknowledgement exactly.
         return json_response({"ok": True})
 
     if method == "GET":
         if not await _authorize_owner(env, request, owner):
             return json_response({"error": "unauthorized"}, status=401)
+        if policy.get("requireAgentE2EE") and not policy.get("ownerKeyId"):
+            return json_response({
+                "error": "active_owner_key_required",
+                "setupPath": "/api/security/owner-keys",
+            }, status=428)
         rows = await d1_all(
             env,
             "SELECT id, data FROM agent_prompts WHERE repo_bi=? ORDER BY id ASC",
             repo_bi,
         )
-        prompts = [rec for rec in
-                   [await decrypt_row(env, r["data"]) for r in rows] if rec]
-        # Delete exactly the rows read: a prompt queued while we were
-        # decrypting must survive for the next drain, not vanish undelivered.
-        if rows:
+        prompts = []
+        encrypted_prompts = []
+        legacy_rows = []
+        legacy_held = 0
+        for row in rows or []:
+            owner_crypto = globals().get("security_control")
+            sealed = (
+                owner_crypto.decode_owner_envelope(row.get("data"))
+                if owner_crypto is not None else None)
+            if sealed:
+                routing = sealed.get("routing") or {}
+                encrypted_prompts.append({
+                    "queueId": int(row.get("id") or 0),
+                    "agentId": int(routing.get("agentId") or 0),
+                    "queuedAt": int(routing.get("queuedAt") or 0),
+                    "envelope": sealed["envelope"],
+                })
+                continue
+            if policy.get("requireAgentE2EE"):
+                # Never decrypt pre-boundary prompt rows in the Worker. They
+                # remain held for an explicit offline owner migration.
+                legacy_held += 1
+                continue
+            rec = await decrypt_row(env, row.get("data"))
+            if rec:
+                rec["queueId"] = int(row.get("id") or 0)
+                prompts.append(rec)
+            legacy_rows.append(row)
+        # Legacy clients keep drain-on-read compatibility. Owner-sealed prompts
+        # require an explicit ack after local decryption, so a wrong/revoked key
+        # cannot destroy the only queued ciphertext.
+        if legacy_rows:
             await d1_run(
                 env,
                 "DELETE FROM agent_prompts WHERE id IN (%s)"
-                % ",".join("?" for _ in rows),
-                *[r["id"] for r in rows])
-        return json_response({"ok": True, "prompts": prompts})
+                % ",".join("?" for _ in legacy_rows),
+                *[r["id"] for r in legacy_rows])
+        return json_response({
+            "ok": True,
+            "prompts": prompts,
+            "encryptedPrompts": encrypted_prompts,
+            "ackPath": "/api/repo/%s/%s/agents/ack" % (owner, repo),
+            "legacyRowsHeldForOwnerMigration": legacy_held,
+            "privacyBoundary": (
+                "owner-only-e2ee" if policy.get("requireAgentE2EE")
+                else "owner-only-e2ee" if encrypted_prompts and not prompts
+                else "mixed" if encrypted_prompts else "legacy-server-readable"),
+            "serverCanDecryptEncryptedPrompts": False,
+        })
 
     return json_response({"error": "method_not_allowed"}, status=405)
 
@@ -16177,21 +22403,59 @@ async def agents_list_handler(env, request, owner, repo):
         data = await request.json()
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
-    ok, err = await _authorize_owner_account(env, owner, data, request)
+    ok, err = await _authorize_owner_account(
+        env, owner, data, request, allow_admin=False)
     if not ok:
         return err
+    policy_reader = globals().get("_repo_privacy_policy")
+    policy = (
+        await policy_reader(env, owner, repo)
+        if callable(policy_reader) else {
+            "ownerKeyId": "", "requireAgentE2EE": True,
+            "requireMirrorEncryption": True,
+        }
+    )
     repo_bi = await blind_index(env, owner + "/" + repo)
     rows = await d1_all(
         env, "SELECT data FROM repo_agents WHERE repo_bi=? ORDER BY updated_at DESC",
         repo_bi,
     )
-    agents = [rec for rec in
-              [await decrypt_row(env, r["data"]) for r in rows] if rec]
+    agents = []
+    encrypted_agents = []
+    legacy_held = 0
+    for row in rows or []:
+        owner_crypto = globals().get("security_control")
+        sealed = (
+            owner_crypto.decode_owner_envelope(row.get("data"))
+            if owner_crypto is not None else None)
+        if sealed:
+            routing = sealed.get("routing") or {}
+            encrypted_agents.append({
+                "id": int(routing.get("agentId") or 0),
+                "envelope": sealed["envelope"],
+            })
+            continue
+        if policy.get("requireAgentE2EE"):
+            legacy_held += 1
+            continue
+        rec = await decrypt_row(env, row.get("data"))
+        if rec:
+            agents.append(rec)
     # The transcript tail can be large; keep it out of the list payload and let
     # the detail page fetch just the selected agent's transcript on demand.
     for rec in agents:
         rec.pop("transcript", None)
-    return json_response({"ok": True, "agents": agents})
+    return json_response({
+        "ok": True,
+        "agents": agents,
+        "encryptedAgents": encrypted_agents,
+        "legacyRowsHeldForOwnerMigration": legacy_held,
+        "privacyBoundary": (
+            "owner-only-e2ee" if policy.get("requireAgentE2EE")
+            else "owner-only-e2ee" if encrypted_agents and not agents
+            else "mixed" if encrypted_agents else "legacy-server-readable"),
+        "serverCanDecryptEncryptedAgents": False,
+    }, cache_control="no-store")
 
 
 async def agents_transcript_handler(env, request, owner, repo, agent_id):
@@ -16202,14 +22466,40 @@ async def agents_transcript_handler(env, request, owner, repo, agent_id):
         data = await request.json()
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
-    ok, err = await _authorize_owner_account(env, owner, data, request)
+    ok, err = await _authorize_owner_account(
+        env, owner, data, request, allow_admin=False)
     if not ok:
         return err
+    policy_reader = globals().get("_repo_privacy_policy")
+    policy = (
+        await policy_reader(env, owner, repo)
+        if callable(policy_reader) else {
+            "ownerKeyId": "", "requireAgentE2EE": True,
+            "requireMirrorEncryption": True,
+        }
+    )
     repo_bi = await blind_index(env, owner + "/" + repo)
     row = await d1_first(
         env, "SELECT data FROM repo_agents WHERE repo_bi=? AND agent_id=?",
         repo_bi, str(agent_id),
     )
+    owner_crypto = globals().get("security_control")
+    sealed = (
+        owner_crypto.decode_owner_envelope(row.get("data"))
+        if row and owner_crypto is not None else None)
+    if sealed:
+        return json_response({
+            "ok": True,
+            "encrypted": True,
+            "envelope": sealed["envelope"],
+            "privacyBoundary": "owner-only-e2ee",
+            "serverCanDecrypt": False,
+        }, cache_control="no-store")
+    if policy.get("requireAgentE2EE") and row:
+        return json_response({
+            "error": "legacy_data_unavailable",
+            "migration": "owner-device-required",
+        }, status=410, cache_control="no-store")
     rec = await decrypt_row(env, row["data"]) if row else None
     if not rec:
         return json_response({"error": "not_found"}, status=404)
@@ -16217,6 +22507,8 @@ async def agents_transcript_handler(env, request, owner, repo, agent_id):
         "ok": True,
         "transcript": rec.get("transcript", ""),
         "status": rec.get("status", ""),
+        "privacyBoundary": "legacy-server-readable",
+        "serverCanDecrypt": True,
     })
 
 
@@ -16228,9 +22520,65 @@ async def agents_prompt_handler(env, request, owner, repo, agent_id):
         data = await request.json()
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
-    ok, err = await _authorize_owner_account(env, owner, data, request)
+    ok, err = await _authorize_owner_account(
+        env, owner, data, request, allow_admin=False)
     if not ok:
         return err
+    policy_reader = globals().get("_repo_privacy_policy")
+    policy = (
+        await policy_reader(env, owner, repo)
+        if callable(policy_reader) else {
+            "ownerKeyId": "", "requireAgentE2EE": True,
+            "requireMirrorEncryption": True,
+        }
+    )
+    owner_crypto = globals().get("security_control")
+    if policy.get("requireAgentE2EE") and not policy.get("ownerKeyId"):
+        return json_response({
+            "error": "active_owner_key_required",
+            "setupPath": "/api/security/owner-keys",
+        }, status=428)
+    envelope = (
+        owner_crypto.validate_owner_envelope(data.get("envelope"))
+        if owner_crypto is not None else None)
+    if envelope:
+        required_kid = policy.get("ownerKeyId", "")
+        envelope_kid = owner_crypto.owner_envelope_key_id(envelope)
+        if required_kid and envelope_kid != required_kid:
+            return json_response(
+                {"error": "wrong_owner_key", "requiredKeyId": required_kid},
+                status=409)
+        repo_bi = await blind_index(env, owner + "/" + repo)
+        count = await d1_first(
+            env,
+            "SELECT COUNT(*) AS c FROM agent_prompts WHERE repo_bi=?",
+            repo_bi,
+        )
+        if count and count.get("c", 0) >= MAX_PENDING_AGENT_PROMPTS:
+            return json_response({"error": "prompt_queue_full"}, status=429)
+        now = int(Date.now())
+        encoded = owner_crypto.encode_owner_envelope(
+            envelope, {"agentId": agent_id, "queuedAt": now})
+        await d1_run(
+            env,
+            "INSERT INTO agent_prompts (repo_bi, agent_id, data, queued_at) "
+            "VALUES (?,?,?,?)",
+            repo_bi, agent_id, encoded, now,
+        )
+        await notify_repo_host(env, owner, repo, "agents")
+        return json_response({
+            "ok": True,
+            "privacyBoundary": "owner-only-e2ee",
+            "serverCanDecrypt": False,
+        })
+    if policy.get("requireAgentE2EE"):
+        return json_response(
+            {
+                "error": "owner_encryption_required",
+                "requiredKeyId": policy.get("ownerKeyId", ""),
+            },
+            status=426,
+        )
     text = str(data.get("text", "") or "").strip()
     if not text:
         return json_response({"error": "text_required"}, status=400)
@@ -16286,6 +22634,53 @@ async def agents_prompt_handler(env, request, owner, repo, agent_id):
     )
     await notify_repo_host(env, owner, repo, "agents")
     return json_response({"ok": True})
+
+
+async def agents_ack_handler(env, request, owner, repo):
+    """Delete only owner-sealed prompts accepted by the owner's local client."""
+    await ensure_schema(env)
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    if not await _authorize_owner(env, request, owner):
+        return json_response({"error": "unauthorized"}, status=401)
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    raw_ids = data.get("queueIds")
+    if not isinstance(raw_ids, list):
+        return json_response({"error": "queue_ids_required"}, status=400)
+    queue_ids = []
+    for value in raw_ids[:MAX_PENDING_AGENT_PROMPTS]:
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            continue
+        if value > 0 and value not in queue_ids:
+            queue_ids.append(value)
+    if not queue_ids:
+        return json_response({"ok": True, "acknowledged": 0})
+    repo_bi = await blind_index(env, owner + "/" + repo)
+    rows = await d1_all(
+        env,
+        "SELECT id, data FROM agent_prompts WHERE repo_bi=? AND id IN (%s)"
+        % ",".join("?" for _ in queue_ids),
+        repo_bi, *queue_ids,
+    )
+    sealed_ids = [
+        int(row.get("id") or 0) for row in rows or []
+        if (globals().get("security_control") is not None
+            and globals()["security_control"].decode_owner_envelope(
+                row.get("data")))
+    ]
+    if sealed_ids:
+        await d1_run(
+            env,
+            "DELETE FROM agent_prompts WHERE repo_bi=? AND id IN (%s)"
+            % ",".join("?" for _ in sealed_ids),
+            repo_bi, *sealed_ids,
+        )
+    return json_response({"ok": True, "acknowledged": len(sealed_ids)})
 
 
 # --- Error log + admin dashboard -------------------------------------------
@@ -16356,11 +22751,15 @@ def _sentry_host(request):
     return _sentry_header(request, "host")[:255]
 
 
-def _sentry_request_payload(request):
+def _sentry_request_payload(request, privacy_safe_path=""):
     if request is None:
         return None
     headers = {}
-    for name in ("host", "user-agent", "accept", "cf-ray"):
+    # Browser/OS and content-negotiation fingerprints are unnecessary for
+    # diagnosing a Worker failure. Keep only the service host and Cloudflare's
+    # incident correlation id; authorization, cookies, IP-derived values,
+    # referrers and user-agent never enter the Sentry envelope.
+    for name in ("host", "cf-ray"):
         value = _sentry_header(request, name)
         if value:
             headers[name] = value
@@ -16368,8 +22767,28 @@ def _sentry_request_payload(request):
         host = _sentry_host(request)
         if host:
             headers["host"] = host
+    safe_url = _sentry_safe_url(request)
+    privacy_safe_path = str(privacy_safe_path or "").strip()
+    if privacy_safe_path:
+        # The event's transaction path has already passed through
+        # _privacy_safe_log_path. Reuse that projection in request.url too;
+        # otherwise Sentry would receive the raw private repository name even
+        # though the top-level transaction was correctly redacted.
+        try:
+            parsed = urlparse(safe_url)
+            if parsed.scheme and parsed.netloc:
+                safe_url = (
+                    parsed.scheme + "://" + parsed.netloc
+                    + (privacy_safe_path
+                       if privacy_safe_path.startswith("/")
+                       else "/" + privacy_safe_path)
+                )
+            else:
+                safe_url = privacy_safe_path
+        except Exception:
+            safe_url = privacy_safe_path
     return {
-        "url": _sentry_safe_url(request),
+        "url": safe_url,
         "method": method_name(request),
         "headers": headers,
     }
@@ -16390,10 +22809,11 @@ def _sentry_cloudflare_context(request, ray="", error_code="", service="forkmesh
         ctx["colo"] = ray.rsplit("-", 1)[-1]
     cf = getattr(request, "cf", None) if request is not None else None
     if cf is not None:
-        for key in (
-            "colo", "country", "timezone", "httpProtocol", "tlsVersion",
-            "tlsCipher", "clientTcpRtt", "requestPriority",
-        ):
+        # A coarse edge colo and transport versions are enough to diagnose
+        # region/protocol faults. Country, timezone, client RTT, cipher and
+        # request-priority details add fingerprinting value without enough
+        # operational value, so they are deliberately excluded.
+        for key in ("colo", "httpProtocol", "tlsVersion"):
             try:
                 value = getattr(cf, key)
             except Exception:
@@ -16438,7 +22858,7 @@ def _sentry_stack_frames(error):
 def _sentry_event_payload(env, status, method, path, message, ray="",
                           request=None, error=None, cloudflare_error_code="",
                           service="forkmesh"):
-    text = str(message or "")
+    text = _privacy_safe_error_text(path, message)
     cf_context = _sentry_cloudflare_context(
         request, ray, cloudflare_error_code, service)
     tags = {
@@ -16480,13 +22900,17 @@ def _sentry_event_payload(env, status, method, path, message, ray="",
     environment = _sentry_environment(env)
     if environment:
         event["environment"] = environment
-    req = _sentry_request_payload(request)
+    req = _sentry_request_payload(request, path)
     if req:
         event["request"] = req
     if error is not None:
         exception = {
             "type": type(error).__name__,
-            "value": _safe_error_text(error)[:1000],
+            "value": (
+                "Repository-route exception details redacted."
+                if _privacy_redacted_log_path(path)
+                else _safe_error_text(error)[:1000]
+            ),
         }
         frames = _sentry_stack_frames(error)
         if frames:
@@ -16660,6 +23084,7 @@ def _fire_and_forget(coro, label="background"):
 
 async def _write_error_log(env, status, method, path, message, ray=""):
     try:
+        message = _privacy_safe_error_text(path, message)
         await ensure_schema(env)
         await d1_run(
             env,
@@ -16679,6 +23104,65 @@ async def _write_error_log(env, status, method, path, message, ray=""):
         pass
 
 
+def _privacy_redacted_log_path(path):
+    path = str(path or "")
+    return (
+        path in (
+            "/private-or-unpublished-repository",
+            "/repository-route-redacted",
+            "/api/private-replicas/[opaque]",
+        )
+        or path.startswith("/private-or-unpublished-repository/")
+        or path.startswith("/repository-route-redacted/")
+    )
+
+
+def _privacy_safe_error_text(path, message):
+    """Remove exception/detail text when the route identity was redacted."""
+    if _privacy_redacted_log_path(path):
+        return "Repository-route error details redacted."
+    return str(message or "")
+
+
+async def _privacy_safe_log_path(env, path):
+    """Redact names from private, missing, or visibility-unknown repo routes."""
+    path = str(path or "")
+    # Opaque ids are identity-free and not sufficient authorization, so their
+    # presence in unavoidable edge request logs does not reveal a repository.
+    # Application/Sentry logs do not need the locator at all: redact it there to
+    # avoid turning an error report into a reusable private-route hint.
+    if path == "/api/private-replicas" or path.startswith(
+            "/api/private-replicas/"):
+        return "/api/private-replicas/[opaque]"
+    match = REPO_API_PREFIX_RE.match(path)
+    if not match:
+        for pattern in (
+                GIT_INFO_RE, GIT_PACK_RE, GIT_RECEIVE_RE,
+                RELEASE_BLOB_RE):
+            match = pattern.match(path)
+            if match:
+                break
+    owner = ""
+    repo = ""
+    if match:
+        owner = safe_segment(match.group(1))
+        repo = safe_segment(match.group(2))
+    elif looks_like_repo_route(path):
+        # Browser repository pages (/owner/repo and their tab/tree/blob deep
+        # links) are repository routes too. Never let an exception log become
+        # a name-existence oracle for a private or unpublished path.
+        parts = [part for part in path.split("/") if part]
+        owner = safe_segment(unquote(parts[0])) if len(parts) >= 2 else ""
+        repo = safe_segment(unquote(parts[1])) if len(parts) >= 2 else ""
+    else:
+        return path
+    if not owner or not repo:
+        return "/repository-route-redacted"
+    if await _repo_is_private(env, owner, repo):
+        return "/private-or-unpublished-repository"
+    return path
+
+
 async def capture_worker_exception(env, request, url, error):
     """Capture the Python exception that Cloudflare will surface as Error 1101."""
     try:
@@ -16693,6 +23177,10 @@ async def capture_worker_exception(env, request, url, error):
         path = getattr(url, "path", "") or _sentry_safe_url(request)
     except BaseException:
         path = ""
+    try:
+        path = await _privacy_safe_log_path(env, path)
+    except BaseException:
+        path = "/repository-route-redacted"
     try:
         message = repr(error) + "\n" + traceback.format_exc()
     except BaseException:
@@ -16818,6 +23306,9 @@ def _is_tunnel_content_path(path):
 async def log_error(env, status, method, path, message, ray="", request=None,
                     error=None):
     """Record a 5xx / unhandled error. Best-effort: never raises."""
+    privacy_filter = globals().get("_privacy_safe_log_path")
+    if callable(privacy_filter):
+        path = await privacy_filter(env, path)
     await capture_sentry_error(
         env, status, method, path, message, ray, request=request, error=error)
     await _write_error_log(env, status, method, path, message, ray)
@@ -16838,8 +23329,13 @@ async def log_durable_object_abort(env, request, path, error):
     already-degraded platform abort just buried real bugs in noise.
     Best-effort: _write_error_log never raises.
     """
+    privacy_filter = globals().get("_privacy_safe_log_path")
+    safe_path = (
+        await privacy_filter(env, path)
+        if callable(privacy_filter) else path
+    )
     await _write_error_log(
-        env, 503, method_name(request), path,
+        env, 503, method_name(request), safe_path,
         "durable object aborted: " + _safe_error_text(error)[:400],
         request.headers.get("cf-ray") or "")
 
@@ -16945,9 +23441,18 @@ def _feedback_fields(payload):
     vote = _sanitize_feedback_text(payload.get("vote"), 16).lower()
     if source not in FEEDBACK_SOURCES or vote not in FEEDBACK_VOTES:
         return None
-    path = _sanitize_feedback_text(payload.get("path"), FEEDBACK_MAX_PATH)
-    if not path.startswith("/"):
-        path = "/"
+    # Feedback is a docs-only feature. Never accept an arbitrary URL, query,
+    # private repository path, or search value into this plaintext metrics
+    # column. Preserve only a bounded, anchor-like section id.
+    raw_path = _sanitize_feedback_text(payload.get("path"), FEEDBACK_MAX_PATH)
+    without_query = raw_path.split("?", 1)[0]
+    base, separator, fragment = without_query.partition("#")
+    path = "/docs/"
+    if base.rstrip("/") == "/docs" and separator:
+        fragment = fragment[:80]
+        if fragment and all(
+                char.isalnum() or char in "_-" for char in fragment):
+            path += "#" + fragment
     message = ""
     if vote == "dislike":
         message = _sanitize_feedback_text(
@@ -17146,8 +23651,8 @@ async def feedback_handler(env, request):
         fwd = (headers.get("x-forwarded-for") or "").strip()
         ip = fwd.split(",")[0].strip() if fwd else ""
     ip = ip[:64]
-    user_agent = _sanitize_feedback_text(
-        headers.get("user-agent") or "", FEEDBACK_MAX_USER_AGENT)
+    # Retain only a broad category, never the browser's raw user-agent string.
+    user_agent = _security_client_category(request)
     try:
         await ensure_schema(env)
         ip_hash = await blind_index(env, ip) if ip else ""
@@ -17247,6 +23752,754 @@ async def security_report_handler(env, request):
     except Exception:
         pass
     return json_response({"ok": True}, cache_control="no-store")
+
+
+async def _security_scan_owner_authorization(env, request, owner):
+    """Return the normal repository-owner auth mode, or an empty string."""
+
+    if await _authorize_owner(env, request, owner):
+        return "owner_signature"
+    ok, _ = await _authorize_owner_account(
+        env, owner, {}, request, allow_admin=False)
+    return "owner_session" if ok else ""
+
+
+async def _security_scan_repository_row(env, owner, repo):
+    """Resolve an existing repository without putting its name in scan storage."""
+
+    await ensure_schema(env)
+    repo_bi = await blind_index(env, owner + "/" + repo)
+    row = await d1_first(
+        env,
+        "SELECT is_private FROM repositories WHERE key_bi=?",
+        repo_bi,
+    )
+    return repo_bi, row
+
+
+SECURITY_SCAN_DAILY_MS = 24 * 60 * 60 * 1000
+SECURITY_SCAN_LEASE_MS = 20 * 60 * 1000
+SECURITY_SCAN_LEASE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
+
+
+async def _security_scan_catalog_record(env, owner, repo):
+    await ensure_schema(env)
+    repo_bi = await blind_index(env, owner + "/" + repo)
+    row = await d1_first(
+        env,
+        "SELECT is_private,data FROM repositories WHERE key_bi=?",
+        repo_bi,
+    )
+    if not row:
+        return repo_bi, None
+    try:
+        record = await decrypt_row(env, row.get("data"))
+    except Exception:
+        return repo_bi, None
+    if (
+        not isinstance(record, dict)
+        or str(record.get("owner") or "").lower() != owner.lower()
+        or str(record.get("name") or "").lower() != repo.lower()
+        or record.get("visibility") not in ("public", "private")
+    ):
+        return repo_bi, None
+    return repo_bi, record
+
+
+async def _security_scan_lease_authorization(env, request, repo_bi):
+    authorization = str(request.headers.get("authorization") or "")
+    if not authorization.startswith("Bearer "):
+        return None
+    token = authorization[7:].strip()
+    if not SECURITY_SCAN_LEASE_TOKEN_RE.fullmatch(token):
+        return None
+    token_bi = await blind_index(env, "security-scan-lease:" + token)
+    row = await d1_first(
+        env,
+        "SELECT lease_token_bi,status,expires_at,data "
+        "FROM repo_security_scan_leases WHERE repo_bi=?",
+        repo_bi,
+    )
+    if (
+        not row
+        or row.get("status") != "leased"
+        or int(row.get("expires_at") or 0) <= int(Date.now())
+        or not hmac.compare_digest(
+            str(row.get("lease_token_bi") or ""), token_bi)
+    ):
+        return None
+    try:
+        data = await decrypt_row(env, row.get("data"))
+    except Exception:
+        return None
+    if (
+        not isinstance(data, dict)
+        or not re.fullmatch(r"[0-9a-f]{40}", str(data.get("commit") or ""))
+    ):
+        return None
+    return {"tokenBi": token_bi, "commit": data["commit"]}
+
+
+async def repository_security_scan_lease_handler(
+        env, request, owner, repo):
+    """Owner-authorized, short-lived daily lease for a native mirror scanner."""
+    method = method_name(request)
+    if method not in ("GET", "POST"):
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            cache_control="no-store",
+            extra_headers={"allow": "GET, POST"})
+    auth_mode = await _security_scan_owner_authorization(
+        env, request, owner)
+    if not auth_mode:
+        return json_response(
+            {"error": "unauthorized"}, status=401,
+            cache_control="no-store")
+    repo_bi, record = await _security_scan_catalog_record(
+        env, owner, repo)
+    if record is None:
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+    catalog_commit = str(record.get("commit") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", catalog_commit):
+        return json_response(
+            {"error": "commit_pin_required"}, status=409,
+            cache_control="no-store")
+    now = int(Date.now())
+    row = await d1_first(
+        env,
+        "SELECT status,acquired_at,expires_at,next_attempt_at,"
+        "attempt_count,completed_scan_id,updated_at,data "
+        "FROM repo_security_scan_leases WHERE repo_bi=?",
+        repo_bi,
+    )
+    saved = {}
+    if row:
+        try:
+            saved = await decrypt_row(env, row.get("data")) or {}
+        except Exception:
+            saved = {}
+    same_commit = hmac.compare_digest(
+        str(saved.get("commit") or ""), catalog_commit)
+    if method == "GET":
+        status = str((row or {}).get("status") or "never")
+        due = not (
+            row
+            and same_commit
+            and status == "completed"
+            and now - int(row.get("updated_at") or 0)
+            < SECURITY_SCAN_DAILY_MS
+        )
+        return json_response({
+            "ok": True,
+            "status": status,
+            "due": due,
+            "commit": catalog_commit,
+            "leaseExpiresAt": int((row or {}).get("expires_at") or 0),
+            "nextAttemptAt": int((row or {}).get("next_attempt_at") or 0),
+            "attemptCount": int((row or {}).get("attempt_count") or 0),
+            "completedScanId": str(
+                (row or {}).get("completed_scan_id") or ""),
+            "artifactPolicy": "encrypted-public-safe-envelope-only",
+            "privateDiagnosticsStored": False,
+        }, cache_control="no-store")
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response(
+            {"error": "invalid_json"}, status=400,
+            cache_control="no-store")
+    requested_commit = str(
+        (data or {}).get("commit") or "").strip().lower()
+    if (
+        not re.fullmatch(r"[0-9a-f]{40}", requested_commit)
+        or not hmac.compare_digest(requested_commit, catalog_commit)
+    ):
+        return json_response(
+            {"error": "commit_mismatch"}, status=409,
+            cache_control="no-store")
+    if row and same_commit:
+        status = str(row.get("status") or "")
+        if (
+            status == "completed"
+            and now - int(row.get("updated_at") or 0)
+            < SECURITY_SCAN_DAILY_MS
+        ):
+            return json_response({
+                "ok": True,
+                "leased": False,
+                "reason": "not_due",
+                "nextDueAt":
+                    int(row.get("updated_at") or 0) + SECURITY_SCAN_DAILY_MS,
+            }, cache_control="no-store")
+        if status == "leased" and int(row.get("expires_at") or 0) > now:
+            return json_response({
+                "error": "lease_held",
+                "retryAfterMs": int(row.get("expires_at") or 0) - now,
+            }, status=409, cache_control="no-store")
+        if int(row.get("next_attempt_at") or 0) > now:
+            return json_response({
+                "error": "retry_backoff",
+                "retryAfterMs": int(row.get("next_attempt_at") or 0) - now,
+            }, status=429, cache_control="no-store")
+    token = _b64url_encode(_random_bytes(32))
+    token_bi = await blind_index(env, "security-scan-lease:" + token)
+    attempt = (
+        int(row.get("attempt_count") or 0) + 1
+        if row and same_commit else 1)
+    expires = now + SECURITY_SCAN_LEASE_MS
+    encrypted = await encrypt_row(env, {
+        "commit": catalog_commit,
+        "schema": "native-mirror-security-scan-lease-v1",
+    })
+    await d1_run(
+        env,
+        "INSERT INTO repo_security_scan_leases "
+        "(repo_bi,lease_token_bi,status,acquired_at,expires_at,"
+        "next_attempt_at,attempt_count,completed_scan_id,updated_at,data) "
+        "VALUES (?,?, 'leased',?,?,0,?,'',?,?) "
+        "ON CONFLICT(repo_bi) DO UPDATE SET "
+        "lease_token_bi=excluded.lease_token_bi,status='leased',"
+        "acquired_at=excluded.acquired_at,expires_at=excluded.expires_at,"
+        "next_attempt_at=0,attempt_count=excluded.attempt_count,"
+        "completed_scan_id='',updated_at=excluded.updated_at,data=excluded.data",
+        repo_bi, token_bi, now, expires, attempt, now, encrypted,
+    )
+    await _audit_sensitive_action(
+        env, owner, "repository.security_scan_lease",
+        "repository", owner + "/" + repo, "success",
+        {"attemptCount": attempt, "authMode": auth_mode})
+    return json_response({
+        "ok": True,
+        "leased": True,
+        "leaseToken": token,
+        "expiresAt": expires,
+        "commit": catalog_commit,
+        "ingestUrl": (
+            _public_base_url(env, request).rstrip("/")
+            + "/api/repo/" + quote(owner) + "/" + quote(repo)
+            + "/security-scans/ingest"
+        ),
+        "artifactPolicy": "public-safe-envelope-only",
+    }, status=201, cache_control="no-store")
+
+
+async def _security_scan_review_overlays(env, repo_bi, scan_ids):
+    scan_ids = [
+        str(value or "").lower()
+        for value in scan_ids
+        if security_scan_ingest.valid_scan_id(value)
+    ][:security_scan_ingest.MAX_HISTORY_RESPONSE]
+    if not scan_ids:
+        return []
+    rows = await d1_all(
+        env,
+        "SELECT scan_id, finding_id, reviewed_at, data "
+        "FROM repo_security_scan_reviews WHERE repo_bi=? AND scan_id IN ("
+        + ",".join("?" for _ in scan_ids) + ")",
+        repo_bi,
+        *scan_ids,
+    )
+    overlays = []
+    for row in rows or []:
+        try:
+            saved = await decrypt_row(env, row.get("data"))
+        except Exception:
+            continue
+        status = security_scan_ingest.normalize_finding_status(
+            (saved or {}).get("status"))
+        finding_id = str(row.get("finding_id") or "").lower()
+        scan_id = str(row.get("scan_id") or "").lower()
+        if (
+            scan_id not in scan_ids
+            or not security_scan_ingest.valid_finding_id(finding_id)
+            or not status
+        ):
+            continue
+        overlays.append({
+            "scanId": scan_id,
+            "findingId": finding_id,
+            "status": status,
+            "reviewedAt": int(row.get("reviewed_at") or 0),
+        })
+    return overlays
+
+
+async def _security_scan_reviewer_authorization(
+        env, request, owner, repo, data=None):
+    actor = await _authed_account_name(env, request, data)
+    owner_auth = await _security_scan_owner_authorization(
+        env, request, owner)
+    reviewer = bool(
+        actor and (
+            await _has_role(env, actor, "security_reviewer")
+            or await _has_role(
+                env, actor, "security_reviewer", "repository",
+                owner + "/" + repo)
+        )
+    )
+    if owner_auth:
+        return actor or owner, "owner"
+    if reviewer:
+        return actor, "security_reviewer"
+    return actor, ""
+
+
+async def repository_security_scan_queue_handler(env, request):
+    """Retired central fan-out endpoint; native repository leases replaced it."""
+    del env, request
+    return json_response({
+        "error": "central_scan_queue_retired",
+        "nativePath": (
+            "/api/repo/{owner}/{repo}/security-scans/lease"),
+        "notice": (
+            "Daily scans are leased to authenticated mirror nodes. "
+            "No central catalog credential or repository-enumeration queue "
+            "exists."
+        ),
+    }, status=410, cache_control="no-store")
+
+
+async def repository_security_scans_handler(
+        env, request, owner, repo, action):
+    """Ingest and read bounded, redacted per-repository security scans.
+
+    A native mirror scanner authenticates with a short-lived, repository- and
+    commit-bound lease. An owner may instead use the existing signed owner
+    query/session for a manual scan. Authentication happens before the ingest
+    body is read.
+
+    Public repositories expose only the compact clipboard. Rich artifacts and
+    every view of a private repository require normal owner authorization;
+    unauthorized private/missing repositories both return the same 404 shape.
+    """
+
+    method = method_name(request)
+    repository_name = owner + "/" + repo
+
+    if action == "lease":
+        return await repository_security_scan_lease_handler(
+            env, request, owner, repo)
+
+    if action == "ingest":
+        if method != "POST":
+            return json_response(
+                {"error": "method_not_allowed"},
+                status=405,
+                cache_control="no-store",
+                extra_headers={"allow": "POST"},
+            )
+        # Never redirect a credential-bearing request from HTTP: a redirect can
+        # replay Authorization to a different origin. Production publishing is
+        # HTTPS-only and fails closed before reading either the header or body.
+        if urlparse(request.url).scheme.lower() != "https":
+            return json_response(
+                {"error": "https_required"},
+                status=400,
+                cache_control="no-store",
+            )
+        preliminary_repo_bi = await blind_index(
+            env, owner + "/" + repo)
+        lease = await _security_scan_lease_authorization(
+            env, request, preliminary_repo_bi)
+        auth_mode = "native_mirror_lease" if lease else (
+            await _security_scan_owner_authorization(env, request, owner))
+        if not auth_mode:
+            return json_response(
+                {"error": "unauthorized"},
+                status=401,
+                cache_control="no-store",
+                extra_headers={"www-authenticate": "Bearer"},
+            )
+
+        # Resolve visibility before reading the artifact body. A guessed private
+        # name and a missing repository retain the same 404.
+        try:
+            repo_bi, repo_row = await _security_scan_repository_row(
+                env, owner, repo)
+            if not repo_row:
+                return json_response(
+                    {"error": "not_found"},
+                    status=404,
+                    cache_control="no-store",
+                )
+            is_private = await _repo_is_private(env, owner, repo)
+        except Exception:
+            return json_response(
+                {"error": "temporarily_unavailable"},
+                status=503,
+                cache_control="no-store",
+            )
+        content_type = (
+            request.headers.get("content-type") or "").split(";", 1)[0].strip()
+        if content_type.lower() != "application/json":
+            return json_response(
+                {"error": "content_type_required"},
+                status=415,
+                cache_control="no-store",
+            )
+        try:
+            announced = int(request.headers.get("content-length") or 0)
+        except (TypeError, ValueError):
+            announced = 0
+        if announced > security_scan_ingest.MAX_INGEST_BYTES:
+            return json_response(
+                {"error": "payload_too_large"},
+                status=413,
+                cache_control="no-store",
+            )
+        try:
+            raw = await request.text()
+        except Exception:
+            raw = ""
+        if len(raw.encode("utf-8")) > security_scan_ingest.MAX_INGEST_BYTES:
+            return json_response(
+                {"error": "payload_too_large"},
+                status=413,
+                cache_control="no-store",
+            )
+        try:
+            payload = json.loads(raw)
+            envelope = security_scan_ingest.validate_ingest_envelope(
+                payload, expected_repository=repository_name)
+        except (json.JSONDecodeError, security_scan_ingest.ScanEnvelopeError):
+            return json_response(
+                {"error": "invalid_security_scan"},
+                status=400,
+                cache_control="no-store",
+            )
+        if lease and not hmac.compare_digest(
+            str(envelope["rich"]["repository"]["commit"] or "").lower(),
+            lease["commit"],
+        ):
+            return json_response(
+                {"error": "leased_commit_mismatch"},
+                status=409,
+                cache_control="no-store",
+            )
+
+        try:
+            async def run(sql, *args):
+                return await d1_run(env, sql, *args)
+
+            async def encrypt(value):
+                return await encrypt_row(env, value)
+
+            scan_id = await security_scan_ingest.store_scan(
+                run,
+                encrypt,
+                repo_bi,
+                envelope,
+                int(Date.now()),
+            )
+            if lease:
+                await d1_run(
+                    env,
+                    "UPDATE repo_security_scan_leases SET "
+                    "lease_token_bi='',status='completed',expires_at=0,"
+                    "next_attempt_at=0,completed_scan_id=?,updated_at=? "
+                    "WHERE repo_bi=? AND lease_token_bi=? AND status='leased'",
+                    scan_id, int(Date.now()), repo_bi, lease["tokenBi"],
+                )
+            # The audit contains no report, repository path, commit, finding,
+            # token, or request body. target is converted to a blind token by
+            # _audit_sensitive_action.
+            await _audit_sensitive_action(
+                env,
+                owner,
+                "repository.security_scan_ingest",
+                "repository",
+                repository_name,
+                "success",
+                {
+                    "status": envelope["rich"]["status"],
+                    "authMode": auth_mode,
+                    "historyLimit":
+                        security_scan_ingest.MAX_HISTORY_PER_REPOSITORY,
+                },
+            )
+        except Exception:
+            # Do not log the request, bearer token, response body, or artifact.
+            # The native runner retains its local artifact and retries temporary
+            # failures, while the deterministic scan id makes re-ingest safe.
+            return json_response(
+                {"error": "temporarily_unavailable"},
+                status=503,
+                cache_control="no-store",
+            )
+        return json_response(
+            {
+                "ok": True,
+                "stored": True,
+                "scanId": scan_id,
+                "status": envelope["rich"]["status"],
+            },
+            status=202,
+            cache_control="no-store",
+        )
+
+    if action == "triage":
+        if method not in ("GET", "PATCH"):
+            return json_response(
+                {"error": "method_not_allowed"},
+                status=405,
+                cache_control="no-store",
+                extra_headers={"allow": "GET, PATCH"},
+            )
+        data = {}
+        if method == "PATCH":
+            try:
+                data = await request.json()
+            except Exception:
+                return json_response(
+                    {"error": "invalid_json"},
+                    status=400,
+                    cache_control="no-store",
+                )
+        try:
+            repo_bi, repo_row = await _security_scan_repository_row(
+                env, owner, repo)
+        except Exception:
+            return json_response(
+                {"error": "temporarily_unavailable"},
+                status=503,
+                cache_control="no-store",
+            )
+        if not repo_row:
+            return json_response(
+                {"error": "not_found"}, status=404, cache_control="no-store")
+        actor, review_role = await _security_scan_reviewer_authorization(
+            env, request, owner, repo, data)
+        is_private = await _repo_is_private(env, owner, repo)
+        if not review_role:
+            if actor:
+                await _audit_sensitive_action(
+                    env, actor, "repository.security_scan_triage",
+                    "repository", repository_name, "denied",
+                    {"reason": "review_role_required"})
+            return json_response(
+                {"error": "not_found" if is_private else "forbidden"},
+                status=404 if is_private else 403,
+                cache_control="no-store",
+            )
+
+        params = parse_qs(urlparse(request.url).query)
+        requested_scan_id = str(
+            data.get("scanId")
+            if method == "PATCH"
+            else params.get("scanId", [""])[0]
+        ).strip().lower()
+        if requested_scan_id and not security_scan_ingest.valid_scan_id(
+                requested_scan_id):
+            return json_response(
+                {"error": "invalid_scan_id"},
+                status=400,
+                cache_control="no-store",
+            )
+
+        async def all_rows(sql, *args):
+            return await d1_all(env, sql, *args)
+
+        async def decrypt(value):
+            return await decrypt_row(env, value)
+
+        records = await security_scan_ingest.load_scans(
+            all_rows,
+            decrypt,
+            repo_bi,
+            repository_name,
+            security_scan_ingest.MAX_HISTORY_RESPONSE,
+        )
+        record = next(
+            (
+                item for item in records
+                if not requested_scan_id
+                or item.get("scanId") == requested_scan_id
+            ),
+            None,
+        )
+        if not record:
+            return json_response(
+                {"error": "not_found"}, status=404, cache_control="no-store")
+
+        if method == "PATCH":
+            finding_id = str(data.get("findingId") or "").strip().lower()
+            status = security_scan_ingest.normalize_finding_status(
+                data.get("status"))
+            if (
+                not security_scan_ingest.valid_finding_id(finding_id)
+                or not status
+            ):
+                return json_response(
+                    {"error": "invalid_finding_review"},
+                    status=400,
+                    cache_control="no-store",
+                )
+            findings = record["envelope"]["rich"]["findings"]
+            if not any(
+                    str(item.get("id") or "").lower() == finding_id
+                    for item in findings):
+                return json_response(
+                    {"error": "not_found"},
+                    status=404,
+                    cache_control="no-store",
+                )
+            now = int(Date.now())
+            reviewer_bi = await blind_index(env, actor)
+            note = clean_string(data.get("note", ""), 500)
+            encrypted = await encrypt_row(env, {
+                "status": status,
+                "note": note,
+                "reviewedAt": now,
+                "reviewRole": review_role,
+            })
+            await d1_run(
+                env,
+                "INSERT INTO repo_security_scan_reviews "
+                "(repo_bi, scan_id, finding_id, reviewer_bi, reviewed_at, "
+                "data) VALUES (?,?,?,?,?,?) "
+                "ON CONFLICT(repo_bi,scan_id,finding_id) DO UPDATE SET "
+                "reviewer_bi=excluded.reviewer_bi, "
+                "reviewed_at=excluded.reviewed_at, data=excluded.data",
+                repo_bi, record["scanId"], finding_id, reviewer_bi, now,
+                encrypted,
+            )
+            await _audit_sensitive_action(
+                env, actor, "repository.security_scan_triage",
+                "repository", repository_name, "success",
+                {
+                    "status": status,
+                    "reviewRole": review_role,
+                    "scanIdPrefix": record["scanId"][:12],
+                    "findingId": finding_id,
+                },
+            )
+
+        overlays = await _security_scan_review_overlays(
+            env, repo_bi, [record["scanId"]])
+        reviewed = security_scan_ingest.apply_review_overlays(
+            record, overlays)
+        rich = reviewed["envelope"]["rich"]
+        clipboard = reviewed["envelope"]["clipboard"]
+        return json_response({
+            "ok": True,
+            "repository": repository_name,
+            "canReview": True,
+            "reviewRole": review_role,
+            "scanId": reviewed["scanId"],
+            "commitHash": rich["repository"]["commit"],
+            "reviewStatus": clipboard["reviewStatus"],
+            "falsePositiveStatus": clipboard["falsePositiveStatus"],
+            "findings": [{
+                "id": item["id"],
+                "category": item["category"],
+                "severity": item["severity"],
+                "ruleId": item["ruleId"],
+                "path": item["path"],
+                "line": item["line"],
+                "summary": item["summary"],
+                "recommendation": item["recommendation"],
+                "falsePositiveStatus": item["falsePositiveStatus"],
+            } for item in rich["findings"]],
+        }, cache_control="no-store")
+
+    if action not in ("latest", "history"):
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+    if method != "GET":
+        return json_response(
+            {"error": "method_not_allowed"},
+            status=405,
+            cache_control="no-store",
+            extra_headers={"allow": "GET"},
+        )
+
+    try:
+        repo_bi, repo_row = await _security_scan_repository_row(
+            env, owner, repo)
+    except Exception:
+        return json_response(
+            {"error": "temporarily_unavailable"},
+            status=503,
+            cache_control="no-store",
+        )
+    if not repo_row:
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+
+    owner_auth = await _security_scan_owner_authorization(env, request, owner)
+    # Migration 0011 defaulted historical rows to is_private=0. The signed,
+    # encrypted catalog record is the authority; missing/malformed visibility
+    # therefore fails closed just like every other repository read surface.
+    is_private = await _repo_is_private(env, owner, repo)
+    if is_private and not owner_auth:
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+
+    params = parse_qs(urlparse(request.url).query)
+    detail = params.get("detail", ["clipboard"])[0]
+    if detail not in ("clipboard", "rich"):
+        return json_response(
+            {"error": "invalid_detail"}, status=400, cache_control="no-store")
+    include_rich = detail == "rich"
+    if include_rich and not owner_auth:
+        return json_response(
+            {"error": "owner_authorization_required"},
+            status=403,
+            cache_control="no-store",
+        )
+    requested_limit = (
+        1 if action == "latest" else
+        security_scan_ingest.history_limit(
+            params.get("limit", ["10"])[0]))
+
+    async def all_rows(sql, *args):
+        return await d1_all(env, sql, *args)
+
+    async def decrypt(value):
+        return await decrypt_row(env, value)
+
+    try:
+        records = await security_scan_ingest.load_scans(
+            all_rows,
+            decrypt,
+            repo_bi,
+            repository_name,
+            requested_limit,
+        )
+        overlays = await _security_scan_review_overlays(
+            env, repo_bi, [record.get("scanId") for record in records])
+        records = [
+            security_scan_ingest.apply_review_overlays(record, overlays)
+            for record in records
+        ]
+    except Exception:
+        return json_response(
+            {"error": "temporarily_unavailable"},
+            status=503,
+            cache_control="no-store",
+        )
+    if not records:
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+
+    visibility = "owner_redacted" if include_rich else "public_clipboard"
+    result = {
+        "ok": True,
+        "repository": repository_name,
+        "visibility": visibility,
+    }
+    if action == "latest":
+        result["latest"] = security_scan_ingest.scan_projection(
+            records[0], include_rich=include_rich)
+    else:
+        result["history"] = [
+            security_scan_ingest.scan_projection(
+                record, include_rich=include_rich)
+            for record in records
+        ]
+        result["count"] = len(records)
+    return json_response(result, cache_control="no-store")
 
 
 def _admin_path(env):
@@ -17580,8 +24833,48 @@ ADMIN_STYLE = """
  .ab-root .diagcol table{width:auto;min-width:220px}
 """
 
-# Cloudflare D1 keeps internal bookkeeping tables; hide them from the browser.
-ADMIN_HIDDEN_TABLES = ("_cf_KV",)
+# Cloudflare D1 keeps internal bookkeeping tables out of the browser. Owner
+# ciphertext, reviewer evidence, wallet-custody migration rows, role grants and
+# the append-only audit trail are also deliberately absent: being a platform
+# administrator is not a decryption capability and the generic CRUD UI is not a
+# least-privilege security-review interface.
+ADMIN_HIDDEN_TABLES = (
+    "_cf_KV",
+    "accounts",
+    "repositories",
+    "repo_shares",
+    "mirror_requests",
+    "repo_agents",
+    "agent_prompts",
+    "owner_encryption_keys",
+    "repo_privacy_policy",
+    "security_reports",
+    "repo_security_scans",
+    "repo_security_scan_reviews",
+    "security_appeals",
+    "security_signals",
+    "security_restrictions",
+    "role_grants",
+    "sensitive_audit_log",
+    # Succession is governed only by the organization's current roster. The
+    # generic platform-admin table editor must not create approvals, alter
+    # cases, or bypass the append-only history/role-transfer guard.
+    "org_succession_policies",
+    "org_succession_cases",
+    "org_succession_approvals",
+    "org_succession_events",
+    "chain_intents",
+    "pending_rewards",
+    # Legacy tables can contain Worker-held wallet seeds. They remain frozen
+    # for an offline migration, but must never be rendered or edited over HTTP.
+    "central_fund",
+    "bounty_wallet",
+    "issue_bounty",
+    "federated_signup",
+    # Relay identity is not a Solana wallet, but its private signing seed is
+    # likewise outside the generic platform-admin decryption boundary.
+    "relay_self",
+)
 
 
 async def _admin_list_tables(env):
@@ -17601,6 +24894,60 @@ ADMIN_CELL_PREVIEW = 120
 ADMIN_CELL_TOOLTIP_MAX = 4000
 # Cap on extra columns expanded from the decrypted `data` JSON blob.
 ADMIN_MAX_JSON_COLS = 24
+
+
+_ADMIN_WALLET_KEY_NAMES = frozenset({
+    "donationsecret",
+    "walletsecret",
+    "walletprivatekey",
+    "solanasecret",
+    "solanaprivatekey",
+    "seedbase64url",
+    "mnemonic",
+    "recoveryphrase",
+})
+
+
+def _admin_contains_wallet_key(value):
+    if isinstance(value, dict):
+        normalized_keys = {
+            re.sub(r"[^a-z0-9]", "", str(key).lower())
+            for key in value
+        }
+        for key, item in value.items():
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if normalized in _ADMIN_WALLET_KEY_NAMES:
+                return True
+            # Historical bounty rows used the generic pair {address, secret}.
+            if normalized == "secret" and "address" in normalized_keys:
+                return True
+            if _admin_contains_wallet_key(item):
+                return True
+    elif isinstance(value, list):
+        return any(_admin_contains_wallet_key(item) for item in value)
+    return False
+
+
+def _admin_redact_wallet_keys(value):
+    if isinstance(value, dict):
+        normalized_keys = {
+            re.sub(r"[^a-z0-9]", "", str(key).lower())
+            for key in value
+        }
+        redacted = {}
+        for key, item in value.items():
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if (
+                normalized in _ADMIN_WALLET_KEY_NAMES
+                or (normalized == "secret" and "address" in normalized_keys)
+            ):
+                redacted[key] = "<restricted: offline custody migration>"
+            else:
+                redacted[key] = _admin_redact_wallet_keys(item)
+        return redacted
+    if isinstance(value, list):
+        return [_admin_redact_wallet_keys(item) for item in value]
+    return value
 
 
 def _admin_compact_cell(value, extra_class=""):
@@ -17625,6 +24972,7 @@ def _admin_compact_cell(value, extra_class=""):
 def _admin_json_cell(decoded):
     # Collapse the decrypted `data` JSON to a small marker; the full pretty
     # JSON shows in the hover tooltip.
+    decoded = _admin_redact_wallet_keys(decoded)
     pretty = json.dumps(decoded, indent=2, sort_keys=True)
     if len(pretty) > ADMIN_CELL_TOOLTIP_MAX:
         pretty = pretty[:ADMIN_CELL_TOOLTIP_MAX] + "…"
@@ -17670,6 +25018,8 @@ async def _render_row_form(env, table, rowid, csrf_field="", admin_query=""):
     # Full-page create/edit form for one row. Field per column; the encrypted
     # `data` column is shown decrypted as JSON in a textarea and re-encrypted on
     # save. Field names are prefixed "f_" so they never collide with rowid/action.
+    if table in ADMIN_HIDDEN_TABLES:
+        return '<div class="empty">This table is restricted.</div>'
     columns = await _admin_table_columns(env, table)
     row = {}
     editing = bool(rowid) and str(rowid).isdigit()
@@ -17684,6 +25034,12 @@ async def _render_row_form(env, table, rowid, csrf_field="", admin_query=""):
             shown = ""
             if isinstance(value, str) and value:
                 decoded = await decrypt_row(env, value)
+                if _admin_contains_wallet_key(decoded):
+                    return (
+                        '<div class="empty">This row contains frozen legacy '
+                        "wallet custody material. Generic web editing is "
+                        "disabled; use the explicit offline migration.</div>"
+                    )
                 shown = json.dumps(decoded, indent=2, sort_keys=True) if decoded is not None else value
             fields.append(
                 '<label class="rowfield"><span>%s (JSON, encrypted on save)</span>'
@@ -17726,6 +25082,8 @@ async def _admin_row_values(env, table, form):
         raw = vals[0] if vals else ""
         if col == "data":
             parsed = json.loads(raw) if raw.strip() else {}
+            if _admin_contains_wallet_key(parsed):
+                raise ValueError("wallet_private_key_fields_are_not_accepted")
             values.append(await encrypt_row(env, parsed))
         else:
             values.append(raw)
@@ -17737,6 +25095,18 @@ async def _admin_update_row(env, table, form):
     rowid = form.get("rowid", [""])[0]
     if not str(rowid).isdigit():
         return "Update failed: missing row id."
+    if table in ("users", "nodes") and "f_data" in form:
+        current = await d1_first(
+            env,
+            "SELECT data FROM " + table + " WHERE rowid=?",
+            int(rowid),
+        )
+        decoded = await decrypt_row(env, (current or {}).get("data", ""))
+        if _admin_contains_wallet_key(decoded):
+            return (
+                "Update blocked: this row contains frozen legacy wallet "
+                "custody material. Use the explicit offline migration."
+            )
     cols, values = await _admin_row_values(env, table, form)
     if not cols:
         return "Update: nothing to change."
@@ -17754,6 +25124,28 @@ async def _admin_insert_row(env, table, form):
     await d1_run(env, "INSERT INTO " + table + " (" + ",".join(cols) + ") VALUES ("
                  + placeholders + ")", *values)
     return "Added a row to %s." % table
+
+
+async def _admin_selected_rows_have_wallet_keys(env, table, rowids):
+    # A bulk delete must not become an undeclared custody scrub. Only tables
+    # that can historically embed donation_secret are inspected; key-bearing
+    # rows remain until the separately confirmed offline migration updates them.
+    if table not in ("users", "nodes") or not rowids:
+        return False
+    for start in range(0, len(rowids), 90):
+        batch = rowids[start:start + 90]
+        placeholders = ",".join(["?"] * len(batch))
+        rows = await d1_all(
+            env,
+            "SELECT data FROM " + table + " WHERE rowid IN ("
+            + placeholders + ")",
+            *batch,
+        )
+        for row in rows or []:
+            decoded = await decrypt_row(env, row.get("data", ""))
+            if _admin_contains_wallet_key(decoded):
+                return True
+    return False
 
 
 def _render_diag_breakdown(title, pairs):
@@ -17836,6 +25228,8 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
     # Newest-first by default: rowid ascends with insertion, so ORDER BY rowid DESC
     # surfaces the most recent rows (and, with LIMIT, keeps the newest 500) for
     # every table — including the error log, which reads from these rows.
+    if table in ADMIN_HIDDEN_TABLES:
+        return '<div class="empty">This table is restricted.</div>'
     rows = await d1_all(
         env, "SELECT rowid AS _rowid_, * FROM " + table
         + " ORDER BY rowid DESC LIMIT 500")
@@ -17998,7 +25392,11 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
         decoded = None
         if isinstance(r.get("data"), str) and r.get("data"):
             decoded = await decrypt_row(env, r.get("data"))
-        decoded_rows.append((r, decoded if isinstance(decoded, dict) else None))
+        decoded_rows.append((
+            r,
+            _admin_redact_wallet_keys(decoded)
+            if isinstance(decoded, dict) else None,
+        ))
     json_cols = []
     for _r, decoded in decoded_rows:
         if decoded:
@@ -18126,13 +25524,14 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
         "Solana payment-reference status.</div></header>"
         + _render_admin_stats(env_stats)
         + '<div class="tools"><form method="post" action="%s" '
-          'onsubmit="return confirm(\'Sweep confirmed join deposits now?\')">'
+          'onsubmit="return confirm(\'Show legacy custody migration status?\')">'
           % _admin_href(admin_query, action="disburse")
           + csrf_field +
-          '<button type="submit">Sweep join deposits</button></form>'
-          '<span class="meta">Automated sweeping is enabled: confirmed join '
-          'deposits sweep to the treasury and online node payout addresses; '
-          'this retries any pending sweep.</span></div>'
+          '<button type="submit">Legacy custody status</button></form>'
+          '<span class="meta">Worker signing and automated sweeps are disabled. '
+          'Historical encrypted deposit rows require an offline, balance-'
+          'reconciled migration; this console cannot access or use wallet '
+          'seeds.</span></div>'
         + '<div class="tools"><form method="post" action="%s" '
           'onsubmit="return confirm(\'Request ownership transfer for this node?\')">'
           % _admin_href(admin_query, action="request_ownership")
@@ -18228,55 +25627,1478 @@ async def _admin_console_request_ownership(env, target, owner):
 
 
 async def _admin_disburse(env):
-    treasury = _treasury_address(env)
-    if not treasury:
-        return ("No Solana treasury address configured "
-                "(set TREASURY_SOLANA_ADDRESS or NODE_SOLANA_ADDRESS).")
-    # Join deposits can sit on either identity table: a keyless web signup
-    # finalizes as a user, a key-bound one as a node.
-    rows = list(await d1_all(
-        env, "SELECT user_bi AS name_bi, data FROM users") or [])
-    rows += list(await d1_all(
-        env, "SELECT node_bi AS name_bi, data FROM nodes") or [])
-    swept = 0
-    already = 0
-    pending = 0
-    total = 0
-    errors = []
-    for row in (rows or []):
-        rec = await decrypt_row(env, row.get("data"))
-        if not rec or not rec.get("donation_confirmed"):
+    del env
+    return (
+        "Legacy Worker-held deposit sweeps are disabled. Export D1 and run the "
+        "offline custody migration after reconciling every on-chain balance; "
+        "the web admin cannot access or use retained wallet seeds."
+    )
+
+
+# --- Direct HTTPS mirror discovery, health, and masked routing --------------
+#
+# Repository bytes use ordinary HTTPS between this edge router and an
+# independently operated mirror. D1 retains only signed endpoint identity and
+# health metadata. The desktop host WebSocket remains a control/update channel;
+# public browse, clone, and release reads below never fall back to it.
+
+HTTPS_MIRROR_ENDPOINT_PATH = "/api/mirrors/https"
+HTTPS_MIRROR_PRIVATE_ROUTE_PATH = "/api/mirrors/private"
+HTTPS_MIRROR_MANIFEST_MAX_BYTES = 128 * 1024
+HTTPS_MIRROR_HEALTH_BATCH = 8
+HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS = 20
+HTTPS_MIRROR_BODY_MAX_BYTES = 8 * 1024 * 1024
+HTTPS_MIRROR_REQUIRED_FORKMESH_OPERATIONS = frozenset({
+    "git-info-refs", "git-upload-pack", "tree", "blob", "raw",
+})
+HTTPS_MIRROR_RETRY_STATUSES = frozenset({
+    401, 403, 404, 408, 425, 429, 500, 502, 503, 504,
+})
+HTTPS_MIRROR_REPO_PROOF_TTL_MS = 60 * 1000
+HTTPS_MIRROR_REPO_PROOF_MEMO_MAX = 500
+_HTTPS_MIRROR_REPO_PROOF_MEMO = {}
+
+
+def _https_mirror_router_public_key(env):
+    value = clean_string(
+        getattr(env, "MIRROR_ROUTER_PUBLIC_KEY", ""), 120).strip()
+    return value if valid_node_pubkey(value) else ""
+
+
+def _https_mirror_router_seed(env):
+    # This is a Cloudflare Worker secret, never a D1 field, response value,
+    # log field, endpoint argument, or node/wallet credential.
+    value = clean_string(
+        getattr(env, "MIRROR_ROUTER_SIGNING_SEED", ""), 120).strip()
+    return value if re.fullmatch(r"[A-Za-z0-9_-]{43}", value) else ""
+
+
+def _https_mirror_registration_payload(data):
+    if not isinstance(data, dict):
+        return None
+    node = clean_string(data.get("node", ""), MAX_NODE_NAME).strip().lower()
+    base_url = https_routing.normalize_base_url(data.get("baseUrl"))
+    public_key = clean_string(data.get("publicKey", ""), 120).strip()
+    signature = clean_string(data.get("signature", ""), 200).strip()
+    try:
+        issued_at = int(data.get("issuedAt") or 0)
+    except (TypeError, ValueError):
+        return None
+    message = https_routing.registration_message(
+        node, base_url, public_key, issued_at)
+    if (
+        not message
+        or not valid_node_pubkey(public_key)
+        or not re.fullmatch(r"[A-Za-z0-9_-]{86}", signature)
+    ):
+        return None
+    return {
+        "node": node,
+        "baseUrl": base_url,
+        "publicKey": public_key,
+        "issuedAt": issued_at,
+        "signature": signature,
+        "message": message,
+    }
+
+
+async def _https_mirror_fetch_text(url, max_bytes, timeout_seconds):
+    """Fetch a bounded control document without forwarding caller metadata."""
+    from js import fetch as js_fetch
+    try:
+        response = await asyncio.wait_for(
+            js_fetch(
+                url,
+                to_js({
+                    "method": "GET",
+                    "headers": {
+                        "accept": "application/json",
+                        "user-agent": "ForkMesh-HTTPS-router/1.0",
+                    },
+                    "redirect": "manual",
+                }),
+            ),
+            timeout=timeout_seconds,
+        )
+        status = int(getattr(response, "status", 0) or 0)
+        try:
+            announced = int(response.headers.get("content-length") or 0)
+        except Exception:
+            announced = 0
+        if announced > max_bytes:
+            return status, ""
+        text = str(await response.text())
+        if len(text.encode("utf-8")) > max_bytes:
+            return status, ""
+        return status, text
+    except Exception:
+        return 0, ""
+
+
+_CLOUDFLARE_EDGE_RANGES_MEMO = {"checkedAt": 0, "documents": ()}
+_HTTPS_MIRROR_EDGE_DNS_MEMO = {}
+CLOUDFLARE_EDGE_RANGES_TTL_MS = 24 * 60 * 60 * 1000
+HTTPS_MIRROR_EDGE_DNS_TTL_MS = 2 * 60 * 1000
+
+
+async def _cloudflare_edge_range_documents():
+    """Fetch Cloudflare's official bounded IP-range documents."""
+    now = int(Date.now())
+    cached = _CLOUDFLARE_EDGE_RANGES_MEMO
+    documents = cached.get("documents") or ()
+    if (
+        len(documents) == 2
+        and now - int(cached.get("checkedAt") or 0)
+        <= CLOUDFLARE_EDGE_RANGES_TTL_MS
+    ):
+        return documents
+    fetched = []
+    for url in (
+            "https://www.cloudflare.com/ips-v4",
+            "https://www.cloudflare.com/ips-v6"):
+        status, text = await _https_mirror_fetch_text(
+            url, 16 * 1024, HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS)
+        if status != 200 or not text:
+            return ()
+        fetched.append(text)
+    documents = tuple(fetched)
+    # Validate the documents before caching them. A minimal synthetic DNS
+    # answer is enough to exercise strict CIDR parsing without trusting it as a
+    # real endpoint decision.
+    try:
+        first_network = str(documents[0]).split()[0]
+        probe = str(ipaddress.ip_network(first_network, strict=True).network_address)
+    except (IndexError, ValueError):
+        return ()
+    if not https_routing.cloudflare_proxied_dns_answers(
+            [{"Status": 0, "Answer": [{"type": 1, "data": probe}]}],
+            documents):
+        return ()
+    cached["checkedAt"] = now
+    cached["documents"] = documents
+    return documents
+
+
+async def _https_mirror_cloudflare_dns_ok(base_url):
+    """Independently verify that an endpoint resolves to Cloudflare's edge."""
+    normalized = https_routing.normalize_base_url(base_url)
+    try:
+        hostname = urlparse(normalized).hostname or ""
+    except Exception:
+        hostname = ""
+    if not hostname:
+        return False
+    now = int(Date.now())
+    memo = _HTTPS_MIRROR_EDGE_DNS_MEMO.get(hostname)
+    if (
+        memo
+        and now - int(memo.get("checkedAt") or 0)
+        <= HTTPS_MIRROR_EDGE_DNS_TTL_MS
+    ):
+        return bool(memo.get("ok"))
+    cidr_documents = await _cloudflare_edge_range_documents()
+    if not cidr_documents:
+        return False
+    payloads = []
+    for record_type in ("A", "AAAA"):
+        target = (
+            "https://cloudflare-dns.com/dns-query?name="
+            + quote(hostname)
+            + "&type="
+            + record_type
+        )
+        status, text = await _https_mirror_fetch_text(
+            target,
+            HTTPS_MIRROR_MANIFEST_MAX_BYTES,
+            HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+        )
+        if status != 200 or not text:
+            return False
+        try:
+            payloads.append(json.loads(text))
+        except Exception:
+            return False
+    ok = https_routing.cloudflare_proxied_dns_answers(
+        payloads, cidr_documents)
+    _HTTPS_MIRROR_EDGE_DNS_MEMO[hostname] = {
+        "checkedAt": now,
+        "ok": bool(ok),
+    }
+    return bool(ok)
+
+
+async def _https_mirror_manifest_ok(registration):
+    status, text = await _https_mirror_fetch_text(
+        registration["baseUrl"] + "/forkmesh-mirror.json",
+        HTTPS_MIRROR_MANIFEST_MAX_BYTES,
+        HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+    )
+    if status != 200 or not text:
+        return False
+    try:
+        manifest = json.loads(text)
+    except Exception:
+        return False
+    checked = https_routing.validate_tunnel_manifest(
+        manifest,
+        registration["baseUrl"],
+        registration["node"],
+        registration["publicKey"],
+    )
+    return bool(
+        checked
+        and await ed25519_verify(
+            registration["publicKey"],
+            checked["signature"],
+            checked["payload"],
+        )
+    )
+
+
+async def _https_mirror_node_organizations(env, node):
+    """Public organization aliases linked to this endpoint's node."""
+    try:
+        rows = await d1_all(
+            env,
+            """SELECT DISTINCT o.name AS name
+                 FROM org_repos r JOIN orgs o ON o.org_bi=r.org_bi
+                WHERE r.node_owner=? ORDER BY o.name LIMIT 100""",
+            node,
+        )
+        return [
+            clean_string(row.get("name", ""), MAX_NODE_NAME).lower()
+            for row in rows or []
+            if valid_node_name(
+                clean_string(row.get("name", ""), MAX_NODE_NAME).lower())
+        ]
+    except Exception:
+        return []
+
+
+async def https_mirror_endpoint_handler(env, request):
+    """Register/update an account-bound, signed Cloudflare Tunnel endpoint."""
+    method = method_name(request)
+    router_key = _https_mirror_router_public_key(env)
+    if method == "GET":
+        # Endpoint rows and repository membership are deliberately not listed.
+        return json_response({
+            "ok": bool(router_key),
+            "protocol": "forkmesh-masked-proxy-v1",
+            "registration": "forkmesh-https-endpoint-v1",
+            "routerPublicKey": router_key,
+            "nonCustodial": True,
+            "repositoryBytesInD1": False,
+        }, status=200 if router_key else 503,
+           cache_control="public, max-age=300")
+    if method != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        announced = int(request.headers.get("content-length") or 0)
+    except Exception:
+        announced = 0
+    if announced > HTTPS_MIRROR_MANIFEST_MAX_BYTES:
+        return json_response({"error": "request_too_large"}, status=413)
+    try:
+        raw = str(await request.text())
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    if len(raw.encode("utf-8")) > HTTPS_MIRROR_MANIFEST_MAX_BYTES:
+        return json_response({"error": "request_too_large"}, status=413)
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    registration = _https_mirror_registration_payload(data)
+    if not registration or not _ts_ok(registration["issuedAt"]):
+        return json_response({"error": "invalid_registration"}, status=400)
+    await ensure_schema(env)
+
+    # The manifest cannot self-assert a new identity: its key must already be
+    # bound to the named node as its primary or an enabled owner-sign device.
+    allowed_keys = await _owner_signing_pubkeys(env, registration["node"])
+    if (
+        registration["publicKey"] not in allowed_keys
+        or not await ed25519_verify(
+            registration["publicKey"],
+            registration["signature"],
+            registration["message"].encode("utf-8"),
+        )
+    ):
+        return json_response({"error": "unauthorized"}, status=401)
+    existing = await d1_first(
+        env,
+        """SELECT base_url,public_key,registration_sig,issued_at
+             FROM mirror_https_endpoints WHERE node_name=?""",
+        registration["node"],
+    )
+    if existing:
+        old_issued = int(existing.get("issued_at") or 0)
+        same = bool(
+            existing.get("base_url") == registration["baseUrl"]
+            and existing.get("public_key") == registration["publicKey"]
+            and existing.get("registration_sig") == registration["signature"])
+        if registration["issuedAt"] < old_issued or (
+                registration["issuedAt"] == old_issued and not same):
+            return json_response(
+                {"error": "stale_registration"}, status=409)
+    if not await _https_mirror_cloudflare_dns_ok(registration["baseUrl"]):
+        return json_response(
+            {"error": "cloudflare_proxied_dns_required"}, status=400)
+    if not await _https_mirror_manifest_ok(registration):
+        return json_response({"error": "invalid_manifest"}, status=400)
+
+    now = int(Date.now())
+    node_bi = await blind_index(env, registration["node"])
+    region = world_request_country(request)
+    await d1_run(
+        env,
+        """INSERT INTO mirror_https_endpoints
+             (node_bi,node_name,base_url,public_key,registration_sig,issued_at,
+              checked_at,latency_ms,region,healthy,integrity,abuse_blocked,
+              health_sig,forkmesh_verified_at,forkmesh_refs_sha256,
+              forkmesh_operations_sha256,forkmesh_active,health_message,
+              updated_at)
+             VALUES (?,?,?,?,?,?,0,0,?,0,'unknown',0,'',0,'','',0,'',?)
+             ON CONFLICT(node_bi) DO UPDATE SET
+               node_name=excluded.node_name,base_url=excluded.base_url,
+               public_key=excluded.public_key,
+               registration_sig=excluded.registration_sig,
+               issued_at=excluded.issued_at,region=excluded.region,
+               healthy=0,integrity='unknown',health_sig='',
+               forkmesh_verified_at=0,forkmesh_refs_sha256='',
+               forkmesh_operations_sha256='',forkmesh_active=0,
+               health_message='',
+               updated_at=excluded.updated_at""",
+        node_bi,
+        registration["node"],
+        registration["baseUrl"],
+        registration["publicKey"],
+        registration["signature"],
+        registration["issuedAt"],
+        region,
+        now,
+    )
+    try:
+        _, node_rec = await _account_row(env, registration["node"])
+        await touch_registered_node(env, node_bi, node_rec)
+    except Exception:
+        pass
+    return json_response({
+        "ok": True,
+        "node": registration["node"],
+        "baseUrl": registration["baseUrl"],
+        "routerPublicKey": router_key,
+        "organizations": await _https_mirror_node_organizations(
+            env, registration["node"]),
+        "health": "pending",
+        "repositoryBytesInD1": False,
+    }, status=201, cache_control="no-store")
+
+
+def _https_mirror_private_route_payload(data):
+    """Validate one owner-signed opaque private-replica binding."""
+    if not isinstance(data, dict):
+        return None
+    owner = clean_string(data.get("owner", ""), MAX_NODE_NAME).strip().lower()
+    repo = clean_string(data.get("repository", ""), MAX_REPO_SEGMENT).strip()
+    node = clean_string(data.get("node", ""), MAX_NODE_NAME).strip().lower()
+    opaque_id = clean_string(data.get("opaqueId", ""), 64).strip().lower()
+    replica_sha256 = clean_string(
+        data.get("replicaSha256", ""), 64).strip().lower()
+    signature = clean_string(data.get("signature", ""), 200).strip()
+    active = data.get("active")
+    try:
+        key_epoch = int(data.get("keyEpoch") or 0)
+        issued_at = int(data.get("issuedAt") or 0)
+    except (TypeError, ValueError):
+        return None
+    message = https_routing.private_route_message(
+        owner, repo, node, opaque_id, replica_sha256, key_epoch, active,
+        issued_at)
+    if (
+        not message
+        or not re.fullmatch(r"[A-Za-z0-9_-]{86}", signature)
+    ):
+        return None
+    return {
+        "owner": owner,
+        "repo": repo,
+        "node": node,
+        "opaqueId": opaque_id,
+        "replicaSha256": replica_sha256,
+        "keyEpoch": key_epoch,
+        "active": active,
+        "issuedAt": issued_at,
+        "signature": signature,
+        "message": message,
+    }
+
+
+async def _https_mirror_private_record(env, owner, repo):
+    """Return an exact private catalog row without ever listing private rows."""
+    owner = clean_string(owner, MAX_NODE_NAME).strip().lower()
+    repo = clean_string(repo, MAX_REPO_SEGMENT).strip()
+    if not valid_node_name(owner) or not safe_segment(repo):
+        return None
+    try:
+        repo_bi = await blind_index(env, owner + "/" + repo)
+        row = await d1_first(
+            env,
+            "SELECT is_private,data FROM repositories WHERE key_bi=?",
+            repo_bi,
+        )
+        if not row or int(row.get("is_private", 0) or 0) != 1:
+            return None
+        record = await decrypt_row(env, row.get("data"))
+        if (
+            not record
+            or record.get("visibility") != "private"
+            or str(record.get("owner") or "").lower() != owner
+            or str(record.get("name") or "") != repo
+            or record.get("mirrorEncryption") != "owner-sealed-v1"
+            or int(record.get("keyEpoch") or 0) < 1
+        ):
+            return None
+        return {
+            "repoBi": repo_bi,
+            "keyEpoch": int(record["keyEpoch"]),
+            "owner": owner,
+            "repo": repo,
+        }
+    except Exception:
+        return None
+
+
+async def _https_mirror_private_access_record(env, opaque_id):
+    """Resolve one opaque access id to exactly one encrypted private record.
+
+    The random id is the only repository locator accepted on the client-facing
+    private transport.  It is not sufficient authorization: after this exact
+    lookup, the caller must still prove owner/share access using HTTP Basic.
+    Multiple active bindings may legitimately use the same id for mirrors of
+    the same repository, but an id that maps to more than one repository fails
+    closed instead of becoming an ambiguity or existence oracle.
+    """
+    opaque_id = clean_string(opaque_id, 64).strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", opaque_id):
+        return None
+    try:
+        await ensure_schema(env)
+        routes = await d1_all(
+            env,
+            """SELECT DISTINCT repo_bi,key_epoch
+                 FROM private_mirror_routes
+                WHERE opaque_replica_id=? AND active=1""",
+            opaque_id,
+        )
+        repo_bis = {
+            str(route.get("repo_bi") or "")
+            for route in routes or []
+            if route.get("repo_bi")
+        }
+        if len(repo_bis) != 1:
+            return None
+        repo_bi = next(iter(repo_bis))
+        row = await d1_first(
+            env,
+            "SELECT is_private,data FROM repositories WHERE key_bi=?",
+            repo_bi,
+        )
+        if not row or int(row.get("is_private", 0) or 0) != 1:
+            return None
+        record = await decrypt_row(env, row.get("data"))
+        owner = clean_string(
+            (record or {}).get("owner", ""), MAX_NODE_NAME).strip().lower()
+        repo = clean_string(
+            (record or {}).get("name", ""), MAX_REPO_SEGMENT).strip()
+        try:
+            key_epoch = int((record or {}).get("keyEpoch") or 0)
+        except (TypeError, ValueError):
+            return None
+        if (
+            not record
+            or record.get("visibility") != "private"
+            or record.get("mirrorEncryption") != "owner-sealed-v1"
+            or not valid_node_name(owner)
+            or not safe_segment(repo)
+            or key_epoch < 1
+            or not any(
+                int(route.get("key_epoch") or 0) == key_epoch
+                for route in routes or []
+            )
+            or not hmac.compare_digest(
+                repo_bi, await blind_index(env, owner + "/" + repo))
+        ):
+            return None
+        return {
+            "repoBi": repo_bi,
+            "keyEpoch": key_epoch,
+            "owner": owner,
+            "repo": repo,
+        }
+    except Exception:
+        return None
+
+
+async def _https_mirror_private_catalog_access_id(
+        env, repo_bi, key_epoch):
+    """Return one current opaque locator for an already-authorized catalog row."""
+    try:
+        row = await d1_first(
+            env,
+            """SELECT opaque_replica_id
+                 FROM private_mirror_routes
+                WHERE repo_bi=? AND active=1 AND key_epoch=?
+                ORDER BY updated_at DESC LIMIT 1""",
+            repo_bi, int(key_epoch),
+        )
+        opaque_id = clean_string(
+            (row or {}).get("opaque_replica_id", ""), 64).strip().lower()
+        if re.fullmatch(r"[0-9a-f]{64}", opaque_id):
+            return opaque_id
+    except Exception:
+        pass
+    return ""
+
+
+async def https_mirror_private_route_handler(env, request):
+    """Create, rotate, or revoke a blind-indexed private ciphertext route."""
+    method = method_name(request)
+    if method == "GET":
+        # This endpoint deliberately has no list operation.
+        return json_response({
+            "ok": True,
+            "protocol": "forkmesh-private-route-v1",
+            "transport": "owner-sealed-opaque-archive-v1",
+            "repositoryBytesInD1": False,
+            "privateRoutesListed": False,
+        }, cache_control="public, max-age=300")
+    if method != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        announced = int(request.headers.get("content-length") or 0)
+    except Exception:
+        announced = 0
+    if announced > HTTPS_MIRROR_MANIFEST_MAX_BYTES:
+        return json_response({"error": "request_too_large"}, status=413)
+    try:
+        raw = str(await request.text())
+    except Exception:
+        return json_response({"error": "not_found"}, status=404)
+    if len(raw.encode("utf-8")) > HTTPS_MIRROR_MANIFEST_MAX_BYTES:
+        return json_response({"error": "request_too_large"}, status=413)
+    try:
+        binding = _https_mirror_private_route_payload(json.loads(raw))
+    except Exception:
+        binding = None
+    if not binding or not _ts_ok(binding["issuedAt"]):
+        return json_response({"error": "not_found"}, status=404)
+    await ensure_schema(env)
+    private_record = await _https_mirror_private_record(
+        env, binding["owner"], binding["repo"])
+    owner_key = await _owner_pubkey(env, binding["owner"])
+    if (
+        not private_record
+        or not owner_key
+        or private_record["keyEpoch"] != binding["keyEpoch"]
+        or not await ed25519_verify(
+            owner_key,
+            binding["signature"],
+            binding["message"].encode("utf-8"),
+        )
+    ):
+        return json_response({"error": "not_found"}, status=404)
+    endpoint = await d1_first(
+        env,
+        "SELECT node_bi FROM mirror_https_endpoints WHERE node_name=?",
+        binding["node"],
+    )
+    if not endpoint:
+        return json_response({"error": "not_found"}, status=404)
+    node_bi = str(endpoint.get("node_bi") or "")
+    binding_bi = await blind_index(
+        env,
+        "private-route:" + binding["owner"] + "/" + binding["repo"]
+        + ":" + binding["node"],
+    )
+    existing = await d1_first(
+        env,
+        """SELECT issued_at,owner_sig,active,opaque_replica_id,
+                  replica_sha256,key_epoch
+             FROM private_mirror_routes WHERE binding_bi=?""",
+        binding_bi,
+    )
+    if existing:
+        old_issued = int(existing.get("issued_at") or 0)
+        same = bool(
+            old_issued == binding["issuedAt"]
+            and existing.get("owner_sig") == binding["signature"]
+            and bool(existing.get("active")) == binding["active"]
+            and existing.get("opaque_replica_id") == binding["opaqueId"]
+            and existing.get("replica_sha256") == binding["replicaSha256"]
+            and int(existing.get("key_epoch") or 0) == binding["keyEpoch"])
+        if binding["issuedAt"] < old_issued or (
+                binding["issuedAt"] == old_issued and not same):
+            return json_response({"error": "stale_registration"}, status=409)
+    collision = await d1_first(
+        env,
+        """SELECT binding_bi FROM private_mirror_routes
+            WHERE opaque_replica_id=? AND repo_bi<>? LIMIT 1""",
+        binding["opaqueId"], private_record["repoBi"],
+    )
+    if collision:
+        return json_response({"error": "route_conflict"}, status=409)
+    now = int(Date.now())
+    await d1_run(
+        env,
+        """INSERT INTO private_mirror_routes
+             (binding_bi,repo_bi,node_bi,opaque_replica_id,replica_sha256,
+              key_epoch,owner_sig,issued_at,active,updated_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?)
+             ON CONFLICT(binding_bi) DO UPDATE SET
+               node_bi=excluded.node_bi,
+               opaque_replica_id=excluded.opaque_replica_id,
+               replica_sha256=excluded.replica_sha256,
+               key_epoch=excluded.key_epoch,owner_sig=excluded.owner_sig,
+               issued_at=excluded.issued_at,active=excluded.active,
+               updated_at=excluded.updated_at""",
+        binding_bi,
+        private_record["repoBi"],
+        node_bi,
+        binding["opaqueId"],
+        binding["replicaSha256"],
+        binding["keyEpoch"],
+        binding["signature"],
+        binding["issuedAt"],
+        1 if binding["active"] else 0,
+        now,
+    )
+    return json_response({
+        "ok": True,
+        "active": binding["active"],
+        "keyEpoch": binding["keyEpoch"],
+        "privateAccessId": (
+            binding["opaqueId"] if binding["active"] else ""),
+        "accessPath": (
+            "/api/private-replicas/" + binding["opaqueId"]
+            if binding["active"] else ""),
+        "repositoryBytesInD1": False,
+    }, status=201, cache_control="no-store")
+
+
+async def _https_mirror_expected_forkmesh_refs(env):
+    """Owner-attested refs digest for the public flagship repository."""
+    try:
+        key_bi = await blind_index(env, "forkmesh/forkmesh")
+        row = await d1_first(
+            env,
+            "SELECT data,is_private FROM repositories WHERE key_bi=?",
+            key_bi,
+        )
+        if not row or int(row.get("is_private", 1) or 0) != 0:
+            return ""
+        record = await decrypt_row(env, row.get("data"))
+        digest = clean_string((record or {}).get("stateHash", ""), 64).lower()
+        if (
+            not record
+            or record.get("visibility") != "public"
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+        ):
+            return ""
+        return digest
+    except Exception:
+        return ""
+
+
+async def _https_mirror_mark_failed(env, row, now):
+    await d1_run(
+        env,
+        """UPDATE mirror_https_endpoints
+              SET checked_at=?,healthy=0,integrity='failed',health_sig='',
+                  forkmesh_verified_at=0,forkmesh_refs_sha256='',
+                  forkmesh_operations_sha256='',forkmesh_active=0,
+                  health_message='',updated_at=?
+            WHERE node_bi=?""",
+        now, now, row.get("node_bi"),
+    )
+
+
+async def _https_mirror_health_one(env, row, expected_forkmesh_refs):
+    """Verify one fresh node-signed health and forkmesh/forkmesh proof."""
+    now = int(Date.now())
+    node = clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower()
+    public_key = clean_string(row.get("public_key", ""), 120)
+    base_url = https_routing.normalize_base_url(row.get("base_url"))
+    if (
+        not valid_node_name(node)
+        or not valid_node_pubkey(public_key)
+        or not base_url
+        or public_key not in await _owner_signing_pubkeys(env, node)
+        or not await _https_mirror_cloudflare_dns_ok(base_url)
+    ):
+        await _https_mirror_mark_failed(env, row, now)
+        return False
+    nonce = _b64url_encode(_random_bytes(18))
+    target = (
+        base_url + "/health?nonce=" + quote(nonce)
+        + "&issuedAt=" + str(now)
+        + "&owner=forkmesh&repo=forkmesh"
+    )
+    started = int(Date.now())
+    status, text = await _https_mirror_fetch_text(
+        target,
+        HTTPS_MIRROR_MANIFEST_MAX_BYTES,
+        HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+    )
+    latency = max(0, min(60_000, int(Date.now()) - started))
+    try:
+        data = json.loads(text) if text else {}
+    except Exception:
+        data = {}
+    try:
+        proof = data.get("repositoryProof")
+        challenge = data.get("challenge")
+        operations = proof.get("operations")
+        operations_digest = https_routing.operations_sha256(operations)
+        available = proof.get("available") is True
+        proof_integrity = str(proof.get("integrity") or "").lower()
+        refs_digest = str(proof.get("refsSha256") or "").lower()
+        claimed_operations_digest = str(
+            proof.get("operationsSha256") or "").lower()
+        message = https_routing.repository_health_challenge(
+            node,
+            nonce,
+            now,
+            proof.get("owner"),
+            proof.get("repository"),
+            available,
+            proof_integrity,
+            refs_digest,
+            claimed_operations_digest,
+        )
+        signature = str(challenge.get("signature") or "")
+        valid = bool(
+            isinstance(data, dict)
+            and data.get("node") == node
+            and data.get("publicKey") == public_key
+            and data.get("transport") == "direct-https"
+            and isinstance(proof, dict)
+            and proof.get("owner") == "forkmesh"
+            and proof.get("repository") == "forkmesh"
+            and isinstance(challenge, dict)
+            and challenge.get("messageType")
+            == "forkmesh-https-health-repository-v1"
+            and challenge.get("nonce") == nonce
+            and int(challenge.get("issuedAt") or 0) == now
+            and challenge.get("algorithm") == "Ed25519"
+            and challenge.get("encoding") == "base64url-no-padding"
+            and message
+            and challenge.get("messageSha256")
+            == hashlib.sha256(message.encode("utf-8")).hexdigest()
+            and operations_digest
+            and operations_digest == claimed_operations_digest
+            and await ed25519_verify(
+                public_key, signature, message.encode("utf-8"))
+        )
+    except Exception:
+        valid = False
+        signature = ""
+        operations = []
+        operations_digest = ""
+        available = False
+        proof_integrity = "unavailable"
+        refs_digest = ""
+    if not valid:
+        await _https_mirror_mark_failed(env, row, now)
+        return False
+    general_healthy = bool(
+        status == 200
+        and data.get("ok") is True
+        and data.get("integrity") == "ok"
+    )
+    forkmesh_active = bool(
+        general_healthy
+        and available
+        and proof_integrity == "ok"
+        and expected_forkmesh_refs
+        and hmac.compare_digest(refs_digest, expected_forkmesh_refs)
+        and HTTPS_MIRROR_REQUIRED_FORKMESH_OPERATIONS.issubset(
+            set(operations))
+    )
+    verified_at = now if forkmesh_active else 0
+    await d1_run(
+        env,
+        """UPDATE mirror_https_endpoints
+              SET checked_at=?,latency_ms=?,healthy=?,integrity=?,
+                  health_sig=?,forkmesh_verified_at=?,
+                  forkmesh_refs_sha256=?,forkmesh_operations_sha256=?,
+                  forkmesh_active=?,health_message=?,updated_at=?
+            WHERE node_bi=?""",
+        now,
+        latency,
+        1 if general_healthy else 0,
+        "ok" if general_healthy else "degraded",
+        signature,
+        verified_at,
+        refs_digest if available else "",
+        operations_digest if available else "",
+        1 if forkmesh_active else 0,
+        message if valid else "",
+        now,
+        row.get("node_bi"),
+    )
+    if general_healthy:
+        # A fresh identity-bound challenge is a real node activity signal.
+        await d1_run(
+            env, "UPDATE nodes SET last_seen=? WHERE node_bi=?",
+            now, row.get("node_bi"))
+    return general_healthy
+
+
+async def https_mirror_health_cron(env):
+    """Challenge a bounded oldest-first batch; no repository bytes enter D1."""
+    await ensure_schema(env)
+    rows = await d1_all(
+        env,
+        """SELECT node_bi,node_name,base_url,public_key
+             FROM mirror_https_endpoints
+            ORDER BY checked_at ASC,node_name ASC LIMIT ?""",
+        HTTPS_MIRROR_HEALTH_BATCH,
+    )
+    if not rows:
+        return
+    expected = await _https_mirror_expected_forkmesh_refs(env)
+    await asyncio.gather(
+        *[_https_mirror_health_one(env, row, expected) for row in rows],
+        return_exceptions=True,
+    )
+
+
+async def _https_mirror_private_candidates(
+        env, private_record, preferred_region):
+    """Resolve only active, current-epoch opaque routes after authorization."""
+    rows = await d1_all(
+        env,
+        """SELECT r.opaque_replica_id,r.replica_sha256,r.key_epoch,
+                  e.node_name,e.base_url,e.public_key,e.registration_sig,
+                  e.issued_at,e.checked_at,e.latency_ms,e.region,e.healthy,
+                  e.integrity,e.abuse_blocked
+             FROM private_mirror_routes r
+             JOIN mirror_https_endpoints e ON e.node_bi=r.node_bi
+            WHERE r.repo_bi=? AND r.active=1 AND r.key_epoch=?""",
+        private_record["repoBi"], private_record["keyEpoch"],
+    )
+    route_by_node = {}
+    records = []
+    for row in rows or []:
+        node = clean_string(
+            row.get("node_name", ""), MAX_NODE_NAME).strip().lower()
+        opaque_id = clean_string(
+            row.get("opaque_replica_id", ""), 64).strip().lower()
+        digest = clean_string(
+            row.get("replica_sha256", ""), 64).strip().lower()
+        if (
+            not valid_node_name(node)
+            or not re.fullmatch(r"[0-9a-f]{64}", opaque_id)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+        ):
             continue
-        if not rec.get("donation_address") or not rec.get("donation_secret"):
+        projected = _https_mirror_endpoint_projection(row)
+        records.append(projected)
+        route_by_node[node] = {
+            "opaqueId": opaque_id,
+            "replicaSha256": digest,
+            "keyEpoch": int(row.get("key_epoch") or 0),
+        }
+    cursor_row = await d1_first(
+        env, "SELECT cursor FROM edge_route_cursor WHERE repo_bi=?",
+        private_record["repoBi"])
+    selected = https_routing.select_endpoints(
+        records,
+        int(Date.now()),
+        preferred_region=preferred_region,
+        cursor=int((cursor_row or {}).get("cursor") or 0),
+    )
+    for endpoint in selected:
+        endpoint.update(route_by_node.get(endpoint["node"], {}))
+    return [
+        endpoint for endpoint in selected
+        if endpoint.get("opaqueId") and endpoint.get("replicaSha256")
+    ]
+
+
+async def _https_mirror_private_request_authorized(
+        env, request, private_record):
+    """Verify owner/share Basic auth after the opaque route was resolved.
+
+    Private read credentials are never accepted from a URL or query string and
+    are never forwarded to a mirror.  Repository identity comes only from the
+    encrypted record selected by the random opaque id.
+    """
+    if not private_record:
+        return False
+    return await _basic_auth_view_ok(
+        env,
+        private_record.get("owner", ""),
+        private_record.get("repo", ""),
+        request,
+    )
+
+
+def _private_replica_not_found():
+    """One cache-safe denial shape for unknown, inactive, and unauthorized ids."""
+    return json_response(
+        {"error": "not_found"}, status=404,
+        cache_control="no-store, max-age=0, must-revalidate")
+
+
+async def _https_mirror_private_access_handler(
+        env, request, url, opaque_id):
+    """Authorize and serve an identity-free private-replica request."""
+    # A query would put credentials or repository hints into intermediary and
+    # platform logs. Even harmless-looking query parameters are rejected so
+    # there is exactly one supported private client request shape.
+    if method_name(request) not in ("GET", "HEAD") or url.query:
+        return _private_replica_not_found()
+    private_record = await _https_mirror_private_access_record(env, opaque_id)
+    if (
+        private_record is None
+        or not await _https_mirror_private_request_authorized(
+            env, request, private_record)
+    ):
+        return _private_replica_not_found()
+    return await _https_mirror_private_proxy(env, request, private_record)
+
+
+async def _https_mirror_private_proxy(env, request, private_record):
+    """Stream an authorized owner-sealed archive; never request plaintext."""
+    method = method_name(request)
+    if method not in ("GET", "HEAD"):
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+    if private_record is None:
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+    router_public_key = _https_mirror_router_public_key(env)
+    router_seed = _https_mirror_router_seed(env)
+    if not router_public_key or not router_seed:
+        return json_response(
+            {"error": "mirror_unavailable"}, status=503,
+            cache_control="no-store")
+    candidates = await _https_mirror_private_candidates(
+        env, private_record, world_request_country(request))
+    if not candidates:
+        return json_response(
+            {"error": "mirror_unavailable"}, status=503,
+            cache_control="no-store")
+    from js import fetch as js_fetch
+    for endpoint in candidates:
+        target = https_routing.masked_private_replica_url(
+            endpoint["baseUrl"], endpoint["opaqueId"])
+        parsed_target = urlparse(target)
+        signed_path = parsed_target.path
+        request_id = _b64url_encode(_random_bytes(18))
+        issued_at = int(Date.now())
+        body_digest = https_routing.empty_body_sha256()
+        message = https_routing.request_message(
+            endpoint["node"], method, signed_path, body_digest, request_id,
+            issued_at)
+        signature = await ed25519_sign(
+            router_public_key, router_seed, message.encode("utf-8"))
+        if not target or not message or not signature:
             continue
-        if rec.get("donation_sweep_sig"):
-            already += 1
+        headers = {
+            "X-ForkMesh-Node": endpoint["node"],
+            "X-ForkMesh-Request-Id": request_id,
+            "X-ForkMesh-Issued-At": str(issued_at),
+            "X-ForkMesh-Body-Sha256": body_digest,
+            "X-ForkMesh-Signature": signature,
+        }
+        try:
+            upstream = await asyncio.wait_for(
+                js_fetch(JsRequest.new(
+                    target,
+                    to_js({
+                        "method": method,
+                        "headers": headers,
+                        "redirect": "manual",
+                    }),
+                )),
+                timeout=HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+            )
+            status = int(getattr(upstream, "status", 0) or 0)
+        except Exception:
+            upstream = None
+            status = 0
+        if upstream is None or status != 200:
             continue
-        bal = await _solana_balance_lamports(env, rec.get("donation_address"))
-        if not bal or bal <= SOLANA_SWEEP_FEE_RESERVE_LAMPORTS:
+        try:
+            content_type = str(
+                upstream.headers.get("content-type") or "").split(";", 1)[0]
+            etag = str(upstream.headers.get("etag") or "")
+            announced = int(upstream.headers.get("content-length") or 0)
+        except Exception:
             continue
-        total += bal
-        before = rec.get("donation_sweep_sig")
-        changed = await _sweep_confirmed_donation(env, row.get("name_bi"), rec, bal)
-        if changed:
-            await _save_account(env, row.get("name_bi"), rec)
-        if rec.get("donation_sweep_sig") and rec.get("donation_sweep_sig") != before:
-            swept += 1
-        else:
-            pending += 1
-            if rec.get("donation_sweep_error"):
-                errors.append(rec.get("name", "unknown") + ": " +
-                              rec.get("donation_sweep_error"))
-    if swept == 0 and pending == 0:
-        return ("No confirmed per-node deposits awaiting sweep. "
-                "Sweep destination (treasury): %s. Already swept: %d." %
-                (treasury, already))
-    msg = ("Swept %d deposit(s), %d still pending, %d already swept. Checked "
-           "%s SOL. Destination treasury: %s." %
-           (swept, pending, already, _amount_sol(total), treasury))
-    if errors:
-        msg += " Last errors: " + "; ".join(errors[:5])
-    return msg
+        expected_etag = '"sha256-' + endpoint["replicaSha256"] + '"'
+        if (
+            content_type
+            != "application/vnd.forkmesh.private-replica+json"
+            or not hmac.compare_digest(etag, expected_etag)
+            or announced <= 0
+            or announced > 2 * 1024 * 1024 * 1024
+        ):
+            continue
+        raw_headers = {}
+        for name in (
+            "content-type", "content-length", "etag", "content-disposition",
+        ):
+            try:
+                value = upstream.headers.get(name)
+            except Exception:
+                value = None
+            if value is not None:
+                raw_headers[name] = str(value)
+        response_headers = https_routing.response_headers(raw_headers)
+        response_headers["cache-control"] = (
+            "no-store, max-age=0, must-revalidate")
+        await _https_mirror_route_advance(
+            env, private_record, endpoint["node"], "private-replica")
+        return JsResponse.new(
+            upstream.body,
+            to_js({"status": 200, "headers": response_headers}),
+        )
+    return json_response(
+        {"error": "mirror_unavailable"}, status=503,
+        cache_control="no-store")
+
+
+async def _https_mirror_public_context(env, owner, repo):
+    """Return canonical public repo identity and integrity-approved node set."""
+    owner_l = clean_string(owner, MAX_NODE_NAME).strip().lower()
+    repo_l = clean_string(repo, MAX_REPO_SEGMENT).strip().lower()
+    if not valid_node_name(owner_l) or not safe_segment(repo_l):
+        return None
+    try:
+        await ensure_schema(env)
+        now = int(Date.now())
+        rows = [
+            row for row in await _decrypted_public_catalog(env, now)
+            if (
+                not row.get("is_private")
+                and (row.get("data") or {}).get("visibility") == "public"
+                and not _is_blocked_catalog_identity(
+                    env,
+                    (row.get("data") or {}).get("owner"),
+                    (row.get("data") or {}).get("name"),
+                )
+            )
+        ]
+        target_row = None
+        for row in rows:
+            record = row.get("data") or {}
+            if (
+                str(record.get("owner") or "").lower() == owner_l
+                and str(record.get("name") or "").lower() == repo_l
+            ):
+                target_row = row
+                break
+        if not target_row:
+            return None
+        target = target_row["data"]
+        members = [
+            row for row in rows
+            if repo_mirror_same_group(target, row.get("data") or {})
+        ]
+        group_keys = [
+            str(row.get("key_bi") or "")
+            for row in members if row.get("key_bi")
+        ]
+        history = {}
+        if group_keys:
+            history_rows = await d1_all(
+                env,
+                "SELECT key_bi,state_hash FROM repo_state_history"
+                " WHERE key_bi IN (%s)"
+                % ",".join("?" for _ in group_keys),
+                *group_keys,
+            )
+            for item in history_rows or []:
+                history.setdefault(
+                    str(item.get("key_bi") or ""), []).append(
+                        item.get("state_hash"))
+        pins = clone_state_pins(
+            target, target_row.get("key_bi"), members, history)
+        # Direct routing never uses the legacy unpinned fail-open behavior. An
+        # owner must publish an authenticated refs digest before a remote
+        # endpoint can advertise or resolve that repository.
+        if not pins:
+            return None
+        allowed = set()
+        source = None
+        for row in members:
+            record = row.get("data") or {}
+            node = clean_string(
+                record.get("owner", ""), MAX_NODE_NAME).lower()
+            state = clean_string(record.get("stateHash", ""), 64).lower()
+            if not valid_node_name(node):
+                continue
+            if pins and state not in pins:
+                continue
+            allowed.add(node)
+            if (
+                source is None
+                and str(record.get("source") or "local-node")
+                == "local-node"
+            ):
+                source = record
+        if not allowed:
+            return None
+        canonical = source or target
+        canonical_owner = clean_string(
+            canonical.get("owner", ""), MAX_NODE_NAME).lower()
+        canonical_repo = clean_string(
+            canonical.get("name", ""), MAX_REPO_SEGMENT)
+        if (
+            not valid_node_name(canonical_owner)
+            or not safe_segment(canonical_repo)
+        ):
+            return None
+        return {
+            "owner": canonical_owner,
+            "repo": canonical_repo,
+            "nodes": allowed,
+            "pins": set(pins),
+            "repoBi": await blind_index(env, owner_l + "/" + repo_l),
+        }
+    except Exception:
+        return None
+
+
+def _https_mirror_endpoint_projection(row):
+    return {
+        "node": row.get("node_name"),
+        "baseUrl": row.get("base_url"),
+        "publicKey": row.get("public_key"),
+        "signature": row.get("registration_sig"),
+        "issuedAt": row.get("issued_at"),
+        "checkedAt": row.get("checked_at"),
+        "latencyMs": row.get("latency_ms"),
+        "region": row.get("region"),
+        "healthy": bool(row.get("healthy")),
+        "integrity": row.get("integrity"),
+        "abuseBlocked": bool(row.get("abuse_blocked")),
+    }
+
+
+async def _https_mirror_candidates(env, context, preferred_region, sticky=""):
+    rows = await d1_all(
+        env,
+        """SELECT node_name,base_url,public_key,registration_sig,issued_at,
+                  checked_at,latency_ms,region,healthy,integrity,abuse_blocked
+             FROM mirror_https_endpoints""",
+    )
+    records = [
+        _https_mirror_endpoint_projection(row)
+        for row in rows or []
+        if str(row.get("node_name") or "").lower() in context["nodes"]
+    ]
+    cursor_row = await d1_first(
+        env, "SELECT cursor FROM edge_route_cursor WHERE repo_bi=?",
+        context["repoBi"])
+    selected = https_routing.select_endpoints(
+        records,
+        int(Date.now()),
+        preferred_region=preferred_region,
+        cursor=int((cursor_row or {}).get("cursor") or 0),
+    )
+    sticky = str(sticky or "").lower()
+    if sticky:
+        selected.sort(key=lambda item: 0 if item["node"] == sticky else 1)
+    return selected
+
+
+async def _https_mirror_clone_pin(env, context):
+    row = await d1_first(
+        env,
+        "SELECT owner,ts FROM clone_sticky WHERE repo_bi=?",
+        context["repoBi"],
+    )
+    if (
+        row
+        and int(Date.now()) - int(row.get("ts") or 0) <= CLONE_STICKY_MS
+    ):
+        return clean_string(row.get("owner", ""), MAX_NODE_NAME).lower()
+    return ""
+
+
+async def _https_mirror_route_advance(env, context, served_node, operation):
+    now = int(Date.now())
+    await d1_run(
+        env,
+        """INSERT INTO edge_route_cursor(repo_bi,cursor,updated_at)
+             VALUES (?,1,?)
+             ON CONFLICT(repo_bi) DO UPDATE SET
+               cursor=edge_route_cursor.cursor+1,updated_at=excluded.updated_at""",
+        context["repoBi"], now,
+    )
+    if operation == "git-info-refs":
+        await d1_run(
+            env,
+            """INSERT INTO clone_sticky(repo_bi,owner,ts) VALUES (?,?,?)
+                 ON CONFLICT(repo_bi) DO UPDATE SET
+                   owner=excluded.owner,ts=excluded.ts""",
+            context["repoBi"], served_node, now,
+        )
+
+
+def _https_mirror_request_query(url, operation, release_sha=""):
+    params = parse_qs(url.query, keep_blank_values=True)
+    if operation == "git-info-refs":
+        return {"service": "git-upload-pack"}
+    if operation == "release-blob":
+        return {"sha256": release_sha}
+    output = {}
+    if operation == "blobs":
+        paths = params.get("path", [])[:MAX_BLOB_BATCH]
+        if paths:
+            output["path"] = paths
+    elif operation == "search":
+        query = params.get("q", params.get("path", [""]))[0]
+        if query:
+            output["path"] = query
+    elif operation in ("tree", "blob", "raw", "commit"):
+        if params.get("path"):
+            output["path"] = params["path"][0]
+    if params.get("ref"):
+        output["ref"] = params["ref"][0]
+    return output
+
+
+async def _https_mirror_repository_proof(env, endpoint, context, operation):
+    """Require a fresh signed refs/operation proof for this public repo."""
+    now = int(Date.now())
+    pins_key = ",".join(sorted(context["pins"]))
+    memo_key = (
+        endpoint["node"], context["owner"], context["repo"], pins_key)
+    memo = _HTTPS_MIRROR_REPO_PROOF_MEMO.get(memo_key)
+    if memo and now - memo["checkedAt"] <= HTTPS_MIRROR_REPO_PROOF_TTL_MS:
+        return operation in memo["operations"]
+    nonce = _b64url_encode(_random_bytes(18))
+    target = (
+        endpoint["baseUrl"] + "/health?nonce=" + quote(nonce)
+        + "&issuedAt=" + str(now)
+        + "&owner=" + quote(context["owner"])
+        + "&repo=" + quote(context["repo"])
+    )
+    status, text = await _https_mirror_fetch_text(
+        target,
+        HTTPS_MIRROR_MANIFEST_MAX_BYTES,
+        HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+    )
+    try:
+        data = json.loads(text) if text else {}
+        proof = data.get("repositoryProof")
+        challenge = data.get("challenge")
+        operations = proof.get("operations")
+        operations_digest = https_routing.operations_sha256(operations)
+        refs_digest = str(proof.get("refsSha256") or "").lower()
+        claimed_operations_digest = str(
+            proof.get("operationsSha256") or "").lower()
+        message = https_routing.repository_health_challenge(
+            endpoint["node"],
+            nonce,
+            now,
+            proof.get("owner"),
+            proof.get("repository"),
+            proof.get("available") is True,
+            proof.get("integrity"),
+            refs_digest,
+            claimed_operations_digest,
+        )
+        valid = bool(
+            status == 200
+            and isinstance(data, dict)
+            and data.get("ok") is True
+            and data.get("integrity") == "ok"
+            and data.get("node") == endpoint["node"]
+            and data.get("publicKey") == endpoint["publicKey"]
+            and data.get("transport") == "direct-https"
+            and isinstance(proof, dict)
+            and proof.get("owner") == context["owner"]
+            and proof.get("repository") == context["repo"]
+            and proof.get("available") is True
+            and proof.get("integrity") == "ok"
+            and refs_digest in context["pins"]
+            and operations_digest
+            and operations_digest == claimed_operations_digest
+            and isinstance(challenge, dict)
+            and challenge.get("messageType")
+            == "forkmesh-https-health-repository-v1"
+            and challenge.get("nonce") == nonce
+            and int(challenge.get("issuedAt") or 0) == now
+            and challenge.get("algorithm") == "Ed25519"
+            and challenge.get("encoding") == "base64url-no-padding"
+            and challenge.get("messageSha256")
+            == hashlib.sha256(message.encode("utf-8")).hexdigest()
+            and await ed25519_verify(
+                endpoint["publicKey"],
+                str(challenge.get("signature") or ""),
+                message.encode("utf-8"),
+            )
+        )
+    except Exception:
+        valid = False
+        operations = []
+    if not valid:
+        return False
+    if len(_HTTPS_MIRROR_REPO_PROOF_MEMO) >= HTTPS_MIRROR_REPO_PROOF_MEMO_MAX:
+        _HTTPS_MIRROR_REPO_PROOF_MEMO.clear()
+    _HTTPS_MIRROR_REPO_PROOF_MEMO[memo_key] = {
+        "checkedAt": now,
+        "operations": frozenset(operations),
+    }
+    return operation in set(operations)
+
+
+async def _https_mirror_proxy(
+        env, request, owner, repo, operation, release_sha=""):
+    """Stream a public read through healthy endpoints under the original URL."""
+    context = await _https_mirror_public_context(env, owner, repo)
+    if context is None:
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+    method = method_name(request)
+    if operation == "git-upload-pack" and method != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    if operation != "git-upload-pack" and method not in ("GET", "HEAD"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    body = b""
+    if method == "POST":
+        try:
+            announced = int(request.headers.get("content-length") or 0)
+        except Exception:
+            announced = 0
+        if announced > HTTPS_MIRROR_BODY_MAX_BYTES:
+            return Response("request too large", status=413)
+        try:
+            body = bytes(await request.bytes())
+        except Exception:
+            return Response("invalid request body", status=400)
+        if len(body) > HTTPS_MIRROR_BODY_MAX_BYTES:
+            return Response("request too large", status=413)
+    router_public_key = _https_mirror_router_public_key(env)
+    router_seed = _https_mirror_router_seed(env)
+    if not router_public_key or not router_seed:
+        return json_response(
+            {"error": "mirror_unavailable"}, status=503,
+            cache_control="no-store")
+    sticky = (
+        await _https_mirror_clone_pin(env, context)
+        if operation == "git-upload-pack" else "")
+    candidates = await _https_mirror_candidates(
+        env, context, world_request_country(request), sticky=sticky)
+    if not candidates:
+        return json_response(
+            {"error": "mirror_unavailable"}, status=503,
+            cache_control="no-store")
+    query = _https_mirror_request_query(
+        urlparse(request.url), operation, release_sha=release_sha)
+    from js import fetch as js_fetch
+    for endpoint in candidates:
+        if not await _https_mirror_repository_proof(
+                env, endpoint, context, operation):
+            continue
+        target = https_routing.masked_target_url(
+            endpoint["baseUrl"],
+            context["owner"],
+            context["repo"],
+            operation,
+            query,
+        )
+        parsed_target = urlparse(target)
+        signed_path = parsed_target.path + (
+            ("?" + parsed_target.query) if parsed_target.query else "")
+        body_digest = hashlib.sha256(body).hexdigest()
+        request_id = _b64url_encode(_random_bytes(18))
+        issued_at = int(Date.now())
+        message = https_routing.request_message(
+            endpoint["node"],
+            method,
+            signed_path,
+            body_digest,
+            request_id,
+            issued_at,
+        )
+        signature = await ed25519_sign(
+            router_public_key, router_seed, message.encode("utf-8"))
+        if not target or not message or not signature:
+            continue
+        headers = {
+            "X-ForkMesh-Node": endpoint["node"],
+            "X-ForkMesh-Request-Id": request_id,
+            "X-ForkMesh-Issued-At": str(issued_at),
+            "X-ForkMesh-Body-Sha256": body_digest,
+            "X-ForkMesh-Signature": signature,
+        }
+        if operation == "git-upload-pack":
+            headers["Content-Type"] = (
+                "application/x-git-upload-pack-request")
+            encoding = request.headers.get("content-encoding")
+            if encoding:
+                headers["Content-Encoding"] = encoding
+        init = {
+            "method": method,
+            "headers": headers,
+            "redirect": "manual",
+        }
+        if method == "POST":
+            init["body"] = Uint8Array.new(_to_js(body))
+        try:
+            upstream = await asyncio.wait_for(
+                js_fetch(JsRequest.new(target, to_js(init))),
+                timeout=HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+            )
+            status = int(getattr(upstream, "status", 0) or 0)
+        except Exception:
+            status = 0
+            upstream = None
+        if upstream is None or status in HTTPS_MIRROR_RETRY_STATUSES:
+            if status in (401, 403, 500, 502, 503, 504):
+                try:
+                    await d1_run(
+                        env,
+                        """UPDATE mirror_https_endpoints
+                              SET healthy=0,integrity='failed',
+                                  forkmesh_active=0,updated_at=?
+                            WHERE node_name=?""",
+                        int(Date.now()), endpoint["node"])
+                except Exception:
+                    pass
+            continue
+        raw_headers = {}
+        for name in (
+            "content-type", "content-length", "content-range",
+            "accept-ranges", "etag", "last-modified", "cache-control",
+            "content-disposition",
+        ):
+            try:
+                value = upstream.headers.get(name)
+            except Exception:
+                value = None
+            if value is not None:
+                raw_headers[name] = str(value)
+        response_headers = https_routing.response_headers(raw_headers)
+        await _https_mirror_route_advance(
+            env, context, endpoint["node"], operation)
+        # The selected origin and node are deliberately omitted. This streams
+        # the body; the Worker does not materialize repository bytes.
+        return JsResponse.new(
+            upstream.body,
+            to_js({"status": status, "headers": response_headers}),
+        )
+    return json_response(
+        {"error": "mirror_unavailable"}, status=503,
+        cache_control="no-store")
 
 
 class Default(WorkerEntrypoint):
@@ -18338,17 +27160,30 @@ class Default(WorkerEntrypoint):
                 self.env, "/cron/record-online-sample",
                 "record_online_sample failed: " + _safe_error_text(error),
                 error=error, failures=cron_failures)
-        # Backstop the bounty escrow split so a funded bounty pays out to the
-        # author + treasury even if no client polls its status. Scans (and
-        # decrypts) every bounty row, so every 5 minutes is plenty for a
-        # backstop of a client-driven flow.
+        # Oldest-first bounded signed challenges keep direct HTTPS endpoints
+        # inside the two-minute routing freshness window. This moves no
+        # repository content: only identity, latency, integrity, and the
+        # forkmesh/forkmesh refs proof are retained.
+        try:
+            await https_mirror_health_cron(self.env)
+        except BaseException as error:
+            await log_cron_error(
+                self.env, "/cron/https-mirror-health",
+                "https_mirror_health_cron failed: "
+                + _safe_error_text(error),
+                error=error, failures=cron_failures)
+        # Confirm externally signed reward plans. This job only reads finalized
+        # transactions and checks their exact System Program transfer list; it
+        # has no signing key and never broadcasts a transaction.
         if minute % 5 == 1:
             try:
-                await sweep_funded_bounties(self.env)
+                await verify_submitted_chain_intents(self.env)
+                await verify_submitted_reward_contributions(self.env)
             except BaseException as error:
                 await log_cron_error(
-                    self.env, "/cron/sweep-funded-bounties",
-                    "sweep_funded_bounties failed: " + _safe_error_text(error),
+                    self.env, "/cron/verify-reward-intents",
+                    "reward finality verification failed: "
+                    + _safe_error_text(error),
                     error=error, failures=cron_failures)
         # ActivityPub outbound delivery: the publish path already best-effort
         # sends a few activities inline, this drains the retry backlog (one
@@ -18361,6 +27196,21 @@ class Default(WorkerEntrypoint):
                 await log_cron_error(
                     self.env, "/cron/activitypub-deliver",
                     "_ap_drain_outbox failed: " + _safe_error_text(error),
+                    error=error, failures=cron_failures)
+        # Automatic Fediverse activity is combined per repo/org alias and is
+        # eligible no more than once per 24 hours. Processing is bounded and
+        # only creates durable Notes/outbox rows; the normal delivery drain
+        # above retains its established Retry-After/exponential backoff policy.
+        if minute % 10 == 8:
+            try:
+                await ensure_schema(self.env)
+                await _ap_process_digest_queues(
+                    self.env, AP_DIGEST_CRON_BATCH)
+            except BaseException as error:
+                await log_cron_error(
+                    self.env, "/cron/activitypub-digests",
+                    "_ap_process_digest_queues failed: "
+                    + _safe_error_text(error),
                     error=error, failures=cron_failures)
         # Relay federation: a federated relay registers + reports its online
         # nodes to the main relay (two outbound HTTP calls); the main relay
@@ -18406,9 +27256,9 @@ class Default(WorkerEntrypoint):
                     self.env, "/cron/purge-blocked-catalog",
                     "purge_blocked_catalog failed: " + _safe_error_text(error),
                     error=error, failures=cron_failures)
-        # Central donation fund: distributes once an hour (interval gate
-        # inside); polling that gate every 15 minutes keeps the distribution
-        # within minutes of the hour mark without a per-minute check.
+        # Community reward pool: prepare an unsigned round about once an hour
+        # (interval gate inside). The owner-device signer remains the only
+        # component that can approve and broadcast the exact plan.
         if minute % 15 == 14:
             try:
                 await ensure_schema(self.env)
@@ -18440,6 +27290,40 @@ class Default(WorkerEntrypoint):
                     self.env, "/cron/purge-stale-account-devices",
                     "purge_stale_account_devices failed: " + _safe_error_text(error),
                     error=error, failures=cron_failures)
+        # Hourly organization-succession warning pass. It reads only the
+        # configured owner's generalized activity maximum and emits at most one
+        # deduplicated warning per inactivity deadline. It never opens a grace
+        # case or transfers a role automatically.
+        if minute % 60 == 42:
+            try:
+                await process_organization_succession_warnings(self.env)
+            except BaseException as error:
+                await log_cron_error(
+                    self.env, "/cron/organization-succession-warnings",
+                    "organization succession warning pass failed: "
+                    + _safe_error_text(error),
+                    error=error, failures=cron_failures)
+        # Hourly privacy/security retention: raw network identifiers were never
+        # stored; expire generalized signals, reviewed restrictions, appeals and
+        # metadata-only audit records on their documented schedules.
+        if minute % 60 == 52:
+            try:
+                await cleanup_security_records(self.env)
+                await expire_pending_rewards(self.env)
+            except BaseException as error:
+                await log_cron_error(
+                    self.env, "/cron/cleanup-security-records",
+                    "cleanup_security_records failed: "
+                    + _safe_error_text(error),
+                    error=error, failures=cron_failures)
+            try:
+                await cleanup_world_media_records(self.env)
+            except BaseException as error:
+                await log_cron_error(
+                    self.env, "/cron/cleanup-world-media-records",
+                    "cleanup_world_media_records failed: "
+                    + _safe_error_text(error),
+                    error=error, failures=cron_failures)
         # Hourly: the once-per-user "How are we doing?" founder feedback email
         # for accounts that crossed the 24h-after-signup mark (batched; also
         # back-fills accounts that signed up before this feature shipped).
@@ -18466,6 +27350,11 @@ class Default(WorkerEntrypoint):
         try:
             url = urlparse(request.url)
 
+            restriction_response = await _security_enforce_request(
+                self.env, request, url)
+            if restriction_response is not None:
+                return restriction_response
+
             # Admin error dashboard at a secret, env-configured path. Its 401/403
             # responses are not logged, but unexpected exceptions are captured.
             admin_path = _admin_path(self.env)
@@ -18474,6 +27363,8 @@ class Default(WorkerEntrypoint):
 
             response = await self._route(request, url)
         except Exception as error:
+            if str(error) == "legacy_custody_migration_required":
+                return _legacy_custody_not_ready_response()
             try:
                 await capture_worker_exception(self.env, request, url, error)
             except BaseException:
@@ -18481,6 +27372,10 @@ class Default(WorkerEntrypoint):
             # Re-raise so Cloudflare records the native Worker failure/Error 1101
             # while Sentry keeps the underlying Python exception and stack trace.
             raise
+        post_restriction = await _security_observe_response(
+            self.env, request, url, response)
+        if post_restriction is not None:
+            response = post_restriction
         try:
             status = int(getattr(response, "status", 200) or 200)
         except Exception:
@@ -18531,7 +27426,7 @@ class Default(WorkerEntrypoint):
         admin_query = _admin_query(params.get("admin", [""])[0]
                                    or _admin_cookie_name(request))
 
-        # POST actions: ?action=disburse retries join-deposit sweeps;
+        # POST action ?action=disburse reports migration-only custody status;
         # ?action=set_password resets a user account's login password. Every
         # state-changing POST must carry a CSRF token rendered into the admin
         # page, so a cross-site form cannot trigger these actions.
@@ -18588,6 +27483,13 @@ class Default(WorkerEntrypoint):
                         banner = "Delete failed: unknown table."
                     elif not ids:
                         banner = "Delete: no rows were selected."
+                    elif await _admin_selected_rows_have_wallet_keys(
+                            self.env, table, ids):
+                        banner = (
+                            "Delete blocked: a selected row contains frozen "
+                            "legacy wallet custody material. Use the explicit "
+                            "offline migration."
+                        )
                     else:
                         # D1 caps bound parameters per query (~100), so delete in
                         # chunks rather than one giant IN (...) list.
@@ -18616,6 +27518,37 @@ class Default(WorkerEntrypoint):
                         banner = await _admin_insert_row(self.env, table, form)
                 except Exception as error:
                     banner = "Save failed: " + repr(error)
+
+            if action in (
+                    "disburse", "set_password", "resend_verify",
+                    "request_ownership", "delete_rows", "update_row",
+                    "insert_row"):
+                audit_actor = (
+                    _admin_cookie_name(request)
+                    or params.get("admin", [""])[0])
+                target_type = (
+                    "account" if action in (
+                        "set_password", "resend_verify",
+                        "request_ownership")
+                    else "database_table" if action in (
+                        "delete_rows", "update_row", "insert_row")
+                    else "legacy_custody")
+                target = (
+                    form.get("name", [""])[0] if action in (
+                        "set_password", "resend_verify")
+                    else form.get("target", [""])[0]
+                    if action == "request_ownership"
+                    else params.get("table", [""])[0])
+                lowered_banner = str(banner or "").lower()
+                outcome = (
+                    "denied" if "blocked" in lowered_banner
+                    else "failed" if "failed" in lowered_banner
+                    else "success")
+                await _audit_sensitive_action(
+                    self.env, audit_actor, "admin.console_" + action,
+                    target_type, target, outcome,
+                    {"rowCount": len(form.get("ids", []))}
+                    if action == "delete_rows" else {})
 
         # Left-nav table browser: pick the requested table (validated against the
         # live list), defaulting to the error log.
@@ -18663,6 +27596,18 @@ class Default(WorkerEntrypoint):
         )
 
     async def _route(self, request, url):
+        if url.path.rstrip("/") == HTTPS_MIRROR_ENDPOINT_PATH:
+            return await https_mirror_endpoint_handler(self.env, request)
+        if url.path.rstrip("/") == HTTPS_MIRROR_PRIVATE_ROUTE_PATH:
+            return await https_mirror_private_route_handler(self.env, request)
+        if url.path.rstrip("/") == "/api/ssh/authorize":
+            return await ssh_gateway_authorize_handler(self.env, request)
+
+        private_access_match = PRIVATE_REPLICA_ACCESS_RE.match(url.path)
+        if private_access_match:
+            return await _https_mirror_private_access_handler(
+                self.env, request, url, private_access_match.group(1))
+
         # Organization repo aliases (issue #388): rewrite /<org>/<repo> git and
         # /api/repo/<org>/<repo>/... requests to the linked node's namespace
         # before any route matching — see org_alias_rewrite.
@@ -18670,35 +27615,44 @@ class Default(WorkerEntrypoint):
         if aliased is not None:
             request, url = aliased
 
-        # Git smart-HTTP clone, proxied to the hosting client over the tunnel.
+        # Public clone traffic uses signed, masked HTTPS. Private/missing paths
+        # fail closed in _git_host. Private clients use only the identity-free
+        # opaque endpoint above; named Git paths never advertise or proxy it.
         git_info = GIT_INFO_RE.match(url.path)
         if git_info:
             service = parse_qs(url.query).get("service", [""])[0]
             if service == "git-upload-pack":
-                return await self._git_advert_cached(
-                    request, git_info.group(1), git_info.group(2))
+                owner = safe_segment(git_info.group(1))
+                repo = safe_segment(git_info.group(2))
+                if (
+                    owner and repo
+                    and not await _repo_is_private(self.env, owner, repo)
+                ):
+                    return await _https_mirror_proxy(
+                        self.env, request, owner, repo, "git-info-refs")
+                return await self._git_host(request, owner, repo)
             if service == "git-receive-pack":
                 return await self._git_push(
                     request, git_info.group(1), git_info.group(2))
         git_pack = GIT_PACK_RE.match(url.path)
         if git_pack and method_name(request) == "POST":
-            return await self._git_host(request, git_pack.group(1), git_pack.group(2))
+            owner = safe_segment(git_pack.group(1))
+            repo = safe_segment(git_pack.group(2))
+            if (
+                owner and repo
+                and not await _repo_is_private(self.env, owner, repo)
+            ):
+                return await _https_mirror_proxy(
+                    self.env, request, owner, repo, "git-upload-pack")
+            return await self._git_host(request, owner, repo)
         git_recv = GIT_RECEIVE_RE.match(url.path)
         if git_recv and method_name(request) == "POST":
             return await self._git_push(request, git_recv.group(1), git_recv.group(2))
 
         if url.path == "/" and method_name(request) in ("GET", "HEAD"):
-            # Logged-in visitors go straight to the dashboard: a server-side
-            # 302 keyed off the forkmesh_session presence cookie (value "1",
-            # set by login/signup JS, cleared on logout — a hint, never a
-            # credential). This replaces the old inline localStorage redirect
-            # in index.html that visibly painted the homepage first. no-store
-            # so a logout never replays a cached redirect.
-            if _cookie_value(request, "forkmesh_session") == "1":
-                return Response("", status=302, headers={
-                    "location": "/dashboard",
-                    "cache-control": "no-store, max-age=0, must-revalidate",
-                })
+            # Everyone enters the same world immediately. The app may use the
+            # locally held session to render an authorized avatar and portals,
+            # but the route itself never changes based on login state.
             return await self._serve_homepage(url)
 
         if url.path in BLOCKED_STATIC_HTML_PATHS:
@@ -18744,6 +27698,90 @@ class Default(WorkerEntrypoint):
                     "now": Date.now(),
                 }
             )
+
+        if url.path in ("/api/world/context", "/api/world/context/"):
+            return world_context_handler(request)
+
+        if url.path in ("/api/world/ticket", "/api/world/ticket/"):
+            return await world_ticket_handler(self.env, request)
+
+        if url.path in ("/api/world/inactive", "/api/world/inactive/"):
+            return await world_inactive_handler(self.env, request)
+
+        if url.path in (
+                "/api/world/organizations",
+                "/api/world/organizations/"):
+            return await world_organizations_handler(self.env, request)
+        if url.path in (
+                "/api/world/instances",
+                "/api/world/instances/"):
+            return await world_relay_instances_handler(self.env, request)
+
+        if (url.path == "/api/world/fediverse"
+                or url.path == "/api/world/fediverse/"
+                or url.path.startswith("/api/world/fediverse/")):
+            return await world_fediverse_directory_handler(
+                self.env, request, url.path)
+
+        if (url.path == "/api/world/media"
+                or url.path == "/api/world/media/"
+                or url.path.startswith("/api/world/media/")):
+            return await world_media_handler(
+                self.env, request, url.path)
+
+        if (url.path == "/api/world/events"
+                or url.path == "/api/world/events/"
+                or url.path.startswith("/api/world/events/")):
+            return await world_events_handler(
+                self.env, request, url.path)
+
+        if (url.path == "/api/world/workshops"
+                or url.path == "/api/world/workshops/"
+                or url.path.startswith("/api/world/workshops/")):
+            return await world_workshops_handler(
+                self.env, request, url.path)
+
+        if (url.path == "/api/world/community-ads"
+                or url.path == "/api/world/community-ads/"
+                or url.path.startswith("/api/world/community-ads/")):
+            return await world_community_ads_handler(
+                self.env, request, url.path)
+
+        if (url.path == "/api/world/fediverse-mentions"
+                or url.path == "/api/world/fediverse-mentions/"
+                or url.path.startswith(
+                    "/api/world/fediverse-mentions/")):
+            return await world_fediverse_mentions_handler(
+                self.env, request, url.path)
+
+        if url.path in ("/api/world/ws", "/api/world/ws/"):
+            if method_name(request) != "GET":
+                return json_response(
+                    {"error": "method_not_allowed"},
+                    status=405,
+                    extra_headers={"allow": "GET"},
+                )
+            if not world_websocket_origin_allowed(request):
+                return json_response({"error": "origin_not_allowed"}, status=403)
+            query = parse_qs(url.query, keep_blank_values=False)
+            ticket_values = query.get("ticket") or []
+            trusted_claim = (
+                _world_ticket_decode(self.env, ticket_values[0])
+                if len(ticket_values) == 1 else None
+            )
+            world_id = self.env.FORKMESH_WORLD.idFromName("town-square-v1")
+            last_error = None
+            for _attempt in range(2):
+                world_object = self.env.FORKMESH_WORLD.get(world_id)
+                try:
+                    return await world_object.fetch(
+                        await world_durable_object_request(
+                            request, trusted_claim))
+                except Exception as error:
+                    last_error = error
+            await log_durable_object_abort(
+                self.env, request, url.path, last_error)
+            return json_response({"error": "unavailable"}, status=503)
 
         if url.path in ("/simulate-sentry-error", "/simulate-sentry-error/"):
             division_by_zero = 1 / 0
@@ -18793,9 +27831,71 @@ class Default(WorkerEntrypoint):
         if url.path in ("/api/security/report", "/api/security/report/"):
             return await security_report_handler(self.env, request)
 
+        if url.path in ("/api/security/roles", "/api/security/roles/"):
+            return await security_roles_handler(self.env, request)
+
+        if url.path in (
+                "/api/security/quarantine",
+                "/api/security/quarantine/"):
+            return await security_quarantine_handler(self.env, request)
+
+        if url.path in (
+                "/api/security/appeals",
+                "/api/security/appeals/"):
+            return await security_appeals_handler(self.env, request)
+
+        if url.path in ("/api/security/audit", "/api/security/audit/"):
+            return await security_audit_handler(self.env, request)
+
+        if url.path in (
+                "/api/security-scans/queue",
+                "/api/security-scans/queue/"):
+            return await repository_security_scan_queue_handler(
+                self.env, request)
+
+        if url.path in (
+                "/api/security/owner-keys",
+                "/api/security/owner-keys/"):
+            return await owner_encryption_keys_handler(self.env, request)
+
+        if url.path in (
+                "/api/rewards/signing-jobs",
+                "/api/rewards/signing-jobs/"):
+            return await reward_signing_jobs_handler(self.env, request)
+
+        if url.path in (
+                "/api/rewards/pending",
+                "/api/rewards/pending/"):
+            return await pending_rewards_handler(self.env, request)
+
+        if url.path in (
+                "/api/rewards/pending-awards",
+                "/api/rewards/pending-awards/"):
+            return await pending_reward_award_handler(self.env, request)
+
+        if url.path in (
+                "/api/rewards/contributions",
+                "/api/rewards/contributions/"):
+            return await reward_contributions_handler(self.env, request)
+
+        if url.path in ("/api/rewards/pool", "/api/rewards/pool/"):
+            if method_name(request) != "GET":
+                return json_response(
+                    {"error": "method_not_allowed"}, status=405)
+            return await _account_central_fund(self.env, request)
+
         # Persistent data lives in D1, not Durable Objects.
         if url.path in ("/api/repositories", "/api/repositories/"):
             return await catalog_handler(self.env, request)
+
+        # GitHub/GitLab metadata imports and non-mirrored stubs are deliberately
+        # separate from /api/repositories: only the latter represents a mirror
+        # that ForkMesh can actually route or clone.
+        if (url.path == "/api/repository-imports"
+                or url.path == "/api/repository-imports/"
+                or url.path.startswith("/api/repository-imports/")):
+            return await repository_imports_handler(
+                self.env, request, url.path)
 
         if url.path in ("/api/notifications", "/api/notifications/"):
             return await notifications_handler(self.env, request)
@@ -18870,6 +27970,24 @@ class Default(WorkerEntrypoint):
             if not org:
                 return json_response({"error": "not_found"}, status=404)
             return await org_repos_handler(self.env, request, org)
+        org_succession_match = ORG_SUCCESSION_RE.match(url.path)
+        if org_succession_match:
+            org = safe_segment(org_succession_match.group(1))
+            action = safe_segment(
+                org_succession_match.group(2) or "", 40)
+            if not org or (
+                org_succession_match.group(2) and not action
+            ):
+                return json_response({"error": "not_found"}, status=404)
+            return await organization_succession_handler(
+                self.env, request, org, action)
+        org_fediverse_match = ORG_FEDIVERSE_RE.match(url.path)
+        if org_fediverse_match:
+            org = safe_segment(org_fediverse_match.group(1))
+            if not org:
+                return json_response({"error": "not_found"}, status=404)
+            return await org_fediverse_handler(
+                self.env, request, org)
         org_match = ORG_RE.match(url.path)
         if org_match:
             org = safe_segment(org_match.group(1))
@@ -18983,6 +28101,11 @@ class Default(WorkerEntrypoint):
             repo = safe_segment(issues_match.group(2))
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
+            if (await _repo_is_private(self.env, owner, repo)
+                    and not (method_name(request) in ("GET", "DELETE")
+                             and await _authorize_owner(
+                                 self.env, request, owner))):
+                return json_response({"error": "not_found"}, status=404)
             return await issues_handler(self.env, request, owner, repo)
 
         pulls_match = REPO_PULLS_RE.match(url.path)
@@ -18990,6 +28113,11 @@ class Default(WorkerEntrypoint):
             owner = safe_segment(pulls_match.group(1))
             repo = safe_segment(pulls_match.group(2))
             if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            if (await _repo_is_private(self.env, owner, repo)
+                    and not (method_name(request) in ("GET", "DELETE")
+                             and await _authorize_owner(
+                                 self.env, request, owner))):
                 return json_response({"error": "not_found"}, status=404)
             return await pulls_handler(self.env, request, owner, repo)
 
@@ -18999,6 +28127,11 @@ class Default(WorkerEntrypoint):
             repo = safe_segment(commits_match.group(2))
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
+            if (await _repo_is_private(self.env, owner, repo)
+                    and not (method_name(request) in ("GET", "DELETE")
+                             and await _authorize_owner(
+                                 self.env, request, owner))):
+                return json_response({"error": "not_found"}, status=404)
             return await commits_handler(self.env, request, owner, repo)
 
         discussions_match = REPO_DISCUSSIONS_RE.match(url.path)
@@ -19006,6 +28139,11 @@ class Default(WorkerEntrypoint):
             owner = safe_segment(discussions_match.group(1))
             repo = safe_segment(discussions_match.group(2))
             if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            if (await _repo_is_private(self.env, owner, repo)
+                    and not (method_name(request) in ("GET", "DELETE")
+                             and await _authorize_owner(
+                                 self.env, request, owner))):
                 return json_response({"error": "not_found"}, status=404)
             return await discussions_handler(self.env, request, owner, repo)
 
@@ -19034,6 +28172,15 @@ class Default(WorkerEntrypoint):
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
             return await ap_publish_handler(self.env, request, owner, repo)
+
+        ap_digest_match = REPO_AP_DIGEST_RE.match(url.path)
+        if ap_digest_match:
+            owner = safe_segment(ap_digest_match.group(1))
+            repo = safe_segment(ap_digest_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await ap_digest_handler(
+                self.env, request, owner, repo)
 
         ap_posts_match = REPO_AP_POSTS_RE.match(url.path)
         if ap_posts_match:
@@ -19092,6 +28239,20 @@ class Default(WorkerEntrypoint):
                 return json_response({"error": "not_found"}, status=404)
             return await shares_handler(self.env, request, owner, repo)
 
+        security_scans_match = REPO_SECURITY_SCANS_RE.match(url.path)
+        if security_scans_match:
+            owner = safe_segment(security_scans_match.group(1))
+            repo = safe_segment(security_scans_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await repository_security_scans_handler(
+                self.env,
+                request,
+                owner,
+                repo,
+                security_scans_match.group(3),
+            )
+
         mirrors_match = REPO_MIRRORS_RE.match(url.path)
         if mirrors_match:
             owner = safe_segment(mirrors_match.group(1))
@@ -19099,6 +28260,24 @@ class Default(WorkerEntrypoint):
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
             return await repo_mirrors_handler(self.env, request, owner, repo)
+
+        logo_suggestions_match = REPO_LOGO_SUGGESTIONS_RE.match(url.path)
+        if logo_suggestions_match:
+            owner = safe_segment(logo_suggestions_match.group(1))
+            repo = safe_segment(logo_suggestions_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await native_repository_logo_handler(
+                self.env, request, owner, repo, suggestions=True)
+
+        logo_match = REPO_LOGO_RE.match(url.path)
+        if logo_match:
+            owner = safe_segment(logo_match.group(1))
+            repo = safe_segment(logo_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await native_repository_logo_handler(
+                self.env, request, owner, repo)
 
         about_match = REPO_ABOUT_RE.match(url.path)
         if about_match:
@@ -19108,6 +28287,15 @@ class Default(WorkerEntrypoint):
                 return json_response({"error": "not_found"}, status=404)
             return await repo_about_handler(self.env, request, owner, repo)
 
+        privacy_match = REPO_PRIVACY_RE.match(url.path)
+        if privacy_match:
+            owner = safe_segment(privacy_match.group(1))
+            repo = safe_segment(privacy_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await repo_privacy_handler(
+                self.env, request, owner, repo)
+
         agents_list_match = REPO_AGENTS_LIST_RE.match(url.path)
         if agents_list_match:
             owner = safe_segment(agents_list_match.group(1))
@@ -19115,6 +28303,15 @@ class Default(WorkerEntrypoint):
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
             return await agents_list_handler(self.env, request, owner, repo)
+
+        agents_ack_match = REPO_AGENTS_ACK_RE.match(url.path)
+        if agents_ack_match:
+            owner = safe_segment(agents_ack_match.group(1))
+            repo = safe_segment(agents_ack_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await agents_ack_handler(
+                self.env, request, owner, repo)
 
         agents_transcript_match = REPO_AGENTS_TRANSCRIPT_RE.match(url.path)
         if agents_transcript_match:
@@ -19157,48 +28354,11 @@ class Default(WorkerEntrypoint):
             sha256 = release_blob_match.group(3)
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
-            # Public, content-addressed download: forward to the repo's host DO,
-            # which streams the blob from a serving node over the tunnel. If the
-            # named source is offline or lacks that CAS blob, retry through live
-            # mirrors of the same logical repo before failing the installer. For
-            # release blobs, prefer mirrors that have published artifactCount > 0
-            # because CAS bytes sync separately from git metadata.
-            host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
-            host_object = self.env.FORKMESH_HOST.get(host_id)
-            try:
-                response = await host_object.fetch(
-                    await durable_object_request(request))
-                try:
-                    status = int(response.status)
-                except Exception:
-                    status = 0
-            except Exception:
-                # A host DO can abort internally while streaming a CAS blob
-                # (Cloudflare surfaces this as pyodide.http.AbortError). Treat
-                # it like a transient 503 so the public release route still gets
-                # to try healthy mirrors instead of leaking the Worker traceback.
-                response = json_response({"error": "unavailable"}, status=503)
-                status = 503
-            if status in (404, 502, 503, 504):
-                failed_release_nodes = [owner]
-                for _ in range(4):
-                    fallback = await self._select_release_blob_mirror(
-                        owner, repo, exclude=failed_release_nodes)
-                    if not fallback or fallback.lower() == owner.lower():
-                        break
-                    try:
-                        forwarded = await self._forward_to_node(
-                            request, url, repo, fallback,
-                            "/api/repo/%s/%s/releases/blob/sha256/%s" % (
-                                fallback, repo, sha256))
-                        fstatus = int(forwarded.status)
-                    except Exception:
-                        failed_release_nodes.append(fallback)
-                        continue
-                    if fstatus not in (404, 502, 503, 504):
-                        return forwarded
-                    failed_release_nodes.append(fallback)
-            return response
+            if await _repo_is_private(self.env, owner, repo):
+                return json_response({"error": "not_found"}, status=404)
+            return await _https_mirror_proxy(
+                self.env, request, owner, repo, "release-blob",
+                release_sha=sha256)
 
         host_match = REPO_HOST_RE.match(url.path)
         if host_match:
@@ -19206,165 +28366,46 @@ class Default(WorkerEntrypoint):
             repo = safe_segment(host_match.group(2))
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
-            # Registering as a host (the WebSocket upgrade) requires a token signed
-            # by the owner account's registered key. Read-only browse/clone of a
-            # repo someone else hosts stays public, so only gate the upgrade.
-            public_browse = False
-            browse_cache_key = ""  # set only for public /history (fmv-keyed)
+            action = host_match.group(3)
             upgrade = (request.headers.get("upgrade") or "").lower()
-            if upgrade == "websocket":
-                params = parse_qs(url.query)
-                ts = params.get("ts", [""])[0]
-                sig = params.get("sig", [""])[0]
-                if not await verify_host_token(self.env, owner, repo, ts, sig):
-                    return json_response({"error": "unauthorized"}, status=401)
-                try:
-                    owner_bi, owner_rec = await _account_row(self.env, owner)
-                    await touch_registered_node(self.env, owner_bi, owner_rec)
-                except Exception:
-                    pass
-            elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches", "search", "stats", "sizes"):
-                # Browsing a private repo's files/commits needs a view token as
-                # ?ts=&sig= (the host-token query shape): the owner's own
-                # (forkmesh-view-v1), or — when ?viewer= names a collaborator the
-                # repo was shared with — that grantee's (forkmesh-share-view-v1,
-                # issue #9). Public repos remain open to browse.
+            if (
+                upgrade != "websocket"
+                and action in {
+                    "tree", "blobs", "blob", "raw", "history", "commit",
+                    "branches", "search", "stats", "sizes",
+                }
+            ):
                 if await _repo_is_private(self.env, owner, repo):
-                    params = parse_qs(url.query)
-                    ts = params.get("ts", [""])[0]
-                    sig = params.get("sig", [""])[0]
-                    viewer = safe_segment(params.get("viewer", [""])[0])
-                    if viewer and viewer != owner:
-                        ok = await verify_share_view_token(
-                            self.env, viewer, owner, repo, ts, sig)
-                    else:
-                        ok = await verify_view_token(
-                            self.env, owner, repo, ts, sig)
-                    if not ok:
-                        return json_response({"error": "unauthorized"}, status=401)
-                else:
-                    # Public repo browse (tree/blob/raw/commits): round-robin the
-                    # request across every ONLINE mirror of the logical repo,
-                    # including the named source, so consecutive page loads
-                    # spread over all live nodes. The chosen node serves IN
-                    # PLACE, through the URL that was requested: the request is
-                    # dispatched to its host DO with the path rewritten into its
-                    # namespace — never a client-visible redirect. The DO tags
-                    # the response with servedBy (derived from the rewritten
-                    # path), so the website still shows which node answered. An
-                    # offline source with an online mirror is covered the same
-                    # way, as the clone fallback in _git_host does. `fmserved`
-                    # survives as a legacy pin: a URL that carries it skips the
-                    # rotation (old redirected links keep working).
-                    public_browse = True
-                    # A mirror that failed the first browse hop, so the failure
-                    # handler below skips it on retry instead of re-picking the
-                    # same flapping node and returning its error.
-                    failed_mirror = None
-                    params = parse_qs(url.query)
-                    # The contribution graph fans out one /history fetch per
-                    # repo (up to 12 on a first profile view), each a full
-                    # mirror-selection + DO tunnel round-trip. The client
-                    # already sends fmv=<attested state hash>, so keying on
-                    # the whole URL self-invalidates the moment the repo
-                    # moves (git_advert_cache pattern); the TTL is only a
-                    # backstop. Public repos only — private browse carries
-                    # per-viewer tokens and never sets browse_cache_key.
-                    if (host_match.group(3) == "history"
-                            and params.get("fmv", [""])[0]):
-                        browse_cache_key = (
-                            "https://forkmesh.internal" + url.path
-                            + "?" + url.query)
-                        cached = await edge_cache_match_media(
-                            browse_cache_key, "application/json")
-                        if cached is not None:
-                            return cached
-                    pinned = safe_segment(params.get("fmserved", [""])[0])
-                    if not (pinned and pinned.lower() == owner.lower()):
-                        served = await self._select_browse_mirror(owner, repo)
-                        if served and served.lower() != owner.lower():
-                            # A failed forward (exception, 503/504: the pick's
-                            # presence row outlived its tunnel, or 502: its host
-                            # answered but couldn't produce the tree — e.g. a
-                            # freshly-added mirror whose clone is empty/still
-                            # syncing) falls through to the named owner's own
-                            # route, whose failure handler below tries the
-                            # remaining mirrors — a broken mirror hop must
-                            # degrade, never take the page down.
-                            forwarded = None
-                            try:
-                                forwarded = await self._forward_to_node(
-                                    request, url, repo, served,
-                                    "/api/repo/%s/%s/%s" % (
-                                        served, repo, host_match.group(3)))
-                                fstatus = int(forwarded.status)
-                            except Exception:
-                                fstatus = 0
-                            if forwarded is not None and \
-                                    fstatus not in (0, 502, 503, 504):
-                                if browse_cache_key and fstatus == 200:
-                                    # Same raw-response store as git adverts:
-                                    # rebuilt with a public max-age so the
-                                    # Cache API accepts it.
-                                    await git_advert_cache_put(
-                                        browse_cache_key, forwarded)
-                                return forwarded
-                            failed_mirror = served
-            host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
-            host_object = self.env.FORKMESH_HOST.get(host_id)
-            try:
-                response = await host_object.fetch(
-                    await durable_object_request(request))
-            except Exception as error:
-                # Same platform abort as the room / release-blob routes (the
-                # free-tier Durable Object duration cap). Treat it as a
-                # transient 503 so a public browse still falls over to a live
-                # mirror below instead of leaking the Worker traceback.
-                await log_durable_object_abort(
-                    self.env, request, url.path, error)
-                response = json_response({"error": "unavailable"}, status=503)
-            if public_browse:
-                # The routed node couldn't serve (no host connected: 503, a
-                # dead-but-lingering tunnel: 504, or a host that answered but
-                # couldn't build the reply: 502 — e.g. a freshly-added mirror
-                # whose clone is empty/still syncing, so ls-tree has no ref).
-                # Its host_presence row can lag reality for up to
-                # HOST_PRESENCE_STALE_MS, during which the rotation above still
-                # picks it — so on failure, serve once more in place from an
-                # online mirror of the same logical repo, excluding the node
-                # that just failed. Best-effort: if that forward fails too,
-                # return the named node's original error.
-                try:
-                    status = int(response.status)
-                except Exception:
-                    status = 0
-                if status in (502, 503, 504):
-                    tried = [owner, failed_mirror]
-                    while True:
-                        fallback = await self._select_browse_mirror(
-                            owner, repo, exclude=tried)
-                        if not fallback or fallback.lower() == owner.lower():
-                            break
-                        try:
-                            forwarded = await self._forward_to_node(
-                                request, url, repo, fallback,
-                                "/api/repo/%s/%s/%s" % (
-                                    fallback, repo, host_match.group(3)))
-                            if int(forwarded.status) not in (502, 503, 504):
-                                if browse_cache_key and \
-                                        int(forwarded.status) == 200:
-                                    await git_advert_cache_put(
-                                        browse_cache_key, forwarded)
-                                return forwarded
-                        except Exception:
-                            pass
-                        tried.append(fallback)
-                if browse_cache_key and status == 200:
-                    await git_advert_cache_put(browse_cache_key, response)
-            return response
+                    # Named private content routes are intentionally inert. The
+                    # only private byte transport is the identity-free opaque
+                    # endpoint, with authorization outside the URL.
+                    return _private_replica_not_found()
+                return await _https_mirror_proxy(
+                    self.env, request, owner, repo, action)
+            # The repository tunnel is permanently retired. Repository bytes
+            # use ordinary HTTPS mirror routes; desktop clients use bounded
+            # polling for control-plane changes.
+            return json_response({
+                "error": "repository_socket_transport_retired",
+                "httpsMirrorRequired": True,
+                "socketFallback": False,
+            }, status=410, cache_control="no-store")
 
         room = room_key_from_path(url.path)
         if room:
+            if (
+                not room.get("compat")
+                and await _repository_access_context(
+                    self.env,
+                    request,
+                    room.get("owner", ""),
+                    room.get("repo", ""),
+                ) is None
+            ):
+                # Apply this before choosing or calling the Durable Object. A
+                # guessed private/missing repository therefore cannot reveal
+                # whether a room or retained history exists.
+                return _private_replica_not_found()
             room_id = self.env.FORKMESH_MAINNODE_ROOM.idFromName(room["key"])
             # The platform can abort a room DO mid-request — the free-tier
             # duration cap kills long-lived requests, and any co-located DO
@@ -19395,7 +28436,7 @@ class Default(WorkerEntrypoint):
         # can verify the repo actor's profile link (green check) against this
         # very page — a static shared asset can't carry a per-repo link.
         if looks_like_repo_route(url.path):
-            return await self._serve_repo_page(url)
+            return await self._serve_repo_page(request, url)
 
         if url.path == "/dashboard" or url.path.startswith("/dashboard/"):
             # Legacy /dashboard?section=X links 308 to the per-page paths.
@@ -19450,16 +28491,16 @@ class Default(WorkerEntrypoint):
         # Update(Person), and those bursts must not each rebuild it at origin.
         # _ap_broadcast_actor_update purges the key on profile changes.
         origin = url.scheme + "://" + url.netloc
-        cache_key = "%s/@%s%s" % (
-            origin, quote(name), "/repositories" if repositories else "")
-        cached = await edge_cache_match(cache_key)
-        if cached is not None:
-            return cached
         await ensure_schema(self.env)
         _, rec = await _account_row(self.env, name)
         if (not rec or rec.get("status") != "active"
                 or rec.get("profile_private")):
             return await self._serve_not_found_page(url)
+        cache_key = "%s/@%s%s" % (
+            origin, quote(name), "/repositories" if repositories else "")
+        cached = await edge_cache_match(cache_key)
+        if cached is not None:
+            return cached
         asset = DASHBOARD_PAGE_ASSETS[
             "/dashboard/profile/repositories" if repositories
             else "/dashboard/profile"]
@@ -19492,7 +28533,7 @@ class Default(WorkerEntrypoint):
         await edge_cache_put(cache_key, page)
         return page
 
-    async def _serve_repo_page(self, url):
+    async def _serve_repo_page(self, request, url):
         # The shared repo-detail document, plus per-repo head tags:
         #  - <link rel="me" href="<repo actor url>"> — the reciprocal half of
         #    the repo actor's verified "Repository" row: that row links this git
@@ -19508,18 +28549,28 @@ class Default(WorkerEntrypoint):
         owner = safe_segment(unquote(parts[0])) if len(parts) >= 2 else ""
         repo = safe_segment(unquote(parts[1])) if len(parts) >= 2 else ""
         cache_key = ""
+        explicit_public = False
         if owner and repo:
-            cache_key = "%s/%s/%s" % (origin, quote(owner), quote(repo))
-            cached = await edge_cache_match(cache_key)
-            if cached is not None:
-                return cached
+            # Only an explicit public catalog row may contribute names,
+            # description, actor links, or a shared cache entry. Private and
+            # missing paths intentionally receive the same generic app shell;
+            # authenticated client APIs decide whether the viewer may render
+            # repository data. This keeps URL probing non-disclosing.
+            explicit_public = not await _repo_is_private(
+                self.env, owner, repo)
+            if explicit_public:
+                cache_key = "%s/%s/%s" % (
+                    origin, quote(owner), quote(repo))
+                cached = await edge_cache_match(cache_key)
+                if cached is not None:
+                    return cached
         base = url.scheme + "://" + url.netloc + "/"
         try:
             resp = await self.env.ASSETS.fetch(base + DASHBOARD_REPO_ASSET)
             body = await resp.text()
         except Exception:
             body = "<!doctype html><title>ForkMesh Dashboard</title>"
-        if owner and repo and "</head>" in body:
+        if owner and repo and explicit_public and "</head>" in body:
             canonical = "%s/%s/%s" % (origin, quote(owner), quote(repo))
             # The repo actor's `url` — the /@owner.repo fediverse profile — is
             # the rel=me target that verifies this page's "Repository" row.
@@ -19575,7 +28626,9 @@ class Default(WorkerEntrypoint):
             body = body.replace("</head>", tags + "</head>", 1)
         page = Response(body, status=200, headers={
             "content-type": "text/html; charset=utf-8",
-            "cache-control": "public, max-age=300",
+            "cache-control": (
+                "public, max-age=300" if explicit_public
+                else "no-store, max-age=0, must-revalidate"),
         })
         if cache_key:
             await edge_cache_put(cache_key, page)
@@ -19591,18 +28644,19 @@ class Default(WorkerEntrypoint):
         # document by the caller; this is the HTML view for browsers.
         origin = url.scheme + "://" + url.netloc
         handle = ap.repo_handle(owner.lower(), repo.lower())
+        await ensure_schema(self.env)
+        if (not await _ap_enabled(self.env)
+                or await _repo_is_private(self.env, owner, repo)):
+            return await self._serve_not_found_page(url)
         cache_key = "%s/@%s" % (origin, handle)
         cached = await edge_cache_match(cache_key)
         if cached is not None:
             return cached
-        await ensure_schema(self.env)
-        if not await _ap_enabled(self.env):
-            return await self._serve_not_found_page(url)
         key_bi = await blind_index(self.env, owner + "/" + repo)
         repo_row = await d1_first(
             self.env,
             "SELECT is_private, data FROM repositories WHERE key_bi=?", key_bi)
-        if not repo_row or int(repo_row.get("is_private") or 0):
+        if not repo_row:
             return await self._serve_not_found_page(url)
         rec = await decrypt_row(self.env, repo_row.get("data"))
         description = clean_string(
@@ -19686,21 +28740,13 @@ class Default(WorkerEntrypoint):
         })
 
     async def _serve_homepage(self, url):
-        # The / response varies on the forkmesh_session cookie (302 vs this
-        # page), so it must revalidate every time — a browser-cached logged-out
-        # homepage would mask the login redirect. The body still comes straight
-        # off the assets store; no-cache only forces revalidation, matching the
-        # platform's default ETag behavior for static assets.
+        # Root remains the regular product/source-code website for guests and
+        # signed-in visitors alike. It embeds the World in a bounded iframe and
+        # links to /world/ for full-screen play. no-cache permits ETag
+        # revalidation without pinning an old shell after deploy.
         base = url.scheme + "://" + url.netloc + "/"
-        # Stream the asset body straight through rather than buffering the
-        # whole page into Python with resp.text(). / is the highest-traffic
-        # route and can't be edge-cached (varies on cookie, must revalidate),
-        # so every anonymous visit runs this handler; reassembling the HTML in
-        # the isolate each hit is avoidable Pyodide CPU/memory pressure on the
-        # single event loop — the hot-path work that, under a burst of
-        # visitors, starved the loop enough for the runtime to cancel a request
-        # as hung ("Cannot enter into task"). Passing resp.body to a new
-        # Response only rewrites the headers.
+        # Stream the asset body rather than buffering and rebuilding the
+        # highest-traffic document in the Python isolate.
         try:
             resp = await self.env.ASSETS.fetch(base + "index.html")
             return JsResponse.new(resp.body, to_js({
@@ -19708,7 +28754,6 @@ class Default(WorkerEntrypoint):
                 "headers": {
                     "content-type": "text/html; charset=utf-8",
                     "cache-control": "no-cache",
-                    "vary": "cookie",
                 },
             }))
         except Exception:
@@ -19718,603 +28763,42 @@ class Default(WorkerEntrypoint):
                 headers={
                     "content-type": "text/html; charset=utf-8",
                     "cache-control": "no-cache",
-                    "vary": "cookie",
                 },
             )
 
-    async def _select_clone_fallback(self, owner, repo, force=False):
-        # When owner/repo's own host is offline, find a healthy online mirror of the
-        # same logical repo to redirect a clone to. Best-effort: any failure returns
-        # None so the request just falls through to the normal named-owner route.
-        # `force` overrides the presence fast-path: the caller has already
-        # confirmed the named source can't actually serve right now (its host DO
-        # reports no connected host), so a still-fresh-but-stale presence row must
-        # not veto the redirect — this is what routes a clone around a source whose
-        # tunnel died uncleanly, before host_presence ages out.
-        try:
-            await ensure_schema(self.env)
-            now = int(Date.now())
-            repo_bi = await blind_index(self.env, owner + "/" + repo)
-            presence_rows = await d1_all(
-                self.env, "SELECT repo_bi, ts FROM host_presence")
-            presence = {
-                str(r.get("repo_bi")): int(r.get("ts") or 0)
-                for r in presence_rows
-                if r.get("repo_bi")
-            }
-            catalog_rows = [
-                row for row in await _decrypted_public_catalog(self.env, now)
-                if not _is_blocked_catalog_identity(
-                    self.env, row["data"].get("owner"), row["data"].get("name"))
-            ]
-            presence = await hydrate_repo_group_live_hosts(
-                self.env, owner, repo, catalog_rows, presence, now)
-            source_ts = presence.get(repo_bi) or 0
-            source_online = bool(
-                source_ts and now - source_ts <= HOST_PRESENCE_STALE_MS) and not force
-            # Fast path: the named host is live, so serve it directly.
-            if source_online:
-                return None
-            rotate = await next_clone_rotation(self.env, repo_bi)
-            return select_clone_fallback(
-                owner, repo, catalog_rows, presence, now,
-                HOST_PRESENCE_STALE_MS, source_online, rotate)
-        except Exception:
-            return None
-
-    async def _select_browse_mirror(self, owner, repo, exclude=None):
-        # Round-robin pick of which online mirror serves this website browse of
-        # owner/repo. Spreads consecutive page loads across every live mirror of
-        # the logical repo (the named source included) so no single node carries
-        # all the browse traffic and the website can show which node served the
-        # page. Returns the chosen node's owner (possibly `owner` itself), or None
-        # when nothing is online. `exclude` drops one node from consideration —
-        # used on retry after that node's host DO failed to serve, since its
-        # presence row may not have aged out yet. Best-effort: any failure
-        # returns None so the request just falls through to the normal
-        # named-owner route. `exclude` may be a single node name or an iterable
-        # of names — every one is dropped, so a retry can skip BOTH the named
-        # source and a mirror that already failed this request instead of
-        # re-picking the flapping node and surfacing its error.
-        try:
-            await ensure_schema(self.env)
-            now = int(Date.now())
-            repo_bi = await blind_index(self.env, owner + "/" + repo)
-            presence_rows = await d1_all(
-                self.env, "SELECT repo_bi, ts FROM host_presence")
-            presence = {
-                str(r.get("repo_bi")): int(r.get("ts") or 0)
-                for r in presence_rows
-                if r.get("repo_bi")
-            }
-            catalog_rows = [
-                row for row in await _decrypted_public_catalog(self.env, now)
-                if not _is_blocked_catalog_identity(
-                    self.env, row["data"].get("owner"), row["data"].get("name"))
-            ]
-            presence = await hydrate_repo_group_live_hosts(
-                self.env, owner, repo, catalog_rows, presence, now)
-            candidates = browse_mirror_candidates(
-                owner, repo, catalog_rows, presence, now, HOST_PRESENCE_STALE_MS)
-            if exclude:
-                names = [exclude] if isinstance(exclude, str) else list(exclude)
-                excluded = {n.lower() for n in names if n}
-                candidates = [
-                    c for c in candidates if c.lower() not in excluded]
-            if not candidates:
-                return None
-            if len(candidates) == 1:
-                return candidates[0]
-            # Only pay the round-robin cursor write when there's more than one live
-            # mirror to spread the browse across.
-            rotate = await next_clone_rotation(self.env, repo_bi)
-            return candidates[rotate % len(candidates)]
-        except Exception:
-            return None
-
-    async def _select_release_blob_mirror(self, owner, repo, exclude=None):
-        # Release blobs are out-of-git CAS files. A node can mirror the git
-        # release manifest without having the bytes yet, so prefer online mirrors
-        # that have published artifactCount > 0. Best-effort: any failure returns
-        # None so the caller falls back to the original host response.
-        try:
-            await ensure_schema(self.env)
-            now = int(Date.now())
-            presence_rows = await d1_all(
-                self.env, "SELECT repo_bi, ts FROM host_presence")
-            presence = {
-                str(r.get("repo_bi")): int(r.get("ts") or 0)
-                for r in presence_rows
-                if r.get("repo_bi")
-            }
-            catalog_rows = [
-                row for row in await _decrypted_public_catalog(self.env, now)
-                if not _is_blocked_catalog_identity(
-                    self.env, row["data"].get("owner"), row["data"].get("name"))
-            ]
-            presence = await hydrate_repo_group_live_hosts(
-                self.env, owner, repo, catalog_rows, presence, now)
-            candidates = release_blob_mirror_candidates(
-                owner, repo, catalog_rows, presence, now,
-                HOST_PRESENCE_STALE_MS)
-            if exclude:
-                names = [exclude] if isinstance(exclude, str) else list(exclude)
-                excluded = {n.lower() for n in names if n}
-                candidates = [
-                    c for c in candidates if c.lower() not in excluded]
-            return candidates[0] if candidates else None
-        except Exception:
-            return None
-
-    async def _clone_advert_cache_key(self, owner, repo):
-        # Edge-cache tag for a public clone's ref advertisement: the requesting
-        # namespace's OWN source-attested state hash, and only when this
-        # namespace is itself the working-copy holder (source == local-node).
-        # That hash is republished on every push, so the key rotates exactly when
-        # the served refs change — a cache hit is byte-identical to the last live
-        # handshake. A mirror or source-forwarded clone is served live (its
-        # authoritative state can lag this record, so it must not be keyed on it),
-        # and private repos are never cached (their advertisement is auth-varying).
-        # Best-effort: any failure returns None → serve live.
-        try:
-            await ensure_schema(self.env)
-            key_bi = await blind_index(self.env, owner + "/" + repo)
-            row = await d1_first(
-                self.env,
-                "SELECT data, is_private FROM repositories WHERE key_bi=?",
-                key_bi)
-            if not row or int(row.get("is_private") or 0):
-                return None
-            rec = await decrypt_row(self.env, row.get("data"))
-            if not rec or str(rec.get("source") or "local-node") != "local-node":
-                return None
-            return git_advert_cache_key(owner, repo, rec.get("stateHash"))
-        except Exception:
-            return None
-
-    async def _git_advert_cached(self, request, owner_raw, repo_raw):
-        # Serve the clone handshake (info/refs upload-pack ref advertisement) from
-        # the colo edge cache when nothing has changed. The handshake is a small,
-        # side-effect-free GET whose bytes are fixed for a given ref state; keying
-        # the cache on the repo's attested state hash means every clone after the
-        # first reuses it WITHOUT waking the host tunnel, and a live fetch reaches
-        # the mirror again only once a push rotates that hash. Wraps _git_host so
-        # every existing fallback/integrity path still runs on a cache miss. The
-        # store is gated on a live source so a mirror's (possibly older) refs are
-        # never cached under the source's current-state key.
-        owner = safe_segment(owner_raw)
-        repo = safe_segment(repo_raw)
-        cache_key = None
-        if owner and repo and method_name(request) == "GET":
-            cache_key = await self._clone_advert_cache_key(owner, repo)
-            if cache_key is not None:
-                hit = await git_advert_cache_get(cache_key)
-                if hit is not None:
-                    return hit
-        response = await self._git_host(request, owner_raw, repo_raw)
-        if cache_key is not None:
-            try:
-                cacheable = int(response.status) == 200
-            except Exception:
-                cacheable = False
-            if cacheable and await self._source_has_live_host(owner, repo):
-                await git_advert_cache_put(cache_key, response)
-        return response
-
     async def _git_host(self, request, owner_raw, repo_raw):
+        # Legacy compatibility boundary. Public clone traffic never reaches
+        # this method; authorized private Git clients are directed to the
+        # owner-sealed archive transport without consuming their request body.
         owner = safe_segment(owner_raw)
         repo = safe_segment(repo_raw)
         if not owner or not repo:
             return Response("not found", status=404)
         url = urlparse(request.url)
         is_info = url.path.endswith("/info/refs")
-        # Buffer the upload-pack POST body ONCE, up front. The body stream is
-        # single-use, but the POST may hop twice: a pinned mirror that turns out
-        # to be behind the advertisement the client negotiated against answers
-        # 502 ("fatal: git upload-pack: not our ref <oid>"), and the request is
-        # then replayed at the live named source. Only upload-pack negotiation
-        # bodies come through here (receive-pack streams via _git_push), so the
-        # buffered copy is small — the same bytes durable_object_request
-        # buffered per-hop anyway.
-        post_body = None if is_info else bytes(await request.bytes())
-        # Private repos clone only with an owner-key-signed view token carried in
-        # HTTP Basic auth; public repos stay open. Challenge with 401 Basic so git
-        # supplies credentials from the clone URL or a credential helper.
+        # Named Git URLs never advertise or proxy private content. Authorized
+        # private clients discover an opaque locator in their ACL-gated catalog
+        # and use the dedicated identity-free HTTPS endpoint.
         repo_private = await _repo_is_private(self.env, owner, repo)
         if repo_private:
-            if not await _basic_auth_view_ok(self.env, owner, repo, request):
-                return _basic_auth_challenge()
-        else:
-            # Public repo whose named node can't serve right now: serve the clone
-            # from a healthy mirror of the same logical repo THROUGH THIS SAME
-            # URL — the request is dispatched to the mirror's host DO with the
-            # path rewritten to its namespace, never a client-visible redirect.
-            # Liveness is ground truth (a subrequest to the named node's host DO
-            # for its connected-host count), not the host_presence row, which
-            # lags an unclean tunnel death by up to HOST_PRESENCE_STALE_MS —
-            # during that window the old presence-based check kept forwarding
-            # clones into the dead tunnel ("no host serving" / isolate crash).
-            # A git clone is two requests (info/refs, then the upload-pack POST)
-            # that must reach the SAME mirror, so the pick is pinned per repo for
-            # CLONE_STICKY_MS (see _sticky_clone_fallback) instead of rotating
-            # per request. The integrity gate still applies on the serving node:
-            # a mirror must advertise a source-attested state (clone_state_pins),
-            # so serving in place never weakens the tamper check.
-            # Auto-heal a mirror namespace while the source of truth is online:
-            # hand the clone to the authoritative source instead of this mirror. A
-            # mirror whose refs fail the integrity pin (stale, diverged, or running
-            # an agent) would otherwise reject every clone here; the source is
-            # online and canonical, so it serves the request and the mirror clears
-            # once it re-syncs — its own unverified bytes are never served. Skipped
-            # when the source is offline, so the tamper gate still fully protects
-            # clones then. Cheap in the common case (cloning the source itself):
-            # _online_source_of_truth returns after a single indexed lookup. Both
-            # clone requests (info/refs + upload-pack POST) take this branch while
-            # the source stays online, so they reach the same node.
-            src_owner, src_repo = await self._online_source_of_truth(owner, repo)
-            if src_owner:
-                tail = "info/refs" if is_info else "git-upload-pack"
-                try:
-                    return await self._forward_to_node(
-                        request, url, src_repo, src_owner,
-                        "/%s/%s/%s" % (src_owner, src_repo, tail),
-                        timeout_ms=GIT_ADVERTISE_ROUTE_TIMEOUT_MS
-                        if is_info else None,
-                        body=post_body)
-                except Exception:
-                    # Best-effort: fall through to the normal route (which may
-                    # still mirror-fallback) rather than take the request down.
-                    pass
-            if is_info:
-                serving = await self._select_browse_mirror(owner, repo)
-                if serving and serving.lower() != owner.lower():
-                    forwarded = None
-                    try:
-                        forwarded = await self._forward_to_node(
-                            request, url, repo, serving,
-                            "/%s/%s/info/refs" % (serving, repo),
-                            timeout_ms=GIT_ADVERTISE_ROUTE_TIMEOUT_MS)
-                        fstatus = int(forwarded.status)
-                    except Exception:
-                        fstatus = 0
-                    if forwarded is not None and \
-                            fstatus not in (0, 502, 503, 504):
-                        await self._set_clone_pin(owner, repo, serving)
-                        return forwarded
-                    await self._set_clone_pin(owner, repo, None)
-                else:
-                    await self._set_clone_pin(owner, repo, None)
-            if not await self._source_has_live_host(owner, repo):
-                serving = await self._sticky_clone_fallback(
-                    owner, repo, refresh=is_info)
-                if serving and serving.lower() != owner.lower():
-                    tail = "info/refs" if is_info else "git-upload-pack"
-                    try:
-                        return await self._forward_to_node(
-                            request, url, repo, serving,
-                            "/%s/%s/%s" % (serving, repo, tail),
-                            timeout_ms=GIT_ADVERTISE_ROUTE_TIMEOUT_MS
-                            if is_info else None,
-                            body=post_body)
-                    except Exception:
-                        # Best-effort: fall through to the named owner's route,
-                        # which answers with git's clean "no host" advertisement
-                        # instead of taking the whole request down.
-                        pass
-            elif not is_info:
-                # Source's host IS connected, but a paired info/refs that just
-                # timed out (below) may have failed over to a mirror and pinned
-                # it. The upload-pack POST negotiates against the refs that first
-                # request advertised, so it MUST follow that same mirror even
-                # though the named source's tunnel now looks live — otherwise the
-                # pack is negotiated against a different node's refs and the
-                # clone breaks. Read-only pin lookup; no rotation.
-                serving = await self._fresh_clone_pin(owner, repo)
-                if serving and serving.lower() != owner.lower():
-                    forwarded = None
-                    try:
-                        forwarded = await self._forward_to_node(
-                            request, url, repo, serving,
-                            "/%s/%s/git-upload-pack" % (serving, repo),
-                            body=post_body)
-                        fstatus = int(forwarded.status)
-                    except Exception:
-                        fstatus = 0
-                    if forwarded is not None and \
-                            fstatus not in (0, 502, 503, 504):
-                        return forwarded
-                    # The pin is a repo-global pick shared by every concurrent
-                    # clone, so THIS clone's advertisement may not have come
-                    # from the pinned mirror at all — and a mirror behind that
-                    # advertisement rejects the negotiated wants with 502
-                    # "fatal: git upload-pack: not our ref <oid>". The named
-                    # source is live and canonical (and allows tip/reachable
-                    # SHA1 wants), so replay the buffered POST there instead
-                    # of failing the clone with the mirror's error.
-        host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
-        host_object = self.env.FORKMESH_HOST.get(host_id)
-        try:
-            host_fetch = host_object.fetch(
-                await durable_object_request(request, include_body=not is_info,
-                                             body=post_body))
-            if is_info:
-                response = await asyncio.wait_for(
-                    host_fetch, timeout=GIT_ADVERTISE_ROUTE_TIMEOUT_MS / 1000)
-            else:
-                response = await host_fetch
-        except Exception:
-            response = Response("Host timed out.", status=504)
-        # The named source's host is connected but stalled answering the (small,
-        # idempotent) info/refs advertisement. The route-level advertise timeout
-        # turns a hung host DO into a 504 before Workers cancels this fetch, then
-        # the retry below serves the advertisement from a live mirror and pins it
-        # (clone_sticky), so the paired upload-pack POST follows the same node.
-        # Only info/refs (a bodyless GET) is safe to replay this way; the POST
-        # body is already in flight, so it relies on the pin instead. Private
-        # repos are excluded — they never fall a clone over to a mirror.
-        if is_info and not repo_private:
-            try:
-                status = int(response.status)
-            except Exception:
-                status = 0
-            if status in (503, 504):
-                serving = await self._sticky_clone_fallback(
-                    owner, repo, refresh=True)
-                if serving and serving.lower() != owner.lower():
-                    try:
-                        return await self._forward_to_node(
-                            request, url, repo, serving,
-                            "/%s/%s/info/refs" % (serving, repo),
-                            timeout_ms=GIT_ADVERTISE_ROUTE_TIMEOUT_MS)
-                    except Exception:
-                        pass
-        return response
+            return _private_replica_not_found()
+        operation = "git-info-refs" if is_info else "git-upload-pack"
+        return await _https_mirror_proxy(
+            self.env, request, owner, repo, operation)
 
     async def _git_push(self, request, owner_raw, repo_raw):
-        # git push (issue #358): receive-pack proxied to the owner's own host DO.
-        # Unlike a clone this NEVER falls back to a mirror — a mirror is a
-        # read-only copy; a push must reach the working-copy holder that can run
-        # receive-pack and re-attest the integrity pin. Gated by an owner-key-
-        # signed HTTP Basic token; git sends no credentials until it sees a 401,
-        # so both info/refs and the POST challenge when auth is missing/invalid.
+        # Direct HTTPS receive-pack is not implemented yet, so fail closed
+        # before reading a request body.
+        del request
         owner = safe_segment(owner_raw)
         repo = safe_segment(repo_raw)
         if not owner or not repo:
             return Response("not found", status=404)
-        if not await _basic_auth_push_ok(self.env, owner, repo, request):
-            return _basic_auth_challenge()
-        host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
-        host_object = self.env.FORKMESH_HOST.get(host_id)
-        if method_name(request) != "POST":
-            return await host_object.fetch(await durable_object_request(request))
-        return await host_object.fetch(request)
-
-    async def _source_has_live_host(self, owner, repo):
-        # Whether a desktop host is CONNECTED to this repo's host DO right now —
-        # the ground truth, not the host_presence row (which lags an unclean
-        # disconnect by up to HOST_PRESENCE_STALE_MS). One cheap subrequest to the
-        # DO's non-WebSocket /host endpoint, which returns {"hosts": N}. Any
-        # failure (including the DO throwing) is treated as "not live" so the
-        # caller falls back to a mirror rather than stranding the clone on a dead
-        # or flapping source.
-        try:
-            host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
-            host_object = self.env.FORKMESH_HOST.get(host_id)
-            resp = await asyncio.wait_for(
-                host_object.fetch(
-                    "https://forkmesh.internal/api/repo/%s/%s/host" % (
-                        owner, repo)),
-                timeout=HOST_COUNT_TIMEOUT_MS / 1000,
-            )
-            if int(getattr(resp, "status", 0) or 0) != 200:
-                return False
-            data = await resp.json()
-            # workers Response.json() may cross the boundary as a dict or a
-            # JsProxy (see _flagship_client_count); accept both shapes.
-            hosts = (data.get("hosts", 0) if isinstance(data, dict)
-                     else getattr(data, "hosts", 0))
-            return int(hosts or 0) > 0
-        except Exception:
-            return False
-
-    async def _online_source_of_truth(self, owner, repo):
-        # If owner/repo is a MIRROR whose logical repo (grouped by root commit,
-        # name fallback) has a working-copy holder — its source of truth — with a
-        # live host right now, return (source_owner, source_repo); otherwise
-        # (None, None). Cloning a mirror namespace while the source is online is
-        # routed to the source: the source is canonical, so this auto-heals a
-        # mirror whose refs fail the integrity pin (stale, diverged, or running an
-        # agent) without ever serving the mirror's own unverified bytes. The
-        # tamper gate still fully protects clones when the source is OFFLINE — the
-        # caller only consults this while looking for an online node to serve.
-        # Cheap for the common case: when THIS namespace itself holds the working
-        # copy (the usual clone target), we return after one indexed lookup and
-        # never scan the catalog. Best-effort: any failure returns (None, None).
-        try:
-            owner_l = (owner or "").strip().lower()
-            repo_l = (repo or "").strip().lower()
-            if not owner_l or not repo_l:
-                return None, None
-            await ensure_schema(self.env)
-            repo_bi = await blind_index(self.env, owner + "/" + repo)
-            row = await d1_first(
-                self.env,
-                "SELECT data, is_private FROM repositories WHERE key_bi=?", repo_bi)
-            if not row or int(row.get("is_private") or 0):
-                return None, None
-            target = await decrypt_row(self.env, row.get("data"))
-            if not target:
-                return None, None
-            # The named namespace holds the working copy — it IS a source of
-            # truth, so serve it directly (no catalog scan, no self-redirect).
-            if str(target.get("source") or "local-node") == "local-node":
-                return None, None
-            # Find the freshest-synced source-of-truth record in the same group,
-            # from the shared per-isolate catalog memo. This runs on EVERY
-            # public clone of a mirror namespace (info/refs AND the upload-pack
-            # POST); a raw scan + sequential decrypt_row() per request here was
-            # the one such pass left on the clone path after the 2026-07-12
-            # fix, and under a clone burst it congested the single Worker event
-            # loop until the runtime canceled requests as hung ("Cannot enter
-            # into task" on git-upload-pack info/refs). The memo's active-node
-            # filter is harmless: a source must pass _source_has_live_host
-            # below anyway, and a node with a connected host is active.
-            best_owner = None
-            best_repo = None
-            best_sync = -1
-            for row in await _decrypted_public_catalog(
-                    self.env, int(Date.now())):
-                rec = row["data"]
-                if str(rec.get("source") or "local-node") != "local-node":
-                    continue
-                if not repo_mirror_same_group(target, rec):
-                    continue
-                rec_owner = str(rec.get("owner") or "").strip()
-                rec_name = str(rec.get("name") or "").strip()
-                if not rec_owner or not rec_name or rec_owner.lower() == owner_l:
-                    continue
-                sync = _mirror_ms(rec.get("lastSync")) or 0
-                if sync > best_sync:
-                    best_sync = sync
-                    best_owner = rec_owner
-                    best_repo = rec_name
-            if best_owner and await self._source_has_live_host(best_owner, best_repo):
-                return best_owner, best_repo
-            return None, None
-        except Exception:
-            return None, None
-
-    async def _forward_to_node(self, request, url, repo, node, new_path,
-                               timeout_ms=None, body=None):
-        # Serve THROUGH the original URL: dispatch this request to `node`'s host
-        # DO with the path rewritten into its namespace. The client never sees a
-        # redirect — the mirror's bytes stream back on the URL that was asked
-        # for. The rewritten path is also what the DO derives its repo identity
-        # from, so presence marking, the servedBy tag and the clone integrity
-        # gate (_state_pins) all evaluate against the node actually serving.
-        #
-        # The forwarded request is rebuilt from PRIMITIVES only — a bare URL
-        # string for GETs (the DO reads everything from the path + query, the
-        # same shape _source_has_live_host uses), and url + a plain init dict
-        # for the git upload-pack POST. It must never be constructed around the
-        # incoming Python-wrapped request object: JsRequest.new(target, request)
-        # kills the isolate at the JS boundary (Cloudflare error 1101) before
-        # Python can even catch it, which is exactly how the first deploy of
-        # this fallback took every forwarded browse/clone down.
-        target = url.scheme + "://" + url.netloc + new_path
-        if url.query:
-            target += "?" + url.query
-        host_id = self.env.FORKMESH_HOST.idFromName(f"host:{node}/{repo}")
-        host_object = self.env.FORKMESH_HOST.get(host_id)
-        if method_name(request) != "POST":
-            host_fetch = host_object.fetch(target)
-            if timeout_ms:
-                return await asyncio.wait_for(
-                    host_fetch, timeout=timeout_ms / 1000)
-            return await host_fetch
-        # The caller may have buffered the (single-use) body stream already so
-        # a failed hop can be replayed elsewhere; only read it here when not.
-        body = bytes(await request.bytes()) if body is None else bytes(body)
-        headers = {}
-        for name in ("content-type", "content-encoding"):
-            value = request.headers.get(name)
-            if value:
-                headers[name] = value
-        host_fetch = host_object.fetch(JsRequest.new(target, to_js({
-            "method": "POST",
-            "headers": headers,
-            # Copy the body into a JS-owned buffer: a to_js view into Python's
-            # WASM memory read later — after the GIL is released — is a
-            # runtime crash ("Attempted to use PyProxy when Python GIL not
-            # held"), not an exception.
-            "body": Uint8Array.new(_to_js(body)),
-        })))
-        if timeout_ms:
-            return await asyncio.wait_for(
-                host_fetch, timeout=timeout_ms / 1000)
-        return await host_fetch
-
-    async def _set_clone_pin(self, owner, repo, serving):
-        try:
-            await ensure_schema(self.env)
-            repo_bi = await blind_index(self.env, owner + "/" + repo)
-            if serving and serving.lower() != owner.lower():
-                await d1_run(
-                    self.env,
-                    "INSERT INTO clone_sticky (repo_bi, owner, ts) VALUES (?,?,?) "
-                    "ON CONFLICT(repo_bi) DO UPDATE SET "
-                    "owner=excluded.owner, ts=excluded.ts",
-                    repo_bi, serving, int(Date.now()),
-                )
-            else:
-                await d1_run(
-                    self.env, "DELETE FROM clone_sticky WHERE repo_bi=?", repo_bi)
-        except Exception:
-            pass
-
-    async def _sticky_clone_fallback(self, owner, repo, refresh):
-        # Which mirror serves owner/repo's clones while its named node is down.
-        # Sticky per repo for CLONE_STICKY_MS: git's info/refs and upload-pack
-        # POST are separate requests that must hit the SAME node (the pack is
-        # negotiated against the refs the first request advertised), so per-
-        # request rotation is replaced by a pinned pick that rotates only when
-        # it expires. `refresh` is True on info/refs (a new clone may re-pick);
-        # the POST reuses whatever pick exists, however old, as long as that
-        # node is still live. Best-effort: any failure returns None and the
-        # request just falls through to the named owner's route.
-        try:
-            await ensure_schema(self.env)
-            now = int(Date.now())
-            repo_bi = await blind_index(self.env, owner + "/" + repo)
-            row = await d1_first(
-                self.env,
-                "SELECT owner, ts FROM clone_sticky WHERE repo_bi=?", repo_bi)
-            pick = str((row or {}).get("owner") or "")
-            fresh = bool(row) and now - int(row.get("ts") or 0) <= CLONE_STICKY_MS
-            if pick and (fresh or not refresh):
-                if await self._source_has_live_host(pick, repo):
-                    return pick
-            # No usable pick: choose a live mirror. force=True because the
-            # caller already confirmed the named node has no connected host —
-            # a fresh-but-stale presence row must not veto the fallback.
-            choice = await self._select_clone_fallback(owner, repo, force=True)
-            if choice and refresh:
-                await d1_run(
-                    self.env,
-                    "INSERT INTO clone_sticky (repo_bi, owner, ts) VALUES (?,?,?) "
-                    "ON CONFLICT(repo_bi) DO UPDATE SET "
-                    "owner=excluded.owner, ts=excluded.ts",
-                    repo_bi, choice, now,
-                )
-            return choice
-        except Exception:
-            return None
-
-    async def _fresh_clone_pin(self, owner, repo):
-        # The mirror a recent info/refs failed over to and pinned in clone_sticky,
-        # if that pin is still fresh (<= CLONE_STICKY_MS) and the mirror still has
-        # a live host. Read-only: never selects, rotates or writes a pin — used by
-        # the upload-pack POST to follow whatever info/refs advertised, even when
-        # the named source's own tunnel has since come back. Best-effort; any
-        # failure (and the common no-pin case) returns None so the POST falls
-        # through to the named source.
-        try:
-            await ensure_schema(self.env)
-            now = int(Date.now())
-            repo_bi = await blind_index(self.env, owner + "/" + repo)
-            row = await d1_first(
-                self.env,
-                "SELECT owner, ts FROM clone_sticky WHERE repo_bi=?", repo_bi)
-            if not row:
-                return None
-            pick = str(row.get("owner") or "")
-            fresh = now - int(row.get("ts") or 0) <= CLONE_STICKY_MS
-            if pick and fresh and pick.lower() != owner.lower():
-                if await self._source_has_live_host(pick, repo):
-                    return pick
-            return None
-        except Exception:
-            return None
+        return json_response({
+            "error": "direct_https_receive_pack_required",
+            "repositoryBytesAccepted": False,
+            "socketFallback": False,
+        }, status=501, cache_control="no-store")
 
 
 async def chat_history_recent(env, room_key):
@@ -20365,6 +28849,394 @@ async def chat_history_prune_expired(env):
     await ensure_schema(env)
     cutoff = int(Date.now()) - CHAT_HISTORY_RETAIN_MS
     await d1_run(env, "DELETE FROM chat_history WHERE ts<?", cutoff)
+
+
+class ForkMeshWorld(DurableObject):
+    """Ephemeral Town Square presence and movement relay.
+
+    The object uses the WebSocket Hibernation API, with the current allowlisted
+    public state held only in each live socket's attachment. It never opens
+    Durable Object storage, D1, KV, R2, or chat history. Once a socket closes
+    there is no history to read back and its random peer id is gone.
+    """
+
+    async def fetch(self, request):
+        path = urlparse(request.url).path
+        if path.rstrip("/") != "/api/world/ws":
+            return json_response({"error": "not_found"}, status=404)
+
+        upgrade = request.headers.get("upgrade")
+        if not (upgrade and upgrade.lower() == "websocket"):
+            return json_response(
+                {"error": "websocket_required"},
+                status=426,
+                extra_headers={"upgrade": "websocket"},
+            )
+
+        now = int(Date.now())
+        peers = self._live_sockets(cleanup=True)
+        if len(peers) >= world_protocol.WORLD_MAX_CONNECTIONS:
+            return json_response({"error": "world_full"}, status=429)
+        if not self._connection_admitted(now):
+            return json_response(
+                {"error": "connection_rate_limited"},
+                status=429,
+                extra_headers={"retry-after": "10"},
+            )
+
+        try:
+            raw_country = request.headers.get("x-forkmesh-country") or ""
+        except Exception:
+            raw_country = ""
+        peer_id = new_world_peer_id()
+        country_source = world_protocol.approximate_country_code(raw_country)
+        state = world_protocol.default_presence(peer_id, now)
+        trusted_claim = {}
+        try:
+            encoded_claim = (
+                request.headers.get("x-forkmesh-world-claim") or "")
+            if encoded_claim and re.fullmatch(
+                    r"[A-Za-z0-9_-]{1,1024}", encoded_claim):
+                padded = encoded_claim + "=" * (
+                    (4 - len(encoded_claim) % 4) % 4)
+                candidate = json.loads(
+                    base64.urlsafe_b64decode(padded).decode())
+                if isinstance(candidate, dict):
+                    trusted_claim = world_protocol.trusted_presence_claim(
+                        candidate.get("name", ""),
+                        candidate.get("accountStatus", "Guest"),
+                        candidate.get("nodeCount", 0))
+        except Exception:
+            trusted_claim = {}
+        if trusted_claim:
+            # The name and operator count remain private attachment fields
+            # until the owner's first presence frame opts into each one.
+            state["accountStatus"] = trusted_claim["accountStatus"]
+
+        client, server = WebSocketPair.new().object_values()
+        self.ctx.acceptWebSocket(server, to_js(["world"]))
+        self._save_attachment(
+            server, state, last=now, rate_start=now, rate_count=0,
+            country_source=country_source,
+            trusted_name=trusted_claim.get("name", ""),
+            trusted_node_count=trusted_claim.get("nodeCount", 0))
+
+        # The only snapshot is the state of sockets alive right now. It is sent
+        # directly from runtime attachments and is never persisted or replayed.
+        snapshot = [
+            world_protocol.public_presence(self._socket_state(peer))
+            for peer in peers
+        ]
+        self._safe_send(server, {
+            "type": "welcome",
+            "id": peer_id,
+            "peers": snapshot,
+        })
+        self._broadcast({
+            "type": "join",
+            "peer": world_protocol.public_presence(state),
+        }, exclude_id=peer_id, budgeted=True)
+
+        return JsResponse.new(
+            None, to_js({"status": 101, "webSocket": client}))
+
+    def _socket_state(self, ws):
+        attachment = _ws_attachment(ws)
+        if attachment is None:
+            return {}
+        return {
+            field: getattr(attachment, field, None)
+            for field in world_protocol.WORLD_PUBLIC_FIELDS
+        }
+
+    def _save_attachment(self, ws, state, last, rate_start, rate_count,
+                         departed=False, country_source=None,
+                         trusted_name=None, trusted_node_count=None,
+                         pending_knocks=None):
+        if country_source is None:
+            country_source = _ws_attr(ws, "country_source", "")
+        if trusted_name is None:
+            trusted_name = _ws_attr(ws, "trusted_name", "")
+        if trusted_node_count is None:
+            trusted_node_count = _ws_attr(ws, "trusted_node_count", 0)
+        if pending_knocks is None:
+            pending_knocks = _ws_attr(ws, "pending_knocks", [])
+        pending_knocks = [
+            str(peer_id)
+            for peer_id in list(pending_knocks or [])[-8:]
+            if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", str(peer_id or ""))
+        ]
+        trusted_fields = world_protocol.trusted_presence_claim(
+            trusted_name or "", "Guest", trusted_node_count)
+        attachment = {
+            **world_protocol.public_presence(state),
+            # Kept only in this live socket attachment so a user's privacy
+            # control can restore their edge-derived flag after hiding it.
+            "country_source":
+                world_protocol.approximate_country_code(country_source),
+            # These server-validated sources never leave the attachment
+            # directly. sanitize_message exposes them only when the user opts
+            # into name/operator-belt sharing.
+            "trusted_name": trusted_fields["name"] if trusted_name else "",
+            "trusted_node_count": trusted_fields["nodeCount"],
+            # One-use, live-socket-only consent requests. They are never
+            # persisted, broadcast, or exposed in the public presence record.
+            "pending_knocks": pending_knocks,
+            "last": int(last or 0),
+            "rl_start": int(rate_start or 0),
+            "rl_count": int(rate_count or 0),
+            "departed": bool(departed),
+        }
+        try:
+            ws.serializeAttachment(to_js(attachment))
+        except Exception:
+            pass
+
+    def _mark_departed(self, ws):
+        self._save_attachment(
+            ws,
+            self._socket_state(ws),
+            last=_ws_attr(ws, "last", 0),
+            rate_start=_ws_attr(ws, "rl_start", 0),
+            rate_count=_ws_attr(ws, "rl_count", 0),
+            departed=True,
+        )
+
+    def _live_sockets(self, cleanup=False):
+        now = int(Date.now())
+        try:
+            sockets = self.ctx.getWebSockets("world")
+        except Exception:
+            sockets = []
+        live = []
+        stale_ids = []
+        for socket in sockets:
+            # A close/error path marks the attachment before asking the runtime
+            # to close it. Hibernation may still return that socket briefly;
+            # exclude it without producing a duplicate leave frame.
+            if bool(_ws_attr(socket, "departed", False)):
+                if cleanup:
+                    self._safe_close(socket, 1000, "")
+                continue
+            if world_protocol.presence_is_stale(
+                    _ws_attr(socket, "last", 0), now):
+                stale_id = _ws_attr(socket, "id")
+                if stale_id:
+                    stale_ids.append(stale_id)
+                if cleanup:
+                    self._mark_departed(socket)
+                    self._safe_close(socket, 1001, "stale")
+                continue
+            live.append(socket)
+
+        # Tell remaining clients to remove stale avatars immediately. Marking
+        # the socket departed before close prevents webSocketClose from sending
+        # the same leave twice.
+        if cleanup and stale_ids:
+            for stale_id in stale_ids:
+                frame = {"type": "leave", "id": stale_id}
+                for peer in live:
+                    self._safe_send(peer, frame)
+        return live
+
+    def _rate_step(self, ws, state, now):
+        allowed, start, count = world_protocol.advance_rate_window(
+            _ws_attr(ws, "rl_start", 0),
+            _ws_attr(ws, "rl_count", 0),
+            now,
+        )
+        # Invalid or over-limit frames do not refresh last-seen and therefore
+        # cannot keep a dead/spamming avatar alive indefinitely.
+        self._save_attachment(
+            ws, state,
+            last=_ws_attr(ws, "last", 0),
+            rate_start=start,
+            rate_count=count,
+            departed=bool(_ws_attr(ws, "departed", False)),
+        )
+        return allowed, start, count
+
+    def _connection_admitted(self, now):
+        allowed, start, count = world_protocol.advance_connection_window(
+            getattr(self, "_connect_window", 0),
+            getattr(self, "_connect_count", 0),
+            now,
+        )
+        self._connect_window = start
+        self._connect_count = count
+        return allowed
+
+    def _broadcast_admitted(self, now):
+        allowed, start, count = world_protocol.advance_broadcast_window(
+            getattr(self, "_broadcast_window", 0),
+            getattr(self, "_broadcast_count", 0),
+            now,
+        )
+        self._broadcast_window = start
+        self._broadcast_count = count
+        return allowed
+
+    async def webSocketMessage(self, ws, message):
+        if not isinstance(message, str):
+            self._safe_close(ws, 1003, "text frames only")
+            return
+        if len(message.encode("utf-8")) > world_protocol.WORLD_MESSAGE_MAX_BYTES:
+            self._safe_close(ws, 1009, "message too large")
+            return
+
+        state = self._socket_state(ws)
+        if not state.get("id"):
+            self._safe_close(ws, 1008, "invalid presence")
+            return
+        now = int(Date.now())
+        if world_protocol.presence_is_stale(
+                _ws_attr(ws, "last", 0), now):
+            self._depart(ws, 1001, "stale")
+            return
+        allowed, rate_start, rate_count = self._rate_step(
+            ws, state, now)
+        if not allowed:
+            self._safe_close(ws, 1008, "rate limit")
+            return
+        # Every frame (including a heartbeat or invalid JSON) is an opportunity
+        # to reap peers that vanished without a close event.
+        self._live_sockets(cleanup=True)
+
+        try:
+            payload = json.loads(message)
+        except Exception:
+            return
+        interaction = world_protocol.sanitize_interaction(payload, state)
+        if interaction is not None:
+            # Home interactions are targeted, text-free consent frames. The
+            # server keeps at most eight one-use knocks inside the live socket
+            # attachment; hibernation/disconnect naturally expires them.
+            # Sender identity always comes from the attachment, never JSON.
+            self._save_attachment(
+                ws, state, last=now,
+                rate_start=rate_start, rate_count=rate_count)
+            if interaction["kind"] == "knock":
+                for peer in self._live_sockets(cleanup=True):
+                    if (
+                        _ws_attr(peer, "id") == interaction["target"]
+                        and _ws_attr(peer, "publicDoor", "closed") == "knock"
+                    ):
+                        pending = list(
+                            _ws_attr(peer, "pending_knocks", []) or [])
+                        if state.get("id") not in pending:
+                            pending.append(state.get("id"))
+                        self._save_attachment(
+                            peer,
+                            self._socket_state(peer),
+                            last=_ws_attr(peer, "last", now),
+                            rate_start=_ws_attr(peer, "rl_start", now),
+                            rate_count=_ws_attr(peer, "rl_count", 0),
+                            pending_knocks=pending[-8:],
+                        )
+                        self._safe_send(peer, {
+                            "type": "interaction",
+                            "kind": "knock",
+                            "from": state.get("id"),
+                        })
+                        break
+            elif interaction["kind"] in ("home-grant", "home-decline"):
+                pending = list(
+                    _ws_attr(ws, "pending_knocks", []) or [])
+                if interaction["target"] not in pending:
+                    return
+                pending = [
+                    peer_id for peer_id in pending
+                    if peer_id != interaction["target"]
+                ]
+                self._save_attachment(
+                    ws, state, last=now,
+                    rate_start=rate_start, rate_count=rate_count,
+                    pending_knocks=pending,
+                )
+                for peer in self._live_sockets(cleanup=True):
+                    if _ws_attr(peer, "id") == interaction["target"]:
+                        self._safe_send(peer, {
+                            "type": "interaction",
+                            "kind": interaction["kind"],
+                            "from": state.get("id"),
+                        })
+                        break
+            else:
+                self._broadcast({
+                    "type": "interaction",
+                    "kind": "emote",
+                    "emote": interaction["emote"],
+                    "from": state.get("id"),
+                }, exclude_id=state.get("id"), budgeted=True)
+            return
+        sanitized = world_protocol.sanitize_message(
+            payload, state, now,
+            country_source=_ws_attr(ws, "country_source", ""),
+            trusted_name=_ws_attr(ws, "trusted_name", ""),
+            trusted_node_count=_ws_attr(ws, "trusted_node_count", 0))
+        if sanitized is None:
+            return
+        kind, state = sanitized
+        self._save_attachment(
+            ws, state, last=now,
+            rate_start=rate_start, rate_count=rate_count)
+
+        if kind == "ping":
+            self._safe_send(ws, {"type": "pong", "serverTimeMs": now})
+            return
+        if kind == "presence":
+            frame = {
+                "type": "presence",
+                "peer": world_protocol.public_presence(state),
+            }
+        else:
+            frame = world_protocol.movement_delta(state)
+        self._broadcast(
+            frame, exclude_id=state.get("id"), budgeted=True)
+
+    async def webSocketClose(self, ws, code, reason, was_clean):
+        self._depart(ws, 1000, "")
+
+    async def webSocketError(self, ws, error):
+        self._depart(ws, 1011, "socket error")
+
+    # Hibernation events may be dispatched under either naming convention.
+    web_socket_message = webSocketMessage
+    web_socket_close = webSocketClose
+    web_socket_error = webSocketError
+
+    def _depart(self, ws, code, reason):
+        peer_id = _ws_attr(ws, "id")
+        departed = bool(_ws_attr(ws, "departed", False))
+        self._mark_departed(ws)
+        self._safe_close(ws, code, reason)
+        if peer_id and not departed:
+            self._broadcast(
+                {"type": "leave", "id": peer_id},
+                exclude_id=peer_id,
+            )
+
+    def _broadcast(self, frame, exclude_id=None, budgeted=False):
+        if budgeted and not self._broadcast_admitted(int(Date.now())):
+            # State still updates in the sender's attachment, so the next
+            # welcome snapshot is current even when a hot movement delta drops.
+            return
+        for peer in self._live_sockets(cleanup=True):
+            if exclude_id and _ws_attr(peer, "id") == exclude_id:
+                continue
+            self._safe_send(peer, frame)
+
+    def _safe_send(self, ws, frame):
+        try:
+            ws.send(json.dumps(frame, separators=(",", ":")))
+        except Exception:
+            self._safe_close(ws, 1011, "unavailable")
+
+    def _safe_close(self, ws, code, reason):
+        try:
+            ws.close(code, reason)
+        except Exception:
+            pass
 
 
 class ForkMeshRoom(DurableObject):
@@ -20523,986 +29395,3 @@ class ForkMeshRoom(DurableObject):
             ws.close(code, reason)
         except Exception:
             pass
-
-
-class ForkMeshHost(DurableObject):
-    # Live tunnel for a single repository. Desktop clients that mirror the repo
-    # connect here as "hosts" and answer tree/blob requests by reading their
-    # local Git mirror. The website's /tree and /blob calls are forwarded to the
-    # host with the best (lowest round-trip) connection. Nothing is stored: when
-    # no host is connected, the repo is simply unavailable.
-    # On the WebSocket Hibernation API: host sockets are accepted via
-    # ctx.acceptWebSocket(["host"]) and the live set is read from
-    # ctx.getWebSockets("host"), so an idle-but-connected host no longer pins the
-    # Durable Object in memory. Per-host round-trip time rides in the socket's
-    # hibernation attachment. The pending/git_buffers maps are in-memory and only
-    # ever hold an *in-flight* request, which keeps the DO active (no eviction
-    # mid-request), so they need not survive hibernation.
-    def _ensure(self):
-        if not hasattr(self, "pending"):
-            self.pending = {}  # reqId -> asyncio.Future
-        if not hasattr(self, "counter"):
-            self.counter = 0
-        if not hasattr(self, "git_buffers"):
-            self.git_buffers = {}  # reqId -> bytearray for chunked git output
-        if not hasattr(self, "git_streams"):
-            # reqId -> {"writer": TransformStream writer, "last": ms}. Large
-            # transfers (upload-pack packs, release assets, raw blobs) stream
-            # each chunk straight into the response body instead of
-            # reassembling in git_buffers: buffering a full clone's pack (plus
-            # its base64 and bytes() copies) is what blew the Durable Object's
-            # 128 MB memory limit and reset the whole isolate — killing every
-            # unrelated in-flight request with it.
-            self.git_streams = {}
-        if not hasattr(self, "_repo_bi"):
-            self._repo_bi = None   # blind index of this DO's owner/repo
-        if not hasattr(self, "_last_presence"):
-            self._last_presence = 0  # ms of last host_presence write (throttle)
-        if not hasattr(self, "_req_window"):
-            self._req_window = 0   # start ms of the current rate window
-        if not hasattr(self, "_req_count"):
-            self._req_count = 0    # requests served in the current window
-
-    def _rate_ok(self):
-        # Generous per-repo request rate limit on the tunnel/git proxy to blunt
-        # floods without breaking real clones (which make a handful of requests).
-        now = int(Date.now())
-        if now - self._req_window >= HOST_RATE_WINDOW_MS:
-            self._req_window = now
-            self._req_count = 0
-        self._req_count += 1
-        return self._req_count <= HOST_RATE_MAX_PER_WINDOW
-
-    async def _repo_blind_index(self, path):
-        # This DO is per-repo; derive its blind index from the request path once
-        # and cache it. Works for both /api/repo/{o}/{r}/* and git /{o}/{r}/* URLs.
-        if self._repo_bi:
-            return self._repo_bi
-        match = (REPO_HOST_RE.match(path) or GIT_INFO_RE.match(path)
-                 or GIT_PACK_RE.match(path) or RELEASE_BLOB_RE.match(path))
-        if not match:
-            return None
-        owner = safe_segment(match.group(1))
-        repo = safe_segment(match.group(2))
-        if not owner or not repo:
-            return None
-        # Blocked phantom identities never register host presence (so they can't
-        # appear "live" under /network/), but are still routed normally.
-        self._blocked_presence = _is_blocked_catalog_identity(
-            self.env, owner, repo)
-        self._repo_bi = await blind_index(self.env, owner + "/" + repo)
-        return self._repo_bi
-
-    async def _mark_present(self, path=None):
-        # Refresh this repo's host-presence row, throttled so hot browse traffic
-        # doesn't write to D1 on every request. Best-effort; never fails the call.
-        #
-        # Only ever mark presence while a host WebSocket is actually connected to
-        # this DO. Otherwise a repo whose desktop host has gone offline would be
-        # kept "live" forever by the very browse/clone traffic that can't be
-        # served: each request self-refreshes host_presence, so `liveHost`/
-        # `source_online` never age out, `_select_clone_fallback` refuses to
-        # redirect ("never redirect away from an online source"), and the online
-        # mirror is never used — the repo shows "host online" yet nothing serves
-        # its tree. Letting presence lapse when no host is connected is what lets
-        # the source of truth age out so a live mirror takes over (adhoc #68).
-        if not self._host_count():
-            return
-        now = int(Date.now())
-        if now - self._last_presence < HOST_PRESENCE_REFRESH_MS:
-            return
-        try:
-            repo_bi = (await self._repo_blind_index(path) if path
-                       else self._repo_bi)
-        except Exception:
-            return
-        if not repo_bi:
-            return
-        if getattr(self, "_blocked_presence", False):
-            return  # blocked phantom identity — never mark live
-        self._last_presence = now
-        try:
-            await touch_host_presence(self.env, repo_bi)
-        except Exception:
-            pass
-
-    async def fetch(self, request):
-        # Nothing above Default.fetch's try/except sees an exception raised in
-        # here: the router awaits a DO *stub*, so the Python traceback dies
-        # inside this isolate and Cloudflare logs only a bare
-        # "outcome: exception" for the request (adhoc #17: git-upload-pack
-        # POSTs failing with no diagnostics anywhere). Capture the real stack
-        # to Sentry ourselves, then answer 503 like the router's other
-        # DO-abort paths — retryable, feeds the mirror fallback, and gives git
-        # clients a readable error instead of an Error 1101 page.
-        try:
-            return await self._fetch_inner(request)
-        except Exception as error:
-            try:
-                await capture_worker_exception(
-                    self.env, request, urlparse(request.url), error)
-            except BaseException:
-                pass
-            return Response("Host tunnel error.", status=503)
-
-    async def _fetch_inner(self, request):
-        self._ensure()
-        url = urlparse(request.url)
-        path = url.path
-        upgrade = request.headers.get("upgrade")
-        is_websocket = bool(upgrade) and upgrade.lower() == "websocket"
-        # Forwarded to the host so its operator log line (issue #297) can show
-        # who a clone/browse request came from — a git client, a browser, or a
-        # scraper/bot — without the worker ever storing it server-side.
-        ua = clean_string(request.headers.get("user-agent") or "", 256)
-
-        # Rate-limit the request-serving paths (not the host's own WS upgrade,
-        # which is already gated by a signed token in _route).
-        if not is_websocket and not self._rate_ok():
-            return json_response({"error": "rate_limited"}, status=429)
-
-        # Git smart-HTTP clone endpoints proxied to the host's git upload-pack.
-        if path.endswith("/info/refs"):
-            await self._mark_present(path)
-            service = parse_qs(url.query).get("service", [""])[0]
-            if service == "git-receive-pack":
-                # Push ref advertisement (issue #358); auth already enforced by
-                # the router's _git_push before it reached this DO.
-                return await self._git(request, "git-receive-info-refs")
-            return await self._git(request, "git-info-refs")
-        if path.endswith("/git-upload-pack"):
-            await self._mark_present(path)
-            body = b""
-            try:
-                raw_body = bytes(await request.bytes())
-                body = decode_git_request_body(
-                    raw_body, request.headers.get("content-encoding") or ""
-                )
-            except ValueError as error:
-                return Response("Invalid Git request: " + str(error), status=400)
-            except Exception:
-                return Response("Could not read Git request body.", status=400)
-            return await self._git(request, "git-upload-pack", body)
-        if path.endswith("/git-receive-pack"):
-            # git push (issue #358): the request body IS the pack (client->host),
-            # potentially hundreds of MB, so it must never be buffered in the
-            # isolate. _git streams it straight through the tunnel to the host's
-            # receive-pack stdin (see _stream_receive / _pump_request_body).
-            await self._mark_present(path)
-            return await self._git(request, "git-receive-pack")
-
-        action = path.rsplit("/", 1)[-1]
-        if action == "host":
-            if not is_websocket:
-                return json_response({"ok": True, "hosts": self._host_count()})
-            client, server = WebSocketPair.new().object_values()
-            self.ctx.acceptWebSocket(server, to_js(["host"]))
-            # Stash the repo blind index on the socket so a "ping" heartbeat can
-            # refresh host presence even after the Durable Object hibernated (when
-            # the cached self._repo_bi has been reset).
-            repo_bi = await self._repo_blind_index(path)
-            server.serializeAttachment(to_js({"rtt": None, "repo_bi": repo_bi}))
-            await self._mark_present(path)
-            return JsResponse.new(
-                None, to_js({"status": 101, "webSocket": client})
-            )
-
-        if action == "notify":
-            # Internal-only (the public router never forwards this action):
-            # relay a minimal event frame to every connected host socket so the
-            # desktop node knows to run one /api/sync instead of fast-polling.
-            topic = clean_string(parse_qs(url.query).get("topic", [""])[0], 40)
-            frame = json.dumps({"type": "event", "topic": topic})
-            delivered = 0
-            try:
-                hosts = self.ctx.getWebSockets("host")
-            except Exception:
-                hosts = []
-            for host in hosts:
-                try:
-                    host.send(frame)
-                    delivered += 1
-                except Exception:
-                    pass
-            return json_response({"ok": True, "delivered": delivered})
-
-        release_blob_match = RELEASE_BLOB_RE.match(path)
-        if release_blob_match:
-            await self._mark_present(path)
-            repo_bi = await self._repo_blind_index(path)
-            return await self._release_blob(
-                release_blob_match.group(3), repo_bi, ua)
-
-        rel_path = (parse_qs(url.query).get("path", [""])[0] or "").strip()
-        ref = (parse_qs(url.query).get("ref", [""])[0] or "").strip()
-        if action == "raw":
-            await self._mark_present(path)
-            return await self._raw_blob(rel_path, ref, ua)
-        if action == "blobs":
-            # Batched blob read: one HTTP request returns up to MAX_BLOB_BATCH
-            # files (repeated ?path= params), fanned out over the live tunnel
-            # concurrently inside the DO. The website's issue/PR/discussion
-            # lists used to fetch every record's markdown as its own /blob
-            # request — 50+ parallel HTTP calls per page view, which tripped
-            # the per-repo rate limit and hammered the host.
-            await self._mark_present(path)
-            paths = [p.strip() for p in parse_qs(url.query).get("path", [])
-                     if p and p.strip()][:MAX_BLOB_BATCH]
-            if not paths:
-                return json_response({"error": "path_required"}, status=400)
-            results = await asyncio.gather(
-                *[self._tunnel_result("blob", p, ref, ua) for p in paths])
-            if results and all(not r.get("ok") for r in results):
-                # Nothing could be served (host gone / tunnel dead). Surface it
-                # as the request's status so the router's mirror fallback sees
-                # the 503/504 and serves from a live mirror, instead of a 200
-                # full of nulls pinning traffic to a dead node.
-                stats = [int(r.get("_status") or 502) for r in results]
-                status = 503 if 503 in stats else 504 if 504 in stats else 502
-                return json_response(
-                    {"ok": False, "error": "unavailable"}, status=status)
-            blobs = {}
-            for p, result in zip(paths, results):
-                result.pop("_status", None)
-                blobs[p] = result if result.get("ok") else None
-            payload = {"ok": True, "blobs": blobs}
-            served = REPO_HOST_RE.match(path)
-            served_by = safe_segment(served.group(1)) if served else ""
-            if served_by:
-                payload["servedBy"] = served_by
-            return json_response(payload)
-        if action == "search":
-            # Repo-scoped search (issue #360): the host runs one `git grep` over
-            # its mirror and returns capped issue/PR/code matches. The query rides
-            # as ?q=; the result buckets are already capped host-side, so this is a
-            # single tunnel round-trip — no per-record fan-out.
-            await self._mark_present(path)
-            query = (parse_qs(url.query).get("q", [""])[0] or "").strip()[:100]
-            if len(query) < 2:
-                return json_response(
-                    {"ok": False, "error": "query_too_short"}, status=400)
-            served = REPO_HOST_RE.match(path)
-            served_by = safe_segment(served.group(1)) if served else ""
-            return await self._tunnel("search", query, ref, served_by, ua)
-        if action in ("tree", "blob", "history", "commit", "branches", "stats", "sizes"):
-            await self._mark_present(path)
-            op = "commits" if action == "history" else action
-            # This DO is per-repo, so the owner in its path IS the mirror node
-            # answering the request (the router round-robins by redirecting to the
-            # chosen node's route). Pass it through so the browse response can tell
-            # the website which node served it.
-            served = REPO_HOST_RE.match(path)
-            served_by = safe_segment(served.group(1)) if served else ""
-            return await self._tunnel(op, rel_path, ref, served_by, ua)
-        return json_response({"error": "not_found"}, status=404)
-
-    def _host_count(self):
-        try:
-            return len(self.ctx.getWebSockets("host"))
-        except Exception:
-            return 0
-
-    async def webSocketMessage(self, ws, message):
-        self._ensure()
-        if not isinstance(message, str):
-            return
-        try:
-            msg = json.loads(message)
-        except Exception:
-            return
-        if not isinstance(msg, dict):
-            return
-        mtype = msg.get("type")
-        if mtype == "heartbeat":
-            # Control-frame pings keep the socket alive but do not dispatch a
-            # message event. The desktop host therefore sends this lightweight
-            # application heartbeat too. Restore the repo key from the socket
-            # attachment after DO hibernation, then refresh D1 presence.
-            repo_bi = _ws_attr(ws, "repo_bi")
-            if repo_bi:
-                self._repo_bi = repo_bi
-                await self._mark_present()
-        elif mtype == "response":
-            req_id = msg.get("reqId")
-            # A plain error response can arrive for a request we expected to
-            # stream (e.g. the host rejects the op) — tear the stream down so
-            # the client isn't left waiting on a body that will never come.
-            stream = self.git_streams.pop(req_id, None)
-            if stream is not None:
-                try:
-                    await stream["writer"].abort("host error")
-                except Exception:
-                    pass
-            fut = self.pending.pop(req_id, None)
-            if fut is not None and not fut.done():
-                fut.set_result(msg)
-        elif mtype == "git-chunk":
-            req_id = msg.get("reqId")
-            stream = self.git_streams.get(req_id)
-            if stream is not None:
-                # First chunk doubles as the "host is answering" signal the
-                # request handler awaits before returning the streamed 200.
-                fut = self.pending.pop(req_id, None)
-                if fut is not None and not fut.done():
-                    fut.set_result({"ok": True})
-                try:
-                    data = base64.b64decode(msg.get("data", ""))
-                except Exception:
-                    data = b""
-                if data:
-                    stream["last"] = int(Date.now())
-                    if stream.get("hasher") is not None:
-                        # Fold each chunk into the running integrity hash before
-                        # it leaves for the client; verified against verify at
-                        # git-end (content-addressed release assets).
-                        try:
-                            stream["hasher"].update(data)
-                        except Exception:
-                            pass
-                    try:
-                        # Copy into a JS-owned buffer before it crosses into the
-                        # response stream: a view into Python's WASM memory read
-                        # later, off the GIL, is a runtime crash.
-                        await stream["writer"].write(
-                            Uint8Array.new(_to_js(data)))
-                    except Exception:
-                        # Reader hung up (client aborted the download): drop the
-                        # stream so remaining chunks fall on the floor.
-                        self.git_streams.pop(req_id, None)
-                return
-            buffer = self.git_buffers.get(req_id)
-            if buffer is not None:
-                try:
-                    buffer += base64.b64decode(msg.get("data", ""))
-                except Exception:
-                    pass
-        elif mtype == "git-end":
-            req_id = msg.get("reqId")
-            stream = self.git_streams.pop(req_id, None)
-            if stream is not None:
-                fut = self.pending.pop(req_id, None)
-                if fut is not None and not fut.done():
-                    fut.set_result({"ok": bool(msg.get("ok")),
-                                    "error": msg.get("error")})
-                try:
-                    hasher = stream.get("hasher")
-                    if (msg.get("ok") and hasher is not None and
-                            hasher.hexdigest() != stream.get("verify")):
-                        # Content-addressed asset whose bytes don't hash to the
-                        # requested sha256: a tampered mirror. Abort rather than
-                        # close so the client sees a failed transfer and the
-                        # forged bytes never land as a complete (or edge-cached)
-                        # download — the integrity pin, enforced at the relay.
-                        await stream["writer"].abort("integrity check failed")
-                    elif msg.get("ok"):
-                        await stream["writer"].close()
-                    else:
-                        # Failure after bytes already streamed: the 200 headers
-                        # are gone, so abort the body — the client sees a
-                        # truncated transfer and fails cleanly.
-                        await stream["writer"].abort(
-                            str(msg.get("error") or "host error"))
-                except Exception:
-                    pass
-                return
-            buffer = self.git_buffers.pop(req_id, None)
-            fut = self.pending.pop(req_id, None)
-            if fut is not None and not fut.done():
-                fut.set_result(
-                    {
-                        "ok": bool(msg.get("ok")),
-                        "error": msg.get("error"),
-                        "data": bytes(buffer or b""),
-                    }
-                )
-
-    async def webSocketClose(self, ws, code, reason, was_clean):
-        await self._host_disconnected(ws)
-
-    async def webSocketError(self, ws, error):
-        await self._host_disconnected(ws)
-
-    async def _host_disconnected(self, ws):
-        # The last host socket going away means nothing can serve this repo, so
-        # expire its host_presence row NOW instead of letting it linger up to
-        # HOST_PRESENCE_STALE_MS — that stale window is what kept browse/clone
-        # traffic routed at a dead source while a live mirror sat unused. The
-        # offline notification is deduped (kind:repo_bi), so a reconnect blip
-        # doesn't spam. Best-effort: an unclean death that skips this handler is
-        # still covered by the router's no-host retry to a live mirror.
-        self._ensure()
-        if self._live_host_count(skip=ws) > 0:
-            return
-        # Whatever this host was mid-way through streaming can never finish;
-        # abort those bodies so downloading clients fail fast instead of
-        # hanging until the stall watchdog fires.
-        for req_id in list(self.git_streams.keys()):
-            stream = self.git_streams.pop(req_id, None)
-            if stream is not None:
-                try:
-                    await stream["writer"].abort("host disconnected")
-                except Exception:
-                    pass
-        repo_bi = _ws_attr(ws, "repo_bi") or self._repo_bi
-        if not repo_bi:
-            return
-        self._last_presence = 0
-        try:
-            await ensure_schema(self.env)
-            await d1_run(
-                self.env, "DELETE FROM host_presence WHERE repo_bi=?", repo_bi)
-            await notify_host_status(self.env, repo_bi, "host_offline")
-        except Exception:
-            pass
-
-    def _live_host_count(self, skip=None):
-        # Host sockets that are still actually open. During a close/error event
-        # the runtime may still list the dying socket, so filter it (and anything
-        # no longer OPEN) out rather than trusting the raw tag count.
-        count = 0
-        for socket in self.ctx.getWebSockets("host"):
-            if skip is not None and socket == skip:
-                continue
-            try:
-                if int(socket.readyState) != 1:
-                    continue
-            except Exception:
-                pass
-            count += 1
-        return count
-
-    # Hibernation events may be dispatched under either naming convention.
-    web_socket_message = webSocketMessage
-    web_socket_close = webSocketClose
-    web_socket_error = webSocketError
-
-    def _best_host(self):
-        # Pick the live host with the lowest measured round-trip time (stored in
-        # each socket's hibernation attachment); unmeasured hosts sort last.
-        best = None
-        best_score = None
-        for ws in self.ctx.getWebSockets("host"):
-            rtt = _ws_attr(ws, "rtt")
-            score = rtt if isinstance(rtt, (int, float)) else float("inf")
-            if best is None or score < best_score:
-                best, best_score = ws, score
-        return best
-
-    async def _tunnel_result(self, op, rel_path, ref="", ua=""):
-        # One request over the live tunnel, returned as a payload dict rather
-        # than a Response so callers can batch several reads into one HTTP
-        # response (see the /blobs action). Failures carry the HTTP status
-        # they'd map to under "_status"; _tunnel pops it before responding.
-        self._ensure()
-        host = self._best_host()
-        if host is None:
-            return {"ok": False, "error": "no_host", "_status": 503}
-
-        self.counter += 1
-        req_id = "r%d" % self.counter
-        loop = asyncio.get_event_loop()
-        future = loop.create_future()
-        self.pending[req_id] = future
-        started = Date.now()
-        try:
-            host.send(
-                json.dumps({"type": "request", "reqId": req_id, "op": op,
-                            "path": rel_path, "ref": ref, "ua": ua})
-            )
-        except Exception:
-            self.pending.pop(req_id, None)
-            self._drop_host(host)
-            return {"ok": False, "error": "host_unavailable", "_status": 503}
-
-        try:
-            msg = await asyncio.wait_for(future, timeout=TUNNEL_TIMEOUT_MS / 1000)
-        except Exception:
-            self.pending.pop(req_id, None)
-            return {"ok": False, "error": "timeout", "_status": 504}
-
-        self._update_rtt(host, Date.now() - started)
-
-        if not msg.get("ok"):
-            return {"ok": False, "error": msg.get("error", "host_error"),
-                    "_status": 502}
-        payload = {
-            key: value
-            for key, value in msg.items()
-            if key not in ("type", "reqId", "ok")
-        }
-        payload["ok"] = True
-        return payload
-
-    async def _tunnel(self, op, rel_path, ref="", served_by="", ua=""):
-        result = await self._tunnel_result(op, rel_path, ref, ua)
-        status = int(result.pop("_status", 200) or 200)
-        if not result.get("ok"):
-            return json_response(result, status=status)
-        if served_by:
-            # The mirror node that answered, so the website can show a
-            # "served by <node>" note confirming the round-robin is working.
-            result["servedBy"] = served_by
-        return json_response(result)
-
-    async def _stream_request(self, host, message, headers, verify_sha256=None):
-        # Send a chunked-transfer request to the host and return a Response
-        # whose body STREAMS the reply: each git-chunk is written straight
-        # through a TransformStream to the client as it arrives, so a full
-        # clone's pack or a large release asset never accumulates in DO memory
-        # (reassembling one is what used to exceed the 128 MB isolate limit and
-        # reset it, killing every in-flight request). Waits GIT_TIMEOUT_MS for
-        # the host's FIRST sign of life (chunk, end, or error); after that a
-        # per-chunk watchdog aborts a mid-stream stall so a dying host fails
-        # the one transfer instead of hanging the client.
-        #
-        # verify_sha256 (content-addressed assets only): the relay hashes the
-        # bytes as they stream — keeping just the running hash context, never
-        # the payload — and aborts the transfer at git-end if the digest doesn't
-        # match. This is the integrity pin for release artifacts: a tampered
-        # mirror serving forged bytes for a hash gets its stream cut, so the
-        # client never sees a complete (or edge-cacheable) forged download,
-        # regardless of whether the client itself re-verifies.
-        #
-        # Returns (response, error_result): exactly one is non-None. A
-        # transport failure yields a ready error Response; a host-reported
-        # error yields the result dict so each endpoint maps its own status.
-        req_id = message["reqId"]
-        loop = asyncio.get_event_loop()
-        future = loop.create_future()
-        self.pending[req_id] = future
-        transform = TransformStream.new()
-        writer = transform.writable.getWriter()
-        self.git_streams[req_id] = {
-            "writer": writer, "last": int(Date.now()),
-            "verify": verify_sha256,
-            "hasher": hashlib.sha256() if verify_sha256 else None,
-        }
-        try:
-            host.send(json.dumps(message))
-        except Exception:
-            self.pending.pop(req_id, None)
-            self.git_streams.pop(req_id, None)
-            self._drop_host(host)
-            return Response("Host unavailable.", status=503), None
-        try:
-            result = await asyncio.wait_for(
-                future, timeout=GIT_TIMEOUT_MS / 1000)
-        except Exception:
-            self.pending.pop(req_id, None)
-            if self.git_streams.pop(req_id, None) is not None:
-                try:
-                    await writer.abort("host timed out")
-                except Exception:
-                    pass
-            return Response("Host timed out.", status=504), None
-        if not result.get("ok"):
-            if self.git_streams.pop(req_id, None) is not None:
-                try:
-                    await writer.abort("host error")
-                except Exception:
-                    pass
-            return None, result
-        _fire_and_forget(self._stream_watchdog(req_id), "git stream watchdog")
-        return JsResponse.new(
-            transform.readable,
-            to_js({"status": 200, "headers": headers}),
-        ), None
-
-    async def _stream_watchdog(self, req_id):
-        # Abort a streamed transfer whose host went quiet mid-body, so the
-        # client sees a truncated transfer promptly instead of hanging (and the
-        # stream doesn't pin the Durable Object forever). The happy path — the
-        # stream already closed/errored and left git_streams — just exits.
-        while True:
-            await asyncio.sleep(GIT_TIMEOUT_MS / 1000)
-            stream = self.git_streams.get(req_id)
-            if stream is None:
-                return
-            if int(Date.now()) - stream["last"] > GIT_TIMEOUT_MS:
-                self.git_streams.pop(req_id, None)
-                try:
-                    await stream["writer"].abort("host stalled mid-stream")
-                except Exception:
-                    pass
-                return
-
-    async def _stream_receive(self, host, message, headers, request):
-        # git push (issue #358): the mirror image of _stream_request. There the
-        # big body is the REPLY (a clone's pack); here it is the REQUEST (the
-        # pushed pack), so the incoming body is pumped to the host chunk by chunk
-        # (_pump_request_body) and NEVER reassembled in the isolate — buffering a
-        # pack here is exactly what OOM'd the DO once. The host runs receive-pack
-        # and streams its small report-status reply back through the same
-        # git-chunk/git-end path a clone uses.
-        req_id = message["reqId"]
-        loop = asyncio.get_event_loop()
-        future = loop.create_future()
-        self.pending[req_id] = future
-        transform = TransformStream.new()
-        writer = transform.writable.getWriter()
-        self.git_streams[req_id] = {"writer": writer, "last": int(Date.now())}
-        try:
-            host.send(json.dumps(message))
-            # Forward the pushed pack, then tell the host to close stdin so
-            # receive-pack can finish and reply. The host must set up the process
-            # on the "request" message above before these chunks arrive; WS
-            # message order guarantees it.
-            await self._pump_request_body(host, req_id, request)
-        except Exception:
-            self.pending.pop(req_id, None)
-            if self.git_streams.pop(req_id, None) is not None:
-                try:
-                    await writer.abort("host unavailable")
-                except Exception:
-                    pass
-            self._drop_host(host)
-            return Response("Host unavailable.", status=503), None
-        try:
-            result = await asyncio.wait_for(
-                future, timeout=GIT_TIMEOUT_MS / 1000)
-        except Exception:
-            self.pending.pop(req_id, None)
-            if self.git_streams.pop(req_id, None) is not None:
-                try:
-                    await writer.abort("host timed out")
-                except Exception:
-                    pass
-            return Response("Host timed out.", status=504), None
-        if not result.get("ok"):
-            if self.git_streams.pop(req_id, None) is not None:
-                try:
-                    await writer.abort("host error")
-                except Exception:
-                    pass
-            return None, result
-        _fire_and_forget(self._stream_watchdog(req_id), "git stream watchdog")
-        return JsResponse.new(
-            transform.readable,
-            to_js({"status": 200, "headers": headers}),
-        ), None
-
-    async def _pump_request_body(self, host, req_id, request):
-        # Read the incoming request body as a stream and relay it to the host as
-        # git-req-chunk messages (base64, capped at GIT_REQ_CHUNK like the host's
-        # own git-chunk replies), ending with git-req-end so the host closes
-        # receive-pack's stdin. Reading via getReader() keeps a large push pack
-        # from ever sitting whole in DO memory.
-        body = getattr(request, "body", None)
-        if body is not None:
-            reader = body.getReader()
-            while True:
-                piece = await reader.read()
-                if piece.done:
-                    break
-                value = getattr(piece, "value", None)
-                if value is None:
-                    continue
-                # Copy the JS Uint8Array into Python bytes synchronously (a copy,
-                # not a view) before encoding — the reverse direction is the one
-                # that must round-trip through Uint8Array.new to stay GIL-safe.
-                data = bytes(value.to_py())
-                for i in range(0, len(data), GIT_REQ_CHUNK):
-                    host.send(json.dumps({
-                        "type": "git-req-chunk", "reqId": req_id,
-                        "data": base64.b64encode(
-                            data[i:i + GIT_REQ_CHUNK]).decode(),
-                    }))
-        host.send(json.dumps({"type": "git-req-end", "reqId": req_id}))
-
-    async def _release_blob(self, sha256, repo_bi=None, ua=""):
-        # Stream a content-addressed release asset from a serving node: each
-        # chunk flows straight to the client (see _stream_request), so
-        # arbitrarily large binaries download without the 4 MB inline /blob cap
-        # and without ever holding the whole asset in DO memory. Still cached
-        # forever at the edge — the URL is content-addressed. The relay itself
-        # now hashes the stream and aborts on mismatch (verify_sha256 below), so
-        # a tampered mirror can't serve forged bytes for this hash even to a
-        # client that doesn't re-verify; x-content-sha256 lets clients that do.
-        if not valid_sha256_hex(sha256):
-            return Response("not found", status=404)
-        self._ensure()
-        host = self._best_host()
-        if host is None:
-            return Response(
-                "No host is currently serving this release.", status=503)
-        self.counter += 1
-        req_id = "r%d" % self.counter
-        response, err = await self._stream_request(
-            host,
-            {"type": "request", "reqId": req_id,
-             "op": "release-blob", "path": sha256.lower(), "ua": ua},
-            {
-                "content-type": "application/octet-stream",
-                "cache-control": "public, max-age=31536000, immutable",
-                "x-content-sha256": sha256.lower(),
-            },
-            verify_sha256=sha256.lower(),
-        )
-        if response is not None:
-            if repo_bi:
-                # Fire-and-forget: log the download without delaying the
-                # already-streaming response on a D1 round-trip.
-                _fire_and_forget(
-                    record_release_download(self.env, repo_bi, sha256.lower(), ua),
-                    "release download log")
-            return response
-        status = 404 if str(err.get("error", "")) in (
-            "not_found", "bad_hash") else 502
-        return Response("Release asset unavailable.", status=status)
-
-    async def _raw_blob(self, rel_path, ref="", ua=""):
-        # Stream a repository blob from git as bytes so browser-native previews
-        # can load media without the capped JSON/base64 /blob response — chunk
-        # by chunk (see _stream_request), so a large asset never sits whole in
-        # DO memory.
-        if not rel_path or "\x00" in rel_path:
-            return Response("not found", status=404)
-        self._ensure()
-        host = self._best_host()
-        if host is None:
-            return Response("No host is currently serving this file.", status=503)
-        self.counter += 1
-        req_id = "r%d" % self.counter
-        response, err = await self._stream_request(
-            host,
-            {"type": "request", "reqId": req_id,
-             "op": "raw-blob", "path": rel_path, "ref": ref, "ua": ua},
-            {
-                "content-type": repo_blob_content_type(rel_path),
-                "cache-control": "no-cache, max-age=0, must-revalidate",
-                "content-disposition":
-                    'inline; filename="%s"' % repo_blob_filename(rel_path),
-                "x-content-type-options": "nosniff",
-                "content-security-policy": "sandbox",
-            },
-        )
-        if response is not None:
-            return response
-        status = 404 if str(err.get("error", "")) in (
-            "not_found", "bad_path") else 502
-        return Response("File unavailable.", status=status)
-
-    def _drop_host(self, ws):
-        # A send failed: force-close so the runtime drops it from getWebSockets.
-        try:
-            ws.close(1011, "host unavailable")
-        except Exception:
-            pass
-
-    def _update_rtt(self, ws, elapsed):
-        # Exponential moving average of round-trip time, persisted in the socket's
-        # hibernation attachment so it survives a Durable Object eviction.
-        prev = _ws_attr(ws, "rtt")
-        new_rtt = (elapsed if not isinstance(prev, (int, float))
-                   else 0.5 * prev + 0.5 * elapsed)
-        try:
-            # Preserve repo_bi when rewriting the attachment. serializeAttachment
-            # replaces the whole blob, so omitting repo_bi here loses it after the
-            # first successful tunnel response. The heartbeat handler reads repo_bi
-            # from the attachment after DO hibernation to restore self._repo_bi and
-            # keep host_presence fresh; without it, heartbeats silently stop
-            # refreshing presence and the mirror ages out in HOST_PRESENCE_STALE_MS.
-            ws.serializeAttachment(
-                to_js({"rtt": new_rtt, "repo_bi": _ws_attr(ws, "repo_bi")}))
-        except Exception:
-            pass
-
-    async def _state_pins(self, path):
-        # The set of acceptable repo-state hashes for the node serving this clone
-        # path, or None when the repo is unpinned. A working-copy holder is
-        # checked against its own attestations; a MIRROR must match a pin some
-        # working-copy holder in its logical-repo group signed — its own
-        # self-attested hash proves nothing (a tampered mirror can republish a
-        # matching pin at will). Selection logic lives in the pure
-        # clone_state_pins(); this wrapper gathers the catalog rows + recent pin
-        # history it needs. Best-effort: any failure returns None (fail-open),
-        # matching the pre-existing behaviour for unreadable records.
-        match = GIT_INFO_RE.match(path) or GIT_PACK_RE.match(path)
-        if not match:
-            return None
-        owner = safe_segment(match.group(1))
-        repo = safe_segment(match.group(2))
-        if not owner or not repo:
-            return None
-        try:
-            await ensure_schema(self.env)
-            key_bi = await blind_index(self.env, owner + "/" + repo)
-            row = await d1_first(
-                self.env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
-            if not row:
-                return None
-            target = await decrypt_row(self.env, row["data"])
-            if not target:
-                return None
-            # Fast path: the serving node holds the working copy — no need to
-            # scan the catalog for group members.
-            source = str(target.get("source") or "local-node")
-            catalog_rows = []
-            if source != "local-node":
-                # Same-group source records from the shared per-isolate catalog
-                # memo (same fix as _online_source_of_truth, adhoc #144): a raw
-                # repositories scan + sequential decrypt_row() per row ran here
-                # on EVERY public info/refs of a mirror namespace, and under a
-                # clone burst that held the single Worker event loop long
-                # enough for the runtime to cancel concurrent requests as hung
-                # ("Cannot enter into task"). The memo's public/active-node
-                # scoping is harmless: the raw scan already applied the
-                # active-node filter, and a group source invisible to the memo
-                # just drops clone_state_pins to the target's own pins — the
-                # pre-existing legacy fallback.
-                for r in await _decrypted_public_catalog(
-                        self.env, int(Date.now())):
-                    if repo_mirror_same_group(target, r["data"]):
-                        catalog_rows.append(
-                            {"key_bi": r.get("key_bi"), "data": r["data"]})
-            # Pin history scoped to the keys clone_state_pins can actually use
-            # (target + same-group sources) — the old unscoped SELECT read
-            # every repo's history on every info/refs (same scoping fix as the
-            # /mirrors payload).
-            history = {}
-            keys = [k for k in
-                    [str(key_bi)] +
-                    [str(r.get("key_bi") or "") for r in catalog_rows] if k]
-            hist_rows = await d1_all(
-                self.env,
-                "SELECT key_bi, state_hash FROM repo_state_history"
-                " WHERE key_bi IN (%s)" % ",".join("?" for _ in keys),
-                *keys)
-            for r in hist_rows:
-                history.setdefault(str(r.get("key_bi") or ""), []).append(
-                    r.get("state_hash"))
-            return clone_state_pins(target, key_bi, catalog_rows, history)
-        except Exception:
-            return None
-
-    async def _git(self, request, op, body=None):
-        # Forward a git smart-HTTP request to the hosting client, which runs
-        # git upload-pack on its local mirror and streams the result back in
-        # chunks. The upload-pack POST reply — the pack itself, hundreds of MB
-        # for a big repo — streams straight through to the client
-        # (_stream_request); only the small info/refs advertisement is still
-        # reassembled here, because the integrity gate must hash the complete
-        # advertisement before releasing it.
-        # The push ops (issue #358) share this plumbing: git-receive-info-refs is
-        # the receive-pack ref advertisement (buffered like info/refs, but no
-        # integrity gate — pushing to the source, not cloning from a mirror), and
-        # git-receive-pack streams the pushed pack through to the host.
-        is_advertise = op in ("git-info-refs", "git-receive-info-refs")
-        is_receive = op in ("git-receive-info-refs", "git-receive-pack")
-        service = "git-receive-pack" if is_receive else "git-upload-pack"
-
-        self._ensure()
-        host = self._best_host()
-        if host is None:
-            # No desktop client is currently connected. Return a proper git
-            # smart-HTTP error so git shows a readable message instead of a
-            # confusing protocol error. For info/refs the response MUST use the
-            # advertisement content-type and pkt-line encoding.
-            err_msg = b"ERR no host is currently serving this repository\n"
-            if is_advertise:
-                body_out = (
-                    pkt_line(("# service=%s\n" % service).encode()) + b"0000" +
-                    pkt_line(err_msg)
-                )
-                return git_bytes_response(
-                    body_out,
-                    "application/x-%s-advertisement" % service,
-                )
-            return Response(
-                "No client is hosting this repository.", status=503
-            )
-
-        self.counter += 1
-        req_id = "g%d" % self.counter
-        ua = clean_string(request.headers.get("user-agent") or "", 256)
-        message = {"type": "request", "reqId": req_id, "op": op, "ua": ua}
-        if body:
-            message["body"] = base64.b64encode(body).decode()
-
-        if op == "git-receive-pack":
-            # The request body (the pushed pack) streams straight to the host's
-            # receive-pack stdin — never buffered in the isolate — and the small
-            # report-status reply streams back.
-            response, err = await self._stream_receive(
-                host, message,
-                {
-                    "content-type": "application/x-git-receive-pack-result",
-                    "cache-control": "no-cache, max-age=0, must-revalidate",
-                },
-                request,
-            )
-            if response is not None:
-                return response
-            return Response(
-                "Host error: " + str(err.get("error", "")), status=502
-            )
-
-        if op == "git-upload-pack":
-            response, err = await self._stream_request(
-                host, message,
-                {
-                    "content-type": "application/x-git-upload-pack-result",
-                    "cache-control": "no-cache, max-age=0, must-revalidate",
-                },
-            )
-            if response is not None:
-                return response
-            return Response(
-                "Host error: " + str(err.get("error", "")), status=502
-            )
-
-        loop = asyncio.get_event_loop()
-        future = loop.create_future()
-        self.pending[req_id] = future
-        self.git_buffers[req_id] = bytearray()
-        try:
-            host.send(json.dumps(message))
-        except Exception:
-            self.pending.pop(req_id, None)
-            self.git_buffers.pop(req_id, None)
-            self._drop_host(host)
-            return Response("Host unavailable.", status=503)
-
-        try:
-            timeout_ms = (
-                GIT_ADVERTISE_TIMEOUT_MS if is_advertise else GIT_TIMEOUT_MS)
-            result = await asyncio.wait_for(future, timeout=timeout_ms / 1000)
-        except Exception:
-            self.pending.pop(req_id, None)
-            self.git_buffers.pop(req_id, None)
-            return Response("Host timed out.", status=504)
-
-        if not result.get("ok"):
-            return Response(
-                "Host error: " + str(result.get("error", "")), status=502
-            )
-
-        data = result.get("data", b"")
-        # Tamper/rollback gate: the refs this node advertises must hash to a
-        # state the repo's working-copy holder attested — a mirror is checked
-        # against the SOURCE's signed pins (current + recent history), never
-        # just its own self-published hash, so a forged or rolled-back mirror
-        # fails here and no clone ever receives it. (Fails open when nothing
-        # is pinned, e.g. a not-yet-attested repo; see clone_state_pins.) The
-        # push advertisement (git-receive-info-refs) skips it: a push targets
-        # the owner's own source node, not a mirror, so there is nothing to
-        # attest against yet — the pin is re-attested AFTER the push lands.
-        if op == "git-info-refs":
-            pinned = await self._state_pins(urlparse(request.url).path)
-            if (pinned and await sha256_hex(advertised_refs_canonical(data))
-                    not in pinned):
-                err = (b"ERR repository failed integrity check "
-                       b"(mirror may be tampered or out of date)\n")
-                body_out = (
-                    pkt_line(b"# service=git-upload-pack\n") + b"0000" +
-                    pkt_line(err)
-                )
-                return git_bytes_response(
-                    body_out, "application/x-git-upload-pack-advertisement"
-                )
-        body_out = (
-            pkt_line(("# service=%s\n" % service).encode()) + b"0000" + data
-        )
-        return git_bytes_response(
-            body_out, "application/x-%s-advertisement" % service
-        )

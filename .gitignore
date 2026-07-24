@@ -11,6 +11,17 @@ build-forkmesh/
 .venv/
 .git-rewrite/
 tools/__pycache__/
+node_modules/
+cloudflare_worker/browser_tests/test-results/
+cloudflare_worker/browser_tests/playwright-report/
+
+# Offline legacy-custody migration outputs. These may be encrypted, but remain
+# owner-only operational artifacts and must never enter repository history.
+*.fmcustody
+*custody-confirmation*.json
+*custody-scrub*.sql
+*d1-snapshot*.sqlite
+*d1-export*.sql
 
 # Release artifact bytes live in a per-node content-addressed blob store and are
 # NEVER committed (issue #304; see docs/design/release-binary-publishing.md).

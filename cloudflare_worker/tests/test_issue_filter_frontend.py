@@ -194,29 +194,6 @@ def test_dashboard_js_issue_header_counts_open_not_total():
     assert 'setRepoCollectionCounts("issues", openIssues, Number(counts.closedIssues));' in served
 
 
-def test_repo_host_serves_open_and_closed_issue_split():
-    # The desktop host that computes the served root-tree counts reports an
-    # open/closed issue split so the website can badge headers with the open
-    # count only (issue #397). Closed issues keep their .forkmesh/issues/<n>/
-    # directory, so a bare directory count would overstate the open total.
-    repo_host = (
-        Path(__file__).resolve().parents[2] / "qt_client" / "src" / "RepoHost.cpp"
-    ).read_text(encoding="utf-8")
-    assert "int countOpenIssues(const QString &mirrorPath" in repo_host
-    # Reads each issue record's top-level status; anything not "closed" is open.
-    assert "issue-%1.json" in repo_host
-    assert 'value(QStringLiteral("status"))' in repo_host
-    assert 'if (status != QLatin1String("closed"))' in repo_host
-    # rootCountsFor emits the split alongside the legacy total.
-    counts = repo_host[
-        repo_host.index("QJsonObject rootCountsFor")
-        : repo_host.index("QJsonObject rootCountsFor") + 900
-    ]
-    assert '{"openIssues", openIssues}' in counts
-    assert '{"closedIssues", closedIssues}' in counts
-    assert '{"issues", openIssues + closedIssues}' in counts
-
-
 def test_advertised_catalog_issue_count_is_open_only():
     # adhoc #29: the catalog's issueCount seeds the Issues tab badge on the FIRST
     # repo render (before the live-served open/closed split from #397 arrives),
@@ -235,8 +212,8 @@ def test_advertised_catalog_issue_count_is_open_only():
         internal.index("inline int mirrorOpenIssueCount")
         : internal.index("inline int mirrorIssueCount")
     ]
-    # Reads each record's status; anything not "closed" counts as open (matching
-    # RepoHost::countOpenIssues and the web's parseIssueJson default).
+    # Reads each record's status; anything not "closed" counts as open,
+    # matching the web's parseIssueJson default.
     assert 'issue-%1.json' in open_counter
     assert 'value(QStringLiteral("status"))' in open_counter
     assert 'if (status != QLatin1String("closed"))' in open_counter

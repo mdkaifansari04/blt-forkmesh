@@ -5,6 +5,7 @@
 #include <QJsonObject>
 #include <QSet>
 #include <QString>
+#include <QStringList>
 
 #include <optional>
 
@@ -30,6 +31,21 @@ struct RepoContributionSnapshotInput {
 struct RepoContributionPreparation {
     QString dependencyFingerprint;
     std::optional<RepoContributionSnapshot> rebuiltSnapshot;
+};
+
+// Bounded, content-free repository facts used by ForkMesh's deterministic
+// native-logo generator. Public publishers can reuse the aggregate extension
+// counts in contributionPayload; private publishers leave it empty and derive
+// the same labels from bounded git tree metadata. No blob/source contents leave
+// the device through this structure.
+struct RepoLogoMetadataInput {
+    QString workTreePath;
+    QString mirrorPath;
+    QString head;
+    QString description;
+    QString primaryLanguage;
+    QStringList topics;
+    QJsonObject contributionPayload;
 };
 
 class RepoContributionPublicationCache
@@ -86,6 +102,8 @@ RepoContributionPreparation prepareRepoContributionSnapshot(
     const RepoContributionSnapshotInput &input,
     const QString &expectedDependencyFingerprint,
     bool cachedSnapshotAvailable);
+
+QJsonObject buildRepoLogoMetadata(const RepoLogoMetadataInput &input);
 
 bool repoContributionResponseNeedsRefresh(const QJsonObject &response,
                                           bool contributionSubmitted);

@@ -223,7 +223,7 @@ def test_worker_profile_public_edits_and_follows_accept_signed_session_token():
     ]
     follow_body = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _account_follow"):
-        ENTRY_TEXT.index("# Step 1 of the funnel")
+        ENTRY_TEXT.index("async def _account_reserve")
     ]
     login_body = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _account_login"):

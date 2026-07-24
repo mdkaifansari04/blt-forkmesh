@@ -93,6 +93,10 @@ def _run(url, *, cached=False):
         "decrypt_row": identity,
         "_is_blocked_catalog_identity": (lambda env, o, n: False),
         "_admin_query": (lambda admin: ""),
+        "_ssh_gateway_settings": (lambda env: {
+            "configured": False, "host": "", "port": 0,
+            "repositories": {},
+        }),
         "safe_segment": (lambda v: v),
         "clean_string": (lambda v, n: v),
         "served_mirror_groups": (lambda repos: set()),

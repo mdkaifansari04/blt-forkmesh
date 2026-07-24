@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forkmesh.com/schemas/ssh-gateway-config-v1.json",
+  "title": "ForkMesh node-side Git SSH gateway configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "apiOrigin",
+    "gatewayExecutable",
+    "gatewayTokenFile",
+    "repositoryRoot",
+    "repositories"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "apiOrigin": {
+      "type": "string",
+      "pattern": "^https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?/?$"
+    },
+    "gatewayExecutable": {
+      "type": "string",
+      "pattern": "^/[A-Za-z0-9_./+-]+$"
+    },
+    "gatewayTokenFile": {
+      "type": "string",
+      "pattern": "^/[^\\r\\n\\u0000]+$",
+      "description": "Owner-only file containing the Worker/gateway bearer token; the token itself never belongs in this JSON file."
+    },
+    "repositoryRoot": {
+      "type": "string",
+      "pattern": "^/[^\\r\\n\\u0000]+$"
+    },
+    "repositories": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["owner", "name", "path", "access"],
+        "properties": {
+          "owner": {
+            "type": "string",
+            "pattern": "^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+          },
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]{1,100}$"
+          },
+          "path": {
+            "type": "string",
+            "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\r\\n\\u0000]+$"
+          },
+          "access": {"enum": ["read-only", "read-write"]}
+        }
+      }
+    }
+  }
+}

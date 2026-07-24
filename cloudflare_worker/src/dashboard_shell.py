@@ -86,7 +86,7 @@ PAGES = {
         "route": "/dashboard/chat",
         "asset": "dashboard/chat/index.html",
         "title": "Chat - ForkMesh",
-        "description": "Encrypted #general chat relayed through ForkMesh - messages are encrypted in your browser.",
+        "description": "ForkMesh #general chat uses a relay-derived authenticated shared key; the relay can decrypt messages.",
     },
     "settings": {
         "view": "settings",

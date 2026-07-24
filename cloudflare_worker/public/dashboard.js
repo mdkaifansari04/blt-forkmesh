@@ -1,6 +1,8 @@
 (() => {
   const state = {
     repositories: [],
+    externalRepositories: [],
+    externalRepositoriesLoading: false,
     filteredRepositories: [],
     filteredGroups: [],
     repositoriesLoading: true,
@@ -1374,7 +1376,7 @@
   // The only client-routed state left is within-page: repo tabs/tree/blob on
   // the repo page, and the settings sub-tabs below.
 
-  const SETTINGS_SECTIONS = ["public-profile", "account", "appearance", "notifications", "payout", "nodes", "organizations", "danger"];
+  const SETTINGS_SECTIONS = ["public-profile", "account", "ssh-keys", "appearance", "notifications", "payout", "nodes", "organizations", "danger"];
 
   function normalizeSettingsSection(section) {
     return SETTINGS_SECTIONS.includes(section) ? section : "public-profile";
@@ -1420,6 +1422,145 @@
 
     // The Organizations tab is data-driven and only fetched when first opened.
     if (activeSection === "organizations") initOrgsSection();
+    if (activeSection === "ssh-keys") loadSshKeys();
+  }
+
+  // ---- SSH public keys (settings tab) ---------------------------------------
+  // Public keys are account-scoped and encrypted at rest by the Worker. The
+  // browser never handles a private key; every push is authorized again by the
+  // Worker and executed by a separately operated node-side SSH gateway.
+  let sshKeysLoaded = false;
+  let sshKeysLoading = null;
+
+  function setSshKeyStatus(message, kind = "") {
+    const target = $("[data-ssh-key-status]");
+    if (!target) return;
+    target.textContent = message || "";
+    target.className = "min-h-4 text-xs " + (
+      kind === "bad" ? "text-red-400"
+        : kind === "good" ? "text-emerald-400"
+          : "text-muted-foreground"
+    );
+  }
+
+  async function sshKeyApi(method, path = "", body) {
+    const token = state.session?.sessionToken || "";
+    if (!token) throw new Error("invalid_session");
+    const headers = {
+      accept: "application/json",
+      authorization: "Bearer " + token,
+    };
+    if (body !== undefined) headers["content-type"] = "application/json";
+    const response = await fetch("/api/accounts/ssh-keys" + path, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `http_${response.status}`);
+    }
+    return data;
+  }
+
+  function renderSshKeys(data) {
+    const list = $("[data-ssh-key-list]");
+    if (!list) return;
+    const keys = Array.isArray(data?.keys) ? data.keys : [];
+    const gateway = $("[data-ssh-gateway-status]");
+    if (gateway) {
+      gateway.textContent = data?.gatewayConfigured
+        ? `SSH gateway: ${data.gatewayHost}${Number(data.gatewayPort) === 22 ? "" : `:${data.gatewayPort}`}`
+        : "SSH gateway is not configured";
+    }
+    if (!keys.length) {
+      list.innerHTML = '<p class="p-4 text-sm text-muted-foreground">No SSH keys registered.</p>';
+      return;
+    }
+    list.innerHTML = keys.map((key, index) => {
+      const used = Number(key.lastUsedAt || 0);
+      return `
+        <article class="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between ${index ? "border-t border-border" : ""}">
+          <div class="min-w-0">
+            <p class="truncate text-sm font-semibold text-foreground">${escapeHtml(key.label || "SSH key")}</p>
+            <p class="mt-1 break-all font-mono text-xs text-muted-foreground">${escapeHtml(key.fingerprint || "")}</p>
+            <p class="mt-1 text-xs text-muted-foreground">${escapeHtml(key.keyType || "SSH")} · added ${escapeHtml(formatDate(key.createdAt))}${used ? ` · last used ${escapeHtml(formatTimeAgo(used))}` : " · never used"}</p>
+          </div>
+          <button type="button" data-ssh-key-revoke="${escapeHtml(key.id || "")}" class="inline-flex h-8 shrink-0 items-center justify-center rounded-md border border-red-500/50 px-3 text-xs font-semibold text-red-300 hover:bg-red-500/10">
+            Revoke
+          </button>
+        </article>`;
+    }).join("");
+  }
+
+  async function loadSshKeys({ force = false } = {}) {
+    if (!$("[data-ssh-key-list]")) return;
+    if (sshKeysLoaded && !force) return;
+    if (sshKeysLoading) return sshKeysLoading;
+    sshKeysLoading = (async () => {
+      try {
+        const data = await sshKeyApi("GET");
+        renderSshKeys(data);
+        sshKeysLoaded = true;
+      } catch (error) {
+        const list = $("[data-ssh-key-list]");
+        if (list) {
+          list.innerHTML = `<p class="p-4 text-sm text-red-400">${error.message === "invalid_session" ? "Sign in to manage SSH keys." : "Could not load SSH keys."}</p>`;
+        }
+      } finally {
+        sshKeysLoading = null;
+      }
+    })();
+    return sshKeysLoading;
+  }
+
+  async function addSshKey() {
+    const publicKey = ($("[data-ssh-public-key]")?.value || "").trim();
+    const label = ($("[data-ssh-key-label]")?.value || "").trim();
+    if (!publicKey) {
+      setSshKeyStatus("Paste one OpenSSH public key.", "bad");
+      return;
+    }
+    const button = $("[data-ssh-key-add]");
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Adding…";
+    }
+    try {
+      await sshKeyApi("POST", "", { publicKey, label });
+      if ($("[data-ssh-public-key]")) $("[data-ssh-public-key]").value = "";
+      if ($("[data-ssh-key-label]")) $("[data-ssh-key-label]").value = "";
+      setSshKeyStatus("SSH public key registered.", "good");
+      sshKeysLoaded = false;
+      await loadSshKeys({ force: true });
+    } catch (error) {
+      const messages = {
+        unsupported_key_type: "Use an Ed25519, ECDSA, security-key, or RSA (3072-bit or stronger) public key.",
+        rsa_key_too_small: "RSA keys must be at least 3072 bits.",
+        ssh_key_already_registered: "That public key is already registered or was previously revoked. Use a fresh keypair.",
+        ssh_key_limit_reached: "Revoke an unused key before adding another.",
+        one_public_key_required: "Paste exactly one public key.",
+        invalid_session: "Sign in to manage SSH keys.",
+      };
+      setSshKeyStatus(messages[error.message] || "That SSH public key could not be registered.", "bad");
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = "Add SSH key";
+      }
+    }
+  }
+
+  async function revokeSshKey(keyId) {
+    if (!keyId || !window.confirm("Revoke this SSH key? It will stop authenticating immediately.")) return;
+    try {
+      await sshKeyApi("DELETE", "/" + encodeURIComponent(keyId));
+      setSshKeyStatus("SSH key revoked.", "good");
+      sshKeysLoaded = false;
+      await loadSshKeys({ force: true });
+    } catch (_) {
+      setSshKeyStatus("Could not revoke that SSH key.", "bad");
+    }
   }
 
   // ---- Organizations (settings tab) -----------------------------------------
@@ -1429,6 +1570,7 @@
   // [data-orgs-root] the first time the Organizations settings tab is opened.
   const ORG_ROLE_OPTIONS = ["owner", "admin", "member"];
   const ORG_TEAM_PERMISSIONS = ["read", "write", "maintain", "admin"];
+  const ORG_WORLD_ACCESS_OPTIONS = ["public", "restricted", "private"];
 
   // Worker org-endpoint error codes -> human text. Unknown codes fall through
   // to a generic message so the UI never shows a raw slug.
@@ -1452,6 +1594,9 @@
     repo_required: "Enter a repository name.",
     not_your_node: "You can only link repositories from your own node.",
     unknown_repo: "That repository is not published on your node.",
+    enabled_required: "Choose whether organization digests are enabled.",
+    invalid_logo_url: "Logo URLs must use HTTPS and cannot contain credentials or fragments.",
+    invalid_world_access: "Choose a valid access level for every organization space.",
   };
 
   function orgErrorText(code) {
@@ -1602,6 +1747,7 @@
     let members = [];
     let teams = [];
     let repos = [];
+    let fediverse = { controls: { enabled: true }, repos: [] };
     try {
       const [profileData, membersData, teamsData, reposData] = await Promise.all([
         orgApiRequest("GET", "/api/orgs/" + encodeURIComponent(name)),
@@ -1613,6 +1759,10 @@
       members = membersData.members || [];
       teams = teamsData.teams || [];
       repos = reposData.repos || [];
+      if (profile.viewerRole === "owner" || profile.viewerRole === "admin") {
+        fediverse = await orgApiRequest(
+          "GET", "/api/orgs/" + encodeURIComponent(name) + "/fediverse");
+      }
     } catch (error) {
       root.innerHTML =
         '<button type="button" data-org-back class="mb-4 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">' +
@@ -1622,13 +1772,45 @@
       root.querySelector("[data-org-back]")?.addEventListener("click", showOrgsList);
       return;
     }
-    renderOrgDetail(root, name, profile, members, teams, repos);
+    renderOrgDetail(root, name, profile, members, teams, repos, fediverse);
   }
 
-  function renderOrgDetail(root, name, profile, members, teams, repos) {
+  function renderOrgDetail(root, name, profile, members, teams, repos, fediverse) {
     const canManage = profile.viewerRole === "owner" || profile.viewerRole === "admin";
     const isOwner = profile.viewerRole === "owner";
     const title = escapeHtml(profile.displayName || profile.org || name);
+    const worldAccess = {
+      lobby: profile.worldAccess?.lobby || "public",
+      floors: profile.worldAccess?.floors || "restricted",
+      offices: profile.worldAccess?.offices || "restricted",
+    };
+    const worldSettings = canManage
+      ? '<form data-org-world-settings class="mt-5 grid gap-3 rounded-md border border-border bg-card p-4">' +
+          '<div><h4 class="text-sm font-semibold text-foreground">World building</h4>' +
+          '<p class="mt-1 text-xs leading-5 text-muted-foreground">Set the public identity of this building and independently control its lobby, repository floors, and personal offices. Restricted spaces are visible to organization members; private spaces are limited to owners and administrators.</p></div>' +
+          '<div class="grid gap-3 md:grid-cols-2">' +
+            '<label class="grid gap-1 text-xs font-semibold text-foreground">Display name' +
+              '<input data-org-world-display maxlength="80" value="' + escapeHtml(profile.displayName || "") + '" class="' + ORG_INPUT_CLASS + '" /></label>' +
+            '<label class="grid gap-1 text-xs font-semibold text-foreground">HTTPS logo URL' +
+              '<input data-org-world-logo type="url" inputmode="url" maxlength="500" value="' + escapeHtml(profile.logoUrl || "") + '" placeholder="https://…" class="' + ORG_INPUT_CLASS + '" /></label>' +
+          '</div>' +
+          '<label class="grid gap-1 text-xs font-semibold text-foreground">Description' +
+            '<textarea data-org-world-description maxlength="500" rows="3" class="' + ORG_INPUT_CLASS + ' h-auto py-2">' + escapeHtml(profile.description || "") + "</textarea></label>" +
+          '<div class="grid gap-3 sm:grid-cols-3">' +
+            '<label class="grid gap-1 text-xs font-semibold text-foreground">Lobby access<select data-org-world-lobby class="' + ORG_INPUT_CLASS + '">' +
+              orgOptionTags(ORG_WORLD_ACCESS_OPTIONS, worldAccess.lobby) + "</select></label>" +
+            '<label class="grid gap-1 text-xs font-semibold text-foreground">Repository floors<select data-org-world-floors class="' + ORG_INPUT_CLASS + '">' +
+              orgOptionTags(ORG_WORLD_ACCESS_OPTIONS, worldAccess.floors) + "</select></label>" +
+            '<label class="grid gap-1 text-xs font-semibold text-foreground">Personal offices<select data-org-world-offices class="' + ORG_INPUT_CLASS + '">' +
+              orgOptionTags(ORG_WORLD_ACCESS_OPTIONS, worldAccess.offices) + "</select></label>" +
+          "</div>" +
+          '<button type="submit" class="' + ORG_BTN_PRIMARY + ' w-fit">Save world settings</button>' +
+        "</form>"
+      : '<section class="mt-5 rounded-md border border-border bg-card p-4">' +
+          '<h4 class="text-sm font-semibold text-foreground">World building access</h4>' +
+          '<p class="mt-1 text-xs text-muted-foreground">Lobby: ' + escapeHtml(worldAccess.lobby) +
+          " · floors: " + escapeHtml(worldAccess.floors) +
+          " · offices: " + escapeHtml(worldAccess.offices) + "</p></section>";
 
     const memberRows = members.map((member) => {
       const memberName = escapeHtml(member.name || "");
@@ -1692,6 +1874,33 @@
           '<input data-repo-node value="' + escapeHtml(account) + '" placeholder="your node" autocomplete="off" class="' + ORG_INPUT_CLASS + '" />' +
           '<button type="submit" class="' + ORG_BTN_SECONDARY + '">Link repo</button></form>'
       : "";
+    const digestRows = (fediverse?.repos || []).map((item) => {
+      const repoName = escapeHtml(item.repo || "");
+      const preview = String(item.preview?.text || "").trim();
+      const status = !item.ownerEnabled
+        ? "Disabled by repository owner"
+        : item.enabled ? "Eligible for daily digest" : "Disabled for organization";
+      return '<details class="rounded-md border border-border bg-card p-3">' +
+        '<summary class="cursor-pointer text-sm font-medium text-foreground">' +
+          escapeHtml(name) + "/" + repoName +
+          ' <span class="ml-1 text-xs font-normal text-muted-foreground">· ' +
+          escapeHtml(status) + "</span></summary>" +
+        '<pre class="mt-2 max-h-52 overflow-auto whitespace-pre-wrap break-words rounded bg-background p-2 font-mono text-[10px] leading-4 text-foreground">' +
+          escapeHtml(preview || "No meaningful public updates are queued.") +
+        "</pre></details>";
+    }).join("") || '<p class="text-sm text-muted-foreground">No public linked repositories have queued updates.</p>';
+    const digestControls = canManage
+      ? '<section class="mt-6" data-org-fediverse-controls>' +
+          '<div class="flex items-start justify-between gap-4">' +
+            '<div><h4 class="text-sm font-semibold text-foreground">Fediverse daily digests</h4>' +
+            '<p class="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">Combine meaningful public updates for each organization alias into at most one clearly automated post per 24 hours. Repository-owner federation settings remain authoritative; empty posts are never sent.</p></div>' +
+            '<label class="inline-flex shrink-0 items-center gap-2 text-xs font-semibold text-foreground"><input data-org-fediverse-enabled type="checkbox" class="h-4 w-4"' +
+              (fediverse?.controls?.enabled !== false ? " checked" : "") +
+              " />Enabled</label>" +
+          "</div>" +
+          '<div class="mt-3 grid gap-2">' + digestRows + "</div>" +
+        "</section>"
+      : "";
 
     root.innerHTML =
       '<div class="flex items-center gap-3">' +
@@ -1705,13 +1914,15 @@
         (profile.viewerRole ? orgRoleBadge(profile.viewerRole) : "") +
       "</div>" +
       (profile.description ? '<p class="mt-1 text-sm text-muted-foreground">' + escapeHtml(profile.description) + "</p>" : "") +
+      worldSettings +
       '<p data-org-status class="mt-2 min-h-4 text-xs text-muted-foreground"></p>' +
       '<section class="mt-5"><h4 class="text-sm font-semibold text-foreground">Members</h4>' +
         '<div class="mt-2 grid gap-2">' + memberRows + "</div>" + memberAdd + "</section>" +
       '<section class="mt-6"><h4 class="text-sm font-semibold text-foreground">Teams</h4>' +
         '<div class="mt-2 grid gap-2">' + teamRows + "</div>" + teamAdd + "</section>" +
       '<section class="mt-6"><h4 class="text-sm font-semibold text-foreground">Linked repos</h4>' +
-        '<div class="mt-2 grid gap-2">' + repoRows + "</div>" + repoAdd + "</section>";
+        '<div class="mt-2 grid gap-2">' + repoRows + "</div>" + repoAdd + "</section>" +
+      digestControls;
 
     window.lucide?.createIcons();
     wireOrgDetail(root, name, members);
@@ -1733,6 +1944,21 @@
     root.querySelector("[data-org-delete]")?.addEventListener("click", () => {
       if (!window.confirm("Delete " + name + "? This dissolves the org, its members, teams, and repo links. Linked repos are not deleted.")) return;
       guard(() => orgApiRequest("DELETE", "/api/orgs/" + encodeURIComponent(name), {}).then(showOrgsList));
+    });
+
+    root.querySelector("[data-org-world-settings]")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const worldAccess = {
+        lobby: root.querySelector("[data-org-world-lobby]")?.value || "public",
+        floors: root.querySelector("[data-org-world-floors]")?.value || "restricted",
+        offices: root.querySelector("[data-org-world-offices]")?.value || "restricted",
+      };
+      guard(() => orgApiRequest("PATCH", "/api/orgs/" + encodeURIComponent(name), {
+        displayName: (root.querySelector("[data-org-world-display]")?.value || "").trim(),
+        description: (root.querySelector("[data-org-world-description]")?.value || "").trim(),
+        logoUrl: (root.querySelector("[data-org-world-logo]")?.value || "").trim(),
+        worldAccess,
+      }));
     });
 
     root.querySelector("[data-org-member-add]")?.addEventListener("submit", (event) => {
@@ -1796,6 +2022,12 @@
         guard(() => orgApiRequest("DELETE", "/api/orgs/" + encodeURIComponent(name) + "/repos", { repo }));
       });
     });
+    root.querySelector("[data-org-fediverse-enabled]")?.addEventListener(
+      "change", (event) => {
+        guard(() => orgApiRequest(
+          "POST", "/api/orgs/" + encodeURIComponent(name) + "/fediverse",
+          { enabled: Boolean(event.target.checked) }));
+      });
   }
 
   async function showOrgTeamDetail(name, team, orgMembers) {
@@ -4055,6 +4287,89 @@
     `;
   }
 
+  const nativeRepositoryLogoCache = new Map();
+  let nativeRepositoryLogoSessionToken = "";
+  let nativeRepositoryLogoSessionEpoch = 0;
+
+  function nativeRepositoryLogoEndpoint(repo) {
+    const owner = String(repo?.owner || "").trim();
+    const name = String(repo?.name || "").trim();
+    if (!owner || !name) return "";
+    return `/api/repo/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/logo`;
+  }
+
+  function nativeRepositoryLogoMarkup(repo, sizeClass = "h-10 w-10") {
+    const endpoint = nativeRepositoryLogoEndpoint(repo);
+    if (!endpoint) return "";
+    return `
+      <span data-native-repo-logo-frame class="relative flex ${sizeClass} shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border bg-secondary text-muted-foreground">
+        <i data-native-repo-logo-fallback data-lucide="book-marked" class="h-4 w-4"></i>
+        <img data-native-repo-logo data-logo-endpoint="${escapeHtml(endpoint)}" alt="" loading="lazy" decoding="async" class="absolute inset-0 hidden h-full w-full object-cover" />
+      </span>
+    `;
+  }
+
+  function nativeRepositoryLogoDataUrl(value) {
+    const url = String(value || "");
+    return /^data:image\/(?:svg\+xml|png|jpeg|webp)(?:;|,)/i.test(url)
+      ? url
+      : "";
+  }
+
+  function nativeRepositoryLogoCacheKey(endpoint) {
+    const token = String(state.session?.sessionToken || "");
+    if (token !== nativeRepositoryLogoSessionToken) {
+      // A guest miss must not hide a private logo after login, and an
+      // owner-authorized logo must never survive logout/account switching.
+      nativeRepositoryLogoCache.clear();
+      nativeRepositoryLogoSessionToken = token;
+      nativeRepositoryLogoSessionEpoch += 1;
+    }
+    return `${nativeRepositoryLogoSessionEpoch}:${endpoint}`;
+  }
+
+  function loadNativeRepositoryLogo(endpoint) {
+    const cacheKey = nativeRepositoryLogoCacheKey(endpoint);
+    if (!nativeRepositoryLogoCache.has(cacheKey)) {
+      const token = String(state.session?.sessionToken || "");
+      const headers = { Accept: "application/json" };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const pending = fetch(endpoint, {
+        headers,
+        credentials: "same-origin",
+      }).then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const body = await response.json();
+        if (String(state.session?.sessionToken || "") !== token) return "";
+        return nativeRepositoryLogoDataUrl(body?.logo?.dataUrl);
+      }).catch(() => {
+        // Do not negatively cache authorization failures or transient errors.
+        // The same card can be retried after login or on a later render.
+        if (nativeRepositoryLogoCache.get(cacheKey) === pending) {
+          nativeRepositoryLogoCache.delete(cacheKey);
+        }
+        return "";
+      });
+      nativeRepositoryLogoCache.set(cacheKey, pending);
+    }
+    return nativeRepositoryLogoCache.get(cacheKey);
+  }
+
+  function hydrateNativeRepositoryLogos(root) {
+    if (!root) return;
+    root.querySelectorAll("[data-native-repo-logo]").forEach(async (image) => {
+      const endpoint = image.getAttribute("data-logo-endpoint") || "";
+      if (!endpoint || image.dataset.logoHydrated === "true") return;
+      image.dataset.logoHydrated = "true";
+      const dataUrl = await loadNativeRepositoryLogo(endpoint);
+      if (!dataUrl || !image.isConnected) return;
+      image.src = dataUrl;
+      image.classList.remove("hidden");
+      image.parentElement?.querySelector("[data-native-repo-logo-fallback]")
+        ?.classList.add("hidden");
+    });
+  }
+
   function repoActivitySparkline(values, options = {}) {
     const series = normalizeActivityWeeks(values);
     const max = Math.max(1, ...series);
@@ -4108,7 +4423,9 @@
     return `
       <div data-repo="${escapeHtml(key.toLowerCase())}" data-dashboard-open-repo="${escapeHtml(key)}" data-clone-url="${escapeHtml(cloneUrl(origin))}" role="link" tabindex="0" aria-label="Open ${escapeHtml(key)}" class="repo-card group cursor-pointer px-4 py-3 hover:bg-secondary/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
         <div class="repo-layout grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(10rem,12rem)] md:items-center">
-          <div class="min-w-0">
+          <div class="flex min-w-0 items-start gap-3">
+            ${nativeRepositoryLogoMarkup(origin)}
+            <div class="min-w-0 flex-1">
             <div class="flex min-w-0 items-center gap-2">
               <p class="min-w-0 truncate text-sm font-medium text-foreground">
                 <span class="text-muted-foreground">${escapeHtml(origin.owner || "owner")}/</span>${escapeHtml(origin.name || "repository")}
@@ -4136,6 +4453,7 @@
               <span class="text-xs text-muted-foreground font-mono">updated ${escapeHtml(formatDate(repo.updatedAt || repo.lastSync))}</span>
             </div>
             <div class="mt-3 grid grid-cols-2 gap-1.5 sm:grid-cols-4">${metrics}</div>
+            </div>
           </div>
           <div class="min-w-0">
             ${repoActivitySparkline(activityWeeks, { totalHint: commitTotal })}
@@ -4154,7 +4472,9 @@
     const commitTotal = groupRepoMetric(group, ["commitCount", "commits", "commitHistory"]);
     const activityWeeks = groupActivityWeeks(group);
     return `<article data-profile-repository-row class="grid gap-3 px-4 py-5 md:grid-cols-[minmax(0,1fr)_12rem]">
-      <a href="${escapeHtml(repoPathUrl(repo))}" class="block min-w-0 text-left">
+      <a href="${escapeHtml(repoPathUrl(repo))}" class="flex min-w-0 items-start gap-3 text-left">
+        ${nativeRepositoryLogoMarkup(repo, "h-12 w-12")}
+        <span class="block min-w-0 flex-1">
         <span class="flex min-w-0 flex-wrap items-center gap-2">
           <span class="min-w-0 truncate text-lg font-semibold text-accent hover:underline">${escapeHtml(repo.name || "repository")}</span>
           <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground">${escapeHtml(visibility)}</span>
@@ -4165,6 +4485,7 @@
           <span class="inline-flex items-center gap-1.5"><span data-repo-language-dot class="h-2 w-2 rounded-full bg-primary"></span>${escapeHtml(language)}</span>
           <span class="inline-flex items-center gap-1.5"><i data-lucide="scale" class="h-3.5 w-3.5"></i>${escapeHtml(license)}</span>
           <span>Updated ${escapeHtml(formatDate(repo.updatedAt || repo.lastSync))}</span>
+        </span>
         </span>
       </a>
       <div class="grid content-center gap-3">
@@ -4247,6 +4568,7 @@
 
     window.lucide?.createIcons();
     hydrateRepoStarButtons(list);
+    hydrateNativeRepositoryLogos(list);
   }
 
   function renderSidebarRepositories(session) {
@@ -4325,9 +4647,7 @@
     return `
       <article class="overflow-hidden rounded-lg border border-border bg-card">
         <div class="flex min-w-0 items-start gap-3 px-4 py-4">
-          <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-secondary ${live ? "text-primary" : "text-muted-foreground"}">
-            <i data-lucide="${viaMirror ? "radio" : "book-marked"}" class="h-5 w-5"></i>
-          </span>
+          ${nativeRepositoryLogoMarkup(repo)}
           <div class="min-w-0 flex-1">
             <p class="text-sm text-muted-foreground">
               <a href="${escapeHtml(repoPathUrl(repo))}" class="font-semibold text-accent hover:underline">${escapeHtml(key)}</a>
@@ -4354,6 +4674,7 @@
       ? cards.join("")
       : '<div class="rounded-lg border border-border bg-card px-4 py-6 text-sm text-muted-foreground">No dashboard activity yet. Publish a repository or receive a notification to start the feed.</div>';
     window.lucide?.createIcons();
+    hydrateNativeRepositoryLogos(container);
   }
 
   function renderHomeChangelog() {
@@ -4458,6 +4779,7 @@
       : '<div class="px-4 py-8 text-sm text-muted-foreground">No repositories match this filter.</div>';
     window.lucide?.createIcons();
     hydrateRepoStarButtons(container);
+    hydrateNativeRepositoryLogos(container);
   }
 
   function renderProfileRepositoryCount(count = profileRepositoryGroups().length) {
@@ -4496,6 +4818,107 @@
     renderGlobalSearchResults();
   }
 
+  function externalRepositoryCard(repository) {
+    const logo = String(repository?.logo?.dataUrl || "");
+    const status = String(repository?.statusLabel || "External repository");
+    const provider = String(repository?.attribution?.provider || repository?.provider || "Provider");
+    const original = String(repository?.originalUrl || "");
+    const canVolunteer = Boolean(state.session?.sessionToken) &&
+      !["actively_mirrored", "archived"].includes(String(repository?.status || ""));
+    const incomplete = Array.isArray(repository?.metadataIncomplete) && repository.metadataIncomplete.length
+      ? `<p class="mt-2 text-[11px] text-amber-300">Some metadata was unavailable or rate-limited during import.</p>`
+      : "";
+    return `
+      <article class="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-start sm:px-5" data-external-repo-id="${escapeHtml(repository?.id || "")}">
+        <img src="${escapeHtml(logo)}" alt="" class="h-12 w-12 shrink-0 rounded-xl border border-border bg-secondary object-cover" />
+        <div class="min-w-0 flex-1">
+          <div class="flex flex-wrap items-center gap-2">
+            <a href="${escapeHtml(original)}" target="_blank" rel="noopener noreferrer" class="truncate font-mono text-sm font-semibold text-foreground hover:text-primary hover:underline">${escapeHtml(repository?.fullName || repository?.name || "External repository")}</a>
+            <span class="rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">${escapeHtml(status)}</span>
+            ${repository?.isPrivate ? '<span class="rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">Private · owner only</span>' : ""}
+          </div>
+          <p class="mt-1 text-xs leading-5 text-muted-foreground">${escapeHtml(repository?.metadata?.description || "No provider description.")}</p>
+          <p class="mt-2 text-[11px] leading-4 text-muted-foreground">${escapeHtml(repository?.mirrorNotice || "This external entry is not mirrored by ForkMesh.")}</p>
+          ${incomplete}
+          <div class="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+            <a href="${escapeHtml(original)}" target="_blank" rel="noopener noreferrer" class="font-medium text-primary hover:underline">Open on ${escapeHtml(provider)}</a>
+            <span aria-hidden="true">·</span>
+            <span>ForkMesh does not own or control this repository</span>
+          </div>
+        </div>
+        ${canVolunteer ? `
+          <button type="button" data-external-mirror-volunteer="${escapeHtml(repository?.id || "")}" class="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border px-3 text-xs font-semibold text-foreground hover:bg-secondary">
+            <i data-lucide="copy-plus" class="h-3.5 w-3.5"></i>
+            Volunteer to mirror
+          </button>` : ""}
+      </article>`;
+  }
+
+  function renderExternalRepositories(repositories) {
+    state.externalRepositoriesLoading = false;
+    state.externalRepositories = Array.isArray(repositories) ? repositories : [];
+    const list = $("[data-external-repo-list]");
+    const count = $("[data-external-repo-count]");
+    if (count) count.textContent = `${formatCount(state.externalRepositories.length)} external`;
+    if (!list) return;
+    list.innerHTML = state.externalRepositories.length
+      ? state.externalRepositories.map(externalRepositoryCard).join("")
+      : '<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">No external repositories or stubs have been listed yet. Use “New repository” to import one.</div>';
+    window.lucide?.createIcons();
+  }
+
+  async function loadExternalRepositories({ fresh = false } = {}) {
+    const list = $("[data-external-repo-list]");
+    if (!list) return;
+    state.externalRepositoriesLoading = true;
+    try {
+      const data = await fetchJson("/api/repository-imports", { fresh });
+      renderExternalRepositories(data.repositories);
+    } catch (_) {
+      state.externalRepositoriesLoading = false;
+      const count = $("[data-external-repo-count]");
+      if (count) count.textContent = "Unavailable";
+      list.innerHTML = '<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">External repository metadata is temporarily unavailable.</div>';
+    }
+  }
+
+  function externalMirrorNodeName() {
+    const nodes = Array.isArray(state.session?.nodes) ? state.session.nodes : [];
+    const first = nodes.find((node) => String(node?.name || node || "").trim());
+    return String(first?.name || first || state.session?.nodeName || "").trim();
+  }
+
+  async function volunteerForExternalMirror(repositoryId, button) {
+    if (!state.session?.sessionToken) {
+      setNewRepoHint("Sign in before volunteering a mirror node.", "bad");
+      return;
+    }
+    const node = externalMirrorNodeName();
+    if (!node) return;
+    if (button) button.disabled = true;
+    try {
+      const response = await fetch(
+        `/api/repository-imports/${encodeURIComponent(repositoryId)}/mirror-volunteers`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", accept: "application/json" },
+          body: JSON.stringify({ node, sessionToken: state.session.sessionToken }),
+        },
+      );
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+      await loadExternalRepositories({ fresh: true });
+    } catch (error) {
+      if (button) {
+        button.textContent = String(error?.message || "") === "eligible_owned_mirror_node_required"
+          ? "Owned mirror node required"
+          : "Could not volunteer";
+      }
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   // New-repository flow (adhoc #30). Publishing a signed catalog record and
   // running the git mirror both require the account's Ed25519 key, which lives
   // on the desktop node — the browser only holds a separate web-issue identity.
@@ -4512,6 +4935,9 @@
       $("[data-new-repo-steps]")?.classList.add("hidden");
       window.setTimeout(() => $("[data-new-repo-name]")?.focus(), 0);
       window.lucide?.createIcons();
+    } else {
+      const token = $("[data-new-repo-provider-token]");
+      if (token) token.value = "";
     }
   }
 
@@ -4529,9 +4955,25 @@
     });
     const value = $("[data-new-repo-source-value]");
     const hint = $("[data-new-repo-source-hint]");
+    const provider = source === "provider";
+    $("[data-new-repo-provider-options]")?.classList.toggle("hidden", !provider);
+    $("[data-new-repo-name-wrap]")?.classList.toggle("hidden", provider);
+    $("[data-new-repo-visibility-wrap]")?.classList.toggle("hidden", provider);
+    $("[data-new-repo-description-wrap]")?.classList.toggle("hidden", provider);
+    const name = $("[data-new-repo-name]");
+    if (name) name.required = !provider;
+    const submitLabel = $("[data-new-repo-submit-label]");
+    if (submitLabel) submitLabel.textContent = provider ? "Import metadata" : "Create & mirror";
+    if (!provider) {
+      const token = $("[data-new-repo-provider-token]");
+      if (token) token.value = "";
+    }
     if (source === "local") {
       if (value) value.placeholder = "/home/you/code/my-project";
       if (hint) hint.textContent = "The desktop node reads this local repo directly — the path never leaves your machine.";
+    } else if (provider) {
+      if (value) value.placeholder = "https://github.com/owner/repo or https://gitlab.com/group/repo";
+      if (hint) hint.textContent = "ForkMesh reads bounded metadata from the provider. Importing does not claim ownership or create a mirror.";
     } else {
       if (value) value.placeholder = "https://github.com/owner/repo.git";
       if (hint) hint.textContent = "ForkMesh clones this URL into a bare mirror you then keep in sync.";
@@ -4567,10 +5009,61 @@
     window.lucide?.createIcons();
   }
 
-  function handleNewRepoSubmit() {
-    const name = String($("[data-new-repo-name]")?.value || "").trim();
+  async function handleNewRepoSubmit() {
     const source = newRepoSource();
     const sourceValue = String($("[data-new-repo-source-value]")?.value || "").trim();
+    if (source === "provider") {
+      if (!state.session?.sessionToken) {
+        setNewRepoHint("Sign in to import a GitHub or GitLab repository.", "bad");
+        return;
+      }
+      if (!sourceValue) {
+        setNewRepoHint("Enter a GitHub or GitLab repository URL.", "bad");
+        $("[data-new-repo-source-value]")?.focus();
+        return;
+      }
+      const tokenInput = $("[data-new-repo-provider-token]");
+      const providerToken = String(tokenInput?.value || "").trim();
+      const mode = $("[data-new-repo-import-mode]")?.value === "stub" ? "stub" : "import";
+      const submit = $("[data-new-repo-submit]");
+      if (submit) submit.disabled = true;
+      setNewRepoHint("Reading provider metadata…");
+      try {
+        const response = await fetch("/api/repository-imports", {
+          method: "POST",
+          headers: { "content-type": "application/json", accept: "application/json" },
+          body: JSON.stringify({
+            sourceUrl: sourceValue,
+            providerToken,
+            mode,
+            sessionToken: state.session.sessionToken,
+          }),
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+        setNewRepoHint(
+          `${body.repository?.statusLabel || "External repository"} created. It remains separate from live mirrors.`,
+          "good",
+        );
+        await loadExternalRepositories({ fresh: true });
+      } catch (error) {
+        const code = String(error?.message || "");
+        setNewRepoHint(
+          code === "provider_rate_limited" ? "The provider rate limit was reached. Try again after its reset time."
+            : code.includes("authorization") ? "The provider rejected access. Private repositories require a valid scoped token."
+            : code === "unsupported_provider" ? "Use a github.com or gitlab.com repository URL."
+            : "Could not import provider metadata.",
+          "bad",
+        );
+      } finally {
+        // The credential is request-only: remove it from the form immediately,
+        // regardless of success or provider failure.
+        if (tokenInput) tokenInput.value = "";
+        if (submit) submit.disabled = false;
+      }
+      return;
+    }
+    const name = String($("[data-new-repo-name]")?.value || "").trim();
     const visibility = $("[data-new-repo-visibility]")?.value === "private" ? "private" : "public";
     const description = String($("[data-new-repo-description]")?.value || "").trim();
     if (!name) {
@@ -5666,7 +6159,7 @@
     try {
       const requestedAt = performance.now();
       // A live-mirror read: fetch fresh (fetchRepoJson, no-store) like every
-      // other tunnel surface (issues/pulls/releases/README), never the browser-
+      // other HTTPS data surface (issues/pulls/releases/README), never the browser-
       // cached, account-scoped fetchJson. The router round-robins browse across
       // whichever mirrors are online, so a cached copy could pin the page to a
       // node that has since gone offline — the "served by mirror" view must
@@ -6178,7 +6671,7 @@
 
   async function fetchRepoBlobs(repo, paths, options = {}) {
     // Batched file read: ONE request returns every path (repeated ?path=
-    // params); the worker fans the reads out over the live tunnel itself.
+    // params); the Worker fans the reads out over authenticated HTTPS mirrors.
     // Fetching each record as its own /blob call flooded the relay with 50+
     // parallel requests per page view and tripped the per-repo rate limit.
     // Missing/unreadable paths come back null.
@@ -6857,6 +7350,76 @@
     ];
   }
 
+  function safeFederatedUrl(value) {
+    try {
+      const url = new URL(String(value || ""));
+      return url.protocol === "https:" && !url.username && !url.password
+        ? url.href
+        : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function renderFederatedReplies(items) {
+    if (!items.length) {
+      return '<p class="px-4 py-4 text-sm text-muted-foreground">No remote ActivityPub replies yet.</p>';
+    }
+    return items.map((item) => {
+      const lifecycle = String(item.lifecycle || (item.tombstone ? "tombstoned" : item.moderated ? "moderated" : item.edited ? "edited" : "active"));
+      const author = item.authorName || item.author || "remote participant";
+      const instance = item.sourceInstance || item.provenance?.instance || "";
+      const software = item.sourceSoftware || item.provenance?.software || "ActivityPub";
+      const backlink = safeFederatedUrl(item.url || item.backlink || item.remoteId);
+      const depth = Math.min(8, Math.max(0, Number(item.depth) || 0));
+      const status = lifecycle === "tombstoned"
+        ? "Deleted on the remote instance"
+        : lifecycle === "moderated"
+          ? "Hidden by remote moderation"
+          : lifecycle === "awaiting-redelivery"
+            ? "Restored remotely; awaiting a safe redelivery"
+            : "";
+      const body = status || String(item.body || "");
+      const edited = lifecycle === "edited" ? '<span class="text-[10px] text-muted-foreground">(edited)</span>' : "";
+      const backlinkHtml = backlink
+        ? `<a href="${escapeHtml(backlink)}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 text-primary hover:underline">Open original <i data-lucide="external-link" class="h-3 w-3"></i></a>`
+        : "";
+      return `
+        <article class="border-t border-border px-4 py-3 first:border-t-0" style="margin-left:${depth * 1.25}rem" data-federated-reply data-native-event="false">
+          <div class="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+            <span class="font-semibold text-foreground">${escapeHtml(author)} ${edited}</span>
+            <span class="font-mono text-muted-foreground">${escapeHtml(software)}${instance ? ` · ${escapeHtml(instance)}` : ""}</span>
+          </div>
+          <p class="mt-2 whitespace-pre-wrap text-sm leading-6 ${status ? "italic text-muted-foreground" : "text-foreground"}">${escapeHtml(body)}</p>
+          <div class="mt-2 flex flex-wrap items-center gap-3 text-[10px] text-muted-foreground">
+            <span>Remote ActivityPub reply · not a signed ForkMesh event</span>
+            ${backlinkHtml}
+          </div>
+        </article>`;
+    }).join("");
+  }
+
+  async function loadFederatedReplies(repo, kind, number, root) {
+    const container = root?.querySelector?.("[data-repo-federated-replies]");
+    if (!container || !repo || !number) return;
+    const apiKind = kind === "issues" ? "issue" : kind === "pulls" ? "pull" : "discussion";
+    container.innerHTML = '<p class="px-4 py-4 text-sm text-muted-foreground">Loading remote ActivityPub replies…</p>';
+    try {
+      const response = await fetch(
+        `${repoApiBase(repo)}/fedi-comments?kind=${encodeURIComponent(apiKind)}&number=${encodeURIComponent(number)}`,
+        { headers: { accept: "application/json" } },
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+      const comments = Array.isArray(data.comments) ? data.comments : Array.isArray(data.items) ? data.items : [];
+      container.innerHTML = renderFederatedReplies(comments);
+    } catch (_) {
+      container.innerHTML = '<p class="px-4 py-4 text-sm text-muted-foreground">Remote replies are currently unavailable.</p>';
+    } finally {
+      window.lucide?.createIcons();
+    }
+  }
+
   function renderRepoRecordDetail(repo, kind, number, parsed) {
     const options = parsed.options || {};
     const config = repoCollectionConfig[kind] || repoCollectionConfig.issues;
@@ -6954,6 +7517,13 @@
                 ${issueTimelineSection}
                 ${pullConversationSection}
               </section>`}
+            <section class="overflow-hidden rounded-lg border border-border" data-repo-federated-thread>
+              <div class="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-secondary/50 px-4 py-3">
+                <span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Fediverse thread</span>
+                <span class="text-[10px] text-muted-foreground">Remote provenance · separate from signed native history</span>
+              </div>
+              <div data-repo-federated-replies></div>
+            </section>
             ${pullFilesSection}
           </div>
           <aside data-repo-record-sidebar class="min-w-0 text-xs">
@@ -6983,7 +7553,7 @@
     const pendingItem = kind === "issues"
       ? state.issuesView.items.find((item) => item.pending && item.localId === number)
       : null;
-    if (pendingItem) {
+      if (pendingItem) {
       container.innerHTML = renderRepoRecordDetail(repo, kind, number, {
         values: { title: pendingItem.title, status: pendingItem.status, authorName: pendingItem.author },
         body: pendingItem.body,
@@ -7028,6 +7598,7 @@
       if (kind === "discussions") parsed.discussionConversation = await loadRepoDiscussionConversation(repo, number);
       state.repoRecordDetail = { repo, kind, number, parsed };
       container.innerHTML = renderRepoRecordDetail(repo, kind, number, parsed);
+      loadFederatedReplies(repo, kind, number, container);
     } catch (_) {
       container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">This ${escapeHtml(config.itemLabel)} is unavailable until a live desktop host serves ${escapeHtml(recordPath)}.</div>`;
     } finally {
@@ -8083,6 +8654,135 @@
     return formatDate(ts);
   }
 
+  function setRepoLogoSuggestionStatus(message, tone = "") {
+    const target = $("[data-repo-logo-suggestion-status]");
+    if (!target) return;
+    target.textContent = message || "";
+    target.className = `text-[11px] ${
+      tone === "bad"
+        ? "text-destructive"
+        : tone === "good"
+          ? "text-primary"
+          : "text-muted-foreground"
+    }`;
+  }
+
+  async function loadRepoLogoSuggestions(repo) {
+    const target = $("[data-repo-logo-suggestions]");
+    if (!target || repo.isPrivate) return;
+    try {
+      const headers = {};
+      if (state.session?.sessionToken) {
+        headers.Authorization = `Bearer ${state.session.sessionToken}`;
+      }
+      const response = await fetch(`${repoApiBase(repo)}/logo-suggestions`, {
+        headers,
+        cache: "no-store",
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || !repoAboutStillCurrent(repo)) return;
+      const suggestions = Array.isArray(body?.suggestions)
+        ? body.suggestions
+        : [];
+      const mayReview = sessionOwnsRepo(repo) || Boolean(state.session?.isAdmin);
+      target.innerHTML = suggestions.length
+        ? suggestions
+            .map((suggestion) => {
+              const image = String(suggestion?.image?.dataUrl || "");
+              const id = String(suggestion?.id || "");
+              const pending = suggestion?.status === "pending";
+              return `<article class="flex items-center gap-2 rounded-md border border-border p-2">
+                ${
+                  image.startsWith("data:image/")
+                    ? `<img src="${escapeHtml(image)}" alt="" class="h-10 w-10 rounded-md border border-border object-cover" />`
+                    : ""
+                }
+                <div class="min-w-0 flex-1 text-[11px]">
+                  <strong class="block truncate text-foreground">${escapeHtml(
+                    suggestion?.official
+                      ? "Official logo"
+                      : `${suggestion?.status || "pending"} suggestion`,
+                  )}</strong>
+                  <span class="block truncate text-muted-foreground">by ${escapeHtml(
+                    suggestion?.proposer || "community member",
+                  )}${suggestion?.aiGenerated ? " · AI-generated" : ""}</span>
+                </div>
+                ${
+                  mayReview && pending
+                    ? `<span class="inline-flex gap-1">
+                        <button type="button" data-repo-logo-review="approve" data-repo-logo-suggestion-id="${escapeHtml(
+                          id,
+                        )}" class="rounded border border-border px-2 py-1 text-[10px] text-foreground hover:bg-secondary">Approve</button>
+                        <button type="button" data-repo-logo-review="reject" data-repo-logo-suggestion-id="${escapeHtml(
+                          id,
+                        )}" class="rounded border border-border px-2 py-1 text-[10px] text-muted-foreground hover:bg-secondary">Reject</button>
+                      </span>`
+                    : ""
+                }
+              </article>`;
+            })
+            .join("")
+        : `<p class="text-[11px] text-muted-foreground">No community suggestions yet.</p>`;
+    } catch (_) {
+      target.innerHTML = `<p class="text-[11px] text-muted-foreground">Suggestions are temporarily unavailable.</p>`;
+    }
+  }
+
+  async function submitRepoLogoSuggestion(repo, form) {
+    if (!state.session?.sessionToken) {
+      throw new Error("sign_in_required");
+    }
+    const file = form.querySelector("[data-repo-logo-suggestion-file]")?.files?.[0];
+    if (!file || file.size > 256 * 1024) throw new Error("logo_too_large");
+    if (!form.querySelector("[data-repo-logo-suggestion-rights]")?.checked) {
+      throw new Error("rights_required");
+    }
+    const imageData = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(new Error("image_read_failed"));
+      reader.readAsDataURL(file);
+    });
+    const response = await fetch(`${repoApiBase(repo)}/logo-suggestions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionToken: state.session.sessionToken,
+        imageData,
+        rightsConfirmed: true,
+        attribution: String(
+          form.querySelector("[data-repo-logo-suggestion-attribution]")?.value ||
+            "",
+        ).trim(),
+        aiGenerated: Boolean(
+          form.querySelector("[data-repo-logo-suggestion-ai]")?.checked,
+        ),
+      }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body?.error || "logo_suggestion_failed");
+    form.reset();
+    await loadRepoLogoSuggestions(repo);
+  }
+
+  async function reviewRepoLogoSuggestion(repo, suggestionId, action) {
+    const response = await fetch(`${repoApiBase(repo)}/logo-suggestions`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionToken: state.session?.sessionToken || "",
+        suggestionId,
+        action,
+      }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body?.error || "logo_review_failed");
+    await Promise.all([
+      loadRepoLogoSuggestions(repo),
+      loadRepoFediverse(repo),
+    ]);
+  }
+
   async function loadRepoFediverse(repo) {
     // Public branding + follower count from the relay (GET /about). Fills the
     // Watch button count, the popover, and the social badge header.
@@ -8157,7 +8857,38 @@
       // .forkmesh/info.json (loadRepoAboutInfo) overrides it when the live
       // mirror is reachable.
       if (body.website) applyRepoAboutWebsite(body.website);
+      loadRepoLogoSuggestions(repo);
     } catch (_) { /* fediverse card is an adornment, never an error */ }
+  }
+
+  async function loadRepoDigestPreview(repo) {
+    const target = $("[data-repo-digest-preview]");
+    if (!target || !sessionOwnsRepo(repo) || repo.isPrivate) return;
+    target.textContent = "Loading preview…";
+    try {
+      const token = state.session?.sessionToken || "";
+      const response = await fetch(
+        `${repoApiBase(repo)}/fediverse-digest`, {
+          headers: {
+            accept: "application/json",
+            ...(token ? { authorization: "Bearer " + token } : {}),
+          },
+          cache: "no-store",
+        });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || !body?.ok) {
+        throw new Error(body?.error || "preview_failed");
+      }
+      if (!repoAboutStillCurrent(repo)) return;
+      const text = String(body.preview?.text || "").trim();
+      target.textContent = text || "No meaningful public updates are queued.";
+      target.dataset.pending = String(Number(body.pending || 0));
+      target.dataset.nextPublishAt = String(Number(body.nextPublishAt || 0));
+    } catch (_) {
+      if (repoAboutStillCurrent(repo)) {
+        target.textContent = "Digest preview is unavailable.";
+      }
+    }
   }
 
   async function loadRepoAboutInfo(repo) {
@@ -8415,6 +9146,8 @@
             a1: at + childSpan,
             color: colors.get(child) || REPO_SIZEMAP_GRAY,
             hasChildren: Array.isArray(child.children) && child.children.length > 0,
+            isFile: child.type === "file" && typeof child.path === "string",
+            filePath: child.type === "file" ? String(child.path || "") : "",
           });
           walk(child, depth + 1, at, childSpan, nodes);
         }
@@ -8451,7 +9184,11 @@
       const r1 = r0 + ringWidth;
       parts.push(
         `<path data-seg="${i}" d="${repoSizeMapArc(c, r0, r1, seg.a0, seg.a1)}" fill="${seg.color}" ` +
-        `stroke="${gap}" stroke-width="2"${opts.interactive ? ' class="cursor-pointer"' : ""}>` +
+        `stroke="${gap}" stroke-width="2"${opts.interactive
+          ? ` class="cursor-pointer" tabindex="0" role="button" aria-label="${escapeHtml(
+              `${seg.isFile ? "Open file" : "Zoom directory"} ${seg.path}`,
+            )}"`
+          : ""}>` +
         (opts.interactive ? "" : `<title>${escapeHtml(`${seg.path} — ${formatSize(seg.node.size)}`)}</title>`) +
         `</path>`);
     });
@@ -8476,7 +9213,7 @@
     }
     // Center hub: a transparent circle catches zoom-out clicks over the whole
     // hole; the two text lines ride on top with pointer events off.
-    parts.push(`<circle data-sizemap-center="1" cx="${c}" cy="${c}" r="${hole - 2}" fill="transparent"${opts.canGoUp ? ' class="cursor-pointer"' : ""}></circle>`);
+    parts.push(`<circle data-sizemap-center="1" cx="${c}" cy="${c}" r="${hole - 2}" fill="transparent"${opts.canGoUp ? ' class="cursor-pointer" tabindex="0" role="button" aria-label="Zoom out one directory"' : ""}></circle>`);
     const title = String(opts.centerTitle || "");
     const shownTitle = title.length > 16 ? `${title.slice(0, 15)}…` : title;
     parts.push(
@@ -8540,7 +9277,7 @@
         <div data-sizemap-chart class="mx-auto max-w-xl"></div>
         <div data-sizemap-tip class="pointer-events-none absolute z-20 hidden max-w-xs rounded-md border border-border bg-popover px-2.5 py-1.5 font-mono text-[11px] text-foreground shadow-lg"></div>
       </div>
-      <p class="mt-3 border-t border-border pt-2 text-[11px] text-muted-foreground">Click a directory to zoom in · click the center to zoom out · a ring's unfilled span is the files sitting directly in that directory.</p>`;
+      <p class="mt-3 border-t border-border pt-2 text-[11px] text-muted-foreground">Activate a directory to zoom in · activate a leaf file to open it at the selected ref · activate the center to zoom out. Pointer, touch, Enter, and Space are supported.</p>`;
     mountRepoSizeMapExplorer({
       repo,
       root,
@@ -8607,21 +9344,35 @@
       window.lucide?.createIcons();
     };
 
-    chart.addEventListener("click", (event) => {
-      if (event.target.closest("[data-sizemap-center]")) {
+    const activateSizeMapTarget = (target) => {
+      if (target?.closest?.("[data-sizemap-center]")) {
         if (trail.length > 1) {
           trail = trail.slice(0, -1);
           render();
         }
         return;
       }
-      const hit = event.target.closest("[data-seg]");
+      const hit = target?.closest?.("[data-seg]");
       const seg = hit ? segments[Number(hit.dataset.seg)] : null;
+      if (seg?.isFile && seg.filePath) {
+        tip.classList.add("hidden");
+        loadRepositoryBlob(repo, seg.filePath);
+        return;
+      }
       if (seg?.hasChildren) {
         trail = [...trail, ...seg.nodes];
         tip.classList.add("hidden");
         render();
       }
+    };
+    chart.addEventListener("click", (event) => {
+      activateSizeMapTarget(event.target);
+    });
+    chart.addEventListener("keydown", (event) => {
+      if (!["Enter", " "].includes(event.key)) return;
+      if (!event.target.closest("[data-seg],[data-sizemap-center]")) return;
+      event.preventDefault();
+      activateSizeMapTarget(event.target);
     });
     chart.addEventListener("mousemove", (event) => {
       const hit = event.target.closest("[data-seg]");
@@ -8763,39 +9514,18 @@
       </button>`;
   }
 
-  // Detail page (adhoc #259): live transcript pane + a prompt area to interact
-  // with one agent. The wrapper carries data-repo-agent-id so the shared prompt
-  // submit / hint plumbing resolves the same way it did for an inline list row.
+  // Agent plaintext is intentionally unavailable in the browser.  The hybrid
+  // recipient private key lives only in the owner's desktop vault, so even a
+  // stale legacy row must not reactivate browser transcript/prompt surfaces.
   function renderRepoAgentDetail(agent) {
-    const promptable = repoAgentsCanPrompt(agent.status);
-    const issueLabel = repoAgentIssueLabel(agent);
     return `
       <div data-repo-agent-detail data-repo-agent-id="${escapeHtml(String(agent.id ?? ""))}" class="grid gap-3 px-4 py-3 text-xs">
-        <div class="flex flex-wrap items-center gap-2">
-          <button type="button" data-repo-agent-back class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="arrow-left" class="h-3.5 w-3.5"></i>Agents</button>
-          <span data-repo-agent-status class="rounded-full border border-border px-2 py-0.5 font-mono ${repoAgentStatusTone(agent.status)}">${escapeHtml(agent.status || "unknown")}</span>
-          ${issueLabel ? `<span class="min-w-0 truncate font-medium text-foreground">${escapeHtml(issueLabel)}</span>` : ""}
-          <span class="ml-auto font-mono text-muted-foreground">${escapeHtml(agent.model || "")}</span>
+        <div class="flex items-center gap-2 font-medium text-foreground">
+          <i data-lucide="shield-check" class="h-4 w-4 text-primary"></i>
+          Owner-device encrypted
         </div>
-        <div class="flex flex-wrap items-center gap-3 text-muted-foreground">
-          ${agent.provider ? `<span>${escapeHtml(agent.provider)}</span>` : ""}
-          <span>${formatCount(agent.numTurns)} turns</span>
-          ${agent.durationMs ? `<span>${escapeHtml(formatServeSpeed(agent.durationMs))}</span>` : ""}
-          <span>${escapeHtml(formatUsd(agent.costUsd))}</span>
-          ${agent.branchName ? `<span class="font-mono">${escapeHtml(agent.branchName)}</span>` : ""}
-        </div>
-        ${agent.lastError ? `<div class="text-destructive">${escapeHtml(agent.lastError)}</div>` : ""}
-        <div class="flex items-center gap-2 text-[11px] font-medium text-muted-foreground">
-          <i data-lucide="terminal" class="h-3.5 w-3.5"></i>Live transcript
-        </div>
-        <pre data-repo-agent-transcript class="max-h-[420px] min-h-[160px] overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-secondary/40 p-3 font-mono text-[11px] leading-relaxed text-foreground">Loading transcript…</pre>
-        ${promptable ? `
-        <form data-repo-agent-prompt-form class="flex items-center gap-2">
-          <input data-repo-agent-prompt-input type="text" maxlength="8000" placeholder="Send a message to this agent" class="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary" />
-          <button type="submit" data-repo-agent-prompt-submit class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-3.5 w-3.5"></i>Send</button>
-        </form>
-        <span data-repo-agent-prompt-hint class="text-[11px] text-muted-foreground"></span>`
-          : '<div class="text-[11px] text-muted-foreground">This session has finished - you can no longer send it messages.</div>'}
+        <p class="leading-5 text-muted-foreground">This session, its transcript, and its prompts can be opened only by the owner's ForkMesh desktop key. The browser and relay do not have that key.</p>
+        <a href="/desktop" class="inline-flex h-8 w-fit items-center gap-1.5 rounded-md bg-primary px-3 font-medium text-primary-foreground hover:bg-primary/90"><i data-lucide="monitor-down" class="h-3.5 w-3.5"></i>Open desktop downloads</a>
       </div>`;
   }
 
@@ -9016,197 +9746,177 @@
     renderRepoAgentsList(state.agentsView.agents);
   }
 
-  // Fetch + render one agent's transcript tail. Preserves the reader's scroll
-  // position unless they're already pinned to the bottom, in which case it keeps
-  // following the tail as new output streams in.
+  // The browser intentionally has no owner recipient private key.  Never fetch
+  // a legacy plaintext transcript or pretend an opaque envelope is readable.
   async function loadRepoAgentTranscript(repo, agentId) {
     const pre = $("[data-repo-agent-transcript]");
-    if (!pre || !repo) return;
-    try {
-      const response = await fetch(`${repoApiBase(repo)}/agents/${encodeURIComponent(agentId)}/transcript`, {
-        method: "POST",
-        headers: { "content-type": "application/json", accept: "application/json" },
-        body: JSON.stringify({ ownerAccount: state.session?.nodeName || "", sessionToken: state.session?.sessionToken || "" }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
-      // Only touch the pane if it's still the open agent - a slow response that
-      // lands after the user navigated away must not clobber the new view.
-      if (String(state.agentsView.selectedAgentId ?? "") !== String(agentId)) return;
-      const current = $("[data-repo-agent-transcript]");
-      if (!current) return;
-      const atBottom = current.scrollHeight - current.scrollTop - current.clientHeight < 24;
-      const text = String(data.transcript || "");
-      current.textContent = text || "No transcript yet - waiting for the agent to produce output.";
-      if (atBottom) current.scrollTop = current.scrollHeight;
-      const statusEl = $("[data-repo-agent-status]");
-      if (statusEl && data.status) {
-        statusEl.textContent = data.status;
-        statusEl.className = `rounded-full border border-border px-2 py-0.5 font-mono ${repoAgentStatusTone(data.status)}`;
-      }
-    } catch (error) {
-      const current = $("[data-repo-agent-transcript]");
-      if (current && (!current.textContent.trim().length || current.textContent === "Loading transcript…")) {
-        current.textContent = "Could not load the transcript. Retrying…";
-      }
-    }
+    if (!pre || !repo || !agentId) return;
+    pre.textContent =
+      "Open this transcript in the ForkMesh desktop app on the owner device.";
   }
 
   async function requestRepoAgentsList(repo) {
-    const response = await fetch(`${repoApiBase(repo)}/agents/list`, {
-      method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify({
-        ownerAccount: state.session?.nodeName || "",
-        sessionToken: state.session?.sessionToken || "",
-      }),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || data.ok === false) {
-      throw new Error(data.error || `HTTP ${response.status}`);
-    }
-    return Array.isArray(data.agents) ? data.agents : [];
+    if (!repo) return [];
+    throw new Error("owner_device_only");
   }
 
   async function loadRepoAgents(repo) {
     const container = $("[data-repo-agents]");
     if (!container || !repo) return;
-    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading agent sessions...")}</div>`;
+    state.agentsView.agents = [];
+    state.agentsView.selectedAgentId = null;
+    container.innerHTML = `
+      <div class="grid gap-3 px-4 py-4 text-sm text-muted-foreground">
+        <div class="flex items-center gap-2 font-medium text-foreground"><i data-lucide="shield-check" class="h-4 w-4 text-primary"></i>Owner-device encrypted agents</div>
+        <p class="max-w-2xl leading-6">Agent session snapshots, transcripts, results, and prompts are encrypted to a hybrid key whose private half stays in the owner's desktop vault. This browser cannot decrypt them, and ForkMesh administrators do not receive an override.</p>
+        <a href="/desktop" class="inline-flex h-9 w-fit items-center gap-2 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90"><i data-lucide="monitor-down" class="h-4 w-4"></i>Open desktop downloads</a>
+      </div>`;
+    window.lucide?.createIcons();
+  }
+
+  function workshopAgentDeepLink(repo) {
+    if (!repo || !sessionCanAssignAgent(repo)) return null;
+    const params = new URLSearchParams(location.search || "");
+    const sessionId = String(params.get("workshopSession") || "").toLowerCase();
+    const resultId = String(params.get("workshopResult") || "").toLowerCase();
+    const runId = String(params.get("run") || "");
+    const commit = String(params.get("commit") || "").toLowerCase();
+    if (
+      !/^[a-f0-9]{32}$/.test(sessionId) ||
+      !/^[a-f0-9]{32}$/.test(resultId) ||
+      !/^[A-Za-z0-9_-]{16,80}$/.test(runId) ||
+      !/^[a-f0-9]{40,64}$/.test(commit)
+    ) {
+      return null;
+    }
+    return { sessionId, resultId, runId, commit };
+  }
+
+  function setWorkshopAgentContext(message, tone = "") {
+    const target = $("[data-workshop-agent-context]");
+    if (!target) return;
+    target.hidden = !message;
+    target.textContent = message || "";
+    target.className = `border-b border-border px-4 py-3 text-xs ${
+      tone === "bad"
+        ? "text-destructive"
+        : tone === "good"
+          ? "text-primary"
+          : "text-muted-foreground"
+    }`;
+  }
+
+  function workshopAgentPrompt(savedSession, result) {
+    const report =
+      result?.report && typeof result.report === "object" ? result.report : {};
+    const cleanItems = (value, limit) =>
+      (Array.isArray(value) ? value : [])
+        .map((item) =>
+          String(item || "")
+            .replace(/[\u0000-\u001f\u007f]/g, " ")
+            .replace(/\s+/g, " ")
+            .trim(),
+        )
+        .filter(Boolean)
+        .slice(0, limit);
+    const findings = cleanItems(report.findings, 20);
+    const recommendations = cleanItems(report.recommendations, 12);
+    const references = cleanItems(report.references, 30);
+    return [
+      "Authorized workshop context",
+      `Repository: ${String(savedSession.repository || "")}`,
+      `Commit: ${String(savedSession.commit || "")}`,
+      `Run: ${String(savedSession.runId || "")}`,
+      `Workshop: ${String(savedSession.workshopType || "")}`,
+      `Saved result: ${String(result.id || "")}`,
+      "",
+      "Findings to verify:",
+      ...(findings.length ? findings.map((item) => `- ${item}`) : ["- No candidate findings were saved."]),
+      "",
+      "Recommendations:",
+      ...(recommendations.length
+        ? recommendations.map((item) => `- ${item}`)
+        : ["- Re-run the bounded analysis and verify the referenced code."]),
+      "",
+      "Supporting file references:",
+      ...(references.length
+        ? references.map((item) => `- ${item}`)
+        : ["- No supporting paths were saved."]),
+      "",
+      "Continue this analysis only against the repository and exact commit above. Treat prior findings as recommendations, not guaranteed facts.",
+    ]
+      .join("\n")
+      .slice(0, 8000);
+  }
+
+  async function consumeWorkshopAgentDeepLink(repo, deepLink) {
+    if (!deepLink || !sessionCanAssignAgent(repo)) return;
+    setWorkshopAgentContext("Verifying the authorized workshop result…");
     try {
-      const agents = await requestRepoAgentsList(repo);
-      state.agentsView.agents = agents;
-      renderRepoAgentsList(agents);
-    } catch (error) {
-      const code = String(error?.message || "");
-      container.innerHTML = `<div class="px-4 py-3 text-sm text-destructive">${
-        code === "not_authorized" ? "You don't have permission to view agents for this repository."
-          : "Could not load agent sessions. Please try again."}</div>`;
-      window.lucide?.createIcons();
+      const payload = await fetchJson(
+        `/api/world/workshops/${encodeURIComponent(deepLink.sessionId)}`,
+        { fresh: true },
+      );
+      const savedSession = payload?.session;
+      const result = Array.isArray(savedSession?.results)
+        ? savedSession.results.find((item) => item?.id === deepLink.resultId)
+        : null;
+      if (
+        !savedSession ||
+        !repoMatchesKey(repo, savedSession?.repository) ||
+        savedSession?.runId !== deepLink.runId ||
+        savedSession?.commit !== deepLink.commit ||
+        result?.runId !== savedSession?.runId ||
+        result?.commit !== savedSession?.commit
+      ) {
+        throw new Error("workshop_scope_mismatch");
+      }
+      setAgentModalOpen(true);
+      const modal = $("#agentModal");
+      const repoSelect = modal?.querySelector("[data-agent-modal-repo]");
+      const prompt = modal?.querySelector("[data-repo-agent-new-input]");
+      const hint = modal?.querySelector("[data-repo-agent-new-hint]");
+      if (repoSelect) repoSelect.value = repoKey(repo);
+      if (prompt) prompt.value = workshopAgentPrompt(savedSession, result);
+      if (hint) {
+        hint.textContent =
+          "Verified repository, run, result, and commit. Review the prompt before starting an agent.";
+        hint.className = "text-[11px] text-primary";
+      }
+      setWorkshopAgentContext(
+        `Authorized workshop context loaded for commit ${String(
+          savedSession.commit || "",
+        ).slice(0, 12)}. No agent has been started.`,
+        "good",
+      );
+    } catch (_) {
+      setWorkshopAgentContext(
+        "Workshop context could not be verified for this repository. No agent was started.",
+        "bad",
+      );
     }
   }
 
 
   async function handleRepoAgentPromptSubmit(repo, form) {
-    // The prompt form now lives inside the detail page (adhoc #259); resolve the
-    // agent id from the nearest element carrying it (detail wrapper or, for any
-    // legacy inline row, the row itself).
-    const row = form.closest("[data-repo-agent-id]");
-    const agentId = row?.dataset.repoAgentId || "";
-    const input = form.querySelector("[data-repo-agent-prompt-input]");
-    const submit = form.querySelector("[data-repo-agent-prompt-submit]");
-    const hint = row?.querySelector("[data-repo-agent-prompt-hint]");
-    const setHint = (text, tone) => {
-      if (!hint) return;
-      hint.className = `text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
-      hint.textContent = text;
-    };
-    const text = String(input?.value || "").trim();
-    if (!agentId) return;
-    if (!text) {
-      setHint("Write a message before sending.", "bad");
-      return;
-    }
-    if (submit) submit.disabled = true;
-    setHint("Sending...");
-    try {
-      const response = await fetch(`${repoApiBase(repo)}/agents/${encodeURIComponent(agentId)}/prompt`, {
-        method: "POST",
-        headers: { "content-type": "application/json", accept: "application/json" },
-        body: JSON.stringify({
-          ownerAccount: state.session?.nodeName || "",
-          sessionToken: state.session?.sessionToken || "",
-          text,
-        }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || data.ok === false) {
-        throw new Error(data.error || `HTTP ${response.status}`);
-      }
-      if (input) input.value = "";
-      setHint("Sent to the agent.", "good");
-      loadRepoAgentTranscript(repo, agentId);
-    } catch (error) {
-      const code = String(error?.message || "");
-      setHint(
-        code === "text_required" ? "Write a message before sending."
-          : code === "text_too_long" ? "Message is too long."
-          : code === "prompt_queue_full" ? "Too many pending messages for this repository - try again shortly."
-          : code === "not_authorized" ? "You don't have permission to send messages."
-            : "Could not send the message. Please try again.",
-        "bad");
-    } finally {
-      if (submit) submit.disabled = false;
+    void repo;
+    const hint = form?.querySelector("[data-repo-agent-prompt-hint]");
+    if (hint) {
+      hint.className = "text-[11px] text-muted-foreground";
+      hint.textContent =
+        "Send prompts from the ForkMesh desktop app; this browser has no owner encryption key.";
     }
   }
 
-  // Header-modal composer: queue a "new agent" prompt for the picked repo
-  // (adhoc #266, moved into the modal by adhoc #62). Reuses the per-agent
-  // prompt endpoint with the "new" sentinel agent id, which the owner's node
-  // turns into a fresh ad-hoc agent run on drain.
+  // Kept as a defensive no-op for stale cached markup.  The current dashboard
+  // renders an owner-device information panel instead of a browser prompt form.
   async function handleRepoAgentNewSubmit(repo, form) {
-    const input = form.querySelector("[data-repo-agent-new-input]");
-    const providerSelect = form.querySelector("[data-repo-agent-new-provider]");
-    const modelSelect = form.querySelector("[data-repo-agent-new-model]");
-    const submit = form.querySelector("[data-repo-agent-new-submit]");
-    const hint = form.querySelector("[data-repo-agent-new-hint]");
-    const setHint = (text, tone) => {
-      if (!hint) return;
-      hint.className = `text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
-      hint.textContent = text;
-    };
-    if (!repo) {
-      setHint("Pick a repository you own to start an agent.", "bad");
-      return;
-    }
-    const text = String(input?.value || "").trim();
-    if (!text) {
-      setHint("Enter a prompt to start an agent.", "bad");
-      return;
-    }
-    // Pasted/attached screenshots (adhoc #78) ride along as data: URLs.
-    const images = agentModalImages(form).map((img) => img.dataUrl).filter(Boolean);
-    if (submit) submit.disabled = true;
-    setHint("Starting…");
-    try {
-      const response = await fetch(`${repoApiBase(repo)}/agents/new/prompt`, {
-        method: "POST",
-        headers: { "content-type": "application/json", accept: "application/json" },
-        body: JSON.stringify({
-          ownerAccount: state.session?.nodeName || "",
-          sessionToken: state.session?.sessionToken || "",
-          text,
-          provider: String(providerSelect?.value || ""),
-          model: String(modelSelect?.value || ""),
-          images,
-        }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || data.ok === false) {
-        throw new Error(data.error || `HTTP ${response.status}`);
-      }
-      if (input) input.value = "";
-      form._pendingAgentImages = [];
-      renderAgentModalChips(form);
-      setHint("Sent - the node will start a new agent shortly.", "good");
-      // Refresh the Agents tab only when it's showing the repo we just
-      // prompted - the modal can target any owned repo from any page.
-      if (state.activeRepoTab === "agents" && state.selectedRepo && repoKey(state.selectedRepo).toLowerCase() === repoKey(repo).toLowerCase()) {
-        loadRepoAgents(repo);
-      }
-      // Close the modal now that the prompt is queued (adhoc #80).
-      setAgentModalOpen(false);
-    } catch (error) {
-      const code = String(error?.message || "");
-      setHint(
-        code === "text_required" ? "Enter a prompt to start an agent."
-          : code === "text_too_long" ? "Prompt is too long."
-          : code === "prompt_queue_full" ? "Too many pending prompts for this repository - try again shortly."
-          : code === "image_too_large" || code === "images_too_large" ? "The attached screenshot is too large - remove or shrink it."
-          : code === "not_authorized" ? "You don't have permission to start agents."
-            : "Could not start the agent. Please try again.",
-        "bad");
-    } finally {
-      if (submit) submit.disabled = false;
+    void repo;
+    const hint = form?.querySelector("[data-repo-agent-new-hint]");
+    if (hint) {
+      hint.className = "text-[11px] text-muted-foreground";
+      hint.textContent =
+        "Start agents from the owner device so no plaintext prompt crosses the relay.";
     }
   }
   function openIssueCompose(repo) {
@@ -10638,6 +11348,11 @@
   function renderRepoDetail(repo) {
     const detail = $("[data-repo-detail]");
     if (!detail || !repo) return;
+    // Capture the signed-in participant's workshop continuation parameters
+    // before navigateHistory removes the query string from the canonical repo
+    // URL. The consumer independently verifies repository, run, result, and
+    // commit against the encrypted workshop record before preparing a prompt.
+    const workshopDeepLink = workshopAgentDeepLink(repo);
     state.selectedRepo = repo;
     state.repoCollectionPages = { issues: 1, pulls: 1 };
     state.repoMirrors = [];
@@ -10861,7 +11576,7 @@
             <section data-dashboard-repo-tab-panel="insights" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-no-axes-combined" class="h-3.5 w-3.5 text-muted-foreground"></i>Insights</span><span class="font-mono text-[10px] text-muted-foreground">contributors and activity</span></div><div data-repo-insights></div></div></section>
             <section data-dashboard-repo-tab-panel="sizemap" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-pie" class="h-3.5 w-3.5 text-primary"></i>Size map</span><span class="font-mono text-[10px] text-muted-foreground">directory sizes · default branch</span></div><div data-repo-sizemap class="p-4"></div></div></section>
             <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">live host health</span></div><div data-mirror-request hidden class="border-b border-border px-4 py-3"><label class="mb-1.5 block text-[11px] font-medium text-foreground">Ask a node to mirror this repo</label><div class="flex items-center gap-2"><input data-mirror-request-target type="text" autocomplete="off" spellcheck="false" placeholder="node name" class="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" /><button type="button" data-mirror-request-send class="h-8 shrink-0 rounded-md border border-border bg-secondary px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary/70">Ask to mirror</button></div><p data-mirror-request-hint class="mt-1.5 text-[11px] text-muted-foreground">They get a notification; if they accept, their node starts mirroring your repo.</p></div><div data-repo-mirrors></div></div></section>
-            ${canSeeAgentsTab ? `<section data-dashboard-repo-tab-panel="agents" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Agents</span><button type="button" data-repo-agents-refresh class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button></div><div data-repo-agents></div></div></section>` : ""}
+            ${canSeeAgentsTab ? `<section data-dashboard-repo-tab-panel="agents" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Agents</span><button type="button" data-repo-agents-refresh class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button></div><div data-workshop-agent-context hidden></div><div data-repo-agents></div></div></section>` : ""}
           </div>
           <aside data-repo-about data-repo-about-rail class="min-w-0 rounded-lg border border-border bg-background p-4">
             ${repo.isPrivate ? "" : `
@@ -10901,8 +11616,16 @@
               <fieldset class="grid gap-1.5 rounded-md border border-border p-2 text-[11px] text-muted-foreground">
                 <legend class="px-1 text-[10px] font-semibold uppercase tracking-wide">ActivityPub federation</legend>
                 <label class="inline-flex items-start gap-1.5"><input data-repo-ap-federate type="checkbox" class="mt-0.5 h-3 w-3" checked />Federate this repository (fediverse actor and handle)</label>
-                <label class="inline-flex items-start gap-1.5"><input data-repo-ap-broadcast type="checkbox" class="mt-0.5 h-3 w-3" checked />Post new issues, pull requests, discussions and releases to followers</label>
+                <label class="inline-flex items-start gap-1.5"><input data-repo-ap-broadcast type="checkbox" class="mt-0.5 h-3 w-3" checked />Include meaningful public updates in one automated digest at most every 24 hours</label>
                 <label class="inline-flex items-start gap-1.5"><input data-repo-ap-comments type="checkbox" class="mt-0.5 h-3 w-3" checked />Accept fediverse replies as federated comments</label>
+                <div class="mt-1 rounded-md border border-border bg-secondary/40 p-2">
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="font-semibold text-foreground">Daily digest preview</span>
+                    <button type="button" data-repo-digest-preview-refresh class="rounded-md border border-border px-2 py-1 text-[10px] font-semibold text-foreground hover:bg-secondary">Refresh</button>
+                  </div>
+                  <p class="mt-1 leading-4">Only public titles, stable links, categories and UTC times enter the encrypted bounded queue. Empty digests are never posted.</p>
+                  <pre data-repo-digest-preview class="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-background p-2 font-mono text-[10px] leading-4 text-foreground">Loading preview…</pre>
+                </div>
               </fieldset>
               <p class="text-[10px] leading-4 text-muted-foreground">Saved to the relay now and written into the repo's committed <span class="font-mono">.forkmesh/info.json</span> (what the desktop app shows) the next time the owner's node syncs.</p>
               <div class="flex flex-wrap items-center justify-between gap-2">
@@ -10913,6 +11636,25 @@
                 </span>
               </div>
             </form>
+            ${repo.isPrivate ? "" : `
+            <details data-repo-logo-workflow class="mt-4 border-t border-border pt-4">
+              <summary class="flex cursor-pointer list-none items-center justify-between gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <span class="inline-flex items-center gap-1.5"><i data-lucide="image-plus" class="h-3.5 w-3.5"></i>Repository logo</span>
+                <i data-lucide="chevron-down" class="h-3.5 w-3.5"></i>
+              </summary>
+              <p class="mt-2 text-[11px] leading-4 text-muted-foreground">ForkMesh generates an original local mark from public repository metadata when no approved logo exists. Signed-in community members may suggest PNG, JPEG, or WebP artwork; the repository owner or a moderator must approve it before it becomes official.</p>
+              <form data-repo-logo-suggestion-form class="mt-3 grid gap-2">
+                <input data-repo-logo-suggestion-file type="file" accept="image/png,image/jpeg,image/webp" required class="text-xs text-muted-foreground file:mr-2 file:rounded-md file:border file:border-border file:bg-secondary file:px-2 file:py-1 file:text-xs file:text-foreground" />
+                <input data-repo-logo-suggestion-attribution type="text" maxlength="240" placeholder="Artwork attribution (optional)" class="h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary" />
+                <label class="inline-flex items-start gap-1.5 text-[11px] text-muted-foreground"><input data-repo-logo-suggestion-rights type="checkbox" required class="mt-0.5 h-3 w-3" />I created this image or have permission to submit it.</label>
+                <label class="inline-flex items-start gap-1.5 text-[11px] text-muted-foreground"><input data-repo-logo-suggestion-ai type="checkbox" class="mt-0.5 h-3 w-3" />This image was AI-generated.</label>
+                <div class="flex items-center justify-between gap-2">
+                  <span data-repo-logo-suggestion-status class="text-[11px] text-muted-foreground"></span>
+                  <button type="submit" class="h-8 rounded-md border border-border bg-secondary px-3 text-xs font-medium text-foreground hover:bg-secondary/70">Suggest logo</button>
+                </div>
+              </form>
+              <div data-repo-logo-suggestions class="mt-3 grid gap-2"></div>
+            </details>`}
             <div class="mt-4 grid gap-2 text-xs text-muted-foreground">
               <a href="${escapeHtml(cloneUrl(repo))}" class="dashboard-accent-link inline-flex min-w-0 items-center gap-2 hover:underline"><i data-lucide="link" class="h-3.5 w-3.5 shrink-0"></i><span class="min-w-0 truncate">Open clean URL</span></a>
               <a href="${escapeHtml(readmeHref)}" data-repo-readme-link data-repo-readme-path="${escapeHtml(readmePath)}" class="inline-flex min-w-0 items-center gap-2 hover:text-foreground hover:underline"><i data-lucide="book-open" class="h-3.5 w-3.5"></i><span>Readme</span></a>
@@ -10982,6 +11724,7 @@
     loadRepoPendingCounts(repo);
     loadRepoAboutRail(repo);
     loadRepoStarState(repo, $("[data-repo-action-star]"));
+    consumeWorkshopAgentDeepLink(repo, workshopDeepLink);
   }
 
   // GitHub-style "Code" button: a green trigger that opens a popover with the
@@ -10993,6 +11736,9 @@
   function renderRepoCodeButton(repo, compact = false) {
     const url = cloneUrl(repo);
     const gitCmd = `git clone ${url}`;
+    const sshUrl = String(repo?.sshUrl || "").trim();
+    const sshCloneCmd = sshUrl ? `git clone ${sshUrl}` : "";
+    const sshPushCmd = sshUrl ? `git remote set-url --push origin ${sshUrl}` : "";
     const btnHeight = compact ? "h-8" : "h-9";
     const copyBtn = (value, label) =>
       `<button type="button" data-dashboard-copy="${escapeHtml(value)}" aria-label="${label}" class="copy-button inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="copy" class="copy-icon h-3.5 w-3.5"></i><i data-lucide="check" class="copy-check h-3.5 w-3.5"></i></button>`;
@@ -11001,7 +11747,7 @@
         <button type="button" data-repo-code-button aria-haspopup="true" aria-expanded="false" class="inline-flex ${btnHeight} items-center justify-center gap-2 rounded-md border border-primary/40 bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition-colors">
           <i data-lucide="code" class="h-3.5 w-3.5"></i><span>Code</span><i data-lucide="chevron-down" class="h-3 w-3"></i>
         </button>
-        <div data-repo-code-menu class="absolute right-0 z-40 mt-1 hidden w-80 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-background p-3 text-left shadow-xl">
+        <div data-repo-code-menu class="absolute right-0 z-40 mt-1 hidden w-96 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-background p-3 text-left shadow-xl">
           <div class="flex items-center justify-between gap-2">
             <span class="inline-flex items-center gap-1.5 text-xs font-semibold text-foreground"><i data-lucide="terminal" class="h-3.5 w-3.5 text-muted-foreground"></i>Clone</span>
             <span class="rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">HTTPS</span>
@@ -11018,6 +11764,26 @@
               ${copyBtn(gitCmd, "Copy git clone command")}
             </div>
           </div>
+          ${sshUrl ? `
+            <div class="mt-3 border-t border-border pt-3">
+              <div class="flex items-center justify-between gap-2">
+                <span class="inline-flex items-center gap-1.5 text-xs font-semibold text-foreground"><i data-lucide="key-round" class="h-3.5 w-3.5 text-muted-foreground"></i>SSH clone and push</span>
+                <span class="rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">SSH</span>
+              </div>
+              <p class="mt-1 text-[11px] leading-4 text-muted-foreground">Register your public key in Settings. Your private key stays on your device; write permission is checked on every push.</p>
+              <div class="mt-2 flex items-center gap-2">
+                <input data-repo-ssh-url type="text" readonly value="${escapeHtml(sshUrl)}" aria-label="SSH clone and push URL" class="min-w-0 flex-1 rounded-md border border-border bg-secondary px-2 py-1 font-mono text-[11px] text-foreground outline-none focus:border-primary" />
+                ${copyBtn(sshUrl, "Copy SSH URL")}
+              </div>
+              <div class="mt-2 flex items-center gap-2">
+                <code class="min-w-0 flex-1 truncate rounded-md border border-border bg-secondary px-2 py-1 font-mono text-[11px] text-foreground">${escapeHtml(sshCloneCmd)}</code>
+                ${copyBtn(sshCloneCmd, "Copy SSH clone command")}
+              </div>
+              <div class="mt-2 flex items-center gap-2">
+                <code class="min-w-0 flex-1 truncate rounded-md border border-border bg-secondary px-2 py-1 font-mono text-[11px] text-foreground">${escapeHtml(sshPushCmd)}</code>
+                ${copyBtn(sshPushCmd, "Copy SSH push-remote command")}
+              </div>
+            </div>` : ""}
         </div>
       </div>`;
   }
@@ -11781,6 +12547,7 @@
   function initReposPage() {
     // The catalog fetch from initSharedChrome() owns this page's content; the
     // baked markup already shows the loading state.
+    loadExternalRepositories();
   }
 
   function initNetworkPage() {
@@ -11947,6 +12714,12 @@
     const settingsSectionButton = event.target.closest("[data-settings-section-link]");
     if (settingsSectionButton) {
       setSettingsSection(settingsSectionButton.dataset.settingsSectionLink || "public-profile", { push: true });
+      return;
+    }
+
+    const sshRevokeButton = event.target.closest("[data-ssh-key-revoke]");
+    if (sshRevokeButton) {
+      revokeSshKey(sshRevokeButton.dataset.sshKeyRevoke || "");
       return;
     }
 
@@ -12180,12 +12953,60 @@
       if (aboutEditButton && state.selectedRepo && sessionOwnsRepo(state.selectedRepo)) {
         setRepoAboutStatus("");
         setRepoAboutEditing(true);
+        loadRepoDigestPreview(state.selectedRepo);
+        return;
+      }
+
+      const digestPreviewButton = event.target.closest(
+        "[data-repo-digest-preview-refresh]");
+      if (digestPreviewButton && state.selectedRepo
+          && sessionOwnsRepo(state.selectedRepo)) {
+        loadRepoDigestPreview(state.selectedRepo);
         return;
       }
 
       if (event.target.closest("[data-repo-about-cancel]")) {
         setRepoAboutStatus("");
         setRepoAboutEditing(false);
+        return;
+      }
+
+      const logoWorkflowSummary = event.target.closest(
+        "[data-repo-logo-workflow] > summary",
+      );
+      if (logoWorkflowSummary && state.selectedRepo) {
+        const details = logoWorkflowSummary.parentElement;
+        setTimeout(() => {
+          if (details?.open) loadRepoLogoSuggestions(state.selectedRepo);
+        }, 0);
+        return;
+      }
+
+      const logoReview = event.target.closest("[data-repo-logo-review]");
+      if (logoReview && state.selectedRepo) {
+        const action = logoReview.getAttribute("data-repo-logo-review") || "";
+        const suggestionId =
+          logoReview.getAttribute("data-repo-logo-suggestion-id") || "";
+        logoReview.disabled = true;
+        setRepoLogoSuggestionStatus(
+          action === "approve" ? "Approving…" : "Rejecting…",
+        );
+        reviewRepoLogoSuggestion(state.selectedRepo, suggestionId, action)
+          .then(() =>
+            setRepoLogoSuggestionStatus(
+              action === "approve" ? "Official logo updated." : "Suggestion rejected.",
+              "good",
+            ),
+          )
+          .catch(() =>
+            setRepoLogoSuggestionStatus(
+              "Only the repository owner or a moderator can review suggestions.",
+              "bad",
+            ),
+          )
+          .finally(() => {
+            logoReview.disabled = false;
+          });
         return;
       }
 
@@ -12483,6 +13304,37 @@
   });
 
   document.addEventListener("submit", async (event) => {
+    const logoSuggestionForm = event.target.closest(
+      "[data-repo-logo-suggestion-form]",
+    );
+    if (logoSuggestionForm && state.selectedRepo) {
+      event.preventDefault();
+      const submit = logoSuggestionForm.querySelector('button[type="submit"]');
+      if (submit) submit.disabled = true;
+      setRepoLogoSuggestionStatus("Submitting…");
+      try {
+        await submitRepoLogoSuggestion(state.selectedRepo, logoSuggestionForm);
+        setRepoLogoSuggestionStatus(
+          "Suggestion submitted for owner or moderator review.",
+          "good",
+        );
+      } catch (error) {
+        const code = String(error?.message || "");
+        setRepoLogoSuggestionStatus(
+          code === "sign_in_required"
+            ? "Sign in to suggest a logo."
+            : code === "rights_required"
+              ? "Confirm that you have rights to submit the image."
+              : code === "logo_too_large"
+                ? "Choose a PNG, JPEG, or WebP image up to 256 KB."
+                : "The logo suggestion could not be submitted.",
+          "bad",
+        );
+      } finally {
+        if (submit) submit.disabled = false;
+      }
+      return;
+    }
     const aboutForm = event.target.closest("[data-repo-about-form]");
     if (aboutForm && state.selectedRepo) {
       event.preventDefault();
@@ -12532,6 +13384,7 @@
         // Refresh the badge header + watch count so the new logo/banner (and
         // the ?v= cache-buster) show immediately.
         loadRepoFediverse(state.selectedRepo);
+        loadRepoDigestPreview(state.selectedRepo);
       } catch (error) {
         const code = String(error?.message || "");
         setRepoAboutStatus(
@@ -12656,6 +13509,12 @@
     event.preventDefault();
     handleNewRepoSubmit();
   });
+  $("[data-external-repo-list]")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-external-mirror-volunteer]");
+    if (!button) return;
+    volunteerForExternalMirror(
+      button.dataset.externalMirrorVolunteer || "", button);
+  });
 
   // [data-profile-settings-button] is a real link to /dashboard/settings now,
   // and [data-settings-section-link] clicks are handled by the delegated
@@ -12674,6 +13533,11 @@
     if (!button) return;
     button.disabled = ($("[data-profile-delete-confirm]")?.value || "").trim() !== "DELETE";
     button.classList.toggle("opacity-40", button.disabled);
+  });
+
+  $("[data-ssh-key-form]")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    addSshKey();
   });
 
   document.addEventListener("input", (event) => {

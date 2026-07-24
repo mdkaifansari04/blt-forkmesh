@@ -30,6 +30,89 @@ QString MainWindow::agentProviderName(const QString &provider) const
 
 namespace {
 
+QStringList localProviderCredentialValues()
+{
+    QStringList values;
+    QFile credentials(
+        QDir::homePath() +
+        QStringLiteral("/.claude/.credentials.json"));
+    if (credentials.open(QIODevice::ReadOnly)) {
+        const QJsonObject oauth =
+            QJsonDocument::fromJson(credentials.readAll())
+                .object()
+                .value(QStringLiteral("claudeAiOauth"))
+                .toObject();
+        values << oauth.value(QStringLiteral("accessToken")).toString()
+               << oauth.value(QStringLiteral("refreshToken")).toString();
+    }
+    const QSettings settings;
+    values << settings.value(kClaudeApiKeySetting).toString()
+           << settings.value(kClaudeAdminKeySetting).toString()
+           << settings.value(kCodexApiKeySetting).toString()
+           << settings.value(kOpenAiAdminKeySetting).toString();
+    values.removeAll(QString());
+    values.removeDuplicates();
+    return values;
+}
+
+QString redactProviderCredentials(QString text,
+                                  const QStringList &credentialValues)
+{
+    for (const QString &secret : credentialValues) {
+        if (secret.size() >= 8)
+            text.replace(secret, QStringLiteral("***"));
+    }
+    text.replace(
+        QRegularExpression(
+            QStringLiteral(
+                "(?i)(authorization\\s*:\\s*bearer\\s+)[A-Za-z0-9._~+/-]{8,}")),
+        QStringLiteral("\\1***"));
+    text.replace(
+        QRegularExpression(
+            QStringLiteral(
+                "(?i)([\"']?(?:accessToken|refreshToken|apiKey|"
+                "anthropicApiKey|openAiApiKey|authorization)[\"']?"
+                "\\s*[:=]\\s*[\"'])[^\"'\\r\\n]+")),
+        QStringLiteral("\\1***"));
+    text.replace(
+        QRegularExpression(QStringLiteral("\\bsk-[A-Za-z0-9_-]{20,}")),
+        QStringLiteral("sk-***"));
+    return text;
+}
+
+QJsonValue redactProviderCredentials(
+    const QJsonValue &value, const QStringList &credentialValues)
+{
+    if (value.isString())
+        return redactProviderCredentials(
+            value.toString(), credentialValues);
+    if (value.isArray()) {
+        QJsonArray result;
+        for (const QJsonValue &entry : value.toArray()) {
+            result.append(
+                redactProviderCredentials(entry, credentialValues));
+        }
+        return result;
+    }
+    if (!value.isObject())
+        return value;
+    QJsonObject result;
+    static const QRegularExpression sensitiveKey(
+        QStringLiteral(
+            "(?i)^(?:accessToken|refreshToken|apiKey|anthropicApiKey|"
+            "openAiApiKey|authorization|credentials)$"));
+    const QJsonObject object = value.toObject();
+    for (auto it = object.constBegin(); it != object.constEnd(); ++it) {
+        result.insert(
+            it.key(),
+            sensitiveKey.match(it.key()).hasMatch()
+                ? QJsonValue(QStringLiteral("***"))
+                : redactProviderCredentials(
+                      it.value(), credentialValues));
+    }
+    return result;
+}
+
 // The base branch an agent session landed in, defaulting to "main" when the
 // session never recorded one (issue #291).
 QString agentMergeBase(const AgentSession &s)
@@ -347,6 +430,77 @@ QString moneyString(double amount, QString currency)
     if (currency.compare(QStringLiteral("usd"), Qt::CaseInsensitive) == 0)
         return QStringLiteral("$%1 USD").arg(formatted);
     return QStringLiteral("%1 %2").arg(formatted, currency.toUpper());
+}
+
+QString agentE2EEControlKey(const QUrl &catalogUrl,
+                            const RepositoryRecord &repo,
+                            const QString &ownerKeyId)
+{
+    QUrl origin = catalogUrl;
+    origin.setPath(QString());
+    origin.setQuery(QString());
+    origin.setFragment(QString());
+    return origin.toString(QUrl::RemoveUserInfo | QUrl::StripTrailingSlash) +
+           QLatin1Char('|') + repo.owner.trimmed().toLower() +
+           QLatin1Char('/') + repo.name.trimmed().toLower() +
+           QLatin1Char('|') + ownerKeyId;
+}
+
+void clearOwnerIdentity(MirrorCrypto::Identity *identity)
+{
+    if (!identity)
+        return;
+    identity->x25519Priv.fill('\0');
+    identity->mlkemPriv.fill('\0');
+    identity->x25519Pub.clear();
+    identity->x25519Priv.clear();
+    identity->mlkemPub.clear();
+    identity->mlkemPriv.clear();
+}
+
+QString acceptedAgentPromptToken(const QUrl &catalogUrl,
+                                 const RepositoryRecord &repo,
+                                 qint64 queueId,
+                                 const QJsonObject &envelope)
+{
+    QUrl origin = catalogUrl;
+    origin.setPath(QString());
+    origin.setQuery(QString());
+    origin.setFragment(QString());
+    const QByteArray canonical =
+        origin.toString(QUrl::RemoveUserInfo | QUrl::StripTrailingSlash)
+            .toUtf8() +
+        '\n' + repo.owner.trimmed().toLower().toUtf8() + '/' +
+        repo.name.trimmed().toLower().toUtf8() + '\n' +
+        QByteArray::number(queueId) + '\n' +
+        QJsonDocument(envelope).toJson(QJsonDocument::Compact);
+    return QString::fromLatin1(
+        QCryptographicHash::hash(canonical, QCryptographicHash::Sha256).toHex());
+}
+
+bool agentPromptWasAccepted(const QString &token)
+{
+    return QSettings()
+        .value(QStringLiteral("agents/acceptedEncryptedPromptTokens"))
+        .toStringList()
+        .contains(token);
+}
+
+void rememberAcceptedAgentPrompt(const QString &token)
+{
+    QSettings settings;
+    QStringList tokens =
+        settings
+            .value(QStringLiteral("agents/acceptedEncryptedPromptTokens"))
+            .toStringList();
+    if (tokens.contains(token))
+        return;
+    tokens.append(token);
+    constexpr int kAcceptedPromptJournalLimit = 1024;
+    if (tokens.size() > kAcceptedPromptJournalLimit)
+        tokens = tokens.mid(tokens.size() - kAcceptedPromptJournalLimit);
+    settings.setValue(QStringLiteral("agents/acceptedEncryptedPromptTokens"),
+                      tokens);
 }
 
 } // namespace
@@ -1096,13 +1250,13 @@ QWidget *MainWindow::buildAgentsTab()
     });
     m_agentHourlyTimer->start();
 
-    // adhoc #182: push a snapshot of this node's agent sessions to the website
-    // (repo owner can watch them there). The periodic tick is only a safety
+    // adhoc #182: push owner-encrypted snapshots of this node's agent sessions
+    // to the relay. The periodic tick is only a safety
     // net: pushAgentSessionsForRepo skips the POST when the payload hasn't
     // changed since the last successful push, and every real change already
-    // schedules a debounced push (scheduleAgentSessionsPush). Steering prompts
-    // queued from the browser no longer need their own 30s drain timer — the
-    // relay pushes an "agents" event frame over the repo's host tunnel socket
+    // schedules a debounced push (scheduleAgentSessionsPush). Encrypted prompts
+    // queued by an owner-key-capable client do not need their own 30s drain
+    // timer — the relay pushes an "agents" topic over the repo's control socket
     // and performRelaySync() picks the prompts up in the shared /api/sync.
     m_agentSyncPushTimer = new QTimer(this);
     connect(m_agentSyncPushTimer, &QTimer::timeout, this,
@@ -1344,10 +1498,10 @@ void MainWindow::sendIssueContextToSelectedAgent()
     sendPromptToSelectedAgent(issueContextPrompt(*issue));
 }
 
-// ---- Website agent sync (adhoc #182) ---------------------------------------
-// The repo owner can watch this node's agent sessions on the website and
-// steer a running one from the browser. Two directions: push a snapshot of
-// local sessions up, and drain any prompts the owner queued there.
+// ---- Owner-encrypted agent relay sync (adhoc #182) -------------------------
+// Session snapshots are sealed to the owner's local hybrid identity before
+// upload. The relay can route numeric ids but cannot read transcripts/results;
+// encrypted prompts are opened and authenticated only in this desktop.
 
 QUrl MainWindow::agentsApiUrl(const RepositoryRecord &repo) const
 {
@@ -1358,6 +1512,145 @@ QUrl MainWindow::agentsApiUrl(const RepositoryRecord &repo) const
     return url;
 }
 
+void MainWindow::ensureAgentE2EEControlPlane(
+    RepositoryRecord repo, std::function<void(bool)> onDone)
+{
+    auto finish = [onDone = std::move(onDone)](bool ok) mutable {
+        if (onDone)
+            onDone(ok);
+    };
+    if (!m_networkAccess || m_accountSessionToken.trimmed().isEmpty() ||
+        !m_profileIdentity.isValid() ||
+        !hasOwnerSigningCapability(repo.owner)) {
+        finish(false);
+        return;
+    }
+
+    MirrorCrypto::Identity identity;
+    QString identityError;
+    if (!loadOwnerEncryptionIdentity(&identity, &identityError)) {
+        logSystem(QStringLiteral(
+            "Agent sync remains local: the owner encryption vault is unavailable."));
+        finish(false);
+        return;
+    }
+    const QString ownerKeyId = identity.keyId();
+    const QJsonObject publicBundle = identity.publicBundle();
+    clearOwnerIdentity(&identity);
+    const QString controlKey =
+        agentE2EEControlKey(catalogApiUrl(), repo, ownerKeyId);
+    if (m_agentE2EEReady.contains(controlKey)) {
+        finish(true);
+        return;
+    }
+    if (m_agentE2EEInFlight.contains(controlKey)) {
+        finish(false);
+        return;
+    }
+    m_agentE2EEInFlight.insert(controlKey);
+
+    QUrl keyUrl = catalogApiUrl();
+    keyUrl.setPath(QStringLiteral("/api/security/owner-keys"));
+    keyUrl.setQuery(QString());
+    keyUrl.setFragment(QString());
+    QNetworkRequest keyRequest(keyUrl);
+    keyRequest.setHeader(QNetworkRequest::ContentTypeHeader,
+                         QStringLiteral("application/json"));
+    keyRequest.setRawHeader(
+        "Authorization",
+        QByteArrayLiteral("Bearer ") + m_accountSessionToken.toUtf8());
+    QNetworkReply *keyReply = m_networkAccess->post(
+        keyRequest,
+        QJsonDocument(QJsonObject{
+                          {QStringLiteral("publicBundle"), publicBundle},
+                      })
+            .toJson(QJsonDocument::Compact));
+    connect(
+        keyReply, &QNetworkReply::finished, this,
+        [this, keyReply, repo, ownerKeyId, controlKey,
+         finish = std::move(finish)]() mutable {
+            const QByteArray keyBody = keyReply->readAll();
+            const int keyStatus =
+                keyReply
+                    ->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                    .toInt();
+            const bool keyNetworkOk =
+                keyReply->error() == QNetworkReply::NoError;
+            keyReply->deleteLater();
+            const QJsonObject keyResponse =
+                QJsonDocument::fromJson(keyBody).object();
+            if (!keyNetworkOk || keyStatus < 200 || keyStatus >= 300 ||
+                !keyResponse.value(QStringLiteral("ok")).toBool() ||
+                keyResponse.value(QStringLiteral("keyId")).toString() !=
+                    ownerKeyId ||
+                keyResponse.value(QStringLiteral("privateKeysStored"))
+                    .toBool(true)) {
+                m_agentE2EEInFlight.remove(controlKey);
+                logSystem(QStringLiteral(
+                    "Agent sync remains local: the relay did not accept the "
+                    "public-only owner encryption key."));
+                finish(false);
+                return;
+            }
+
+            QUrl policyUrl = agentsApiUrl(repo);
+            QString policyPath = policyUrl.path();
+            if (policyPath.endsWith(QStringLiteral("/agents")))
+                policyPath.chop(QStringLiteral("/agents").size());
+            policyUrl.setPath(policyPath + QStringLiteral("/privacy"));
+            policyUrl.setQuery(QString());
+            policyUrl.setFragment(QString());
+            QNetworkRequest policyRequest(policyUrl);
+            policyRequest.setHeader(QNetworkRequest::ContentTypeHeader,
+                                    QStringLiteral("application/json"));
+            policyRequest.setRawHeader(
+                "Authorization",
+                QByteArrayLiteral("Bearer ") +
+                    m_accountSessionToken.toUtf8());
+            QNetworkReply *policyReply = m_networkAccess->post(
+                policyRequest,
+                QJsonDocument(QJsonObject{
+                                  {QStringLiteral("ownerKeyId"), ownerKeyId},
+                              })
+                    .toJson(QJsonDocument::Compact));
+            connect(
+                policyReply, &QNetworkReply::finished, this,
+                [this, policyReply, controlKey, ownerKeyId,
+                 finish = std::move(finish)]() mutable {
+                    const QByteArray policyBody = policyReply->readAll();
+                    const int policyStatus =
+                        policyReply
+                            ->attribute(
+                                QNetworkRequest::HttpStatusCodeAttribute)
+                            .toInt();
+                    const bool policyNetworkOk =
+                        policyReply->error() == QNetworkReply::NoError;
+                    policyReply->deleteLater();
+                    const QJsonObject policy =
+                        QJsonDocument::fromJson(policyBody).object();
+                    const bool ok =
+                        policyNetworkOk && policyStatus >= 200 &&
+                        policyStatus < 300 &&
+                        policy.value(QStringLiteral("ok")).toBool() &&
+                        policy.value(QStringLiteral("ownerKeyId")).toString() ==
+                            ownerKeyId &&
+                        policy.value(QStringLiteral("requireAgentE2EE"))
+                            .toBool() &&
+                        policy.value(QStringLiteral("agentBoundary"))
+                                .toString() ==
+                            QLatin1String("owner-only-e2ee");
+                    m_agentE2EEInFlight.remove(controlKey);
+                    if (ok)
+                        m_agentE2EEReady.insert(controlKey);
+                    else
+                        logSystem(QStringLiteral(
+                            "Agent sync remains local: the relay did not "
+                            "confirm its owner-only encryption boundary."));
+                    finish(ok);
+                });
+        });
+}
+
 // Full-replace snapshot: send ALL of this repo's current sessions every call,
 // not a diff (the worker overwrites its stored list). Called on a periodic
 // timer (m_agentSyncPushTimer) and, debounced, right after a session's status
@@ -1366,8 +1659,8 @@ void MainWindow::pushAgentSessionsSnapshot()
 {
     if (!m_networkAccess || !m_agentStore || m_repositories.isEmpty())
         return;
-    // Off by default: a session started here in the desktop stays local unless
-    // the user opts into publishing agents to the web catalog in Settings.
+    // Off by default: a session started here stays local unless the user opts
+    // into relaying owner-encrypted agent snapshots in Settings.
     if (!QSettings().value(kPublishAgentsToWebSetting, false).toBool())
         return;
     // AgentSession::owner/name are the repo's owner/name (see repoKey()), not
@@ -1417,16 +1710,45 @@ void MainWindow::pushAgentSessionsForRepo(RepositoryRecord repo,
     if (sessions.size() > 300) // worker contract caps at 300
         sessions = sessions.mid(0, 300);
 
-    QJsonArray arr;
+    MirrorCrypto::Identity ownerIdentity;
+    QString identityError;
+    if (!loadOwnerEncryptionIdentity(&ownerIdentity, &identityError)) {
+        logSystem(QStringLiteral(
+            "Agent sync remains local: the owner encryption vault is unavailable."));
+        return;
+    }
+    const QString ownerKeyId = ownerIdentity.keyId();
+    const QString controlKey =
+        agentE2EEControlKey(catalogApiUrl(), repo, ownerKeyId);
+    if (!m_agentE2EEReady.contains(controlKey)) {
+        clearOwnerIdentity(&ownerIdentity);
+        ensureAgentE2EEControlPlane(
+            repo, [this, repo, sessions](bool ok) {
+                if (ok)
+                    pushAgentSessionsForRepo(repo, sessions);
+            });
+        return;
+    }
+
+    QJsonArray plainSessions;
+    const QStringList providerCredentialValues =
+        localProviderCredentialValues();
     for (const AgentSession &s : sessions) {
-        // Bounded tail of the run log for the website's live transcript view
-        // (adhoc #259). The cap matches the worker's MAX_AGENT_TRANSCRIPT so the
-        // full-replace snapshot stays small even with several sessions per repo.
+        // The bounded run-log tail and all other session metadata are sealed
+        // together.  The relay sees only the clear numeric id needed for row
+        // replacement; title, status, errors, and transcript remain owner-only.
         constexpr int kMaxTranscript = 16000;
         QString transcript = m_agentStore ? m_agentStore->readLog(s) : QString();
         if (transcript.size() > kMaxTranscript)
             transcript = transcript.right(kMaxTranscript);
-        arr.append(QJsonObject{
+        const QJsonObject ownerSealedSnapshot{
+            {"kind", "forkmesh.agent-session"},
+            {"v", 1},
+            {"credentialBoundary", "owner-device-only"},
+            {"sharedWorkspaceBoundary",
+             "owner-sealed-task-state-artifacts-only"},
+            {"repositoryOwner", repo.owner.trimmed().toLower()},
+            {"repositoryName", repo.name.trimmed().toLower()},
             {"id", s.id},
             {"issueNumber", s.issueNumber},
             {"issueTitle", s.issueTitle},
@@ -1442,7 +1764,13 @@ void MainWindow::pushAgentSessionsForRepo(RepositoryRecord repo,
             {"costUsd", s.costUsd},
             {"lastError", s.lastError},
             {"transcript", transcript},
-        });
+        };
+        // Encryption protects this snapshot from the relay and teammates, but
+        // credentials are outside the workspace data model entirely: redact
+        // them before serialization even into an owner-only envelope.
+        plainSessions.append(
+            redactProviderCredentials(
+                QJsonValue(ownerSealedSnapshot), providerCredentialValues));
     }
 
     QUrl url = agentsApiUrl(repo);
@@ -1456,10 +1784,41 @@ void MainWindow::pushAgentSessionsForRepo(RepositoryRecord repo,
     // 30s. A running agent's transcript tail changes every tick, so live
     // sessions still stream to the website at the timer's cadence.
     const QString pushKey = repo.owner + "/" + repo.name;
-    const QByteArray body =
-        QJsonDocument(QJsonObject{{"sessions", arr}}).toJson(QJsonDocument::Compact);
-    if (m_lastAgentPushPayload.value(pushKey) == body)
+    const QByteArray plainPayload =
+        QJsonDocument(QJsonObject{{"sessions", plainSessions}})
+            .toJson(QJsonDocument::Compact);
+    if (m_lastAgentPushPayload.value(pushKey) == plainPayload) {
+        clearOwnerIdentity(&ownerIdentity);
         return;
+    }
+
+    const QJsonObject recipientBundle = ownerIdentity.publicBundle();
+    QJsonArray encryptedSessions;
+    for (const QJsonValue &value : plainSessions) {
+        const QJsonObject session = value.toObject();
+        QString sealError;
+        const QJsonObject envelope = MirrorCrypto::sealOwnerPayload(
+            QJsonDocument(session).toJson(QJsonDocument::Compact),
+            recipientBundle, &sealError);
+        if (envelope.isEmpty()) {
+            clearOwnerIdentity(&ownerIdentity);
+            logSystem(QStringLiteral(
+                "Agent sync remains local: a session snapshot could not be "
+                "owner-encrypted."));
+            return;
+        }
+        encryptedSessions.append(QJsonObject{
+            {QStringLiteral("id"), session.value(QStringLiteral("id"))},
+            {QStringLiteral("envelope"), envelope},
+        });
+    }
+    clearOwnerIdentity(&ownerIdentity);
+    const QByteArray body =
+        QJsonDocument(QJsonObject{
+                          {QStringLiteral("encryptedSessions"),
+                           encryptedSessions},
+                      })
+            .toJson(QJsonDocument::Compact);
 
     const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
     if (!hasOwnerSigningCapability(owner))
@@ -1479,14 +1838,19 @@ void MainWindow::pushAgentSessionsForRepo(RepositoryRecord repo,
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     QNetworkReply *reply = m_networkAccess->post(request, body);
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, backoffKey, pushKey, body] {
+            [this, reply, backoffKey, pushKey, plainPayload, controlKey] {
+        const int status =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const bool networkOk = reply->error() == QNetworkReply::NoError;
         reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) {
+        if (!networkOk) {
+            if (status == 409 || status == 426 || status == 428)
+                m_agentE2EEReady.remove(controlKey);
             m_pollBackoff.noteFailure(backoffKey, QDateTime::currentMSecsSinceEpoch());
             return;
         }
         m_pollBackoff.noteSuccess(backoffKey);
-        m_lastAgentPushPayload.insert(pushKey, body);
+        m_lastAgentPushPayload.insert(pushKey, plainPayload);
     });
 }
 
@@ -1509,6 +1873,8 @@ void MainWindow::scheduleAgentSessionsPush()
 void MainWindow::drainAgentPrompts()
 {
     if (!m_networkAccess || m_repositories.isEmpty())
+        return;
+    if (!QSettings().value(kPublishAgentsToWebSetting, false).toBool())
         return;
     QSet<QString> seen;
     for (const RepositoryRecord &repo : m_repositories) {
@@ -1533,6 +1899,21 @@ void MainWindow::drainAgentPromptsFor(RepositoryRecord repo)
 {
     if (!m_networkAccess)
         return;
+    MirrorCrypto::Identity ownerIdentity;
+    QString identityError;
+    if (!loadOwnerEncryptionIdentity(&ownerIdentity, &identityError))
+        return;
+    const QString controlKey =
+        agentE2EEControlKey(catalogApiUrl(), repo, ownerIdentity.keyId());
+    clearOwnerIdentity(&ownerIdentity);
+    if (!m_agentE2EEReady.contains(controlKey)) {
+        ensureAgentE2EEControlPlane(
+            repo, [this, repo](bool ok) {
+                if (ok)
+                    drainAgentPromptsFor(repo);
+            });
+        return;
+    }
     QUrl url = agentsApiUrl(repo);
     const QString backoffKey = "agentDrain:" + url.toString();
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
@@ -1554,37 +1935,116 @@ void MainWindow::drainAgentPromptsFor(RepositoryRecord repo)
     url.setQuery(query);
 
     QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, backoffKey, repo] {
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, backoffKey, repo, controlKey] {
+        const int status =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const bool networkOk = reply->error() == QNetworkReply::NoError;
+        const QByteArray responseBody = reply->readAll();
         reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) {
+        if (!networkOk) {
+            if (status == 409 || status == 426 || status == 428)
+                m_agentE2EEReady.remove(controlKey);
             m_pollBackoff.noteFailure(backoffKey, QDateTime::currentMSecsSinceEpoch());
             return;
         }
         m_pollBackoff.noteSuccess(backoffKey);
-        applyAgentPromptsPayload(repo, QJsonDocument::fromJson(reply->readAll())
-                                           .object()
-                                           .value("prompts")
-                                           .toArray());
+        const QJsonObject payload =
+            QJsonDocument::fromJson(responseBody).object();
+        if (!payload.value(QStringLiteral("prompts")).toArray().isEmpty())
+            logSystem(QStringLiteral(
+                "Rejected relay-readable agent prompts; owner encryption is "
+                "mandatory."));
+        applyAgentPromptsPayload(
+            repo,
+            payload.value(QStringLiteral("encryptedPrompts")).toArray());
     });
 }
 
-// Deliver website-queued steering prompts to their agent sessions. `prompts`
-// comes from either a per-repo GET /agents drain reply or the repo's slice of
-// the consolidated GET /api/sync response (both drain server-side on read).
+// Authenticate and open owner-sealed steering prompts locally, then deliver
+// them to their agent sessions.  The clear routing id is cross-checked against
+// the authenticated payload; relay-readable legacy prompts are never executed.
 void MainWindow::applyAgentPromptsPayload(const RepositoryRecord &repo,
                                           const QJsonArray &prompts)
 {
-    if (!hasOwnerSigningCapability(repo.owner))
+    if (!QSettings().value(kPublishAgentsToWebSetting, false).toBool() ||
+        !hasOwnerSigningCapability(repo.owner))
         return;
+    MirrorCrypto::Identity ownerIdentity;
+    QString identityError;
+    if (!loadOwnerEncryptionIdentity(&ownerIdentity, &identityError)) {
+        logSystem(QStringLiteral(
+            "Could not open queued agent prompts: the owner encryption vault "
+            "is unavailable."));
+        return;
+    }
+    QList<qint64> acceptedQueueIds;
     for (const QJsonValue &value : prompts) {
-        const QJsonObject item = value.toObject();
-        const QString text = item.value("text").toString();
-        const QString agentId = item.value("agentId").toString();
-        if (text.isEmpty()) {
+        const QJsonObject transport = value.toObject();
+        const QJsonObject envelope =
+            transport.value(QStringLiteral("envelope")).toObject();
+        const qint64 queueId =
+            qint64(transport.value(QStringLiteral("queueId")).toDouble());
+        if (queueId <= 0 || envelope.isEmpty()) {
             logSystem(QStringLiteral(
-                "Dropped a malformed website agent prompt."));
+                "Rejected a relay-readable or malformed agent prompt."));
             continue;
         }
+        const QString acceptedToken = acceptedAgentPromptToken(
+            catalogApiUrl(), repo, queueId, envelope);
+        if (agentPromptWasAccepted(acceptedToken)) {
+            acceptedQueueIds.append(queueId);
+            continue;
+        }
+
+        QString openError;
+        const QByteArray plaintext = MirrorCrypto::openOwnerPayload(
+            envelope, ownerIdentity, &openError);
+        QJsonParseError parseError;
+        const QJsonDocument promptDocument =
+            QJsonDocument::fromJson(plaintext, &parseError);
+        if (plaintext.isEmpty() ||
+            parseError.error != QJsonParseError::NoError ||
+            !promptDocument.isObject()) {
+            logSystem(QStringLiteral(
+                "Could not authenticate a queued owner-encrypted agent prompt."));
+            continue;
+        }
+        const QJsonObject item = promptDocument.object();
+        const QString text = item.value("text").toString();
+        const bool scopedPrompt =
+            item.value(QStringLiteral("kind")).toString() ==
+                QLatin1String("forkmesh.agent-prompt") &&
+            item.value(QStringLiteral("v")).toInt() == 1 &&
+            item.value(QStringLiteral("repositoryOwner"))
+                    .toString()
+                    .compare(repo.owner.trimmed(), Qt::CaseInsensitive) == 0 &&
+            item.value(QStringLiteral("repositoryName"))
+                    .toString()
+                    .compare(repo.name.trimmed(), Qt::CaseInsensitive) == 0;
+        QString agentId;
+        if (item.value(QStringLiteral("agentId")).isString())
+            agentId = item.value(QStringLiteral("agentId")).toString();
+        else if (item.value(QStringLiteral("agentId")).isDouble())
+            agentId =
+                QString::number(item.value(QStringLiteral("agentId")).toInt());
+        const int routedAgentId =
+            transport.value(QStringLiteral("agentId")).toInt();
+        bool numericAgentIdOk = false;
+        const int numericAgentId = agentId.toInt(&numericAgentIdOk);
+        if (!scopedPrompt || text.trimmed().isEmpty() || text.size() > 8000 ||
+            agentId.isEmpty() ||
+            (routedAgentId > 0 &&
+             (!numericAgentIdOk || numericAgentId != routedAgentId))) {
+            logSystem(QStringLiteral(
+                "Rejected a malformed owner-encrypted agent prompt."));
+            continue;
+        }
+        // Journal acceptance before invoking an agent.  If the subsequent ack
+        // is interrupted, the next drain re-acks this exact ciphertext without
+        // executing its side effect twice, including after an app restart.
+        rememberAcceptedAgentPrompt(acceptedToken);
+        acceptedQueueIds.append(queueId);
         // Sentinel "new" (adhoc #266): the website's top-of-list composer asks
         // to spin up a brand-new ad-hoc agent for this repo from the prompt,
         // rather than steer an existing session.
@@ -1614,6 +2074,45 @@ void MainWindow::applyAgentPromptsPayload(const RepositoryRecord &repo,
         }
         deliverQueuedAgentPrompt(sessionId, text);
     }
+    clearOwnerIdentity(&ownerIdentity);
+    if (!acceptedQueueIds.isEmpty())
+        acknowledgeAgentPrompts(repo, acceptedQueueIds);
+}
+
+void MainWindow::acknowledgeAgentPrompts(
+    const RepositoryRecord &repo, const QList<qint64> &queueIds)
+{
+    if (!m_networkAccess || queueIds.isEmpty() ||
+        !hasOwnerSigningCapability(repo.owner))
+        return;
+    QJsonArray ids;
+    QSet<qint64> seen;
+    for (const qint64 id : queueIds) {
+        if (id > 0 && !seen.contains(id)) {
+            seen.insert(id);
+            ids.append(double(id));
+        }
+    }
+    if (ids.isEmpty())
+        return;
+    QUrl url = agentsApiUrl(repo);
+    url.setPath(url.path() + QStringLiteral("/ack"));
+    url.setQuery(signedInboxQuery(
+        repoSegment(repo.owner, QStringLiteral("owner"))));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    QNetworkReply *reply = m_networkAccess->post(
+        request,
+        QJsonDocument(QJsonObject{
+                          {QStringLiteral("queueIds"), ids},
+                      })
+            .toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [reply] {
+        // A failed ack is retried by the next drain.  The local accepted
+        // ciphertext journal prevents a duplicate agent side effect.
+        reply->deleteLater();
+    });
 }
 
 // Steer an agent session with a prompt queued from the website, by session id
@@ -3524,9 +4023,15 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
 {
     if (!m_agentMeta)
         return;
-    const AgentSession *session = findAgentSession(sessionId);
-    if (!session)
+    const AgentSession *liveSession = findAgentSession(sessionId);
+    if (!liveSession)
         return;
+    // Resolving a reloaded session's worktree below shells out through
+    // runGitCapture(), whose keep-alive loop can deliver reloadAgents() and
+    // replace m_agentSessions. Keep this renderer on a value snapshot so that
+    // nested event delivery cannot leave any of the strings below dangling.
+    const AgentSession sessionSnapshot = *liveSession;
+    const AgentSession *session = &sessionSnapshot;
     // Issue #291: a "merged into <base>" note appended to the meta line once
     // the session's worktree/PR has landed in the base branch. Joined with the
     // block's separator below, like every other part.
@@ -3675,8 +4180,8 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
 void MainWindow::showAgentSession(int sessionId)
 {
     m_selectedAgentSessionId = sessionId;
-    AgentSession *session = findAgentSession(sessionId);
-    if (!session) {
+    AgentSession *liveSession = findAgentSession(sessionId);
+    if (!liveSession) {
         if (m_agentTitle)
             m_agentTitle->setText("Select a session");
         if (m_agentStatusPill)
@@ -3703,6 +4208,12 @@ void MainWindow::showAgentSession(int sessionId)
         updateAgentActionState();
         return;
     }
+    // Several detail helpers resolve git/worktree state through keep-alive
+    // subprocess waits. Those waits intentionally process events, including an
+    // async reloadAgents() that replaces m_agentSessions. Render from a stable
+    // value copy rather than retaining a pointer into that replaceable list.
+    const AgentSession sessionSnapshot = *liveSession;
+    const AgentSession *session = &sessionSnapshot;
 
     // Restore a finished/idle Claude Code session's transcript from disk so it
     // survives an app restart — parsed on a worker thread. The first click on a
@@ -3893,28 +4404,30 @@ void MainWindow::setAgentLogText(int sessionId, const QString &text)
 {
     if (!m_agentLog)
         return;
+    const QString safeText =
+        redactProviderCredentials(text, localProviderCredentialValues());
     // Skip the re-layout when the same session's log is already on screen with
     // identical text. setPlainText()+moveCursor(End) forces QPlainTextEdit to lay
     // out the whole document (cursorRect -> initCharAttributes over every block),
     // which for a large transcript blocked the GUI thread for ~2.9 s every time
     // refreshAgentTable() re-selected the open session (adhoc #245).
-    if (m_agentLogSession == sessionId && m_agentLogText == text)
+    if (m_agentLogSession == sessionId && m_agentLogText == safeText)
         return;
     // Streaming growth: the new text usually just extends what's on screen.
     // Insert only the delta at the end (incremental layout) instead of paying
     // setPlainText()'s full re-layout of a multi-megabyte document per burst.
     if (m_agentLogSession == sessionId && !m_agentLogText.isEmpty() &&
-        text.startsWith(m_agentLogText)) {
+        safeText.startsWith(m_agentLogText)) {
         QTextCursor cursor(m_agentLog->document());
         cursor.movePosition(QTextCursor::End);
-        cursor.insertText(text.mid(m_agentLogText.size()));
-        m_agentLogText = text;
+        cursor.insertText(safeText.mid(m_agentLogText.size()));
+        m_agentLogText = safeText;
         m_agentLog->moveCursor(QTextCursor::End);
         return;
     }
     m_agentLogSession = sessionId;
-    m_agentLogText = text;
-    m_agentLog->setPlainText(text);
+    m_agentLogText = safeText;
+    m_agentLog->setPlainText(safeText);
     m_agentLog->moveCursor(QTextCursor::End); // raw log opens at the tail
 }
 
@@ -5300,9 +5813,15 @@ void MainWindow::startClaudeCodeTerminal(AgentSession &session, const Issue &iss
     // here (that key is for the script-based AgentRunner path, which needs raw
     // API access). Injecting it makes Claude Code warn "Both claude.ai and
     // ANTHROPIC_API_KEY set" and silently switch to API-usage billing. Drop any
-    // ANTHROPIC_API_KEY inherited from the shell too; an entry without '=' tells
-    // the terminal to unset the variable in the child.
-    env << QStringLiteral("ANTHROPIC_API_KEY");
+    // provider credential inherited from the shell too; an entry without '='
+    // tells the terminal to unset the variable in the child.  Claude's own
+    // device-local login discovery remains available through its protected
+    // provider storage; ForkMesh never injects or copies those credentials into
+    // the agent worktree or command environment.
+    env << QStringLiteral("ANTHROPIC_API_KEY")
+        << QStringLiteral("ANTHROPIC_AUTH_TOKEN")
+        << QStringLiteral("ANTHROPIC_ADMIN_KEY")
+        << QStringLiteral("CLAUDE_CODE_OAUTH_TOKEN");
 
     // Make ForkMesh act as the IDE this CLI connects to (issue #191): start the
     // localhost bridge for this checkout and inject the discovery env vars so
@@ -5743,10 +6262,21 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
         applyTranscriptEvent(sid, QJsonObject{
                                       {QStringLiteral("type"), QStringLiteral("_local_user")},
                                       {QStringLiteral("text"), prompt}});
-    auto onEvent = [this, sid](const QJsonObject &ev) {
-        applyTranscriptEvent(sid, ev);
+    const QStringList providerCredentialValues =
+        localProviderCredentialValues();
+    auto onEvent =
+        [this, sid, providerCredentialValues](
+            const QJsonObject &ev) {
+        applyTranscriptEvent(
+            sid,
+            redactProviderCredentials(
+                ev, providerCredentialValues).toObject());
     };
-    auto onRaw = [this, sid](const QString &line) {
+    auto onRaw =
+        [this, sid, providerCredentialValues](
+            const QString &rawLine) {
+        const QString line = redactProviderCredentials(
+            rawLine, providerCredentialValues);
         noteAgentActivity(sid, line.size()); // pulse the list's night-rider light
         QString &buf = m_streamRaw[sid];
         // Separate each JSON object with a blank line so the raw view is readable.
@@ -5756,7 +6286,11 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
         if (sid == m_selectedAgentSessionId)
             appendAgentRawLog(line + QStringLiteral("\n\n"));
     };
-    auto onStderr = [this, sid](const QString &text) {
+    auto onStderr =
+        [this, sid, providerCredentialValues](
+            const QString &rawText) {
+        const QString text = redactProviderCredentials(
+            rawText, providerCredentialValues);
         if (text.isEmpty())
             return;
         noteAgentActivity(sid, text.size());
@@ -5978,7 +6512,9 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
             // silently switch this path to API billing.
             live->start(workdir,
                         {QStringLiteral("OPENAI_API_KEY"),
-                         QStringLiteral("CODEX_API_KEY")},
+                         QStringLiteral("CODEX_API_KEY"),
+                         QStringLiteral("OPENAI_ACCESS_TOKEN"),
+                         QStringLiteral("OPENAI_ADMIN_KEY")},
                         prompt, resumeId, selectedModel, mode, effort);
             return;
         }
@@ -5987,7 +6523,10 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
         if (!live)
             return; // session was stopped or deleted while the worktree was building
         QStringList env;
-        env << QStringLiteral("ANTHROPIC_API_KEY"); // see startClaudeCodeTerminal
+        env << QStringLiteral("ANTHROPIC_API_KEY")
+            << QStringLiteral("ANTHROPIC_AUTH_TOKEN")
+            << QStringLiteral("ANTHROPIC_ADMIN_KEY")
+            << QStringLiteral("CLAUDE_CODE_OAUTH_TOKEN");
         if (ClaudeIdeBridge *bridge = ensureIdeBridge()) {
             if (bridge->start(workdir))
                 env << bridge->env();
@@ -6541,6 +7080,8 @@ void MainWindow::renderExternalTranscript(int sessionId, bool full)
     qint64 newOffset = offset;
     const QList<QJsonObject> events =
         ClaudeSessionScan::readEvents(ext.path, offset, &newOffset);
+    const QStringList providerCredentialValues =
+        localProviderCredentialValues();
     m_externalReadOffset[sessionId] = newOffset;
     if (!events.isEmpty())
         // Surfaced external transcripts arrive in event batches rather than raw
@@ -6551,7 +7092,11 @@ void MainWindow::renderExternalTranscript(int sessionId, bool full)
     // fade-in churn for those; incremental tails keep the animation.
     m_agentTranscript->setBulkPopulate(full);
     qint64 addedTokens = 0;
-    for (const QJsonObject &ev : events) {
+    for (const QJsonObject &unsafeEvent : events) {
+        const QJsonObject ev =
+            redactProviderCredentials(
+                QJsonValue(unsafeEvent), providerCredentialValues)
+                .toObject();
         if (ev.value(QStringLiteral("type")).toString() == QLatin1String("assistant"))
             addedTokens += static_cast<qint64>(
                 ev.value(QStringLiteral("message")).toObject()
@@ -6598,7 +7143,9 @@ void MainWindow::renderExternalTranscript(int sessionId, bool full)
             f.seek(ClaudeSessionScan::tailStartOffset(ext.path, 400 * 1024));
             // Separate each JSON object with a blank line so the raw view is readable.
             const QStringList objs =
-                QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+                redactProviderCredentials(
+                    QString::fromUtf8(f.readAll()), providerCredentialValues)
+                    .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
             setAgentLogText(sessionId, objs.join(QStringLiteral("\n\n")));
         }
     }
@@ -6608,8 +7155,16 @@ void MainWindow::renderExternalTranscript(int sessionId, bool full)
 
 // Buffer one event for a session and, if that session is the one on screen,
 // render it live. Also collect the files it edits for the side panel.
-void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
+void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
 {
+    // Agent output is untrusted data.  Strip provider credentials before it can
+    // enter a UI buffer, the persistent transcript store, an owner-sealed sync
+    // snapshot, or a copyable raw-output surface.  This is intentionally at the
+    // common ingestion point so future stream providers cannot bypass it.
+    const QJsonObject ev =
+        redactProviderCredentials(
+            QJsonValue(event), localProviderCredentialValues())
+            .toObject();
     const QString type = ev.value(QStringLiteral("type")).toString();
     m_streamEvents[sessionId].append(ev);
     // Persist the turn so the transcript survives an app restart (issue #41).
@@ -8039,7 +8594,8 @@ void MainWindow::appendAgentRawLog(const QString &text)
     // ensureCursorVisible → cursorRect layout the widget API forces.
     QTextCursor cursor(m_agentLog->document());
     cursor.movePosition(QTextCursor::End);
-    cursor.insertText(text);
+    cursor.insertText(
+        redactProviderCredentials(text, localProviderCredentialValues()));
     m_agentLogSession = -1; // appended out-of-band; the dedup tracker is now stale
     if (atBottom && sb)
         sb->setValue(sb->maximum()); // keep following the tail only if already pinned
@@ -8053,8 +8609,12 @@ void MainWindow::showAgentRawOutput()
 {
     if (!m_agentOutputStack || !m_agentLog)
         return;
-    if (m_streamRaw.contains(m_selectedAgentSessionId))
-        m_agentLog->setPlainText(m_streamRaw.value(m_selectedAgentSessionId));
+    if (m_streamRaw.contains(m_selectedAgentSessionId)) {
+        m_agentLog->setPlainText(
+            redactProviderCredentials(
+                m_streamRaw.value(m_selectedAgentSessionId),
+                localProviderCredentialValues()));
+    }
     m_agentLogSession = -1; // set out-of-band; the dedup tracker is now stale
     m_agentOutputStack->setCurrentWidget(m_agentLog);
     m_agentLog->moveCursor(QTextCursor::End); // always land on the tail when shown

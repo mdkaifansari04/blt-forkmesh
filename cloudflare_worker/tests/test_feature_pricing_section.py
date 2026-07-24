@@ -44,12 +44,16 @@ def test_pricing_section_explains_mirror_rewards():
     for text in (
         "FORKMESH - NETWORK PARTICIPATION",
         "Preserve code.",
-        "Get paid <em>$0.0001</em> at a time.",
-        "Live earnings calculator",
-        "SOL / join",
-        "Paid in Solana (SOL)",
+        "Share <em>community rewards</em>.",
+        "Fund states stay distinct",
+        "User-owned funds",
+        "Community-funded",
+        "Pending / finalized",
         "You mirror code",
-        "You get paid",
+        "You may be selected",
+        "No payment or return is guaranteed",
+        "ForkMesh never stores community members’ wallet private",
+        "keys or controls user funds",
     ):
         assert text in pricing
 
@@ -59,6 +63,9 @@ def test_pricing_section_replaces_old_stack_illustration():
 
     assert "pricing-stack-illustration" not in pricing
     assert "Preserve code for just $1" not in pricing
+    assert "SOL / join" not in pricing
+    assert "Live earnings calculator" not in pricing
+    assert "You get paid" not in pricing
 
 
 def test_visible_media_assets_exist():

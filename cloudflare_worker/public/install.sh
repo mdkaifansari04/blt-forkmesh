@@ -77,14 +77,14 @@ FORKMESH_INSTALL_SOURCE_URL="${FORKMESH_INSTALL_SOURCE_URL:-${FORKMESH_HOST%/}/a
 FORKMESH_DIAG_URL="${FORKMESH_DIAG_URL:-${FORKMESH_HOST%/}/api/install-diag}"
 REPO="${FORKMESH_REPO:-}"
 # Space-separated list of online mirror nodes resolved from the mainnode, best
-# first, and the matching list of clone URLs to try in order. A mirror can report
-# itself online (a live host WebSocket) yet still time out the git clone proxy
-# with a 504, so the installer falls back to the next mirror instead of dead-
-# ending on the first one. Populated by resolve_install_node / the mirror block.
+# first, and the matching list of clone URLs to try in order. A direct-HTTPS
+# endpoint can become unavailable after its latest signed health check, so the
+# installer still falls back instead of dead-ending on the first one. Populated
+# by resolve_install_node / the mirror block.
 FORKMESH_NODES=""
 REPO_CANDIDATES=()
 # Set by clean_clone to the human-readable reason the last clone attempt failed
-# (e.g. "mirror host timed out (HTTP 504)"), so the final error and the anonymous
+# (e.g. "mirror endpoint timed out (HTTP 504)"), so the final error and the anonymous
 # diagnostics can say WHY every mirror was unreachable rather than just "failed".
 CLONE_FAIL_REASON=""
 # The build checkout lives in a dedicated, installer-only location. The only
@@ -926,7 +926,7 @@ repo_node() {
 classify_clone_failure() {
   case "$1" in
     *"failed integrity check"*|*"repository failed integrity"*) echo "integrity pin rejected by the relay" ;;
-    *"Host timed out"*|*"error: 504"*|*" 504"*)                 echo "mirror host timed out (HTTP 504)" ;;
+    *"Host timed out"*|*"error: 504"*|*" 504"*)                 echo "mirror endpoint timed out (HTTP 504)" ;;
     *"error: 502"*|*" 502"*)                                    echo "relay gateway error (HTTP 502)" ;;
     *"error: 503"*|*" 503"*)                                    echo "mirror temporarily unavailable (HTTP 503)" ;;
     *"error: 404"*|*"not found"*|*"Repository not found"*)      echo "repository not found on this mirror (HTTP 404)" ;;

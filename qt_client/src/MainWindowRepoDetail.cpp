@@ -658,6 +658,12 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_overviewBodyStack->addWidget(buildRepoCommitsTab()); // 1 commit history
     m_overviewBodyStack->addWidget(buildBranchesTab());    // 2 branches panel
     m_overviewBodyStack->addWidget(buildWorktreesTab());   // 3 worktrees panel
+    // Every body page already owns its inner scrolling and this stack fills an
+    // expanding layout slot. Ignore child size-hint changes so switching from
+    // files to commits does not relayout the entire top-level window.
+    m_overviewBodyStack->setMinimumHeight(0);
+    m_overviewBodyStack->setSizePolicy(
+        QSizePolicy::Expanding, QSizePolicy::Ignored);
 
     // Left column: toolbar, latest commit, then the swappable body.
     auto *leftColumn = new QWidget;
@@ -1303,6 +1309,7 @@ void MainWindow::openRepoDetail(int repoIndex)
 {
     if (repoIndex < 0 || repoIndex >= m_repositories.size())
         return;
+    ensureRepoDetailSectionBuilt();
     // Guard against re-entrancy: a node switch yields the event loop between load
     // steps (see nodeSwitchStep), so a queued call must not start a second load
     // on top of this one.
@@ -7815,6 +7822,24 @@ bool MainWindow::repoHasWorkingTree() const
 
 // ---- Repo detail (files + issues tabs) -------------------------------------
 
+void MainWindow::ensureRepoDetailSectionBuilt()
+{
+    if (m_repoDetailStack)
+        return;
+
+    QWidget *placeholder = m_repoDetailSection;
+    QWidget *home = placeholder ? placeholder->parentWidget() : nullptr;
+    QLayout *homeLayout = home ? home->layout() : nullptr;
+    QWidget *detail = buildRepoDetailSection();
+    if (homeLayout && placeholder)
+        homeLayout->replaceWidget(placeholder, detail);
+    else if (homeLayout)
+        homeLayout->addWidget(detail);
+    m_repoDetailSection = detail;
+    if (placeholder)
+        placeholder->deleteLater();
+}
+
 QWidget *MainWindow::buildRepoDetailSection()
 {
     auto *page = new QWidget;
@@ -8179,6 +8204,13 @@ QWidget *MainWindow::buildRepoDetailSection()
             // body was left on the commits panel, swap it back (and dim the
             // commit strip's toggle). The explorer/overview mode is untouched.
             showOverviewFiles();
+        } else if (m_historyButton) {
+            // The commit toggle belongs to the Code overview. Do not leave it
+            // visually armed after navigating to another repository tab: a
+            // subsequent return to history must take the real checked-click
+            // path and rebuild/open the commit content instead of mistaking a
+            // hidden, stale panel for the active view.
+            m_historyButton->setChecked(false);
         }
         if (id == 2) {
             // Opening Issues: clear any filter the user left set on a prior visit
@@ -8595,18 +8627,30 @@ QWidget *MainWindow::buildRepoCommitsTab()
     auto *navCol = new QVBoxLayout;
     navCol->setContentsMargins(0, 0, 0, 0);
     navCol->setSpacing(4);
-    auto *prevNextRow = new QHBoxLayout;
-    prevNextRow->setContentsMargins(0, 0, 0, 0);
-    prevNextRow->setSpacing(4);
-    prevNextRow->addWidget(m_commitDeleteButton);
-    prevNextRow->addWidget(m_commitRevertButton);
-    prevNextRow->addWidget(m_commitSplitButton);
-    prevNextRow->addWidget(commitCopyLinkButton);
-    prevNextRow->addWidget(m_commitDownloadButton);
-    prevNextRow->addWidget(m_commitPrevButton);
-    prevNextRow->addWidget(m_commitNextButton);
-    prevNextRow->addStretch();
-    navCol->addLayout(prevNextRow);
+
+    // Keep the paired history actions together on their own row. Combining all
+    // seven controls in one fixed-width row raised the commit workspace's
+    // minimum width above a laptop viewport; depending on the window manager,
+    // Restore could then be clipped even though it existed. The second row
+    // contains navigation and presentation actions and can fit independently.
+    auto *historyActionRow = new QHBoxLayout;
+    historyActionRow->setContentsMargins(0, 0, 0, 0);
+    historyActionRow->setSpacing(4);
+    historyActionRow->addWidget(m_commitDeleteButton);
+    historyActionRow->addWidget(m_commitRevertButton);
+    historyActionRow->addStretch();
+    navCol->addLayout(historyActionRow);
+
+    auto *commitToolRow = new QHBoxLayout;
+    commitToolRow->setContentsMargins(0, 0, 0, 0);
+    commitToolRow->setSpacing(4);
+    commitToolRow->addWidget(m_commitSplitButton);
+    commitToolRow->addWidget(commitCopyLinkButton);
+    commitToolRow->addWidget(m_commitDownloadButton);
+    commitToolRow->addWidget(m_commitPrevButton);
+    commitToolRow->addWidget(m_commitNextButton);
+    commitToolRow->addStretch();
+    navCol->addLayout(commitToolRow);
 
     auto *headerRow = new QVBoxLayout;
     headerRow->setContentsMargins(0, 0, 0, 0);

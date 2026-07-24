@@ -5,7 +5,7 @@
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ForkMesh Community Chat</title>
-    <meta name="description" content="Join the ForkMesh user chat rooms — end-to-end encrypted for signed-in user accounts." />
+    <meta name="description" content="Join ForkMesh authenticated shared-key chat rooms. Default keys are relay-derived and relay-readable." />
     <meta name="application-name" content="ForkMesh" />
     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
     <meta name="theme-color" content="#090909" />
@@ -741,7 +741,7 @@
           </div>
 
           <div class="chat-e2e-note">
-            Messages are AES-256-GCM encrypted in your browser, so the relay only stores and forwards ciphertext. The shared room key is held by the relay and given only to signed-in accounts — use a room passphrase for a key the relay can't derive. <a href="/docs">Learn more</a>
+            Default rooms use AES-256-GCM authenticated shared-key transport. The relay derives the shared passphrase, so its operator can decrypt messages; it retains at most 500 persisted frames per room for 7 days. Clients that support an out-of-band participant passphrase can use one for a key the relay cannot derive. <a href="/docs">Learn more</a>
           </div>
         </main>
 

@@ -42,10 +42,9 @@
       type="application/xml"
       href="https://forkmesh.com/sitemap.xml"
     />
-    <!-- Logged-in visitors never see this page: the Worker answers / with an
-         instant 302 to /dashboard keyed off the forkmesh_session presence
-         cookie (see entry.py), replacing the old inline localStorage redirect
-         that painted the homepage first and then swapped. -->
+    <!-- The regular product/source-code homepage remains available to guests
+         and signed-in visitors alike. ForkMesh World is embedded below and
+         also has a dedicated /world/ route; dashboard navigation stays explicit. -->
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://forkmesh.com/" />
     <meta property="og:site_name" content="ForkMesh" />
@@ -114,7 +113,7 @@
             "featureList": [
               "Desktop nodes keep local Git mirrors",
               "Mainnodes coordinate discovery and live clone routing",
-              "Host tunnels connect clone traffic to online desktop nodes",
+              "Direct HTTPS routing connects clone traffic to healthy mirror nodes",
               "Encrypted repo rooms relay client-encrypted community messages",
               "Signed issue events and signed patch PRs keep collaboration portable",
               "Owner inboxes and account lookup help maintainers receive verified events"
@@ -136,7 +135,7 @@
                 "name": "What is ForkMesh?",
                 "acceptedAnswer": {
                   "@type": "Answer",
-                  "text": "ForkMesh is local-first infrastructure for preserving and collaborating on source code. Desktop nodes keep real Git mirrors locally, while mainnodes coordinate discovery, live clone routing, host tunnels, encrypted repo rooms, signed inboxes, and account lookup."
+                  "text": "ForkMesh is local-first infrastructure for preserving and collaborating on source code. Desktop nodes keep encrypted Git mirrors locally, while mainnodes coordinate discovery, direct HTTPS clone routing, encrypted repo rooms, signed inboxes, and account lookup."
                 }
               },
               {
@@ -160,7 +159,7 @@
                 "name": "What is a desktop node?",
                 "acceptedAnswer": {
                   "@type": "Answer",
-                  "text": "A desktop node is the local ForkMesh app that keeps repository mirrors on your machine. It can browse mirrored files, preserve Git history, and serve clone data through a live host tunnel when your node is online."
+                  "text": "A desktop node is the local ForkMesh app that keeps encrypted repository mirrors on your machine. Its authenticated mirror gateway can serve clone and browse data through ordinary HTTPS when the node is healthy; game sockets carry no repository bytes."
                 }
               },
               {
@@ -168,7 +167,7 @@
                 "name": "What is a mainnode?",
                 "acceptedAnswer": {
                   "@type": "Answer",
-                  "text": "A mainnode is a coordination node for the ForkMesh network. It handles catalog discovery, account lookup, host tunnels, encrypted repo rooms, signed inboxes, and routing without becoming the owner of everyone's source code."
+                  "text": "A mainnode is a coordination node for the ForkMesh network. It handles catalog discovery, account lookup, healthy HTTPS mirror selection, encrypted repo rooms, signed inboxes, and routing without becoming the owner of everyone’s source code."
                 }
               },
               {
@@ -184,7 +183,7 @@
                 "name": "Are repo rooms encrypted?",
                 "acceptedAnswer": {
                   "@type": "Answer",
-                  "text": "Yes. ForkMesh repo rooms are designed so clients encrypt messages before they are relayed. The mainnode helps deliver room traffic, but the room content is not meant to be readable by the relay."
+                  "text": "Yes, as authenticated shared-key transport. Clients encrypt messages before relay, but the mainnode derives and distributes the default passphrase, so its operator can decrypt room content. At most 500 persisted frames per room are retained for 7 days."
                 }
               },
               {
@@ -232,7 +231,7 @@
                 "name": "Can open-source communities run their own ForkMesh network?",
                 "acceptedAnswer": {
                   "@type": "Answer",
-                  "text": "Yes. Communities can run mainnodes for their own catalog, host tunnels, encrypted rooms, inboxes, and account lookup while contributors run desktop nodes that keep repository mirrors locally."
+                  "text": "Yes. Communities can run mainnodes for their own catalog, direct-HTTPS routing, encrypted rooms, inboxes, and account lookup while contributors run desktop nodes that keep encrypted repository mirrors locally."
                 }
               }
             ]
@@ -2167,15 +2166,16 @@
               <h1
                 class="motion-in motion-delay-1 mx-auto mt-8 max-w-4xl font-bold text-balance font-domine text-5xl leading-[1.05] tracking-normal md:text-7xl lg:mt-16 xl:text-[5.25rem]"
               >
-                Never lose the code that matters
+                Protect the code that matters from a single-host failure
               </h1>
               <p
                 class="motion-in motion-delay-2 mx-auto mt-8 max-w-2xl text-balance text-lg leading-relaxed text-foreground/90"
               >
                 ForkMesh mirrors your Git repositories across a live mesh of
                 desktop nodes &mdash; so your history, issues, and pull requests
-                stay portable, verifiable, and always cloneable. Mirror the
-                projects you rely on, and earn as you help keep them online.
+                stay portable and verifiable. They remain cloneable while at
+                least one eligible, healthy copy is available. Mirror the
+                projects you rely on, and help keep them online.
               </p>
               <div
                 id="install-banner"
@@ -2439,7 +2439,7 @@
                     fill="currentColor"
                   />
                 </svg>
-                <span class="relative text-5xl font-semibold">100%</span>
+                <span class="relative text-5xl font-semibold">Your node</span>
               </div>
               <h3 class="mt-6 text-3xl font-semibold">Local-first</h3>
             </div>
@@ -2467,7 +2467,7 @@
               </div>
               <div class="relative z-10 mt-6 space-y-2 text-center">
                 <h3 class="text-lg font-medium text-white">
-                  Secure by default
+                  Signed by default
                 </h3>
                 <p class="text-foreground">
                   Every issue, comment, and patch is a signed event. Verify
@@ -2541,8 +2541,9 @@
                     Encrypted repo rooms
                   </h3>
                   <p class="text-foreground">
-                    Collaborate on a fork before it's public. Repo rooms are
-                    end-to-end encrypted between invited nodes.
+                    Collaborate beside the code with authenticated shared-key
+                    rooms. The relay derives the default key and can read room
+                    plaintext; persisted history is capped at 500 frames for 7 days.
                   </p>
                 </div>
               </div>
@@ -2812,6 +2813,65 @@
       </section>
 
       <section
+        id="world-preview"
+        aria-labelledby="world-preview-title"
+        class="mx-auto max-w-[96rem] px-4 py-20 sm:px-6 lg:px-8 lg:py-28"
+      >
+        <div
+          class="mb-8 flex flex-col gap-5 md:flex-row md:items-end md:justify-between"
+        >
+          <div class="max-w-3xl">
+            <p class="text-sm font-semibold uppercase tracking-[0.18em] text-accent">
+              ForkMesh World
+            </p>
+            <h2
+              id="world-preview-title"
+              class="mt-3 font-favorit text-4xl font-normal tracking-tight text-foreground sm:text-5xl"
+            >
+              Step into the developer city
+            </h2>
+            <p class="mt-4 text-lg leading-relaxed text-muted-foreground">
+              The multiplayer Town Square is one part of ForkMesh, not a
+              replacement for the website. Explore it here, then keep browsing
+              repositories, source code, documentation, pricing, and the
+              operations dashboard through normal web pages.
+            </p>
+          </div>
+          <a
+            href="/world/"
+            class="inline-flex shrink-0 items-center justify-center rounded-md border border-border bg-card px-5 py-3 text-sm font-semibold text-foreground transition hover:border-accent hover:text-accent"
+          >
+            Open World full screen
+          </a>
+        </div>
+        <div
+          class="overflow-hidden rounded-2xl border border-border bg-black shadow-2xl shadow-black/40"
+        >
+          <div
+            class="flex items-center justify-between border-b border-border bg-card px-4 py-3 text-xs uppercase tracking-[0.15em] text-muted-foreground"
+          >
+            <span>Live Town Square</span>
+            <span>WebGL · keyboard + touch · graceful fallback</span>
+          </div>
+          <iframe
+            src="/world/"
+            title="Interactive ForkMesh World"
+            loading="lazy"
+            referrerpolicy="same-origin"
+            allow="fullscreen"
+            class="block h-[72svh] min-h-[32rem] w-full border-0 bg-black"
+          ></iframe>
+        </div>
+        <p class="mt-4 text-sm leading-6 text-muted-foreground">
+          The World uses minimal real-time presence for multiplayer movement
+          and chat signals. Repository pages, cloning, downloads, and file
+          content continue over ordinary HTTPS. Local voice control is
+          opt-in and records only through a paired Qt client; browser audio is
+          never relayed.
+        </p>
+      </section>
+
+      <section
         id="solution"
         class="mx-auto max-w-6xl px-5 py-24 lg:px-8 lg:py-32"
       >
@@ -3009,41 +3069,42 @@
           <div class="pricing-content">
             <div class="index">FORKMESH - NETWORK PARTICIPATION</div>
 
-            <h2 id="pricing-title">Preserve code.<br />Get paid <em>$0.0001</em> at a time.</h2>
+            <h2 id="pricing-title">Preserve code.<br />Share <em>community rewards</em>.</h2>
 
             <p class="lead">
               Your desktop mirrors source code and serves clone data, keeping projects
-              discoverable even when centralized platforms go down. Each join donation
-              funds the nodes keeping the network reachable.
+              discoverable even when centralized platforms go down. Community members
+              may voluntarily fund a transparent public reward pool for eligible,
+              verified mirror nodes.
             </p>
 
             <hr class="rule" />
 
             <div class="row">
-              <div class="k">Nodes online</div>
-              <div class="v">128 <small>+7 / hr</small></div>
+              <div class="k">Reward network</div>
+              <div class="v">Solana mainnet-beta <small>public on-chain state</small></div>
             </div>
             <div class="row">
-              <div class="k">Your est. earnings</div>
-              <div class="v">$0.0001 <small>per useful mirror event</small></div>
+              <div class="k">Pool</div>
+              <div class="v">Public on-chain balance <small>and history</small></div>
             </div>
             <div class="row">
-              <div class="k">Data mirrored</div>
-              <div class="v">24.6 GB <small>useful, hosted</small></div>
+              <div class="k">Selection</div>
+              <div class="v">Verified eligible mirrors <small>transparent proof</small></div>
             </div>
             <div class="row">
               <div class="k">Wallet</div>
-              <div class="v">SOL ready <small>connect after signup</small></div>
+              <div class="v">Self-custodial <small>public address only</small></div>
             </div>
 
             <div class="formula">
-              <div class="caption">Live earnings calculator</div>
+              <div class="caption">Fund states stay distinct</div>
               <div class="formula-row">
-                <div class="term"><span class="n">$1</span><span class="l">SOL / join</span></div>
-                <span class="op">+</span>
-                <div class="term"><span class="n">128</span><span class="l">Nodes online</span></div>
-                <span class="op">=</span>
-                <div class="term"><span class="n result">$0.0001</span><span class="l">Your share</span></div>
+                <div class="term"><span class="n">YOU</span><span class="l">User-owned funds</span></div>
+                <span class="op">→</span>
+                <div class="term"><span class="n">POOL</span><span class="l">Community-funded</span></div>
+                <span class="op">→</span>
+                <div class="term"><span class="n result">CHAIN</span><span class="l">Pending / finalized</span></div>
               </div>
             </div>
 
@@ -3055,18 +3116,19 @@
               </div>
               <div class="step">
                 <div class="num">02</div>
-                <h3>You get paid</h3>
-                <p>Rewards are distributed to eligible nodes hosting useful, reachable data, paid out to the wallet configured on your profile.</p>
+                <h3>You may be selected</h3>
+                <p>Configurable randomized rounds can send a small community incentive to an eligible node’s self-custodial address. No payment or return is guaranteed.</p>
               </div>
             </div>
 
             <div class="cta-block">
-              <div class="price">Suggested donation <strong>$1</strong></div>
-              <a class="btn" href="/signup">Join the network &rarr;</a>
+              <div class="price">Participation <strong>does not require a contribution</strong></div>
+              <a class="btn" href="/world?landmark=fountain">Join or fund the reward program &rarr;</a>
             </div>
 
             <footer>
-              Paid in Solana (SOL)<span>&middot;</span>Transparent<span>&middot;</span>Decentralized<span>&middot;</span>Open source
+              Non-custodial: ForkMesh never stores community members’ wallet private
+              keys or controls user funds<span>&middot;</span>Community incentives are not investments
             </footer>
           </div>
         </section>
@@ -3128,8 +3190,8 @@
                 <p class="pb-2.5 text-base">
                   ForkMesh is local-first infrastructure for preserving and
                   collaborating on source code. Desktop nodes keep real Git
-                  mirrors locally, while mainnodes coordinate discovery, live
-                  clone routing, host tunnels, encrypted repo rooms, signed
+                  encrypted mirrors locally, while mainnodes coordinate
+                  discovery, direct-HTTPS clone routing, encrypted repo rooms, signed
                   inboxes, and account lookup.
                 </p>
               </details>
@@ -3157,11 +3219,12 @@
                   Where is the Git data stored?<span class="faq-icon">⌄</span>
                 </summary>
                 <p class="pb-2.5 text-base">
-                  Git mirrors live on desktop nodes. Mainnodes coordinate the
-                  network, but they are not the canonical storage layer for Git
-                  objects. When someone clones a repository through ForkMesh,
-                  the route can be coordinated by a mainnode while an online
-                  desktop node serves the Git data.
+                  Encrypted Git mirrors live on independently operated desktop
+                  nodes. Mainnodes coordinate the network, but they are not the
+                  canonical storage layer for Git objects. When someone clones
+                  a public repository through ForkMesh, the Worker proxies a
+                  healthy, integrity-verified HTTPS mirror under the original
+                  URL.
                 </p>
               </details>
               <hr class="faq-divider mx-7 border-dashed border-border" />
@@ -3172,10 +3235,10 @@
                   What is a desktop node?<span class="faq-icon">⌄</span>
                 </summary>
                 <p class="pb-2.5 text-base">
-                  A desktop node is the local ForkMesh app that keeps repository
-                  mirrors on your machine. It can browse mirrored files,
-                  preserve Git history, and serve clone data through a live host
-                  tunnel when your node is online.
+                  A desktop node is the local ForkMesh app that keeps encrypted
+                  repository mirrors on your machine. Its authenticated gateway
+                  can serve clone and browse data through ordinary HTTPS when
+                  healthy; multiplayer sockets carry no repository bytes.
                 </p>
               </details>
               <hr class="faq-divider mx-7 border-dashed border-border" />
@@ -3187,7 +3250,7 @@
                 </summary>
                 <p class="pb-2.5 text-base">
                   A mainnode is a coordination node for the ForkMesh network. It
-                  handles catalog discovery, account lookup, host tunnels,
+                  handles catalog discovery, account lookup, healthy HTTPS mirror routing,
                   encrypted repo rooms, signed inboxes, and routing without
                   becoming the owner of everyone's source code.
                 </p>
@@ -3214,10 +3277,11 @@
                   Are repo rooms encrypted?<span class="faq-icon">⌄</span>
                 </summary>
                 <p class="pb-2.5 text-base">
-                  Yes. ForkMesh repo rooms are designed so clients encrypt
-                  messages before they are relayed. The mainnode helps deliver
-                  room traffic, but the room content is not meant to be readable
-                  by the relay.
+                  Yes, as authenticated shared-key transport. Clients encrypt
+                  messages before relay, but the mainnode derives and
+                  distributes the default passphrase, so its operator can
+                  decrypt room content. At most 500 persisted frames per room
+                  are retained for 7 days.
                 </p>
               </details>
               <hr class="faq-divider mx-7 border-dashed border-border" />
@@ -3295,7 +3359,7 @@
                 </summary>
                 <p class="pb-2.5 text-base">
                   A normal backup protects one copy. ForkMesh adds network
-                  discovery, live clone routing, signed collaboration records,
+                  discovery, direct-HTTPS clone routing, signed collaboration records,
                   encrypted repo rooms, and mainnode coordination so preserved
                   repositories can still be found and used by others.
                 </p>
@@ -3309,10 +3373,10 @@
                   network?<span class="faq-icon">⌄</span>
                 </summary>
                 <p class="pb-2.5 text-base">
-                  Yes. Communities can run mainnodes for their own catalog, host
-                  tunnels, encrypted rooms, inboxes, and account lookup while
-                  contributors run desktop nodes that keep repository mirrors
-                  locally.
+                  Yes. Communities can run mainnodes for their own catalog,
+                  direct-HTTPS routing, encrypted rooms, inboxes, and account
+                  lookup while contributors run desktop nodes that keep
+                  encrypted repository mirrors locally.
                 </p>
               </details>
             </div>

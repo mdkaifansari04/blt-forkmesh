@@ -103,12 +103,17 @@ def test_worker_indexes_notifications_from_existing_event_sources():
         "await notify_pending_inbox(env, owner, repo, \"discussion\"",
         "await notify_mentions(env, owner, repo,",
         "await enqueue_notification(env, grantee, \"repo_shared\"",
-        "await notify_bounty_event(env, rec, \"bounty_funded\"",
-        "await notify_bounty_event(env, rec, \"bounty_paid\"",
         "async def notify_release_published",
-        "await notify_host_status(env, repo_bi, \"host_online\"",
+        "await notify_host_status(env, repo_bi, \"host_offline\"",
     ):
         assert marker in ENTRY_TEXT
+    # Legacy Worker-held bounty funding/payout mutation is frozen; public
+    # historical status polling must not emit a new event or move funds.
+    bounty_handler = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def bounties_handler")
+        :ENTRY_TEXT.index("\n\n# Cap on collaborators")
+    ]
+    assert "notify_bounty_event" not in bounty_handler
 
 
 

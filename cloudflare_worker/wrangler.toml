@@ -22,11 +22,8 @@ run_worker_first = [
   "/.well-known/*",
   "/ap/*",
   "/nodeinfo/*",
-  # In production, forkmesh.com/ itself is owned by the separate marketing
-  # Worker (../cloudflare_marketing_worker) via an exact-match route, which
-  # takes precedence over this Worker for the root URL only. This "/" entry
-  # keeps the relay's homepage handler working as the fallback on workers.dev
-  # previews and in local dev, where no route splitting exists.
+  # The relay is the single production Worker for the World, marketing pages,
+  # static assets, APIs, and realtime chat/presence.
   "/",
   "/health",
   "/simulate-sentry-error",
@@ -70,11 +67,20 @@ run_worker_first = [
   "!/favicon/*",
   "!/blog/*",
   "!/docs/*",
+  "!/world/*",
 ]
 
 [vars]
 NODE_NAME = "forkmesh-mainnode"
 NODE_SOLANA_ADDRESS = ""
+COMMUNITY_REWARD_NETWORK = "mainnet-beta"
+COMMUNITY_REWARD_RPC_URL = "https://api.mainnet-beta.solana.com"
+REWARD_INTERVAL_MS = "3600000"
+REWARD_JITTER_MAX_MS = "2700000"
+REWARD_AMOUNT_LAMPORTS = "100000"
+REWARD_MIN_UPTIME_MS = "1800000"
+REWARD_MIN_CONTRIBUTION_UNITS = "0"
+REWARD_HEALTH_FRESH_MS = "600000"
 # ForkBot's chat-to-issue model. llama-3.3-70b (fp8-fast) is markedly better
 # at intent detection and supports Workers AI JSON mode (response_format
 # json_schema), which _forkbot_run_ai requests first so replies are guaranteed
@@ -83,14 +89,15 @@ NODE_SOLANA_ADDRESS = ""
 FORKBOT_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 # Payout relay mesh (canonical routes /api/relay-mesh/*, legacy alias
 # /api/federation/* — unrelated to the ActivityPub fediverse layer at /ap/*).
-# Leave MAIN_RELAY_URL UNSET on the main relay (forkmesh.com) —
-# that is what makes a deployment "the main relay": it custodies federated signup
-# deposits and disburses to every node on every approved relay.
+# Leave MAIN_RELAY_URL UNSET on the main relay (forkmesh.com). The relay
+# coordinates public presence and unsigned reward intents; it does not custody
+# signup deposits or load a wallet signing key.
 #
 # On a *federated* relay, set MAIN_RELAY_URL to the main relay's origin, e.g.
 #   MAIN_RELAY_URL = "https://forkmesh.com"
-# Then node signups custody their Solana on the main relay (the funds flow
-# through it) and this relay's online nodes join the main relay's payout split.
+# Then this relay's eligible nodes can join the main relay's public selection
+# snapshot. Reward signing still happens only in the configured owner's local
+# Qt client.
 # A federated relay auto-generates its own Ed25519 federation identity (stored
 # in D1, table relay_self) — no key to manage. Optionally set RELAY_LABEL and
 # PUBLIC_BASE_URL so it identifies itself when registering. The main operator
@@ -100,19 +107,26 @@ FORKBOT_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 # MAIN_RELAY_URL = ""
 # RELAY_LABEL = ""
 # PUBLIC_BASE_URL = ""
-# TREASURY_SOLANA_ADDRESS (receives automated sweeps from per-account join
-# deposit wallets) is NOT here — it lives in .env.production and is pushed as a
-# Worker secret by deploy.sh, so it isn't committed and can't be wiped by a
-# deploy. Falls back to NODE_SOLANA_ADDRESS when unset.
+# TREASURY_SOLANA_ADDRESS is the existing one-click deployment name for the
+# public reward destination. COMMUNITY_REWARD_POOL_ADDRESS is an optional
+# explicit modern override; REWARD_SIGNER_ACCOUNT identifies the local signer.
+# The corresponding private key must exist only in the first instance owner's
+# encrypted local Qt vault; never put it in wrangler variables, D1, Worker
+# secrets, logs, or deployment manifests.
 # Admins are set in the database, not here: the users table has an is_admin
 # column. Grant one with: UPDATE users SET is_admin=1 WHERE username='<user>'.
-# DATA_KEY encrypts ALL D1 data at rest (AES-GCM row blobs) and derives the
-# blind-index HMAC key — including the Ed25519 SEEDS that control custody
-# deposit/bounty wallets. It is INTENTIONALLY NOT here: a value in [vars] is
-# plaintext and committed (i.e. public), which would let anyone with a DB read
-# decrypt every custody key. It lives in .env.production (gitignored) and is
-# pushed as a Worker *secret* by deploy.sh. The code fails closed if it is unset
-# or left at a known dev placeholder.
+# DATA_KEY encrypts D1 private row blobs and derives blind indexes. It is
+# INTENTIONALLY NOT here: a value in [vars] is plaintext and committed. It
+# lives in .env.production (gitignored) and is pushed as a Worker secret. It is
+# not a wallet key and the Worker reward paths never use it to encrypt wallet
+# seeds. Historical legacy-custody rows require the documented offline
+# inventory/reconciliation/scrub migration.
+# MIRROR_ROUTER_SIGNING_SEED is a separate Ed25519 infrastructure capability
+# key in .env.production. It signs short-lived read requests sent to registered
+# direct-HTTPS mirror gateways; it is never a user/wallet/repository key and is
+# never written to D1. MIRROR_ROUTER_PUBLIC_KEY is deployed alongside it and is
+# intentionally discoverable at GET /api/mirrors/https so gateway verifiers can
+# be configured without receiving the signing seed.
 # The secret admin dashboard path (ADMIN_PATH) is kept out of this committed
 # file. It lives in .env.production (gitignored) and is pushed as a Worker
 # *secret* by deploy.sh (`pywrangler secret put`) — NOT a plaintext var, which
@@ -122,8 +136,8 @@ FORKBOT_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 # served at https://<host>/<ADMIN_PATH>, gated by a forkmesh login whose account
 # carries the is_admin flag (no static HTTP Basic credentials).
 
-# Durable Objects are used only for transient relaying now: the encrypted chat
-# rooms and the live file/git tunnel. All persistent data lives in D1 below.
+# Durable Objects are used only for transient encrypted chat/world presence.
+# Repository content and control traffic use normal HTTPS.
 #
 # ForkBot uses Cloudflare Workers AI when available to turn a chat mention into
 # a crisp issue title/body. The Worker falls back to deterministic parsing when
@@ -136,8 +150,8 @@ name = "FORKMESH_MAINNODE_ROOM"
 class_name = "ForkMeshRoom"
 
 [[durable_objects.bindings]]
-name = "FORKMESH_HOST"
-class_name = "ForkMeshHost"
+name = "FORKMESH_WORLD"
+class_name = "ForkMeshWorld"
 
 # Persistent storage: repo catalog, accounts, and the issue/pull inboxes.
 # Create once with:  uvx --from workers-py pywrangler d1 create forkmesh
@@ -158,6 +172,20 @@ binding = "DB"
 database_name = "forkmesh-dev"
 database_id = "REPLACE_WITH_DEV_D1_DATABASE_ID"
 migrations_dir = "migrations"
+
+[env.dev.vars]
+# Development is explicitly isolated on devnet. Production defaults above are
+# mainnet-beta and must never silently fall back to this cluster.
+COMMUNITY_REWARD_NETWORK = "devnet"
+COMMUNITY_REWARD_RPC_URL = "https://api.devnet.solana.com"
+
+[[env.dev.durable_objects.bindings]]
+name = "FORKMESH_MAINNODE_ROOM"
+class_name = "ForkMeshRoom"
+
+[[env.dev.durable_objects.bindings]]
+name = "FORKMESH_WORLD"
+class_name = "ForkMeshWorld"
 
 [[migrations]]
 tag = "v1"
@@ -197,6 +225,17 @@ deleted_classes = [
     "ForkMeshIssues",
     "ForkMeshPulls",
 ]
+
+[[migrations]]
+tag = "v9"
+# ForkMeshWorld never uses its SQLite storage; registering it as a SQLite-backed
+# class is still required by Cloudflare before the transient DO can be bound.
+new_sqlite_classes = ["ForkMeshWorld"]
+
+[[migrations]]
+tag = "v10"
+# Repository bytes and control traffic moved to the direct HTTPS mirror layer.
+deleted_classes = ["ForkMeshHost"]
 
 
 [observability]

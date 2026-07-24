@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Zero-custody relay · ForkMesh Blog</title>
-    <meta name="description" content="The mainnode coordinates discovery, presence, and routing with Cloudflare Durable Objects, but it stores no packfiles and no message bodies. Objects stream between peers; the relay just connects them.">
+    <title>Packfile-free routing relay · ForkMesh Blog</title>
+    <meta name="description" content="The main Worker stores discovery and health metadata, not Git packfiles. Repository bytes stream from selected independent origins over ordinary HTTPS.">
     <meta name="application-name" content="ForkMesh">
     <meta name="apple-mobile-web-app-title" content="ForkMesh">
     <meta name="theme-color" content="#090909">
@@ -22,8 +22,8 @@
     <meta property="og:type" content="article">
     <meta property="og:url" content="https://forkmesh.com/blog/zero-custody-relay/">
     <meta property="og:site_name" content="ForkMesh">
-    <meta property="og:title" content="Zero-custody relay">
-    <meta property="og:description" content="The mainnode coordinates discovery, presence, and routing with Cloudflare Durable Objects, but it stores no packfiles and no message bodies. Objects stream between peers; the relay just connects them.">
+    <meta property="og:title" content="Packfile-free routing relay">
+    <meta property="og:description" content="The main Worker stores discovery and health metadata, not Git packfiles. Repository bytes stream from selected independent origins over ordinary HTTPS.">
     <meta property="og:image" content="https://forkmesh.com/assets/blog/features/zero-custody-relay.webp">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:image" content="https://forkmesh.com/assets/blog/features/zero-custody-relay.webp">
@@ -37,23 +37,23 @@
         <section class="hero">
           <div>
             <p class="eyebrow">Distributed hosting</p>
-            <h1>Zero-custody relay</h1>
-            <p class="lede">The mainnode coordinates discovery, presence, and routing with Cloudflare Durable Objects, but it stores no packfiles and no message bodies. Objects stream between peers; the relay just connects them.</p>
+            <h1>Packfile-free routing relay</h1>
+            <p class="lede">The main Worker stores discovery and health metadata, not Git packfiles. Repository bytes stream from selected independent origins over ordinary HTTPS.</p>
             <div class="meta"><span class="pill">Feature 02 of 72</span><span>Feature</span><span>Distributed hosting &amp; preservation</span><span>3 min read</span></div>
           </div>
-          <img class="hero-img" src="/assets/blog/features/zero-custody-relay.webp" alt="Abstract ForkMesh artwork for Zero-custody relay">
+          <img class="hero-img" src="/assets/blog/features/zero-custody-relay.webp" alt="Abstract ForkMesh artwork for a packfile-free routing relay">
         </section>
         <article class="body">
           <h2>Why it matters</h2>
-          <p>Zero-custody relay gives ForkMesh a concrete mechanism for relay coordination without packfile or message-body custody. The mainnode coordinates discovery, presence, and routing with Cloudflare Durable Objects, but it stores no packfiles and no message bodies. Objects stream between peers; the relay just connects them.</p>
-          <p>Code disappears from a network when one hosted account, one VM, or one storage path becomes the only way to reach it. In ForkMesh, zero-custody relay addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
+          <p>Packfile-free routing gives ForkMesh a control plane without turning it into canonical Git storage. The Worker tracks signed endpoint registration, generalized health, integrity state, and selection metadata; repository bytes remain on independent mirror nodes.</p>
+          <p>Code becomes fragile when one hosted account, VM, or storage path is the only way to reach it. This routing boundary keeps repository bytes separate from the coordination layer.</p>
           <h2>How ForkMesh handles it</h2>
-          <p>ForkMesh handles zero-custody relay through the same split it uses across the product: desktop nodes keep real Git mirrors, while mainnodes coordinate discovery, relay tunnels, presence, account lookup, and clone routing.</p>
-          <p>The behavior is intentionally narrow: The mainnode coordinates discovery, presence, and routing with Cloudflare Durable Objects, but it stores no packfiles and no message bodies. Objects stream between peers; the relay just connects them. The Worker helps find and route a live host, but it is not canonical Git storage.</p>
-          <div class="note">Title focus: Zero-custody relay stays tied to relay coordination without packfile or message-body custody and the local-first repository model.</div>
+          <p>Desktop and organization nodes keep real Git mirrors. A proxied Cloudflare Tunnel terminates public TLS at each node’s loopback-only read gateway. The Worker verifies the node identity and signed repository proof, chooses a fresh healthy origin, issues a single-use request capability, and streams the response while the public ForkMesh URL stays unchanged.</p>
+          <p>Git clone, browse, raw files, search, and release downloads use normal HTTPS. Multiplayer sockets are reserved for small presence, chat, movement, and invalidation events. The Worker is service discovery and bounded failover, not repository or wallet custody.</p>
+          <div class="note">Private or unknown repositories produce the same response for unauthorized callers. Private mirror bytes remain in opaque client-encrypted replicas and are never enabled by adding a public gateway path.</div>
           <h2>Where it fits</h2>
-          <p>Use zero-custody relay when availability, clone routing, and preservation need to be handled by the mesh instead of by a single origin.</p>
-          <p>It pairs with the rest of Distributed hosting &amp; preservation because Zero-custody relay keeps relay coordination without packfile or message-body custody connected to the repository, its signatures, and the nodes that serve it.</p>
+          <p>Use packfile-free routing when availability, clone routing, and preservation need to be handled by the mesh instead of by a single origin.</p>
+          <p>The claim is intentionally scoped: the Worker has no packfile or wallet-key custody, but it does store bounded coordination metadata. Chat is a separate relay-readable encrypted service with bounded message retention.</p>
         </article>
         <nav class="next" aria-label="Feature posts">
           <a href="/blog/desktop-node-mirrors/">← Desktop-node mirrors</a>

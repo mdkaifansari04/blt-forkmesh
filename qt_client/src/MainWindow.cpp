@@ -2,6 +2,7 @@
 #include "MainWindow.h"
 #include "CrashHandler.h"
 #include "MainWindowInternal.h"
+#include "WorldSpeechBridge.h"
 
 using namespace forkmesh::ui;
 
@@ -49,6 +50,35 @@ QString networkRequestEventFor(const QUrl &url)
 
 MainWindow::~MainWindow()
 {
+    // Revoke the browser's memory-only voice capability and stop any local
+    // capture while MainWindow's voice state is still alive.
+    if (m_worldSpeechBridge)
+        m_worldSpeechBridge->stop();
+
+    // Deployment children may still hold a session API token or Tunnel
+    // connector token in their private process environment. Stop all of them
+    // before QObject teardown, drop the retained QProcess environments, and
+    // overwrite our short-lived redaction copy. No token is persisted in
+    // settings or argv.
+    for (QProcess *process :
+         {m_cloudflareBootstrapProcess,
+          m_cloudflareTunnelBootstrapProcess,
+          m_cloudflaredInstallProcess, m_cloudflaredProcess,
+          m_mirrorGatewayProcess}) {
+        if (!process)
+            continue;
+        if (process->state() != QProcess::NotRunning) {
+            process->terminate();
+            if (!process->waitForFinished(2000)) {
+                process->kill();
+                process->waitForFinished(1000);
+            }
+        }
+        process->setProcessEnvironment(QProcessEnvironment());
+    }
+    m_cloudflareActiveSecret.fill(QChar(u'\0'));
+    m_cloudflareActiveSecret.clear();
+
     forkmesh::setCrashContext(
         QStringLiteral("MainWindow teardown\nregistered diff views: %1")
             .arg(m_diffViews.size()));
@@ -276,6 +306,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     m_stack->addWidget(buildChatPage());
     logStartup(QStringLiteral("chat/app page built"));
     setCentralWidget(m_stack);
+    initializeWorldSpeechBridge();
     loadRepositories();
     refreshRepositoryList();
     logStartup(QStringLiteral("repositories loaded"));
@@ -342,7 +373,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     QTimer::singleShot(15000, this, &MainWindow::autoSyncMirrors);
     // Source-of-truth nodes pick up issues/PRs/comments/agent-prompts filed by
     // other nodes through the relay's event push: a minimal frame on the repo's
-    // host tunnel socket triggers one consolidated GET /api/sync (see
+    // control/update socket triggers one consolidated GET /api/sync (see
     // performRelaySync). This timer is only the slow safety net for dropped
     // events and reconnect gaps — it used to be a 60s poll of four endpoints
     // per owned repo. First pass shortly after launch covers anything queued
@@ -443,19 +474,15 @@ void MainWindow::showEvent(QShowEvent *event)
     if (m_deferredStartupStarted)
         return;
     m_deferredStartupStarted = true;
-    // Run the heavy, git-backed startup (silent auth + last-repo restore) only
-    // once the window's first frame is actually on screen. A singleShot(0) would
-    // fire before the compositor exposes/paints the window, blocking the GUI
-    // thread on git work and leaving an unpainted black frame for ~a second.
-    if (QWindow *handle = windowHandle()) {
-        if (handle->isExposed())
-            QTimer::singleShot(0, this, &MainWindow::runDeferredStartup);
-        else
-            handle->installEventFilter(this); // wait for the first expose
-    }
-    // Safety net so startup still runs if no expose ever arrives (e.g. headless
-    // / offscreen platforms). runDeferredStartup is idempotent.
-    QTimer::singleShot(250, this, &MainWindow::runDeferredStartup);
+    // An Expose event is not proof that Qt has painted the first frame (notably
+    // with the offscreen QPA and some compositors). Starting silent auth from
+    // that event let key/account work run ahead of paint and restored the black
+    // startup pause this deferral was meant to prevent. Give the event loop a
+    // bounded five-second interactive runway so silent authentication and session
+    // restoration cannot collide with the user's first repository/tab navigation,
+    // then run the idempotent startup regardless of platform. Headless launches
+    // use the same deterministic fallback.
+    QTimer::singleShot(5000, this, &MainWindow::runDeferredStartup);
 }
 
 void MainWindow::runDeferredStartup()

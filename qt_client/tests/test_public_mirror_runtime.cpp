@@ -1,0 +1,323 @@
+#include "PublicMirrorRuntime.h"
+
+#include <QCoreApplication>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QJsonDocument>
+#include <QProcess>
+#include <QProcessEnvironment>
+#include <QTemporaryDir>
+
+#include <cstdio>
+
+namespace {
+
+int failures = 0;
+
+void check(bool condition, const char *message)
+{
+    if (condition)
+        return;
+    std::fprintf(stderr, "FAIL: %s\n", message);
+    ++failures;
+}
+
+bool writeFile(const QString &path, const QByteArray &bytes,
+               bool executable = false)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
+        file.write(bytes) != bytes.size()) {
+        return false;
+    }
+    file.close();
+    if (executable) {
+        return file.setPermissions(
+            QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+            QFileDevice::ExeOwner);
+    }
+    return true;
+}
+
+bool git(const QString &path, const QStringList &arguments,
+         QByteArray *output = nullptr)
+{
+    QProcess process;
+    QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+    environment.insert(QStringLiteral("GIT_AUTHOR_NAME"),
+                       QStringLiteral("Public Mirror Test"));
+    environment.insert(QStringLiteral("GIT_AUTHOR_EMAIL"),
+                       QStringLiteral("public-mirror@example.invalid"));
+    environment.insert(QStringLiteral("GIT_COMMITTER_NAME"),
+                       QStringLiteral("Public Mirror Test"));
+    environment.insert(QStringLiteral("GIT_COMMITTER_EMAIL"),
+                       QStringLiteral("public-mirror@example.invalid"));
+    process.setProcessEnvironment(environment);
+    process.start(QStringLiteral("git"),
+                  QStringList{QStringLiteral("-C"), path} + arguments);
+    if (!process.waitForFinished(30000) || process.exitCode() != 0)
+        return false;
+    if (output)
+        *output = process.readAllStandardOutput();
+    return true;
+}
+
+bool excludesGroupAndOther(const QFileInfo &info)
+{
+    const auto permissions = info.permissions();
+    return !(permissions &
+             (QFileDevice::ReadGroup | QFileDevice::WriteGroup |
+              QFileDevice::ExeGroup | QFileDevice::ReadOther |
+              QFileDevice::WriteOther | QFileDevice::ExeOther));
+}
+
+QByteArray readAll(const QString &path)
+{
+    QFile file(path);
+    return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+}
+
+} // namespace
+
+int main(int argc, char **argv)
+{
+    QCoreApplication app(argc, argv);
+
+    QTemporaryDir root;
+    check(root.isValid(), "temporary root is available");
+    const QString toolsRoot = root.filePath(QStringLiteral("tools"));
+    check(QDir().mkpath(toolsRoot), "fake tool directory is created");
+    const QString fakeAge =
+        QDir(toolsRoot).filePath(QStringLiteral("age"));
+    const QString fakeKeygen =
+        QDir(toolsRoot).filePath(QStringLiteral("age-keygen"));
+    const QByteArray ageScript = R"PY(#!/usr/bin/env python3
+import pathlib
+import sys
+
+HEADER = b"age-encryption.org/v1\n"
+args = sys.argv[1:]
+if "--encrypt" in args:
+    output = pathlib.Path(args[args.index("--output") + 1])
+    plain = sys.stdin.buffer.read()
+    output.write_bytes(HEADER + bytes(value ^ 0xA5 for value in plain))
+    raise SystemExit(0)
+if "--decrypt" in args:
+    raw = pathlib.Path(args[-1]).read_bytes()
+    if not raw.startswith(HEADER):
+        raise SystemExit(2)
+    sys.stdout.buffer.write(bytes(value ^ 0xA5 for value in raw[len(HEADER):]))
+    raise SystemExit(0)
+raise SystemExit(2)
+)PY";
+    const QByteArray keygenScript = R"PY(#!/usr/bin/env python3
+import pathlib
+import sys
+
+SECRET = "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ"
+RECIPIENT = "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+args = sys.argv[1:]
+if args[:1] == ["-o"] and len(args) == 2:
+    pathlib.Path(args[1]).write_text(
+        "# created by deterministic ForkMesh test helper\n" + SECRET + "\n",
+        encoding="ascii",
+    )
+    raise SystemExit(0)
+if args[:1] == ["-y"] and len(args) == 2:
+    print(RECIPIENT)
+    raise SystemExit(0)
+raise SystemExit(2)
+)PY";
+    check(writeFile(fakeAge, ageScript, true),
+          "fake age tool is created");
+    check(writeFile(fakeKeygen, keygenScript, true),
+          "fake age-keygen tool is created");
+
+    PublicMirrorRuntime::Tools tools;
+    tools.age = fakeAge;
+    tools.ageKeygen = fakeKeygen;
+    tools.tar = QStringLiteral("tar");
+    tools.git = QStringLiteral("git");
+    QString error;
+    check(PublicMirrorRuntime::toolingAvailable(tools, &error),
+          "all encrypted public mirror tools are available");
+    PublicMirrorRuntime::Tools missing = tools;
+    missing.age = root.filePath(QStringLiteral("missing-age"));
+    check(!PublicMirrorRuntime::toolingAvailable(missing, &error),
+          "missing age fails closed");
+    error.clear();
+
+    const QString source = root.filePath(QStringLiteral("source"));
+    check(QDir().mkpath(source), "public source directory is created");
+    check(git(source, {QStringLiteral("init"), QStringLiteral("-q"),
+                       QStringLiteral("-b"), QStringLiteral("main")}),
+          "public source repository is initialized");
+    const QByteArray firstPlaintext =
+        QByteArrayLiteral("public-repository-content-v1");
+    check(writeFile(QDir(source).filePath(QStringLiteral("README.md")),
+                    firstPlaintext) &&
+              git(source, {QStringLiteral("add"), QStringLiteral("README.md")}) &&
+              git(source, {QStringLiteral("commit"), QStringLiteral("-q"),
+                           QStringLiteral("-m"), QStringLiteral("initial")}),
+          "public source commit is created");
+
+    const QString archiveRoot =
+        root.filePath(QStringLiteral("encrypted-public-mirrors"));
+    const QString vaultPath =
+        root.filePath(QStringLiteral("identity/public-age-vault.json"));
+    const QByteArray vaultSecret =
+        QByteArrayLiteral("0123456789abcdef0123456789abcdef"
+                          "device-bound-public-age-vault-secret");
+    auto created = PublicMirrorRuntime::syncRepository(
+        source, archiveRoot, vaultPath, vaultSecret, {}, tools, &error);
+    if (!created.isValid())
+        std::fprintf(stderr, "public sync error: %s\n",
+                     error.toUtf8().constData());
+    check(created.isValid() && created.created && error.isEmpty(),
+          "public repository seals into an age archive and authenticates a temporary reopen");
+    check(PublicMirrorRuntime::isArchiveId(created.metadata.archiveId) &&
+              created.metadata.ciphertextSha256.size() == 64 &&
+              created.metadata.expectedRefsSha256.size() == 64 &&
+              created.metadata.keyReference ==
+                  PublicMirrorRuntime::keyReference(
+                      created.metadata.archiveId),
+          "public archive metadata is complete and opaque");
+
+    const QString ciphertext = PublicMirrorRuntime::ciphertextPath(
+        archiveRoot, created.metadata.archiveId);
+    const QByteArray cipherBytes = readAll(ciphertext);
+    const QByteArray vaultBytes = readAll(vaultPath);
+    check(cipherBytes.startsWith(QByteArrayLiteral("age-encryption.org/v1\n")) &&
+              !cipherBytes.contains(firstPlaintext) &&
+              !vaultBytes.contains(firstPlaintext) &&
+              !vaultBytes.contains(QByteArrayLiteral("AGE-SECRET-KEY-1")),
+          "durable archive and identity vault contain no repository or age-identity plaintext");
+    check(excludesGroupAndOther(QFileInfo(ciphertext)) &&
+              excludesGroupAndOther(QFileInfo(vaultPath)) &&
+              excludesGroupAndOther(
+                  QFileInfo(QFileInfo(vaultPath).absolutePath())),
+          "ciphertext, vault, and vault directory are owner-only");
+
+    QByteArray shown;
+    check(git(created.materialization->repositoryPath(),
+              {QStringLiteral("show"),
+               QStringLiteral("refs/heads/main:README.md")},
+              &shown) &&
+              shown.trimmed() == firstPlaintext,
+          "authenticated temporary materialization contains the expected commit");
+    check(!created.materialization->repositoryPath().startsWith(
+              QDir::cleanPath(archiveRoot) + QLatin1Char('/')),
+          "plaintext materialization is outside durable archive storage");
+
+    const QString firstMaterialization =
+        created.materialization->repositoryPath();
+    created.materialization.reset();
+    check(!QFileInfo::exists(firstMaterialization),
+          "destroying a public materialization removes its plaintext");
+    auto reopened = PublicMirrorRuntime::materialize(
+        archiveRoot, vaultPath, vaultSecret, created.metadata.archiveId,
+        tools, &error);
+    check(reopened && reopened->isValid(),
+          "the device-bound vault can reopen the encrypted archive");
+    check(!PublicMirrorRuntime::materialize(
+              archiveRoot, vaultPath, QByteArray(64, 'x'),
+              created.metadata.archiveId, tools, &error),
+          "a wrong device secret cannot decrypt the age identity vault");
+
+    QTemporaryDir gatewayDestination;
+    const QJsonObject gatewayRequest{
+        {QStringLiteral("schemaVersion"), 1},
+        {QStringLiteral("type"),
+         QStringLiteral("forkmesh.repository-archive-materialize")},
+        {QStringLiteral("scheme"),
+         QStringLiteral("age-encrypted-tar-v1")},
+        {QStringLiteral("ciphertextPath"), ciphertext},
+        {QStringLiteral("ciphertextSha256"),
+         created.metadata.ciphertextSha256},
+        {QStringLiteral("keyReference"),
+         created.metadata.keyReference},
+        {QStringLiteral("destination"), gatewayDestination.path()},
+    };
+    const QJsonObject gatewayResponse =
+        PublicMirrorRuntime::materializeGatewayRequest(
+            gatewayRequest, archiveRoot, vaultPath, vaultSecret,
+            tools, &error);
+    check(gatewayResponse.value(QStringLiteral("ok")).toBool() &&
+              gatewayResponse.value(QStringLiteral("repositoryPath"))
+                      .toString() ==
+                  QLatin1String("repository.git") &&
+              QFileInfo(gatewayDestination.filePath(
+                            QStringLiteral("repository.git")))
+                  .isDir(),
+          "gateway materialization validates the complete external-command request");
+    QJsonObject wrongRequest = gatewayRequest;
+    wrongRequest.insert(QStringLiteral("ciphertextSha256"),
+                        QString(64, QLatin1Char('0')));
+    QTemporaryDir wrongDestination;
+    wrongRequest.insert(QStringLiteral("destination"),
+                        wrongDestination.path());
+    check(PublicMirrorRuntime::materializeGatewayRequest(
+              wrongRequest, archiveRoot, vaultPath, vaultSecret,
+              tools, &error)
+              .isEmpty(),
+          "gateway materialization rejects a mismatched ciphertext digest");
+
+    const QByteArray secondPlaintext =
+        QByteArrayLiteral("public-repository-content-v2");
+    check(writeFile(QDir(source).filePath(QStringLiteral("README.md")),
+                    secondPlaintext) &&
+              git(source, {QStringLiteral("add"), QStringLiteral("README.md")}) &&
+              git(source, {QStringLiteral("commit"), QStringLiteral("-q"),
+                           QStringLiteral("-m"), QStringLiteral("update")}),
+          "public source is updated");
+    const QString archiveId = created.metadata.archiveId;
+    const QString firstDigest = created.metadata.ciphertextSha256;
+    auto updated = PublicMirrorRuntime::syncRepository(
+        source, archiveRoot, vaultPath, vaultSecret, archiveId,
+        tools, &error);
+    check(updated.isValid() && !updated.created &&
+              updated.metadata.archiveId == archiveId &&
+              updated.metadata.ciphertextSha256 != firstDigest &&
+              updated.metadata.expectedRefsSha256 !=
+                  created.metadata.expectedRefsSha256,
+          "public sync atomically rotates ciphertext while retaining its opaque archive id");
+    shown.clear();
+    check(git(updated.materialization->repositoryPath(),
+              {QStringLiteral("show"),
+               QStringLiteral("refs/heads/main:README.md")},
+              &shown) &&
+              shown.trimmed() == secondPlaintext,
+          "updated encrypted archive reopens at the new commit");
+
+    QByteArray tampered = readAll(ciphertext);
+    if (tampered.size() > 40)
+        tampered[tampered.size() / 2] ^= 1;
+    check(writeFile(ciphertext, tampered),
+          "test can tamper with durable ciphertext");
+    check(!PublicMirrorRuntime::materialize(
+              archiveRoot, vaultPath, vaultSecret, archiveId,
+              tools, &error),
+          "ciphertext tampering is rejected before age is invoked");
+
+    const QString managedRoot =
+        root.filePath(QStringLiteral("legacy-mirrors"));
+    const QString legacy =
+        QDir(managedRoot).filePath(QStringLiteral("demo.git"));
+    check(QDir().mkpath(legacy), "legacy managed mirror is created");
+    check(PublicMirrorRuntime::removeManagedPlaintextMirror(
+              legacy, managedRoot, &error) &&
+              !QFileInfo::exists(legacy),
+          "authenticated migration can remove a managed legacy plaintext mirror");
+    const QString outside =
+        root.filePath(QStringLiteral("outside.git"));
+    check(QDir().mkpath(outside) &&
+              !PublicMirrorRuntime::removeManagedPlaintextMirror(
+                  outside, managedRoot, &error) &&
+              QFileInfo::exists(outside),
+          "legacy cleanup refuses paths outside the managed root");
+
+    if (failures == 0)
+        std::printf("public mirror runtime tests passed\n");
+    return failures == 0 ? 0 : 1;
+}

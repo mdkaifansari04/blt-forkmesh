@@ -215,12 +215,11 @@ def build_repo_mirrors_payload(
     for row in members:
         freshest_sync = max(freshest_sync, _mirror_ms(row["data"].get("lastSync")) or 0)
 
-    # Is the logical repo's source of truth (a working-copy holder — "local-node")
-    # online right now? While it is, a clone of a mirror whose refs fail the
-    # integrity pin is transparently served from the source instead of the mirror
-    # (see Default._online_source_of_truth), so that mirror is auto-healing, not
-    # blocking — reported as "healing" rather than "rejected". The hard reject (and
-    # its tamper protection) still applies when the source is offline.
+    # Is the logical repo's source of truth (a working-copy holder —
+    # "local-node") reachable through a fresh, healthy direct-HTTPS endpoint?
+    # While it is, a mirror with stale refs can re-sync from the source, so it is
+    # auto-healing rather than blocked. The hard reject still applies when no
+    # healthy source endpoint is available.
     source_online = False
     for row in members:
         rec = row["data"]

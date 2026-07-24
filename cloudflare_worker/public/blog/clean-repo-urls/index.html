@@ -5,7 +5,7 @@
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Clean repo URLs · ForkMesh Blog</title>
-    <meta name="description" content="forkmesh.com/owner/repo takes you straight to the repository, shareable links that keep working even when the original host is offline.">
+    <meta name="description" content="forkmesh.com/owner/repo stays the public entry point; during an origin outage it can continue through an eligible, healthy, integrity-matching mirror.">
     <meta name="application-name" content="ForkMesh">
     <meta name="apple-mobile-web-app-title" content="ForkMesh">
     <meta name="theme-color" content="#090909">
@@ -23,7 +23,7 @@
     <meta property="og:url" content="https://forkmesh.com/blog/clean-repo-urls/">
     <meta property="og:site_name" content="ForkMesh">
     <meta property="og:title" content="Clean repo URLs">
-    <meta property="og:description" content="forkmesh.com/owner/repo takes you straight to the repository, shareable links that keep working even when the original host is offline.">
+    <meta property="og:description" content="forkmesh.com/owner/repo stays the public entry point; during an origin outage it can continue through an eligible, healthy, integrity-matching mirror.">
     <meta property="og:image" content="https://forkmesh.com/assets/blog/features/clean-repo-urls.webp">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:image" content="https://forkmesh.com/assets/blog/features/clean-repo-urls.webp">
@@ -38,22 +38,22 @@
           <div>
             <p class="eyebrow">Mobile, web &amp; IDE</p>
             <h1>Clean repo URLs</h1>
-            <p class="lede">forkmesh.com/owner/repo takes you straight to the repository, shareable links that keep working even when the original host is offline.</p>
+            <p class="lede">forkmesh.com/owner/repo stays the public entry point; during an origin outage it can continue through an eligible, healthy, integrity-matching mirror.</p>
             <div class="meta"><span class="pill">Feature 68 of 72</span><span>Feature</span><span>Mobile, web &amp; IDE</span><span>3 min read</span></div>
           </div>
           <img class="hero-img" src="/assets/blog/features/clean-repo-urls.webp" alt="Abstract ForkMesh artwork for Clean repo URLs">
         </section>
         <article class="body">
           <h2>Why it matters</h2>
-          <p>Clean repo URLs gives ForkMesh a concrete mechanism for shareable repository URLs that keep working through host changes. forkmesh.com/owner/repo takes you straight to the repository, shareable links that keep working even when the original host is offline.</p>
+          <p>Clean repo URLs gives ForkMesh a stable public entry point across routing changes. During an origin outage, <code>forkmesh.com/owner/repo</code> can continue only when an eligible, healthy, integrity-matching mirror is online.</p>
           <p>A distributed forge still needs clean entry points for readers, contributors, mobile users, and editor workflows. In ForkMesh, clean repo URLs addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
           <p>ForkMesh handles clean repo URLs through the same split it uses across the product: ForkMesh exposes web, mobile, editor, docs, status, and clean URL surfaces on top of the desktop-node and mainnode model.</p>
-          <p>The behavior is intentionally narrow: forkmesh.com/owner/repo takes you straight to the repository, shareable links that keep working even when the original host is offline. Those surfaces route to live or mirrored data; they are access layers, not the canonical Git store.</p>
-          <div class="note">Title focus: Clean repo URLs stays tied to shareable repository URLs that keep working through host changes and the local-first repository model.</div>
+          <p>The behavior is intentionally narrow: <code>forkmesh.com/owner/repo</code> routes to a qualifying live origin or mirror; if none is available, the repository request fails clearly. These surfaces are access layers, not the canonical Git store.</p>
+          <div class="note">A stable URL does not guarantee availability. Failover requires an eligible, healthy, integrity-matching mirror serving the same repository state.</div>
           <h2>Where it fits</h2>
           <p>Use clean repo URLs when people need to browse, contribute, learn, and receive updates outside the main desktop window.</p>
-          <p>It pairs with the rest of Mobile, web &amp; IDE because Clean repo URLs keeps shareable repository URLs that keep working through host changes connected to the repository, its signatures, and the nodes that serve it.</p>
+          <p>It pairs with the rest of Mobile, web &amp; IDE by keeping one public repository URL while verified routing selects an available qualifying source.</p>
         </article>
         <nav class="next" aria-label="Feature posts">
           <a href="/blog/web-repo-browser/">← Web repo browser</a>

@@ -5,7 +5,7 @@
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Streaming transfers · ForkMesh Blog</title>
-    <meta name="description" content="Packs stream end-to-end through the relay, so multi-gigabyte clones never buffer in the cloud, the mesh scales to big repositories without a big server.">
+    <meta name="description" content="Git packs stream over ordinary HTTPS from a selected mirror through the lightweight Worker proxy; they are never retained as Worker or D1 repository storage.">
     <meta name="application-name" content="ForkMesh">
     <meta name="apple-mobile-web-app-title" content="ForkMesh">
     <meta name="theme-color" content="#090909">
@@ -23,7 +23,7 @@
     <meta property="og:url" content="https://forkmesh.com/blog/streaming-transfers/">
     <meta property="og:site_name" content="ForkMesh">
     <meta property="og:title" content="Streaming transfers">
-    <meta property="og:description" content="Packs stream end-to-end through the relay, so multi-gigabyte clones never buffer in the cloud, the mesh scales to big repositories without a big server.">
+    <meta property="og:description" content="Git packs stream over ordinary HTTPS from a selected mirror and are never retained as Worker or D1 repository storage.">
     <meta property="og:image" content="https://forkmesh.com/assets/blog/features/streaming-transfers.webp">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:image" content="https://forkmesh.com/assets/blog/features/streaming-transfers.webp">
@@ -38,19 +38,19 @@
           <div>
             <p class="eyebrow">Distributed hosting</p>
             <h1>Streaming transfers</h1>
-            <p class="lede">Packs stream end-to-end through the relay, so multi-gigabyte clones never buffer in the cloud, the mesh scales to big repositories without a big server.</p>
+            <p class="lede">Git packs stream over ordinary HTTPS from a selected mirror through the lightweight Worker proxy; they are never retained as Worker or D1 repository storage.</p>
             <div class="meta"><span class="pill">Feature 04 of 72</span><span>Feature</span><span>Distributed hosting &amp; preservation</span><span>3 min read</span></div>
           </div>
           <img class="hero-img" src="/assets/blog/features/streaming-transfers.webp" alt="Abstract ForkMesh artwork for Streaming transfers">
         </section>
         <article class="body">
           <h2>Why it matters</h2>
-          <p>Streaming transfers gives ForkMesh a concrete mechanism for large packfiles streamed through the relay instead of buffered in cloud storage. Packs stream end-to-end through the relay, so multi-gigabyte clones never buffer in the cloud, the mesh scales to big repositories without a big server.</p>
+          <p>Streaming transfers keep large packfiles out of persistent platform storage. The client speaks Git Smart HTTP, the Worker verifies and selects an origin, and the selected read-only gateway streams the response through the unchanged public URL.</p>
           <p>Code disappears from a network when one hosted account, one VM, or one storage path becomes the only way to reach it. In ForkMesh, streaming transfers addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
-          <p>ForkMesh handles streaming transfers through the same split it uses across the product: desktop nodes keep real Git mirrors, while mainnodes coordinate discovery, relay tunnels, presence, account lookup, and clone routing.</p>
-          <p>The behavior is intentionally narrow: Packs stream end-to-end through the relay, so multi-gigabyte clones never buffer in the cloud, the mesh scales to big repositories without a big server. The Worker helps find and route a live host, but it is not canonical Git storage.</p>
-          <div class="note">Title focus: Streaming transfers stays tied to large packfiles streamed through the relay instead of buffered in cloud storage and the local-first repository model.</div>
+          <p>ForkMesh separates repository traffic from its multiplayer transport. Clone, fetch, raw files, standard page content, and releases use HTTPS; sockets carry only small presence, chat, movement, shared-event, and update-signal messages.</p>
+          <p>The Worker applies bounded bodies, methods, operations, timeouts, and failover. D1 holds discovery and health metadata only. The gateway invokes Git directly with hooks, credential helpers, alternate protocols, prompts, and ambient credential variables disabled.</p>
+          <div class="note">Streaming is not permanent storage: the selected independent mirror remains the repository-byte origin, and the client-visible URL does not disclose that origin.</div>
           <h2>Where it fits</h2>
           <p>Use streaming transfers when availability, clone routing, and preservation need to be handled by the mesh instead of by a single origin.</p>
           <p>It pairs with the rest of Distributed hosting &amp; preservation because Streaming transfers keeps large packfiles streamed through the relay instead of buffered in cloud storage connected to the repository, its signatures, and the nodes that serve it.</p>

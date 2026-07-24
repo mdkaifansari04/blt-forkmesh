@@ -292,7 +292,9 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
     if (_settings.passphrase.isNotEmpty) {
       // Explicit per-room passphrase (a secret only participants share).
       _crypto = await RoomCrypto.withPassphrase(
-          _settings.room, _settings.passphrase);
+        _settings.room,
+        _settings.passphrase,
+      );
     } else {
       // Shared room: fetch the server-held key once (cached), no longer a public
       // constant. Fail closed so we never silently fall back to a weaker key.
@@ -303,7 +305,9 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
         throw Exception('Sign in to join chat — room key unavailable.');
       }
       _crypto = await RoomCrypto.withPassphrase(
-          _settings.room, _sharedPassphrase);
+        _settings.room,
+        _sharedPassphrase,
+      );
     }
     try {
       final uri = Uri.parse(_settings.serverUrl);

@@ -17,6 +17,7 @@
 #include "ClaudeSessionScan.h"
 #include "RepoSecurity.h"
 #include "RepoContributionSnapshot.h"
+#include "MirrorCrypto.h"
 
 struct CommitComment; // CommitCommentStore.h
 
@@ -65,6 +66,7 @@ struct AgentDiffStat {
 
 #include <functional>
 #include <limits>
+#include <memory>
 
 // Attached to each block of the always-on footer log (adhoc #133) so a clipped,
 // no-wrap line still carries its full untruncated text — surfaced on hover and
@@ -86,6 +88,8 @@ class CodexAppServerSession;
 class StallWatchdog;
 class ClaudeTranscriptView;
 class RepoHost;
+class WorldSpeechBridge;
+class PrivateMirrorMaterialization;
 class ActionRunner;
 class QButtonGroup;
 class QGridLayout;
@@ -110,6 +114,7 @@ class QListWidget;
 class QListWidgetItem;
 class QMenu;
 class QNetworkAccessManager;
+class QNetworkReply;
 class QPlainTextEdit;
 class QImage;
 class QProgressBar;
@@ -131,6 +136,7 @@ class QTemporaryDir;
 class QVBoxLayout;
 class QCheckBox;
 class QHBoxLayout;
+class PublicMirrorMaterialization;
 namespace forkmesh::ui { class DiffFileNavigator; } // file-list <-> diff-view sync
 
 // A configured mainnode the user can connect to. The client connects to one at
@@ -162,10 +168,19 @@ struct RepositoryRecord {
     QString localPath;
     QString solanaAddress;
     QString mirrorPath;
+    // Random local handle for the durable owner-sealed .fm-private replica.
+    // It is never a repository name and is visible only in this owner's local
+    // settings. Private mirrorPath values are runtime-temporary and are never
+    // persisted once this handle exists.
+    QString privateReplicaId;
+    // Random local handle for an official-age encrypted public mirror archive.
+    // Once present, mirrorPath is an owner-only runtime materialization and is
+    // never written to settings.
+    QString publicArchiveId;
     bool publishToNetwork = false;
-    // Private repo: hidden from the public catalog and readable (browse/clone
-    // through the relay) only with an owner-key-signed forkmesh-view-v1 token, so
-    // only this node's key holder can reach it. Still published/hosted otherwise.
+    // Private repo: absent from public discovery. Authorized owners and
+    // collaborators fetch only its opaque encrypted replica over HTTPS, then
+    // decrypt into short-lived owner-only local storage with their own key.
     bool isPrivate = false;
     // Run .forkmesh/ workflows when a fork pushes to this repo's bare mirror.
     // Enabled by default; can be turned off per repo on the Actions tab. Pushed
@@ -208,6 +223,11 @@ class MainWindow : public QMainWindow
 public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
+
+    // Safe target for the website's secret-free setup link. This only opens the
+    // local Control Node page and focuses its session-only Cloudflare token
+    // field; link parameters are never accepted.
+    void openCloudflareSetupFromSystemLink();
 
     // Apply the saved theme (system/dark/light) to the whole application.
     static void applyTheme();
@@ -254,6 +274,7 @@ public:
     void testLogSystem(const QString &text) { logSystem(text); }
     // Drives the network log's segmented-render + scroll-to-top-loads-more path
     // (adhoc #15) without needing real scroll-wheel input.
+    void testShowSettingsSection() { showSection(1); }
     void testShowLogSection() { showSection(4); }
     void testRebuildNetworkLogView() { rebuildNetworkLogView(); }
     QTextBrowser *testNetworkLogView() const { return m_settingsLog; }
@@ -422,6 +443,8 @@ public:
     // work without a click first (adhoc #183).
     int testReleasesTabIndex() const { return m_releasesTabIndex; }
     int testMirrorNodesTabIndex() const { return m_mirrorNodesTabIndex; }
+    int testControlNodeSectionIndex() const { return kControlNodeSectionIndex; }
+    void testShowControlNode() { showSection(kControlNodeSectionIndex); }
     bool testReleasesTableHasKeyboardFocus() const;
     bool testMirrorNodesTableHasKeyboardFocus() const;
     // The Mirror nodes rows as "name-cell-text|node-id", so a test can prove a
@@ -495,9 +518,8 @@ public:
     // streams to the terminal via the [restart +Nms] log lines.
     void headlessUpdateRestart();
     QStringList headlessStatusLines() const;
-    // `claude-auth status|export [path]|import <path>` from the headless console:
-    // move this owner's Claude Code login (and configured Claude API key) onto a
-    // host so it can service "start an agent" requests. Returns output lines.
+    // Device-local Claude login status from the headless console. Historical
+    // export/import verbs return a hard refusal; tokens are never serialized.
     QStringList headlessClaudeAuth(const QStringList &args);
     QStringList headlessRosterLines() const;
     QStringList headlessRepoLines() const;
@@ -542,6 +564,7 @@ private:
     static constexpr int kNetworkReposSectionIndex = 11;
     static constexpr int kNetworkDiagnosticsSectionIndex = 12;
     static constexpr int kNodesSectionIndex = 13; // "Nodes" directory (adhoc #9)
+    static constexpr int kControlNodeSectionIndex = 14;
 
     // Setup page
     QWidget *buildSetupPage();
@@ -583,8 +606,9 @@ private:
     // Non-interactive equivalent of runSignupFlow for a headless mirror node: a
     // VM has no GUI to click "Join ForkMesh", so its auto-start path reserves +
     // finalizes its node name (free, key-bound, no dialog) here. Once the account
-    // is key-bound the relay accepts this node's catalog writes and host tokens,
-    // so the mirror finally registers in the database and shows on the repo page.
+    // is key-bound the relay accepts this node's catalog writes and signed
+    // direct-endpoint registration, so the mirror registers in the database
+    // and shows on the repository page.
     // Returns true when the node ends up with an active, key-bound account.
     bool registerNodeAccountSilently(const QString &accountName);
     // In-app join: pick a username and you're in. Joining is free — the
@@ -672,12 +696,12 @@ private:
     bool accountEmailVerified(const QString &accountName) const;
     QString settingsAccountName() const;
     void refreshSettingsEmailVerifiedBadge();
-    // The owner a repo is published/browsed under on the website. Must match the
-    // owner the live host tunnel registers with, or the website can't find the
-    // host. Mirrors the fallback used when publishing.
+    // The owner a repo is published/browsed under on the website. It must match
+    // the owner used by the signed catalog, direct-HTTPS endpoint binding, and
+    // minimal repository update channel.
     QString catalogOwner(const RepositoryRecord &repo) const;
     void runQuickUpdate();
-    // Pull a fresh copy from the install URL (the live hosted mirror), then
+    // Pull a fresh copy from the install URL (the direct-HTTPS mirror), then
     // rebuild and relaunch. Installs into the invoking non-root user's home even
     // when ForkMesh itself is running as root.
     void updateRebuildRestart();
@@ -729,15 +753,16 @@ private:
 
     // Chat page
     QWidget *buildChatPage();
+    void ensureSectionBuilt(int index);
 
-    // Global donation nudge shown until this node sets a Solana address.
+    // Optional public payout-address notice; crypto never gates the core app.
     QWidget *buildSolanaNotice();
     void updateSolanaNotice();
     void promptSetSolanaAddress();
-    // The one opt-in entry into the crypto side: set a Solana payout address,
-    // activate the node's network account, and start hosting its mirrors so it
-    // earns donations. Nothing in the core flow (clone, mirror, issues, PRs)
-    // routes here — it is reached only from the "Get paid to mirror" button.
+    // Opt-in reward settings for an already registered, locally signable node:
+    // accept only a public self-custodial payout address and start its existing
+    // public mirrors. This never runs account reservation/donation and never
+    // promises selection or payment.
     void enablePaidMirroring();
 
     // Top breadcrumb: active server > current section.
@@ -753,7 +778,7 @@ private:
     void initRelayReachabilityWatch(); // OS reachability → instant radar flips
     void openServerWebsite(int index); // open a relay's site in the browser
     void showNodeMenu();           // searchable dropdown to pick a node
-    void showNodesWindow();        // full window listing nodes, status, earnings
+    void showNodesWindow();        // full window listing nodes, status, public wallet
     QString topBarUserName() const; // linked user/account name shown in the top bar
     QString nodeOwnerDisplayName() const; // user account that owns this node, if known
     QString chatDisplayName() const; // user identity used for chat sender names
@@ -969,6 +994,53 @@ private:
     void mirrorNetworkRepo(const QString &owner, const QString &name,
                            const QString &cloneUrl, bool isPrivate);
 
+    // Local control node: one operational surface for this machine's mirrors,
+    // sync/health/logs, local identity + wallet public address, repository
+    // permissions, Cloudflare relay bootstrap, and remote host deployment.
+    QWidget *buildControlNodeSection();
+    void refreshControlNode();
+    void runControlNodeHealthCheck();
+    void startControlNodeServing();
+    void stopControlNodeServing();
+    void syncControlNodeMirrors();
+    void updateControlRepositoryPermission(QTableWidgetItem *item);
+    void saveControlWalletAddress();
+    void runCloudflareBootstrap(bool dryRun);
+    void cancelCloudflareBootstrap();
+    void provisionDirectMirrorEndpoint(bool dryRun);
+    bool rebuildDirectMirrorGatewayConfiguration(
+        QString *error = nullptr, bool restartRunningGateway = false);
+    void startDirectMirrorServices();
+    void stopDirectMirrorServices();
+    void registerDirectMirrorEndpoint();
+    void checkDirectMirrorGatewayHealth();
+    void appendControlNodeOutput(const QString &text);
+    void connectToDeployedRelay(const QString &hostname);
+    void openForkMeshWorld();
+    void deploySavedHostsFromControl();
+    // First-instance-owner community reward-pool signer. The Solana private key
+    // is imported into an encrypted local vault and never leaves this desktop;
+    // the Worker only authors public intents and records public reconciliation.
+    QWidget *buildRewardPoolControlCard();
+    void refreshRewardPoolControls();
+    void importRewardPoolKey();
+    void saveRewardPoolRpcConfiguration();
+    void fetchRewardPoolIntents();
+    void reviewAndSignRewardIntent();
+    void prepareRewardPoolTransaction(const QJsonObject &job);
+    void submitRewardPoolTransaction(const QJsonObject &intent,
+                                     const QString &signedTransactionBase64,
+                                     const QString &chainSignature);
+    void submitRewardSignatureReceipt(const QString &intentId,
+                                      const QString &chainSignature,
+                                      bool finalizationObserved);
+    void pollRewardPoolFinalization(int attempt);
+    void reconcileRewardPoolIntent(const QString &intentId,
+                                   const QString &chainSignature,
+                                   const QString &observedStatus,
+                                   const QString &slot);
+    QUrl rewardPoolWorkerEndpoint(const QString &path) const;
+
     // Hosts (adhoc #263): SSH into a remote machine and run the ForkMesh
     // installer over a plain shell (sshpass + ssh), streaming the live session
     // output. Once the install finishes the new node joins the network and shows
@@ -1073,7 +1145,7 @@ private:
     void refreshNodesTable();           // re-list the known nodes into the table
     void showNodeDetailForRow(int row); // fill the detail panel for a table row
     // Fetch the relay's list of currently-online node names (/api/network/stats
-    // "onlineNodes": live host tunnel or fresh signed heartbeat). Headless
+    // "onlineNodes": repository update channel or fresh signed heartbeat). Headless
     // mirror nodes serve through the relay without joining this client's chat
     // room, so room presence alone painted them offline (adhoc #27).
     void fetchRelayOnlineNodes(bool force = false);
@@ -1095,6 +1167,7 @@ private:
     void showEndpointRequestDetails(int row, int column);
 
     // Repo detail view (files + issues tabs), opened by clicking a repository.
+    void ensureRepoDetailSectionBuilt();
     QWidget *buildRepoDetailSection();
     QWidget *buildRepoFilesPanel();
     QWidget *buildRepoOverviewPage();
@@ -1340,18 +1413,13 @@ private:
     // (closeIssuesLinkedFromPull) and the worktree/branch merge flows (adhoc #23).
     QList<int> closeIssuesForMerge(const QList<int> &numbers,
                                    const QString &comment, const QString &via);
-    // After a merge, mint the escrow deposit address and show the funding QR for
-    // any (pledged-but-unpaid) bounty on the issues this PR closes. Bounties are
-    // added to issues without paying up front; merge is when they get funded.
+    // Migration-only compatibility hook for historical issue bounties. New
+    // Worker-held escrow creation is disabled and this performs no transfer.
     void fundBountiesForMergedPull(const PullRequest &pr);
-    // Issue #347: when the per-PR bounty setting is on, reward every merged pull
-    // request's author with the configured fixed bounty — either by showing a
-    // funding QR (perPr mode) or auto-paying from the inbuilt wallet (wallet
-    // mode). Independent of whether the PR closes a bountied issue.
+    // Migration-only compatibility hook: clears stale automatic PR-bounty
+    // preferences without contacting the retired custody API.
     void autoBountyForMergedPull(const PullRequest &pr);
-    // Poll a bounty escrow after merge; once funded the worker splits it to the
-    // author + treasury, and this records the paid state on the issue. kind ""
-    // is an issue bounty; "pr" is a per-pull-request bounty (issue #347).
+    // Retained for source compatibility; legacy escrow polling is disabled.
     void pollBountyPayout(const RepositoryRecord &repo, int number, double amount,
                           const QString &kind = QString());
     QList<int> issuesLinkedFromPull(const PullRequest &pr) const;
@@ -1572,7 +1640,7 @@ private:
     // ("send to the visible agent") button.
     void sendPromptToSelectedAgent(const QString &prompt);
     // Same as sendPromptToSelectedAgent, but for an arbitrary session id
-    // (adhoc #182: the website can steer any of this node's agent sessions).
+    // (adhoc #182: an authenticated owner-sealed prompt names its session).
     void sendPromptToAgentSession(int sessionId, const QString &prompt);
     // Full issue title + description + every comment, formatted for an agent
     // prompt. Shared by the initial issue-assignment prompt and the "Send
@@ -2546,6 +2614,12 @@ private:
     // comment composer). `button` is the mic that was pressed, so its icon swaps to
     // red while recording and the transcript lands in `target`.
     void startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *button);
+    // Origin-bound, loopback-only control bridge used by the browser World to
+    // drive this same local recorder/transcriber. It never accepts audio.
+    void initializeWorldSpeechBridge();
+    void createWorldSpeechPairing();
+    void revokeWorldSpeechPairing();
+    void cancelWorldVoiceCapture();
     // Jump to Settings and land on the Voice tab — used when the mic is
     // clicked before speech-to-text is set up (adhoc #132).
     void openVoiceSettings();
@@ -2593,7 +2667,8 @@ private:
     void activateSlashActionRow(QWidget *row);
     void refreshClaudeSlashCommands();
     void mentionProjectFileInQuickAdd();
-    // Pop a QR + address dialog for donating directly to the ForkMesh treasury.
+    // Show the transparent public community reward pool. The pool key is not
+    // available to the Worker and user wallets always remain self-custodial.
     void showTreasuryDonateDialog();
     void copyIssueToClipboard();
     void copyIssueThreadToClipboard();
@@ -2640,8 +2715,9 @@ private:
     void commitIssueProgressDrag();
     // Row of the issue list currently being progress-dragged, or -1 when idle.
     int m_issueProgressDragRow = -1;
+    // Migration-only no-op that explains why new issue bounty escrow is retired.
     void editIssueBounty();
-    // Bulk-pledge the same bounty (USD) on every open issue in the current repo.
+    // Migration-only no-op; no pledge, wallet, or transfer is created.
     void bountyAllOpenIssues(double amountUsd);
     // One-shot triage: give every open issue with no priority an MVP/Phase-2
     // label and an initial priority (votes/age heuristic), and estimate each
@@ -2696,20 +2772,26 @@ private:
     int projectProgressPercent(const Project &project) const;
 
     QUrl issuesApiUrl(const RepositoryRecord &repo) const;
-    QUrl bountyApiUrl(const RepositoryRecord &repo) const;
-    // Website agent view (adhoc #182): the repo owner watches this node's
-    // Claude Code agent sessions and can steer a running one from the browser.
+    // Owner-encrypted agent relay (adhoc #182): clear session content remains
+    // on the desktop; the relay stores only recipient-sealed snapshots/prompts.
     QUrl agentsApiUrl(const RepositoryRecord &repo) const;
     // Push a full-replace snapshot of every owned/hosted repo's local agent
     // sessions to the website. Called on a periodic timer and, debounced, right
     // after a session's status changes.
     void pushAgentSessionsSnapshot();
     void pushAgentSessionsForRepo(RepositoryRecord repo, QList<AgentSession> sessions);
+    // Register this device's public hybrid recipient bundle and enforce the
+    // repository's mandatory owner-only agent policy before any snapshot or
+    // prompt drain reaches the relay.
+    void ensureAgentE2EEControlPlane(
+        RepositoryRecord repo, std::function<void(bool ok)> onDone);
+    bool loadOwnerEncryptionIdentity(MirrorCrypto::Identity *identity,
+                                     QString *error = nullptr) const;
     // Arms/re-arms a short debounce timer that calls pushAgentSessionsSnapshot()
     // once it fires, so a burst of status flips coalesces into one request.
     void scheduleAgentSessionsPush();
-    // Periodic drain of prompts the website owner queued for this node's agent
-    // sessions (steering a running one from the browser).
+    // Periodic drain of prompts an owner-key-capable client queued for this
+    // node's agent sessions.
     void drainAgentPrompts();
     void drainAgentPromptsFor(RepositoryRecord repo);
     // Deliver one queued website prompt to the matching session via
@@ -2730,20 +2812,22 @@ private:
     QUrl sharesApiUrl(const RepositoryRecord &repo) const;
     void shareRepoRequest(const RepositoryRecord &repo, const QString &grantee,
                           const QString &action);
+    void requestPrivateRecipientBundles(
+        const RepositoryRecord &repo, bool updateCollaboratorList,
+        std::function<void(bool ok, QList<QJsonObject> bundles,
+                           QStringList grantees, QString error)> onDone);
     void addRepoCollaborator(const QString &nameRaw);
     void removeRepoCollaborator(const QString &nameRaw);
     void refreshRepoCollaborators();
-    // Pop up a modal with a Solana QR + address so a funder can pay a bounty,
-    // showing the exact SOL to send and polling for the deposit like the signup
-    // flow. On confirmation the worker splits the escrow 90% author / 10%
-    // treasury; the dialog records the paid state on the issue.
+    // Compatibility method that refuses new funding for legacy Worker-held
+    // bounty escrow.
     void showBountyQrDialog(const RepositoryRecord &repo, int number,
                             const QString &uri, const QString &address,
                             double amountUsd, const QString &amountSol,
                             const QString &kind = QString(),
                             const QString &payee = QString());
-    // Issue #347: fetch/mint the owner's inbuilt bounty wallet and show its
-    // deposit address, QR and live balance so the owner can pre-fund it.
+    // Compatibility method that explains the legacy bounty-wallet migration;
+    // it performs no network action and never exposes a deposit address.
     void showBountyWalletDialog();
     void submitIssueCommentToInbox(const QString &body,
                                    const QStringList &attachmentSrcPaths = {},
@@ -2785,12 +2869,10 @@ private:
     // Periodically pull every owned repo's inboxes so the source of truth picks
     // up issues/PRs/comments filed by other nodes without a manual sync.
     void pollOwnedInboxes();
-    // Event-driven relay sync: the relay pushes a minimal {"type":"event"}
-    // frame over the repo's host tunnel socket whenever it stores something
-    // for this node (inbox item, agent prompt). scheduleRelaySync() coalesces
-    // those into one signed GET /api/sync that returns everything for every
-    // owned repo in a single round-trip; a slow fallback tick covers dropped
-    // events. Replaces the old 30–60s polling of the per-topic endpoints.
+    // Bounded relay sync: scheduleRelaySync() coalesces explicit refresh
+    // requests into one signed GET /api/sync that returns every owned repo's
+    // pending control-plane changes. The normal timer provides the fallback
+    // and no per-repository socket is opened.
     void scheduleRelaySync();
     void performRelaySync();
     // Merge one repo's pending payload from /api/sync (or a per-topic drain
@@ -2807,15 +2889,17 @@ private:
                                  const QJsonArray &pending, bool interactive);
     void applyAgentPromptsPayload(const RepositoryRecord &repo,
                                   const QJsonArray &prompts);
+    void acknowledgeAgentPrompts(const RepositoryRecord &repo,
+                                 const QList<qint64> &queueIds);
     // owner/ts/sig query params carrying the forkmesh-issues-pull-v1 drain
     // token — the shared auth for inbox GET/DELETE and /api/sync.
     QUrlQuery signedInboxQuery(const QString &owner) const;
     // #368: identity key backup/export/import UI + first-run "back up" nag.
     void backUpIdentityKey();
     void refreshIdentityBackupNag();
-    // Export/import the Claude Code account (claude.ai OAuth login + Claude API
-    // key) so a host node can run "claude-code" agents as this owner.
-    void transferClaudeCodeAccount();
+    // Explain provider-owned, per-device Claude login and the owner-sealed
+    // shared-workspace boundary. No credential export/import controls exist.
+    void showClaudeCodeDeviceSetup();
     void chooseAvatar();
     void setSettingsAvatar(const QByteArray &pngData);
     // Effective avatar bytes: the uploaded/generated one, or a deterministic
@@ -3033,6 +3117,18 @@ private:
     void mirrorAdvertisedRepo(const QString &ownerName);
     void mirrorPreviewRepository(int index);
     void syncRepository(int index, bool quiet = false);
+    void syncPublicEncryptedRepository(int index, bool quiet = false);
+    void syncPrivateRepository(int index, bool quiet = false);
+    void syncPrivateRepositoryWithRecipients(
+        int index, bool quiet,
+        const QList<QJsonObject> &recipientBundles);
+    void resealPrivateRepositoryRecipients(
+        const RepositoryRecord &repo,
+        const QList<QJsonObject> &recipientBundles,
+        std::function<void(bool ok, QString error)> onDone);
+    void ensurePrivateMirrorRecipientIdentityRegistered(
+        std::function<void(bool ok, QString error)> onDone = {});
+    void downloadPrivateReplica(int index, bool quiet = false);
     // Second half of syncRepository: spawn the async fetch/clone once the
     // off-thread pre-fetch prep (refs digest + origin set-url) has finished.
     void startSyncFetch(int index, bool quiet, bool hasMirror,
@@ -3087,12 +3183,14 @@ private:
     void scheduleCatalogPublish(const QString &key, bool showDialogOnError,
                                 qint64 minDelayMs = 0);
     void publishRepositoryNow(int index, bool showDialogOnError);
+    void ensurePrivateRepositoryControlPlane(int index,
+                                             bool showDialogOnError);
+    void registerPrivateReplicaRoute(int index);
     int repositoryIndexForCatalogPublishKey(const QString &key) const;
     QString catalogPublishKey(const RepositoryRecord &repo) const;
     void updateRepoActionMenus();
     void deleteCurrentMirror();
     void updateRepoDetailStatus();
-    QUrl hostWsUrl(const RepositoryRecord &repo) const;
     void startRepoHosts();
     void stopRepoHosts();
     void onRequestServed(const QString &owner, const QString &name, bool clone);
@@ -3105,6 +3203,8 @@ private:
     // is public or the source URL is not the mainnode host (never leak the token).
     QStringList viewAuthGitArgs(const RepositoryRecord &repo,
                                 const QString &source) const;
+    QByteArray privateReplicaAuthorization(
+        const RepositoryRecord &repo) const;
     QString repositoryChannel(const RepositoryRecord &repo) const;
     QString repositoryMirrorRoot() const;
     QString repositoryPreviewRoot() const;
@@ -3139,11 +3239,12 @@ private:
     QHash<QString, QPixmap> m_faviconCache; // host -> favicon
     QSet<QString> m_faviconFetching;        // hosts with an in-flight favicon GET
 
-    // Donation nudge banner (no Solana address yet).
+    // Optional public payout-address banner (hidden outside explicit settings).
     QWidget *m_solanaBanner = nullptr;
     QLabel *m_solanaBannerLabel = nullptr;
-    // Payout-wallet verification banner: shown when an address is set but not yet
-    // verified (a small deposit proves control before payouts can be received).
+    // Payout-setting check: validates only the public address and existing
+    // locally signable node identity. It never asks for a deposit or claims to
+    // prove control of the external wallet.
     QWidget *m_walletVerifyBanner = nullptr;
     QWidget *buildWalletVerifyNotice();
     void updateWalletVerifyNotice();
@@ -3179,16 +3280,17 @@ private:
     QLabel *m_navSolanaBalance = nullptr;
     // Super-tiny Claude Code and Codex usage charts in the top-right cluster
     // (issue #266): two horizontal bars (5-hour + weekly) sitting beside the
-    // earnings/avatar. Held as QWidget* and poked via static_cast, since their
-    // concrete type (TokenUsageMiniChart) is private to MainWindow.cpp.
+    // public-wallet balance/avatar. Held as QWidget* and poked via static_cast,
+    // since their concrete type (TokenUsageMiniChart) is private to MainWindow.cpp.
     QWidget *m_navTokenUsage = nullptr;
     QWidget *m_navCodexUsage = nullptr;
     // Reward-availability cluster, now living in the node profile panel right
-    // under "Get paid to mirror": a clear on/off switch (ToggleSwitch, private to
+    // under Mirror reward settings: a clear on/off switch (ToggleSwitch, private to
     // MainWindowChat.cpp) that takes this node offline (stops serving + the
     // reward heartbeat), a status label spelling out on/off, a clear
-    // "available for rewards" / "offline · not collecting rewards" status line,
-    // and a live "online Xh Ym" uptime readout. m_nodeOffline is persisted so a
+    // "may be eligible; selection not guaranteed" / "offline; not publishing
+    // eligibility" status line, and a live "online Xh Ym" uptime readout.
+    // m_nodeOffline is persisted so a
     // node the user deliberately took offline stays offline across restarts.
     QAbstractButton *m_nodeOnlineToggle = nullptr;
     QLabel *m_nodeOnlineStatusLabel = nullptr;
@@ -3282,6 +3384,8 @@ private:
     QPushButton *m_logNavButton = nullptr; // retired (adhoc #137): Log now opens via m_floatingLogButton
     QPushButton *m_floatingLogButton = nullptr; // "Log" button floating over the live-log strip
     QPushButton *m_leaderboardNavButton = nullptr; // "Leaderboards" top-nav button
+    QPushButton *m_controlNodeNavButton = nullptr; // local control-node operations
+    QPushButton *m_worldNavButton = nullptr; // opens the active relay's 3D world
     QPushButton *m_hostsNavButton = nullptr;  // "Hosts" top-nav button (adhoc #263)
     QPushButton *m_nodesNavButton = nullptr;  // "Nodes" top-nav button (adhoc #9)
     QPushButton *m_relaysNavButton = nullptr; // "Relays" top-nav button
@@ -3304,6 +3408,65 @@ private:
     QLabel *m_networkReposStatus = nullptr;
     QPushButton *m_networkReposRefreshButton = nullptr;
     int m_networkReposLoadGen = 0;
+    // Opaque private archive ids are delivered only in an authenticated,
+    // ACL-filtered catalog response. They let the client use a name-free
+    // /api/private-replicas/<id> URL; no private owner/repository identity is
+    // placed in an edge-visible path or query string.
+    QHash<QString, QString> m_privateCatalogAccessIds; // owner/name -> 64 hex
+    // Local control-node section. The Cloudflare token exists only in the
+    // password edit/process environment and the short-lived redaction copy;
+    // unlike public deployment fields, it is never written to QSettings.
+    QLabel *m_controlNodeStatus = nullptr;
+    QLabel *m_controlNodeHealth = nullptr;
+    QLabel *m_controlIdentityStatus = nullptr;
+    QLabel *m_controlWalletStatus = nullptr;
+    QLabel *m_controlHostsStatus = nullptr;
+    QTableWidget *m_controlPermissionsTable = nullptr;
+    bool m_controlRefreshingPermissions = false;
+    QLineEdit *m_controlWalletEdit = nullptr;
+    QLineEdit *m_cloudflareHostnameEdit = nullptr;
+    QLineEdit *m_cloudflareMirrorHostnameEdit = nullptr;
+    QLineEdit *m_cloudflareZoneEdit = nullptr;
+    QLineEdit *m_cloudflareAccountEdit = nullptr;
+    QLineEdit *m_cloudflareNodeNameEdit = nullptr;
+    QLineEdit *m_cloudflareRelayLabelEdit = nullptr;
+    QLineEdit *m_cloudflareMainRelayEdit = nullptr;
+    QLineEdit *m_cloudflareTokenEdit = nullptr;
+    QCheckBox *m_cloudflareConnectCheck = nullptr;
+    QPushButton *m_cloudflareDryRunButton = nullptr;
+    QPushButton *m_cloudflareDeployButton = nullptr;
+    QPushButton *m_cloudflareCancelButton = nullptr;
+    QPlainTextEdit *m_controlNodeOutput = nullptr;
+    QProcess *m_cloudflareBootstrapProcess = nullptr;
+    QProcess *m_cloudflareTunnelBootstrapProcess = nullptr;
+    QProcess *m_cloudflaredInstallProcess = nullptr;
+    QProcess *m_mirrorGatewayProcess = nullptr;
+    QProcess *m_cloudflaredProcess = nullptr;
+    QString m_cloudflareActiveSecret;
+    QString m_cloudflareDeployHostname;
+    QString m_directMirrorHostname;
+    QString m_directMirrorRouterPublicKey;
+    bool m_directMirrorGatewayHealthy = false;
+    bool m_directMirrorEndpointRegistered = false;
+    bool m_managedCloudflaredVerified = false;
+    bool m_cloudflareConnectAfterDeploy = false;
+    QTimer *m_controlNodeRefreshTimer = nullptr;
+    QTimer *m_directMirrorRegistrationTimer = nullptr;
+    // Community reward pool: no private material is held in these widgets or
+    // members. Only the vault's public address, public chain intents, and public
+    // submitted transaction identifiers are retained in memory/settings.
+    QLabel *m_rewardPoolVaultStatus = nullptr;
+    QLabel *m_rewardPoolAddress = nullptr;
+    QLabel *m_rewardPoolStatus = nullptr;
+    QLineEdit *m_rewardPoolRpcEdit = nullptr;
+    QComboBox *m_rewardPoolNetworkCombo = nullptr;
+    QTableWidget *m_rewardPoolIntentsTable = nullptr;
+    QPushButton *m_rewardPoolFetchButton = nullptr;
+    QPushButton *m_rewardPoolSignButton = nullptr;
+    QPushButton *m_rewardPoolReconcileButton = nullptr;
+    QHash<QString, QJsonObject> m_rewardPoolIntents;
+    bool m_rewardPoolBusy = false;
+    QTimer *m_rewardPoolFinalizeTimer = nullptr;
     // Hosts section widgets (adhoc #263): one-host install form + live log.
     QLineEdit *m_hostIpEdit = nullptr;
     QLineEdit *m_hostUserEdit = nullptr;
@@ -3362,8 +3525,8 @@ private:
     QLabel *m_nodesStatus = nullptr;            // "N nodes · M online" summary line
     QPushButton *m_nodesRefreshButton = nullptr;
     QScrollArea *m_nodeDetailScroll = nullptr;  // detail panel for the selected node
-    // Node names (lowercased) the relay currently reports online — a live host
-    // tunnel or a fresh signed heartbeat. Merged into the Nodes page's status so
+    // Node names (lowercased) the relay currently reports online — an update
+    // channel or a fresh signed heartbeat. Merged into the Nodes page's status so
     // headless mirror nodes that serve via the relay (but never join this
     // client's chat room) show online instead of permanently offline.
     QSet<QString> m_relayOnlineNodes;
@@ -3488,7 +3651,7 @@ private:
     QPlainTextEdit *m_prioritizePromptEdit = nullptr;
     QTimer *m_mirrorSyncTimer = nullptr;
     QTimer *m_inboxPollTimer = nullptr; // slow fallback tick for performRelaySync()
-    // Coalesces relay "event" frames (host tunnel push) into one /api/sync.
+    // Coalesces control-channel "event" frames into one /api/sync.
     QTimer *m_relaySyncDebounce = nullptr;
     // False after the relay 404s /api/sync (older worker): fall back to the
     // legacy per-topic polling until the app talks to an upgraded relay again.
@@ -3613,6 +3776,20 @@ private:
     // and churn the cursor.
     qint64 m_voiceLastTranscribeSize = 0;
     QString m_voiceLastPreview;
+    // Hosted-World voice control. The bridge stores only hashed, expiring
+    // capabilities and listens on loopback; the hidden draft edit lets the
+    // existing local Whisper/Parakeet pipeline feed transcript text back without
+    // adding any browser audio transport.
+    WorldSpeechBridge *m_worldSpeechBridge = nullptr;
+    QLineEdit *m_worldSpeechOriginEdit = nullptr;
+    QLineEdit *m_worldSpeechPairCodeEdit = nullptr;
+    QLabel *m_worldSpeechStatusLabel = nullptr;
+    QPushButton *m_worldSpeechPairButton = nullptr;
+    QPushButton *m_worldSpeechRevokeButton = nullptr;
+    QPlainTextEdit *m_worldSpeechDraftEdit = nullptr;
+    QPushButton *m_worldSpeechHiddenMicButton = nullptr;
+    QString m_worldSpeechCaptureId;
+    bool m_worldSpeechCancelPending = false;
     // Live input-level meter shown beside the mic while recording. m_voiceLevelTimer
     // samples the fresh tail of the WAV every ~80 ms; m_voiceLevelPos tracks the byte
     // offset already metered so each tick only reads the newly-captured samples.
@@ -4613,8 +4790,8 @@ private:
     QPushButton *m_agentUpdateButton = nullptr;  // worktree: update from main
     QPushButton *m_agentWtDeleteButton = nullptr; // worktree: delete worktree+branch
     QTimer *m_agentHourlyTimer = nullptr;        // refreshes spend + files hourly
-    // adhoc #182: push this node's agent sessions to the website + drain any
-    // steering prompts queued there. m_agentSyncDebounceTimer is a singleShot
+    // adhoc #182: relay owner-encrypted session snapshots and drain encrypted
+    // steering prompts. m_agentSyncDebounceTimer is a singleShot
     // re-armed after a status flip so a burst of updates coalesces into one push.
     QTimer *m_agentSyncPushTimer = nullptr;
     QTimer *m_agentSyncDebounceTimer = nullptr;
@@ -4622,6 +4799,11 @@ private:
     // network write when the sessions payload hasn't changed (idle nodes used
     // to re-upload an identical snapshot every 30s).
     QHash<QString, QByteArray> m_lastAgentPushPayload;
+    // Owner-E2EE policy setup is cached per relay/repository/key.  A policy
+    // rejection clears the ready entry and the next safety-net tick performs
+    // an idempotent key/policy registration before retrying.
+    QSet<QString> m_agentE2EEReady;
+    QSet<QString> m_agentE2EEInFlight;
     // Each running CLI session has its own worktree, transport, and buffered
     // events, so output never leaks across providers or sessions.
     QHash<int, ClaudeStreamSession *> m_streamSessions;
@@ -5191,8 +5373,8 @@ private:
     QPushButton *m_profileMessageButton = nullptr;
     // Admin-only "Take ownership" request on another node's profile (adhoc #141).
     QPushButton *m_profileTakeOwnershipButton = nullptr;
-    // "Get paid to mirror": opt-in CTA shown under the username on your own
-    // profile. Flips to an "earning" label once the node is activated.
+    // Mirror reward settings: opt-in CTA shown under the username on your own
+    // profile. Reports configuration, never guaranteed earnings.
     QPushButton *m_profileGetPaidButton = nullptr;
     // Self-only actions pinned to the top of the node profile panel.
     QWidget *m_profileSelfActions = nullptr;
@@ -5227,6 +5409,11 @@ private:
     // every ~30s, hammering the relay's D1 for no reader-visible difference.
     QHash<QString, QByteArray> m_catalogPublishedFingerprint; // owner/name -> hash
     QHash<QString, qint64> m_catalogPublishedFingerprintAtMs; // owner/name -> ms
+    // A private catalog write is permitted only after this process has
+    // idempotently registered its public hybrid key and repository privacy
+    // policy with an authenticated owner session.
+    QSet<QString> m_privateControlReady;
+    QSet<QString> m_privateControlInFlight;
     // Public-repository contribution snapshots are expensive Git reads. This
     // bounded state coalesces one worker per immutable repo state, remembers a
     // requested publish dialog, and applies separate success/error TTLs.
@@ -5237,7 +5424,14 @@ private:
     QHash<QString, QString> m_catalogContributionPreparedScanKey;
     QHash<QString, QString> m_catalogContributionPreparedSnapshotKey;
     QList<RepoHost *> m_repoHosts;
-    QSet<QString> m_repoHostKeys; // owner/name + mirror/url for active hosts
+    QSet<QString> m_repoHostKeys; // empty compatibility state; sockets retired
+    // Keeps authorized, owner-only private repository materializations alive
+    // only for this app process. They are removed recursively on destruction
+    // and their paths are never written to settings.
+    QHash<QString, std::shared_ptr<PrivateMirrorMaterialization>>
+        m_privateMirrorMaterializations; // opaque replica id -> temp repo
+    QHash<QString, std::shared_ptr<PublicMirrorMaterialization>>
+        m_publicMirrorMaterializations; // age archive id -> temp repo
     QList<MemberInfo> m_homeRoster;
     QHash<QString, MemberInfo> m_chatDirectoryUsers; // lowercased user -> profile
     bool m_chatDirectoryFetchInFlight = false;
@@ -5325,8 +5519,8 @@ private:
     QString m_accountSessionToken;
     bool m_accountSolanaVerified = false;
     bool m_accountDesktopCapable = false;
-    // "free" = view-only (must mirror >=1 repo) until the user joins by
-    // donating; "active" = donated + email/password set.
+    // Compatibility tier label: account signup/activation is free and separate
+    // from any voluntary reward-pool contribution.
     QString m_accountTier = QStringLiteral("free");
     QTimer *m_heartbeatTimer = nullptr;
     bool m_isAdmin = false;

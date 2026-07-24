@@ -715,9 +715,10 @@ def test_qt_login_explains_desktop_key_mismatch():
     assert "already bound to another" in qt
 
 
-def test_signed_publish_and_hosting_stay_account_key_bound():
+def test_signed_private_publish_and_direct_routing_stay_account_key_bound():
     entry = ENTRY.read_text(encoding="utf-8")
-    # Catalog publish + host-token signing moved into split MainWindow TUs.
+    # Catalog publication and direct-route registration live in split
+    # MainWindow TUs. The retired repository socket has no credential.
     qt = "\n".join(
         p.read_text(encoding="utf-8")
         for p in sorted(QT_MAIN.parent.glob("MainWindow*.cpp"))
@@ -726,10 +727,18 @@ def test_signed_publish_and_hosting_stay_account_key_bound():
     assert "owner_pub = await _owner_pubkey(env, owner)" in entry
     assert 'return json_response({"error": "account_required"}, status=403)' in entry
     assert 'record["maintainer"] != owner_pub' in entry
-    assert '"forkmesh-host-v1\\n" + owner + "\\n" + repo + "\\n" + str(ts)' in entry
+    assert 'canonical = ("forkmesh-catalog-v2\\n" + record_hash).encode()' in entry
+    assert 'metadata.insert(QStringLiteral("catalogSigVersion"), 2);' in qt
+    assert "forkmesh::control::catalogV2SigningPayload(" in qt
+    assert 'url.setPath(QStringLiteral("/api/mirrors/private"));' in qt
+    assert "forkmesh::control::privateReplicaRouteSigningPayload(" in qt
+    assert 'HTTPS_MIRROR_ENDPOINT_PATH = "/api/mirrors/https"' in entry
+    assert "registration[\"publicKey\"] not in allowed_keys" in entry
+    assert "FROM mirror_https_endpoints e " in entry
+    assert '"direct_https_receive_pack_required"' in entry
     assert '{"maintainer", m_profileIdentity.publicKey()}' in qt
-    assert '"forkmesh-catalog-v1\\n" + owner + "\\n" + name + "\\n" + updatedAt' in qt
-    assert '"forkmesh-host-v1\\n" + tokenOwner + "\\n" + tokenRepo + "\\n" + ts' in qt
+    assert "per-repository persistent socket is retired" in qt
+    assert "forkmesh-host-v1" not in qt
 
 
 def test_contribution_actor_resolution_accepts_only_enabled_nonrevoked_devices():

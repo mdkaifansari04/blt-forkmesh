@@ -82,6 +82,7 @@ def _run(coro):
 
 TEAM_PERMISSIONS = _constant("TEAM_PERMISSIONS")
 ORG_ROLES = _constant("ORG_ROLES")
+ORG_WORLD_ACCESS_VALUES = _constant("ORG_WORLD_ACCESS_VALUES")
 
 
 # --- Route table + schema ----------------------------------------------------
@@ -307,7 +308,10 @@ def test_ap_data_reads_route_through_the_org_alias_resolver():
     mention = ENTRY_TEXT[ENTRY_TEXT.index("async def _ap_handle_repo_mention"):]
     mention = mention[:mention.index("\n\n\nasync def")]
     assert "data_owner = await _ap_org_alias_owner(env, owner, repo)" in mention
-    assert "_forkbot_enqueue_issue(\n        env, data_owner, repo," in mention
+    assert "fediverse_mentions_api.record_verified(" in mention
+    assert "data_owner=data_owner" in mention
+    assert "signature_verified=True" in mention
+    assert "_forkbot_enqueue_issue(" not in mention
 
 
 # --- Push gate ---------------------------------------------------------------
@@ -350,3 +354,92 @@ def test_org_admin_guards_and_caps_are_present():
         assert cap in ENTRY_TEXT, cap
     # team membership can only raise an existing member's permission
     assert '"error": "not_a_member"' in ENTRY_TEXT
+
+
+def test_world_logo_and_floor_office_access_are_server_enforced():
+    ns = _load(
+        "_org_logo_url",
+        "_org_world_access",
+        "_org_world_access_allowed",
+        extra_globals={
+            "clean_string": lambda value, size: str(value or "")[:size],
+            "urlparse": urlparse,
+            "ORG_WORLD_ACCESS_VALUES": ORG_WORLD_ACCESS_VALUES,
+            "ORG_ROLES": ORG_ROLES,
+        },
+    )
+    logo = ns["_org_logo_url"]
+    assert logo("https://cdn.example/acme.svg") == \
+        "https://cdn.example/acme.svg"
+    assert logo("http://cdn.example/acme.svg") == ""
+    assert logo("https://user:secret@cdn.example/acme.svg") == ""
+    assert logo("javascript:alert(1)") == ""
+
+    access = ns["_org_world_access"]({
+        "lobby": "public",
+        "floors": "restricted",
+        "offices": "private",
+    })
+    assert access == {
+        "lobby": "public",
+        "floors": "restricted",
+        "offices": "private",
+    }
+    allowed = ns["_org_world_access_allowed"]
+    assert allowed("public", "") is True
+    assert allowed("restricted", "member") is True
+    assert allowed("restricted", "") is False
+    assert allowed("private", "admin") is True
+    assert allowed("private", "member") is False
+
+    handler = next(
+        node for node in ast.parse(ENTRY_TEXT).body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "org_handler"
+    )
+    source = ast.unparse(handler)
+    assert "PATCH" in source
+    assert "organization_world_settings_update" in source
+    assert "worldCapabilities" in source
+    assert "floors_visible" in source
+
+
+def test_dashboard_exposes_world_building_identity_and_access_controls():
+    source = (
+        ROOT / "public" / "dashboard" / "js" / "04-account.js"
+    ).read_text(encoding="utf-8")
+    assert "data-org-world-settings" in source
+    assert "data-org-world-logo" in source
+    assert "data-org-world-lobby" in source
+    assert "data-org-world-floors" in source
+    assert "data-org-world-offices" in source
+    assert 'orgApiRequest("PATCH", "/api/orgs/"' in source
+
+
+def test_world_organization_directory_only_returns_enterable_lobbies():
+    handler = next(
+        node for node in ast.parse(ENTRY_TEXT).body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "world_organizations_handler"
+    )
+    source = ast.unparse(handler)
+    assert "GET" in source
+    assert "ORDER BY created_at DESC LIMIT 64" in source
+    assert "_org_world_access_allowed(access['lobby'], viewer_role)" in source
+    assert "continue" in source
+    assert "enterable-lobbies-only" in source
+    assert "organizations" in source
+    assert "org_repos" not in source
+
+
+def test_public_office_access_never_publishes_member_names_for_guests():
+    handler = next(
+        node for node in ast.parse(ENTRY_TEXT).body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "org_members_handler"
+    )
+    source = ast.unparse(handler)
+    assert "if not viewer_role" in source
+    assert "public-redacted" in source
+    assert "'members': []" in source
+    assert "memberCount" in source

@@ -682,8 +682,8 @@
         background-clip: padding-box;
       }
     </style>
-    <script src="/dashboard.js?v=1bd8db83ab92" defer></script>
-    <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+    <script src="/dashboard.js?v=7d30d42549da" defer></script>
+    <script src="/dashboard-chat.js?v=9a3beabc8e8d" defer></script>
   </head>
   <body class="bg-background text-foreground" data-page="home">
     <div data-dashboard-root data-dashboard-section="home" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
@@ -741,10 +741,19 @@
 
         <div class="flex items-center gap-1.5">
           <a
+            href="/"
+            class="hidden h-9 w-9 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors sm:inline-flex"
+            title="Open ForkMesh World"
+            aria-label="Open ForkMesh World"
+          >
+            <i data-lucide="globe-2" class="h-4 w-4"></i>
+          </a>
+
+          <a
             href="/mirror-payouts"
             class="hidden h-9 w-9 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors sm:inline-flex"
-            title="Get paid to mirror code"
-            aria-label="Get paid to mirror code"
+            title="Mirror reward settings"
+            aria-label="Mirror reward settings"
           >
             <img src="/assets/sol.png" alt="" aria-hidden="true" class="h-4 w-4 shrink-0 rounded-full object-contain" />
           </a>
@@ -781,8 +790,8 @@
             <button
               id="agentModalToggle"
               type="button"
-              aria-label="Start an agent"
-              title="Start an agent"
+              aria-label="Open owner-device agents"
+              title="Agents are controlled on the owner device"
               class="flex h-9 w-9 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
             >
               <i data-lucide="bot" class="w-4 h-4"></i>
@@ -795,32 +804,22 @@
             >
               <div class="flex items-center justify-between border-b border-border px-4 py-3">
                 <div class="min-w-0">
-                  <h2 id="agentModalTitle" class="flex items-center gap-2 text-sm font-semibold text-foreground"><i data-lucide="bot" class="h-4 w-4 text-primary"></i>Start an agent</h2>
-                  <p class="mt-0.5 text-xs text-muted-foreground">Send a prompt to a fresh agent on the repository owner's node.</p>
+                  <h2 id="agentModalTitle" class="flex items-center gap-2 text-sm font-semibold text-foreground"><i data-lucide="shield-check" class="h-4 w-4 text-primary"></i>Owner-device agents</h2>
+                  <p class="mt-0.5 text-xs text-muted-foreground">Private prompts and transcripts stay encrypted to a key held by the desktop node.</p>
                 </div>
-                <button data-agent-modal-close type="button" aria-label="Close start agent" class="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+                <button data-agent-modal-close type="button" aria-label="Close agent information" class="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
                   <i data-lucide="x" class="h-4 w-4"></i>
                 </button>
               </div>
-              <form data-repo-agent-new-form class="grid gap-3 p-4">
-                <label class="grid gap-1.5 text-xs text-muted-foreground">
-                  Repository
-                  <select data-agent-modal-repo class="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none focus:border-primary"></select>
-                </label>
-                <input data-repo-agent-new-input type="text" maxlength="8000" placeholder="Start a new agent - enter a prompt (paste a screenshot to attach)" class="h-9 min-w-0 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-primary" />
-                <div class="flex items-center gap-2">
-                  <button type="button" data-repo-agent-new-attach title="Attach a screenshot" class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="paperclip" class="h-3.5 w-3.5"></i>Attach</button>
-                  <span class="text-[11px] text-muted-foreground">or paste a screenshot</span>
-                </div>
-                <input type="file" data-repo-agent-new-file-input multiple accept="image/png,image/jpeg,image/gif,image/webp" class="hidden" />
-                <div data-repo-agent-new-attachments class="flex flex-wrap gap-2"></div>
-                <div class="flex flex-wrap items-center gap-2">
-                  <select data-repo-agent-new-provider title="Agent provider" class="h-8 shrink-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary"></select>
-                  <select data-repo-agent-new-model title="Agent model" class="h-8 shrink-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary"></select>
-                  <button type="submit" data-repo-agent-new-submit class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="plus" class="h-3.5 w-3.5"></i>Start agent</button>
-                  <span data-repo-agent-new-hint class="text-[11px] text-muted-foreground"></span>
-                </div>
-              </form>
+              <div class="grid gap-3 p-4 text-xs leading-5 text-muted-foreground">
+                <p>The browser deliberately has no owner private key, so the relay and its administrators cannot read agent sessions or turn a browser form into a plaintext prompt channel.</p>
+                <p>Start, inspect, and steer agents from the ForkMesh desktop app on the owner device.</p>
+                <a href="/desktop" class="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 font-semibold text-primary-foreground hover:bg-primary/90">
+                  <i data-lucide="monitor-down" class="h-4 w-4"></i>
+                  Open desktop downloads
+                </a>
+                <p class="text-[11px]">Agent privacy boundary: agent-recipient private keys stay on your device and are never sent to the ForkMesh relay.</p>
+              </div>
             </div>
           </div>
 
@@ -1113,7 +1112,7 @@
         <div class="flex items-center justify-between border-b border-border px-4 py-3">
           <div class="min-w-0">
             <h2 id="profileModalTitle" class="text-sm font-semibold text-foreground">Profile settings</h2>
-            <p class="mt-0.5 text-xs text-muted-foreground">Verify email and add a Solana payout address when you start mirroring.</p>
+            <p class="mt-0.5 text-xs text-muted-foreground">Verify email and optionally add a public Solana address for mirror rewards or direct community donations.</p>
           </div>
           <button data-profile-modal-close type="button" aria-label="Close profile settings" class="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="x" class="h-4 w-4"></i>
@@ -1135,7 +1134,8 @@
           <label class="grid gap-1.5 text-xs text-muted-foreground">
             Solana payout address
             <input data-profile-solana type="text" inputmode="latin" autocomplete="off" placeholder="Your public Solana address" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
-            <span class="text-[11px] leading-4 text-muted-foreground">Used only for mirror rewards and bounty payouts. You can leave it empty until you start mirroring.</span>
+            <span class="text-[11px] leading-4 text-muted-foreground">Used only for optional mirror rewards and direct community donations. Legacy bounty custody is disabled; you may leave it empty.</span>
+            <span class="text-[11px] leading-4 text-amber-300">Non-custodial: only this public address is saved. Keys and recovery phrases stay on your device. User funds, the community pool, pending rewards, and completed transfers are distinct states.</span>
           </label>
 
           <label class="grid gap-1.5 text-xs text-muted-foreground">
@@ -1229,7 +1229,7 @@
         </div>
 
         <form data-new-repo-form class="grid min-h-0 gap-4 overflow-y-auto p-4">
-          <label class="grid gap-1.5 text-xs text-muted-foreground">
+          <label data-new-repo-name-wrap class="grid gap-1.5 text-xs text-muted-foreground">
             Repository name
             <input data-new-repo-name type="text" autocomplete="off" spellcheck="false" placeholder="my-project" required class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
           </label>
@@ -1239,12 +1239,28 @@
             <div data-new-repo-source-toggle class="flex items-center rounded-md border border-border overflow-hidden text-xs">
               <button data-new-repo-source="remote" type="button" aria-pressed="true" class="flex-1 bg-secondary text-foreground px-3 py-2 transition-colors">Remote clone URL</button>
               <button data-new-repo-source="local" type="button" aria-pressed="false" class="flex-1 text-muted-foreground hover:text-foreground px-3 py-2 border-l border-border transition-colors">Local repository</button>
+              <button data-new-repo-source="provider" type="button" aria-pressed="false" class="flex-1 text-muted-foreground hover:text-foreground px-3 py-2 border-l border-border transition-colors">GitHub / GitLab</button>
             </div>
             <input data-new-repo-source-value type="text" autocomplete="off" spellcheck="false" placeholder="https://github.com/owner/repo.git" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
             <span data-new-repo-source-hint class="text-[11px] leading-4 text-muted-foreground">ForkMesh clones this URL into a bare mirror. Local paths never leave your machine.</span>
           </div>
 
-          <label class="grid gap-1.5 text-xs text-muted-foreground">
+          <div data-new-repo-provider-options class="hidden grid gap-3 rounded-lg border border-border bg-background p-3">
+            <label class="grid gap-1.5 text-xs text-muted-foreground">
+              Import type
+              <select data-new-repo-import-mode class="h-9 rounded-md border border-border bg-card px-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20">
+                <option value="import">Import permitted metadata</option>
+                <option value="stub">Create a non-mirrored stub</option>
+              </select>
+            </label>
+            <label class="grid gap-1.5 text-xs text-muted-foreground">
+              Provider access token <span class="text-[11px] font-normal">(required for private repositories; optional for public)</span>
+              <input data-new-repo-provider-token type="password" autocomplete="off" spellcheck="false" placeholder="One-request GitHub or GitLab token" class="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+            </label>
+            <p class="text-[11px] leading-4 text-muted-foreground">The token passes through ForkMesh’s Worker only for this request and is forwarded to the provider; it is not persisted. Only metadata endpoints are read; source files are not fetched or sent to an external model.</p>
+          </div>
+
+          <label data-new-repo-visibility-wrap class="grid gap-1.5 text-xs text-muted-foreground">
             Visibility
             <select data-new-repo-visibility class="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20">
               <option value="public">Public — listed in the catalog and browsable by anyone</option>
@@ -1252,7 +1268,7 @@
             </select>
           </label>
 
-          <label class="grid gap-1.5 text-xs text-muted-foreground">
+          <label data-new-repo-description-wrap class="grid gap-1.5 text-xs text-muted-foreground">
             Description <span class="text-[11px] font-normal text-muted-foreground">(optional)</span>
             <textarea data-new-repo-description rows="2" maxlength="240" spellcheck="true" placeholder="What is this repository for?" class="resize-y rounded-md border border-border bg-background px-3 py-2 text-sm leading-6 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20"></textarea>
           </label>
@@ -1273,7 +1289,7 @@
             <button data-new-repo-cancel type="button" class="inline-flex h-9 items-center justify-center rounded-md border border-border px-4 text-sm font-semibold text-foreground hover:bg-secondary transition-colors">Cancel</button>
             <button data-new-repo-submit type="submit" class="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors">
               <i data-lucide="git-branch-plus" class="h-4 w-4"></i>
-              Create &amp; mirror
+              <span data-new-repo-submit-label>Create &amp; mirror</span>
             </button>
           </div>
         </form>

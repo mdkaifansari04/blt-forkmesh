@@ -8,6 +8,49 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_activitypub_thread_lifecycle_migration_upgrades_remote_replies():
+    initial = (ROOT / "migrations" / "0028_activitypub.sql").read_text(
+        encoding="utf-8"
+    )
+    upgrade = (
+        ROOT / "migrations" / "0065_activitypub_thread_lifecycle.sql"
+    ).read_text(encoding="utf-8")
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.executescript(initial)
+        connection.execute(
+            "INSERT INTO ap_comments "
+            "(context_bi,remote_id_bi,data,ts) VALUES (?,?,?,?)",
+            ("context", "remote", "encrypted", 1),
+        )
+        connection.executescript(upgrade)
+        columns = {
+            row[1]: row for row in connection.execute(
+                "PRAGMA table_info(ap_comments)"
+            )
+        }
+        assert "parent_remote_id_bi" in columns
+        assert "lifecycle" in columns
+        assert connection.execute(
+            "SELECT lifecycle,data FROM ap_comments"
+        ).fetchone() == ("active", "encrypted")
+        indexes = {
+            row[1] for row in connection.execute(
+                "PRAGMA index_list(ap_comments)"
+            )
+        }
+        assert "idx_ap_comments_parent" in indexes
+        try:
+            connection.execute(
+                "UPDATE ap_comments SET lifecycle='native-signed'"
+            )
+            raise AssertionError("invalid lifecycle was accepted")
+        except sqlite3.IntegrityError:
+            pass
+    finally:
+        connection.close()
+
+
 def test_release_downloads_user_agent_migration_bootstraps_fresh_local_db():
     migration = (ROOT / "migrations" / "0034_release_downloads_ua.sql").read_text(
         encoding="utf-8"
@@ -117,5 +160,48 @@ def test_drop_accounts_migration_removes_only_the_legacy_table():
         # Re-running is a no-op (DROP TABLE IF EXISTS), matching how
         # ensure_schema replays the same statement on lazily-created DBs.
         connection.executescript(migration)
+    finally:
+        connection.close()
+
+
+def test_social_directory_migration_preserves_rows_and_widens_kinds():
+    initial = (
+        ROOT / "migrations" / "0052_world_fediverse_media.sql"
+    ).read_text(encoding="utf-8")
+    upgrade = (
+        ROOT / "migrations" / "0061_world_social_directory.sql"
+    ).read_text(encoding="utf-8")
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.executescript(initial)
+        connection.execute(
+            "INSERT INTO world_fediverse_instances "
+            "(instance_id,kind,host,url,data,created_by_bi,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            ("a" * 32, "mastodon", "social.example.org",
+             "https://social.example.org/", "{}", "admin-bi", 1, 1),
+        )
+        connection.executescript(upgrade)
+        assert connection.execute(
+            "SELECT kind,host FROM world_fediverse_instances"
+        ).fetchall() == [("mastodon", "social.example.org")]
+        connection.execute(
+            "INSERT INTO world_fediverse_instances "
+            "(instance_id,kind,host,url,data,created_by_bi,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            ("b" * 32, "x", "x.com", "https://x.com/", "{}",
+             "admin-bi", 2, 2),
+        )
+        try:
+            connection.execute(
+                "INSERT INTO world_fediverse_instances "
+                "(instance_id,kind,host,url,data,created_by_bi,created_at,"
+                "updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                ("c" * 32, "unsupported", "bad.example.org",
+                 "https://bad.example.org/", "{}", "admin-bi", 3, 3),
+            )
+            raise AssertionError("unsupported directory kind was accepted")
+        except sqlite3.IntegrityError:
+            pass
     finally:
         connection.close()

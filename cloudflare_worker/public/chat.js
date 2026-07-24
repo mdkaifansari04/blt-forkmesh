@@ -1,7 +1,8 @@
 // Browser-side ForkMesh room chat. Reimplements the desktop client's room
 // crypto (PBKDF2 + AES-256-GCM) and message envelope so the website can join
-// the public encrypted rooms and talk to connected clients. The relay only
-// ever sees ciphertext.
+// the public encrypted rooms and talk to connected clients. Frames are
+// ciphertext on the wire, but the relay derives the default shared passphrase
+// and can therefore decrypt them; this is not end-to-end encryption.
 //
 // Layout: rooms on the left (channels multiplex over the ONE "general" room
 // socket via each message's `channel` field, exactly like the desktop),
@@ -14,8 +15,10 @@ const ROOM_NAME = "general";
 // passphrase (derived server-side from the relay's DATA_KEY) from
 // /api/chat/room-key and feeds it into the same PBKDF2 room-key derivation, so
 // all clients still converge on the same AES key — but only signed-in accounts
-// can obtain it. Fetched once and cached here.
-const ROOM_KEY_ENDPOINT = "/api/chat/room-key";
+// can fetch it. The relay controls DATA_KEY and can derive the room key too.
+// Fetched once and cached here.
+const ROOM_KEY_ENDPOINT =
+  "/api/chat/room-key?owner=mainnode&repo=forkmesh";
 let roomPassphrase = null;
 const DEFAULT_CHANNELS = ["#general", "#welcome", "#random"];
 const CHAT_WS_PATH = "/api/repo/mainnode/forkmesh/rooms/general/ws";
@@ -117,8 +120,8 @@ try {
 } catch (_) {}
 // Rolling per-channel buffer of the most recent decrypted messages, forwarded
 // to ForkBot so it can resolve references like "that bug" from the
-// conversation. The room is end-to-end encrypted, so the relay only ever sees
-// what we choose to send here.
+// conversation. The relay can decrypt the default shared-key room; this buffer
+// controls only the narrower context we explicitly send to ForkBot.
 const recentContext = new Map(); // channel -> [{sender, text}]
 const RECENT_CONTEXT_MAX = 20;
 function rememberContext(channel, sender, text) {
@@ -1477,7 +1480,7 @@ async function connect() {
   socket.addEventListener("open", () => {
     connecting = false;
     reconnectDelayMs = 2000;
-    setStatus("Connected · end-to-end encrypted");
+    setStatus("Connected · authenticated shared key");
     // Announce ourselves so clients add us to their roster and replay history.
     send(makePlain("hello", { channels: [...channelMeta.keys()] }));
     noteSelfRoster();

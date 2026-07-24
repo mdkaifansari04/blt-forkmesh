@@ -48,6 +48,11 @@ async def _const(value):
 
 
 def _run(repo_records):
+    repo_records = [
+        dict(record, visibility=record.get("visibility", "public"))
+        for record in repo_records
+    ]
+
     async def d1_all(env, sql, *args):
         if "repositories" in sql:
             return [{"key_bi": f"bi:{i}", "data": rec} for i, rec in enumerate(repo_records)]

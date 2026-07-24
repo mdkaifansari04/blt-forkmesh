@@ -34,7 +34,8 @@ def _load(*names, extra_globals=None):
     want_assigns = {
         "ROOM_RE", "REPO_ROOM_RE", "GIT_INFO_RE", "GIT_PACK_RE",
         "RELEASE_BLOB_RE", "REPO_HOST_RE", "GIT_RECEIVE_RE",
-        "HOST_PRESENCE_STALE_MS", "STATUS_SYSTEMS", "STATUS_SYSTEM_CHECKS",
+        "HOST_PRESENCE_STALE_MS", "HTTPS_MIRROR_STATUS_FRESH_MS",
+        "STATUS_SYSTEMS", "STATUS_SYSTEM_CHECKS",
         "STATUS_HISTORY_DAYS",
         "STATUS_HISTORY_RETAIN_MS", "STATUS_SAMPLE_WINDOW_MS",
         "STATUS_HOUR_MS", "STATUS_DAY_MS",
@@ -77,7 +78,7 @@ class _Clock:
 
 
 def _sample_env(now, error_paths, host_online=True, db_ok=True, error_rows=None):
-    """Stub env for record_status_sample: error_log rows + host_presence count."""
+    """Stub error rows plus the signed direct-HTTPS mirror health count."""
     inserted = []
     hourly = []
     minutely = []
@@ -87,7 +88,7 @@ def _sample_env(now, error_paths, host_online=True, db_ok=True, error_rows=None)
             if not db_ok:
                 raise RuntimeError("db down")
             return {"ok": 1}
-        if "host_presence" in sql:
+        if "mirror_https_endpoints" in sql:
             return {"n": 1 if host_online else 0}
         return {}
 
@@ -141,7 +142,7 @@ def _run_sample(error_paths=(), host_online=True, db_ok=True, error_rows=None):
 
 # --- record_status_sample ---------------------------------------------------
 
-def test_all_systems_recorded_ok_with_no_errors_and_a_live_host():
+def test_all_systems_recorded_ok_with_no_errors_and_a_live_https_mirror():
     results, reasons, _minutes = _run_sample(error_paths=[], host_online=True, db_ok=True)
     assert set(results) == {
         "website", "api", "database", "git_hosting", "realtime", "durable_objects",
@@ -159,12 +160,12 @@ def test_database_failure_is_isolated_to_the_database_system():
     assert reasons["website"] is None
 
 
-def test_no_live_host_fails_only_git_hosting():
+def test_no_healthy_https_mirror_fails_only_git_hosting():
     results, reasons, _minutes = _run_sample(error_paths=[], host_online=False, db_ok=True)
     assert results["git_hosting"] == 1
     assert results["website"] == 0
     assert results["api"] == 0
-    assert "no desktop hosts" in reasons["git_hosting"].lower()
+    assert "no healthy direct https mirror" in reasons["git_hosting"].lower()
 
 
 def test_api_error_does_not_fail_website():
@@ -219,19 +220,19 @@ def test_reason_includes_status_and_message_and_extra_count():
     assert reasons["api"] == "500 on /api/repositories: boom (+1 more)"
 
 
-def test_offline_node_tunnel_503s_do_not_fail_any_system():
-    # 502/503/504 on host-tunnel content paths mean the one desktop node
-    # holding that content is unreachable — node availability (tracked by
-    # host_presence / git_hosting), not an API outage. A single offline node's
+def test_offline_direct_mirror_503s_do_not_fail_any_system():
+    # 502/503/504 on direct-mirror content paths mean an upstream endpoint is
+    # unreachable — node availability (tracked by signed HTTPS health), not an
+    # API outage. A single offline node's
     # release blob being re-requested every few minutes used to paint the
     # whole "api" system red on /status.
     blob = "/api/repo/somenode/forkmesh/releases/blob/sha256/" + "a" * 64
     results, reasons, _minutes = _run_sample(error_rows=[
         {"path": blob, "status": 503, "message": "response status 503"},
         {"path": "/api/repo/somenode/forkmesh/tree", "status": 504,
-         "message": "host timeout"},
+         "message": "mirror timeout"},
         {"path": "/somenode/forkmesh/info/refs", "status": 502,
-         "message": "no host"},
+         "message": "no healthy mirror"},
     ])
     assert results["api"] == 0
     assert results["realtime"] == 0
@@ -239,7 +240,7 @@ def test_offline_node_tunnel_503s_do_not_fail_any_system():
     assert reasons["api"] is None
 
 
-def test_a_500_on_a_tunnel_path_still_fails_the_api_bucket():
+def test_a_500_on_a_direct_mirror_path_still_fails_the_api_bucket():
     # Only upstream-unavailability statuses are excused; a real worker bug
     # (500) on the same path must still count.
     blob = "/api/repo/somenode/forkmesh/releases/blob/sha256/" + "b" * 64
@@ -250,7 +251,7 @@ def test_a_500_on_a_tunnel_path_still_fails_the_api_bucket():
     assert "boom" in reasons["api"]
 
 
-def test_tunnel_content_paths_are_classified_and_room_paths_are_not():
+def test_repository_content_paths_are_classified_and_room_paths_are_not():
     g = _load()
     is_tunnel = g["_is_tunnel_content_path"]
     assert is_tunnel(
@@ -265,9 +266,9 @@ def test_tunnel_content_paths_are_classified_and_room_paths_are_not():
     assert not is_tunnel("/api/repositories")
 
 
-def test_fetch_skips_logging_offline_node_5xx_on_tunnel_paths():
+def test_fetch_skips_logging_offline_node_5xx_on_repository_content_paths():
     # Source contract: Default.fetch must not log_error (blocking Sentry call
-    # + D1 write per hit) for 502/503/504 on tunnel content paths — an
+    # + D1 write per hit) for 502/503/504 on direct-mirror content paths — an
     # offline node's re-requested release blob used to generate hundreds of
     # noise rows a day. Everything else >= 500 still logs.
     fetch_src = ENTRY_TEXT.split("async def fetch", 1)[1] \
@@ -315,7 +316,7 @@ def test_cron_samples_run_every_tick_and_heavy_jobs_are_staggered():
     # The /status sample runs before the heavier online sample, so a tick
     # that dies partway has already landed the publicly-visible data point.
     assert sample_at < online_at
-    for job in ("sweep_funded_bounties", "_federation_cron",
+    for job in ("verify_submitted_chain_intents", "_federation_cron",
                 "send_notification_digests", "purge_stale_registered_nodes",
                 "purge_blocked_catalog", "_distribute_central_fund",
                 "chat_history_prune_expired"):
@@ -325,7 +326,7 @@ def test_cron_samples_run_every_tick_and_heavy_jobs_are_staggered():
         # i.e. no other job call sits between the gate and this call.
         between = scheduled[gate:job_at]
         assert not any(other + "(" in between for other in (
-            "sweep_funded_bounties", "_federation_cron",
+            "verify_submitted_chain_intents", "_federation_cron",
             "send_notification_digests", "purge_stale_registered_nodes",
             "purge_blocked_catalog", "_distribute_central_fund",
             "chat_history_prune_expired") if other != job), job
@@ -366,6 +367,9 @@ def test_ensure_schema_skips_ddl_when_fingerprint_matches():
         async def d1_run(_env, sql, *args):
             d1_runs.append((sql, args))
 
+        async def custody_ready(_env):
+            return None
+
         return {
             "asyncio": asyncio,
             "SCHEMA_STATEMENTS": fake_statements,
@@ -375,6 +379,7 @@ def test_ensure_schema_skips_ddl_when_fingerprint_matches():
             "_schema_lock": None,
             "d1_first": d1_first,
             "d1_run": d1_run,
+            "_assert_legacy_wallet_custody_ready": custody_ready,
         }
 
     def load_ensure_schema(**kwargs):
@@ -804,6 +809,8 @@ def _run_history_current(
                 ), sql
                 return {"n": do_abort_count}
             return {"n": error_count}
+        if "MAX(forkmesh_verified_at)" in sql:
+            return {"ts": _Clock.value if mainnode_online else 0}
         return {}
 
     async def decrypt_row(_env, _data):
@@ -891,30 +898,23 @@ def test_room_route_turns_a_do_duration_abort_into_a_retryable_503():
     after_fetch = room_block[fetch_at:]
     assert "log_durable_object_abort" in after_fetch
     assert "status=503" in after_fetch
-    # The browse route's host DO fetch is guarded the same way so its mirror
-    # fallback engages instead of a 1101.
+    # Repository browse keeps no second DO fetch to guard: it is ordinary
+    # direct HTTPS and leaves the multiplayer room socket intact.
     browse_block = src[src.index("REPO_HOST_RE.match"):src.index(
         "room_key_from_path(url.path)")]
-    browse_fetch_at = browse_block.index("host_object.fetch")
-    assert "try:" in browse_block[:browse_fetch_at]
-    assert "log_durable_object_abort" in browse_block[browse_fetch_at:]
+    assert "host_object.fetch" not in browse_block
+    assert "_https_mirror_proxy" in browse_block
 
 
-def test_current_mainnode_online_via_forkmesh_mirror_heartbeat():
-    # Regression (adhoc #189): no node ever registers a host tunnel under the
-    # literal "mainnode" owner, so host_presence for mainnode/forkmesh is never
-    # written. The banner must still read online when a real node hosts a live
-    # "forkmesh" mirror, whose fresh heartbeat is folded into the last-seen ts.
+def test_current_mainnode_online_via_signed_forkmesh_https_proof():
+    # The banner reflects a fresh, integrity-matching direct HTTPS proof for
+    # forkmesh/forkmesh. A control-socket heartbeat alone is not evidence that
+    # repository bytes are available.
     def _load_with_mirror():
         async def noop(*_a, **_k):
             return None
 
         async def d1_all(_env, sql, *_args):
-            if "FROM repositories" in sql:
-                return [{"key_bi": "mirror_bi", "data": "enc"},
-                        {"key_bi": "other_bi", "data": "enc2"}]
-            if "FROM host_presence" in sql:
-                return [{"repo_bi": "mirror_bi", "ts": _Clock.value - 1000}]
             return []
 
         async def d1_first(_env, sql, *_args):
@@ -922,14 +922,9 @@ def test_current_mainnode_online_via_forkmesh_mirror_heartbeat():
                 return {"n": 1}
             if "FROM error_log" in sql:
                 return {"n": 0}
-            # The literal mainnode/forkmesh presence row never exists.
-            if "FROM host_presence" in sql:
-                return None
+            if "MAX(forkmesh_verified_at)" in sql:
+                return {"ts": _Clock.value - 1000}
             return {}
-
-        async def decrypt_row(_env, data):
-            return {"owner": "alice", "name": "forkmesh"} if data == "enc" \
-                else {"owner": "bob", "name": "notforkmesh"}
 
         async def _live_online_nodes(_env, _now):
             return {"bi0": "alice"}
@@ -945,9 +940,7 @@ def test_current_mainnode_online_via_forkmesh_mirror_heartbeat():
 
         extra = {
             "Date": _Clock, "ensure_schema": noop, "d1_all": d1_all,
-            "d1_first": d1_first, "decrypt_row": decrypt_row,
-            "safe_segment": lambda s: str(s or "").strip().lower(),
-            "_is_blocked_catalog_identity": lambda *_a: False,
+            "d1_first": d1_first,
             "_live_online_nodes": _live_online_nodes,
             "blind_index": blind_index, "json_response": json_response,
         }

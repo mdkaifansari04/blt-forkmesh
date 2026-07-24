@@ -7,6 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "FederatedThreadView.h"
 #include "KebabHeaderView.h"
 #include "PacmanProgress.h"
 #include "PullAiReview.h"
@@ -2859,6 +2860,20 @@ void MainWindow::renderPullThread(const PullRequest &pr)
             pullLink + QStringLiteral("#%1")
                            .arg(ev.id.isEmpty() ? QString::number(ev.ts) : ev.id),
             ev.author);
+    }
+    if (m_repoDetailIndex >= 0 &&
+        m_repoDetailIndex < m_repositories.size() && m_networkAccess) {
+        const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+        auto *remoteThread =
+            new FederatedThreadView(m_networkAccess, m_pullThreadContainer);
+        const QUrl server(canonicalServerUrl(
+            m_activeServer >= 0 && m_activeServer < m_servers.size()
+                ? m_servers.at(m_activeServer).url
+                : QString()));
+        remoteThread->load(server, repo.owner, repo.name,
+                           QStringLiteral("pull"), pr.number);
+        m_pullThreadLayout->insertWidget(
+            qMax(0, m_pullThreadLayout->count() - 1), remoteThread);
     }
 }
 
@@ -6512,6 +6527,13 @@ void MainWindow::linkIssueToPullFromPullPage()
 
 void MainWindow::fundBountiesForMergedPull(const PullRequest &pr)
 {
+    // Historical issue-bounty records remain visible, but the Worker-held
+    // escrow create/payout contract is frozen. Never create or advertise a new
+    // deposit address from this compatibility hook.
+    Q_UNUSED(pr);
+    return;
+
+#if 0 // Historical Worker-held bounty escrow implementation; never compiled.
     const int idx = issuesRepoIndex();
     if (idx < 0 || !m_networkAccess)
         return;
@@ -6613,10 +6635,31 @@ void MainWindow::fundBountiesForMergedPull(const PullRequest &pr)
                                        amountSol, QString(), payeeDisplay);
                 });
     }
+#endif
 }
 
 void MainWindow::autoBountyForMergedPull(const PullRequest &pr)
 {
+    // Migrate stale preferences without contacting the frozen custody API.
+    // A future PR-reward implementation must provide an externally signed,
+    // independently verifiable transfer contract before this hook is enabled.
+    Q_UNUSED(pr);
+    QSettings legacySettings;
+    const bool wasEnabled =
+        legacySettings.value(kAutoPrBountyEnabledSetting, false).toBool();
+    const bool usedWallet =
+        legacySettings.value(kAutoPrBountyModeSetting).toString() ==
+        QLatin1String("wallet");
+    legacySettings.setValue(kAutoPrBountyEnabledSetting, false);
+    legacySettings.setValue(kAutoPrBountyModeSetting,
+                            QStringLiteral("perPr"));
+    if (wasEnabled || usedWallet)
+        logSystem(QStringLiteral(
+            "Legacy automatic PR bounty funding was disabled; no Worker-held "
+            "wallet or escrow request was sent."));
+    return;
+
+#if 0 // Historical Worker-held automatic bounty implementation; never compiled.
     // Issue #347: reward every merged PR's author with the configured fixed
     // bounty, independent of any issue bounty. Only the repo owner can create a
     // bounty (the worker requires an owner signature), so this is a no-op on a
@@ -6730,11 +6773,21 @@ void MainWindow::autoBountyForMergedPull(const PullRequest &pr)
         showBountyQrDialog(repo, number, uri, address, amount, amountSol,
                            QStringLiteral("pr"), payeeDisplay);
     });
+#endif
 }
 
 void MainWindow::pollBountyPayout(const RepositoryRecord &repo, int number,
                                   double amount, const QString &kind)
 {
+    // Read/write polling used to trigger a Worker-held escrow payout as a side
+    // effect. The endpoint is migration-only, so do not contact it.
+    Q_UNUSED(repo);
+    Q_UNUSED(number);
+    Q_UNUSED(amount);
+    Q_UNUSED(kind);
+    return;
+
+#if 0 // Historical status polling could trigger a custodial payout; disabled.
     if (!m_networkAccess)
         return;
     const bool isPr = kind == QLatin1String("pr");
@@ -6793,6 +6846,7 @@ void MainWindow::pollBountyPayout(const RepositoryRecord &repo, int number,
         });
     });
     timer->start();
+#endif
 }
 
 
@@ -7632,8 +7686,8 @@ QUrlQuery MainWindow::signedInboxQuery(const QString &owner) const
     return query;
 }
 
-// Coalesce a burst of relay "event" frames (one arrives per website write,
-// possibly across several repos' host sockets) into a single /api/sync fetch.
+// Coalesce an explicit local refresh request into a single /api/sync fetch.
+// Routine repository changes are discovered by the bounded HTTPS sync poll.
 void MainWindow::scheduleRelaySync()
 {
     if (!hasOwnerSigningCapability())

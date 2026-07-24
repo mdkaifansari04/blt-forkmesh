@@ -14,10 +14,19 @@ contract and the key security guards as source substrings so a one-sided edit
 (worker OR client) can't silently break sharing or weaken its access control.
 """
 
+import ast
+import asyncio
+import base64
+import json
 from pathlib import Path
+import sys
+from types import SimpleNamespace
+from urllib.parse import parse_qs, urlparse
 
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
+sys.path.insert(0, str(ENTRY.parent))
+import security_controls  # noqa: E402
 # MainWindow.cpp is split into feature TUs (MainWindow*.cpp); scan them all.
 QT_SRC = Path(__file__).resolve().parents[2] / "qt_client" / "src"
 QT_HDR = QT_SRC / "MainWindow.h"
@@ -119,3 +128,299 @@ def test_client_declares_collaborator_api():
                  "refreshRepoCollaborators"):
         assert decl in QT_HDR_TEXT, decl
         assert decl in QT_TEXT, decl
+
+
+# --- Executable owner-only collaborator/bundle contract --------------------
+
+def _load_share_functions(namespace):
+    wanted = {"_active_public_recipient_bundles", "shares_handler"}
+    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    nodes = [
+        node for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in wanted
+    ]
+    assert {node.name for node in nodes} == wanted
+    module = ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[]))
+    exec(compile(module, str(ENTRY), "exec"), namespace)
+    return namespace
+
+
+def _b64url(raw):
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _public_bundle(seed=1):
+    bundle = {
+        "v": 1,
+        "x25519": _b64url(bytes([seed]) * 32),
+        "mlkem768": _b64url(bytes([seed + 1]) * 1184),
+        # The handler must project this away even if a corrupt/manual DB row
+        # somehow contains extra material.
+        "privateKey": "must-never-leave-the-server-row",
+    }
+    valid = security_controls.validate_owner_public_bundle(bundle)
+    assert valid
+    return bundle, valid["kid"]
+
+
+class _Request:
+    def __init__(self, method, *, query="", payload=None):
+        self.method = method
+        self.url = "https://forkmesh.test/api/repo/alice/secret/shares" + query
+        self._payload = payload or {}
+
+    async def json(self):
+        return self._payload
+
+
+class _ShareHarness:
+    def __init__(self):
+        self.accounts = {"alice", "bob", "carol"}
+        self.keys = {}
+        self.shares = {}
+        self.notifications = []
+        self.queries = []
+        self.audits = []
+
+        class _Date:
+            @staticmethod
+            def now():
+                return 1_700_000_000_000
+
+        async def d1_all(_env, sql, *args):
+            self.queries.append((sql, args))
+            if "FROM repo_shares" in sql:
+                repo_bi = args[0]
+                rows = [
+                    {
+                        "grantee_bi": grantee_bi,
+                        "data": record["data"],
+                        "ts": record["ts"],
+                    }
+                    for (stored_repo_bi, grantee_bi), record
+                    in self.shares.items()
+                    if stored_repo_bi == repo_bi
+                ]
+                return sorted(rows, key=lambda row: row["ts"])
+            if "FROM owner_encryption_keys" in sql:
+                rows = []
+                for account_bi in args:
+                    for row in self.keys.get(account_bi, []):
+                        if int(row.get("revoked_at") or 0) == 0:
+                            rows.append({"account_bi": account_bi, **row})
+                return sorted(
+                    rows, key=lambda row: int(row.get("created_at") or 0),
+                    reverse=True)
+            raise AssertionError(sql)
+
+        async def d1_first(_env, sql, *args):
+            self.queries.append((sql, args))
+            if "SELECT 1 AS one FROM repo_shares" in sql:
+                return (
+                    {"one": 1} if (args[0], args[1]) in self.shares else None
+                )
+            if "SELECT COUNT(*) AS n FROM repo_shares" in sql:
+                return {
+                    "n": sum(
+                        1 for repo_bi, _grantee_bi in self.shares
+                        if repo_bi == args[0])
+                }
+            raise AssertionError(sql)
+
+        async def d1_run(_env, sql, *args):
+            self.queries.append((sql, args))
+            if sql.startswith("DELETE FROM repo_shares"):
+                self.shares.pop((args[0], args[1]), None)
+                return None
+            if sql.startswith("INSERT INTO repo_shares"):
+                self.shares[(args[0], args[1])] = {
+                    "data": args[2], "ts": args[3]}
+                return None
+            raise AssertionError(sql)
+
+        async def owner_pubkey(_env, name):
+            return ("pub:" + name) if name in self.accounts else None
+
+        async def verify(_pub, signature, _canonical):
+            return signature == "valid"
+
+        async def notify(_env, recipient, kind, title, **kwargs):
+            self.notifications.append({
+                "recipient": recipient, "kind": kind, "title": title,
+                **kwargs,
+            })
+
+        async def audit(
+            _env, actor, action, target_type="", target="",
+            outcome="success", details=None,
+        ):
+            self.audits.append({
+                "actor": actor,
+                "action": action,
+                "targetType": target_type,
+                "target": target,
+                "outcome": outcome,
+                "details": details or {},
+            })
+
+        def json_response(data, status=200, cache_control=None, **_kwargs):
+            return SimpleNamespace(
+                data=data, status=status, cache_control=cache_control)
+
+        namespace = {
+            "MAX_REPO_GRANTEES": 100,
+            "MAX_NODE_NAME": 80,
+            "Date": _Date,
+            "json": json,
+            "parse_qs": parse_qs,
+            "urlparse": urlparse,
+            "security_control": security_controls,
+            "ensure_schema": lambda _env: _async_none(),
+            "method_name": lambda request: request.method,
+            "blind_index": lambda _env, value: _async_value("bi:" + value),
+            "_owner_pubkey": owner_pubkey,
+            "_ts_ok": lambda ts: ts == "123",
+            "ed25519_verify": verify,
+            "d1_all": d1_all,
+            "d1_first": d1_first,
+            "d1_run": d1_run,
+            "decrypt_row": lambda _env, value: _async_value(value),
+            "encrypt_row": lambda _env, value: _async_value(value),
+            "clean_string": lambda value, size: str(value or "")[:size],
+            "json_response": json_response,
+            "enqueue_notification": notify,
+            "repo_web_href": lambda owner, repo: "/" + owner + "/" + repo,
+            "_audit_sensitive_action": audit,
+        }
+        self.api = _load_share_functions(namespace)
+
+    def active_key(self, account, seed=1, *, created_at=10):
+        bundle, kid = _public_bundle(seed)
+        self.keys.setdefault("bi:" + account, []).append({
+            "key_id": kid,
+            "public_bundle": json.dumps(bundle),
+            "created_at": created_at,
+            "revoked_at": 0,
+        })
+        return bundle, kid
+
+    async def call(self, request):
+        return await self.api["shares_handler"](
+            object(), request, "alice", "secret")
+
+
+async def _async_none():
+    return None
+
+
+async def _async_value(value):
+    return value
+
+
+def _share_payload(action, grantee, signature="valid"):
+    return {
+        "action": action,
+        "grantee": grantee,
+        "ts": "123",
+        "sig": signature,
+    }
+
+
+def test_add_lists_public_bundle_and_remove_survives_key_loss():
+    harness = _ShareHarness()
+    original, key_id = harness.active_key("bob")
+    added = asyncio.run(harness.call(_Request(
+        "POST", payload=_share_payload("add", "bob"))))
+
+    assert added.status == 200
+    assert added.data["shared"] is True
+    assert added.data["recipient"] == {
+        "grantee": "bob",
+        "keyId": key_id,
+        "publicBundle": {
+            "v": 1,
+            "x25519": original["x25519"],
+            "mlkem768": original["mlkem768"],
+        },
+        "createdAt": 10,
+    }
+    assert "must-never-leave-the-server-row" not in json.dumps(added.data)
+    assert "privateKey" not in added.data["recipient"]["publicBundle"]
+    assert len(harness.notifications) == 1
+
+    listed = asyncio.run(harness.call(_Request(
+        "GET", query="?ts=123&sig=valid")))
+    assert listed.status == 200
+    assert listed.cache_control == "no-store"
+    assert listed.data["grantees"] == ["bob"]
+    assert listed.data["recipients"] == [added.data["recipient"]]
+    assert listed.data["encryptionReady"] is True
+    assert listed.data["missingEncryptionKeys"] == []
+    assert listed.data["privateKeysStored"] is False
+
+    # Losing/revoking the public registration must not trap an owner in an ACL
+    # they can no longer edit. Removal does not require the grantee key.
+    harness.keys["bi:bob"].clear()
+    removed = asyncio.run(harness.call(_Request(
+        "POST", payload=_share_payload("remove", "bob"))))
+    assert removed.status == 200
+    assert removed.data == {"ok": True, "grantee": "bob", "shared": False}
+    assert harness.shares == {}
+
+
+def test_add_fails_closed_without_active_valid_recipient_key():
+    harness = _ShareHarness()
+    failed = asyncio.run(harness.call(_Request(
+        "POST", payload=_share_payload("add", "bob"))))
+    assert failed.status == 409
+    assert failed.data["error"] == "grantee_encryption_key_required"
+    assert failed.data["shared"] is False
+    assert harness.shares == {}
+    assert harness.notifications == []
+
+    # A revoked registration is equally unusable.
+    harness.active_key("bob")
+    harness.keys["bi:bob"][0]["revoked_at"] = 99
+    failed = asyncio.run(harness.call(_Request(
+        "POST", payload=_share_payload("add", "bob"))))
+    assert failed.status == 409
+    assert harness.shares == {}
+
+
+def test_owner_list_reports_legacy_share_missing_key_as_not_ready():
+    harness = _ShareHarness()
+    harness.shares[("bi:alice/secret", "bi:bob")] = {
+        "data": {"grantee": "bob", "owner": "alice", "repo": "secret"},
+        "ts": 1,
+    }
+    listed = asyncio.run(harness.call(_Request(
+        "GET", query="?ts=123&sig=valid")))
+    assert listed.status == 200
+    assert listed.data["grantees"] == ["bob"]
+    assert listed.data["recipients"] == []
+    assert listed.data["encryptionReady"] is False
+    assert listed.data["missingEncryptionKeys"] == ["bob"]
+
+
+def test_unauthorized_share_list_cannot_discover_private_names_or_acl_state():
+    harness = _ShareHarness()
+    harness.shares[("bi:alice/secret", "bi:bob")] = {
+        "data": {"grantee": "bob", "owner": "alice", "repo": "secret"},
+        "ts": 1,
+    }
+    with_share = asyncio.run(harness.call(_Request(
+        "GET", query="?ts=123&sig=invalid")))
+    queries_with_share = list(harness.queries)
+
+    harness.shares.clear()
+    harness.queries.clear()
+    without_share = asyncio.run(harness.call(_Request(
+        "GET", query="?ts=123&sig=invalid")))
+
+    assert with_share.status == without_share.status == 401
+    assert with_share.data == without_share.data == {"error": "unauthorized"}
+    assert queries_with_share == harness.queries == []
+    assert "alice" not in json.dumps(with_share.data)
+    assert "secret" not in json.dumps(with_share.data)
+    assert "bob" not in json.dumps(with_share.data)

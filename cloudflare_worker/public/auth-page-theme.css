@@ -125,7 +125,8 @@ html.light .auth-sub,
 html.light .join-sub,
 html.light #mp-node,
 html.light .terms-check,
-html.light .flow {
+html.light .flow,
+html.light .custody-notice {
   color: var(--auth-text-secondary);
 }
 
@@ -151,7 +152,8 @@ html.light .calc,
 html.light .flow div,
 html.light .panel,
 html.light .join-banner,
-html.light .demo-credentials {
+html.light .demo-credentials,
+html.light .custody-notice {
   background: var(--auth-surface);
   border-color: var(--auth-border);
 }
@@ -159,6 +161,7 @@ html.light .demo-credentials {
 html.light .join-banner strong,
 html.light .calc-cell .big,
 html.light .flow strong,
+html.light .custody-notice strong,
 html.light .team-row .who,
 html.light .log-row .what .to,
 html.light .demo-credentials strong,

@@ -292,10 +292,9 @@ def test_payload_marks_mirrors_the_integrity_gate_rejects():
 
 
 def test_payload_downgrades_rejected_to_healing_when_source_online():
-    # Same mirrors as above, but the source of truth (mainnode) has a live host
-    # right now. Clones of a failing mirror are then served from the source (see
-    # Default._online_source_of_truth), so the failing node auto-heals instead of
-    # blocking: its verdict is "healing", not the alarming "rejected".
+    # Same mirrors as above, but the source of truth (mainnode) has a fresh
+    # healthy direct-HTTPS endpoint right now. The failing mirror can re-sync
+    # from that source, so its verdict is "healing", not "rejected".
     now = 1_000_000
     rows = [
         _row("a", "mainnode", "forkmesh", root="abc", synced="990000",

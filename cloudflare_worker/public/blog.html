@@ -62,7 +62,7 @@
           <div class="blog1-featured-copy">
             <div class="blog1-meta"><span class="blog1-tag">Featured</span><span>Feature 01</span><span class="blog1-dot"></span><span>Distributed hosting</span></div>
             <h2>Desktop-node mirrors</h2>
-            <p>Every published repository lives as a full bare Git mirror on the nodes that host it, created with git clone --mirror and kept fresh automatically. Your history is always physically yours.</p>
+            <p>Actively mirrored repositories live on independent nodes and refresh while configured synchronization is healthy; external stubs stay labeled.</p>
             <span class="blog1-button">Read the post</span>
           </div>
         </a>
@@ -79,15 +79,15 @@
             <div class="blog1-card-copy">
               <p class="blog1-card-meta">Distributed hosting · Feature 01</p>
               <h3>Desktop-node mirrors</h3>
-              <p>Every published repository lives as a full bare Git mirror on the nodes that host it, created with git clone --mirror and kept fresh automatically. Your history is always physically yours.</p>
+              <p>Actively mirrored repositories live on independent nodes and refresh while configured synchronization is healthy; external stubs stay labeled.</p>
             </div>
           </a>
           <a class="blog1-card" href="/blog/zero-custody-relay/" data-section="mesh">
-            <img class="blog1-post-image blog1-has-art" src="/assets/blog/features/zero-custody-relay.webp" alt="Abstract ForkMesh artwork for Zero-custody relay">
+            <img class="blog1-post-image blog1-has-art" src="/assets/blog/features/zero-custody-relay.webp" alt="Abstract ForkMesh artwork for a packfile-free routing relay">
             <div class="blog1-card-copy">
               <p class="blog1-card-meta">Distributed hosting · Feature 02</p>
-              <h3>Zero-custody relay</h3>
-              <p>The mainnode coordinates discovery, presence, and routing with Cloudflare Durable Objects, but it stores no packfiles and no message bodies. Objects stream between peers; the relay just connects them.</p>
+              <h3>Packfile-free routing relay</h3>
+              <p>The Worker stores signed discovery and health metadata, not Git packfiles. Repository bytes stream from selected independent origins over HTTPS.</p>
             </div>
           </a>
           <a class="blog1-card" href="/blog/live-clone-routing/" data-section="mesh">
@@ -95,7 +95,7 @@
             <div class="blog1-card-copy">
               <p class="blog1-card-meta">Distributed hosting · Feature 03</p>
               <h3>Live clone routing</h3>
-              <p>git clone https://forkmesh.com/owner/repo just works. Smart-HTTP requests are routed over an outbound tunnel to the hosting desktop node, which serves the pack directly.</p>
+              <p>Git Smart HTTP keeps the public ForkMesh URL while the Worker selects a signed, healthy, integrity-verified mirror behind it.</p>
             </div>
           </a>
           <a class="blog1-card" href="/blog/streaming-transfers/" data-section="mesh">
@@ -103,7 +103,7 @@
             <div class="blog1-card-copy">
               <p class="blog1-card-meta">Distributed hosting · Feature 04</p>
               <h3>Streaming transfers</h3>
-              <p>Packs stream end-to-end through the relay, so multi-gigabyte clones never buffer in the cloud, the mesh scales to big repositories without a big server.</p>
+              <p>Git packs stream over ordinary HTTPS from a selected mirror and are never retained as Worker or D1 repository storage.</p>
             </div>
           </a>
           <a class="blog1-card" href="/blog/mirror-failover/" data-section="mesh">
@@ -111,7 +111,7 @@
             <div class="blog1-card-copy">
               <p class="blog1-card-meta">Distributed hosting · Feature 05</p>
               <h3>Mirror failover</h3>
-              <p>Host offline? Any mirror node serves browsing and clones at the exact same URL, no redirects, no broken links. Sticky routing keeps a clone pinned to one mirror for consistency.</p>
+              <p>When an eligible, healthy, integrity-matching mirror exists, ForkMesh can fail over behind the same public URL and keep a clone exchange sticky.</p>
             </div>
           </a>
           <a class="blog1-card" href="/blog/source-attested-integrity/" data-section="mesh">
@@ -127,7 +127,7 @@
             <div class="blog1-card-copy">
               <p class="blog1-card-meta">Distributed hosting · Feature 07</p>
               <h3>Root-commit identity</h3>
-              <p>Mirrors are grouped network-wide by the repository's root commit, so the mesh always knows which nodes carry copies of the same project, whatever they named it.</p>
+              <p>Reported mirrors can be grouped by a signed repository root commit, independent of the local name each host chose.</p>
             </div>
           </a>
           <a class="blog1-card" href="/blog/headless-mirror-nodes/" data-section="mesh">
@@ -143,7 +143,7 @@
             <div class="blog1-card-copy">
               <p class="blog1-card-meta">Distributed hosting · Feature 09</p>
               <h3>Public network map</h3>
-              <p>A live network page shows every online node, what it mirrors, how in-sync it is, and its platform, version, and optional CPU, RAM, and disk telemetry.</p>
+              <p>The network page shows recently verified public nodes, generalized mirror health, and operator-approved optional telemetry.</p>
             </div>
           </a>
           <a class="blog1-card" href="/blog/presence-done-right/" data-section="mesh">
@@ -151,7 +151,7 @@
             <div class="blog1-card-copy">
               <p class="blog1-card-meta">Distributed hosting · Feature 10</p>
               <h3>Presence done right</h3>
-              <p>Heartbeats, presence expiry on disconnect, and live host probes mean the network's view of who is online is accurate, failover kicks in the moment a host actually drops.</p>
+              <p>Bounded heartbeats, expiry, and live probes reduce stale presence while allowing the deliberately minimal real-time layer to lag.</p>
             </div>
           </a>
           </div>
@@ -495,7 +495,7 @@
             <div class="blog1-card-copy">
               <p class="blog1-card-meta">Chat &amp; private sharing · Feature 47</p>
               <h3>Encrypted repo rooms</h3>
-              <p>Every repository gets chat rooms encrypted end-to-end. The relay sees only ciphertext and persists no message bodies, ever.</p>
+              <p>Default repository rooms use authenticated shared-key encryption. The relay derives the key and can read messages; up to 500 persisted frames remain for 7 days.</p>
             </div>
           </a>
           <a class="blog1-card" href="/blog/direct-messages/" data-section="chat">
@@ -503,7 +503,7 @@
             <div class="blog1-card-copy">
               <p class="blog1-card-meta">Chat &amp; private sharing · Feature 48</p>
               <h3>Direct messages</h3>
-              <p>Message any node operator directly, with the same encrypt-before-send guarantee as rooms.</p>
+              <p>Message any node operator directly over the same relay-readable authenticated shared-key transport as rooms.</p>
             </div>
           </a>
           <a class="blog1-card" href="/blog/coves/" data-section="chat">
@@ -619,11 +619,11 @@
           </div>
           <div class="blog1-grid">
           <a class="blog1-card" href="/blog/anonymous-accounts/" data-section="money">
-            <img class="blog1-post-image blog1-has-art" src="/assets/blog/features/anonymous-accounts.webp" alt="Abstract ForkMesh artwork for Anonymous accounts">
+            <img class="blog1-post-image blog1-has-art" src="/assets/blog/features/anonymous-accounts.webp" alt="Abstract ForkMesh artwork for guest-first access">
             <div class="blog1-card-copy">
               <p class="blog1-card-meta">Accounts &amp; rewards · Feature 61</p>
-              <h3>Anonymous accounts</h3>
-              <p>Sign up with nothing but a key and a password, no email, no phone. Optional 2FA and optional email recovery if you want them.</p>
+              <h3>Guest-first access</h3>
+              <p>Enter the world immediately as a guest; registered accounts use email, password, and email verification.</p>
             </div>
           </a>
           <a class="blog1-card" href="/blog/public-node-profiles/" data-section="money">
@@ -631,7 +631,7 @@
             <div class="blog1-card-copy">
               <p class="blog1-card-meta">Accounts &amp; rewards · Feature 62</p>
               <h3>Public node profiles</h3>
-              <p>Every node has a public profile: its repositories, identity key, and the version it runs, click any node on the network page to see it.</p>
+              <p>Registered nodes can publish a generalized profile, public repositories, and operator-approved status fields.</p>
             </div>
           </a>
           <a class="blog1-card" href="/blog/solana-donations/" data-section="money">
@@ -639,7 +639,7 @@
             <div class="blog1-card-copy">
               <p class="blog1-card-meta">Accounts &amp; rewards · Feature 63</p>
               <h3>Solana donations</h3>
-              <p>Publish a Solana address and accept donations with on-chain confirmation, priced live via Pyth. Per-node deposit keys mean no shared custodial wallet.</p>
+              <p>Publish a self-custodial address or contribute directly from your wallet to a transparent public reward pool. ForkMesh never stores contributors’ or recipients’ wallet private keys.</p>
             </div>
           </a>
           <a class="blog1-card" href="/blog/make-it-rain/" data-section="money">
@@ -647,7 +647,7 @@
             <div class="blog1-card-copy">
               <p class="blog1-card-meta">Accounts &amp; rewards · Feature 64</p>
               <h3>Make it rain</h3>
-              <p>Donate to a single node, or spray a contribution across every node in the federation at once.</p>
+              <p>Choose an immediate all-eligible-node distribution or fund the transparent pool for later randomized community incentives.</p>
             </div>
           </a>
           <a class="blog1-card" href="/blog/issue-bounties/" data-section="money">
@@ -655,7 +655,7 @@
             <div class="blog1-card-copy">
               <p class="blog1-card-meta">Accounts &amp; rewards · Feature 65</p>
               <h3>Issue bounties</h3>
-              <p>Fund any issue with a one-click Solana bounty. ForkMesh watches the chain, confirms the deposit, and pays the contributor when their pull request merges, 90% to the author, 10% to the network.</p>
+              <p>The former Worker-custodied bounty flow is frozen. Historical records require explicit offline reconciliation and migration.</p>
             </div>
           </a>
           <a class="blog1-card" href="/blog/mirror-rewards/" data-section="money">
@@ -663,7 +663,7 @@
             <div class="blog1-card-copy">
               <p class="blog1-card-meta">Accounts &amp; rewards · Feature 66</p>
               <h3>Mirror rewards</h3>
-              <p>Nodes that preserve code get recognized and rewarded for it, with a payouts page tracking what mirroring has earned.</p>
+              <p>A transparent mainnet-beta community pool may reward eligible, integrity-verified mirrors through an owner-controlled local signer.</p>
             </div>
           </a>
           </div>
@@ -679,7 +679,7 @@
             <div class="blog1-card-copy">
               <p class="blog1-card-meta">Mobile, web &amp; IDE · Feature 67</p>
               <h3>Web repo browser</h3>
-              <p>Explore any published repository, files, commits, rich diffs, issues, and PRs, straight from forkmesh.com, streamed live from its host. No clone, no account required.</p>
+              <p>Explore public repositories at forkmesh.com while a healthy integrity-verified mirror serves repository bytes over HTTPS.</p>
             </div>
           </a>
           <a class="blog1-card" href="/blog/clean-repo-urls/" data-section="everywhere">
@@ -687,7 +687,7 @@
             <div class="blog1-card-copy">
               <p class="blog1-card-meta">Mobile, web &amp; IDE · Feature 68</p>
               <h3>Clean repo URLs</h3>
-              <p>forkmesh.com/owner/repo takes you straight to the repository, shareable links that keep working even when the original host is offline.</p>
+              <p>forkmesh.com/owner/repo stays the public entry point; during an origin outage it can continue through an eligible, healthy, integrity-matching mirror.</p>
             </div>
           </a>
           <a class="blog1-card" href="/blog/mobile-app/" data-section="everywhere">
@@ -711,7 +711,7 @@
             <div class="blog1-card-copy">
               <p class="blog1-card-meta">Mobile, web &amp; IDE · Feature 71</p>
               <h3>Docs with search</h3>
-              <p>Searchable documentation covering the repository model, host tunnels, cloning, and the collaboration protocol.</p>
+              <p>Searchable documentation covering encrypted mirrors, direct-HTTPS routing, cloning, and the collaboration protocol.</p>
             </div>
           </a>
           <a class="blog1-card" href="/blog/status-blog-and-changelog/" data-section="everywhere">
@@ -728,7 +728,7 @@
           <div><p class="blog1-eyebrow">Archive</p><h2>72 feature posts live under /blog.</h2></div>
           <a class="blog1-button" href="/features">View features</a>
         </section>
-        <article id="introducing-forkmesh" class="blog1-detail"><h2>Introducing ForkMesh: code that can't be taken down</h2><p>Your machine is the server. Keys, not passwords. Chat the relay cannot read. Get paid to mirror.</p></article>
+        <article id="introducing-forkmesh" class="blog1-detail"><h2>Introducing ForkMesh: code beyond a single host</h2><p>Independent mirrors, owner-held keys, private collaboration, and transparent community incentives.</p></article>
       </main>
       <div id="blog-search-modal" class="blog1-search-modal" role="dialog" aria-modal="true" aria-labelledby="blog-search-title" hidden>
         <div class="blog1-search-backdrop" data-blog-search-close></div>
@@ -736,55 +736,55 @@
           <div class="blog1-search-panel-head"><div><p class="blog1-eyebrow">Search</p><h2 id="blog-search-title">Find a ForkMesh article</h2></div><button class="blog1-search-close" type="button" data-blog-search-close>Close</button></div>
           <label class="blog1-search-field" for="blog-search-input"><span class="blog1-search-icon" aria-hidden="true">⌕</span><input id="blog-search-input" type="search" autocomplete="off" placeholder="Search mirrors, AI, bounties, chat..."><span class="blog1-search-hint" aria-hidden="true">Esc to close</span></label>
           <div class="blog1-search-results" aria-live="polite">
-            <a class="blog1-search-result" href="/blog/desktop-node-mirrors/" data-blog-search-result data-blog-search-text="desktop-node mirrors every published repository lives as a full bare git mirror on the nodes that host it, created with git clone --mirror and kept fresh automatically. your history is always physically yours. distributed hosting &amp; preservation">
+            <a class="blog1-search-result" href="/blog/desktop-node-mirrors/" data-blog-search-result data-blog-search-text="desktop-node mirrors independently operated nodes external stubs clearly labeled private encrypted replicas distributed hosting &amp; preservation">
               <span class="blog1-search-result-meta">Distributed hosting · Feature 01</span>
               <span class="blog1-search-result-title">Desktop-node mirrors</span>
-              <span class="blog1-search-result-copy">Every published repository lives as a full bare Git mirror on the nodes that host it, created with git clone --mirror and kept fresh automatically. Your history is always physically yours.</span>
+              <span class="blog1-search-result-copy">Actively mirrored repositories live on independently operated nodes; external stubs stay labeled until a mirror accepts them.</span>
             </a>
-            <a class="blog1-search-result" href="/blog/zero-custody-relay/" data-blog-search-result data-blog-search-text="zero-custody relay the mainnode coordinates discovery, presence, and routing with cloudflare durable objects, but it stores no packfiles and no message bodies. objects stream between peers; the relay just connects them. distributed hosting &amp; preservation">
+            <a class="blog1-search-result" href="/blog/zero-custody-relay/" data-blog-search-result data-blog-search-text="packfile-free routing relay worker signed discovery health metadata no git packfiles direct https origins distributed hosting preservation">
               <span class="blog1-search-result-meta">Distributed hosting · Feature 02</span>
-              <span class="blog1-search-result-title">Zero-custody relay</span>
-              <span class="blog1-search-result-copy">The mainnode coordinates discovery, presence, and routing with Cloudflare Durable Objects, but it stores no packfiles and no message bodies. Objects stream between peers; the relay just connects them.</span>
+              <span class="blog1-search-result-title">Packfile-free routing relay</span>
+              <span class="blog1-search-result-copy">The Worker stores signed discovery and health metadata, not Git packfiles; bytes stream from independent origins over HTTPS.</span>
             </a>
-            <a class="blog1-search-result" href="/blog/live-clone-routing/" data-blog-search-result data-blog-search-text="live clone routing git clone https://forkmesh.com/owner/repo just works. smart-http requests are routed over an outbound tunnel to the hosting desktop node, which serves the pack directly. distributed hosting &amp; preservation">
+            <a class="blog1-search-result" href="/blog/live-clone-routing/" data-blog-search-result data-blog-search-text="live clone routing git smart http unchanged public url healthy integrity verified mirror direct https distributed hosting &amp; preservation">
               <span class="blog1-search-result-meta">Distributed hosting · Feature 03</span>
               <span class="blog1-search-result-title">Live clone routing</span>
-              <span class="blog1-search-result-copy">git clone https://forkmesh.com/owner/repo just works. Smart-HTTP requests are routed over an outbound tunnel to the hosting desktop node, which serves the pack directly.</span>
+              <span class="blog1-search-result-copy">Git Smart HTTP keeps the public ForkMesh URL while the Worker selects a signed, healthy, integrity-verified mirror.</span>
             </a>
-            <a class="blog1-search-result" href="/blog/streaming-transfers/" data-blog-search-result data-blog-search-text="streaming transfers packs stream end-to-end through the relay, so multi-gigabyte clones never buffer in the cloud, the mesh scales to big repositories without a big server. distributed hosting &amp; preservation">
+            <a class="blog1-search-result" href="/blog/streaming-transfers/" data-blog-search-result data-blog-search-text="streaming transfers git packs ordinary https selected mirror not retained worker d1 repository storage distributed hosting &amp; preservation">
               <span class="blog1-search-result-meta">Distributed hosting · Feature 04</span>
               <span class="blog1-search-result-title">Streaming transfers</span>
-              <span class="blog1-search-result-copy">Packs stream end-to-end through the relay, so multi-gigabyte clones never buffer in the cloud, the mesh scales to big repositories without a big server.</span>
+              <span class="blog1-search-result-copy">Git packs stream over ordinary HTTPS from a selected mirror and are never retained as Worker or D1 repository storage.</span>
             </a>
-            <a class="blog1-search-result" href="/blog/mirror-failover/" data-blog-search-result data-blog-search-text="mirror failover host offline? any mirror node serves browsing and clones at the exact same url, no redirects, no broken links. sticky routing keeps a clone pinned to one mirror for consistency. distributed hosting &amp; preservation">
+            <a class="blog1-search-result" href="/blog/mirror-failover/" data-blog-search-result data-blog-search-text="mirror failover eligible healthy integrity matching mirror same public url sticky clone distributed hosting preservation">
               <span class="blog1-search-result-meta">Distributed hosting · Feature 05</span>
               <span class="blog1-search-result-title">Mirror failover</span>
-              <span class="blog1-search-result-copy">Host offline? Any mirror node serves browsing and clones at the exact same URL, no redirects, no broken links. Sticky routing keeps a clone pinned to one mirror for consistency.</span>
+              <span class="blog1-search-result-copy">When an eligible, healthy, integrity-matching mirror exists, ForkMesh can fail over behind the same public URL and keep a clone exchange sticky.</span>
             </a>
             <a class="blog1-search-result" href="/blog/source-attested-integrity/" data-blog-search-result data-blog-search-text="source-attested integrity fallback serving is checked against integrity pins attested by the source of truth, so a mirror can prove it&#x27;s handing you the same history the author published. distributed hosting &amp; preservation">
               <span class="blog1-search-result-meta">Distributed hosting · Feature 06</span>
               <span class="blog1-search-result-title">Source-attested integrity</span>
               <span class="blog1-search-result-copy">Fallback serving is checked against integrity pins attested by the source of truth, so a mirror can prove it's handing you the same history the author published.</span>
             </a>
-            <a class="blog1-search-result" href="/blog/root-commit-identity/" data-blog-search-result data-blog-search-text="root-commit identity mirrors are grouped network-wide by the repository&#x27;s root commit, so the mesh always knows which nodes carry copies of the same project, whatever they named it. distributed hosting &amp; preservation">
+            <a class="blog1-search-result" href="/blog/root-commit-identity/" data-blog-search-result data-blog-search-text="root-commit identity reported mirrors grouped by signed repository root commit independent of local name distributed hosting preservation">
               <span class="blog1-search-result-meta">Distributed hosting · Feature 07</span>
               <span class="blog1-search-result-title">Root-commit identity</span>
-              <span class="blog1-search-result-copy">Mirrors are grouped network-wide by the repository's root commit, so the mesh always knows which nodes carry copies of the same project, whatever they named it.</span>
+              <span class="blog1-search-result-copy">Reported mirrors can be grouped by a signed repository root commit, independent of the local name each host chose.</span>
             </a>
             <a class="blog1-search-result" href="/blog/headless-mirror-nodes/" data-blog-search-result data-blog-search-text="headless mirror nodes one command turns any linux box or vm into a mirror node. the installer registers its account, syncs its repositories, and starts serving, no gui required. distributed hosting &amp; preservation">
               <span class="blog1-search-result-meta">Distributed hosting · Feature 08</span>
               <span class="blog1-search-result-title">Headless mirror nodes</span>
               <span class="blog1-search-result-copy">One command turns any Linux box or VM into a mirror node. The installer registers its account, syncs its repositories, and starts serving, no GUI required.</span>
             </a>
-            <a class="blog1-search-result" href="/blog/public-network-map/" data-blog-search-result data-blog-search-text="public network map a live network page shows every online node, what it mirrors, how in-sync it is, and its platform, version, and optional cpu, ram, and disk telemetry. distributed hosting &amp; preservation">
+            <a class="blog1-search-result" href="/blog/public-network-map/" data-blog-search-result data-blog-search-text="public network map recently verified public nodes generalized mirror health operator approved optional telemetry distributed hosting preservation">
               <span class="blog1-search-result-meta">Distributed hosting · Feature 09</span>
               <span class="blog1-search-result-title">Public network map</span>
-              <span class="blog1-search-result-copy">A live network page shows every online node, what it mirrors, how in-sync it is, and its platform, version, and optional CPU, RAM, and disk telemetry.</span>
+              <span class="blog1-search-result-copy">The network page shows recently verified public nodes, generalized mirror health, and operator-approved optional telemetry.</span>
             </a>
-            <a class="blog1-search-result" href="/blog/presence-done-right/" data-blog-search-result data-blog-search-text="presence done right heartbeats, presence expiry on disconnect, and live host probes mean the network&#x27;s view of who is online is accurate, failover kicks in the moment a host actually drops. distributed hosting &amp; preservation">
+            <a class="blog1-search-result" href="/blog/presence-done-right/" data-blog-search-result data-blog-search-text="presence heartbeats expiry live probes reduce stale eventually consistent minimal realtime lag distributed hosting preservation">
               <span class="blog1-search-result-meta">Distributed hosting · Feature 10</span>
               <span class="blog1-search-result-title">Presence done right</span>
-              <span class="blog1-search-result-copy">Heartbeats, presence expiry on disconnect, and live host probes mean the network's view of who is online is accurate, failover kicks in the moment a host actually drops.</span>
+              <span class="blog1-search-result-copy">Bounded heartbeats, expiry, and live probes reduce stale presence while allowing the deliberately minimal real-time layer to lag.</span>
             </a>
             <a class="blog1-search-result" href="/blog/ed25519-identity/" data-blog-search-result data-blog-search-text="ed25519 identity nodes and people are identified by local ed25519 keys. profiles, catalog records, and every collaboration event carry a signature you can check yourself. signed, portable collaboration">
               <span class="blog1-search-result-meta">Signed collaboration · Feature 11</span>
@@ -966,15 +966,15 @@
               <span class="blog1-search-result-title">Insights</span>
               <span class="blog1-search-result-copy">Contribution and activity insights per repository, see where the energy is going.</span>
             </a>
-            <a class="blog1-search-result" href="/blog/encrypted-repo-rooms/" data-blog-search-result data-blog-search-text="encrypted repo rooms every repository gets chat rooms encrypted end-to-end. the relay sees only ciphertext and persists no message bodies, ever. chat &amp; private sharing">
+            <a class="blog1-search-result" href="/blog/encrypted-repo-rooms/" data-blog-search-result data-blog-search-text="encrypted repo rooms authenticated shared key relay readable aes 256 gcm 7 days 500 frames chat &amp; private sharing">
               <span class="blog1-search-result-meta">Chat &amp; private sharing · Feature 47</span>
               <span class="blog1-search-result-title">Encrypted repo rooms</span>
-              <span class="blog1-search-result-copy">Every repository gets chat rooms encrypted end-to-end. The relay sees only ciphertext and persists no message bodies, ever.</span>
+              <span class="blog1-search-result-copy">Default rooms use authenticated shared-key encryption. The relay can read messages; up to 500 persisted frames remain for 7 days.</span>
             </a>
-            <a class="blog1-search-result" href="/blog/direct-messages/" data-blog-search-result data-blog-search-text="direct messages message any node operator directly, with the same encrypt-before-send guarantee as rooms. chat &amp; private sharing">
+            <a class="blog1-search-result" href="/blog/direct-messages/" data-blog-search-result data-blog-search-text="direct messages relay readable authenticated shared key transport chat &amp; private sharing">
               <span class="blog1-search-result-meta">Chat &amp; private sharing · Feature 48</span>
               <span class="blog1-search-result-title">Direct messages</span>
-              <span class="blog1-search-result-copy">Message any node operator directly, with the same encrypt-before-send guarantee as rooms.</span>
+              <span class="blog1-search-result-copy">Direct messages use the same relay-readable authenticated shared-key transport as rooms.</span>
             </a>
             <a class="blog1-search-result" href="/blog/coves/" data-blog-search-result data-blog-search-text="coves encrypted vaults for the things that don&#x27;t belong in a repo: notes, credentials, plans. documents live inside authenticated ciphertext, and every unlock is recorded in an access log the creator can audit. chat &amp; private sharing">
               <span class="blog1-search-result-meta">Chat &amp; private sharing · Feature 49</span>
@@ -1036,45 +1036,45 @@
               <span class="blog1-search-result-title">Built to stay up</span>
               <span class="blog1-search-result-copy">A crash handler, a UI stall watchdog, network backoff, and a network activity log keep long-running nodes healthy, and tell you exactly what happened when something hiccups.</span>
             </a>
-            <a class="blog1-search-result" href="/blog/anonymous-accounts/" data-blog-search-result data-blog-search-text="anonymous accounts sign up with nothing but a key and a password, no email, no phone. optional 2fa and optional email recovery if you want them. accounts, money &amp; rewards">
+            <a class="blog1-search-result" href="/blog/anonymous-accounts/" data-blog-search-result data-blog-search-text="guest-first access enter the world immediately as a guest registered accounts use email password and email verification accounts money rewards">
               <span class="blog1-search-result-meta">Accounts &amp; rewards · Feature 61</span>
-              <span class="blog1-search-result-title">Anonymous accounts</span>
-              <span class="blog1-search-result-copy">Sign up with nothing but a key and a password, no email, no phone. Optional 2FA and optional email recovery if you want them.</span>
+              <span class="blog1-search-result-title">Guest-first access</span>
+              <span class="blog1-search-result-copy">Enter the world immediately as a guest; registered accounts use email, password, and email verification.</span>
             </a>
-            <a class="blog1-search-result" href="/blog/public-node-profiles/" data-blog-search-result data-blog-search-text="public node profiles every node has a public profile: its repositories, identity key, and the version it runs, click any node on the network page to see it. accounts, money &amp; rewards">
+            <a class="blog1-search-result" href="/blog/public-node-profiles/" data-blog-search-result data-blog-search-text="public node profiles registered nodes generalized profile public repositories operator approved status fields accounts money rewards">
               <span class="blog1-search-result-meta">Accounts &amp; rewards · Feature 62</span>
               <span class="blog1-search-result-title">Public node profiles</span>
-              <span class="blog1-search-result-copy">Every node has a public profile: its repositories, identity key, and the version it runs, click any node on the network page to see it.</span>
+              <span class="blog1-search-result-copy">Registered nodes can publish a generalized profile, public repositories, and operator-approved status fields.</span>
             </a>
-            <a class="blog1-search-result" href="/blog/solana-donations/" data-blog-search-result data-blog-search-text="solana donations publish a solana address and accept donations with on-chain confirmation, priced live via pyth. per-node deposit keys mean no shared custodial wallet. accounts, money &amp; rewards">
+            <a class="blog1-search-result" href="/blog/solana-donations/" data-blog-search-result data-blog-search-text="solana donations self-custodial address direct wallet contribution transparent public reward pool no private keys accounts, money &amp; rewards">
               <span class="blog1-search-result-meta">Accounts &amp; rewards · Feature 63</span>
               <span class="blog1-search-result-title">Solana donations</span>
-              <span class="blog1-search-result-copy">Publish a Solana address and accept donations with on-chain confirmation, priced live via Pyth. Per-node deposit keys mean no shared custodial wallet.</span>
+              <span class="blog1-search-result-copy">Publish a self-custodial address or contribute directly from your wallet to a transparent public reward pool. ForkMesh never stores contributors’ or recipients’ wallet private keys.</span>
             </a>
-            <a class="blog1-search-result" href="/blog/make-it-rain/" data-blog-search-result data-blog-search-text="make it rain donate to a single node, or spray a contribution across every node in the federation at once. accounts, money &amp; rewards">
+            <a class="blog1-search-result" href="/blog/make-it-rain/" data-blog-search-result data-blog-search-text="make it rain instant all eligible nodes transparent trickle reward pool non-custodial accounts, money &amp; rewards">
               <span class="blog1-search-result-meta">Accounts &amp; rewards · Feature 64</span>
               <span class="blog1-search-result-title">Make it rain</span>
-              <span class="blog1-search-result-copy">Donate to a single node, or spray a contribution across every node in the federation at once.</span>
+              <span class="blog1-search-result-copy">Choose an immediate all-eligible-node distribution or fund the transparent pool for later randomized community incentives.</span>
             </a>
-            <a class="blog1-search-result" href="/blog/issue-bounties/" data-blog-search-result data-blog-search-text="issue bounties fund any issue with a one-click solana bounty. forkmesh watches the chain, confirms the deposit, and pays the contributor when their pull request merges, 90% to the author, 10% to the network. accounts, money &amp; rewards">
+            <a class="blog1-search-result" href="/blog/issue-bounties/" data-blog-search-result data-blog-search-text="issue bounties legacy worker custody frozen historical offline reconciliation migration accounts, money &amp; rewards">
               <span class="blog1-search-result-meta">Accounts &amp; rewards · Feature 65</span>
               <span class="blog1-search-result-title">Issue bounties</span>
-              <span class="blog1-search-result-copy">Fund any issue with a one-click Solana bounty. ForkMesh watches the chain, confirms the deposit, and pays the contributor when their pull request merges, 90% to the author, 10% to the network.</span>
+              <span class="blog1-search-result-copy">The former Worker-custodied bounty flow is frozen. Historical records require explicit offline reconciliation and migration.</span>
             </a>
-            <a class="blog1-search-result" href="/blog/mirror-rewards/" data-blog-search-result data-blog-search-text="mirror rewards nodes that preserve code get recognized and rewarded for it, with a payouts page tracking what mirroring has earned. accounts, money &amp; rewards">
+            <a class="blog1-search-result" href="/blog/mirror-rewards/" data-blog-search-result data-blog-search-text="mirror rewards transparent mainnet beta community pool eligible integrity verified local signer accounts, money &amp; rewards">
               <span class="blog1-search-result-meta">Accounts &amp; rewards · Feature 66</span>
               <span class="blog1-search-result-title">Mirror rewards</span>
-              <span class="blog1-search-result-copy">Nodes that preserve code get recognized and rewarded for it, with a payouts page tracking what mirroring has earned.</span>
+              <span class="blog1-search-result-copy">A transparent mainnet-beta community pool may reward eligible, integrity-verified mirrors through an owner-controlled local signer.</span>
             </a>
-            <a class="blog1-search-result" href="/blog/web-repo-browser/" data-blog-search-result data-blog-search-text="web repo browser explore any published repository, files, commits, rich diffs, issues, and prs, straight from forkmesh.com, streamed live from its host. no clone, no account required. mobile, web &amp; ide">
+            <a class="blog1-search-result" href="/blog/web-repo-browser/" data-blog-search-result data-blog-search-text="web repo browser public repositories files commits diffs issues prs healthy integrity verified mirror https mobile, web &amp; ide">
               <span class="blog1-search-result-meta">Mobile, web &amp; IDE · Feature 67</span>
               <span class="blog1-search-result-title">Web repo browser</span>
-              <span class="blog1-search-result-copy">Explore any published repository, files, commits, rich diffs, issues, and PRs, straight from forkmesh.com, streamed live from its host. No clone, no account required.</span>
+              <span class="blog1-search-result-copy">Explore public repositories at forkmesh.com while a healthy integrity-verified mirror serves repository bytes over HTTPS.</span>
             </a>
-            <a class="blog1-search-result" href="/blog/clean-repo-urls/" data-blog-search-result data-blog-search-text="clean repo urls forkmesh.com/owner/repo takes you straight to the repository, shareable links that keep working even when the original host is offline. mobile, web &amp; ide">
+            <a class="blog1-search-result" href="/blog/clean-repo-urls/" data-blog-search-result data-blog-search-text="clean repo urls forkmesh.com owner repo public entry point origin outage eligible healthy integrity matching mirror mobile web ide">
               <span class="blog1-search-result-meta">Mobile, web &amp; IDE · Feature 68</span>
               <span class="blog1-search-result-title">Clean repo URLs</span>
-              <span class="blog1-search-result-copy">forkmesh.com/owner/repo takes you straight to the repository, shareable links that keep working even when the original host is offline.</span>
+              <span class="blog1-search-result-copy">forkmesh.com/owner/repo stays the public entry point; during an origin outage it can continue through an eligible, healthy, integrity-matching mirror.</span>
             </a>
             <a class="blog1-search-result" href="/blog/mobile-app/" data-blog-search-result data-blog-search-text="mobile app carry the mesh in your pocket: browse repositories, follow activity, chat, and get notifications from a native mobile app. mobile, web &amp; ide">
               <span class="blog1-search-result-meta">Mobile, web &amp; IDE · Feature 69</span>
@@ -1086,10 +1086,10 @@
               <span class="blog1-search-result-title">VS Code extension</span>
               <span class="blog1-search-result-copy">ForkMesh issues in your editor's sidebar, with one-click "start with Claude Code" or "start with Codex" on every issue. Works in VS Code, Cursor, Windsurf, and friends.</span>
             </a>
-            <a class="blog1-search-result" href="/blog/docs-with-search/" data-blog-search-result data-blog-search-text="docs with search searchable documentation covering the repository model, host tunnels, cloning, and the collaboration protocol. mobile, web &amp; ide">
+            <a class="blog1-search-result" href="/blog/docs-with-search/" data-blog-search-result data-blog-search-text="docs with search searchable documentation covering encrypted mirrors, direct HTTPS routing, cloning, and the collaboration protocol. mobile, web &amp; ide">
               <span class="blog1-search-result-meta">Mobile, web &amp; IDE · Feature 71</span>
               <span class="blog1-search-result-title">Docs with search</span>
-              <span class="blog1-search-result-copy">Searchable documentation covering the repository model, host tunnels, cloning, and the collaboration protocol.</span>
+              <span class="blog1-search-result-copy">Searchable documentation covering encrypted mirrors, direct-HTTPS routing, cloning, and the collaboration protocol.</span>
             </a>
             <a class="blog1-search-result" href="/blog/status-blog-and-changelog/" data-blog-search-result data-blog-search-text="status, blog &amp; changelog a public status page, a blog, and a human-readable changelog keep the network&#x27;s story out in the open. mobile, web &amp; ide">
               <span class="blog1-search-result-meta">Mobile, web &amp; IDE · Feature 72</span>

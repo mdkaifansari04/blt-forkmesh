@@ -42,7 +42,7 @@ const QString kKnownRosterGroup = QStringLiteral("mainnode/knownRoster");
 // of leaving them shown as online indefinitely.
 constexpr int kPresenceIntervalMs = 60000;   // 60s broadcast
 constexpr qint64 kPeerStaleMs = 180000;       // 3 missed beats -> offline
-// Half-open-link watchdog (same guard RepoHost uses on the /host tunnel): if
+// Half-open-link watchdog (same guard as the repository update channel): if
 // nothing at all has arrived for this long while the link is believed up — not
 // even a pong for the 25s keepalive pings — the TCP socket is a zombie (NAT
 // timeout, silent relay drop). Writes into it still "succeed", so Qt may never
@@ -1142,9 +1142,10 @@ void ServerNode::sendBotChat(const QString &channel, const QString &text)
     // A ForkBot reply relayed on behalf of this client (the bot has no room
     // connection of its own). Mirrors the web clients' makeForkbotPlain frame:
     // sender/senderId "forkbot", accountKind "user" so every surface — web
-    // and desktop — renders it. Never into a private room: the bot's reply
-    // text comes back over plain HTTPS, so it has no place in an E2E room
-    // whose members deliberately excluded the relay.
+    // and desktop — renders it. Never inject one into a private channel: those
+    // channels use application-level invite scoping, and sending their context
+    // to the bot endpoint would widen that audience. They do not cryptographically
+    // exclude the relay because the default room passphrase is relay-derived.
     const QString trimmed = text.trimmed();
     if (trimmed.isEmpty() || m_privateChannels.contains(channel))
         return;

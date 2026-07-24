@@ -54,6 +54,10 @@ jobs:
           ADMIN_USER=${{ vars.ADMIN_USER }}
           ADMIN_PASS=${{ vars.ADMIN_PASS }}
           TREASURY_SOLANA_ADDRESS=${{ vars.TREASURY_SOLANA_ADDRESS }}
+          SSH_GATEWAY_HOST=${{ vars.SSH_GATEWAY_HOST }}
+          SSH_GATEWAY_PORT=${{ vars.SSH_GATEWAY_PORT }}
+          SSH_GATEWAY_TOKEN=${{ vars.SSH_GATEWAY_TOKEN }}
+          SSH_GATEWAY_REPOSITORIES=${{ vars.SSH_GATEWAY_REPOSITORIES }}
           MAILTRAP_API_TOKEN=${{ vars.MAILTRAP_API_TOKEN }}
           DATA_KEY=${{ vars.DATA_KEY }}
           SENTRY_DSN=${{ vars.SENTRY_DSN }}

@@ -96,14 +96,18 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=OFF \
             ${version:+-DFORKMESH_VERSION_OVERRIDE="$version"}
           cmake --build qt_client/build-release -j"$jobs"
+          install_root="qt_client/build-release/install"
+          cmake --install qt_client/build-release --prefix "$install_root"
 
-          # Locate the produced executable (a bare binary on Linux/Windows, a
-          # .app bundle on macOS).
+          # Locate the executable inside the CMake install tree. That tree also
+          # contains the pinned bootstrap/Tunnel/gateway tools plus the Worker
+          # source, generated/static assets, and migrations required by the
+          # token-only Cloudflare flow; native packagers must ship it intact.
           built=""
           for cand in \
-            "qt_client/build-release/forkmesh" \
-            "qt_client/build-release/forkmesh.exe" \
-            "qt_client/build-release/ForkMesh.app/Contents/MacOS/ForkMesh"; do
+            "$install_root/bin/forkmesh" \
+            "$install_root/bin/forkmesh.exe" \
+            "$install_root/ForkMesh.app/Contents/MacOS/ForkMesh"; do
             if [ -x "$cand" ]; then built="$cand"; break; fi
           done
           if [ -z "$built" ]; then
@@ -128,9 +132,14 @@ jobs:
           # bare binary is always published too (headless/SSH installs use it).
           # See docs/design/signed-installers.md.
           publish_assets=("$staged")
+          package_input="$built"
+          if [ "$os" = "macos" ]; then
+            package_input="$install_root/ForkMesh.app"
+          fi
           installer="$(tools/package/package-release.sh \
             --os "$os" --arch "$arch" \
-            --binary "$built" \
+            --binary "$package_input" \
+            --install-root "$install_root" \
             --channel "$channel" \
             --tag "${FORKMESH_TAG:-}" \
             --outdir . | tail -n1 || true)"

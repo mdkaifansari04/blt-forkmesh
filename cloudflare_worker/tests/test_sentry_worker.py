@@ -62,6 +62,25 @@ def _load_sentry_dsn_parts():
     return ns["_sentry_dsn_parts"]
 
 
+def _load_sentry_request_payload():
+    tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    want = {
+        "method_name",
+        "_sentry_header",
+        "_sentry_safe_url",
+        "_sentry_host",
+        "_sentry_request_payload",
+    }
+    selected = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name in want
+    ]
+    module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
+    namespace = {"urlparse": urlparse}
+    exec(compile(module, str(ENTRY), "exec"), namespace)
+    return namespace["_sentry_request_payload"]
+
+
 def _load_capture_worker_exception():
     tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
     want = {
@@ -228,18 +247,129 @@ def test_background_tasks_observe_exceptions_instead_of_default_handler():
         if "asyncio.ensure_future(" in line
     ]
     assert ensure_future_lines == ["task = asyncio.ensure_future(coro)"]
-    assert '_fire_and_forget(self._stream_watchdog(req_id), "git stream watchdog")' in ENTRY_TEXT
-    assert '"release download log"' in ENTRY_TEXT
+    # Repository transfers are awaited direct-HTTPS fetches, not detached
+    # socket watchdog tasks.
+    proxy = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _https_mirror_proxy"):
+        ENTRY_TEXT.index("\n\nclass Default")
+    ]
+    assert "await asyncio.wait_for(" in proxy
+    assert "_stream_watchdog" not in ENTRY_TEXT
 
 
 def test_sentry_request_metadata_is_allowlisted_and_sanitized():
-    assert 'for name in ("host", "user-agent", "accept", "cf-ray")' in ENTRY_TEXT
-    assert '"url": _sentry_safe_url(request)' in ENTRY_TEXT
+    assert 'for name in ("host", "cf-ray")' in ENTRY_TEXT
+    assert '"url": safe_url' in ENTRY_TEXT
     assert "return parsed.scheme + \"://\" + parsed.netloc + (parsed.path or \"/\")" in ENTRY_TEXT
+    assert "req = _sentry_request_payload(request, path)" in ENTRY_TEXT
     request_payload = ENTRY_TEXT.split("def _sentry_request_payload", 1)[1] \
         .split("def _sentry_cloudflare_context", 1)[0]
     assert '"authorization"' not in request_payload.lower()
     assert '"cookie"' not in request_payload.lower()
+    assert '"user-agent"' not in request_payload.lower()
+    assert '"accept"' not in request_payload.lower()
+    cloudflare_context = ENTRY_TEXT.split(
+        "def _sentry_cloudflare_context", 1)[1].split(
+        "def _sentry_environment", 1)[0]
+    assert '"country"' not in cloudflare_context
+    assert '"timezone"' not in cloudflare_context
+    assert '"clientTcpRtt"' not in cloudflare_context
+
+
+def test_private_route_error_text_is_redacted_in_sentry_and_d1():
+    assert "def _privacy_redacted_log_path(path):" in ENTRY_TEXT
+    assert "def _privacy_safe_error_text(path, message):" in ENTRY_TEXT
+    assert "text = _privacy_safe_error_text(path, message)" in ENTRY_TEXT
+    assert "message = _privacy_safe_error_text(path, message)" in ENTRY_TEXT
+    assert "Repository-route exception details redacted." in ENTRY_TEXT
+    assert "Repository-route error details redacted." in ENTRY_TEXT
+
+    tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    selected = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {
+            "_privacy_redacted_log_path",
+            "_privacy_safe_error_text",
+        }
+    ]
+    namespace = {}
+    exec(
+        compile(
+            ast.fix_missing_locations(
+                ast.Module(body=selected, type_ignores=[])),
+            str(ENTRY),
+            "exec",
+        ),
+        namespace,
+    )
+    safe = namespace["_privacy_safe_error_text"]
+    secret = "alice/top-secret?token=do-not-log"
+    for path in (
+        "/private-or-unpublished-repository",
+        "/repository-route-redacted",
+        "/api/private-replicas/[opaque]",
+    ):
+        rendered = safe(path, secret)
+        assert rendered == "Repository-route error details redacted."
+        assert "alice" not in rendered
+        assert "token" not in rendered
+    assert safe("/health", "probe failed") == "probe failed"
+
+
+def test_sentry_request_url_reuses_private_repository_path_redaction():
+    request_payload = _load_sentry_request_payload()
+
+    class Request:
+        method = "GET"
+        url = (
+            "https://forkmesh.test/api/repo/alice/top-secret/"
+            "private-replica?credential=never-log"
+        )
+        headers = {
+            "host": "forkmesh.test",
+            "user-agent": "test-browser",
+        }
+
+    payload = request_payload(
+        Request(), "/private-or-unpublished-repository")
+
+    assert payload["url"] == (
+        "https://forkmesh.test/private-or-unpublished-repository")
+    assert "alice" not in repr(payload)
+    assert "top-secret" not in repr(payload)
+    assert "credential" not in repr(payload)
+
+
+def test_sentry_redacts_opaque_private_access_locator_and_query():
+    opaque_id = "a" * 64
+    privacy_filter = ENTRY_TEXT.split(
+        "async def _privacy_safe_log_path", 1)[1].split(
+            "async def capture_worker_exception", 1)[0]
+    assert '"/api/private-replicas/[opaque]"' in privacy_filter
+    assert 'path.startswith(\n            "/api/private-replicas/")' in (
+        privacy_filter)
+
+    request_payload = _load_sentry_request_payload()
+
+    class Request:
+        method = "GET"
+        url = (
+            "https://forkmesh.test/api/private-replicas/" + opaque_id
+            + "?credential=never-log"
+        )
+        headers = {
+            "host": "forkmesh.test",
+            "user-agent": "test-browser",
+        }
+
+    payload = request_payload(
+        Request(), "/api/private-replicas/[opaque]")
+    rendered = repr(payload)
+    assert payload["url"] == (
+        "https://forkmesh.test/api/private-replicas/[opaque]")
+    assert opaque_id not in rendered
+    assert "credential" not in rendered
 
 
 def test_simulate_sentry_error_route_is_worker_owned_and_raises():

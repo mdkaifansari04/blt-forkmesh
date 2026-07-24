@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Server-held room-chat key endpoint (/api/chat/room-key).
+"""Repository-scoped room-chat key endpoint (/api/chat/room-key).
 
-The room key is derived one-way from DATA_KEY and handed only to authenticated
-clients, replacing the old public app-wide constant. Verifies: unauthenticated
-callers are rejected; a valid account session token OR a node Ed25519 signature
-is accepted; the passphrase is deterministic (so every client derives the same
-room key) and never leaks DATA_KEY. AST-extraction harness (test_repo_agents.py
-style) with WebCrypto SHA-256 stubbed by hashlib.
+Each passphrase is derived one-way from DATA_KEY and handed only to an
+authenticated repository participant. Verifies: unauthenticated callers are
+rejected; a valid account session token OR a node Ed25519 signature is accepted;
+non-default repositories have distinct keys; and no response leaks DATA_KEY.
+AST-extraction harness (test_repo_agents.py style) with WebCrypto SHA-256
+stubbed by hashlib.
 """
 
 import ast
@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlparse
 
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
+QT_SETUP = ENTRY.parents[2] / "qt_client" / "src" / "MainWindowSetup.cpp"
 CATALOG = ENTRY.parent / "catalog.py"
 SCHEMA = ENTRY.parent / "schema.py"
 ENTRY_TEXT = (
@@ -27,6 +28,7 @@ ENTRY_TEXT = (
 
 FUNCS = {
     "chat_room_key_handler", "_room_key_authorized", "_room_chat_passphrase",
+    "_room_key_requester",
     "_require_data_secret", "_authed_account_name", "_account_session_record",
     "_account_session_token", "_account_session_token_name",
     "_account_session_signature", "_account_session_secret", "_account_kind",
@@ -112,6 +114,16 @@ def _harness(accounts, data_key="a-real-secret-data-key"):
         # A node "signs" by presenting sig == "sig-for:<pubkey>".
         return bool(pubkey) and sig == "sig-for:" + pubkey
 
+    async def _repository_access_context(
+            _env, _request, owner, repo, viewer=""):
+        if owner == "missing":
+            return None
+        return {
+            "visibility": "public",
+            "viewer": viewer,
+            "record": {"owner": owner, "name": repo, "visibility": "public"},
+        }
+
     def method_name(request):
         return getattr(request, "method", "GET")
 
@@ -127,6 +139,12 @@ def _harness(accounts, data_key="a-real-secret-data-key"):
         "ensure_schema": ensure_schema,
         "_account_row": _account_row,
         "ed25519_verify": ed25519_verify,
+        "_repository_access_context": _repository_access_context,
+        "_private_replica_not_found": lambda: {
+            "status": 404, "data": {"error": "not_found"}},
+        "safe_segment": lambda value, *_a: (
+            str(value or "") if re.fullmatch(
+                r"[A-Za-z0-9._-]+", str(value or "")) else ""),
         "method_name": method_name,
         "_ts_ok": _ts_ok,
         "parse_qs": parse_qs,
@@ -193,6 +211,49 @@ def test_passphrase_is_deterministic_and_key_derived_not_raw_data_key():
     expected = hashlib.sha256(
         b"super-secret-data-key:room-chat-passphrase-v1").hexdigest()
     assert a == expected
+
+
+def test_non_default_repository_passphrase_is_scoped():
+    ns, env = _harness({"alice": _user()}, data_key="super-secret-data-key")
+    token = ns["_account_session_token"](env, "alice")
+    headers = {"authorization": "Bearer " + token}
+    public = asyncio.run(ns["chat_room_key_handler"](
+        env, _Request(headers=headers)))["data"]
+    scoped = asyncio.run(ns["chat_room_key_handler"](
+        env,
+        _Request(
+            url=("https://forkmesh.test/api/chat/room-key"
+                 "?owner=alice&repo=secret"),
+            headers=headers,
+        ),
+    ))["data"]
+    assert public["scope"] == "mainnode/forkmesh"
+    assert scoped["scope"] == "alice/secret"
+    assert scoped["passphrase"] != public["passphrase"]
+    assert scoped["passphrase"] == hashlib.sha256(
+        b"super-secret-data-key:room-chat-passphrase-v2:alice/secret"
+    ).hexdigest()
+
+
+def test_qt_signature_binds_the_requested_repository_scope():
+    setup = QT_SETUP.read_text(encoding="utf-8")
+    assert '"forkmesh-room-key-v2\\n" + node + "\\n" + roomOwner + "\\n"' in setup
+    assert 'query.addQueryItem("owner", roomOwner)' in setup
+    assert 'query.addQueryItem("repo", roomRepo)' in setup
+
+
+def test_missing_or_unauthorized_scope_is_normalized_to_not_found():
+    ns, env = _harness({"alice": _user()})
+    token = ns["_account_session_token"](env, "alice")
+    resp = asyncio.run(ns["chat_room_key_handler"](
+        env,
+        _Request(
+            url=("https://forkmesh.test/api/chat/room-key"
+                 "?owner=missing&repo=secret"),
+            headers={"authorization": "Bearer " + token},
+        ),
+    ))
+    assert resp == {"status": 404, "data": {"error": "not_found"}}
 
 
 def test_placeholder_data_key_fails_closed():

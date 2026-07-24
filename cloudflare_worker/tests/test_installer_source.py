@@ -311,7 +311,7 @@ def test_clean_clone_falls_back_past_unreachable_mirror():
         assert "RESULT_REPO=https://forkmesh.com/bravo/forkmesh" in result.stdout
         # Named the unreachable mirror and the 504 reason for the operator.
         assert ("Mirror 'alpha' could not be cloned: "
-                "mirror host timed out (HTTP 504)") in result.stderr
+                "mirror endpoint timed out (HTTP 504)") in result.stderr
         assert src.is_dir()
 
 
@@ -358,5 +358,5 @@ def test_clean_clone_reports_when_all_mirrors_time_out():
         )
         assert result.returncode == 0, result.stderr + result.stdout
         assert "CLONE_FAILED" in result.stdout
-        assert "REASON=mirror host timed out (HTTP 504)" in result.stdout
+        assert "REASON=mirror endpoint timed out (HTTP 504)" in result.stdout
         assert "PIN=0" in result.stdout

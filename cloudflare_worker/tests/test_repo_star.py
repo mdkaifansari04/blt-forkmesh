@@ -65,7 +65,13 @@ class _Request:
 
 
 def _harness(accounts, repositories=None, stars=None):
-    repositories = list(repositories or [])  # {key_bi, is_private}
+    # Public serving now fails closed when the catalog row is absent, so the
+    # ordinary harness includes the explicit public repository under test.
+    repositories = list(
+        repositories if repositories is not None else [
+            {"key_bi": "bi:alice/proj", "is_private": 0}
+        ]
+    )  # {key_bi, is_private}
     stars = list(stars or [])                # {repo_bi, account_bi, created_at}
     now = [1_000_000_000]
 

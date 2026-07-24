@@ -5,9 +5,11 @@
 // the class itself is declared in MainWindow.h. Shared helpers live in
 // MainWindowInternal.h / MainWindowShared.cpp (namespace forkmesh::ui).
 
+#include "ControlNode.h"
 #include "ForkMeshVersion.h"
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "PrivateMirrorStore.h"
 
 #include <QFutureWatcher>
 #include <QtConcurrent/QtConcurrentRun>
@@ -349,7 +351,17 @@ QWidget *MainWindow::buildSetupPage()
     // it keep working unchanged.
     m_solanaEdit = new QLineEdit(card);
     m_solanaEdit->setMaxLength(64);
-    m_solanaEdit->setText(savedSolanaAddress());
+    const QString storedSolana = savedSolanaAddress();
+    if (!storedSolana.isEmpty() &&
+        !forkmesh::control::isValidSolanaPublicAddress(storedSolana)) {
+        // Older builds accepted arbitrary text in this public-address slot.
+        // Scrub it before any profile, heartbeat, or peer frame can reuse it:
+        // private-looking material must never remain in payout settings.
+        saveSolanaAddress(QString());
+        m_solanaEdit->clear();
+    } else {
+        m_solanaEdit->setText(storedSolana);
+    }
     m_solanaEdit->hide();
     // The node's public key is no longer surfaced on the welcome screen (it kept
     // the first run feeling technical). The label is kept as a hidden data-holder
@@ -912,6 +924,11 @@ bool MainWindow::testOpenRepository(int index)
 {
     if (index < 0 || index >= m_repositories.size())
         return false;
+    // Keep the selected-node context aligned with the fixture's repository.
+    // Periodic repository refreshes intentionally clear an open detail that
+    // does not belong to the selected node; without this, a timer could erase
+    // the synthetic repo halfway through a window-layout assertion.
+    m_selectedNode = m_repositories.at(index).owner;
     openRepoDetail(index);
     return true;
 }
@@ -923,14 +940,18 @@ QString MainWindow::testRepoDefaultBranch() const
 
 bool MainWindow::testShowRepoIssuesTab()
 {
-    if (!m_repoDetailStack || m_repoDetailStack->count() <= 2)
+    if (!m_repoDetailStack || m_repoDetailStack->count() <= 2 ||
+        !m_repoDetailTabs)
         return false;
-    m_repoDetailStack->setCurrentIndex(2); // Issues
-    if (m_repoDetailTabs) {
-        if (QAbstractButton *b = m_repoDetailTabs->button(2))
-            b->setChecked(true);
-    }
-    return true;
+    QAbstractButton *button = m_repoDetailTabs->button(2);
+    if (!button)
+        return false;
+    // Exercise the same navigation signal a user click emits. Directly changing
+    // the stack left the Code overview's commit toggle checked behind the Issues
+    // page, so the next history click could be skipped as if it were already
+    // visible.
+    button->click();
+    return m_repoDetailStack->currentIndex() == 2;
 }
 
 void MainWindow::testShowPublishBar(bool on)
@@ -1021,9 +1042,9 @@ void MainWindow::setHeadlessMode(bool headless)
     // from a prior desktop session on this box, or left over from before the
     // machine was converted to a headless daemon — would silently strand it:
     // still connected to the room and syncing its mirror (so it publishes a fresh
-    // catalog record and shows up in the Mirror nodes list), yet never starting a
-    // host tunnel or sending the online heartbeat. The node then appears offline
-    // on the Network page and serves nothing, with no way for a headless operator
+    // catalog record and shows up in the Mirror nodes list), yet never starting
+    // its HTTPS gateway or sending the online heartbeat. The node then
+    // appears offline on the Network page, with no way for a headless operator
     // to fix it (adhoc #216: "mirror1" was connected and syncing but never online
     // or serving). Force such a node online here, before startSession reads the
     // flag, so a headless daemon always serves.
@@ -1073,9 +1094,9 @@ void MainWindow::startSession()
     }
 
     // No wallet, no signup: the core flow (clone, mirror, issues, PRs, chat)
-    // needs only a node name. Crypto is strictly opt-in and lives behind the
-    // "Get paid to mirror" button on the node profile — we never gate entry on
-    // an account or a Solana address here. We still attempt a silent, dialog-free
+    // needs only a node name. Crypto is strictly opt-in in the node profile's
+    // reward settings — we never gate entry on an account or Solana address
+    // here. We still attempt a silent, dialog-free
     // auth so a returning node that already owns an active account keeps its
     // hosting/payout privileges; a brand-new node simply starts unauthenticated.
 #ifdef FORKMESH_WINDOW_TESTS
@@ -1147,7 +1168,13 @@ void MainWindow::startSession()
     if (m_serverUrlEdit->text().trimmed().isEmpty())
         m_serverUrlEdit->setText(serverHostDisplay(kDefaultServerUrl));
 
-    saveSolanaAddress(m_solanaEdit->text().trimmed());
+    QString payoutAddress = m_solanaEdit->text().trimmed();
+    if (!payoutAddress.isEmpty() &&
+        !forkmesh::control::isValidSolanaPublicAddress(payoutAddress)) {
+        payoutAddress.clear();
+        m_solanaEdit->clear();
+    }
+    saveSolanaAddress(payoutAddress);
     if (m_accountAuthenticated &&
         AccountCapability::normalizedAccount(m_accountName) !=
             AccountCapability::normalizedAccount(name)) {
@@ -1214,7 +1241,7 @@ void MainWindow::startSession()
                                   nodeOwnerDisplayName(),
                                   m_profileIdentity.publicKey(), url,
                                   kDefaultRoomName,
-                                  m_solanaEdit->text().trimmed(),
+                                  payoutAddress,
                                   m_roomPassphrase, this);
     server->setConnectionAuthorizer([this](const QUrl &endpoint) {
         return authorizeFirewallConnection(QStringLiteral("WebSocket"), endpoint);
@@ -1262,7 +1289,7 @@ void MainWindow::startSession()
         const QJsonObject signedProfile =
             m_profileIdentity.signedProfile(m_userName,
                                             m_userName,
-                                            m_solanaEdit->text());
+                                            payoutAddress);
         const QString profileBytes = QString::fromUtf8(
             QJsonDocument(signedProfile).toJson(QJsonDocument::Compact));
         logSystem("Identity: signed profile for " +
@@ -1307,7 +1334,7 @@ void MainWindow::startSession()
     }
 }
 
-// ---- Account / node registration (staged join + reward heartbeat) ----------
+// ---- Account / node registration and signed reward heartbeat ----------------
 
 QJsonObject MainWindow::emailNotificationPreferencesPayload() const
 {
@@ -1441,11 +1468,11 @@ void MainWindow::sendNodeHeartbeat()
         }
         // The nav balance is deliberately NOT refreshed on every heartbeat:
         // hitting Solana RPC + the price API each minute is wasteful. Instead the
-        // server reports this node's wallet balance in the heartbeat reply and
-        // flags when it grew since the last beat (a donation). Only then do we
-        // refresh the displayed balance (which also fires the disbursement
-        // notification). Other refreshes happen on startup / address changes.
-        if (resp.value(QStringLiteral("donationReceived")).toBool())
+        // server reports this node's public external-wallet balance in the
+        // heartbeat reply and flags when it grew since the last beat. Only then
+        // do we refresh the display (which may fire the opt-in balance-change
+        // alert). Other refreshes happen on startup / address changes.
+        if (resp.value(QStringLiteral("balanceIncreased")).toBool())
             updateNavSolanaBalance();
         // A user on forkmesh.com is claiming this node (adhoc #53): the reply
         // carries the confirmation code, which is shown on this machine only.
@@ -1699,11 +1726,16 @@ void MainWindow::fetchRoomPassphrase()
         !m_profileIdentity.isValid())
         return;
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QString roomOwner = QStringLiteral("mainnode");
+    const QString roomRepo = QStringLiteral("forkmesh");
     const QByteArray canonical =
-        ("forkmesh-room-key-v1\n" + node + "\n" + ts).toUtf8();
+        ("forkmesh-room-key-v2\n" + node + "\n" + roomOwner + "\n" +
+         roomRepo + "\n" + ts).toUtf8();
     QUrl url = catalogApiUrl();
     url.setPath(QStringLiteral("/api/chat/room-key"));
     QUrlQuery query;
+    query.addQueryItem("owner", roomOwner);
+    query.addQueryItem("repo", roomRepo);
     query.addQueryItem("node", node);
     query.addQueryItem("ts", ts);
     query.addQueryItem("sig", m_profileIdentity.signData(canonical));
@@ -1752,8 +1784,8 @@ void MainWindow::showAdminVerifyDialog()
     dialog.resize(480, 420);
     auto *layout = new QVBoxLayout(&dialog);
     layout->addWidget(new QLabel(
-        "New users awaiting manual email verification (placeholder until an "
-        "email service such as Amazon SES is connected):"));
+        "New users awaiting manual review because the configured email "
+        "verification provider did not confirm delivery:"));
     auto *scroll = new QScrollArea;
     scroll->setWidgetResizable(true);
     auto *inner = new QWidget;
@@ -2193,6 +2225,12 @@ void MainWindow::mirrorCatalogRepo(const QString &owner, const QString &name,
     // one shared with us (issue #9) — must keep its private flag so clone/fetch
     // attaches a view token (the owner's, or our grantee share token).
     repo.isPrivate = isPrivate;
+    if (isPrivate) {
+        const QString accessId =
+            m_privateCatalogAccessIds.value(owner + "/" + name);
+        if (PrivateMirrorStore::isOpaqueId(accessId))
+            repo.privateReplicaId = accessId;
+    }
     // Mirrored repos (cloned from another node) start with actions off; the user
     // can opt in per repo on the Settings/Actions tab.
     repo.actionsEnabled = false;
@@ -2648,14 +2686,15 @@ void MainWindow::scheduleHeadlessRegisterRetry(const QString &accountName)
                         m_headlessRegisterAttempt = 0;
                         if (m_headless)
                             ensureFlagshipRepo();
-                        // Bring the live /host tunnels up now. startSession() ran
+                        // Bring the repository update channels up now.
+                        // startSession() ran
                         // startRepoHosts() back when this node had no session — a
                         // no-op then (hasActiveAccountSession() was false) — and
                         // nothing else in a headless run retries it. So a node that
                         // only registered on this retry would publish its catalog
-                        // record (below) yet never open a host tunnel: it marks no
-                        // host_presence and so shows offline ("not ready to serve")
-                        // on the website even though it is fully mirroring. Honour a
+                        // record (below) yet never open a control channel: it
+                        // marks no live presence and so shows offline on the
+                        // website even though it is fully mirroring. Honour a
                         // node the user parked offline, matching startSession's guard.
                         if (!m_nodeOffline)
                             startRepoHosts();
@@ -2727,6 +2766,11 @@ bool MainWindow::verifyTotpLogin(const QString &email,
         // and the web dashboard show the same picture. Adopt a picture already
         // set on the account; otherwise upload the one chosen locally.
         m_accountSessionToken = payload.value("sessionToken").toString();
+        // Register only this device's public hybrid encryption bundle. This
+        // makes the account ready to be named as a private-repo collaborator;
+        // the X25519 and ML-KEM private halves stay in the encrypted local vault.
+        if (ownsDesktopKey)
+            ensurePrivateMirrorRecipientIdentityRegistered();
         const QString serverAvatar = payload.value("avatarPng").toString();
         if (!serverAvatar.isEmpty()) {
             const QByteArray png =
@@ -3050,22 +3094,38 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
 
 void MainWindow::verifyWallet()
 {
-    // Repurposed: the "join / verify" button now drives the staged join flow,
-    // which both registers the account and marks it an active network member.
-    const QString name = accountOwner();
-    if (name.isEmpty()) {
-        QMessageBox::information(this, "Join the network",
-                                 "Set your username on the setup screen first.");
+    // Verify configuration only: the address is public, account registration is
+    // a separate explicit action, and no deposit/balance proves wallet custody.
+    // In particular this must never launch the retired reserve/donation funnel.
+    const QString address = savedSolanaAddress().trimmed();
+    if (address.isEmpty() ||
+        !forkmesh::control::isValidSolanaPublicAddress(address)) {
+        QMessageBox::information(
+            this, QStringLiteral("Reward settings"),
+            QStringLiteral(
+                "Add one valid public self-custodial Solana payout address. "
+                "Never enter a private key, seed, mnemonic, or recovery phrase."));
         return;
     }
-    if (ensureNodeAccount(name, m_solanaEdit ? m_solanaEdit->text().trimmed() : QString())) {
-        if (m_profileEligibility)
-            m_profileEligibility->setText(
-                QString::fromUtf8("<span style='color:#3fb950'>Active "
-                               "\xC2\xB7 network member</span>"));
-        // Verified now: hide the "verify your wallet" banner.
-        updateSolanaNotice();
+    const QString name = accountOwner();
+    if (name.isEmpty() || !hasOwnerSigningCapability(name)) {
+        QMessageBox::information(
+            this, QStringLiteral("Reward settings"),
+            QStringLiteral(
+                "Register or sign in to this node from Account settings first. "
+                "Checking reward settings does not create a wallet or request a deposit, "
+                "and it does not register an account."));
+        return;
     }
+    sendNodeHeartbeat();
+    if (m_profileEligibility)
+        m_profileEligibility->setText(
+            QString::fromUtf8(
+                "<span style='color:#3fb950'>Public payout address configured "
+                "\xC2\xB7 may be eligible</span>"));
+    updateSolanaNotice();
+    flashMessage(QStringLiteral(
+        "Reward settings checked. Selection and payment are not guaranteed."));
 }
 
 void MainWindow::persistProfile()
@@ -3073,7 +3133,19 @@ void MainWindow::persistProfile()
     const QString name = accountNameFromInput(m_nameEdit->text(), m_userName);
     m_nameEdit->setText(name);
     saveProfileName(name);
-    saveSolanaAddress(m_solanaEdit->text().trimmed());
+    const QString address = m_solanaEdit->text().trimmed();
+    if (address.isEmpty() ||
+        forkmesh::control::isValidSolanaPublicAddress(address)) {
+        saveSolanaAddress(address);
+    } else {
+        m_solanaEdit->clear();
+        saveSolanaAddress(QString());
+        flashMessage(
+            QStringLiteral(
+                "Invalid payout-address text was removed. ForkMesh accepts only "
+                "a public Solana address, never a private key or recovery phrase."),
+            true);
+    }
     updateNavSolanaBalance();
 }
 

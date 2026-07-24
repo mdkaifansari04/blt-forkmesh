@@ -85,7 +85,7 @@
         <ul>
           <li><strong>Built-in coding agents.</strong> Assign any issue to Claude Code or Codex from the issue detail or quick-add box. The agent works on your connected fork and opens a pull request when it's done.</li>
           <li><strong>A real terminal, in the app.</strong> A native VT100 terminal renders every agent and workflow run with full color output and emoji.</li>
-          <li><strong>Bounties that pay out.</strong> Fund any issue with a one-click Solana bounty. ForkMesh watches the chain, confirms the deposit, and releases the reward when the PR is merged.</li>
+          <li><strong>Legacy issue bounties.</strong> This release originally added a Worker-custodied issue-bounty flow. That flow is now frozen: do not fund historical addresses; use the explicit offline reconciliation and migration process.</li>
           <li><strong>IDE extension.</strong> Kick off ForkMesh agents straight from your editor.</li>
           <li><strong>Profile pages.</strong> Click any node to see its full public profile — repos, identity, and version.</li>
           <li><strong>Hardened by default.</strong> Tighter signup and relay security, with auto-publish off until you say so.</li>
@@ -114,11 +114,11 @@
           <span class="tag">v0.3.0</span>
           <span class="when">June 2026</span>
         </div>
-        <p class="pitch">ForkMesh learned to pay the people who keep the network alive.</p>
+        <p class="pitch">ForkMesh added optional community-funded incentives for healthy mirror operators.</p>
         <ul>
-          <li><strong>Anonymous accounts.</strong> Sign up with nothing but a key and a password — no email, no phone. Optional 2FA included.</li>
-          <li><strong>Solana payouts and donations.</strong> Publish a Solana address and let anyone "make it rain" across a node or the whole federation. SOL and USDT, priced live.</li>
-          <li><strong>Rewards for mirroring.</strong> The nodes that preserve code get recognized for it.</li>
+          <li><strong>Guest-first access.</strong> Visitors enter the world immediately; registered accounts use email, password, and email verification.</li>
+          <li><strong>Solana payouts and contributions.</strong> Publish a self-custodial payout address or voluntarily fund the public mainnet-beta community pool with a direct transfer signed in your own wallet. ForkMesh never receives a community member’s wallet key.</li>
+          <li><strong>Rewards for mirroring.</strong> Eligible, integrity-verified nodes may be selected for a community incentive; participation, payment, and financial returns are never guaranteed.</li>
           <li><strong>Network presence, done right.</strong> Mirror-sync notices moved into a proper network log, with live connection alerts.</li>
         </ul>
       </section>
@@ -135,7 +135,7 @@
           <li><strong>Actions.</strong> Run real workflows on push, with the latest live log one click away.</li>
           <li><strong>Releases and tags.</strong> See your tags, mark the current one, and cut new releases in seconds.</li>
           <li><strong>Browse before you mirror.</strong> Explore files, commits, and rich diffs (images side by side) — no clone required.</li>
-          <li><strong>Mirror on your phone.</strong> Carry the mesh in your pocket.</li>
+          <li><strong>ForkMesh on your phone.</strong> Browse repositories, follow activity, chat, and submit signed collaboration updates. The Flutter app is an access client; Git mirroring remains a desktop/headless-node job.</li>
           <li><strong>Fork with intent.</strong> Choose exactly where a fork lands in your working tree.</li>
         </ul>
       </section>
@@ -152,10 +152,10 @@
         </p>
         <ul>
           <li><strong>A distributed mirror network.</strong> Local Git mirrors, signed identities, and a Cloudflare relay that coordinates without ever holding your objects.</li>
-          <li><strong>A public catalog.</strong> Every repository a node publishes, browsable on the web and streamed live from its host.</li>
+          <li><strong>A public catalog.</strong> Public repositories and clearly labeled external stubs, with actively mirrored repository bytes streamed over HTTPS from a selected healthy origin.</li>
           <li><strong>Issues that grow with you.</strong> Open/closed states, priorities, custom fields, a Kanban board, and milestones with progress bars.</li>
           <li><strong>Commit history and diffs</strong>, viewable right in the browser.</li>
-          <li><strong>Encrypted room chat</strong>, end-to-end encrypted before it ever touches the relay.</li>
+          <li><strong>Authenticated shared-key room chat.</strong> Clients encrypt before sending, while the relay derives the default shared passphrase and can read room plaintext. Persisted frames are limited to 500 per room for 7 days.</li>
           <li><strong>One-click hand-off to your AI tools</strong>, baked in from day one.</li>
         </ul>
       </section>

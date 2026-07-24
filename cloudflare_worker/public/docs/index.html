@@ -7,7 +7,7 @@
     <title>Docs · ForkMesh</title>
     <meta
       name="description"
-      content="ForkMesh documentation for desktop mirrors, host tunnels, Git clone, APIs, WebSocket endpoints, issues, pull requests, accounts, and encrypted rooms."
+      content="ForkMesh documentation for encrypted desktop mirrors, direct-HTTPS Git routing, APIs, multiplayer WebSockets, issues, pull requests, accounts, and encrypted rooms."
     />
     <meta name="application-name" content="ForkMesh" />
     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
@@ -390,7 +390,7 @@
             </h2>
             <a class="nav-link" href="#repository">Repository model</a>
             <a class="nav-link" href="/docs/contributions">Contribution counting</a>
-            <a class="nav-link" href="#host-tunnel">Host tunnel</a>
+            <a class="nav-link" href="#https-routing">HTTPS mirror routing</a>
             <a class="nav-link" href="#git-clone">Git clone</a>
             <a class="nav-link" href="#issues">Issues</a>
             <a class="nav-link" href="#pull-requests">Pull requests</a>
@@ -425,7 +425,7 @@
           id="welcome"
           class="scroll-mt-44"
           data-search-title="Welcome"
-          data-search-body="ForkMesh desktop documentation overview install quickstart repository host tunnel Git clone issues pull requests accounts encrypted rooms"
+          data-search-body="ForkMesh desktop documentation overview install quickstart encrypted repository direct HTTPS mirror routing Git clone issues pull requests accounts encrypted rooms"
         >
           <div class="mb-6 flex flex-wrap items-center justify-between gap-4">
             <div></div>
@@ -469,10 +469,10 @@
               routing, identities, and collaboration records.
             </p>
             <p>
-              You organize work around repositories, host tunnels, Git-over-HTTP
-              clone paths, issues, pull requests, accounts, and encrypted rooms.
-              The Worker is the control plane and relay layer, not canonical Git
-              storage.
+              You organize work around encrypted mirrors, direct-HTTPS
+              Git-over-HTTP routes, issues, pull requests, accounts, and
+              encrypted rooms. The Worker is service discovery and a bounded
+              in-place proxy, not canonical Git storage.
             </p>
           </div>
 
@@ -507,7 +507,7 @@
           id="mental-model"
           class="mt-16 scroll-mt-44"
           data-search-title="The ForkMesh Mental Model"
-          data-search-body="Repositories host tunnels signed inboxes encrypted rooms mental model concepts"
+          data-search-body="Repositories direct HTTPS mirrors signed inboxes encrypted rooms mental model concepts"
         >
           <h2
             class="text-[1.78rem] font-black leading-tight text-[var(--docs-fg)]"
@@ -537,7 +537,7 @@
             </a>
             <a
               class="doc-card min-h-[14rem] p-7 no-underline"
-              href="#host-tunnel"
+              href="#https-routing"
             >
               <svg
                 class="h-8 w-8 text-[var(--docs-fg)]"
@@ -551,11 +551,12 @@
                 <path d="M12 4v16"></path>
               </svg>
               <h3 class="mt-7 text-[1.1rem] font-black text-[var(--docs-fg)]">
-                Host tunnels
+                HTTPS mirror routing
               </h3>
               <p class="mt-2 text-[0.95rem] leading-7 text-[var(--docs-muted)]">
-                Desktop nodes attach outbound so browsers and Git clients can
-                reach repos without exposing IP addresses.
+                Independent mirror nodes expose an authenticated Cloudflare
+                origin; the Worker selects a healthy origin and masks it behind
+                the original ForkMesh URL.
               </p>
             </a>
             <a
@@ -592,8 +593,8 @@
                 Encrypted rooms
               </h3>
               <p class="mt-2 text-[0.95rem] leading-7 text-[var(--docs-muted)]">
-                Room traffic is encrypted before the Worker relays it to
-                connected collaboration clients.
+                Default room traffic uses a relay-derived authenticated shared
+                key. It is encrypted on the wire but readable by the relay.
               </p>
             </a>
           </div>
@@ -719,37 +720,39 @@
               </li>
               <li>
                 <strong class="text-[var(--docs-fg)]">Browser view:</strong>
-                live tree and blob requests routed to a connected host.
+                tree and blob requests proxied over HTTPS to a healthy,
+                integrity-verified mirror.
               </li>
             </ul>
           </div>
         </section>
 
         <section
-          id="host-tunnel"
+          id="https-routing"
           class="mt-16 scroll-mt-44"
-          data-search-title="Host tunnel"
-          data-search-body="Desktop node outbound WebSocket Cloudflare Durable Object host attach status tree blob"
+          data-search-title="HTTPS mirror routing"
+          data-search-body="Desktop node Cloudflare Tunnel direct HTTPS signed capability health check integrity tree blob"
         >
           <h2 class="text-[1.5rem] font-black text-[var(--docs-fg)]">
-            Host tunnel
+            HTTPS mirror routing
           </h2>
           <p class="mt-4 text-[0.95rem] leading-8 text-[var(--docs-muted)]">
-            A desktop node opens an outbound WebSocket tunnel to Cloudflare for
-            each hosted repository. Browsers and Git clients connect to
-            Cloudflare, and the Worker routes requests through the matching
-            Durable Object to the active host.
+            Each independent mirror runs a loopback-only gateway behind a
+            Cloudflare Tunnel. The Worker performs signed health and integrity
+            checks, selects an eligible origin, and streams ordinary HTTPS
+            responses under the original ForkMesh URL. Repository bytes never
+            travel over the multiplayer socket.
           </p>
           <div class="doc-card mt-6 p-6">
             <div class="route-row">
               <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
-                >WS/GET</strong
+                >POST</strong
               >
               <code class="break-words text-sm text-[var(--docs-fg)]"
-                >/api/repo/&lt;owner&gt;/&lt;repo&gt;/host</code
+                >/api/mirrors/https</code
               >
               <span class="text-[var(--docs-muted)]"
-                >Host attach and status</span
+                >Register a node-signed HTTPS endpoint</span
               >
             </div>
             <div class="route-row">
@@ -785,11 +788,13 @@
           <p class="mt-4 text-[0.95rem] leading-8 text-[var(--docs-muted)]">
             The current production path supports Git upload-pack, which covers
             clone and fetch style operations. The Worker proxies Git smart HTTP
-            requests to the host tunnel instead of storing packfiles itself.
+            requests in place from an authenticated, healthy HTTPS mirror
+            origin instead of storing packfiles itself. Push is disabled until
+            a direct-HTTPS write protocol is available.
           </p>
           <pre
             class="doc-card mt-6 overflow-x-auto p-5 text-sm leading-7 text-[var(--docs-fg)]"
-          ><code>git clone https://forkmesh.com/mainnode/forkmesh</code></pre>
+          ><code>git clone https://forkmesh.com/forkmesh/forkmesh</code></pre>
           <div class="doc-card mt-4 p-6">
             <div class="route-row">
               <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
@@ -926,9 +931,16 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch + NUL + commits)</code><
             Encrypted rooms
           </h2>
           <p class="mt-4 text-[0.95rem] leading-8 text-[var(--docs-muted)]">
-            Room clients use WebSockets. The website also opens a read-only
-            clients observer, so the header can show live network presence
-            without joining chat.
+            Room clients use WebSockets. The Town Square compatibility room
+            derives SHA-256(DATA_KEY +
+            &quot;:room-chat-passphrase-v1&quot;); other repositories derive a
+            distinct v2 passphrase from DATA_KEY and lower(owner/repo). The
+            relay releases it only to an authenticated repository participant.
+            Clients apply PBKDF2-HMAC-SHA256 for 210,000 rounds with a
+            room-scoped salt before AES-256-GCM. The relay can derive that key
+            and decrypt messages. It retains at most 500 persisted frames per
+            room for 7 days. The header reads bounded, cached aggregate counts
+            without joining the room.
           </p>
           <div class="doc-card mt-6 p-6">
             <div class="route-row">
@@ -939,7 +951,7 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch + NUL + commits)</code><
                 >/api/repo/&lt;owner&gt;/&lt;repo&gt;/rooms/&lt;room&gt;/ws</code
               >
               <span class="text-[var(--docs-muted)]"
-                >Join an encrypted room</span
+                >Join an authenticated shared-key room</span
               >
             </div>
             <div class="route-row">
@@ -960,28 +972,33 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch + NUL + commits)</code><
           id="api-websockets"
           class="mt-16 scroll-mt-44"
           data-search-title="APIs and WebSockets"
-          data-search-body="API WebSocket endpoint reference Worker Durable Object D1 host tunnel repository catalog signed inboxes agents notifications accounts network status telemetry improvement event driven polling"
+          data-search-body="API WebSocket endpoint reference Worker Durable Object D1 direct HTTPS mirror routing repository catalog signed inboxes agents notifications accounts network status telemetry improvement event driven polling"
         >
           <h2 class="text-[1.5rem] font-black text-[var(--docs-fg)]">
             APIs and WebSockets
           </h2>
           <p class="mt-4 text-[0.95rem] leading-8 text-[var(--docs-muted)]">
             The public API is served by the Cloudflare Worker. Durable Objects
-            hold transient WebSocket state for encrypted rooms and per-repo host
-            tunnels. D1 stores encrypted records, blind indexes, inboxes,
-            notifications, status samples, telemetry, and small control-plane
-            state. Desktop and headless nodes keep the Git data and connect
-            outbound.
+            hold transient WebSocket state for authenticated shared-key rooms
+            and generalized presence. D1 stores encrypted records, blind
+            indexes, inboxes, endpoint health, notifications, status samples,
+            telemetry, small control-plane state, and up to 500 persisted room
+            frames per room for 7 days. The relay-derived default room key can
+            decrypt those frames. Desktop and headless nodes keep encrypted
+            mirror data and serve authorized repository reads through direct
+            HTTPS.
           </p>
 
           <div class="doc-card mt-6 p-6">
             <h3 class="text-[1.1rem] font-black text-[var(--docs-fg)]">
-              Realtime and host tunnels
+              Realtime and repository transport
             </h3>
             <p class="mt-2 text-[0.95rem] leading-7 text-[var(--docs-muted)]">
-              These paths are the live data plane. Chat and repo serving are
-              already WebSocket based, while presence summaries still use HTTP
-              snapshots and periodic heartbeats as a durable fallback.
+              WebSockets are limited to chat, presence, movement, shared live
+              interactions, and small repository-update signals. Clone, browse,
+              release, and other repository payloads use ordinary HTTPS.
+              Presence summaries also use HTTP snapshots and periodic
+              heartbeats as a durable fallback.
             </p>
             <div class="mt-5">
               <div class="route-row">
@@ -992,7 +1009,7 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch + NUL + commits)</code><
                   >/api/repo/&lt;owner&gt;/&lt;repo&gt;/host</code
                 >
                 <span class="text-[var(--docs-muted)]"
-                  >Desktop host tunnel; signed by the owner key</span
+                  >Legacy control/update channel; repository payload frames are rejected</span
                 >
               </div>
               <div class="route-row">
@@ -1003,7 +1020,7 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch + NUL + commits)</code><
                   >/api/repo/&lt;owner&gt;/&lt;repo&gt;/host</code
                 >
                 <span class="text-[var(--docs-muted)]"
-                  >Connected host count used for liveness probes</span
+                  >Legacy control-channel count; not repository health proof</span
                 >
               </div>
               <div class="route-row">
@@ -1162,10 +1179,10 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch + NUL + commits)</code><
               Cross-user work is staged as signed records in D1 &mdash; a
               temporary inbox, not the permanent record &mdash; then the repo
               owner's node drains it and merges/commits it into Git. Delivery
-              is event-driven: a minimal push frame on the repo's host tunnel
-              triggers one consolidated sync fetch, with a 5-minute poll as
-              the fallback for dropped events, and exponential backoff on
-              relay failures.
+              is event-driven: a minimal repository-update signal on the
+              control channel triggers one consolidated HTTPS sync fetch, with
+              a 5-minute poll as the fallback for dropped events and
+              exponential backoff on relay failures.
             </p>
             <div class="mt-5">
               <div class="route-row">
@@ -1198,7 +1215,7 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch + NUL + commits)</code><
                   >/api/repo/&lt;owner&gt;/&lt;repo&gt;/bounty</code
                 >
                 <span class="text-[var(--docs-muted)]"
-                  >Bounty wallet, create, status, and payout actions</span
+                  >Retired legacy custody path; returns migration guidance and never creates or pays a bounty</span
                 >
               </div>
               <div class="route-row">
@@ -1220,7 +1237,7 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch + NUL + commits)</code><
                   >/api/repo/&lt;owner&gt;/&lt;repo&gt;/agents</code
                 >
                 <span class="text-[var(--docs-muted)]"
-                  >Desktop pushes session snapshots and drains prompts</span
+                  >Desktop pushes owner-sealed snapshots and drains ciphertext prompts</span
                 >
               </div>
               <div class="route-row">
@@ -1231,7 +1248,7 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch + NUL + commits)</code><
                   >/api/repo/&lt;owner&gt;/&lt;repo&gt;/agents/list</code
                 >
                 <span class="text-[var(--docs-muted)]"
-                  >Website reads owner agent session list</span
+                  >Authorized client retrieves owner-sealed session envelopes; the relay cannot decrypt them</span
                 >
               </div>
               <div class="route-row">
@@ -1242,7 +1259,7 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch + NUL + commits)</code><
                   >/api/repo/&lt;owner&gt;/&lt;repo&gt;/agents/&lt;id&gt;/transcript</code
                 >
                 <span class="text-[var(--docs-muted)]"
-                  >Website reads one stored transcript tail</span
+                  >Authorized client retrieves one owner-sealed session envelope for local decryption</span
                 >
               </div>
               <div class="route-row">
@@ -1253,7 +1270,7 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch + NUL + commits)</code><
                   >/api/repo/&lt;owner&gt;/&lt;repo&gt;/agents/&lt;id&gt;/prompt</code
                 >
                 <span class="text-[var(--docs-muted)]"
-                  >Website queues a prompt for desktop drain</span
+                  >Queues an owner-sealed prompt; plaintext prompts are rejected</span
                 >
               </div>
             </div>
@@ -1397,8 +1414,8 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch + NUL + commits)</code><
               <li>
                 <strong class="text-[var(--docs-fg)]">Agent control:</strong>
                 replace full session snapshots and prompt polling with
-                per-agent deltas and push-to-node prompts over the host tunnel
-                or an account control WebSocket.
+                per-agent deltas and push-to-node prompts over a bounded account
+                control WebSocket.
               </li>
               <li>
                 <strong class="text-[var(--docs-fg)]">Account control:</strong>
@@ -1426,55 +1443,57 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch + NUL + commits)</code><
           id="bounty-custody"
           class="mt-16 scroll-mt-44"
           data-search-title="Bounty custody and payouts"
-          data-search-body="Solana bounty custody payout escrow treasury contributor idempotency mainnet worker encrypted D1 security audit"
+          data-search-body="Solana bounty legacy custody frozen migration external signer non-custodial security audit"
         >
           <h2 class="text-[1.5rem] font-black text-[var(--docs-fg)]">
             Bounty custody and payouts
           </h2>
           <p class="mt-4 text-[0.95rem] leading-8 text-[var(--docs-muted)]">
-            ForkMesh bounties use per-issue, worker-custodied Solana escrow
-            accounts on mainnet. A funded bounty pays the contributor when the
-            owner-approved pull request merges, with the treasury receiving the
-            protocol share.
+            New Worker-custodied bounty wallets and payouts are disabled.
+            Historical encrypted escrow rows are frozen for an explicit offline,
+            balance-reconciled migration. New bounty work must use an external
+            self-custodial wallet, program, or multisig and an unsigned intent.
           </p>
           <div class="doc-card mt-6 p-6">
             <ul
               class="grid gap-4 text-[0.95rem] leading-7 text-[var(--docs-muted)]"
             >
               <li>
-                <strong class="text-[var(--docs-fg)]">Custody model:</strong>
-                each bounty gets a fresh Solana keypair. The seed is encrypted
-                in D1 and never returned to clients; the public address, amount,
-                status, payee, and payout signature are the public fields.
+                <strong class="text-[var(--docs-fg)]">Current boundary:</strong>
+                the Worker never creates, accepts through an API, signs with,
+                broadcasts, or rewrites a wallet private key. A frozen historical
+                row may still decrypt as one legacy blob for its read-only public
+                status projection until the offline scrub removes the key field.
               </li>
               <li>
-                <strong class="text-[var(--docs-fg)]">Funding:</strong>
-                USD bounty amounts are converted to lamports using the live
-                SOL/USD price. The escrow is funded when its balance reaches the
-                required lamports, with a small fee reserve left in the account.
+                <strong class="text-[var(--docs-fg)]">Historical funding:</strong>
+                do not send funds to a legacy per-issue or owner bounty address.
+                Its public status is migration-only until the documented offline
+                inventory and reconciliation is complete.
               </li>
               <li>
                 <strong class="text-[var(--docs-fg)]">Authorization:</strong>
-                only an owner-signed request can choose the payee. The Worker
-                refuses auto-payout unless that payee was authorized by the repo
-                owner key.
+                a repository owner may approve public payout metadata, but an
+                owner-controlled external signer must separately review and
+                authorize the exact on-chain transfer.
               </li>
               <li>
-                <strong class="text-[var(--docs-fg)]">Split:</strong>
-                the payout path sends about 90% to the contributor and 10% to
-                the treasury in one transaction.
+                <strong class="text-[var(--docs-fg)]">Fund states:</strong>
+                user-owned funds, community pools, pending allocations, and
+                finalized on-chain transfers are always displayed separately.
               </li>
               <li>
-                <strong class="text-[var(--docs-fg)]">Idempotency:</strong>
-                ForkMesh records the signed transaction before broadcasting it.
-                If a Worker or RPC call fails mid-payout, retries resume the
-                same transaction instead of issuing a second transfer.
+                <strong class="text-[var(--docs-fg)]">Verification:</strong>
+                the Worker may accept a public transaction signature only after
+                an external signer broadcasts. It independently checks finality,
+                source, destination, amount, and replay protection.
               </li>
               <li>
-                <strong class="text-[var(--docs-fg)]">Residual risk:</strong>
-                this is custodial escrow. Compromise of the Worker runtime or
-                data-encryption key can expose escrow seeds; there is no on-chain
-                multisig program limiting the Worker's authority today.
+                <strong class="text-[var(--docs-fg)]">Migration:</strong>
+                legacy rows may contain encrypted historical seed material.
+                They cannot be consumed by a live Worker path and must be
+                inventoried, exported locally without logging, reconciled, and
+                scrubbed only after explicit operator confirmation.
               </li>
             </ul>
           </div>
@@ -1704,9 +1723,11 @@ uvx --from workers-py pywrangler dev
               </li>
               <li>
                 <strong class="text-[var(--docs-fg)]">Environment:</strong>
-                set relay variables such as node name, Solana address, data key,
-                treasury address, and admin path through Cloudflare Worker
-                configuration for production deployments.
+                set relay variables such as node name, the community reward
+                pool's public address and network, data key, and admin path
+                through Cloudflare Worker configuration for production
+                deployments. Never put a wallet private key in Worker
+                configuration.
               </li>
             </ul>
           </div>
@@ -1730,18 +1751,23 @@ uvx --from workers-py pywrangler dev
                 metadata.
               </li>
               <li>
-                Fresh file browsing, clone, and push require at least one host
-                online &mdash; the relay itself holds no Git objects.
+                Fresh file browsing, clone, and release downloads require a
+                healthy direct-HTTPS mirror &mdash; the relay itself holds no
+                Git objects. Git receive-pack/push currently returns
+                <code class="rounded-md bg-[var(--docs-code)] px-2 py-1">501 Not Implemented</code>
+                until a direct-HTTPS write protocol is available; it never
+                falls back to a content socket.
               </li>
               <li>
-                Git hosting and mirroring are scoped to one relay instance
-                today; a self-hosted relay federates with the main relay for
-                node coordination and payouts, but repos don't yet move or
-                merge across independent relay instances.
+                Routing metadata is currently scoped to one relay instance.
+                Repositories remain on independent HTTPS gateways (or in
+                owner-sealed private replicas), and automatic cross-instance
+                repository replication is not yet available.
               </li>
               <li>
-                Durable Objects should not be used as heavy long-term Git
-                storage.
+                Durable Object sockets carry only real-time presence, chat,
+                collaboration, control signals, and minimal repository-update
+                notifications. They never carry Git objects or large files.
               </li>
             </ul>
           </div>
@@ -1862,8 +1888,8 @@ uvx --from workers-py pywrangler dev
           >
           <a
             class="mb-4 block font-bold text-[var(--docs-muted)] no-underline"
-            href="#host-tunnel"
-            >Host tunnel</a
+            href="#https-routing"
+            >HTTPS mirror routing</a
           >
           <a
             class="mb-4 block font-bold text-[var(--docs-muted)] no-underline"

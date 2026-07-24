@@ -1,0 +1,8044 @@
+import {
+  ACTIVITY_OPTIONS,
+  AVAILABILITY_OPTIONS,
+  LANDMARKS,
+  RADIO_STATIONS,
+  THEME_OPTIONS,
+  TOUR_STEPS,
+  WORKSHOP_TYPES,
+  WORLD_DAY_MS,
+  WORLD_REGIONS,
+  detectClient,
+  flagEmoji,
+  landmarkById,
+  sanitizePresenceText,
+  worldClock,
+} from "./world-data.js";
+import { buildRepositoryGraphEntities } from "./world-repository-graph.js";
+import { createWorldScene } from "./world-scene.js";
+
+const THREE_MODULE_URL =
+  "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.min.js";
+const SETTINGS_KEY = "forkmesh.world.settings.v1";
+const GUEST_ID_KEY = "forkmesh.world.guestId.v1";
+const SOCKET_RETRY_MAX_MS = 20000;
+const PRESENCE_STALE_MS = 22000;
+const WORLD_TICKET_REFRESH_MS = 5 * 60 * 1000;
+const ACCOUNT_STATUS_VALUES = new Set([
+  "Guest",
+  "Registered",
+  "Supporting member",
+  "Mirror operator",
+  "Organization admin",
+  "Verified bot",
+]);
+const ACCOUNT_STATUS_ICONS = Object.freeze({
+  Guest: "○",
+  Registered: "✓",
+  "Supporting member": "♥",
+  "Mirror operator": "◈",
+  "Organization admin": "◆",
+  "Verified bot": "⌘",
+});
+const WORLD_SPACE_IDS = new Set([
+  "town-square",
+  "east",
+  "central",
+  "west",
+  "sky-campus",
+  "space-station",
+  "code-planet",
+  "organization-region",
+  "planet-atlas",
+]);
+
+function escapeHTML(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function readJSON(storage, key, fallback) {
+  try {
+    const value = JSON.parse(storage.getItem(key) || "null");
+    return value && typeof value === "object" ? value : fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function writeJSON(storage, key, value) {
+  try {
+    storage.setItem(key, JSON.stringify(value));
+  } catch (_) {}
+}
+
+function randomId() {
+  try {
+    return crypto.randomUUID();
+  } catch (_) {
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  }
+}
+
+function readSession() {
+  return readJSON(localStorage, "forkmesh.session", null);
+}
+
+function guestId() {
+  try {
+    let id = sessionStorage.getItem(GUEST_ID_KEY);
+    if (!id) {
+      id = randomId();
+      sessionStorage.setItem(GUEST_ID_KEY, id);
+    }
+    return id;
+  } catch (_) {
+    return randomId();
+  }
+}
+
+function accountIdentity(session) {
+  const client = detectClient();
+  const id = session?.nodeName
+    ? `account:${String(session.nodeName).toLowerCase()}`
+    : `guest:${guestId()}`;
+  const suffix = hashSuffix(id);
+  // Login data in localStorage is only a cache and can be edited by the
+  // browser owner. A server-issued world ticket upgrades this guest identity
+  // after the session has actually been verified.
+  const rawName = `Guest ${suffix}`;
+  const name = sanitizePresenceText(rawName, `Guest ${suffix}`, 24);
+
+  return {
+    id,
+    name,
+    browser: client.browser,
+    os: client.os,
+    touch: client.touch,
+    countryCode: "",
+    flag: "◌",
+    accountStatus: "Guest",
+    nodes: [],
+  };
+}
+
+function hashSuffix(value) {
+  let hash = 0;
+  for (const char of String(value || "")) hash = (Math.imul(hash, 31) + char.charCodeAt(0)) >>> 0;
+  return String(hash % 10000).padStart(4, "0");
+}
+
+function defaultSettings() {
+  return {
+    theme: "world",
+    availability: "online",
+    activityCategory: "automatic",
+    publicDoor: "knock",
+    displayName: "",
+    privacy: {
+      name: true,
+      country: true,
+      browser: true,
+      os: true,
+      activity: true,
+      inactivity: false,
+      localTime: false,
+      nodes: true,
+    },
+    labels: true,
+    reducedData: false,
+  };
+}
+
+function mergeSettings(stored) {
+  const defaults = defaultSettings();
+  return {
+    ...defaults,
+    ...(stored || {}),
+    privacy: {
+      ...defaults.privacy,
+      ...(stored?.privacy || {}),
+    },
+  };
+}
+
+function publicIdentity(identity, settings) {
+  const chosenName = sanitizePresenceText(
+    identity.accountStatus === "Guest" ? settings.displayName : identity.name,
+    identity.name,
+    24,
+  );
+  return {
+    id: identity.id,
+    name: settings.privacy.name ? chosenName : "Private visitor",
+    flag: settings.privacy.country ? identity.flag : "◌",
+    browser: settings.privacy.browser ? identity.browser : "Hidden",
+    os: settings.privacy.os ? identity.os : "Hidden",
+    accountStatus: identity.accountStatus,
+    status:
+      settings.privacy.activity &&
+      (settings.privacy.inactivity || !["inactive", "recent"].includes(settings.availability))
+        ? settings.availability
+        : "hidden",
+    localTime: settings.privacy.localTime
+      ? new Intl.DateTimeFormat(undefined, {
+          hour: "numeric",
+          minute: "2-digit",
+        }).format(new Date())
+      : "",
+    // Only an authenticated, bounded count is represented. Node names never
+    // enter public world presence.
+    nodes: settings.privacy.nodes
+      ? Array.from(
+          { length: Math.min(identity.nodes?.length || 0, 6) },
+          () => "node",
+        )
+      : [],
+    publicDoor: ["closed", "knock", "open"].includes(settings.publicDoor)
+      ? settings.publicDoor
+      : "closed",
+  };
+}
+
+function presenceBrowser(value, visible) {
+  if (!visible) return "hidden";
+  const normalized = String(value || "").toLowerCase();
+  return ["chrome", "edge", "firefox", "safari"].includes(normalized)
+    ? normalized
+    : "other";
+}
+
+function presenceOS(value, visible) {
+  if (!visible) return "hidden";
+  const normalized = String(value || "").toLowerCase().replace(/\s+/g, "");
+  return ["android", "chromeos", "ios", "linux", "macos", "windows"].includes(
+    normalized,
+  )
+    ? normalized
+    : "other";
+}
+
+function presenceStatus(settings) {
+  if (!settings?.privacy?.activity) return "hidden";
+  if (
+    !settings.privacy.inactivity &&
+    ["inactive", "recent"].includes(settings.availability)
+  ) {
+    return "hidden";
+  }
+  return {
+    online: "available",
+    away: "away",
+    inactive: "idle",
+    recent: "idle",
+    "offline-operator": "away",
+    returning: "available",
+  }[settings.availability] || "exploring";
+}
+
+function presenceLocalTime(visible) {
+  if (!visible) return "";
+  const now = new Date();
+  return `${String(now.getHours()).padStart(2, "0")}:${String(
+    now.getMinutes(),
+  ).padStart(2, "0")}`;
+}
+
+function presenceActivity(settings, automatic = "exploring-town-square") {
+  if (!settings?.privacy?.activity) return "hidden";
+  const chosen =
+    settings.activityCategory === "automatic"
+      ? automatic
+      : settings.activityCategory;
+  return ACTIVITY_OPTIONS.some((option) => option.id === chosen)
+    ? chosen
+    : "exploring-town-square";
+}
+
+function boundedPresenceNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(-512, Math.min(512, number)) : 0;
+}
+
+function boundedYaw(value) {
+  const number = Number(value);
+  return Number.isFinite(number)
+    ? Math.max(-Math.PI, Math.min(Math.PI, number))
+    : 0;
+}
+
+function presenceLabel(value, hidden, fallback) {
+  if (value === "hidden") return hidden;
+  if (!value || value === "other") return fallback;
+  const labels = {
+    chrome: "Chrome",
+    edge: "Edge",
+    firefox: "Firefox",
+    safari: "Safari",
+    android: "Android",
+    chromeos: "ChromeOS",
+    ios: "iOS",
+    linux: "Linux",
+    macos: "macOS",
+    windows: "Windows",
+  };
+  return labels[value] || fallback;
+}
+
+function remotePlayer(peer) {
+  if (!peer?.id) return null;
+  const status = String(peer.status || "hidden");
+  return {
+    id: String(peer.id),
+    name: sanitizePresenceText(peer.name, "visitor", 32),
+    flag: flagEmoji(peer.countryCode),
+    browser: presenceLabel(peer.browser, "Hidden", "Browser"),
+    os: presenceLabel(peer.os, "Hidden", "Device"),
+    activity: status === "hidden" ? "online" : status,
+    category: ACTIVITY_OPTIONS.some(
+      (option) => option.id === String(peer.activityCategory || ""),
+    )
+      ? String(peer.activityCategory)
+      : "hidden",
+    publicDoor: ["closed", "knock", "open"].includes(String(peer.publicDoor))
+      ? String(peer.publicDoor)
+      : "closed",
+    accountStatus: ACCOUNT_STATUS_VALUES.has(String(peer.accountStatus || ""))
+      ? String(peer.accountStatus)
+      : "Guest",
+    nodes: Array.from(
+      { length: Math.max(0, Math.min(6, Number(peer.nodeCount) || 0)) },
+      () => "node",
+    ),
+    space: WORLD_SPACE_IDS.has(String(peer.space || ""))
+      ? String(peer.space)
+      : "town-square",
+    localTime: /^\d{2}:\d{2}$/.test(String(peer.localTime || ""))
+      ? String(peer.localTime)
+      : "",
+    x: boundedPresenceNumber(peer.x),
+    y: boundedPresenceNumber(peer.y),
+    z: boundedPresenceNumber(peer.z),
+    heading: boundedYaw(peer.yaw),
+  };
+}
+
+function compactNumber(value) {
+  const number = Number(value) || 0;
+  if (number < 1000) return String(number);
+  return new Intl.NumberFormat(undefined, {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(number);
+}
+
+function formatMediaPosition(value) {
+  const totalSeconds = Math.max(
+    0,
+    Math.min(7 * 24 * 60 * 60, Math.floor((Number(value) || 0) / 1000)),
+  );
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+    : `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function providerMetadataCopy(item) {
+  const metadata = item?.providerMetadata;
+  if (
+    metadata?.status === "available" &&
+    Number(metadata.receivedAt) > 0 &&
+    metadata.title
+  ) {
+    const credit = [metadata.artist, metadata.title].filter(Boolean).join(" — ");
+    return `Permitted provider metadata received ${new Date(
+      metadata.receivedAt,
+    ).toLocaleTimeString()}: ${credit}`;
+  }
+  return "Current provider track metadata unavailable: ForkMesh did not receive a permitted provider metadata event. The playlist title is user supplied.";
+}
+
+function createProceduralWorldSoundtrack(AudioContext, worldOffsetMs) {
+  const context = new AudioContext();
+  const master = context.createGain();
+  master.gain.setValueAtTime(0.0001, context.currentTime);
+  master.gain.exponentialRampToValueAtTime(
+    0.055,
+    context.currentTime + 1.2,
+  );
+  master.connect(context.destination);
+
+  const stepSeconds = 60 / 72 / 2;
+  const roots = [110, 98, 82.41, 92.5, 73.42, 82.41, 98, 87.31];
+  let step = Math.floor(
+    (worldOffsetMs / 1000 / stepSeconds) %
+      Math.floor(WORLD_DAY_MS / 1000 / stepSeconds),
+  );
+  let nextWhen = context.currentTime + 0.08;
+  let stopped = false;
+
+  const voice = (frequency, when, duration, level, type, detune = 0) => {
+    const oscillator = context.createOscillator();
+    const envelope = context.createGain();
+    oscillator.type = type;
+    oscillator.frequency.setValueAtTime(frequency, when);
+    oscillator.detune.setValueAtTime(detune, when);
+    envelope.gain.setValueAtTime(0.0001, when);
+    envelope.gain.exponentialRampToValueAtTime(level, when + 0.18);
+    envelope.gain.exponentialRampToValueAtTime(
+      0.0001,
+      when + Math.max(0.25, duration),
+    );
+    oscillator.connect(envelope);
+    envelope.connect(master);
+    oscillator.start(when);
+    oscillator.stop(when + duration + 0.08);
+  };
+
+  const schedule = () => {
+    const horizon = context.currentTime + 1.6;
+    while (!stopped && nextWhen < horizon) {
+      const worldStepCount = Math.floor(WORLD_DAY_MS / 1000 / stepSeconds);
+      const normalizedStep = ((step % worldStepCount) + worldStepCount) %
+        worldStepCount;
+      const worldMs = normalizedStep * stepSeconds * 1000;
+      const chapter = Math.floor(worldMs / (15 * 60 * 1000));
+      const bar = Math.floor(normalizedStep / 8);
+      const root = roots[(bar + chapter * 3) % roots.length];
+      const color = [1, 6 / 5, 3 / 2, 9 / 5][
+        (Math.floor(bar / 2) + chapter) % 4
+      ];
+      if (normalizedStep % 8 === 0) {
+        voice(root, nextWhen, stepSeconds * 7.5, 0.025, "sine");
+        voice(
+          root * color,
+          nextWhen + 0.03,
+          stepSeconds * 7.2,
+          0.012,
+          "triangle",
+          chapter % 2 ? 4 : -4,
+        );
+      }
+      if (normalizedStep % 2 === 0) {
+        voice(
+          root * (chapter % 3 === 0 ? 2 : 1),
+          nextWhen,
+          stepSeconds * 1.45,
+          0.009,
+          "sine",
+        );
+      }
+      if (
+        normalizedStep % 4 === 3 &&
+        (chapter % 4 !== 0 || normalizedStep % 16 === 15)
+      ) {
+        voice(
+          880 + (chapter % 5) * 55,
+          nextWhen,
+          0.11,
+          0.0025,
+          "triangle",
+        );
+      }
+      step += 1;
+      nextWhen += stepSeconds;
+    }
+  };
+  schedule();
+  const timer = window.setInterval(schedule, 180);
+  return {
+    context,
+    gain: master,
+    timer,
+    worldOffsetMs,
+    durationMs: WORLD_DAY_MS,
+    license: "ForkMesh Procedural World Score · CC0-1.0",
+    stop() {
+      if (stopped) return;
+      stopped = true;
+      window.clearInterval(timer);
+      master.gain.cancelScheduledValues(context.currentTime);
+      master.gain.setTargetAtTime(0.0001, context.currentTime, 0.03);
+    },
+  };
+}
+
+function safeHTTPURL(value) {
+  try {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const url = new URL(raw, location.origin);
+    if (!["http:", "https:"].includes(url.protocol)) return "";
+    return url.href;
+  } catch (_) {
+    return "";
+  }
+}
+
+function safePublicHTTPSURL(value) {
+  try {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const url = new URL(raw);
+    const host = url.hostname.toLowerCase().replace(/\.$/, "");
+    if (
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      !host.includes(".") ||
+      ["localhost", "0.0.0.0", "::1"].includes(host) ||
+      /^(?:\d{1,3}\.){3}\d{1,3}$/.test(host) ||
+      host.endsWith(".local") ||
+      host.endsWith(".internal") ||
+      host.endsWith(".test") ||
+      host.endsWith(".onion")
+    ) {
+      return "";
+    }
+    url.hash = "";
+    return url.href;
+  } catch (_) {
+    return "";
+  }
+}
+
+function normalizeCommunityPlacement(value) {
+  if (
+    value?.label !== "Community-reviewed placement" ||
+    value?.tracking !== "none" ||
+    value?.behavioralTargeting !== false ||
+    value?.sensitiveTargeting !== false ||
+    value?.personalDataUsed !== false
+  ) {
+    return null;
+  }
+  const item = Array.isArray(value?.placements) ? value.placements[0] : null;
+  if (
+    !item ||
+    item.label !== "Community-reviewed placement" ||
+    item.tracking !== "none"
+  ) {
+    return null;
+  }
+  const destination = safePublicHTTPSURL(item.destinationUrl);
+  const proposalId = /^[a-f0-9]{32}$/.test(String(item.proposalId || ""))
+    ? String(item.proposalId)
+    : "";
+  if (!destination || !proposalId) return null;
+  return {
+    proposalId,
+    label: "Community-reviewed placement",
+    sponsor: sanitizePresenceText(item.sponsor, "Community sponsor", 80),
+    copy: sanitizePresenceText(item.copy, "", 180),
+    destination,
+    whyShown: sanitizePresenceText(
+      item.whyShown,
+      "Enabled for the Town Square page context.",
+      120,
+    ),
+    tracking: "none",
+  };
+}
+
+function normalizeFediverseMentions(value) {
+  const states = new Set([
+    "review",
+    "pending",
+    "created",
+    "linked",
+    "failed",
+  ]);
+  return (Array.isArray(value?.items) ? value.items : [])
+    .map((item) => {
+      const id = /^[a-f0-9]{32}$/.test(String(item?.id || ""))
+        ? String(item.id)
+        : "";
+      const state = states.has(item?.state) ? item.state : "review";
+      const kind = item?.kind === "reply" ? "reply" : "mention";
+      const repositoryParts = String(item?.repository || "").split("/");
+      const repository =
+        repositoryParts.length === 2 &&
+        repositoryParts.every((part) =>
+          /^[A-Za-z0-9_.-]{1,100}$/.test(part),
+        )
+          ? repositoryParts.join("/")
+          : "public repository";
+      return {
+        id,
+        state,
+        kind,
+        repository,
+        author: sanitizePresenceText(item?.author, "fediverse user", 100),
+        authorName: sanitizePresenceText(item?.authorName, "", 100),
+        excerpt: sanitizePresenceText(item?.excerpt, "", 320),
+        remoteUrl: safePublicHTTPSURL(item?.remoteUrl),
+        issueUrl: safePublicHTTPSURL(item?.issueUrl),
+        issueNumber:
+          state === "created" || state === "linked"
+            ? Math.max(0, Number(item?.issueNumber) || 0)
+            : 0,
+        progress: sanitizePresenceText(item?.progress, "", 180),
+        verifiedPublicActivity: item?.verifiedPublicActivity === true,
+        automaticIssueCreation: item?.automaticIssueCreation === true,
+      };
+    })
+    .filter(
+      (item) =>
+        item.id &&
+        item.remoteUrl &&
+        item.verifiedPublicActivity &&
+        item.automaticIssueCreation === false,
+    )
+    .slice(0, 50);
+}
+
+function normalizeMediaRoom(value) {
+  const sessionTypes = new Set([
+    "listening-room",
+    "dj-session",
+    "video-room",
+    "watch-party",
+    "repository-launch",
+    "organization-presentation",
+  ]);
+  const source = value && typeof value === "object" ? value : {};
+  const space =
+    source.space && typeof source.space === "object" ? source.space : source;
+  const items = Array.isArray(source.items)
+    ? source.items
+        .map((item) => ({
+          id: sanitizePresenceText(item?.id, "", 40),
+          title: sanitizePresenceText(item?.title, "Untitled media link", 80),
+          url: safeHTTPURL(item?.url),
+          provider: sanitizePresenceText(item?.provider, "External provider", 50),
+          status: item?.status === "stopped" ? "stopped" : "queued",
+          providerMetadata:
+            item?.providerMetadata?.status === "available" &&
+            item?.providerMetadata?.permissionConfirmed === true &&
+            Number(item?.providerMetadata?.receivedAt) > 0
+              ? {
+                  status: "available",
+                  title: sanitizePresenceText(
+                    item.providerMetadata.title,
+                    "Provider track",
+                    100,
+                  ),
+                  artist: sanitizePresenceText(
+                    item.providerMetadata.artist,
+                    "",
+                    100,
+                  ),
+                  receivedAt: Number(item.providerMetadata.receivedAt),
+                }
+              : { status: "unavailable", reason: "not_received" },
+        }))
+        .filter((item) => item.id && item.url?.startsWith("https://"))
+        .slice(0, 100)
+    : [];
+  const schedules = Array.isArray(source.schedules)
+    ? source.schedules
+        .map((schedule) => ({
+          id: sanitizePresenceText(schedule?.id, "", 40),
+          title: sanitizePresenceText(schedule?.title, "Scheduled session", 100),
+          sessionType: sessionTypes.has(schedule?.sessionType)
+            ? schedule.sessionType
+            : "listening-room",
+          startsAt: Number(schedule?.startsAt) || 0,
+          endsAt: Number(schedule?.endsAt) || 0,
+          status: schedule?.status === "completed" ? "completed" : "scheduled",
+        }))
+        .filter((schedule) => schedule.id && schedule.startsAt > 0)
+        .slice(0, 50)
+    : [];
+  const nextSchedule = schedules.find(
+    (schedule) => schedule.status === "scheduled" && schedule.endsAt > Date.now(),
+  );
+  const playbackSource =
+    source.playback && typeof source.playback === "object"
+      ? source.playback
+      : {};
+  const playbackState = ["idle", "playing", "paused", "stopped"].includes(
+    playbackSource.state,
+  )
+    ? playbackSource.state
+    : "idle";
+  const playbackItemId = sanitizePresenceText(
+    playbackSource.itemId,
+    "",
+    40,
+  );
+  const playbackPosition = Math.max(
+    0,
+    Math.min(
+      7 * 24 * 60 * 60 * 1000,
+      Number(playbackSource.positionMs) || 0,
+    ),
+  );
+  return {
+    id: sanitizePresenceText(space?.id, "", 40),
+    name: sanitizePresenceText(space?.name, "Shared media room", 80),
+    description: sanitizePresenceText(space?.description, "", 300),
+    sessionType: sessionTypes.has(space?.sessionType)
+      ? space.sessionType
+      : "listening-room",
+    owner: sanitizePresenceText(space?.owner, "", 80),
+    viewerRole: ["owner", "moderator"].includes(space?.viewerRole)
+      ? space.viewerRole
+      : "",
+    canModerate: space?.canModerate === true,
+    playbackState,
+    playback: {
+      state: playbackState,
+      itemId: playbackItemId,
+      positionMs: playbackPosition,
+      changedAt: Math.max(0, Number(playbackSource.changedAt) || 0),
+      startedAt: Math.max(0, Number(playbackSource.startedAt) || 0),
+      revision: Math.max(0, Number(playbackSource.revision) || 0),
+      serverTime: Math.max(0, Number(playbackSource.serverTime) || 0),
+      observedAt: Date.now(),
+      coordinationOnly: playbackSource.coordinationOnly === true,
+      requiresLocalPlaybackConsent:
+        playbackSource.requiresLocalPlaybackConsent !== false,
+    },
+    itemCount: Math.max(0, Number(space?.itemCount) || items.length),
+    scheduleCount: Math.max(
+      0,
+      Number(space?.scheduleCount) || schedules.length,
+    ),
+    scheduledAt: nextSchedule
+      ? new Date(nextSchedule.startsAt).toISOString()
+      : "",
+    items,
+    schedules,
+    roles: Array.isArray(source.roles)
+      ? source.roles
+          .map((role) => ({
+            id: sanitizePresenceText(role?.id, "", 40),
+            account: sanitizePresenceText(role?.account, "", 80),
+            role: role?.role === "moderator" ? "moderator" : "",
+          }))
+          .filter((role) => role.id && role.account && role.role)
+          .slice(0, 20)
+      : [],
+  };
+}
+
+function normalizeMediaSpaces(value) {
+  return (Array.isArray(value?.spaces) ? value.spaces : [])
+    .map((space) => normalizeMediaRoom(space))
+    .filter((space) => space.id)
+    .slice(0, 50);
+}
+
+function normalizeQuarantinePayload(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const summary = (Array.isArray(source.summary) ? source.summary : [])
+    .map((item) => ({
+      reason: sanitizePresenceText(item?.reason, "other_security_abuse", 64),
+      status: sanitizePresenceText(item?.status, "quarantined", 24),
+      count: Math.max(0, Math.min(100000, Number(item?.count) || 0)),
+    }))
+    .filter((item) => item.count > 0)
+    .slice(0, 40);
+  const restrictions = (Array.isArray(source.restrictions)
+    ? source.restrictions
+    : [])
+    .map((item) => {
+      const incidentId = String(item?.incidentId || "").toLowerCase();
+      if (!/^[a-f0-9]{32}$/.test(incidentId)) return null;
+      return {
+        incidentId,
+        reason: sanitizePresenceText(
+          item?.reason,
+          "other_security_abuse",
+          64,
+        ),
+        rule: sanitizePresenceText(item?.rule, "generalized-rule", 80),
+        detectedAt: Math.max(0, Number(item?.detectedAt) || 0),
+        durationMs: Math.max(0, Number(item?.durationMs) || 0),
+        expiresAt: Math.max(0, Number(item?.expiresAt) || 0),
+        confidence: ["low", "medium", "high"].includes(item?.confidence)
+          ? item.confidence
+          : "low",
+        automatic: item?.automatic === true,
+        reviewed: item?.reviewed === true,
+        appealStatus: sanitizePresenceText(item?.appealStatus, "none", 32),
+        status: sanitizePresenceText(item?.status, "quarantined", 24),
+        countryCode: /^[A-Z]{2}$/.test(String(item?.countryCode || ""))
+          ? String(item.countryCode)
+          : "",
+        clientCategory: sanitizePresenceText(item?.clientCategory, "", 40),
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 100);
+  const allowedActions = Array.isArray(source.allowedActions)
+    ? source.allowedActions.filter((action) => action === "revoke")
+    : [];
+  return {
+    visibility: [
+      "aggregate-only",
+      "moderator-generalized",
+      "reviewer-generalized-world",
+    ].includes(source.visibility)
+      ? source.visibility
+      : "unavailable",
+    summary,
+    restrictions,
+    allowedActions,
+  };
+}
+
+function normalizeFederatedInstances(value) {
+  return (Array.isArray(value?.instances) ? value.instances : [])
+    .map((item) => ({
+      id: /^[a-f0-9]{24}$/.test(String(item?.id || ""))
+        ? String(item.id)
+        : "",
+      label: sanitizePresenceText(item?.label, "ForkMesh instance", 80),
+      origin: safeHTTPURL(item?.origin),
+      approved: item?.approved === true,
+      health: ["online", "offline", "awaiting_verified_health"].includes(
+        item?.health,
+      )
+        ? item.health
+        : "awaiting_verified_health",
+      online: item?.online === true,
+      healthEvidence: sanitizePresenceText(
+        item?.healthEvidence,
+        "no-fresh-verified-node-health",
+        80,
+      ),
+    }))
+    .filter(
+      (item) =>
+        item.id &&
+        item.approved &&
+        item.origin?.startsWith("https://"),
+    )
+    .slice(0, 100);
+}
+
+function mediaProviderForURL(value) {
+  const href = safeHTTPURL(value);
+  if (!href?.startsWith("https://")) return "";
+  const url = new URL(href);
+  const host = url.hostname.toLowerCase();
+  const matches = (domain) => host === domain || host.endsWith(`.${domain}`);
+  if (matches("somafm.com")) return "somafm";
+  if (
+    matches("youtube.com") ||
+    matches("youtu.be") ||
+    matches("youtube-nocookie.com")
+  ) {
+    return "youtube";
+  }
+  if (matches("vimeo.com")) return "vimeo";
+  if (matches("soundcloud.com")) return "soundcloud";
+  if (matches("twitch.tv")) return "twitch";
+  if (matches("archive.org")) return "internet-archive";
+  if (/^\/(?:w\/|videos\/(?:watch|embed)\/)[A-Za-z0-9_-]{4,128}\/?$/.test(url.pathname)) {
+    return "peertube";
+  }
+  return "";
+}
+
+function formatBytes(value) {
+  const bytes = Math.max(0, Number(value) || 0);
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let scaled = bytes / 1024;
+  let index = 0;
+  while (scaled >= 1024 && index < units.length - 1) {
+    scaled /= 1024;
+    index += 1;
+  }
+  return `${scaled >= 10 ? scaled.toFixed(0) : scaled.toFixed(1)} ${units[index]}`;
+}
+
+function fileLanguage(name) {
+  const extension = String(name || "").toLowerCase().split(".").pop();
+  return {
+    js: "JavaScript",
+    mjs: "JavaScript",
+    ts: "TypeScript",
+    tsx: "TypeScript",
+    py: "Python",
+    cpp: "C++",
+    cc: "C++",
+    c: "C",
+    h: "C/C++",
+    rs: "Rust",
+    go: "Go",
+    dart: "Dart",
+    java: "Java",
+    kt: "Kotlin",
+    rb: "Ruby",
+    php: "PHP",
+    css: "CSS",
+    html: "HTML",
+    sql: "SQL",
+    md: "Markdown",
+  }[extension] || "Other";
+}
+
+function repositoryNodeRole(path, type) {
+  if (type === "directory") return "directory";
+  const value = String(path || "").toLowerCase();
+  if (/(^|\/)(package\.json|package-lock\.json|pyproject\.toml|requirements[^/]*|cargo\.toml|go\.mod|cmakelists\.txt)$/.test(value)) {
+    return "package";
+  }
+  if (/(^|\/)(model|models|schema|schemas|migration|migrations|entities)(\/|\.|$)|\.sql$/.test(value)) {
+    return "database-model";
+  }
+  if (/(^|\/)(api|routes|controllers|endpoints)(\/|\.|$)/.test(value)) {
+    return "api";
+  }
+  if (/(^|\/)(service|services|worker|workers)(\/|\.|$)/.test(value)) {
+    return "service";
+  }
+  if (/(^|\/)(test|tests|spec|specs)(\/|\.|$)/.test(value)) {
+    return "test";
+  }
+  return "module";
+}
+
+function modificationBand(changeCount, modified) {
+  const count = Math.max(0, Number(changeCount) || 0);
+  if (count >= 10) return "high";
+  if (count >= 3) return "medium";
+  if (count >= 1) return "low";
+  const instant = new Date(modified || "");
+  if (!Number.isNaN(instant.getTime())) return "low";
+  return "unknown";
+}
+
+function normalizeTreeEntries(payload, parent = "") {
+  const entries = Array.isArray(payload?.entries) ? payload.entries : [];
+  const analysisCommit = String(
+    payload?.analysis?.commit || payload?.commit || "",
+  ).toLowerCase();
+  const normalized = entries.slice(0, 160).map((entry, index) => {
+    const name = sanitizePresenceText(entry?.name, `item-${index + 1}`, 100);
+    const type = entry?.type === "tree" ? "directory" : "file";
+    const constructedPath = parent ? `${parent}/${name}` : name;
+    const reportedPath = String(entry?.path || "")
+      .replaceAll("\\", "/")
+      .replace(/^\/+/, "");
+    const path =
+      reportedPath &&
+      !reportedPath.split("/").includes("..") &&
+      (!parent || reportedPath.startsWith(`${parent}/`))
+        ? reportedPath.slice(0, 500)
+        : constructedPath;
+    const securityValues = new Set([
+      "unavailable",
+      "no-finding",
+      "finding",
+      "reviewed",
+    ]);
+    const rawCoverage = entry?.coverage;
+    const coverage =
+      rawCoverage === null ||
+      rawCoverage === undefined ||
+      rawCoverage === ""
+        ? Number.NaN
+        : Number(rawCoverage);
+    const entryAnalysisCommit = String(
+      entry?.analysisCommit || analysisCommit,
+    ).toLowerCase();
+    const analysisMatches =
+      /^[0-9a-f]{40,64}$/.test(analysisCommit) &&
+      entryAnalysisCommit === analysisCommit;
+    const dependencyDepth = analysisMatches
+      ? Math.max(0, Math.min(12, Number(entry?.dependencyDepth) || 0))
+      : 0;
+    const dependencies =
+      analysisMatches && Array.isArray(entry?.dependencies)
+        ? entry.dependencies
+            .map((dependency) =>
+              String(dependency || "").replaceAll("\\", "/").slice(0, 500),
+            )
+            .filter(
+              (dependency) =>
+                dependency &&
+                !dependency.startsWith("/") &&
+                !dependency.split("/").includes(".."),
+            )
+            .slice(0, 80)
+        : [];
+    const commitMatchedCoverage =
+      analysisMatches &&
+      Number.isFinite(coverage) &&
+      coverage >= 0 &&
+      coverage <= 100
+        ? coverage
+        : null;
+    return {
+      name,
+      path,
+      type,
+      size: Math.max(0, Number(entry?.size) || 0),
+      language: type === "directory" ? "Directory" : fileLanguage(name),
+      contributor: sanitizePresenceText(entry?.author, "Unknown", 40),
+      modified: String(entry?.date || ""),
+      changeCount: Math.max(0, Math.min(20, Number(entry?.changeCount) || 0)),
+      frequency: modificationBand(entry?.changeCount, entry?.date),
+      role: repositoryNodeRole(path, type),
+      dependencyDepth,
+      dependencies,
+      security: securityValues.has(entry?.security)
+        ? entry.security
+        : "unavailable",
+      coverage: commitMatchedCoverage,
+      analysisCommit: entryAnalysisCommit,
+    };
+  });
+  const stems = new Map();
+  normalized.forEach((entry) => {
+    const stem = entry.name.toLowerCase().replace(/\.[^.]+$/, "");
+    stems.set(stem, (stems.get(stem) || 0) + 1);
+  });
+  return normalized.map((entry) => ({
+    ...entry,
+    redundantCandidate:
+      (stems.get(entry.name.toLowerCase().replace(/\.[^.]+$/, "")) || 0) > 1,
+  }));
+}
+
+function mergeCommitMatchedSecurity(entries, scanRecord, commit, triage = null) {
+  const rich =
+    triage &&
+    Array.isArray(triage.findings) &&
+    /^[0-9a-f]{40,64}$/.test(String(triage.commitHash || "").toLowerCase())
+      ? {
+          repository: { commit: triage.commitHash },
+          findings: triage.findings,
+        }
+      : scanRecord?.rich;
+  const clipboard = scanRecord?.clipboard || {};
+  const scanCommit = String(
+    rich?.repository?.commit || clipboard?.commitHash || "",
+  ).toLowerCase();
+  const expectedCommit = String(commit || "").toLowerCase();
+  if (
+    !/^[0-9a-f]{40,64}$/.test(expectedCommit) ||
+    scanCommit !== expectedCommit ||
+    !rich ||
+    !Array.isArray(rich.findings)
+  ) {
+    return entries.map((entry) => ({
+      ...entry,
+      security: "unavailable",
+      securityCommit: scanCommit,
+    }));
+  }
+  const stateByPath = new Map();
+  rich.findings.slice(0, 500).forEach((finding) => {
+    const path = String(finding?.path || "")
+      .replaceAll("\\", "/")
+      .replace(/^\/+/, "");
+    if (!path || path.split("/").includes("..")) return;
+    const next =
+      finding?.falsePositiveStatus === "dismissed" ? "reviewed" : "finding";
+    if (stateByPath.get(path) !== "finding") stateByPath.set(path, next);
+  });
+  return entries.map((entry) => {
+    let state = stateByPath.get(entry.path) || "no-finding";
+    if (entry.type === "directory") {
+      const prefix = `${entry.path}/`;
+      const descendantStates = [...stateByPath.entries()]
+        .filter(([path]) => path.startsWith(prefix))
+        .map(([, value]) => value);
+      if (descendantStates.includes("finding")) state = "finding";
+      else if (descendantStates.includes("reviewed")) state = "reviewed";
+    }
+    return {
+      ...entry,
+      security: state,
+      securityCommit: scanCommit,
+    };
+  });
+}
+
+function decodeWorkshopBlob(blob) {
+  if (!blob || blob.ok === false) return "";
+  const content = String(blob.content || blob.text || "");
+  if (!content) return "";
+  if (blob.encoding !== "base64") return content.slice(0, 240000);
+  try {
+    const bytes = Uint8Array.from(atob(content), (char) => char.charCodeAt(0));
+    return new TextDecoder("utf-8", { fatal: false })
+      .decode(bytes)
+      .slice(0, 240000);
+  } catch (_) {
+    return "";
+  }
+}
+
+function workshopTextCandidate(entry) {
+  if (entry.type !== "file" || entry.size > 512000) return false;
+  return /\.(c|cc|cpp|cs|dart|go|h|hpp|java|js|jsx|kt|md|php|py|rb|rs|sql|toml|ts|tsx|yaml|yml|json)$/i.test(
+    entry.path,
+  );
+}
+
+function workshopRunId() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (value) =>
+    value.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+function findDirectedCycles(edges) {
+  const graph = new Map();
+  edges.forEach(({ from, to }) => {
+    graph.set(from, [...(graph.get(from) || []), to]);
+  });
+  const cycles = [];
+  const visiting = new Set();
+  const visited = new Set();
+  const walk = (node, trail) => {
+    if (visiting.has(node)) {
+      const start = trail.indexOf(node);
+      cycles.push([...trail.slice(Math.max(0, start)), node]);
+      return;
+    }
+    if (visited.has(node)) return;
+    visiting.add(node);
+    (graph.get(node) || []).forEach((next) => walk(next, [...trail, node]));
+    visiting.delete(node);
+    visited.add(node);
+  };
+  [...graph.keys()].forEach((node) => walk(node, []));
+  return cycles.slice(0, 12);
+}
+
+function analyzeDatabaseModels(files) {
+  const models = [];
+  const edges = [];
+  files.forEach(({ path, text }) => {
+    const modelPath = /(model|schema|migration|entity|database|\.sql)/i.test(path);
+    if (!modelPath) return;
+    const definitions = [
+      ...text.matchAll(
+        /\b(?:class|interface|type|model|entity)\s+([A-Z][A-Za-z0-9_]*)/g,
+      ),
+      ...text.matchAll(
+        /\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["`[]?([A-Za-z_][A-Za-z0-9_]*)/gi,
+      ),
+      ...text.matchAll(
+        /\b(?:sequelize\.define|model)\s*\(\s*["'`]([A-Za-z_][A-Za-z0-9_]*)/gi,
+      ),
+    ];
+    definitions.forEach((match) => {
+      const name = sanitizePresenceText(match[1], "Model", 80);
+      if (!models.some((model) => model.name === name && model.path === path)) {
+        models.push({ name, path, fields: new Set(), uses: [] });
+      }
+    });
+  });
+  models.forEach((model) => {
+    const own = files.find((file) => file.path === model.path)?.text || "";
+    const fieldMatches = own.matchAll(
+      /^\s*(?:["'`]?)([A-Za-z_][A-Za-z0-9_]*)(?:["'`]?)\s*(?::|=|\b(?:INTEGER|TEXT|VARCHAR|BOOLEAN|DATE|UUID|JSON)\b)/gim,
+    );
+    for (const match of fieldMatches) model.fields.add(match[1]);
+    files.forEach(({ path, text }) => {
+      const uses = text.match(
+        new RegExp(`\\b${model.name.replace(/[^A-Za-z0-9_]/g, "")}\\b`, "g"),
+      );
+      const count = Math.max(
+        0,
+        Number(uses?.length || 0) - (path === model.path ? 1 : 0),
+      );
+      if (count) model.uses.push({ path, count });
+    });
+    const relationshipPatterns = [
+      /\b(?:ForeignKey|OneToOneField|ManyToManyField|relationship|belongsTo|hasMany|references)\s*\(\s*["'`]?([A-Z][A-Za-z0-9_]*)/g,
+      /\bREFERENCES\s+["`[]?([A-Za-z_][A-Za-z0-9_]*)/gi,
+    ];
+    relationshipPatterns.forEach((pattern) => {
+      for (const match of own.matchAll(pattern)) {
+        edges.push({
+          from: model.name,
+          to: sanitizePresenceText(match[1], "RelatedModel", 80),
+          path: model.path,
+        });
+      }
+    });
+  });
+  const concepts = new Map();
+  models.forEach((model) => {
+    const concept = model.name.toLowerCase().replace(/[_-]|model|entity/g, "");
+    concepts.set(concept, [...(concepts.get(concept) || []), model]);
+  });
+  const duplicateConcepts = [...concepts.values()].filter(
+    (group) => group.length > 1,
+  );
+  const fields = new Map();
+  models.forEach((model) => {
+    model.fields.forEach((field) => {
+      fields.set(field, [...(fields.get(field) || []), model.name]);
+    });
+  });
+  const repeatedFields = [...fields.entries()]
+    .filter(([, owners]) => owners.length > 1)
+    .slice(0, 20);
+  return {
+    models: models.slice(0, 80),
+    edges: edges.slice(0, 160),
+    cycles: findDirectedCycles(edges),
+    duplicateConcepts,
+    repeatedFields,
+  };
+}
+
+function analyzeWorkshopSnapshot(type, entries, files, stats = {}) {
+  const references = new Set();
+  const findings = [];
+  const recommendations = [];
+  const nodes = [];
+  const edges = [];
+  const addReference = (path) => {
+    if (path) references.add(String(path).slice(0, 180));
+  };
+  if (type === "Database-model analysis") {
+    const report = analyzeDatabaseModels(files);
+    report.models.forEach((model) => {
+      nodes.push({
+        label: model.name,
+        kind: "Model",
+        detail: `${model.fields.size} fields · ${model.uses.length} use sites`,
+        definitionPath: model.path,
+        useSites: model.uses
+          .slice(0, 20)
+          .map((use) => ({ path: use.path, count: use.count })),
+      });
+      addReference(model.path);
+      model.uses.slice(0, 6).forEach((use) => addReference(use.path));
+    });
+    report.edges.forEach((edge) => {
+      edges.push(edge);
+      addReference(edge.path);
+    });
+    report.duplicateConcepts.forEach((group) => {
+      findings.push(
+        `Potentially duplicated concept: ${group
+          .map((model) => model.name)
+          .join(", ")}`,
+      );
+    });
+    report.repeatedFields.forEach(([field, owners]) => {
+      findings.push(
+        `Potentially redundant field “${field}” appears in ${owners.join(", ")}`,
+      );
+    });
+    report.cycles.forEach((cycle) => {
+      findings.push(`Possible circular relationship: ${cycle.join(" → ")}`);
+    });
+    recommendations.push(
+      `${report.models.length} candidate model definitions and ${report.edges.length} relationship edges were mapped.`,
+      "Verify inferred relationships, repeated concepts, tables, and fields with a maintainer before changing schema.",
+      "Use the supporting paths and use-site counts to scope human review.",
+    );
+  } else if (type === "Dependency mapping") {
+    files.forEach(({ path, text }) => {
+      const imports = [
+        ...text.matchAll(
+          /\b(?:import\s+(?:[^"'`]+?\s+from\s+)?|require\s*\(|#include\s*[<"]|use\s+)(["'`<]?)([^"'`>;\n)]+)\1/g,
+        ),
+      ].slice(0, 80);
+      if (imports.length || repositoryNodeRole(path, "file") === "package") {
+        nodes.push({
+          label: path.split("/").pop(),
+          kind: "Dependency source",
+          detail: `${imports.length} inferred edges`,
+        });
+        addReference(path);
+      }
+      imports.forEach((match) =>
+        edges.push({
+          from: path,
+          to: String(match[2] || "").trim().slice(0, 100),
+          path,
+        }),
+      );
+    });
+    findings.push(`${edges.length} candidate import or manifest relationships were found.`);
+    recommendations.push(
+      "Verify inferred imports against lockfiles and build tooling before treating them as resolved dependency edges.",
+    );
+  } else if (type === "Redundancy detection") {
+    const stems = new Map();
+    entries.forEach((entry) => {
+      const stem = entry.name.toLowerCase().replace(/\.[^.]+$/, "");
+      stems.set(stem, [...(stems.get(stem) || []), entry.path]);
+    });
+    [...stems.entries()]
+      .filter(([, paths]) => paths.length > 1)
+      .forEach(([stem, paths]) => {
+        findings.push(`Potential duplicate “${stem}”: ${paths.join(", ")}`);
+        paths.forEach(addReference);
+      });
+    recommendations.push(
+      "Matching names are candidates only; compare responsibilities, exports, and call sites before removing code.",
+    );
+  } else if (type === "Dead-code detection") {
+    const definitions = [];
+    files.forEach(({ path, text }) => {
+      for (const match of text.matchAll(
+        /\b(?:function|class|def|const|let|var|struct)\s+([A-Za-z_][A-Za-z0-9_]*)/g,
+      )) {
+        definitions.push({ name: match[1], path });
+      }
+    });
+    definitions.forEach((definition) => {
+      const uses = files.reduce(
+        (total, file) =>
+          total +
+          (file.text.match(
+            new RegExp(`\\b${definition.name}\\b`, "g"),
+          )?.length || 0),
+        0,
+      );
+      if (uses <= 1) {
+        findings.push(`Possible unreferenced symbol: ${definition.name}`);
+        addReference(definition.path);
+      }
+    });
+    recommendations.push(
+      "Reference counts cannot prove dead code; confirm dynamic loading, reflection, generated use, and build targets.",
+    );
+  } else if (type === "Security analysis") {
+    const rules = [
+      ["credential-like assignment", /\b(password|secret|api[_-]?key)\s*[:=]\s*["'`][^"'`\n]{6,}/i],
+      ["dynamic code execution", /\b(eval|exec)\s*\(/],
+      ["shell invocation", /\b(system|popen|child_process|QProcess)\b/],
+      ["weak digest", /\b(md5|sha1)\b/i],
+    ];
+    files.forEach(({ path, text }) => {
+      rules.forEach(([rule, pattern]) => {
+        if (pattern.test(text)) {
+          findings.push(`${rule} candidate in ${path}`);
+          addReference(path);
+        }
+      });
+    });
+    recommendations.push(
+      "Public output names only the rule and authorized path; inspect redacted details in the security-review workflow.",
+      "Run dependency, secret-detection, and static-analysis tools on the same commit before triage.",
+    );
+  } else if (type === "Test-coverage analysis") {
+    const tests = entries.filter((entry) =>
+      /(^|\/)(test|tests|spec|specs)(\/|\.|$)/i.test(entry.path),
+    );
+    const coverageFiles = entries.filter((entry) => entry.type === "file");
+    const sources = coverageFiles.filter((entry) => !tests.includes(entry));
+    const coverageRows = coverageFiles.map((entry) => {
+      const value =
+        typeof entry.coverage === "number" &&
+        Number.isFinite(entry.coverage) &&
+        entry.coverage >= 0 &&
+        entry.coverage <= 100
+          ? entry.coverage
+          : null;
+      const state =
+        value === null
+          ? "unknown"
+          : value >= 80
+            ? "covered"
+            : value > 0
+              ? "partial"
+              : "uncovered";
+      return { entry, value, state };
+    });
+    const measured = coverageRows.filter((row) => row.value !== null);
+    const stateCounts = {
+      covered: coverageRows.filter((row) => row.state === "covered").length,
+      partial: coverageRows.filter((row) => row.state === "partial").length,
+      uncovered: coverageRows.filter((row) => row.state === "uncovered").length,
+      unknown: coverageRows.filter((row) => row.state === "unknown").length,
+    };
+    tests.forEach((entry) => addReference(entry.path));
+    if (!measured.length) {
+      findings.push(
+        `${tests.length} test paths and ${sources.length} non-test paths were mapped; no line-coverage claim is made without an artifact.`,
+      );
+      recommendations.push(
+        "Upload a commit-matched coverage artifact to populate per-file coverage and uncovered filters.",
+      );
+    } else {
+      measured
+        .sort((left, right) => left.value - right.value)
+        .slice(0, 40)
+        .forEach((row) => {
+          addReference(row.entry.path);
+          nodes.push({
+            label: row.entry.path,
+            kind: `Coverage: ${row.state}`,
+            detail: `${row.value}% at the analyzed commit`,
+          });
+        });
+      coverageRows
+        .filter((row) => row.state === "unknown")
+        .slice(0, 12)
+        .forEach((row) =>
+          nodes.push({
+            label: row.entry.path,
+            kind: "Coverage: unknown",
+            detail: "No commit-matched per-file value",
+          }),
+        );
+      findings.push(
+        `${measured.length} of ${coverageFiles.length} mapped files have commit-matched coverage values.`,
+        `Artifact-reported file states: ${stateCounts.covered} covered (80%+), ${stateCounts.partial} partial, ${stateCounts.uncovered} uncovered, and ${stateCounts.unknown} unknown.`,
+      );
+      if (stateCounts.partial || stateCounts.uncovered) {
+        recommendations.push(
+          "Review the referenced partial and uncovered files alongside their tests before prioritizing additional coverage.",
+        );
+      }
+      if (stateCounts.unknown) {
+        recommendations.push(
+          `Publish commit-matched coverage for the ${stateCounts.unknown} unknown file paths before drawing repository-wide conclusions.`,
+        );
+      }
+      recommendations.push(
+        "Treat artifact-reported percentages as test-execution evidence for this commit, not proof of behavioral correctness.",
+      );
+    }
+  } else if (type === "Documentation analysis") {
+    const docs = entries.filter((entry) =>
+      /(readme|docs|contributing|changelog|\.md$)/i.test(entry.path),
+    );
+    docs.forEach((entry) => addReference(entry.path));
+    findings.push(`${docs.length} documentation candidates were mapped.`);
+    recommendations.push(
+      "Compare documented commands, APIs, and configuration names against current definitions and tests.",
+    );
+  } else if (type === "Performance analysis") {
+    entries
+      .filter((entry) => entry.type === "file")
+      .sort((a, b) => b.size - a.size)
+      .slice(0, 12)
+      .forEach((entry) => {
+        findings.push(`Large-file investigation candidate: ${entry.path}`);
+        addReference(entry.path);
+      });
+    files.forEach(({ path, text }) => {
+      if (/\bfor\b[\s\S]{0,200}\bfor\b/.test(text)) {
+        findings.push(`Nested-loop review candidate: ${path}`);
+        addReference(path);
+      }
+    });
+    recommendations.push(
+      "File size and syntax are not runtime profiles; benchmark representative workloads before optimizing.",
+    );
+  } else if (type === "License compatibility analysis") {
+    entries
+      .filter((entry) =>
+        /(license|copying|notice|package|lock|pyproject|cargo)/i.test(entry.path),
+      )
+      .forEach((entry) => addReference(entry.path));
+    findings.push(`${references.size} license or dependency declaration paths were found.`);
+    recommendations.push(
+      "Resolve direct and transitive licenses against project policy; this recommendation is not legal advice.",
+    );
+  } else {
+    const directories = entries.filter((entry) => entry.type === "directory");
+    directories.forEach((entry) => {
+      nodes.push({
+        label: entry.path,
+        kind: "Boundary",
+        detail: repositoryNodeRole(entry.path, entry.type),
+      });
+      addReference(entry.path);
+    });
+    const roles = new Map();
+    entries.forEach((entry) =>
+      roles.set(entry.role, (roles.get(entry.role) || 0) + 1),
+    );
+    findings.push(
+      `Architecture layers: ${[...roles.entries()]
+        .map(([role, count]) => `${role} ${count}`)
+        .join(", ")}`,
+    );
+    recommendations.push(
+      "Verify inferred directory boundaries against imports, build targets, deployed services, APIs, and database ownership.",
+    );
+  }
+  if (!nodes.length) {
+    entries.slice(0, 18).forEach((entry) =>
+      nodes.push({
+        label: entry.path,
+        kind: entry.role,
+        detail: entry.type,
+      }),
+    );
+  }
+  return {
+    nodes: nodes.slice(0, 80),
+    edges: edges.slice(0, 160),
+    findings: findings.slice(0, 80),
+    recommendations: recommendations.slice(0, 20),
+    references: [...references].slice(0, 80),
+    modelUseSites:
+      type === "Database-model analysis"
+        ? nodes.map((node) => ({
+            name: node.label,
+            definitionPath: node.definitionPath,
+            useSites: node.useSites || [],
+          }))
+        : [],
+    contributorCount: Number(
+      stats.contributorCount || stats.contributors?.length || 0,
+    ),
+  };
+}
+
+function cleanRepositories(payload) {
+  const items =
+    payload?.repositories ||
+    payload?.items ||
+    payload?.repos ||
+    payload?.data ||
+    [];
+  if (!Array.isArray(items)) return [];
+  return items
+    .filter((repo) => repo && (repo.owner || repo.name))
+    .map((repo) => ({
+      owner: sanitizePresenceText(repo.owner, "external", 40),
+      name: sanitizePresenceText(repo.name, "repository", 60),
+      description: String(repo.description || "").slice(0, 180),
+      liveHost: Boolean(repo.liveHost ?? repo.cloneOnline ?? repo.online),
+      source: String(repo.source || "external"),
+      language: String(
+        repo.language ||
+          repo.primaryLanguage ||
+          Object.keys(repo.languages || {})[0] ||
+          "",
+      ).slice(0, 30),
+      isPrivate: Boolean(repo.private || repo.isPrivate || repo.visibility === "private"),
+      mirrorCount: Number(repo.mirrorCount || repo.mirrors || 0),
+      status: String(repo.status || "").slice(0, 40),
+      externalUrl: String(repo.externalUrl || repo.sourceUrl || repo.url || "").slice(
+        0,
+        500,
+      ),
+      archived: Boolean(repo.archived),
+      license: String(repo.license?.name || repo.license || "").slice(0, 80),
+      topics: Array.isArray(repo.topics)
+        ? repo.topics.map((topic) => String(topic).slice(0, 30)).slice(0, 12)
+        : [],
+    }))
+    .slice(0, 200);
+}
+
+function normalizeCommunityEvents(payload, now = Date.now()) {
+  const items = Array.isArray(payload?.events) ? payload.events : [];
+  return items
+    .slice(0, 64)
+    .map((item) => {
+      const startsAt = String(item?.startsAt || "");
+      const endsAt = String(item?.endsAt || "");
+      const start = Date.parse(startsAt);
+      const end = Date.parse(endsAt);
+      if (
+        !/Z$/.test(startsAt) ||
+        !/Z$/.test(endsAt) ||
+        !Number.isFinite(start) ||
+        !Number.isFinite(end) ||
+        end <= Math.max(start, now)
+      ) {
+        return null;
+      }
+      const id = String(item?.id || "").toLowerCase();
+      if (!/^[a-f0-9-]{16,64}$/.test(id)) return null;
+      return {
+        id,
+        type: sanitizePresenceText(item?.type, "Community", 32),
+        title: sanitizePresenceText(item?.title, "Community event", 160),
+        description: sanitizePresenceText(item?.description, "", 500),
+        destination: sanitizePresenceText(
+          item?.destination,
+          "Town Square",
+          100,
+        ),
+        startsAt: new Date(start).toISOString(),
+        endsAt: new Date(end).toISOString(),
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => Date.parse(left.startsAt) - Date.parse(right.startsAt));
+}
+
+function liveNodeRecords(network) {
+  const stats = network?.stats || network || {};
+  const names = Array.isArray(stats.onlineNodes) ? stats.onlineNodes : [];
+  if (names.length) {
+    return names.slice(0, 20).map((name) => ({
+      name: sanitizePresenceText(name, "mirror node", 30),
+      online: true,
+    }));
+  }
+  const nodes =
+    network?.history?.nodes ||
+    network?.nodes ||
+    network?.leaderboards?.uptime ||
+    [];
+  return Array.isArray(nodes)
+    ? nodes.slice(0, 20).map((node) => ({
+        name: sanitizePresenceText(node?.label || node?.name, "mirror node", 30),
+        online: node?.online !== false,
+      }))
+    : [];
+}
+
+function accountBadgeCopy(identity, settings) {
+  const availability = AVAILABILITY_OPTIONS.find(
+    (option) => option.id === settings.availability,
+  )?.label;
+  const pieces = [
+    `${ACCOUNT_STATUS_ICONS[identity.accountStatus] || "○"} ${
+      identity.accountStatus || "Guest"
+    }`,
+  ];
+  if (
+    settings.privacy.activity &&
+    (settings.privacy.inactivity || !["inactive", "recent"].includes(settings.availability))
+  ) {
+    pieces.push(availability || "Online");
+  }
+  if (settings.privacy.localTime) {
+    pieces.push(
+      new Intl.DateTimeFormat(undefined, {
+        hour: "numeric",
+        minute: "2-digit",
+      }).format(new Date()),
+    );
+  }
+  return pieces.join(" · ");
+}
+
+function worldTemplate(identity, settings, mode) {
+  const mapItems = LANDMARKS.map(
+    (landmark) => `
+      <li>
+        <button
+          type="button"
+          class="world-map-button"
+          data-world-landmark="${escapeHTML(landmark.id)}"
+          style="--map-color:${escapeHTML(landmark.color)}"
+          aria-current="${landmark.id === "information" ? "true" : "false"}"
+        >
+          <span class="world-map-icon" aria-hidden="true">${escapeHTML(landmark.icon)}</span>
+          <span>${escapeHTML(landmark.shortLabel)}</span>
+          <span class="world-map-distance" data-world-distance="${escapeHTML(landmark.id)}">—</span>
+        </button>
+      </li>`,
+  ).join("");
+
+  const themes = THEME_OPTIONS.map(
+    (theme) => `
+      <button
+        type="button"
+        class="world-theme-option"
+        data-world-theme="${escapeHTML(theme.id)}"
+        aria-pressed="${String(settings.theme === theme.id)}"
+      >${escapeHTML(theme.label)}</button>`,
+  ).join("");
+
+  const privacyOptions = [
+    ["name", "Show chosen display name"],
+    ["country", "Show approximate country flag"],
+    ["browser", "Show browser badge"],
+    ["os", "Show operating-system badge"],
+    ["activity", "Share generalized activity"],
+    ["inactivity", "Show inactive / recently-active state"],
+    ["localTime", "Show local time"],
+    ["nodes", "Show mirror-operator belt"],
+  ]
+    .map(
+      ([key, label]) => `
+        <label class="world-privacy-option">
+          <span>${escapeHTML(label)}</span>
+          <input
+            type="checkbox"
+            data-world-privacy="${escapeHTML(key)}"
+            ${settings.privacy[key] ? "checked" : ""}
+          />
+        </label>`,
+    )
+    .join("");
+
+  const availabilityOptions = AVAILABILITY_OPTIONS.map(
+    (option) => `
+      <option value="${escapeHTML(option.id)}" ${
+        settings.availability === option.id ? "selected" : ""
+      }>${escapeHTML(option.label)}</option>`,
+  ).join("");
+
+  const activityOptions = ACTIVITY_OPTIONS.map(
+    (option) => `
+      <option value="${escapeHTML(option.id)}" ${
+        settings.activityCategory === option.id ? "selected" : ""
+      }>${escapeHTML(option.label)}</option>`,
+  ).join("");
+
+  const regionClocks = WORLD_REGIONS.map(
+    (region) => `
+      <span class="world-region-clock" data-world-region-clock="${escapeHTML(
+        region.id,
+      )}">
+        <strong>${escapeHTML(region.label)}</strong>
+        <span>${escapeHTML(region.phase)} · --:--</span>
+      </span>`,
+  ).join("");
+
+  return `
+    <div class="fm-world ${mode === "dashboard" ? "world-dashboard-embed" : ""}" data-world-root>
+      <section
+        class="world-information-anchor"
+        id="world-information"
+        tabindex="-1"
+        aria-label="ForkMesh World information"
+      >
+        <p><strong>ForkMesh World controls</strong></p>
+        <button type="button" data-world-landmark="information">Open the information booth</button>
+        <a href="/dashboard">Open the standard operations console</a>
+      </section>
+      <div class="world-canvas-wrap" data-world-canvas-wrap></div>
+      <div class="world-label-layer" data-world-label-layer></div>
+
+      <nav class="world-quick-dock" aria-label="Quick world destinations">
+        <button type="button" data-world-landmark="information"><span aria-hidden="true">i</span><span>Start</span></button>
+        <button type="button" data-world-landmark="repositories"><span aria-hidden="true">{ }</span><span>Code</span></button>
+        <button type="button" data-world-landmark="workshops"><span aria-hidden="true">⌘</span><span>Workshops</span></button>
+        <a href="/dashboard/chat"><span aria-hidden="true">⌁</span><span>Chat</span></a>
+        <button type="button" data-world-landmark="support"><span aria-hidden="true">♥</span><span>Support</span></button>
+      </nav>
+
+      <div class="world-loading-screen" data-world-loading aria-live="polite">
+        <div class="world-loading-lockup">
+          <div class="world-loading-mark" aria-hidden="true"></div>
+          <strong>Entering ForkMesh World</strong>
+          <span data-world-loading-copy>Mapping the Town Square</span>
+        </div>
+      </div>
+
+      <div class="world-hud">
+        <header class="world-topbar">
+          <a class="world-brand brand" href="/" aria-label="ForkMesh World home">
+            <img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true" />
+            <span class="world-brand-name">ForkMesh <small>World</small></span>
+            <span class="world-live" data-world-presence-state="connecting">
+              <span data-world-presence-copy>Joining world</span>
+            </span>
+          </a>
+
+          <div class="world-clock" aria-label="Shared ForkMesh world time">
+            <strong class="world-clock-time" data-world-clock>00:00</strong>
+            <span class="world-clock-label">World time</span>
+            <span class="world-clock-phase" data-world-phase>Synchronizing</span>
+            <div class="world-region-clocks" aria-label="Visual campus regions">${regionClocks}</div>
+          </div>
+
+          <nav class="world-top-actions" aria-label="World tools">
+            <span class="world-emote-bar" aria-label="Public emotes">
+              <button type="button" data-world-emote="wave" title="Wave" aria-label="Wave">◡</button>
+              <button type="button" data-world-emote="idea" title="Idea" aria-label="Share an idea">✦</button>
+              <button type="button" data-world-emote="celebrate" title="Celebrate" aria-label="Celebrate">★</button>
+            </span>
+            <a class="world-top-link" href="/dashboard/chat" title="Open chat">
+              <span aria-hidden="true">⌁</span><span>Chat</span>
+            </a>
+            <a class="world-top-link" href="/dashboard" title="Open operations console">
+              <span aria-hidden="true">▦</span><span>Console</span>
+            </a>
+            <button class="world-icon-button" type="button" data-world-settings-open aria-label="World and privacy settings">⚙</button>
+          </nav>
+        </header>
+
+        <div class="world-left-rail">
+          <section class="world-arrival-card" aria-labelledby="world-arrival-title">
+            <p class="world-eyebrow">YOU ARE HERE / TOWN SQUARE</p>
+            <h1 id="world-arrival-title">Code is a place now.</h1>
+            <p>
+              Walk the mesh, enter repositories, meet operators, and inspect the
+              infrastructure behind every metaphor.
+            </p>
+            <div class="world-arrival-actions">
+              <button class="world-primary-action" type="button" data-world-action="tour">Take the tour</button>
+              <button class="world-secondary-action" type="button" data-world-landmark="information">How it works</button>
+            </div>
+          </section>
+
+          <div class="world-metrics" aria-label="Live ForkMesh metrics">
+            <div class="world-metric"><strong data-world-repos>—</strong><span>repositories</span></div>
+            <div class="world-metric"><strong data-world-nodes>—</strong><span>live nodes</span></div>
+            <div class="world-metric"><strong data-world-players>1</strong><span>in world</span></div>
+          </div>
+        </div>
+
+        <aside class="world-right-rail" aria-label="World navigation and activity">
+          <section class="world-map">
+            <div class="world-panel-heading">
+              <h2>World map</h2>
+              <span data-world-location-code>TS-01</span>
+            </div>
+            <ul class="world-map-list">${mapItems}</ul>
+          </section>
+          <section
+            class="world-community-placement"
+            data-world-community-placement
+            aria-label="Community-reviewed contextual placement"
+            hidden
+          ></section>
+          <section
+            class="world-fediverse-activity"
+            data-world-fediverse-activity
+            aria-labelledby="world-fediverse-activity-title"
+          >
+            <div class="world-panel-heading">
+              <h2 id="world-fediverse-activity-title">Verified public feedback</h2>
+              <span>MANUAL</span>
+            </div>
+            <div data-world-fediverse-items>
+              <p class="world-rail-empty">No verified public repository feedback is currently listed.</p>
+            </div>
+          </section>
+          <div class="world-activity" aria-live="polite">
+            <div class="world-activity-line" data-world-activity>
+              Public network activity will appear here in generalized form.
+            </div>
+          </div>
+        </aside>
+
+        <section class="world-identity" aria-label="Your public avatar badge">
+          <div class="world-shirt-badge" data-world-shirt-badge>
+            <span class="world-shirt-flag" data-world-shirt-flag>${escapeHTML(identity.flag)}</span>
+            <span class="world-shirt-account" data-world-shirt-account title="${escapeHTML(
+              identity.accountStatus,
+            )}">${escapeHTML(
+              ACCOUNT_STATUS_ICONS[identity.accountStatus] || "○",
+            )}</span>
+            <span class="world-shirt-tech" data-world-shirt-tech>${escapeHTML(identity.browser)} · ${escapeHTML(identity.os)}</span>
+            <span class="world-shirt-name" data-world-shirt-name>${escapeHTML(identity.name)}</span>
+          </div>
+          <div class="world-identity-copy">
+            <strong data-world-identity-name>${escapeHTML(identity.name)}</strong>
+            <span data-world-identity-status>${escapeHTML(accountBadgeCopy(identity, settings))}</span>
+          </div>
+          <button class="world-identity-edit" type="button" data-world-settings-open aria-label="Edit public badge">✎</button>
+        </section>
+
+        <div class="world-controls" aria-label="Movement controls">
+          <div class="world-control-keys" aria-hidden="true">
+            <span class="world-control-key">W</span>
+            <span class="world-control-key">A</span>
+            <span class="world-control-key">S</span>
+            <span class="world-control-key">D</span>
+          </div>
+          <div class="world-controls-copy">
+            <strong>Move around</strong>
+            <span>WASD, arrows, or click the plaza</span>
+          </div>
+          <span class="world-location" data-world-location>Town Square</span>
+          <span class="world-location world-region-location" data-world-active-region>Central Campus · Afternoon</span>
+        </div>
+
+        <div class="world-touch-controls" aria-label="Touch movement controls">
+          <button class="world-touch-button" type="button" data-move="forward" aria-label="Move forward">↑</button>
+          <button class="world-touch-button" type="button" data-move="left" aria-label="Move left">←</button>
+          <button class="world-touch-button" type="button" data-move="back" aria-label="Move back">↓</button>
+          <button class="world-touch-button" type="button" data-move="right" aria-label="Move right">→</button>
+        </div>
+
+        <div class="world-toast" data-world-toast role="status"></div>
+        <div class="world-detail-backdrop" data-world-detail-backdrop></div>
+        <aside
+          class="world-detail"
+          data-world-detail
+          aria-labelledby="world-detail-title"
+          aria-hidden="true"
+        ></aside>
+
+        <section class="world-settings" data-world-settings aria-labelledby="world-settings-title" aria-hidden="true">
+          <div class="world-settings-heading">
+            <div>
+              <p class="world-eyebrow">LOCAL CONTROLS</p>
+              <h2 id="world-settings-title">Your view, your signal.</h2>
+            </div>
+            <button class="world-settings-close" type="button" data-world-settings-close aria-label="Close settings">×</button>
+          </div>
+
+          <fieldset class="world-setting-group">
+            <legend>Personal environment · only changes this device</legend>
+            <div class="world-theme-grid">${themes}</div>
+          </fieldset>
+
+          <fieldset class="world-setting-group">
+            <legend>Public avatar badge</legend>
+            <label class="world-field">
+              <span>Display name</span>
+              <input
+                type="text"
+                maxlength="24"
+                value="${escapeHTML(settings.displayName || identity.name)}"
+                data-world-display-name
+              />
+            </label>
+            <label class="world-field">
+              <span>Availability</span>
+              <select data-world-availability>${availabilityOptions}</select>
+            </label>
+            <label class="world-field">
+              <span>Generalized public activity</span>
+              <select data-world-activity-category>${activityOptions}</select>
+            </label>
+            <label class="world-field">
+              <span>Home / office door</span>
+              <select data-world-public-door>
+                <option value="knock" ${settings.publicDoor === "knock" ? "selected" : ""}>Visitors knock first</option>
+                <option value="open" ${settings.publicDoor === "open" ? "selected" : ""}>Public lobby open</option>
+                <option value="closed" ${settings.publicDoor === "closed" ? "selected" : ""}>Closed</option>
+              </select>
+            </label>
+            ${privacyOptions}
+          </fieldset>
+
+          <p class="world-setting-note">
+            Browser and OS are detected locally. Country comes from a country-only
+            edge hint; ForkMesh World does not receive or
+            display your raw IP. Movement is coarse, ephemeral, and never includes
+            URLs, search terms, form contents, repository names, or wallet data.
+          </p>
+        </section>
+
+        <section class="world-tour" data-world-tour aria-labelledby="world-tour-title" aria-hidden="true">
+          <div class="world-tour-progress" data-world-tour-progress></div>
+          <h2 id="world-tour-title" data-world-tour-title>Welcome to ForkMesh</h2>
+          <p data-world-tour-copy></p>
+          <div class="world-tour-actions">
+            <button class="world-tour-skip" type="button" data-world-tour-skip>Leave tour</button>
+            <button class="world-tour-next" type="button" data-world-tour-next>Next stop →</button>
+          </div>
+        </section>
+      </div>
+    </div>`;
+}
+
+class ForkMeshWorld extends HTMLElement {
+  constructor() {
+    super();
+    this.mode = "public";
+    this.identity = null;
+    this.settings = null;
+    this.world = null;
+    this.repositories = [];
+    this.repositoryCatalogState = "loading";
+    this.network = {};
+    this.federatedInstances = [];
+    this.communityPlacement = null;
+    this.fediverseMentions = [];
+    this.activeFediverseMention = null;
+    this.organizations = [];
+    this.activeOffice = null;
+    this.events = [];
+    this.eventsState = "loading";
+    this.rewardState = {};
+    this.pendingRewards = [];
+    this.pendingContribution = null;
+    this.securityScan = null;
+    this.securityHistory = [];
+    this.securityRepository = "";
+    this.quarantine = normalizeQuarantinePayload(null);
+    this.fediverseDirectory = {
+      mastodon: [],
+      lemmy: [],
+      x: [],
+      reddit: [],
+    };
+    this.botDirectory = [];
+    this.activeAudio = null;
+    this.mediaSpaces = [];
+    this.mediaRoom = normalizeMediaRoom(null);
+    this.activeRepository = null;
+    this.securityTriage = null;
+    this.pendingWorkshop = null;
+    this.activeWorkshop = null;
+    this.savedWorkshopSessions = [];
+    this.workshopEventCursor = 0;
+    this.remotePlayers = new Map();
+    this.localPeers = new Map();
+    this.inactivePlayers = [];
+    this.pendingKnocks = new Map();
+    this.serverPeerId = "";
+    this.worldTicket = "";
+    this.worldTicketExpires = 0;
+    this.worldTicketTimer = 0;
+    const worldQuery = new URLSearchParams(location.search);
+    const requestedSpace = worldQuery.get("space") || "";
+    const requestedLandmark = worldQuery.get("landmark") || "";
+    this.currentSpace = WORLD_SPACE_IDS.has(requestedSpace)
+      ? requestedSpace
+      : "town-square";
+    this.requestedLandmark = LANDMARKS.some(
+      (landmark) => landmark.id === requestedLandmark,
+    )
+      ? requestedLandmark
+      : "";
+    this.socket = null;
+    this.presenceConnecting = false;
+    this.socketRetry = 1000;
+    this.socketTimer = 0;
+    this.pingTimer = 0;
+    this.rewardTimer = 0;
+    this.eventsTimer = 0;
+    this.mediaTimer = 0;
+    this.seenRewardEvents = new Set();
+    this.broadcast = null;
+    this.broadcastTimer = 0;
+    this.activityTimer = 0;
+    this.clockTimer = 0;
+    this.distanceTimer = 0;
+    this.toastTimer = 0;
+    this.inactiveSyncTimer = 0;
+    this.tourIndex = -1;
+    this.serverOffset = 0;
+    this.lastMovement = {
+      x: -8.5,
+      y: 0.38,
+      z: 12.5,
+      heading: Math.PI * 0.82,
+      activity: "exploring the Town Square",
+    };
+    this.currentActivityCategory = "exploring-town-square";
+    this.destroyed = false;
+  }
+
+  connectedCallback() {
+    if (this.dataset.worldReady === "true") return;
+    this.dataset.worldReady = "true";
+    this.mode = this.dataset.worldMode || "public";
+    if (this.mode === "public") document.body.classList.add("world-active");
+    this.identity = accountIdentity(readSession());
+    this.settings = mergeSettings(readJSON(localStorage, SETTINGS_KEY, null));
+    // Shared rooms, playlists, roles, and schedules are server-authoritative.
+    // localStorage is reserved for this device's visual/privacy preferences.
+    this.mediaSpaces = [];
+    this.mediaRoom = normalizeMediaRoom(null);
+    this.innerHTML = worldTemplate(this.identity, this.settings, this.mode);
+    this.syncViewportHeight();
+    window.visualViewport?.addEventListener("resize", this.syncViewportHeight);
+    window.addEventListener("orientationchange", this.syncViewportHeight);
+    this.bindUI();
+    this.startClock();
+    this.bootstrap();
+    this.startWorldTicketRefresh();
+  }
+
+  disconnectedCallback() {
+    this.destroy();
+  }
+
+  $(selector) {
+    return this.querySelector(selector);
+  }
+
+  $$(selector) {
+    return Array.from(this.querySelectorAll(selector));
+  }
+
+  async bootstrap() {
+    const loadingCopy = this.$("[data-world-loading-copy]");
+    try {
+      loadingCopy.textContent = "Synchronizing the shared world clock";
+      const contextPromise = this.loadContext();
+      const dataPromise = this.loadWorldData();
+      loadingCopy.textContent = "Building repositories, offices, and portals";
+      const THREE = await import(THREE_MODULE_URL);
+      if (this.destroyed) return;
+      this.world = createWorldScene({
+        THREE,
+        container: this.$("[data-world-canvas-wrap]"),
+        labelLayer: this.$("[data-world-label-layer]"),
+        identity: publicIdentity(this.identity, this.settings),
+        reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+        onLandmarkSelect: (id, meta = {}) => {
+          if (id === "repositories" && meta.graphNode) {
+            this.selectRepositoryGraphNode(meta.graphNode);
+            return;
+          }
+          if (id === "broadcast" && meta.mediaSpaceId) {
+            this.loadMediaSpace(meta.mediaSpaceId, true);
+            return;
+          }
+          this.openLandmark(id);
+        },
+        onLocationChange: (label, id) => this.updateLocation(label, id),
+        onRegionChange: (region) => this.updateRegion(region),
+        onMovement: (movement) => this.handleMovement(movement),
+      });
+      this.world.setTheme(this.settings.theme);
+      await Promise.allSettled([contextPromise, dataPromise]);
+      this.world.setClockOffset(this.serverOffset);
+      this.world.updateIdentity(publicIdentity(this.identity, this.settings));
+      this.world.updateNetworkNodes(liveNodeRecords(this.network));
+      this.world.updateFederatedInstances?.(this.federatedInstances);
+      this.world.updateBots(this.botDirectory);
+      this.world.updateFediverseDirectory(this.fediverseDirectory);
+      this.world.updateQuarantine?.(this.quarantine);
+      this.world.updateMediaSpaces?.(this.mediaSpaces, this.mediaRoom);
+      if (!this.repositories.length) {
+        // The portal's construction geometry is decorative, but an empty or
+        // failed live catalog must not leave file icons that look selectable.
+        this.world.updateRepositoryGraph?.([], []);
+      }
+      if (this.currentSpace !== "town-square") {
+        this.world.travelToSpace?.(this.currentSpace);
+      }
+      this.connectPresence();
+      this.hideLoading();
+      this.updateMetrics();
+      this.updateDistances();
+      this.startActivityTicker();
+      this.startRewardPolling();
+      this.startEventPolling();
+      this.startMediaPlaybackPolling();
+      this.distanceTimer = window.setInterval(() => this.updateDistances(), 1000);
+      document.addEventListener("visibilitychange", this.handleVisibility);
+      window.addEventListener("pagehide", this.handlePageHide, { once: true });
+      const workshopSession = new URLSearchParams(location.search).get(
+        "workshopSession",
+      );
+      if (
+        readSession()?.sessionToken &&
+        /^[a-f0-9]{32}$/.test(String(workshopSession || ""))
+      ) {
+        this.openLandmark("workshops");
+        this.loadWorkshopSession(workshopSession);
+      } else if (this.requestedLandmark) {
+        this.openLandmark(this.requestedLandmark);
+      }
+    } catch (error) {
+      console.warn("ForkMesh World could not start WebGL", error);
+      this.renderWebGLFallback();
+      await Promise.allSettled([this.loadContext(), this.loadWorldData()]);
+      this.hideLoading();
+      this.updateMetrics();
+      if (this.requestedLandmark) {
+        this.openLandmark(this.requestedLandmark);
+      }
+    }
+  }
+
+  handleVisibility = () => {
+    this.world?.setPaused(document.hidden);
+    if (document.hidden) {
+      try {
+        this.socket?.close(1000, "page hidden");
+      } catch (_) {}
+    } else if (!this.socket) {
+      this.refreshWorldTicket();
+      this.connectPresence();
+    }
+  };
+
+  syncViewportHeight = () => {
+    const height = Math.max(
+      240,
+      Math.round(window.visualViewport?.height || window.innerHeight || 0),
+    );
+    this.style.setProperty("--world-viewport-height", `${height}px`);
+  };
+
+  handlePageHide = () => {
+    this.sendPresence({ type: "leave" });
+    this.destroy();
+  };
+
+  hideLoading() {
+    const loading = this.$("[data-world-loading]");
+    if (!loading) return;
+    window.setTimeout(() => loading.setAttribute("aria-hidden", "true"), 180);
+  }
+
+  renderWebGLFallback() {
+    const wrap = this.$("[data-world-canvas-wrap]");
+    if (!wrap) return;
+    wrap.innerHTML = `
+      <div class="world-webgl-fallback">
+        <div>
+          <strong>The city is still here.</strong>
+          <p>
+            This browser could not start the 3D renderer. Use the World Map to
+            inspect every district, or open the standard operations console.
+          </p>
+          <a class="world-primary-action" href="/dashboard">Open operations console</a>
+        </div>
+      </div>`;
+  }
+
+  async fetchJSON(path, options = {}) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), options.timeout || 8000);
+    const session = readSession();
+    const headers = new Headers(options.headers || {});
+    if (session?.sessionToken && options.auth !== false) {
+      headers.set("Authorization", `Bearer ${session.sessionToken}`);
+    }
+    try {
+      const response = await fetch(path, {
+        ...options,
+        headers,
+        signal: controller.signal,
+        credentials: "same-origin",
+      });
+      if (!response.ok) throw new Error(`${path} returned ${response.status}`);
+      return await response.json();
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  async postJSON(path, body, options = {}) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(
+      () => controller.abort(),
+      options.timeout || 10000,
+    );
+    const headers = new Headers({
+      accept: "application/json",
+      "content-type": "application/json",
+      ...(options.headers || {}),
+    });
+    const session = readSession();
+    if (session?.sessionToken && options.auth !== false) {
+      headers.set("Authorization", `Bearer ${session.sessionToken}`);
+    }
+    try {
+      const response = await fetch(path, {
+        method: options.method || "POST",
+        headers,
+        credentials: "same-origin",
+        cache: "no-store",
+        body: JSON.stringify(body || {}),
+        signal: controller.signal,
+      });
+      let payload = {};
+      try {
+        payload = await response.json();
+      } catch (_) {}
+      if (!response.ok) {
+        throw new Error(
+          String(payload?.error || `Request returned ${response.status}`),
+        );
+      }
+      return payload;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  async loadContext() {
+    const [contextResult, ticketResult] = await Promise.allSettled([
+      this.fetchJSON("/api/world/context", {
+        auth: false,
+        timeout: 5000,
+        cache: "no-store",
+      }),
+      this.fetchJSON("/api/world/ticket", {
+        timeout: 5000,
+        cache: "no-store",
+      }),
+    ]);
+    const context =
+      contextResult.status === "fulfilled" ? contextResult.value : null;
+    const ticket =
+      ticketResult.status === "fulfilled" ? ticketResult.value : null;
+    if (
+      ticket?.authenticated === true &&
+      ACCOUNT_STATUS_VALUES.has(String(ticket.accountStatus || "")) &&
+      ticket.accountStatus !== "Guest"
+    ) {
+      this.identity.name = sanitizePresenceText(
+        ticket.name,
+        this.identity.name,
+        24,
+      );
+      this.identity.accountStatus = String(ticket.accountStatus);
+      this.identity.nodes = Array.from(
+        {
+          length: Math.max(
+            0,
+            Math.min(6, Number(ticket.nodeCount) || 0),
+          ),
+        },
+        () => "node",
+      );
+      this.worldTicket = String(ticket.ticket || "");
+      this.worldTicketExpires = Number(ticket.expiresAt || 0);
+    } else {
+      this.identity.accountStatus = "Guest";
+      this.identity.nodes = [];
+      this.worldTicket = "";
+      this.worldTicketExpires = 0;
+    }
+    const country = String(context?.country || context?.countryCode || "")
+      .trim()
+      .toUpperCase()
+      .slice(0, 2);
+    this.identity.countryCode = /^[A-Z]{2}$/.test(country) ? country : "";
+    this.identity.flag = flagEmoji(this.identity.countryCode);
+    const serverNow = Number(
+      context?.serverTimeMs || context?.now || context?.worldNow || 0,
+    );
+    if (serverNow > 0) this.serverOffset = serverNow - Date.now();
+    this.updateIdentityUI();
+    this.world?.setClockOffset(this.serverOffset);
+    this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
+  }
+
+  async loadWorldData() {
+    const hasSession = Boolean(readSession()?.sessionToken);
+    const [
+      networkResult,
+      instancesResult,
+      reposResult,
+      versionResult,
+      rewardResult,
+      orgResult,
+      scanResult,
+      directoryResult,
+      mediaResult,
+      botResult,
+      pendingRewardsResult,
+      inactiveResult,
+      eventsResult,
+      quarantineResult,
+      placementResult,
+      mentionResult,
+    ] =
+      await Promise.allSettled([
+        this.fetchJSON("/api/network/overview", { auth: false }),
+        this.fetchJSON("/api/world/instances", {
+          auth: false,
+          timeout: 5000,
+          cache: "no-store",
+        }),
+        this.fetchJSON("/api/repositories"),
+        this.fetchJSON("/api/version", { auth: false, timeout: 5000 }),
+        this.fetchJSON("/api/accounts/central-fund", {
+          auth: false,
+          timeout: 5000,
+          cache: "no-store",
+        }),
+        this.fetchJSON("/api/world/organizations", {
+          auth: false,
+          timeout: 5000,
+          cache: "no-store",
+        }),
+        this.fetchJSON("/security/latest.json", {
+          auth: false,
+          timeout: 4000,
+          cache: "no-store",
+        }),
+        this.fetchJSON("/api/world/fediverse", {
+          auth: false,
+          timeout: 4000,
+          cache: "no-store",
+        }),
+        hasSession
+          ? this.fetchJSON("/api/world/media/spaces", {
+              timeout: 5000,
+              cache: "no-store",
+            })
+          : Promise.resolve({ spaces: [] }),
+        this.fetchJSON("/world/bot-directory.json", {
+          auth: false,
+          timeout: 4000,
+        }),
+        hasSession
+          ? this.fetchJSON("/api/rewards/pending", {
+              timeout: 5000,
+              cache: "no-store",
+            })
+          : Promise.resolve({ rewards: [] }),
+        this.fetchJSON("/api/world/inactive", {
+          auth: false,
+          timeout: 5000,
+          cache: "no-store",
+        }),
+        this.fetchJSON("/api/world/events", {
+          auth: false,
+          timeout: 5000,
+          cache: "no-store",
+        }),
+        this.fetchJSON("/api/security/quarantine", {
+          timeout: 5000,
+          cache: "no-store",
+          headers: { "x-forkmesh-world-view": "generalized" },
+        }),
+        this.fetchJSON(
+          "/api/world/community-ads/placements?context=town-square",
+          {
+            auth: false,
+            timeout: 4000,
+            cache: "no-store",
+          },
+        ),
+        this.fetchJSON("/api/world/fediverse-mentions", {
+          auth: false,
+          timeout: 5000,
+          cache: "no-store",
+        }),
+      ]);
+    this.network = networkResult.status === "fulfilled" ? networkResult.value : {};
+    this.federatedInstances =
+      instancesResult.status === "fulfilled"
+        ? normalizeFederatedInstances(instancesResult.value)
+        : [];
+    this.communityPlacement =
+      placementResult.status === "fulfilled"
+        ? normalizeCommunityPlacement(placementResult.value)
+        : null;
+    this.fediverseMentions =
+      mentionResult.status === "fulfilled"
+        ? normalizeFediverseMentions(mentionResult.value)
+        : [];
+    this.renderCommunityPlacement();
+    this.renderFediverseActivity();
+    if (reposResult.status === "fulfilled") {
+      this.repositories = cleanRepositories(reposResult.value);
+      this.repositoryCatalogState = this.repositories.length ? "ready" : "empty";
+    } else {
+      this.repositories = [];
+      this.repositoryCatalogState = "unavailable";
+    }
+    if (eventsResult.status === "fulfilled") {
+      this.events = normalizeCommunityEvents(eventsResult.value);
+      this.eventsState = this.events.length ? "ready" : "empty";
+    } else {
+      this.events = [];
+      this.eventsState = "unavailable";
+    }
+    const serverNow =
+      versionResult.status === "fulfilled" ? Number(versionResult.value?.now || 0) : 0;
+    this.rewardState =
+      rewardResult.status === "fulfilled" ? rewardResult.value || {} : {};
+    this.pendingRewards =
+      pendingRewardsResult.status === "fulfilled" &&
+      Array.isArray(pendingRewardsResult.value?.rewards)
+        ? pendingRewardsResult.value.rewards.slice(0, 100)
+        : [];
+    this.captureRewardEvents(false);
+    this.organizations =
+      orgResult.status === "fulfilled" &&
+      Array.isArray(orgResult.value?.organizations)
+        ? orgResult.value.organizations.slice(0, 50)
+        : [];
+    if (this.organizations.length) {
+      this.organizations = await this.loadOrganizationSpaces(this.organizations);
+    }
+    this.securityScan =
+      scanResult.status === "fulfilled" ? scanResult.value || null : null;
+    this.quarantine =
+      quarantineResult.status === "fulfilled"
+        ? normalizeQuarantinePayload(quarantineResult.value)
+        : normalizeQuarantinePayload(null);
+    this.fediverseDirectory =
+      directoryResult.status === "fulfilled"
+        ? directoryResult.value || {
+            mastodon: [],
+            lemmy: [],
+            x: [],
+            reddit: [],
+          }
+        : { mastodon: [], lemmy: [], x: [], reddit: [] };
+    this.mediaSpaces =
+      mediaResult.status === "fulfilled"
+        ? normalizeMediaSpaces(mediaResult.value)
+        : [];
+    const selectedMediaSpace =
+      this.mediaSpaces.find((space) => space.id === this.mediaRoom.id) ||
+      this.mediaSpaces[0];
+    if (selectedMediaSpace?.id) {
+      try {
+        this.mediaRoom = normalizeMediaRoom(
+          await this.fetchJSON(
+            `/api/world/media/spaces/${encodeURIComponent(
+              selectedMediaSpace.id,
+            )}`,
+            { timeout: 5000, cache: "no-store" },
+          ),
+        );
+      } catch (_) {
+        this.mediaRoom = selectedMediaSpace;
+      }
+    } else {
+      this.mediaRoom = normalizeMediaRoom(null);
+    }
+    this.botDirectory =
+      botResult.status === "fulfilled" && Array.isArray(botResult.value?.bots)
+        ? botResult.value.bots.slice(0, 24)
+        : [];
+    this.inactivePlayers =
+      inactiveResult.status === "fulfilled" &&
+      Array.isArray(inactiveResult.value?.people)
+        ? inactiveResult.value.people.slice(0, 64).map((person) => ({
+            id: `inactive:${String(person.id || "").slice(0, 24)}`,
+            name: sanitizePresenceText(
+              person.name,
+              "Private contributor",
+              32,
+            ),
+            flag: "◌",
+            browser: "Hidden",
+            os: "Hidden",
+            accountStatus: ACCOUNT_STATUS_VALUES.has(
+              String(person.accountStatus || ""),
+            )
+              ? String(person.accountStatus)
+              : "Registered",
+            nodes: Array.from(
+              {
+                length: Math.max(
+                  0,
+                  Math.min(6, Number(person.nodeCount) || 0),
+                ),
+              },
+              () => "node",
+            ),
+            activity: "idle",
+            availability: String(person.availability || "inactive"),
+            lastActive: String(person.lastActive || "Last active recently"),
+            publicDoor: "closed",
+            space: "town-square",
+            x: 0,
+            y: 0.38,
+            z: 0,
+            heading: 0,
+            persistedInactive: true,
+          }))
+        : [];
+    if (serverNow > 0 && !this.serverOffset) this.serverOffset = serverNow - Date.now();
+    this.world?.setClockOffset(this.serverOffset);
+    this.world?.updateNetworkNodes(liveNodeRecords(this.network));
+    this.world?.updateFederatedInstances?.(this.federatedInstances);
+    this.world?.updateBots(this.botDirectory);
+    this.world?.updateOrganizations(this.organizations);
+    this.world?.updateFediverseDirectory(this.fediverseDirectory);
+    this.world?.updateQuarantine?.(this.quarantine);
+    this.world?.updateMediaSpaces?.(this.mediaSpaces, this.mediaRoom);
+    this.renderPeers();
+    this.updateMetrics();
+  }
+
+  renderCommunityPlacement() {
+    const container = this.$("[data-world-community-placement]");
+    if (!container) return;
+    const placement = this.communityPlacement;
+    if (!placement) {
+      container.hidden = true;
+      container.replaceChildren();
+      return;
+    }
+    container.hidden = false;
+    container.innerHTML = `
+      <p class="world-community-placement-label">${escapeHTML(
+        placement.label,
+      )}</p>
+      <strong>${escapeHTML(placement.sponsor)}</strong>
+      <p>${escapeHTML(placement.copy)}</p>
+      <a
+        href="${escapeHTML(placement.destination)}"
+        target="_blank"
+        rel="sponsored noopener noreferrer"
+        referrerpolicy="no-referrer"
+      >Visit sponsor <span aria-hidden="true">↗</span></a>
+      <small>${escapeHTML(
+        placement.whyShown,
+      )} No behavioral tracking or personal data selected this placement.</small>`;
+  }
+
+  renderFediverseActivity() {
+    const container = this.$("[data-world-fediverse-items]");
+    if (!container) return;
+    const items = this.fediverseMentions.slice(0, 3);
+    if (!items.length) {
+      container.innerHTML = `
+        <p class="world-rail-empty">
+          No verified public repository feedback is currently listed.
+        </p>`;
+      return;
+    }
+    const hasSession = Boolean(readSession()?.sessionToken);
+    container.innerHTML = items
+      .map((item) => {
+        const stateLabel = {
+          review: "Manual review",
+          pending: "Pending",
+          created: "Created",
+          linked: "Tracked reply",
+          failed: "Retry available",
+        }[item.state];
+        const reviewable =
+          item.kind === "mention" &&
+          ["review", "failed"].includes(item.state) &&
+          hasSession;
+        const destination =
+          (item.state === "created" || item.state === "linked") &&
+          item.issueUrl
+            ? item.issueUrl
+            : item.remoteUrl;
+        return `
+          <article class="world-fediverse-activity-item" data-world-fediverse-item="${escapeHTML(
+            item.id,
+          )}">
+            <div>
+              <span>${escapeHTML(stateLabel)}</span>
+              <strong>${escapeHTML(item.repository)}</strong>
+            </div>
+            <p>${escapeHTML(item.excerpt || item.progress)}</p>
+            <div>
+              ${
+                reviewable
+                  ? `<button type="button" data-world-fediverse-review="${escapeHTML(
+                      item.id,
+                    )}">Preview</button>`
+                  : ""
+              }
+              ${
+                item.issueNumber > 0
+                  ? `<button type="button" data-world-fediverse-thread="${escapeHTML(
+                      item.id,
+                    )}">Thread</button>`
+                  : ""
+              }
+              <a
+                href="${escapeHTML(destination)}"
+                target="_blank"
+                rel="noopener noreferrer"
+                referrerpolicy="no-referrer"
+              >${item.issueUrl === destination ? "Open issue" : "Public post"} ↗</a>
+            </div>
+          </article>`;
+      })
+      .join("");
+  }
+
+  openFediverseDetail(title, summary, content) {
+    const detail = this.$("[data-world-detail]");
+    const backdrop = this.$("[data-world-detail-backdrop]");
+    if (!detail || !backdrop) return;
+    detail.style.setProperty("--detail-color", "var(--world-violet)");
+    detail.innerHTML = `
+      <header class="world-detail-header">
+        <div>
+          <p class="world-eyebrow">VERIFIED PUBLIC ACTIVITY / MANUAL REVIEW</p>
+          <h2 id="world-detail-title">${escapeHTML(title)}</h2>
+        </div>
+        <button
+          class="world-detail-close"
+          type="button"
+          data-world-detail-close
+          aria-label="Close fediverse review"
+        >×</button>
+      </header>
+      <div class="world-detail-scroll">
+        <p class="world-detail-summary">${escapeHTML(summary)}</p>
+        ${content}
+      </div>`;
+    detail.dataset.open = "true";
+    detail.setAttribute("aria-hidden", "false");
+    backdrop.dataset.open = "true";
+    window.setTimeout(
+      () => detail.querySelector("[data-world-detail-close]")?.focus(),
+      100,
+    );
+  }
+
+  async previewFediverseMention(id) {
+    if (!readSession()?.sessionToken) {
+      this.toast("Sign in as the repository owner to review this public feedback.");
+      return;
+    }
+    try {
+      const preview = await this.postJSON(
+        `/api/world/fediverse-mentions/${encodeURIComponent(id)}/preview`,
+        {},
+      );
+      this.activeFediverseMention = {
+        id,
+        draft: preview.draft || {},
+      };
+      this.openFediverseDetail(
+        "Review public feedback",
+        "Nothing is filed automatically. Edit the draft, confirm it explicitly, and it will remain pending until the owner node materializes it.",
+        `
+          <section class="world-feature-card world-fediverse-review-card">
+            <h3>${escapeHTML(preview.repository || "Public repository")}</h3>
+            <p>
+              From ${escapeHTML(preview.author || "fediverse user")} ·
+              <a
+                href="${escapeHTML(safePublicHTTPSURL(preview.remoteUrl))}"
+                target="_blank"
+                rel="noopener noreferrer"
+                referrerpolicy="no-referrer"
+              >verify public source ↗</a>
+            </p>
+            <label class="world-field">
+              <span>Issue title</span>
+              <input
+                type="text"
+                maxlength="240"
+                data-world-fediverse-title
+                value="${escapeHTML(preview.draft?.title || "")}"
+              />
+            </label>
+            <label class="world-field">
+              <span>Issue body</span>
+              <textarea
+                rows="9"
+                maxlength="8192"
+                data-world-fediverse-body
+              >${escapeHTML(preview.draft?.body || "")}</textarea>
+            </label>
+            <label class="world-privacy-option">
+              <span>I reviewed this public content and authorize a pending issue submission.</span>
+              <input type="checkbox" data-world-fediverse-confirm />
+            </label>
+            <label class="world-privacy-option">
+              <span>After owner-node confirmation, publish one public follow-up with the issue backlink.</span>
+              <input type="checkbox" data-world-fediverse-followup />
+            </label>
+            <div class="world-notice">
+              <strong>Pending is not created</strong>
+              <span>The World will not call this an issue or announce a backlink until the owner node confirms the committed issue number.</span>
+            </div>
+            <div class="world-detail-actions">
+              <button
+                class="world-primary-action"
+                type="button"
+                data-world-fediverse-create="${escapeHTML(id)}"
+              >Queue as pending issue</button>
+              <button
+                class="world-secondary-action"
+                type="button"
+                data-world-fediverse-dismiss="${escapeHTML(id)}"
+              >Dismiss from feed</button>
+            </div>
+            <p class="world-panel-footnote" data-world-fediverse-result>
+              Follow-up consent is off by default. No automated classification or behavioral profile is used.
+            </p>
+          </section>`,
+      );
+    } catch (error) {
+      this.toast(
+        String(error?.message || "").includes("forbidden")
+          ? "Only the repository owner can review this item."
+          : "The review preview is unavailable. No issue was queued.",
+      );
+    }
+  }
+
+  async openFediverseThread(id) {
+    const item = this.fediverseMentions.find((entry) => entry.id === id);
+    const parts = String(item?.repository || "").split("/");
+    if (!item || item.issueNumber <= 0 || parts.length !== 2 || parts.some((part) => !part)) {
+      this.toast("No public issue thread is available for this activity.");
+      return;
+    }
+    const [owner, repo] = parts;
+    this.openFediverseDetail(
+      `Issue #${item.issueNumber} fediverse thread`,
+      "Loading read-only remote replies. ActivityPub delivery signatures are not ForkMesh native event signatures.",
+      '<section class="world-feature-card"><p class="world-empty-state">Loading remote ActivityPub replies…</p></section>',
+    );
+    try {
+      const response = await this.fetchJSON(
+        `/api/repo/${encodeURIComponent(owner)}/${encodeURIComponent(
+          repo,
+        )}/fedi-comments?kind=issue&number=${encodeURIComponent(
+          item.issueNumber,
+        )}`,
+        { auth: false, timeout: 5000, cache: "no-store" },
+      );
+      const comments = (
+        Array.isArray(response?.comments)
+          ? response.comments
+          : Array.isArray(response?.items)
+            ? response.items
+            : []
+      )
+        .map((comment) => {
+          const lifecycle = [
+            "active",
+            "edited",
+            "tombstoned",
+            "moderated",
+            "awaiting-redelivery",
+          ].includes(comment?.lifecycle)
+            ? comment.lifecycle
+            : comment?.tombstone
+              ? "tombstoned"
+              : comment?.moderated
+                ? "moderated"
+                : comment?.edited
+                  ? "edited"
+                  : "active";
+          const provenance =
+            comment?.provenance && typeof comment.provenance === "object"
+              ? comment.provenance
+              : {};
+          return {
+            id: sanitizePresenceText(
+              comment?.remoteId || comment?.id,
+              "",
+              500,
+            ),
+            author: sanitizePresenceText(
+              comment?.authorName || comment?.author,
+              "Remote participant",
+              100,
+            ),
+            body: sanitizePresenceText(comment?.body, "", 4000),
+            url: safePublicHTTPSURL(
+              comment?.url ||
+                comment?.backlink ||
+                provenance.backlink ||
+                comment?.remoteId,
+            ),
+            instance: sanitizePresenceText(
+              comment?.sourceInstance || provenance.instance,
+              "",
+              160,
+            ),
+            software: sanitizePresenceText(
+              comment?.sourceSoftware || provenance.software,
+              "ActivityPub",
+              40,
+            ),
+            lifecycle,
+            depth: Math.max(0, Math.min(8, Number(comment?.depth) || 0)),
+            nativeEvent: false,
+          };
+        })
+        .filter((comment) => comment.id || comment.url)
+        .slice(0, 200);
+      const threadHTML = comments.length
+        ? comments
+            .map((comment) => {
+              const unavailable = [
+                "tombstoned",
+                "moderated",
+                "awaiting-redelivery",
+              ].includes(comment.lifecycle);
+              const body =
+                comment.lifecycle === "tombstoned"
+                  ? "Deleted on the remote instance"
+                  : unavailable
+                    ? "Hidden by remote moderation"
+                    : comment.body;
+              return `
+                <article
+                  class="world-feature-card"
+                  style="margin-left:${comment.depth * 16}px"
+                  data-world-federated-reply
+                  data-native-event="false"
+                >
+                  <h3>${escapeHTML(comment.author)}${
+                    comment.lifecycle === "edited"
+                      ? " <small>(edited)</small>"
+                      : ""
+                  }</h3>
+                  <p${unavailable ? ' style="font-style:italic"' : ""}>${escapeHTML(
+                    body || "Remote reply has no public text.",
+                  )}</p>
+                  <p class="world-panel-footnote">
+                    ${escapeHTML(comment.software)}${
+                      comment.instance
+                        ? ` · ${escapeHTML(comment.instance)}`
+                        : ""
+                    } · Remote ActivityPub reply · not a signed ForkMesh native event
+                  </p>
+                  ${
+                    comment.url
+                      ? `<a href="${escapeHTML(
+                          comment.url,
+                        )}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">Open original ↗</a>`
+                      : ""
+                  }
+                </article>`;
+            })
+            .join("")
+        : '<p class="world-empty-state">No remote ActivityPub replies are attached to this public issue.</p>';
+      this.openFediverseDetail(
+        `Issue #${item.issueNumber} fediverse thread`,
+        `${item.repository} · read-only remote collaboration with explicit provenance and backlinks.`,
+        `
+          <section class="world-feature-card">
+            <div class="world-notice">
+              <strong>Separate trust domain</strong>
+              <span>These replies are not part of the repository’s Ed25519-signed issue history. Edits, tombstones, moderation, and instance blocks come from the federated projection.</span>
+            </div>
+            <div class="world-detail-actions">
+              ${
+                item.issueUrl
+                  ? `<a href="${escapeHTML(
+                      item.issueUrl,
+                    )}" target="_blank" rel="noopener noreferrer">Open native issue ↗</a>`
+                  : ""
+              }
+            </div>
+          </section>
+          ${threadHTML}`,
+      );
+    } catch (_) {
+      this.openFediverseDetail(
+        `Issue #${item.issueNumber} fediverse thread`,
+        "The remote-reply projection is currently unavailable.",
+        '<section class="world-feature-card"><p class="world-empty-state">No remote content was shown. The signed native issue remains available through its own issue link.</p></section>',
+      );
+    }
+  }
+
+  async createFediverseMentionIssue(id) {
+    const result = this.$("[data-world-fediverse-result]");
+    const title = this.$("[data-world-fediverse-title]")?.value?.trim() || "";
+    const body = this.$("[data-world-fediverse-body]")?.value?.trim() || "";
+    const confirmed = Boolean(
+      this.$("[data-world-fediverse-confirm]")?.checked,
+    );
+    if (!confirmed || !title || !body) {
+      if (result) {
+        result.textContent =
+          "Review the title and body, then check the explicit authorization box.";
+      }
+      return;
+    }
+    const button = this.$(`[data-world-fediverse-create="${CSS.escape(id)}"]`);
+    if (button) button.disabled = true;
+    try {
+      const response = await this.postJSON(
+        `/api/world/fediverse-mentions/${encodeURIComponent(id)}/create`,
+        {
+          confirm: true,
+          title,
+          body,
+          publishFollowup: Boolean(
+            this.$("[data-world-fediverse-followup]")?.checked,
+          ),
+        },
+      );
+      if (result) {
+        result.textContent =
+          response.state === "pending"
+            ? "Pending owner-node materialization. No issue-created announcement has been published."
+            : "This feedback was already queued; no duplicate was created.";
+      }
+      await this.refreshFediverseMentions();
+      this.toast("Feedback queued as pending; awaiting owner-node confirmation.");
+    } catch (_) {
+      if (result) {
+        result.textContent =
+          "The pending inbox could not accept this request. Nothing was called created; retry remains available.";
+      }
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  async moderateFediverseMention(id) {
+    const reason = window.prompt(
+      "Why should this public activity be dismissed from the World feed?",
+      "",
+    );
+    if (!reason?.trim()) return;
+    try {
+      await this.postJSON(
+        `/api/world/fediverse-mentions/${encodeURIComponent(id)}/moderate`,
+        { action: "dismiss", reason: reason.trim() },
+      );
+      await this.refreshFediverseMentions();
+      this.closeLandmark();
+      this.toast("Public activity dismissed with an owner audit record.");
+    } catch (_) {
+      this.toast("The moderation action was not applied.");
+    }
+  }
+
+  async refreshFediverseMentions() {
+    try {
+      this.fediverseMentions = normalizeFediverseMentions(
+        await this.fetchJSON("/api/world/fediverse-mentions", {
+          auth: false,
+          timeout: 5000,
+          cache: "no-store",
+        }),
+      );
+    } catch (_) {
+      this.fediverseMentions = [];
+    }
+    this.renderFediverseActivity();
+  }
+
+  async loadOrganizationSpaces(organizations) {
+    const spaces = await Promise.all(
+      organizations.slice(0, 24).map(async (membership) => {
+        const name = sanitizePresenceText(membership.name, "", 50);
+        if (!name) return membership;
+        const root = `/api/orgs/${encodeURIComponent(name)}`;
+        const [profile, members, teams] = await Promise.allSettled([
+          this.fetchJSON(root, { timeout: 5000 }),
+          this.fetchJSON(`${root}/members`, { timeout: 5000 }),
+          this.fetchJSON(`${root}/teams`, { timeout: 5000 }),
+        ]);
+        return {
+          ...membership,
+          ...(profile.status === "fulfilled" ? profile.value : {}),
+          memberList:
+            members.status === "fulfilled" &&
+            Array.isArray(members.value?.members)
+              ? members.value.members.slice(0, 40)
+              : [],
+          teamList:
+            teams.status === "fulfilled" && Array.isArray(teams.value?.teams)
+              ? teams.value.teams.slice(0, 40)
+              : [],
+        };
+      }),
+    );
+    return spaces.filter((space) => space?.name || space?.org);
+  }
+
+  bindUI() {
+    this.addEventListener("click", (event) => {
+      const landmarkButton = event.target.closest("[data-world-landmark]");
+      if (landmarkButton) {
+        const id = landmarkButton.dataset.worldLandmark;
+        this.world?.focusLandmark(id);
+        this.openLandmark(id);
+        return;
+      }
+      if (event.target.closest("[data-world-action='tour']")) {
+        this.startTour();
+        return;
+      }
+      if (event.target.closest("[data-world-settings-open]")) {
+        this.toggleSettings(true);
+        return;
+      }
+      if (event.target.closest("[data-world-settings-close]")) {
+        this.toggleSettings(false);
+        return;
+      }
+      const fediverseReview = event.target.closest(
+        "[data-world-fediverse-review]",
+      );
+      if (fediverseReview) {
+        this.previewFediverseMention(
+          fediverseReview.dataset.worldFediverseReview,
+        );
+        return;
+      }
+      const fediverseThread = event.target.closest(
+        "[data-world-fediverse-thread]",
+      );
+      if (fediverseThread) {
+        this.openFediverseThread(
+          fediverseThread.dataset.worldFediverseThread,
+        );
+        return;
+      }
+      const fediverseCreate = event.target.closest(
+        "[data-world-fediverse-create]",
+      );
+      if (fediverseCreate) {
+        this.createFediverseMentionIssue(
+          fediverseCreate.dataset.worldFediverseCreate,
+        );
+        return;
+      }
+      const fediverseDismiss = event.target.closest(
+        "[data-world-fediverse-dismiss]",
+      );
+      if (fediverseDismiss) {
+        this.moderateFediverseMention(
+          fediverseDismiss.dataset.worldFediverseDismiss,
+        );
+        return;
+      }
+      if (event.target.closest("[data-world-detail-close]") || event.target.closest("[data-world-detail-backdrop]")) {
+        this.closeLandmark();
+        return;
+      }
+      const themeButton = event.target.closest("[data-world-theme]");
+      if (themeButton) {
+        this.setTheme(themeButton.dataset.worldTheme);
+        return;
+      }
+      if (event.target.closest("[data-world-contribution-prepare]")) {
+        this.prepareRewardContribution();
+        return;
+      }
+      if (event.target.closest("[data-world-contribution-confirm]")) {
+        this.confirmRewardContribution();
+        return;
+      }
+      const pendingClaim = event.target.closest("[data-world-pending-claim]");
+      if (pendingClaim) {
+        this.claimPendingReward(
+          pendingClaim.dataset.worldPendingClaim,
+          pendingClaim
+            .closest("[data-world-pending-reward]")
+            ?.querySelector("[data-world-pending-wallet]")?.value,
+        );
+        return;
+      }
+      const detailAction = event.target.closest("[data-world-detail-action]");
+      if (detailAction) {
+        this.handleLandmarkAction(detailAction.dataset.worldDetailAction);
+        return;
+      }
+      const graphNode = event.target.closest("[data-world-graph-node]");
+      if (graphNode) {
+        const entity = buildRepositoryGraphEntities(
+          this.activeRepository || {},
+        ).find((candidate) => candidate.id === graphNode.dataset.worldGraphNode);
+        if (entity) this.selectRepositoryGraphNode(entity);
+        return;
+      }
+      const repoMap = event.target.closest("[data-world-repo-map]");
+      if (repoMap) {
+        const [owner, name] = String(repoMap.dataset.worldRepoMap || "").split("/");
+        if (owner && name) this.loadRepositoryMap(owner, name);
+        return;
+      }
+      const securityScan = event.target.closest("[data-world-security-scan]");
+      if (securityScan) {
+        const [owner, name] = String(
+          securityScan.dataset.worldSecurityScan || "",
+        ).split("/");
+        if (owner && name) this.loadRepositorySecurity(owner, name);
+        return;
+      }
+      const office = event.target.closest("[data-world-office-member]");
+      if (office) {
+        this.activeOffice = {
+          org: sanitizePresenceText(office.dataset.worldOfficeOrg, "", 50),
+          member: sanitizePresenceText(
+            office.dataset.worldOfficeMember,
+            "",
+            50,
+          ),
+        };
+        this.openLandmark("organizations");
+        return;
+      }
+      const triage = event.target.closest("[data-world-security-triage]");
+      if (triage) {
+        this.updateSecurityFindingStatus(
+          triage.dataset.worldSecurityTriage,
+          triage.dataset.worldSecurityStatus,
+        );
+        return;
+      }
+      const mirrorRequest = event.target.closest("[data-world-mirror-request]");
+      if (mirrorRequest) {
+        const repo = String(mirrorRequest.dataset.worldMirrorRequest || "");
+        const destination = new URL("/dashboard/repos", location.origin);
+        destination.searchParams.set("volunteer", repo);
+        location.assign(destination.href);
+        return;
+      }
+      const directory = event.target.closest("[data-world-repo-directory]");
+      if (directory) {
+        const owner = directory.dataset.worldRepoOwner;
+        const repo = directory.dataset.worldRepoName;
+        const path = directory.dataset.worldRepoDirectory;
+        if (owner && repo) this.loadRepositoryDirectory(owner, repo, path || "");
+        return;
+      }
+      if (event.target.closest("[data-world-run-workshop]")) {
+        this.runWorkshop();
+        return;
+      }
+      if (event.target.closest("[data-world-workshop-save]")) {
+        this.saveWorkshopReport();
+        return;
+      }
+      if (event.target.closest("[data-world-workshop-load]")) {
+        this.loadWorkshopSessions();
+        return;
+      }
+      const openWorkshop = event.target.closest("[data-world-workshop-open]");
+      if (openWorkshop) {
+        this.loadWorkshopSession(openWorkshop.dataset.worldWorkshopOpen);
+        return;
+      }
+      if (event.target.closest("[data-world-workshop-share]")) {
+        this.shareWorkshopSession();
+        return;
+      }
+      if (event.target.closest("[data-world-workshop-comment]")) {
+        this.addWorkshopComment();
+        return;
+      }
+      if (event.target.closest("[data-world-workshop-events-refresh]")) {
+        this.refreshWorkshopEvents();
+        return;
+      }
+      if (event.target.closest("[data-world-events-refresh]")) {
+        this.refreshCommunityEvents(true);
+        return;
+      }
+      if (event.target.closest("[data-world-quarantine-refresh]")) {
+        this.refreshQuarantine(true);
+        return;
+      }
+      const revokeRestriction = event.target.closest(
+        "[data-world-quarantine-revoke]",
+      );
+      if (revokeRestriction) {
+        this.revokeQuarantineRestriction(
+          revokeRestriction.dataset.worldQuarantineRevoke,
+        );
+        return;
+      }
+      const radio = event.target.closest("[data-world-radio]");
+      if (radio) {
+        this.playRadio(radio.dataset.worldRadio);
+        return;
+      }
+      if (event.target.closest("[data-world-radio-stop]")) {
+        this.stopRadio();
+        return;
+      }
+      if (event.target.closest("[data-world-media-add]")) {
+        this.addMediaItem();
+        return;
+      }
+      if (event.target.closest("[data-world-media-create]")) {
+        this.createMediaSpace();
+        return;
+      }
+      const playMedia = event.target.closest("[data-world-media-play]");
+      if (playMedia) {
+        this.updateMediaPlayback(
+          "playing",
+          playMedia.dataset.worldMediaPlay,
+        );
+        return;
+      }
+      if (event.target.closest("[data-world-media-pause]")) {
+        this.updateMediaPlayback(
+          "paused",
+          this.mediaRoom.playback?.itemId || "",
+        );
+        return;
+      }
+      if (event.target.closest("[data-world-media-stop]")) {
+        this.stopMediaRoom();
+        return;
+      }
+      if (event.target.closest("[data-world-media-playback-refresh]")) {
+        this.refreshMediaPlayback(true);
+        return;
+      }
+      if (event.target.closest("[data-world-media-moderator-add]")) {
+        this.grantMediaModerator();
+        return;
+      }
+      const removeMedia = event.target.closest("[data-world-media-remove]");
+      if (removeMedia) {
+        this.removeMediaItem(removeMedia.dataset.worldMediaRemove);
+        return;
+      }
+      const cancelSchedule = event.target.closest(
+        "[data-world-media-schedule-cancel]",
+      );
+      if (cancelSchedule) {
+        this.cancelMediaSchedule(
+          cancelSchedule.dataset.worldMediaScheduleCancel,
+        );
+        return;
+      }
+      const removeModerator = event.target.closest(
+        "[data-world-media-moderator-remove]",
+      );
+      if (removeModerator) {
+        this.removeMediaModerator(
+          removeModerator.dataset.worldMediaModeratorRemove,
+        );
+        return;
+      }
+      const emote = event.target.closest("[data-world-emote]");
+      if (emote) {
+        this.sendWorldInteraction(
+          "emote",
+          "",
+          emote.dataset.worldEmote,
+        );
+        return;
+      }
+      const travel = event.target.closest("[data-world-travel]");
+      if (travel) {
+        this.travelTo(travel.dataset.worldTravel);
+        return;
+      }
+      const homeGrant = event.target.closest("[data-world-home-grant]");
+      if (homeGrant) {
+        const target = homeGrant.dataset.worldHomeGrant;
+        this.sendWorldInteraction("home-grant", target);
+        this.pendingKnocks.delete(target);
+        this.openLandmark("neighborhood");
+        this.toast("Front-yard visit granted once. Normal chat and resource permissions are unchanged.");
+        return;
+      }
+      const homeDecline = event.target.closest("[data-world-home-decline]");
+      if (homeDecline) {
+        const target = homeDecline.dataset.worldHomeDecline;
+        this.sendWorldInteraction("home-decline", target);
+        this.pendingKnocks.delete(target);
+        this.openLandmark("neighborhood");
+        this.toast("Visit request declined without exposing a reason.");
+        return;
+      }
+      const enterHome = event.target.closest("[data-world-enter-home]");
+      if (enterHome) {
+        this.enterNeighborhoodHome(enterHome.dataset.worldEnterHome, false);
+        return;
+      }
+      if (event.target.closest("[data-world-knock]")) {
+        const target = event.target.closest("[data-world-knock]")?.dataset
+          .worldKnock;
+        this.sendWorldInteraction("knock", target);
+        this.toast("Knock sent as a consent request. It does not bypass the room’s permissions.");
+        return;
+      }
+      if (event.target.closest("[data-world-tour-skip]")) {
+        this.stopTour();
+        return;
+      }
+      if (event.target.closest("[data-world-tour-next]")) {
+        this.nextTourStep();
+      }
+    });
+
+    this.addEventListener("change", (event) => {
+      if (event.target.closest("[data-world-repo-filter]")) {
+        this.applyRepositoryFilters();
+        return;
+      }
+      const input = event.target.closest("[data-world-privacy]");
+      if (input) {
+        this.settings.privacy[input.dataset.worldPrivacy] = input.checked;
+        this.commitPublicSettings();
+        return;
+      }
+      const availability = event.target.closest("[data-world-availability]");
+      if (availability) {
+        if (AVAILABILITY_OPTIONS.some((option) => option.id === availability.value)) {
+          this.settings.availability = availability.value;
+          this.commitPublicSettings();
+        }
+        return;
+      }
+      const activity = event.target.closest("[data-world-activity-category]");
+      if (activity) {
+        if (ACTIVITY_OPTIONS.some((option) => option.id === activity.value)) {
+          this.settings.activityCategory = activity.value;
+          this.commitPublicSettings();
+        }
+        return;
+      }
+      const door = event.target.closest("[data-world-public-door]");
+      if (door) {
+        if (["knock", "open", "closed"].includes(door.value)) {
+          this.settings.publicDoor = door.value;
+          this.commitPublicSettings();
+        }
+        return;
+      }
+      const mediaSession = event.target.closest("[data-world-media-session]");
+      if (mediaSession) {
+        this.updateMediaSession(mediaSession.value);
+        return;
+      }
+      const mediaSchedule = event.target.closest("[data-world-media-schedule]");
+      if (mediaSchedule) {
+        this.scheduleMediaRoom(mediaSchedule.value);
+        return;
+      }
+      const mediaSpace = event.target.closest("[data-world-media-space]");
+      if (mediaSpace) {
+        this.loadMediaSpace(mediaSpace.value, true);
+        return;
+      }
+      const name = event.target.closest("[data-world-display-name]");
+      if (name) {
+        this.settings.displayName = sanitizePresenceText(
+          name.value,
+          this.identity.name,
+          24,
+        );
+        name.value = this.settings.displayName;
+        this.commitPublicSettings();
+      }
+    });
+
+    this.addEventListener("input", (event) => {
+      if (event.target.closest("[data-world-repo-filter='directory']")) {
+        this.applyRepositoryFilters();
+      }
+    });
+
+    this.$$("[data-move]").forEach((button) => {
+      const start = (event) => {
+        event.preventDefault();
+        button.setPointerCapture?.(event.pointerId);
+        this.world?.setControl(button.dataset.move, true);
+      };
+      const stop = (event) => {
+        event.preventDefault();
+        this.world?.setControl(button.dataset.move, false);
+      };
+      button.addEventListener("pointerdown", start);
+      button.addEventListener("pointerup", stop);
+      button.addEventListener("pointercancel", stop);
+      button.addEventListener("pointerleave", stop);
+    });
+
+    this.addEventListener("keydown", (event) => {
+      if (event.code !== "Escape") return;
+      if (this.$("[data-world-settings]")?.dataset.open === "true") {
+        this.toggleSettings(false);
+      } else if (this.$("[data-world-detail]")?.dataset.open === "true") {
+        this.closeLandmark();
+      } else if (this.tourIndex >= 0) {
+        this.stopTour();
+      }
+    });
+  }
+
+  commitPublicSettings() {
+    this.saveSettings();
+    this.updateIdentityUI();
+    this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
+    this.sendPresence({ type: "presence" });
+    this.broadcastLocalPresence();
+    this.syncInactivePresence();
+  }
+
+  syncInactivePresence() {
+    window.clearTimeout(this.inactiveSyncTimer);
+    this.inactiveSyncTimer = window.setTimeout(async () => {
+      const session = readSession();
+      if (!session?.sessionToken) return;
+      const persistedStatuses = new Set([
+        "away",
+        "inactive",
+        "recent",
+        "offline-operator",
+        "returning",
+      ]);
+      const visible =
+        this.settings.privacy.inactivity &&
+        this.settings.privacy.activity &&
+        persistedStatuses.has(this.settings.availability);
+      try {
+        if (!visible) {
+          await this.fetchJSON("/api/world/inactive", {
+            method: "DELETE",
+            timeout: 5000,
+            cache: "no-store",
+          });
+          this.inactivePlayers = this.inactivePlayers.filter(
+            (player) => !player.persistedInactive,
+          );
+          this.renderPeers();
+          return;
+        }
+        await this.postJSON("/api/world/inactive", {
+          status: this.settings.availability,
+          shareInactivity: true,
+          shareName: Boolean(this.settings.privacy.name),
+          shareNodes: Boolean(this.settings.privacy.nodes),
+          sessionToken: session.sessionToken,
+        });
+        const payload = await this.fetchJSON("/api/world/inactive", {
+          auth: false,
+          timeout: 5000,
+          cache: "no-store",
+        });
+        this.inactivePlayers = Array.isArray(payload?.people)
+          ? payload.people.slice(0, 64).map((person) => ({
+              id: `inactive:${String(person.id || "").slice(0, 24)}`,
+              name: sanitizePresenceText(
+                person.name,
+                "Private contributor",
+                32,
+              ),
+              flag: "◌",
+              browser: "Hidden",
+              os: "Hidden",
+              accountStatus: ACCOUNT_STATUS_VALUES.has(
+                String(person.accountStatus || ""),
+              )
+                ? String(person.accountStatus)
+                : "Registered",
+              nodes: Array.from(
+                {
+                  length: Math.max(
+                    0,
+                    Math.min(6, Number(person.nodeCount) || 0),
+                  ),
+                },
+                () => "node",
+              ),
+              activity: "idle",
+              availability: String(person.availability || "inactive"),
+              lastActive: String(
+                person.lastActive || "Last active recently",
+              ),
+              publicDoor: "closed",
+              space: "town-square",
+              x: 0,
+              y: 0.38,
+              z: 0,
+              heading: 0,
+              persistedInactive: true,
+            }))
+          : [];
+        this.renderPeers();
+      } catch (_) {
+        // Realtime presence continues even if the optional seating record
+        // cannot be updated. Never fabricate a public inactivity state.
+      }
+    }, 250);
+  }
+
+  startClock() {
+    const render = () => {
+      const clock = worldClock(Date.now() + this.serverOffset);
+      const time = this.$("[data-world-clock]");
+      const phase = this.$("[data-world-phase]");
+      if (time) time.textContent = clock.label;
+      if (phase) phase.textContent = `${clock.phase} · 4h shared day`;
+      this.$$("[data-world-region-clock]").forEach((element) => {
+        const region = WORLD_REGIONS.find(
+          (item) => item.id === element.dataset.worldRegionClock,
+        );
+        if (!region) return;
+        const regionalClock = worldClock(
+          Date.now() +
+            this.serverOffset +
+            Number(region.utcOffsetHours || 0) * (WORLD_DAY_MS / 24),
+        );
+        const label = element.querySelector("span");
+        if (label) {
+          label.textContent = `${region.phase} · ${regionalClock.label}`;
+        }
+      });
+      if (this.settings?.privacy?.localTime) this.updateIdentityUI();
+    };
+    render();
+    this.clockTimer = window.setInterval(render, 1000);
+  }
+
+  updateIdentityUI() {
+    if (!this.identity || !this.settings) return;
+    const visible = publicIdentity(this.identity, this.settings);
+    const flag = this.$("[data-world-shirt-flag]");
+    const account = this.$("[data-world-shirt-account]");
+    const tech = this.$("[data-world-shirt-tech]");
+    const shirtName = this.$("[data-world-shirt-name]");
+    const name = this.$("[data-world-identity-name]");
+    const status = this.$("[data-world-identity-status]");
+    if (flag) flag.textContent = visible.flag;
+    if (account) {
+      account.textContent =
+        ACCOUNT_STATUS_ICONS[visible.accountStatus] || "○";
+      account.title = visible.accountStatus || "Guest";
+    }
+    if (tech) tech.textContent = `${visible.browser} · ${visible.os}`;
+    if (shirtName) shirtName.textContent = visible.name;
+    if (name) name.textContent = visible.name;
+    if (status) status.textContent = accountBadgeCopy(this.identity, this.settings);
+  }
+
+  updateMetrics() {
+    const stats = this.network?.stats || this.network || {};
+    const repoCount = Number(stats.repos || stats.repositories || this.repositories.length);
+    const nodes = Number(stats.hosts || stats.nodes || liveNodeRecords(this.network).length);
+    const reposEl = this.$("[data-world-repos]");
+    const nodesEl = this.$("[data-world-nodes]");
+    if (reposEl) reposEl.textContent = compactNumber(repoCount);
+    if (nodesEl) nodesEl.textContent = compactNumber(nodes);
+    this.updatePlayerCount();
+  }
+
+  rewardEvents() {
+    return Array.isArray(this.rewardState?.transactions)
+      ? this.rewardState.transactions.slice(0, 40)
+      : [];
+  }
+
+  captureRewardEvents(animate = true) {
+    this.rewardEvents().forEach((event) => {
+      const id = String(
+        event.transactionSignature || event.signature || event.eventId || event.id || "",
+      );
+      if (!id) return;
+      const isNew = !this.seenRewardEvents.has(id);
+      this.seenRewardEvents.add(id);
+      const state = String(event.state || event.status || "").toLowerCase();
+      if (
+        animate &&
+        isNew &&
+        (event.transactionSignature ||
+          event.signature ||
+          /(completed|confirmed|finalized|on-chain)/.test(state))
+      ) {
+        const publicNode = sanitizePresenceText(
+          event.node || event.recipientNode || "",
+          "",
+          40,
+        );
+        this.world?.playRewardEvent?.(publicNode);
+        this.toast(
+          "A confirmed community reward event reached an eligible mirror node. The animation is illustrative.",
+        );
+      }
+    });
+  }
+
+  async refreshRewardState() {
+    const hasSession = Boolean(readSession()?.sessionToken);
+    const [pool, pending] = await Promise.allSettled([
+      this.fetchJSON("/api/accounts/central-fund", {
+        auth: false,
+        timeout: 5000,
+        cache: "no-store",
+      }),
+      hasSession
+        ? this.fetchJSON("/api/rewards/pending", {
+            timeout: 5000,
+            cache: "no-store",
+          })
+        : Promise.resolve({ rewards: [] }),
+    ]);
+    if (pool.status === "fulfilled") {
+      this.rewardState = pool.value || {};
+      this.captureRewardEvents(true);
+    }
+    if (pending.status === "fulfilled") {
+      this.pendingRewards = Array.isArray(pending.value?.rewards)
+        ? pending.value.rewards.slice(0, 100)
+        : [];
+    }
+  }
+
+  async prepareRewardContribution() {
+    const amountInput = this.$("[data-world-contribution-amount]");
+    const modeInput = this.$("[data-world-contribution-mode]");
+    const amountSol = Number(amountInput?.value || 0);
+    const amountLamports = Math.round(amountSol * 1_000_000_000);
+    if (!Number.isSafeInteger(amountLamports) || amountLamports < 10_000) {
+      this.toast("Enter at least 0.00001 SOL.");
+      return;
+    }
+    try {
+      this.pendingContribution = await this.postJSON(
+        "/api/rewards/contributions",
+        {
+          action: "prepare",
+          mode: modeInput?.value || "trickle",
+          amountLamports,
+        },
+        { auth: false },
+      );
+      this.openLandmark("fountain");
+      this.toast(
+        "Contribution intent prepared. Review it in your own wallet; ForkMesh never receives your key.",
+      );
+    } catch (error) {
+      this.toast(`Contribution intent unavailable: ${error.message}`);
+    }
+  }
+
+  async confirmRewardContribution() {
+    const contributionId = String(
+      this.pendingContribution?.contributionId || "",
+    );
+    const signature = String(
+      this.$("[data-world-contribution-signature]")?.value || "",
+    ).trim();
+    if (!contributionId || !/^[1-9A-HJ-NP-Za-km-z]{64,120}$/.test(signature)) {
+      this.toast("Paste the finalized Solana transaction signature.");
+      return;
+    }
+    try {
+      const result = await this.postJSON(
+        "/api/rewards/contributions",
+        {
+          action: "confirm",
+          contributionId,
+          transactionSignature: signature,
+        },
+        { auth: false, timeout: 12000 },
+      );
+      this.pendingContribution = {
+        ...this.pendingContribution,
+        ...result,
+      };
+      await this.refreshRewardState();
+      this.openLandmark("fountain");
+      this.toast(
+        result.status === "awaiting_finality"
+          ? "Transfer submitted. No distribution occurs until finality is verified."
+          : "Finalized direct contribution verified on-chain.",
+      );
+    } catch (error) {
+      this.toast(`Contribution could not be verified: ${error.message}`);
+    }
+  }
+
+  async claimPendingReward(rewardId, walletAddress) {
+    const wallet = String(walletAddress || "").trim();
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(wallet)) {
+      this.toast("Enter a valid public self-custodial Solana address.");
+      return;
+    }
+    try {
+      await this.postJSON("/api/rewards/pending", {
+        rewardId: String(rewardId || ""),
+        walletAddress: wallet,
+      });
+      await this.refreshRewardState();
+      this.openLandmark("fountain");
+      this.toast(
+        "Public address accepted. The external local signer must still complete and finalize the exact transfer.",
+      );
+    } catch (error) {
+      this.toast(`Pending reward could not be claimed: ${error.message}`);
+    }
+  }
+
+  startRewardPolling() {
+    window.clearInterval(this.rewardTimer);
+    window.clearInterval(this.eventsTimer);
+    this.rewardTimer = window.setInterval(async () => {
+      try {
+        await this.refreshRewardState();
+        if (
+          this.$("[data-world-detail]")?.dataset.open === "true" &&
+          this.$("#world-detail-title")?.textContent?.includes("reward")
+        ) {
+          this.openLandmark("fountain");
+        }
+      } catch (_) {}
+    }, 60000);
+  }
+
+  updatePlayerCount() {
+    const count = 1 + this.remotePlayers.size + this.localPeers.size;
+    const element = this.$("[data-world-players]");
+    if (element) element.textContent = compactNumber(count);
+  }
+
+  updateLocation(label, id) {
+    const location = this.$("[data-world-location]");
+    const code = this.$("[data-world-location-code]");
+    if (location) location.textContent = label;
+    if (code) code.textContent = id ? id.slice(0, 2).toUpperCase() + "-01" : "TS-01";
+    this.$$("[data-world-landmark]").forEach((button) => {
+      button.setAttribute(
+        "aria-current",
+        String(Boolean(id) && button.dataset.worldLandmark === id),
+      );
+    });
+    if (this.settings.privacy.activity) {
+      this.lastMovement.activity =
+        label === "Town Square" ? "exploring the Town Square" : `visiting ${label}`;
+    } else {
+      this.lastMovement.activity = "online";
+    }
+    this.currentActivityCategory = {
+      repositories: "viewing-repository",
+      workshops: "browsing-code-visualization",
+      organizations: "visiting-organization",
+      information: "reading-documentation",
+    }[id] || "exploring-town-square";
+    this.sendPresence({ type: "presence" });
+  }
+
+  updateRegion(region) {
+    const element = this.$("[data-world-active-region]");
+    if (element && region) {
+      element.textContent = `${region.label} · ${region.phase}`;
+    }
+  }
+
+  updateDistances() {
+    const position = this.world?.getPosition?.();
+    if (!position) return;
+    LANDMARKS.forEach((landmark) => {
+      const distance = Math.hypot(
+        position.x - landmark.position[0],
+        position.z - landmark.position[2],
+      );
+      const element = this.$(`[data-world-distance="${landmark.id}"]`);
+      if (element) element.textContent = distance < 1 ? "here" : `${Math.round(distance)}m`;
+    });
+  }
+
+  openLandmark(id) {
+    const landmark = landmarkById(id);
+    const detail = this.$("[data-world-detail]");
+    const backdrop = this.$("[data-world-detail-backdrop]");
+    if (!detail || !backdrop) return;
+    const featurePanel = this.landmarkPanelHTML(landmark.id);
+    detail.style.setProperty("--detail-color", landmark.color);
+    detail.innerHTML = `
+      <header class="world-detail-header">
+        <div>
+          <p class="world-eyebrow">${escapeHTML(landmark.eyebrow)}</p>
+          <h2 id="world-detail-title">${escapeHTML(landmark.label)}</h2>
+        </div>
+        <button class="world-detail-close" type="button" data-world-detail-close aria-label="Close ${escapeHTML(landmark.label)}">×</button>
+      </header>
+      <div class="world-detail-scroll">
+        <p class="world-detail-summary">${escapeHTML(landmark.summary)}</p>
+        <span class="world-status-pill">${escapeHTML(landmark.status)}</span>
+
+        <div class="world-truth-grid">
+          <section class="world-truth-block">
+            <h3>In the world</h3>
+            <p>${escapeHTML(landmark.metaphor)}</p>
+          </section>
+          <section class="world-truth-block">
+            <h3>What is actually happening</h3>
+            <p>${escapeHTML(landmark.reality)}</p>
+          </section>
+        </div>
+
+        <ul class="world-detail-list">
+          ${landmark.bullets.map((bullet) => `<li>${escapeHTML(bullet)}</li>`).join("")}
+        </ul>
+
+        ${featurePanel}
+
+        <div class="world-detail-actions">
+          ${
+            landmark.primary?.action
+              ? `<button class="world-primary-action" type="button" data-world-detail-action="${escapeHTML(landmark.primary.action)}">${escapeHTML(landmark.primary.label)}</button>`
+              : ""
+          }
+          ${
+            landmark.secondary?.href
+              ? `<a class="world-secondary-action" href="${escapeHTML(landmark.secondary.href)}">${escapeHTML(landmark.secondary.label)}</a>`
+              : ""
+          }
+        </div>
+      </div>`;
+    detail.dataset.open = "true";
+    detail.setAttribute("aria-hidden", "false");
+    backdrop.dataset.open = "true";
+    this.$$("[data-world-landmark]").forEach((button) => {
+      button.setAttribute(
+        "aria-current",
+        String(button.dataset.worldLandmark === landmark.id),
+      );
+    });
+    window.setTimeout(() => detail.querySelector("[data-world-detail-close]")?.focus(), 120);
+  }
+
+  closeLandmark() {
+    const detail = this.$("[data-world-detail]");
+    const backdrop = this.$("[data-world-detail-backdrop]");
+    if (detail) {
+      detail.dataset.open = "false";
+      detail.setAttribute("aria-hidden", "true");
+    }
+    if (backdrop) backdrop.dataset.open = "false";
+    this.world?.clearFocus();
+  }
+
+  landmarkPanelHTML(id) {
+    const panels = {
+      information: () => this.informationPanelHTML(),
+      fountain: () => this.rewardPanelHTML(),
+      repositories: () => this.repositoryPanelHTML(),
+      routing: () => this.routingPanelHTML(),
+      organizations: () => this.organizationPanelHTML(),
+      fediverse: () => this.fediversePanelHTML(),
+      security: () => this.securityPanelHTML(),
+      quarantine: () => this.quarantinePanelHTML(),
+      launchpad: () => this.launchpadPanelHTML(),
+      events: () => this.eventsPanelHTML(),
+      neighborhood: () => this.neighborhoodPanelHTML(),
+      workshops: () => this.workshopPanelHTML(),
+      broadcast: () => this.broadcastPanelHTML(),
+      support: () => this.supportPanelHTML(),
+    };
+    return panels[id]?.() || "";
+  }
+
+  informationPanelHTML() {
+    const steps = [
+      ["What ForkMesh is", "A multiplayer developer city backed by independently operated Git mirrors."],
+      ["Create an account", "Register and verify email in the console; guests can explore immediately."],
+      ["Mirror a repository", "Install the desktop control node, choose an authorized repository, and publish signed health."],
+      ["Operate a node", "The desktop controls sync, health, logs, permissions, Cloudflare deployment, and local keys."],
+      ["Wallets and rewards", "Community members connect only a public self-custodial payout address; never enter its private key or recovery phrase."],
+      ["Privacy and encryption", "Country is approximate; presence is optional and generalized; private data follows owner-controlled encryption and authorization."],
+    ];
+    return `
+      <section class="world-feature-card" aria-label="ForkMesh orientation">
+        <h3>New contributor route</h3>
+        <ol class="world-orientation-list">
+          ${steps
+            .map(
+              ([title, copy]) => `
+                <li><strong>${escapeHTML(title)}</strong><span>${escapeHTML(copy)}</span></li>`,
+            )
+            .join("")}
+        </ol>
+        <div class="world-notice world-notice-safe">
+          <strong>Non-custodial by design</strong>
+          <span>User-owned funds and wallet keys remain on the user’s device. Community-pool funds, pending allocations, and completed on-chain transfers are separate states.</span>
+        </div>
+        <div class="world-notice">
+          <strong>One-click Cloudflare setup stays on your computer</strong>
+          <span>The hosted World never accepts, proxies, or stores a Cloudflare API token. Open the installed Qt Control Node and enter the scoped session-only token there.</span>
+        </div>
+        <div class="world-detail-actions">
+          <a href="forkmesh://control/cloudflare" data-world-local-qt-link>Open local Qt Cloudflare setup</a>
+          <a href="/docs/qt-client/#cloudflare">Desktop setup guide</a>
+        </div>
+      </section>`;
+  }
+
+  routingPanelHTML() {
+    const instances = Array.isArray(this.federatedInstances)
+      ? this.federatedInstances
+      : [];
+    return `
+      <section class="world-feature-card" aria-label="Approved ForkMesh relay instances">
+        <h3>Approved federated instances</h3>
+        <div class="world-instance-list">
+          ${
+            instances.length
+              ? instances
+                  .map(
+                    (instance) => `<article>
+                      <span class="world-instance-icon" aria-hidden="true">${
+                        instance.online ? "●" : "○"
+                      }</span>
+                      <div><strong>${escapeHTML(
+                        instance.label,
+                      )}</strong><span>${escapeHTML(
+                        instance.health.replaceAll("_", " "),
+                      )}</span><p>${escapeHTML(
+                        instance.online
+                          ? "Online is backed by fresh signed node health through an approved relay."
+                          : "Listed as approved, but not claimed online without fresh verified health.",
+                      )}</p><small>${escapeHTML(
+                        instance.healthEvidence.replaceAll("-", " "),
+                      )}</small></div>
+                      <a href="${escapeHTML(
+                        instance.origin,
+                      )}" target="_blank" rel="noopener noreferrer">Open public instance</a>
+                    </article>`,
+                  )
+                  .join("")
+              : '<p class="world-empty-state">No approved federated instance has a publishable origin yet. ForkMesh does not invent map nodes.</p>'
+          }
+        </div>
+        <p class="world-panel-footnote">This projection includes only an approved public origin, generalized health, and a random public display id. Federation keys, signatures, tokens, wallets, node identities, raw IPs, private repositories, and exact activity are excluded.</p>
+      </section>`;
+  }
+
+  rewardPanelHTML() {
+    const address = String(this.rewardState?.address || "");
+    const network = String(this.rewardState?.network || "mainnet-beta");
+    const balance = Number(
+      this.rewardState?.balanceSol ??
+        this.rewardState?.balance ??
+        this.rewardState?.sol ??
+        0,
+    );
+    const transactions = Array.isArray(this.rewardState?.transactions)
+      ? this.rewardState.transactions.slice(0, 5)
+      : [];
+    const contribution = this.pendingContribution;
+    const pending = Array.isArray(this.pendingRewards)
+      ? this.pendingRewards.slice(0, 10)
+      : [];
+    const poolExplorer = String(this.rewardState?.explorerUrl || "");
+    const latestRound = this.rewardState?.latestRound || null;
+    return `
+      <section class="world-feature-card" aria-label="Global Reward Pool status">
+        <div class="world-finance-grid">
+          <div>
+            <span>Public pool balance</span>
+            <strong>${address ? `${escapeHTML(String(balance))} SOL` : "Unavailable"}</strong>
+          </div>
+          <div>
+            <span>Solana network</span>
+            <strong>${escapeHTML(network)}</strong>
+          </div>
+          <div>
+            <span>Pending allocation window</span>
+            <strong>24 hours</strong>
+          </div>
+        </div>
+        <dl class="world-technical-list">
+          <div><dt>Public address</dt><dd class="world-break">${
+            poolExplorer && address
+              ? `<a href="${escapeHTML(poolExplorer)}" target="_blank" rel="noopener noreferrer">${escapeHTML(address)}</a>`
+              : escapeHTML(address || "No verified pool address configured")
+          }</dd></div>
+          <div><dt>User-owned funds</dt><dd>Remain in each user’s self-custodial wallet.</dd></div>
+          <div><dt>Community-pool funds</dt><dd>Visible public on-chain state; signing authority stays in the first instance owner’s local Qt client.</dd></div>
+          <div><dt>Pending rewards</dt><dd>Ledger allocation only; funds stay at the source and the allocation expires after 24 hours.</dd></div>
+          <div><dt>Completed transfers</dt><dd>Shown only after an exact finalized System transfer is independently verified.</dd></div>
+          <div><dt>Randomized round</dt><dd>${
+            latestRound
+              ? `${escapeHTML(latestRound.status || "scheduled")} · ${escapeHTML(
+                  latestRound.roundId || "",
+                )} · ${Number(latestRound.eligibleCount || 0)} eligible`
+              : "No eligible round has been scheduled."
+          }</dd></div>
+          <div><dt>Selection proof</dt><dd>${
+            latestRound?.selection
+              ? `${escapeHTML(
+                  latestRound.selection.algorithm || "",
+                )} selected ${escapeHTML(
+                  latestRound.selection.selectedNodeId || "a public node",
+                )} from snapshot ${escapeHTML(
+                  latestRound.selection.snapshotHash || "",
+                )}`
+              : "Selection waits for the scheduled time and a finalized public Solana blockhash."
+          }</dd></div>
+        </dl>
+        <h3>Join or fund the community reward program</h3>
+        <p class="world-panel-footnote">Joining is a voluntary direct contribution to the configured public pool. It does not purchase ownership, guaranteed rewards, investment returns, or governance control; your own wallet reviews and signs the transfer.</p>
+        <div class="world-reward-form">
+          <label>
+            <span>Amount (SOL)</span>
+            <input data-world-contribution-amount type="number" min="0.00001" max="100" step="0.00001" value="0.001" inputmode="decimal" />
+          </label>
+          <label>
+            <span>Distribution choice</span>
+            <select data-world-contribution-mode>
+              <option value="trickle">Add to randomized trickle pool</option>
+              <option value="instant_all_nodes">Instant intent for all eligible nodes</option>
+            </select>
+          </label>
+          <button type="button" data-world-contribution-prepare ${address ? "" : "disabled"}>
+            Prepare direct wallet transfer
+          </button>
+        </div>
+        ${
+          contribution
+            ? `<div class="world-contribution-intent" data-world-contribution-intent>
+                <strong>Prepared public intent · ${escapeHTML(
+                  contribution.mode || "",
+                )}</strong>
+                <span>${escapeHTML(
+                  contribution.amountSol || "",
+                )} SOL → ${escapeHTML(contribution.poolAddress || address)}</span>
+                <span>Expires ${escapeHTML(
+                  new Date(Number(contribution.expiresAt || 0)).toLocaleString(),
+                )}</span>
+                ${
+                  contribution.uri
+                    ? `<a class="world-primary-action" href="${escapeHTML(
+                        contribution.uri,
+                      )}">Review in self-custodial wallet</a>`
+                    : ""
+                }
+                <label>
+                  <span>Finalized transaction signature</span>
+                  <input data-world-contribution-signature type="text" autocomplete="off" spellcheck="false" placeholder="Paste public Solana signature" />
+                </label>
+                <button type="button" data-world-contribution-confirm>Verify finalized transfer</button>
+                <small>Never paste a private key, seed, or recovery phrase. A reference-bound direct transfer is required; visual particles do not prove payment.</small>
+              </div>`
+            : ""
+        }
+        <h3>Your pending allocations</h3>
+        <div class="world-pending-rewards">
+          ${
+            pending.length
+              ? pending
+                  .map((item) => {
+                    const expiresAt = Number(item.expiresAt || 0);
+                    const remaining = Math.max(0, expiresAt - Date.now());
+                    const remainingHours = Math.ceil(
+                      remaining / (60 * 60 * 1000),
+                    );
+                    const claimable =
+                      String(item.status || "") === "pending_wallet" &&
+                      remaining > 0;
+                    return `<article data-world-pending-reward>
+                      <strong>${escapeHTML(
+                        item.amountLamports
+                          ? `${Number(item.amountLamports) / 1_000_000_000} SOL`
+                          : "Community allocation",
+                      )}</strong>
+                      <span>Status: ${escapeHTML(item.status || "pending")}</span>
+                      <span>Expires ${escapeHTML(
+                        new Date(expiresAt).toLocaleString(),
+                      )} (${remainingHours}h remaining)</span>
+                      ${
+                        claimable
+                          ? `<label><span>Public self-custodial wallet</span><input data-world-pending-wallet type="text" autocomplete="off" spellcheck="false" placeholder="Solana public address" /></label>
+                             <button type="button" data-world-pending-claim="${escapeHTML(
+                               item.rewardId || "",
+                             )}">Use this public address</button>`
+                          : ""
+                      }
+                    </article>`;
+                  })
+                  .join("")
+              : `<p class="world-empty-state">${
+                  readSession()?.sessionToken
+                    ? "No pending walletless allocations."
+                    : "Sign in to view private pending-allocation status."
+                }</p>`
+          }
+        </div>
+        <h3>Recent verified reward events</h3>
+        <div class="world-event-list">
+          ${
+            transactions.length
+              ? transactions
+                  .map(
+                    (item) => `
+                      <div>
+                        <strong>${escapeHTML(
+                          item.type || "Completed on-chain transfer",
+                        )}</strong>
+                        <span>${escapeHTML(
+                          [
+                            item.recipientNode,
+                            item.amountSol ? `${item.amountSol} SOL` : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" · ") || "Verified event",
+                        )}</span>
+                        ${
+                          item.explorerUrl
+                            ? `<a href="${escapeHTML(
+                                item.explorerUrl,
+                              )}" target="_blank" rel="noopener noreferrer">View finalized transaction</a>`
+                            : ""
+                        }
+                      </div>`,
+                  )
+                  .join("")
+              : `<p class="world-empty-state">No verified on-chain reward events were returned. Fountain particles remain illustrative.</p>`
+          }
+        </div>
+        <div class="world-notice world-notice-warning">
+          <strong>ForkMesh is non-custodial</strong>
+          <span>ForkMesh does not hold or control your funds. Never enter a private key or recovery phrase. Community rewards are voluntary incentives, not investments or guaranteed returns.</span>
+        </div>
+      </section>`;
+  }
+
+  repositoryPanelHTML() {
+    const repos = this.repositories.slice(0, 8);
+    const catalogEmpty = this.repositoryCatalogState === "empty";
+    const catalogUnavailable = this.repositoryCatalogState === "unavailable";
+    return `
+      <div class="world-repositories-panel" aria-label="Repository portals">
+        ${
+          repos.length
+            ? repos
+                .map((repo) => {
+            const path = `/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`;
+            const state = repo.isPrivate
+              ? "Private to you"
+              : repo.liveHost
+                ? repo.source === "remote-clone"
+                  ? "Mirrored"
+                  : "Live"
+                : repo.source === "external"
+                  ? "Stub only"
+                  : "Unavailable";
+            const meta = [repo.language, repo.mirrorCount ? `${repo.mirrorCount} mirrors` : ""]
+              .filter(Boolean)
+              .join(" · ");
+            const external = safeHTTPURL(repo.externalUrl);
+            return `
+              <div class="world-repo-row">
+                <span>
+                  <strong>${escapeHTML(repo.owner)}/${escapeHTML(repo.name)}</strong>
+                  <span>${escapeHTML(meta || repo.description || "Repository portal")}</span>
+                </span>
+                <span class="world-repo-state">${escapeHTML(state)}</span>
+                <span class="world-repo-actions">
+                  ${
+                    repo.liveHost || repo.isPrivate
+                      ? `<button type="button" data-world-repo-map="${escapeHTML(
+                          `${repo.owner}/${repo.name}`,
+                        )}">Explore 3D map</button>`
+                      : `<button type="button" data-world-mirror-request="${escapeHTML(
+                          `${repo.owner}/${repo.name}`,
+                        )}">Volunteer to mirror</button>`
+                  }
+                  <button type="button" data-world-security-scan="${escapeHTML(
+                    `${repo.owner}/${repo.name}`,
+                  )}">Security clipboard</button>
+                  <a href="${escapeHTML(external || path)}">${
+                    external ? "Original source" : "Repository"
+                  }</a>
+                </span>
+              </div>`;
+                })
+                .join("")
+            : `<div class="world-notice ${
+                catalogUnavailable
+                  ? "world-notice-warning"
+                  : ""
+              }" data-world-repository-catalog-state="${escapeHTML(
+                this.repositoryCatalogState,
+              )}">
+                <strong>${
+                  catalogUnavailable
+                    ? "Repository catalog unavailable"
+                    : catalogEmpty
+                      ? "No authorized repositories listed"
+                      : "Repository catalog loading"
+                }</strong>
+                <span>${
+                  catalogUnavailable
+                    ? "The live catalog request failed. ForkMesh does not substitute demo repositories or imply that a mirror is online."
+                    : catalogEmpty
+                      ? "The catalog returned no public or account-authorized repositories. No repository can be opened or analyzed from this panel."
+                      : "Waiting for the live repository catalog."
+                }</span>
+              </div>`
+        }
+        <div data-world-repo-explorer>
+          <p class="world-empty-state">${
+            repos.length
+              ? "Choose an available repository to build its authorized, size-aware file map."
+              : "A live, authorized repository is required before a three-dimensional map can run."
+          }</p>
+        </div>
+      </div>`;
+  }
+
+  organizationPanelHTML() {
+    const orgs = this.organizations.length
+      ? this.organizations
+      : [{ name: "Public lobby", role: "guest", placeholder: true }];
+    return `
+      <section class="world-feature-card" aria-label="Organization spaces">
+        <div class="world-building-grid">
+          ${orgs
+            .map((org) => {
+              const name = sanitizePresenceText(
+                org.name || org.org,
+                "organization",
+                50,
+              );
+              const displayName = sanitizePresenceText(
+                org.displayName,
+                name,
+                80,
+              );
+              const role = sanitizePresenceText(
+                org.viewerRole || org.role,
+                "guest",
+                24,
+              );
+              const logoURL = safeHTTPURL(org.logoUrl);
+              const worldAccess =
+                org.worldAccess && typeof org.worldAccess === "object"
+                  ? org.worldAccess
+                  : {
+                      lobby: "public",
+                      floors: "restricted",
+                      offices: "restricted",
+                    };
+              const capabilities =
+                org.worldCapabilities &&
+                typeof org.worldCapabilities === "object"
+                  ? org.worldCapabilities
+                  : {
+                      lobby: true,
+                      floors: role !== "guest",
+                      offices: role !== "guest",
+                    };
+              const repos = Array.isArray(org.repos) ? org.repos.slice(0, 12) : [];
+              const teams = Array.isArray(org.teamList)
+                ? org.teamList.slice(0, 12)
+                : [];
+              const members = Array.isArray(org.memberList)
+                ? org.memberList.slice(0, 12)
+                : [];
+              const office = members.find(
+                (member) =>
+                  String(member.name || "").toLowerCase() ===
+                  String(this.identity.name || "").toLowerCase(),
+              );
+              const lobbyURL = `/dashboard/chat?org=${encodeURIComponent(name)}`;
+              const settingsURL = `/dashboard/settings/organizations?org=${encodeURIComponent(
+                name,
+              )}`;
+              const selectedOffice =
+                this.activeOffice?.org === name
+                  ? members.find(
+                      (member) =>
+                        String(member.name || "").toLowerCase() ===
+                        String(this.activeOffice.member || "").toLowerCase(),
+                    )
+                  : null;
+              const selectedPresence = selectedOffice
+                ? [...this.remotePlayers.values()].find(
+                    (player) =>
+                      String(player.name || "").toLowerCase() ===
+                      String(selectedOffice.name || "").toLowerCase(),
+                  )
+                : null;
+              return `
+                <article class="world-building-card">
+                  <span class="world-building-logo">${
+                    logoURL
+                      ? `<img src="${escapeHTML(
+                          logoURL,
+                        )}" alt="${escapeHTML(
+                          displayName,
+                        )} logo" loading="lazy" referrerpolicy="no-referrer" />`
+                      : `<span aria-hidden="true">${escapeHTML(
+                          displayName.slice(0, 2).toUpperCase(),
+                        )}</span>`
+                  }</span>
+                  <div><strong>${escapeHTML(displayName)}</strong><span>${escapeHTML(
+                    org.placeholder ? "Public preview" : `${role} access`,
+                  )}</span><p>${escapeHTML(
+                    String(org.description || "Organization collaboration space").slice(
+                      0,
+                      180,
+                    ),
+                  )}</p></div>
+                  <ul class="world-org-floors">
+                    <li><span>Lobby</span><em>${escapeHTML(
+                      `${worldAccess.lobby || "public"} · ${
+                        capabilities.lobby ? "enterable" : "restricted"
+                      }`,
+                    )}</em></li>
+                    ${teams
+                      .map(
+                        (team) =>
+                          `<li><span>${escapeHTML(
+                            sanitizePresenceText(team.team, "Team", 50),
+                          )} team floor</span><em>${escapeHTML(
+                            sanitizePresenceText(
+                              team.permission,
+                              "role checked",
+                              24,
+                            ),
+                          )} · ${Number(team.members || 0)} members</em></li>`,
+                      )
+                      .join("")}
+                    ${repos
+                      .map(
+                        (repo) =>
+                          `<li><span>Repository bed · ${escapeHTML(
+                            sanitizePresenceText(repo.repo, "repository", 60),
+                          )}</span><em>Node ${escapeHTML(
+                            sanitizePresenceText(repo.node, "linked", 50),
+                          )}</em></li>`,
+                      )
+                      .join("")}
+                    <li><span>Floor visibility</span><em>${escapeHTML(
+                      `${worldAccess.floors || "restricted"} · ${
+                        capabilities.floors
+                          ? "repository beds visible"
+                          : "repository beds hidden"
+                      }`,
+                    )}</em></li>
+                  </ul>
+                  <section class="world-office-card">
+                    <strong>${office ? `${escapeHTML(office.name)}’s office` : "Personal offices"}</strong>
+                    <span>${escapeHTML(
+                      capabilities.offices
+                        ? office
+                          ? "Member workspace available"
+                          : "Authorized office directory"
+                        : `Offices are ${worldAccess.offices || "restricted"}`,
+                    )}</span>
+                    <small>Repositories: ${repos.length} · activity: user-controlled · achievements: profile-controlled</small>
+                    ${
+                      capabilities.offices && members.length
+                        ? `<div class="world-detail-actions">${members
+                            .map(
+                              (member) =>
+                                `<button type="button" data-world-office-org="${escapeHTML(
+                                  name,
+                                )}" data-world-office-member="${escapeHTML(
+                                  sanitizePresenceText(
+                                    member.name,
+                                    "member",
+                                    50,
+                                  ),
+                                )}">Open ${escapeHTML(
+                                  sanitizePresenceText(
+                                    member.name,
+                                    "member",
+                                    50,
+                                  ),
+                                )}’s office</button>`,
+                            )
+                            .join("")}</div>`
+                        : ""
+                    }
+                  </section>
+                  ${
+                    selectedOffice
+                      ? `<section class="world-office-card" data-world-active-office>
+                          <strong>${escapeHTML(
+                            sanitizePresenceText(
+                              selectedOffice.name,
+                              "Member",
+                              50,
+                            ),
+                          )} · ${escapeHTML(displayName)}</strong>
+                          <span>Organization role: ${escapeHTML(
+                            sanitizePresenceText(
+                              selectedOffice.role,
+                              "member",
+                              24,
+                            ),
+                          )}${
+                            Number(selectedOffice.since) > 0
+                              ? ` · member since ${escapeHTML(
+                                  new Date(
+                                    Number(selectedOffice.since),
+                                  ).toLocaleDateString(),
+                                )}`
+                              : ""
+                          }</span>
+                          <small>Current work: ${escapeHTML(
+                            selectedPresence?.activity &&
+                              selectedPresence.activity !== "hidden"
+                              ? selectedPresence.activity
+                              : "Not publicly shared",
+                          )}</small>
+                          <ul class="world-org-floors">${
+                            repos.length
+                              ? repos
+                                  .map(
+                                    (repo) =>
+                                      `<li><span>${escapeHTML(
+                                        sanitizePresenceText(
+                                          repo.repo,
+                                          "repository",
+                                          60,
+                                        ),
+                                      )}</span><em>Authorized organization repository floor</em></li>`,
+                                  )
+                                  .join("")
+                              : "<li><span>No visible repository floor</span><em>Access remains role-gated</em></li>"
+                          }</ul>
+                          <div class="world-detail-actions">
+                            <a href="/@${encodeURIComponent(
+                              sanitizePresenceText(
+                                selectedOffice.name,
+                                "member",
+                                50,
+                              ),
+                            )}">Open public profile and achievements</a>
+                            <a href="${escapeHTML(
+                              lobbyURL,
+                            )}">Collaborate in organization lobby</a>
+                          </div>
+                        </section>`
+                      : ""
+                  }
+                  <div class="world-repo-actions">
+                    ${
+                      capabilities.lobby
+                        ? `<a href="${escapeHTML(lobbyURL)}">Enter lobby</a>`
+                        : `<button type="button" disabled>Lobby restricted</button>`
+                    }
+                    <a href="/${encodeURIComponent(name)}">Watch projects</a>
+                    <a href="/dashboard/settings/activitypub?org=${encodeURIComponent(
+                      name,
+                    )}">Follow on Fediverse</a>
+                    ${
+                      org.placeholder
+                        ? ""
+                        : `<a href="${escapeHTML(settingsURL)}">Manage access</a>`
+                    }
+                  </div>
+                </article>`;
+            })
+            .join("")}
+        </div>
+        <p class="world-panel-footnote">An organization role never grants access outside that organization. Mirror operators cannot read private repository plaintext merely because they host encrypted bytes.</p>
+      </section>`;
+  }
+
+  fediversePanelHTML() {
+    const centers = [
+      {
+        name: "Mastodon",
+        copy: "Instances, languages, topics, registration, and explicitly attested public follower connections.",
+        url: "https://mastodon.social/@forkmesh",
+      },
+      {
+        name: "Lemmy",
+        copy: "Instances, communities, topics, public activity, and moderation or registration state.",
+        url: "",
+      },
+      {
+        name: "Twitter / X",
+        copy: "ForkMesh’s public profile link only; no private relationship graph is imported.",
+        url: "https://x.com/forkmesh",
+      },
+      {
+        name: "Reddit",
+        copy: "ForkMesh’s public profile link only; private browsing and subscriptions stay private.",
+        url: "https://www.reddit.com/user/forkmesh",
+      },
+    ];
+    const directoryEntries = [
+      ...(Array.isArray(this.fediverseDirectory?.mastodon)
+        ? this.fediverseDirectory.mastodon.map((item) => ({
+            ...item,
+            network: "Mastodon",
+          }))
+        : []),
+      ...(Array.isArray(this.fediverseDirectory?.lemmy)
+        ? this.fediverseDirectory.lemmy.map((item) => ({
+            ...item,
+            network: "Lemmy",
+          }))
+        : []),
+      ...(Array.isArray(this.fediverseDirectory?.x)
+        ? this.fediverseDirectory.x.map((item) => ({
+            ...item,
+            network: "X",
+          }))
+        : []),
+      ...(Array.isArray(this.fediverseDirectory?.reddit)
+        ? this.fediverseDirectory.reddit.map((item) => ({
+            ...item,
+            network: "Reddit",
+          }))
+        : []),
+    ].slice(0, 40);
+    return `
+      <section class="world-feature-card" aria-label="Social and Fediverse centers">
+        <div class="world-social-grid">
+          ${centers
+            .map(
+              ({ name, copy, url }) => `
+                <article><span aria-hidden="true">${escapeHTML(name.slice(0, 1))}</span><strong>${escapeHTML(
+                  name,
+                )}</strong><p>${escapeHTML(copy)}</p>${
+                  url
+                    ? `<a href="${escapeHTML(
+                        url,
+                      )}" target="_blank" rel="noopener noreferrer">Open public center</a>`
+                    : "<small>Participating instances appear below when an approved directory record exists.</small>"
+                }</article>`,
+            )
+            .join("")}
+        </div>
+        <h3>Participating public directory records</h3>
+        <div class="world-instance-list">
+          ${
+            directoryEntries.length
+              ? directoryEntries
+                  .map((instance) => {
+                    const url = safeHTTPURL(instance.url);
+                    const iconURL = safeHTTPURL(instance.icon);
+                    const name = sanitizePresenceText(
+                      instance.name,
+                      "Public instance",
+                      80,
+                    );
+                    const details = [
+                      ...(Array.isArray(instance.languages)
+                        ? instance.languages.slice(0, 4)
+                        : []),
+                      ...(Array.isArray(instance.topics)
+                        ? instance.topics.slice(0, 4)
+                        : []),
+                      instance.registration || "",
+                      instance.moderation || "",
+                      instance.publicActivity || "",
+                    ]
+                      .filter(Boolean)
+                      .map((value) => String(value).slice(0, 40))
+                      .join(" · ");
+                    return `
+                      <article>
+                        <span class="world-instance-icon">${
+                          iconURL
+                            ? `<img src="${escapeHTML(
+                                iconURL,
+                              )}" alt="" referrerpolicy="no-referrer" />`
+                            : escapeHTML(name.slice(0, 1).toUpperCase())
+                        }</span>
+                        <div><strong>${escapeHTML(name)}</strong><span>${escapeHTML(
+                          instance.network,
+                        )}</span><p>${escapeHTML(
+                          String(instance.description || "").slice(0, 180),
+                        )}</p><small>${escapeHTML(details)}</small>
+                        ${
+                          Array.isArray(instance.communities) &&
+                          instance.communities.length
+                            ? `<small>Communities: ${escapeHTML(
+                                instance.communities
+                                  .slice(0, 6)
+                                  .map((item) =>
+                                    String(item.name || item).slice(0, 40),
+                                  )
+                                  .join(", "),
+                              )}</small>`
+                            : ""
+                        }
+                        ${
+                          Array.isArray(instance.relationships) &&
+                          instance.relationships.length
+                            ? `<small>Public instance links: ${escapeHTML(
+                                instance.relationships
+                                  .slice(0, 6)
+                                  .map((item) =>
+                                    String(item.name || item).slice(0, 40),
+                                  )
+                                  .join(", "),
+                              )}</small>`
+                            : ""
+                        }
+                        ${
+                          Array.isArray(instance.approvedSubscriptions) &&
+                          instance.approvedSubscriptions.length
+                            ? `<small>User-approved subscriptions: ${escapeHTML(
+                                instance.approvedSubscriptions
+                                  .filter(
+                                    (item) =>
+                                      item?.consent === true &&
+                                      item?.public === true,
+                                  )
+                                  .slice(0, 6)
+                                  .map((item) =>
+                                    String(item.name || item.community || "").slice(
+                                      0,
+                                      40,
+                                    ),
+                                  )
+                                  .filter(Boolean)
+                                  .join(", "),
+                              )}</small>`
+                            : ""
+                        }
+                        <div class="world-follower-orbit" aria-label="User-approved public connections">
+                          ${
+                            Array.isArray(
+                              instance.network === "Mastodon"
+                                ? instance.consentedFollowers
+                                : instance.consentedProfiles,
+                            )
+                              ? (instance.network === "Mastodon"
+                                  ? instance.consentedFollowers
+                                  : instance.consentedProfiles
+                                )
+                                  .filter(
+                                    (follower) =>
+                                      follower?.consent === true &&
+                                      follower?.public === true &&
+                                      follower?.consentEvidence
+                                        ?.oauthVerifiedByForkMesh === false,
+                                  )
+                                  .slice(0, 12)
+                                  .map((follower) => {
+                                    const avatar = safeHTTPURL(follower.avatar);
+                                    const handle = String(
+                                      follower.handle || "Public follower",
+                                    ).slice(0, 80);
+                                    const source = sanitizePresenceText(
+                                      follower?.consentEvidence?.source,
+                                      "operator attestation",
+                                      40,
+                                    );
+                                    return `<span title="${escapeHTML(
+                                      `${handle} · ${source} · not OAuth-verified by ForkMesh`,
+                                    )}">${
+                                      avatar
+                                        ? `<img src="${escapeHTML(
+                                            avatar,
+                                          )}" alt="${escapeHTML(
+                                            handle,
+                                          )}" referrerpolicy="no-referrer" />`
+                                        : escapeHTML(handle.slice(0, 1))
+                                    }</span>`;
+                                  })
+                                  .join("")
+                              : ""
+                          }
+                        </div></div>
+                        ${
+                          url
+                            ? `<a href="${escapeHTML(
+                                url,
+                              )}" target="_blank" rel="noopener noreferrer">Visit public instance</a>`
+                            : ""
+                        }
+                      </article>`;
+                  })
+                  .join("")
+              : `<p class="world-empty-state">No participating service has an approved public directory record yet.</p>`
+          }
+        </div>
+        <div class="world-notice world-notice-safe">
+          <strong>Consent boundary</strong>
+          <span>Directory records are operator-ingested public/consent attestations, labeled with their consent source and review time; ForkMesh does not claim to independently own or OAuth-verify remote accounts. Follower faces appear only for records marked public, public-account-visible, and user-consented. Private followers, private accounts, search terms, and browsing history are excluded.</span>
+        </div>
+        <h3>Known automated agents</h3>
+        <div class="world-instance-list world-bot-list">
+          ${
+            this.botDirectory.length
+              ? this.botDirectory
+                  .map((bot) => {
+                    const verified = bot.verified === true;
+                    return `
+                      <article>
+                        <span class="world-instance-icon" aria-hidden="true">⌘</span>
+                        <div>
+                          <strong>${escapeHTML(
+                            sanitizePresenceText(bot.name, "Automated agent", 80),
+                          )}</strong>
+                          <span>${escapeHTML(
+                            sanitizePresenceText(bot.type, "Bot", 60),
+                          )} · ${verified ? "Verified" : "Unverified"}</span>
+                          <p>${escapeHTML(
+                            String(bot.generalActivity || "General public automation").slice(
+                              0,
+                              180,
+                            ),
+                          )}</p>
+                          <small>${escapeHTML(
+                            String(
+                              bot.publicResourceCategory ||
+                                "No public resource category reported",
+                            ).slice(0, 120),
+                          )}</small>
+                        </div>
+                      </article>`;
+                  })
+                  .join("")
+              : `<p class="world-empty-state">No deployed bot directory entries are available.</p>`
+          }
+        </div>
+        <dl class="world-technical-list">
+          <div><dt>Digest cadence</dt><dd>At most one meaningful automated post per repository or organization each day.</dd></div>
+          <div><dt>Empty / duplicate updates</dt><dd>Suppressed before delivery.</dd></div>
+          <div><dt>Owner controls</dt><dd>Preview, disable, and per-repository or per-organization settings.</dd></div>
+          <div><dt>Attribution</dt><dd>Automated posts identify themselves and link to the relevant public update.</dd></div>
+        </dl>
+      </section>`;
+  }
+
+  securityPanelHTML() {
+    const scan = this.securityScan || {};
+    const findings = scan.findings || scan.summary || {};
+    const state = scan.status || "Scan unavailable";
+    const categories =
+      scan.categories && typeof scan.categories === "object"
+        ? JSON.stringify(scan.categories)
+        : scan.categories || "See the authorized report for redacted finding detail.";
+    const history = Array.isArray(this.securityHistory)
+      ? this.securityHistory
+      : [];
+    const selectedRepository = this.securityRepository || "No repository selected";
+    const triage = this.securityTriage || {};
+    const reviewCounts =
+      triage.falsePositiveStatus || scan.falsePositiveStatus || {};
+    return `
+      <section class="world-feature-card world-clipboard" aria-label="Latest security scan clipboard">
+        <div class="world-clipboard-head">
+          <div><span>REPOSITORY / STATUS</span><strong>${escapeHTML(
+            selectedRepository,
+          )} · ${escapeHTML(state)}</strong></div>
+          <div><span>SCANNED COMMIT</span><strong>${escapeHTML(
+            scan.commit || scan.commitHash || "Not reported",
+          )}</strong></div>
+        </div>
+        <dl class="world-technical-list">
+          <div><dt>Date and time</dt><dd>${escapeHTML(scan.scannedAt || scan.timestamp || "Not reported")}</dd></div>
+          <div><dt>Scanner / model</dt><dd>${escapeHTML(
+            [scan.scanner, scan.model, scan.modelVersion].filter(Boolean).join(" · ") ||
+              "Not reported",
+          )}</dd></div>
+          <div><dt>Policy</dt><dd>${escapeHTML(scan.policy || scan.policyVersion || "Public redacted policy not reported")}</dd></div>
+          <div><dt>Duration</dt><dd>${escapeHTML(scan.duration || scan.durationMs || "Not reported")}</dd></div>
+          <div><dt>Included</dt><dd>${escapeHTML(
+            Array.isArray(scan.included) ? scan.included.join(", ") : scan.included || "Not reported",
+          )}</dd></div>
+          <div><dt>Excluded</dt><dd>${escapeHTML(
+            Array.isArray(scan.excluded) ? scan.excluded.join(", ") : scan.excluded || "Not reported",
+          )}</dd></div>
+          <div><dt>Severity totals</dt><dd>${escapeHTML(
+            typeof findings === "object" ? JSON.stringify(findings) : findings || "Not reported",
+          )}</dd></div>
+          <div><dt>Dependency / secrets / static analysis</dt><dd>${escapeHTML(
+            categories,
+          )}</dd></div>
+          <div><dt>False positives / human review</dt><dd>${escapeHTML(
+            scan.reviewStatus || "Not reviewed",
+          )}</dd></div>
+          <div><dt>Finding review states</dt><dd>${escapeHTML(
+            `Unreviewed ${Number(reviewCounts.unreviewed || 0)} · Confirmed ${Number(
+              reviewCounts.confirmed || 0,
+            )} · Dismissed ${Number(reviewCounts.dismissed || 0)}`,
+          )}</dd></div>
+          <div><dt>Recommended actions</dt><dd>${escapeHTML(
+            Array.isArray(scan.recommendations)
+              ? scan.recommendations.join("; ")
+              : scan.recommendations || "Run or inspect the latest authorized scan.",
+          )}</dd></div>
+          <div><dt>Scope limitations</dt><dd>${escapeHTML(
+            Array.isArray(scan.scopeLimitations)
+              ? scan.scopeLimitations.join("; ") || "None reported"
+              : scan.scopeLimitations || "Not reported",
+          )}</dd></div>
+        </dl>
+        <h3>Scan and review record</h3>
+        <ol class="world-orientation-list" data-world-security-history>
+          ${
+            history.length
+              ? history
+                  .slice(0, 10)
+                  .map((record) => {
+                    const clipboard = record?.clipboard || {};
+                    return `<li><strong>${escapeHTML(
+                      clipboard.status || "Scan status unavailable",
+                    )}</strong><span>${escapeHTML(
+                      clipboard.scannedAt || record?.receivedAt || "Time unavailable",
+                    )} · commit ${escapeHTML(
+                      clipboard.commitHash || "unknown",
+                    )} · ${escapeHTML(
+                      clipboard.reviewStatus || "No review action recorded",
+                    )}</span></li>`;
+                  })
+                  .join("")
+              : `<li><strong>No scan history returned</strong><span>Select a catalog repository. Missing and unauthorized private repositories fail closed without revealing whether a scan exists.</span></li>`
+          }
+        </ol>
+        ${
+          triage.canReview === true && Array.isArray(triage.findings)
+            ? `<section class="world-security-triage" aria-label="Authorized finding review">
+                <h3>Owner / security-reviewer triage</h3>
+                <p class="world-panel-footnote">${escapeHTML(
+                  triage.reviewRole || "Authorized reviewer",
+                )} · scan ${escapeHTML(triage.scanId || "")} · commit ${escapeHTML(
+                  triage.commitHash || "",
+                )}</p>
+                <div class="world-event-list">${triage.findings
+                  .slice(0, 100)
+                  .map(
+                    (finding) => `<article>
+                      <div><strong>${escapeHTML(
+                        `${finding.severity || "unknown"} · ${
+                          finding.ruleId || finding.category || "finding"
+                        }`,
+                      )}</strong><p><code>${escapeHTML(
+                        finding.path || "redacted path",
+                      )}${finding.line ? `:${escapeHTML(finding.line)}` : ""}</code> · ${escapeHTML(
+                        finding.summary || "",
+                      )}</p><small>Current: ${escapeHTML(
+                        finding.falsePositiveStatus || "unreviewed",
+                      )}</small></div>
+                      <div class="world-detail-actions">
+                        ${["unreviewed", "confirmed", "dismissed"]
+                          .map(
+                            (status) =>
+                              `<button type="button" data-world-security-triage="${escapeHTML(
+                                finding.id,
+                              )}" data-world-security-status="${status}" ${
+                                finding.falsePositiveStatus === status
+                                  ? "disabled"
+                                  : ""
+                              }>${status}</button>`,
+                          )
+                          .join("")}
+                      </div>
+                    </article>`,
+                  )
+                  .join("")}</div>
+              </section>`
+            : ""
+        }
+        <div class="world-notice world-notice-warning">
+          <strong>Scope-limited recommendation</strong>
+          <span>Automated scans may miss vulnerabilities. Results apply only to the named commit; a clean scan is not a guarantee, and human review may still be required. Secrets, source, sensitive prompts, and exploit detail are redacted publicly.</span>
+        </div>
+        <div class="world-detail-actions">
+          ${
+            this.securityRepository
+              ? `<a class="world-primary-action" href="/${escapeHTML(
+                  this.securityRepository
+                    .split("/")
+                    .map((part) => encodeURIComponent(part))
+                    .join("/"),
+                )}">Open authorized repository review</a>`
+              : `<button class="world-primary-action" type="button" data-world-detail-action="repositories">Choose a repository</button>`
+          }
+          <a class="world-secondary-action" href="/security-report">Report a security issue privately</a>
+        </div>
+      </section>`;
+  }
+
+  quarantinePanelHTML() {
+    const signals = [
+      "Known vulnerable endpoint probing",
+      "Credential stuffing or repeated authentication abuse",
+      "Path traversal or injection attempts",
+      "Excessive automated scraping or denial-of-service behavior",
+      "Known exploit signatures or access-control bypass attempts",
+    ];
+    const summary = Array.isArray(this.quarantine?.summary)
+      ? this.quarantine.summary
+      : [];
+    const restrictions = Array.isArray(this.quarantine?.restrictions)
+      ? this.quarantine.restrictions
+      : [];
+    const canRevoke = this.quarantine?.allowedActions?.includes("revoke");
+    const visibilityLabels = {
+      "aggregate-only": "Public aggregate view",
+      "moderator-generalized": "Moderator generalized view",
+      "reviewer-generalized-world": "Security reviewer generalized world view",
+      unavailable: "Live quarantine data unavailable",
+    };
+    return `
+      <section class="world-feature-card" aria-label="Quarantine safeguards">
+        <div class="world-quarantine-flow">
+          <span>Rate limit</span><b>→</b><span>Temporary quarantine</span><b>→</b><span>Human review</span><b>→</b><span>Appeal / expiry</span>
+        </div>
+        <ul class="world-detail-list">${signals
+          .map((signal) => `<li>${escapeHTML(signal)}</li>`)
+          .join("")}</ul>
+        <dl class="world-technical-list">
+          <div><dt>Public record</dt><dd>Generalized reason, rule, timestamp, duration, confidence, evidence summary, review source, and appeal state.</dd></div>
+          <div><dt>Identifier</dt><dd>Tokenized internal incident ID; never a raw IP address.</dd></div>
+          <div><dt>Private evidence</dt><dd>Least-privilege access with a defined retention period and sensitive-action audit trail.</dd></div>
+          <div><dt>False-positive safeguards</dt><dd>Shared networks, VPNs, proxies, and carrier NAT are considered. Country, browser, and OS are never malicious indicators.</dd></div>
+        </dl>
+        <div class="world-notice world-notice-safe">
+          <strong>${escapeHTML(
+            visibilityLabels[this.quarantine?.visibility] ||
+              visibilityLabels.unavailable,
+          )}</strong>
+          <span>The live visual jail consumes the privacy-safe quarantine API. This panel allowlists generalized fields and never renders private evidence, request paths, raw network identifiers, or decrypted reviewer material.</span>
+        </div>
+        <h3>Live privacy-safe aggregates</h3>
+        <div class="world-instance-list" data-world-quarantine-summary>
+          ${
+            summary.length
+              ? summary
+                  .map(
+                    (item) => `
+                      <article>
+                        <span class="world-instance-icon" aria-hidden="true">${escapeHTML(
+                          compactNumber(item.count),
+                        )}</span>
+                        <div><strong>${escapeHTML(
+                          item.reason.replaceAll("_", " "),
+                        )}</strong><span>${escapeHTML(
+                          item.status,
+                        )}</span><p>Generalized restrictions in the retained security window.</p></div>
+                      </article>`,
+                  )
+                  .join("")
+              : `<p class="world-empty-state">${
+                  this.quarantine?.visibility === "unavailable"
+                    ? "The live aggregate could not be loaded. No synthetic incident count is shown."
+                    : "No retained restrictions are present in the live aggregate."
+                }</p>`
+          }
+        </div>
+        ${
+          restrictions.length
+            ? `<h3>Role-gated generalized records</h3>
+              <div class="world-instance-list" data-world-quarantine-records>
+                ${restrictions
+                  .map((item) => {
+                    const detected = item.detectedAt
+                      ? new Date(item.detectedAt).toLocaleString()
+                      : "Timestamp unavailable";
+                    const expires = item.expiresAt
+                      ? new Date(item.expiresAt).toLocaleString()
+                      : "Manual expiry";
+                    const client = [
+                      item.countryCode ? flagEmoji(item.countryCode) : "",
+                      item.clientCategory,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ");
+                    return `<article>
+                      <span class="world-instance-icon" aria-hidden="true">⚑</span>
+                      <div><strong>${escapeHTML(
+                        item.reason.replaceAll("_", " "),
+                      )}</strong><span>${escapeHTML(
+                        `${item.status} · ${item.confidence} confidence`,
+                      )}</span><p>${escapeHTML(
+                        item.rule,
+                      )} · ${escapeHTML(detected)} · expires ${escapeHTML(
+                        expires,
+                      )}</p><small>${escapeHTML(
+                        [
+                          item.automatic ? "Automatic" : "Human initiated",
+                          item.reviewed ? "reviewed" : "awaiting review",
+                          `appeal ${item.appealStatus}`,
+                          client,
+                        ]
+                          .filter(Boolean)
+                          .join(" · "),
+                      )}</small></div>
+                      ${
+                        canRevoke &&
+                        ["quarantined", "blocked"].includes(item.status)
+                          ? `<button type="button" data-world-quarantine-revoke="${escapeHTML(
+                              item.incidentId,
+                            )}">Revoke restriction</button>`
+                          : ""
+                      }
+                    </article>`;
+                  })
+                  .join("")}
+              </div>`
+            : ""
+        }
+        <div class="world-detail-actions">
+          <button type="button" data-world-quarantine-refresh>Refresh live controls</button>
+          <a href="/security-report">Report a security issue privately</a>
+        </div>
+      </section>`;
+  }
+
+  async refreshQuarantine(openPanel = false) {
+    try {
+      const payload = await this.fetchJSON("/api/security/quarantine", {
+        timeout: 5000,
+        cache: "no-store",
+        headers: { "x-forkmesh-world-view": "generalized" },
+      });
+      this.quarantine = normalizeQuarantinePayload(payload);
+      this.world?.updateQuarantine?.(this.quarantine);
+      if (openPanel) this.openLandmark("quarantine");
+    } catch (_) {
+      this.quarantine = normalizeQuarantinePayload(null);
+      this.world?.updateQuarantine?.(this.quarantine);
+      if (openPanel) this.openLandmark("quarantine");
+      this.toast("The live privacy-safe quarantine view is unavailable.");
+    }
+  }
+
+  async revokeQuarantineRestriction(incidentId) {
+    const id = String(incidentId || "").toLowerCase();
+    if (
+      !/^[a-f0-9]{32}$/.test(id) ||
+      !this.quarantine?.allowedActions?.includes("revoke")
+    ) {
+      return;
+    }
+    if (
+      !window.confirm(
+        "Revoke this restriction? The action is audited and does not delete its retained review record.",
+      )
+    ) {
+      return;
+    }
+    try {
+      await this.postJSON("/api/security/quarantine", {
+        action: "revoke",
+        incidentId: id,
+      });
+      await this.refreshQuarantine(true);
+      this.toast("The restriction was revoked and the action was audited.");
+    } catch (_) {
+      this.toast("The restriction could not be revoked.");
+    }
+  }
+
+  launchpadPanelHTML() {
+    return `
+      <section class="world-feature-card" aria-label="World destinations">
+        <div class="world-region-grid">
+          ${WORLD_REGIONS.map(
+            (region) => `
+              <article>
+                <span>${escapeHTML(region.phase)}</span>
+                <strong>${escapeHTML(region.label)}</strong>
+                <p>Visual offset ${region.utcOffsetHours >= 0 ? "+" : ""}${escapeHTML(
+                  region.utcOffsetHours,
+                )}h · events remain UTC-synchronized.</p>
+                <button type="button" data-world-travel="${escapeHTML(
+                  region.id,
+                )}">Teleport to campus</button>
+              </article>`,
+          ).join("")}
+          <article><span>Achievement space</span><strong>Sky campus</strong><p>Collaboration room with standard permission checks.</p><button type="button" data-world-travel="sky-campus">Take the launch elevator</button></article>
+          <article><span>Repository world</span><strong>Code planet</strong><p>Opens the selected repository map and workshop tools.</p><button type="button" data-world-travel="code-planet">Enter repository portal</button></article>
+          <article><span>Organization region</span><strong>Garden campus</strong><p>Organization-owned lobbies, offices, and project beds.</p><button type="button" data-world-travel="organization-region">Enter organization portal</button></article>
+          <article><span>Community planets</span><strong>Planet atlas</strong><p>Achievement, event, and community-owned destinations with UTC schedules.</p><button type="button" data-world-travel="planet-atlas">Open planet atlas</button></article>
+          <article><span>Community space</span><strong>Space station</strong><p>Scheduled presentation, chat, and moderated media room.</p><button type="button" data-world-travel="space-station">Board shuttle</button></article>
+        </div>
+        <p class="world-panel-footnote">Each portal moves your live avatar into the shared 3D destination. Signed-in collaborators can use its dedicated authenticated shared-key channel. The relay derives the default key and can read messages: <a href="/dashboard/chat?space=sky-campus">Sky campus</a> · <a href="/dashboard/chat?space=space-station">Space station</a> · <a href="/dashboard/chat?space=code-planet">Code planet</a> · <a href="/dashboard/chat?space=organization-region">Garden campus</a> · <a href="/dashboard/chat?space=planet-atlas">Planet atlas</a>.</p>
+      </section>`;
+  }
+
+  setCurrentSpace(space) {
+    this.currentSpace = WORLD_SPACE_IDS.has(space) ? space : "town-square";
+    const url = new URL(location.href);
+    if (this.currentSpace === "town-square") {
+      url.searchParams.delete("space");
+    } else {
+      url.searchParams.set("space", this.currentSpace);
+    }
+    history.replaceState(history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    this.sendPresence({ type: "presence" });
+  }
+
+  travelTo(destination) {
+    if (WORLD_REGIONS.some((region) => region.id === destination)) {
+      this.setCurrentSpace(destination);
+      if (this.world?.travelToRegion(destination)) {
+        const region = WORLD_REGIONS.find((item) => item.id === destination);
+        this.toast(
+          `Arrived in ${region.label}. Its visual time is ${region.phase}; shared events remain UTC-synchronized.`,
+        );
+        this.closeLandmark();
+      }
+      return;
+    }
+    const destinationPanels = {
+      "sky-campus": "workshops",
+      "space-station": "broadcast",
+      "code-planet": "repositories",
+      "organization-region": "organizations",
+      "planet-atlas": "events",
+    };
+    const panel = destinationPanels[destination];
+    if (panel && this.world?.travelToSpace?.(destination)) {
+      this.setCurrentSpace(destination);
+      this.openLandmark(panel);
+      this.toast(
+        `Arrived in ${destination.replaceAll("-", " ")}. Your avatar, realtime presence, tools, and dedicated encrypted collaboration channel now share this destination.`,
+      );
+    }
+  }
+
+  eventsPanelHTML() {
+    const events = this.events.slice(0, 12);
+    const formatter = new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+    return `
+      <section class="world-feature-card" aria-label="UTC community events">
+        <div class="world-event-list">
+          ${
+            events.length
+              ? events.map((item) => {
+              const instant = new Date(item.startsAt);
+              const ends = new Date(item.endsAt);
+              return `
+                <article>
+                  <span>${escapeHTML(item.type || "Event")}</span>
+                  <strong>${escapeHTML(item.title)}</strong>
+                  <time datetime="${escapeHTML(item.startsAt)}">${escapeHTML(
+                    Number.isNaN(instant.getTime())
+                      ? item.startsAt
+                      : formatter.format(instant),
+                  )}</time>
+                  <em>${escapeHTML(item.destination || "Town Square")}</em>
+                  <small>Ends ${escapeHTML(
+                    Number.isNaN(ends.getTime())
+                      ? item.endsAt
+                      : formatter.format(ends),
+                  )}</small>
+                </article>`;
+                }).join("")
+              : `<p class="world-empty-state" data-world-events-state="${escapeHTML(
+                  this.eventsState,
+                )}">${
+                  this.eventsState === "unavailable"
+                    ? "The live event service is unavailable. No seeded or demo announcement is being presented as scheduled."
+                    : this.eventsState === "loading"
+                      ? "Loading live UTC event announcements…"
+                      : "No unexpired community events are currently scheduled."
+                }</p>`
+          }
+        </div>
+        <button type="button" data-world-events-refresh>Refresh live events</button>
+        <p class="world-panel-footnote">Event instants are stored as UTC ISO-8601 values; the dates above are formatted in this device’s selected time zone.</p>
+      </section>`;
+  }
+
+  async refreshCommunityEvents(render = false) {
+    try {
+      const payload = await this.fetchJSON("/api/world/events", {
+        auth: false,
+        timeout: 5000,
+        cache: "no-store",
+      });
+      this.events = normalizeCommunityEvents(payload);
+      this.eventsState = this.events.length ? "ready" : "empty";
+    } catch (_) {
+      this.events = [];
+      this.eventsState = "unavailable";
+    }
+    if (
+      render &&
+      this.$("[data-world-detail]")?.dataset.open === "true" &&
+      this.$("#world-detail-title")?.textContent?.includes("Events")
+    ) {
+      this.openLandmark("events");
+    }
+  }
+
+  startEventPolling() {
+    window.clearInterval(this.eventsTimer);
+    this.eventsTimer = window.setInterval(() => {
+      this.refreshCommunityEvents(
+        this.$("[data-world-detail]")?.dataset.open === "true" &&
+          this.$("#world-detail-title")?.textContent?.includes("Events"),
+      );
+    }, 60000);
+  }
+
+  neighborhoodPanelHTML() {
+    const availability =
+      AVAILABILITY_OPTIONS.find((option) => option.id === this.settings.availability)
+        ?.label || "Online";
+    const hidden =
+      !this.settings.privacy.activity ||
+      (!this.settings.privacy.inactivity &&
+        ["inactive", "recent"].includes(this.settings.availability));
+    const publicNeighbors = [
+      ...this.remotePlayers.values(),
+      ...this.inactivePlayers,
+    ];
+    return `
+      <section class="world-feature-card" aria-label="Contributor neighborhood controls">
+        <div class="world-home-card">
+          <span class="world-home-door" data-state="${escapeHTML(
+            this.settings.publicDoor,
+          )}" aria-hidden="true"></span>
+          <div>
+            <strong>${escapeHTML(publicIdentity(this.identity, this.settings).name)}’s space</strong>
+            <span>${hidden ? "Availability hidden" : escapeHTML(availability)} · ${
+              this.settings.publicDoor === "open"
+                ? "public lobby open"
+                : this.settings.publicDoor === "closed"
+                  ? "door closed"
+                  : "knock first"
+            }</span>
+          </div>
+        </div>
+        ${
+          this.pendingKnocks.size
+            ? `<h3>Knocks waiting for your consent</h3>
+              <div class="world-neighbor-list">
+                ${[...this.pendingKnocks.values()]
+                  .slice(0, 8)
+                  .map(
+                    (visitor) => `<article>
+                      <span aria-hidden="true">✦</span>
+                      <div><strong>${escapeHTML(
+                        visitor.name,
+                      )}</strong><small>One-use visual visit request; no chat or private-data access.</small></div>
+                      <button type="button" data-world-home-grant="${escapeHTML(
+                        visitor.id,
+                      )}">Open front yard</button>
+                      <button type="button" data-world-home-decline="${escapeHTML(
+                        visitor.id,
+                      )}">Decline</button>
+                    </article>`,
+                  )
+                  .join("")}
+              </div>`
+            : ""
+        }
+        <h3>Public neighborhood</h3>
+        <div class="world-neighbor-list">
+          ${
+            publicNeighbors.length
+              ? publicNeighbors
+                  .slice(0, 16)
+                  .map((player) => {
+                    const door = ["closed", "knock", "open"].includes(
+                      player.publicDoor,
+                    )
+                      ? player.publicDoor
+                      : "closed";
+                    return `
+                      <article>
+                        <span aria-hidden="true">⌂</span>
+                        <div><strong>${escapeHTML(
+                          player.name,
+                        )}’s house</strong><small>${escapeHTML(
+                          player.persistedInactive
+                            ? `${player.lastActive || "Last active recently"} · seating status chosen by user`
+                            : door === "open"
+                            ? "Public lobby unlocked"
+                            : door === "knock"
+                              ? "Knock before entering"
+                              : "Door closed",
+                        )}</small></div>
+                        ${
+                          door === "knock"
+                            ? `<button type="button" data-world-knock="${escapeHTML(
+                                player.id,
+                              )}">Knock</button>`
+                            : door === "open"
+                              ? `<button type="button" data-world-enter-home="${escapeHTML(
+                                  player.id,
+                                )}">Enter front yard</button>`
+                              : `<button type="button" disabled>Private</button>`
+                        }
+                      </article>`;
+                  })
+                  .join("")
+              : `<p class="world-empty-state">No other public homes are online. Empty houses reveal nothing about offline users.</p>`
+          }
+        </div>
+        <p class="world-panel-footnote">The seating area indicates a chosen away state without penalties or rankings. Hiding inactivity produces no public inactivity record.</p>
+      </section>`;
+  }
+
+  sendWorldInteraction(kind, target = "", emote = "") {
+    if (kind === "emote" && ["wave", "idea", "celebrate"].includes(emote)) {
+      this.world?.playEmote?.(this.serverPeerId || this.identity.id, emote, true);
+    } else if (
+      !["knock", "home-grant", "home-decline"].includes(kind) ||
+      !target
+    ) {
+      return;
+    }
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      this.toast(
+        kind === "emote"
+          ? "Realtime is offline; the emote played on this device only."
+          : "Realtime is offline; use the public lobby link instead.",
+      );
+      return;
+    }
+    try {
+      this.socket.send(
+        JSON.stringify(
+          kind === "emote"
+            ? { type: "interaction", kind: "emote", emote }
+            : {
+                type: "interaction",
+                kind,
+                target: String(target).slice(0, 32),
+              },
+        ),
+      );
+    } catch (_) {}
+  }
+
+  enterNeighborhoodHome(ownerId, granted) {
+    const owner = this.remotePlayers.get(String(ownerId || ""));
+    if (!owner || (!granted && owner.publicDoor !== "open")) {
+      this.toast("That front yard is no longer open.");
+      return;
+    }
+    if (!this.world?.visitNeighborhoodHome?.(String(ownerId || ""))) {
+      this.toast("That home is not currently present in the live neighborhood.");
+      return;
+    }
+    this.closeLandmark();
+    this.toast(
+      granted
+        ? `${owner.name || "The owner"} accepted your knock. You entered their visual front yard; normal collaboration permissions still apply.`
+        : `Entered ${owner.name || "the owner"}’s public front yard. Normal collaboration permissions still apply.`,
+    );
+  }
+
+  workshopPanelHTML() {
+    const repos = this.repositories
+      .filter((repo) => repo.liveHost || repo.isPrivate)
+      .slice(0, 50);
+    const runnable = repos.length > 0;
+    return `
+      <section class="world-feature-card" aria-label="Code workshop controls">
+        <div class="world-workshop-form">
+          <label><span>Authorized repository</span><select data-world-workshop-repo ${
+            runnable ? "" : "disabled"
+          }>
+            ${
+              runnable
+                ? repos
+                    .map(
+                      (repo) =>
+                        `<option value="${escapeHTML(`${repo.owner}/${repo.name}`)}">${escapeHTML(
+                          `${repo.owner}/${repo.name}`,
+                        )}</option>`,
+                    )
+                    .join("")
+                : `<option value="">No live authorized repository available</option>`
+            }
+          </select></label>
+          <label><span>Workshop</span><select data-world-workshop-type>
+            ${WORKSHOP_TYPES.map(
+              (type) => `<option value="${escapeHTML(type)}">${escapeHTML(type)}</option>`,
+            ).join("")}
+          </select></label>
+          <button type="button" class="world-primary-action" data-world-run-workshop ${
+            runnable ? "" : "disabled"
+          }>Run local inspection</button>
+          <button type="button" data-world-workshop-load ${
+            readSession()?.sessionToken ? "" : "disabled"
+          }>Load saved workshops</button>
+        </div>
+        <div data-world-workshop-results>
+          <p class="world-empty-state">${
+            runnable
+              ? "Choose a repository and scope. The first pass uses one commit-pinned authorized snapshot. Sign in to save an encrypted report, invite explicit participants, and coordinate updates."
+              : this.repositoryCatalogState === "unavailable"
+                ? "The live repository catalog is unavailable. ForkMesh will not run a workshop against sample or guessed repository data."
+                : "No live public or account-authorized repository is available for a workshop."
+          }</p>
+        </div>
+      </section>`;
+  }
+
+  broadcastPanelHTML() {
+    const sessionLabels = {
+      "listening-room": "Shared listening room",
+      "dj-session": "DJ session",
+      "video-room": "Video-sharing room",
+      "watch-party": "Watch party",
+      "repository-launch": "Repository launch event",
+      "organization-presentation": "Organization presentation",
+    };
+    const authenticated = Boolean(readSession()?.sessionToken);
+    const hasRoom = Boolean(this.mediaRoom.id);
+    const canModerate = this.mediaRoom.canModerate === true;
+    const isOwner = this.mediaRoom.viewerRole === "owner";
+    const playback = this.mediaRoom.playback || {
+      state: "idle",
+      itemId: "",
+      positionMs: 0,
+      revision: 0,
+    };
+    const playbackItem = this.mediaRoom.items.find(
+      (item) => item.id === playback.itemId,
+    );
+    const playbackPosition = this.mediaPlaybackPosition();
+    const localSchedule = this.mediaRoom.scheduledAt
+      ? new Date(this.mediaRoom.scheduledAt)
+      : null;
+    const scheduleValue =
+      localSchedule && !Number.isNaN(localSchedule.getTime())
+        ? new Date(
+            localSchedule.getTime() -
+              localSchedule.getTimezoneOffset() * 60 * 1000,
+          )
+            .toISOString()
+            .slice(0, 16)
+        : "";
+    return `
+      <section class="world-feature-card" aria-label="Opt-in media controls">
+        <div class="world-media-list">
+          ${RADIO_STATIONS.map(
+            (station) => `
+              <article>
+                <div><span>${escapeHTML(station.provider)}</span><strong>${escapeHTML(
+                  station.name,
+                )}</strong><p>${escapeHTML(station.description)}</p></div>
+                <button type="button" data-world-radio="${escapeHTML(
+                  station.id,
+                )}">${
+                  station.playMode === "external"
+                    ? "Open official player"
+                    : "Play with consent"
+                }</button>
+                <a href="${escapeHTML(station.homepageUrl)}" target="_blank" rel="noopener noreferrer">${
+                  station.playMode === "external"
+                    ? "Provider page"
+                    : "License and method"
+                }</a>
+              </article>`,
+          ).join("")}
+        </div>
+        <div class="world-media-now" data-world-media-now>
+          <span>Nothing is playing. Audio never starts automatically.</span>
+          <button type="button" data-world-radio-stop disabled>Mute / stop</button>
+        </div>
+        <section class="world-media-room" aria-label="Community media room">
+          <h3>Server-authoritative rooms and playlists</h3>
+          ${
+            authenticated
+              ? `<div class="world-workshop-form">
+                  <label><span>Shared room</span><select data-world-media-space>
+                    ${
+                      this.mediaSpaces.length
+                        ? this.mediaSpaces
+                            .map(
+                              (space) =>
+                                `<option value="${escapeHTML(space.id)}" ${
+                                  space.id === this.mediaRoom.id ? "selected" : ""
+                                }>${escapeHTML(space.name)} · ${escapeHTML(
+                                  space.viewerRole || "participant",
+                                )}</option>`,
+                            )
+                            .join("")
+                        : `<option value="">No active rooms yet</option>`
+                    }
+                  </select></label>
+                  <label><span>Create a room</span><input type="text" maxlength="80" placeholder="Community listening room" data-world-media-space-name /></label>
+                  <button type="button" data-world-media-create>Create room</button>
+                </div>`
+              : `<div class="world-notice"><strong>Account required</strong><span>Sign in to load shared rooms, playlists, schedules, and moderation roles. No room state is stored in this browser.</span></div>`
+          }
+          ${
+            hasRoom
+              ? `<p><strong>${escapeHTML(this.mediaRoom.name)}</strong> · owned by ${escapeHTML(
+                  this.mediaRoom.owner || "a registered contributor",
+                )} · your role: ${escapeHTML(
+                  this.mediaRoom.viewerRole || "participant",
+                )}</p>`
+              : `<p class="world-empty-state">Create or select an authenticated shared room. ForkMesh stores coordination metadata, not media.</p>`
+          }
+          <div class="world-notice world-notice-safe" data-world-shared-playback>
+            <strong>Shared clock · ${escapeHTML(playback.state)}</strong>
+            <span data-world-shared-playback-copy>${
+              playbackItem
+                ? `${escapeHTML(playbackItem.title)} at ${escapeHTML(
+                    formatMediaPosition(playbackPosition),
+                  )}. Open the official provider yourself, then seek to this shared position.`
+                : "No provider item is selected. The shared clock never starts media on a participant’s device."
+            }</span>
+            <span data-world-shared-provider-metadata>${escapeHTML(
+              playbackItem
+                ? providerMetadataCopy(playbackItem)
+                : "Current provider track metadata unavailable: no provider item is selected.",
+            )}</span>
+            <span>Revision ${escapeHTML(playback.revision)} · coordination metadata only</span>
+            <div class="world-detail-actions">
+              <button type="button" data-world-media-playback-refresh ${
+                hasRoom ? "" : "disabled"
+              }>Refresh shared clock</button>
+              <button type="button" data-world-media-pause ${
+                canModerate && playback.state === "playing" ? "" : "disabled"
+              }>Pause shared clock</button>
+              <button type="button" data-world-media-stop ${
+                canModerate && !["idle", "stopped"].includes(playback.state)
+                  ? ""
+                  : "disabled"
+              }>Stop shared clock</button>
+            </div>
+          </div>
+          <div class="world-workshop-form">
+            <label><span>Session type</span><select data-world-media-session ${
+              canModerate ? "" : "disabled"
+            }>
+              ${Object.entries(sessionLabels)
+                .map(
+                  ([value, label]) =>
+                    `<option value="${escapeHTML(value)}" ${
+                      this.mediaRoom.sessionType === value ? "selected" : ""
+                    }>${escapeHTML(label)}</option>`,
+                )
+                .join("")}
+            </select></label>
+            <label><span>Schedule in your time zone</span><input type="datetime-local" value="${escapeHTML(
+              scheduleValue,
+            )}" data-world-media-schedule ${canModerate ? "" : "disabled"} /></label>
+          </div>
+          <div class="world-media-add">
+            <input type="text" maxlength="80" placeholder="Playlist item title" data-world-media-title />
+            <input type="url" maxlength="500" placeholder="Official HTTPS provider or media page" data-world-media-url />
+            <button type="button" data-world-media-add ${
+              canModerate ? "" : "disabled"
+            }>Add provider link</button>
+            <button type="button" data-world-media-stop ${
+              canModerate ? "" : "disabled"
+            }>Moderator stop</button>
+          </div>
+          <div class="world-media-queue">
+            ${
+              this.mediaRoom.items.length
+                ? this.mediaRoom.items
+                    .map(
+                      (item) => `
+                        <article>
+                          <div><strong>${escapeHTML(item.title)}</strong><small>User playlist label · ${escapeHTML(
+                            item.provider,
+                          )} · external provider playback${
+                            item.id === playback.itemId
+                              ? ` · shared ${escapeHTML(playback.state)} at ${escapeHTML(
+                                  formatMediaPosition(playbackPosition),
+                                )}`
+                              : ""
+                          }</small><small>${escapeHTML(
+                            providerMetadataCopy(item),
+                          )}</small></div>
+                          <a href="${escapeHTML(
+                            item.url,
+                          )}" target="_blank" rel="noopener noreferrer">Open official page</a>
+                          ${
+                            canModerate
+                              ? `<button type="button" data-world-media-play="${escapeHTML(
+                                  item.id,
+                                )}">${
+                                  item.id === playback.itemId &&
+                                  playback.state === "paused"
+                                    ? "Resume shared clock"
+                                    : "Start shared clock"
+                                }</button><button type="button" data-world-media-remove="${escapeHTML(
+                                  item.id,
+                                )}" aria-label="Moderator remove ${escapeHTML(
+                                  item.title,
+                                )}">Remove</button>`
+                              : ""
+                          }
+                        </article>`,
+                    )
+                    .join("")
+                : `<p class="world-empty-state">The user-created playlist is empty. Add official provider links; ForkMesh stores no copied media.</p>`
+            }
+          </div>
+          <div class="world-media-queue" aria-label="Scheduled broadcasts">
+            ${
+              this.mediaRoom.schedules.length
+                ? this.mediaRoom.schedules
+                    .map(
+                      (schedule) => `
+                        <article>
+                          <div><strong>${escapeHTML(
+                            schedule.title,
+                          )}</strong><small>${escapeHTML(
+                            new Date(schedule.startsAt).toLocaleString(),
+                          )} · ${escapeHTML(schedule.status)}</small></div>
+                          ${
+                            canModerate && schedule.status === "scheduled"
+                              ? `<button type="button" data-world-media-schedule-cancel="${escapeHTML(
+                                  schedule.id,
+                                )}">Cancel schedule</button>`
+                              : ""
+                          }
+                        </article>`,
+                    )
+                    .join("")
+                : `<p class="world-empty-state">No shared broadcast is scheduled.</p>`
+            }
+          </div>
+          ${
+            isOwner
+              ? `<div class="world-media-add" aria-label="Room moderators">
+                  <input type="text" maxlength="40" placeholder="Registered username" data-world-media-moderator />
+                  <button type="button" data-world-media-moderator-add>Add moderator</button>
+                </div>
+                <div class="world-media-queue">
+                  ${
+                    this.mediaRoom.roles.length
+                      ? this.mediaRoom.roles
+                          .map(
+                            (role) => `<article><div><strong>${escapeHTML(
+                              role.account,
+                            )}</strong><small>Explicit room moderator</small></div><button type="button" data-world-media-moderator-remove="${escapeHTML(
+                              role.id,
+                            )}">Remove role</button></article>`,
+                          )
+                          .join("")
+                      : `<p class="world-empty-state">Only the owner can moderate until an explicit moderator role is granted.</p>`
+                  }
+                </div>`
+              : ""
+          }
+          <div class="world-detail-actions">
+            <a class="world-primary-action" href="/dashboard/chat?space=${escapeHTML(
+              this.mediaRoom.id || "broadcast",
+            )}">Open moderated shared room</a>
+          </div>
+          <p class="world-panel-footnote">${
+            this.mediaRoom.scheduledAt
+              ? `Scheduled UTC: ${escapeHTML(
+                  this.mediaRoom.scheduledAt,
+                )} · shown locally above.`
+              : "No broadcast is scheduled."
+          } The server-authoritative UTC clock synchronizes selection, play,
+          pause, stop, and position with optimistic revisions. Playback remains individual and opt-in; ForkMesh never sends an autoplay command or rebroadcasts media.</p>
+        </section>
+        <div class="world-notice world-notice-safe">
+          <strong>Licensed-source boundary</strong>
+          <span>Every add confirms provider terms and no rebroadcast. The API accepts supported HTTPS provider pages only, never raw stream/file URLs; playback remains opt-in and provider-controlled. Owners and explicitly granted moderators can add, remove, schedule, or stop items.</span>
+        </div>
+      </section>`;
+  }
+
+  supportPanelHTML() {
+    const options = [
+      {
+        label: "Recurring project support",
+        destination: "Patreon · published ForkMesh creator page",
+        purpose:
+          "Ongoing development, infrastructure, documentation, accessibility, and community operations.",
+        href: "https://www.patreon.com/16434219/join",
+        action: "Open Patreon",
+      },
+      {
+        label: "Direct project sponsorship",
+        destination: "ForkMesh founders · direct contact",
+        purpose:
+          "Discuss a disclosed one-time sponsorship purpose and destination before any transfer.",
+        href: "mailto:founders@forkmesh.com?subject=Direct%20ForkMesh%20project%20support",
+        action: "Contact founders",
+      },
+      {
+        label: "Community membership",
+        destination: "ForkMesh account and public community",
+        purpose:
+          "Join discussions, operate a mirror, improve code, report issues, or attend events without purchasing access.",
+        href: "/signup",
+        action: "Join the community",
+      },
+    ];
+    return `
+      <section class="world-feature-card" aria-label="Transparent ForkMesh project support">
+        <div class="world-building-grid">
+          ${options
+            .map(
+              (option) => `<article>
+                <span>${escapeHTML(option.label)}</span>
+                <strong>${escapeHTML(option.destination)}</strong>
+                <p>${escapeHTML(option.purpose)}</p>
+                <a href="${escapeHTML(option.href)}" ${
+                  option.href.startsWith("https://")
+                    ? 'target="_blank" rel="noopener noreferrer"'
+                    : ""
+                }>${escapeHTML(option.action)}</a>
+              </article>`,
+            )
+            .join("")}
+        </div>
+        <div class="world-notice world-notice-warning">
+          <strong>Voluntary project support · no financial return</strong>
+          <span>ForkMesh does not custody a supporter’s wallet keys or user funds. Support is voluntary, is separate from the Global Reward Pool, does not guarantee a reward or financial return, and does not buy governance dominance, node selection, security approval, or investment rights.</span>
+        </div>
+      </section>`;
+  }
+
+  mediaMutationError(error, fallback) {
+    const detail = String(error?.message || "")
+      .replace(/_/g, " ")
+      .slice(0, 120);
+    this.toast(detail ? `${fallback}: ${detail}.` : fallback);
+  }
+
+  syncMediaWorld(render = true) {
+    this.world?.updateMediaSpaces?.(this.mediaSpaces, this.mediaRoom);
+    if (render) this.openLandmark("broadcast");
+  }
+
+  async refreshMediaSpaces(preferredId = "", render = true) {
+    if (!readSession()?.sessionToken) {
+      this.mediaSpaces = [];
+      this.mediaRoom = normalizeMediaRoom(null);
+      this.syncMediaWorld(render);
+      return;
+    }
+    const listing = await this.fetchJSON("/api/world/media/spaces", {
+      timeout: 5000,
+      cache: "no-store",
+    });
+    this.mediaSpaces = normalizeMediaSpaces(listing);
+    const target =
+      this.mediaSpaces.find((space) => space.id === preferredId) ||
+      this.mediaSpaces.find((space) => space.id === this.mediaRoom.id) ||
+      this.mediaSpaces[0];
+    if (target?.id) {
+      await this.loadMediaSpace(target.id, render);
+    } else {
+      this.mediaRoom = normalizeMediaRoom(null);
+      this.syncMediaWorld(render);
+    }
+  }
+
+  async loadMediaSpace(spaceId, render = true) {
+    const id = sanitizePresenceText(spaceId, "", 40);
+    if (!id) return;
+    try {
+      const detail = await this.fetchJSON(
+        `/api/world/media/spaces/${encodeURIComponent(id)}`,
+        { timeout: 5000, cache: "no-store" },
+      );
+      this.mediaRoom = normalizeMediaRoom(detail);
+      this.syncMediaWorld(render);
+    } catch (error) {
+      this.mediaMutationError(error, "Could not load the shared media room");
+    }
+  }
+
+  mediaPlaybackPosition() {
+    const playback = this.mediaRoom.playback || {};
+    const base = Math.max(0, Number(playback.positionMs) || 0);
+    if (playback.state !== "playing") return base;
+    return Math.min(
+      7 * 24 * 60 * 60 * 1000,
+      base + Math.max(0, Date.now() - (Number(playback.observedAt) || Date.now())),
+    );
+  }
+
+  renderMediaPlaybackStatus() {
+    const container = this.$("[data-world-shared-playback]");
+    const copy = this.$("[data-world-shared-playback-copy]");
+    if (!container || !copy) return;
+    const playback = this.mediaRoom.playback || {};
+    const item = this.mediaRoom.items.find(
+      (candidate) => candidate.id === playback.itemId,
+    );
+    const heading = container.querySelector("strong");
+    const metadata = this.$("[data-world-shared-provider-metadata]");
+    if (heading) heading.textContent = `Shared clock · ${playback.state || "idle"}`;
+    copy.textContent = item
+      ? `${item.title} at ${formatMediaPosition(
+          this.mediaPlaybackPosition(),
+        )}. Open the official provider yourself, then seek to this shared position.`
+      : "No provider item is selected. The shared clock never starts media on a participant’s device.";
+    if (metadata) {
+      metadata.textContent = item
+        ? providerMetadataCopy(item)
+        : "Current provider track metadata unavailable: no provider item is selected.";
+    }
+  }
+
+  async refreshMediaPlayback(render = false) {
+    const id = sanitizePresenceText(this.mediaRoom.id, "", 40);
+    if (!id || !readSession()?.sessionToken) return;
+    try {
+      const result = await this.fetchJSON(
+        `/api/world/media/spaces/${encodeURIComponent(id)}/playback`,
+        { timeout: 5000, cache: "no-store" },
+      );
+      const normalized = normalizeMediaRoom({
+        ...this.mediaRoom,
+        playback: result?.playback,
+        items: this.mediaRoom.items,
+        schedules: this.mediaRoom.schedules,
+        roles: this.mediaRoom.roles,
+      });
+      this.mediaRoom = normalized;
+      this.world?.updateMediaSpaces?.(this.mediaSpaces, this.mediaRoom);
+      if (render) {
+        this.openLandmark("broadcast");
+      } else {
+        this.renderMediaPlaybackStatus();
+      }
+    } catch (error) {
+      if (render) {
+        this.mediaMutationError(error, "Could not refresh the shared clock");
+      }
+    }
+  }
+
+  startMediaPlaybackPolling() {
+    window.clearInterval(this.mediaTimer);
+    this.mediaTimer = window.setInterval(() => {
+      if (!document.hidden && this.mediaRoom.id) {
+        this.refreshMediaPlayback(false);
+      }
+    }, 5000);
+  }
+
+  async createMediaSpace() {
+    if (!readSession()?.sessionToken) {
+      this.toast("Sign in before creating a shared media room.");
+      return;
+    }
+    const name = sanitizePresenceText(
+      this.$("[data-world-media-space-name]")?.value,
+      "",
+      80,
+    );
+    if (!name) {
+      this.toast("Give the shared room a name.");
+      return;
+    }
+    try {
+      const created = await this.postJSON("/api/world/media/spaces", {
+        name,
+        description:
+          "Community-coordinated external provider playback. No media is stored or rebroadcast.",
+        sessionType: "listening-room",
+      });
+      const id = sanitizePresenceText(created?.space?.id, "", 40);
+      await this.refreshMediaSpaces(id, true);
+      this.toast("Shared room created. You are its owner.");
+    } catch (error) {
+      this.mediaMutationError(error, "Could not create the room");
+    }
+  }
+
+  async updateMediaSession(sessionType) {
+    if (!this.mediaRoom.id || !this.mediaRoom.canModerate) return;
+    try {
+      const detail = await this.postJSON(
+        `/api/world/media/spaces/${encodeURIComponent(this.mediaRoom.id)}`,
+        { sessionType },
+        { method: "PATCH" },
+      );
+      this.mediaRoom = normalizeMediaRoom(detail);
+      this.syncMediaWorld(true);
+      this.toast("Shared room type updated.");
+    } catch (error) {
+      this.mediaMutationError(error, "Could not update the room");
+    }
+  }
+
+  async addMediaItem() {
+    const title = sanitizePresenceText(
+      this.$("[data-world-media-title]")?.value,
+      "Untitled media link",
+      80,
+    );
+    const url = safeHTTPURL(this.$("[data-world-media-url]")?.value);
+    if (!url || !url.startsWith("https://")) {
+      this.toast("Add an HTTPS page from an authorized or official media provider.");
+      return;
+    }
+    if (!this.mediaRoom.id || !this.mediaRoom.canModerate) {
+      this.toast("Only the room owner or an explicit moderator can add links.");
+      return;
+    }
+    const provider = mediaProviderForURL(url);
+    if (!provider) {
+      this.toast(
+        "Use a supported SomaFM, YouTube, Vimeo, SoundCloud, Twitch, Internet Archive, or PeerTube provider page.",
+      );
+      return;
+    }
+    try {
+      await this.postJSON(
+        `/api/world/media/spaces/${encodeURIComponent(
+          this.mediaRoom.id,
+        )}/items`,
+        {
+          title,
+          url,
+          provider,
+          termsConfirmed: true,
+          noRebroadcast: true,
+          autoplay: false,
+        },
+      );
+      await this.loadMediaSpace(this.mediaRoom.id, true);
+      this.toast(
+        "Provider link added to the shared playlist. It will not autoplay or rebroadcast.",
+      );
+    } catch (error) {
+      this.mediaMutationError(error, "Could not add the provider link");
+    }
+  }
+
+  async removeMediaItem(id) {
+    if (!this.mediaRoom.id || !this.mediaRoom.canModerate) return;
+    try {
+      await this.postJSON(
+        `/api/world/media/spaces/${encodeURIComponent(
+          this.mediaRoom.id,
+        )}/items/${encodeURIComponent(id)}`,
+        {},
+        { method: "DELETE" },
+      );
+      await this.loadMediaSpace(this.mediaRoom.id, true);
+      this.toast("Playlist item removed by an authorized room moderator.");
+    } catch (error) {
+      this.mediaMutationError(error, "Could not remove the playlist item");
+    }
+  }
+
+  async updateMediaPlayback(state, itemId = "") {
+    if (!this.mediaRoom.id || !this.mediaRoom.canModerate) {
+      this.toast("Only the room owner or an explicit moderator can change the shared clock.");
+      return;
+    }
+    const current = this.mediaRoom.playback || {};
+    const selectedId = sanitizePresenceText(itemId, "", 40);
+    const sameItem = selectedId && selectedId === current.itemId;
+    const positionMs =
+      state === "stopped"
+        ? 0
+        : sameItem
+          ? this.mediaPlaybackPosition()
+          : 0;
+    try {
+      const result = await this.postJSON(
+        `/api/world/media/spaces/${encodeURIComponent(
+          this.mediaRoom.id,
+        )}/playback`,
+        {
+          state,
+          itemId: state === "stopped" ? "" : selectedId,
+          positionMs: Math.round(positionMs),
+          expectedRevision: Math.max(0, Number(current.revision) || 0),
+        },
+        { method: "PATCH" },
+      );
+      this.mediaRoom = normalizeMediaRoom({
+        ...this.mediaRoom,
+        playback: result?.playback,
+        items: this.mediaRoom.items,
+        schedules: this.mediaRoom.schedules,
+        roles: this.mediaRoom.roles,
+      });
+      this.syncMediaWorld(true);
+      this.toast(
+        `${state[0].toUpperCase()}${state.slice(
+          1,
+        )} shared clock saved. Each participant still controls local provider playback.`,
+      );
+    } catch (error) {
+      await this.refreshMediaPlayback(true);
+      this.mediaMutationError(
+        error,
+        "Could not update the shared clock; the latest revision was loaded",
+      );
+    }
+  }
+
+  async stopMediaRoom() {
+    if (!this.mediaRoom.id || !this.mediaRoom.canModerate) return;
+    this.stopRadio();
+    await this.updateMediaPlayback("stopped");
+  }
+
+  async scheduleMediaRoom(localValue) {
+    if (!this.mediaRoom.id || !this.mediaRoom.canModerate) return;
+    const instant = new Date(localValue);
+    if (!localValue || Number.isNaN(instant.getTime())) {
+      this.toast("Choose a valid future date and time.");
+      return;
+    }
+    try {
+      await this.postJSON(
+        `/api/world/media/spaces/${encodeURIComponent(
+          this.mediaRoom.id,
+        )}/schedules`,
+        {
+          title: `${this.mediaRoom.name} scheduled session`,
+          sessionType: this.mediaRoom.sessionType,
+          startsAt: instant.getTime(),
+          endsAt: instant.getTime() + 60 * 60 * 1000,
+        },
+      );
+      await this.loadMediaSpace(this.mediaRoom.id, true);
+      this.toast("Shared schedule stored in UTC and displayed in local time.");
+    } catch (error) {
+      this.mediaMutationError(error, "Could not schedule the shared room");
+    }
+  }
+
+  async cancelMediaSchedule(id) {
+    if (!this.mediaRoom.id || !this.mediaRoom.canModerate) return;
+    try {
+      await this.postJSON(
+        `/api/world/media/spaces/${encodeURIComponent(
+          this.mediaRoom.id,
+        )}/schedules/${encodeURIComponent(id)}`,
+        {},
+        { method: "DELETE" },
+      );
+      await this.loadMediaSpace(this.mediaRoom.id, true);
+      this.toast("Shared schedule cancelled.");
+    } catch (error) {
+      this.mediaMutationError(error, "Could not cancel the schedule");
+    }
+  }
+
+  async grantMediaModerator() {
+    if (this.mediaRoom.viewerRole !== "owner") return;
+    const account = sanitizePresenceText(
+      this.$("[data-world-media-moderator]")?.value,
+      "",
+      40,
+    ).toLowerCase();
+    if (!account) {
+      this.toast("Enter a registered username.");
+      return;
+    }
+    try {
+      await this.postJSON(
+        `/api/world/media/spaces/${encodeURIComponent(
+          this.mediaRoom.id,
+        )}/roles`,
+        { account },
+      );
+      await this.loadMediaSpace(this.mediaRoom.id, true);
+      this.toast("Explicit room moderator role granted.");
+    } catch (error) {
+      this.mediaMutationError(error, "Could not grant the moderator role");
+    }
+  }
+
+  async removeMediaModerator(id) {
+    if (this.mediaRoom.viewerRole !== "owner") return;
+    try {
+      await this.postJSON(
+        `/api/world/media/spaces/${encodeURIComponent(
+          this.mediaRoom.id,
+        )}/roles/${encodeURIComponent(id)}`,
+        {},
+        { method: "DELETE" },
+      );
+      await this.loadMediaSpace(this.mediaRoom.id, true);
+      this.toast("Room moderator role removed.");
+    } catch (error) {
+      this.mediaMutationError(error, "Could not remove the moderator role");
+    }
+  }
+
+  async loadRepositoryEntityRecords(base, commit) {
+    const locations = [
+      { path: ".forkmesh/issues", kind: "issue", state: "" },
+      { path: ".forkmesh/issues/open", kind: "issue", state: "open" },
+      { path: ".forkmesh/issues/closed", kind: "issue", state: "closed" },
+      { path: "pulls", kind: "pull", state: "" },
+    ];
+    const results = await Promise.allSettled(
+      locations.map(({ path }) =>
+        this.fetchJSON(
+          `${base}/tree?path=${encodeURIComponent(path)}&ref=${encodeURIComponent(
+            commit,
+          )}`,
+          { timeout: 9000, cache: "no-store" },
+        ),
+      ),
+    );
+    const issues = new Map();
+    const pulls = new Map();
+    let matched = false;
+    results.forEach((result, index) => {
+      if (result.status !== "fulfilled" || result.value?.ok === false) return;
+      const payload = result.value || {};
+      const payloadCommit = String(
+        payload.commit || payload.analysis?.commit || "",
+      ).toLowerCase();
+      if (payloadCommit !== commit) return;
+      matched = true;
+      const location = locations[index];
+      const entries = Array.isArray(payload.entries)
+        ? payload.entries.slice(0, 80)
+        : [];
+      entries.forEach((entry) => {
+        if (!["tree", "directory"].includes(entry?.type)) return;
+        const number = Number(entry.name);
+        if (!Number.isSafeInteger(number) || number < 1 || number > 10_000_000) {
+          return;
+        }
+        const record = {
+          number,
+          path: `${location.path}/${number}`,
+          state: location.state,
+        };
+        if (location.kind === "issue") {
+          const previous = issues.get(number);
+          if (!previous || location.state) issues.set(number, record);
+        } else {
+          pulls.set(number, record);
+        }
+      });
+    });
+    return {
+      commit,
+      available: matched,
+      issues: [...issues.values()]
+        .sort((left, right) => right.number - left.number)
+        .slice(0, 40),
+      pulls: [...pulls.values()]
+        .sort((left, right) => right.number - left.number)
+        .slice(0, 40),
+    };
+  }
+
+  async loadRepositoryMap(owner, repo) {
+    const explorer = this.$("[data-world-repo-explorer]");
+    if (!explorer) return;
+    const safeOwner = sanitizePresenceText(owner, "", 40);
+    const safeRepo = sanitizePresenceText(repo, "", 60);
+    if (!safeOwner || !safeRepo) return;
+    explorer.innerHTML = `<p class="world-empty-state">Loading authorized tree, size, contribution, and mirror metadata…</p>`;
+    const base = `/api/repo/${encodeURIComponent(safeOwner)}/${encodeURIComponent(
+      safeRepo,
+    )}`;
+    let tree;
+    try {
+      tree = await this.fetchJSON(`${base}/tree?path=`, {
+        timeout: 12000,
+        cache: "no-store",
+      });
+    } catch (_) {
+      tree = null;
+    }
+    if (!tree || tree?.ok === false) {
+      explorer.innerHTML = `
+        <div class="world-notice world-notice-warning">
+          <strong>Map unavailable</strong>
+          <span>The selected mirror is offline, still synchronizing, or requires an owner-authorized view token. ForkMesh does not probe private repositories.</span>
+        </div>`;
+      return;
+    }
+    const commit = String(
+      tree.commit ||
+        tree.analysis?.commit ||
+        tree.latestCommit?.commit ||
+        tree.latestCommit?.hash ||
+        "",
+    ).toLowerCase();
+    if (!/^[0-9a-f]{40,64}$/.test(commit)) {
+      explorer.innerHTML = `
+        <div class="world-notice world-notice-warning">
+          <strong>Map unavailable</strong>
+          <span>The mirror did not attest one resolved commit for this tree, so ForkMesh declined to combine potentially mismatched analysis data.</span>
+        </div>`;
+      return;
+    }
+    const ref = `?ref=${encodeURIComponent(commit)}`;
+    const [sizeResult, statsResult, mirrorsResult, entityRecordsResult] =
+      await Promise.allSettled([
+        this.fetchJSON(`${base}/sizes${ref}`, {
+          timeout: 12000,
+          cache: "no-store",
+        }),
+        this.fetchJSON(`${base}/stats${ref}`, {
+          timeout: 12000,
+          cache: "no-store",
+        }),
+        this.fetchJSON(`${base}/mirrors`, { auth: false }),
+        this.loadRepositoryEntityRecords(base, commit),
+      ]);
+    this.activeRepository = {
+      owner: safeOwner,
+      repo: safeRepo,
+      path: "",
+      commit,
+      analysis: tree.analysis || {},
+      entries: normalizeTreeEntries(tree),
+      counts: tree?.counts || {},
+      sizes:
+        sizeResult.status === "fulfilled" &&
+        String(sizeResult.value?.commit || "").toLowerCase() === commit
+          ? sizeResult.value
+          : {},
+      stats:
+        statsResult.status === "fulfilled" &&
+        String(statsResult.value?.commit || "").toLowerCase() === commit
+          ? statsResult.value
+          : {},
+      mirrors: mirrorsResult.status === "fulfilled" ? mirrorsResult.value : {},
+      entityRecords:
+        entityRecordsResult.status === "fulfilled"
+          ? entityRecordsResult.value
+          : { commit, available: false, issues: [], pulls: [] },
+    };
+    this.renderRepositoryExplorer();
+    this.world?.updateRepositoryGraph?.(
+      this.activeRepository.entries,
+      buildRepositoryGraphEntities(this.activeRepository),
+    );
+    this.loadRepositorySecurity(safeOwner, safeRepo, false);
+  }
+
+  async loadRepositorySecurity(owner, repo, openPanel = true) {
+    const safeOwner = sanitizePresenceText(owner, "", 40);
+    const safeRepo = sanitizePresenceText(repo, "", 60);
+    if (!safeOwner || !safeRepo) return;
+    this.securityRepository = `${safeOwner}/${safeRepo}`;
+    this.securityScan = {
+      status: "Scan unavailable",
+      commitHash: "Not reported",
+      limitations: [
+        "The latest redacted clipboard has not been returned.",
+        "Missing and unauthorized private repositories use the same response.",
+        "A clean automated scan would not guarantee security.",
+      ],
+    };
+    this.securityScanRecord = null;
+    this.securityTriage = null;
+    this.securityHistory = [];
+    if (openPanel) this.openLandmark("security");
+    const base = `/api/repo/${encodeURIComponent(
+      safeOwner,
+    )}/${encodeURIComponent(safeRepo)}/security-scans`;
+    let latestResult;
+    try {
+      latestResult = await this.fetchJSON(`${base}/latest?detail=rich`, {
+        timeout: 7000,
+        cache: "no-store",
+      });
+    } catch (_) {
+      try {
+        latestResult = await this.fetchJSON(`${base}/latest`, {
+          timeout: 7000,
+          cache: "no-store",
+        });
+      } catch (_) {
+        latestResult = null;
+      }
+    }
+    const [historyResult, triageResult] = await Promise.allSettled([
+      this.fetchJSON(`${base}/history?limit=10`, {
+        timeout: 7000,
+        cache: "no-store",
+      }),
+      this.fetchJSON(`${base}/triage`, {
+        timeout: 7000,
+        cache: "no-store",
+      }),
+    ]);
+    if (latestResult) {
+      this.securityScan =
+        latestResult?.latest?.clipboard || this.securityScan;
+      this.securityScanRecord = latestResult?.latest || null;
+    }
+    if (
+      historyResult.status === "fulfilled" &&
+      Array.isArray(historyResult.value?.history)
+    ) {
+      this.securityHistory = historyResult.value.history.slice(0, 10);
+    }
+    if (triageResult.status === "fulfilled") {
+      this.securityTriage = triageResult.value || null;
+    }
+    if (
+      this.activeRepository?.owner === safeOwner &&
+      this.activeRepository?.repo === safeRepo
+    ) {
+      this.activeRepository.entries = mergeCommitMatchedSecurity(
+        this.activeRepository.entries,
+        this.securityScanRecord,
+        this.activeRepository.commit,
+        this.securityTriage,
+      );
+      this.renderRepositoryExplorer();
+      this.world?.updateRepositoryGraph?.(
+        this.activeRepository.entries,
+        buildRepositoryGraphEntities(this.activeRepository),
+      );
+    }
+    if (openPanel) this.openLandmark("security");
+  }
+
+  async updateSecurityFindingStatus(findingId, status) {
+    const [owner, repo] = String(this.securityRepository || "").split("/");
+    const scanId = String(this.securityTriage?.scanId || "");
+    if (
+      !owner ||
+      !repo ||
+      !scanId ||
+      !/^[0-9a-f]{16}$/.test(String(findingId || "")) ||
+      !["unreviewed", "confirmed", "dismissed"].includes(status)
+    ) {
+      return;
+    }
+    try {
+      await this.postJSON(
+        `/api/repo/${encodeURIComponent(owner)}/${encodeURIComponent(
+          repo,
+        )}/security-scans/triage`,
+        { scanId, findingId, status },
+        { method: "PATCH", timeout: 10000 },
+      );
+      await this.loadRepositorySecurity(owner, repo, true);
+      this.toast(`Finding marked ${status}.`);
+    } catch (error) {
+      this.toast(`Finding review could not be updated: ${error.message}`);
+    }
+  }
+
+  async loadRepositoryDirectory(owner, repo, path) {
+    const explorer = this.$("[data-world-repo-explorer]");
+    if (!explorer) return;
+    const normalizedPath = String(path || "")
+      .split("/")
+      .filter(Boolean)
+      .slice(0, 24)
+      .map((part) => sanitizePresenceText(part, "", 100))
+      .filter(Boolean)
+      .join("/");
+    explorer.innerHTML = `<p class="world-empty-state">Opening ${escapeHTML(
+      normalizedPath || "repository root",
+    )}…</p>`;
+    try {
+      const payload = await this.fetchJSON(
+        `/api/repo/${encodeURIComponent(owner)}/${encodeURIComponent(
+          repo,
+        )}/tree?path=${encodeURIComponent(normalizedPath)}&ref=${encodeURIComponent(
+          this.activeRepository?.commit || "",
+        )}`,
+      );
+      if (payload?.ok === false) throw new Error("tree unavailable");
+      const payloadCommit = String(
+        payload.commit || payload.analysis?.commit || "",
+      ).toLowerCase();
+      if (payloadCommit !== this.activeRepository?.commit) {
+        throw new Error("commit mismatch");
+      }
+      this.activeRepository = {
+        ...(this.activeRepository || {}),
+        owner,
+        repo,
+        path: normalizedPath,
+        entries: mergeCommitMatchedSecurity(
+          normalizeTreeEntries(payload, normalizedPath),
+          this.securityScanRecord,
+          payloadCommit,
+          this.securityTriage,
+        ),
+      };
+      this.renderRepositoryExplorer();
+      this.world?.updateRepositoryGraph?.(
+        this.activeRepository.entries,
+        buildRepositoryGraphEntities(this.activeRepository),
+      );
+    } catch (_) {
+      explorer.innerHTML = `
+        <div class="world-notice world-notice-warning">
+          <strong>Directory unavailable</strong>
+          <span>The node could not return this authorized tree. No fallback attempts reveal private repository existence.</span>
+        </div>`;
+    }
+  }
+
+  repositoryExplorerHTML(active) {
+    const languages = [...new Set(active.entries.map((entry) => entry.language))]
+      .filter(Boolean)
+      .sort();
+    const contributors = [
+      ...new Set(active.entries.map((entry) => entry.contributor)),
+    ]
+      .filter((name) => name && name !== "Unknown")
+      .sort();
+    const maxSize = Math.max(1, ...active.entries.map((entry) => entry.size));
+    const parent = active.path.split("/").slice(0, -1).join("/");
+    const contributorCount = Number(
+      active.stats?.contributorCount || active.stats?.contributors?.length || 0,
+    );
+    const fileCount = Number(
+      active.stats?.fileCount || active.sizes?.fileCount || active.entries.length,
+    );
+    const totalSize = Number(active.sizes?.size || 0);
+    const mirrorItems = Array.isArray(active.mirrors?.mirrors)
+      ? active.mirrors.mirrors
+      : [];
+    const graphEntities = buildRepositoryGraphEntities(active);
+    const entityNodes = [
+      ...graphEntities.map((entity) => ({
+        kind:
+          entity.kind === "contributor"
+            ? "Contributor"
+            : entity.kind === "issue-collection"
+              ? "Issues"
+              : entity.kind === "issue"
+                ? "Issue"
+                : entity.kind === "pull-request-collection"
+                  ? "Pull requests"
+                  : "Pull request",
+        label: entity.label,
+        value: entity.detail,
+        graphNode: entity,
+      })),
+      {
+        kind: "Dependencies",
+        label: "Manifest candidates",
+        value: compactNumber(
+          active.entries.filter((entry) => entry.role === "package").length,
+        ),
+      },
+      {
+        kind: "Database models",
+        label: "Model candidates",
+        value: compactNumber(
+          active.entries.filter((entry) => entry.role === "database-model")
+            .length,
+        ),
+      },
+      {
+        kind: "Services / APIs",
+        label: "Boundary candidates",
+        value: compactNumber(
+          active.entries.filter((entry) =>
+            ["service", "api"].includes(entry.role),
+          ).length,
+        ),
+      },
+    ];
+    return `
+      <section class="world-repo-explorer" aria-label="Three-dimensional repository file graph">
+        <header>
+          <div>
+            <span>AUTHORIZED CODE MAP</span>
+            <strong>${escapeHTML(active.owner)}/${escapeHTML(active.repo)}${
+              active.path ? ` / ${escapeHTML(active.path)}` : ""
+            }</strong>
+            <small>commit ${escapeHTML(String(active.commit || "").slice(0, 12))}</small>
+          </div>
+          ${
+            active.path
+              ? `<button type="button" data-world-repo-directory="${escapeHTML(
+                  parent,
+                )}" data-world-repo-owner="${escapeHTML(
+                  active.owner,
+                )}" data-world-repo-name="${escapeHTML(active.repo)}">← ${
+                  parent ? "Parent" : "Root"
+                }</button>`
+              : ""
+          }
+        </header>
+        <div class="world-repo-summary">
+          <span><strong>${compactNumber(fileCount)}</strong> tracked files</span>
+          <span><strong>${formatBytes(totalSize)}</strong> mapped size</span>
+          <span><strong>${compactNumber(contributorCount)}</strong> contributors</span>
+          <span><strong>${compactNumber(mirrorItems.length)}</strong> reported mirrors</span>
+        </div>
+        <div class="world-repo-entities" aria-label="Repository entity layers">
+          ${entityNodes
+            .map(
+              (entity) =>
+                entity.graphNode
+                  ? `
+                <button type="button" data-entity-kind="${escapeHTML(
+                  entity.kind,
+                )}" data-world-graph-node="${escapeHTML(entity.graphNode.id)}">
+                  <small>${escapeHTML(entity.kind)}</small>
+                  <strong>${escapeHTML(entity.label)}</strong>
+                  <em>${escapeHTML(entity.value)}</em>
+                </button>`
+                  : `
+                <span data-entity-kind="${escapeHTML(entity.kind)}">
+                  <small>${escapeHTML(entity.kind)}</small>
+                  <strong>${escapeHTML(entity.label)}</strong>
+                  <em>${escapeHTML(entity.value)}</em>
+                </span>`,
+            )
+            .join("")}
+        </div>
+        <div class="world-empty-state" data-world-graph-selection>
+          Select a file, contributor, issue, or pull-request node in the 3D scene for its commit-matched relationship details.
+        </div>
+        <details class="world-filter-panel">
+          <summary>Graph filters</summary>
+          <div class="world-filter-grid">
+            <label><span>Language</span><select data-world-repo-filter="language"><option value="">All</option>${languages
+              .map(
+                (language) =>
+                  `<option value="${escapeHTML(language)}">${escapeHTML(
+                    language,
+                  )}</option>`,
+              )
+              .join("")}</select></label>
+            <label><span>File type</span><select data-world-repo-filter="type"><option value="">Files + directories</option><option value="file">Files</option><option value="directory">Directories</option></select></label>
+            <label><span>Contributor</span><select data-world-repo-filter="contributor"><option value="">All public commit authors</option>${contributors
+              .map(
+                (name) =>
+                  `<option value="${escapeHTML(name)}">${escapeHTML(name)}</option>`,
+              )
+              .join("")}</select></label>
+            <label><span>Directory</span><input data-world-repo-filter="directory" type="search" placeholder="Path contains…" /></label>
+            <label><span>Minimum size</span><select data-world-repo-filter="size"><option value="0">Any</option><option value="1024">1 KB</option><option value="10240">10 KB</option><option value="102400">100 KB</option></select></label>
+            <label><span>Modification frequency</span><select data-world-repo-filter="frequency"><option value="">All frequencies</option><option value="high">High (10+ recent changes)</option><option value="medium">Medium (3–9)</option><option value="low">Low (1–2)</option><option value="unknown">Unknown</option></select></label>
+            <label><span>Dependency depth</span><select data-world-repo-filter="dependency"><option value="">Any depth</option><option value="0">0 / not mapped</option><option value="1">1</option><option value="2">2</option><option value="3">3+</option></select></label>
+            <label><span>Security findings</span><select data-world-repo-filter="security"><option value="">All commit-matched states</option><option value="unavailable">Unavailable / commit mismatch</option><option value="no-finding">No reported finding</option><option value="finding">Reported finding</option><option value="reviewed">Dismissed after review</option></select></label>
+            <label><span>Test coverage</span><select data-world-repo-filter="coverage"><option value="">All coverage states</option><option value="covered">Covered (80%+)</option><option value="partial">Partial</option><option value="uncovered">Uncovered</option><option value="unknown">Unknown</option></select></label>
+          </div>
+        </details>
+        <div class="world-code-map" data-world-code-map>
+          ${active.entries
+            .map((entry, index) => {
+              const scale =
+                entry.type === "directory"
+                  ? 1.18
+                  : 0.72 + Math.sqrt(entry.size / maxSize) * 0.72;
+              const style = `--node-scale:${scale.toFixed(2)};--node-depth:${
+                index % 5
+              };--node-angle:${(index * 47) % 360}deg`;
+              const filter = [
+                `data-filter-language="${escapeHTML(entry.language)}"`,
+                `data-filter-type="${escapeHTML(entry.type)}"`,
+                `data-filter-contributor="${escapeHTML(entry.contributor)}"`,
+                `data-filter-directory="${escapeHTML(entry.path)}"`,
+                `data-filter-size="${escapeHTML(entry.size)}"`,
+                `data-filter-security="${escapeHTML(entry.security)}"`,
+                `data-filter-frequency="${escapeHTML(entry.frequency)}"`,
+                `data-filter-dependency="${escapeHTML(entry.dependencyDepth)}"`,
+                `data-filter-coverage="${
+                  entry.coverage === null
+                    ? "unknown"
+                    : entry.coverage >= 80
+                      ? "covered"
+                      : entry.coverage > 0
+                        ? "partial"
+                        : "uncovered"
+                }"`,
+              ].join(" ");
+              const classes = [
+                "world-code-node",
+                `world-code-node--${entry.role}`,
+                entry.frequency === "high" ? "is-active" : "",
+                entry.redundantCandidate ? "is-redundant" : "",
+                entry.security === "finding" ? "is-sensitive" : "",
+              ]
+                .filter(Boolean)
+                .join(" ");
+              if (entry.type === "directory") {
+                return `<button class="${classes}" type="button" style="${style}" ${filter} data-world-repo-directory="${escapeHTML(
+                  entry.path,
+                )}" data-world-repo-owner="${escapeHTML(
+                  active.owner,
+                )}" data-world-repo-name="${escapeHTML(active.repo)}">
+                  <span aria-hidden="true">▰</span><strong>${escapeHTML(
+                    entry.name,
+                  )}</strong><small>Directory layer · ${escapeHTML(
+                    entry.frequency,
+                  )} activity</small>
+                </button>`;
+              }
+              const href = `/${encodeURIComponent(active.owner)}/${encodeURIComponent(
+                active.repo,
+              )}/blob/${entry.path
+                .split("/")
+                .map(encodeURIComponent)
+                .join("/")}`;
+              return `<a class="${classes}" style="${style}" ${filter} href="${escapeHTML(
+                href,
+              )}">
+                <span aria-hidden="true">◇</span><strong>${escapeHTML(
+                  entry.name,
+                )}</strong><small>${escapeHTML(formatBytes(entry.size))} · ${escapeHTML(
+                  entry.language,
+                )} · ${escapeHTML(entry.role)} · ${escapeHTML(
+                  entry.frequency,
+                )}</small>
+              </a>`;
+            })
+            .join("")}
+        </div>
+        <p class="world-panel-footnote">Node scale reflects blob size. Dependency edges and depth come from bounded imports resolved against commit ${escapeHTML(
+          String(active.commit || "").slice(0, 12),
+        )}; coverage comes only from artifacts committed at that revision. File-level security state appears only when an owner-authorized scan names that exact commit. Public mirror health and signed state remain separate from trust.</p>
+      </section>`;
+  }
+
+  renderRepositoryExplorer() {
+    const explorer = this.$("[data-world-repo-explorer]");
+    if (!explorer || !this.activeRepository) return;
+    explorer.innerHTML = this.repositoryExplorerHTML(this.activeRepository);
+  }
+
+  selectRepositoryGraphNode(candidate) {
+    const entity = buildRepositoryGraphEntities(
+      this.activeRepository || {},
+    ).find((item) => item.id === String(candidate?.id || ""));
+    if (!entity) return;
+    const selection = this.$("[data-world-graph-selection]");
+    if (selection) {
+      selection.innerHTML = `
+        <strong>${escapeHTML(entity.label)}</strong>
+        <span>${escapeHTML(entity.detail)}</span>
+        <small>${compactNumber(entity.targetPaths?.length || 0)} commit-matched relationship${
+          entity.targetPaths?.length === 1 ? "" : "s"
+        }</small>
+        ${
+          entity.href
+            ? `<a href="${escapeHTML(entity.href)}">Open ${escapeHTML(
+                entity.label,
+              )}</a>`
+            : ""
+        }`;
+    }
+    this.$$("[data-world-graph-node]").forEach((button) => {
+      button.setAttribute(
+        "aria-selected",
+        String(button.dataset.worldGraphNode === entity.id),
+      );
+    });
+    this.toast(`${entity.label}: ${entity.detail}`);
+  }
+
+  applyRepositoryFilters() {
+    const map = this.$("[data-world-code-map]");
+    if (!map) return;
+    const filters = {};
+    this.$$("[data-world-repo-filter]").forEach((control) => {
+      if (!control.disabled) filters[control.dataset.worldRepoFilter] = control.value;
+    });
+    map.querySelectorAll(".world-code-node").forEach((node) => {
+      const language = node.dataset.filterLanguage || "";
+      const type = node.dataset.filterType || "";
+      const contributor = node.dataset.filterContributor || "";
+      const directory = (node.dataset.filterDirectory || "").toLowerCase();
+      const size = Number(node.dataset.filterSize || 0);
+      const security = node.dataset.filterSecurity || "";
+      const frequency = node.dataset.filterFrequency || "unknown";
+      const dependency = Number(node.dataset.filterDependency || 0);
+      const coverage = node.dataset.filterCoverage || "unknown";
+      node.hidden = Boolean(
+        (filters.language && filters.language !== language) ||
+          (filters.type && filters.type !== type) ||
+          (filters.contributor && filters.contributor !== contributor) ||
+          (filters.directory &&
+            !directory.includes(String(filters.directory).toLowerCase())) ||
+          (filters.size && size < Number(filters.size)) ||
+          (filters.security && filters.security !== security) ||
+          (filters.frequency && filters.frequency !== frequency) ||
+          (filters.dependency &&
+            (filters.dependency === "3"
+              ? dependency < 3
+              : dependency !== Number(filters.dependency))) ||
+          (filters.coverage && filters.coverage !== coverage),
+      );
+    });
+  }
+
+  async collectWorkshopSnapshot(owner, repo) {
+    const base = `/api/repo/${encodeURIComponent(owner)}/${encodeURIComponent(
+      repo,
+    )}`;
+    const queue = [""];
+    const visited = new Set();
+    const entries = [];
+    let commit = "";
+    while (queue.length && visited.size < 28 && entries.length < 520) {
+      const path = queue.shift();
+      if (visited.has(path)) continue;
+      visited.add(path);
+      const query = new URLSearchParams({ path });
+      if (commit) query.set("ref", commit);
+      const payload = await this.fetchJSON(
+        `${base}/tree?${query.toString()}`,
+        { timeout: 12000 },
+      );
+      if (payload?.ok === false) throw new Error("tree unavailable");
+      const resolved = String(
+        payload?.commit ||
+          payload?.analysis?.commit ||
+          payload?.latestCommit?.commit ||
+          payload?.latestCommit?.hash ||
+          "",
+      ).toLowerCase();
+      if (!/^[0-9a-f]{40,64}$/.test(resolved)) {
+        throw new Error("tree commit unavailable");
+      }
+      if (commit && resolved !== commit) throw new Error("tree commit changed");
+      commit = resolved;
+      const children = normalizeTreeEntries(payload, path);
+      entries.push(...children);
+      children
+        .filter((entry) => entry.type === "directory")
+        .slice(0, 24)
+        .forEach((entry) => {
+          if (!visited.has(entry.path)) queue.push(entry.path);
+        });
+    }
+    const candidates = entries.filter(workshopTextCandidate).slice(0, 72);
+    const files = [];
+    for (let offset = 0; offset < candidates.length; offset += 16) {
+      const batch = candidates.slice(offset, offset + 16);
+      const query = new URLSearchParams();
+      batch.forEach((entry) => query.append("path", entry.path));
+      query.set("ref", commit);
+      const payload = await this.fetchJSON(`${base}/blobs?${query.toString()}`, {
+        timeout: 18000,
+      });
+      const blobs = payload?.blobs || {};
+      batch.forEach((entry) => {
+        const text = decodeWorkshopBlob(blobs[entry.path]);
+        if (text) files.push({ path: entry.path, text });
+      });
+    }
+    let stats = {};
+    try {
+      stats = await this.fetchJSON(
+        `${base}/stats?ref=${encodeURIComponent(commit)}`,
+        { timeout: 12000, cache: "no-store" },
+      );
+      if (String(stats?.commit || "").toLowerCase() !== commit) stats = {};
+    } catch (_) {}
+    return {
+      commit,
+      entries: entries.slice(0, 520),
+      files,
+      stats,
+    };
+  }
+
+  workshopReportHTML(owner, repo, type, report, context = {}) {
+    const session = context.session || null;
+    const repositoryRecord = this.repositories.find(
+      (candidate) =>
+        candidate.owner.toLowerCase() === String(owner).toLowerCase() &&
+        candidate.name.toLowerCase() === String(repo).toLowerCase(),
+    );
+    // Browser WebSocket handshakes cannot attach the dashboard's Bearer header.
+    // Keep private or unresolved workshops on the persisted participant ACL
+    // event stream until a header-safe private-room handshake is available.
+    // Public workshops can use the repository-scoped room below.
+    const liveWorkshopChatAvailable = Boolean(
+      repositoryRecord && !repositoryRecord.isPrivate,
+    );
+    const commit = String(context.commit || session?.commit || "");
+    const runId = String(context.runId || session?.runId || "");
+    const resultId = String(
+      context.resultId || session?.results?.[0]?.id || "",
+    );
+    const chatParams = new URLSearchParams({
+      space: "workshop",
+      repo: `${owner}/${repo}`,
+      run: runId,
+    });
+    if (session?.id) chatParams.set("workshopSession", session.id);
+    const agentParams = new URLSearchParams({
+      workshopSession: String(session?.id || ""),
+      workshopResult: resultId,
+      run: runId,
+      commit,
+    });
+    return `
+      <section class="world-workshop-results">
+        <span class="world-status-pill">Recommendation · ${escapeHTML(type)}</span>
+        <h3>${escapeHTML(owner)}/${escapeHTML(repo)}</h3>
+        <p class="world-panel-footnote">Commit <code>${escapeHTML(
+          commit || "not attested",
+        )}</code> · run <code>${escapeHTML(runId || "not saved")}</code></p>
+        <div class="world-model-graph" aria-label="Candidate visual relationship graph">
+          ${
+            report.nodes.length
+              ? report.nodes
+                  .slice(0, 24)
+                  .map(
+                    (node, index) =>
+                      `<span style="--graph-index:${index}" title="${escapeHTML(
+                        node.detail || "",
+                      )}"><strong>${escapeHTML(
+                        node.label,
+                      )}</strong><small>${escapeHTML(node.kind)}</small></span>`,
+                  )
+                  .join("")
+              : `<span>No candidate nodes matched this bounded local pass.</span>`
+          }
+        </div>
+        ${
+          Array.isArray(report.modelUseSites) && report.modelUseSites.length
+            ? `<details open data-world-model-use-sites>
+                <summary>Model definitions and their own use sites (${report.modelUseSites.length})</summary>
+                <div class="world-model-use-sites">${report.modelUseSites
+                  .map(
+                    (model) => `<article>
+                      <strong>${escapeHTML(model.name)}</strong>
+                      <span>Definition: <code>${escapeHTML(
+                        model.definitionPath || "Unknown",
+                      )}</code></span>
+                      ${
+                        model.useSites?.length
+                          ? `<ul>${model.useSites
+                              .map(
+                                (use) =>
+                                  `<li><code>${escapeHTML(
+                                    use.path,
+                                  )}</code> · ${escapeHTML(
+                                    use.count,
+                                  )} reference${Number(use.count) === 1 ? "" : "s"}</li>`,
+                              )
+                              .join("")}</ul>`
+                          : "<small>No use beyond the definition occurrence was found in this bounded pass.</small>"
+                      }
+                    </article>`,
+                  )
+                  .join("")}</div>
+              </details>`
+            : ""
+        }
+        ${
+          report.edges.length
+            ? `<details open><summary>Relationship edges (${report.edges.length})</summary>
+                <ul class="world-file-reference-list">${report.edges
+                  .slice(0, 40)
+                  .map(
+                    (edge) =>
+                      `<li>${escapeHTML(edge.from)} → ${escapeHTML(
+                        edge.to,
+                      )}</li>`,
+                  )
+                  .join("")}</ul></details>`
+            : ""
+        }
+        <h3>Findings to verify</h3>
+        <ul class="world-detail-list">${
+          report.findings.length
+            ? report.findings
+                .map((finding) => `<li>${escapeHTML(finding)}</li>`)
+                .join("")
+            : "<li>No candidate finding matched the bounded analysis.</li>"
+        }</ul>
+        <h3>Recommendations</h3>
+        <ul class="world-detail-list">${report.recommendations
+          .map((item) => `<li>${escapeHTML(item)}</li>`)
+          .join("")}</ul>
+        <details>
+          <summary>Supporting file references (${report.references.length})</summary>
+          <ul class="world-file-reference-list">${
+            report.references.length
+              ? report.references
+                  .map((path) => `<li><code>${escapeHTML(path)}</code></li>`)
+                  .join("")
+              : "<li>None in this bounded pass.</li>"
+          }</ul>
+        </details>
+        <section class="world-workshop-session" data-world-workshop-session>
+          <div class="world-detail-actions">
+            <button type="button" data-world-workshop-save ${
+              readSession()?.sessionToken && commit ? "" : "disabled"
+            }>${session?.id ? "Save a new result version" : "Save encrypted workshop report"}</button>
+            <button type="button" data-world-workshop-load ${
+              readSession()?.sessionToken ? "" : "disabled"
+            }>Load saved reports</button>
+          </div>
+          ${
+            session?.id
+              ? `<dl class="world-technical-list">
+                  <div><dt>Session ID</dt><dd><code>${escapeHTML(
+                    session.id,
+                  )}</code></dd></div>
+                  <div><dt>Result ID</dt><dd><code>${escapeHTML(
+                    resultId || "No result",
+                  )}</code></dd></div>
+                  <div><dt>Participant link</dt><dd><a href="/world/?workshopSession=${encodeURIComponent(
+                    session.id,
+                  )}">Open this authorized session</a></dd></div>
+                  <div><dt>Your role</dt><dd>${escapeHTML(
+                    session.viewerRole || "participant",
+                  )}</dd></div>
+                  <div><dt>Participants</dt><dd>${escapeHTML(
+                    (session.participants || [])
+                      .map((participant) => `${participant.account} (${participant.role})`)
+                      .join(", ") || "Owner only",
+                  )}</dd></div>
+                </dl>
+                ${
+                  session.viewerRole === "owner"
+                    ? `<div class="world-workshop-form">
+                        <label><span>Share with account</span><input data-world-workshop-share-account autocomplete="off" maxlength="63" placeholder="account-name" /></label>
+                        <label><span>Role</span><select data-world-workshop-share-role><option value="viewer">Viewer</option><option value="editor">Editor</option></select></label>
+                        <button type="button" data-world-workshop-share>Add participant</button>
+                      </div>`
+                    : ""
+                }
+                <div class="world-workshop-form">
+                  <label><span>Participant update</span><input data-world-workshop-comment-input maxlength="2000" placeholder="Add a bounded collaboration note…" /></label>
+                  <button type="button" data-world-workshop-comment>Add update</button>
+                  <button type="button" data-world-workshop-events-refresh>Refresh updates</button>
+                </div>
+                <ol class="world-orientation-list" data-world-workshop-events>${
+                  (session.events || []).length
+                    ? session.events
+                        .slice(-20)
+                        .map(
+                          (event) =>
+                            `<li><strong>${escapeHTML(
+                              event.actor || event.kind,
+                            )}</strong><span>${escapeHTML(
+                              event.data?.message ||
+                                event.data?.status ||
+                                event.data?.resultId ||
+                                event.kind,
+                            )}</span></li>`,
+                        )
+                        .join("")
+                    : "<li><strong>No participant updates yet</strong><span>Result saves and explicit comments appear here.</span></li>"
+                }</ol>`
+              : `<p class="world-empty-state">This result exists only in this browser tab until an authenticated participant saves it. Saved rows encrypt repository identity, paths, report content, participant labels, and updates.</p>`
+          }
+        </section>
+        <div class="world-detail-actions">
+          ${
+            liveWorkshopChatAvailable
+              ? `<a class="world-primary-action" href="/dashboard/chat?${escapeHTML(
+                  chatParams.toString(),
+                )}">Open live encrypted collaboration for this run</a>`
+              : `<span class="world-status-pill">Private/unresolved workshop · use the authorized participant updates above; live browser chat fails closed.</span>`
+          }
+          ${
+            session?.id && resultId
+              ? `<a class="world-secondary-action" href="/${encodeURIComponent(
+                  owner,
+                )}/${encodeURIComponent(repo)}/agents?${escapeHTML(
+                  agentParams.toString(),
+                )}">Continue with an owner-authorized agent for this result</a>`
+              : ""
+          }
+        </div>
+        <p class="world-panel-footnote">Analysis ran in this browser against same-origin, authorized repository data pinned to the displayed commit. It did not send private code to an external model. Findings are recommendations, not guaranteed facts. Collaboration events use incremental cursors. Public workshop live chat uses a repository-scoped encrypted dashboard socket; private and unresolved workshops stay on the authorized persisted event stream.</p>
+      </section>`;
+  }
+
+  async saveWorkshopReport() {
+    const pending = this.pendingWorkshop;
+    const results = this.$("[data-world-workshop-results]");
+    if (!pending || !results || !readSession()?.sessionToken) {
+      this.toast("Sign in and run a commit-pinned workshop before saving.");
+      return;
+    }
+    try {
+      let response;
+      if (this.activeWorkshop?.id === pending.sessionId) {
+        response = await this.postJSON(
+          `/api/world/workshops/${encodeURIComponent(
+            this.activeWorkshop.id,
+          )}/results`,
+          { report: pending.report },
+          { timeout: 15000 },
+        );
+        const refreshed = await this.fetchJSON(
+          `/api/world/workshops/${encodeURIComponent(this.activeWorkshop.id)}`,
+          { timeout: 10000, cache: "no-store" },
+        );
+        this.activeWorkshop = refreshed.session;
+        pending.resultId = response.resultId;
+      } else {
+        response = await this.postJSON(
+          "/api/world/workshops",
+          {
+            repository: `${pending.owner}/${pending.repo}`,
+            commit: pending.commit,
+            runId: pending.runId,
+            workshopType: pending.type,
+            report: pending.report,
+          },
+          { timeout: 15000 },
+        );
+        this.activeWorkshop = response.session;
+        pending.sessionId = response.session?.id;
+        pending.resultId = response.resultId;
+      }
+      this.workshopEventCursor = Number(
+        this.activeWorkshop?.eventCursor || 0,
+      );
+      results.innerHTML = this.workshopReportHTML(
+        pending.owner,
+        pending.repo,
+        pending.type,
+        pending.report,
+        {
+          commit: pending.commit,
+          runId: pending.runId,
+          resultId: pending.resultId,
+          session: this.activeWorkshop,
+        },
+      );
+      this.toast(`Workshop result saved as ${pending.resultId}.`);
+    } catch (error) {
+      this.toast(`Workshop could not be saved: ${error.message}`);
+    }
+  }
+
+  async loadWorkshopSessions() {
+    const repoControl = this.$("[data-world-workshop-repo]");
+    const results = this.$("[data-world-workshop-results]");
+    const repository = String(repoControl?.value || "");
+    if (!results || !repository || !readSession()?.sessionToken) {
+      this.toast("Sign in to load workshops shared with your account.");
+      return;
+    }
+    results.innerHTML = `<p class="world-empty-state">Loading your encrypted workshop sessions…</p>`;
+    try {
+      const query = new URLSearchParams({ repository });
+      const payload = await this.fetchJSON(
+        `/api/world/workshops?${query.toString()}`,
+        { timeout: 10000, cache: "no-store" },
+      );
+      this.savedWorkshopSessions = Array.isArray(payload?.sessions)
+        ? payload.sessions
+        : [];
+      results.innerHTML = this.savedWorkshopSessions.length
+        ? `<section class="world-workshop-results"><h3>Saved workshops</h3><div class="world-event-list">${this.savedWorkshopSessions
+            .map(
+              (session) => `<article>
+                <div><strong>${escapeHTML(
+                  session.workshopType,
+                )}</strong><p>commit ${escapeHTML(
+                  String(session.commit || "").slice(0, 12),
+                )} · run ${escapeHTML(session.runId)} · ${escapeHTML(
+                  session.viewerRole,
+                )}</p></div>
+                <button type="button" data-world-workshop-open="${escapeHTML(
+                  session.id,
+                )}">Open saved result</button>
+              </article>`,
+            )
+            .join("")}</div></section>`
+        : `<p class="world-empty-state">No saved workshop for this repository is shared with your account.</p>`;
+    } catch (error) {
+      results.innerHTML = `<p class="world-empty-state">Saved workshops are unavailable: ${escapeHTML(
+        error.message,
+      )}</p>`;
+    }
+  }
+
+  async loadWorkshopSession(sessionId) {
+    if (!/^[a-f0-9]{32}$/.test(String(sessionId || ""))) return;
+    const results = this.$("[data-world-workshop-results]");
+    if (!results) return;
+    results.innerHTML = `<p class="world-empty-state">Decrypting the authorized workshop report…</p>`;
+    try {
+      const payload = await this.fetchJSON(
+        `/api/world/workshops/${encodeURIComponent(sessionId)}`,
+        { timeout: 10000, cache: "no-store" },
+      );
+      const session = payload.session;
+      const result = session?.results?.[0];
+      if (!session || !result?.report) throw new Error("result unavailable");
+      const [owner, repo] = String(session.repository || "").split("/");
+      this.activeWorkshop = session;
+      this.workshopEventCursor = Number(session.eventCursor || 0);
+      this.pendingWorkshop = {
+        owner,
+        repo,
+        type: session.workshopType,
+        report: result.report,
+        commit: session.commit,
+        runId: session.runId,
+        sessionId: session.id,
+        resultId: result.id,
+      };
+      results.innerHTML = this.workshopReportHTML(
+        owner,
+        repo,
+        session.workshopType,
+        result.report,
+        {
+          commit: session.commit,
+          runId: session.runId,
+          resultId: result.id,
+          session,
+        },
+      );
+    } catch (error) {
+      results.innerHTML = `<p class="world-empty-state">Workshop unavailable or not shared with this account: ${escapeHTML(
+        error.message,
+      )}</p>`;
+    }
+  }
+
+  async shareWorkshopSession() {
+    const sessionId = this.activeWorkshop?.id;
+    const account = String(
+      this.$("[data-world-workshop-share-account]")?.value || "",
+    ).trim();
+    const role =
+      this.$("[data-world-workshop-share-role]")?.value || "viewer";
+    if (!sessionId || !account) return;
+    try {
+      await this.postJSON(
+        `/api/world/workshops/${encodeURIComponent(sessionId)}/participants`,
+        { account, role },
+      );
+      await this.loadWorkshopSession(sessionId);
+      this.toast(`Workshop shared with ${account}.`);
+    } catch (error) {
+      this.toast(`Workshop could not be shared: ${error.message}`);
+    }
+  }
+
+  async addWorkshopComment() {
+    const sessionId = this.activeWorkshop?.id;
+    const input = this.$("[data-world-workshop-comment-input]");
+    const message = String(input?.value || "").trim();
+    if (!sessionId || !message) return;
+    try {
+      await this.postJSON(
+        `/api/world/workshops/${encodeURIComponent(sessionId)}/events`,
+        { kind: "comment", message },
+      );
+      if (input) input.value = "";
+      await this.refreshWorkshopEvents();
+    } catch (error) {
+      this.toast(`Workshop update could not be added: ${error.message}`);
+    }
+  }
+
+  async refreshWorkshopEvents() {
+    const sessionId = this.activeWorkshop?.id;
+    if (!sessionId) return;
+    try {
+      const payload = await this.fetchJSON(
+        `/api/world/workshops/${encodeURIComponent(
+          sessionId,
+        )}/events?after=${encodeURIComponent(this.workshopEventCursor)}`,
+        { timeout: 8000, cache: "no-store" },
+      );
+      this.workshopEventCursor = Number(
+        payload.cursor || this.workshopEventCursor,
+      );
+      if (Array.isArray(payload.events) && payload.events.length) {
+        this.activeWorkshop.events = [
+          ...(this.activeWorkshop.events || []),
+          ...payload.events,
+        ].slice(-25);
+      }
+      const pending = this.pendingWorkshop;
+      const results = this.$("[data-world-workshop-results]");
+      if (pending && results) {
+        results.innerHTML = this.workshopReportHTML(
+          pending.owner,
+          pending.repo,
+          pending.type,
+          pending.report,
+          {
+            commit: pending.commit,
+            runId: pending.runId,
+            resultId: pending.resultId,
+            session: this.activeWorkshop,
+          },
+        );
+      }
+    } catch (error) {
+      this.toast(`Workshop updates unavailable: ${error.message}`);
+    }
+  }
+
+  async runWorkshop() {
+    {
+      const repoControl = this.$("[data-world-workshop-repo]");
+      const typeControl = this.$("[data-world-workshop-type]");
+      const results = this.$("[data-world-workshop-results]");
+      const [owner, repo] = String(repoControl?.value || "").split("/");
+      if (repoControl && typeControl && results && owner && repo) {
+        results.innerHTML = `<p class="world-empty-state">Walking the authorized tree and reading a bounded set of same-origin source files locally…</p>`;
+        try {
+          const snapshot = await this.collectWorkshopSnapshot(owner, repo);
+          const report = analyzeWorkshopSnapshot(
+            typeControl.value,
+            snapshot.entries,
+            snapshot.files,
+            snapshot.stats,
+          );
+          this.activeWorkshop = null;
+          this.workshopEventCursor = 0;
+          this.pendingWorkshop = {
+            owner,
+            repo,
+            type: typeControl.value,
+            report,
+            commit: snapshot.commit,
+            runId: workshopRunId(),
+            sessionId: "",
+            resultId: "",
+          };
+          results.innerHTML = this.workshopReportHTML(
+            owner,
+            repo,
+            typeControl.value,
+            report,
+            {
+              commit: snapshot.commit,
+              runId: this.pendingWorkshop.runId,
+            },
+          );
+          return;
+        } catch (_) {
+          results.innerHTML = `<p class="world-empty-state">Deep local analysis was unavailable; falling back to authorized root metadata.</p>`;
+        }
+      }
+    }
+    const repoControl = this.$("[data-world-workshop-repo]");
+    const typeControl = this.$("[data-world-workshop-type]");
+    const results = this.$("[data-world-workshop-results]");
+    if (!repoControl || !typeControl || !results) return;
+    const [owner, repo] = String(repoControl.value || "").split("/");
+    if (!owner || !repo) {
+      results.innerHTML = `<p class="world-empty-state">No authorized online repository is available.</p>`;
+      return;
+    }
+    results.innerHTML = `<p class="world-empty-state">Reading authorized repository metadata locally…</p>`;
+    let entries = [];
+    try {
+      const payload = await this.fetchJSON(
+        `/api/repo/${encodeURIComponent(owner)}/${encodeURIComponent(
+          repo,
+        )}/tree?path=`,
+      );
+      entries = normalizeTreeEntries(payload);
+    } catch (_) {
+      results.innerHTML = `<div class="world-notice world-notice-warning"><strong>Workshop unavailable</strong><span>The selected node is offline or authorization is required. No private repository probe or external-model request was made.</span></div>`;
+      return;
+    }
+    const type = typeControl.value;
+    const names = entries.map((entry) => entry.path);
+    const lowerNames = names.map((name) => name.toLowerCase());
+    const candidates = [];
+    const recommendations = [];
+    if (type === "Database-model analysis") {
+      entries.forEach((entry) => {
+        if (/(model|schema|migration|entity|database|\\.sql)/i.test(entry.name)) {
+          candidates.push(entry.path);
+        }
+      });
+      recommendations.push(
+        "Inspect candidate model definitions and migrations for relationship declarations.",
+        "Build the relationship graph from authorized source references before treating possible cycles or duplicate concepts as findings.",
+        "Compare table and field names across the listed paths for potentially redundant concepts.",
+      );
+    } else if (type === "Dependency mapping") {
+      entries.forEach((entry) => {
+        if (
+          /(^|\/)(package-lock\.json|package\.json|pyproject\.toml|requirements.*|cargo\.toml|go\.mod|cmakelists\.txt)$/i.test(
+            entry.path,
+          )
+        ) {
+          candidates.push(entry.path);
+        }
+      });
+      recommendations.push(
+        "Parse the selected manifests in an authorized agent session to map direct and transitive dependencies.",
+        "Keep inferred relationships separate from verified lockfile edges.",
+      );
+    } else if (type === "Redundancy detection") {
+      const stems = new Map();
+      entries.forEach((entry) => {
+        const stem = entry.name.toLowerCase().replace(/\.[^.]+$/, "");
+        stems.set(stem, [...(stems.get(stem) || []), entry.path]);
+      });
+      stems.forEach((paths) => {
+        if (paths.length > 1) candidates.push(...paths);
+      });
+      recommendations.push(
+        "Matching names are only candidates; compare responsibilities and call sites before removing anything.",
+      );
+    } else if (type === "Dead-code detection") {
+      candidates.push(...names.filter((name) => /(deprecated|legacy|unused|old)/i.test(name)));
+      recommendations.push(
+        "Tree metadata cannot prove dead code. Run reference and build analysis before taking action.",
+      );
+    } else if (type === "Security analysis") {
+      candidates.push(
+        ...names.filter((name) =>
+          /(^|\/)(auth|crypto|security|secret|wallet|permission|\.env)/i.test(name),
+        ),
+      );
+      recommendations.push(
+        "Review the latest commit with dependency, secret-detection, and static-analysis scanners.",
+        "Keep exploit detail and secrets out of public workshop output.",
+      );
+    } else if (type === "Test-coverage analysis") {
+      candidates.push(...names.filter((name) => /(^|\/)(test|tests|spec|coverage)/i.test(name)));
+      const testCount = lowerNames.filter((name) => /(test|spec)/.test(name)).length;
+      const coverageRows = entries
+        .filter((entry) => entry.type === "file")
+        .map((entry) => ({
+          entry,
+          value:
+            typeof entry.coverage === "number" &&
+            Number.isFinite(entry.coverage) &&
+            entry.coverage >= 0 &&
+            entry.coverage <= 100
+              ? entry.coverage
+              : null,
+        }));
+      const measured = coverageRows.filter((row) => row.value !== null);
+      if (measured.length) {
+        const covered = measured.filter((row) => row.value >= 80).length;
+        const partial = measured.filter(
+          (row) => row.value > 0 && row.value < 80,
+        ).length;
+        const uncovered = measured.filter((row) => row.value === 0).length;
+        const unknown = coverageRows.length - measured.length;
+        candidates.push(
+          ...measured
+            .filter((row) => row.value < 80)
+            .map((row) => row.entry.path),
+        );
+        recommendations.push(
+          `Commit-matched artifact states at this tree depth: ${covered} covered (80%+), ${partial} partial, ${uncovered} uncovered, and ${unknown} unknown.`,
+          "Treat artifact-reported percentages as test-execution evidence for this commit, not proof of behavioral correctness.",
+        );
+      } else {
+        recommendations.push(
+          `${testCount} root-level test-related entries were identified; load a commit-matched coverage artifact before drawing coverage conclusions.`,
+        );
+      }
+    } else if (type === "Documentation analysis") {
+      candidates.push(...names.filter((name) => /(readme|docs|contributing|changelog|\\.md$)/i.test(name)));
+      recommendations.push(
+        "Compare public APIs and configuration surfaces with the documentation paths listed below.",
+      );
+    } else if (type === "Performance analysis") {
+      candidates.push(
+        ...entries
+          .filter((entry) => entry.type === "file")
+          .sort((a, b) => b.size - a.size)
+          .slice(0, 10)
+          .map((entry) => entry.path),
+      );
+      recommendations.push(
+        "Large blobs are investigation candidates, not proof of a runtime bottleneck; profile before optimizing.",
+      );
+    } else if (type === "License compatibility analysis") {
+      candidates.push(...names.filter((name) => /(license|copying|notice|package|lock)/i.test(name)));
+      recommendations.push(
+        "Resolve declared and transitive package licenses against the project policy; this is not legal advice.",
+      );
+    } else {
+      candidates.push(...entries.filter((entry) => entry.type === "directory").map((entry) => entry.path));
+      recommendations.push(
+        "Treat top-level directories as architectural boundaries to verify against imports, build targets, services, and APIs.",
+      );
+    }
+    const uniqueCandidates = [...new Set(candidates)].slice(0, 24);
+    results.innerHTML = `
+      <section class="world-workshop-results">
+        <span class="world-status-pill">Recommendation · ${escapeHTML(type)}</span>
+        <h3>${escapeHTML(owner)}/${escapeHTML(repo)}</h3>
+        <div class="world-model-graph" aria-label="Candidate relationship graph">
+          ${
+            uniqueCandidates.length
+              ? uniqueCandidates
+                  .slice(0, 12)
+                  .map(
+                    (path, index) =>
+                      `<span style="--graph-index:${index}">${escapeHTML(path)}</span>`,
+                  )
+                  .join("")
+              : `<span>No root-level candidates matched this metadata-only pass.</span>`
+          }
+        </div>
+        <ul class="world-detail-list">${recommendations
+          .map((item) => `<li>${escapeHTML(item)}</li>`)
+          .join("")}</ul>
+        <details>
+          <summary>Supporting file references</summary>
+          <ul class="world-file-reference-list">${
+            uniqueCandidates.length
+              ? uniqueCandidates.map((path) => `<li><code>${escapeHTML(path)}</code></li>`).join("")
+              : "<li>None at the selected tree depth.</li>"
+          }</ul>
+        </details>
+        <p class="world-panel-footnote">This metadata pass is a recommendation, not a guaranteed fact. A deeper owner-authorized agent can find definitions, use sites, relationships, possible circular dependencies, duplicated concepts, and redundant fields.</p>
+      </section>`;
+  }
+
+  async playRadio(stationId) {
+    const station = RADIO_STATIONS.find((item) => item.id === stationId);
+    const now = this.$("[data-world-media-now]");
+    if (!station || !now) return;
+    this.stopRadio(false);
+    if (station.playMode === "external") {
+      const provider = window.open(
+        station.homepageUrl,
+        "_blank",
+        "noopener,noreferrer",
+      );
+      now.innerHTML = `
+        <span><strong>${escapeHTML(station.name)}</strong> · official ${escapeHTML(
+          station.provider,
+        )} player<small>Current provider track metadata is unavailable because ForkMesh did not receive a permitted provider metadata event. ForkMesh does not embed, restream, record, or control the provider’s audio.</small></span>
+        <button type="button" data-world-radio-stop disabled>Controlled by provider</button>`;
+      this.toast(
+        provider
+          ? `Opened ${station.name} on the provider’s site.`
+          : "The browser blocked the provider window; use the provider-page link.",
+      );
+      return;
+    }
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) {
+      now.innerHTML = `<span>Local audio synthesis is unavailable in this browser.</span><button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
+      return;
+    }
+    const worldOffsetMs =
+      ((Date.now() + this.serverOffset) % WORLD_DAY_MS + WORLD_DAY_MS) %
+      WORLD_DAY_MS;
+    const soundtrack = createProceduralWorldSoundtrack(
+      AudioContext,
+      worldOffsetMs,
+    );
+    this.activeAudio = soundtrack;
+    now.innerHTML = `
+      <span><strong>${escapeHTML(station.name)}</strong> · ${escapeHTML(
+        station.provider,
+      )}<small data-world-track>Original four-hour procedural downtempo score · World-day offset ${escapeHTML(
+        formatMediaPosition(worldOffsetMs),
+      )} · loops with the shared World day · CC0-1.0 · local playback only.</small></span>
+      <button type="button" data-world-radio-stop>Mute / stop</button>`;
+    try {
+      await soundtrack.context.resume();
+      this.toast(`${station.name} is playing on this device only.`);
+    } catch (_) {
+      soundtrack.stop();
+      await soundtrack.context.close().catch(() => {});
+      this.activeAudio = null;
+      now.innerHTML = `
+        <span>Playback was blocked or the provider stream is unavailable.</span>
+        <button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
+    }
+  }
+
+  stopRadio(render = true) {
+    try {
+      this.activeAudio?.stop?.();
+      this.activeAudio?.context?.close?.();
+    } catch (_) {}
+    this.activeAudio = null;
+    if (!render) return;
+    const now = this.$("[data-world-media-now]");
+    if (now) {
+      now.innerHTML = `
+        <span>Nothing is playing. Audio never starts automatically.</span>
+        <button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
+    }
+  }
+
+  handleLandmarkAction(action) {
+    if (action === "tour") {
+      this.closeLandmark();
+      this.startTour();
+      return;
+    }
+    if (action === "repositories") {
+      this.toast(
+        this.repositories.length
+          ? `${this.repositories.length} authorized repository portals are mapped. Choose one in this panel.`
+          : this.repositoryCatalogState === "unavailable"
+            ? "The live catalog is unavailable. No substitute portal is shown or treated as mirrored."
+            : "The live catalog contains no public or account-authorized repository portal.",
+      );
+      return;
+    }
+    const messages = {
+      reward:
+        "Contributions are direct wallet-to-public-pool transfers. Reward plans are signed only in the instance owner’s local Qt client and shown as complete only after on-chain finality.",
+      organizations:
+        "Every floor and office delegates to the same organization and repository role checks as the console.",
+      fediverse:
+        "Only public and explicitly consented social relationships belong in this district.",
+      security:
+        "The clipboard shows only the latest redacted artifact; private evidence stays restricted.",
+      quarantine:
+        "Detailed incident evidence is never exposed in the public world.",
+      launchpad:
+        "Destinations retain normal permissions while events remain synchronized through UTC.",
+      events:
+        "Event records remain usable over HTTPS even when multiplayer presence is offline.",
+      neighborhood:
+        "Availability, inactivity, and door state are under your local privacy controls.",
+      workshops:
+        "Choose a repository and analysis scope in the workshop panel.",
+      broadcast:
+        "Audio starts only after your explicit play action and stays local to this device.",
+      support:
+        "Project support is voluntary, separate from node rewards, and never promises returns or governance dominance.",
+    };
+    this.toast(messages[action] || "This district is being connected to its technical backend.");
+  }
+
+  toggleSettings(open) {
+    const panel = this.$("[data-world-settings]");
+    if (!panel) return;
+    panel.dataset.open = String(open);
+    panel.setAttribute("aria-hidden", String(!open));
+    if (open) window.setTimeout(() => panel.querySelector("button")?.focus(), 80);
+  }
+
+  setTheme(theme) {
+    if (!THEME_OPTIONS.some((option) => option.id === theme)) return;
+    this.settings.theme = theme;
+    this.saveSettings();
+    this.world?.setTheme(theme);
+    this.$$("[data-world-theme]").forEach((button) => {
+      button.setAttribute("aria-pressed", String(button.dataset.worldTheme === theme));
+    });
+    const label = THEME_OPTIONS.find((option) => option.id === theme)?.label || theme;
+    this.toast(`${label} is local to this device. Shared world time and events are unchanged.`);
+  }
+
+  saveSettings() {
+    writeJSON(localStorage, SETTINGS_KEY, this.settings);
+  }
+
+  toast(message) {
+    const element = this.$("[data-world-toast]");
+    if (!element) return;
+    window.clearTimeout(this.toastTimer);
+    element.textContent = message;
+    element.dataset.open = "true";
+    this.toastTimer = window.setTimeout(() => {
+      element.dataset.open = "false";
+    }, 4200);
+  }
+
+  startTour() {
+    this.closeLandmark();
+    this.tourIndex = 0;
+    const panel = this.$("[data-world-tour]");
+    if (panel) {
+      panel.dataset.open = "true";
+      panel.setAttribute("aria-hidden", "false");
+    }
+    this.renderTourStep();
+  }
+
+  nextTourStep() {
+    if (this.tourIndex < 0) return;
+    if (this.tourIndex >= TOUR_STEPS.length - 1) {
+      this.stopTour();
+      this.toast("Tour complete. The whole city is open to you.");
+      return;
+    }
+    this.tourIndex += 1;
+    this.renderTourStep();
+  }
+
+  renderTourStep() {
+    const step = TOUR_STEPS[this.tourIndex];
+    if (!step) return;
+    this.world?.focusLandmark(step.landmark, { move: false });
+    const title = this.$("[data-world-tour-title]");
+    const copy = this.$("[data-world-tour-copy]");
+    const progress = this.$("[data-world-tour-progress]");
+    const next = this.$("[data-world-tour-next]");
+    if (title) title.textContent = step.title;
+    if (copy) copy.textContent = step.copy;
+    if (progress) {
+      progress.innerHTML = TOUR_STEPS.map(
+        (_, index) =>
+          `<span data-complete="${String(index <= this.tourIndex)}"></span>`,
+      ).join("");
+    }
+    if (next) {
+      next.textContent =
+        this.tourIndex === TOUR_STEPS.length - 1 ? "Finish tour ✓" : "Next stop →";
+    }
+  }
+
+  stopTour() {
+    this.tourIndex = -1;
+    const panel = this.$("[data-world-tour]");
+    if (panel) {
+      panel.dataset.open = "false";
+      panel.setAttribute("aria-hidden", "true");
+    }
+    this.world?.clearFocus();
+  }
+
+  startActivityTicker() {
+    const messages = () => {
+      const nodes = liveNodeRecords(this.network);
+      const repos = this.repositories;
+      const output = [
+        nodes.length
+          ? `${nodes[0].name} is online as a mirror operator.`
+          : "The world degrades gracefully while live node data is unavailable.",
+        repos.find((repo) => repo.liveHost)
+          ? `${repos.find((repo) => repo.liveHost).owner}/${repos.find((repo) => repo.liveHost).name} has a healthy public route.`
+          : "Repository portals distinguish live mirrors from stubs and unavailable hosts.",
+        "Activity is generalized; private URLs, searches, forms, and history stay out of the world.",
+        "Visual reward particles are illustrative and do not represent a guaranteed transfer.",
+        this.remotePlayers.size
+          ? `${this.remotePlayers.size} other ${this.remotePlayers.size === 1 ? "visitor is" : "visitors are"} moving through the world.`
+          : "Presence uses a tiny ephemeral channel with a static-world fallback.",
+        ...[...this.remotePlayers.values()]
+          .filter((player) => player.category && player.category !== "hidden")
+          .slice(0, 2)
+          .map((player) => {
+            const label =
+              ACTIVITY_OPTIONS.find((option) => option.id === player.category)
+                ?.label || "Exploring ForkMesh";
+            return `${player.name} is ${label.toLowerCase()}.`;
+          }),
+      ].filter(Boolean);
+      return output;
+    };
+    let index = 0;
+    const render = () => {
+      const list = messages();
+      const element = this.$("[data-world-activity]");
+      if (element && list.length) element.textContent = list[index % list.length];
+      index += 1;
+    };
+    render();
+    this.activityTimer = window.setInterval(render, 6500);
+  }
+
+  handleMovement(movement) {
+    this.lastMovement = {
+      ...movement,
+      activity: this.settings.privacy.activity ? movement.activity : "online",
+    };
+    this.sendPresence({ type: "move", ...this.lastMovement, moving: true });
+    this.broadcastLocalPresence();
+  }
+
+  async refreshWorldTicket() {
+    if (this.destroyed || document.hidden) return;
+    if (!readSession()?.sessionToken) {
+      this.worldTicket = "";
+      this.worldTicketExpires = 0;
+      return;
+    }
+    try {
+      const ticket = await this.fetchJSON("/api/world/ticket", {
+        timeout: 5000,
+        cache: "no-store",
+      });
+      if (
+        ticket?.authenticated === true &&
+        ACCOUNT_STATUS_VALUES.has(String(ticket.accountStatus || "")) &&
+        ticket.accountStatus !== "Guest"
+      ) {
+        this.worldTicket = String(ticket.ticket || "");
+        this.worldTicketExpires = Number(ticket.expiresAt || 0);
+        return;
+      }
+      this.worldTicket = "";
+      this.worldTicketExpires = 0;
+    } catch (_) {
+      // Keep a still-valid ticket for reconnect; clear only an expired one.
+      if (this.worldTicketExpires <= Date.now()) {
+        this.worldTicket = "";
+        this.worldTicketExpires = 0;
+      }
+    }
+  }
+
+  startWorldTicketRefresh() {
+    window.clearInterval(this.worldTicketTimer);
+    this.worldTicketTimer = window.setInterval(() => {
+      if (!document.hidden && readSession()?.sessionToken) {
+        this.refreshWorldTicket();
+      }
+    }, WORLD_TICKET_REFRESH_MS);
+  }
+
+  async connectPresence() {
+    if (
+      this.destroyed ||
+      document.hidden ||
+      this.presenceConnecting ||
+      this.socket?.readyState === WebSocket.OPEN
+    ) {
+      return;
+    }
+    this.presenceConnecting = true;
+    this.setupBroadcastChannel();
+    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    if (
+      readSession()?.sessionToken &&
+      (!this.worldTicket || this.worldTicketExpires <= Date.now() + 5000)
+    ) {
+      await this.refreshWorldTicket();
+    }
+    const socketURL = new URL(
+      `${protocol}//${location.host}/api/world/ws`,
+    );
+    if (this.worldTicket) socketURL.searchParams.set("ticket", this.worldTicket);
+    let socket;
+    try {
+      socket = new WebSocket(socketURL.href);
+    } catch (_) {
+      this.presenceConnecting = false;
+      this.setPresenceState("offline", "Local world");
+      return;
+    }
+    this.socket = socket;
+    this.setPresenceState("connecting", "Joining world");
+    socket.addEventListener("open", () => {
+      this.presenceConnecting = false;
+      this.socketRetry = 1000;
+      this.setPresenceState("online", "World online");
+      this.sendPresence({ type: "presence" });
+      this.sendPresence({ type: "move", ...this.lastMovement, moving: false });
+      window.clearInterval(this.pingTimer);
+      this.pingTimer = window.setInterval(
+        () => this.sendPresence({ type: "ping" }),
+        20000,
+      );
+    });
+    socket.addEventListener("message", (event) => {
+      let message = null;
+      try {
+        message = JSON.parse(event.data);
+      } catch (_) {
+        return;
+      }
+      this.receivePresence(message);
+    });
+    socket.addEventListener("close", () => {
+      this.presenceConnecting = false;
+      if (this.socket === socket) this.socket = null;
+      window.clearInterval(this.pingTimer);
+      this.serverPeerId = "";
+      this.remotePlayers.clear();
+      this.renderPeers();
+      if (this.destroyed) return;
+      this.setPresenceState("offline", "Local world");
+      window.clearTimeout(this.socketTimer);
+      this.socketTimer = window.setTimeout(
+        () => this.connectPresence(),
+        this.socketRetry,
+      );
+      this.socketRetry = Math.min(SOCKET_RETRY_MAX_MS, this.socketRetry * 1.8);
+    });
+    socket.addEventListener("error", () => socket.close());
+  }
+
+  setPresenceState(state, copy) {
+    const element = this.$("[data-world-presence-state]");
+    const text = this.$("[data-world-presence-copy]");
+    if (element) element.dataset.state = state;
+    if (text) text.textContent = copy;
+  }
+
+  sendPresence(message) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+    let safe;
+    if (message.type === "presence") {
+      safe = {
+        type: "presence",
+        name: sanitizePresenceText(this.identity.name, "visitor", 24),
+        shareName: Boolean(this.settings.privacy.name),
+        shareCountry: Boolean(this.settings.privacy.country),
+        shareNodes: Boolean(this.settings.privacy.nodes),
+        browser: presenceBrowser(this.identity.browser, this.settings.privacy.browser),
+        os: presenceOS(this.identity.os, this.settings.privacy.os),
+        status: presenceStatus(this.settings),
+        localTime: presenceLocalTime(this.settings.privacy.localTime),
+        activityCategory: presenceActivity(
+          this.settings,
+          this.currentActivityCategory,
+        ),
+        publicDoor: ["closed", "knock", "open"].includes(
+          this.settings.publicDoor,
+        )
+          ? this.settings.publicDoor
+          : "closed",
+        space: WORLD_SPACE_IDS.has(this.currentSpace)
+          ? this.currentSpace
+          : "town-square",
+      };
+    } else if (message.type === "move") {
+      safe = {
+        type: "move",
+        x: boundedPresenceNumber(message.x),
+        y: boundedPresenceNumber(message.y),
+        z: boundedPresenceNumber(message.z),
+        yaw: boundedYaw(message.yaw ?? message.heading),
+        moving: Boolean(message.moving),
+      };
+    } else if (message.type === "ping") {
+      safe = { type: "ping" };
+    } else {
+      return;
+    }
+    try {
+      this.socket.send(JSON.stringify(safe));
+    } catch (_) {}
+  }
+
+  receivePresence(message) {
+    if (!message || typeof message !== "object") return;
+    if (message.type === "welcome" && Array.isArray(message.peers)) {
+      this.serverPeerId = String(message.id || "");
+      this.remotePlayers.clear();
+      message.peers.forEach((peer) => {
+        const player = remotePlayer(peer);
+        if (player?.id && player.id !== this.serverPeerId) {
+          this.remotePlayers.set(player.id, player);
+        }
+      });
+    } else if (["presence", "join"].includes(message.type) && message.peer?.id) {
+      const player = remotePlayer(message.peer);
+      if (player?.id && player.id !== this.serverPeerId) {
+        const current = this.remotePlayers.get(player.id) || {};
+        this.remotePlayers.set(player.id, { ...current, ...player });
+      }
+    } else if (message.type === "move" && message.id) {
+      const id = String(message.id);
+      if (id !== this.serverPeerId) {
+        const current = this.remotePlayers.get(id) || remotePlayer({ id });
+        this.remotePlayers.set(id, {
+          ...current,
+          x: boundedPresenceNumber(message.x),
+          z: boundedPresenceNumber(message.z),
+          heading: boundedYaw(message.yaw),
+        });
+      }
+    } else if (message.type === "leave") {
+      const departed = String(message.id || "");
+      this.remotePlayers.delete(departed);
+      this.pendingKnocks.delete(departed);
+    } else if (
+      message.type === "interaction" &&
+      message.kind === "knock" &&
+      message.from
+    ) {
+      const visitorId = String(message.from);
+      const visitor = this.remotePlayers.get(visitorId);
+      this.pendingKnocks.set(visitorId, {
+        id: visitorId,
+        name: visitor?.name || "A visitor",
+      });
+      this.toast(
+        `${visitor?.name || "A visitor"} knocked. Open Neighborhood to accept or decline; no permission changes happen automatically.`,
+      );
+      if (
+        this.$("[data-world-detail]")?.dataset.open === "true" &&
+        this.$("#world-detail-title")?.textContent?.includes("Neighborhood")
+      ) {
+        this.openLandmark("neighborhood");
+      }
+    } else if (
+      message.type === "interaction" &&
+      message.kind === "home-grant" &&
+      message.from
+    ) {
+      this.enterNeighborhoodHome(String(message.from), true);
+    } else if (
+      message.type === "interaction" &&
+      message.kind === "home-decline" &&
+      message.from
+    ) {
+      const owner = this.remotePlayers.get(String(message.from));
+      this.toast(
+        `${owner?.name || "The owner"} declined the visual visit request. No reason or private status was shared.`,
+      );
+    } else if (
+      message.type === "interaction" &&
+      message.kind === "emote" &&
+      ["wave", "idea", "celebrate"].includes(message.emote) &&
+      message.from
+    ) {
+      this.world?.playEmote?.(String(message.from), message.emote);
+    }
+    this.renderPeers();
+  }
+
+  setupBroadcastChannel() {
+    if (this.broadcast || !("BroadcastChannel" in window)) return;
+    try {
+      this.broadcast = new BroadcastChannel("forkmesh-world-presence-v1");
+      this.broadcast.addEventListener("message", (event) => {
+        const message = event.data;
+        if (!message?.id || message.id === this.identity.id) return;
+        if (message.type === "leave") {
+          this.localPeers.delete(message.id);
+        } else {
+          this.localPeers.set(message.id, {
+            ...message,
+            seenAt: Date.now(),
+          });
+        }
+        this.pruneLocalPeers();
+      });
+      this.broadcastLocalPresence();
+      this.broadcastTimer = window.setInterval(() => {
+        this.broadcastLocalPresence();
+        this.pruneLocalPeers();
+      }, 5000);
+    } catch (_) {
+      this.broadcast = null;
+    }
+  }
+
+  broadcastLocalPresence() {
+    if (!this.broadcast) return;
+    try {
+      this.broadcast.postMessage({
+        type: "presence",
+        ...publicIdentity(this.identity, this.settings),
+        ...this.lastMovement,
+        // The same-device fallback follows the exact same privacy choice as
+        // network presence. In particular, the initial movement object must
+        // never reintroduce an activity label after activity sharing is off.
+        activity: this.settings.privacy.activity
+          ? sanitizePresenceText(this.lastMovement.activity, "online", 64)
+          : "online",
+      });
+    } catch (_) {}
+  }
+
+  pruneLocalPeers() {
+    const cutoff = Date.now() - PRESENCE_STALE_MS;
+    this.localPeers.forEach((peer, id) => {
+      if (Number(peer.seenAt || 0) < cutoff) this.localPeers.delete(id);
+    });
+    this.renderPeers();
+  }
+
+  renderPeers() {
+    const combined = new Map(
+      this.inactivePlayers.map((player) => [player.id, player]),
+    );
+    this.remotePlayers.forEach((player, id) => combined.set(id, player));
+    this.localPeers.forEach((peer, id) => {
+      combined.set(`local:${id}`, {
+        ...peer,
+        id: `local:${id}`,
+        activity: peer.status === "hidden" ? "online" : peer.status,
+      });
+    });
+    this.world?.setRemotePlayers([...combined.values()]);
+    this.updatePlayerCount();
+  }
+
+  destroy() {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    document.removeEventListener("visibilitychange", this.handleVisibility);
+    window.visualViewport?.removeEventListener(
+      "resize",
+      this.syncViewportHeight,
+    );
+    window.removeEventListener("orientationchange", this.syncViewportHeight);
+    window.clearTimeout(this.socketTimer);
+    window.clearTimeout(this.toastTimer);
+    window.clearTimeout(this.inactiveSyncTimer);
+    window.clearInterval(this.activityTimer);
+    window.clearInterval(this.clockTimer);
+    window.clearInterval(this.distanceTimer);
+    window.clearInterval(this.pingTimer);
+    window.clearInterval(this.rewardTimer);
+    window.clearInterval(this.eventsTimer);
+    window.clearInterval(this.mediaTimer);
+    window.clearInterval(this.broadcastTimer);
+    window.clearInterval(this.worldTicketTimer);
+    try {
+      this.broadcast?.postMessage({ type: "leave", id: this.identity?.id });
+      this.broadcast?.close();
+    } catch (_) {}
+    try {
+      this.socket?.close(1000, "page closed");
+    } catch (_) {}
+    this.stopRadio(false);
+    this.world?.dispose();
+    this.world = null;
+    if (this.mode === "public") document.body.classList.remove("world-active");
+  }
+}
+
+if (!customElements.get("forkmesh-world")) {
+  customElements.define("forkmesh-world", ForkMeshWorld);
+}

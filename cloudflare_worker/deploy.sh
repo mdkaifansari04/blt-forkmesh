@@ -369,6 +369,71 @@ verify_public_assets() {
     echo "Verified: public static assets are serving expected content types."
 }
 
+# Remove the superseded script only after the relay build and its public assets
+# have verified successfully. Deleting a Worker also removes its route
+# associations, allowing the main Worker's static assets to answer the former
+# exact marketing routes. "Already absent" is idempotent; authentication/API
+# failures remain fatal so a split deployment cannot be mistaken for success.
+retire_legacy_marketing_worker() {
+    local output rc=0
+    echo "Retiring legacy forkmesh-marketing Worker (if present) ..."
+    output="$(pywrangler delete --name forkmesh-marketing --force 2>&1)" || rc=$?
+    if [ "$rc" = 0 ]; then
+        printf '%s\n' "$output"
+        echo "Retired: forkmesh-marketing routes now resolve through forkmesh-relay."
+        return 0
+    fi
+    if grep -Eiq \
+        'not found|does not exist|could not find|workers script.*10007|code: 10007' \
+        <<<"$output"; then
+        echo "Already retired: forkmesh-marketing does not exist."
+        return 0
+    fi
+    printf '%s\n' "$output" >&2
+    echo "ERROR: could not retire forkmesh-marketing; refusing a split deployment." >&2
+    return "$rc"
+}
+
+# Prove the marketing documents consolidated into this Worker retain their
+# clean URLs and canonical bodies. This runs after the former marketing Worker
+# is absent, so success demonstrates the main deployment itself owns the World,
+# pricing, blog index, and posts.
+verify_marketing_routes() {
+    local base="${DEPLOY_VERIFY_URL:-https://forkmesh.com}"
+    base="${base%/}"
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "note: curl not found — skipping marketing route verification." >&2
+        return 0
+    fi
+
+    local checks=(
+        "/|ForkMesh - Local-first source code preservation"
+        "/pricing|ForkMesh Pricing - Coding Reimagined for Teams"
+        "/blog|Blog · ForkMesh"
+        "/blog/introducing-forkmesh/|Introducing ForkMesh"
+    )
+    local check path marker body status failed=0
+    echo "Verifying consolidated World and marketing routes on $base ..."
+    for check in "${checks[@]}"; do
+        path="${check%%|*}"
+        marker="${check#*|}"
+        body="$(curl -sS --max-time 25 -w $'\n%{http_code}' "$base$path" 2>/dev/null || true)"
+        status="${body##*$'\n'}"
+        body="${body%$'\n'*}"
+        if [ "$status" != "200" ] || ! grep -Fq "$marker" <<<"$body"; then
+            echo "ERROR: $base$path failed consolidated route verification" >&2
+            echo "       (HTTP ${status:-<none>}; expected marker: $marker)." >&2
+            failed=1
+        fi
+    done
+    if [ "$failed" != "0" ]; then
+        echo "       The main Worker must own /, /pricing, /blog and posts before" >&2
+        echo "       the legacy marketing Worker/routes are retired." >&2
+        return 1
+    fi
+    echo "Verified: one Worker serves the World, pricing, blog index and posts."
+}
+
 # Push every KEY=VALUE in .env.production to the deployed Worker as a SECRET.
 # Idempotent (re-running updates values) and persists across redeploys. Requires
 # the Worker to already exist, so run it after `pywrangler deploy`.
@@ -384,7 +449,7 @@ push_secrets() {
     # production deploy is guaranteed to push and register it (the Worker still
     # no-ops gracefully if it's ever unset). A fork that doesn't send email can
     # drop it from this list.
-    local required=" ADMIN_PATH TREASURY_SOLANA_ADDRESS MAILTRAP_API_TOKEN "
+    local required=" ADMIN_PATH MAILTRAP_API_TOKEN MIRROR_ROUTER_PUBLIC_KEY MIRROR_ROUTER_SIGNING_SEED "
 
     echo "Pushing secrets from: $(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
     local count=0
@@ -573,6 +638,8 @@ case "${1:-deploy}" in
         # phantom success.
         verify_deploy "$BUILD_REV"
         verify_public_assets
+        retire_legacy_marketing_worker
+        verify_marketing_routes
 
         # Build and publish a prebuilt release binary for install.sh to find.
         # This is optional: if it fails, the deploy still succeeds (users can build

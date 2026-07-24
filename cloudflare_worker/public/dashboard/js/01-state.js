@@ -1,6 +1,8 @@
 (() => {
   const state = {
     repositories: [],
+    externalRepositories: [],
+    externalRepositoriesLoading: false,
     filteredRepositories: [],
     filteredGroups: [],
     repositoriesLoading: true,

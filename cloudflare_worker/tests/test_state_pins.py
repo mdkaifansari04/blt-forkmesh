@@ -137,15 +137,6 @@ def _method_source(class_name, method_name):
         "%s.%s not found in entry.py" % (class_name, method_name))
 
 
-def test_git_gate_checks_membership_in_the_pin_set():
-    # The DO's info/refs gate must consult _state_pins (the group-aware set),
-    # not a single self-attested hash.
-    src = _method_source("ForkMeshHost", "_git")
-    assert "_state_pins" in src
-    assert "not in pinned" in src
-    assert "failed integrity check" in src
-
-
 def test_publish_records_source_pins_into_history():
     # Only working-copy holders' verified attestations enter the history that
     # mirrors are validated against, pruned to the newest STATE_PIN_HISTORY.
@@ -155,25 +146,6 @@ def test_publish_records_source_pins_into_history():
     assert "STATE_PIN_HISTORY" in text
     # Renaming an account carries its attested history to the new namespace.
     assert "UPDATE repo_state_history SET key_bi=" in text
-
-
-def test_clone_of_mirror_prefers_online_source_of_truth():
-    # A public clone routes to the logical repo's source of truth while it is
-    # online, so a mirror whose refs fail the integrity pin still clones (from the
-    # authoritative source, never its own bytes). _git_host must consult
-    # _online_source_of_truth before serving the named mirror and forward there.
-    host = _method_source("Default", "_git_host")
-    assert "_online_source_of_truth" in host
-    assert "_forward_to_node" in host
-
-    finder = _method_source("Default", "_online_source_of_truth")
-    # It is scoped to mirrors: a working-copy holder ("local-node") is served
-    # directly, never redirected...
-    assert "local-node" in finder
-    # ...it groups by the same logical repo...
-    assert "repo_mirror_same_group" in finder
-    # ...and only forwards while the source actually has a live host.
-    assert "_source_has_live_host" in finder
 
 
 def test_schema_has_pin_history_and_sticky_tables():

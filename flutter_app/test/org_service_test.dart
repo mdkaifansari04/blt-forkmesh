@@ -97,8 +97,10 @@ void main() {
 
   test('orgErrorMessage maps known codes and falls back for unknown', () {
     expect(orgErrorMessage('org_name_taken'), 'That name is already taken.');
-    expect(orgErrorMessage('last_owner'),
-        'An organization must keep at least one owner.');
+    expect(
+      orgErrorMessage('last_owner'),
+      'An organization must keep at least one owner.',
+    );
     expect(orgErrorMessage('mystery'), 'Request failed (mystery).');
     expect(orgErrorMessage(''), 'Request failed.');
   });
@@ -217,19 +219,27 @@ void main() {
       expect(writes[i].body, equals(body));
     }
 
-    expectWrite(0, 'POST', '/api/orgs/acme/members',
-        {'member': 'carol', 'role': 'admin'});
+    expectWrite(0, 'POST', '/api/orgs/acme/members', {
+      'member': 'carol',
+      'role': 'admin',
+    });
     expectWrite(1, 'DELETE', '/api/orgs/acme/members', {'member': 'bob'});
-    expectWrite(2, 'POST', '/api/orgs/acme/teams',
-        {'team': 'core', 'permission': 'write'});
+    expectWrite(2, 'POST', '/api/orgs/acme/teams', {
+      'team': 'core',
+      'permission': 'write',
+    });
     expectWrite(3, 'DELETE', '/api/orgs/acme/teams', {'team': 'core'});
-    expectWrite(4, 'POST', '/api/orgs/acme/repos',
-        {'repo': 'widget', 'node': 'alice'});
+    expectWrite(4, 'POST', '/api/orgs/acme/repos', {
+      'repo': 'widget',
+      'node': 'alice',
+    });
     expectWrite(5, 'DELETE', '/api/orgs/acme/repos', {'repo': 'widget'});
-    expectWrite(6, 'POST', '/api/orgs/acme/teams/core/members',
-        {'member': 'alice'});
-    expectWrite(7, 'DELETE', '/api/orgs/acme/teams/core/members',
-        {'member': 'alice'});
+    expectWrite(6, 'POST', '/api/orgs/acme/teams/core/members', {
+      'member': 'alice',
+    });
+    expectWrite(7, 'DELETE', '/api/orgs/acme/teams/core/members', {
+      'member': 'alice',
+    });
     expectWrite(8, 'DELETE', '/api/orgs/acme', <String, dynamic>{});
   });
 }

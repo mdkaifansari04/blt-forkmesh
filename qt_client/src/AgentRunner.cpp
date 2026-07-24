@@ -362,8 +362,13 @@ void AgentRunner::launch(Phase phase, const QString &program,
     // inherited key, then reset only the one ForkMesh configured.
     const QString provider = m_session.provider;
     env.remove(QStringLiteral("ANTHROPIC_API_KEY"));
+    env.remove(QStringLiteral("ANTHROPIC_AUTH_TOKEN"));
+    env.remove(QStringLiteral("ANTHROPIC_ADMIN_KEY"));
+    env.remove(QStringLiteral("CLAUDE_CODE_OAUTH_TOKEN"));
     env.remove(QStringLiteral("CODEX_API_KEY"));
     env.remove(QStringLiteral("OPENAI_API_KEY"));
+    env.remove(QStringLiteral("OPENAI_ACCESS_TOKEN"));
+    env.remove(QStringLiteral("OPENAI_ADMIN_KEY"));
     if (!m_config.apiKeyName.isEmpty())
         env.remove(m_config.apiKeyName);
     const bool usingConfiguredKey = !m_config.apiKeyName.isEmpty() &&
@@ -781,6 +786,18 @@ QString AgentRunner::redact(QString text) const
         text.replace(key, QStringLiteral("***"));
     text.replace(QRegularExpression(QStringLiteral("\\bsk-[A-Za-z0-9_-]{20,}")),
                  QStringLiteral("sk-***"));
+    text.replace(
+        QRegularExpression(
+            QStringLiteral(
+                "(?i)(authorization\\s*:\\s*bearer\\s+)[A-Za-z0-9._~+/-]{8,}")),
+        QStringLiteral("\\1***"));
+    text.replace(
+        QRegularExpression(
+            QStringLiteral(
+                "(?i)([\"']?(?:accessToken|refreshToken|apiKey|"
+                "anthropicApiKey|openAiApiKey)[\"']?\\s*[:=]\\s*[\"'])"
+                "[^\"'\\r\\n]+")),
+        QStringLiteral("\\1***"));
     return text;
 }
 

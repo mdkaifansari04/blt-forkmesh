@@ -1,0 +1,228 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forkmesh.com/schemas/mirror-gateway-config-v1.json",
+  "title": "ForkMesh local mirror gateway configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "node",
+    "routerPublicKey",
+    "publicOrigin",
+    "listen",
+    "manifestPath",
+    "requestVerifierCommand",
+    "healthSignerCommand",
+    "repositories"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "publicKey"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+        },
+        "publicKey": {
+          "type": "string",
+          "description": "32-byte Ed25519 public key, base64url without padding",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        }
+      }
+    },
+    "routerPublicKey": {
+      "type": "string",
+      "description": "32-byte routing-Worker Ed25519 public key, base64url without padding",
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "publicOrigin": {
+      "type": "string",
+      "pattern": "^https://[A-Za-z0-9.-]+$"
+    },
+    "listen": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "port"],
+      "properties": {
+        "host": {"enum": ["127.0.0.1", "::1", "localhost"]},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+      }
+    },
+    "manifestPath": {"type": "string", "minLength": 1},
+    "requestVerifierCommand": {"$ref": "#/$defs/command"},
+    "healthSignerCommand": {"$ref": "#/$defs/command"},
+    "privateReplicaStore": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Owner-only directory containing only 64-hex .fm-private ciphertext envelopes"
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxReleaseBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 17179869184
+        },
+        "maxPrivateReplicaBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483648
+        }
+      }
+    },
+    "repositories": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {"$ref": "#/$defs/privateRepository"},
+          {"$ref": "#/$defs/disabledPublicRepository"},
+          {"$ref": "#/$defs/encryptedPublicRepository"}
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "command": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "identity": {
+      "type": "object",
+      "required": ["owner", "name", "visibility", "enabled"],
+      "properties": {
+        "owner": {
+          "type": "string",
+          "pattern": "^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]{1,100}$"
+        },
+        "visibility": {"enum": ["public", "private"]},
+        "enabled": {"type": "boolean"}
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expectedRefsSha256"],
+      "properties": {
+        "expectedRefsSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "operations": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "git-info-refs",
+          "git-upload-pack",
+          "tree",
+          "blobs",
+          "blob",
+          "raw",
+          "history",
+          "commit",
+          "branches",
+          "search",
+          "stats",
+          "sizes",
+          "release-blob"
+        ]
+      }
+    },
+    "privateRepository": {
+      "allOf": [
+        {"$ref": "#/$defs/identity"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["owner", "name", "visibility", "enabled"],
+          "properties": {
+            "owner": true,
+            "name": true,
+            "visibility": {"const": "private"},
+            "enabled": {"const": false}
+          }
+        }
+      ]
+    },
+    "disabledPublicRepository": {
+      "allOf": [
+        {"$ref": "#/$defs/identity"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["owner", "name", "visibility", "enabled"],
+          "properties": {
+            "owner": true,
+            "name": true,
+            "visibility": {"const": "public"},
+            "enabled": {"const": false}
+          }
+        }
+      ]
+    },
+    "encryptedPublicRepository": {
+      "allOf": [
+        {"$ref": "#/$defs/identity"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "owner",
+            "name",
+            "visibility",
+            "enabled",
+            "encryptedArchive",
+            "integrity"
+          ],
+          "properties": {
+            "owner": true,
+            "name": true,
+            "visibility": {"const": "public"},
+            "enabled": {"const": true},
+            "releaseStore": {"type": "string", "minLength": 1},
+            "integrity": {"$ref": "#/$defs/integrity"},
+            "operations": {"$ref": "#/$defs/operations"},
+            "encryptedArchive": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "scheme",
+                "ciphertextPath",
+                "ciphertextSha256",
+                "keyReference",
+                "materializeCommand"
+              ],
+              "properties": {
+                "scheme": {
+                  "const": "age-encrypted-tar-v1"
+                },
+                "ciphertextPath": {"type": "string", "minLength": 1},
+                "ciphertextSha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "keyReference": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9._:/@+-]{3,240}$"
+                },
+                "materializeCommand": {"$ref": "#/$defs/command"}
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

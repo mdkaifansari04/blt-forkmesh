@@ -53,7 +53,10 @@ def _make_env(rows, decrypt_calls):
         # Blobs are "cipher:<json-ish payload>"; the plaintext is the tail.
         if not str(stored).startswith("cipher:"):
             return None
-        return {"payload": str(stored)[len("cipher:"):]}
+        return {
+            "payload": str(stored)[len("cipher:"):],
+            "visibility": "public",
+        }
 
     return {
         "_PUBLIC_CATALOG_MEMO": {"ts": 0, "rows": None, "refresh_ts": 0},

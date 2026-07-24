@@ -11,6 +11,7 @@
 #include "moc_BackoffNetworkAccessManager.cpp"
 #include "moc_ChatBackend.cpp"
 #include "moc_ClaudeIdeBridge.cpp"
+#include "moc_WorldSpeechBridge.cpp"
 #include "moc_ClaudeStreamSession.cpp"
 #include "moc_ClaudeTranscriptView.cpp"
 #include "moc_HeadlessConsole.cpp"
