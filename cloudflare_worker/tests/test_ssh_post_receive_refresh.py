@@ -29,6 +29,10 @@ bridge = _module(
     PROJECT_ROOT / "tools" / "ssh_post_receive_refresh.py",
     "forkmesh_ssh_post_receive_refresh",
 )
+edge_routing = _module(
+    PROJECT_ROOT / "cloudflare_worker" / "src" / "edge_routing.py",
+    "forkmesh_edge_routing_for_renew_timer",
+)
 
 
 def _config(tmp_path, *, health_timeout_seconds=10):
@@ -501,6 +505,26 @@ def test_signed_health_renewal_timer_is_bounded_and_gateway_coupled():
         "ReadWritePaths=/var/lib/forkmesh-mirror/gateway "
         "/var/lib/forkmesh-mirror/identity"
     ) in service
-    assert "OnUnitActiveSec=4min" in timer
-    assert "RandomizedDelaySec=30s" in timer
-    assert "Persistent=true" in timer
+    def directives(text):
+        parsed = {}
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            assert key not in parsed
+            parsed[key] = value
+        return parsed
+
+    timer_directives = directives(timer)
+    service_directives = directives(service)
+    assert timer_directives["OnBootSec"] == "2min"
+    assert timer_directives["OnUnitActiveSec"] == "4min"
+    assert timer_directives["AccuracySec"] == "15s"
+    assert timer_directives["RandomizedDelaySec"] == "30s"
+    assert service_directives["TimeoutStartSec"] == "5min"
+    # Conservatively include a complete service timeout after the maximum
+    # scheduled interval. Repository requests also require a separate signed
+    # proof whose production cache lifetime is only 60 seconds.
+    worst_case_renewal_ms = (4 * 60 + 15 + 30 + 5 * 60) * 1000
+    assert worst_case_renewal_ms < edge_routing.ENDPOINT_STALE_MS

@@ -241,7 +241,13 @@ endpoint fail-closed if the gateway or Tunnel is unavailable.
 
 Install and enable `forkmesh-mirror-renew.service` and
 `forkmesh-mirror-renew.timer` from `packaging/systemd/`. The timer runs after
-boot and every four minutes, below the ten-minute routing freshness window.
+boot and every four minutes. Its cadence, scheduling jitter, and bounded
+five-minute service runtime remain below the ten-minute endpoint-registration
+lease, so independently healthy mirrors stay eligible for round-robin
+selection. A registration lease alone never authorizes repository bytes: the
+Worker still requires a node-signed repository proof matching the canonical
+refs, and caches a successful proof for no more than one minute before
+revalidating it on later use.
 Renewal and repository refresh share the same exclusive owner-only lock, so a
 push refresh completes before a queued renewal can publish.
 
