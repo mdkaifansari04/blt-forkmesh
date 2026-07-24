@@ -8,7 +8,7 @@ export const LANDMARKS = [
     eyebrow: "WELCOME / 01",
     icon: "i",
     color: "#9ef7c6",
-    position: [-9, 0, 8],
+    position: [-16, 0, 16],
     summary: "Your orientation point for the mesh, privacy, wallets, and running a node.",
     metaphor: "A staffed welcome booth at the Town Square entrance.",
     reality:
@@ -56,7 +56,7 @@ export const LANDMARKS = [
     eyebrow: "CODE DISTRICT / 03",
     icon: "{ }",
     color: "#77d9ff",
-    position: [11, 0, 3],
+    position: [16, 0, 16],
     summary: "Walk through live, stub, and mirrored repositories as navigable structures.",
     metaphor: "Files orbit their repository entrance in architectural rings.",
     reality:
@@ -80,7 +80,7 @@ export const LANDMARKS = [
     eyebrow: "EDGE ROUTING / 04",
     icon: "↝",
     color: "#80e8ff",
-    position: [20, 0, 3],
+    position: [32, 0, 16],
     summary: "Inspect how a stable ForkMesh URL selects an available, authenticated mirror.",
     metaphor: "A dispatch station sends each repository request along a healthy route.",
     reality:
@@ -103,7 +103,7 @@ export const LANDMARKS = [
     eyebrow: "TEAM SPACES / 05",
     icon: "▤",
     color: "#d5b6ff",
-    position: [9, 0, -10],
+    position: [16, 0, -16],
     summary: "Buildings and gardens map teams, repositories, offices, and permission boundaries.",
     metaphor: "Floors are teams; offices are developer workspaces; lobbies are public project rooms.",
     reality:
@@ -126,7 +126,7 @@ export const LANDMARKS = [
     eyebrow: "FEDIVERSE / 06",
     icon: "⁂",
     color: "#ff9eb7",
-    position: [-12, 0, -7],
+    position: [-16, 0, -16],
     summary: "Mastodon and Lemmy communities become consent-aware social spaces.",
     metaphor: "Connected arches show instances, communities, and public relationships.",
     reality:
@@ -149,7 +149,7 @@ export const LANDMARKS = [
     eyebrow: "TRUST & ANALYSIS / 07",
     icon: "⌁",
     color: "#88f0df",
-    position: [-2, 0, -13],
+    position: [0, 0, -16],
     summary: "Clipboards show scan scope, commit, findings, limitations, and review state.",
     metaphor: "A workshop clipboard follows every repository build.",
     reality:
@@ -172,16 +172,16 @@ export const LANDMARKS = [
     eyebrow: "PORTALS / 08",
     icon: "↑",
     color: "#b6d8ff",
-    position: [18, 0, 12],
+    position: [32, 0, 32],
     summary: "Portals lead to repository worlds, sky campuses, events, and workshops.",
     metaphor: "Launch pads turn URLs and collaboration rooms into destinations.",
     reality:
-      "Each destination keeps standard permission checks and graceful HTML fallbacks. Scheduled events use UTC even when visual regions show different times.",
+      "Each destination keeps standard permission checks and graceful HTML fallbacks. Every region now follows the same smooth four-hour world clock; scheduled events remain UTC.",
     status: "Route preview",
     statusTone: "prototype",
     bullets: [
       "Shared world time keeps events synchronized.",
-      "Personal weather and lighting themes stay local to your device.",
+      "Personal weather overlays stay local while shared sunlight continues to follow the global clock.",
       "Live collaboration can degrade to polling when realtime transport is unavailable.",
       "Large transfers and releases remain ordinary HTTPS downloads.",
     ],
@@ -195,7 +195,7 @@ export const LANDMARKS = [
     eyebrow: "EVENTS / 09",
     icon: "◫",
     color: "#ffb77d",
-    position: [-21, 0, 9],
+    position: [-32, 0, 16],
     summary: "UTC-scheduled hackathons, releases, workshops, and community broadcasts.",
     metaphor: "A public stage and departure board make shared events visible from the plaza.",
     reality:
@@ -218,7 +218,7 @@ export const LANDMARKS = [
     eyebrow: "PRESENCE / 10",
     icon: "⌂",
     color: "#b8e986",
-    position: [-23, 0, -7],
+    position: [-32, 0, -16],
     summary: "Consent-aware homes, gardens, and a quiet seating area for contributors.",
     metaphor: "An unlocked door invites visitors; a closed door asks them to knock.",
     reality:
@@ -241,7 +241,7 @@ export const LANDMARKS = [
     eyebrow: "ANALYSIS / 11",
     icon: "⌘",
     color: "#73f0ad",
-    position: [1, 0, 22],
+    position: [0, 0, -32],
     summary: "Collaborative, recommendation-first analysis rooms for repository architecture.",
     metaphor: "A workbench turns code structure, dependencies, models, tests, and findings into inspectable maps.",
     reality:
@@ -264,7 +264,7 @@ export const LANDMARKS = [
     eyebrow: "COMMUNITY MEDIA / 12",
     icon: "♫",
     color: "#8fcfff",
-    position: [16, 0, 22],
+    position: [16, 0, 32],
     summary: "Opt-in radio, playlists, presentations, and moderated watch rooms.",
     metaphor: "A garden stage becomes a shared listening room or presentation screen.",
     reality:
@@ -287,7 +287,7 @@ export const LANDMARKS = [
     eyebrow: "PROJECT SUSTAINABILITY / 13",
     icon: "♥",
     color: "#ffd08f",
-    position: [-15, 0, 20],
+    position: [-16, 0, 32],
     summary: "Transparent, voluntary ways to support ForkMesh itself, separate from node rewards.",
     metaphor: "A public help desk connects contributors, members, and recurring project supporters.",
     reality:
@@ -334,15 +334,12 @@ export const TOUR_STEPS = [
 ];
 
 export const THEME_OPTIONS = [
-  { id: "world", label: "World sync" },
-  { id: "day", label: "Day" },
-  { id: "sunset", label: "Sunset" },
-  { id: "night", label: "Night" },
-  { id: "rain", label: "Rain" },
-  { id: "snow", label: "Snow" },
-  { id: "winter", label: "Winter" },
-  { id: "cyberpunk", label: "Cyberpunk" },
-  { id: "low-light", label: "Low light" },
+  { id: "world", label: "Shared four-hour cycle" },
+  { id: "rain", label: "Shared cycle + rain" },
+  { id: "snow", label: "Shared cycle + snow" },
+  { id: "winter", label: "Shared cycle + winter" },
+  { id: "cyberpunk", label: "Shared cycle + cyberpunk" },
+  { id: "low-light", label: "Shared cycle + low light" },
 ];
 
 export const AVAILABILITY_OPTIONS = [
@@ -364,9 +361,9 @@ export const ACTIVITY_OPTIONS = [
 ];
 
 export const WORLD_REGIONS = [
-  { id: "east", label: "East Campus", phase: "Morning", utcOffsetHours: -5 },
-  { id: "central", label: "Central Campus", phase: "Afternoon", utcOffsetHours: 0 },
-  { id: "west", label: "West Campus", phase: "Evening", utcOffsetHours: 5 },
+  { id: "east", label: "East Campus", phase: "Shared world time" },
+  { id: "central", label: "Central Campus", phase: "Shared world time" },
+  { id: "west", label: "West Campus", phase: "Shared world time" },
 ];
 
 export const RADIO_STATIONS = [
@@ -438,7 +435,7 @@ export function detectClient() {
   const platform = navigator.userAgentData?.platform || navigator.platform || "";
   let browser = "Browser";
   if (/Edg\//.test(ua)) browser = "Edge";
-  else if (/Firefox\//.test(ua)) browser = "Firefox";
+  else if (/Firefox\/|FxiOS\//.test(ua)) browser = "Firefox";
   else if (/CriOS\//.test(ua)) browser = "Chrome";
   else if (/Chrome\//.test(ua)) browser = "Chrome";
   else if (/Safari\//.test(ua)) browser = "Safari";
@@ -446,9 +443,10 @@ export function detectClient() {
   let os = "Device";
   if (/Android/i.test(ua)) os = "Android";
   else if (/iPhone|iPad|iPod/i.test(ua)) os = "iOS";
+  else if (/CrOS/i.test(ua)) os = "ChromeOS";
   else if (/Mac/i.test(platform)) os = "macOS";
   else if (/Win/i.test(platform)) os = "Windows";
-  else if (/Linux/i.test(platform)) os = "Linux";
+  else if (/Linux/i.test(platform) || /Linux/i.test(ua)) os = "Linux";
 
   return { browser, os, touch: navigator.maxTouchPoints > 0 };
 }

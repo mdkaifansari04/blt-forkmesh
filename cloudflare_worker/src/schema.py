@@ -1721,6 +1721,22 @@ SCHEMA_STATEMENTS = [
         revoked_at INTEGER NOT NULL DEFAULT 0)""",
     "CREATE INDEX IF NOT EXISTS idx_account_ssh_keys_account "
     "ON account_ssh_keys(account_bi, revoked_at, created_at)",
+    # Explicit, administrator-created World moderation blocks. Subjects are
+    # rotating keyed tokens derived transiently at the edge; raw addresses and
+    # user-agent strings never enter D1. This table is intentionally separate
+    # from the retired automated abuse/quarantine tables and has no signal,
+    # scoring, detection, or permanent-ban state.
+    """CREATE TABLE IF NOT EXISTS world_manual_blocks (
+        block_id TEXT PRIMARY KEY,
+        target_type TEXT NOT NULL CHECK (target_type IN ('ip','agent')),
+        subject_token TEXT NOT NULL,
+        created_by_bi TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        revoked_at INTEGER NOT NULL DEFAULT 0)""",
+    "CREATE INDEX IF NOT EXISTS idx_world_manual_blocks_active "
+    "ON world_manual_blocks(target_type, subject_token, expires_at) "
+    "WHERE revoked_at=0",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the

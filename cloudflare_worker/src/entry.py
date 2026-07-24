@@ -2535,7 +2535,7 @@ def world_context_handler(request):
         )
     return json_response(
         world_protocol.context_payload(
-            world_request_country(request), int(Date.now())),
+            world_request_country(request), int(Date.now()), MAX_CONNECTIONS),
         cache_control="no-store, max-age=0, must-revalidate",
         extra_headers={"x-content-type-options": "nosniff"},
     )
@@ -2576,7 +2576,8 @@ def world_websocket_origin_allowed(request):
     return origin_key(origin_url) == origin_key(request_url)
 
 
-async def world_durable_object_request(request, trusted_claim=None):
+async def world_durable_object_request(
+        request, trusted_claim=None, moderation_tokens=None):
     """Rebuild the world upgrade with no identifying connection headers.
 
     The general tunnel helper forwards Authorization and User-Agent because Git
@@ -2606,10 +2607,24 @@ async def world_durable_object_request(request, trusted_claim=None):
         public_claim = world_protocol.trusted_presence_claim(
             claim.get("name", ""), claim.get("accountStatus", "Guest"),
             claim.get("nodeCount", 0))
+        private_claim = {
+            **public_claim,
+            # This flag is verified from the signed, short-lived World ticket.
+            # The Durable Object uses it only to tailor moderation handles to
+            # an administrator's socket; it is not public presence metadata.
+            "isAdmin": claim.get("isAdmin") is True,
+        }
         encoded_claim = base64.urlsafe_b64encode(
-            json.dumps(public_claim, separators=(",", ":")).encode()
+            json.dumps(private_claim, separators=(",", ":")).encode()
         ).decode().rstrip("=")
         headers["x-forkmesh-world-claim"] = encoded_claim
+    tokens = moderation_tokens if isinstance(moderation_tokens, dict) else {}
+    for target_type in ("ip", "agent"):
+        token = str(tokens.get(target_type) or "")
+        if re.fullmatch(r"[a-f0-9]{64}", token):
+            # Only keyed opaque tokens cross this boundary. The source address
+            # and raw client fingerprint remain in the outer Worker call frame.
+            headers["x-forkmesh-world-%s-token" % target_type] = token
     source_url = urlparse(request.url)
     # Strip query/fragment data as an additional privacy boundary. The world
     # protocol has no tokens or user-selected URL state.
@@ -2623,6 +2638,11 @@ async def world_durable_object_request(request, trusted_claim=None):
 
 WORLD_TICKET_TTL_MS = 60 * 1000
 WORLD_INACTIVE_RETAIN_MS = 30 * 24 * 60 * 60 * 1000
+WORLD_MANUAL_BLOCK_MIN_MS = 60 * 1000
+WORLD_MANUAL_BLOCK_MAX_MS = 24 * 60 * 60 * 1000
+WORLD_MANUAL_BLOCK_DEFAULT_MS = 15 * 60 * 1000
+WORLD_MANUAL_BLOCK_RETAIN_MS = 30 * 24 * 60 * 60 * 1000
+WORLD_MANUAL_TOKEN_DAY_MS = 24 * 60 * 60 * 1000
 # An opted-in seating card represents somebody who has actually been away, not
 # somebody who selected "Away" while still walking around the world. A fresh
 # authenticated world visit resets this quiet-period clock.
@@ -2676,6 +2696,9 @@ def _world_ticket_decode(env, ticket):
         claim.get("nodeCount", 0))
     if not public["name"] or public["accountStatus"] == "Guest":
         return None
+    # `isAdmin` is accepted only from the HMAC-authenticated ticket body. It is
+    # never accepted from a browser presence frame.
+    public["isAdmin"] = claim.get("isAdmin") is True
     return public
 
 
@@ -2735,8 +2758,11 @@ async def _world_account_claim(env, request, data=None):
         account_status = "Guest"
     if account_status == "Guest":
         return None
-    return world_protocol.trusted_presence_claim(
+    claim = world_protocol.trusted_presence_claim(
         name, account_status, node_count)
+    claim["isAdmin"] = bool(
+        await _has_role(env, name, "platform_administrator"))
+    return claim
 
 
 async def world_ticket_handler(env, request):
@@ -7504,6 +7530,221 @@ def _generalized_client_category(request):
             "mozilla/", "chrome/", "safari/", "firefox/", "edg/")):
         return "browser"
     return "other-client" if ua else ""
+
+
+async def _world_moderation_tokens(env, request, now=None):
+    """Derive rotating moderation subjects while raw request data is transient."""
+    now = int(Date.now()) if now is None else int(now)
+    day = now // WORLD_MANUAL_TOKEN_DAY_MS
+    address = _transient_client_address(request)
+    try:
+        # The exact value is used only as keyed-HMAC input in this call frame.
+        # Capping it prevents an oversized header from becoming hash work; it is
+        # never returned, forwarded, logged, or persisted.
+        transient_agent = str(
+            request.headers.get("user-agent") or "")[:2048]
+    except Exception:
+        transient_agent = ""
+    tokens = {"ip": "", "agent": ""}
+    if address:
+        tokens["ip"] = await blind_index(
+            env, "world-manual-ip-v1:%d:%s" % (day, address))
+    if transient_agent:
+        tokens["agent"] = await blind_index(
+            env, "world-manual-agent-v1:%d:%s" % (day, transient_agent))
+    # `address` and `transient_agent` die with this call. Only keyed, rotating
+    # tokens may be forwarded or persisted; public badge display continues to
+    # use the existing generalized browser/OS allowlist.
+    return tokens
+
+
+async def _world_active_manual_block(env, tokens, now=None):
+    """Return an active explicit block matching either opaque subject token."""
+    now = int(Date.now()) if now is None else int(now)
+    values = tokens if isinstance(tokens, dict) else {}
+    ip_token = str(values.get("ip") or "")
+    agent_token = str(values.get("agent") or "")
+    if not (
+        re.fullmatch(r"[a-f0-9]{64}", ip_token)
+        or re.fullmatch(r"[a-f0-9]{64}", agent_token)
+    ):
+        return None
+    await ensure_schema(env)
+    row = await d1_first(
+        env,
+        "SELECT target_type,expires_at FROM world_manual_blocks "
+        "WHERE revoked_at=0 AND expires_at>? AND "
+        "((target_type='ip' AND subject_token=?) OR "
+        "(target_type='agent' AND subject_token=?)) "
+        "ORDER BY expires_at ASC LIMIT 1",
+        now, ip_token, agent_token,
+    )
+    if not row:
+        return None
+    return {
+        "targetType": (
+            str(row.get("target_type") or "")
+            if str(row.get("target_type") or "") in ("ip", "agent")
+            else "unknown"),
+        "expiresAt": int(row.get("expires_at") or 0),
+    }
+
+
+def _world_manual_control_signature(env, target_type, subject_token, expires_at):
+    canonical = (
+        "forkmesh-world-manual-block-v1\n%s\n%s\n%d"
+        % (target_type, subject_token, int(expires_at))
+    ).encode()
+    return hmac.new(
+        _account_session_secret(env), canonical, "sha256").hexdigest()
+
+
+async def _world_disconnect_manual_block(
+        env, target_type, subject_token, expires_at):
+    """Ask the World DO to eject matching live sockets after persistence."""
+    world_id = env.FORKMESH_WORLD.idFromName("town-square-v1")
+    world_object = env.FORKMESH_WORLD.get(world_id)
+    payload = {
+        "targetType": target_type,
+        "subjectToken": subject_token,
+        "expiresAt": int(expires_at),
+    }
+    control_request = JsRequest.new(
+        "https://forkmesh.internal/api/world/manual-block",
+        to_js({
+            "method": "POST",
+            "headers": {
+                "content-type": "application/json",
+                "x-forkmesh-world-control": _world_manual_control_signature(
+                    env, target_type, subject_token, expires_at),
+            },
+            "body": json.dumps(payload, separators=(",", ":")),
+        }),
+    )
+    response = await world_object.fetch(control_request)
+    if int(getattr(response, "status", 0) or 0) != 200:
+        return 0
+    try:
+        result = json.loads(await response.text())
+    except Exception:
+        return 0
+    return max(0, min(64, int(result.get("disconnected") or 0)))
+
+
+async def world_moderation_handler(env, request):
+    """Create one explicit, temporary World block as a platform admin."""
+    if method_name(request) != "POST":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"allow": "POST"})
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response(
+            {"error": "invalid_json"}, status=400,
+            cache_control="no-store, max-age=0, must-revalidate")
+    if not isinstance(data, dict):
+        return json_response(
+            {"error": "invalid_json"}, status=400,
+            cache_control="no-store, max-age=0, must-revalidate")
+    account_bi, rec = await _account_session_record(env, request, data)
+    actor = clean_string(
+        rec.get("name", "") if rec else "", MAX_NODE_NAME).strip().lower()
+    if not actor:
+        return json_response(
+            {"error": "invalid_session"}, status=401,
+            cache_control="no-store, max-age=0, must-revalidate")
+    if not await _has_role(env, actor, "platform_administrator"):
+        await _audit_sensitive_action(
+            env, actor, "world.manual_block", "world_peer", "", "denied",
+            {"reason": "platform_administrator_required"})
+        return json_response(
+            {"error": "forbidden"}, status=403,
+            cache_control="no-store, max-age=0, must-revalidate")
+
+    target_type = str(data.get("targetType") or "").strip().lower()
+    subject_token = str(data.get("handle") or "").strip().lower()
+    duration = data.get("durationMs", WORLD_MANUAL_BLOCK_DEFAULT_MS)
+    if target_type not in ("ip", "agent"):
+        return json_response(
+            {"error": "invalid_target_type"}, status=400,
+            cache_control="no-store, max-age=0, must-revalidate")
+    if not re.fullmatch(r"[a-f0-9]{64}", subject_token):
+        return json_response(
+            {"error": "invalid_handle"}, status=400,
+            cache_control="no-store, max-age=0, must-revalidate")
+    if (
+        isinstance(duration, bool)
+        or not isinstance(duration, int)
+        or duration < WORLD_MANUAL_BLOCK_MIN_MS
+        or duration > WORLD_MANUAL_BLOCK_MAX_MS
+    ):
+        return json_response(
+            {"error": "invalid_duration"}, status=400,
+            cache_control="no-store, max-age=0, must-revalidate")
+
+    now = int(Date.now())
+    # Subject tokens rotate daily. Do not pretend a block can outlive the token
+    # it targets, even when the requested bounded duration crosses UTC midnight.
+    token_expires = ((now // WORLD_MANUAL_TOKEN_DAY_MS) + 1
+                     ) * WORLD_MANUAL_TOKEN_DAY_MS
+    expires_at = min(now + duration, token_expires)
+    block_id = new_world_peer_id() + new_world_peer_id()
+    try:
+        await ensure_schema(env)
+        await d1_run(
+            env,
+            "DELETE FROM world_manual_blocks WHERE expires_at<?",
+            now - WORLD_MANUAL_BLOCK_RETAIN_MS,
+        )
+        await d1_run(
+            env,
+            "INSERT INTO world_manual_blocks "
+            "(block_id,target_type,subject_token,created_by_bi,created_at,"
+            "expires_at,revoked_at) VALUES (?,?,?,?,?,?,0)",
+            block_id, target_type, subject_token, account_bi, now, expires_at,
+        )
+    except Exception:
+        await _audit_sensitive_action(
+            env, actor, "world.manual_block", "world_" + target_type,
+            subject_token, "failed",
+            {"reason": "persistence_failed", "durationMs": duration})
+        raise
+
+    disconnected = 0
+    try:
+        disconnected = await _world_disconnect_manual_block(
+            env, target_type, subject_token, expires_at)
+    except Exception:
+        # Admission checks are D1-backed, so a transient DO control failure does
+        # not undo the block. Existing sockets will also disappear on their
+        # normal stale/close boundary.
+        disconnected = 0
+    await _audit_sensitive_action(
+        env, actor, "world.manual_block", "world_" + target_type,
+        subject_token, "success", {
+            "manual": True,
+            "targetType": target_type,
+            "durationMs": duration,
+            "expiresAt": expires_at,
+            "disconnectedCount": disconnected,
+        })
+    return json_response(
+        {
+            "ok": True,
+            "blockId": block_id,
+            "targetType": target_type,
+            "expiresAt": expires_at,
+            "disconnected": disconnected,
+            "notice": (
+                "This is an explicit temporary administrator action. "
+                "ForkMesh automatic abuse detection and quarantine remain off."
+            ),
+        },
+        cache_control="no-store, max-age=0, must-revalidate",
+        extra_headers={"x-content-type-options": "nosniff"},
+    )
 
 
 # Simple web signup: create an active account from node name + email + password.
@@ -27549,6 +27790,10 @@ class Default(WorkerEntrypoint):
             return await world_fediverse_mentions_handler(
                 self.env, request, url.path)
 
+        if url.path in (
+                "/api/world/moderation", "/api/world/moderation/"):
+            return await world_moderation_handler(self.env, request)
+
         if url.path in ("/api/world/ws", "/api/world/ws/"):
             if method_name(request) != "GET":
                 return json_response(
@@ -27564,6 +27809,24 @@ class Default(WorkerEntrypoint):
                 _world_ticket_decode(self.env, ticket_values[0])
                 if len(ticket_values) == 1 else None
             )
+            moderation_tokens = await _world_moderation_tokens(
+                self.env, request)
+            active_block = await _world_active_manual_block(
+                self.env, moderation_tokens)
+            if active_block:
+                return json_response(
+                    {
+                        "error": "world_temporarily_blocked",
+                        "targetType": active_block["targetType"],
+                        "expiresAt": active_block["expiresAt"],
+                        "notice": (
+                            "This is a temporary manual administrator action; "
+                            "it is not an automated abuse or quarantine result."
+                        ),
+                    },
+                    status=403,
+                    cache_control="no-store, max-age=0, must-revalidate",
+                )
             world_id = self.env.FORKMESH_WORLD.idFromName("town-square-v1")
             last_error = None
             for _attempt in range(2):
@@ -27571,7 +27834,7 @@ class Default(WorkerEntrypoint):
                 try:
                     return await world_object.fetch(
                         await world_durable_object_request(
-                            request, trusted_claim))
+                            request, trusted_claim, moderation_tokens))
                 except Exception as error:
                     last_error = error
             await log_durable_object_abort(
@@ -28662,6 +28925,8 @@ class ForkMeshWorld(DurableObject):
 
     async def fetch(self, request):
         path = urlparse(request.url).path
+        if path.rstrip("/") == "/api/world/manual-block":
+            return await self._manual_block(request)
         if path.rstrip("/") != "/api/world/ws":
             return json_response({"error": "not_found"}, status=404)
 
@@ -28691,7 +28956,11 @@ class ForkMeshWorld(DurableObject):
         peer_id = new_world_peer_id()
         country_source = world_protocol.approximate_country_code(raw_country)
         state = world_protocol.default_presence(peer_id, now)
+        arrival_slot = world_protocol.first_available_arrival_slot(
+            _ws_attr(peer, "arrival_slot", -1) for peer in peers)
+        state.update(world_protocol.arrival_position(arrival_slot))
         trusted_claim = {}
+        is_admin = False
         try:
             encoded_claim = (
                 request.headers.get("x-forkmesh-world-claim") or "")
@@ -28706,8 +28975,19 @@ class ForkMeshWorld(DurableObject):
                         candidate.get("name", ""),
                         candidate.get("accountStatus", "Guest"),
                         candidate.get("nodeCount", 0))
+                    is_admin = candidate.get("isAdmin") is True
         except Exception:
             trusted_claim = {}
+            is_admin = False
+        moderation_tokens = {}
+        for target_type in ("ip", "agent"):
+            try:
+                token = str(request.headers.get(
+                    "x-forkmesh-world-%s-token" % target_type) or "")
+            except Exception:
+                token = ""
+            moderation_tokens[target_type] = (
+                token if re.fullmatch(r"[a-f0-9]{64}", token) else "")
         if trusted_claim:
             # The name and operator count remain private attachment fields
             # until the owner's first presence frame opts into each one.
@@ -28719,26 +28999,71 @@ class ForkMeshWorld(DurableObject):
             server, state, last=now, rate_start=now, rate_count=0,
             country_source=country_source,
             trusted_name=trusted_claim.get("name", ""),
-            trusted_node_count=trusted_claim.get("nodeCount", 0))
+            trusted_node_count=trusted_claim.get("nodeCount", 0),
+            arrival_slot=arrival_slot, is_admin=is_admin,
+            ip_token=moderation_tokens["ip"],
+            agent_token=moderation_tokens["agent"])
 
         # The only snapshot is the state of sockets alive right now. It is sent
         # directly from runtime attachments and is never persisted or replayed.
         snapshot = [
-            world_protocol.public_presence(self._socket_state(peer))
+            self._presence_for_viewer(server, peer)
             for peer in peers
         ]
         self._safe_send(server, {
             "type": "welcome",
             "id": peer_id,
+            "self": world_protocol.public_presence(state),
             "peers": snapshot,
         })
         self._broadcast({
             "type": "join",
             "peer": world_protocol.public_presence(state),
-        }, exclude_id=peer_id, budgeted=True)
+        }, exclude_id=peer_id, budgeted=True, moderation_subject=server)
 
         return JsResponse.new(
             None, to_js({"status": 101, "webSocket": client}))
+
+    async def _manual_block(self, request):
+        """Disconnect sockets selected by a signed outer-Worker command."""
+        if method_name(request) != "POST":
+            return json_response({"error": "method_not_allowed"}, status=405)
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+        if not isinstance(data, dict):
+            return json_response({"error": "invalid_json"}, status=400)
+        target_type = str(data.get("targetType") or "").strip().lower()
+        subject_token = str(data.get("subjectToken") or "").strip().lower()
+        try:
+            expires_at = int(data.get("expiresAt") or 0)
+        except (TypeError, ValueError):
+            expires_at = 0
+        try:
+            signature = str(
+                request.headers.get("x-forkmesh-world-control") or "")
+        except Exception:
+            signature = ""
+        expected = _world_manual_control_signature(
+            self.env, target_type, subject_token, expires_at)
+        now = int(Date.now())
+        if (
+            target_type not in ("ip", "agent")
+            or not re.fullmatch(r"[a-f0-9]{64}", subject_token)
+            or expires_at <= now
+            or expires_at > now + WORLD_MANUAL_BLOCK_MAX_MS
+            or not hmac.compare_digest(signature, expected)
+        ):
+            return json_response({"error": "unauthorized"}, status=401)
+        disconnected = 0
+        token_field = target_type + "_token"
+        for peer in list(self._live_sockets(cleanup=True)):
+            if _ws_attr(peer, token_field, "") != subject_token:
+                continue
+            disconnected += 1
+            self._depart(peer, 1008, "temporary manual moderation")
+        return json_response({"ok": True, "disconnected": disconnected})
 
     def _socket_state(self, ws):
         attachment = _ws_attachment(ws)
@@ -28752,7 +29077,8 @@ class ForkMeshWorld(DurableObject):
     def _save_attachment(self, ws, state, last, rate_start, rate_count,
                          departed=False, country_source=None,
                          trusted_name=None, trusted_node_count=None,
-                         pending_knocks=None):
+                         pending_knocks=None, arrival_slot=None, is_admin=None,
+                         ip_token=None, agent_token=None):
         if country_source is None:
             country_source = _ws_attr(ws, "country_source", "")
         if trusted_name is None:
@@ -28761,6 +29087,14 @@ class ForkMeshWorld(DurableObject):
             trusted_node_count = _ws_attr(ws, "trusted_node_count", 0)
         if pending_knocks is None:
             pending_knocks = _ws_attr(ws, "pending_knocks", [])
+        if arrival_slot is None:
+            arrival_slot = _ws_attr(ws, "arrival_slot", -1)
+        if is_admin is None:
+            is_admin = bool(_ws_attr(ws, "is_admin", False))
+        if ip_token is None:
+            ip_token = _ws_attr(ws, "ip_token", "")
+        if agent_token is None:
+            agent_token = _ws_attr(ws, "agent_token", "")
         pending_knocks = [
             str(peer_id)
             for peer_id in list(pending_knocks or [])[-8:]
@@ -28779,9 +29113,24 @@ class ForkMeshWorld(DurableObject):
             # into name/operator-belt sharing.
             "trusted_name": trusted_fields["name"] if trusted_name else "",
             "trusted_node_count": trusted_fields["nodeCount"],
+            # These opaque rotating subjects and authorization bit remain
+            # private attachment data. Only `_presence_for_viewer` can project
+            # the handles, and only to a server-verified administrator.
+            "is_admin": bool(is_admin),
+            "ip_token": (
+                str(ip_token)
+                if re.fullmatch(r"[a-f0-9]{64}", str(ip_token or ""))
+                else ""),
+            "agent_token": (
+                str(agent_token)
+                if re.fullmatch(r"[a-f0-9]{64}", str(agent_token or ""))
+                else ""),
             # One-use, live-socket-only consent requests. They are never
             # persisted, broadcast, or exposed in the public presence record.
             "pending_knocks": pending_knocks,
+            # A room-local collision-avoidance index. It is never broadcast,
+            # persisted, or derived from an account/network identifier.
+            "arrival_slot": int(arrival_slot),
             "last": int(last or 0),
             "rl_start": int(rate_start or 0),
             "rl_count": int(rate_count or 0),
@@ -28791,6 +29140,19 @@ class ForkMeshWorld(DurableObject):
             ws.serializeAttachment(to_js(attachment))
         except Exception:
             pass
+
+    def _presence_for_viewer(self, viewer, subject):
+        public = world_protocol.public_presence(self._socket_state(subject))
+        if not bool(_ws_attr(viewer, "is_admin", False)):
+            return public
+        handles = {}
+        for target_type in ("ip", "agent"):
+            token = str(_ws_attr(subject, target_type + "_token", "") or "")
+            if re.fullmatch(r"[a-f0-9]{64}", token):
+                handles[target_type] = token
+        if handles:
+            public["moderationHandles"] = handles
+        return public
 
     def _mark_departed(self, ws):
         self._save_attachment(
@@ -28992,7 +29354,8 @@ class ForkMeshWorld(DurableObject):
         else:
             frame = world_protocol.movement_delta(state)
         self._broadcast(
-            frame, exclude_id=state.get("id"), budgeted=True)
+            frame, exclude_id=state.get("id"), budgeted=True,
+            moderation_subject=ws if kind == "presence" else None)
 
     async def webSocketClose(self, ws, code, reason, was_clean):
         self._depart(ws, 1000, "")
@@ -29016,7 +29379,8 @@ class ForkMeshWorld(DurableObject):
                 exclude_id=peer_id,
             )
 
-    def _broadcast(self, frame, exclude_id=None, budgeted=False):
+    def _broadcast(self, frame, exclude_id=None, budgeted=False,
+                   moderation_subject=None):
         if budgeted and not self._broadcast_admitted(int(Date.now())):
             # State still updates in the sender's attachment, so the next
             # welcome snapshot is current even when a hot movement delta drops.
@@ -29024,7 +29388,18 @@ class ForkMeshWorld(DurableObject):
         for peer in self._live_sockets(cleanup=True):
             if exclude_id and _ws_attr(peer, "id") == exclude_id:
                 continue
-            self._safe_send(peer, frame)
+            outgoing = frame
+            if (
+                moderation_subject is not None
+                and isinstance(frame.get("peer"), dict)
+                and bool(_ws_attr(peer, "is_admin", False))
+            ):
+                outgoing = {
+                    **frame,
+                    "peer": self._presence_for_viewer(
+                        peer, moderation_subject),
+                }
+            self._safe_send(peer, outgoing)
 
     def _safe_send(self, ws, frame):
         try:

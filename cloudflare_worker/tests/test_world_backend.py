@@ -87,6 +87,7 @@ def _load_context_handler(now=17_500_000):
         "json_response": json_response,
         "world_protocol": world,
         "Date": SimpleNamespace(now=lambda: now),
+        "MAX_CONNECTIONS": 128,
     }
     exec(compile(module, str(ENTRY), "exec"), namespace)
     return namespace["world_context_handler"]
@@ -108,6 +109,9 @@ def test_context_returns_only_country_and_shared_clock_fields():
         "serverTimeMs": now,
         "worldTimeMs": now % world.WORLD_DAY_LENGTH_MS,
         "worldDayLengthMs": world.WORLD_DAY_LENGTH_MS,
+        "worldConnections": 64,
+        "worldMessagesPerSecond": 4,
+        "chatConnections": 128,
     }
     assert headers.read == ["cf-ipcountry"]
     assert response["cache_control"] == "no-store, max-age=0, must-revalidate"
@@ -280,6 +284,80 @@ def test_activity_is_generalized_allowlisted_and_never_accepts_urls():
             "activityCategory": invalid,
         }, shared, 3000)
         assert hidden["activityCategory"] == "hidden"
+
+
+def test_coarse_activity_metadata_is_bounded_and_privacy_gated():
+    assert world.WORLD_FIRST_VISIT_AGE_VALUES == {
+        "this-session", "today", "this-week", "this-month", "this-year",
+        "over-a-year", "hidden",
+    }
+    current = world.default_presence("peer", 1000)
+    assert current["inputActive"] is False
+    assert current["visitCount"] == 0
+    assert current["firstVisitAge"] == "hidden"
+
+    _, shared = world.sanitize_message({
+        "type": "presence",
+        "activityCategory": "viewing-repository",
+        "inputActive": True,
+        "visitCount": 27,
+        "firstVisitAge": "this-month",
+        "url": "https://example.test/private?q=secret",
+    }, current, 2000)
+    assert shared["inputActive"] is True
+    assert shared["visitCount"] == 27
+    assert shared["firstVisitAge"] == "this-month"
+    assert "url" not in world.public_presence(shared)
+    assert "example.test" not in repr(world.public_presence(shared))
+
+    _, bounded = world.sanitize_message({
+        "type": "presence",
+        "activityCategory": "exploring-town-square",
+        "visitCount": 5000,
+        "firstVisitAge": "over-a-year",
+    }, current, 3000)
+    assert bounded["visitCount"] == 999
+    assert bounded["firstVisitAge"] == "over-a-year"
+    _, lower_bounded = world.sanitize_message({
+        "type": "presence",
+        "activityCategory": "exploring-town-square",
+        "visitCount": -1,
+    }, current, 3500)
+    assert lower_bounded["visitCount"] == 0
+
+    _, rejected = world.sanitize_message({
+        "type": "presence",
+        "activityCategory": "exploring-town-square",
+        "inputActive": "true",
+        "visitCount": "999",
+        "firstVisitAge": "https://example.test/history",
+    }, current, 4000)
+    assert rejected["inputActive"] is False
+    assert rejected["visitCount"] == 0
+    assert rejected["firstVisitAge"] == "hidden"
+
+    _, hidden = world.sanitize_message({
+        "type": "presence",
+        "activityCategory": "hidden",
+        "inputActive": True,
+        "visitCount": 42,
+        "firstVisitAge": "today",
+    }, shared, 5000)
+    assert hidden["inputActive"] is False
+    assert hidden["visitCount"] == 0
+    assert hidden["firstVisitAge"] == "hidden"
+
+
+def test_arrival_slots_fill_unique_forward_facing_rows_of_ten():
+    positions = [world.arrival_position(slot) for slot in range(21)]
+    assert len({(item["x"], item["z"]) for item in positions}) == 21
+    assert [item["z"] for item in positions[:10]] == [30.0] * 10
+    assert [item["z"] for item in positions[10:20]] == [27.9] * 10
+    assert positions[20]["z"] == 25.8
+    assert all(item["yaw"] == 0.0 for item in positions)
+    assert all(item["y"] == 0.38 for item in positions)
+    assert world.first_available_arrival_slot([0, 2, 3]) == 1
+    assert world.first_available_arrival_slot(range(63)) == 63
 
 
 def test_public_door_state_is_explicit_and_allowlisted():

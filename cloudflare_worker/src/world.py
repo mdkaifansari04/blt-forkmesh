@@ -31,6 +31,11 @@ WORLD_CONNECT_MAX_PER_WINDOW = 20
 WORLD_CLIENT_STALE_MS = 90 * 1000
 WORLD_MAX_CONNECTIONS = 64
 WORLD_COORD_LIMIT = 512.0
+WORLD_ARRIVAL_COLUMNS = 10
+WORLD_ARRIVAL_X = -8.1
+WORLD_ARRIVAL_Z = 30.0
+WORLD_ARRIVAL_COLUMN_GAP = 1.8
+WORLD_ARRIVAL_ROW_GAP = 2.1
 
 WORLD_BROWSER_VALUES = frozenset({
     "chrome", "edge", "firefox", "safari", "other", "hidden",
@@ -45,6 +50,10 @@ WORLD_STATUS_VALUES = frozenset({
 WORLD_ACTIVITY_VALUES = frozenset({
     "browsing-code-visualization", "exploring-town-square", "hidden",
     "reading-documentation", "viewing-repository", "visiting-organization",
+})
+WORLD_FIRST_VISIT_AGE_VALUES = frozenset({
+    "this-session", "today", "this-week", "this-month", "this-year",
+    "over-a-year", "hidden",
 })
 WORLD_DOOR_VALUES = frozenset({"closed", "knock", "open"})
 WORLD_EMOTE_VALUES = frozenset({"celebrate", "idea", "wave"})
@@ -65,7 +74,8 @@ WORLD_NODE_BADGE_MAX = 6
 # list explicit is the privacy boundary for snapshots and presence frames.
 WORLD_PUBLIC_FIELDS = (
     "id", "name", "countryCode", "browser", "os", "status", "localTime",
-    "activityCategory", "accountStatus", "nodeCount", "space",
+    "activityCategory", "inputActive", "visitCount", "firstVisitAge",
+    "accountStatus", "nodeCount", "space",
     "publicDoor",
     "x", "y", "z", "yaw", "moving", "updatedAt",
 )
@@ -136,6 +146,54 @@ def _bounded_yaw(value, fallback):
     return round(max(-math.pi, min(math.pi, number)), 3)
 
 
+def _bounded_visit_count(value, fallback):
+    """Return an integer visit count without coercing strings or booleans."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return fallback
+    return max(0, min(999, value))
+
+
+def arrival_position(slot):
+    """Return one deterministic, non-overlapping Town Square arrival slot.
+
+    The 64-person room fits into seven shallow rows.  Ten people fill a row
+    before the next row begins, and yaw zero faces everyone toward the square
+    instead of toward one another.  The slot itself stays private to the live
+    Durable Object attachment; only the ordinary bounded coordinates leave it.
+    """
+    try:
+        slot = int(slot)
+    except (TypeError, ValueError):
+        slot = 0
+    slot = max(0, min(WORLD_MAX_CONNECTIONS - 1, slot))
+    column = slot % WORLD_ARRIVAL_COLUMNS
+    row = slot // WORLD_ARRIVAL_COLUMNS
+    return {
+        "x": round(WORLD_ARRIVAL_X + column * WORLD_ARRIVAL_COLUMN_GAP, 2),
+        "y": 0.38,
+        "z": round(WORLD_ARRIVAL_Z - row * WORLD_ARRIVAL_ROW_GAP, 2),
+        "yaw": 0.0,
+    }
+
+
+def first_available_arrival_slot(used_slots):
+    """Choose the first free room slot without consulting persistent storage."""
+    used = set()
+    for value in used_slots or ():
+        if isinstance(value, bool):
+            continue
+        try:
+            slot = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= slot < WORLD_MAX_CONNECTIONS:
+            used.add(slot)
+    for slot in range(WORLD_MAX_CONNECTIONS):
+        if slot not in used:
+            return slot
+    return WORLD_MAX_CONNECTIONS - 1
+
+
 def default_presence(peer_id, now):
     """Create a non-identifying, privacy-default per-connection state."""
     peer_id = str(peer_id or "")[:32]
@@ -151,6 +209,12 @@ def default_presence(peer_id, now):
         "status": "hidden",
         "localTime": "",
         "activityCategory": "hidden",
+        # These coarse indicators are meaningful only while generalized
+        # activity sharing is enabled. They never contain event coordinates,
+        # visited URLs, query strings, or timestamps.
+        "inputActive": False,
+        "visitCount": 0,
+        "firstVisitAge": "hidden",
         # Account status and operator-belt count are supplied by the routing
         # Worker after it validates a short-lived world ticket. They are never
         # accepted from arbitrary socket JSON.
@@ -218,6 +282,26 @@ def sanitize_message(payload, current, now, country_source="",
             state["activityCategory"] = _choice(
                 payload.get("activityCategory"), WORLD_ACTIVITY_VALUES,
                 "hidden")
+        if "inputActive" in payload:
+            state["inputActive"] = (
+                payload.get("inputActive")
+                if isinstance(payload.get("inputActive"), bool)
+                else False)
+        if "visitCount" in payload:
+            state["visitCount"] = _bounded_visit_count(
+                payload.get("visitCount"), 0)
+        if "firstVisitAge" in payload:
+            state["firstVisitAge"] = _choice(
+                payload.get("firstVisitAge"),
+                WORLD_FIRST_VISIT_AGE_VALUES,
+                "hidden")
+        # Activity privacy is the parent control for all three derived
+        # indicators. Explicitly clear prior values so turning sharing off
+        # cannot leave stale metadata visible in a live socket attachment.
+        if state.get("activityCategory") == "hidden":
+            state["inputActive"] = False
+            state["visitCount"] = 0
+            state["firstVisitAge"] = "hidden"
         if "publicDoor" in payload:
             state["publicDoor"] = _choice(
                 payload.get("publicDoor"), WORLD_DOOR_VALUES, "closed")
@@ -398,7 +482,7 @@ def presence_is_stale(last_seen, now):
     return last_seen <= 0 or now - last_seen > WORLD_CLIENT_STALE_MS
 
 
-def context_payload(country_code, now):
+def context_payload(country_code, now, chat_connections=0):
     """Public context with no address, user-agent, or precise location data."""
     now = int(now)
     return {
@@ -407,4 +491,7 @@ def context_payload(country_code, now):
         "serverTimeMs": now,
         "worldTimeMs": now % WORLD_DAY_LENGTH_MS,
         "worldDayLengthMs": WORLD_DAY_LENGTH_MS,
+        "worldConnections": WORLD_MAX_CONNECTIONS,
+        "worldMessagesPerSecond": WORLD_RATE_MAX_PER_WINDOW,
+        "chatConnections": max(0, int(chat_connections or 0)),
     }

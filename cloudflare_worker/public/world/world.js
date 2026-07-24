@@ -28,10 +28,18 @@ const THREE_MODULE = import(THREE_MODULE_URL);
 THREE_MODULE.catch(() => {});
 const SETTINGS_KEY = "forkmesh.world.settings.v1";
 const GUEST_ID_KEY = "forkmesh.world.guestId.v1";
+const FIRST_VISIT_KEY = "forkmesh.world.firstVisitAt.v1";
+const VISIT_COUNT_KEY = "forkmesh.world.publicVisitCount.v1";
+const INTRO_DISMISSED_KEY = "forkmesh.world.introDismissed.v1";
 const SOCKET_RETRY_MAX_MS = 20000;
 const PRESENCE_STALE_MS = 22000;
 const WORLD_TICKET_REFRESH_MS = 5 * 60 * 1000;
 const WORLD_NOTIFICATION_POLL_MS = 30 * 1000;
+const WORLD_MANUAL_BLOCK_DURATION_MS = 60 * 60 * 1000;
+const FLAGSHIP_REPOSITORY = Object.freeze({
+  owner: "forkmesh",
+  repo: "forkmesh",
+});
 const ACCOUNT_STATUS_VALUES = new Set([
   "Guest",
   "Registered",
@@ -84,6 +92,53 @@ function writeJSON(storage, key, value) {
   } catch (_) {}
 }
 
+function firstVisitTimestamp(now = Date.now()) {
+  try {
+    const stored = Number(localStorage.getItem(FIRST_VISIT_KEY) || 0);
+    if (
+      Number.isSafeInteger(stored) &&
+      stored >= Date.UTC(2020, 0, 1) &&
+      stored <= now
+    ) {
+      return stored;
+    }
+    localStorage.setItem(FIRST_VISIT_KEY, String(now));
+  } catch (_) {}
+  return now;
+}
+
+function firstVisitAge(timestamp, now = Date.now()) {
+  const age = Math.max(0, now - Number(timestamp || now));
+  if (age < 10 * 60 * 1000) return "this-session";
+  if (age < 24 * 60 * 60 * 1000) return "today";
+  if (age < 7 * 24 * 60 * 60 * 1000) return "this-week";
+  if (age < 31 * 24 * 60 * 60 * 1000) return "this-month";
+  if (age < 366 * 24 * 60 * 60 * 1000) return "this-year";
+  return "over-a-year";
+}
+
+function sessionVisitCount(increment = false) {
+  try {
+    const current = Math.max(
+      0,
+      Math.min(999, Number(sessionStorage.getItem(VISIT_COUNT_KEY)) || 0),
+    );
+    const next = increment ? Math.min(999, current + 1) : current;
+    sessionStorage.setItem(VISIT_COUNT_KEY, String(next));
+    return next;
+  } catch (_) {
+    return increment ? 1 : 0;
+  }
+}
+
+function introDismissed() {
+  try {
+    return localStorage.getItem(INTRO_DISMISSED_KEY) === "1";
+  } catch (_) {
+    return false;
+  }
+}
+
 function randomId() {
   try {
     return crypto.randomUUID();
@@ -130,7 +185,12 @@ function accountIdentity(session) {
     countryCode: "",
     flag: "◌",
     accountStatus: "Guest",
+    isAdmin: false,
     nodes: [],
+    inputActive: false,
+    visitCount: 0,
+    firstVisitAge: "this-session",
+    activityCategory: "exploring-town-square",
   };
 }
 
@@ -164,9 +224,14 @@ function defaultSettings() {
 
 function mergeSettings(stored) {
   const defaults = defaultSettings();
+  const requestedTheme = String(stored?.theme || defaults.theme);
+  const theme = THEME_OPTIONS.some((option) => option.id === requestedTheme)
+    ? requestedTheme
+    : defaults.theme;
   return {
     ...defaults,
     ...(stored || {}),
+    theme,
     privacy: {
       ...defaults.privacy,
       ...(stored?.privacy || {}),
@@ -184,9 +249,15 @@ function publicIdentity(identity, settings) {
     id: identity.id,
     name: settings.privacy.name ? chosenName : "Private visitor",
     flag: settings.privacy.country ? identity.flag : "◌",
+    countryCode:
+      settings.privacy.country &&
+      /^[A-Z]{2}$/.test(String(identity.countryCode || ""))
+        ? String(identity.countryCode)
+        : "",
     browser: settings.privacy.browser ? identity.browser : "Hidden",
     os: settings.privacy.os ? identity.os : "Hidden",
     accountStatus: identity.accountStatus,
+    isAdmin: identity.isAdmin === true,
     status:
       settings.privacy.activity &&
       (settings.privacy.inactivity || !["inactive", "recent"].includes(settings.availability))
@@ -209,6 +280,17 @@ function publicIdentity(identity, settings) {
     publicDoor: ["closed", "knock", "open"].includes(settings.publicDoor)
       ? settings.publicDoor
       : "closed",
+    activityCategory: settings.privacy.activity
+      ? String(identity.activityCategory || "exploring-town-square")
+      : "hidden",
+    inputActive:
+      settings.privacy.activity && identity.inputActive === true,
+    visitCount: settings.privacy.activity
+      ? Math.max(0, Math.min(999, Number(identity.visitCount) || 0))
+      : 0,
+    firstVisitAge: settings.privacy.activity
+      ? String(identity.firstVisitAge || "this-session")
+      : "hidden",
   };
 }
 
@@ -300,10 +382,22 @@ function presenceLabel(value, hidden, fallback) {
 function remotePlayer(peer) {
   if (!peer?.id) return null;
   const status = String(peer.status || "hidden");
+  const moderationHandles = {};
+  if (peer.moderationHandles && typeof peer.moderationHandles === "object") {
+    for (const targetType of ["ip", "agent"]) {
+      const handle = String(peer.moderationHandles[targetType] || "");
+      if (/^[a-f0-9]{64}$/.test(handle)) {
+        moderationHandles[targetType] = handle;
+      }
+    }
+  }
   return {
     id: String(peer.id),
     name: sanitizePresenceText(peer.name, "visitor", 32),
     flag: flagEmoji(peer.countryCode),
+    countryCode: /^[A-Z]{2}$/.test(String(peer.countryCode || ""))
+      ? String(peer.countryCode)
+      : "",
     browser: presenceLabel(peer.browser, "Hidden", "Browser"),
     os: presenceLabel(peer.os, "Hidden", "Device"),
     activity: status === "hidden" ? "online" : status,
@@ -332,6 +426,20 @@ function remotePlayer(peer) {
     y: boundedPresenceNumber(peer.y),
     z: boundedPresenceNumber(peer.z),
     heading: boundedYaw(peer.yaw),
+    inputActive: peer.inputActive === true,
+    visitCount: Math.max(0, Math.min(999, Number(peer.visitCount) || 0)),
+    firstVisitAge: [
+      "this-session",
+      "today",
+      "this-week",
+      "this-month",
+      "this-year",
+      "over-a-year",
+    ].includes(String(peer.firstVisitAge || ""))
+      ? String(peer.firstVisitAge)
+      : "hidden",
+    moderationHandles,
+    updatedAt: Math.max(0, Number(peer.updatedAt) || 0),
   };
 }
 
@@ -1489,31 +1597,40 @@ function cleanRepositories(payload) {
   if (!Array.isArray(items)) return [];
   return items
     .filter((repo) => repo && (repo.owner || repo.name))
-    .map((repo) => ({
-      owner: sanitizePresenceText(repo.owner, "external", 40),
-      name: sanitizePresenceText(repo.name, "repository", 60),
-      description: String(repo.description || "").slice(0, 180),
-      liveHost: Boolean(repo.liveHost ?? repo.cloneOnline ?? repo.online),
-      source: String(repo.source || "external"),
-      language: String(
-        repo.language ||
-          repo.primaryLanguage ||
-          Object.keys(repo.languages || {})[0] ||
-          "",
-      ).slice(0, 30),
-      isPrivate: Boolean(repo.private || repo.isPrivate || repo.visibility === "private"),
-      mirrorCount: Number(repo.mirrorCount || repo.mirrors || 0),
-      status: String(repo.status || "").slice(0, 40),
-      externalUrl: String(repo.externalUrl || repo.sourceUrl || repo.url || "").slice(
-        0,
-        500,
-      ),
-      archived: Boolean(repo.archived),
-      license: String(repo.license?.name || repo.license || "").slice(0, 80),
-      topics: Array.isArray(repo.topics)
-        ? repo.topics.map((topic) => String(topic).slice(0, 30)).slice(0, 12)
-        : [],
-    }))
+    .map((repo) => {
+      const commit = String(repo.commit || "").trim().toLowerCase();
+      const stateHash = String(repo.stateHash || "").trim().toLowerCase();
+      return {
+        owner: sanitizePresenceText(repo.owner, "external", 40),
+        name: sanitizePresenceText(repo.name, "repository", 60),
+        description: String(repo.description || "").slice(0, 180),
+        liveHost: Boolean(repo.liveHost ?? repo.cloneOnline ?? repo.online),
+        source: String(repo.source || "external"),
+        language: String(
+          repo.language ||
+            repo.primaryLanguage ||
+            Object.keys(repo.languages || {})[0] ||
+            "",
+        ).slice(0, 30),
+        isPrivate: Boolean(
+          repo.private || repo.isPrivate || repo.visibility === "private",
+        ),
+        commit: /^[0-9a-f]{40,64}$/.test(commit) ? commit : "",
+        stateHash: /^[0-9a-f]{64}$/.test(stateHash) ? stateHash : "",
+        mirrorCount: Number(repo.mirrorCount || repo.mirrors || 0),
+        status: String(repo.status || "").slice(0, 40),
+        externalUrl: String(
+          repo.externalUrl || repo.sourceUrl || repo.url || "",
+        ).slice(0, 500),
+        archived: Boolean(repo.archived),
+        license: String(repo.license?.name || repo.license || "").slice(0, 80),
+        topics: Array.isArray(repo.topics)
+          ? repo.topics
+              .map((topic) => String(topic).slice(0, 30))
+              .slice(0, 12)
+          : [],
+      };
+    })
     .slice(0, 200);
 }
 
@@ -1734,6 +1851,12 @@ function worldTemplate(identity, settings, mode) {
             </span>
           </a>
 
+          <div class="world-clock" aria-label="Shared four-hour World clock">
+            <strong class="world-clock-time" data-world-clock>--:--</strong>
+            <span class="world-clock-label">World time</span>
+            <span class="world-clock-phase" data-world-phase>Shared · 4h day</span>
+          </div>
+
           <nav class="world-top-actions" aria-label="World tools">
             <span class="world-emote-bar" aria-label="Public emotes">
               <button type="button" data-world-emote="wave" title="Wave" aria-label="Wave">◡</button>
@@ -1752,6 +1875,15 @@ function worldTemplate(identity, settings, mode) {
             <a class="world-top-link" href="/dashboard/chat" data-world-chat-open title="Open chat inside the World">
               <span aria-hidden="true">⌁</span><span>Chat</span>
             </a>
+            <button
+              class="world-top-link"
+              type="button"
+              data-world-sound-toggle
+              aria-pressed="false"
+              title="Enable World sounds"
+            >
+              <span aria-hidden="true">♪</span><span data-world-sound-label>Sound</span>
+            </button>
             <a class="world-top-link" href="/dashboard" title="Open operations console">
               <span aria-hidden="true">▦</span><span>Console</span>
             </a>
@@ -1760,7 +1892,18 @@ function worldTemplate(identity, settings, mode) {
         </header>
 
         <div class="world-left-rail">
-          <section class="world-arrival-card" aria-labelledby="world-arrival-title">
+          <section
+            class="world-arrival-card"
+            aria-labelledby="world-arrival-title"
+            ${introDismissed() ? "hidden" : ""}
+          >
+            <button
+              class="world-arrival-dismiss"
+              type="button"
+              data-world-arrival-dismiss
+              aria-label="Permanently dismiss this introduction"
+              title="Do not show this introduction again"
+            >×</button>
             <p class="world-eyebrow">YOU ARE HERE / TOWN SQUARE</p>
             <h1 id="world-arrival-title">Code is a place now.</h1>
             <p>
@@ -1844,7 +1987,7 @@ function worldTemplate(identity, settings, mode) {
             <span>WASD, arrows, or click the plaza</span>
           </div>
           <span class="world-location" data-world-location>Town Square</span>
-          <span class="world-location world-region-location" data-world-active-region>Central Campus · Afternoon</span>
+          <span class="world-location world-region-location" data-world-active-region>Central Campus · shared global time</span>
         </div>
 
         <div class="world-touch-controls" aria-label="Touch movement controls">
@@ -1995,10 +2138,19 @@ class ForkMeshWorld extends HTMLElement {
       reddit: [],
     };
     this.botDirectory = [];
+    this.worldLimits = null;
     this.activeAudio = null;
+    this.soundEnabled = false;
+    this.soundContext = null;
+    this.joinSoundTimes = [];
     this.mediaSpaces = [];
     this.mediaRoom = normalizeMediaRoom(null);
     this.activeRepository = null;
+    this.repositoryMapState = "idle";
+    this.repositoryMapTarget = "";
+    this.repositoryMapSelection = 0;
+    this.repositoryManualSelection = "";
+    this.repositoryMapLoads = new Map();
     this.securityTriage = null;
     this.pendingWorkshop = null;
     this.activeWorkshop = null;
@@ -2043,6 +2195,10 @@ class ForkMeshWorld extends HTMLElement {
     this.distanceTimer = 0;
     this.toastTimer = 0;
     this.inactiveSyncTimer = 0;
+    this.inputInactiveTimer = 0;
+    this.firstVisitAt = firstVisitTimestamp();
+    this.publicVisitCount = sessionVisitCount(true);
+    this.visitedPlaces = new Set(["town-square"]);
     this.tourIndex = -1;
     this.serverOffset = 0;
     this.lastMovement = {
@@ -2062,6 +2218,9 @@ class ForkMeshWorld extends HTMLElement {
     this.mode = this.dataset.worldMode || "public";
     if (this.mode === "public") document.body.classList.add("world-active");
     this.identity = accountIdentity(readSession());
+    this.identity.firstVisitAge = firstVisitAge(this.firstVisitAt);
+    this.identity.visitCount = this.publicVisitCount;
+    this.identity.activityCategory = this.currentActivityCategory;
     this.settings = mergeSettings(readJSON(localStorage, SETTINGS_KEY, null));
     // Shared rooms, playlists, roles, and schedules are server-authoritative.
     // localStorage is reserved for this device's visual/privacy preferences.
@@ -2072,6 +2231,13 @@ class ForkMeshWorld extends HTMLElement {
     window.visualViewport?.addEventListener("resize", this.syncViewportHeight);
     window.addEventListener("orientationchange", this.syncViewportHeight);
     window.addEventListener("storage", this.handleStorage);
+    window.addEventListener("pointerdown", this.handlePublicInputActivity, {
+      passive: true,
+    });
+    window.addEventListener("pointermove", this.handlePublicInputActivity, {
+      passive: true,
+    });
+    window.addEventListener("keydown", this.handlePublicInputActivity);
     this.bindUI();
     this.startClock();
     this.bootstrap();
@@ -2088,6 +2254,33 @@ class ForkMeshWorld extends HTMLElement {
 
   $$(selector) {
     return Array.from(this.querySelectorAll(selector));
+  }
+
+  handlePublicInputActivity = () => {
+    if (this.destroyed || !this.identity) return;
+    if (!this.identity.inputActive) {
+      this.identity.inputActive = true;
+      this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
+      this.sendPresence({ type: "presence" });
+      this.broadcastLocalPresence();
+    }
+    window.clearTimeout(this.inputInactiveTimer);
+    this.inputInactiveTimer = window.setTimeout(() => {
+      if (!this.identity || this.destroyed) return;
+      this.identity.inputActive = false;
+      this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
+      this.sendPresence({ type: "presence" });
+      this.broadcastLocalPresence();
+    }, 12000);
+  };
+
+  recordPublicVisit(place) {
+    const safePlace = String(place || "").toLowerCase().slice(0, 64);
+    if (!safePlace || this.visitedPlaces.has(safePlace)) return;
+    this.visitedPlaces.add(safePlace);
+    this.publicVisitCount = sessionVisitCount(true);
+    this.identity.visitCount = this.publicVisitCount;
+    this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
   }
 
   async bootstrap() {
@@ -2119,6 +2312,7 @@ class ForkMeshWorld extends HTMLElement {
         onLocationChange: (label, id) => this.updateLocation(label, id),
         onRegionChange: (region) => this.updateRegion(region),
         onMovement: (movement) => this.handleMovement(movement),
+        onModeration: (action) => this.moderateWorldPeer(action),
       });
       this.world.setTheme(this.settings.theme);
       await Promise.allSettled([contextPromise, dataPromise]);
@@ -2129,7 +2323,12 @@ class ForkMeshWorld extends HTMLElement {
       this.world.updateBots(this.botDirectory);
       this.world.updateFediverseDirectory(this.fediverseDirectory);
       this.world.updateMediaSpaces?.(this.mediaSpaces, this.mediaRoom);
-      if (!this.repositories.length) {
+      if (this.repositories.length) {
+        // The scene and authenticated live catalog are both ready. Populate
+        // the repository district from the canonical flagship route without
+        // delaying entry into the rest of the World.
+        void this.autoLoadFlagshipRepositoryMap();
+      } else {
         // The portal's construction geometry is decorative, but an empty or
         // failed live catalog must not leave file icons that look selectable.
         this.world.updateRepositoryGraph?.([], []);
@@ -2326,6 +2525,7 @@ class ForkMeshWorld extends HTMLElement {
         24,
       );
       this.identity.accountStatus = String(ticket.accountStatus);
+      this.identity.isAdmin = ticket.isAdmin === true;
       this.identity.nodes = Array.from(
         {
           length: Math.max(
@@ -2339,6 +2539,7 @@ class ForkMeshWorld extends HTMLElement {
       this.worldTicketExpires = Number(ticket.expiresAt || 0);
     } else {
       this.identity.accountStatus = "Guest";
+      this.identity.isAdmin = false;
       this.identity.nodes = [];
       this.worldTicket = "";
       this.worldTicketExpires = 0;
@@ -2353,9 +2554,26 @@ class ForkMeshWorld extends HTMLElement {
       context?.serverTimeMs || context?.now || context?.worldNow || 0,
     );
     if (serverNow > 0) this.serverOffset = serverNow - Date.now();
+    const worldConnections = Number(context?.worldConnections);
+    const worldMessagesPerSecond = Number(context?.worldMessagesPerSecond);
+    const chatConnections = Number(context?.chatConnections);
+    this.worldLimits =
+      Number.isSafeInteger(worldConnections) &&
+      worldConnections > 0 &&
+      Number.isSafeInteger(worldMessagesPerSecond) &&
+      worldMessagesPerSecond > 0 &&
+      Number.isSafeInteger(chatConnections) &&
+      chatConnections > 0
+        ? {
+            worldConnections,
+            worldMessagesPerSecond,
+            chatConnections,
+          }
+        : null;
     this.updateIdentityUI();
     this.world?.setClockOffset(this.serverOffset);
     this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
+    this.updateDurableObjectMetrics();
   }
 
   async loadWorldData() {
@@ -3115,6 +3333,19 @@ class ForkMeshWorld extends HTMLElement {
         this.closeWorldChat();
         return;
       }
+      if (event.target.closest("[data-world-arrival-dismiss]")) {
+        try {
+          localStorage.setItem(INTRO_DISMISSED_KEY, "1");
+        } catch (_) {}
+        const card = this.$(".world-arrival-card");
+        if (card) card.hidden = true;
+        this.toast("Introduction dismissed on this device. Start remains available from the dock.");
+        return;
+      }
+      if (event.target.closest("[data-world-sound-toggle]")) {
+        this.toggleWorldSound();
+        return;
+      }
       const landmarkButton = event.target.closest("[data-world-landmark]");
       if (landmarkButton) {
         const id = landmarkButton.dataset.worldLandmark;
@@ -3213,7 +3444,9 @@ class ForkMeshWorld extends HTMLElement {
       const repoMap = event.target.closest("[data-world-repo-map]");
       if (repoMap) {
         const [owner, name] = String(repoMap.dataset.worldRepoMap || "").split("/");
-        if (owner && name) this.loadRepositoryMap(owner, name);
+        if (owner && name) {
+          this.loadRepositoryMap(owner, name, { automatic: false });
+        }
         return;
       }
       const securityScan = event.target.closest("[data-world-security-scan]");
@@ -3629,14 +3862,9 @@ class ForkMeshWorld extends HTMLElement {
           (item) => item.id === element.dataset.worldRegionClock,
         );
         if (!region) return;
-        const regionalClock = worldClock(
-          Date.now() +
-            this.serverOffset +
-            Number(region.utcOffsetHours || 0) * (WORLD_DAY_MS / 24),
-        );
         const label = element.querySelector("span");
         if (label) {
-          label.textContent = `${region.phase} · ${regionalClock.label}`;
+          label.textContent = `${region.phase} · ${clock.label}`;
         }
       });
       if (this.settings?.privacy?.localTime) this.updateIdentityUI();
@@ -3675,6 +3903,79 @@ class ForkMeshWorld extends HTMLElement {
     if (reposEl) reposEl.textContent = compactNumber(repoCount);
     if (nodesEl) nodesEl.textContent = compactNumber(nodes);
     this.updatePlayerCount();
+    this.updateDurableObjectMetrics();
+  }
+
+  updateDurableObjectMetrics() {
+    if (!this.world?.updateDurableObjects) return;
+    const limits = this.worldLimits;
+    if (!limits) {
+      this.world.updateDurableObjects([]);
+      return;
+    }
+    const worldSocketOnline =
+      this.socket?.readyState === WebSocket.OPEN && Boolean(this.serverPeerId);
+    const chatConnected = Number(this.network?.stats?.clients);
+    const objects = [];
+    if (worldSocketOnline) {
+      objects.push({
+        id: "forkmesh-world",
+        name: "Town Square presence",
+        usage: { connections: 1 + this.remotePlayers.size },
+        limits: { connections: limits.worldConnections },
+      });
+    }
+    if (Number.isFinite(chatConnected) && chatConnected >= 0) {
+      objects.push({
+        id: "forkmesh-general-chat",
+        name: "#general chat · cached live count",
+        usage: { connections: chatConnected },
+        limits: { connections: limits.chatConnections },
+      });
+    }
+    this.world.updateDurableObjects({ objects });
+  }
+
+  async moderateWorldPeer(action) {
+    if (!this.identity?.isAdmin) {
+      this.toast("Platform administrator access is required.");
+      return;
+    }
+    const targetType = String(action?.targetType || "").toLowerCase();
+    const handle = String(action?.handle || "").toLowerCase();
+    if (
+      !["ip", "agent"].includes(targetType) ||
+      !/^[a-f0-9]{64}$/.test(handle)
+    ) {
+      this.toast("That temporary moderation handle is no longer available.");
+      return;
+    }
+    const targetLabel =
+      targetType === "ip" ? "this rotating IP token" : "this browser agent";
+    if (
+      !window.confirm(
+        `Temporarily block ${targetLabel} from the World for one hour? ` +
+          "This is a manual administrative action and will be audited.",
+      )
+    ) {
+      return;
+    }
+    try {
+      const result = await this.postJSON("/api/world/moderation", {
+        targetType,
+        handle,
+        durationMs: WORLD_MANUAL_BLOCK_DURATION_MS,
+      });
+      const disconnected = Math.max(0, Number(result?.disconnected) || 0);
+      this.toast(
+        `Temporary ${targetType === "ip" ? "IP-token" : "agent"} block applied` +
+          (disconnected
+            ? `; ${disconnected} live connection${disconnected === 1 ? "" : "s"} closed.`
+            : "."),
+      );
+    } catch (error) {
+      this.toast(`Temporary block was not applied: ${error.message}`);
+    }
   }
 
   rewardEvents() {
@@ -3841,7 +4142,13 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   updatePlayerCount() {
-    const count = 1 + this.remotePlayers.size + this.localPeers.size;
+    // BroadcastChannel is an offline/same-device fallback. Once the
+    // authoritative World socket is live, counting both maps would show the
+    // same browser tab twice.
+    const socketOnline =
+      this.socket?.readyState === WebSocket.OPEN && Boolean(this.serverPeerId);
+    const count =
+      1 + this.remotePlayers.size + (socketOnline ? 0 : this.localPeers.size);
     const element = this.$("[data-world-players]");
     if (element) element.textContent = compactNumber(count);
   }
@@ -3857,6 +4164,7 @@ class ForkMeshWorld extends HTMLElement {
         String(Boolean(id) && button.dataset.worldLandmark === id),
       );
     });
+    this.recordPublicVisit(id || "town-square");
     if (this.settings.privacy.activity) {
       this.lastMovement.activity =
         label === "Town Square" ? "exploring the Town Square" : `visiting ${label}`;
@@ -3869,13 +4177,15 @@ class ForkMeshWorld extends HTMLElement {
       organizations: "visiting-organization",
       information: "reading-documentation",
     }[id] || "exploring-town-square";
+    this.identity.activityCategory = this.currentActivityCategory;
     this.sendPresence({ type: "presence" });
+    this.broadcastLocalPresence();
   }
 
   updateRegion(region) {
     const element = this.$("[data-world-active-region]");
     if (element && region) {
-      element.textContent = `${region.label} · ${region.phase}`;
+      element.textContent = `${region.label} · shared global time`;
     }
   }
 
@@ -4249,6 +4559,34 @@ class ForkMeshWorld extends HTMLElement {
       </section>`;
   }
 
+  repositoryMapStatusHTML() {
+    if (this.repositoryMapState === "ready" && this.activeRepository) {
+      return this.repositoryExplorerHTML(this.activeRepository);
+    }
+    if (this.repositoryMapState === "loading") {
+      return `<p class="world-empty-state">Loading ${escapeHTML(
+        this.repositoryMapTarget || "the selected repository",
+      )} from commit-pinned authorized HTTPS endpoints…</p>`;
+    }
+    if (this.repositoryMapState === "unavailable") {
+      return `
+        <div class="world-notice world-notice-warning" data-world-repository-map-state="unavailable">
+          <strong>Repository map unavailable</strong>
+          <span>The live catalog or commit-pinned repository data could not be verified. ForkMesh did not substitute sample files, guessed entries, or stale analysis.</span>
+        </div>`;
+    }
+    return `<p class="world-empty-state">${
+      this.repositories.length
+        ? "Choose an available repository to build its authorized, size-aware file map."
+        : "A live, authorized repository is required before a three-dimensional map can run."
+    }</p>`;
+  }
+
+  renderRepositoryMapStatus() {
+    const explorer = this.$("[data-world-repo-explorer]");
+    if (explorer) explorer.innerHTML = this.repositoryMapStatusHTML();
+  }
+
   repositoryPanelHTML() {
     const repos = this.repositories.slice(0, 8);
     const catalogEmpty = this.repositoryCatalogState === "empty";
@@ -4324,11 +4662,7 @@ class ForkMeshWorld extends HTMLElement {
               </div>`
         }
         <div data-world-repo-explorer>
-          <p class="world-empty-state">${
-            repos.length
-              ? "Choose an available repository to build its authorized, size-aware file map."
-              : "A live, authorized repository is required before a three-dimensional map can run."
-          }</p>
+          ${this.repositoryMapStatusHTML()}
         </div>
       </div>`;
   }
@@ -5008,9 +5342,7 @@ class ForkMeshWorld extends HTMLElement {
               <article>
                 <span>${escapeHTML(region.phase)}</span>
                 <strong>${escapeHTML(region.label)}</strong>
-                <p>Visual offset ${region.utcOffsetHours >= 0 ? "+" : ""}${escapeHTML(
-                  region.utcOffsetHours,
-                )}h · events remain UTC-synchronized.</p>
+                <p>Uses the same smooth four-hour cycle as every campus · events remain UTC-synchronized.</p>
                 <button type="button" data-world-travel="${escapeHTML(
                   region.id,
                 )}">Teleport to campus</button>
@@ -5044,7 +5376,7 @@ class ForkMeshWorld extends HTMLElement {
       if (this.world?.travelToRegion(destination)) {
         const region = WORLD_REGIONS.find((item) => item.id === destination);
         this.toast(
-          `Arrived in ${region.label}. Its visual time is ${region.phase}; shared events remain UTC-synchronized.`,
+          `Arrived in ${region.label}. The global four-hour day remains continuous; shared events stay UTC-synchronized.`,
         );
         this.closeLandmark();
       }
@@ -6319,47 +6651,82 @@ class ForkMeshWorld extends HTMLElement {
     };
   }
 
-  async loadRepositoryMap(owner, repo) {
-    const explorer = this.$("[data-world-repo-explorer]");
-    if (!explorer) return;
+  flagshipCatalogCommits() {
+    const commits = new Set();
+    this.repositories.forEach((record) => {
+      const source = String(record?.source || "").toLowerCase();
+      if (
+        String(record?.owner || "").toLowerCase() ===
+          FLAGSHIP_REPOSITORY.owner &&
+        String(record?.name || "").toLowerCase() === FLAGSHIP_REPOSITORY.repo &&
+        !record?.isPrivate &&
+        !record?.archived &&
+        ["local-node", "remote-clone"].includes(source) &&
+        /^[0-9a-f]{40,64}$/.test(String(record?.commit || "")) &&
+        /^[0-9a-f]{64}$/.test(String(record?.stateHash || ""))
+      ) {
+        commits.add(String(record.commit).toLowerCase());
+      }
+    });
+    return commits;
+  }
+
+  async autoLoadFlagshipRepositoryMap() {
+    if (
+      this.destroyed ||
+      !this.world ||
+      this.repositoryCatalogState !== "ready" ||
+      this.repositoryManualSelection ||
+      this.activeRepository
+    ) {
+      return false;
+    }
+    const catalogCommits = this.flagshipCatalogCommits();
+    if (!catalogCommits.size) {
+      this.repositoryMapState = "unavailable";
+      this.repositoryMapTarget =
+        `${FLAGSHIP_REPOSITORY.owner}/${FLAGSHIP_REPOSITORY.repo}`;
+      this.world.updateRepositoryGraph?.([], []);
+      this.renderRepositoryMapStatus();
+      return false;
+    }
+    // Remove construction-only file shapes before the live request begins.
+    // The scene is repopulated only after every required response is pinned to
+    // one catalog-attested commit.
+    this.world.updateRepositoryGraph?.([], []);
+    return this.loadRepositoryMap(
+      FLAGSHIP_REPOSITORY.owner,
+      FLAGSHIP_REPOSITORY.repo,
+      {
+        automatic: true,
+        expectedCommits: catalogCommits,
+        requireComplete: true,
+      },
+    );
+  }
+
+  async fetchRepositoryMapSnapshot(owner, repo) {
     const safeOwner = sanitizePresenceText(owner, "", 40);
     const safeRepo = sanitizePresenceText(repo, "", 60);
-    if (!safeOwner || !safeRepo) return;
-    explorer.innerHTML = `<p class="world-empty-state">Loading authorized tree, size, contribution, and mirror metadata…</p>`;
     const base = `/api/repo/${encodeURIComponent(safeOwner)}/${encodeURIComponent(
       safeRepo,
     )}`;
-    let tree;
-    try {
-      tree = await this.fetchJSON(`${base}/tree?path=`, {
-        timeout: 12000,
-        cache: "no-store",
-      });
-    } catch (_) {
-      tree = null;
-    }
+    const tree = await this.fetchJSON(`${base}/tree?path=`, {
+      timeout: 12000,
+      cache: "no-store",
+    });
     if (!tree || tree?.ok === false) {
-      explorer.innerHTML = `
-        <div class="world-notice world-notice-warning">
-          <strong>Map unavailable</strong>
-          <span>The selected mirror is offline, still synchronizing, or requires an owner-authorized view token. ForkMesh does not probe private repositories.</span>
-        </div>`;
-      return;
+      throw new Error("repository tree unavailable");
     }
     const commit = String(
       tree.commit ||
         tree.analysis?.commit ||
         tree.latestCommit?.commit ||
         tree.latestCommit?.hash ||
-        "",
+      "",
     ).toLowerCase();
     if (!/^[0-9a-f]{40,64}$/.test(commit)) {
-      explorer.innerHTML = `
-        <div class="world-notice world-notice-warning">
-          <strong>Map unavailable</strong>
-          <span>The mirror did not attest one resolved commit for this tree, so ForkMesh declined to combine potentially mismatched analysis data.</span>
-        </div>`;
-      return;
+      throw new Error("repository tree commit unavailable");
     }
     const ref = `?ref=${encodeURIComponent(commit)}`;
     const [sizeResult, statsResult, mirrorsResult, entityRecordsResult] =
@@ -6375,7 +6742,25 @@ class ForkMeshWorld extends HTMLElement {
         this.fetchJSON(`${base}/mirrors`, { auth: false }),
         this.loadRepositoryEntityRecords(base, commit),
       ]);
-    this.activeRepository = {
+    const sizes =
+      sizeResult.status === "fulfilled" &&
+      sizeResult.value?.ok !== false &&
+      String(sizeResult.value?.commit || "").toLowerCase() === commit
+        ? sizeResult.value
+        : null;
+    const stats =
+      statsResult.status === "fulfilled" &&
+      statsResult.value?.ok !== false &&
+      String(statsResult.value?.commit || "").toLowerCase() === commit
+        ? statsResult.value
+        : null;
+    const entityRecords =
+      entityRecordsResult.status === "fulfilled" &&
+      entityRecordsResult.value?.available === true &&
+      String(entityRecordsResult.value?.commit || "").toLowerCase() === commit
+        ? entityRecordsResult.value
+        : null;
+    const snapshot = {
       owner: safeOwner,
       repo: safeRepo,
       path: "",
@@ -6383,28 +6768,108 @@ class ForkMeshWorld extends HTMLElement {
       analysis: tree.analysis || {},
       entries: normalizeTreeEntries(tree),
       counts: tree?.counts || {},
-      sizes:
-        sizeResult.status === "fulfilled" &&
-        String(sizeResult.value?.commit || "").toLowerCase() === commit
-          ? sizeResult.value
-          : {},
-      stats:
-        statsResult.status === "fulfilled" &&
-        String(statsResult.value?.commit || "").toLowerCase() === commit
-          ? statsResult.value
-          : {},
+      sizes: sizes || {},
+      stats: stats || {},
       mirrors: mirrorsResult.status === "fulfilled" ? mirrorsResult.value : {},
-      entityRecords:
-        entityRecordsResult.status === "fulfilled"
-          ? entityRecordsResult.value
-          : { commit, available: false, issues: [], pulls: [] },
+      entityRecords: entityRecords || {
+        commit,
+        available: false,
+        issues: [],
+        pulls: [],
+      },
     };
-    this.renderRepositoryExplorer();
+    return {
+      snapshot,
+      complete:
+        snapshot.entries.length > 0 &&
+        Boolean(sizes) &&
+        Boolean(stats) &&
+        Boolean(entityRecords),
+    };
+  }
+
+  async loadRepositoryMap(owner, repo, options = {}) {
+    const safeOwner = sanitizePresenceText(owner, "", 40);
+    const safeRepo = sanitizePresenceText(repo, "", 60);
+    if (!safeOwner || !safeRepo) return false;
+    const key = `${safeOwner.toLowerCase()}/${safeRepo.toLowerCase()}`;
+    const automatic = options.automatic === true;
+    if (automatic && (this.repositoryManualSelection || this.activeRepository)) {
+      return false;
+    }
+    if (!automatic) this.repositoryManualSelection = key;
+    if (
+      this.repositoryMapState === "ready" &&
+      this.activeRepository?.owner.toLowerCase() === safeOwner.toLowerCase() &&
+      this.activeRepository?.repo.toLowerCase() === safeRepo.toLowerCase()
+    ) {
+      this.renderRepositoryMapStatus();
+      return true;
+    }
+
+    const selection = ++this.repositoryMapSelection;
+    this.repositoryMapState = "loading";
+    this.repositoryMapTarget = `${safeOwner}/${safeRepo}`;
+    this.renderRepositoryMapStatus();
+
+    let request = this.repositoryMapLoads.get(key);
+    if (!request) {
+      request = this.fetchRepositoryMapSnapshot(safeOwner, safeRepo);
+      this.repositoryMapLoads.set(key, request);
+      request.then(
+        () => {
+          if (this.repositoryMapLoads.get(key) === request) {
+            this.repositoryMapLoads.delete(key);
+          }
+        },
+        () => {
+          if (this.repositoryMapLoads.get(key) === request) {
+            this.repositoryMapLoads.delete(key);
+          }
+        },
+      );
+    }
+
+    let result;
+    try {
+      result = await request;
+    } catch (_) {
+      if (selection !== this.repositoryMapSelection || this.destroyed) {
+        return false;
+      }
+      this.repositoryMapState = "unavailable";
+      if (!this.activeRepository) this.world?.updateRepositoryGraph?.([], []);
+      this.renderRepositoryMapStatus();
+      return false;
+    }
+    if (selection !== this.repositoryMapSelection || this.destroyed) {
+      return false;
+    }
+
+    const expectedCommits =
+      options.expectedCommits instanceof Set
+        ? options.expectedCommits
+        : new Set();
+    if (
+      (options.requireComplete === true && !result.complete) ||
+      (expectedCommits.size &&
+        !expectedCommits.has(String(result.snapshot.commit).toLowerCase()))
+    ) {
+      this.repositoryMapState = "unavailable";
+      if (!this.activeRepository) this.world?.updateRepositoryGraph?.([], []);
+      this.renderRepositoryMapStatus();
+      return false;
+    }
+
+    this.activeRepository = result.snapshot;
+    this.repositoryMapState = "ready";
+    this.renderRepositoryMapStatus();
     this.world?.updateRepositoryGraph?.(
       this.activeRepository.entries,
       buildRepositoryGraphEntities(this.activeRepository),
     );
-    this.loadRepositorySecurity(safeOwner, safeRepo, false);
+    void this.loadRepositorySecurity(safeOwner, safeRepo, false);
+    return true;
   }
 
   async loadRepositorySecurity(owner, repo, openPanel = true) {
@@ -7607,6 +8072,13 @@ class ForkMeshWorld extends HTMLElement {
       );
       return;
     }
+    if (!this.soundEnabled) {
+      now.innerHTML = `
+        <span><strong>Sound is off</strong><small>Use the Sound button in the World toolbar first. Audio never starts automatically.</small></span>
+        <button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
+      this.toast("Enable World sounds from the toolbar before starting local audio.");
+      return;
+    }
     const AudioContext = window.AudioContext || window.webkitAudioContext;
     if (!AudioContext) {
       now.innerHTML = `<span>Local audio synthesis is unavailable in this browser.</span><button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
@@ -7763,7 +8235,76 @@ class ForkMeshWorld extends HTMLElement {
       button.setAttribute("aria-pressed", String(button.dataset.worldTheme === theme));
     });
     const label = THEME_OPTIONS.find((option) => option.id === theme)?.label || theme;
-    this.toast(`${label} is local to this device. Shared world time and events are unchanged.`);
+    this.toast(`${label} is local to this device. Global sunlight keeps following the shared four-hour clock.`);
+  }
+
+  async toggleWorldSound() {
+    const button = this.$("[data-world-sound-toggle]");
+    const label = this.$("[data-world-sound-label]");
+    if (this.soundEnabled) {
+      this.soundEnabled = false;
+      const context = this.soundContext;
+      this.soundContext = null;
+      await context?.close?.().catch(() => {});
+      button?.setAttribute("aria-pressed", "false");
+      if (button) button.title = "Enable World sounds";
+      if (label) label.textContent = "Sound";
+      this.toast("World sounds muted.");
+      return;
+    }
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) {
+      this.toast("World sounds are unavailable in this browser.");
+      return;
+    }
+    try {
+      // This is the only path that creates the shared cue context, and it runs
+      // directly from the user's sound-button click.
+      this.soundContext = new AudioContext();
+      await this.soundContext.resume();
+      this.soundEnabled = true;
+      button?.setAttribute("aria-pressed", "true");
+      if (button) button.title = "Mute World sounds";
+      if (label) label.textContent = "Sound on";
+      this.playCountryJoinSound("FM", true);
+      this.toast("World sounds enabled. Join cues use short local tones.");
+    } catch (_) {
+      this.soundEnabled = false;
+      this.soundContext = null;
+      this.toast("World sounds could not be enabled.");
+    }
+  }
+
+  playCountryJoinSound(countryCode, force = false) {
+    const context = this.soundContext;
+    if (!this.soundEnabled || !context || context.state === "closed") return;
+    const now = Date.now();
+    this.joinSoundTimes = this.joinSoundTimes.filter(
+      (timestamp) => now - timestamp < 10000,
+    );
+    if (!force && this.joinSoundTimes.length >= 3) return;
+    this.joinSoundTimes.push(now);
+    const code = /^[A-Z]{2}$/.test(String(countryCode || ""))
+      ? String(countryCode)
+      : "XX";
+    const seed = code.charCodeAt(0) * 37 + code.charCodeAt(1) * 17;
+    const scale = [0, 2, 3, 5, 7, 9, 10];
+    const first = 220 * 2 ** (scale[seed % scale.length] / 12);
+    const second = 220 * 2 ** (scale[(seed >> 3) % scale.length] / 12);
+    [first, second].forEach((frequency, index) => {
+      const start = context.currentTime + index * 0.09;
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(frequency, start);
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.035, start + 0.018);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.11);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start(start);
+      oscillator.stop(start + 0.12);
+    });
   }
 
   saveSettings() {
@@ -7902,10 +8443,12 @@ class ForkMeshWorld extends HTMLElement {
       ) {
         this.worldTicket = String(ticket.ticket || "");
         this.worldTicketExpires = Number(ticket.expiresAt || 0);
+        this.identity.isAdmin = ticket.isAdmin === true;
         return;
       }
       this.worldTicket = "";
       this.worldTicketExpires = 0;
+      if (this.identity) this.identity.isAdmin = false;
     } catch (_) {
       // Keep a still-valid ticket for reconnect; clear only an expired one.
       if (this.worldTicketExpires <= Date.now()) {
@@ -7961,7 +8504,6 @@ class ForkMeshWorld extends HTMLElement {
       this.socketRetry = 1000;
       this.setPresenceState("online", "World online");
       this.sendPresence({ type: "presence" });
-      this.sendPresence({ type: "move", ...this.lastMovement, moving: false });
       window.clearInterval(this.pingTimer);
       this.pingTimer = window.setInterval(
         () => this.sendPresence({ type: "ping" }),
@@ -8007,6 +8549,12 @@ class ForkMeshWorld extends HTMLElement {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
     let safe;
     if (message.type === "presence") {
+      this.identity.firstVisitAge = firstVisitAge(this.firstVisitAt);
+      this.identity.visitCount = this.publicVisitCount;
+      this.identity.activityCategory = presenceActivity(
+        this.settings,
+        this.currentActivityCategory,
+      );
       safe = {
         type: "presence",
         name: sanitizePresenceText(this.identity.name, "visitor", 24),
@@ -8021,6 +8569,15 @@ class ForkMeshWorld extends HTMLElement {
           this.settings,
           this.currentActivityCategory,
         ),
+        inputActive:
+          Boolean(this.settings.privacy.activity) &&
+          this.identity.inputActive === true,
+        visitCount: this.settings.privacy.activity
+          ? Math.max(0, Math.min(999, Number(this.publicVisitCount) || 0))
+          : 0,
+        firstVisitAge: this.settings.privacy.activity
+          ? this.identity.firstVisitAge
+          : "hidden",
         publicDoor: ["closed", "knock", "open"].includes(
           this.settings.publicDoor,
         )
@@ -8053,6 +8610,22 @@ class ForkMeshWorld extends HTMLElement {
     if (!message || typeof message !== "object") return;
     if (message.type === "welcome" && Array.isArray(message.peers)) {
       this.serverPeerId = String(message.id || "");
+      const ownPresence = remotePlayer(message.self);
+      if (ownPresence?.id === this.serverPeerId) {
+        this.lastMovement = {
+          ...this.lastMovement,
+          x: ownPresence.x,
+          y: ownPresence.y,
+          z: ownPresence.z,
+          heading: ownPresence.heading,
+        };
+        this.world?.setSpawn?.({
+          x: ownPresence.x,
+          y: ownPresence.y,
+          z: ownPresence.z,
+          heading: ownPresence.heading,
+        });
+      }
       this.remotePlayers.clear();
       message.peers.forEach((peer) => {
         const player = remotePlayer(peer);
@@ -8060,11 +8633,17 @@ class ForkMeshWorld extends HTMLElement {
           this.remotePlayers.set(player.id, player);
         }
       });
+      // Publishing starts only after the server has assigned this connection's
+      // unique row/column arrival slot.
+      this.sendPresence({ type: "move", ...this.lastMovement, moving: false });
     } else if (["presence", "join"].includes(message.type) && message.peer?.id) {
       const player = remotePlayer(message.peer);
       if (player?.id && player.id !== this.serverPeerId) {
+        const isNewJoin =
+          message.type === "join" && !this.remotePlayers.has(player.id);
         const current = this.remotePlayers.get(player.id) || {};
         this.remotePlayers.set(player.id, { ...current, ...player });
+        if (isNewJoin) this.playCountryJoinSound(player.countryCode);
       }
     } else if (message.type === "move" && message.id) {
       const id = String(message.id);
@@ -8184,15 +8763,20 @@ class ForkMeshWorld extends HTMLElement {
       this.inactivePlayers.map((player) => [player.id, player]),
     );
     this.remotePlayers.forEach((player, id) => combined.set(id, player));
-    this.localPeers.forEach((peer, id) => {
-      combined.set(`local:${id}`, {
-        ...peer,
-        id: `local:${id}`,
-        activity: peer.status === "hidden" ? "online" : peer.status,
+    const socketOnline =
+      this.socket?.readyState === WebSocket.OPEN && Boolean(this.serverPeerId);
+    if (!socketOnline) {
+      this.localPeers.forEach((peer, id) => {
+        combined.set(`local:${id}`, {
+          ...peer,
+          id: `local:${id}`,
+          activity: peer.status === "hidden" ? "online" : peer.status,
+        });
       });
-    });
+    }
     this.world?.setRemotePlayers([...combined.values()]);
     this.updatePlayerCount();
+    this.updateDurableObjectMetrics();
   }
 
   destroy() {
@@ -8205,9 +8789,13 @@ class ForkMeshWorld extends HTMLElement {
     );
     window.removeEventListener("orientationchange", this.syncViewportHeight);
     window.removeEventListener("storage", this.handleStorage);
+    window.removeEventListener("pointerdown", this.handlePublicInputActivity);
+    window.removeEventListener("pointermove", this.handlePublicInputActivity);
+    window.removeEventListener("keydown", this.handlePublicInputActivity);
     window.clearTimeout(this.socketTimer);
     window.clearTimeout(this.toastTimer);
     window.clearTimeout(this.inactiveSyncTimer);
+    window.clearTimeout(this.inputInactiveTimer);
     window.clearInterval(this.activityTimer);
     window.clearInterval(this.clockTimer);
     window.clearInterval(this.distanceTimer);
@@ -8226,6 +8814,10 @@ class ForkMeshWorld extends HTMLElement {
       this.socket?.close(1000, "page closed");
     } catch (_) {}
     this.stopRadio(false);
+    this.soundEnabled = false;
+    const soundContext = this.soundContext;
+    this.soundContext = null;
+    soundContext?.close?.().catch(() => {});
     this.world?.dispose();
     this.world = null;
     if (this.mode === "public") document.body.classList.remove("world-active");

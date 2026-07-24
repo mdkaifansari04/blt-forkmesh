@@ -18,6 +18,9 @@ CHAT = (PUBLIC / "dashboard-chat.js").read_text(encoding="utf-8")
 PUBLIC_CHAT = (PUBLIC / "chat.js").read_text(encoding="utf-8")
 DASHBOARD_HTML = (PUBLIC / "dashboard" / "chat" / "index.html").read_text(encoding="utf-8")
 PUBLIC_CHAT_HTML = (PUBLIC / "chat.html").read_text(encoding="utf-8")
+CHAT_VIEW = (
+    PUBLIC / "dashboard" / "partials" / "views" / "chat.html"
+).read_text(encoding="utf-8")
 STYLES = (PUBLIC / "styles.css").read_text(encoding="utf-8")
 
 
@@ -255,3 +258,43 @@ def test_dashboard_side_chat_keeps_its_socket_alive_and_reconnects():
         CHAT.index('socket.addEventListener("error"')
     ]
     assert "scheduleReconnect();" in close_handler
+
+
+def test_world_embedded_dashboard_chat_removes_redundant_dashboard_chrome():
+    assert 'params.get("worldEmbed") !== "1"' in CHAT_VIEW
+    assert 'document.documentElement.dataset.worldEmbed = "1"' in CHAT_VIEW
+    assert 'html[data-world-embed="1"] [data-app-header]' in CHAT_VIEW
+    assert 'html[data-world-embed="1"] [data-dashboard-sidebar]' in CHAT_VIEW
+    assert 'html[data-world-embed="1"] [data-mobile-sidebar-backdrop]' in CHAT_VIEW
+    assert "display: none !important" in CHAT_VIEW
+    assert "data-dashboard-chat-view" in CHAT_VIEW
+    assert "data-dashboard-chat-composer" in CHAT_VIEW
+
+
+def test_world_embedded_dashboard_chat_tracks_mobile_keyboard_viewport():
+    assert "window.visualViewport?.height || window.innerHeight" in CHAT_VIEW
+    assert '"--forkmesh-chat-viewport-height"' in CHAT_VIEW
+    viewport_listeners = CHAT_VIEW[
+        CHAT_VIEW.index("syncWorldEmbedViewport();"):
+        CHAT_VIEW.index('window.addEventListener("resize"')
+    ]
+    assert viewport_listeners.count(
+        "window.visualViewport?.addEventListener("
+    ) == 2
+    assert '"resize",' in viewport_listeners
+    assert '"scroll",' in viewport_listeners
+    assert "height: 100%;" in CHAT_VIEW
+    assert "min-height: 0 !important;" in CHAT_VIEW
+    assert "overflow-y: auto;" in CHAT_VIEW
+
+
+def test_world_embedded_dashboard_chat_keeps_mobile_composer_usable():
+    assert "font-size: 16px;" in CHAT_VIEW
+    assert "min-height: 2.75rem;" in CHAT_VIEW
+    assert 'meta[name="viewport"]' in CHAT_VIEW
+    assert 'viewportMeta.content += ", viewport-fit=cover"' in CHAT_VIEW
+    assert "env(safe-area-inset-bottom, 0px)" in CHAT_VIEW
+    assert "env(safe-area-inset-left, 0px)" in CHAT_VIEW
+    assert "env(safe-area-inset-right, 0px)" in CHAT_VIEW
+    assert 'aria-label="Message #general"' in CHAT_VIEW
+    assert 'enterkeyhint="send"' in CHAT_VIEW

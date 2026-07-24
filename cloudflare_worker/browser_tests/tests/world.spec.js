@@ -89,7 +89,20 @@ async function prepareWorldPage(
     let status = 200;
     const body =
       url.pathname === "/api/world/context"
-        ? { now: FIXED_NOW, countryCode: "" }
+        ? {
+            now: FIXED_NOW,
+            countryCode: "",
+            worldConnections: 64,
+            worldMessagesPerSecond: 4,
+            chatConnections: 128,
+          }
+        : url.pathname === "/api/network/overview"
+          ? {
+              ok: true,
+              stats: { repos: 0, hosts: 0, clients: 0 },
+              leaderboards: {},
+              history: {},
+            }
         : url.pathname === "/api/world/instances"
           ? {
               instances: [
@@ -604,7 +617,10 @@ test("reward-program links deep-link to the self-custodial fountain controls", a
 
 async function freezeWorld(page) {
   await page.locator("forkmesh-world").evaluate((shell) => {
-    shell.world.setTheme("day");
+    // Keep the one shared clock authoritative. FIXED_NOW is 08:00 in the
+    // four-hour cycle; visual tests must not revive a conflicting fixed-day
+    // theme merely to stabilize the lighting.
+    shell.world.setTheme("world");
   });
   // The camera intentionally eases from its spawn position. Let that bounded
   // interpolation converge before pausing so the WebGL baseline does not
@@ -668,6 +684,95 @@ test("enhanced Town Square starts in WebGL and keeps keyboard navigation", async
   expect(Math.hypot(after.x - before.x, after.z - before.z)).toBeGreaterThan(
     0.05,
   );
+});
+
+test("desktop camera supports pointer-lock mouse look, camera-relative WASD, and wheel zoom", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "desktop-fps-controls");
+  await waitForWorld(page);
+
+  const canvas = page.locator("[data-world-canvas-wrap] canvas");
+  const box = await canvas.boundingBox();
+  expect(box).not.toBeNull();
+  const centre = {
+    x: Math.round(box.x + box.width / 2),
+    y: Math.round(box.y + box.height / 2),
+  };
+
+  await page.mouse.click(centre.x, centre.y);
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getCameraState().pointerLocked,
+    ),
+  ).toBe(true);
+
+  const beforeLook = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getCameraState(),
+  );
+  // Playwright keeps its virtual cursor stationary while Chromium owns the
+  // pointer. Dispatch the relative values that a real locked mousemove carries.
+  await page.evaluate(() => {
+    const relativeMove = new MouseEvent("mousemove", { bubbles: true });
+    Object.defineProperties(relativeMove, {
+      movementX: { value: 120 },
+      movementY: { value: 35 },
+    });
+    document.dispatchEvent(relativeMove);
+  });
+  const afterLook = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getCameraState(),
+  );
+  expect(afterLook.yaw).not.toBeCloseTo(beforeLook.yaw, 4);
+  expect(afterLook.pitch).not.toBeCloseTo(beforeLook.pitch, 4);
+
+  const beforeMove = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getPosition(),
+  );
+  await page.keyboard.down("w");
+  await page.waitForTimeout(240);
+  await page.keyboard.up("w");
+  const afterMove = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getPosition(),
+  );
+  const displacement = {
+    x: afterMove.x - beforeMove.x,
+    z: afterMove.z - beforeMove.z,
+  };
+  const cameraForward = {
+    x: -Math.sin(afterLook.yaw),
+    z: -Math.cos(afterLook.yaw),
+  };
+  expect(
+    displacement.x * cameraForward.x + displacement.z * cameraForward.z,
+  ).toBeGreaterThan(0.05);
+
+  await page.keyboard.press("Escape");
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getCameraState().pointerLocked,
+    ),
+  ).toBe(false);
+
+  await page.mouse.move(centre.x, centre.y);
+  const initialZoom = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getCameraState().zoom,
+  );
+  await page.mouse.wheel(0, 480);
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getCameraState().zoom,
+    ),
+  ).toBeGreaterThan(initialZoom);
+  const zoomedOut = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getCameraState().zoom,
+  );
+  await page.mouse.wheel(0, -960);
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getCameraState().zoom,
+    ),
+  ).toBeLessThan(zoomedOut);
 });
 
 test("two live clients synchronize movement without leaking disabled badge fields", async ({
@@ -753,6 +858,61 @@ test("landscape touch controls remain visible and move the avatar", async ({
   expect(Math.hypot(after.x - before.x, after.z - before.z)).toBeGreaterThan(
     0.05,
   );
+  await context.close();
+});
+
+test("two-finger pinch traverses the complete bounded mobile camera range", async ({
+  browser,
+}) => {
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    isMobile: true,
+  });
+  const page = await context.newPage();
+  await prepareWorldPage(page, "mobile-full-range-pinch");
+  await waitForWorld(page);
+
+  const canvas = page.locator("[data-world-canvas-wrap] canvas");
+  const box = await canvas.boundingBox();
+  expect(box).not.toBeNull();
+  const centreX = Math.round(box.x + box.width / 2);
+  const centreY = Math.round(box.y + box.height * 0.62);
+  const client = await page.context().newCDPSession(page);
+  const points = (spread) => [
+    { x: centreX - spread, y: centreY, id: 1 },
+    { x: centreX + spread, y: centreY, id: 2 },
+  ];
+
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: points(10),
+  });
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchMove",
+    touchPoints: points(185),
+  });
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getCameraState(),
+    ),
+  ).toMatchObject({ zoom: 0.12, minZoom: 0.12 });
+
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchMove",
+    touchPoints: points(1),
+  });
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getCameraState(),
+    ),
+  ).toMatchObject({ zoom: 3.2, maxZoom: 3.2 });
+
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchEnd",
+    touchPoints: [],
+  });
+  await client.detach();
   await context.close();
 });
 
@@ -993,6 +1153,18 @@ test("four-hour procedural soundtrack starts only after consent and stops locall
 
   await page.locator("forkmesh-world").evaluate((shell) =>
     shell.openLandmark("broadcast"),
+  );
+  await page.locator("[data-world-radio='forkmesh-focus']").click();
+  await expect(page.locator("[data-world-media-now]")).toContainText(
+    "Use the Sound button",
+  );
+  expect(
+    await page.locator("forkmesh-world").evaluate((shell) => shell.activeAudio),
+  ).toBeNull();
+  await page.locator("[data-world-sound-toggle]").click();
+  await expect(page.locator("[data-world-sound-toggle]")).toHaveAttribute(
+    "aria-pressed",
+    "true",
   );
   await page.locator("[data-world-radio='forkmesh-focus']").click();
   const playback = await page.locator("forkmesh-world").evaluate((shell) => ({

@@ -23,7 +23,8 @@ def test_production_world_has_no_sample_repository_fallback_or_runnable_fake():
     assert "No authorized repositories listed" in APP
     assert "will not run a workshop against sample or guessed" in APP
     assert 'runnable ? "" : "disabled"' in APP
-    assert "if (!this.repositories.length)" in APP
+    assert 'this.repositoryCatalogState !== "ready"' in APP
+    assert "if (!catalogCommits.size)" in APP
     assert "this.world.updateRepositoryGraph?.([], [])" in APP
 
 
