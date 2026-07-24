@@ -14,6 +14,15 @@ import {
   utcClock,
 } from "./world-data.js";
 import { buildLiveMirrorNodes } from "./world-mirror-nodes.js";
+import {
+  buildPullFileTree,
+  immutableGitOid,
+  parsePullFrontMatter,
+  parseUnifiedDiff,
+  pullViewedStateKey,
+  safeDiffPath,
+  safePullNumber,
+} from "./world-pull-review.js";
 import { buildRepositoryGraphEntities } from "./world-repository-graph.js";
 import { createWorldScene } from "./world-scene.js";
 
@@ -1702,6 +1711,7 @@ function cleanRepositories(payload) {
     .map((repo) => {
       const commit = String(repo.commit || "").trim().toLowerCase();
       const stateHash = String(repo.stateHash || "").trim().toLowerCase();
+      const pullCount = Number(repo.pullCount);
       return {
         owner: sanitizePresenceText(repo.owner, "external", 40),
         name: sanitizePresenceText(repo.name, "repository", 60),
@@ -1719,7 +1729,16 @@ function cleanRepositories(payload) {
         ),
         commit: /^[0-9a-f]{40,64}$/.test(commit) ? commit : "",
         stateHash: /^[0-9a-f]{64}$/.test(stateHash) ? stateHash : "",
+        rootCommit: immutableGitOid(repo.rootCommit),
+        pullCount:
+          Number.isSafeInteger(pullCount) &&
+          pullCount >= 0 &&
+          pullCount <= 10_000_000
+            ? pullCount
+            : null,
         mirrorCount: Number(repo.mirrorCount || repo.mirrors || 0),
+        cloneUrl: String(repo.cloneUrl || "").slice(0, 500),
+        updatedAt: Number(repo.updatedAt || repo.lastSync || 0) || 0,
         status: String(repo.status || "").slice(0, 40),
         externalUrl: String(
           repo.externalUrl || repo.sourceUrl || repo.url || "",
@@ -1734,6 +1753,119 @@ function cleanRepositories(payload) {
       };
     })
     .slice(0, 200);
+}
+
+function repositoryBlobText(blob) {
+  const content = String(blob?.content ?? blob?.text ?? "");
+  if (String(blob?.encoding || "").toLowerCase() !== "base64") {
+    return content;
+  }
+  try {
+    const bytes = Uint8Array.from(atob(content), (character) =>
+      character.charCodeAt(0),
+    );
+    return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  } catch (_) {
+    return "";
+  }
+}
+
+function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
+  const source = Array.isArray(repositories) ? repositories : [];
+  const catalogs = Array.isArray(mirrorCatalogs) ? mirrorCatalogs : [];
+  const consumed = new Set();
+  const aliases = [];
+  catalogs.forEach((catalog) => {
+    const owner = sanitizePresenceText(
+      catalog?.requestedOwner || catalog?.owner,
+      "",
+      40,
+    );
+    const repo = sanitizePresenceText(
+      catalog?.requestedRepo || catalog?.repo,
+      "",
+      60,
+    );
+    if (!owner || !repo) return;
+    const mirrors = Array.isArray(catalog?.mirrors)
+      ? catalog.mirrors.slice(0, 100)
+      : [];
+    const nodes = new Set(
+      mirrors
+        .map((mirror) =>
+          sanitizePresenceText(mirror?.node || mirror?.owner, "", 40).toLowerCase(),
+        )
+        .filter(Boolean),
+    );
+    const candidates = source
+      .map((record, index) => ({ record, index }))
+      .filter(
+        ({ record }) =>
+          !record.isPrivate &&
+          record.name.toLowerCase() === repo.toLowerCase() &&
+          nodes.has(record.owner.toLowerCase()),
+      );
+    if (!candidates.length) return;
+    candidates.forEach(({ index }) => consumed.add(index));
+    const healthy = mirrors.filter(
+      (mirror) =>
+        String(mirror?.status || "").toLowerCase() === "online" &&
+        mirror?.cloneAvailable === true &&
+        String(mirror?.integrity || "").toLowerCase() === "ok",
+    );
+    const preferredNode = String(healthy[0]?.node || "").toLowerCase();
+    const preferred =
+      candidates.find(
+        ({ record }) => record.owner.toLowerCase() === preferredNode,
+      )?.record ||
+      candidates
+        .map(({ record }) => record)
+        .sort((left, right) => right.updatedAt - left.updatedAt)[0];
+    const commits = new Set(
+      candidates
+        .map(({ record }) => immutableGitOid(record.commit))
+        .filter(Boolean),
+    );
+    const stateHashes = new Set(
+      candidates
+        .map(({ record }) => String(record.stateHash || "").toLowerCase())
+        .filter((value) => /^[0-9a-f]{64}$/.test(value)),
+    );
+    const reportedPullCounts = mirrors
+      .map((mirror) => Number(mirror?.pullCount))
+      .filter(
+        (value) =>
+          Number.isSafeInteger(value) &&
+          value >= 0 &&
+          value <= 10_000_000,
+      );
+    const pullCount =
+      reportedPullCounts.length === mirrors.length &&
+      new Set(reportedPullCounts).size === 1
+        ? reportedPullCounts[0]
+        : null;
+    aliases.push({
+      ...preferred,
+      owner,
+      name: repo,
+      servingOwner: preferred.owner,
+      servingName: preferred.name,
+      source: "organization-alias",
+      liveHost: healthy.length > 0,
+      mirrorCount: mirrors.length,
+      pullCount,
+      commit: commits.size === 1 ? [...commits][0] : "",
+      stateHash: stateHashes.size === 1 ? [...stateHashes][0] : "",
+      mirrorAliases: candidates.map(({ record }) => ({
+        owner: record.owner,
+        name: record.name,
+      })),
+    });
+  });
+  return [
+    ...aliases,
+    ...source.filter((_record, index) => !consumed.has(index)),
+  ].slice(0, 200);
 }
 
 function normalizeCommunityEvents(payload, now = Date.now()) {
@@ -2253,6 +2385,11 @@ class ForkMeshWorld extends HTMLElement {
     this.repositoryMapSelection = 0;
     this.repositoryManualSelection = "";
     this.repositoryMapLoads = new Map();
+    this.repositoryView = "map";
+    this.pullReview = null;
+    this.pullReviewSelection = 0;
+    this.pullViewedFiles = new Map();
+    this.pullReviewScrollCleanup = null;
     this.securityTriage = null;
     this.pendingWorkshop = null;
     this.activeWorkshop = null;
@@ -2860,7 +2997,10 @@ class ForkMeshWorld extends HTMLElement {
     this.renderCommunityPlacement();
     this.renderFediverseActivity();
     if (reposResult.status === "fulfilled") {
-      this.repositories = cleanRepositories(reposResult.value);
+      this.repositories = reconcileRepositoryAliases(
+        cleanRepositories(reposResult.value),
+        this.mirrorCatalogs,
+      );
       this.repositoryCatalogState = this.repositories.length ? "ready" : "empty";
     } else {
       this.repositories = [];
@@ -3614,6 +3754,28 @@ class ForkMeshWorld extends HTMLElement {
       const detailAction = event.target.closest("[data-world-detail-action]");
       if (detailAction) {
         this.handleLandmarkAction(detailAction.dataset.worldDetailAction);
+        return;
+      }
+      if (event.target.closest("[data-world-pull-list]")) {
+        this.openRepositoryPullList();
+        return;
+      }
+      const pullOpen = event.target.closest("[data-world-pull-open]");
+      if (pullOpen) {
+        this.loadRepositoryPullReview(pullOpen.dataset.worldPullNumber);
+        return;
+      }
+      const pullBack = event.target.closest("[data-world-pull-back]");
+      if (pullBack) {
+        this.repositoryView =
+          pullBack.dataset.worldPullBack === "map" ? "map" : "list";
+        this.clearPullReviewScrollTracking();
+        this.renderRepositoryExplorer();
+        return;
+      }
+      const pullFile = event.target.closest("[data-world-pull-file-path]");
+      if (pullFile) {
+        this.scrollToPullFile(pullFile.dataset.worldPullFilePath);
         return;
       }
       const graphNode = event.target.closest("[data-world-graph-node]");
@@ -4478,6 +4640,16 @@ class ForkMeshWorld extends HTMLElement {
     detail.dataset.open = "true";
     detail.setAttribute("aria-hidden", "false");
     backdrop.dataset.open = "true";
+    this.updateRepositoryReviewMode();
+    if (
+      landmark.id === "repositories" &&
+      this.repositoryView === "review" &&
+      this.pullReview?.state === "ready"
+    ) {
+      window.requestAnimationFrame(() =>
+        this.setupPullReviewScrollTracking(),
+      );
+    }
     this.$$("[data-world-landmark]").forEach((button) => {
       button.setAttribute(
         "aria-current",
@@ -4492,9 +4664,11 @@ class ForkMeshWorld extends HTMLElement {
     const backdrop = this.$("[data-world-detail-backdrop]");
     if (detail) {
       detail.dataset.open = "false";
+      detail.dataset.repositoryReview = "false";
       detail.setAttribute("aria-hidden", "true");
     }
     if (backdrop) backdrop.dataset.open = "false";
+    this.clearPullReviewScrollTracking();
     this.world?.clearFocus();
   }
 
@@ -5030,6 +5204,12 @@ class ForkMeshWorld extends HTMLElement {
   renderRepositoryMapStatus() {
     const explorer = this.$("[data-world-repo-explorer]");
     if (explorer) explorer.innerHTML = this.repositoryMapStatusHTML();
+    this.updateRepositoryReviewMode();
+    if (this.repositoryView === "review" && this.pullReview?.state === "ready") {
+      window.requestAnimationFrame(() =>
+        this.setupPullReviewScrollTracking(),
+      );
+    }
   }
 
   repositoryPanelHTML() {
@@ -5052,7 +5232,13 @@ class ForkMeshWorld extends HTMLElement {
                 : repo.source === "external"
                   ? "Stub only"
                   : "Unavailable";
-            const meta = [repo.language, repo.mirrorCount ? `${repo.mirrorCount} mirrors` : ""]
+            const meta = [
+              repo.language,
+              repo.mirrorCount ? `${repo.mirrorCount} mirrors` : "",
+              Number.isSafeInteger(repo.pullCount)
+                ? `${compactNumber(repo.pullCount)} pull requests`
+                : "",
+            ]
               .filter(Boolean)
               .join(" · ");
             const external = safeHTTPURL(repo.externalUrl);
@@ -7033,34 +7219,165 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-  async loadRepositoryEntityRecords(base, commit) {
+  async resolveRepositoryPullMetadataCommit(base) {
+    const branches = await this.fetchJSON(`${base}/branches`, {
+      timeout: 9000,
+      cache: "no-store",
+    });
+    const branch = (Array.isArray(branches?.branches) ? branches.branches : [])
+      .map((candidate) => ({
+        name: String(candidate?.name || candidate?.ref || "")
+          .replace(/^refs\/heads\//, "")
+          .replace(/^refs\/remotes\/origin\//, ""),
+        commit: immutableGitOid(
+          candidate?.commit || candidate?.hash || candidate?.sha,
+        ),
+      }))
+      .find(
+        (candidate) =>
+          candidate.name === "forkmesh/pulls" && candidate.commit,
+      );
+    if (!branch) throw new Error("pull metadata branch unavailable");
+    return branch.commit;
+  }
+
+  async loadRepositoryPullRecords(base) {
+    const pullMetadataCommit =
+      await this.resolveRepositoryPullMetadataCommit(base);
+    const tree = await this.fetchJSON(
+      `${base}/tree?path=pulls&ref=${encodeURIComponent(
+        pullMetadataCommit,
+      )}`,
+      { timeout: 10000, cache: "no-store" },
+    );
+    if (
+      tree?.ok === false ||
+      immutableGitOid(tree?.commit) !== pullMetadataCommit
+    ) {
+      throw new Error("pull metadata commit mismatch");
+    }
+    const numbered = (Array.isArray(tree?.entries) ? tree.entries : [])
+      .filter(
+        (entry) =>
+          ["tree", "directory"].includes(String(entry?.type || "")) &&
+          safePullNumber(entry?.name),
+      )
+      .map((entry) => safePullNumber(entry.name))
+      .sort((left, right) => right - left);
+    const selected = numbered.slice(0, 60);
+    const paths = selected.map((number) => `pulls/${number}/pull.md`);
+    let blobs = {};
+    if (paths.length) {
+      const query = new URLSearchParams();
+      paths.forEach((path) => query.append("path", path));
+      query.set("ref", pullMetadataCommit);
+      try {
+        const result = await this.fetchJSON(`${base}/blobs?${query}`, {
+          timeout: 12000,
+          cache: "no-store",
+        });
+        if (immutableGitOid(result?.commit) !== pullMetadataCommit) {
+          throw new Error("pull metadata batch commit mismatch");
+        }
+        blobs =
+          result?.blobs && typeof result.blobs === "object"
+            ? result.blobs
+            : {};
+      } catch (error) {
+        throw new Error(
+          error?.message || "pull metadata batch is unavailable",
+        );
+      }
+    }
+    let pullMetadataUnavailableCount = 0;
+    const pulls = selected.map((number) => {
+      const path = `pulls/${number}`;
+      const metadataBlob = blobs[`${path}/pull.md`];
+      const metadataText =
+        metadataBlob && metadataBlob?.ok !== false
+          ? repositoryBlobText(metadataBlob)
+          : "";
+      if (!metadataText.trim()) {
+        pullMetadataUnavailableCount += 1;
+        return {
+          number,
+          path,
+          state: "unknown",
+          title: "Metadata unavailable",
+          author: "Unknown",
+          base: "",
+          head: "",
+          createdAt: 0,
+          body: "",
+          creationBaseOid: "",
+          creationHeadOid: "",
+          metadataAvailable: false,
+        };
+      }
+      const parsed = parsePullFrontMatter(metadataText, number);
+      return {
+        number,
+        path,
+        state: parsed.status,
+        title: parsed.title,
+        author: parsed.author,
+        base: parsed.base,
+        head: parsed.head,
+        createdAt: parsed.createdAt,
+        body: parsed.body,
+        creationBaseOid: parsed.creationBaseOid,
+        creationHeadOid: parsed.creationHeadOid,
+        metadataAvailable: true,
+      };
+    });
+    return {
+      pullMetadataCommit,
+      pullsAvailable: true,
+      pullCount: numbered.length,
+      pullCountExact: tree?.truncated !== true,
+      pullTreeTruncated: tree?.truncated === true,
+      pullMetadataUnavailableCount,
+      pulls,
+    };
+  }
+
+  async loadRepositoryEntityRecords(base, commit, options = {}) {
     const locations = [
-      { path: ".forkmesh/issues", kind: "issue", state: "" },
-      { path: ".forkmesh/issues/open", kind: "issue", state: "open" },
-      { path: ".forkmesh/issues/closed", kind: "issue", state: "closed" },
-      { path: "pulls", kind: "pull", state: "" },
+      { path: ".forkmesh/issues", state: "" },
+      { path: ".forkmesh/issues/open", state: "open" },
+      { path: ".forkmesh/issues/closed", state: "closed" },
     ];
-    const results = await Promise.allSettled(
-      locations.map(({ path }) =>
-        this.fetchJSON(
-          `${base}/tree?path=${encodeURIComponent(path)}&ref=${encodeURIComponent(
-            commit,
-          )}`,
-          { timeout: 9000, cache: "no-store" },
+    const [issueResults, pullResult] = await Promise.all([
+      Promise.allSettled(
+        locations.map(({ path }) =>
+          this.fetchJSON(
+            `${base}/tree?path=${encodeURIComponent(
+              path,
+            )}&ref=${encodeURIComponent(commit)}`,
+            { timeout: 9000, cache: "no-store" },
+          ),
         ),
       ),
-    );
+      options.privateRepository === true
+        ? Promise.resolve({
+            status: "rejected",
+            reason: new Error("private pull metadata is not publicly probed"),
+          })
+        : this.loadRepositoryPullRecords(base).then(
+            (value) => ({ status: "fulfilled", value }),
+            (reason) => ({ status: "rejected", reason }),
+          ),
+    ]);
     const issues = new Map();
-    const pulls = new Map();
-    let matched = false;
-    results.forEach((result, index) => {
+    let issuesMatched = false;
+    issueResults.forEach((result, index) => {
       if (result.status !== "fulfilled" || result.value?.ok === false) return;
       const payload = result.value || {};
       const payloadCommit = String(
         payload.commit || payload.analysis?.commit || "",
       ).toLowerCase();
       if (payloadCommit !== commit) return;
-      matched = true;
+      issuesMatched = true;
       const location = locations[index];
       const entries = Array.isArray(payload.entries)
         ? payload.entries.slice(0, 80)
@@ -7076,23 +7393,30 @@ class ForkMeshWorld extends HTMLElement {
           path: `${location.path}/${number}`,
           state: location.state,
         };
-        if (location.kind === "issue") {
-          const previous = issues.get(number);
-          if (!previous || location.state) issues.set(number, record);
-        } else {
-          pulls.set(number, record);
-        }
+        const previous = issues.get(number);
+        if (!previous || location.state) issues.set(number, record);
       });
     });
+    const pullRecords =
+      pullResult.status === "fulfilled"
+        ? pullResult.value
+        : {
+            pullMetadataCommit: "",
+            pullsAvailable: false,
+            pullCount: 0,
+            pullCountExact: false,
+            pullTreeTruncated: false,
+            pullMetadataUnavailableCount: 0,
+            pulls: [],
+          };
     return {
       commit,
-      available: matched,
+      repositoryCommit: commit,
+      available: issuesMatched || pullRecords.pullsAvailable,
       issues: [...issues.values()]
         .sort((left, right) => right.number - left.number)
         .slice(0, 40),
-      pulls: [...pulls.values()]
-        .sort((left, right) => right.number - left.number)
-        .slice(0, 40),
+      ...pullRecords,
     };
   }
 
@@ -7106,7 +7430,7 @@ class ForkMeshWorld extends HTMLElement {
         String(record?.name || "").toLowerCase() === FLAGSHIP_REPOSITORY.repo &&
         !record?.isPrivate &&
         !record?.archived &&
-        ["local-node", "remote-clone"].includes(source) &&
+        ["local-node", "remote-clone", "organization-alias"].includes(source) &&
         /^[0-9a-f]{40,64}$/.test(String(record?.commit || "")) &&
         /^[0-9a-f]{64}$/.test(String(record?.stateHash || ""))
       ) {
@@ -7174,6 +7498,11 @@ class ForkMeshWorld extends HTMLElement {
       throw new Error("repository tree commit unavailable");
     }
     const ref = `?ref=${encodeURIComponent(commit)}`;
+    const catalogRecord = this.repositories.find(
+      (record) =>
+        record.owner.toLowerCase() === safeOwner.toLowerCase() &&
+        record.name.toLowerCase() === safeRepo.toLowerCase(),
+    );
     const [sizeResult, statsResult, mirrorsResult, entityRecordsResult] =
       await Promise.allSettled([
         this.fetchJSON(`${base}/sizes${ref}`, {
@@ -7185,7 +7514,9 @@ class ForkMeshWorld extends HTMLElement {
           cache: "no-store",
         }),
         this.fetchJSON(`${base}/mirrors`, { auth: false }),
-        this.loadRepositoryEntityRecords(base, commit),
+        this.loadRepositoryEntityRecords(base, commit, {
+          privateRepository: catalogRecord?.isPrivate === true,
+        }),
       ]);
     const sizes =
       sizeResult.status === "fulfilled" &&
@@ -7205,6 +7536,42 @@ class ForkMeshWorld extends HTMLElement {
       String(entityRecordsResult.value?.commit || "").toLowerCase() === commit
         ? entityRecordsResult.value
         : null;
+    const mirrorPayload =
+      mirrorsResult.status === "fulfilled" ? mirrorsResult.value : {};
+    const mirrorPullCounts = (
+      Array.isArray(mirrorPayload?.mirrors) ? mirrorPayload.mirrors : []
+    )
+      .map((mirror) => Number(mirror?.pullCount))
+      .filter(
+        (value) =>
+          Number.isSafeInteger(value) &&
+          value >= 0 &&
+          value <= 10_000_000,
+      );
+    const unanimousMirrorPullCount =
+      mirrorPullCounts.length > 0 &&
+      mirrorPullCounts.length ===
+        (Array.isArray(mirrorPayload?.mirrors)
+          ? mirrorPayload.mirrors.length
+          : 0) &&
+      new Set(mirrorPullCounts).size === 1
+        ? mirrorPullCounts[0]
+        : null;
+    const catalogPullCount = this.repositories.find(
+      (record) =>
+        record.owner.toLowerCase() === safeOwner.toLowerCase() &&
+        record.name.toLowerCase() === safeRepo.toLowerCase(),
+    )?.pullCount;
+    const pullCount =
+      entityRecords?.pullCountExact === true
+        ? entityRecords.pullCount
+        : unanimousMirrorPullCount ?? catalogPullCount ?? null;
+    const pullCountSource =
+      entityRecords?.pullCountExact === true
+        ? "metadata-tree"
+        : pullCount !== null
+          ? "signed-mirror-report"
+          : "unavailable";
     const snapshot = {
       owner: safeOwner,
       repo: safeRepo,
@@ -7212,13 +7579,26 @@ class ForkMeshWorld extends HTMLElement {
       commit,
       analysis: tree.analysis || {},
       entries: normalizeTreeEntries(tree),
-      counts: tree?.counts || {},
+      counts: {
+        ...(tree?.counts || {}),
+        pulls: pullCount,
+      },
+      pullCount,
+      pullCountSource,
+      isPrivate: catalogRecord?.isPrivate === true,
       sizes: sizes || {},
       stats: stats || {},
-      mirrors: mirrorsResult.status === "fulfilled" ? mirrorsResult.value : {},
+      mirrors: mirrorPayload,
       entityRecords: entityRecords || {
         commit,
+        repositoryCommit: commit,
         available: false,
+        pullMetadataCommit: "",
+        pullsAvailable: false,
+        pullCount: 0,
+        pullCountExact: false,
+        pullTreeTruncated: false,
+        pullMetadataUnavailableCount: 0,
         issues: [],
         pulls: [],
       },
@@ -7248,10 +7628,18 @@ class ForkMeshWorld extends HTMLElement {
       this.activeRepository?.owner.toLowerCase() === safeOwner.toLowerCase() &&
       this.activeRepository?.repo.toLowerCase() === safeRepo.toLowerCase()
     ) {
+      this.repositoryView = "map";
+      this.pullReview = null;
+      this.pullReviewSelection += 1;
+      this.clearPullReviewScrollTracking();
       this.renderRepositoryMapStatus();
       return true;
     }
 
+    this.repositoryView = "map";
+    this.pullReview = null;
+    this.pullReviewSelection += 1;
+    this.clearPullReviewScrollTracking();
     const selection = ++this.repositoryMapSelection;
     this.repositoryMapState = "loading";
     this.repositoryMapTarget = `${safeOwner}/${safeRepo}`;
@@ -7478,7 +7866,697 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  repositoryPullRecords(active = this.activeRepository) {
+    const records =
+      active?.entityRecords && typeof active.entityRecords === "object"
+        ? active.entityRecords
+        : {};
+    const metadataCommit = immutableGitOid(records.pullMetadataCommit);
+    if (
+      active?.isPrivate === true ||
+      records.pullsAvailable !== true ||
+      !metadataCommit ||
+      !Array.isArray(records.pulls)
+    ) {
+      return [];
+    }
+    return records.pulls
+      .map((record) => {
+        const number = safePullNumber(record?.number);
+        if (!number) return null;
+        const state = ["open", "closed", "merged", "unknown"].includes(
+          String(record?.state || "").toLowerCase(),
+        )
+          ? String(record.state).toLowerCase()
+          : "unknown";
+        return {
+          ...record,
+          number,
+          state,
+          title: sanitizePresenceText(
+            record?.title,
+            `Pull request #${number}`,
+            240,
+          ),
+          author: sanitizePresenceText(record?.author, "Unknown", 100),
+          base: sanitizePresenceText(record?.base, "main", 160),
+          head: sanitizePresenceText(record?.head, "", 160),
+          metadataAvailable: record?.metadataAvailable !== false,
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => right.number - left.number)
+      .slice(0, 60);
+  }
+
+  repositoryPullCount(active = this.activeRepository) {
+    const candidates = [
+      active?.pullCount,
+      active?.counts?.pulls,
+      active?.entityRecords?.pullCountExact === true
+        ? active.entityRecords.pullCount
+        : null,
+    ];
+    for (const candidate of candidates) {
+      const value = Number(candidate);
+      if (
+        Number.isSafeInteger(value) &&
+        value >= 0 &&
+        value <= 10_000_000
+      ) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  repositoryPullCountLabel(active = this.activeRepository) {
+    const count = this.repositoryPullCount(active);
+    if (count === null) return "Pull-request count unavailable";
+    const source =
+      active?.pullCountSource === "metadata-tree"
+        ? "exact metadata tree"
+        : active?.pullCountSource === "signed-mirror-report"
+          ? "matching signed mirror reports"
+          : "authorized repository metadata";
+    return `${compactNumber(count)} pull request${
+      count === 1 ? "" : "s"
+    } · ${source}`;
+  }
+
+  repositoryPullListHTML(active) {
+    const records = this.repositoryPullRecords(active);
+    const metadataCommit = immutableGitOid(
+      active?.entityRecords?.pullMetadataCommit,
+    );
+    const available =
+      active?.isPrivate !== true &&
+      active?.entityRecords?.pullsAvailable === true &&
+      Boolean(metadataCommit);
+    const count = this.repositoryPullCount(active);
+    return `
+      <section class="world-pull-list-panel" aria-labelledby="world-pull-list-title">
+        <header class="world-pull-panel-heading">
+          <button type="button" data-world-pull-back="map">← Code map</button>
+          <div>
+            <span>IN-WORLD REVIEW</span>
+            <h3 id="world-pull-list-title">${escapeHTML(
+              active.owner,
+            )}/${escapeHTML(active.repo)} pull requests</h3>
+            <small>${escapeHTML(this.repositoryPullCountLabel(active))}</small>
+          </div>
+        </header>
+        ${
+          available
+            ? `<p class="world-pull-pin">Record index and files are read from immutable <code>${escapeHTML(
+                metadataCommit,
+              )}</code>. ForkMesh never substitutes <code>main</code> or an unpinned ref.</p>`
+            : ""
+        }
+        <div class="world-pull-records" data-world-pull-state="${
+          available ? (records.length ? "ready" : "empty") : "unavailable"
+        }">
+          ${
+            available && records.length
+              ? records
+                  .map((record) => {
+                    const rawTime = Number(record.createdAt || 0);
+                    const timestamp =
+                      rawTime > 0 && rawTime < 1_000_000_000_000
+                        ? rawTime * 1000
+                        : rawTime;
+                    const date = Number.isFinite(timestamp) && timestamp > 0
+                      ? new Date(timestamp).toLocaleDateString()
+                      : "";
+                    const content = `
+                      <span>
+                        <strong>#${record.number} · ${escapeHTML(
+                          record.title,
+                        )}</strong>
+                        <small>${escapeHTML(
+                          [
+                            record.author,
+                            record.base && record.head
+                              ? `${record.base} ← ${record.head}`
+                              : "",
+                            date,
+                          ]
+                            .filter(Boolean)
+                            .join(" · "),
+                        )}</small>
+                      </span>
+                      <em data-pull-state="${escapeHTML(
+                        record.state,
+                      )}">${escapeHTML(record.state)}</em>
+                    `;
+                    return record.metadataAvailable
+                      ? `<button type="button" data-world-pull-open data-world-pull-number="${record.number}">${content}</button>`
+                      : `<div class="world-pull-record-unavailable" aria-label="Pull request #${record.number} metadata unavailable">${content}</div>`;
+                  })
+                  .join("")
+              : available
+                ? `<p class="world-empty-state">The pinned metadata tree contains no pull-request records.</p>`
+                : `<div class="world-notice world-notice-warning">
+                    <strong>Pull-request records unavailable</strong>
+                    <span>${
+                      active?.isPrivate === true
+                        ? "Private repositories are not probed through the public pull-metadata branch. Missing and unauthorized repositories remain indistinguishable."
+                        : `The exact forkmesh/pulls commit could not be verified${
+                            count === null
+                              ? ""
+                              : `, although ${compactNumber(
+                                  count,
+                                )} was reported`
+                          }. No main-branch, guessed-ref, or repository-name probe was attempted.`
+                    }</span>
+                  </div>`
+          }
+        </div>
+        ${
+          active?.entityRecords?.pullTreeTruncated === true
+            ? `<p class="world-panel-footnote">The mirror bounded this metadata listing. Only returned records are shown; ForkMesh does not invent the missing entries.</p>`
+            : records.length >= 60
+              ? `<p class="world-panel-footnote">Showing the newest 60 records from the pinned metadata tree.</p>`
+              : Number(
+                    active?.entityRecords?.pullMetadataUnavailableCount || 0,
+                  ) > 0
+                ? `<p class="world-panel-footnote">${compactNumber(
+                    active.entityRecords.pullMetadataUnavailableCount,
+                  )} pull-request record${
+                    active.entityRecords.pullMetadataUnavailableCount === 1
+                      ? " is"
+                      : "s are"
+                  } listed by the tree but ${
+                    active.entityRecords.pullMetadataUnavailableCount === 1
+                      ? "its metadata is"
+                      : "their metadata are"
+                  } unavailable. ${
+                    active.entityRecords.pullMetadataUnavailableCount === 1
+                      ? "It is"
+                      : "They are"
+                  } not labeled open.</p>`
+              : ""
+        }
+      </section>`;
+  }
+
+  pullViewedSet(active, review) {
+    const key = pullViewedStateKey(
+      active?.owner,
+      active?.repo,
+      review?.metadataCommit,
+      review?.number,
+    );
+    if (!key) return new Set();
+    if (!this.pullViewedFiles.has(key)) {
+      this.pullViewedFiles.set(key, new Set());
+    }
+    return this.pullViewedFiles.get(key);
+  }
+
+  pullFileTreeHTML(nodes, viewed, depth = 0) {
+    if (!Array.isArray(nodes) || !nodes.length) return "";
+    return `<ul>${nodes
+      .map((node) => {
+        if (node.kind === "directory") {
+          return `<li class="world-pull-tree-directory">
+            <span style="--pull-tree-depth:${Math.min(depth, 12)}">▾ ${escapeHTML(
+              node.name,
+            )}</span>
+            ${this.pullFileTreeHTML(node.children, viewed, depth + 1)}
+          </li>`;
+        }
+        const isViewed = viewed.has(node.path);
+        return `<li>
+          <button type="button"
+            style="--pull-tree-depth:${Math.min(depth, 12)}"
+            data-world-pull-file-path="${escapeHTML(node.path)}"
+            data-viewed="${isViewed}"
+            aria-label="${isViewed ? "Viewed" : "Review"} ${escapeHTML(
+              node.path,
+            )}">
+            <span aria-hidden="true">${escapeHTML(
+              node.status === "added"
+                ? "+"
+                : node.status === "deleted"
+                  ? "−"
+                  : node.status === "renamed"
+                    ? "↪"
+                    : "◇",
+            )}</span>
+            <strong>${escapeHTML(node.name)}</strong>
+            <small>+${compactNumber(node.additions)} −${compactNumber(
+              node.deletions,
+            )}</small>
+            <em data-world-pull-viewed aria-label="${
+              isViewed ? "Viewed" : "Not viewed"
+            }">${isViewed ? "✓" : "○"}</em>
+          </button>
+        </li>`;
+      })
+      .join("")}</ul>`;
+  }
+
+  pullDiffRowsHTML(file) {
+    if (file.binary) {
+      return `<p class="world-pull-binary">Binary change · content is not rendered in the World.</p>`;
+    }
+    if (!file.rows.length) {
+      return `<p class="world-empty-state">No textual diff rows were returned for this file.</p>`;
+    }
+    return `<div class="world-pull-diff-table" role="table" aria-label="${escapeHTML(
+      file.path,
+    )} unified diff">${file.rows
+      .map((row) => {
+        if (row.type === "hunk") {
+          return `<div class="world-pull-diff-row is-hunk" role="row">
+            <span role="cell"></span><span role="cell"></span><code role="cell">${escapeHTML(
+              row.text,
+            )}</code>
+          </div>`;
+        }
+        const marker =
+          row.type === "add"
+            ? "+"
+            : row.type === "delete"
+              ? "−"
+              : row.type === "meta"
+                ? "\\"
+                : " ";
+        return `<div class="world-pull-diff-row is-${escapeHTML(
+          row.type,
+        )}" role="row">
+          <span role="cell">${row.oldLine ?? ""}</span>
+          <span role="cell">${row.newLine ?? ""}</span>
+          <code role="cell"><b aria-hidden="true">${marker}</b>${escapeHTML(
+            row.text,
+          )}</code>
+        </div>`;
+      })
+      .join("")}</div>`;
+  }
+
+  repositoryPullReviewHTML(active) {
+    const review = this.pullReview || { state: "unavailable" };
+    const back = `
+      <header class="world-pull-panel-heading">
+        <button type="button" data-world-pull-back="list">← Pull requests</button>
+        <div>
+          <span>IN-WORLD REVIEW</span>
+          <h3 id="world-pull-review-title">Pull request #${escapeHTML(
+            safePullNumber(review.number) || "",
+          )}</h3>
+        </div>
+      </header>`;
+    if (review.state === "loading") {
+      return `<section class="world-pull-review" aria-labelledby="world-pull-review-title">
+        ${back}
+        <p class="world-empty-state" role="status">Loading the metadata record and patch from exact commit ${escapeHTML(
+          String(review.metadataCommit || "").slice(0, 12),
+        )}…</p>
+      </section>`;
+    }
+    if (review.state !== "ready") {
+      return `<section class="world-pull-review" aria-labelledby="world-pull-review-title">
+        ${back}
+        <div class="world-notice world-notice-warning" data-world-pull-detail data-world-pull-state="unavailable">
+          <strong>Pull-request review unavailable</strong>
+          <span>${escapeHTML(
+            review.message ||
+              "The exact metadata record and patch could not be verified. No alternate branch or external page was opened.",
+          )}</span>
+        </div>
+      </section>`;
+    }
+    const viewed = this.pullViewedSet(active, review);
+    const files = Array.isArray(review.diff?.files)
+      ? review.diff.files
+      : [];
+    const fileTree = buildPullFileTree(files);
+    const metadata = review.metadata || {};
+    return `
+      <section class="world-pull-review" aria-labelledby="world-pull-review-title" data-world-pull-detail data-world-pull-review-key="${escapeHTML(
+        pullViewedStateKey(
+          active.owner,
+          active.repo,
+          review.metadataCommit,
+          review.number,
+        ),
+      )}">
+        ${back}
+        <div class="world-pull-review-summary">
+          <div>
+            <strong>${escapeHTML(
+              metadata.title || `Pull request #${review.number}`,
+            )}</strong>
+            <span>${escapeHTML(
+              [
+                metadata.status || "unknown",
+                metadata.author,
+                metadata.base && metadata.head
+                  ? `${metadata.base} ← ${metadata.head}`
+                  : "",
+              ]
+                .filter(Boolean)
+                .join(" · "),
+            )}</span>
+          </div>
+          <div>
+            <span><strong>${compactNumber(files.length)}</strong> files</span>
+            <span><strong>+${compactNumber(
+              review.diff?.additions || 0,
+            )}</strong> additions</span>
+            <span><strong>−${compactNumber(
+              review.diff?.deletions || 0,
+            )}</strong> deletions</span>
+            <span data-world-pull-viewed-summary>${compactNumber(
+              viewed.size,
+            )} of ${compactNumber(files.length)} files viewed</span>
+          </div>
+        </div>
+        ${
+          metadata.body
+            ? `<p class="world-pull-description">${escapeHTML(
+                metadata.body,
+              )}</p>`
+            : ""
+        }
+        <p class="world-pull-pin">Metadata and committed patch pinned to <code>${escapeHTML(
+          review.metadataCommit,
+        )}</code>${
+          review.patchSource === "immutable-compare"
+            ? "; the patch was reconstructed only from the two immutable creation OIDs"
+            : ""
+        }. Viewed checks live only in memory for this page.</p>
+        ${
+          review.diff?.truncated
+            ? `<div class="world-notice world-notice-warning"><strong>Diff bounded for safe display</strong><span>The World rendered a compact subset. Review the full signed change with a trusted Git client before deciding.</span></div>`
+            : ""
+        }
+        ${
+          files.length
+            ? `<div class="world-pull-review-layout">
+                <nav class="world-pull-file-tree" aria-label="Changed files">
+                  ${this.pullFileTreeHTML(fileTree, viewed)}
+                </nav>
+                <div class="world-pull-diff" data-world-pull-diff tabindex="0" aria-label="Unified code diff">
+                  ${files
+                    .map(
+                      (file) => `
+                        <article class="world-pull-diff-file"
+                          id="${escapeHTML(file.id)}"
+                          tabindex="-1"
+                          data-world-pull-diff-file
+                          data-world-pull-file="${escapeHTML(file.path)}"
+                          data-viewed="${viewed.has(file.path)}">
+                          <header>
+                            <strong>${escapeHTML(file.path)}</strong>
+                            <span>${escapeHTML(file.status)} · +${compactNumber(
+                              file.additions,
+                            )} −${compactNumber(file.deletions)}</span>
+                          </header>
+                          ${this.pullDiffRowsHTML(file)}
+                          <span class="world-pull-file-end" data-world-pull-file-end="${escapeHTML(
+                            file.path,
+                          )}" aria-hidden="true"></span>
+                        </article>`,
+                    )
+                    .join("")}
+                </div>
+              </div>`
+            : `<div class="world-notice">
+                <strong>No textual patch is committed for this pull request</strong>
+                <span>The World will not invent a diff or silently read a moving branch. Use a trusted Git client to inspect branch-backed changes.</span>
+              </div>`
+        }
+        <p class="world-panel-footnote">This viewer is for examination only. Merge controls are intentionally absent until an authenticated, owner-authorized, commit-checked merge path exists.</p>
+      </section>`;
+  }
+
+  updateRepositoryReviewMode() {
+    const detail = this.$("[data-world-detail]");
+    if (!detail) return;
+    detail.dataset.repositoryReview = String(
+      detail.dataset.openLandmark === "repositories" &&
+        this.repositoryView === "review",
+    );
+  }
+
+  clearPullReviewScrollTracking() {
+    if (typeof this.pullReviewScrollCleanup === "function") {
+      this.pullReviewScrollCleanup();
+    }
+    this.pullReviewScrollCleanup = null;
+  }
+
+  setupPullReviewScrollTracking() {
+    this.clearPullReviewScrollTracking();
+    const scroller = this.$("[data-world-pull-diff]");
+    if (!scroller || this.pullReview?.state !== "ready") return;
+    const onScroll = () => this.markVisiblePullFilesViewed();
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    this.pullReviewScrollCleanup = () =>
+      scroller.removeEventListener("scroll", onScroll);
+  }
+
+  markVisiblePullFilesViewed() {
+    const scroller = this.$("[data-world-pull-diff]");
+    if (!scroller) return;
+    const rootBounds = scroller.getBoundingClientRect();
+    scroller.querySelectorAll("[data-world-pull-file-end]").forEach((marker) => {
+      const bounds = marker.getBoundingClientRect();
+      if (
+        bounds.top >= rootBounds.top &&
+        bounds.top <= rootBounds.bottom
+      ) {
+        this.markPullFileViewed(marker.dataset.worldPullFileEnd);
+      }
+    });
+  }
+
+  markPullFileViewed(path) {
+    const safePath = safeDiffPath(path);
+    if (!safePath || this.pullReview?.state !== "ready") return;
+    const viewed = this.pullViewedSet(this.activeRepository, this.pullReview);
+    if (viewed.has(safePath)) return;
+    viewed.add(safePath);
+    this.$$("[data-world-pull-file-path]").forEach((button) => {
+      if (button.dataset.worldPullFilePath !== safePath) return;
+      button.dataset.viewed = "true";
+      button.setAttribute("aria-label", `Viewed ${safePath}`);
+      const icon = button.querySelector("[data-world-pull-viewed]");
+      if (icon) {
+        icon.textContent = "✓";
+        icon.setAttribute("aria-label", "Viewed");
+      }
+    });
+    this.$$("[data-world-pull-diff-file]").forEach((section) => {
+      if (section.dataset.worldPullFile === safePath) {
+        section.dataset.viewed = "true";
+      }
+    });
+    const summary = this.$("[data-world-pull-viewed-summary]");
+    const total = this.pullReview.diff?.files?.length || 0;
+    if (summary) {
+      summary.textContent = `${compactNumber(viewed.size)} of ${compactNumber(
+        total,
+      )} files viewed`;
+    }
+  }
+
+  scrollToPullFile(path) {
+    const safePath = safeDiffPath(path);
+    if (!safePath) return;
+    const section = this.$$("[data-world-pull-diff-file]").find(
+      (candidate) => candidate.dataset.worldPullFile === safePath,
+    );
+    if (!section) return;
+    section.scrollIntoView({ behavior: "smooth", block: "start" });
+    section.focus({ preventScroll: true });
+    this.markPullFileViewed(safePath);
+  }
+
+  openRepositoryPullList() {
+    if (!this.activeRepository) return;
+    this.repositoryView = "list";
+    this.clearPullReviewScrollTracking();
+    if (
+      this.$("[data-world-detail]")?.dataset.openLandmark !== "repositories"
+    ) {
+      this.openLandmark("repositories");
+      return;
+    }
+    this.renderRepositoryExplorer();
+  }
+
+  async fetchRepositoryPullReview(active, record, metadataCommit) {
+    if (active?.isPrivate === true) {
+      throw new Error(
+        "Private repositories are not probed through the public pull-metadata branch.",
+      );
+    }
+    const number = safePullNumber(record?.number);
+    if (!number || !immutableGitOid(metadataCommit)) {
+      throw new Error("The exact pull metadata commit is unavailable.");
+    }
+    const base = `/api/repo/${encodeURIComponent(
+      active.owner,
+    )}/${encodeURIComponent(active.repo)}`;
+    const metadataPath = `pulls/${number}/pull.md`;
+    const patchPath = `pulls/${number}/changes.patch`;
+    const query = new URLSearchParams();
+    query.append("path", metadataPath);
+    query.append("path", patchPath);
+    query.set("ref", metadataCommit);
+    const payload = await this.fetchJSON(`${base}/blobs?${query.toString()}`, {
+      timeout: 12000,
+      cache: "no-store",
+    });
+    const responseCommit = immutableGitOid(payload?.commit);
+    if (responseCommit !== metadataCommit) {
+      throw new Error("The mirror returned a different metadata commit.");
+    }
+    const blobs =
+      payload?.blobs && typeof payload.blobs === "object"
+        ? payload.blobs
+        : {};
+    const metadataBlob = blobs[metadataPath];
+    if (!metadataBlob || metadataBlob?.ok === false) {
+      throw new Error("The pinned pull-request record is unavailable.");
+    }
+    const metadataText = repositoryBlobText(metadataBlob);
+    if (!metadataText.trim()) {
+      throw new Error("The pinned pull-request metadata is empty.");
+    }
+    const metadata = parsePullFrontMatter(metadataText, number);
+    if (metadata.number !== number) {
+      throw new Error("The pinned pull-request record does not match its path.");
+    }
+    let patch = repositoryBlobText(blobs[patchPath]);
+    let patchSource = "metadata-patch";
+    if (
+      !patch.trim() &&
+      metadata.creationBaseOid &&
+      metadata.creationHeadOid
+    ) {
+      try {
+        const compare = await this.fetchJSON(
+          `${base}/compare?base=${encodeURIComponent(
+            metadata.creationBaseOid,
+          )}&head=${encodeURIComponent(metadata.creationHeadOid)}`,
+          { timeout: 12000, cache: "no-store" },
+        );
+        if (
+          immutableGitOid(compare?.baseOid) === metadata.creationBaseOid &&
+          immutableGitOid(compare?.headOid) === metadata.creationHeadOid
+        ) {
+          patch = String(compare?.patch || "");
+          patchSource = "immutable-compare";
+        }
+      } catch (_) {}
+    }
+    return {
+      state: "ready",
+      number,
+      metadataCommit,
+      metadata,
+      patchSource,
+      diff: parseUnifiedDiff(patch, {
+        maxCharacters: 1_200_000,
+        maxFiles: 120,
+        maxRows: 6_000,
+      }),
+    };
+  }
+
+  async loadRepositoryPullReview(value) {
+    const active = this.activeRepository;
+    const number = safePullNumber(value);
+    const metadataCommit = immutableGitOid(
+      active?.entityRecords?.pullMetadataCommit,
+    );
+    const record = this.repositoryPullRecords(active).find(
+      (candidate) => candidate.number === number,
+    );
+    this.repositoryView = "review";
+    this.clearPullReviewScrollTracking();
+    const selection = ++this.pullReviewSelection;
+    if (
+      !active ||
+      !number ||
+      !metadataCommit ||
+      !record ||
+      record.metadataAvailable === false
+    ) {
+      this.pullReview = {
+        state: "unavailable",
+        number,
+        metadataCommit,
+        message:
+          "That pull request is not present in the exact pinned metadata index. No alternate ref was queried.",
+      };
+      if (
+        this.$("[data-world-detail]")?.dataset.openLandmark !== "repositories"
+      ) {
+        this.openLandmark("repositories");
+      } else {
+        this.renderRepositoryExplorer();
+      }
+      return;
+    }
+    this.pullReview = {
+      state: "loading",
+      number,
+      metadataCommit,
+    };
+    if (
+      this.$("[data-world-detail]")?.dataset.openLandmark !== "repositories"
+    ) {
+      this.openLandmark("repositories");
+    } else {
+      this.renderRepositoryExplorer();
+    }
+    try {
+      const review = await this.fetchRepositoryPullReview(
+        active,
+        record,
+        metadataCommit,
+      );
+      if (
+        selection !== this.pullReviewSelection ||
+        active !== this.activeRepository ||
+        this.destroyed
+      ) {
+        return;
+      }
+      this.pullReview = review;
+    } catch (error) {
+      if (
+        selection !== this.pullReviewSelection ||
+        active !== this.activeRepository ||
+        this.destroyed
+      ) {
+        return;
+      }
+      this.pullReview = {
+        state: "unavailable",
+        number,
+        metadataCommit,
+        message:
+          error?.message ||
+          "The exact metadata record and patch could not be verified.",
+      };
+    }
+    this.renderRepositoryExplorer();
+  }
+
   repositoryExplorerHTML(active) {
+    if (this.repositoryView === "list") {
+      return this.repositoryPullListHTML(active);
+    }
+    if (this.repositoryView === "review") {
+      return this.repositoryPullReviewHTML(active);
+    }
     const languages = [...new Set(active.entries.map((entry) => entry.language))]
       .filter(Boolean)
       .sort();
@@ -7568,6 +8646,14 @@ class ForkMeshWorld extends HTMLElement {
           <span><strong>${formatBytes(totalSize)}</strong> mapped size</span>
           <span><strong>${compactNumber(contributorCount)}</strong> contributors</span>
           <span><strong>${compactNumber(mirrorItems.length)}</strong> reported mirrors</span>
+          <button type="button" data-world-pull-list>
+            <strong>${
+              this.repositoryPullCount(active) === null
+                ? "—"
+                : compactNumber(this.repositoryPullCount(active))
+            }</strong>
+            pull requests
+          </button>
         </div>
         <div class="world-repo-entities" aria-label="Repository entity layers">
           ${entityNodes
@@ -7701,6 +8787,12 @@ class ForkMeshWorld extends HTMLElement {
     const explorer = this.$("[data-world-repo-explorer]");
     if (!explorer || !this.activeRepository) return;
     explorer.innerHTML = this.repositoryExplorerHTML(this.activeRepository);
+    this.updateRepositoryReviewMode();
+    if (this.repositoryView === "review" && this.pullReview?.state === "ready") {
+      window.requestAnimationFrame(() =>
+        this.setupPullReviewScrollTracking(),
+      );
+    }
   }
 
   selectRepositoryGraphNode(candidate) {
@@ -7708,6 +8800,22 @@ class ForkMeshWorld extends HTMLElement {
       this.activeRepository || {},
     ).find((item) => item.id === String(candidate?.id || ""));
     if (!entity) return;
+    if (
+      entity.kind === "pull-request-collection" ||
+      entity.kind === "pull-request"
+    ) {
+      if (
+        this.$("[data-world-detail]")?.dataset.openLandmark !== "repositories"
+      ) {
+        this.openLandmark("repositories");
+      }
+      if (entity.kind === "pull-request-collection") {
+        this.openRepositoryPullList();
+      } else {
+        this.loadRepositoryPullReview(entity.number);
+      }
+      return;
+    }
     const selection = this.$("[data-world-graph-selection]");
     if (selection) {
       selection.innerHTML = `
@@ -9475,6 +10583,7 @@ class ForkMeshWorld extends HTMLElement {
     if (this.destroyed) return;
     if (this.spawnSelected) this.captureWorldPosition(true);
     this.destroyed = true;
+    this.clearPullReviewScrollTracking();
     document.removeEventListener("visibilitychange", this.handleVisibility);
     window.visualViewport?.removeEventListener(
       "resize",

@@ -48,6 +48,7 @@ async function prepareWorldPage(
     events = [],
     chatPassphrase = "",
     worldSocketHandler = null,
+    repositoryFixture = null,
   } = {},
 ) {
   let mentionState = "review";
@@ -88,7 +89,7 @@ async function prepareWorldPage(
   await page.route("**/api/**", (route) => {
     const url = new URL(route.request().url());
     let status = 200;
-    const body =
+    let body =
       url.pathname === "/api/world/context"
         ? {
             now: FIXED_NOW,
@@ -357,6 +358,174 @@ async function prepareWorldPage(
             : url.pathname === "/api/repositories"
               ? { repositories: [] }
               : {};
+    if (repositoryFixture) {
+      const codeOid = "a".repeat(40);
+      const pullOid = "b".repeat(40);
+      const stateHash = "c".repeat(64);
+      const pullMarkdown = (number, title, head) => `---
+number: ${number}
+title: "${title}"
+status: open
+authorName: Alice
+base: main
+head: ${head}
+creationBaseOid: ${"d".repeat(40)}
+creationHeadOid: ${"e".repeat(40)}
+---
+This description came from the exact pull metadata commit.`;
+      const longContext = Array.from(
+        { length: 90 },
+        (_, index) => ` line ${index + 1}`,
+      ).join("\n");
+      const patch = `diff --git a/src/alpha.js b/src/alpha.js
+index 1111111..2222222 100644
+--- a/src/alpha.js
++++ b/src/alpha.js
+@@ -1,90 +1,91 @@
+${longContext}
++const worldReviewMarker = "world-pr-diff-visible";
+diff --git a/src/beta.js b/src/beta.js
+index 3333333..4444444 100644
+--- a/src/beta.js
++++ b/src/beta.js
+@@ -1,90 +1,90 @@
+${longContext}
+-const oldValue = false;
++const oldValue = true;`;
+      const repoBase = "/api/repo/forkmesh/forkmesh";
+      if (url.pathname === "/api/repositories") {
+        body = {
+          repositories: ["mirror2", "mirror3"].map((owner) => ({
+            owner,
+            name: "forkmesh",
+            source: "remote-clone",
+            liveHost: true,
+            commit: codeOid,
+            stateHash,
+            pullCount: 2,
+            updatedAt: FIXED_NOW,
+          })),
+        };
+      } else if (url.pathname === `${repoBase}/mirrors`) {
+        body = {
+          ok: true,
+          owner: "forkmesh",
+          repo: "forkmesh",
+          mirrors: ["mirror2", "mirror3"].map((node) => ({
+            node,
+            status: "online",
+            integrity: "ok",
+            cloneAvailable: true,
+            commit: codeOid,
+            branch: "main",
+            pullCount: 2,
+            version: "0.7.0",
+          })),
+        };
+      } else if (url.pathname === `${repoBase}/branches`) {
+        body = {
+          ok: true,
+          branches: repositoryFixture.invalidPullBranch
+            ? [{ name: "main", commit: codeOid }]
+            : [
+                { name: "main", commit: codeOid },
+                { name: "forkmesh/pulls", commit: pullOid },
+              ],
+        };
+      } else if (url.pathname === `${repoBase}/tree`) {
+        const treePath = url.searchParams.get("path") || "";
+        const ref = url.searchParams.get("ref") || "";
+        if (treePath === "") {
+          body = {
+            ok: true,
+            commit: codeOid,
+            entries: [
+              {
+                name: "src",
+                path: "src",
+                type: "tree",
+                size: 4096,
+                author: "Alice",
+              },
+              {
+                name: "README.md",
+                path: "README.md",
+                type: "blob",
+                size: 1200,
+                author: "Alice",
+              },
+            ],
+          };
+        } else if (treePath.startsWith(".forkmesh/issues")) {
+          body = { ok: true, commit: codeOid, entries: [] };
+        } else if (
+          treePath === "pulls" &&
+          !repositoryFixture.invalidPullBranch &&
+          ref === pullOid
+        ) {
+          body = {
+            ok: true,
+            commit: pullOid,
+            entries: [
+              { name: "44", path: "pulls/44", type: "tree" },
+              { name: "43", path: "pulls/43", type: "tree" },
+            ],
+          };
+        } else {
+          status = 404;
+          body = { ok: false, error: "not_found" };
+        }
+      } else if (url.pathname === `${repoBase}/sizes`) {
+        body = { ok: true, commit: codeOid, size: 5296, fileCount: 2 };
+      } else if (url.pathname === `${repoBase}/stats`) {
+        body = {
+          ok: true,
+          commit: codeOid,
+          fileCount: 2,
+          contributorCount: 1,
+          contributors: [{ name: "Alice", commits: 4 }],
+        };
+      } else if (url.pathname === `${repoBase}/blobs`) {
+        const paths = url.searchParams.getAll("path");
+        const ref = url.searchParams.get("ref") || "";
+        if (
+          repositoryFixture.invalidPullBranch ||
+          ref !== pullOid ||
+          paths.some((item) => !/^pulls\/(?:43|44)\/(?:pull\.md|changes\.patch)$/.test(item))
+        ) {
+          status = 404;
+          body = { ok: false, error: "not_found" };
+        } else {
+          const blobs = {};
+          paths.forEach((item) => {
+            if (item === "pulls/44/pull.md") {
+              blobs[item] = {
+                ok: true,
+                encoding: "utf8",
+                content: pullMarkdown(44, "Review inside the World", "review-ui"),
+              };
+            } else if (item === "pulls/43/pull.md") {
+              blobs[item] = repositoryFixture.missingPullMetadata
+                ? null
+                : {
+                    ok: true,
+                    encoding: "utf8",
+                    content: pullMarkdown(
+                      43,
+                      "Earlier exact review",
+                      "earlier",
+                    ),
+                  };
+            } else if (item === "pulls/44/changes.patch") {
+              blobs[item] = { ok: true, encoding: "utf8", content: patch };
+            } else {
+              blobs[item] = null;
+            }
+          });
+          body = { ok: true, commit: pullOid, blobs };
+        }
+      }
+    }
     return route.fulfill({
       status,
       contentType: "application/json; charset=utf-8",
@@ -1239,6 +1408,182 @@ test("approved instances, local setup, and project support stay truthful", async
     "href",
     "https://www.patreon.com/16434219/join",
   );
+});
+
+test("pull requests open and become viewed entirely inside the repository World", async ({
+  page,
+  context,
+}) => {
+  const repositoryRequests = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith("/api/repo/forkmesh/forkmesh/")) {
+      repositoryRequests.push(url);
+    }
+  });
+  await prepareWorldPage(page, "world-pull-review", {
+    repositoryFixture: {},
+  });
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.repositoryMapState === "ready" &&
+      shell?.activeRepository?.owner === "forkmesh" &&
+      shell?.activeRepository?.repo === "forkmesh";
+  });
+
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.openLandmark("repositories"),
+  );
+  await expect(
+    page.getByRole("button", { name: /^2 pull requests$/i }),
+  ).toBeVisible();
+  const originalURL = page.url();
+  const originalPages = context.pages().length;
+  await page.getByRole("button", { name: /^2 pull requests$/i }).click();
+  await expect(
+    page.getByRole("heading", { name: "forkmesh/forkmesh pull requests" }),
+  ).toBeVisible();
+  await expect(page.locator("[data-world-pull-open]")).toHaveCount(2);
+  await expect(
+    page.locator("[data-world-pull-open][data-world-pull-number='44']"),
+  ).toContainText("Review inside the World");
+
+  await page
+    .locator("[data-world-pull-open][data-world-pull-number='44']")
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Pull request #44" }),
+  ).toBeVisible();
+  await expect(page.locator(".world-pull-file-tree button")).toHaveCount(2);
+  await expect(page.locator("[data-world-pull-diff-file]")).toHaveCount(2);
+  await expect(page.locator("[data-world-pull-diff]")).toContainText(
+    "world-pr-diff-visible",
+  );
+  await expect(page.locator("[data-world-pull-viewed-summary]")).toHaveText(
+    "0 of 2 files viewed",
+  );
+  expect(page.url()).toBe(originalURL);
+  expect(context.pages()).toHaveLength(originalPages);
+  await expect(
+    page.getByRole("button", { name: /merge pull request/i }),
+  ).toHaveCount(0);
+
+  await page.locator("[data-world-pull-diff]").evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await expect(page.locator("[data-world-pull-viewed-summary]")).toHaveText(
+    "1 of 2 files viewed",
+  );
+  await page
+    .locator("[data-world-pull-file-path='src/alpha.js']")
+    .click();
+  await expect(page.locator("[data-world-pull-viewed-summary]")).toHaveText(
+    "2 of 2 files viewed",
+  );
+  await expect(
+    page.locator("[data-world-pull-file-path][data-viewed='true']"),
+  ).toHaveCount(2);
+
+  const persisted = await page.evaluate(() => JSON.stringify(localStorage));
+  expect(persisted).not.toContain("world-pr-diff-visible");
+  expect(persisted).not.toContain("src/alpha.js");
+  const pullReads = repositoryRequests.filter(
+    (url) =>
+      (url.pathname.endsWith("/tree") &&
+        url.searchParams.get("path") === "pulls") ||
+      (url.pathname.endsWith("/blobs") &&
+        url.searchParams.getAll("path").some((item) => item.startsWith("pulls/"))),
+  );
+  expect(pullReads.length).toBeGreaterThanOrEqual(3);
+  for (const request of pullReads) {
+    expect(request.searchParams.get("ref")).toBe("b".repeat(40));
+    expect(request.searchParams.get("ref")).not.toBe("main");
+    expect(request.searchParams.get("ref")).not.toBe("a".repeat(40));
+  }
+  expect(
+    repositoryRequests.filter((url) => url.pathname.endsWith("/branches")),
+  ).toHaveLength(1);
+});
+
+test("missing pull metadata branch fails closed without probing main", async ({
+  page,
+}) => {
+  const repositoryRequests = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith("/api/repo/forkmesh/forkmesh/")) {
+      repositoryRequests.push(url);
+    }
+  });
+  await prepareWorldPage(page, "world-pull-unavailable", {
+    repositoryFixture: { invalidPullBranch: true },
+  });
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.repositoryMapState === "ready";
+  });
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.openLandmark("repositories"),
+  );
+  await page.getByRole("button", { name: /^2 pull requests$/i }).click();
+  await expect(
+    page.locator("[data-world-pull-state='unavailable']"),
+  ).toContainText("exact forkmesh/pulls commit could not be verified");
+  await expect(
+    page.locator("[data-world-pull-state='unavailable']"),
+  ).toContainText("No main-branch, guessed-ref");
+  expect(
+    repositoryRequests.filter(
+      (url) =>
+        url.pathname.endsWith("/tree") &&
+        url.searchParams.get("path") === "pulls",
+    ),
+  ).toHaveLength(0);
+  expect(
+    repositoryRequests.filter(
+      (url) =>
+        url.pathname.endsWith("/blobs") &&
+        url.searchParams.getAll("path").some((item) => item.startsWith("pulls/")),
+    ),
+  ).toHaveLength(0);
+  await page.locator("[data-world-pull-back='map']").click();
+  await expect(page.locator("[data-world-code-map]")).toBeVisible();
+});
+
+test("a listed pull with unreadable metadata is unknown rather than open", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "world-pull-record-unreadable", {
+    repositoryFixture: { missingPullMetadata: true },
+  });
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.repositoryMapState === "ready";
+  });
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.openLandmark("repositories"),
+  );
+  await page.getByRole("button", { name: /^2 pull requests$/i }).click();
+  const unavailable = page.locator(".world-pull-record-unavailable");
+  await expect(unavailable).toHaveCount(1);
+  await expect(unavailable).toContainText(
+    "#43 · Metadata unavailable",
+  );
+  await expect(unavailable).toContainText("unknown");
+  await expect(page.locator("[data-world-pull-open]")).toHaveCount(1);
+  await expect(page.locator("[data-world-pull-open]")).toHaveAttribute(
+    "data-world-pull-number",
+    "44",
+  );
+  await expect(
+    page.getByText(
+      "1 pull-request record is listed by the tree but its metadata is unavailable.",
+    ),
+  ).toBeVisible();
 });
 
 test("live mirror cabinets expose a readable truthful technical panel", async ({

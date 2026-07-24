@@ -51,6 +51,10 @@ def test_graph_fixture_builds_distinct_commit_matched_contributor_issue_pr_nodes
         counts: {{ issues: 1, pulls: 1 }},
         entityRecords: {{
           commit,
+          repositoryCommit: commit,
+          pullMetadataCommit: "b".repeat(40),
+          pullsAvailable: true,
+          pullCount: 1,
           issues: [{{ number: 12, path: ".forkmesh/issues/open/12", state: "open" }}],
           pulls: [{{ number: 7, path: "pulls/7" }}]
         }}
@@ -75,8 +79,8 @@ def test_graph_fixture_builds_distinct_commit_matched_contributor_issue_pr_nodes
         capture_output=True,
     )
     nodes = json.loads(result.stdout)
-    assert len(nodes) == 4
-    assert len({node["id"] for node in nodes}) == 4
+    assert len(nodes) == 5
+    assert len({node["id"] for node in nodes}) == 5
 
 
 def test_entity_records_fail_closed_on_commit_mismatch_and_remain_bounded():
@@ -88,6 +92,10 @@ def test_entity_records_fail_closed_on_commit_mismatch_and_remain_bounded():
         counts: {{ issues: 2, pulls: 3 }},
         entityRecords: {{
           commit: "b".repeat(40),
+          repositoryCommit: "b".repeat(40),
+          pullMetadataCommit: "c".repeat(40),
+          pullsAvailable: true,
+          pullCount: 3,
           issues: Array.from({{length: 100}}, (_, index) => ({{
             number: index + 1, path: `.forkmesh/issues/open/${{index + 1}}`
           }})),
@@ -104,7 +112,7 @@ def test_entity_records_fail_closed_on_commit_mismatch_and_remain_bounded():
     )
     nodes = json.loads(result.stdout)
     assert {node["kind"] for node in nodes} == {
-        "issue-collection", "pull-request-collection"}
+        "issue-collection", "pull-request-collection", "pull-request"}
     assert all("Leak" not in json.dumps(node) for node in nodes)
 
 

@@ -616,7 +616,10 @@ def test_world_autoloads_the_live_catalog_attested_flagship_repository_map():
         )
     ]
     assert "record?.owner" in catalog
-    assert '["local-node", "remote-clone"].includes(source)' in catalog
+    assert (
+        '["local-node", "remote-clone", "organization-alias"].includes(source)'
+        in catalog
+    )
     assert "!record?.isPrivate" in catalog
     assert "!record?.archived" in catalog
     assert "record?.commit" in catalog
@@ -635,7 +638,8 @@ def test_flagship_graph_requires_commit_matched_tree_sizes_stats_and_entities():
     assert "const ref = `?ref=${encodeURIComponent(commit)}`;" in fetch_map
     assert "`${base}/sizes${ref}`" in fetch_map
     assert "`${base}/stats${ref}`" in fetch_map
-    assert "this.loadRepositoryEntityRecords(base, commit)" in fetch_map
+    assert "this.loadRepositoryEntityRecords(base, commit, {" in fetch_map
+    assert "privateRepository: catalogRecord?.isPrivate === true" in fetch_map
     assert fetch_map.count(
         'String(sizeResult.value?.commit || "").toLowerCase() === commit'
     ) == 1

@@ -988,7 +988,7 @@ def test_bounded_analysis_parsers_reject_escape_and_parse_common_artifacts():
 
 
 def test_batched_blobs_preserve_repeated_paths_and_bound_missing_files(application):
-    app, _commit, _release_hash, _logs = application
+    app, commit, _release_hash, _logs = application
     target = (
         "/v1/repositories/alice/project/blobs"
         "?path=README.md&path=src%2Fmain.py"
@@ -1002,6 +1002,7 @@ def test_batched_blobs_preserve_repeated_paths_and_bound_missing_files(applicati
     )
     assert response.status == 200
     payload = decode_json(response)
+    assert payload["commit"] == commit
     assert "searchable mirror gateway" in payload["blobs"]["README.md"]["content"]
     assert payload["blobs"]["src/main.py"]["ok"] is True
     assert payload["blobs"]["does-not-exist"] is None

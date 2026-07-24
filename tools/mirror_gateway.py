@@ -1907,12 +1907,17 @@ class GitRepository:
 
     def blobs(self, paths: Iterable[str], ref: str = "") -> dict[str, Any]:
         """Bounded compatibility batch for the repository web UI."""
+        # Resolve once so every member of the batch and the returned proof name
+        # the same immutable repository state even when the caller supplied a
+        # moving branch name.
+        commit = self.resolve_commit(ref)
         output: dict[str, Any] = {}
-        used = 0
+        # Reserve the bounded envelope before accounting for member payloads.
+        used = len(commit) + 128
         truncated = False
         for path in list(paths)[:60]:
             try:
-                result = self.blob({"path": path, "ref": ref})
+                result = self.blob({"path": path, "ref": commit})
             except (GatewayError, GitError):
                 result = None
             encoded_size = len(
@@ -1927,7 +1932,12 @@ class GitRepository:
                 continue
             output[path] = result
             used += encoded_size
-        return {"ok": True, "blobs": output, "truncated": truncated}
+        return {
+            "ok": True,
+            "commit": commit,
+            "blobs": output,
+            "truncated": truncated,
+        }
 
     def raw_spec(self, query: Mapping[str, str]) -> "StreamSpec":
         path = _safe_repo_path(query.get("path"), allow_empty=False)

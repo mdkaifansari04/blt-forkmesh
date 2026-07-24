@@ -64,6 +64,7 @@ def test_world_refreshes_cannot_reuse_an_older_application_graph():
         "world-data.js",
         "world-scene.js",
         "world-mirror-nodes.js",
+        "world-pull-review.js",
         "world-repository-graph.js",
         "world-speech.js",
         "world.css",
