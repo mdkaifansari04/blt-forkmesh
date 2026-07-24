@@ -1985,23 +1985,56 @@ function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
       (mirror) =>
         String(mirror?.status || "").toLowerCase() === "online" &&
         mirror?.cloneAvailable === true &&
-        String(mirror?.integrity || "").toLowerCase() === "ok",
+        String(mirror?.integrity || "").toLowerCase() === "ok" &&
+        mirror?.behind !== true,
     );
+    const attestedMirrorCommits = new Map();
+    healthy.forEach((mirror) => {
+      const node = sanitizePresenceText(
+        mirror?.node || mirror?.owner,
+        "",
+        40,
+      ).toLowerCase();
+      const commit = immutableGitOid(mirror?.commit);
+      if (!node || !commit) return;
+      if (!attestedMirrorCommits.has(node)) {
+        attestedMirrorCommits.set(node, new Set());
+      }
+      attestedMirrorCommits.get(node).add(commit);
+    });
+    // A stale/offline repository listing must not erase the immutable pin
+    // unanimously reported by the mirrors that can actually serve the clone.
+    // Conversely, duplicate or disagreeing eligible reports remain ambiguous
+    // and fail closed instead of selecting a majority or freshest timestamp.
+    const attestedCandidates = candidates.filter(({ record }) => {
+      const reportedCommits = attestedMirrorCommits.get(
+        record.owner.toLowerCase(),
+      );
+      const commit = immutableGitOid(record.commit);
+      return (
+        commit &&
+        reportedCommits?.size === 1 &&
+        reportedCommits.has(commit)
+      );
+    });
     const preferredNode = String(healthy[0]?.node || "").toLowerCase();
     const preferred =
-      candidates.find(
+      attestedCandidates.find(
         ({ record }) => record.owner.toLowerCase() === preferredNode,
       )?.record ||
+      attestedCandidates
+        .map(({ record }) => record)
+        .sort((left, right) => right.updatedAt - left.updatedAt)[0] ||
       candidates
         .map(({ record }) => record)
         .sort((left, right) => right.updatedAt - left.updatedAt)[0];
     const commits = new Set(
-      candidates
+      attestedCandidates
         .map(({ record }) => immutableGitOid(record.commit))
         .filter(Boolean),
     );
     const stateHashes = new Set(
-      candidates
+      attestedCandidates
         .map(({ record }) => String(record.stateHash || "").toLowerCase())
         .filter((value) => /^[0-9a-f]{64}$/.test(value)),
     );
