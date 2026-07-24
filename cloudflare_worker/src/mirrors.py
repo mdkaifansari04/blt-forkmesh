@@ -134,7 +134,7 @@ def repo_clone_online(rec, served_groups):
 
 def build_repo_mirrors_payload(
     owner, repo, rows, presence, first_hosted, now, stale_ms, sync_tolerance_ms,
-    history=None,
+    history=None, linked_canonical=False,
 ):
     def clone_target(rec):
         raw = str((rec or {}).get("cloneUrl") or "").strip()
@@ -230,6 +230,35 @@ def build_repo_mirrors_payload(
             source_online = True
             break
 
+    # Organization aliases explicitly appoint one account-owned node as the
+    # canonical backing node for /<org>/<repo>. The HTTPS router therefore
+    # treats a linked remote-clone target's signed state as the organization's
+    # attestation instead of letting an unrelated same-name local-node record
+    # override it. Mirror status must use that same trust anchor or it can label
+    # the node actively serving a verified org route "rejected".
+    #
+    # `linked_canonical` is supplied only after the caller verifies the
+    # org_repos link in D1. It is deliberately ignored for a local-node target,
+    # whose normal source-pin policy is already the stronger/correct one.
+    target_record = target["data"]
+    canonical_link_mode = bool(
+        linked_canonical
+        and str(target_record.get("source") or "").strip().lower()
+        == "remote-clone"
+    )
+    canonical_pins = set()
+    canonical_online = False
+    if canonical_link_mode:
+        target_state = str(target_record.get("stateHash") or "").strip().lower()
+        if target_state:
+            canonical_pins.add(target_state)
+        for state in (history or {}).get(str(target.get("key_bi") or ""), []) or []:
+            state = str(state or "").strip().lower()
+            if state:
+                canonical_pins.add(state)
+        target_seen = _mirror_ms((presence or {}).get(target.get("key_bi")))
+        canonical_online = bool(target_seen and now - target_seen <= stale_ms)
+
     def _int_field(rec, name):
         try:
             return int(rec.get(name))
@@ -258,23 +287,33 @@ def build_repo_mirrors_payload(
         website_served = _int_field(rec, "websiteServed")
         # Would the clone integrity gate serve this node right now? Its published
         # refs fingerprint (stateHash, the same one it signs on publish) must be
-        # a state some working-copy holder in the group attested — current pin or
-        # recent history — or every clone it serves is rejected with "repository
-        # failed integrity check" (see clone_state_pins). Verdicts: "ok" (matches
-        # a pin, or nothing is pinned and the gate fails open), "rejected" (its
-        # fingerprint matches no attested state AND the source is offline, so the
-        # tamper gate is actively blocking its clones), "healing" (fingerprint
-        # matches nothing yet, but the source of truth is online, so clones are
-        # served from the source and the mirror clears once it re-syncs — not a
-        # failure), "unknown" (legacy record with no fingerprint; the gate checks
-        # its live refs, which we can't see here).
+        # a state the group's trust anchor attested: normally a working-copy
+        # holder's current/recent pin, or the explicitly appointed backing
+        # node's pin for an organization alias. Otherwise every clone it serves
+        # is rejected with "repository failed integrity check" (see
+        # clone_state_pins). Verdicts: "ok" (matches a pin, or the legacy
+        # unlinked gate is unpinned), "rejected" (matches no attested state AND
+        # the anchor is offline), "healing" (matches nothing yet, but the anchor
+        # is online, so it can re-sync), "unknown" (no fingerprint published).
         state_hash = str(rec.get("stateHash") or "").strip().lower()
-        pins = clone_state_pins(rec, key, public_rows, history)
-        if not pins or state_hash in pins:
+        pins = (
+            canonical_pins
+            if canonical_link_mode
+            else clone_state_pins(rec, key, public_rows, history)
+        )
+        integrity_anchor_online = (
+            canonical_online if canonical_link_mode else source_online
+        )
+        if canonical_link_mode and not pins:
+            # Unlike the legacy unlinked path, an explicit organization route
+            # is fail-closed until its appointed backing node publishes an
+            # authenticated refs digest.
+            integrity = "unknown" if not state_hash else "rejected"
+        elif not pins or state_hash in pins:
             integrity = "ok"
         elif not state_hash:
             integrity = "unknown"
-        elif source_online:
+        elif integrity_anchor_online:
             integrity = "healing"
         else:
             integrity = "rejected"

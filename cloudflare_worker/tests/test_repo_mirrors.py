@@ -329,6 +329,85 @@ def test_payload_downgrades_rejected_to_healing_when_source_online():
         == "rejected"
 
 
+def test_payload_uses_explicit_org_backing_node_as_integrity_anchor():
+    # /forkmesh/forkmesh is an organization alias explicitly linked to
+    # mirror2/forkmesh. The direct HTTPS router treats that account-owned,
+    # signed backing record as the organization's canonical attestation. The
+    # mirror-status payload must use the same pin instead of a stale same-name
+    # local-node record, otherwise it contradicts the route it is describing.
+    now = 1_000_000
+    rows = [
+        _row("source", "jett", "forkmesh", root="abc", synced="910000",
+             state_hash="stale"),
+        _row("canonical", "mirror2", "forkmesh", root="", synced="990000",
+             state_hash="current", source="remote-clone"),
+        _row("peer", "mirror3", "forkmesh", root="", synced="980000",
+             state_hash="current", source="remote-clone"),
+    ]
+    ordinary = build_repo_mirrors_payload(
+        "mirror2", "forkmesh", rows, {}, {}, now, 600_000, 5_000,
+    )
+    assert {
+        m["node"]: m["integrity"] for m in ordinary["mirrors"]
+    } == {
+        "mirror2": "rejected",
+        "mirror3": "rejected",
+        "jett": "ok",
+    }
+
+    linked = build_repo_mirrors_payload(
+        "mirror2", "forkmesh", rows, {}, {}, now, 600_000, 5_000,
+        linked_canonical=True,
+    )
+    assert {
+        m["node"]: m["integrity"] for m in linked["mirrors"]
+    } == {
+        "mirror2": "ok",
+        "mirror3": "ok",
+        "jett": "rejected",
+    }
+
+
+def test_linked_backing_node_presence_marks_mismatched_peer_healing():
+    now = 1_000_000
+    rows = [
+        _row("canonical", "mirror2", "forkmesh", root="", synced="990000",
+             state_hash="current", source="remote-clone"),
+        _row("peer", "mirror3", "forkmesh", root="", synced="980000",
+             state_hash="old", source="remote-clone"),
+    ]
+    payload = build_repo_mirrors_payload(
+        "mirror2", "forkmesh", rows, {"canonical": now - 1_000}, {},
+        now, 600_000, 5_000, linked_canonical=True,
+    )
+    assert {
+        m["node"]: m["integrity"] for m in payload["mirrors"]
+    } == {
+        "mirror2": "ok",
+        "mirror3": "healing",
+    }
+
+
+def test_linked_backing_node_without_attestation_fails_closed():
+    now = 1_000_000
+    rows = [
+        _row("canonical", "mirror2", "forkmesh", root="", synced="990000",
+             source="remote-clone"),
+        _row("peer", "mirror3", "forkmesh", root="", synced="980000",
+             state_hash="self-published", source="remote-clone"),
+    ]
+    payload = build_repo_mirrors_payload(
+        "mirror2", "forkmesh", rows, {}, {}, now, 600_000, 5_000,
+        linked_canonical=True,
+    )
+    assert {
+        m["node"]: m["integrity"] for m in payload["mirrors"]
+    } == {
+        "mirror2": "unknown",
+        "mirror3": "rejected",
+    }
+
+
 def test_payload_integrity_fails_open_without_source_attestation():
     # When no working-copy holder in the group ever attested a state, the gate
     # falls back to the mirror's own pins (legacy behaviour): nothing to compare
