@@ -78,6 +78,15 @@ const WORLD_SCORE_LOOP_MS = 4 * 60 * 60 * 1000;
 const WORLD_LIGHT_LEVEL_MIN = 40;
 const WORLD_LIGHT_LEVEL_MAX = 140;
 const WORLD_LIGHT_LEVEL_DEFAULT = 100;
+// Movement tuning, stored per device as a percentage of the shared defaults.
+const WORLD_MOVE_SPEED_MIN = 50;
+const WORLD_MOVE_SPEED_MAX = 300;
+const WORLD_MOVE_SPEED_DEFAULT = 100;
+const WORLD_MOVE_ACCEL_MIN = 25;
+// The top slider position is the "instant" sentinel — it maps to infinite
+// acceleration so the player reaches top speed the moment a key is pressed.
+const WORLD_MOVE_ACCEL_MAX = 1000;
+const WORLD_MOVE_ACCEL_DEFAULT = 100;
 const WORLD_DIAGNOSTICS_INTERVAL_MS = 1000;
 const WORLD_DIAGNOSTICS_COUNTER_MAX = 1_000_000_000;
 const WORLD_PULL_MERGE_MAX_REQUESTS = 6;
@@ -426,6 +435,8 @@ function defaultSettings() {
   return {
     theme: "world",
     lightLevel: WORLD_LIGHT_LEVEL_DEFAULT,
+    moveSpeed: WORLD_MOVE_SPEED_DEFAULT,
+    moveAccel: WORLD_MOVE_ACCEL_DEFAULT,
     availability: "online",
     activityCategory: "automatic",
     publicDoor: "knock",
@@ -468,6 +479,24 @@ function mergeSettings(stored) {
         Number.isFinite(Number(stored?.lightLevel))
           ? Number(stored.lightLevel)
           : WORLD_LIGHT_LEVEL_DEFAULT,
+      ),
+    ),
+    moveSpeed: Math.min(
+      WORLD_MOVE_SPEED_MAX,
+      Math.max(
+        WORLD_MOVE_SPEED_MIN,
+        Number.isFinite(Number(stored?.moveSpeed))
+          ? Number(stored.moveSpeed)
+          : WORLD_MOVE_SPEED_DEFAULT,
+      ),
+    ),
+    moveAccel: Math.min(
+      WORLD_MOVE_ACCEL_MAX,
+      Math.max(
+        WORLD_MOVE_ACCEL_MIN,
+        Number.isFinite(Number(stored?.moveAccel))
+          ? Number(stored.moveAccel)
+          : WORLD_MOVE_ACCEL_DEFAULT,
       ),
     ),
     statusEmoji: publicStatus.emoji,
@@ -2676,6 +2705,46 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </fieldset>
 
           <fieldset class="world-setting-group">
+            <legend>Movement · only changes this device</legend>
+            <label class="world-light-control">
+              <span>
+                <strong>Move speed</strong>
+                <output data-world-move-speed-output>${escapeHTML(
+                  settings.moveSpeed,
+                )}%</output>
+              </span>
+              <input
+                type="range"
+                min="${WORLD_MOVE_SPEED_MIN}"
+                max="${WORLD_MOVE_SPEED_MAX}"
+                step="5"
+                value="${escapeHTML(settings.moveSpeed)}"
+                data-world-move-speed
+              />
+              <small>Scales how fast your avatar walks and runs. 100% is the default pace.</small>
+            </label>
+            <label class="world-light-control">
+              <span>
+                <strong>Acceleration</strong>
+                <output data-world-move-accel-output>${escapeHTML(
+                  settings.moveAccel >= WORLD_MOVE_ACCEL_MAX
+                    ? "∞"
+                    : `${settings.moveAccel}%`,
+                )}</output>
+              </span>
+              <input
+                type="range"
+                min="${WORLD_MOVE_ACCEL_MIN}"
+                max="${WORLD_MOVE_ACCEL_MAX}"
+                step="25"
+                value="${escapeHTML(settings.moveAccel)}"
+                data-world-move-accel
+              />
+              <small>How quickly you reach top speed from rest. Slide all the way up for instant (∞) acceleration.</small>
+            </label>
+          </fieldset>
+
+          <fieldset class="world-setting-group">
             <legend>Public avatar badge</legend>
             <label class="world-field">
               <span>Display name</span>
@@ -3060,6 +3129,7 @@ class ForkMeshWorld extends HTMLElement {
       );
       this.world.setTheme(this.settings.theme);
       this.world.setLightLevel(this.settings.lightLevel);
+      this.world.setMovementTuning?.(this.movementTuning());
       await Promise.allSettled([contextPromise, dataPromise]);
       this.world.updateIdentity(publicIdentity(this.identity, this.settings));
       this.world.updateNetworkNodes(
@@ -4683,6 +4753,16 @@ class ForkMeshWorld extends HTMLElement {
       const lightLevel = event.target.closest("[data-world-light-level]");
       if (lightLevel) {
         this.setLightLevel(lightLevel.value);
+        return;
+      }
+      const moveSpeed = event.target.closest("[data-world-move-speed]");
+      if (moveSpeed) {
+        this.setMoveSpeed(moveSpeed.value);
+        return;
+      }
+      const moveAccel = event.target.closest("[data-world-move-accel]");
+      if (moveAccel) {
+        this.setMoveAccel(moveAccel.value);
         return;
       }
       if (event.target.closest("[data-world-repo-filter='directory']")) {
@@ -11165,6 +11245,58 @@ class ForkMeshWorld extends HTMLElement {
     const output = this.$("[data-world-light-level-output]");
     if (input && Number(input.value) !== next) input.value = String(next);
     if (output) output.textContent = `${next}%`;
+    return next;
+  }
+
+  movementTuning() {
+    return {
+      speed: this.settings.moveSpeed / 100,
+      // The max slider position means "instant" — hand the scene Infinity so it
+      // snaps to top speed with no ramp.
+      acceleration:
+        this.settings.moveAccel >= WORLD_MOVE_ACCEL_MAX
+          ? Infinity
+          : this.settings.moveAccel / 100,
+    };
+  }
+
+  setMoveSpeed(value) {
+    const numeric = Number(value);
+    const next = Math.min(
+      WORLD_MOVE_SPEED_MAX,
+      Math.max(
+        WORLD_MOVE_SPEED_MIN,
+        Number.isFinite(numeric) ? numeric : WORLD_MOVE_SPEED_DEFAULT,
+      ),
+    );
+    this.settings.moveSpeed = next;
+    this.saveSettings();
+    this.world?.setMovementTuning?.(this.movementTuning());
+    const input = this.$("[data-world-move-speed]");
+    const output = this.$("[data-world-move-speed-output]");
+    if (input && Number(input.value) !== next) input.value = String(next);
+    if (output) output.textContent = `${next}%`;
+    return next;
+  }
+
+  setMoveAccel(value) {
+    const numeric = Number(value);
+    const next = Math.min(
+      WORLD_MOVE_ACCEL_MAX,
+      Math.max(
+        WORLD_MOVE_ACCEL_MIN,
+        Number.isFinite(numeric) ? numeric : WORLD_MOVE_ACCEL_DEFAULT,
+      ),
+    );
+    this.settings.moveAccel = next;
+    this.saveSettings();
+    this.world?.setMovementTuning?.(this.movementTuning());
+    const input = this.$("[data-world-move-accel]");
+    const output = this.$("[data-world-move-accel-output]");
+    if (input && Number(input.value) !== next) input.value = String(next);
+    if (output) {
+      output.textContent = next >= WORLD_MOVE_ACCEL_MAX ? "∞" : `${next}%`;
+    }
     return next;
   }
 

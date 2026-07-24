@@ -1151,13 +1151,17 @@ def test_world_supports_bounded_pinch_wheel_and_drag_controls():
     assert "pointerLockElement" not in SCENE
     assert "raycaster.intersectObject(ground" not in SCENE
 
-    # Keyboard movement accelerates gradually to a named cap and resets as
-    # soon as movement input is released or the browser loses focus.
+    # Keyboard movement accelerates toward a named cap and resets to the base
+    # from-rest speed as soon as movement input is released or focus is lost.
+    # Speed and acceleration are scaled by per-device controls; an infinite
+    # acceleration scale collapses the ramp to instant top speed.
     for contract in (
         "PLAYER_MAX_SPEED",
         "PLAYER_ACCELERATION",
-        "keyboardMovementSpeed + PLAYER_ACCELERATION * delta",
-        "keyboardMovementSpeed = PLAYER_SPEED",
+        "keyboardMovementSpeed + PLAYER_ACCELERATION * moveAccelScale * delta",
+        "keyboardMovementSpeed = baseMoveSpeed()",
+        "function setMovementTuning",
+        "setMovementTuning,",
         'window.addEventListener("blur", handleWindowBlur)',
         "getMovementState",
     ):
@@ -1263,6 +1267,30 @@ def test_world_lighting_is_static_daylight_with_a_local_persisted_control():
     ]
     for overlay in ("rain", "snow", "winter", "cyberpunk", '"low-light"'):
         assert overlay in SCENE
+
+
+def test_world_movement_speed_and_acceleration_are_locally_adjustable():
+    # Scene exposes a movement-tuning setter and scales the shared defaults by
+    # per-device speed/acceleration factors, with Infinity meaning instant.
+    assert "function setMovementTuning" in SCENE
+    assert "setMovementTuning," in SCENE
+    assert "let moveSpeedScale = 1" in SCENE
+    assert "let moveAccelScale = 1" in SCENE
+    assert "PLAYER_MAX_SPEED * moveSpeedScale" in SCENE
+    assert "PLAYER_ACCELERATION * moveAccelScale * delta" in SCENE
+    assert "moveAccelScale = Number.isFinite(numeric)" in SCENE
+    # App renders local-controls sliders wired to persisted settings and pushes
+    # the tuning (Infinity at the top acceleration position) into the scene.
+    assert "data-world-move-speed" in APP
+    assert "data-world-move-accel" in APP
+    assert "data-world-move-speed-output" in APP
+    assert "data-world-move-accel-output" in APP
+    assert "this.settings.moveSpeed = next" in APP
+    assert "this.settings.moveAccel = next" in APP
+    assert "this.world?.setMovementTuning?.(this.movementTuning())" in APP
+    assert "? Infinity" in APP
+    assert "moveSpeed: WORLD_MOVE_SPEED_DEFAULT" in APP
+    assert "moveAccel: WORLD_MOVE_ACCEL_DEFAULT" in APP
 
 
 def test_qt_main_navigation_opens_the_world_root():
