@@ -434,7 +434,6 @@ def test_world_has_consent_aware_activity_events_workshops_and_media():
     assert "function playRewardEvent" in SCENE
     assert "syncOperatorBelt" in SCENE
     assert "this.inactivePlayers" in APP
-    assert "/dashboard/chat?space=sky-campus" in APP
     assert "SPACE_CHANNELS" in DASHBOARD_CHAT
     for channel in (
         "#world-sky-campus",
@@ -475,19 +474,20 @@ def test_join_cues_are_country_specific_local_opt_in_and_rate_limited():
     assert "speechSynthesis" not in cue
 
 
-def test_chat_opens_inside_the_world_without_popup_permission():
-    assert "data-world-chat-open" in APP
-    assert "data-world-chat-frame" in APP
-    assert 'role="dialog"' in APP
+def test_chat_opens_only_through_the_spatial_forkmesh_office():
+    assert "data-world-office-focus" in APP
+    assert "data-world-office-enter" in APP
+    assert "data-world-office-chat" in APP
+    assert "data-world-office-frame" in APP
+    assert "Visit ForkMesh Office" in APP
+    assert "ForkMesh Office chat" in APP
+    assert 'office: "visiting-office"' in APP
+    assert "/chat?embed=office" not in APP
+    assert "data-world-chat-open" not in APP
+    assert "data-world-chat-frame" not in APP
+    assert "/dashboard/chat" not in APP
     assert 'sandbox="allow-forms allow-same-origin allow-scripts"' in APP
     assert "allow-popups" not in APP
-    assert "openWorldChat(" in APP
-    assert "closeWorldChat()" in APP
-    assert "destination.origin !== location.origin" in APP
-    assert '["/dashboard/chat", "/dashboard/chat/"]' in APP
-    assert 'destination.searchParams.set("worldEmbed", "1")' in APP
-    assert 'a[href^=\'/dashboard/chat\']' in APP
-    assert 'href="/dashboard/chat" target="_blank"' not in APP
     assert 'playMode: "external"' in DATA
     assert "does not embed, restream, record" in APP
     for media_feature in (

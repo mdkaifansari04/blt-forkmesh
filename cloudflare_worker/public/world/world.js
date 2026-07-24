@@ -31,6 +31,7 @@ import {
   safePullNumber,
 } from "./world-pull-review.js";
 import { buildRepositoryGraphEntities } from "./world-repository-graph.js";
+import { createWorldOfficeController } from "./world-office.js";
 import { createWorldScene } from "./world-scene.js";
 
 const THREE_MODULE_URL =
@@ -2345,7 +2346,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         <button type="button" data-world-landmark="information"><span aria-hidden="true">i</span><span>Start</span></button>
         <button type="button" data-world-landmark="repositories"><span aria-hidden="true">{ }</span><span>Code</span></button>
         <button type="button" data-world-landmark="workshops"><span aria-hidden="true">⌘</span><span>Workshops</span></button>
-        <a href="/dashboard/chat" data-world-chat-open><span aria-hidden="true">⌁</span><span>Chat</span></a>
+        <button type="button" data-world-office-focus aria-label="Visit ForkMesh Office"><span aria-hidden="true">⌁</span><span>Office</span></button>
         <button type="button" data-world-landmark="support"><span aria-hidden="true">♥</span><span>Support</span></button>
       </nav>
 
@@ -2388,9 +2389,9 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <span aria-hidden="true">◫</span><span>Alerts</span>
               <strong data-world-notification-count aria-hidden="true" hidden>0</strong>
             </button>
-            <a class="world-top-link" href="/dashboard/chat" data-world-chat-open title="Open chat inside the World">
-              <span aria-hidden="true">⌁</span><span>Chat</span>
-            </a>
+            <button class="world-top-link" type="button" data-world-office-focus title="Visit ForkMesh Office" aria-label="Visit ForkMesh Office">
+              <span aria-hidden="true">⌁</span><span>Office</span>
+            </button>
             <button
               class="world-top-link"
               type="button"
@@ -2561,33 +2562,35 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           aria-hidden="true"
         ></aside>
 
-        <button
-          class="world-chat-backdrop"
-          type="button"
-          data-world-chat-close
-          aria-label="Close World chat"
-          tabindex="-1"
-        ></button>
         <section
-          class="world-chat"
-          data-world-chat
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="world-chat-title"
+          class="world-office-prompt"
+          data-world-office-prompt
+          aria-label="ForkMesh Office entrance"
+          hidden
+        >
+          <p><span aria-hidden="true">●</span> ForkMesh Office is open</p>
+          <button type="button" data-world-office-enter>
+            Enter ForkMesh Office <kbd>E</kbd>
+          </button>
+        </section>
+        <section
+          class="world-office-chat"
+          data-world-office-chat
+          aria-labelledby="world-office-chat-title"
           aria-hidden="true"
         >
-          <header class="world-chat-heading">
+          <header class="world-office-chat__heading">
             <div>
-              <p class="world-eyebrow">LIVE COLLABORATION</p>
-              <h2 id="world-chat-title">World chat</h2>
-              <span>Chat stays inside ForkMesh World.</span>
+              <p class="world-eyebrow">ENCRYPTED WORKSPACE</p>
+              <h2 id="world-office-chat-title" tabindex="-1">ForkMesh Office</h2>
             </div>
-            <button type="button" data-world-chat-close aria-label="Close World chat">×</button>
+            <button type="button" data-world-office-close aria-label="Collapse ForkMesh Office chat">×</button>
           </header>
+          <p class="world-office-chat__loading" data-world-office-loading role="status">Opening encrypted chat...</p>
           <iframe
-            class="world-chat-frame"
-            data-world-chat-frame
-            title="ForkMesh World chat"
+            class="world-office-chat__frame"
+            data-world-office-frame
+            title="ForkMesh Office chat"
             sandbox="allow-forms allow-same-origin allow-scripts"
             referrerpolicy="same-origin"
           ></iframe>
@@ -2922,8 +2925,8 @@ class ForkMeshWorld extends HTMLElement {
     this.worldTicket = "";
     this.worldTicketExpires = 0;
     this.worldTicketTimer = 0;
-    this.chatReturnFocus = null;
     this.accountReturnFocus = null;
+    this.officeController = null;
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
     const requestedLandmark = worldQuery.get("landmark") || "";
@@ -3102,6 +3105,11 @@ class ForkMeshWorld extends HTMLElement {
         identity: publicIdentity(this.identity, this.settings),
         reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
         onLandmarkSelect: (id, meta = {}) => {
+          if (id === "office") {
+            this.closeLandmark();
+            this.officeController?.focusOffice();
+            return;
+          }
           if (meta.nodeCabinet) {
             this.openMirrorNodeDetail(meta.nodeCabinet);
             return;
@@ -3116,6 +3124,9 @@ class ForkMeshWorld extends HTMLElement {
           }
           this.openLandmark(id);
         },
+        onOfficeProximity: (state) => {
+          this.officeController?.setProximity(state);
+        },
         onLocationChange: (label, id) => this.updateLocation(label, id),
         onRegionChange: (region) => this.updateRegion(region),
         onMovement: (movement) => this.handleMovement(movement),
@@ -3127,6 +3138,10 @@ class ForkMeshWorld extends HTMLElement {
         true,
         "The interactive destination renderer is available.",
       );
+      this.officeController = createWorldOfficeController({
+        root: this,
+        world: this.world,
+      });
       this.world.setTheme(this.settings.theme);
       this.world.setLightLevel(this.settings.lightLevel);
       this.world.setMovementTuning?.(this.movementTuning());
@@ -3267,7 +3282,10 @@ class ForkMeshWorld extends HTMLElement {
             This browser could not start the 3D renderer. Use the World Map to
             inspect every district, or open the standard operations console.
           </p>
-          <a class="world-primary-action" href="/dashboard">Open operations console</a>
+          <div class="world-arrival-actions">
+            <a class="world-primary-action" href="/chat">Open ForkMesh chat</a>
+            <a class="world-secondary-action" href="/dashboard">Open operations console</a>
+          </div>
         </div>
       </div>`;
   }
@@ -4251,23 +4269,6 @@ class ForkMeshWorld extends HTMLElement {
 
   bindUI() {
     this.addEventListener("click", (event) => {
-      const chatLink = event.target.closest(
-        "[data-world-chat-open], a[href^='/dashboard/chat']",
-      );
-      if (chatLink) {
-        event.preventDefault();
-        this.openWorldChat(
-          chatLink.getAttribute("href") ||
-            chatLink.dataset.worldChatOpen ||
-            "/dashboard/chat",
-          chatLink,
-        );
-        return;
-      }
-      if (event.target.closest("[data-world-chat-close]")) {
-        this.closeWorldChat();
-        return;
-      }
       const accountOpen = event.target.closest("[data-world-account-open]");
       if (accountOpen) {
         this.toggleWorldAccount(true, "login", accountOpen);
@@ -4302,6 +4303,11 @@ class ForkMeshWorld extends HTMLElement {
       const landmarkButton = event.target.closest("[data-world-landmark]");
       if (landmarkButton) {
         const id = landmarkButton.dataset.worldLandmark;
+        if (id === "office") {
+          this.closeLandmark();
+          this.officeController?.focusOffice(landmarkButton);
+          return;
+        }
         this.world?.focusLandmark(id);
         this.openLandmark(id);
         return;
@@ -4797,9 +4803,7 @@ class ForkMeshWorld extends HTMLElement {
 
     this.addEventListener("keydown", (event) => {
       if (event.code !== "Escape") return;
-      if (this.$("[data-world-chat]")?.dataset.open === "true") {
-        this.closeWorldChat();
-      } else if (this.$("[data-world-account]")?.dataset.open === "true") {
+      if (this.$("[data-world-account]")?.dataset.open === "true") {
         this.toggleWorldAccount(false);
       } else if (this.$("[data-world-settings]")?.dataset.open === "true") {
         this.toggleSettings(false);
@@ -5357,6 +5361,7 @@ class ForkMeshWorld extends HTMLElement {
       repositories: "viewing-repository",
       workshops: "browsing-code-visualization",
       organizations: "visiting-organization",
+      office: "visiting-office",
       information: "reading-documentation",
     }[id] || "exploring-town-square";
     this.identity.activityCategory = this.currentActivityCategory;
@@ -6199,7 +6204,7 @@ class ForkMeshWorld extends HTMLElement {
                   String(member.name || "").toLowerCase() ===
                   String(this.identity.name || "").toLowerCase(),
               );
-              const lobbyURL = `/dashboard/chat?org=${encodeURIComponent(name)}`;
+              const lobbyURL = "/chat";
               const settingsURL = `/dashboard/settings/organizations?org=${encodeURIComponent(
                 name,
               )}`;
@@ -6832,7 +6837,7 @@ class ForkMeshWorld extends HTMLElement {
           <article><span>Community planets</span><strong>Planet atlas</strong><p>Achievement, event, and community-owned destinations with UTC schedules.</p><button type="button" data-world-travel="planet-atlas">Open planet atlas</button></article>
           <article><span>Community space</span><strong>Space station</strong><p>Scheduled presentation, chat, and moderated media room.</p><button type="button" data-world-travel="space-station">Board shuttle</button></article>
         </div>
-        <p class="world-panel-footnote">Each portal moves your live avatar into the shared 3D destination. Signed-in collaborators can use its dedicated authenticated shared-key channel. The relay derives the default key and can read messages: <a href="/dashboard/chat?space=sky-campus">Sky campus</a> · <a href="/dashboard/chat?space=space-station">Space station</a> · <a href="/dashboard/chat?space=code-planet">Code planet</a> · <a href="/dashboard/chat?space=organization-region">Garden campus</a> · <a href="/dashboard/chat?space=planet-atlas">Planet atlas</a>.</p>
+        <p class="world-panel-footnote">Each portal moves your live avatar into the shared 3D destination. Encrypted conversation remains available through the authorization-aware <a href="/chat">ForkMesh chat</a>; avatar location never grants channel access.</p>
       </section>`;
   }
 
@@ -7635,9 +7640,7 @@ class ForkMeshWorld extends HTMLElement {
               : ""
           }
           <div class="world-detail-actions">
-            <a class="world-primary-action" href="/dashboard/chat?space=${escapeHTML(
-              this.mediaRoom.id || "broadcast",
-            )}">Open moderated shared room</a>
+            <a class="world-primary-action" href="/chat">Open moderated shared room</a>
           </div>
           <p class="world-panel-footnote">${
             this.mediaRoom.scheduledAt
@@ -10169,12 +10172,6 @@ class ForkMeshWorld extends HTMLElement {
     const resultId = String(
       context.resultId || session?.results?.[0]?.id || "",
     );
-    const chatParams = new URLSearchParams({
-      space: "workshop",
-      repo: `${owner}/${repo}`,
-      run: runId,
-    });
-    if (session?.id) chatParams.set("workshopSession", session.id);
     const agentParams = new URLSearchParams({
       workshopSession: String(session?.id || ""),
       workshopResult: resultId,
@@ -10340,9 +10337,7 @@ class ForkMeshWorld extends HTMLElement {
         <div class="world-detail-actions">
           ${
             liveWorkshopChatAvailable
-              ? `<a class="world-primary-action" href="/dashboard/chat?${escapeHTML(
-                  chatParams.toString(),
-                )}">Open live encrypted collaboration for this run</a>`
+              ? `<a class="world-primary-action" href="/chat">Open live encrypted collaboration for this run</a>`
               : `<span class="world-status-pill">Private/unresolved workshop · use the authorized participant updates above; live browser chat fails closed.</span>`
           }
           ${
@@ -10898,6 +10893,11 @@ class ForkMeshWorld extends HTMLElement {
       );
       return;
     }
+    if (action === "office") {
+      this.closeLandmark();
+      this.officeController?.focusOffice();
+      return;
+    }
     const messages = {
       reward:
         "Contributions are direct wallet-to-public-pool transfers. Reward plans are signed only in the instance owner’s local Qt client and shown as complete only after on-chain finality.",
@@ -10961,7 +10961,7 @@ class ForkMeshWorld extends HTMLElement {
     if (open) {
       this.accountReturnFocus =
         returnFocus instanceof HTMLElement ? returnFocus : null;
-      this.closeWorldChat();
+      this.officeController?.collapse();
       this.closeLandmark();
       this.toggleSettings(false);
       if (this.tourIndex >= 0) this.stopTour();
@@ -11165,56 +11165,6 @@ class ForkMeshWorld extends HTMLElement {
     panel.dataset.open = String(open);
     panel.setAttribute("aria-hidden", String(!open));
     if (open) window.setTimeout(() => panel.querySelector("button")?.focus(), 80);
-  }
-
-  openWorldChat(href = "/dashboard/chat", returnFocus = null) {
-    let destination;
-    try {
-      destination = new URL(String(href || "/dashboard/chat"), location.origin);
-    } catch (_) {
-      return;
-    }
-    if (
-      destination.origin !== location.origin ||
-      !["/dashboard/chat", "/dashboard/chat/"].includes(destination.pathname)
-    ) {
-      return;
-    }
-    destination.searchParams.set("worldEmbed", "1");
-    const panel = this.$("[data-world-chat]");
-    const backdrop = this.$(".world-chat-backdrop");
-    const frame = this.$("[data-world-chat-frame]");
-    if (!panel || !backdrop || !frame) return;
-    const frameURL = `${destination.pathname}${destination.search}`;
-    if (frame.dataset.worldChatUrl !== frameURL) {
-      frame.dataset.worldChatUrl = frameURL;
-      frame.src = frameURL;
-    }
-    this.chatReturnFocus =
-      returnFocus instanceof HTMLElement ? returnFocus : null;
-    this.closeLandmark();
-    this.toggleSettings(false);
-    if (this.tourIndex >= 0) this.stopTour();
-    panel.dataset.open = "true";
-    panel.setAttribute("aria-hidden", "false");
-    backdrop.dataset.open = "true";
-    window.setTimeout(
-      () => panel.querySelector("[data-world-chat-close]")?.focus(),
-      80,
-    );
-  }
-
-  closeWorldChat() {
-    const panel = this.$("[data-world-chat]");
-    const backdrop = this.$(".world-chat-backdrop");
-    if (panel) {
-      panel.dataset.open = "false";
-      panel.setAttribute("aria-hidden", "true");
-    }
-    if (backdrop) backdrop.dataset.open = "false";
-    const returnFocus = this.chatReturnFocus;
-    this.chatReturnFocus = null;
-    window.setTimeout(() => returnFocus?.focus?.(), 0);
   }
 
   setTheme(theme) {
@@ -12361,6 +12311,8 @@ class ForkMeshWorld extends HTMLElement {
     const soundContext = this.soundContext;
     this.soundContext = null;
     soundContext?.close?.().catch(() => {});
+    this.officeController?.destroy();
+    this.officeController = null;
     this.world?.dispose();
     this.world = null;
     if (this.mode === "public") document.body.classList.remove("world-active");
