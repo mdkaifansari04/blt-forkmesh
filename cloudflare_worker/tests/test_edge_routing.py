@@ -210,6 +210,11 @@ def test_internal_target_is_bounded_and_never_a_client_redirect_contract():
         "https://mirror.example.net", "alice", "repo", "blobs",
         {"path": ["a.md", "b.md"], "token": "must-drop"})
     assert repeated.endswith("blobs?path=a.md&path=b.md")
+    comparison = routing.masked_target_url(
+        "https://mirror.example.net", "alice", "repo", "compare",
+        {"base": "main", "head": "feature/web", "token": "must-drop"})
+    assert comparison.endswith("compare?base=main&head=feature%2Fweb")
+    assert "token" not in comparison
 
 
 def test_proxy_request_and_response_do_not_expose_endpoint_or_credentials():

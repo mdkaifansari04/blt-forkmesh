@@ -24,7 +24,7 @@ REPO_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 OPAQUE_REPLICA_RE = re.compile(r"^[0-9a-f]{64}$")
 PUBLIC_OPERATIONS = frozenset({
     "git-info-refs", "git-upload-pack", "tree", "blobs", "blob", "raw", "history",
-    "commit", "branches", "search", "stats", "sizes", "release-blob",
+    "commit", "compare", "branches", "search", "stats", "sizes", "release-blob",
 })
 
 
@@ -473,7 +473,7 @@ def masked_target_url(base_url, owner, repo, operation, query=None):
         quote(operation, safe="-"),
     )
     safe_query = {}
-    for key in ("path", "ref", "service", "sha256"):
+    for key in ("path", "ref", "base", "head", "service", "sha256"):
         if key in (query or {}):
             raw = (query or {}).get(key)
             values = raw if isinstance(raw, (list, tuple)) else [raw]

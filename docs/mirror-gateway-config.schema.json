@@ -132,6 +132,7 @@
           "raw",
           "history",
           "commit",
+          "compare",
           "branches",
           "search",
           "stats",

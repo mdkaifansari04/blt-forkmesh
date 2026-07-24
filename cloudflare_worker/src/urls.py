@@ -81,7 +81,7 @@ PRIVATE_REPLICA_ACCESS_RE = re.compile(
 # shapes remain parseable for compatibility, but Default routes authorized
 # reads through direct HTTPS; the former repository tunnel is retired.
 REPO_HOST_RE = re.compile(
-    r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches|search|stats|sizes)$")
+    r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|compare|branches|search|stats|sizes)$")
 # Stable content-addressed release URL. Default streams it from an attested
 # direct-HTTPS endpoint; the host control socket rejects this path.
 RELEASE_BLOB_RE = re.compile(

@@ -1176,26 +1176,45 @@
   }
 
   // Mirrors PullStore::canonicalString for a new pull (verify_pull_event in
-  // the worker): title/base/head/patch, with an empty patch for a
-  // branch-referencing submission from the web - the desktop reconstructs the
-  // diff on drain (see renderRepoPullPatch's "Branch-backed PRs are
-  // reconstructed by the desktop client" copy).
+  // the Worker). Branch names alone are mutable and may not exist on the
+  // owner's node, so resolve them through an attested mirror once and sign the
+  // resulting portable binary patch + commit series.
   async function submitWebPullOpen(repo, title, body, base, head) {
+    const comparison = await fetchRepoJson(repoLiveUrl(repo, "compare", {
+      base,
+      head,
+      ref: "",
+    }));
+    const patch = String(comparison.patch || "");
+    const commits = String(comparison.commits || "");
+    const baseOid = String(comparison.baseOid || "").toLowerCase();
+    const headOid = String(comparison.headOid || "").toLowerCase();
+    const validOid = (value) => /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(value);
+    if (!validOid(baseOid) || !validOid(headOid)) {
+      throw new Error("invalid_comparison");
+    }
+    if (!patch.trim()) {
+      throw new Error("no_changes");
+    }
+    if (ISSUE_TEXT_ENCODER.encode(patch).byteLength
+        + ISSUE_TEXT_ENCODER.encode(commits).byteLength > 4 * 1024 * 1024) {
+      throw new Error("pull_too_large");
+    }
     const { privateKey, pub } = await getWebIssueKey();
     const ts = Math.floor(Date.now() / 1000);
     const cleanBody = String(body || "").replace(/[\r\n]+$/, "");
     const NUL = String.fromCharCode(0);
-    const patch = "";
-    const content = [title, base, head, patch].join(NUL);
+    const content = [title, base, head, patch, commits].join(NUL);
     const contentHash = await sha256HexLower(content);
     const canonical = `forkmesh-pull-event-v1\n${pub}\n${ts}\n${contentHash}`;
     const sig = bytesToB64url(await crypto.subtle.sign({ name: "Ed25519" }, privateKey, ISSUE_TEXT_ENCODER.encode(canonical)));
     const pull = {
       title,
-      body: cleanBody,
+      description: cleanBody,
       base,
       head,
       patch,
+      commits,
       author: pub,
       authorName: state.session?.nodeName || "",
       ts,
@@ -10144,7 +10163,7 @@
     const images = form._pendingIssueImages || [];
     for (const img of images) body = body.split(img.id).join(img.dataUrl);
     if (submit) submit.disabled = true;
-    setHint("Signing and sending…");
+    setHint("Preparing and signing the change set…");
     try {
       await submitWebIssue(repo, title, body, assignAgent, agentModel, agentProvider, { milestone, project });
       // Submissions land in the maintainer's inbox, not the public mirror, so it
@@ -10476,6 +10495,8 @@
         code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
           : code === "author_quota" ? "You've reached the submission limit for this repository."
           : code === "pull_too_large" ? "The submission is too large."
+          : code === "no_changes" ? "Those branches do not contain any changes to propose."
+          : code === "invalid_comparison" ? "The mirror returned an invalid branch comparison."
           : code === "bad_signature" ? "Could not verify the pull request's signature."
           : "Could not send the pull request. Please try again.",
         "bad");

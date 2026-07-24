@@ -110,7 +110,7 @@
       "description": "The runtime additionally requires git-info-refs, git-upload-pack, tree, blob, and raw.",
       "type": "array",
       "minItems": 5,
-      "maxItems": 13,
+      "maxItems": 14,
       "uniqueItems": true,
       "items": {
         "enum": [
@@ -122,6 +122,7 @@
           "raw",
           "history",
           "commit",
+          "compare",
           "branches",
           "search",
           "stats",
