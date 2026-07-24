@@ -437,6 +437,9 @@ def test_refresh_packaging_has_no_user_derived_commands():
     service = (
         PROJECT_ROOT / "packaging" / "systemd" / "forkmesh-mirror-refresh.service"
     ).read_text(encoding="utf-8")
+    gateway_service = (
+        PROJECT_ROOT / "packaging" / "systemd" / "forkmesh-mirror.service"
+    ).read_text(encoding="utf-8")
     path_unit = (
         PROJECT_ROOT / "packaging" / "systemd" / "forkmesh-mirror-refresh.path"
     ).read_text(encoding="utf-8")
@@ -451,6 +454,15 @@ def test_refresh_packaging_has_no_user_derived_commands():
     assert (
         "CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SETGID CAP_SETUID"
         in service
+    )
+    for unit in (service, gateway_service):
+        assert (
+            "Environment=TMPDIR=/var/lib/forkmesh-mirror/runtime-tmp"
+            in unit
+        )
+    assert (
+        "ReadWritePaths=/var/lib/forkmesh-mirror/runtime-tmp"
+        in gateway_service
     )
 
 

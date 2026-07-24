@@ -7,6 +7,7 @@ After=network-online.target forkmesh-ssh-authorization-broker.service
 [Service]
 Type=oneshot
 UMask=0077
+Environment=TMPDIR=/var/lib/forkmesh-mirror/runtime-tmp
 ExecStart=/usr/bin/python3 -I /opt/forkmesh-mirror/ssh_post_receive_refresh.py --config /etc/forkmesh/ssh-refresh.json run
 TimeoutStartSec=40min
 NoNewPrivileges=true

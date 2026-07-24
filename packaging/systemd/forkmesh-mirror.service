@@ -9,6 +9,7 @@ Type=simple
 User=forkmesh-mirror
 Group=forkmesh-mirror
 UMask=0077
+Environment=TMPDIR=/var/lib/forkmesh-mirror/runtime-tmp
 ExecStartPre=/usr/bin/python3 /opt/forkmesh-mirror/headless_mirror_refresh.py --config /var/lib/forkmesh-mirror/gateway/mirror-refresh.json check
 ExecStart=/usr/bin/python3 /opt/forkmesh-mirror/mirror_gateway.py --config /var/lib/forkmesh-mirror/gateway/mirror-gateway.json
 Restart=on-failure
@@ -26,6 +27,7 @@ ProtectKernelLogs=true
 ProtectKernelModules=true
 ProtectKernelTunables=true
 ProtectSystem=strict
+ReadWritePaths=/var/lib/forkmesh-mirror/runtime-tmp
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictNamespaces=true
 RestrictRealtime=true
