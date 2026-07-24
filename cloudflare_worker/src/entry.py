@@ -5502,6 +5502,13 @@ async def catalog_handler(env, request):
             for stale_key, _ in decoded[MAX_CATALOG_REPOS:]:
                 await _delete_repo_scoped_state(env, stale_key)
                 await d1_run(env, "DELETE FROM repositories WHERE key_bi=?", stale_key)
+        # Endpoint registration deliberately resets health to pending. Once this
+        # account-bound publication has durably pinned the public flagship state,
+        # immediately challenge only the publishing node so clone availability
+        # does not depend on a later cron tick. The helper is best-effort: an
+        # unreachable or invalid proof remains fail-closed in endpoint state but
+        # never rolls back an otherwise valid catalog publication.
+        await _https_mirror_refresh_catalog_publisher_health(env, record)
         await purge_catalog_related_caches()
         payload = {
             "ok": True,
@@ -25858,6 +25865,50 @@ async def _https_mirror_expected_forkmesh_refs(env):
         return digest
     except Exception:
         return ""
+
+
+async def _https_mirror_refresh_catalog_publisher_health(env, record):
+    """Best-effort activation for one signed public flagship publication.
+
+    Catalog authorization already binds ``record["owner"]`` and its maintainer
+    signature to an active account. This lookup stays scoped to that exact node;
+    ``_https_mirror_health_one`` then independently rechecks its bound signing
+    key, Cloudflare-proxied DNS, and fresh node-signed repository proof.
+    """
+    if (
+        not isinstance(record, dict)
+        or record.get("visibility") != "public"
+        or clean_string(record.get("name", ""), MAX_REPO_SEGMENT).lower()
+        != "forkmesh"
+    ):
+        return False
+    node = clean_string(
+        record.get("owner", ""), MAX_NODE_NAME).strip().lower()
+    if not valid_node_name(node):
+        return False
+    try:
+        canonical_node = clean_string(
+            await _org_repo_node(env, "forkmesh", "forkmesh"),
+            MAX_NODE_NAME,
+        ).strip().lower()
+        canonical_node = canonical_node or "forkmesh"
+        if node != canonical_node:
+            return False
+        row = await d1_first(
+            env,
+            """SELECT node_bi,node_name,base_url,public_key
+                 FROM mirror_https_endpoints WHERE node_name=?""",
+            node,
+        )
+        if not row:
+            return False
+        expected = await _https_mirror_expected_forkmesh_refs(env)
+        return bool(await _https_mirror_health_one(env, row, expected))
+    except Exception:
+        # Publication is already authorized and durable. Health remains pending
+        # or is cleared by the verifier; a control-plane fetch/storage failure
+        # must not turn that successful catalog write into an error response.
+        return False
 
 
 async def _https_mirror_mark_failed(env, row, now):

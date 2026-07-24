@@ -195,6 +195,194 @@ def test_flagship_state_pin_falls_back_to_account_namespace_without_org_alias():
     assert looked_up == ["forkmesh/forkmesh"]
 
 
+def test_public_flagship_publish_refreshes_only_its_exact_node_health():
+    events = []
+    endpoint = {
+        "node_bi": "mirror-2-bi",
+        "node_name": "mirror2",
+        "base_url": "https://mirror2.example.test",
+        "public_key": "node-public-key",
+    }
+
+    async def d1_first(env, sql, *params):
+        events.append(("lookup", params))
+        assert "FROM mirror_https_endpoints WHERE node_name=?" in sql
+        assert params == ("mirror2",)
+        return endpoint
+
+    async def org_repo_node(env, owner, repo):
+        events.append(("canonical", owner, repo))
+        return "mirror2"
+
+    async def expected_refs(env):
+        events.append(("expected",))
+        return "a" * 64
+
+    async def health_one(env, row, expected):
+        events.append(("health", row, expected))
+        return True
+
+    namespace = {
+        "MAX_REPO_SEGMENT": 128,
+        "MAX_NODE_NAME": 80,
+        "clean_string": lambda value, limit: str(value or "")[:limit],
+        "valid_node_name": lambda value: bool(
+            re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", value)),
+        "_org_repo_node": org_repo_node,
+        "d1_first": d1_first,
+        "_https_mirror_expected_forkmesh_refs": expected_refs,
+        "_https_mirror_health_one": health_one,
+    }
+    exec(
+        _function_source("_https_mirror_refresh_catalog_publisher_health"),
+        namespace,
+    )
+    refreshed = asyncio.run(
+        namespace["_https_mirror_refresh_catalog_publisher_health"](
+            object(),
+            {
+                "owner": "Mirror2",
+                "name": "forkmesh",
+                "visibility": "public",
+            },
+        )
+    )
+    assert refreshed is True
+    assert events == [
+        ("canonical", "forkmesh", "forkmesh"),
+        ("lookup", ("mirror2",)),
+        ("expected",),
+        ("health", endpoint, "a" * 64),
+    ]
+
+
+def test_catalog_health_activation_is_flagship_public_only_and_best_effort():
+    calls = []
+    endpoint_available = True
+
+    async def d1_first(env, sql, *params):
+        calls.append(params)
+        if params == ("mirror2",) and endpoint_available:
+            return {
+                "node_bi": "mirror-2-bi",
+                "node_name": "mirror2",
+                "base_url": "https://mirror2.example.test",
+                "public_key": "node-public-key",
+            }
+        return None
+
+    async def org_repo_node(env, owner, repo):
+        return "mirror2"
+
+    async def expected_refs(env):
+        return "b" * 64
+
+    async def failing_health(env, row, expected):
+        raise RuntimeError("bounded health fetch failed")
+
+    namespace = {
+        "MAX_REPO_SEGMENT": 128,
+        "MAX_NODE_NAME": 80,
+        "clean_string": lambda value, limit: str(value or "")[:limit],
+        "valid_node_name": lambda value: bool(
+            re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", value)),
+        "_org_repo_node": org_repo_node,
+        "d1_first": d1_first,
+        "_https_mirror_expected_forkmesh_refs": expected_refs,
+        "_https_mirror_health_one": failing_health,
+    }
+    exec(
+        _function_source("_https_mirror_refresh_catalog_publisher_health"),
+        namespace,
+    )
+    refresh = namespace["_https_mirror_refresh_catalog_publisher_health"]
+    for record in (
+        {"owner": "mirror2", "name": "forkmesh", "visibility": "private"},
+        {"owner": "mirror2", "name": "another-repo", "visibility": "public"},
+        {"owner": "not valid", "name": "forkmesh", "visibility": "public"},
+        # Same repository name, but this account is not the organization's
+        # current canonical backing node and must not trigger a health fetch.
+        {"owner": "mirror3", "name": "forkmesh", "visibility": "public"},
+    ):
+        assert asyncio.run(refresh(object(), record)) is False
+    assert calls == []
+
+    endpoint_available = False
+    assert asyncio.run(refresh(object(), {
+        "owner": "mirror2",
+        "name": "forkmesh",
+        "visibility": "public",
+    })) is False
+    assert calls == [("mirror2",)]
+
+    # Once the exact endpoint is selected, a fetch/verifier exception is
+    # swallowed so the already accepted catalog publication is not rolled back.
+    endpoint_available = True
+    assert asyncio.run(refresh(object(), {
+        "owner": "mirror2",
+        "name": "forkmesh",
+        "visibility": "public",
+    })) is False
+    assert calls == [("mirror2",), ("mirror2",)]
+
+
+def test_catalog_health_activation_falls_back_only_to_canonical_account():
+    looked_up = []
+
+    async def org_repo_node(env, owner, repo):
+        return ""
+
+    async def d1_first(env, sql, *params):
+        looked_up.append(params)
+        return None
+
+    namespace = {
+        "MAX_REPO_SEGMENT": 128,
+        "MAX_NODE_NAME": 80,
+        "clean_string": lambda value, limit: str(value or "")[:limit],
+        "valid_node_name": lambda value: bool(
+            re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", value)),
+        "_org_repo_node": org_repo_node,
+        "d1_first": d1_first,
+        "_https_mirror_expected_forkmesh_refs": lambda env: None,
+        "_https_mirror_health_one": lambda env, row, expected: None,
+    }
+    exec(
+        _function_source("_https_mirror_refresh_catalog_publisher_health"),
+        namespace,
+    )
+    refresh = namespace["_https_mirror_refresh_catalog_publisher_health"]
+    assert asyncio.run(refresh(object(), {
+        "owner": "mirror2",
+        "name": "forkmesh",
+        "visibility": "public",
+    })) is False
+    assert looked_up == []
+    assert asyncio.run(refresh(object(), {
+        "owner": "forkmesh",
+        "name": "forkmesh",
+        "visibility": "public",
+    })) is False
+    assert looked_up == [("forkmesh",)]
+
+
+def test_catalog_persists_before_exact_node_health_activation_and_cache_purge():
+    handler = _function_source("catalog_handler")
+    durable_write = handler.index(
+        "await _contribution_write_catalog_state")
+    activation = handler.index(
+        "await _https_mirror_refresh_catalog_publisher_health")
+    cache_purge = handler.index("await purge_catalog_related_caches()")
+    assert durable_write < activation < cache_purge
+
+    activation_source = _function_source(
+        "_https_mirror_refresh_catalog_publisher_health")
+    assert '_org_repo_node(env, "forkmesh", "forkmesh")' in activation_source
+    assert "WHERE node_name=?" in activation_source
+    assert "_https_mirror_expected_forkmesh_refs" in activation_source
+    assert "_https_mirror_health_one" in activation_source
+
+
 def test_public_browse_clone_and_release_are_intercepted_before_host_tunnel():
     route = _method_source("Default", "_route")
     assert route.index("HTTPS_MIRROR_ENDPOINT_PATH") < route.index(
