@@ -4,7 +4,7 @@ number: 44
 title: feat: add public and private chat channels
 base: main
 head: feat/team-chat-feature
-status: open
+status: merged
 ts: 1784911453364
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
@@ -24,4 +24,3 @@ sig: OYrAOQBvAtYJrAMooG5dbQJ31D2c5MEbYaCXbWpY6uUvejCGxwws70IqqxHGenxCe8CSaqKDfdX
 ## Notes
 - Based on current `origin/main` at payload generation time.
 - Excludes the local dirty `cloudflare_worker/wrangler.toml` D1 database id change from this signed branch payload.
-
