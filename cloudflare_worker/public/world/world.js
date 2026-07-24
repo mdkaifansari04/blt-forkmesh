@@ -83,6 +83,11 @@ const WORLD_DIAGNOSTICS_COUNTER_MAX = 1_000_000_000;
 const WORLD_PULL_MERGE_MAX_REQUESTS = 6;
 const WORLD_PULL_MERGE_POLL_MS = 400;
 const WORLD_PULL_MERGE_RESPONSE_MAX_BYTES = 16 * 1024;
+// The edge router can spend up to 20 seconds on each of two attested mirrors.
+// Keep the browser bound just above that failover envelope; shorter 6-12s
+// aborts made healthy exact-ref reads fail whenever a one-vCPU node was doing
+// integrity maintenance.
+const REPOSITORY_METADATA_TIMEOUT_MS = 45 * 1000;
 const WORLD_ACCOUNT_NAME_RE =
   /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const FLAGSHIP_REPOSITORY = Object.freeze({
@@ -7973,7 +7978,7 @@ class ForkMeshWorld extends HTMLElement {
 
   async resolveRepositoryPullMetadataCommit(base) {
     const branches = await this.fetchJSON(`${base}/branches`, {
-      timeout: 9000,
+      timeout: REPOSITORY_METADATA_TIMEOUT_MS,
       cache: "no-store",
     });
     const branch = (Array.isArray(branches?.branches) ? branches.branches : [])
@@ -8000,7 +8005,7 @@ class ForkMeshWorld extends HTMLElement {
       `${base}/tree?path=pulls&ref=${encodeURIComponent(
         pullMetadataCommit,
       )}`,
-      { timeout: 10000, cache: "no-store" },
+      { timeout: REPOSITORY_METADATA_TIMEOUT_MS, cache: "no-store" },
     );
     if (
       tree?.ok === false ||
@@ -8025,7 +8030,7 @@ class ForkMeshWorld extends HTMLElement {
       query.set("ref", pullMetadataCommit);
       try {
         const result = await this.fetchJSON(`${base}/blobs?${query}`, {
-          timeout: 12000,
+          timeout: REPOSITORY_METADATA_TIMEOUT_MS,
           cache: "no-store",
         });
         if (immutableGitOid(result?.commit) !== pullMetadataCommit) {
@@ -8103,15 +8108,18 @@ class ForkMeshWorld extends HTMLElement {
     // truthful review surface. Resolve that short chain before lower-priority
     // issue-layout probes can occupy every connection on a small mirror.
     const pullResult =
-      options.privateRepository === true
-        ? {
-            status: "rejected",
-            reason: new Error("private pull metadata is not publicly probed"),
-          }
-        : await this.loadRepositoryPullRecords(base).then(
-            (value) => ({ status: "fulfilled", value }),
-            (reason) => ({ status: "rejected", reason }),
-          );
+      options.pullResult?.status === "fulfilled" ||
+      options.pullResult?.status === "rejected"
+        ? options.pullResult
+        : options.privateRepository === true
+          ? {
+              status: "rejected",
+              reason: new Error("private pull metadata is not publicly probed"),
+            }
+          : await this.loadRepositoryPullRecords(base).then(
+              (value) => ({ status: "fulfilled", value }),
+              (reason) => ({ status: "rejected", reason }),
+            );
     const issueResults = [];
     const issueConcurrency = 2;
     for (let offset = 0; offset < locations.length; offset += issueConcurrency) {
@@ -8123,7 +8131,13 @@ class ForkMeshWorld extends HTMLElement {
               `${base}/tree?path=${encodeURIComponent(
                 path,
               )}&ref=${encodeURIComponent(commit)}`,
-              { timeout: 6000, cache: "no-store" },
+              {
+                // Issue layout is optional context. Never let its three legacy
+                // probes hold an otherwise complete PR review for the full
+                // two-mirror failover envelope.
+                timeout: 6000,
+                cache: "no-store",
+              },
             ),
           ),
         )),
@@ -8242,7 +8256,7 @@ class ForkMeshWorld extends HTMLElement {
       safeRepo,
     )}`;
     const tree = await this.fetchJSON(`${base}/tree?path=`, {
-      timeout: 12000,
+      timeout: REPOSITORY_METADATA_TIMEOUT_MS,
       cache: "no-store",
     });
     if (!tree || tree?.ok === false) {
@@ -8264,19 +8278,33 @@ class ForkMeshWorld extends HTMLElement {
         record.owner.toLowerCase() === safeOwner.toLowerCase() &&
         record.name.toLowerCase() === safeRepo.toLowerCase(),
     );
+    // Resolve the short immutable PR chain before sizes/stats and issue scans
+    // can contend for a one-vCPU mirror. This result is then injected into the
+    // entity loader, so the browser never repeats branches/tree/blobs.
+    const pullResult =
+      catalogRecord?.isPrivate === true
+        ? {
+            status: "rejected",
+            reason: new Error("private pull metadata is not publicly probed"),
+          }
+        : await this.loadRepositoryPullRecords(base).then(
+            (value) => ({ status: "fulfilled", value }),
+            (reason) => ({ status: "rejected", reason }),
+          );
     const [sizeResult, statsResult, mirrorsResult, entityRecordsResult] =
       await Promise.allSettled([
         this.fetchJSON(`${base}/sizes${ref}`, {
-          timeout: 12000,
+          timeout: REPOSITORY_METADATA_TIMEOUT_MS,
           cache: "no-store",
         }),
         this.fetchJSON(`${base}/stats${ref}`, {
-          timeout: 12000,
+          timeout: REPOSITORY_METADATA_TIMEOUT_MS,
           cache: "no-store",
         }),
         this.fetchJSON(`${base}/mirrors`, { auth: false }),
         this.loadRepositoryEntityRecords(base, commit, {
           privateRepository: catalogRecord?.isPrivate === true,
+          pullResult,
         }),
       ]);
     const sizes =

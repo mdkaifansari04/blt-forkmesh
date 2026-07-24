@@ -68,6 +68,7 @@ MAX_ACTIONS_SUMMARY_RUNS = 20
 MAX_ACTIONS_LOG_TAIL_BYTES = 16 * 1024
 MAX_ACTIONS_SUMMARY_LEASE_MS = 15 * 60 * 1000
 MAX_ACTIONS_SUMMARY_CLOCK_SKEW_MS = 60 * 1000
+COLLABORATION_TREE_ROOTS = frozenset({"pulls", ".forkmesh/issues"})
 PUBLIC_OPERATIONS = frozenset(
     {
         "git-info-refs",
@@ -1968,7 +1969,19 @@ class GitRepository:
     def tree(self, query: Mapping[str, str]) -> dict[str, Any]:
         path = _safe_repo_path(query.get("path", ""))
         commit = self.resolve_commit(query.get("ref", ""))
-        analysis = self._analysis(commit)
+        # Pull and issue directory reads are control metadata, not code-graph
+        # exploration. Building the whole-repository dependency/coverage
+        # analysis here made a 44-PR listing scan thousands of files before it
+        # could return, then _commit_summary spawned one `git log` per PR. On a
+        # one-vCPU mirror (especially while fsck is running) that turned a
+        # small exact-ref read into a 20-35 second request. Keep the regular
+        # rich analysis everywhere else, while these two explicit public
+        # metadata namespaces receive commit-pinned neutral analysis fields.
+        collaboration_tree = any(
+            path == root or path.startswith(root + "/")
+            for root in COLLABORATION_TREE_ROOTS
+        )
+        analysis = None if collaboration_tree else self._analysis(commit)
         treeish = commit if not path else f"{commit}:{path}"
         output = _run_git(
             self.git_dir,
@@ -2000,19 +2013,48 @@ class GitRepository:
                 "type": fields[1].decode("ascii", "replace"),
                 "size": max(0, size),
             }
-            entry.update(
-                self._tree_analysis_fields(
-                    analysis, path, full_path, entry["type"]
+            if collaboration_tree:
+                entry.update({
+                    "path": full_path,
+                    "dependencies": [],
+                    "dependencyDepth": 0,
+                    "coverage": None,
+                    "analysisCommit": commit,
+                })
+            else:
+                entry.update(
+                    self._tree_analysis_fields(
+                        analysis, path, full_path, entry["type"]
+                    )
                 )
-            )
-            entry.update(self._commit_summary(commit, full_path))
+                entry.update(self._commit_summary(commit, full_path))
             entries.append(entry)
+        analysis_summary = (
+            {
+                "commit": commit,
+                "dependency": {
+                    "status": "not-requested",
+                    "filesParsed": 0,
+                    "edgeCount": 0,
+                    "maxFiles": MAX_ANALYSIS_FILES,
+                    "maxRepositoryFiles": MAX_ANALYSIS_REPOSITORY_FILES,
+                    "maxBytes": MAX_ANALYSIS_TOTAL_BYTES,
+                },
+                "coverage": {
+                    "status": "not-requested",
+                    "artifacts": [],
+                    "files": 0,
+                },
+            }
+            if collaboration_tree
+            else analysis["summary"]
+        )
         return {
             "ok": True,
             "commit": commit,
             "entries": entries,
             "latestCommit": self._commit_summary(commit),
-            "analysis": analysis["summary"],
+            "analysis": analysis_summary,
             "truncated": truncated,
         }
 

@@ -654,7 +654,7 @@ def test_flagship_graph_requires_commit_matched_tree_sizes_stats_and_entities():
     )
     assert "await this.loadRepositoryPullRecords(base)" in entity_loader
     assert "const issueConcurrency = 2;" in entity_loader
-    assert "{ timeout: 6000, cache: \"no-store\" }" in entity_loader
+    assert "timeout: 6000" in entity_loader
 
     fetch_map = APP[
         APP.index("  async fetchRepositoryMapSnapshot("):
@@ -669,6 +669,12 @@ def test_flagship_graph_requires_commit_matched_tree_sizes_stats_and_entities():
     assert "`${base}/stats${ref}`" in fetch_map
     assert "this.loadRepositoryEntityRecords(base, commit, {" in fetch_map
     assert "privateRepository: catalogRecord?.isPrivate === true" in fetch_map
+    assert "pullResult," in fetch_map
+    assert (
+        fetch_map.index("await this.loadRepositoryPullRecords(base)")
+        < fetch_map.index("await Promise.allSettled([")
+    )
+    assert "const REPOSITORY_METADATA_TIMEOUT_MS = 45 * 1000;" in APP
     assert fetch_map.count(
         'String(sizeResult.value?.commit || "").toLowerCase() === commit'
     ) == 1

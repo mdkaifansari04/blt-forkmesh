@@ -97,6 +97,41 @@ async function prepareWorldPage(
         body: JSON.stringify({ ok: false, error: "fixture_unavailable" }),
       });
     }
+    let metadataCapacityRelease = null;
+    if (
+      repositoryFixture &&
+      Number(repositoryFixture.singleCoreDelayMs) > 0 &&
+      url.pathname.startsWith("/api/repo/forkmesh/forkmesh/") &&
+      ["/branches", "/tree", "/blobs", "/sizes", "/stats"].some((suffix) =>
+        url.pathname.endsWith(suffix),
+      )
+    ) {
+      const previous =
+        repositoryFixture.metadataCapacityTail || Promise.resolve();
+      metadataCapacityRelease = null;
+      repositoryFixture.metadataCapacityTail = new Promise((resolve) => {
+        metadataCapacityRelease = resolve;
+      });
+      await previous;
+      repositoryFixture.metadataActive =
+        Number(repositoryFixture.metadataActive || 0) + 1;
+      repositoryFixture.maxMetadataActive = Math.max(
+        Number(repositoryFixture.maxMetadataActive || 0),
+        repositoryFixture.metadataActive,
+      );
+      await new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          Math.max(
+            1,
+            Math.min(
+              1000,
+              Number(repositoryFixture.singleCoreDelayMs) || 0,
+            ),
+          ),
+        ),
+      );
+    }
     let status = 200;
     let body =
       url.pathname === "/api/world/context"
@@ -670,6 +705,13 @@ ${longContext}
           body = { ok: true, commit: pullOid, blobs };
         }
       }
+    }
+    if (metadataCapacityRelease) {
+      repositoryFixture.metadataActive = Math.max(
+        0,
+        Number(repositoryFixture.metadataActive || 0) - 1,
+      );
+      metadataCapacityRelease();
     }
     return route.fulfill({
       status,
@@ -2149,6 +2191,94 @@ test("a fresh map resolves exact pull metadata before slow issue scans", async (
   await expect(page.locator("[data-world-pull-diff]")).toContainText(
     "world-pr-diff-visible",
   );
+});
+
+test("four fresh single-core contexts keep exact pull metadata ahead of other reads", async ({
+  browser,
+}) => {
+  for (let iteration = 0; iteration < 4; iteration += 1) {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    const repositoryFixture = { singleCoreDelayMs: 60 };
+    const repositoryRequests = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname.startsWith("/api/repo/forkmesh/forkmesh/")) {
+        repositoryRequests.push(url);
+      }
+    });
+    await prepareWorldPage(page, `single-core-${iteration}`, {
+      repositoryFixture,
+    });
+    await waitForWorld(page);
+    await page.waitForFunction(() => {
+      const shell = document.querySelector("forkmesh-world");
+      return shell?.repositoryMapState === "ready" &&
+        shell?.activeRepository?.pullCountSource === "metadata-tree";
+    });
+
+    const snapshot = await page.locator("forkmesh-world").evaluate((shell) => ({
+      commit: shell.activeRepository?.commit,
+      pullCount: shell.activeRepository?.pullCount,
+      pullCountSource: shell.activeRepository?.pullCountSource,
+      pullMetadataCommit:
+        shell.activeRepository?.entityRecords?.pullMetadataCommit,
+      pullCountExact: shell.activeRepository?.entityRecords?.pullCountExact,
+    }));
+    expect(snapshot).toEqual({
+      commit: "a".repeat(40),
+      pullCount: 2,
+      pullCountSource: "metadata-tree",
+      pullMetadataCommit: "b".repeat(40),
+      pullCountExact: true,
+    });
+    expect(repositoryFixture.maxMetadataActive).toBe(1);
+
+    const branchesIndex = repositoryRequests.findIndex((url) =>
+      url.pathname.endsWith("/branches"),
+    );
+    const pullTreeIndex = repositoryRequests.findIndex(
+      (url) =>
+        url.pathname.endsWith("/tree") &&
+        url.searchParams.get("path") === "pulls" &&
+        url.searchParams.get("ref") === "b".repeat(40),
+    );
+    const pullBlobsIndex = repositoryRequests.findIndex(
+      (url) =>
+        url.pathname.endsWith("/blobs") &&
+        url.searchParams.get("ref") === "b".repeat(40) &&
+        url.searchParams
+          .getAll("path")
+          .every((path) => /^pulls\/(?:43|44)\/pull\.md$/.test(path)),
+    );
+    const firstCompetingIndex = repositoryRequests.findIndex(
+      (url) =>
+        url.pathname.endsWith("/sizes") ||
+        url.pathname.endsWith("/stats") ||
+        (
+          url.pathname.endsWith("/tree") &&
+          String(url.searchParams.get("path") || "").startsWith(
+            ".forkmesh/issues",
+          )
+        ),
+    );
+    expect(branchesIndex).toBeGreaterThanOrEqual(0);
+    expect(pullTreeIndex).toBeGreaterThan(branchesIndex);
+    expect(pullBlobsIndex).toBeGreaterThan(pullTreeIndex);
+    expect(firstCompetingIndex).toBeGreaterThan(pullBlobsIndex);
+    expect(
+      repositoryRequests.filter((url) => url.pathname.endsWith("/branches")),
+    ).toHaveLength(1);
+    expect(
+      repositoryRequests.filter(
+        (url) =>
+          url.pathname.endsWith("/tree") &&
+          url.searchParams.get("path") === "pulls",
+      ),
+    ).toHaveLength(1);
+
+    await context.close();
+  }
 });
 
 test("an authenticated organization writer merges exact reviewed OIDs in-World", async ({
