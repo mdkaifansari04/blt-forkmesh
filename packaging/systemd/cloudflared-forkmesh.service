@@ -4,6 +4,7 @@ Documentation=https://developers.cloudflare.com/cloudflare-one/connections/conne
 Wants=network-online.target
 After=network-online.target forkmesh-mirror.service
 Requires=forkmesh-mirror.service
+PartOf=forkmesh-mirror.service
 
 [Service]
 Type=simple

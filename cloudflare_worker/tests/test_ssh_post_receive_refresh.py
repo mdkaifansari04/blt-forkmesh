@@ -179,3 +179,14 @@ def test_refresh_packaging_has_no_user_derived_commands():
     assert "$@" not in notifier
     assert "SSH_ORIGINAL_COMMAND" not in notifier
     assert "ExecStart=/usr/bin/python3 -I " in service
+
+
+def test_tunnel_restarts_with_the_mirror_gateway():
+    tunnel_service = (
+        PROJECT_ROOT
+        / "packaging"
+        / "systemd"
+        / "cloudflared-forkmesh.service"
+    ).read_text(encoding="utf-8")
+    assert "Requires=forkmesh-mirror.service" in tunnel_service
+    assert "PartOf=forkmesh-mirror.service" in tunnel_service
