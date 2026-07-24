@@ -724,9 +724,11 @@ def test_signed_private_publish_and_direct_routing_stay_account_key_bound():
         for p in sorted(QT_MAIN.parent.glob("MainWindow*.cpp"))
     )
 
-    assert "owner_pub = await _owner_pubkey(env, owner)" in entry
+    assert 'primary_owner_pub = (publish_owner_rec.get("pubkey", "")' in entry
     assert 'return json_response({"error": "account_required"}, status=403)' in entry
-    assert 'record["maintainer"] != owner_pub' in entry
+    assert "owner_pub = await _catalog_publication_key(" in entry
+    assert "allowed = await _owner_signing_pubkeys(env, owner)" in entry
+    assert "return maintainer if maintainer in allowed else" in entry
     assert 'canonical = ("forkmesh-catalog-v2\\n" + record_hash).encode()' in entry
     assert 'metadata.insert(QStringLiteral("catalogSigVersion"), 2);' in qt
     assert "forkmesh::control::catalogV2SigningPayload(" in qt
