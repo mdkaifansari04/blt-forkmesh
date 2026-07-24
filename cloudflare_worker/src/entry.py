@@ -5328,11 +5328,13 @@ async def catalog_handler(env, request):
         # One account fetch serves both the pubkey check and the node touch
         # below (the old code fetched + decrypted the same record twice).
         _, publish_owner_rec = await _account_row(env, owner)
-        owner_pub = (publish_owner_rec.get("pubkey", "")
-                     if publish_owner_rec else "")
-        if not owner_pub:
+        primary_owner_pub = (publish_owner_rec.get("pubkey", "")
+                             if publish_owner_rec else "")
+        if not primary_owner_pub:
             return json_response({"error": "account_required"}, status=403)
-        if record["maintainer"] != owner_pub:
+        owner_pub = await _catalog_publication_key(
+            env, owner, record["maintainer"])
+        if not owner_pub:
             return json_response({"error": "maintainer_mismatch"}, status=403)
         catalog_sig = clean_string(data.get("catalogSig", ""), 200)
         try:
@@ -18521,6 +18523,22 @@ async def _owner_signing_pubkeys(env, owner):
                 and "owner_sign" in (device.get("capabilities") or [])):
             keys.append(pub)
     return keys
+
+
+async def _catalog_publication_key(env, owner, maintainer):
+    """Return an account-bound key allowed to sign one catalog publication.
+
+    Catalog publication follows the same durable desktop-node identity policy
+    as sync and HTTPS mirror registration. The account must still exist (the
+    caller checks that separately), while a reinstalled or headless node may
+    publish with its enabled, non-revoked ``owner_sign`` device key without
+    replacing the account's primary key.
+    """
+    maintainer = clean_string(maintainer, 120).strip()
+    if not valid_node_pubkey(maintainer):
+        return ""
+    allowed = await _owner_signing_pubkeys(env, owner)
+    return maintainer if maintainer in allowed else ""
 
 
 async def _verify_owner_signature(env, owner, sig, canonical):
