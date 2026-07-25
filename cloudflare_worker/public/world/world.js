@@ -3798,13 +3798,6 @@ class ForkMeshWorld extends HTMLElement {
         onLayoutObjectMoved: (move) => {
           void this.lockWorldObjectPlacement(move);
         },
-        onAccountAction: (action) => {
-          if (action === "logout") {
-            void this.logoutFromWorld();
-            return;
-          }
-          this.toggleWorldAccount(true, "login");
-        },
       });
       this.syncWorldCameraModeButton();
       this.syncConstructionMarkers();
@@ -3835,7 +3828,6 @@ class ForkMeshWorld extends HTMLElement {
         tasks: this.officeTasks,
       });
       this.world.setTheme(this.settings.theme);
-      this.world.setMemberLoungeLoading?.(true);
       this.world.setLightLevel(this.settings.lightLevel);
       this.world.setMovementTuning?.(this.movementTuning());
       void layoutPromise.then((layout) => {
@@ -3863,7 +3855,6 @@ class ForkMeshWorld extends HTMLElement {
       void this.loadMastodonBoard();
       this.syncMastodonKiosk();
       this.syncMemberLounge();
-      this.world.setMemberLoungeLoading?.(false);
       this.syncRepositoryScene();
       // Do not fan out a star request for every perimeter portal at startup.
       // The active repository hydrates its exact count below; inactive portals
@@ -4479,8 +4470,7 @@ class ForkMeshWorld extends HTMLElement {
         : [];
     // Public chat roster directory (user profiles only) doubles as the
     // campfire-circle population: every public registered account gets a
-    // stool around the fire, and the roster length feeds the total-members
-    // sign at the lounge front.
+    // stool around the fire, and the roster length sizes the circle.
         this.memberDirectory =
       membersResult.status === "fulfilled" &&
       Array.isArray(membersResult.value?.users)
