@@ -6089,9 +6089,17 @@ void MainWindow::pushToSshMirrorRemotes(int index)
         // refs this node serves; forced, because the source of truth wins over
         // whatever state a mirror gateway holds. Heads + tags only — the same
         // stable namespaces every mirror serves (issues/PRs live on heads).
+        // --prune, because clone admission compares the mirror's WHOLE
+        // heads+tags advertisement digest against this node's attested
+        // stateHash: a branch deleted here but left on the gateway keeps the
+        // digests unequal forever, and once the stale states age out of the
+        // relay's pin history every public read of the repo hard-fails with
+        // mirror_unavailable (the gateway hides its internal refs from the
+        // push, so prune can only drop refs this node stopped serving).
         process->start(QStringLiteral("git"),
                        {QStringLiteral("-C"), repo.mirrorPath,
                         QStringLiteral("push"), QStringLiteral("--porcelain"),
+                        QStringLiteral("--prune"),
                         url, QStringLiteral("+refs/heads/*:refs/heads/*"),
                         QStringLiteral("+refs/tags/*:refs/tags/*")});
     }
