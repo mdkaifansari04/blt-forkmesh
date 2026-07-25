@@ -13481,6 +13481,12 @@ class ForkMeshWorld extends HTMLElement {
         <div class="world-shot-stage"></div>
         <footer class="world-shot-footer">
           <button type="button" class="world-shot-ghost" data-shot-close>Discard</button>
+          <button type="button" class="world-shot-ghost" data-shot-copy>Copy to Clipboard</button>
+          <div class="world-shot-share" role="group" aria-label="Share screenshot">
+            <button type="button" data-shot-share="mastodon" title="Copy the screenshot, then open Mastodon to share it">Mastodon</button>
+            <button type="button" data-shot-share="twitter" title="Copy the screenshot, then open X / Twitter to share it">X / Twitter</button>
+            <button type="button" data-shot-share="reddit" title="Copy the screenshot, then open Reddit to share it">Reddit</button>
+          </div>
           <button type="button" class="world-shot-primary" data-shot-download>Download PNG</button>
         </footer>
       </div>
@@ -13650,6 +13656,30 @@ class ForkMeshWorld extends HTMLElement {
       active = null;
       redraw();
     });
+    const canvasBlob = () =>
+      new Promise((resolve, reject) => {
+        canvas.toBlob((blob) => {
+          if (blob) resolve(blob);
+          else reject(new Error("Could not encode the screenshot."));
+        }, "image/png");
+      });
+    const copyCanvasToClipboard = async () => {
+      if (!window.ClipboardItem || !navigator.clipboard?.write) {
+        throw new Error("Clipboard image copy isn't supported in this browser.");
+      }
+      const blob = await canvasBlob();
+      await navigator.clipboard.write([
+        new window.ClipboardItem({ [blob.type]: blob }),
+      ]);
+    };
+    const shareTargets = {
+      mastodon: (text) =>
+        `https://mastodon.social/share?text=${encodeURIComponent(text)}`,
+      twitter: (text) =>
+        `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}`,
+      reddit: (text) =>
+        `https://www.reddit.com/submit?title=${encodeURIComponent(text)}`,
+    };
     modal.addEventListener("click", (event) => {
       const toolButton = event.target.closest("[data-shot-tool]");
       if (toolButton) {
@@ -13680,6 +13710,32 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-shot-close]")) {
         this.closeScreenshotUI();
+        return;
+      }
+      if (event.target.closest("[data-shot-copy]")) {
+        copyCanvasToClipboard()
+          .then(() => this.toast("Annotated screenshot copied to clipboard."))
+          .catch((error) => this.toast(error.message));
+        return;
+      }
+      const shareButton = event.target.closest("[data-shot-share]");
+      if (shareButton) {
+        const network = shareButton.dataset.shotShare;
+        const buildUrl = shareTargets[network];
+        if (!buildUrl) return;
+        const shareUrl = buildUrl(
+          `My ForkMesh world, annotated — ${window.location.origin}/world`,
+        );
+        copyCanvasToClipboard()
+          .then(() =>
+            this.toast("Screenshot copied — paste it into your post."),
+          )
+          .catch(() =>
+            this.toast(
+              "Opening the share window. Download the screenshot to attach it manually.",
+            ),
+          )
+          .finally(() => window.open(shareUrl, "_blank", "noopener,noreferrer"));
         return;
       }
       if (event.target.closest("[data-shot-download]")) {
