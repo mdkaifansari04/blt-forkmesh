@@ -1113,6 +1113,136 @@ def test_world_ticket_and_inactive_routes_keep_auth_out_of_the_socket():
         assert "expires_at" in source
 
 
+def test_world_system_capacity_is_bounded_content_free_and_identifier_safe():
+    calls = {"list": [], "count": []}
+
+    async def d1_all(_env, sql, *args):
+        calls["list"].append((sql, args))
+        return [
+            {"name": "accounts"},
+            {"name": "one_row"},
+            {"name": "empty_table"},
+            {"name": "sqlite_sequence"},
+            {"name": "_cf_KV"},
+            {"name": 'bad" UNION SELECT secret FROM accounts--'},
+            {"name": "space padded "},
+            {"name": "too_large"},
+            {"name": "dropped_during_migration"},
+        ]
+
+    async def d1_first(_env, sql, *args):
+        assert args == ()
+        calls["count"].append(sql)
+        table = sql.split('"')[1]
+        if table == "dropped_during_migration":
+            raise RuntimeError("no such table")
+        return {
+            "row_count": {
+                "accounts": 37,
+                "one_row": 1,
+                "empty_table": 0,
+                "too_large": 9_007_199_254_740_992,
+            }[table]
+        }
+
+    namespace = {
+        "d1_all": d1_all,
+        "d1_first": d1_first,
+        "WORLD_SYSTEM_CAPACITY_MAX_TABLES": 256,
+        "WORLD_SYSTEM_CAPACITY_MAX_SAFE_ROWS": 9_007_199_254_740_991,
+        "WORLD_SYSTEM_CAPACITY_TABLE_RE": re.compile(
+            r"[A-Za-z_][A-Za-z0-9_]{0,127}"),
+    }
+    node = _top_level_node("_world_system_capacity")
+    module = ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[]))
+    exec(compile(module, str(ENTRY), "exec"), namespace)
+    result = asyncio.run(namespace["_world_system_capacity"](object()))
+
+    assert result == [{"name": "accounts", "rowCount": 37}]
+    assert set(result[0]) == {"name", "rowCount"}
+    assert len(calls["list"]) == 1
+    list_sql, list_args = calls["list"][0]
+    assert "sqlite_master" in list_sql
+    assert "ORDER BY name LIMIT ?" in list_sql
+    assert list_args == (256,)
+    assert calls["count"] == [
+        'SELECT COUNT(*) AS row_count FROM "accounts"',
+        'SELECT COUNT(*) AS row_count FROM "one_row"',
+        'SELECT COUNT(*) AS row_count FROM "empty_table"',
+        'SELECT COUNT(*) AS row_count FROM "too_large"',
+        'SELECT COUNT(*) AS row_count FROM "dropped_during_migration"',
+    ]
+
+
+def test_world_ticket_capacity_is_queried_and_returned_only_for_admins():
+    async def exercise(claim):
+        capacity_calls = []
+
+        async def account_claim(_env, _request):
+            return claim
+
+        async def ensure_schema(_env):
+            return None
+
+        async def blind_index(_env, value):
+            return "bi:" + value
+
+        async def d1_run(_env, _sql, *_args):
+            return None
+
+        async def system_capacity(_env):
+            capacity_calls.append(True)
+            return [{"name": "repositories", "rowCount": 12}]
+
+        def json_response(data, **kwargs):
+            return {"data": data, **kwargs}
+
+        namespace = {
+            "method_name": lambda request: request.method,
+            "json_response": json_response,
+            "_world_account_claim": account_claim,
+            "Date": SimpleNamespace(now=lambda: 50_000),
+            "ensure_schema": ensure_schema,
+            "blind_index": blind_index,
+            "d1_run": d1_run,
+            "WORLD_INACTIVE_RETAIN_MS": 100_000,
+            "WORLD_TICKET_TTL_MS": 60_000,
+            "_world_ticket_encode": lambda _env, _claim: "signed-ticket",
+            "_world_system_capacity": system_capacity,
+        }
+        node = _top_level_node("world_ticket_handler")
+        module = ast.fix_missing_locations(
+            ast.Module(body=[node], type_ignores=[]))
+        exec(compile(module, str(ENTRY), "exec"), namespace)
+        response = await namespace["world_ticket_handler"](
+            object(), SimpleNamespace(method="GET"))
+        return response["data"], capacity_calls
+
+    guest_data, guest_calls = asyncio.run(exercise(None))
+    assert "systemCapacity" not in guest_data
+    assert guest_calls == []
+
+    user_data, user_calls = asyncio.run(exercise({
+        "name": "alice",
+        "accountStatus": "Registered",
+        "nodeCount": 0,
+        "isAdmin": False,
+    }))
+    assert "systemCapacity" not in user_data
+    assert user_calls == []
+
+    admin_data, admin_calls = asyncio.run(exercise({
+        "name": "root",
+        "accountStatus": "Registered",
+        "nodeCount": 0,
+        "isAdmin": True,
+    }))
+    assert admin_data["systemCapacity"] == {
+        "tables": [{"name": "repositories", "rowCount": 12}],
+    }
+    assert admin_calls == [True]
+
+
 def test_arrival_odometer_counts_aggregate_buckets_outside_the_world_object():
     # The counter is incremented in the outer Worker's route handler, never in
     # the storage-free ForkMeshWorld object (see the transient/hibernating

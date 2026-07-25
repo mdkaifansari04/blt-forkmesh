@@ -1462,14 +1462,12 @@ def test_world_has_no_pale_plaza_and_places_trees_deterministically_clear_of_use
     assert "const plazaLines = new THREE.Group()" not in SCENE
     assert "function createFountain" in SCENE
     assert "new THREE.CylinderGeometry(4.4, 4.4, 0.16, 48)" in SCENE
-    assert "const TREE_TARGET_COUNT = 96" in SCENE
-    assert "const TREE_CANDIDATE_LIMIT = 1200" in SCENE
+    assert "const TREES_PER_LANDMARK = 3" in SCENE
     assert "function deterministicTreeLayout()" in SCENE
-    assert "deterministicFraction(`tree-radius:${candidate}`)" in SCENE
+    assert "deterministicFraction(`tree-radius:${landmark.id}:${treeIndex}`)" in SCENE
     assert "pointInsideBounds(x, z, ARRIVAL_GRID_BOUNDS)" in SCENE
     assert "pointInsideBounds(x, z, cabinetBounds)" in SCENE
     assert "pointInsideBounds(x, z, durableBounds)" in SCENE
-    assert "TREE_LANDMARK_CLEARANCE[landmark.id]" in SCENE
     assert "TREE_MIN_SPACING" in SCENE
     assert 'treeField.name = "world-tree-field"' in SCENE
     assert "treeField.userData.treeCount = treeLayout.length" in SCENE

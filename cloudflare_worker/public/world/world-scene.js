@@ -73,10 +73,8 @@ const ARRIVAL_GRID_BOUNDS = Object.freeze({
   minZ: 14,
   maxZ: 32.4,
 });
-const TREE_TARGET_COUNT = 96;
-const TREE_CANDIDATE_LIMIT = 1200;
-const TREE_MIN_SPACING = 4.2;
-const TREE_MIN_RADIUS = 9;
+const TREES_PER_LANDMARK = 3;
+const TREE_MIN_SPACING = 3.2;
 const TREE_PORTAL_CLEARANCE = 7;
 const TREE_LANDMARK_CLEARANCE = Object.freeze({
   information: 7,
@@ -87,7 +85,6 @@ const TREE_LANDMARK_CLEARANCE = Object.freeze({
   security: 8,
   events: 9,
   neighborhood: 9,
-  workshops: 8,
   broadcast: 9,
   office: 10,
 });
@@ -206,7 +203,6 @@ function arrivalFacingHeading(x, z, heading) {
 
 function deterministicTreeLayout() {
   const positions = [];
-  const maxRadius = REPOSITORY_EDGE_RADIUS - TREE_PORTAL_CLEARANCE;
   const cabinetBounds = {
     minX: SERVER_CABINET_YARD_ORIGIN[0] + 6,
     maxX: SERVER_CABINET_YARD_ORIGIN[0] + 34,
@@ -219,65 +215,46 @@ function deterministicTreeLayout() {
     minZ: DURABLE_OBJECT_DISTRICT_POSITION[2] - 8,
     maxZ: DURABLE_OBJECT_DISTRICT_POSITION[2] + 8,
   };
-  for (
-    let candidate = 0;
-    candidate < TREE_CANDIDATE_LIMIT &&
-    positions.length < TREE_TARGET_COUNT;
-    candidate += 1
-  ) {
-    const radiusUnit = deterministicFraction(`tree-radius:${candidate}`);
-    const radius = Math.sqrt(
-      TREE_MIN_RADIUS ** 2 +
-        radiusUnit * (maxRadius ** 2 - TREE_MIN_RADIUS ** 2),
-    );
-    const angle =
-      deterministicFraction(`tree-angle:${candidate}`) * Math.PI * 2;
-    const x = Math.cos(angle) * radius;
-    const z = Math.sin(angle) * radius;
+  LANDMARKS.forEach((landmark) => {
+    for (let treeIndex = 0; treeIndex < TREES_PER_LANDMARK; treeIndex += 1) {
+      const angle =
+        deterministicFraction(`tree-angle:${landmark.id}:${treeIndex}`) * Math.PI * 2;
+      const radius =
+        6.4 + deterministicFraction(`tree-radius:${landmark.id}:${treeIndex}`) * 2.1;
+      const x = landmark.position[0] + Math.cos(angle) * radius;
+      const z = landmark.position[2] + Math.sin(angle) * radius;
     if (
       pointInsideBounds(x, z, ARRIVAL_GRID_BOUNDS) ||
       pointInsideBounds(x, z, cabinetBounds) ||
       pointInsideBounds(x, z, durableBounds)
     ) {
-      continue;
+        continue;
     }
-    if (Math.hypot(x - 8, z - 8) < 5.5) continue;
+      if (Math.hypot(x - 8, z - 8) < 5.5) continue;
     if (
       Math.hypot(
         x - REGISTERED_LOUNGE_POSITION[0],
         z - REGISTERED_LOUNGE_POSITION[2],
       ) < 11.5
     ) {
-      continue;
-    }
-    if (
-      LANDMARKS.some((landmark) => {
-        const clearance = TREE_LANDMARK_CLEARANCE[landmark.id] || 8;
-        return (
-          Math.hypot(
-            x - landmark.position[0],
-            z - landmark.position[2],
-          ) < clearance
-        );
-      })
-    ) {
-      continue;
+        continue;
     }
     if (
       positions.some(
         (tree) => Math.hypot(x - tree.x, z - tree.z) < TREE_MIN_SPACING,
       )
     ) {
-      continue;
+        continue;
     }
-    positions.push({
-      x,
-      z,
-      scale:
-        0.7 + deterministicFraction(`tree-scale:${candidate}`) * 0.38,
-      colorIndex: hashNumber(`tree-color:${candidate}`) % 4,
-    });
-  }
+      positions.push({
+        x,
+        z,
+        scale:
+          0.7 + deterministicFraction(`tree-scale:${landmark.id}:${treeIndex}`) * 0.38,
+        colorIndex: hashNumber(`tree-color:${landmark.id}:${treeIndex}`) % 4,
+      });
+    }
+  });
   return positions;
 }
 
@@ -1914,10 +1891,10 @@ function createRegisteredUserLounge(THREE, animated, interactive) {
   return lounge;
 }
 
-function createDurableObjectDistrict(THREE) {
+function createSystemCapacityPlatform(THREE) {
   const district = new THREE.Group();
-  district.name = "durable-object-infrastructure";
-  district.userData.infrastructureKind = "durable-objects";
+  district.name = "system-capacity-infrastructure";
+  district.userData.infrastructureKind = "system-capacity";
   district.userData.metricsAvailable = false;
   district.position.set(...DURABLE_OBJECT_DISTRICT_POSITION);
   const base = new THREE.Mesh(
@@ -1934,8 +1911,8 @@ function createDurableObjectDistrict(THREE) {
     THREE,
     district,
     DURABLE_OBJECT_DISTRICT_POSITION,
-    "DURABLE OBJECTS",
-    "usage appears only with explicit configured limits",
+    "SYSTEM CAPACITY",
+    "live services + database rows",
     "#80e8ff",
     9,
   );
@@ -1948,7 +1925,7 @@ function createDurableObjectDistrict(THREE) {
       opacity: 0.75,
     }),
   );
-  emptyMarker.name = "durable-object-metrics-unavailable";
+  emptyMarker.name = "system-capacity-metrics-unavailable";
   emptyMarker.position.y = 1.4;
   emptyMarker.rotation.x = Math.PI / 2;
   district.add(emptyMarker);
@@ -1956,7 +1933,7 @@ function createDurableObjectDistrict(THREE) {
   return district;
 }
 
-function durableObjectMetricPairs(record) {
+function systemCapacityMetricPairs(record) {
   const usage =
     record?.usage && typeof record.usage === "object" ? record.usage : null;
   const limits =
@@ -2447,6 +2424,11 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
     legacyFiles.add(file);
   }
   portal.add(legacyFiles);
+  // Repository navigation now lives on the perimeter portals and their
+  // interactive sunbursts. Keep the plaque, but remove the obsolete central
+  // globe/ring/upright centerpiece from the district.
+  portal.visible = false;
+  portal.userData.legacyPortalHidden = true;
   group.add(portal);
 
   const plinth = new THREE.Mesh(
@@ -2851,53 +2833,6 @@ function createNeighborhood(THREE, position, interactive, animated) {
   return group;
 }
 
-function createCodeWorkshops(THREE, position, interactive, animated) {
-  const group = new THREE.Group();
-  const base = new THREE.Mesh(
-    new THREE.BoxGeometry(8.2, 0.45, 5.8),
-    makeMaterial(THREE, "#153a2a"),
-  );
-  base.position.y = 0.23;
-  group.add(base);
-  const benches = [];
-  for (let index = 0; index < 4; index += 1) {
-    const bench = new THREE.Mesh(
-      new THREE.BoxGeometry(2.7, 0.38, 1.25),
-      makeMaterial(THREE, "#3e6f55"),
-    );
-    bench.position.set(index % 2 ? 1.8 : -1.8, 1.0, index < 2 ? -1.4 : 1.4);
-    group.add(bench);
-    const graph = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(0.52 + index * 0.08, 1),
-      makeMaterial(THREE, ["#73f0ad", "#77d9ff", "#d5b6ff", "#f7c96b"][index], {
-        emissive: ["#259059", "#237a99", "#60458b", "#9d7023"][index],
-        emissiveIntensity: 0.72,
-      }),
-    );
-    graph.position.set(bench.position.x, 1.85, bench.position.z);
-    graph.userData.phase = index;
-    benches.push(graph);
-    group.add(graph);
-  }
-  addSectionPlaque(
-    THREE,
-    group,
-    position,
-    "CODE WORKSHOPS",
-    "analysis + collaboration",
-    "#73f0ad",
-    5.4,
-  );
-  finishLandmark(group, "workshops", position, interactive);
-  animated.push((time) => {
-    benches.forEach((graph, index) => {
-      graph.rotation.y = time * 0.0005 * (index % 2 ? -1 : 1);
-      graph.position.y = 1.85 + Math.sin(time * 0.0012 + index) * 0.16;
-    });
-  });
-  return group;
-}
-
 function createBroadcastGarden(THREE, position, interactive, animated) {
   const group = new THREE.Group();
   const garden = new THREE.Mesh(
@@ -3108,6 +3043,27 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
   sign.position.set(0, 6.85, 3.73);
   group.add(sign);
 
+  const enterTexture = canvasTexture(THREE, 768, 160, (context) => {
+    context.fillStyle = "#071712";
+    context.fillRect(0, 0, 768, 160);
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 8;
+    context.strokeRect(6, 6, 756, 148);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = '800 42px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#d9ffea";
+    context.fillText("ENTER FORKMESH OFFICE · E", 384, 80);
+  });
+  const enterPlaque = new THREE.Mesh(
+    new THREE.PlaneGeometry(4.8, 1.0),
+    new THREE.MeshBasicMaterial({ map: enterTexture, toneMapped: false }),
+  );
+  enterPlaque.name = "forkmesh-office-enter-plaque";
+  enterPlaque.position.set(0, 1.05, 3.78);
+  enterPlaque.userData.officeEnter = true;
+  group.add(enterPlaque);
+
   group.position.set(...position);
   group.userData.landmark = "office";
   group.traverse((child) => {
@@ -3234,6 +3190,7 @@ export function createWorldScene({
   reducedMotion = false,
   onLandmarkSelect = () => {},
   onOfficeProximity = () => {},
+  onOfficeEnter = () => {},
   onOfficeChairSelect = () => {},
   onOfficeMovement = () => {},
   onLocationChange = () => {},
@@ -3354,7 +3311,6 @@ export function createWorldScene({
     security: createSecurityWorkshop,
     events: createCommunityStage,
     neighborhood: createNeighborhood,
-    workshops: createCodeWorkshops,
     broadcast: createBroadcastGarden,
     office: createForkMeshOffice,
   };
@@ -3395,6 +3351,8 @@ export function createWorldScene({
     makeMaterial(THREE, "#4a4038", { roughness: 0.9 }),
   );
   firePit.position.y = 0.11;
+  firePit.userData.campfirePit = true;
+  interactive.push(firePit);
   campfire.add(firePit);
   for (let index = 0; index < 8; index += 1) {
     const stoneAngle = (index / 8) * Math.PI * 2;
@@ -3419,6 +3377,21 @@ export function createWorldScene({
     log.position.y = 0.3;
     campfire.add(log);
   }
+  const logPile = new THREE.Group();
+  logPile.name = "campfire-log-pile";
+  for (let index = 0; index < 5; index += 1) {
+    const log = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.13, 0.13, 1.25, 10),
+      makeMaterial(THREE, "#70472a", { roughness: 0.86 }),
+    );
+    log.rotation.z = Math.PI / 2;
+    log.rotation.y = index * 0.38;
+    log.position.set(-2.1 + (index % 2) * 0.22, 0.18 + Math.floor(index / 2) * 0.22, 1.55);
+    log.userData.campfireLog = true;
+    logPile.add(log);
+    interactive.push(log);
+  }
+  campfire.add(logPile);
   const flame = new THREE.Mesh(
     new THREE.ConeGeometry(0.42, 1.05, 8),
     makeMaterial(THREE, "#ffb547", {
@@ -3430,13 +3403,27 @@ export function createWorldScene({
   );
   flame.position.y = 0.82;
   campfire.add(flame);
+  const innerFlame = new THREE.Mesh(
+    new THREE.ConeGeometry(0.24, 0.72, 8),
+    makeMaterial(THREE, "#fff0a6", {
+      emissive: "#ffb547",
+      emissiveIntensity: 2.1,
+      transparent: true,
+      opacity: 0.94,
+    }),
+  );
+  innerFlame.position.y = 0.72;
+  campfire.add(innerFlame);
+  let fireLevel = 1;
   const fireLight = new THREE.PointLight("#ffa14d", 3.2, 14, 1.8);
   fireLight.position.y = 1.1;
   campfire.add(fireLight);
   animated.push((time) => {
     const flicker = 1 + Math.sin(time * 0.011) * 0.12 + Math.sin(time * 0.023) * 0.06;
-    flame.scale.set(flicker, 1 + Math.sin(time * 0.017) * 0.16, flicker);
-    fireLight.intensity = 3.2 + Math.sin(time * 0.013) * 0.7;
+    const size = fireLevel * flicker;
+    flame.scale.set(size, fireLevel * (1 + Math.sin(time * 0.017) * 0.16), size);
+    innerFlame.scale.set(size * 0.82, size * 0.9, size * 0.82);
+    fireLight.intensity = 3.2 * fireLevel + Math.sin(time * 0.013) * 0.7;
   });
   for (let index = 0; index < 6; index += 1) {
     const angle = (index / 6) * Math.PI * 2;
@@ -3457,6 +3444,14 @@ export function createWorldScene({
     }
     bench.position.set(Math.cos(angle) * 2.9, 0, Math.sin(angle) * 2.9);
     bench.rotation.y = -angle + Math.PI / 2;
+    const seatWorld = new THREE.Vector3(
+      campfire.position.x + bench.position.x,
+      0.38,
+      campfire.position.z + bench.position.z,
+    );
+    bench.userData.campfireBench = seatWorld;
+    seat.userData.campfireBench = seatWorld;
+    interactive.push(seat);
     setShadows(bench);
     campfire.add(bench);
   }
@@ -3648,8 +3643,11 @@ export function createWorldScene({
   let officeZoneState = "distant";
   let focusedRepositoryKey = "";
   let cameraZoom = 1;
+  let environmentFogDensity = 0.0085;
   let cameraYaw = Math.atan2(CAMERA_OFFSET[0], CAMERA_OFFSET[2]);
   let cameraPitch = Math.asin(CAMERA_OFFSET[1] / CAMERA_DISTANCE);
+  let jumpVelocity = 0;
+  let jumpQueued = false;
   // Per-device movement tuning (scales the shared defaults above). Acceleration
   // may be Infinity, meaning the player snaps to top speed the instant a key is
   // pressed. Both are adjustable from the World's local controls.
@@ -3695,8 +3693,9 @@ export function createWorldScene({
     }
     scene.background.copy(state.background);
     scene.fog.color.copy(state.fog);
-    scene.fog.density =
+    environmentFogDensity =
       state.fogDensity * (overlay?.fogMultiplier || 1);
+    scene.fog.density = environmentFogDensity * zoomFogMultiplier();
     const lightMultiplier = lightLevel / LIGHT_LEVEL_DEFAULT;
     hemisphere.color.copy(state.hemiSky);
     hemisphere.groundColor.copy(state.hemiGround);
@@ -3719,6 +3718,14 @@ export function createWorldScene({
     weather.rain.visible = currentTheme === "rain";
     weather.snow.visible = currentTheme === "snow" || currentTheme === "winter";
     updateWorldEnvironment();
+  }
+
+  function zoomFogMultiplier() {
+    // At the strategic overview distance, atmospheric fog would wash the
+    // whole world into a pale blur. Preserve local depth, but make the far
+    // view readable all the way out to the world-as-a-dot scale.
+    const normalized = clamp((cameraZoom - 1) / 7, 0, 1);
+    return 1 - normalized * 0.98;
   }
 
   function setLightLevel(value) {
@@ -6445,6 +6452,7 @@ export function createWorldScene({
     const next = Number(value);
     if (!Number.isFinite(next)) return cameraZoom;
     cameraZoom = clamp(next, CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX);
+    scene.fog.density = environmentFogDensity * zoomFogMultiplier();
     return cameraZoom;
   }
 
@@ -6637,6 +6645,10 @@ export function createWorldScene({
     const authAction = String(hit?.object?.userData?.worldAuthAction || "");
     if (authAction === "login" || authAction === "logout") {
       onAccountAction(authAction);
+      return;
+    }
+    if (hit?.object?.userData?.officeEnter) {
+      onOfficeEnter();
       return;
     }
     if (hit?.object?.userData?.nodeCabinet) {

@@ -7,7 +7,6 @@ import {
   RADIO_STATIONS,
   THEME_OPTIONS,
   TOUR_STEPS,
-  WORKSHOP_TYPES,
   WORLD_EMOJI_CATEGORIES,
   WORLD_STATUS_NOTE_MAX,
   detectClient,
@@ -2256,8 +2255,6 @@ const LANDMARK_CONSTRUCTION_REASONS = Object.freeze({
     "No completed commit-scoped public security scan has been verified.",
   events:
     "The UTC event service has not been verified in this session.",
-  workshops:
-    "No live authorized repository is available for a code workshop.",
 });
 
 function initialLandmarkCapabilities() {
@@ -3156,6 +3153,7 @@ class ForkMeshWorld extends HTMLElement {
     };
     this.botDirectory = [];
     this.worldLimits = null;
+    this.systemCapacityTables = [];
     this.detailReturnFocus = null;
     this.activeAudio = null;
     this.focusMusicState = "stopped";
@@ -3178,10 +3176,6 @@ class ForkMeshWorld extends HTMLElement {
     this.pullViewedFiles = new Map();
     this.pullReviewScrollCleanup = null;
     this.securityTriage = null;
-    this.pendingWorkshop = null;
-    this.activeWorkshop = null;
-    this.savedWorkshopSessions = [];
-    this.workshopEventCursor = 0;
     this.remotePlayers = new Map();
     this.localPeers = new Map();
     this.inactivePlayers = [];
@@ -3258,6 +3252,7 @@ class ForkMeshWorld extends HTMLElement {
     this.inputInactiveTimer = 0;
     this.firstVisitAt = firstVisitTimestamp();
     this.publicVisitCount = sessionVisitCount(true);
+    this.activityArrivalRecorded = false;
     this.visitedPlaces = new Set(["town-square"]);
     this.tourIndex = -1;
     this.lastMovement = {
@@ -3339,6 +3334,7 @@ class ForkMeshWorld extends HTMLElement {
 
   handlePublicInputActivity = () => {
     if (this.destroyed || !this.identity) return;
+    this.recordActivityArrival();
     this.maybeGreetForkbot();
     if (!this.identity.inputActive) {
       this.identity.inputActive = true;
@@ -3355,6 +3351,20 @@ class ForkMeshWorld extends HTMLElement {
       this.broadcastLocalPresence();
     }, 12000);
   };
+
+  recordActivityArrival() {
+    if (this.activityArrivalRecorded || this.destroyed) return;
+    this.activityArrivalRecorded = true;
+    void fetch("/api/world/visitors", {
+      method: "POST",
+      credentials: "same-origin",
+      keepalive: true,
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }).catch(() => {
+      this.activityArrivalRecorded = false;
+    });
+  }
 
   // The embedded /dashboard/chat iframe mirrors every live chat line to this
   // page (dashboard-chat.js, emitWorldChatBubble). Float it above the
@@ -3480,6 +3490,9 @@ class ForkMeshWorld extends HTMLElement {
         onOfficeProximity: (state) => {
           this.officeController?.setProximity(state);
         },
+        onOfficeEnter: () => {
+          this.officeController?.enterOffice?.();
+        },
         onOfficeChairSelect: (chairId) => {
           this.officeMeeting?.requestSeat(chairId);
         },
@@ -3571,16 +3584,7 @@ class ForkMeshWorld extends HTMLElement {
       this.distanceTimer = window.setInterval(() => this.updateDistances(), 1000);
       document.addEventListener("visibilitychange", this.handleVisibility);
       window.addEventListener("pagehide", this.handlePageHide, { once: true });
-      const workshopSession = new URLSearchParams(location.search).get(
-        "workshopSession",
-      );
-      if (
-        readSession()?.sessionToken &&
-        /^[a-f0-9]{32}$/.test(String(workshopSession || ""))
-      ) {
-        this.openLandmark("workshops");
-        this.loadWorkshopSession(workshopSession);
-      } else if (this.requestedLandmark) {
+      if (this.requestedLandmark) {
         this.openLandmark(this.requestedLandmark);
       }
     } catch (error) {
@@ -3798,6 +3802,22 @@ class ForkMeshWorld extends HTMLElement {
             chatConnections,
           }
         : null;
+    this.systemCapacityTables = Array.isArray(
+      ticket?.systemCapacity?.tables,
+    )
+      ? ticket.systemCapacity.tables
+          .map((table) => {
+            const name = String(table?.name || "").trim();
+            const rowCount = Number(table?.rowCount);
+            return /^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(name) &&
+              Number.isSafeInteger(rowCount) &&
+              rowCount > 1
+              ? { name, rowCount }
+              : null;
+          })
+          .filter(Boolean)
+          .slice(0, 128)
+      : [];
     this.updateIdentityUI();
     this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
     this.updateDurableObjectMetrics();
@@ -4151,12 +4171,6 @@ class ForkMeshWorld extends HTMLElement {
         eventsResult.status === "fulfilled" &&
         Array.isArray(eventsResult.value?.events),
       reason: LANDMARK_CONSTRUCTION_REASONS.events,
-    };
-    this.landmarkCapabilities.workshops = {
-      live:
-        this.landmarkCapabilities.repositories.live === true &&
-        this.repositories.some((repo) => repo.liveHost || repo.isPrivate),
-      reason: LANDMARK_CONSTRUCTION_REASONS.workshops,
     };
     this.syncConstructionMarkers();
     this.world?.updateNetworkNodes(
@@ -4947,35 +4961,6 @@ class ForkMeshWorld extends HTMLElement {
         if (owner && repo) this.loadRepositoryDirectory(owner, repo, path || "");
         return;
       }
-      if (event.target.closest("[data-world-run-workshop]")) {
-        this.runWorkshop();
-        return;
-      }
-      if (event.target.closest("[data-world-workshop-save]")) {
-        this.saveWorkshopReport();
-        return;
-      }
-      if (event.target.closest("[data-world-workshop-load]")) {
-        this.loadWorkshopSessions();
-        return;
-      }
-      const openWorkshop = event.target.closest("[data-world-workshop-open]");
-      if (openWorkshop) {
-        this.loadWorkshopSession(openWorkshop.dataset.worldWorkshopOpen);
-        return;
-      }
-      if (event.target.closest("[data-world-workshop-share]")) {
-        this.shareWorkshopSession();
-        return;
-      }
-      if (event.target.closest("[data-world-workshop-comment]")) {
-        this.addWorkshopComment();
-        return;
-      }
-      if (event.target.closest("[data-world-workshop-events-refresh]")) {
-        this.refreshWorkshopEvents();
-        return;
-      }
       if (event.target.closest("[data-world-events-refresh]")) {
         this.refreshCommunityEvents(true);
         return;
@@ -5527,7 +5512,7 @@ class ForkMeshWorld extends HTMLElement {
   updateDurableObjectMetrics() {
     if (!this.world?.updateDurableObjects) return;
     const limits = this.worldLimits;
-    if (!limits) {
+    if (!limits && !this.systemCapacityTables.length) {
       this.world.updateDurableObjects([]);
       return;
     }
@@ -5535,7 +5520,7 @@ class ForkMeshWorld extends HTMLElement {
       this.socket?.readyState === WebSocket.OPEN && Boolean(this.serverPeerId);
     const chatConnected = Number(this.network?.stats?.clients);
     const objects = [];
-    if (worldSocketOnline) {
+    if (limits && worldSocketOnline) {
       objects.push({
         id: "forkmesh-world",
         name: "Town Square presence",
@@ -5543,7 +5528,11 @@ class ForkMeshWorld extends HTMLElement {
         limits: { connections: limits.worldConnections },
       });
     }
-    if (Number.isFinite(chatConnected) && chatConnected >= 0) {
+    if (
+      limits &&
+      Number.isFinite(chatConnected) &&
+      chatConnected >= 0
+    ) {
       objects.push({
         id: "forkmesh-general-chat",
         name: "#general chat · cached live count",
@@ -5551,7 +5540,10 @@ class ForkMeshWorld extends HTMLElement {
         limits: { connections: limits.chatConnections },
       });
     }
-    this.world.updateDurableObjects({ objects });
+    this.world.updateDurableObjects({
+      objects,
+      tables: this.systemCapacityTables,
+    });
   }
 
   async moderateWorldPeer(action) {
@@ -5818,7 +5810,6 @@ class ForkMeshWorld extends HTMLElement {
     }
     this.currentActivityCategory = {
       repositories: "viewing-repository",
-      workshops: "browsing-code-visualization",
       organizations: "visiting-organization",
       office: "visiting-office",
       information: "reading-documentation",
@@ -6057,7 +6048,6 @@ class ForkMeshWorld extends HTMLElement {
       security: () => this.securityPanelHTML(),
       events: () => this.eventsPanelHTML(),
       neighborhood: () => this.neighborhoodPanelHTML(),
-      workshops: () => this.workshopPanelHTML(),
       broadcast: () => this.broadcastPanelHTML(),
     };
     return panels[id]?.() || "";
@@ -7706,54 +7696,6 @@ class ForkMeshWorld extends HTMLElement {
         ? `${owner.name || "The owner"} accepted your knock. You entered their visual front yard; normal collaboration permissions still apply.`
         : `Entered ${owner.name || "the owner"}’s public front yard. Normal collaboration permissions still apply.`,
     );
-  }
-
-  workshopPanelHTML() {
-    const repos = this.repositories
-      .filter((repo) => repo.liveHost || repo.isPrivate)
-      .slice(0, 50);
-    const runnable = repos.length > 0;
-    return `
-      <section class="world-feature-card" aria-label="Code workshop controls">
-        <div class="world-workshop-form">
-          <label><span>Authorized repository</span><select data-world-workshop-repo ${
-            runnable ? "" : "disabled"
-          }>
-            ${
-              runnable
-                ? repos
-                    .map(
-                      (repo) =>
-                        `<option value="${escapeHTML(`${repo.owner}/${repo.name}`)}">${escapeHTML(
-                          `${repo.owner}/${repo.name}`,
-                        )}</option>`,
-                    )
-                    .join("")
-                : `<option value="">No live authorized repository available</option>`
-            }
-          </select></label>
-          <label><span>Workshop</span><select data-world-workshop-type>
-            ${WORKSHOP_TYPES.map(
-              (type) => `<option value="${escapeHTML(type)}">${escapeHTML(type)}</option>`,
-            ).join("")}
-          </select></label>
-          <button type="button" class="world-primary-action" data-world-run-workshop ${
-            runnable ? "" : "disabled"
-          }>Run local inspection</button>
-          <button type="button" data-world-workshop-load ${
-            readSession()?.sessionToken ? "" : "disabled"
-          }>Load saved workshops</button>
-        </div>
-        <div data-world-workshop-results>
-          <p class="world-empty-state">${
-            runnable
-              ? "Choose a repository and scope. The first pass uses one commit-pinned authorized snapshot. Sign in to save an encrypted report, invite explicit participants, and coordinate updates."
-              : this.repositoryCatalogState === "unavailable"
-                ? "The live repository catalog is unavailable. ForkMesh will not run a workshop against sample or guessed repository data."
-                : "No live public or account-authorized repository is available for a workshop."
-          }</p>
-        </div>
-      </section>`;
   }
 
   focusMusicPanelHTML() {
@@ -11640,8 +11582,6 @@ class ForkMeshWorld extends HTMLElement {
         "Event records remain usable over HTTPS even when multiplayer presence is offline.",
       neighborhood:
         "Availability, inactivity, and door state are under your local privacy controls.",
-      workshops:
-        "Choose a repository and analysis scope in the workshop panel.",
       broadcast:
         "Audio starts only after your explicit play action and stays local to this device.",
     };
@@ -12485,6 +12425,7 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   handleMovement(movement) {
+    this.recordActivityArrival();
     this.maybeGreetForkbot();
     const space = WORLD_SPACE_IDS.has(String(movement?.space || ""))
       ? String(movement.space)

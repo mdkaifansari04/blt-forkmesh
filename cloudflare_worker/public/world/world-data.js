@@ -188,33 +188,10 @@ export const LANDMARKS = [
     secondary: { label: "Edit public profile", href: "/dashboard/settings/profile" },
   },
   {
-    id: "workshops",
-    label: "Code workshops",
-    shortLabel: "Workshops",
-    eyebrow: "ANALYSIS / 09",
-    icon: "⌘",
-    color: "#73f0ad",
-    position: [-17, 0, -46],
-    summary: "Collaborative, recommendation-first analysis rooms for repository architecture.",
-    metaphor: "A workbench turns code structure, dependencies, models, tests, and findings into inspectable maps.",
-    reality:
-      "Analysis runs only against an explicitly selected authorized repository. Findings are recommendations with supporting paths, not guaranteed facts.",
-    status: "Client workshop live",
-    statusTone: "live",
-    bullets: [
-      "Architecture, models, dependencies, redundancy, dead code, security, coverage, documentation, performance, and licenses are separate scopes.",
-      "Database workshops map model definitions, relationships, use sites, and possible cycles.",
-      "Private code is never sent to an external model without explicit repository-owner authorization.",
-      "Live collaboration uses the existing encrypted room and degrades to saved results when realtime is unavailable.",
-    ],
-    primary: { label: "Open a workshop", action: "workshops" },
-    secondary: { label: "Open agents", href: "/dashboard/agents" },
-  },
-  {
     id: "broadcast",
     label: "Broadcast garden",
     shortLabel: "Media",
-    eyebrow: "COMMUNITY MEDIA / 10",
+    eyebrow: "COMMUNITY MEDIA / 09",
     icon: "♫",
     color: "#8fcfff",
     position: [10, 0, 46],
@@ -237,7 +214,7 @@ export const LANDMARKS = [
     id: "office",
     label: "ForkMesh Office",
     shortLabel: "Office",
-    eyebrow: "COLLABORATION / 11",
+    eyebrow: "COLLABORATION / 10",
     icon: "⌁",
     color: "#9ef7c6",
     position: [45, 0, -27],
@@ -541,19 +518,6 @@ export const RADIO_STATIONS = [
     playMode: "external",
     homepageUrl: "https://somafm.com/defcon/",
   },
-];
-
-export const WORKSHOP_TYPES = [
-  "Architecture analysis",
-  "Database-model analysis",
-  "Dependency mapping",
-  "Redundancy detection",
-  "Dead-code detection",
-  "Security analysis",
-  "Test-coverage analysis",
-  "Documentation analysis",
-  "Performance analysis",
-  "License compatibility analysis",
 ];
 
 export function landmarkById(id) {

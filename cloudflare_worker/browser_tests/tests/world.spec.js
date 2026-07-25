@@ -1543,7 +1543,7 @@ test("enhanced Town Square starts in WebGL and keeps keyboard navigation", async
   );
 });
 
-test("Town Square trees use the full safe field while arrival faces inward", async ({
+test("landmark tree clusters stay local while arrival faces inward", async ({
   page,
 }) => {
   await prepareWorldPage(page, "world-tree-field");
@@ -1637,10 +1637,9 @@ test("Town Square trees use the full safe field while arrival faces inward", asy
   expect(state.signHeading).toBeCloseTo(Math.PI, 5);
   expect(state.playerHeading).toBeCloseTo(Math.PI, 5);
   expect(state.remoteHeading).toBeCloseTo(Math.PI, 5);
-  expect(state.treeCount).toBe(96);
-  expect(Math.min(...state.radii)).toBeLessThan(20);
-  expect(Math.max(...state.radii)).toBeGreaterThan(55);
-  state.quadrants.forEach((count) => expect(count).toBeGreaterThan(12));
+  expect(state.treeCount).toBeGreaterThan(0);
+  expect(state.treeCount).toBeLessThanOrEqual(33);
+  expect(Math.max(...state.radii)).toBeLessThan(80);
   expect(state.arrivalTrees).toBe(0);
   expect(state.cabinetTrees).toBe(0);
 });

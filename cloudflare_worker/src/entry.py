@@ -2901,6 +2901,13 @@ WORLD_MANUAL_TOKEN_DAY_MS = 24 * 60 * 60 * 1000
 # somebody who selected "Away" while still walking around the world. A fresh
 # authenticated world visit resets this quiet-period clock.
 WORLD_INACTIVE_DELAY_MS = 15 * 60 * 1000
+# The platform-admin capacity card is deliberately metadata-only. Keep both the
+# number of sqlite_master rows and the resulting COUNT queries hard-bounded so a
+# ticket refresh cannot turn into an unbounded database-inspection endpoint.
+WORLD_SYSTEM_CAPACITY_MAX_TABLES = 256
+WORLD_SYSTEM_CAPACITY_MAX_SAFE_ROWS = 9_007_199_254_740_991
+WORLD_SYSTEM_CAPACITY_TABLE_RE = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 
 
 def _world_ticket_signature(env, payload):
@@ -3019,6 +3026,51 @@ async def _world_account_claim(env, request, data=None):
     return claim
 
 
+async def _world_system_capacity(env):
+    """Return bounded, content-free D1 table counts for platform admins."""
+    rows = await d1_all(
+        env,
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND substr(lower(name),1,7)!='sqlite_' "
+        "AND substr(lower(name),1,4)!='_cf_' "
+        "ORDER BY name LIMIT ?",
+        WORLD_SYSTEM_CAPACITY_MAX_TABLES,
+    )
+    capacity = []
+    for row in rows or []:
+        raw_name = row.get("name") if isinstance(row, dict) else None
+        if not isinstance(raw_name, str):
+            continue
+        name = raw_name.strip()
+        lowered = name.lower()
+        # Names originate in sqlite_master and are then restricted to the
+        # application's conventional identifier grammar before interpolation.
+        # Quotes, whitespace, SQL punctuation, and D1 internal tables therefore
+        # never reach the COUNT statement.
+        if (
+            name != raw_name
+            or lowered.startswith(("sqlite_", "_cf_"))
+            or not WORLD_SYSTEM_CAPACITY_TABLE_RE.fullmatch(name)
+        ):
+            continue
+        try:
+            count_row = await d1_first(
+                env,
+                'SELECT COUNT(*) AS row_count FROM "' + name + '"',
+            )
+            row_count = int((count_row or {}).get("row_count", 0) or 0)
+        except Exception:
+            # A table can disappear during a rolling migration. Skip that
+            # table rather than breaking the short-lived world ticket.
+            continue
+        if (
+            row_count > 1
+            and row_count <= WORLD_SYSTEM_CAPACITY_MAX_SAFE_ROWS
+        ):
+            capacity.append({"name": name, "rowCount": row_count})
+    return capacity
+
+
 async def world_ticket_handler(env, request):
     if method_name(request) != "GET":
         return json_response(
@@ -3060,14 +3112,27 @@ async def world_ticket_handler(env, request):
         "issuedAt": now,
         "expiresAt": now + WORLD_TICKET_TTL_MS,
     }
+    response_data = {
+        "ok": True,
+        "authenticated": True,
+        **claim,
+        "expiresAt": ticket_claim["expiresAt"],
+        "ticket": _world_ticket_encode(env, ticket_claim),
+    }
+    # Platform-administrator status is derived server-side from the verified
+    # account session. Omit the field entirely for every other caller so the
+    # table inventory cannot be inferred from a guest or regular-user ticket.
+    if claim.get("isAdmin") is True:
+        try:
+            response_data["systemCapacity"] = {
+                "tables": await _world_system_capacity(env),
+            }
+        except Exception:
+            # Capacity telemetry is optional; authentication and multiplayer
+            # entry continue to work while D1 is unavailable or migrating.
+            response_data["systemCapacity"] = {"tables": []}
     return json_response(
-        {
-            "ok": True,
-            "authenticated": True,
-            **claim,
-            "expiresAt": ticket_claim["expiresAt"],
-            "ticket": _world_ticket_encode(env, ticket_claim),
-        },
+        response_data,
         cache_control="no-store, max-age=0, must-revalidate",
         extra_headers={"x-content-type-options": "nosniff"},
     )
@@ -3278,6 +3343,9 @@ def world_visit_summary(rows, now):
 
 async def world_visitors_handler(env, request):
     """Public aggregate arrival counts for the Arrival Grid plaque."""
+    if method_name(request) == "POST":
+        await record_world_visit(env)
+        return json_response({"ok": True}, cache_control="no-store")
     if method_name(request) != "GET":
         return json_response(
             {"error": "method_not_allowed"}, status=405,
@@ -29907,14 +29975,6 @@ class Default(WorkerEntrypoint):
                     status=403,
                     cache_control="no-store, max-age=0, must-revalidate",
                 )
-            try:
-                # Aggregate-only odometer for the Arrival Grid plaque,
-                # counted here so the world object itself stays free of any
-                # storage access. Reconnects count as fresh arrivals — peer
-                # ids are ephemeral, so there is nothing to dedupe against.
-                await record_world_visit(self.env)
-            except Exception:
-                pass
             world_id = self.env.FORKMESH_WORLD.idFromName("town-square-v1")
             last_error = None
             for _attempt in range(2):
