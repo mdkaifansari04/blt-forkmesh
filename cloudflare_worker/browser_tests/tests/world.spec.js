@@ -1694,9 +1694,6 @@ test("Unicode emoji status is local-persisted, coalesced, and visible over every
   await expect(page.locator("[data-world-status-preview]")).toHaveText(
     "🧑‍💻 coding",
   );
-  await expect(page.locator("[data-world-identity-emoji-status]")).toHaveText(
-    "🧑‍💻 coding",
-  );
   await expect.poll(() =>
     frames.filter(
       (frame) =>
@@ -3035,6 +3032,44 @@ test("four-hour procedural soundtrack starts only after consent and stops locall
   expect(
     await page.locator("forkmesh-world").evaluate((shell) => shell.activeAudio),
   ).toBeNull();
+});
+
+test("the ForkMesh song button plays the first-party track only on request", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    window.__forkmeshSongPlays = [];
+    HTMLMediaElement.prototype.play = function play() {
+      window.__forkmeshSongPlays.push(this.getAttribute("src") || this.src);
+      return Promise.resolve();
+    };
+    HTMLMediaElement.prototype.pause = function pause() {};
+  });
+  await prepareWorldPage(page, "forkmesh-song");
+  await waitForWorld(page);
+
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.openLandmark("broadcast"),
+  );
+  const button = page.locator("[data-world-radio='forkmesh-song']");
+  await expect(button).toHaveText("Listen to the ForkMesh song");
+  expect(await page.evaluate(() => window.__forkmeshSongPlays)).toEqual([]);
+
+  await button.click();
+  expect(await page.evaluate(() => window.__forkmeshSongPlays)).toEqual([
+    "/assets/songs/ForkMeshForever(IndiePop).mp3",
+  ]);
+  await expect(page.locator("[data-world-media-now]")).toContainText(
+    "ForkMesh Forever (Indie Pop)",
+  );
+
+  await page.locator("[data-world-radio-stop]").click();
+  expect(
+    await page.locator("forkmesh-world").evaluate((shell) => shell.activeAudio),
+  ).toBeNull();
+  await expect(page.locator("[data-world-media-now]")).toContainText(
+    "Nothing is playing",
+  );
 });
 
 test("portrait coarse-pointer controls and visual viewport remain usable", async ({

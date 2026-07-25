@@ -2474,6 +2474,23 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <span aria-hidden="true">▦</span><span>Console</span>
             </a>
             <button class="world-icon-button" type="button" data-world-settings-open aria-label="World and privacy settings">⚙</button>
+            <button
+              class="world-shirt-badge"
+              type="button"
+              data-world-shirt-badge
+              data-world-settings-open
+              aria-label="Your public avatar badge — open World and privacy settings"
+              title="World and privacy settings"
+            >
+              <span class="world-shirt-flag" data-world-shirt-flag>${escapeHTML(identity.flag)}</span>
+              <span class="world-shirt-account" data-world-shirt-account title="${escapeHTML(
+                identity.accountStatus,
+              )}">${escapeHTML(
+                ACCOUNT_STATUS_ICONS[identity.accountStatus] || "○",
+              )}</span>
+              <span class="world-shirt-tech" data-world-shirt-tech>${escapeHTML(identity.browser)} · ${escapeHTML(identity.os)}</span>
+              <span class="world-shirt-name" data-world-shirt-name>${escapeHTML(identity.name)}</span>
+            </button>
           </nav>
         </header>
 
@@ -2542,31 +2559,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             </div>
           </div>
         </aside>
-
-        <section class="world-identity" aria-label="Your public avatar badge">
-          <div class="world-shirt-badge" data-world-shirt-badge>
-            <span class="world-shirt-flag" data-world-shirt-flag>${escapeHTML(identity.flag)}</span>
-            <span class="world-shirt-account" data-world-shirt-account title="${escapeHTML(
-              identity.accountStatus,
-            )}">${escapeHTML(
-              ACCOUNT_STATUS_ICONS[identity.accountStatus] || "○",
-            )}</span>
-            <span class="world-shirt-tech" data-world-shirt-tech>${escapeHTML(identity.browser)} · ${escapeHTML(identity.os)}</span>
-            <span class="world-shirt-name" data-world-shirt-name>${escapeHTML(identity.name)}</span>
-          </div>
-          <div class="world-identity-copy">
-            <strong data-world-identity-name>${escapeHTML(identity.name)}</strong>
-            <span data-world-identity-status>${escapeHTML(accountBadgeCopy(identity, settings))}</span>
-            <span
-              class="world-identity-emoji-status"
-              data-world-identity-emoji-status
-              ${publicStatus.emoji ? "" : "hidden"}
-            >${escapeHTML(
-              [publicStatus.emoji, publicStatus.note].filter(Boolean).join(" "),
-            )}</span>
-          </div>
-          <button class="world-identity-edit" type="button" data-world-settings-open aria-label="Edit public badge">✎</button>
-        </section>
 
         <div class="world-controls" aria-label="Movement and camera controls">
           <div class="world-control-keys" aria-hidden="true">
@@ -4988,13 +4980,8 @@ class ForkMeshWorld extends HTMLElement {
     const copy = [status.emoji, status.note].filter(Boolean).join(" ");
     const preview = this.$("[data-world-status-preview]");
     const clear = this.$("[data-world-status-clear]");
-    const identityStatus = this.$("[data-world-identity-emoji-status]");
     if (preview) preview.textContent = copy || "Off";
     if (clear) clear.disabled = !status.emoji;
-    if (identityStatus) {
-      identityStatus.textContent = copy;
-      identityStatus.hidden = !status.emoji;
-    }
   }
 
   syncInactivePresence() {
@@ -5102,8 +5089,7 @@ class ForkMeshWorld extends HTMLElement {
     const account = this.$("[data-world-shirt-account]");
     const tech = this.$("[data-world-shirt-tech]");
     const shirtName = this.$("[data-world-shirt-name]");
-    const name = this.$("[data-world-identity-name]");
-    const status = this.$("[data-world-identity-status]");
+    const badge = this.$("[data-world-shirt-badge]");
     if (flag) flag.textContent = visible.flag;
     if (account) {
       account.textContent =
@@ -5112,8 +5098,13 @@ class ForkMeshWorld extends HTMLElement {
     }
     if (tech) tech.textContent = `${visible.browser} · ${visible.os}`;
     if (shirtName) shirtName.textContent = visible.name;
-    if (name) name.textContent = visible.name;
-    if (status) status.textContent = accountBadgeCopy(this.identity, this.settings);
+    if (badge) {
+      // The badge is the settings entry point; keep the name/status copy that
+      // used to sit beside it reachable as its tooltip and accessible name.
+      const copy = `${visible.name} · ${accountBadgeCopy(this.identity, this.settings)}`;
+      badge.title = `${copy} — World and privacy settings`;
+      badge.setAttribute("aria-label", `${copy} — open World and privacy settings`);
+    }
     this.updateWorldStatusUI();
   }
 
@@ -7516,11 +7507,12 @@ class ForkMeshWorld extends HTMLElement {
                 )}</strong><p>${escapeHTML(station.description)}</p></div>
                 <button type="button" data-world-radio="${escapeHTML(
                   station.id,
-                )}">${
-                  station.playMode === "external"
-                    ? "Open official player"
-                    : "Play with consent"
-                }</button>
+                )}">${escapeHTML(
+                  station.actionLabel ||
+                    (station.playMode === "external"
+                      ? "Open official player"
+                      : "Play with consent"),
+                )}</button>
                 <a href="${escapeHTML(station.homepageUrl)}" target="_blank" rel="noopener noreferrer">${
                   station.playMode === "external"
                     ? "Provider page"
@@ -10908,6 +10900,10 @@ class ForkMeshWorld extends HTMLElement {
       );
       return;
     }
+    if (station.playMode === "hosted") {
+      await this.playHostedTrack(station, now);
+      return;
+    }
     if (!this.soundEnabled) {
       now.innerHTML = `
         <span><strong>Sound is off</strong><small>Use the Sound button in the World toolbar first. Audio never starts automatically.</small></span>
@@ -10944,6 +10940,43 @@ class ForkMeshWorld extends HTMLElement {
       this.activeAudio = null;
       now.innerHTML = `
         <span>Playback was blocked or the provider stream is unavailable.</span>
+        <button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
+    }
+  }
+
+  // First-party ForkMesh audio shipped with the site. The button press is the
+  // consent gesture, so this path never starts on its own and never proxies a
+  // third-party stream.
+  async playHostedTrack(station, now) {
+    const AudioElement = window.Audio;
+    if (!AudioElement) {
+      now.innerHTML = `<span>Audio playback is unavailable in this browser.</span><button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
+      return;
+    }
+    const element = new AudioElement(station.trackUrl);
+    element.preload = "auto";
+    element.loop = false;
+    element.addEventListener("ended", () => this.stopRadio());
+    this.activeAudio = {
+      stop() {
+        try {
+          element.pause();
+          element.currentTime = 0;
+        } catch (_) {}
+      },
+    };
+    now.innerHTML = `
+      <span><strong>${escapeHTML(station.name)}</strong> · ${escapeHTML(
+        station.provider,
+      )}<small data-world-track>Hosted by ForkMesh · local playback only · stop any time.</small></span>
+      <button type="button" data-world-radio-stop>Mute / stop</button>`;
+    try {
+      await element.play();
+      this.toast(`${station.name} is playing on this device only.`);
+    } catch (_) {
+      this.activeAudio = null;
+      now.innerHTML = `
+        <span>Playback was blocked or the song could not be loaded.</span>
         <button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
     }
   }
