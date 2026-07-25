@@ -2662,7 +2662,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </div>
         </details>
 
-        <details class="world-diagnostics world-chat-terminal" data-world-chat-terminal open>
+        <details class="world-diagnostics world-chat-terminal" data-world-chat-terminal>
           <summary aria-label="Open World chat in a terminal panel">
             <span class="world-diagnostics-light" data-state="online" aria-hidden="true"></span>
             <strong>CHAT</strong>
@@ -3681,6 +3681,10 @@ class ForkMeshWorld extends HTMLElement {
           }
           if (meta.nodeCabinet) {
             this.openMirrorNodeDetail(meta.nodeCabinet);
+            return;
+          }
+          if (id === "repositories" && meta.repositoryBase) {
+            this.openRepositoryWebsite(meta.repositoryBase);
             return;
           }
           if (id === "repositories" && meta.repository) {
@@ -9483,6 +9487,17 @@ class ForkMeshWorld extends HTMLElement {
       automatic: false,
       revealScene: true,
     });
+  }
+
+  openRepositoryWebsite(portal) {
+    const owner = sanitizePresenceText(portal?.owner, "", 40);
+    const name = sanitizePresenceText(portal?.name, "", 60);
+    if (!owner || !name) return;
+    const path = `/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+    // `noopener` intentionally makes window.open return null in some browsers,
+    // so do not mistake a safely opened tab for a popup-blocker failure.
+    window.open(path, "_blank", "noopener,noreferrer");
+    this.toast(`Opening ${owner}/${name} in a new tab…`);
   }
 
   selectRepositorySizeNode(node) {
