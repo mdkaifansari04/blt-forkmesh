@@ -87,6 +87,16 @@ def test_bulk_delete_is_blocked_only_for_hidden_tables():
     assert "purge_allowed = _admin_purge_allowed(table)" in table_view
 
 
+def test_table_view_discloses_which_columns_are_encrypted():
+    # An admin looking at a decrypted `data` blob must be told it was
+    # ciphertext at rest, not silently shown plaintext-looking values.
+    table_view = _function_source("_render_table_view")
+    assert '"data" in columns' in table_view
+    assert "AES-GCM encrypted and decrypted" in table_view
+    assert "are stored as plaintext" in table_view
+    assert "No encrypted columns in this table" in table_view
+
+
 def test_local_reward_snapshot_reverifies_signed_evidence_and_operations():
     source = _function_source("_eligible_reward_snapshot")
     assert "_verified_federated_reward_attestation" in source

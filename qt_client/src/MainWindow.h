@@ -88,6 +88,7 @@ class CodexAppServerSession;
 class StallWatchdog;
 class ClaudeTranscriptView;
 class RepoHost;
+class NodeEventSocket;
 class WorldSpeechBridge;
 class PrivateMirrorMaterialization;
 class ActionRunner;
@@ -804,6 +805,9 @@ private:
     QString chatDisplayName() const; // user identity used for chat sender names
     QString machineNodeName() const; // THIS machine's node name (never the username)
     void saveMachineNodeName(const QString &name); // persist + re-advertise
+    // Persist the extra Actions `runs-on:` labels this machine answers to,
+    // normalized to distinct lower-cased tags.
+    void saveActionNodeLabels(const QString &labels);
     void updateChatIdentity();     // push user name/avatar into the chat backend
     void updateUserSwitcher();     // refresh top-bar user label/avatar
     void updateNodeSwitcher();     // refresh top-bar node label / count
@@ -1898,6 +1902,14 @@ private:
     void writeMirrorActionsSummary();
     void enqueuePushEvent(const QString &owner, const QString &name,
                           const QString &commit, const QString &ref);
+    // The labels this node answers to when a workflow declares `runs-on:` — its
+    // machine node name, its mirror-executor node name, the platform, and any
+    // extra labels the operator typed in Settings. A workflow dedicated to
+    // another node is never queued here, so a mesh can pin tests to one machine,
+    // Cloudflare deploys to a mirror and iOS builds to a Mac.
+    QStringList actionNodeLabels() const;
+    // Human-readable "this workflow belongs to <node>" text for logs and the UI.
+    QString workflowDedicationLabel(const ActionWorkflow &workflow) const;
     void processActionQueue();
     // The runner currently executing `runId`, or nullptr if no runner is. Used
     // to target stop()/abort at the exact run rather than a single global runner.
@@ -3275,6 +3287,11 @@ private:
     void updateRepoDetailStatus();
     void startRepoHosts();
     void stopRepoHosts();
+    // Live relay event channel (ForkMeshNodes DO): pushed event frames run
+    // scheduleRelaySync() the moment the relay records a change, so the
+    // m_inboxPollTimer HTTPS poll is only the reconnect-gap safety net.
+    void startNodeEventSocket();
+    void stopNodeEventSocket();
     void onRequestServed(const QString &owner, const QString &name, bool clone);
     void loadRepoStats();
     void saveRepoStats() const;
@@ -3697,6 +3714,7 @@ private:
     // Settings section widgets
     QLineEdit *m_settingsNameEdit = nullptr;        // Username (the account)
     QLineEdit *m_settingsMachineNodeEdit = nullptr; // this machine's node name
+    QLineEdit *m_settingsNodeLabelsEdit = nullptr;  // extra Actions `runs-on:` labels
     QLineEdit *m_settingsSolanaEdit = nullptr; // #66: node Solana address in Settings
     QLabel *m_settingsEmailLabel = nullptr;
     QLabel *m_settingsEmailVerifiedBadge = nullptr;
@@ -5528,6 +5546,7 @@ private:
     QHash<QString, QString> m_catalogContributionPreparedSnapshotKey;
     QList<RepoHost *> m_repoHosts;
     QSet<QString> m_repoHostKeys; // empty compatibility state; sockets retired
+    NodeEventSocket *m_nodeEventSocket = nullptr; // relay push -> /api/sync
     // Keeps authorized, owner-only private repository materializations alive
     // only for this app process. They are removed recursively on destruction
     // and their paths are never written to settings.

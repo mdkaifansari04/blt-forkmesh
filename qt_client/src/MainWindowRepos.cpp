@@ -9,6 +9,7 @@
 #include "MainWindowInternal.h"
 #include "KebabHeaderView.h"
 #include "ControlNode.h"
+#include "NodeEventSocket.h"
 #include "PrivateMirrorRuntime.h"
 #include "PublicMirrorRuntime.h"
 
@@ -3140,19 +3141,103 @@ void MainWindow::stopRepoHosts()
     }
     m_repoHosts.clear();
     m_repoHostKeys.clear();
+    stopNodeEventSocket();
     refreshNetworkDiagnostics();
 }
 
 void MainWindow::startRepoHosts()
 {
     // The per-repository persistent socket is retired. Public and encrypted
-    // repository bytes use direct HTTPS, while the existing bounded /api/sync
-    // poll carries small control-plane changes. Keep this compatibility method
-    // because publish/settings call sites use it as a lifecycle hook.
+    // repository bytes use direct HTTPS, while the /api/sync drain carries
+    // small control-plane changes — now pushed live over the per-owner node
+    // event socket, with the bounded poll as the fallback. Publish/settings
+    // call sites use this method as the serving-lifecycle hook, so it is also
+    // where the event channel follows the node's online/offline state.
     if (!m_repoHosts.isEmpty())
         stopRepoHosts();
     m_repoHostKeys.clear();
+    startNodeEventSocket();
     refreshNetworkDiagnostics();
+}
+
+// One WebSocket per signed-in owner account to the relay's ForkMeshNodes
+// Durable Object. The relay pushes a payload-free {"type":"event","topic"}
+// frame the instant a web submission lands for any owned repo; the node
+// answers with its usual debounced signed GET /api/sync. While the channel is
+// up the 5-minute fallback poll relaxes to 15 minutes — pushes carry the fast
+// path, so steady-state HTTPS polling drops to a third.
+void MainWindow::startNodeEventSocket()
+{
+    if (m_nodeOffline) {
+        // Honour a node parked offline: no serving, no heartbeat, no live
+        // event channel. The bounded sync poll still runs.
+        stopNodeEventSocket();
+        return;
+    }
+    if (!hasOwnerSigningCapability()) {
+        stopNodeEventSocket();
+        return;
+    }
+    if (m_nodeEventSocket)
+        return; // already running; the socket reconnects on its own
+    m_nodeEventSocket = new NodeEventSocket(this);
+    m_nodeEventSocket->setConnectionAuthorizer([this](const QUrl &endpoint) {
+        return authorizeFirewallConnection(QStringLiteral("WebSocket"),
+                                           endpoint);
+    });
+    // Re-evaluated on every (re)connect attempt so each upgrade carries a
+    // freshly-signed drain token and follows account/relay changes.
+    m_nodeEventSocket->setUrlFactory([this]() -> QUrl {
+        const QString account = m_accountName.isEmpty()
+            ? QSettings().value(kAccountNameSetting).toString().trimmed()
+            : m_accountName;
+        if (!hasOwnerSigningCapability(account) || !m_profileIdentity.isValid())
+            return QUrl();
+        const QString owner =
+            repoSegment(account, QStringLiteral("owner"));
+        if (owner.isEmpty())
+            return QUrl();
+        QUrl url = catalogApiUrl();
+        url.setScheme(url.scheme() == QLatin1String("http")
+                          ? QStringLiteral("ws")
+                          : QStringLiteral("wss"));
+        url.setPath(QStringLiteral("/api/nodes/events"));
+        url.setQuery(signedInboxQuery(owner));
+        return url;
+    });
+    connect(m_nodeEventSocket, &NodeEventSocket::eventReceived, this,
+            [this](const QString &topic, const QString &repo) {
+                Q_UNUSED(topic);
+                Q_UNUSED(repo);
+                scheduleRelaySync();
+            });
+    connect(m_nodeEventSocket, &NodeEventSocket::connectedChanged, this,
+            [this](bool connected) {
+                if (!m_inboxPollTimer)
+                    return;
+                if (connected) {
+                    // Catch up on anything queued while the channel was down,
+                    // then let pushes carry the fast path.
+                    scheduleRelaySync();
+                    m_inboxPollTimer->setInterval(15 * 60 * 1000);
+                } else {
+                    m_inboxPollTimer->setInterval(5 * 60 * 1000);
+                }
+            });
+    connect(m_nodeEventSocket, &NodeEventSocket::systemMessage, this,
+            [this](const QString &text) { logSystem(text); });
+    m_nodeEventSocket->start();
+}
+
+void MainWindow::stopNodeEventSocket()
+{
+    if (!m_nodeEventSocket)
+        return;
+    m_nodeEventSocket->stop();
+    m_nodeEventSocket->deleteLater();
+    m_nodeEventSocket = nullptr;
+    if (m_inboxPollTimer)
+        m_inboxPollTimer->setInterval(5 * 60 * 1000);
 }
 
 void MainWindow::onRequestServed(const QString &owner, const QString &name, bool clone)
