@@ -1,6 +1,91 @@
 const { test, expect } = require("@playwright/test");
 
 
+test("World embeds same-origin global chat and connects its real room transport", async ({
+  page,
+}) => {
+  const passphrase = "playwright-world-embed-passphrase";
+  const socketURLs = [];
+
+  await page.route("**/api/**", (route) => {
+    const url = new URL(route.request().url());
+    let body = { error: "not_found" };
+    let status = 404;
+    if (url.pathname === "/api/chat/room-key") {
+      expect(url.searchParams.get("room")).toBe("world-general");
+      status = 200;
+      body = {
+        ok: true,
+        room: "world-general",
+        access: "public-world-general",
+        passphrase,
+      };
+    } else if (url.pathname === "/api/accounts/users") {
+      status = 200;
+      body = { ok: true, users: [] };
+    } else if (url.pathname === "/api/chat/activity") {
+      status = 200;
+      body = { ok: true, messageCount: 0, latestMessageTs: 0, userCount: 0 };
+    }
+    return route.fulfill({
+      status,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+  await page.routeWebSocket(
+    "**/api/repo/mainnode/forkmesh/rooms/world-general/ws",
+    (socket) => {
+      socketURLs.push(socket.url());
+    },
+  );
+
+  // These are the production response controls declared in public/_headers:
+  // cross-origin framing stays forbidden, but the World may embed chat from
+  // its own origin.
+  await page.route(
+    "**/dashboard/chat/index.html?worldEmbed=1",
+    async (route) => {
+      const response = await route.fetch();
+      await route.fulfill({
+        response,
+        headers: {
+          ...response.headers(),
+          "Content-Security-Policy": "frame-ancestors 'self'",
+          "X-Frame-Options": "SAMEORIGIN",
+        },
+      });
+    },
+  );
+  await page.route("**/world-chat-embed-fixture", (route) =>
+    route.fulfill({
+      contentType: "text/html; charset=utf-8",
+      body: `<!doctype html>
+        <title>World chat embed fixture</title>
+        <iframe
+          title="ForkMesh World chat terminal"
+          src="/dashboard/chat/index.html?worldEmbed=1"
+          sandbox="allow-forms allow-same-origin allow-scripts"
+        ></iframe>`,
+    }),
+  );
+
+  await page.goto("/world-chat-embed-fixture");
+  const chat = page.frameLocator(
+    'iframe[title="ForkMesh World chat terminal"]',
+  );
+  await expect(chat.locator("[data-dashboard-chat-status]").first()).toContainText(
+    "Connected",
+  );
+  await expect
+    .poll(() => socketURLs.length)
+    .toBe(1);
+  expect(
+    await chat.locator("html").getAttribute("data-world-embed"),
+  ).toBe("1");
+});
+
+
 test("clipboard images and documents stay encrypted and survive refresh", async ({ page }) => {
   const passphrase = "playwright-public-world-general-passphrase";
   const retainedFrames = [];

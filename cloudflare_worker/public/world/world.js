@@ -59,19 +59,13 @@ const POSITION_FLOOR_TOLERANCE = 0.5;
 // Mirrors the server's WORLD_ARRIVAL_CLEARANCE: a restored spot this close to
 // another visitor is treated as occupied and the fresh server slot wins.
 const ARRIVAL_CLEARANCE = 0.9;
-// Mirrors WORLD_SPACE_FLOORS in world-scene.js. The unfinished destinations are
-// parked on the ground in the works-in-progress barn, so every space shares the
-// Town Square floor.
+// Mirrors WORLD_SPACE_FLOORS in world-scene.js. The Town Square and three
+// regional campus labels share one walkable floor.
 const POSITION_FLOORS = Object.freeze({
   "town-square": 0.38,
   east: 0.38,
   central: 0.38,
   west: 0.38,
-  "sky-campus": 0.38,
-  "space-station": 0.38,
-  "code-planet": 0.38,
-  "organization-region": 0.38,
-  "planet-atlas": 0.38,
 });
 const SOCKET_RETRY_MAX_MS = 20000;
 const SOCKET_STABLE_MS = 5000;
@@ -146,11 +140,6 @@ const WORLD_SPACE_IDS = new Set([
   "east",
   "central",
   "west",
-  "sky-campus",
-  "space-station",
-  "code-planet",
-  "organization-region",
-  "planet-atlas",
 ]);
 
 function escapeHTML(value) {
@@ -2256,16 +2245,12 @@ const LANDMARK_CONSTRUCTION_REASONS = Object.freeze({
     "A configured public Solana reward-pool address has not been verified in this session.",
   repositories:
     "The live repository catalog has not been verified in this session.",
-  routing:
-    "No healthy, integrity-checked, clone-ready mirror route has been verified in this session.",
   organizations:
     "The organization directory integration has not been verified in this session.",
   fediverse:
     "The Mastodon and Lemmy directory integration has not been verified in this session.",
   security:
     "No completed commit-scoped public security scan has been verified.",
-  launchpad:
-    "The interactive destination renderer has not finished loading.",
   events:
     "The UTC event service has not been verified in this session.",
   workshops:
@@ -2709,10 +2694,19 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         </details>
 
         <div class="world-toast" data-world-toast role="status"></div>
-        <div class="world-detail-backdrop" data-world-detail-backdrop></div>
+        <button
+          class="world-detail-backdrop"
+          type="button"
+          data-world-detail-backdrop
+          aria-label="Close World details"
+          aria-hidden="true"
+          tabindex="-1"
+        ></button>
         <aside
           class="world-detail"
           data-world-detail
+          role="dialog"
+          aria-modal="false"
           aria-labelledby="world-detail-title"
           aria-hidden="true"
         ></aside>
@@ -3175,6 +3169,7 @@ class ForkMeshWorld extends HTMLElement {
     };
     this.botDirectory = [];
     this.worldLimits = null;
+    this.detailReturnFocus = null;
     this.activeAudio = null;
     this.focusMusicState = "stopped";
     this.focusMusicError = "";
@@ -3513,11 +3508,6 @@ class ForkMeshWorld extends HTMLElement {
         },
       });
       this.syncConstructionMarkers();
-      this.setLandmarkCapability(
-        "launchpad",
-        true,
-        "The interactive destination renderer is available.",
-      );
       this.officeMeeting = createWorldOfficeMeeting({
         root: this,
         scene: this.world,
@@ -3573,11 +3563,7 @@ class ForkMeshWorld extends HTMLElement {
         };
         this.spawnSelected = true;
       } else if (this.currentSpace !== "town-square") {
-        const traveled = WORLD_REGIONS.some(
-          (region) => region.id === this.currentSpace,
-        )
-          ? this.world.travelToRegion?.(this.currentSpace)
-          : this.world.travelToSpace?.(this.currentSpace);
+        const traveled = this.world.travelToRegion?.(this.currentSpace);
         this.spawnSelected = traveled === true;
       }
       this.connectPresence();
@@ -4310,13 +4296,13 @@ class ForkMeshWorld extends HTMLElement {
         <p class="world-detail-summary">${escapeHTML(summary)}</p>
         ${content}
       </div>`;
-    detail.dataset.open = "true";
-    detail.setAttribute("aria-hidden", "false");
-    backdrop.dataset.open = "true";
-    window.setTimeout(
-      () => detail.querySelector("[data-world-detail-close]")?.focus(),
-      100,
-    );
+    this.showDetailOverlay(detail, backdrop, {
+      returnFocus:
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null,
+      focusDelay: 100,
+    });
   }
 
   async previewFediverseMention(id) {
@@ -4741,8 +4727,10 @@ class ForkMeshWorld extends HTMLElement {
           this.officeController?.focusOffice(landmarkButton);
           return;
         }
-        this.world?.focusLandmark(id);
-        this.openLandmark(id);
+        // Map, alert, and navigation controls open a readable overlay without
+        // moving the player or reframing the camera. Clicking the 3D landmark
+        // itself remains the explicit spatial-focus interaction.
+        this.openLandmark(id, { returnFocus: landmarkButton });
         return;
       }
       const mirrorNodeButton = event.target.closest("[data-world-mirror-node]");
@@ -4755,8 +4743,9 @@ class ForkMeshWorld extends HTMLElement {
           this.mirrorCatalogs,
         ).find((candidate) => candidate.name.toLowerCase() === nodeName);
         if (node) {
-          this.world?.focusNetworkNode?.(node.name);
-          this.openMirrorNodeDetail(node);
+          this.openMirrorNodeDetail(node, {
+            returnFocus: mirrorNodeButton,
+          });
         }
         return;
       }
@@ -5877,7 +5866,32 @@ class ForkMeshWorld extends HTMLElement {
     });
   }
 
-  openLandmark(id) {
+  showDetailOverlay(
+    detail,
+    backdrop,
+    { returnFocus = null, focusDelay = 120 } = {},
+  ) {
+    if (!detail || !backdrop) return;
+    const wasOpen = detail.dataset.open === "true";
+    if (
+      !wasOpen &&
+      returnFocus instanceof HTMLElement &&
+      returnFocus.isConnected &&
+      !detail.contains(returnFocus)
+    ) {
+      this.detailReturnFocus = returnFocus;
+    }
+    detail.dataset.open = "true";
+    detail.setAttribute("aria-hidden", "false");
+    backdrop.dataset.open = "true";
+    backdrop.setAttribute("aria-hidden", "false");
+    window.setTimeout(() => {
+      if (detail.dataset.open !== "true") return;
+      detail.querySelector("[data-world-detail-close]")?.focus();
+    }, focusDelay);
+  }
+
+  openLandmark(id, { returnFocus = null } = {}) {
     const landmark = landmarkById(id);
     const capability = this.landmarkCapabilities[landmark.id] || {
       live: false,
@@ -5938,9 +5952,7 @@ class ForkMeshWorld extends HTMLElement {
           }
         </div>
       </div>`;
-    detail.dataset.open = "true";
-    detail.setAttribute("aria-hidden", "false");
-    backdrop.dataset.open = "true";
+    this.showDetailOverlay(detail, backdrop, { returnFocus });
     this.updateRepositoryReviewMode();
     if (
       landmark.id === "repositories" &&
@@ -5957,7 +5969,6 @@ class ForkMeshWorld extends HTMLElement {
         String(button.dataset.worldLandmark === landmark.id),
       );
     });
-    window.setTimeout(() => detail.querySelector("[data-world-detail-close]")?.focus(), 120);
   }
 
   closeLandmark() {
@@ -5968,9 +5979,16 @@ class ForkMeshWorld extends HTMLElement {
       detail.dataset.repositoryReview = "false";
       detail.setAttribute("aria-hidden", "true");
     }
-    if (backdrop) backdrop.dataset.open = "false";
+    if (backdrop) {
+      backdrop.dataset.open = "false";
+      backdrop.setAttribute("aria-hidden", "true");
+    }
     this.clearPullReviewScrollTracking();
-    this.world?.clearFocus();
+    const returnFocus = this.detailReturnFocus;
+    this.detailReturnFocus = null;
+    window.setTimeout(() => {
+      if (returnFocus?.isConnected) returnFocus.focus();
+    }, 0);
   }
 
   landmarkPanelHTML(id) {
@@ -6260,7 +6278,7 @@ class ForkMeshWorld extends HTMLElement {
       </section>`;
   }
 
-  openMirrorNodeDetail(node) {
+  openMirrorNodeDetail(node, { returnFocus = null } = {}) {
     const detail = this.$("[data-world-detail]");
     const backdrop = this.$("[data-world-detail-backdrop]");
     if (!detail || !backdrop || !node) return;
@@ -6280,13 +6298,7 @@ class ForkMeshWorld extends HTMLElement {
         <p class="world-detail-summary">The readable technical equivalent of this server cabinet’s front display.</p>
         ${this.mirrorNodeTechnicalHTML(node)}
       </div>`;
-    detail.dataset.open = "true";
-    detail.setAttribute("aria-hidden", "false");
-    backdrop.dataset.open = "true";
-    window.setTimeout(
-      () => detail.querySelector("[data-world-detail-close]")?.focus(),
-      120,
-    );
+    this.showDetailOverlay(detail, backdrop, { returnFocus });
   }
 
   rewardPanelHTML() {

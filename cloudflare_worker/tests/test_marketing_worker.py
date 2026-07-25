@@ -66,9 +66,7 @@ def test_world_refreshes_cannot_reuse_an_older_application_graph():
         "world-mirror-nodes.js",
         "world-pull-review.js",
         "world-repository-graph.js",
-        "world-speech.js",
         "world.css",
-        "world-speech.css",
     ):
         assert f"public/world/{asset}" in DEPLOY
     assert "remote_hash" in DEPLOY

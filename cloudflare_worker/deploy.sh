@@ -387,9 +387,7 @@ verify_public_assets() {
         "/world/world-mirror-nodes.js|public/world/world-mirror-nodes.js"
         "/world/world-pull-review.js|public/world/world-pull-review.js"
         "/world/world-repository-graph.js|public/world/world-repository-graph.js"
-        "/world/world-speech.js|public/world/world-speech.js"
         "/world/world.css|public/world/world.css"
-        "/world/world-speech.css|public/world/world-speech.css"
     )
     local local_asset local_hash remote_hash cache_control
     local asset_attempt asset_attempts=15 asset_retry_s=2

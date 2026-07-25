@@ -9,7 +9,6 @@ WORLD = ROOT / "public" / "world"
 APP = (WORLD / "world.js").read_text(encoding="utf-8")
 SCENE = (WORLD / "world-scene.js").read_text(encoding="utf-8")
 CSS = (WORLD / "world.css").read_text(encoding="utf-8")
-SPEECH_CSS = (WORLD / "world-speech.css").read_text(encoding="utf-8")
 
 
 def _section(source: str, start: str, end: str) -> str:
@@ -30,7 +29,6 @@ def test_diagnostics_bar_is_compact_expandable_and_device_local():
     assert ".world-diagnostics summary" in CSS
     assert ".world-diagnostics[open]" in CSS
     assert "@media (max-width: 480px)" in CSS
-    assert SPEECH_CSS.count("var(--world-diagnostics-height, 0px)") >= 5
 
 
 def test_renderer_exposes_bounded_on_demand_frame_and_draw_diagnostics():

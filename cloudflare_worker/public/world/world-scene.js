@@ -44,73 +44,13 @@ const FORKBOT_GREETING_RANGE = 3.2;
 // If a visitor is out of reach (travelled to another space, moderation walls,
 // …) the greeting still fires from wherever ForkBot got to.
 const FORKBOT_GREETING_TIMEOUT_MS = 12000;
-// Nothing hovers over the Town Square any more. The five unfinished
-// destinations are parked on the ground inside the works-in-progress barn, so
-// every space shares the same walkable floor as the square itself.
+// The public World has one shared ground plane plus three regional labels.
+// Deprecated off-world destinations are deliberately not valid spawn spaces.
 const WORLD_SPACE_FLOORS = Object.freeze({
   "town-square": 0.38,
   east: 0.38,
   central: 0.38,
   west: 0.38,
-  "sky-campus": 0.38,
-  "space-station": 0.38,
-  "code-planet": 0.38,
-  "organization-region": 0.38,
-  "planet-atlas": 0.38,
-});
-// The barn sits south of the square, past the last ring of trees and benches
-// and behind the default chase camera, and is wide enough that every parked
-// destination fits in its own bay.
-const WORKSHOP_BARN_CENTER_Z = 62;
-const WORKSHOP_BARN_HALF_WIDTH = 22;
-const WORKSHOP_BARN_HALF_DEPTH = 8;
-const WORKSHOP_BARN_WALL_HEIGHT = 10;
-const WORKSHOP_BARN_DOOR_HEIGHT = 5.6;
-// The chase camera always sits south of the player and looks north, so the bays
-// go at the north end of the barn and visitors arrive in the aisle south of
-// them, with the plaques in between.
-const WORKSHOP_BARN_BAY_Z = WORKSHOP_BARN_CENTER_Z - 3;
-const WORKSHOP_BARN_PLAQUE_Z = WORKSHOP_BARN_CENTER_Z + 1.6;
-const WORKSHOP_BARN_AISLE_Z = WORKSHOP_BARN_CENTER_Z + 4.5;
-// Bay centres in world coordinates. `y` lifts each exhibit onto its cradle so
-// it rests in the barn instead of floating; `plaque` is the work-in-progress
-// note standing in front of it.
-const WORKSHOP_BARN_BAYS = Object.freeze({
-  "sky-campus": Object.freeze({
-    x: -16.5,
-    y: 0.5,
-    radius: 3,
-    color: "#d5b6ff",
-    plaque: "sky office · unfinished",
-  }),
-  "organization-region": Object.freeze({
-    x: -9,
-    y: 0.75,
-    radius: 3.7,
-    color: "#d5b6ff",
-    plaque: "garden campus · unfinished",
-  }),
-  "code-planet": Object.freeze({
-    x: -1,
-    y: 3.4,
-    radius: 3.4,
-    color: "#77d9ff",
-    plaque: "code planet · unfinished",
-  }),
-  "planet-atlas": Object.freeze({
-    x: 8,
-    y: 1.4,
-    radius: 4.1,
-    color: "#f7c96b",
-    plaque: "community planets · unfinished",
-  }),
-  "space-station": Object.freeze({
-    x: 16.3,
-    y: 2.2,
-    radius: 2.9,
-    color: "#b6d8ff",
-    plaque: "space station · unfinished",
-  }),
 });
 const MOVEMENT_KEYS = new Set([
   "KeyW",
@@ -122,10 +62,9 @@ const MOVEMENT_KEYS = new Set([
   "ArrowLeft",
   "ArrowRight",
 ]);
-const CITY_GRID_EXTENT = 64;
-const CITY_GRID_COORDINATES = Object.freeze([-48, -32, -16, 0, 16, 32, 48]);
-const REGISTERED_LOUNGE_POSITION = Object.freeze([-48, 0, 32]);
-const DURABLE_OBJECT_DISTRICT_POSITION = Object.freeze([48, 0, -32]);
+const REGISTERED_LOUNGE_POSITION = Object.freeze([-54, 0, 40]);
+const DURABLE_OBJECT_DISTRICT_POSITION = Object.freeze([52, 0, -36]);
+const SERVER_CABINET_YARD_ORIGIN = Object.freeze([32, 0, 16]);
 const REGISTERED_LOUNGE_STATUSES = new Set([
   "Registered",
   "Supporting member",
@@ -1214,106 +1153,6 @@ function animateAvatarActivity(avatar, time, delta, reducedMotion) {
       material.userData.avatarBaseTransparent || opacity < 0.995;
     material.needsUpdate = true;
   });
-}
-
-function createRoad(THREE, width, depth, x, z, rotation = 0) {
-  const road = new THREE.Mesh(
-    new THREE.BoxGeometry(width, 0.06, depth),
-    makeMaterial(THREE, "#18372c", { roughness: 0.96 }),
-  );
-  road.position.set(x, 0.055, z);
-  road.rotation.y = rotation;
-  road.receiveShadow = true;
-  return road;
-}
-
-function createElectricMeshCityGrid(THREE, animated) {
-  const grid = new THREE.Group();
-  grid.name = "electric-mesh-city-block-grid";
-  grid.userData.blockSize = 16;
-  grid.userData.extent = CITY_GRID_EXTENT;
-
-  const conduitMaterial = makeMaterial(THREE, "#72f2bd", {
-    emissive: "#2bcc86",
-    emissiveIntensity: 1.05,
-    metalness: 0.28,
-    roughness: 0.32,
-  });
-  const junctionMaterial = makeMaterial(THREE, "#8ce7ff", {
-    emissive: "#35acd0",
-    emissiveIntensity: 1.2,
-    metalness: 0.35,
-    roughness: 0.28,
-  });
-  const conduits = [];
-  const junctions = [];
-
-  CITY_GRID_COORDINATES.forEach((coordinate) => {
-    const northSouth = createRoad(
-      THREE,
-      3.6,
-      CITY_GRID_EXTENT * 2,
-      coordinate,
-      0,
-    );
-    northSouth.userData.cityGridRoad = true;
-    grid.add(northSouth);
-    const eastWest = createRoad(
-      THREE,
-      CITY_GRID_EXTENT * 2,
-      3.6,
-      0,
-      coordinate,
-    );
-    eastWest.userData.cityGridRoad = true;
-    grid.add(eastWest);
-
-    const verticalConduit = new THREE.Mesh(
-      new THREE.BoxGeometry(0.075, 0.035, CITY_GRID_EXTENT * 2 - 2),
-      conduitMaterial,
-    );
-    verticalConduit.position.set(coordinate, 0.105, 0);
-    verticalConduit.userData.electricMeshConduit = true;
-    grid.add(verticalConduit);
-    conduits.push(verticalConduit);
-
-    const horizontalConduit = new THREE.Mesh(
-      new THREE.BoxGeometry(CITY_GRID_EXTENT * 2 - 2, 0.035, 0.075),
-      conduitMaterial,
-    );
-    horizontalConduit.position.set(0, 0.105, coordinate);
-    horizontalConduit.userData.electricMeshConduit = true;
-    grid.add(horizontalConduit);
-    conduits.push(horizontalConduit);
-  });
-
-  CITY_GRID_COORDINATES.forEach((x) => {
-    CITY_GRID_COORDINATES.forEach((z) => {
-      const junction = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.16, 0.2, 0.08, 8),
-        junctionMaterial,
-      );
-      junction.position.set(x, 0.14, z);
-      junction.userData.electricMeshJunction = true;
-      grid.add(junction);
-      junctions.push(junction);
-    });
-  });
-
-  animated.push((time) => {
-    const pulse = (Math.sin(time * 0.0012) + 1) * 0.5;
-    conduitMaterial.emissiveIntensity = 0.8 + pulse * 0.45;
-    junctionMaterial.emissiveIntensity = 0.95 + (1 - pulse) * 0.55;
-    if (junctions.length) {
-      const active = Math.floor(time / 180) % junctions.length;
-      junctions.forEach((junction, index) => {
-        junction.scale.y = index === active ? 2.2 : 1;
-      });
-    }
-  });
-  grid.userData.conduitCount = conduits.length;
-  grid.userData.junctionCount = junctions.length;
-  return grid;
 }
 
 function mirrorNodeIsOnline(node) {
@@ -2479,7 +2318,7 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
     group,
     position,
     "REPOSITORIES",
-    "world-edge portals · 3D size sunbursts",
+    "perimeter portals · 3D size sunbursts",
     "#77d9ff",
     5.2,
   );
@@ -2549,91 +2388,6 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
     }
   });
   return group;
-}
-
-function createRoutingStation(THREE, position, interactive, animated) {
-  const group = new THREE.Group();
-  const base = new THREE.Mesh(
-    new THREE.CylinderGeometry(3.5, 3.9, 0.42, 12),
-    makeMaterial(THREE, "#12313b", { roughness: 0.68 }),
-  );
-  base.position.y = 0.22;
-  group.add(base);
-
-  const tower = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.5, 0.86, 4.7, 10),
-    makeMaterial(THREE, "#80e8ff", {
-      metalness: 0.28,
-      roughness: 0.34,
-      emissive: "#13586c",
-      emissiveIntensity: 0.72,
-    }),
-  );
-  tower.position.y = 2.65;
-  group.add(tower);
-
-  const routeRing = new THREE.Group();
-  routeRing.position.y = 3.25;
-  for (let index = 0; index < 3; index += 1) {
-    const angle = (index / 3) * Math.PI * 2;
-    const endpoint = new THREE.Mesh(
-      new THREE.BoxGeometry(0.84, 0.62, 0.84),
-      makeMaterial(THREE, index === 0 ? "#9ef7c6" : "#77d9ff", {
-        emissive: index === 0 ? "#235f44" : "#164d63",
-        emissiveIntensity: 0.62,
-      }),
-    );
-    endpoint.position.set(Math.cos(angle) * 2.4, 0, Math.sin(angle) * 2.4);
-    endpoint.userData.endpoint = true;
-    routeRing.add(endpoint);
-
-    const beam = new THREE.Mesh(
-      new THREE.BoxGeometry(2.05, 0.08, 0.08),
-      makeMaterial(THREE, "#80e8ff", {
-        transparent: true,
-        opacity: 0.65,
-        emissive: "#80e8ff",
-        emissiveIntensity: 0.9,
-      }),
-    );
-    beam.position.set(Math.cos(angle) * 1.18, 0, Math.sin(angle) * 1.18);
-    beam.rotation.y = -angle;
-    routeRing.add(beam);
-  }
-  group.add(routeRing);
-
-  const dish = new THREE.Mesh(
-    new THREE.TorusGeometry(0.9, 0.09, 10, 36),
-    makeMaterial(THREE, "#e6fbff", {
-      emissive: "#80e8ff",
-      emissiveIntensity: 0.55,
-    }),
-  );
-  dish.position.y = 5.35;
-  dish.rotation.x = Math.PI / 2;
-  group.add(dish);
-
-  addSectionPlaque(
-    THREE,
-    group,
-    position,
-    "ROUTING STATION",
-    "healthy HTTPS mirrors",
-    "#80e8ff",
-    5,
-  );
-
-  const finished = finishLandmark(group, "routing", position, interactive);
-  animated.push((time) => {
-    routeRing.rotation.y = time * 0.00022;
-    routeRing.children.forEach((child, index) => {
-      if (child.userData.endpoint) {
-        child.position.y = Math.sin(time * 0.0018 + index) * 0.16;
-      }
-    });
-    dish.rotation.z = time * 0.00045;
-  });
-  return finished;
 }
 
 function createOrganizationQuarter(THREE, position, interactive, animated) {
@@ -2856,74 +2610,6 @@ function createSecurityWorkshop(THREE, position, interactive, animated) {
   return group;
 }
 
-function createLaunchpad(THREE, position, interactive, animated) {
-  const group = new THREE.Group();
-  const padMaterial = makeMaterial(THREE, "#213c4b", { roughness: 0.58 });
-  const glowMaterial = makeMaterial(THREE, "#b6d8ff", {
-    emissive: "#5e9bd9",
-    emissiveIntensity: 0.8,
-    roughness: 0.28,
-  });
-  const base = new THREE.Mesh(new THREE.CylinderGeometry(4.4, 4.8, 0.55, 12), padMaterial);
-  base.position.y = 0.28;
-  group.add(base);
-  for (let index = 0; index < 4; index += 1) {
-    const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(1.7 + index * 0.5, 0.055, 8, 64),
-      glowMaterial,
-    );
-    ring.rotation.x = Math.PI / 2;
-    ring.position.y = 0.61 + index * 0.09;
-    ring.userData.spin = index % 2 ? -1 : 1;
-    group.add(ring);
-  }
-  const portal = new THREE.Mesh(new THREE.TorusGeometry(2.1, 0.13, 12, 64), glowMaterial);
-  portal.position.y = 3.1;
-  group.add(portal);
-  const portalFill = new THREE.Mesh(
-    new THREE.CircleGeometry(2, 48),
-    makeMaterial(THREE, "#6a90d5", {
-      transparent: true,
-      opacity: 0.26,
-      emissive: "#4b68a8",
-      emissiveIntensity: 1.2,
-      side: THREE.DoubleSide,
-    }),
-  );
-  portalFill.position.y = 3.1;
-  group.add(portalFill);
-  addSectionPlaque(THREE, group, position, "LAUNCHPAD", "events · sky offices · worlds", "#b6d8ff", 6);
-  group.position.set(...position);
-  group.userData.landmark = "launchpad";
-  group.traverse((child) => {
-    if (child.isMesh) {
-      child.userData.landmark = "launchpad";
-      interactive.push(child);
-    }
-  });
-  setShadows(group);
-  animated.push((time) => {
-    portal.rotation.z = time * 0.0003;
-    portalFill.material.opacity = 0.2 + Math.sin(time * 0.0015) * 0.08;
-    group.children.forEach((child) => {
-      if (child.userData.spin) child.rotation.z += 0.003 * child.userData.spin;
-    });
-  });
-  return group;
-}
-
-function finishLandmark(group, id, position, interactive) {
-  group.position.set(...position);
-  group.userData.landmark = id;
-  group.traverse((child) => {
-    if (!child.isMesh) return;
-    child.userData.landmark = id;
-    interactive.push(child);
-  });
-  setShadows(group);
-  return group;
-}
-
 function createCommunityStage(THREE, position, interactive, animated) {
   const group = new THREE.Group();
   const platform = new THREE.Mesh(
@@ -2995,25 +2681,6 @@ function createNeighborhood(THREE, position, interactive, animated) {
     group.add(house);
   }
 
-  // A quiet, non-punitive waiting area. No avatar is placed here unless that
-  // contributor has elected to share an away/inactive state.
-  for (let row = 0; row < 3; row += 1) {
-    const bleacher = new THREE.Mesh(
-      new THREE.BoxGeometry(6.7 - row * 0.45, 0.28, 0.7),
-      makeMaterial(THREE, "#6c5539"),
-    );
-    bleacher.position.set(0, 0.35 + row * 0.34, 4.1 + row * 0.52);
-    group.add(bleacher);
-  }
-  const quietSign = makeLabelSprite(
-    THREE,
-    "QUIET SEATING",
-    "away status is optional",
-    "#b8e986",
-  );
-  quietSign.scale.set(4.2, 1.4, 1);
-  quietSign.position.set(0, 2.3, 5.0);
-  group.add(quietSign);
   addSectionPlaque(
     THREE,
     group,
@@ -3354,402 +3021,6 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
   return group;
 }
 
-// The barn that replaced the sky. Every destination that used to hover over the
-// Town Square is parked here on the ground, one per bay, under a roof frame
-// that is itself unfinished, behind doorways wide enough to roll them back out
-// once the work is done.
-function createWorkshopBarn(THREE) {
-  const barn = new THREE.Group();
-  barn.name = "works-in-progress-barn";
-  const plank = makeMaterial(THREE, "#8c3f2e", { roughness: 0.86 });
-  const trim = makeMaterial(THREE, "#e7d8bd", { roughness: 0.72 });
-  const roofing = makeMaterial(THREE, "#5a4335", { roughness: 0.82 });
-  const halfWidth = WORKSHOP_BARN_HALF_WIDTH;
-  const halfDepth = WORKSHOP_BARN_HALF_DEPTH;
-  const wallHeight = WORKSHOP_BARN_WALL_HEIGHT;
-
-  const floor = new THREE.Mesh(
-    new THREE.BoxGeometry(halfWidth * 2, 0.3, halfDepth * 2),
-    makeMaterial(THREE, "#4b453d", { roughness: 0.94 }),
-  );
-  floor.position.y = 0.15;
-  barn.add(floor);
-
-  // Both ends are full-width doorways and the long sides are stall-height plank
-  // walls under open timber framing. Nothing above knee height stands between
-  // the chase camera and the parked work, whichever way a visitor faces.
-  const stallHeight = 3.2;
-  for (const side of [-1, 1]) {
-    const stall = new THREE.Mesh(
-      new THREE.BoxGeometry(0.6, stallHeight, halfDepth * 2),
-      plank,
-    );
-    stall.position.set(side * (halfWidth - 0.3), stallHeight / 2, 0);
-    barn.add(stall);
-    const plate = new THREE.Mesh(
-      new THREE.BoxGeometry(0.6, 0.5, halfDepth * 2),
-      trim,
-    );
-    plate.position.set(side * (halfWidth - 0.3), wallHeight - 0.25, 0);
-    barn.add(plate);
-  }
-
-  // Posts and header beams frame both doorways. The mid posts land in the gaps
-  // between bays, so each end reads as a row of garage doors rather than one
-  // undivided hole.
-  const headerHeight = wallHeight - WORKSHOP_BARN_DOOR_HEIGHT;
-  for (const end of [-1, 1]) {
-    const endZ = end * (halfDepth - 0.3);
-    for (const x of [-(halfWidth - 0.3), -13.1, 12.75, halfWidth - 0.3]) {
-      const post = new THREE.Mesh(
-        new THREE.BoxGeometry(0.7, wallHeight, 0.7),
-        plank,
-      );
-      post.position.set(x, wallHeight / 2, endZ);
-      barn.add(post);
-    }
-    // Only the town-facing side carries a header. Leaving the aisle side open
-    // to the trusses keeps the beam out of the arriving camera's sightline.
-    if (end > 0) continue;
-    const header = new THREE.Mesh(
-      new THREE.BoxGeometry(halfWidth * 2, headerHeight, 0.6),
-      plank,
-    );
-    header.position.set(
-      0,
-      WORKSHOP_BARN_DOOR_HEIGHT + headerHeight / 2,
-      endZ,
-    );
-    barn.add(header);
-  }
-  for (const side of [-1, 1]) {
-    for (const half of [-1, 1]) {
-      const brace = new THREE.Mesh(
-        new THREE.BoxGeometry(0.18, 0.34, 8.4),
-        trim,
-      );
-      brace.position.set(
-        side * (halfWidth - 0.3),
-        stallHeight + 1.9,
-        (half * halfDepth) / 2,
-      );
-      brace.rotation.x = half * 0.55;
-      barn.add(brace);
-    }
-  }
-
-  // The gambrel roof is still only its frame: six trusses carrying five
-  // purlins, and no decking. That keeps the barn itself honestly unfinished and
-  // leaves the bays lit and readable from the raised camera.
-  const trussSegments = [
-    { z: 6.7, y: 11.2, length: 4.84, tilt: 0.519 },
-    { z: 2.3, y: 13.3, length: 4.94, tilt: 0.373 },
-  ];
-  for (const x of [-halfWidth + 0.3, -13.1, -4.4, 4.4, 12.75, halfWidth - 0.3]) {
-    trussSegments.forEach((segment) => {
-      for (const side of [-1, 1]) {
-        const beam = new THREE.Mesh(
-          new THREE.BoxGeometry(0.34, 0.34, segment.length),
-          roofing,
-        );
-        beam.position.set(x, segment.y, side * segment.z);
-        beam.rotation.x = side * segment.tilt;
-        barn.add(beam);
-      }
-    });
-  }
-  const purlins = [
-    { y: wallHeight, z: halfDepth + 0.8 },
-    { y: wallHeight, z: -halfDepth - 0.8 },
-    { y: 12.4, z: 4.6 },
-    { y: 12.4, z: -4.6 },
-    { y: 14.2, z: 0 },
-  ];
-  purlins.forEach((purlin) => {
-    const beam = new THREE.Mesh(
-      new THREE.BoxGeometry(halfWidth * 2 + 1.2, 0.26, 0.26),
-      roofing,
-    );
-    beam.position.set(0, purlin.y, purlin.z);
-    barn.add(beam);
-  });
-
-  // The barn name goes on both faces of the north header: the outer face reads
-  // on the walk down from the Town Square, the inner one from the aisle.
-  const signTexture = wordTexture(
-    THREE,
-    "WORKS IN PROGRESS BARN",
-    "parked destinations · unfinished",
-    "#f7c96b",
-  );
-  for (const facing of [-1, 1]) {
-    const sign = new THREE.Mesh(
-      new THREE.PlaneGeometry(13.2, 4.4),
-      new THREE.MeshBasicMaterial({ map: signTexture, transparent: true }),
-    );
-    sign.position.set(
-      0,
-      WORKSHOP_BARN_DOOR_HEIGHT + headerHeight / 2,
-      -halfDepth + 0.3 + facing * 0.35,
-    );
-    if (facing < 0) sign.rotation.y = Math.PI;
-    barn.add(sign);
-  }
-
-  // Bay furniture: a plinth per destination, a mount post under the ones that
-  // are held clear of the floor, and a plaque saying the work is unfinished.
-  const bayZ = WORKSHOP_BARN_BAY_Z - WORKSHOP_BARN_CENTER_Z;
-  Object.values(WORKSHOP_BARN_BAYS).forEach((bay) => {
-    const plinth = new THREE.Mesh(
-      new THREE.CylinderGeometry(bay.radius, bay.radius + 0.3, 0.5, 14),
-      makeMaterial(THREE, "#2c2a25", { roughness: 0.88 }),
-    );
-    plinth.position.set(bay.x, 0.4, bayZ);
-    barn.add(plinth);
-    if (bay.y > 1.1) {
-      const post = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.32, 0.5, bay.y - 0.65, 10),
-        makeMaterial(THREE, "#6b665c", { metalness: 0.3, roughness: 0.6 }),
-      );
-      post.position.set(bay.x, 0.65 + (bay.y - 0.65) / 2, bayZ);
-      barn.add(post);
-      const cradle = new THREE.Mesh(
-        new THREE.TorusGeometry(0.75, 0.12, 8, 20),
-        makeMaterial(THREE, "#f7c96b", {
-          emissive: "#7a5a17",
-          emissiveIntensity: 0.4,
-        }),
-      );
-      cradle.rotation.x = Math.PI / 2;
-      cradle.position.set(bay.x, bay.y - 0.6, bayZ);
-      barn.add(cradle);
-    }
-    const plaque = makeGroundPlaque(
-      THREE,
-      "WORK IN PROGRESS",
-      bay.plaque,
-      bay.color,
-    );
-    plaque.position.set(
-      bay.x,
-      0.3,
-      WORKSHOP_BARN_PLAQUE_Z - WORKSHOP_BARN_CENTER_Z,
-    );
-    // makeGroundPlaque faces +z, which is already the aisle side.
-    barn.add(plaque);
-  });
-
-  for (const x of [-15, -5, 5, 15]) {
-    const lamp = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.55, 0.42, 0.22, 12),
-      makeMaterial(THREE, "#ffe9b0", {
-        emissive: "#ffd27a",
-        emissiveIntensity: 0.7,
-      }),
-    );
-    lamp.position.set(x, wallHeight - 0.7, 0);
-    barn.add(lamp);
-  }
-
-  // The barn never casts: a 44-unit roof would drop the whole interior into
-  // shadow and hide the work parked underneath it.
-  setShadows(barn, false, true);
-  barn.position.set(0, 0, WORKSHOP_BARN_CENTER_Z);
-  return barn;
-}
-
-// The sky office kept its name and its cloud raft, but the raft is now a
-// deflated prop sitting on the barn floor under the office it used to carry.
-function createSkyOffice(THREE) {
-  const group = new THREE.Group();
-  const bay = WORKSHOP_BARN_BAYS["sky-campus"];
-  const cloudMaterial = makeMaterial(THREE, "#d8edf2", {
-    transparent: true,
-    opacity: 0.72,
-    roughness: 0.9,
-  });
-  for (let index = 0; index < 9; index += 1) {
-    const cloud = new THREE.Mesh(
-      new THREE.SphereGeometry(1.2 + (index % 3) * 0.28, 16, 12),
-      cloudMaterial,
-    );
-    cloud.scale.y = 0.22;
-    cloud.position.set((index % 3) * 1.7 - 1.7, 0.16, (index % 2) * 1.35 - 0.68);
-    group.add(cloud);
-  }
-  const office = new THREE.Mesh(
-    new THREE.BoxGeometry(4.6, 2.25, 3.4),
-    makeMaterial(THREE, "#d5b6ff", {
-      transparent: true,
-      opacity: 0.76,
-      metalness: 0.18,
-      roughness: 0.34,
-    }),
-  );
-  office.position.y = 1.55;
-  group.add(office);
-  const roof = new THREE.Mesh(
-    new THREE.ConeGeometry(3.2, 1.15, 4),
-    makeMaterial(THREE, "#4b3b6b"),
-  );
-  roof.position.y = 3.25;
-  roof.rotation.y = Math.PI / 4;
-  group.add(roof);
-  const label = makeLabelSprite(
-    THREE,
-    "SKY OFFICE",
-    "work in progress · parked indoors",
-    "#d5b6ff",
-  );
-  label.position.y = 4.6;
-  group.add(label);
-  group.position.set(bay.x, bay.y, WORKSHOP_BARN_BAY_Z);
-  group.scale.setScalar(0.86);
-  setShadows(group);
-  return group;
-}
-
-// The other worlds are unfinished, so none of them orbits overhead any more:
-// each one stands in its own barn bay, on the plinth and mount post that
-// createWorkshopBarn puts under it.
-function createOtherWorlds(THREE, animated) {
-  const destinations = new THREE.Group();
-  destinations.name = "functional-world-destinations";
-  const bayPosition = (spaceId) => {
-    const bay = WORKSHOP_BARN_BAYS[spaceId];
-    return [bay.x, bay.y, WORKSHOP_BARN_BAY_Z];
-  };
-
-  const station = new THREE.Group();
-  const stationCore = new THREE.Mesh(
-    new THREE.SphereGeometry(1.4, 20, 16),
-    makeMaterial(THREE, "#b6d8ff", {
-      emissive: "#456fac",
-      emissiveIntensity: 0.65,
-      metalness: 0.55,
-      roughness: 0.24,
-    }),
-  );
-  station.add(stationCore);
-  const stationRing = new THREE.Mesh(
-    new THREE.TorusGeometry(2.5, 0.22, 12, 64),
-    makeMaterial(THREE, "#77d9ff", {
-      emissive: "#237a99",
-      emissiveIntensity: 0.72,
-      metalness: 0.48,
-    }),
-  );
-  stationRing.rotation.x = Math.PI / 2.8;
-  station.add(stationRing);
-  const stationLabel = makeLabelSprite(
-    THREE,
-    "SPACE STATION",
-    "work in progress · chat rooms",
-    "#b6d8ff",
-  );
-  stationLabel.position.y = 3.7;
-  station.add(stationLabel);
-  station.position.set(...bayPosition("space-station"));
-  destinations.add(station);
-
-  const codePlanet = new THREE.Group();
-  const codeGlobe = new THREE.Mesh(
-    new THREE.IcosahedronGeometry(2.2, 2),
-    makeMaterial(THREE, "#153a46", {
-      emissive: "#1c718d",
-      emissiveIntensity: 0.48,
-      metalness: 0.2,
-    }),
-  );
-  codePlanet.add(codeGlobe);
-  for (let index = 0; index < 14; index += 1) {
-    const file = new THREE.Mesh(
-      new THREE.BoxGeometry(0.22, 0.3, 0.06),
-      makeMaterial(THREE, ["#77d9ff", "#9ef7c6", "#d5b6ff"][index % 3], {
-        emissive: "#276f73",
-        emissiveIntensity: 0.55,
-      }),
-    );
-    const angle = (index / 14) * Math.PI * 2;
-    file.position.set(Math.cos(angle) * 3, Math.sin(angle * 2) * 0.75, Math.sin(angle) * 3);
-    codePlanet.add(file);
-  }
-  const codeLabel = makeLabelSprite(
-    THREE,
-    "CODE PLANET",
-    "work in progress · repository world",
-    "#77d9ff",
-  );
-  codeLabel.position.y = 4.1;
-  codePlanet.add(codeLabel);
-  codePlanet.position.set(...bayPosition("code-planet"));
-  destinations.add(codePlanet);
-
-  const orgRegion = new THREE.Group();
-  const garden = new THREE.Mesh(
-    new THREE.CylinderGeometry(3.1, 3.5, 0.5, 18),
-    makeMaterial(THREE, "#3c684d"),
-  );
-  orgRegion.add(garden);
-  for (let index = 0; index < 18; index += 1) {
-    const flower = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(0.22 + (index % 3) * 0.05, 1),
-      makeMaterial(THREE, ["#d5b6ff", "#ff9eb7", "#9ef7c6"][index % 3], {
-        emissive: "#60458b",
-        emissiveIntensity: 0.42,
-      }),
-    );
-    const angle = (index / 18) * Math.PI * 2;
-    flower.position.set(Math.cos(angle) * (1.2 + (index % 3) * 0.65), 0.62, Math.sin(angle) * (1.2 + (index % 3) * 0.65));
-    orgRegion.add(flower);
-  }
-  const orgLabel = makeLabelSprite(
-    THREE,
-    "GARDEN CAMPUS",
-    "work in progress · org region",
-    "#d5b6ff",
-  );
-  orgLabel.position.y = 3.8;
-  orgRegion.add(orgLabel);
-  orgRegion.position.set(...bayPosition("organization-region"));
-  destinations.add(orgRegion);
-
-  const planetAtlas = new THREE.Group();
-  ["#f7c96b", "#ff9eb7", "#8fcfff"].forEach((color, index) => {
-    const planet = new THREE.Mesh(
-      new THREE.SphereGeometry(0.65 + index * 0.28, 18, 14),
-      makeMaterial(THREE, color, {
-        emissive: color,
-        emissiveIntensity: 0.28,
-      }),
-    );
-    planet.position.set((index - 1) * 2.7, index * 0.65, 0);
-    planetAtlas.add(planet);
-  });
-  const atlasLabel = makeLabelSprite(
-    THREE,
-    "COMMUNITY PLANETS",
-    "work in progress · events · regions",
-    "#f7c96b",
-  );
-  atlasLabel.position.y = 3.8;
-  planetAtlas.add(atlasLabel);
-  planetAtlas.position.set(...bayPosition("planet-atlas"));
-  destinations.add(planetAtlas);
-
-  // Parked exhibits still turn on their mounts; nothing drifts up and down any
-  // more, because everything is resting on the barn floor.
-  animated.push((time) => {
-    station.rotation.y = time * 0.00016;
-    stationRing.rotation.z = time * 0.0004;
-    codePlanet.rotation.y = -time * 0.00011;
-    planetAtlas.children.forEach((child, index) => {
-      if (child.isMesh) child.rotation.y += 0.0008 * (index + 1);
-    });
-  });
-  return destinations;
-}
-
 function createWeather(THREE, scene) {
   const count = 700;
   const positions = new Float32Array(count * 3);
@@ -4003,17 +3274,13 @@ export function createWorldScene({
   arrivalBox.add(arrivalPlaque);
   world.add(arrivalBox);
 
-  world.add(createElectricMeshCityGrid(THREE, animated));
-
   const landmarkFactories = {
     information: createInformationBooth,
     fountain: createFountain,
     repositories: createRepositoryDistrict,
-    routing: createRoutingStation,
     organizations: createOrganizationQuarter,
     fediverse: createFediverseCenter,
     security: createSecurityWorkshop,
-    launchpad: createLaunchpad,
     events: createCommunityStage,
     neighborhood: createNeighborhood,
     workshops: createCodeWorkshops,
@@ -4119,9 +3386,6 @@ export function createWorldScene({
   setShadows(campfire);
   world.add(campfire);
 
-  world.add(createWorkshopBarn(THREE));
-  world.add(createSkyOffice(THREE));
-  world.add(createOtherWorlds(THREE, animated));
   const registeredUserLounge = createRegisteredUserLounge(
     THREE,
     animated,
@@ -4546,37 +3810,6 @@ export function createWorldScene({
     return true;
   }
 
-  function travelToSpace(spaceId) {
-    // Every space is a barn bay now, so arrivals land in the aisle in front of
-    // the parked destination rather than on a platform in the sky.
-    const bay = WORKSHOP_BARN_BAYS[spaceId];
-    const destination = bay
-      ? new THREE.Vector3(bay.x, WORLD_SPACE_FLOORS[spaceId], WORKSHOP_BARN_AISLE_Z)
-      : null;
-    if (!destination) return false;
-    currentSpace = spaceId;
-    currentFloorY = destination.y;
-    player.position.copy(destination);
-    cameraFocus = null;
-    cancelDash();
-    focusedRepositoryKey = "";
-    currentLocation = spaceId
-      .split("-")
-      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-      .join(" ");
-    onLocationChange(currentLocation, "launchpad");
-    onMovement({
-      x: destination.x,
-      y: destination.y,
-      z: destination.z,
-      heading: player.rotation.y,
-      activity: `collaborating in ${spaceId}`,
-      space: spaceId,
-      moving: false,
-    });
-    return true;
-  }
-
   function focusLandmark(id) {
     const landmark = landmarkById(id);
     const object = landmarkObjects.get(landmark.id);
@@ -4794,9 +4027,8 @@ export function createWorldScene({
     cameraFocus = record.group.position.clone();
     cameraFocus.y += 0.1;
     focusedRepositoryKey = key;
-    // Every portal faces toward the world center. Put the camera on that same
-    // inward normal so the selected sunburst is presented straight-on, and
-    // leave forward movement pointing from the campus toward the portal.
+    // Every perimeter portal faces toward the world center. Put the camera on
+    // that inward normal so the selected sunburst is presented straight-on.
     cameraYaw = -record.angle - Math.PI / 2;
     cameraPitch = 0.16;
     cameraZoom = Math.min(cameraZoom, 0.55);
@@ -5155,7 +4387,7 @@ export function createWorldScene({
         .split("-")
         .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
         .join(" ");
-      onLocationChange(currentLocation, "launchpad");
+      onLocationChange(currentLocation, "");
     }
   }
 
@@ -5503,12 +4735,11 @@ export function createWorldScene({
   }
 
   function updateNetworkNodes(nodes = []) {
-    const routingPosition = landmarkById("routing").position;
-    const routingX = Number(routingPosition?.[0]) || 32;
-    const routingZ = Number(routingPosition?.[2]) || 16;
-    // A dedicated 8×8 server aisle east of the routing station keeps all 64
-    // bounded live slots separate without expanding rings through neighboring
-    // repository and launchpad landmarks. Fill closest-to-routing slots first.
+    const routingX = SERVER_CABINET_YARD_ORIGIN[0];
+    const routingZ = SERVER_CABINET_YARD_ORIGIN[2];
+    // A dedicated 8×8 server yard keeps all 64 bounded live slots separate
+    // without requiring the retired routing-station landmark. Fill the inward
+    // slots first so a small healthy fleet stays closest to the Town Square.
     const serverSlots = [];
     for (let column = 0; column < 8; column += 1) {
       for (let row = 0; row < 8; row += 1) {
@@ -5570,8 +4801,8 @@ export function createWorldScene({
       }
       const slot = serverSlots[index];
       cabinet.position.set(slot.x, 0.38, slot.z);
-      // The front display faces inward toward the routing station, so each
-      // cabinet remains individually readable from the surrounding walkway.
+      // The front display faces inward so each cabinet remains individually
+      // readable from the surrounding walkway.
       cabinet.rotation.y = Math.atan2(
         routingX - slot.x,
         routingZ - slot.z,
@@ -6147,8 +5378,9 @@ export function createWorldScene({
       })
       .sort((left, right) => left.key.localeCompare(right.key));
     const activeKey = `${
-      String(activeRepository?.owner || "").toLocaleLowerCase()
-    }/${
+      String(activeRepository?.owner || "").toLocaleLowerCase() +
+      "/"
+    }${
       String(
         activeRepository?.repo || activeRepository?.name || "",
       ).toLocaleLowerCase()
@@ -6185,7 +5417,7 @@ export function createWorldScene({
     if (!records.length) return;
 
     const layer = new THREE.Group();
-    layer.name = "world-edge-repository-portals";
+    layer.name = "repository-perimeter-portals";
     const guide = new THREE.Mesh(
       new THREE.TorusGeometry(REPOSITORY_EDGE_RADIUS, 0.045, 6, 256),
       makeMaterial(THREE, "#77d9ff", {
@@ -6196,7 +5428,7 @@ export function createWorldScene({
         roughness: 0.5,
       }),
     );
-    guide.name = "world-edge-repository-guide";
+    guide.name = "repository-perimeter-guide";
     guide.rotation.x = Math.PI / 2;
     guide.position.y = 0.12;
     layer.add(guide);
@@ -7273,9 +6505,8 @@ export function createWorldScene({
     finishPointer(event, false);
   }
 
-  // The visible floor of the current space, as a math plane: raycasting against
-  // it keeps double-click travel working on the sky campus and other elevated
-  // spaces, where the ground disc is far below the walkable floor.
+  // Raycast against the current shared floor so double-click travel stays
+  // accurate throughout the Town Square and its regional campuses.
   function groundPointAt(clientX, clientY) {
     pointerCoordinates({ clientX, clientY });
     raycaster.setFromCamera(pointer, camera);
@@ -7655,7 +6886,6 @@ export function createWorldScene({
     setControl,
     setSpawn,
     travelToRegion,
-    travelToSpace,
     visitNeighborhoodHome,
     setRemotePlayers,
     updateArrivalStats,

@@ -80,11 +80,9 @@ status delivery.
   permits one local capture, polls status no faster than 450 ms, and adds no
   socket, audio upload, model execution, or Worker work. These are hard bounds,
   not advisory targets.
+- **Current product state:** the World does not load a speech bridge script,
+  stylesheet, launcher, pairing panel, or microphone control. The Qt bridge is
+  retained as dormant local infrastructure for a possible future interface.
 - **Regression evidence:** `forkmesh-world-speech-tests` drives the real Qt
-  loopback server. `test_world_speech_bridge_frontend.py` enforces the static
-  boundary, and `world-speech.spec.js` drives pairing, destination selection,
-  transcript insertion, and cancellation in Chromium.
-- **Operational evidence:** the Qt Voice settings show exact origin, listener
-  port, expiry, and revocation state. Generalized local audit events identify
-  lifecycle failures without sensitive payloads. If browser loopback access is
-  unavailable, the panel fails closed and directs the user back to Qt.
+  loopback server, while `test_world_speech_bridge_frontend.py` enforces that
+  ForkMesh World exposes no browser speech entry point.
