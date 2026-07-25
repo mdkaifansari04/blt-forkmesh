@@ -58,6 +58,9 @@ const FIRST_VISIT_KEY = "forkmesh.world.firstVisitAt.v1";
 const VISIT_COUNT_KEY = "forkmesh.world.publicVisitCount.v1";
 const FORKBOT_GREETED_KEY = "forkmesh.world.forkbotGreeted.v1";
 const POSITION_KEY_PREFIX = "forkmesh.world.position.v1.";
+const DETAIL_WIDTH_KEY = "forkmesh.world.detailWidth.v1";
+const DETAIL_WIDTH_MIN = 320;
+const DETAIL_WIDTH_STEP = 48;
 const REFRESH_POSITION_KEY = "forkmesh.world.refresh-position.v1";
 const RENDERER_RECOVERY_KEY = "forkmesh.world.renderer-recovery.v1";
 const RENDERER_RECOVERY_DELAY_MS = 1500;
@@ -2711,6 +2714,14 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           aria-labelledby="world-detail-title"
           aria-hidden="true"
         ></aside>
+        <div
+          class="world-detail-resize"
+          data-world-detail-resize
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize the details panel"
+          tabindex="0"
+        ></div>
 
         <section
           class="world-office-prompt"
@@ -3768,7 +3779,7 @@ class ForkMeshWorld extends HTMLElement {
           this.handleRendererStateChange(state);
         },
         onForkbotChat: () => {
-          this.openWorldChat("/dashboard/chat", this.$("[data-world-chat-open]"));
+          this.openChatTerminal("@forkbot ");
         },
         onPlayForkmeshSong: () => {
           void this.playForkmeshSong();
@@ -3786,13 +3797,6 @@ class ForkMeshWorld extends HTMLElement {
         onModeration: (action) => this.moderateWorldPeer(action),
         onLayoutObjectMoved: (move) => {
           void this.lockWorldObjectPlacement(move);
-        },
-        onAccountAction: (action) => {
-          if (action === "logout") {
-            void this.logoutFromWorld();
-            return;
-          }
-          this.toggleWorldAccount(true, "login");
         },
       });
       this.syncWorldCameraModeButton();
@@ -3824,7 +3828,6 @@ class ForkMeshWorld extends HTMLElement {
         tasks: this.officeTasks,
       });
       this.world.setTheme(this.settings.theme);
-      this.world.setMemberLoungeLoading?.(true);
       this.world.setLightLevel(this.settings.lightLevel);
       this.world.setMovementTuning?.(this.movementTuning());
       void layoutPromise.then((layout) => {
@@ -3845,8 +3848,13 @@ class ForkMeshWorld extends HTMLElement {
       this.world.updateFediverseDirectory(this.fediverseDirectory);
       this.world.updateMediaSpaces?.(this.mediaSpaces, this.mediaRoom);
       this.world.updateWorldBulletin?.(this.events);
+      // Populate the Mastodon kiosk billboard on entry; the fetch is public,
+      // credential-free, and cached for five minutes. When a fresh snapshot
+      // is already cached the load resolves without refetching, so push the
+      // cached profile onto the rebuilt scene explicitly.
+      void this.loadMastodonBoard();
+      this.syncMastodonKiosk();
       this.syncMemberLounge();
-      this.world.setMemberLoungeLoading?.(false);
       this.syncRepositoryScene();
       // Do not fan out a star request for every perimeter portal at startup.
       // The active repository hydrates its exact count below; inactive portals
@@ -4460,9 +4468,9 @@ class ForkMeshWorld extends HTMLElement {
             persistedInactive: true,
           }))
         : [];
-    // Public chat roster directory (user profiles only) doubles as the Member
-    // Lounge population: every public registered account gets a seat, and the
-    // roster length feeds the total-members sign at the lounge front.
+    // Public chat roster directory (user profiles only) doubles as the
+    // campfire-circle population: every public registered account gets a
+    // stool around the fire, and the roster length sizes the circle.
         this.memberDirectory =
       membersResult.status === "fulfilled" &&
       Array.isArray(membersResult.value?.users)
@@ -5684,6 +5692,8 @@ class ForkMeshWorld extends HTMLElement {
       });
     }
 
+    this.bindDetailResize();
+
     this.addEventListener("keydown", (event) => {
       if (event.code !== "Escape") return;
       if (this.$("[data-world-chat]")?.dataset.open === "true") {
@@ -5697,6 +5707,120 @@ class ForkMeshWorld extends HTMLElement {
       } else if (this.tourIndex >= 0) {
         this.stopTour();
       }
+    });
+  }
+
+  // Detail panels dock to the right edge, so widening one means dragging its
+  // left border outward. The chosen width is a device-local preference and the
+  // per-panel base width stays the floor.
+  detailPanelWidth() {
+    const detail = this.$("[data-world-detail]");
+    const rendered = Math.round(detail?.getBoundingClientRect().width || 0);
+    return rendered || this.detailWidth || DETAIL_WIDTH_MIN;
+  }
+
+  detailWidthLimit() {
+    const host =
+      this.$("[data-world-root]")?.clientWidth ||
+      this.clientWidth ||
+      window.innerWidth ||
+      0;
+    return Math.max(DETAIL_WIDTH_MIN, Math.round(host - 28));
+  }
+
+  setDetailWidth(width, { persist = true } = {}) {
+    const next = Math.round(
+      Math.min(
+        Math.max(Number(width) || 0, DETAIL_WIDTH_MIN),
+        this.detailWidthLimit(),
+      ),
+    );
+    this.detailWidth = next;
+    // .fm-world declares the fallback, so the override has to land there and
+    // not on the host element it would otherwise inherit from.
+    this.$("[data-world-root]")?.style.setProperty(
+      "--world-detail-user-width",
+      `${next}px`,
+    );
+    if (persist) {
+      try {
+        localStorage.setItem(DETAIL_WIDTH_KEY, String(next));
+      } catch (_) {}
+    }
+    this.syncDetailResizeState();
+  }
+
+  resetDetailWidth() {
+    this.detailWidth = 0;
+    this.$("[data-world-root]")?.style.removeProperty(
+      "--world-detail-user-width",
+    );
+    try {
+      localStorage.removeItem(DETAIL_WIDTH_KEY);
+    } catch (_) {}
+    this.syncDetailResizeState();
+  }
+
+  syncDetailResizeState() {
+    const grip = this.$("[data-world-detail-resize]");
+    if (!grip) return;
+    grip.setAttribute("aria-valuemin", String(DETAIL_WIDTH_MIN));
+    grip.setAttribute("aria-valuemax", String(this.detailWidthLimit()));
+    grip.setAttribute("aria-valuenow", String(this.detailPanelWidth()));
+  }
+
+  bindDetailResize() {
+    const grip = this.$("[data-world-detail-resize]");
+    const detail = this.$("[data-world-detail]");
+    if (!grip || !detail) return;
+    let stored = 0;
+    try {
+      stored = Number(localStorage.getItem(DETAIL_WIDTH_KEY) || 0);
+    } catch (_) {}
+    if (Number.isFinite(stored) && stored >= DETAIL_WIDTH_MIN) {
+      this.setDetailWidth(stored, { persist: false });
+    } else {
+      this.syncDetailResizeState();
+    }
+    let activePointerId = null;
+    let anchorRight = 0;
+    grip.addEventListener("pointerdown", (event) => {
+      if (activePointerId !== null || event.button > 0) return;
+      event.preventDefault();
+      activePointerId = event.pointerId;
+      anchorRight = detail.getBoundingClientRect().right;
+      grip.dataset.dragging = "true";
+      grip.setPointerCapture?.(event.pointerId);
+    });
+    grip.addEventListener("pointermove", (event) => {
+      if (event.pointerId !== activePointerId) return;
+      event.preventDefault();
+      this.setDetailWidth(anchorRight - event.clientX);
+    });
+    const stopResize = (event) => {
+      if (event.pointerId !== activePointerId) return;
+      activePointerId = null;
+      delete grip.dataset.dragging;
+      try {
+        grip.releasePointerCapture?.(event.pointerId);
+      } catch (_) {}
+    };
+    grip.addEventListener("pointerup", stopResize);
+    grip.addEventListener("pointercancel", stopResize);
+    grip.addEventListener("lostpointercapture", stopResize);
+    grip.addEventListener("dblclick", () => this.resetDetailWidth());
+    grip.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowLeft") {
+        this.setDetailWidth(this.detailPanelWidth() + DETAIL_WIDTH_STEP);
+      } else if (event.key === "ArrowRight") {
+        this.setDetailWidth(this.detailPanelWidth() - DETAIL_WIDTH_STEP);
+      } else if (event.key === "Home" || event.key === "End") {
+        this.resetDetailWidth();
+      } else {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
     });
   }
 
@@ -6337,9 +6461,17 @@ class ForkMeshWorld extends HTMLElement {
     detail.setAttribute("aria-hidden", "false");
     backdrop.dataset.open = "true";
     backdrop.setAttribute("aria-hidden", "false");
+    // The panel clips its overflow but is still scrollable programmatically:
+    // any focus()/scrollIntoView() inside it could shove the whole panel
+    // sideways or upward, which reads as clipped text and blank space.
+    detail.scrollLeft = 0;
+    detail.scrollTop = 0;
+    this.syncDetailResizeState();
     window.setTimeout(() => {
       if (detail.dataset.open !== "true") return;
-      detail.querySelector("[data-world-detail-close]")?.focus();
+      detail
+        .querySelector("[data-world-detail-close]")
+        ?.focus({ preventScroll: true });
     }, focusDelay);
   }
 
@@ -6715,9 +6847,56 @@ class ForkMeshWorld extends HTMLElement {
       } finally {
         this.mastodonLoad = null;
         this.renderMastodonBoard();
+        this.syncMastodonKiosk();
       }
     })();
     return this.mastodonLoad;
+  }
+
+  // Mirror the mini-app's live profile onto the in-world kiosk billboard so
+  // the header, avatar, counts, and latest toots are visible without opening
+  // the panel. All strings are bounded by normalizeMastodonAccount/Status.
+  syncMastodonKiosk() {
+    const account = this.mastodonProfile;
+    if (!account) return;
+    this.world?.updateMastodonKiosk?.({
+      displayName: account.displayName,
+      acct: `@${account.acct}@mastodon.social`,
+      headerURL: account.header,
+      avatarURL: account.avatar,
+      followers: formatMastodonCount(account.followersCount),
+      following: formatMastodonCount(account.followingCount),
+      posts: formatMastodonCount(account.statusesCount),
+      joined: account.createdAt
+        ? new Date(account.createdAt).toLocaleDateString([], {
+            month: "short",
+            day: "2-digit",
+          })
+        : "—",
+      toots: this.mastodonStatuses.map((status) => {
+        const marker = [
+          status.pinned ? "📌" : "",
+          status.boostedFrom ? `🔁 @${status.boostedFrom}` : "",
+          status.spoiler ? `⚠ ${status.spoiler}` : "",
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        const body =
+          status.text ||
+          (status.images.length ? "(image attachment)" : "Open toot");
+        return {
+          author: status.authorName,
+          date: status.createdAt
+            ? new Date(status.createdAt).toLocaleDateString([], {
+                year: "numeric",
+                month: "short",
+                day: "numeric",
+              })
+            : "",
+          text: marker ? `${marker} — ${body}` : body,
+        };
+      }),
+    });
   }
 
   openSystemCapacityTables(table = null, { returnFocus = null } = {}) {
@@ -6819,9 +6998,20 @@ class ForkMeshWorld extends HTMLElement {
       </div>`;
     if (focus) {
       window.requestAnimationFrame(() => {
-        detail
-          .querySelector("[data-current='true']")
-          ?.scrollIntoView({ block: "center" });
+        // Scroll the table's own viewport rather than calling scrollIntoView,
+        // which would also scroll the clipped panel around the highlighted row.
+        const scroller = detail.querySelector(".world-capacity-scroll");
+        const row = detail.querySelector("[data-current='true']");
+        if (!scroller || !row) return;
+        const rowBox = row.getBoundingClientRect();
+        const offset =
+          rowBox.top -
+          scroller.getBoundingClientRect().top +
+          scroller.scrollTop;
+        scroller.scrollTop = Math.max(
+          0,
+          offset - (scroller.clientHeight - rowBox.height) / 2,
+        );
       });
     }
   }
@@ -13309,6 +13499,34 @@ class ForkMeshWorld extends HTMLElement {
     frame.src = frameURL;
   }
 
+  // Open the collapsed bottom-right CHAT bar (not the full chat overlay) and
+  // hand the composer a starting message so a visitor talking to ForkBot can
+  // start typing immediately. Uses postMessage rather than a query param
+  // because the terminal iframe is loaded once and kept alive across clicks.
+  openChatTerminal(prefillText = "") {
+    const details = this.$("[data-world-chat-terminal]");
+    const frame = this.$("[data-world-chat-terminal-frame]");
+    if (!details || !frame) return;
+    this.closeLandmark();
+    this.toggleSettings(false);
+    if (this.tourIndex >= 0) this.stopTour();
+    this.closeWorldChat();
+    const alreadyLoaded = Boolean(frame.dataset.worldChatUrl);
+    this.loadChatTerminalFrame();
+    details.open = true;
+    const sendPrefill = () => {
+      frame.contentWindow?.postMessage(
+        { type: "forkmesh:chat-prefill", text: prefillText },
+        location.origin,
+      );
+    };
+    if (alreadyLoaded) {
+      window.setTimeout(sendPrefill, 80);
+    } else {
+      frame.addEventListener("load", sendPrefill, { once: true });
+    }
+  }
+
   // Mirror the newest live chat line into the collapsed CHAT bar so the
   // bottom strip shows the latest message without opening the panel.
   setChatTerminalLastMessage(sender, text) {
@@ -15405,9 +15623,10 @@ class ForkMeshWorld extends HTMLElement {
 
   syncMemberLounge() {
     if (!this.world?.updateMemberLounge) return;
-    // Seat every public registered account in the Member Lounge, except the
-    // ones already rendered as live or opted-in idle avatars — those keep
-    // their richer presence avatar instead of a duplicate directory figure.
+    // Seat every public registered account in the circle around the campfire,
+    // except the ones already rendered as live or opted-in idle avatars —
+    // those keep their richer presence avatar instead of a duplicate
+    // directory figure, leaving their campfire stool visibly empty.
     const present = new Set([
       String(this.identity?.name || "").trim().toLowerCase(),
     ]);

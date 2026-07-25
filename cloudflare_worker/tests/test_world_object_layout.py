@@ -312,8 +312,7 @@ def test_world_frontend_loads_applies_and_admin_locks_the_layout():
     assert "OctahedronGeometry(0.09" in scene_js
     for object_id in (
         "world-bulletin", "arrival-box", "mastodon-kiosk", "campfire",
-        "registered-user-lounge", "active-leaderboard-sign",
-        "system-capacity-platform",
+        "active-leaderboard-sign", "system-capacity-platform",
     ):
         assert '"%s"' % object_id in scene_js
 
@@ -348,7 +347,6 @@ def test_individual_placards_and_node_cabinets_are_movable():
     assert 'worldLayoutId("plaque-", title)' in scene_js
     assert "plaque.userData.plaqueLayoutId = plaqueLayoutId(title);" in scene_js
     assert 'plaqueLayoutId("arrival")' in scene_js
-    assert 'plaqueLayoutId("member lounge")' in scene_js
     assert "registerMovableObject(plaqueId, child);" in scene_js
     # A placard nested in a section group is dragged in its parent's space.
     assert "function layoutGroundPoint(object, clientX, clientY)" in scene_js

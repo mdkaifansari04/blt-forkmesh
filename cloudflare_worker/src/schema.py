@@ -148,17 +148,6 @@ SCHEMA_STATEMENTS = [
         os TEXT, arch TEXT, pm TEXT, distro TEXT, version TEXT, detail TEXT)""",
     "CREATE INDEX IF NOT EXISTS idx_install_diag_ts ON install_diag(ts)",
     "CREATE INDEX IF NOT EXISTS idx_install_diag_run ON install_diag(run)",
-    # Opt-in crash/stall telemetry from desktop nodes (issue #354). One row per
-    # reported event. `node` is a client-computed one-way hash of the node's
-    # public key (an anonymized grouping key, NOT the key or any account); no
-    # email/IP is stored. `summary` is the scrubbed crash/stall text — repo names
-    # and filesystem paths are removed client-side before it is ever sent. Purely
-    # operational, like error_log / install_diag.
-    """CREATE TABLE IF NOT EXISTS telemetry (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
-        node TEXT NOT NULL, kind TEXT NOT NULL, version TEXT, os TEXT,
-        summary TEXT)""",
-    "CREATE INDEX IF NOT EXISTS idx_telemetry_ts ON telemetry(ts)",
     # Live host presence: lets /api/network/stats report "hosts online" without
     # probing every repo's tunnel Durable Object on every page view. repo_bi is a
     # blind index (no plaintext repo name), ts is refreshed while a host is active
