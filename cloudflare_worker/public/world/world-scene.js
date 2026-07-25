@@ -1906,6 +1906,7 @@ function mirrorRatio(used, total) {
 function nodeDataKey(node) {
   return JSON.stringify({
     name: node?.name,
+    machineName: node?.machineName,
     online: mirrorNodeIsOnline(node),
     healthy: node?.healthy,
     integrity: node?.integrity,
@@ -2074,7 +2075,13 @@ function serverPanelTexture(THREE, node) {
     context.textBaseline = "middle";
     context.font = '800 52px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#f1fff6";
-    context.fillText(String(node?.name || "MIRROR").toUpperCase().slice(0, 24), 58, 70);
+    context.fillText(
+      String(node?.machineName || node?.name || "MIRROR")
+        .toUpperCase()
+        .slice(0, 24),
+      58,
+      70,
+    );
     context.font = '700 25px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = statusColor;
     context.fillText(

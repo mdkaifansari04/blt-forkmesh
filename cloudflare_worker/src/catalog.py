@@ -276,4 +276,10 @@ def safe_catalog_record(data):
     if disk_total is not None:
         record["diskUsedBytes"] = disk_used
         record["diskTotalBytes"] = disk_total
+    # The publishing machine's node name (node/machineName on the desktop),
+    # distinct from the owning account. Same optional-extension rule: absent
+    # (never empty) when unset so older clients' signatures keep verifying.
+    machine_name = clean_string(data.get("machineName", ""), 63)
+    if machine_name:
+        record["machineName"] = machine_name
     return record

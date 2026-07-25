@@ -6709,7 +6709,12 @@ class ForkMeshWorld extends HTMLElement {
           <span>Online presence, signed repository publication, content integrity, and route eligibility are separate checks. An online node is not automatically trustworthy.</span>
         </div>
         <dl class="world-technical-list">
-          <div><dt>Node</dt><dd>${escapeHTML(node?.name || "Not reported")}</dd></div>
+          <div><dt>Node</dt><dd>${escapeHTML(
+            node?.machineName || node?.name || "Not reported",
+          )}</dd></div>
+          <div><dt>Operator account</dt><dd>${escapeHTML(
+            node?.name || "Not reported",
+          )}</dd></div>
           <div><dt>Node id</dt><dd class="world-break">${escapeHTML(
             node?.nodeId || "Not reported",
           )}</dd></div>
@@ -6801,7 +6806,7 @@ class ForkMeshWorld extends HTMLElement {
         <div>
           <p class="world-eyebrow">MIRROR SERVER / LIVE PUBLIC STATUS</p>
           <h2 id="world-detail-title">${escapeHTML(
-            node.name || "Mirror node",
+            node.machineName || node.name || "Mirror node",
           )}</h2>
         </div>
         <button class="world-detail-close" type="button" data-world-detail-close aria-label="Close mirror server details">×</button>
