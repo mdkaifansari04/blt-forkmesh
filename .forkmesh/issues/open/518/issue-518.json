@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751454,
+    "endDate": 1822276800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nCommunities can bootstrap, discover, exchange, recover keys, restore mirrors, and rebuild service after normal infrastructure is unavailable.\n\n## Scope\n\n- Document offline bootstrap, local community networks, removable media, independent discovery, key recovery, emergency mirrors, and clean restoration.\n- Provide printable/offline copies, signed bootstrap material, role checklists, decision trees, and recovery verification.\n- Run tabletop and live drills for origin loss, main-service loss, DNS loss, key loss, regional isolation, and corrupted backup.\n\n## Acceptance criteria\n\n- A team unfamiliar with the system restores a usable verified repository network from the offline runbook alone.\n- Exercises record recovery time, missing prerequisites, data loss, unsafe steps, and corrective owners.\n- Offline documentation and bootstrap material remain verifiable and current without forkmesh.com.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P1 resilience**\n- Milestone: **Adversarial resilience & disaster readiness**\n- Numeric priority: **44 of 44** (1 is highest)\n- Depends on: #502, #504, #505\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**5% as of 2026-07-22.** Normal install, mirror, LAN, key, and backup components offer partial ingredients; an integrated offline runbook and observed disaster drills remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Drill pass rate, recovery time/data loss, runbook defects, offline verification, and participant readiness. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-518",
+            "sig": "XPsctN2O5K4KpcfBkjLCbhYRZqvlUju4G-D_oyyFgIbVOQbduOVsb4Q0QM6T_RltBRH91vYEpHtYZ67e2UIRDg",
+            "title": "Publish and exercise disaster-mode recovery documentation",
+            "ts": 1784729751454,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "c185cf4a-b65c-45bd-a729-0ef6ed9ab8ca",
+            "labels": [
+                "docs",
+                "infra",
+                "community"
+            ],
+            "sig": "ifkFYYYHvrXPFYDNAnbeEoUUgxOmEnqEO4xdsbjY5u-wpdkjpj1Qq5Rh0qN-uygmvcxQDJhyAywygjTnVv9OAA",
+            "ts": 1784729751455,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "7142c7ee-1bad-44b5-ac86-358554b43e5a",
+            "milestone": "Adversarial resilience & disaster readiness",
+            "sig": "jvVmoWEigDnRJcRZGec5RTR-Cqk6o7NqdTqymuWPEt6IvYvLI5cREZ1u4hQi5zP68PW_Z2SfXEyxARZ8UlMPBA",
+            "ts": 1784729751456,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1822276800000,
+            "id": "45144a8c-f7b3-4bf5-b0a9-44031a6768ed",
+            "sig": "BeKl9jOhb6vbm7AU3X7IuFJeu0iB7ZQo87ZwFncFSNofxxSfR6P089hYfia_RnhO3xQriCKxxyGBNsQCnj-sBQ",
+            "startDate": 1793595600000,
+            "ts": 1784729751457,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "adb7c292-adf3-48f5-b7af-c948bb4bfc00",
+            "priority": 44,
+            "sig": "OTxgY8etsUGM4L0ZtzXEv12XfpebbfpxSh6WjnoHDRJdu0wa1RhQWBm-loITf1AVU0_EHXVgMu5IlVyuqK_ODg",
+            "ts": 1784729751458,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "5e330af4-de4e-4684-a871-5ec726173d79",
+            "progress": 5,
+            "sig": "jg1J26xyEVuqQbhWcs3SQ5F86qM9vijqusApjzpfunKOgRGbCfjs3m7pBDgcasDdm7GoKqiQxwu-qyHK-w_hBg",
+            "ts": 1784729751459,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "docs",
+        "infra",
+        "community"
+    ],
+    "milestone": "Adversarial resilience & disaster readiness",
+    "number": 518,
+    "priority": 44,
+    "progress": 5,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1793595600000,
+    "status": "open",
+    "title": "Publish and exercise disaster-mode recovery documentation",
+    "updatedAt": 1784729751459,
+    "votes": 0
+}

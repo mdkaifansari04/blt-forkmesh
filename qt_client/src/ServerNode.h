@@ -51,6 +51,15 @@ public:
     // filtered list is empty. Call before start().
     void setEndpoints(const QList<QUrl> &endpoints);
     void setConnectionAuthorizer(std::function<bool(const QUrl &)> authorizer);
+    void setNetworkAvailable(bool available) override;
+
+#ifdef FORKMESH_SERVER_NODE_TESTS
+    // Keeps transport integration tests fast and makes backpressure
+    // deterministic without changing production limits.
+    void setTransportLimitsForTests(int connectTimeoutMs,
+                                    int reconnectBaseDelayMs,
+                                    qint64 maxPendingWriteBytes);
+#endif
 
     void sendChat(const QString &channel, const QString &text) override;
     void setAccountKind(const QString &kind) override;
@@ -120,6 +129,8 @@ private:
 
     void openConnection();      // (re)create the socket and start connecting
     void scheduleReconnect();   // progressive backoff after a drop/failure
+    void discardCurrentSocket();
+    void failCurrentConnection();
     // Shared teardown when the link drops — from the socket's disconnected()
     // signal or from the ping timer's stale-rx watchdog, which catches
     // half-open sockets that never emit disconnected() at all.
@@ -239,6 +250,17 @@ private:
     // 101 no other timer is running, so a wedged attempt would hang forever.
     QTimer *m_connectTimeoutTimer = nullptr;
     bool m_userStopped = false;
+    bool m_networkAvailable = true;
+    // True for exactly one current TCP/TLS/WebSocket attempt (including an
+    // upgraded live link). It makes duplicate error/disconnect callbacks
+    // idempotent and prevents two reconnect timers from one failure.
+    bool m_attemptActive = false;
+    int m_connectTimeoutMs = 30000;
+    int m_reconnectBaseDelayMs = 1000;
+    qint64 m_maxPendingWriteBytes = 96ll * 1024 * 1024 + 14;
+    bool m_reconnectJitter = true;
+    qint64 m_backpressureDrops = 0;
+    qint64 m_lastBackpressureNoticeMs = 0;
     QTimer *m_rosterEmitTimer = nullptr; // coalesces roster/status emissions
     QHash<QString, qint64> m_lastHelloReplyMs; // peer id -> last directed hello reply
     qint64 m_lastHelloSentMs = 0;

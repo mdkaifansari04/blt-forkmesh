@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 2,
+  "fetchedAt": "2026-07-25",
+  "license": {
+    "id": "CC0-1.0",
+    "url": "https://creativecommons.org/publicdomain/zero/1.0/"
+  },
+  "tracks": [
+    {
+      "id": "cosmic-waves",
+      "title": "Cosmic Waves",
+      "creator": "HoliznaCC0",
+      "sourcePage": "https://freemusicarchive.org/music/holiznacc0/space-sleep-meditation/cosmic-waves/",
+      "sourceFile": "https://files.freemusicarchive.org/storage-freemusicarchive-org/tracks/Ezl0hehTpT9uZOQSob72CXcbH1TSnfCpUG0khDQG.mp3",
+      "sourceSha256": "36b605312a3bf5cd746b0ccfdd700dd96d611401ee8455c0334dea245b26d884",
+      "sourceDurationSeconds": 1984.56,
+      "sourceBytes": 79383565,
+      "bundledFile": "cosmic-waves.ogg",
+      "bundledSha256": "34de47d2f2ca92b29c93c5cd610395bad2dd78aba212dacdd2ae71aabd0afc1b",
+      "durationSeconds": 1984.536984,
+      "bundledBytes": 14511353,
+      "bundledCodec": "Ogg Vorbis",
+      "bundledSampleRateHz": 44100,
+      "bundledChannels": 2,
+      "modification": "Source MP3 transcoded to stereo Ogg Vorbis with a nominal 80 kbit/s target at 44.1 kHz; source metadata removed."
+    },
+    {
+      "id": "dreamscape",
+      "title": "DreamScape",
+      "creator": "HoliznaCC0",
+      "sourcePage": "https://freemusicarchive.org/music/holiznacc0/space-sleep-meditation/dreamscape/",
+      "sourceFile": "https://files.freemusicarchive.org/storage-freemusicarchive-org/tracks/F8rsaDXQBxNNiQQSNmpO2RBULw8LxtHpjQPY8Gpi.mp3",
+      "sourceSha256": "77d7ef473cbed4164af43d1a7c8db871be83dfaa819e345517e9a61decb871dc",
+      "sourceDurationSeconds": 1319.976,
+      "sourceBytes": 52800205,
+      "bundledFile": "dreamscape.ogg",
+      "bundledSha256": "b0d295a3e6339bd966ec867f0518395d96cbca1694f7ab57a6bb61e95e235679",
+      "durationSeconds": 1319.952993,
+      "bundledBytes": 12328044,
+      "bundledCodec": "Ogg Vorbis",
+      "bundledSampleRateHz": 44100,
+      "bundledChannels": 2,
+      "modification": "Source MP3 transcoded to stereo Ogg Vorbis with a nominal 80 kbit/s target at 44.1 kHz; source metadata removed."
+    },
+    {
+      "id": "too-brief-a-time",
+      "title": "Too Brief A Time To Be Anything",
+      "creator": "HoliznaCC0",
+      "sourcePage": "https://freemusicarchive.org/music/holiznacc0/space-sleep-meditation/too-brief-a-time-to-be-anything/",
+      "sourceFile": "https://files.freemusicarchive.org/storage-freemusicarchive-org/tracks/rQmaRN5y4omWKU3cn2kT3i8kSqyup26HFthRK9Fd.mp3",
+      "sourceSha256": "161daca3df08017953dbe013bcdf5e59025900a055591b6d1e0a49c71703cd4f",
+      "sourceDurationSeconds": 2700.12,
+      "sourceBytes": 86404813,
+      "bundledFile": "too-brief-a-time.ogg",
+      "bundledSha256": "84422867ce06ec0824c739c1a39bfa919976f7d0b3b9df82fae9c49d6e821358",
+      "durationSeconds": 2700.096984,
+      "bundledBytes": 21523134,
+      "bundledCodec": "Ogg Vorbis",
+      "bundledSampleRateHz": 44100,
+      "bundledChannels": 2,
+      "modification": "Source MP3 transcoded to stereo Ogg Vorbis with a nominal 80 kbit/s target at 44.1 kHz; source metadata removed."
+    }
+  ]
+}

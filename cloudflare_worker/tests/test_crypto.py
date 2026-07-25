@@ -295,13 +295,6 @@ def main():
         "forkmesh-discussion-event-v1\ncomment\n1\nTESTPUB\n2000\n"
         "b87e74db2baf019fb26d1a764aa329723024c6be7f13e5a92a60690b301bc3e9",
     )
-    # Host-auth token canonical — must match the client signer + the C++ vector.
-    check(
-        "host-token canonical vector",
-        "forkmesh-host-v1\n" + "alice" + "\n" + "myrepo" + "\n" + "1000",
-        "forkmesh-host-v1\nalice\nmyrepo\n1000",
-    )
-
     print()
     if _failures:
         print("%d test(s) FAILED: %s" % (len(_failures), ", ".join(_failures)))

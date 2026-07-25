@@ -121,18 +121,14 @@ class _ChannelTile extends StatelessWidget {
   const _ChannelTile({
     required this.title,
     required this.selected,
-    this.subtitle,
     this.icon,
-    this.statusColor,
     this.unread = false,
     this.onTap,
   });
 
   final String title;
   final bool selected;
-  final String? subtitle;
   final IconData? icon;
-  final Color? statusColor;
   final bool unread;
   final VoidCallback? onTap;
 
@@ -154,49 +150,26 @@ class _ChannelTile extends StatelessWidget {
             ),
             child: Row(
               children: [
-                if (statusColor != null)
-                  Icon(Icons.circle, size: 10, color: statusColor)
-                else
-                  Icon(
-                    icon ?? Icons.circle,
-                    size: 17,
-                    color: selected
-                        ? FmTheme.accent(context)
-                        : FmTheme.textTertiary(context),
-                  ),
+                Icon(
+                  icon ?? Icons.circle,
+                  size: 17,
+                  color: selected
+                      ? FmTheme.accent(context)
+                      : FmTheme.textTertiary(context),
+                ),
                 const SizedBox(width: FmSpace.x3),
                 Expanded(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: selected
-                              ? FmTheme.textPrimary(context)
-                              : FmTheme.textSecondary(context),
-                          fontSize: 14,
-                          fontWeight: selected
-                              ? FontWeight.w700
-                              : FontWeight.w600,
-                        ),
-                      ),
-                      if (subtitle != null) ...[
-                        const SizedBox(height: FmSpace.x1),
-                        Text(
-                          subtitle!,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: FmTheme.textTertiary(context),
-                          ),
-                        ),
-                      ],
-                    ],
+                  child: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: selected
+                          ? FmTheme.textPrimary(context)
+                          : FmTheme.textSecondary(context),
+                      fontSize: 14,
+                      fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
+                    ),
                   ),
                 ),
                 if (unread) ...[
@@ -252,9 +225,7 @@ class _MemberGroupTile extends StatelessWidget {
                     child: Icon(
                       Icons.circle,
                       size: 10,
-                      color: group.online
-                          ? FmColors.success
-                          : FmColors.offline,
+                      color: group.online ? FmColors.success : FmColors.offline,
                     ),
                   ),
                   const SizedBox(width: FmSpace.x3),
@@ -447,49 +418,49 @@ class _Transcript extends StatelessWidget {
                   Expanded(
                     child: TextField(
                       controller: composer,
-                  minLines: 1,
-                  maxLines: 5,
-                  decoration: InputDecoration(
-                    hintText: 'Message...',
-                    filled: true,
-                    fillColor: FmTheme.bgBase(context),
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: FmSpace.x4,
-                      vertical: FmSpace.x3,
-                    ),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(FmRadius.lg),
-                      borderSide: BorderSide.none,
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(FmRadius.lg),
-                      borderSide: BorderSide(
-                        color: FmTheme.accent(context),
-                        width: 1.2,
+                      minLines: 1,
+                      maxLines: 5,
+                      decoration: InputDecoration(
+                        hintText: 'Message...',
+                        filled: true,
+                        fillColor: FmTheme.bgBase(context),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: FmSpace.x4,
+                          vertical: FmSpace.x3,
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(FmRadius.lg),
+                          borderSide: BorderSide.none,
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(FmRadius.lg),
+                          borderSide: BorderSide(
+                            color: FmTheme.accent(context),
+                            width: 1.2,
+                          ),
+                        ),
                       ),
+                      onSubmitted: connected ? (_) => onSend() : null,
                     ),
                   ),
-                  onSubmitted: connected ? (_) => onSend() : null,
-                ),
-              ),
-              const SizedBox(width: FmSpace.x2),
-              SizedBox(
-                width: 48,
-                height: 48,
-                child: IconButton.filled(
-                  onPressed: connected ? onSend : () => relay.connect(),
-                  style: IconButton.styleFrom(
-                    backgroundColor: FmTheme.accent(context),
-                    foregroundColor: Colors.white,
-                    disabledBackgroundColor: FmTheme.bgElevated(context),
-                    disabledForegroundColor: FmTheme.textTertiary(context),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(FmRadius.md),
+                  const SizedBox(width: FmSpace.x2),
+                  SizedBox(
+                    width: 48,
+                    height: 48,
+                    child: IconButton.filled(
+                      onPressed: connected ? onSend : () => relay.connect(),
+                      style: IconButton.styleFrom(
+                        backgroundColor: FmTheme.accent(context),
+                        foregroundColor: Colors.white,
+                        disabledBackgroundColor: FmTheme.bgElevated(context),
+                        disabledForegroundColor: FmTheme.textTertiary(context),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(FmRadius.md),
+                        ),
+                      ),
+                      icon: const Icon(Icons.send, size: 18),
                     ),
                   ),
-                  icon: const Icon(Icons.send, size: 18),
-                ),
-              ),
                 ],
               ),
             ],

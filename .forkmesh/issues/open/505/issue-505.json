@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751376,
+    "endDate": 1822276800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nUsers can choose transport and anonymity posture with tested reachability, health, failover, and prevention of accidental address disclosure.\n\n## Scope\n\n- Define adapters for direct clearnet, proxies/privacy networks, overlay networks, and LAN-only discovery/transfer.\n- Test reachability, route preference, failover, bandwidth, latency, NAT behavior, and peer authentication.\n- Enforce anonymity profiles that prevent DNS, direct-connect, telemetry, log, and peer-address leaks.\n\n## Acceptance criteria\n\n- Each supported adapter passes common transport and repository conformance tests.\n- Leak tests show no prohibited DNS, IP, direct fallback, telemetry, or log disclosure in privacy modes.\n- The UI clearly distinguishes unreachable, degraded, anonymous, and accidentally exposed states.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P1 resilience**\n- Milestone: **Adversarial resilience & disaster readiness**\n- Numeric priority: **39 of 44** (1 is highest)\n- Depends on: #504, #485\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**25% as of 2026-07-22.** Clearnet relay and LAN paths exist with health signals; privacy/overlay adapters, common tests, and strong leak-prevention profiles remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Transport reachability, failover, leak-test pass rate, anonymity incidents, and latency/throughput. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-505",
+            "sig": "GRENkWF4mJzHXJKHbLogaWKMuq3G88KLMayHj9EJMkLxEphukxtmQyxdh1bqvgCVWw2HBAPBnuenqzKBKq08CQ",
+            "title": "Support leak-safe clearnet, privacy, overlay, and LAN transports",
+            "ts": 1784729751376,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "93d9b9ff-7a32-4cd2-be09-2cff494951b4",
+            "labels": [
+                "security",
+                "infra",
+                "protocol"
+            ],
+            "sig": "9qE1hm6_cGf_w1LKihmP6umvfdZZBv5I4kJvSqJmcMiCDrZvn8w0VBsJXwyMRjgQ3Z-XylcYW90BcHCAMunmDw",
+            "ts": 1784729751377,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "b6f47467-9932-40b8-8090-a32c930dd177",
+            "milestone": "Adversarial resilience & disaster readiness",
+            "sig": "ZZPnASGfs1WKD_Uv2toOnKTyYENlgmdtg5wPwwKXokMKMwfBu_vFf94vXP-0mDDbZOER0K6oKRViRAm3f1-0CQ",
+            "ts": 1784729751378,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1822276800000,
+            "id": "d281c0e1-eb66-4656-b10f-ae1be8664bf0",
+            "sig": "sbVrVpwr-KknNf_OciqsT6-VHgzrQnS4zqSZsKy0gmBHZcC02Q5gvu7mi4gOfDikPxBJ07jnSz2-f7m1f_SCBw",
+            "startDate": 1793595600000,
+            "ts": 1784729751379,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "d80e2884-044d-4dee-b930-3a1ccd2eb231",
+            "priority": 39,
+            "sig": "t4kyGTYz7acwLs0W6GDgbOqZikw5sJtWXANIDCdCQ0taNw8o4MvI2uPnYMkqOY_8qCVFslbkNfouEs4EFO6tDw",
+            "ts": 1784729751380,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "b37666f6-1184-4b94-b0ec-d361dca4455a",
+            "progress": 25,
+            "sig": "6C-VBCkt5Ej8YE4qnFpp6WOgdc1KVlG9gaBHV_xpMN0C0UUNmhB7ZY4Tf1C06D7o846Tq5WfSoSQZnfbiKA4DA",
+            "ts": 1784729751381,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "security",
+        "infra",
+        "protocol"
+    ],
+    "milestone": "Adversarial resilience & disaster readiness",
+    "number": 505,
+    "priority": 39,
+    "progress": 25,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1793595600000,
+    "status": "open",
+    "title": "Support leak-safe clearnet, privacy, overlay, and LAN transports",
+    "updatedAt": 1784729751381,
+    "votes": 0
+}

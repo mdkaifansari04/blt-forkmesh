@@ -1,7 +1,11 @@
 #include "CrashHandler.h"
+#include "ControlNode.h"
+#include "ForkMeshIdentity.h"
 #include "HeadlessConsole.h"
 #include "MainWindow.h"
+#include "MirrorActionsConfiguration.h"
 #include "PlatformLogFilter.h"
+#include "PublicMirrorRuntime.h"
 #include "ServerNode.h"
 #include "SingleInstance.h"
 #include "Theme.h"
@@ -12,31 +16,299 @@
 #ifndef FORKMESH_VERSION
 #define FORKMESH_VERSION "dev"
 #endif
+#ifndef FORKMESH_BUILD_COMMIT
+#define FORKMESH_BUILD_COMMIT "unknown"
+#endif
 
 #include <QApplication>
+#include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDebug>
 #include <QDir>
 #include <QEvent>
+#include <QFileOpenEvent>
 #include <QMetaObject>
 #include <QElapsedTimer>
 #include <QFont>
 #include <QFontDatabase>
 #include <QGuiApplication>
 #include <QIcon>
+#include <QJsonDocument>
+#include <QJsonParseError>
 #include <QMessageBox>
 #include <QSettings>
+#include <QRegularExpression>
+#include <QSet>
+#include <QStandardPaths>
 #include <QStringList>
 #include <QStyleFactory>
 #include <QStyleHints>
 
 #include <cstdio>
 #include <cstdlib>
+#include <utility>
 
 #if defined(Q_OS_UNIX) && !defined(Q_OS_MACOS)
 #include <unistd.h>
 #endif
 
 namespace {
+
+QJsonObject readBoundedHelperRequest(const char *label, bool *ok)
+{
+    if (ok)
+        *ok = false;
+    QByteArray input;
+    char buffer[4096];
+    while (!std::feof(stdin) && input.size() <= 128 * 1024) {
+        const std::size_t read =
+            std::fread(buffer, 1, sizeof(buffer), stdin);
+        if (read > 0)
+            input.append(buffer, int(read));
+        if (std::ferror(stdin))
+            break;
+    }
+    if (input.isEmpty() || input.size() > 128 * 1024) {
+        std::fprintf(stderr, "%s: invalid request size\n", label);
+        return {};
+    }
+    QJsonParseError parseError;
+    const QJsonDocument document =
+        QJsonDocument::fromJson(input, &parseError);
+    if (parseError.error != QJsonParseError::NoError ||
+        !document.isObject()) {
+        std::fprintf(stderr, "%s: invalid JSON request\n", label);
+        return {};
+    }
+    if (ok)
+        *ok = true;
+    return document.object();
+}
+
+QByteArray strictBase64Url(const QString &value, qsizetype expected = -1)
+{
+    static const QRegularExpression pattern(
+        QStringLiteral("^[A-Za-z0-9_-]+$"));
+    if (!pattern.match(value).hasMatch())
+        return {};
+    const QByteArray decoded = QByteArray::fromBase64(
+        value.toLatin1(), QByteArray::Base64UrlEncoding |
+                                QByteArray::AbortOnBase64DecodingErrors);
+    if ((expected >= 0 && decoded.size() != expected) ||
+        QString::fromLatin1(
+            decoded.toBase64(QByteArray::Base64UrlEncoding |
+                             QByteArray::OmitTrailingEquals)) != value) {
+        return {};
+    }
+    return decoded;
+}
+
+bool validExternalIdentityRequest(
+    const QJsonObject &request, const QString &expectedType,
+    QByteArray *message, QString *publicKey = nullptr)
+{
+    static const QSet<QString> commonFields{
+        QStringLiteral("schemaVersion"), QStringLiteral("type"),
+        QStringLiteral("algorithm"), QStringLiteral("encoding"),
+        QStringLiteral("publicKey"), QStringLiteral("messageBase64"),
+        QStringLiteral("messageSha256")};
+    QSet<QString> actual;
+    for (auto it = request.constBegin(); it != request.constEnd(); ++it)
+        actual.insert(it.key());
+    const bool verifier =
+        expectedType ==
+        QLatin1String("forkmesh.request-capability-verification");
+    QSet<QString> expected = commonFields;
+    if (verifier)
+        expected.insert(QStringLiteral("signature"));
+    const QString key =
+        request.value(QStringLiteral("publicKey")).toString();
+    const QByteArray payload = strictBase64Url(
+        request.value(QStringLiteral("messageBase64")).toString());
+    const QString digest =
+        QString::fromLatin1(
+            QCryptographicHash::hash(payload, QCryptographicHash::Sha256)
+                .toHex());
+    if (actual != expected ||
+        request.value(QStringLiteral("schemaVersion")).toInt() != 1 ||
+        request.value(QStringLiteral("type")).toString() != expectedType ||
+        request.value(QStringLiteral("algorithm")).toString() !=
+            QLatin1String("Ed25519") ||
+        request.value(QStringLiteral("encoding")).toString() !=
+            QLatin1String("base64url-no-padding") ||
+        strictBase64Url(key, 32).size() != 32 ||
+        payload.isEmpty() || payload.size() > 16 * 1024 ||
+        request.value(QStringLiteral("messageSha256")).toString() !=
+            digest) {
+        return false;
+    }
+    if (message)
+        *message = payload;
+    if (publicKey)
+        *publicKey = key;
+    return true;
+}
+
+void writeHelperResponse(const QJsonObject &response)
+{
+    const QByteArray bytes =
+        QJsonDocument(response).toJson(QJsonDocument::Compact);
+    std::fwrite(bytes.constData(), 1, std::size_t(bytes.size()), stdout);
+    std::fputc('\n', stdout);
+    std::fflush(stdout);
+}
+
+int runMirrorCapabilityVerifier(int argc, char *argv[])
+{
+    QCoreApplication app(argc, argv);
+    app.setApplicationName(QStringLiteral("ForkMesh"));
+    app.setOrganizationName(QStringLiteral("ForkMesh"));
+    bool parsed = false;
+    const QJsonObject request =
+        readBoundedHelperRequest("capability verifier", &parsed);
+    QByteArray payload;
+    QString publicKey;
+    const QString signature =
+        request.value(QStringLiteral("signature")).toString();
+    if (!parsed ||
+        !validExternalIdentityRequest(
+            request,
+            QStringLiteral(
+                "forkmesh.request-capability-verification"),
+            &payload, &publicKey) ||
+        strictBase64Url(signature, 64).size() != 64) {
+        std::fputs("capability verifier: invalid request\n", stderr);
+        return 2;
+    }
+    writeHelperResponse(
+        {{QStringLiteral("valid"),
+          ForkMeshIdentity::verifySignature(publicKey, signature,
+                                            payload)},
+         {QStringLiteral("publicKey"), publicKey}});
+    return 0;
+}
+
+bool allowedHealthPayload(const QByteArray &payload)
+{
+    const QStringList lines =
+        QString::fromUtf8(payload).split(QLatin1Char('\n'),
+                                         Qt::KeepEmptyParts);
+    static const QRegularExpression node(
+        QStringLiteral("^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"));
+    static const QRegularExpression nonce(
+        QStringLiteral("^[A-Za-z0-9_-]{16,128}$"));
+    static const QRegularExpression number(
+        QStringLiteral("^[1-9][0-9]{0,18}$"));
+    static const QRegularExpression repository(
+        QStringLiteral("^[A-Za-z0-9._-]{1,100}$"));
+    static const QRegularExpression digest(
+        QStringLiteral("^[0-9a-f]{64}$"));
+    if (lines.size() == 4 &&
+        lines.at(0) == QLatin1String("forkmesh-https-health-v1")) {
+        return node.match(lines.at(1)).hasMatch() &&
+               nonce.match(lines.at(2)).hasMatch() &&
+               number.match(lines.at(3)).hasMatch();
+    }
+    if (lines.size() != 10 ||
+        lines.at(0) !=
+            QLatin1String("forkmesh-https-health-repository-v1") ||
+        !node.match(lines.at(1)).hasMatch() ||
+        !nonce.match(lines.at(2)).hasMatch() ||
+        !number.match(lines.at(3)).hasMatch() ||
+        !node.match(lines.at(4)).hasMatch() ||
+        !repository.match(lines.at(5)).hasMatch() ||
+        (lines.at(6) != QLatin1String("0") &&
+         lines.at(6) != QLatin1String("1")) ||
+        (lines.at(7) != QLatin1String("ok") &&
+         lines.at(7) != QLatin1String("unavailable")) ||
+        (lines.at(6) == QLatin1String("1") &&
+         lines.at(7) != QLatin1String("ok")) ||
+        (lines.at(6) == QLatin1String("0") &&
+         lines.at(7) != QLatin1String("unavailable")) ||
+        !digest.match(lines.at(8)).hasMatch() ||
+        !digest.match(lines.at(9)).hasMatch()) {
+        return false;
+    }
+    return true;
+}
+
+int runMirrorHealthSigner(int argc, char *argv[])
+{
+    QCoreApplication app(argc, argv);
+    app.setApplicationName(QStringLiteral("ForkMesh"));
+    app.setOrganizationName(QStringLiteral("ForkMesh"));
+    bool parsed = false;
+    const QJsonObject request =
+        readBoundedHelperRequest("health signer", &parsed);
+    QByteArray payload;
+    QString expectedPublicKey;
+    ForkMeshIdentity identity;
+    if (!parsed ||
+        !validExternalIdentityRequest(
+            request,
+            QStringLiteral("forkmesh.health-challenge-signing"),
+            &payload, &expectedPublicKey) ||
+        !allowedHealthPayload(payload) || !identity.load() ||
+        !identity.isValid() ||
+        identity.publicKey() != expectedPublicKey) {
+        std::fputs("health signer: invalid request or local identity\n",
+                   stderr);
+        return 2;
+    }
+    const QString signature = identity.signData(payload);
+    if (signature.isEmpty()) {
+        std::fputs("health signer: signing failed\n", stderr);
+        return 3;
+    }
+    writeHelperResponse(
+        {{QStringLiteral("publicKey"), identity.publicKey()},
+         {QStringLiteral("signature"), signature}});
+    return 0;
+}
+
+int runPublicMirrorMaterializer(int argc, char *argv[])
+{
+    QCoreApplication app(argc, argv);
+    app.setApplicationName(QStringLiteral("ForkMesh"));
+    app.setOrganizationName(QStringLiteral("ForkMesh"));
+    bool parsed = false;
+    const QJsonObject request =
+        readBoundedHelperRequest("public mirror materializer", &parsed);
+    ForkMeshIdentity identity;
+    if (!parsed || !identity.load() || !identity.isValid()) {
+        std::fputs(
+            "public mirror materializer: local identity unavailable\n",
+            stderr);
+        return 2;
+    }
+    const QByteArray canonical =
+        QByteArrayLiteral("forkmesh-public-age-vault-unlock-v1\n") +
+        identity.publicKey().toUtf8();
+    QByteArray vaultSecret = QByteArray::fromBase64(
+        identity.signData(canonical).toLatin1(),
+        QByteArray::Base64UrlEncoding);
+    const QString dataRoot =
+        QStandardPaths::writableLocation(
+            QStandardPaths::AppDataLocation);
+    QString error;
+    const QJsonObject response =
+        PublicMirrorRuntime::materializeGatewayRequest(
+            request,
+            QDir(dataRoot).filePath(
+                QStringLiteral("public-mirror-archives")),
+            QDir(dataRoot).filePath(
+                QStringLiteral("identity/public-age-vault.json")),
+            vaultSecret, PublicMirrorRuntime::Tools(), &error);
+    vaultSecret.fill('\0');
+    vaultSecret.clear();
+    if (response.isEmpty()) {
+        std::fputs(
+            "public mirror materializer: request rejected\n", stderr);
+        return 3;
+    }
+    writeHelperResponse(response);
+    return 0;
+}
 
 // Headless = no GUI available / wanted. Triggered explicitly with --headless or
 // --cli, or auto-detected on Linux when there's no display server to connect to
@@ -86,6 +358,31 @@ class ForkMeshApplication : public QApplication
 public:
     using QApplication::QApplication;
 
+    void setLocalLinkHandler(std::function<void(const QString &)> handler)
+    {
+        m_localLinkHandler = std::move(handler);
+        if (!m_pendingLocalLink.isEmpty() && m_localLinkHandler) {
+            const QString pending = std::exchange(m_pendingLocalLink, QString());
+            m_localLinkHandler(pending);
+        }
+    }
+
+    bool event(QEvent *event) override
+    {
+        if (event && event->type() == QEvent::FileOpen) {
+            const auto *open = static_cast<QFileOpenEvent *>(event);
+            const QString link = open->url().toString(QUrl::FullyEncoded);
+            if (link == QLatin1String("forkmesh://control/cloudflare")) {
+                if (m_localLinkHandler)
+                    m_localLinkHandler(link);
+                else
+                    m_pendingLocalLink = link;
+                return true;
+            }
+        }
+        return QApplication::event(event);
+    }
+
     bool notify(QObject *receiver, QEvent *event) override
     {
         try {
@@ -103,6 +400,9 @@ public:
     }
 
 private:
+    std::function<void(const QString &)> m_localLinkHandler;
+    QString m_pendingLocalLink;
+
     static QString describe(QObject *receiver, QEvent *event)
     {
         const QString cls = receiver && receiver->metaObject()
@@ -116,6 +416,71 @@ private:
             .arg(type);
     }
 };
+
+// External signer used by tools/cloudflare_bootstrap.py. The bootstrapper sends
+// a public mirror-manifest request on stdin; this short-lived mode validates it,
+// signs the exact canonical payload with the existing local node identity, and
+// writes only the public key + detached signature to stdout. The private key
+// never crosses the process boundary, enters argv, or reaches Cloudflare.
+int runMirrorManifestSigner(int argc, char *argv[])
+{
+    QCoreApplication app(argc, argv);
+    app.setApplicationName(QStringLiteral("ForkMesh"));
+    app.setOrganizationName(QStringLiteral("ForkMesh"));
+
+    QByteArray input;
+    char buffer[4096];
+    while (!std::feof(stdin) && input.size() <= 128 * 1024) {
+        const std::size_t read = std::fread(buffer, 1, sizeof(buffer), stdin);
+        if (read > 0)
+            input.append(buffer, int(read));
+        if (std::ferror(stdin))
+            break;
+    }
+    if (input.isEmpty() || input.size() > 128 * 1024) {
+        std::fputs("manifest signer: invalid request size\n", stderr);
+        return 2;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(input, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        std::fputs("manifest signer: invalid JSON request\n", stderr);
+        return 2;
+    }
+
+    ForkMeshIdentity identity;
+    if (!identity.load() || !identity.isValid()) {
+        std::fputs("manifest signer: local identity is unavailable\n", stderr);
+        return 3;
+    }
+    QString validationError;
+    const QByteArray payload = forkmesh::control::mirrorManifestSigningPayload(
+        document.object(), identity.publicKey(), &validationError);
+    if (payload.isEmpty()) {
+        const QByteArray safe =
+            QStringLiteral("manifest signer: %1\n")
+                .arg(validationError)
+                .toUtf8();
+        std::fwrite(safe.constData(), 1, std::size_t(safe.size()), stderr);
+        return 2;
+    }
+    const QString signature = identity.signData(payload);
+    if (signature.isEmpty()) {
+        std::fputs("manifest signer: signing failed\n", stderr);
+        return 3;
+    }
+    const QByteArray response =
+        QJsonDocument(QJsonObject{
+                          {QStringLiteral("publicKey"), identity.publicKey()},
+                          {QStringLiteral("signature"), signature},
+                      })
+            .toJson(QJsonDocument::Compact);
+    std::fwrite(response.constData(), 1, std::size_t(response.size()), stdout);
+    std::fputc('\n', stdout);
+    std::fflush(stdout);
+    return 0;
+}
 
 } // namespace
 
@@ -136,6 +501,10 @@ int main(int argc, char *argv[])
     rawArgs.reserve(argc);
     for (int i = 0; i < argc; ++i)
         rawArgs << QString::fromLocal8Bit(argv[i]);
+    const QString localSetupLink =
+        rawArgs.contains(QStringLiteral("forkmesh://control/cloudflare"))
+            ? QStringLiteral("forkmesh://control/cloudflare")
+            : QString();
 
     // `forkmesh --version` prints and exits before the Qt platform, root-gate
     // and single-instance setup. The auto-updater runs a candidate binary with
@@ -145,6 +514,29 @@ int main(int argc, char *argv[])
         printf("ForkMesh %s\n", FORKMESH_VERSION);
         return 0;
     }
+    // Machine-readable provenance used by the fleet binary installer.  Keep it
+    // separate from --version so existing scripts retain their exact output,
+    // while a same-semver artifact from an older commit can no longer pass the
+    // install verification.
+    if (rawArgs.contains(QStringLiteral("--build-commit"))) {
+        printf("%s\n", FORKMESH_BUILD_COMMIT);
+        static const QRegularExpression exactCommit(
+            QStringLiteral("^(?:[0-9a-f]{40}|[0-9a-f]{64})$"));
+        return exactCommit.match(QStringLiteral(FORKMESH_BUILD_COMMIT)).hasMatch()
+                   ? 0
+                   : 1;
+    }
+    if (rawArgs.contains(QStringLiteral("--sign-mirror-manifest")))
+        return runMirrorManifestSigner(argc, argv);
+    if (rawArgs.contains(QStringLiteral("--verify-mirror-capability")))
+        return runMirrorCapabilityVerifier(argc, argv);
+    if (rawArgs.contains(QStringLiteral("--sign-mirror-health")))
+        return runMirrorHealthSigner(argc, argv);
+    if (rawArgs.contains(QStringLiteral("--materialize-public-mirror")))
+        return runPublicMirrorMaterializer(argc, argv);
+    if (rawArgs.contains(
+            QStringLiteral("--configure-mirror-actions-stdin")))
+        return forkmesh::mirror_actions::runConfigurationStdin(argc, argv);
 
     const bool headless = detectHeadless(rawArgs);
     const bool allowRoot = rawArgs.contains(QStringLiteral("--allow-root")) ||
@@ -190,10 +582,35 @@ int main(int argc, char *argv[])
     // own mesh backend and repo-hosting server reading/writing the same
     // ~/.forkmesh data out from under the first one. Now a duplicate launch
     // just raises the existing window and exits.
-    if (!forkmesh::acquireSingleInstance()) {
+    if (!forkmesh::acquireSingleInstance(localSetupLink)) {
         qInfo().noquote()
             << "ForkMesh is already running; focusing the existing window.";
         return 0;
+    }
+
+    // A mirror Actions helper can be killed after the catalog toggle is
+    // published but before its local settings transaction is committed. Revert
+    // any such owner-only journal before MainWindow reads repository records or
+    // secrets. Failure is deliberately startup-fatal: running against a partial
+    // configuration would make the recovery record meaningless.
+    {
+        QSettings recoverySettings;
+        QString recoveryError;
+        if (!forkmesh::mirror_actions::recoverPendingConfiguration(
+                recoverySettings, {}, &recoveryError)) {
+            const QString message =
+                QStringLiteral(
+                    "ForkMesh could not recover an interrupted mirror Actions "
+                    "configuration (%1). No Actions services were started.")
+                    .arg(recoveryError.isEmpty()
+                             ? QStringLiteral("unknown recovery error")
+                             : recoveryError);
+            qCritical().noquote() << message;
+            if (!headless)
+                QMessageBox::critical(nullptr, QStringLiteral("ForkMesh"),
+                                      message);
+            return 2;
+        }
     }
 
     // Bundle a colour-emoji font so 🎉/🙊/✅ paint in full colour in chat
@@ -310,6 +727,11 @@ int main(int argc, char *argv[])
     qInfo().noquote() << QStringLiteral("[startup +%1ms] constructing MainWindow")
                              .arg(startup.elapsed(), 5);
     auto *window = new MainWindow;
+    const auto openLocalSetup = [window](const QString &target) {
+        if (target == QLatin1String("forkmesh://control/cloudflare"))
+            window->openCloudflareSetupFromSystemLink();
+    };
+    app.setLocalLinkHandler(openLocalSetup);
     // Tell the window it's running without a GUI so its auto-start path can
     // register a fresh mirror's account non-interactively (the desktop pops a
     // "Join ForkMesh" dialog for that, which a headless VM cannot click).
@@ -323,9 +745,11 @@ int main(int argc, char *argv[])
     // not support raise()" on every call, which makes a successful re-run of a
     // headless install (bouncing off an already-running node) look like an
     // error in the SSH install log. Skip the no-op calls entirely headless.
-    forkmesh::onSingleInstanceActivation([window, headless] {
+    forkmesh::onSingleInstanceActivation([window, headless, openLocalSetup](
+                                             const QString &target) {
         if (headless)
             return;
+        openLocalSetup(target);
         window->setWindowState((window->windowState() & ~Qt::WindowMinimized) |
                               Qt::WindowActive);
         window->show();
@@ -337,6 +761,7 @@ int main(int argc, char *argv[])
     // headless/offscreen safety net in MainWindow::showEvent — so auto-restore and
     // auto-connect behave identically headless and on the desktop.
     window->show();
+    openLocalSetup(localSetupLink);
     qInfo().noquote() << QStringLiteral("[startup +%1ms] window shown; entering event loop")
                              .arg(startup.elapsed(), 5);
 

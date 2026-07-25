@@ -1237,6 +1237,7 @@ void MainWindow::loadMirrorNodesPanel()
         if (m_relayRadar)
             static_cast<RelayRadarWidget *>(m_relayRadar)->setBlips({});
         m_mirrorNodesTable->setSortingEnabled(true);
+        updateMirrorNodeLightTimer(); // empty table: stops the beacon spinner
         return;
     }
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
@@ -1334,10 +1335,53 @@ void MainWindow::loadMirrorNodesPanel()
             name = node.name.trimmed();
         return name;
     };
-    auto displayOwnerName = [&](const MemberInfo &node) {
+    // What the Node column SHOWS: the machine's node name, never the username.
+    // displayNodeName above is the account half of the clone identity — it still
+    // keys the catalog lookups (serve counts / integrity) and the dedup below —
+    // but a user account owns many nodes, so the visible label prefers the
+    // registered node name the peer advertises (machineNodeName() for our own
+    // row) and only falls back to the account for peers that don't send one.
+    auto displayNodeLabel = [&](const MemberInfo &node,
+                                const MirrorAdvert *advert) {
+        QString label = node.nodeName.trimmed();
+        if (label.isEmpty() && node.self)
+            label = machineNodeName().trimmed();
+        if (label.isEmpty())
+            label = displayNodeName(node, advert);
+        return label;
+    };
+    // Owner (user account) per node. The roster hello carries ownerUser when
+    // the node knows its link; older nodes don't advertise it, but the catalog
+    // mirror record they published does — index it by node name as a fallback.
+    QHash<QString, QString> catalogOwnerUserByNode;
+    if (m_catalogMirrorsSource == source) {
+        for (const QJsonValue &value : std::as_const(m_catalogMirrorsCache)) {
+            const QJsonObject m = value.toObject();
+            const QString n = m.value("node").toString().trimmed().toLower();
+            const QString ownerUser =
+                m.value(QStringLiteral("ownerUser")).toString().trimmed();
+            if (!n.isEmpty() && !ownerUser.isEmpty())
+                catalogOwnerUserByNode.insert(n, ownerUser);
+        }
+    }
+    auto displayOwnerName = [&](const MemberInfo &node,
+                                const MirrorAdvert *advert) {
         QString owner = node.ownerUser.trimmed();
-        if (owner.isEmpty() && node.self)
-            owner = nodeOwnerDisplayName();
+        if (owner.isEmpty())
+            owner = catalogOwnerUserByNode.value(
+                displayNodeName(node, advert).trimmed().toLower());
+        if (owner.isEmpty())
+            owner = catalogOwnerUserByNode.value(node.nodeName.trimmed().toLower());
+        // Our own row is owned by the signed-in user (what the top-bar chip
+        // shows), and a node the user's profile lists as linked is part of that
+        // same fleet — so both resolve to us even when neither the wire nor the
+        // catalog carries the link yet.
+        if (owner.isEmpty() &&
+            (node.self ||
+             (!node.nodeName.trimmed().isEmpty() &&
+              m_profileLinkedNodes.contains(node.nodeName.trimmed(),
+                                            Qt::CaseInsensitive))))
+            owner = topBarUserName().trimmed();
         return owner;
     };
     auto makeOwnerCell = [](const QString &owner) {
@@ -1411,7 +1455,8 @@ void MainWindow::loadMirrorNodesPanel()
         if (!advert || advert->commit.isEmpty())
             continue;
         if (advert->ownerName == source ||
-            displayNodeName(node, advert).compare(sourceOwner, Qt::CaseInsensitive) == 0) {
+            displayNodeName(node, advert).compare(sourceOwner, Qt::CaseInsensitive) == 0 ||
+            (node.self && repoHasWorkingTree())) {
             sourceCommit = advert->commit;
             sourceAdvert = advert;
         }
@@ -1581,16 +1626,23 @@ void MainWindow::loadMirrorNodesPanel()
                             advert->commit != referenceCommit;
 
         const QString nodeDisplay = displayNodeName(node, advert);
-        const QString ownerDisplay = displayOwnerName(node);
+        const QString nodeLabel = displayNodeLabel(node, advert);
+        const QString ownerDisplay = displayOwnerName(node, advert);
         shownNames.insert(nodeDisplay.trimmed().toLower());
+        shownNames.insert(nodeLabel.trimmed().toLower());
         if (!node.id.isEmpty())
             shownIds.insert(node.id);
 
         // The source of truth: the node whose clone identity equals the shared
         // source (the owner advertises ownerName == source); also match by name.
+        // Our own row is the source whenever we hold the working copy this repo
+        // is served from — the account/name matches miss that when the repo is
+        // published under an owner segment (e.g. an org) that isn't the
+        // signed-in account, leaving the owner's own row untagged.
         const bool isSource =
             (advert && advert->ownerName == source) ||
-            nodeDisplay.compare(sourceOwner, Qt::CaseInsensitive) == 0;
+            nodeDisplay.compare(sourceOwner, Qt::CaseInsensitive) == 0 ||
+            (node.self && repoHasWorkingTree());
 
         const int row = m_mirrorNodesTable->rowCount();
         m_mirrorNodesTable->insertRow(row);
@@ -1600,21 +1652,29 @@ void MainWindow::loadMirrorNodesPanel()
         // from the strip (adhoc #196).
         if (online || integrityFailing)
             activityDots.append(
-                {node.id, nodeDisplay, online, node.self, behind, integrityFailing});
+                {node.id, nodeLabel, online, node.self, behind, integrityFailing});
         auto *nameItem = new SortTableWidgetItem(
-            nodeDisplay + (node.self ? QStringLiteral("  (you)") : QString()) +
+            nodeLabel + (node.self ? QStringLiteral("  (you)") : QString()) +
             (isSource ? QString::fromUtf8("  \xE2\x98\x85 source of truth")
                       : QString()));
-        // Green when online and in sync, amber when online but out of sync
-        // (behind the source of truth), grey when offline.
-        nameItem->setIcon(themedOcticon(
-            "broadcast",
-            QColor(!online ? "#8b949e" : behind ? "#d29922" : "#3fb950"), 14));
+        // Status light on top of the node (adhoc #230): steady green when
+        // everything is green, a spinning orange beacon for caution (online but
+        // out of sync), a spinning red beacon on error (failing the integrity
+        // pin — kept spinning even offline so the warning stays visible, per
+        // adhoc #196), and a steady grey lamp when plainly offline.
+        const int light = integrityFailing ? 2 : behind ? 1 : 0;
+        const QColor lightColor = integrityFailing ? QColor("#f85149")
+                                  : !online          ? QColor("#8b949e")
+                                  : behind           ? QColor("#d29922")
+                                                     : QColor("#3fb950");
+        nameItem->setIcon(
+            QIcon(nodeStatusLightPixmap(lightColor, 14, 0.0, light != 0)));
+        nameItem->setData(kNodeLightRole, light);
         nameItem->setData(Qt::UserRole, node.id);
         // Source-of-truth rows sort to the top (★ < letters), then by name.
         nameItem->setData(kTableSortRole,
                           (isSource ? QStringLiteral("0") : QStringLiteral("1")) +
-                              nodeDisplay.toLower());
+                              nodeLabel.toLower());
         nameItem->setToolTip(
             isSource ? QString::fromUtf8("Source of truth \xC2\xB7 %1")
                            .arg(online ? "online" : "offline")
@@ -1623,7 +1683,7 @@ void MainWindow::loadMirrorNodesPanel()
                                          : QStringLiteral("Online now"))
                                : QStringLiteral("Offline")));
         if (!node.name.trimmed().isEmpty() &&
-            node.name.compare(nodeDisplay, Qt::CaseInsensitive) != 0)
+            node.name.compare(nodeLabel, Qt::CaseInsensitive) != 0)
             nameItem->setToolTip(nameItem->toolTip() + QStringLiteral("\nChat: ") +
                                  node.name.trimmed());
         if (integrityFailing)
@@ -1877,17 +1937,29 @@ void MainWindow::loadMirrorNodesPanel()
                                         online, false, behind, integrityFailing});
             const int row = m_mirrorNodesTable->rowCount();
             m_mirrorNodesTable->insertRow(row);
-            const QString ownerUser = m.value(QStringLiteral("ownerUser"))
-                                          .toString()
-                                          .trimmed();
+            QString ownerUser = m.value(QStringLiteral("ownerUser"))
+                                    .toString()
+                                    .trimmed();
+            // Same fleet fallback as the live-roster rows: a node the signed-in
+            // user's profile lists as linked is owned by us even if its catalog
+            // record predates the link.
+            if (ownerUser.isEmpty() &&
+                m_profileLinkedNodes.contains(nodeName, Qt::CaseInsensitive))
+                ownerUser = topBarUserName().trimmed();
             auto *nameItem = new SortTableWidgetItem(
                 nodeName + (isSource
                                 ? QString::fromUtf8("  \xE2\x98\x85 source of truth")
                                 : QString()));
-            nameItem->setIcon(themedOcticon(
-                "broadcast",
-                QColor(!online ? "#8b949e" : behind ? "#d29922" : "#3fb950"),
-                14));
+            // Same status light as the live-roster rows (adhoc #230): steady
+            // green / spinning orange caution / spinning red error / grey.
+            const int light = integrityFailing ? 2 : behind ? 1 : 0;
+            const QColor lightColor = integrityFailing ? QColor("#f85149")
+                                      : !online          ? QColor("#8b949e")
+                                      : behind           ? QColor("#d29922")
+                                                         : QColor("#3fb950");
+            nameItem->setIcon(
+                QIcon(nodeStatusLightPixmap(lightColor, 14, 0.0, light != 0)));
+            nameItem->setData(kNodeLightRole, light);
             nameItem->setData(kTableSortRole,
                               (isSource ? QStringLiteral("0") : QStringLiteral("1")) +
                                   nodeName.toLower());
@@ -1942,8 +2014,6 @@ void MainWindow::loadMirrorNodesPanel()
             // Issues / commit / branch / pull / discussion counts / platform /
             // version / node id: also mirrored into the catalog record by the
             // publishing node, so they show for an offline node too (adhoc #56).
-            // Only the live CPU/RAM/disk telemetry (cols 10-12) stays unknown for
-            // catalog rows — it's broadcast per heartbeat, never stored.
             const int catIssues = m.value("issueCount").toInt(-1);
             auto *catIssuesItem = new SortTableWidgetItem(
                 catIssues >= 0 ? QString::number(catIssues)
@@ -1983,9 +2053,27 @@ void MainWindow::loadMirrorNodesPanel()
                          QString::number(refDiscussions));
             m_mirrorNodesTable->setItem(row, MirrorNodeColDiscussions,
                                         catDiscussionsItem);
-            for (int col : {MirrorNodeColCpu, MirrorNodeColRam, MirrorNodeColDisk})
-                m_mirrorNodesTable->setItem(row, col,
-                                            makeResourceBarCell(-1, QString()));
+            // CPU / RAM / disk: a node that opted into public host telemetry
+            // signs it into its catalog record (headless mirrors renew it every
+            // registration lease), and /mirrors passes it through — so render
+            // it exactly like the live-roster rows instead of a hard-coded
+            // em-dash. Absent fields still show as unknown.
+            m_mirrorNodesTable->setItem(
+                row, MirrorNodeColCpu,
+                makeCpuUsageCell(m.value(QStringLiteral("cpuPercent"))
+                                     .toDouble(-1.0)));
+            m_mirrorNodesTable->setItem(
+                row, MirrorNodeColRam,
+                makeByteUsageCell(
+                    QStringLiteral("RAM"),
+                    qint64(m.value(QStringLiteral("memUsedBytes")).toDouble()),
+                    qint64(m.value(QStringLiteral("memTotalBytes")).toDouble())));
+            m_mirrorNodesTable->setItem(
+                row, MirrorNodeColDisk,
+                makeByteUsageCell(
+                    QStringLiteral("Disk"),
+                    qint64(m.value(QStringLiteral("diskUsedBytes")).toDouble()),
+                    qint64(m.value(QStringLiteral("diskTotalBytes")).toDouble())));
             const QString catPlatform = m.value("platform").toString();
             m_mirrorNodesTable->setItem(
                 row, MirrorNodeColPlatform,
@@ -2128,6 +2216,57 @@ void MainWindow::loadMirrorNodesPanel()
                 : "No other nodes are advertising a mirror of this repository yet.");
         empty->setForeground(QColor("#8b949e"));
         m_mirrorNodesTable->setItem(0, MirrorNodeColNode, empty);
+    }
+    updateMirrorNodeLightTimer();
+}
+
+// Advance the spinning caution/error beacons on the Mirror nodes rows (adhoc
+// #230), mirroring animateRunningAgentIcons()'s treatment of the Agents table.
+// Steady lamps (green in-sync, grey offline) carry kNodeLightRole 0 and are
+// never touched here.
+void MainWindow::animateMirrorNodeLights()
+{
+    if (!m_mirrorNodesTable)
+        return;
+    m_nodeLightFrame = (m_nodeLightFrame + 1) % 10;
+    const qreal angle = m_nodeLightFrame * 36.0;
+    const QIcon caution(nodeStatusLightPixmap(QColor("#d29922"), 14, angle, true));
+    const QIcon error(nodeStatusLightPixmap(QColor("#f85149"), 14, angle, true));
+    QSignalBlocker block(m_mirrorNodesTable);
+    for (int r = 0; r < m_mirrorNodesTable->rowCount(); ++r) {
+        QTableWidgetItem *item = m_mirrorNodesTable->item(r, MirrorNodeColNode);
+        if (!item)
+            continue;
+        const int light = item->data(kNodeLightRole).toInt();
+        if (light == 1)
+            item->setIcon(caution);
+        else if (light == 2)
+            item->setIcon(error);
+    }
+}
+
+// Keep m_nodeLightTimer running only while at least one row's light is
+// spinning, so an all-green (or empty) table costs nothing. Called from both
+// exits of loadMirrorNodesPanel after the rows are (re)built.
+void MainWindow::updateMirrorNodeLightTimer()
+{
+    bool spinning = false;
+    if (m_mirrorNodesTable) {
+        for (int r = 0; r < m_mirrorNodesTable->rowCount() && !spinning; ++r) {
+            QTableWidgetItem *item = m_mirrorNodesTable->item(r, MirrorNodeColNode);
+            spinning = item && item->data(kNodeLightRole).toInt() != 0;
+        }
+    }
+    if (spinning) {
+        if (!m_nodeLightTimer) {
+            m_nodeLightTimer = new QTimer(this);
+            connect(m_nodeLightTimer, &QTimer::timeout, this,
+                    &MainWindow::animateMirrorNodeLights);
+        }
+        if (!m_nodeLightTimer->isActive())
+            m_nodeLightTimer->start(120);
+    } else if (m_nodeLightTimer) {
+        m_nodeLightTimer->stop();
     }
 }
 
@@ -3051,7 +3190,6 @@ void MainWindow::showReleaseDetail(const QString &tag)
     auto *diff = new QTextBrowser;
     diff->setObjectName("diffView");
     diff->setOpenLinks(false); // read-only diff; don't navigate on anchor clicks
-    diff->setLineWrapMode(QTextEdit::NoWrap);
     registerDiffView(diff);
     if (diffHtml.trimmed().isEmpty())
         setDiffHtml(diff,

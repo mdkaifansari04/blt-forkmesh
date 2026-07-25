@@ -50,7 +50,11 @@
         adminUrl: body.adminUrl || "",
         solana: body.solana || "",
         hasPayoutAddress: Boolean(body.hasPayoutAddress),
-        sessionToken: body.sessionToken || "",
+        sessionToken: (
+          location.protocol === "https:" && body.sessionToken
+            ? "cookie"
+            : body.sessionToken || ""
+        ),
         avatarPng: body.avatarPng || "",
         avatarUpdatedAt: Number(body.avatarUpdatedAt) || 0,
         profileBio: body.profileBio || "",
@@ -82,19 +86,6 @@
     }
     if (!email.includes("@")) {
       setHint("Enter a valid email address.", "bad");
-      return;
-    }
-    if (demoLoginAllowed() && email.toLowerCase() === DEMO_EMAIL && password === DEMO_PASSWORD) {
-      storeSession({
-        nodeName: "demo-node",
-        email: DEMO_EMAIL,
-        status: "active",
-        pubkey: "",
-        emailVerified: true,
-        isAdmin: false,
-      });
-      setHint("Logged in with local demo credentials.", "good");
-      setTimeout(() => (location.href = nextPath() || "/dashboard"), 500);
       return;
     }
     btn.disabled = true;

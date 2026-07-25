@@ -56,6 +56,7 @@
         <file alias="search.svg">icons/octicons/search.svg</file>
         <file alias="server.svg">icons/octicons/server.svg</file>
         <file alias="shield-check.svg">icons/octicons/shield-check.svg</file>
+        <file alias="sign-in.svg">icons/octicons/sign-in.svg</file>
         <file alias="sign-out.svg">icons/octicons/sign-out.svg</file>
         <file alias="sort-desc.svg">icons/octicons/sort-desc.svg</file>
         <file alias="star.svg">icons/octicons/star.svg</file>

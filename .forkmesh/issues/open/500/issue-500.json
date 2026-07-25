@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751346,
+    "endDate": 1793332800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nA desktop user, CLI user, server operator, container user, home-server owner, cluster operator, or small-device owner can install a signed supported build confidently.\n\n## Scope\n\n- Publish a support tier and lifecycle for Windows, macOS, Linux desktop/CLI/headless, OCI, clusters, and selected ARM devices.\n- Sign packages, verify checksums and provenance, and test install, upgrade, rollback, uninstall, and data preservation.\n- Keep first-run setup task-oriented and defer node/protocol concepts until they are useful.\n\n## Acceptance criteria\n\n- Clean-machine smoke tests pass for every supported tier and architecture.\n- Installers never overwrite identities or repositories during upgrade, rollback, or uninstall.\n- A new user reaches a successful browse or mirror within the onboarding time budget.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 adoption gate**\n- Milestone: **Preservation public alpha**\n- Numeric priority: **22 of 44** (1 is highest)\n- Depends on: #480\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**55% as of 2026-07-22.** Desktop builds, Linux one-line install, platform packaging scripts, mobile apps, and release checksums exist; a unified supported matrix and automated lifecycle tests remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Install success, time to first value, upgrade safety, uninstall cleanliness, and platform support cost. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-500",
+            "sig": "_OqNK6mDiRdZ5poCDyQ2AGHY4P2H3F9OMDLMi4KgS0WwYlpZJar67gG3A8-cNaDTpC3o4ixlnmV9A-60PHn9Dg",
+            "title": "Ship polished installation across supported operator profiles",
+            "ts": 1784729751346,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "ee740207-f216-4b04-a048-e225e7bf06bd",
+            "labels": [
+                "product",
+                "ux",
+                "infra"
+            ],
+            "sig": "vGkr4DTy4mibrp032-oJfZDn26gI3ordQn0JpaWuBAU53r27Tcg9DYzmVh5kMIz-icEvb8hipj3XU6JjDd1EBQ",
+            "ts": 1784729751347,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "c5083eef-c825-4e7b-8cde-d324cd6df8b9",
+            "milestone": "Preservation public alpha",
+            "sig": "2D-ng98RNYhk-IzgCqvRuNkIvh7RsaSGGmKaht3IQwh0bOIt77dWgOROUp4SX17L8EflnAG7gTrQPkiR86IZBg",
+            "ts": 1784729751348,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1793332800000,
+            "id": "dcd75e16-50a5-469d-993b-8619f3da84ae",
+            "sig": "r19sFKlToo1eurEFgH0gvPClK29F4WecDYVbvdn-mpDhSJCIdxt13xw1KgAY84Jbn1nrl7HYnoXAGQvIzCNyBg",
+            "startDate": 1784692800000,
+            "ts": 1784729751349,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "8e5a7d03-9f0c-40d4-84b3-7cda2efe5782",
+            "priority": 22,
+            "sig": "xKAj31XYb5zkgeXxmIz9KPeLff02vy79NKKo9pa4hh3ElaXHiHp9oC7-U5mx57-vv3qjfDxkRFn1nyllMWQuCw",
+            "ts": 1784729751350,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "c9eb0338-3160-4ed7-ba4c-aca56f4b2704",
+            "progress": 55,
+            "sig": "xZYY8q8XNlWWjAR_uE3OLiT3UuPPk7LE3qnz7758OslTBNr-xaXGDV6YO7OwYWsKNQx2gJGGsfRr3BT-5NoxAQ",
+            "ts": 1784729751351,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "product",
+        "ux",
+        "infra"
+    ],
+    "milestone": "Preservation public alpha",
+    "number": 500,
+    "priority": 22,
+    "progress": 55,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784692800000,
+    "status": "open",
+    "title": "Ship polished installation across supported operator profiles",
+    "updatedAt": 1784729751351,
+    "votes": 0
+}

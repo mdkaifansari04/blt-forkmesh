@@ -1,0 +1,66 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784405500039,
+    "endDate": 1785211200000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nShow how far each repository, issue, pull request, comment, review, release, and revision has propagated using verifiable receipts rather than optimistic client state.\n\n## Implementation\n\n- Define a signed receipt keyed by object kind, object identifier, revision hash, node identity, seen, verified, pinned, timestamp, expiry, and trust scope.\n- Aggregate known, seen, verified, pinned, trusted, stale, and rejected counts with a configurable success quorum.\n- Keep receipt replay idempotent and fold shuffled independent receipts deterministically.\n- Expose concise per-object status and the evidence timestamp in desktop, browser, mobile, and headless output.\n- Protect private object names and participant identities with scoped opaque identifiers.\n\n## Acceptance criteria\n\n- A receipt counts only after its signature, object revision, trust scope, and expiry verify.\n- Old receipts never count for a new revision.\n- Quorum thresholds produce identical results on every node.\n- Private receipts reveal no repository or collaboration title to an unauthorized observer.\n- Disconnect, reconnect, repin, corruption, and repair update status without restart.\n\n## Dependencies\n\nUses deterministic folding from #440 and feeds repository availability in #439 and #466.\n\n## Verification\n\nShuffle, duplicate, expire, forge, revoke trust, revise objects, disconnect, reconnect, pin, unpin, corrupt, and repair receipt fixtures across every supported object kind.",
+            "id": "open-465",
+            "sig": "zWoSLk_J2sGM4hEh9Exos0YoJa1ehOdy559cvgcNlH13_EpcKadJTfyXc31QCrWwB3QVFeYaysCseiipRdzBBg",
+            "title": "Record per-object replication receipts and sync quorum",
+            "ts": 1784405500039,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1785211200000,
+            "id": "d3ef021c-3ab5-479f-8146-78ae25a0c8dc",
+            "sig": "ZrC-D1wFJgXjNHu0ri1diaNn7gyc4Pwq2DMbAfKD85Qab-FqzRZctz6qPsevZlBv7mRdE6Cm9FoLaAzRvMW9Dw",
+            "startDate": 1784779200000,
+            "ts": 1784405500040,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "bfce0ff1-a676-4fc7-8506-6275f270203c",
+            "sig": "o4mQ43osS52zdJ1zyGrRZbwL8DmKKPKdLRg1yg0-pS34gvFZSZ8yoxXw3RRxE4b4DlGV5YBGmtUsxLVJUYuNBg",
+            "ts": 1784729751177,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "3739b958-d896-4f91-9558-670e68512c85",
+            "sig": "G1S-gB79nCX0asCI3EyJh4qOxzqK30wITdoDUFRLo2CpHPO-UXUSlnuWZ8ZYsLn3BfPF2xtVjGoihcm2qZrVDA",
+            "status": "closed",
+            "ts": 1784729751178,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "feature",
+        "security"
+    ],
+    "milestone": "Secure collaboration",
+    "number": 465,
+    "priority": 33,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784779200000,
+    "status": "closed",
+    "title": "Record per-object replication receipts and sync quorum",
+    "updatedAt": 1784729751178,
+    "votes": 0
+}

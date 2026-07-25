@@ -2,14 +2,18 @@
 <html lang="en" class="dark h-full">
   <head>
     <meta charset="utf-8" />
+    <script>
+      if (new URLSearchParams(location.search).get("embed") === "office") {
+        document.documentElement.dataset.chatEmbed = "office";
+      }
+    </script>
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ForkMesh Community Chat</title>
-    <meta name="description" content="Join the ForkMesh user chat rooms — end-to-end encrypted for signed-in user accounts." />
+    <meta name="description" content="Join ForkMesh authenticated shared-key chat rooms. Default keys are relay-derived and relay-readable." />
     <meta name="application-name" content="ForkMesh" />
     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
     <meta name="theme-color" content="#090909" />
-    <meta name="color-scheme" content="light dark" />
     <meta name="color-scheme" content="light dark" />
     <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
@@ -32,6 +36,7 @@
     </script>
     <style>
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      [hidden] { display: none !important; }
 
       :root {
         --bg: #090909;
@@ -131,6 +136,250 @@
         color: var(--muted);
       }
 
+      .chat-pane-title-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .chat-admin-action {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 26px;
+        height: 26px;
+        padding: 0 8px;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: var(--surface2);
+        color: var(--muted);
+        font: inherit;
+        cursor: pointer;
+        text-transform: none;
+      }
+
+      .chat-admin-action:hover,
+      .chat-admin-action:focus-visible {
+        border-color: var(--accent);
+        color: var(--fg);
+        outline: none;
+      }
+
+      #chat-channel-manage { font-size: 12px; }
+
+      #chat-channel-dialog {
+        width: min(520px, calc(100vw - 32px));
+        max-height: min(720px, calc(100vh - 32px));
+        margin: auto;
+        padding: 0;
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--surface);
+        color: var(--fg);
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+      }
+
+      #chat-channel-dialog::backdrop { background: rgba(0, 0, 0, 0.62); }
+
+      .chat-channel-dialog-body {
+        display: grid;
+        max-height: inherit;
+        gap: 16px;
+        padding: 18px;
+        overflow-y: auto;
+      }
+
+      .chat-channel-dialog-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .chat-channel-dialog-head h2 { margin: 0; font-size: 18px; }
+      .chat-channel-dialog-head button {
+        border: none;
+        background: transparent;
+        color: var(--muted);
+        font-size: 22px;
+        cursor: pointer;
+      }
+
+      .chat-channel-section {
+        display: grid;
+        gap: 10px;
+        padding-top: 14px;
+        border-top: 1px solid var(--border);
+      }
+
+      .chat-channel-section h3 { margin: 0; font-size: 14px; }
+      .chat-channel-form { display: flex; gap: 8px; }
+      .chat-channel-form input,
+      .chat-channel-create-form input,
+      .chat-channel-create-form select {
+        flex: 1;
+        width: 100%;
+        min-width: 0;
+        height: 38px;
+        padding: 0 11px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface2);
+        color: var(--fg);
+        outline: none;
+      }
+      .chat-channel-form input:focus,
+      .chat-channel-create-form input:focus,
+      .chat-channel-create-form select:focus {
+        border-color: var(--accent);
+      }
+      .chat-channel-form button,
+      .chat-channel-create-form button,
+      .chat-member-remove {
+        min-height: 36px;
+        padding: 0 12px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--accent);
+        color: #06120a;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .chat-channel-create-form {
+        display: grid;
+        gap: 12px;
+      }
+
+      .chat-channel-create-fields {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 148px;
+        gap: 10px;
+      }
+
+      .chat-channel-field {
+        display: grid;
+        min-width: 0;
+        gap: 6px;
+      }
+
+      .chat-channel-field > label,
+      .chat-channel-picker-head label {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .chat-channel-initial-members {
+        display: grid;
+        gap: 9px;
+        min-width: 0;
+        padding: 11px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--surface2) 78%, transparent);
+      }
+
+      .chat-channel-picker-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      #chat-channel-selected-count,
+      #chat-channel-user-empty {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      #chat-channel-user-options {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 3px 12px;
+        max-height: 176px;
+        overflow-y: auto;
+      }
+
+      .chat-channel-user-option {
+        display: flex;
+        align-items: center;
+        min-width: 0;
+        gap: 7px;
+        padding: 6px 4px;
+        border-radius: 6px;
+        color: var(--fg);
+        font-size: 12px;
+        cursor: pointer;
+      }
+
+      .chat-channel-user-option:hover,
+      .chat-channel-user-option:focus-within {
+        background: var(--surface);
+      }
+
+      .chat-channel-user-option input {
+        width: 15px;
+        height: 15px;
+        margin: 0;
+        accent-color: var(--accent);
+      }
+
+      .chat-channel-user-option span {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      #chat-channel-user-empty { margin: 0; }
+
+      .chat-channel-create-submit { justify-self: start; }
+
+      .chat-channel-heading {
+        display: flex;
+        align-items: baseline;
+        min-width: 0;
+        gap: 8px;
+      }
+
+      #chat-channel-visibility-badge {
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      #chat-channel-error {
+        min-height: 17px;
+        margin: 0;
+        color: #f85149;
+        font-size: 12px;
+      }
+
+      #chat-channel-members { display: grid; gap: 6px; }
+      .chat-channel-member {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface2);
+        font-size: 13px;
+      }
+      .chat-member-remove {
+        min-height: 28px;
+        padding: 0 9px;
+        background: transparent;
+        color: #f85149;
+        font-size: 11px;
+      }
+
       #chat-rooms {
         flex: 1;
         min-height: 0;
@@ -204,6 +453,13 @@
         padding: 10px 16px;
         border-bottom: 1px solid var(--border);
         background: var(--surface);
+      }
+
+      .chat-main-controls {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
       }
 
       #chat-channel-title {
@@ -554,6 +810,99 @@
       #chat-input::placeholder { color: var(--muted); }
       #chat-input:focus { border-color: var(--accent); }
 
+      #chat-attachment-input { display: none; }
+
+      #chat-attachment-button {
+        flex-shrink: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 42px;
+        height: 42px;
+        padding: 0;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--surface2);
+        color: var(--muted);
+        cursor: pointer;
+      }
+
+      #chat-attachment-button:hover,
+      #chat-attachment-button:focus-visible {
+        border-color: var(--accent);
+        color: var(--fg);
+        outline: none;
+      }
+
+      #chat-attachment-button:disabled { cursor: not-allowed; opacity: 0.5; }
+
+      #chat-attachment-feedback {
+        position: absolute;
+        left: 16px;
+        bottom: calc(100% + 8px);
+        max-width: min(420px, calc(100vw - 32px));
+        padding: 7px 10px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface2);
+        color: var(--fg);
+        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.3);
+        font-size: 12px;
+      }
+
+      #chat-attachment-feedback:empty { display: none; }
+
+      .chat-attachment {
+        display: grid;
+        width: min(440px, 100%);
+        gap: 8px;
+        margin-top: 5px;
+      }
+
+      .chat-attachment-image {
+        display: block;
+        width: auto;
+        min-width: 96px;
+        min-height: 72px;
+        max-width: 100%;
+        max-height: 320px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--surface2);
+        object-fit: contain;
+      }
+
+      .chat-attachment-card {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+        padding: 9px 10px;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        background: var(--surface2);
+      }
+
+      .chat-attachment-info { min-width: 0; flex: 1; }
+      .chat-attachment-name {
+        overflow: hidden;
+        color: var(--fg);
+        font-size: 12.5px;
+        font-weight: 650;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .chat-attachment-meta { color: var(--muted); font-size: 11px; }
+      .chat-attachment-download {
+        flex-shrink: 0;
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 650;
+        text-decoration: none;
+      }
+      .chat-attachment-download:hover,
+      .chat-attachment-download:focus-visible { text-decoration: underline; }
+
       #chat-send {
         flex-shrink: 0;
         height: 42px;
@@ -661,6 +1010,85 @@
         box-shadow: 0 0 6px var(--accent-dim);
       }
 
+      .chat-office-alert {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border-bottom: 1px solid var(--border);
+        background: var(--accent-dim);
+        padding: 8px 12px;
+        color: var(--fg);
+        font-size: 12px;
+      }
+
+      .chat-office-alert span {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .chat-office-alert a,
+      .chat-office-alert button,
+      #chat-office-manage {
+        flex: 0 0 auto;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--surface2);
+        color: var(--fg);
+        padding: 5px 8px;
+        cursor: pointer;
+        font: inherit;
+        text-decoration: none;
+      }
+
+      html[data-chat-embed="office"],
+      html[data-chat-embed="office"] body {
+        min-width: 0;
+        height: 100dvh;
+        overflow: hidden;
+      }
+
+      html[data-chat-embed="office"] .chat-shell {
+        width: 100%;
+        min-width: 0;
+        max-width: none;
+        height: 100dvh;
+      }
+
+      html[data-chat-embed="office"] .chat-panes {
+        min-width: 0;
+        grid-template-columns: 118px minmax(0, 1fr);
+      }
+
+      html[data-chat-embed="office"] .chat-site-header { display: none; }
+      html[data-chat-embed="office"] .chat-people-pane { display: none; }
+      html[data-chat-embed="office"] .chat-e2e-note { display: none; }
+      html[data-chat-embed="office"] .chat-admin-action { display: none; }
+      html[data-chat-embed="office"] #chat-channel-dialog { display: none; }
+
+      html[data-chat-embed="office"] .chat-rooms-pane,
+      html[data-chat-embed="office"] .chat-main-pane,
+      html[data-chat-embed="office"] .chat-main-head,
+      html[data-chat-embed="office"] .chat-main-controls {
+        min-width: 0;
+      }
+
+      html[data-chat-embed="office"] .chat-room {
+        padding-inline: 10px;
+      }
+
+      html[data-chat-embed="office"] .chat-name-wrap,
+      html[data-chat-embed="office"] #chat-clear {
+        display: none;
+      }
+
+      html[data-chat-embed="office"] #chat-status {
+        display: inline;
+        max-width: 150px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
       /* ── responsive ── */
       @media (max-width: 980px) {
         .chat-panes { grid-template-columns: 200px minmax(0, 1fr); }
@@ -679,6 +1107,33 @@
         #chat-rooms { flex-direction: row; overflow-x: auto; overflow-y: hidden; padding: 6px 8px; }
         .chat-room { width: auto; white-space: nowrap; }
         .chat-name-wrap { display: none; }
+        .chat-main-head { gap: 8px; padding: 8px 12px; }
+        #chat-channel-title {
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .chat-main-controls { flex-shrink: 0; gap: 6px; }
+        #chat-status { display: none; }
+
+        html[data-chat-embed="office"] .chat-panes {
+          grid-template-columns: minmax(0, 1fr);
+          grid-template-rows: auto minmax(0, 1fr);
+        }
+
+        html[data-chat-embed="office"] #chat-status {
+          display: none;
+        }
+      }
+
+      @media (max-width: 480px) {
+        .chat-channel-dialog-body { padding: 14px; }
+        .chat-channel-create-fields,
+        #chat-channel-user-options {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .chat-channel-create-submit { width: 100%; }
       }
     </style>
   </head>
@@ -694,15 +1149,23 @@
 
         <!-- left: rooms -->
         <aside class="chat-rooms-pane" aria-label="Rooms">
-          <div class="chat-pane-title">Rooms</div>
+          <div class="chat-pane-title chat-pane-title-row">
+            <span>Rooms</span>
+            <button id="chat-channel-create" class="chat-admin-action" type="button" aria-label="Create channel" title="Create channel" hidden>+</button>
+          </div>
           <div id="chat-rooms"></div>
         </aside>
 
         <!-- middle: conversation -->
         <main class="chat-main-pane">
           <div class="chat-main-head">
-            <span id="chat-channel-title">#general</span>
-            <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+            <span class="chat-channel-heading">
+              <span id="chat-channel-title">#general</span>
+              <span id="chat-channel-visibility-badge" hidden></span>
+            </span>
+            <div class="chat-main-controls">
+              <button id="chat-channel-manage" class="chat-admin-action" type="button" hidden>Members</button>
+              <a id="chat-office-manage" href="/chat" target="_top" hidden>Manage channels in full chat</a>
               <span id="chat-status">Waiting to connect…</span>
               <div class="chat-name-wrap">
                 <label class="chat-name-label" for="chat-name">Name</label>
@@ -710,6 +1173,12 @@
               </div>
               <button id="chat-clear" type="button">Clear</button>
             </div>
+          </div>
+
+          <div id="chat-office-alert" class="chat-office-alert" role="alert" hidden>
+            <span id="chat-office-alert-copy"></span>
+            <a id="chat-office-login" href="/login?next=%2Fchat%3Fembed%3Doffice" target="_top" hidden>Log in</a>
+            <button id="chat-office-retry" type="button" hidden>Retry</button>
           </div>
 
           <div id="chat-log" aria-live="polite" aria-label="Chat messages">
@@ -722,6 +1191,22 @@
           </div>
 
           <div class="chat-input-bar">
+            <input
+              id="chat-attachment-input"
+              type="file"
+              aria-label="Choose image or document"
+            />
+            <button
+              id="chat-attachment-button"
+              type="button"
+              aria-label="Attach image or document"
+              title="Attach image or document (up to 1 MiB)"
+            >
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+              </svg>
+            </button>
+            <span id="chat-attachment-feedback" role="status" aria-live="polite"></span>
             <input
               id="chat-input"
               type="text"
@@ -741,7 +1226,7 @@
           </div>
 
           <div class="chat-e2e-note">
-            Messages are AES-256-GCM encrypted in your browser, so the relay only stores and forwards ciphertext. The shared room key is held by the relay and given only to signed-in accounts — use a room passphrase for a key the relay can't derive. <a href="/docs">Learn more</a>
+            Public and private browser channels use AES-256-GCM authenticated shared-key transport. Private channels are invitation-gated and isolated, but the relay derives their passphrases and its operator can decrypt messages. The relay retains at most 500 persisted frames per room for 7 days. <a href="/docs">Learn more</a>
           </div>
         </main>
 
@@ -752,7 +1237,54 @@
         </aside>
 
       </div>
+
+      <dialog id="chat-channel-dialog" aria-labelledby="chat-channel-dialog-title">
+        <div class="chat-channel-dialog-body">
+          <div class="chat-channel-dialog-head">
+            <h2 id="chat-channel-dialog-title">Manage channels</h2>
+            <button id="chat-channel-dialog-close" type="button" aria-label="Close channel manager">×</button>
+          </div>
+          <p id="chat-channel-error" role="alert" aria-live="polite"></p>
+          <section class="chat-channel-section" aria-labelledby="chat-channel-create-title">
+            <h3 id="chat-channel-create-title">Create a channel</h3>
+            <form id="chat-channel-create-form" class="chat-channel-create-form">
+              <div class="chat-channel-create-fields">
+                <div class="chat-channel-field">
+                  <label for="chat-channel-name">Channel name</label>
+                  <input id="chat-channel-name" name="channel" maxlength="40" pattern="[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?" placeholder="release-team" aria-label="Channel name" required />
+                </div>
+                <div class="chat-channel-field">
+                  <label for="chat-channel-visibility">Visibility</label>
+                  <select id="chat-channel-visibility" name="visibility" aria-describedby="chat-channel-visibility-help">
+                    <option value="private" selected>Private</option>
+                    <option value="public">Public</option>
+                  </select>
+                </div>
+              </div>
+              <p id="chat-channel-visibility-help" class="chat-attachment-meta">Public channels are available to every registered user.</p>
+              <div id="chat-channel-initial-members" class="chat-channel-initial-members">
+                <div class="chat-channel-picker-head">
+                  <label for="chat-channel-user-search">Add registered users</label>
+                  <span id="chat-channel-selected-count">0 selected</span>
+                </div>
+                <input id="chat-channel-user-search" type="search" autocomplete="off" placeholder="Search usernames" aria-label="Search registered users" />
+                <div id="chat-channel-user-options" role="group" aria-label="Registered users"></div>
+                <p id="chat-channel-user-empty" aria-live="polite">Loading registered users...</p>
+              </div>
+              <button class="chat-channel-create-submit" type="submit">Create channel</button>
+            </form>
+          </section>
+          <section id="chat-channel-members-section" class="chat-channel-section" aria-labelledby="chat-channel-members-title" hidden>
+            <h3 id="chat-channel-members-title">Members</h3>
+            <form id="chat-channel-invite-form" class="chat-channel-form">
+              <input id="chat-channel-username" name="username" maxlength="63" placeholder="username" aria-label="Registered username" required />
+              <button type="submit">Invite</button>
+            </form>
+            <div id="chat-channel-members" aria-live="polite"></div>
+          </section>
+        </div>
+      </dialog>
     </div>
-    <script src="/chat.js"></script>
+    <script type="module" src="/chat.js"></script>
   </body>
 </html>

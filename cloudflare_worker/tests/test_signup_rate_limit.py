@@ -42,9 +42,22 @@ def _harness(window_ms=60 * 60 * 1000, maximum=5):
     def json_response(data, status=200, **_kwargs):
         return {"status": status, "data": data}
 
-    async def d1_first(_env, _sql, *args):
-        row = rows.get(args[0])
-        return dict(row) if row else None
+    async def d1_first(_env, sql, *args):
+        assert sql.startswith("INSERT INTO signup_rate")
+        ip_bi = args[0]
+        current = rows.get(ip_bi)
+        if (
+            not current
+            or now[0] - current["window_start_ts"] >= window_ms
+        ):
+            current = {"count": 1, "window_start_ts": now[0]}
+        else:
+            current = {
+                "count": current["count"] + 1,
+                "window_start_ts": current["window_start_ts"],
+            }
+        rows[ip_bi] = current
+        return dict(current)
 
     async def d1_run(_env, sql, *args):
         if sql.startswith("INSERT INTO signup_rate"):
@@ -57,7 +70,6 @@ def _harness(window_ms=60 * 60 * 1000, maximum=5):
         "Date": _DateStub,
         "json_response": json_response,
         "d1_first": d1_first,
-        "d1_run": d1_run,
         "SIGNUP_RATE_WINDOW_MS": window_ms,
         "SIGNUP_MAX_PER_IP": maximum,
     })

@@ -32,11 +32,23 @@ fi
 workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
 cp "$binary" "$workdir/forkmesh.exe"
+install_root="${FORKMESH_PKG_INSTALL_ROOT:-}"
+resource_root="${install_root%/}/share/forkmesh"
+if [ -z "$install_root" ] || [ ! -f "$resource_root/tools/cloudflare_bootstrap.py" ] \
+   || [ ! -f "$resource_root/cloudflare_worker/src/entry.py" ] \
+   || [ ! -d "$resource_root/cloudflare_worker/public" ] \
+   || [ ! -d "$resource_root/cloudflare_worker/migrations" ]; then
+  log "CMake-installed ForkMesh deployment resources are incomplete"
+  exit 1
+fi
+mkdir -p "$workdir/resources"
+cp -R "$resource_root" "$workdir/resources/forkmesh"
 
 log "makensis: building $name (version $version)"
 makensis \
   -DFORKMESH_VERSION="$version" \
   -DFORKMESH_SRCEXE="$workdir/forkmesh.exe" \
+  -DFORKMESH_RESOURCES="$workdir/resources/forkmesh" \
   -DFORKMESH_OUTFILE="$out" \
   "$here/forkmesh.nsi" >&2
 

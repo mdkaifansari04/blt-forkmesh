@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Introducing ForkMesh: code that can't be taken down · ForkMesh</title>
-    <meta name="description" content="ForkMesh is a distributed Git network where your code lives on your own machine, every action is signed with your own key, and mirroring repositories pays you in Solana. Meet the forge with no single point of control.">
+    <title>Introducing ForkMesh: code beyond a single host · ForkMesh</title>
+    <meta name="description" content="ForkMesh is a distributed Git network where code lives on independently operated mirrors, collaboration is signed, and eligible nodes may receive transparent non-custodial community incentives.">
     <meta name="application-name" content="ForkMesh" />
     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
     <meta name="theme-color" content="#090909" />
@@ -21,15 +21,15 @@
     <script src="/static-page.js" defer></script>
 
     <meta property="og:type" content="article">
-    <meta property="og:title" content="Introducing ForkMesh: code that can't be taken down">
-    <meta property="og:description" content="A peer-to-peer Git network where your code stays on your machine, every action is signed, and mirroring pays you in Solana.">
+    <meta property="og:title" content="Introducing ForkMesh: code beyond a single host">
+    <meta property="og:description" content="A distributed Git network with independently operated mirrors, signed collaboration, and transparent non-custodial community incentives.">
     <meta property="og:image" content="https://forkmesh.com/assets/blog/forkmesh-noise.webp">
     <meta property="og:image:width" content="1838">
     <meta property="og:image:height" content="1023">
     <meta property="og:image:alt" content="ForkMesh distributed Git network announcement">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Introducing ForkMesh: code that can't be taken down">
-    <meta name="twitter:description" content="A peer-to-peer Git network where your code stays on your machine, every action is signed, and mirroring pays you in Solana.">
+    <meta name="twitter:title" content="Introducing ForkMesh: code beyond a single host">
+    <meta name="twitter:description" content="A distributed Git network with independently operated mirrors, signed collaboration, and transparent non-custodial community incentives.">
     <meta name="twitter:image" content="https://forkmesh.com/assets/blog/forkmesh-noise.webp">
     <meta name="twitter:image:alt" content="ForkMesh distributed Git network announcement">
 
@@ -72,7 +72,7 @@
       <a class="blog-back" href="/blog">&larr; All posts</a>
 
       <span class="blog-tag">Announcing</span>
-      <h1 class="blog-title">Introducing ForkMesh: code that can't be taken down</h1>
+      <h1 class="blog-title">Introducing ForkMesh: code beyond a single host</h1>
       <div class="blog-meta">
         <span>The ForkMesh team</span>
         <span class="dot"></span>
@@ -89,7 +89,8 @@
         someone else's terms of service, one policy change away from disappearing.
         ForkMesh exists to end that. It's a distributed Git network where your code
         stays on <em>your</em> machine, every action is signed with <em>your</em> key,
-        and the people who keep repositories alive actually get paid for it.
+        and eligible mirror operators may receive transparent community incentives.
+        Selection and payment are never guaranteed.
       </p>
 
       <div class="blog-body">
@@ -138,13 +139,13 @@
           </div>
           <div class="feature-card">
             <div class="ico" style="background:color-mix(in srgb,var(--purple) 22%,transparent)">🔒</div>
-            <h4>Chat the relay can't read</h4>
-            <p>Per-repository rooms are encrypted client-side with AES-256-GCM. The relay only ever sees ciphertext envelopes it forwards.</p>
+            <h4>Authenticated shared-key chat</h4>
+            <p>Per-repository rooms use client-side AES-256-GCM with a relay-derived shared passphrase. The relay operator can derive the key and read messages.</p>
           </div>
           <div class="feature-card">
             <div class="ico" style="background:color-mix(in srgb,var(--warning) 22%,transparent)">◎</div>
-            <h4>Get paid to mirror</h4>
-            <p>Profiles and repos carry Solana addresses. Host a mirror, earn payouts; merged bounty PRs split the reward to the contributor automatically.</p>
+            <h4>Transparent mirror incentives</h4>
+            <p>Eligible, integrity-verified mirrors may receive small community-funded mainnet-beta rewards at a self-custodial public address. Test networks require explicit development configuration; selection and payment are never guaranteed.</p>
           </div>
           <div class="feature-card">
             <div class="ico" style="background:color-mix(in srgb,var(--accent-bright) 18%,transparent)">🌐</div>
@@ -161,44 +162,51 @@
         <h2><span class="num">01</span>Your machine is the server</h2>
         <p>
           When you publish a repository, ForkMesh doesn't upload your packfiles anywhere.
-          Your desktop node opens an outbound encrypted tunnel to the relay, and clone
-          and file-browse requests are routed back through that tunnel to your local
-          mirror on demand. Clone the canonical project exactly the way you'd expect:
+          Your desktop node can expose its read-only mirror gateway through a proxied
+          Cloudflare Tunnel. The routing Worker performs signed health and integrity
+          checks, selects an available origin, and streams normal clone and browse
+          traffic over HTTPS while the public URL stays unchanged:
         </p>
-        <pre><code>git clone https://forkmesh.com/mainnode/forkmesh</code></pre>
+        <pre><code>git clone https://forkmesh.com/forkmesh/forkmesh</code></pre>
         <p>
-          The relay never becomes the source of truth. If it vanished tomorrow, every
-          repository would still exist — fully intact — on the machines that host them.
-          That's the whole point.
+          The relay never becomes the source of truth for Git bytes. If it became
+          unavailable, each current local mirror would still retain its own repository
+          copy; discovery and collaboration services would need another relay or direct
+          node access.
         </p>
 
         <h2><span class="num">02</span>Identity you own</h2>
         <p>
-          There's no email-and-password gate to start. The desktop node generates a local
-          Ed25519 identity for you, and that key signs your profile, your repository
-          metadata, your issues, and your pull requests. Because identity is a key rather
-          than a row in a company's database, it's yours to carry to any relay in the
-          network.
+          There is no account form before exploring the world as a guest. Registering a
+          user account requires an email, password, and email verification. The desktop
+          node generates a local Ed25519 identity, and that key signs repository and
+          collaboration metadata; the private signing key remains on the device.
         </p>
 
-        <h2><span class="num">03</span>Conversations the relay can't read</h2>
+        <h2><span class="num">03</span>Authenticated shared-key conversations</h2>
         <p>
-          Every repository gets its own encrypted room. Messages are sealed in your
-          client with AES-256-GCM before they ever touch the wire; the relay's Durable
-          Object forwards opaque ciphertext to connected peers and persists nothing.
-          Coordination, maintainer chatter, release talk — all of it stays between the
-          people holding the room key.
+          A catalog repository can use its own scoped encrypted room. Messages are
+          sealed in your client with AES-256-GCM before they touch the wire. For
+          default rooms, the
+          relay derives and distributes the shared passphrase, so its operator can
+          derive the room key and read plaintext. The Durable Object retains only
+          marked frames, capped at the newest 500 per room for 7 days. Clients that
+          support an out-of-band participant passphrase can exclude the relay from
+          that key.
         </p>
 
         <h2><span class="num">04</span>A network that pays its hosts</h2>
         <p>
           Mirroring is the act that keeps open source alive, and ForkMesh treats it as
-          first-class work. Profiles and repositories publish Solana addresses, hosts
-          accrue payouts for the uptime they contribute, and repository bounties settle
-          on a merged pull request — splitting the reward to the contributor who did the
-          work. Keeping code alive stops being a favor and starts being something the
-          network rewards.
+          first-class work. A node may publish a self-custodial Solana payout address.
+          Configurable rounds evaluate signed identity, fresh HTTPS health, integrity,
+          abuse status, observed contribution, and wallet validity before selecting from
+          the deduplicated eligible set using public entropy. A transparent,
+          community-funded mainnet-beta pool can provide small incentives, but running a
+          node never guarantees selection or payment. Test networks require explicit
+          development configuration.
         </p>
+        <div class="note"><strong>Non-custodial notice:</strong> ForkMesh does not hold or control user funds and never stores community members’ payout- or contribution-wallet private keys, seed phrases, or mnemonics. Separately, the instance owner’s encrypted local Qt signer must explicitly approve exact outgoing pool transfers. Community rewards are incentives, not investments or promised returns.</div>
 
         <h2><span class="num">05</span>Signed issues and pull requests</h2>
         <p>
@@ -219,42 +227,43 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch + NUL + commits)</code><
           there's a resolvable commit behind the PR, falling back to replaying the stored
           patch when there isn't — and the accepted PR, with its whole discussion thread,
           is committed straight into the repository on its own branch. So the
-          conversation around your code travels with the code, forever.
+          conversation around your code travels with every retained copy of that
+          repository branch.
         </p>
 
         <h2><span class="num">06</span>No center to capture</h2>
         <p>
           Relays are federated. The hosted <code>mainnode</code> offers conveniences —
-          repository catalogs, encrypted rooms, mirror-health indexing, Solana metadata,
-          leaderboards — but it owns none of them by right. Anyone can run their own. The
+          repository catalogs, encrypted rooms, mirror-health indexing, public reward
+          metadata, leaderboards — but it owns none of them by right. Anyone can run their own. The
           network is a mesh, not a hub, and that's exactly what makes it hard to take
           down.
         </p>
 
         <blockquote>
-          ForkMesh is a Git app first. Chat, payments, and discovery exist to support
+          ForkMesh is a Git app first. Chat, community incentives, and discovery exist to support
           repositories, mirrors, and the maintainers who keep them alive.
         </blockquote>
 
         <h2>This is an MVP — and that's exciting</h2>
         <p>
           We'll be honest about where we are: ForkMesh is an early prototype. Live file
-          browsing, clone, and <code>git push</code> all need at least one host online —
-          the relay itself holds no Git objects, it only routes to whichever mirror is
-          live. Git hosting is scoped to a single relay instance today: a self-hosted
-          relay can already federate with the main relay for node coordination and
-          payouts, but repos don't yet move or merge across independent relay instances.
-          The relay is still a trusted jump layer for connection metadata.
+          browsing and clone need at least one healthy mirror online. The routing Worker
+          stores discovery and health metadata, not repository bytes. The direct HTTPS
+          gateway is read-only; push and administrative operations remain separate from
+          browse and clone traffic. Private replicas use opaque client-encrypted archives
+          and fail closed when the requesting owner is not authorized.
         </p>
         <p>
           But the foundation that matters is already standing: real Ed25519 identity, real
-          Git mirroring, real encrypted rooms, real Solana payouts, and a real federated
-          relay. Everything from here is building outward from a base that, by design,
-          can't be quietly switched off.
+          Git mirroring, real encrypted rooms, a non-custodial mainnet-beta reward
+          program, and a real federated relay. Everything from here is building
+          outward from independently operated components that reduce reliance on any
+          one host when current mirrors and replacement coordination remain available.
         </p>
 
         <div class="blog-cta">
-          <h2>Run a node. Mirror a repo. Get paid.</h2>
+          <h2>Run a node. Mirror a repo. Keep code available.</h2>
           <p>The desktop node starts with no setup and connects to the network out of the box. Install it with one command:</p>
           <pre><code>curl -fsSL https://forkmesh.com/install.sh | bash</code></pre>
           <div class="row">

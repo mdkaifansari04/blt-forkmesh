@@ -42,7 +42,7 @@ const QString kKnownRosterGroup = QStringLiteral("mainnode/knownRoster");
 // of leaving them shown as online indefinitely.
 constexpr int kPresenceIntervalMs = 60000;   // 60s broadcast
 constexpr qint64 kPeerStaleMs = 180000;       // 3 missed beats -> offline
-// Half-open-link watchdog (same guard RepoHost uses on the /host tunnel): if
+// Half-open-link watchdog (same guard as the repository update channel): if
 // nothing at all has arrived for this long while the link is believed up — not
 // even a pong for the 25s keepalive pings — the TCP socket is a zombie (NAT
 // timeout, silent relay drop). Writes into it still "succeed", so Qt may never
@@ -51,7 +51,6 @@ constexpr qint64 kPeerStaleMs = 180000;       // 3 missed beats -> offline
 constexpr qint64 kStaleRxMs = 70000; // ~2.8x the 25s ping interval
 // A server that accepts TCP/TLS but never answers the WebSocket upgrade would
 // otherwise hang the node forever: the ping timer only starts after the 101.
-constexpr int kConnectTimeoutMs = 30000;
 constexpr qint64 kHelloAdvertiseMinIntervalMs = 30000;
 constexpr qint64 kHelloReplyMinIntervalMs = 120000;
 constexpr qint64 kStatusRepeatMinIntervalMs = 60000;
@@ -311,6 +310,46 @@ void ServerNode::setConnectionAuthorizer(std::function<bool(const QUrl &)> autho
     m_connectionAuthorizer = std::move(authorizer);
 }
 
+#ifdef FORKMESH_SERVER_NODE_TESTS
+void ServerNode::setTransportLimitsForTests(int connectTimeoutMs,
+                                            int reconnectBaseDelayMs,
+                                            qint64 maxPendingWriteBytes)
+{
+    m_connectTimeoutMs = qMax(1, connectTimeoutMs);
+    m_reconnectBaseDelayMs = qMax(1, reconnectBaseDelayMs);
+    m_maxPendingWriteBytes = qMax<qint64>(64, maxPendingWriteBytes);
+    m_reconnectJitter = false;
+}
+#endif
+
+void ServerNode::setNetworkAvailable(bool available)
+{
+    if (m_networkAvailable == available)
+        return;
+    m_networkAvailable = available;
+
+    if (!available) {
+        if (m_reconnectTimer)
+            m_reconnectTimer->stop();
+        if (m_connectTimeoutTimer)
+            m_connectTimeoutTimer->stop();
+        if (m_socket || m_attemptActive || m_wsReady) {
+            discardCurrentSocket();
+            handleLinkLost();
+        }
+        emit statusChanged(QStringLiteral("Offline \xE2\x80\x94 waiting for network\xE2\x80\xA6"));
+        return;
+    }
+
+    if (m_userStopped || m_wsReady || m_attemptActive)
+        return;
+    if (m_reconnectTimer)
+        m_reconnectTimer->stop();
+    m_reconnectAttempts = 0;
+    emit statusChanged(QStringLiteral("Network restored \xE2\x80\x94 reconnecting\xE2\x80\xA6"));
+    openConnection();
+}
+
 void ServerNode::advanceEndpoint()
 {
     if (m_endpoints.size() <= 1)
@@ -353,13 +392,7 @@ bool ServerNode::start()
                     QString::fromUtf8("Mainnode link went stale (nothing "
                                       "received for %1s); reconnecting\xE2\x80\xA6")
                         .arg((now - lastAlive) / 1000));
-                if (m_socket) {
-                    m_socket->disconnect(this);
-                    m_socket->abort();
-                    m_socket->deleteLater();
-                    m_socket = nullptr;
-                }
-                handleLinkLost();
+                failCurrentConnection();
                 return;
             }
             m_pingSentMs = now;
@@ -379,6 +412,7 @@ bool ServerNode::start()
         });
     }
 
+    m_userStopped = false;
     // A fresh join starts from the most-preferred mainnode with fast retries.
     if (!m_endpoints.isEmpty()) {
         m_endpointIndex = 0;
@@ -386,23 +420,40 @@ bool ServerNode::start()
     }
     emit statusChanged("Connecting to " + m_url.host() + "...");
     m_reconnectAttempts = 0;
-    openConnection();
+    if (m_networkAvailable)
+        openConnection();
     return true;
+}
+
+void ServerNode::discardCurrentSocket()
+{
+    QTcpSocket *socket = m_socket;
+    m_socket = nullptr;
+    if (!socket)
+        return;
+    socket->disconnect(this);
+    socket->abort();
+    socket->deleteLater();
+}
+
+void ServerNode::failCurrentConnection()
+{
+    discardCurrentSocket();
+    handleLinkLost();
 }
 
 void ServerNode::openConnection()
 {
     // Tear down any previous socket (e.g. a failed attempt) before reconnecting.
-    if (m_socket) {
-        m_socket->disconnect(this);
-        m_socket->abort();
-        m_socket->deleteLater();
-        m_socket = nullptr;
-    }
+    discardCurrentSocket();
+    m_attemptActive = false;
     m_wsReady = false;
     m_wsConnectedAtMs = 0;
     m_readBuffer.clear();
     emit networkDiagnosticsChanged();
+
+    if (m_userStopped || !m_networkAvailable)
+        return;
 
     if (m_connectionAuthorizer && !m_connectionAuthorizer(m_url)) {
         emit systemMessage(QStringLiteral("Firewall blocked mainnode socket to %1.")
@@ -419,24 +470,20 @@ void ServerNode::openConnection()
         m_connectTimeoutTimer = new QTimer(this);
         m_connectTimeoutTimer->setSingleShot(true);
         connect(m_connectTimeoutTimer, &QTimer::timeout, this, [this] {
-            if (m_wsReady || m_userStopped)
+            if (m_wsReady || m_userStopped || !m_networkAvailable ||
+                !m_attemptActive)
                 return;
             emit systemMessage(
                 QString::fromUtf8("Mainnode connect to %1 timed out; "
                                   "retrying\xE2\x80\xA6")
                     .arg(m_url.host()));
-            if (m_socket) {
-                m_socket->disconnect(this);
-                m_socket->abort();
-                m_socket->deleteLater();
-                m_socket = nullptr;
-            }
-            scheduleReconnect();
+            failCurrentConnection();
         });
     }
-    m_connectTimeoutTimer->start(kConnectTimeoutMs);
+    m_connectTimeoutTimer->start(m_connectTimeoutMs);
 
     m_socket = m_url.scheme() == "wss" ? new QSslSocket(this) : new QTcpSocket(this);
+    m_attemptActive = true;
     connectSocketSignals();
     const int port = m_url.port(m_url.scheme() == "wss" ? 443 : 80);
     if (auto *ssl = qobject_cast<QSslSocket *>(m_socket))
@@ -452,7 +499,7 @@ void ServerNode::scheduleReconnect()
     // fire mid-wait would log a spurious "timed out". openConnection re-arms it.
     if (m_connectTimeoutTimer)
         m_connectTimeoutTimer->stop();
-    if (m_userStopped)
+    if (m_userStopped || !m_networkAvailable)
         return; // the user left the node; don't keep retrying
     if (m_reconnectTimer && m_reconnectTimer->isActive())
         return; // a retry is already pending
@@ -461,7 +508,7 @@ void ServerNode::scheduleReconnect()
         m_reconnectTimer = new QTimer(this);
         m_reconnectTimer->setSingleShot(true);
         connect(m_reconnectTimer, &QTimer::timeout, this, [this] {
-            if (m_userStopped)
+            if (m_userStopped || !m_networkAvailable)
                 return;
             // Fail over to the next configured mainnode before each retry so a
             // dead/quota-limited endpoint is skipped instead of hammered forever
@@ -491,8 +538,10 @@ void ServerNode::scheduleReconnect()
     const int endpointCount = qMax(1, int(m_endpoints.size()));
     const int shift = qMin(m_reconnectAttempts / endpointCount, 9);
     ++m_reconnectAttempts;
-    int delay = qMin(1000 << shift, 300000);
-    delay += int(QRandomGenerator::global()->bounded(delay / 4 + 250));
+    int delay = int(qMin<qint64>(
+        qint64(m_reconnectBaseDelayMs) << shift, 300000));
+    if (m_reconnectJitter)
+        delay += int(QRandomGenerator::global()->bounded(delay / 4 + 250));
     if (delay >= 5000)
         emit statusChanged(
             QString::fromUtf8("Disconnected \xE2\x80\x94 reconnecting in %1s\xE2\x80\xA6")
@@ -505,20 +554,34 @@ void ServerNode::scheduleReconnect()
 
 void ServerNode::connectSocketSignals()
 {
-    connect(m_socket, &QTcpSocket::readyRead, this, &ServerNode::onSocketReadyRead);
-    connect(m_socket, &QTcpSocket::connected, this, [this] {
-        if (!qobject_cast<QSslSocket *>(m_socket))
+    QTcpSocket *socket = m_socket;
+    connect(socket, &QTcpSocket::readyRead, this, [this, socket] {
+        if (socket == m_socket)
+            onSocketReadyRead();
+    });
+    connect(socket, &QTcpSocket::connected, this, [this, socket] {
+        if (socket == m_socket && !qobject_cast<QSslSocket *>(socket))
             onConnectedTransport();
     });
-    if (auto *ssl = qobject_cast<QSslSocket *>(m_socket))
-        connect(ssl, &QSslSocket::encrypted, this, &ServerNode::onConnectedTransport);
-    connect(m_socket, &QTcpSocket::disconnected, this,
-            &ServerNode::handleLinkLost);
-    connect(m_socket, &QTcpSocket::errorOccurred, this, [this] {
-        emit systemMessage("Mainnode socket error: " + m_socket->errorString());
-        // A connect failure may not emit disconnected, so retry from here too.
-        if (!m_wsReady)
-            scheduleReconnect();
+    if (auto *ssl = qobject_cast<QSslSocket *>(socket))
+        connect(ssl, &QSslSocket::encrypted, this, [this, socket] {
+            if (socket == m_socket)
+                onConnectedTransport();
+        });
+    connect(socket, &QTcpSocket::disconnected, this, [this, socket] {
+        if (socket != m_socket)
+            return;
+        discardCurrentSocket();
+        handleLinkLost();
+    });
+    connect(socket, &QTcpSocket::errorOccurred, this, [this, socket] {
+        if (socket != m_socket)
+            return;
+        emit systemMessage("Mainnode socket error: " + socket->errorString());
+        // Some errors do not emit disconnected, while others emit both.
+        // Detach this exact socket before aborting it so either signal path
+        // converges on one reconnect.
+        failCurrentConnection();
     });
 }
 
@@ -527,6 +590,9 @@ void ServerNode::handleLinkLost()
     // Shared teardown for a socket drop, whichever way it was noticed: the
     // disconnected() signal, or the ping timer's stale-rx watchdog (a
     // half-open socket never emits disconnected on its own).
+    if (!m_attemptActive && !m_wsReady)
+        return;
+    m_attemptActive = false;
     if (m_pingTimer)
         m_pingTimer->stop();
     if (m_presenceTimer)
@@ -590,14 +656,15 @@ void ServerNode::onSocketReadyRead()
                 + (statusLine.isEmpty() ? QStringLiteral("no status") : statusLine)
                 + "); reconnecting\xE2\x80\xA6");
             m_wsReady = false;
-            if (m_socket)
-                m_socket->abort();
-            scheduleReconnect();
+            failCurrentConnection();
             return;
         }
         m_wsReady = true;
+        m_attemptActive = true;
         m_wsConnectedAtMs = QDateTime::currentMSecsSinceEpoch();
         m_reconnectAttempts = 0; // link is healthy again; retry fast next drop
+        if (m_reconnectTimer)
+            m_reconnectTimer->stop();
         if (m_connectTimeoutTimer)
             m_connectTimeoutTimer->stop();
         if (m_pingTimer)
@@ -634,7 +701,7 @@ void ServerNode::onSocketReadyRead()
         }
         if (len > kMaxWsPayload) {
             emit systemMessage("Mainnode frame exceeded the safe size limit; disconnecting.");
-            m_socket->disconnectFromHost();
+            failCurrentConnection();
             return;
         }
         const bool masked = b1 & 0x80;
@@ -721,6 +788,21 @@ void ServerNode::sendTextFrame(const QByteArray &payload, const QString &type,
         emit systemMessage("Message exceeded the safe mainnode frame limit and was not sent.");
         return;
     }
+    const qint64 frameBytes = qint64(payload.size()) + 14;
+    const qint64 buffered = m_socket->bytesToWrite();
+    if (frameBytes > m_maxPendingWriteBytes ||
+        buffered > m_maxPendingWriteBytes - frameBytes) {
+        ++m_backpressureDrops;
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (now - m_lastBackpressureNoticeMs >= 10000) {
+            m_lastBackpressureNoticeMs = now;
+            emit systemMessage(
+                QStringLiteral("Mainnode send queue is full; dropped one "
+                               "outgoing frame instead of growing memory."));
+        }
+        emit networkDiagnosticsChanged();
+        return;
+    }
     QByteArray frame;
     frame.append(char(0x81));
     if (payload.size() < 126) {
@@ -758,6 +840,12 @@ void ServerNode::sendControlFrame(int opcode, const QByteArray &payload)
     // Ping/pong control frames (payload <= 125 bytes), client-masked per RFC 6455.
     if (!m_socket || !m_wsReady || payload.size() > 125)
         return;
+    if (m_socket->bytesToWrite() >
+        m_maxPendingWriteBytes - (qint64(payload.size()) + 6)) {
+        ++m_backpressureDrops;
+        emit networkDiagnosticsChanged();
+        return;
+    }
     QByteArray frame;
     frame.append(char(0x80 | (opcode & 0x0f)));
     frame.append(char(0x80 | payload.size()));
@@ -797,6 +885,11 @@ QList<QJsonObject> ServerNode::networkDiagnostics() const
     row.insert(QStringLiteral("txBytes"), double(m_txBytes));
     row.insert(QStringLiteral("rxControlFrames"), double(m_rxControlFrames));
     row.insert(QStringLiteral("txControlFrames"), double(m_txControlFrames));
+    row.insert(QStringLiteral("bufferedBytes"),
+               double(m_socket ? m_socket->bytesToWrite() : 0));
+    row.insert(QStringLiteral("backpressureDrops"),
+               double(m_backpressureDrops));
+    row.insert(QStringLiteral("networkAvailable"), m_networkAvailable);
     row.insert(QStringLiteral("lastRxBytes"), m_lastRxBytes);
     row.insert(QStringLiteral("lastTxBytes"), m_lastTxBytes);
     row.insert(QStringLiteral("lastRxType"), m_lastRxType);
@@ -1060,6 +1153,13 @@ void ServerNode::requestMirrorRefresh(const QString &source,
 
 void ServerNode::advertiseMirrorsNow()
 {
+    // This explicit refresh is also used after an operator changes a host
+    // telemetry privacy toggle. Bypass the normal 10-second sampling throttle,
+    // refresh our own roster row, and then advertise exactly the newly enabled
+    // metrics (or omit the newly disabled ones).
+    m_lastStatsSampleMs = 0;
+    sampleSystemStats();
+    updateRosterAndStatus();
     sendHello(true, false);
 }
 
@@ -1142,9 +1242,10 @@ void ServerNode::sendBotChat(const QString &channel, const QString &text)
     // A ForkBot reply relayed on behalf of this client (the bot has no room
     // connection of its own). Mirrors the web clients' makeForkbotPlain frame:
     // sender/senderId "forkbot", accountKind "user" so every surface — web
-    // and desktop — renders it. Never into a private room: the bot's reply
-    // text comes back over plain HTTPS, so it has no place in an E2E room
-    // whose members deliberately excluded the relay.
+    // and desktop — renders it. Never inject one into a private channel: those
+    // channels use application-level invite scoping, and sending their context
+    // to the bot endpoint would widen that audience. They do not cryptographically
+    // exclude the relay because the default room passphrase is relay-derived.
     const QString trimmed = text.trimmed();
     if (trimmed.isEmpty() || m_privateChannels.contains(channel))
         return;
@@ -1441,11 +1542,8 @@ void ServerNode::shutdown()
         m_connectTimeoutTimer->stop();
     QJsonObject bye = makeMessage("bye");
     sendEncrypted(bye, true);
-    if (m_socket) {
-        m_socket->disconnectFromHost();
-        m_socket->deleteLater();
-        m_socket = nullptr;
-    }
+    discardCurrentSocket();
+    m_attemptActive = false;
     m_wsReady = false;
     m_wsConnectedAtMs = 0;
     emit networkDiagnosticsChanged();

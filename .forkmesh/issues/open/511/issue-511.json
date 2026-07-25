@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751412,
+    "endDate": 1816920000000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nIndependent implementers can reproduce repository identity, signed collaboration, relay, authentication, synchronization, and migration behavior without reading ForkMesh source.\n\n## Scope\n\n- Publish normative documents for identifiers, canonical encodings, state machines, signatures, authorization, merging, relays, sync, migrations, and version negotiation.\n- Define trust boundaries, attacker capabilities, metadata leakage, abuse, recovery, downgrade, replay, equivocation, and data-loss threats.\n- Include positive/negative vectors, wire examples, compatibility policy, and change process.\n\n## Acceptance criteria\n\n- A clean-room implementation verifies fixtures and interoperates on core clone and collaboration flows.\n- Normative language, schemas, and vectors are versioned together and rejected when inconsistent.\n- Security review closes or explicitly accepts every high-severity threat before stable release.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 ecosystem gate**\n- Milestone: **Open platform & ecosystem**\n- Numeric priority: **36 of 44** (1 is highest)\n- Depends on: #480, #484, #485\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**35% as of 2026-07-22.** Protocol documentation and signed schemas exist in code and on the docs site; a complete normative suite, vectors, version negotiation, and reviewed threat model remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Specification coverage, unresolved normative ambiguity, independent implementations, and threat-review findings. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-511",
+            "sig": "2d_JKJJFYLvvOpWuYo7iSa6fM7qeSiQUSFfFUCg92hdr7khvswqxUw903hFgoARYdB6EeE6YABmXIy30DvEeCw",
+            "title": "Publish formal protocol specifications and threat models",
+            "ts": 1784729751412,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "483d74f4-23aa-441e-9883-6717e69b8f29",
+            "labels": [
+                "protocol",
+                "security",
+                "docs"
+            ],
+            "sig": "g-abdINHfi4X7UVm08Od4L3x3WX3fNb4eDxobAJ_uAIR1mubeEV3AxaAeQ95ok2pcGo58f7OqpMt6675YZN2AQ",
+            "ts": 1784729751413,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "4f3a064f-2e9c-494e-a2d3-b25d14779730",
+            "milestone": "Open platform & ecosystem",
+            "sig": "q-1I0SjQM3WOtqmYQP0p3Ec5wW-FilDFyUXfkSzGKVFlKv8smkskafaO39iGbpdxQFXgDWXj8L66HwEGKFr3CQ",
+            "ts": 1784729751414,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1816920000000,
+            "id": "474b1730-bcfb-4bff-83e9-421b5d6067d6",
+            "sig": "MsgyfJGrcJ49zKnPXO7_5AyRQMe2asmqyzKHx1ljwDVeBVA9tNR2Ap8ENcI5nYjx8ONKw2dZD9BETN0KSYvaBw",
+            "startDate": 1792382400000,
+            "ts": 1784729751415,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "32a23e55-4076-4118-b845-1cc9e4477c96",
+            "priority": 36,
+            "sig": "UmgNEaMQzYZ-6zK7jAn5HG8HAo_Tfe1PHjsybZtmUM-2l24IfjZ_5-NYj63fVnOVkhjXj0yZa9NSfxZS8_EXDQ",
+            "ts": 1784729751416,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "cef0574e-3811-49c1-bc63-5993e7296d28",
+            "progress": 35,
+            "sig": "9nyJ4QIPVTYMcqKwdCwSs8PtN9G8TC_fkjo8h4VH1UjXxxQkPUC0GqQomMpR3Y9X0DVnVLOA_Ty-xBa7U-AEBQ",
+            "ts": 1784729751417,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "protocol",
+        "security",
+        "docs"
+    ],
+    "milestone": "Open platform & ecosystem",
+    "number": 511,
+    "priority": 36,
+    "progress": 35,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1792382400000,
+    "status": "open",
+    "title": "Publish formal protocol specifications and threat models",
+    "updatedAt": 1784729751417,
+    "votes": 0
+}

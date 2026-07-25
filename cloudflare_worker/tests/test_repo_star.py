@@ -13,17 +13,15 @@ import hmac
 import re
 from pathlib import Path
 
+from worker_test_helpers import json_from_request_double
+
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 CATALOG = ENTRY.parent / "catalog.py"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8") + "\n" + CATALOG.read_text(encoding="utf-8")
 
 FUNCS = {
-    "repo_star_handler", "_repo_is_private", "_authed_account_name",
-    "_account_session_record", "_account_session_token",
-    "_account_session_token_name", "_account_session_signature",
-    "_account_session_secret", "_account_kind", "valid_node_name",
-    "clean_string", "method_name",
+    "repo_star_handler", "_repo_is_private", "clean_string", "method_name",
 }
 
 
@@ -38,6 +36,7 @@ def _load_functions(extra_globals):
     assert found == FUNCS, "missing functions: %s" % sorted(FUNCS - found)
     module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
     namespace = dict(extra_globals)
+    namespace.setdefault("bounded_json_request", json_from_request_double)
     exec(compile(module, str(ENTRY), "exec"), namespace)
     return namespace
 
@@ -65,7 +64,13 @@ class _Request:
 
 
 def _harness(accounts, repositories=None, stars=None):
-    repositories = list(repositories or [])  # {key_bi, is_private}
+    # Public serving now fails closed when the catalog row is absent, so the
+    # ordinary harness includes the explicit public repository under test.
+    repositories = list(
+        repositories if repositories is not None else [
+            {"key_bi": "bi:alice/proj", "is_private": 0}
+        ]
+    )  # {key_bi, is_private}
     stars = list(stars or [])                # {repo_bi, account_bi, created_at}
     now = [1_000_000_000]
 
@@ -91,6 +96,24 @@ def _harness(accounts, repositories=None, stars=None):
         rec = dict(rec)
         rec.setdefault("name", key)
         return "bi:" + key, rec
+
+    def _account_session_token(_env, name):
+        return "test-session:" + str(name or "").strip().lower()
+
+    async def _account_session_record(_env, request, data=None):
+        payload = data if isinstance(data, dict) else {}
+        token = str(payload.get("sessionToken") or "")
+        if not token:
+            auth = request.headers.get("authorization") or ""
+            token = auth[7:] if auth.lower().startswith("bearer ") else ""
+        prefix = "test-session:"
+        name = token[len(prefix):] if token.startswith(prefix) else ""
+        rec = accounts.get(name)
+        if not rec or rec.get("status") != "active":
+            return "", None
+        record = dict(rec)
+        record.setdefault("name", name)
+        return "bi:" + name, record
 
     async def d1_first(_env, sql, *args):
         if "FROM repositories" in sql:
@@ -131,6 +154,8 @@ def _harness(accounts, repositories=None, stars=None):
         "ensure_schema": ensure_schema,
         "blind_index": blind_index,
         "_account_row": _account_row,
+        "_account_session_token": _account_session_token,
+        "_account_session_record": _account_session_record,
         "d1_first": d1_first,
         "d1_run": d1_run,
         "re": re,

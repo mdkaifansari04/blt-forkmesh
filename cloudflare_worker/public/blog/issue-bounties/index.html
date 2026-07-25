@@ -5,7 +5,7 @@
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Issue bounties · ForkMesh Blog</title>
-    <meta name="description" content="Fund any issue with a one-click Solana bounty. ForkMesh watches the chain, confirms the deposit, and pays the contributor when their pull request merges, 90% to the author, 10% to the network.">
+    <meta name="description" content="ForkMesh's former Worker-custodied issue-bounty flow is frozen. Historical records are read-only and require an explicit offline reconciliation and migration.">
     <meta name="application-name" content="ForkMesh">
     <meta name="apple-mobile-web-app-title" content="ForkMesh">
     <meta name="theme-color" content="#090909">
@@ -23,7 +23,7 @@
     <meta property="og:url" content="https://forkmesh.com/blog/issue-bounties/">
     <meta property="og:site_name" content="ForkMesh">
     <meta property="og:title" content="Issue bounties">
-    <meta property="og:description" content="Fund any issue with a one-click Solana bounty. ForkMesh watches the chain, confirms the deposit, and pays the contributor when their pull request merges, 90% to the author, 10% to the network.">
+    <meta property="og:description" content="ForkMesh's former Worker-custodied issue-bounty flow is frozen. Historical records are read-only and require explicit offline reconciliation and migration.">
     <meta property="og:image" content="https://forkmesh.com/assets/blog/features/issue-bounties.webp">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:image" content="https://forkmesh.com/assets/blog/features/issue-bounties.webp">
@@ -38,22 +38,22 @@
           <div>
             <p class="eyebrow">Accounts &amp; rewards</p>
             <h1>Issue bounties</h1>
-            <p class="lede">Fund any issue with a one-click Solana bounty. ForkMesh watches the chain, confirms the deposit, and pays the contributor when their pull request merges, 90% to the author, 10% to the network.</p>
+            <p class="lede">The former Worker-custodied issue-bounty flow is frozen. Historical records are read-only and require explicit offline reconciliation and migration.</p>
             <div class="meta"><span class="pill">Feature 65 of 72</span><span>Feature</span><span>Accounts, money &amp; rewards</span><span>3 min read</span></div>
           </div>
           <img class="hero-img" src="/assets/blog/features/issue-bounties.webp" alt="Abstract ForkMesh artwork for Issue bounties">
         </section>
         <article class="body">
           <h2>Why it matters</h2>
-          <p>Issue bounties gives ForkMesh a concrete mechanism for issue funding that pays out when a merged PR resolves the work. Fund any issue with a one-click Solana bounty. ForkMesh watches the chain, confirms the deposit, and pays the contributor when their pull request merges, 90% to the author, 10% to the network.</p>
+          <p>An older ForkMesh design generated deposit keys in the Worker and automatically swept or paid bounty funds. That design conflicts with the platform’s non-custodial boundary and is no longer an active funding or payout path.</p>
           <p>Preservation costs time, disk, bandwidth, and maintenance, so incentives need to point at the nodes and people doing the work. In ForkMesh, issue bounties addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
-          <p>ForkMesh handles issue bounties through the same split it uses across the product: ForkMesh links node identity, repository activity, public profiles, and Solana payment flows without changing Git ownership.</p>
-          <p>The behavior is intentionally narrow: Fund any issue with a one-click Solana bounty. ForkMesh watches the chain, confirms the deposit, and pays the contributor when their pull request merges, 90% to the author, 10% to the network. Support can move to maintainers, mirror operators, and contributors while repositories remain local-first.</p>
-          <div class="note">Title focus: Issue bounties stays tied to issue funding that pays out when a merged PR resolves the work and the local-first repository model.</div>
+          <p>All legacy wallet creation, funding, sweeping, and automatic bounty-payout endpoints now fail closed. The web, desktop, and mobile interfaces show historical state only and direct an instance owner to the offline custody-audit tool. That tool inventories encrypted legacy rows, requires explicit reconciliation, never prints secrets, and never moves funds automatically.</p>
+          <p>A future issue incentive must use an owner-controlled external wallet, program, or multisig; publish only public transaction evidence; and independently verify exact finalized transfers. ForkMesh must not create or retain a custodial wallet for the issue or contributor.</p>
+          <div class="note"><strong>Non-custodial notice:</strong> Do not send funds to a historical bounty address. ForkMesh does not hold or control user funds, and this retired bounty flow never asks for payout private keys, seed phrases, or mnemonics.</div>
           <h2>Where it fits</h2>
-          <p>Use issue bounties when identity, support, and incentives should follow verifiable node and repository activity.</p>
-          <p>It pairs with the rest of Accounts, money &amp; rewards because Issue bounties keeps issue funding that pays out when a merged PR resolves the work connected to the repository, its signatures, and the nodes that serve it.</p>
+          <p>The current community reward program supports verified mirror-node incentives on Solana mainnet-beta; explicit development deployments may select a test network. It does not reactivate issue bounties.</p>
+          <p>Historical status labels are accounting and migration records, not user balances, redeemable claims, or guaranteed payouts.</p>
         </article>
         <nav class="next" aria-label="Feature posts">
           <a href="/blog/make-it-rain/">← Make it rain</a>

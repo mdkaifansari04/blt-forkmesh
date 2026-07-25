@@ -6,7 +6,7 @@ jobs:
       - name: Cloudflare Worker test suite
         run: |
           python3 -m venv .forkmesh-pytest-venv
-          .forkmesh-pytest-venv/bin/python -m pip install pytest
+          .forkmesh-pytest-venv/bin/python -m pip install pytest cryptography
           .forkmesh-pytest-venv/bin/python -m pytest -q cloudflare_worker/tests
       - name: Worker syntax + config
         run: |

@@ -7,6 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "FederatedThreadView.h"
 #include "KebabHeaderView.h"
 #include "PacmanProgress.h"
 #include "PullAiReview.h"
@@ -516,7 +517,6 @@ QWidget *MainWindow::buildPullsTab()
     m_pullDiff->setObjectName("diffView");
     m_pullDiff->setOpenExternalLinks(false);
     m_pullDiff->setOpenLinks(false); // we handle "cmt:" anchors ourselves
-    m_pullDiff->setLineWrapMode(QTextEdit::NoWrap);
     connect(m_pullDiff, &QTextBrowser::anchorClicked, this,
             &MainWindow::onPullDiffAnchorClicked);
     registerDiffView(m_pullDiff);
@@ -1794,6 +1794,11 @@ void MainWindow::registerDiffView(QTextEdit *view)
     m_diffViews.append(view);
     if (view->toolTip().isEmpty())
         view->setToolTip(QStringLiteral("Ctrl+scroll to change the text size"));
+    // Every diff view wraps at the widget edge: the rendered tables are
+    // width-constrained and their code cells pre-wrap, so the whole diff
+    // (including side-by-side) stays inside the visible window instead of
+    // running past the right edge behind a horizontal scrollbar.
+    view->setLineWrapMode(QTextEdit::WidgetWidth);
     view->viewport()->installEventFilter(this); // Ctrl+wheel, see eventFilter
     if (auto *browser = qobject_cast<QTextBrowser *>(view)) {
         browser->setOpenLinks(false);
@@ -2859,6 +2864,20 @@ void MainWindow::renderPullThread(const PullRequest &pr)
             pullLink + QStringLiteral("#%1")
                            .arg(ev.id.isEmpty() ? QString::number(ev.ts) : ev.id),
             ev.author);
+    }
+    if (m_repoDetailIndex >= 0 &&
+        m_repoDetailIndex < m_repositories.size() && m_networkAccess) {
+        const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+        auto *remoteThread =
+            new FederatedThreadView(m_networkAccess, m_pullThreadContainer);
+        const QUrl server(canonicalServerUrl(
+            m_activeServer >= 0 && m_activeServer < m_servers.size()
+                ? m_servers.at(m_activeServer).url
+                : QString()));
+        remoteThread->load(server, repo.owner, repo.name,
+                           QStringLiteral("pull"), pr.number);
+        m_pullThreadLayout->insertWidget(
+            qMax(0, m_pullThreadLayout->count() - 1), remoteThread);
     }
 }
 
@@ -6512,6 +6531,13 @@ void MainWindow::linkIssueToPullFromPullPage()
 
 void MainWindow::fundBountiesForMergedPull(const PullRequest &pr)
 {
+    // Historical issue-bounty records remain visible, but the Worker-held
+    // escrow create/payout contract is frozen. Never create or advertise a new
+    // deposit address from this compatibility hook.
+    Q_UNUSED(pr);
+    return;
+
+#if 0 // Historical Worker-held bounty escrow implementation; never compiled.
     const int idx = issuesRepoIndex();
     if (idx < 0 || !m_networkAccess)
         return;
@@ -6534,8 +6560,8 @@ void MainWindow::fundBountiesForMergedPull(const PullRequest &pr)
         const double amount = issue.bountyUsd;
         const QString question =
             QStringLiteral("Issue #%1 has a $%2 bounty. Show the funding QR now?\n\n"
-                           "Send the SOL to the escrow address; on payout 90%% goes "
-                           "to the pull request author and 10%% to the ForkMesh "
+                           "Send the SOL to the escrow address; on payout 90% goes "
+                           "to the pull request author and 10% to the ForkMesh "
                            "treasury.")
                 .arg(number)
                 .arg(QString::number(amount, 'f', 2));
@@ -6571,8 +6597,9 @@ void MainWindow::fundBountiesForMergedPull(const PullRequest &pr)
         request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
         QNetworkReply *reply = m_networkAccess->post(
             request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+        const QString payeeDisplay = pr.authorName.trimmed();
         connect(reply, &QNetworkReply::finished, this,
-                [this, reply, repo, number, amount] {
+                [this, reply, repo, number, amount, payeeDisplay] {
                     const QByteArray body = reply->readAll();
                     reply->deleteLater();
                     const QJsonObject obj = QJsonDocument::fromJson(body).object();
@@ -6608,13 +6635,35 @@ void MainWindow::fundBountiesForMergedPull(const PullRequest &pr)
                     // The dialog shows the QR, polls for the deposit, and on
                     // confirmation records the paid split; if the funder closes it
                     // early, a background watcher (and the worker cron) still pay.
-                    showBountyQrDialog(repo, number, uri, address, amount, amountSol);
+                    showBountyQrDialog(repo, number, uri, address, amount,
+                                       amountSol, QString(), payeeDisplay);
                 });
     }
+#endif
 }
 
 void MainWindow::autoBountyForMergedPull(const PullRequest &pr)
 {
+    // Migrate stale preferences without contacting the frozen custody API.
+    // A future PR-reward implementation must provide an externally signed,
+    // independently verifiable transfer contract before this hook is enabled.
+    Q_UNUSED(pr);
+    QSettings legacySettings;
+    const bool wasEnabled =
+        legacySettings.value(kAutoPrBountyEnabledSetting, false).toBool();
+    const bool usedWallet =
+        legacySettings.value(kAutoPrBountyModeSetting).toString() ==
+        QLatin1String("wallet");
+    legacySettings.setValue(kAutoPrBountyEnabledSetting, false);
+    legacySettings.setValue(kAutoPrBountyModeSetting,
+                            QStringLiteral("perPr"));
+    if (wasEnabled || usedWallet)
+        logSystem(QStringLiteral(
+            "Legacy automatic PR bounty funding was disabled; no Worker-held "
+            "wallet or escrow request was sent."));
+    return;
+
+#if 0 // Historical Worker-held automatic bounty implementation; never compiled.
     // Issue #347: reward every merged PR's author with the configured fixed
     // bounty, independent of any issue bounty. Only the repo owner can create a
     // bounty (the worker requires an owner signature), so this is a no-op on a
@@ -6662,8 +6711,9 @@ void MainWindow::autoBountyForMergedPull(const PullRequest &pr)
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     QNetworkReply *reply = m_networkAccess->post(
         request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    const QString payeeDisplay = pr.authorName.trimmed();
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, repo, number, amount, walletMode] {
+            [this, reply, repo, number, amount, walletMode, payeeDisplay] {
         const QByteArray body = reply->readAll();
         reply->deleteLater();
         const QJsonObject obj = QJsonDocument::fromJson(body).object();
@@ -6725,13 +6775,23 @@ void MainWindow::autoBountyForMergedPull(const PullRequest &pr)
                       .arg(QString::number(amount, 'f', 2))
                       .arg(amountSol));
         showBountyQrDialog(repo, number, uri, address, amount, amountSol,
-                           QStringLiteral("pr"));
+                           QStringLiteral("pr"), payeeDisplay);
     });
+#endif
 }
 
 void MainWindow::pollBountyPayout(const RepositoryRecord &repo, int number,
                                   double amount, const QString &kind)
 {
+    // Read/write polling used to trigger a Worker-held escrow payout as a side
+    // effect. The endpoint is migration-only, so do not contact it.
+    Q_UNUSED(repo);
+    Q_UNUSED(number);
+    Q_UNUSED(amount);
+    Q_UNUSED(kind);
+    return;
+
+#if 0 // Historical status polling could trigger a custodial payout; disabled.
     if (!m_networkAccess)
         return;
     const bool isPr = kind == QLatin1String("pr");
@@ -6790,6 +6850,7 @@ void MainWindow::pollBountyPayout(const RepositoryRecord &repo, int number,
         });
     });
     timer->start();
+#endif
 }
 
 
@@ -7447,7 +7508,12 @@ void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
         if (!probe.canWrite())
             return;
     }
-    if (!hasOwnerSigningCapability(repo.owner))
+    // The relay remains the authority: a desktop-capable account may sign the
+    // public owner in this RepositoryRecord, and the Worker accepts it only for
+    // a directly owned repo or a public linked repo whose organization role is
+    // owner/admin. This is what lets an org admin drain an org-alias inbox
+    // without treating organization membership as a private-repo grant.
+    if (!hasOwnerSigningCapability())
         return;
 
     QUrl url = pullsApiUrl(repo);
@@ -7499,7 +7565,7 @@ void MainWindow::applyPullsInboxPayload(const RepositoryRecord &repo,
                                         const QJsonArray &pending,
                                         bool interactive)
 {
-    if (!hasOwnerSigningCapability(repo.owner))
+    if (!hasOwnerSigningCapability())
         return;
     if (pending.isEmpty()) {
         if (interactive)
@@ -7617,7 +7683,11 @@ void MainWindow::pollOwnedInboxes()
 // drain token — the shared auth for inbox GET/DELETE and GET /api/sync.
 QUrlQuery MainWindow::signedInboxQuery(const QString &owner) const
 {
-    if (!hasOwnerSigningCapability(owner))
+    // `owner` may be a public organization alias. The server resolves the
+    // alias and verifies this device against the linked org's current
+    // owner/admin membership; locally we only require a valid desktop signing
+    // capability and never infer authorization from the alias string.
+    if (!hasOwnerSigningCapability())
         return QUrlQuery();
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
     const QByteArray canonical =
@@ -7629,8 +7699,8 @@ QUrlQuery MainWindow::signedInboxQuery(const QString &owner) const
     return query;
 }
 
-// Coalesce a burst of relay "event" frames (one arrives per website write,
-// possibly across several repos' host sockets) into a single /api/sync fetch.
+// Coalesce an explicit local refresh request into a single /api/sync fetch.
+// Routine repository changes are discovered by the bounded HTTPS sync poll.
 void MainWindow::scheduleRelaySync()
 {
     if (!hasOwnerSigningCapability())

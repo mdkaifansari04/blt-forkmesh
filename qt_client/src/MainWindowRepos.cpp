@@ -8,11 +8,18 @@
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 #include "KebabHeaderView.h"
+#include "ControlNode.h"
+#include "PrivateMirrorRuntime.h"
+#include "PublicMirrorRuntime.h"
 
 #include <QCryptographicHash>
 #include <QFutureWatcher>
+#include <QRegularExpression>
+#include <QStandardPaths>
 
 #include <QtConcurrent/QtConcurrentRun>
+
+#include <cmath>
 
 using namespace forkmesh::ui;
 
@@ -25,6 +32,337 @@ constexpr qint64 kCatalogPublishRefreshMs = 6LL * 60 * 60 * 1000;
 constexpr qint64 kCatalogPublishRateLimitRetryMs = 60LL * 1000;
 constexpr qint64 kCatalogPublishMaxRetryAfterMs = 10LL * 60 * 1000;
 constexpr qint64 kContributionScanCapacityRetryMs = 1000;
+
+QString privateReplicaRoot()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+           QStringLiteral("/private-replicas");
+}
+
+QString privateIdentityVaultPath()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+           QStringLiteral("/identity/private-mirror-vault.json");
+}
+
+QString publicArchiveRoot()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+           QStringLiteral("/public-mirror-archives");
+}
+
+QString publicIdentityVaultPath()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+           QStringLiteral("/identity/public-age-vault.json");
+}
+
+QByteArray publicIdentityVaultSecret(const ForkMeshIdentity &identity)
+{
+    if (!identity.isValid())
+        return {};
+    const QByteArray canonical =
+        QByteArrayLiteral("forkmesh-public-age-vault-unlock-v1\n") +
+        identity.publicKey().toUtf8();
+    return QByteArray::fromBase64(
+        identity.signData(canonical).toLatin1(),
+        QByteArray::Base64UrlEncoding);
+}
+
+QByteArray privateIdentityVaultSecret(const ForkMeshIdentity &identity)
+{
+    if (!identity.isValid())
+        return {};
+    const QByteArray canonical =
+        QByteArrayLiteral("forkmesh-private-mirror-vault-unlock-v1\n") +
+        identity.publicKey().toUtf8();
+    return QByteArray::fromBase64(
+        identity.signData(canonical).toLatin1(),
+        QByteArray::Base64UrlEncoding);
+}
+
+QString privateOpaqueRepositoryId(const QString &opaqueReplicaId)
+{
+    if (!PrivateMirrorStore::isOpaqueId(opaqueReplicaId))
+        return {};
+    return QString::fromLatin1(
+               QCryptographicHash::hash(
+                   QByteArrayLiteral("forkmesh-private-repository-id-v1\n") +
+                       opaqueReplicaId.toUtf8(),
+                   QCryptographicHash::Sha256)
+                   .toHex())
+        .left(32);
+}
+
+QString configuredPrivateMirrorNode()
+{
+    return QSettings()
+        .value(QStringLiteral("control/cloudflareNodeName"))
+        .toString()
+        .trimmed()
+        .toLower();
+}
+
+struct PrivateSyncWorkerResult {
+    PrivateMirrorRuntime::SyncResult sync;
+    std::shared_ptr<PrivateMirrorMaterialization> materialization;
+    QString error;
+    QString notice;
+    bool legacyRemoved = true;
+};
+
+struct PrivateDownloadWorkerResult {
+    QString opaqueId;
+    PrivateMirrorStore::Metadata metadata;
+    std::shared_ptr<PrivateMirrorMaterialization> materialization;
+    QString error;
+};
+
+struct PublicSyncWorkerResult {
+    PublicMirrorRuntime::Metadata metadata;
+    std::shared_ptr<PublicMirrorMaterialization> materialization;
+    QString error;
+    QString notice;
+    bool created = false;
+    bool legacyRemoved = true;
+};
+
+QString cleanCatalogString(const QJsonObject &object, const QString &key,
+                           int maximumCodePoints)
+{
+    const QString value = object.value(key).toString().trimmed();
+    QString result;
+    result.reserve(qMin(value.size(), maximumCodePoints));
+    int points = 0;
+    for (qsizetype i = 0;
+         i < value.size() && points < maximumCodePoints; ++i, ++points) {
+        const QChar current = value.at(i);
+        result.append(current);
+        if (current.isHighSurrogate() && i + 1 < value.size() &&
+            value.at(i + 1).isLowSurrogate()) {
+            result.append(value.at(++i));
+        }
+    }
+    return result;
+}
+
+qint64 boundedCatalogInteger(const QJsonValue &value, qint64 maximum)
+{
+    bool ok = false;
+    qint64 number = 0;
+    if (value.isString())
+        number = value.toString().toLongLong(&ok);
+    else if (value.isDouble()) {
+        const double raw = value.toDouble();
+        number = qint64(raw);
+        ok = std::isfinite(raw) && double(number) == raw;
+    }
+    return ok ? qBound<qint64>(0, number, maximum) : 0;
+}
+
+QJsonArray normalizedActivityWeeks(const QJsonValue &value)
+{
+    const QJsonArray input = value.toArray();
+    QJsonArray normalized;
+    const qsizetype start = qMax<qsizetype>(0, input.size() - 52);
+    for (qsizetype i = start; i < input.size(); ++i)
+        normalized.append(
+            double(boundedCatalogInteger(input.at(i), 1000000)));
+    while (normalized.size() < 52)
+        normalized.prepend(0);
+    return normalized;
+}
+
+QJsonArray normalizedCatalogLogoLabels(const QJsonValue &value, int limit,
+                                       int maximumCodePoints)
+{
+    QJsonArray normalized;
+    for (const QJsonValue &entry : value.toArray()) {
+        QJsonObject wrapper{{QStringLiteral("value"), entry}};
+        const QString label =
+            cleanCatalogString(wrapper, QStringLiteral("value"),
+                               maximumCodePoints);
+        if (!label.isEmpty())
+            normalized.append(label);
+        if (normalized.size() >= limit)
+            break;
+    }
+    return normalized;
+}
+
+QJsonObject normalizedCatalogLogoMetadata(const QJsonValue &value)
+{
+    const QJsonObject input = value.toObject();
+    QJsonObject languages;
+    int languageCount = 0;
+    const QJsonObject inputLanguages =
+        input.value(QStringLiteral("languages")).toObject();
+    for (auto it = inputLanguages.constBegin();
+         it != inputLanguages.constEnd() && languageCount < 12; ++it) {
+        QJsonObject wrapper{{QStringLiteral("value"), it.key()}};
+        const QString language =
+            cleanCatalogString(wrapper, QStringLiteral("value"), 80);
+        if (language.isEmpty())
+            continue;
+        languages.insert(
+            language,
+            double(boundedCatalogInteger(it.value(), qint64(1) << 50)));
+        ++languageCount;
+    }
+    return {
+        {QStringLiteral("description"),
+         cleanCatalogString(input, QStringLiteral("description"), 500)},
+        {QStringLiteral("languages"), languages},
+        {QStringLiteral("topics"),
+         normalizedCatalogLogoLabels(
+             input.value(QStringLiteral("topics")), 12, 80)},
+        {QStringLiteral("fileStructure"),
+         normalizedCatalogLogoLabels(
+             input.value(QStringLiteral("fileStructure")), 24, 120)},
+        {QStringLiteral("frameworks"),
+         normalizedCatalogLogoLabels(
+             input.value(QStringLiteral("frameworks")), 12, 80)},
+        {QStringLiteral("projectCategory"),
+         cleanCatalogString(input, QStringLiteral("projectCategory"), 80)},
+    };
+}
+
+QString normalizedCatalogSolanaAddress(const QJsonObject &data)
+{
+    const QString address =
+        cleanCatalogString(data, QStringLiteral("solana"), 64);
+    static const QRegularExpression publicAddressPattern(
+        QStringLiteral("^[1-9A-HJ-NP-Za-km-z]{32,44}$"));
+    return publicAddressPattern.match(address).hasMatch()
+               ? address
+               : QString();
+}
+
+QJsonObject normalizedCatalogV2Record(const QJsonObject &data)
+{
+    const bool privateRepository =
+        data.value(QStringLiteral("visibility")).toString() !=
+        QLatin1String("public");
+    const QJsonObject hostTelemetry =
+        forkmesh::control::normalizedCatalogHostTelemetry(data);
+    QJsonObject record{
+        {QStringLiteral("owner"),
+         cleanCatalogString(data, QStringLiteral("owner"), 80)},
+        {QStringLiteral("name"),
+         cleanCatalogString(data, QStringLiteral("name"), 80)},
+        {QStringLiteral("visibility"),
+         privateRepository ? QStringLiteral("private")
+                           : QStringLiteral("public")},
+        {QStringLiteral("mirrorEncryption"),
+         data.value(QStringLiteral("mirrorEncryption")).toString() ==
+                 QLatin1String("owner-sealed-v1")
+             ? QStringLiteral("owner-sealed-v1")
+             : QString()},
+        {QStringLiteral("opaqueRepoId"),
+         cleanCatalogString(data, QStringLiteral("opaqueRepoId"), 64)
+             .toLower()},
+        {QStringLiteral("keyEpoch"),
+         double(boundedCatalogInteger(
+             data.value(QStringLiteral("keyEpoch")), qint64(1) << 31))},
+        {QStringLiteral("encryptedManifestHash"),
+         cleanCatalogString(
+             data, QStringLiteral("encryptedManifestHash"), 64)
+             .toLower()},
+        {QStringLiteral("encryptedManifestSig"),
+         cleanCatalogString(
+             data, QStringLiteral("encryptedManifestSig"), 220)},
+        {QStringLiteral("sizeBytes"),
+         double(boundedCatalogInteger(
+             data.value(QStringLiteral("sizeBytes")), qint64(1) << 50))},
+        {QStringLiteral("description"),
+         cleanCatalogString(data, QStringLiteral("description"), 240)},
+        {QStringLiteral("logoMetadata"),
+         normalizedCatalogLogoMetadata(
+             data.value(QStringLiteral("logoMetadata")))},
+        {QStringLiteral("cloneUrl"),
+         cleanCatalogString(data, QStringLiteral("cloneUrl"), 2048)},
+        {QStringLiteral("solana"),
+         normalizedCatalogSolanaAddress(data)},
+        {QStringLiteral("channel"),
+         cleanCatalogString(data, QStringLiteral("channel"), 120)},
+        {QStringLiteral("hostedSince"),
+         cleanCatalogString(data, QStringLiteral("hostedSince"), 32)},
+        {QStringLiteral("lastSync"),
+         cleanCatalogString(data, QStringLiteral("lastSync"), 32)},
+        {QStringLiteral("updatedAt"),
+         cleanCatalogString(data, QStringLiteral("updatedAt"), 32)},
+        {QStringLiteral("rootCommit"),
+         cleanCatalogString(data, QStringLiteral("rootCommit"), 64)},
+        {QStringLiteral("source"),
+         cleanCatalogString(data, QStringLiteral("source"), 40)},
+        {QStringLiteral("commit"),
+         cleanCatalogString(data, QStringLiteral("commit"), 64)},
+        {QStringLiteral("branch"),
+         cleanCatalogString(data, QStringLiteral("branch"), 120)},
+        {QStringLiteral("issueCount"),
+         cleanCatalogString(data, QStringLiteral("issueCount"), 12)},
+        {QStringLiteral("issueMaxNumber"),
+         cleanCatalogString(data, QStringLiteral("issueMaxNumber"), 12)},
+        {QStringLiteral("commitCount"),
+         cleanCatalogString(data, QStringLiteral("commitCount"), 12)},
+        {QStringLiteral("branchCount"),
+         cleanCatalogString(data, QStringLiteral("branchCount"), 12)},
+        {QStringLiteral("pullCount"),
+         cleanCatalogString(data, QStringLiteral("pullCount"), 12)},
+        {QStringLiteral("discussionCount"),
+         cleanCatalogString(data, QStringLiteral("discussionCount"), 12)},
+        {QStringLiteral("activityWeeks"),
+         normalizedActivityWeeks(
+             data.value(QStringLiteral("activityWeeks")))},
+        {QStringLiteral("worktreeCount"),
+         cleanCatalogString(data, QStringLiteral("worktreeCount"), 12)},
+        {QStringLiteral("artifactCount"),
+         cleanCatalogString(data, QStringLiteral("artifactCount"), 12)},
+        {QStringLiteral("platform"),
+         cleanCatalogString(data, QStringLiteral("platform"), 16)},
+        {QStringLiteral("version"),
+         cleanCatalogString(data, QStringLiteral("version"), 32)},
+        {QStringLiteral("nodeId"),
+         cleanCatalogString(data, QStringLiteral("nodeId"), 64)},
+        {QStringLiteral("clonesServed"),
+         cleanCatalogString(data, QStringLiteral("clonesServed"), 12)},
+        {QStringLiteral("websiteServed"),
+         cleanCatalogString(data, QStringLiteral("websiteServed"), 12)},
+        {QStringLiteral("maintainer"),
+         cleanCatalogString(data, QStringLiteral("maintainer"), 120)},
+        {QStringLiteral("signature"),
+         cleanCatalogString(data, QStringLiteral("signature"), 220)},
+        {QStringLiteral("stateHash"),
+         cleanCatalogString(data, QStringLiteral("stateHash"), 64)},
+        {QStringLiteral("stateSig"),
+         cleanCatalogString(data, QStringLiteral("stateSig"), 220)},
+    };
+    // Optional extension fields are omitted when not shared. Besides preserving
+    // a truthful "unknown", this keeps catalog-v2 signatures from older clients
+    // valid after the Worker learns about host telemetry.
+    for (const QString &key :
+         {QStringLiteral("cpuPercent"), QStringLiteral("memUsedBytes"),
+          QStringLiteral("memTotalBytes"), QStringLiteral("diskUsedBytes"),
+          QStringLiteral("diskTotalBytes")}) {
+        const QJsonValue value = hostTelemetry.value(key);
+        if (!value.isNull() && !value.isUndefined())
+            record.insert(key, value);
+    }
+    return record;
+}
+
+QString privateControlPlaneKey(const QUrl &catalogUrl,
+                               const QString &repositoryKey,
+                               const QString &ownerKeyId)
+{
+    QUrl origin = catalogUrl;
+    origin.setPath(QString());
+    origin.setQuery(QString());
+    origin.setFragment(QString());
+    return origin.toString(QUrl::RemoveUserInfo |
+                           QUrl::StripTrailingSlash) +
+           QLatin1Char('|') + repositoryKey + QLatin1Char('|') + ownerKeyId;
+}
 
 struct RepoRemoteRow {
     QString name;
@@ -261,6 +599,144 @@ QStringList MainWindow::viewAuthGitArgs(const RepositoryRecord &repo,
                 QString::fromLatin1(basic)};
 }
 
+QByteArray MainWindow::privateReplicaAuthorization(
+    const RepositoryRecord &repo) const
+{
+    if (!repo.isPrivate || !m_profileIdentity.isValid())
+        return {};
+    const QString owner =
+        repoSegment(repo.owner, QStringLiteral("owner"));
+    const QString name =
+        repoSegment(repo.name, QStringLiteral("repository"));
+    const QString viewer = accountOwner().trimmed().toLower();
+    if (owner.isEmpty() || name.isEmpty() || viewer.isEmpty() ||
+        !hasOwnerSigningCapability(viewer)) {
+        return {};
+    }
+    const QString ts =
+        QString::number(QDateTime::currentMSecsSinceEpoch());
+    const bool asOwner = viewer == owner;
+    const QByteArray canonical =
+        asOwner
+            ? ("forkmesh-view-v1\n" + owner + "\n" + name + "\n" +
+               ts)
+                  .toUtf8()
+            : ("forkmesh-share-view-v1\n" + viewer + "\n" + owner +
+               "\n" + name + "\n" + ts)
+                  .toUtf8();
+    const QString signature =
+        m_profileIdentity.signData(canonical);
+    if (signature.isEmpty())
+        return {};
+    const QByteArray credentials =
+        (asOwner ? owner : viewer).toUtf8() + ':' + ts.toUtf8() + '.' +
+        signature.toUtf8();
+    return QByteArrayLiteral("Basic ") + credentials.toBase64();
+}
+
+void MainWindow::ensurePrivateMirrorRecipientIdentityRegistered(
+    std::function<void(bool, QString)> onDone)
+{
+    auto finish =
+        [onDone = std::move(onDone)](
+            bool ok, const QString &error = QString()) mutable {
+            if (onDone)
+                onDone(ok, error);
+        };
+    if (!m_networkAccess || m_accountSessionToken.trimmed().isEmpty() ||
+        !m_profileIdentity.isValid() ||
+        !hasOwnerSigningCapability(accountOwner())) {
+        finish(false,
+               QStringLiteral(
+                   "an authenticated desktop-capable account is required"));
+        return;
+    }
+    MirrorCrypto::Identity mirrorIdentity;
+    QString localError;
+    if (!loadOwnerEncryptionIdentity(&mirrorIdentity, &localError)) {
+        finish(false,
+               QStringLiteral(
+                   "the local encryption identity vault is unavailable"));
+        return;
+    }
+    const QString keyId = mirrorIdentity.keyId();
+    const QJsonObject publicBundle = mirrorIdentity.publicBundle();
+    mirrorIdentity.x25519Priv.fill('\0');
+    mirrorIdentity.mlkemPriv.fill('\0');
+    mirrorIdentity = {};
+
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/security/owner-keys"));
+    url.setQuery(QString());
+    url.setFragment(QString());
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    request.setRawHeader(
+        "Authorization",
+        QByteArrayLiteral("Bearer ") +
+            m_accountSessionToken.toUtf8());
+    QNetworkReply *reply = m_networkAccess->post(
+        request,
+        QJsonDocument(QJsonObject{
+                          {QStringLiteral("publicBundle"), publicBundle},
+                      })
+            .toJson(QJsonDocument::Compact));
+    connect(
+        reply, &QNetworkReply::finished, this,
+        [reply, keyId, finish = std::move(finish)]() mutable {
+            const QByteArray body = reply->readAll();
+            const int status =
+                reply->attribute(
+                         QNetworkRequest::HttpStatusCodeAttribute)
+                    .toInt();
+            const QJsonObject object =
+                QJsonDocument::fromJson(body).object();
+            const bool ok =
+                reply->error() == QNetworkReply::NoError &&
+                status >= 200 && status < 300 &&
+                object.value(QStringLiteral("ok")).toBool() &&
+                object.value(QStringLiteral("keyId")).toString() ==
+                    keyId &&
+                !object.value(QStringLiteral("privateKeysStored"))
+                     .toBool(true);
+            reply->deleteLater();
+            finish(ok,
+                   ok ? QString()
+                      : QStringLiteral(
+                            "the relay did not accept the public-only "
+                            "encryption key"));
+        });
+}
+
+bool MainWindow::loadOwnerEncryptionIdentity(
+    MirrorCrypto::Identity *identity, QString *error) const
+{
+    if (!identity) {
+        if (error)
+            *error = QStringLiteral("No encryption identity destination.");
+        return false;
+    }
+    *identity = {};
+    QByteArray vaultSecret =
+        privateIdentityVaultSecret(m_profileIdentity);
+    if (vaultSecret.size() < 32) {
+        vaultSecret.fill('\0');
+        vaultSecret.clear();
+        if (error)
+            *error = QStringLiteral(
+                "The local device identity cannot unlock the owner vault.");
+        return false;
+    }
+    const bool ok = PrivateMirrorRuntime::loadOrCreateIdentity(
+        privateIdentityVaultPath(), vaultSecret, identity, error);
+    vaultSecret.fill('\0');
+    vaultSecret.clear();
+    if (!ok)
+        *identity = {};
+    return ok;
+}
+
 void MainWindow::loadRepositories()
 {
     m_repositories.clear();
@@ -276,6 +752,14 @@ void MainWindow::loadRepositories()
         repo.localPath = settings.value("localPath").toString();
         repo.solanaAddress = settings.value("solanaAddress").toString();
         repo.mirrorPath = settings.value("mirrorPath").toString();
+        repo.privateReplicaId =
+            settings.value("privateReplicaId").toString().trimmed();
+        if (!PrivateMirrorStore::isOpaqueId(repo.privateReplicaId))
+            repo.privateReplicaId.clear();
+        repo.publicArchiveId =
+            settings.value("publicArchiveId").toString().trimmed();
+        if (!PublicMirrorRuntime::isArchiveId(repo.publicArchiveId))
+            repo.publicArchiveId.clear();
         repo.publishToNetwork = settings.value("publishToNetwork").toBool();
         repo.isPrivate = settings.value("isPrivate").toBool();
         // Default off for mirrored repos (owner isn't this node); on for repos
@@ -283,17 +767,78 @@ void MainWindow::loadRepositories()
         repo.actionsEnabled =
             settings.value("actionsEnabled", repo.owner == accountOwner())
                 .toBool();
+        repo.externallyManagedActions =
+            settings.value("externallyManagedActions", false).toBool();
+        repo.externalActionsSource =
+            settings.value("externalActionsSource").toString().trimmed();
+        repo.externalActionsRef =
+            settings.value("externalActionsRef").toString().trimmed();
         repo.secretScanningEnabled =
             settings.value("secretScanningEnabled", true).toBool();
         repo.disabledWorkflows = settings.value("disabledWorkflows").toStringList();
         repo.hostedSinceMs = settings.value("hostedSinceMs").toLongLong();
         repo.lastSyncMs = settings.value("lastSyncMs").toLongLong();
         repo.publishedAtMs = settings.value("publishedAtMs").toLongLong();
-        if (!repo.name.isEmpty() && !repositorySource(repo).isEmpty())
+        if (!repo.name.isEmpty() &&
+            (!repositorySource(repo).isEmpty() ||
+             PublicMirrorRuntime::isArchiveId(repo.publicArchiveId) ||
+             PrivateMirrorStore::isOpaqueId(repo.privateReplicaId)))
             m_repositories.append(repo);
     }
     settings.endArray();
+    // Re-attach records whose mirror directory moved out from under them (an
+    // owner rename re-derives mirrorPath without migrating the directory).
+    bool migrated = false;
+    for (RepositoryRecord &repo : m_repositories)
+        migrated = reconcileMirrorPath(repo) || migrated;
+    if (migrated)
+        saveRepositories();
     loadRepoStats();
+}
+
+bool MainWindow::reconcileMirrorPath(RepositoryRecord &repo)
+{
+    if (repo.previewOnly || repo.mirrorPath.trimmed().isEmpty() ||
+        QDir(repo.mirrorPath).exists())
+        return false;
+    // Only a working-copy holder knows which bare mirror its pushes land in:
+    // ensurePushHook points the copy's push URL at the served mirror, so that
+    // remote is the ground truth for where the old directory lives.
+    const QString localPath = repo.localPath.trimmed();
+    if (localPath.isEmpty() || !QDir(localPath).exists(QStringLiteral(".git")))
+        return false;
+    QByteArray out;
+    if (!runGitCapture(localPath,
+                       {QStringLiteral("remote"), QStringLiteral("get-url"),
+                        QStringLiteral("--push"), QStringLiteral("origin")},
+                       &out, nullptr))
+        return false;
+    const QString oldMirror = QString::fromUtf8(out).trimmed();
+    // Adopt only a real local bare repository, never a URL remote.
+    if (oldMirror.isEmpty() || oldMirror.contains(QLatin1String("://")) ||
+        QDir::cleanPath(oldMirror) == QDir::cleanPath(repo.mirrorPath) ||
+        !QFileInfo(oldMirror).isDir() ||
+        !QFileInfo(QDir(oldMirror).filePath(QStringLiteral("HEAD"))).isFile())
+        return false;
+    QDir().mkpath(QFileInfo(repo.mirrorPath).absolutePath());
+    if (QDir().rename(oldMirror, repo.mirrorPath)) {
+        logSystem(QStringLiteral(
+                      "Mirror: moved %1/%2's served mirror from %3 to %4 "
+                      "(record and on-disk mirror had diverged).")
+                      .arg(repo.owner, repo.name, oldMirror, repo.mirrorPath));
+        // The hook and push URL inside the working copy still name the old
+        // path; ensurePushHook rewrites both now that the target exists.
+        ensurePushHook(repo);
+        return false; // record unchanged; only the directory moved
+    }
+    // Could not move (permissions, cross-device): serve the mirror where it
+    // actually is instead of attesting a path that doesn't exist.
+    repo.mirrorPath = oldMirror;
+    logSystem(QStringLiteral(
+                  "Mirror: %1/%2's recorded mirror path was missing; using the "
+                  "existing mirror at %3.")
+                  .arg(repo.owner, repo.name, oldMirror));
+    return true;
 }
 
 void MainWindow::saveRepositories() const
@@ -317,10 +862,26 @@ void MainWindow::saveRepositories() const
         settings.setValue("cloneUrl", repo.cloneUrl);
         settings.setValue("localPath", repo.localPath);
         settings.setValue("solanaAddress", repo.solanaAddress);
-        settings.setValue("mirrorPath", repo.mirrorPath);
+        // A private mirror path is an owner-only runtime materialization. Once
+        // an opaque encrypted replica exists, never persist that temporary
+        // plaintext path. A legacy path is retained only until the first
+        // authenticated sealing pass can migrate and remove it safely.
+        settings.setValue(
+            "mirrorPath",
+            (!repo.privateReplicaId.isEmpty() ||
+             !repo.publicArchiveId.isEmpty())
+                ? QString()
+                : repo.mirrorPath);
+        settings.setValue("privateReplicaId", repo.privateReplicaId);
+        settings.setValue("publicArchiveId", repo.publicArchiveId);
         settings.setValue("publishToNetwork", repo.publishToNetwork);
         settings.setValue("isPrivate", repo.isPrivate);
         settings.setValue("actionsEnabled", repo.actionsEnabled);
+        settings.setValue("externallyManagedActions",
+                          repo.externallyManagedActions);
+        settings.setValue("externalActionsSource",
+                          repo.externalActionsSource);
+        settings.setValue("externalActionsRef", repo.externalActionsRef);
         settings.setValue("secretScanningEnabled", repo.secretScanningEnabled);
         settings.setValue("disabledWorkflows", repo.disabledWorkflows);
         settings.setValue("hostedSinceMs", repo.hostedSinceMs);
@@ -582,13 +1143,10 @@ void MainWindow::refreshRepositoryList()
     }
 
     // Advertise our own mirrors so other nodes can see and mirror them too.
-    // Advertise under the SAME owner/name the live host tunnel and catalog
-    // register with (catalogOwner + canonical name), not the raw repo.owner.
-    // Peers turn the advertised string straight into a clone URL, which the
-    // worker routes to the DO keyed host:<owner>/<name>. If we advertised
-    // repo.owner while the host socket connected as catalogOwner, the peer hit
-    // a DO with no host attached and got a 503 — surfaced as "Sync deferred,
-    // host temporarily unavailable" even though we were online and serving.
+    // Use the SAME owner/name in the signed catalog, direct-HTTPS route binding,
+    // and minimal update channel (catalogOwner + canonical name), not the raw
+    // repo.owner. A mismatch makes peers resolve the wrong mirror group even
+    // when this endpoint is healthy.
     if (m_backend) {
         // Building the adverts shells ~9 git subprocesses per repo (head, commit,
         // size, issue/pull/discussion/commit/branch counts, worktree count). None of
@@ -1498,7 +2056,7 @@ void MainWindow::deleteCurrentMirror()
                                  : QDir::cleanPath(rawWorktree);
 
     QString message = QStringLiteral(
-        "Delete repository %1/%2 from this node?\n\nMirror: %3")
+        "Delete repository %1/%2 from this machine?\n\nMirror: %3")
                           .arg(repo.owner, repo.name,
                                path.isEmpty() ? QStringLiteral("not created") : path);
     if (!repo.localPath.isEmpty())
@@ -1547,6 +2105,27 @@ void MainWindow::deleteCurrentMirror()
     }
     if (!repo.previewOnly && repo.publishToNetwork)
         deleteCatalogRepository(catalogOwner(repo), repo.name);
+    if (PublicMirrorRuntime::isArchiveId(repo.publicArchiveId)) {
+        m_publicMirrorMaterializations.remove(repo.publicArchiveId);
+        if (!keepFiles) {
+            QFile::remove(
+                PublicMirrorRuntime::ciphertextPath(
+                    publicArchiveRoot(), repo.publicArchiveId));
+            QFile::remove(
+                QDir(publicArchiveRoot())
+                    .filePath(repo.publicArchiveId +
+                              QStringLiteral(".json")));
+        }
+    }
+    if (PrivateMirrorStore::isOpaqueId(repo.privateReplicaId)) {
+        m_privateMirrorMaterializations.remove(repo.privateReplicaId);
+        if (!keepFiles) {
+            QFile::remove(
+                QDir(privateReplicaRoot())
+                    .filePath(repo.privateReplicaId +
+                              QStringLiteral(".fm-private")));
+        }
+    }
     // Deleting a repository must remove it completely from this node so its
     // name is free to reuse. The working directory on disk is left alone
     // (only the bare mirror above is removed, unless "keep files" was
@@ -1555,6 +2134,14 @@ void MainWindow::deleteCurrentMirror()
     // the same owner/name indefinitely.
     m_repositories.removeAt(index);
     saveRepositories();
+    QString gatewayError;
+    if (!rebuildDirectMirrorGatewayConfiguration(
+            &gatewayError, true)) {
+        logSystem(
+            QStringLiteral(
+                "Direct gateway refresh after repository deletion failed: %1")
+                .arg(gatewayError));
+    }
     startRepoHosts();
     refreshRepositoryList();
     m_repoDetailIndex = -1;
@@ -1620,14 +2207,23 @@ QWidget *MainWindow::buildRepoSettingsTab()
             return;
         m_repositories[m_repoDetailIndex].isPrivate = on;
         saveRepositories();
+        // Remove the old visibility from the direct gateway immediately. The
+        // current temporary materialization stays alive only long enough to
+        // seal the replacement format; it is never promoted to durable
+        // plaintext.
+        QString gatewayError;
+        rebuildDirectMirrorGatewayConfiguration(
+            &gatewayError, true);
         logSystem(QStringLiteral("%1 %2/%3.")
                       .arg(on ? "Made private" : "Made public",
                            m_repositories.at(m_repoDetailIndex).owner,
                            m_repositories.at(m_repoDetailIndex).name));
-        // Push the new visibility to the catalog and rebuild hosts so the relay's
-        // is_private flag and the host registrations reflect the change at once.
-        if (m_repositories.at(m_repoDetailIndex).publishToNetwork)
-            publishRepository(m_repoDetailIndex, false);
+        // A private transition must seal/migrate before any private catalog
+        // record exists. Public transition rebuilds an official-age archive.
+        if (on)
+            syncPrivateRepository(m_repoDetailIndex, /*quiet=*/false);
+        else
+            syncRepository(m_repoDetailIndex, /*quiet=*/false);
         startRepoHosts();
         refreshRepositoryList();
         refreshRepoSettings();
@@ -1824,7 +2420,7 @@ QWidget *MainWindow::buildRepoSettingsTab()
 
     auto *actionsHint = new QLabel(
         "Mirrored repositories start with actions disabled. Enable this only for "
-        "repos whose workflows you trust to run on this node.");
+        "repos whose workflows you trust to run on this machine.");
     actionsHint->setObjectName("statusLine");
     actionsHint->setWordWrap(true);
     outer->addWidget(actionsHint);
@@ -1866,7 +2462,7 @@ QWidget *MainWindow::buildRepoSettingsTab()
     outer->addWidget(dangerHeading);
 
     auto *deleteHint = new QLabel(
-        "Delete this repository from this node completely. Your working "
+        "Delete this repository from this machine completely. Your working "
         "directory, if any, is kept on disk but no longer tracked by "
         "ForkMesh. Published repos are also removed from the public "
         "ForkMesh catalog, freeing up the name for reuse. You can also "
@@ -2110,7 +2706,7 @@ void MainWindow::refreshRepoSettings()
                     "published/fork location.");
             else if (r.cloneUrl.trimmed().isEmpty())
                 m_repoSourceHint->setText(
-                    "No upstream set — this node hosts the repo directly.");
+                    "No upstream set — this machine hosts the repo directly.");
             else
                 m_repoSourceHint->setText(
                     "The mirror fetches from this URL. Update it to repoint the "
@@ -2157,8 +2753,8 @@ void MainWindow::refreshRepoSettings()
             "yet. The visibility choice applies once you publish it.");
     else if (repo.isPrivate)
         m_repoVisibilityHint->setText(
-            "Private: hidden from the public catalog. Only this node's key can "
-            "browse or clone it through the mainnode.");
+            "Private: hidden from the public catalog. Only this machine's key "
+            "can browse or clone it through the mainnode.");
     else
         m_repoVisibilityHint->setText(
             "Public: listed in the catalog and anyone can browse or clone it "
@@ -2536,23 +3132,6 @@ void MainWindow::migrateReposForProfileName(const QString &oldOwner,
               newName + ".");
 }
 
-QUrl MainWindow::hostWsUrl(const RepositoryRecord &repo) const
-{
-    QUrl url(canonicalServerUrl(m_serverUrlEdit ? m_serverUrlEdit->text() : QString()));
-    if (!url.isValid() || url.host().isEmpty())
-        url = QUrl(kDefaultServerUrl);
-    if (url.scheme() == "http")
-        url.setScheme(QStringLiteral("ws"));
-    else if (url.scheme() == "https")
-        url.setScheme(QStringLiteral("wss"));
-    url.setPath("/api/repo/" + catalogOwner(repo) +
-                "/" + repoSegment(repo.name, QStringLiteral("repository")) +
-                "/host");
-    url.setQuery(QString());
-    url.setFragment(QString());
-    return url;
-}
-
 void MainWindow::stopRepoHosts()
 {
     for (RepoHost *host : std::as_const(m_repoHosts)) {
@@ -2566,76 +3145,13 @@ void MainWindow::stopRepoHosts()
 
 void MainWindow::startRepoHosts()
 {
-    // One live host per published repository that already has a local mirror.
-    // Rebuild only when the desired set changes; many sync/publish/status paths
-    // call this defensively, and restarting identical host tunnels creates noisy
-    // duplicate WebSocket traffic.
-    if (!hasOwnerSigningCapability()) {
-        if (!m_repoHosts.isEmpty())
-            stopRepoHosts();
-        else
-            refreshNetworkDiagnostics();
-        return;
-    }
-
-    QSet<QString> desiredKeys;
-    for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
-        if (repo.previewOnly || !repo.publishToNetwork || repo.mirrorPath.isEmpty() ||
-            !mirrorHasServedCommit(repo.mirrorPath))
-            continue;
-        desiredKeys.insert(catalogOwner(repo) + "/" +
-                           repoSegment(repo.name, QStringLiteral("repository")) +
-                           "\n" + repo.mirrorPath + "\n" +
-                           hostWsUrl(repo).toString(QUrl::RemoveUserInfo));
-    }
-    if (desiredKeys == m_repoHostKeys && m_repoHosts.size() == desiredKeys.size()) {
-        refreshNetworkDiagnostics();
-        return;
-    }
-
-    stopRepoHosts();
-    for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
-        if (repo.previewOnly || !repo.publishToNetwork || repo.mirrorPath.isEmpty() ||
-            !mirrorHasServedCommit(repo.mirrorPath))
-            continue;
-        auto *host = new RepoHost(catalogOwner(repo), repo.name, repo.mirrorPath,
-                                  hostWsUrl(repo), this);
-        host->setConnectionAuthorizer([this](const QUrl &endpoint) {
-            return authorizeFirewallConnection(QStringLiteral("WebSocket"), endpoint);
-        });
-        // Sign a fresh host-auth token on every (re)connect so the relay can
-        // verify this node holds the owner account's key before it may host.
-        const QString tokenOwner = catalogOwner(repo);
-        const QString tokenRepo = repo.name;
-        host->setTokenProvider([this, tokenOwner, tokenRepo]() -> QString {
-            if (!hasOwnerSigningCapability(tokenOwner))
-                return QString();
-            const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
-            const QByteArray canonical =
-                ("forkmesh-host-v1\n" + tokenOwner + "\n" + tokenRepo + "\n" + ts)
-                    .toUtf8();
-            QUrlQuery q;
-            q.addQueryItem(QStringLiteral("ts"), ts);
-            q.addQueryItem(QStringLiteral("sig"), m_profileIdentity.signData(canonical));
-            return q.query();
-        });
-        connect(host, &RepoHost::log, this, &MainWindow::logSystem);
-        connect(host, &RepoHost::requestServed, this, &MainWindow::onRequestServed);
-        // Relay push: "something changed for this repo" (inbox item, agent
-        // prompt). Coalesce into one signed GET /api/sync instead of polling.
-        connect(host, &RepoHost::relayEventReceived, this,
-                [this](const QString &, const QString &, const QString &) {
-                    scheduleRelaySync();
-                });
-        connect(host, &RepoHost::networkDiagnosticsChanged, this, [this] {
-            if (m_sectionStack &&
-                m_sectionStack->currentIndex() == kNetworkDiagnosticsSectionIndex)
-                refreshNetworkDiagnostics();
-        });
-        host->start();
-        m_repoHosts.append(host);
-    }
-    m_repoHostKeys = desiredKeys;
+    // The per-repository persistent socket is retired. Public and encrypted
+    // repository bytes use direct HTTPS, while the existing bounded /api/sync
+    // poll carries small control-plane changes. Keep this compatibility method
+    // because publish/settings call sites use it as a lifecycle hook.
+    if (!m_repoHosts.isEmpty())
+        stopRepoHosts();
+    m_repoHostKeys.clear();
     refreshNetworkDiagnostics();
 }
 
@@ -2834,6 +3350,292 @@ void MainWindow::publishRepositoryAfterMirrorRefresh(int index,
     publishRepository(index, showDialogOnError);
 }
 
+void MainWindow::ensurePrivateRepositoryControlPlane(
+    int index, bool showDialogOnError)
+{
+    if (index < 0 || index >= m_repositories.size() || !m_networkAccess)
+        return;
+    const RepositoryRecord repo = m_repositories.at(index);
+    if (!repo.isPrivate ||
+        !PrivateMirrorStore::isOpaqueId(repo.privateReplicaId))
+        return;
+    PrivateMirrorStore::Metadata metadata;
+    QString localError;
+    if (!PrivateMirrorStore::inspectReplica(
+            privateReplicaRoot(), repo.privateReplicaId, &metadata,
+            &localError)) {
+        if (showDialogOnError)
+            flashMessage(QStringLiteral(
+                             "Private publication is blocked: the encrypted "
+                             "replica could not be authenticated."),
+                         true);
+        return;
+    }
+    const QString node = configuredPrivateMirrorNode();
+    if (node.isEmpty()) {
+        const QString message = QStringLiteral(
+            "Private publication is blocked until the Control Node page has "
+            "the exact Cloudflare mirror node name used by the registered "
+            "direct-HTTPS endpoint.");
+        logSystem(QStringLiteral("Private mirror: ") + message);
+        if (showDialogOnError)
+            flashMessage(message, true);
+        return;
+    }
+    if (m_accountSessionToken.trimmed().isEmpty()) {
+        const QString message = QStringLiteral(
+            "Private publication needs an authenticated owner account session "
+            "to register the public encryption key and repository policy. Sign "
+            "in from Account settings; private keys remain on this device.");
+        logSystem(QStringLiteral("Private mirror: ") + message);
+        if (showDialogOnError)
+            flashMessage(message, true);
+        return;
+    }
+
+    QByteArray vaultSecret =
+        privateIdentityVaultSecret(m_profileIdentity);
+    MirrorCrypto::Identity mirrorIdentity;
+    if (!PrivateMirrorRuntime::loadOrCreateIdentity(
+            privateIdentityVaultPath(), vaultSecret, &mirrorIdentity,
+            &localError)) {
+        vaultSecret.fill('\0');
+        const QString message = QStringLiteral(
+            "Private publication is blocked because the owner-only encryption "
+            "identity vault could not be unlocked.");
+        logSystem(QStringLiteral("Private mirror: ") + message);
+        if (showDialogOnError)
+            flashMessage(message, true);
+        return;
+    }
+    vaultSecret.fill('\0');
+    vaultSecret.clear();
+    const QString ownerKeyId = mirrorIdentity.keyId();
+    const QJsonObject publicBundle = mirrorIdentity.publicBundle();
+    mirrorIdentity.x25519Priv.fill('\0');
+    mirrorIdentity.mlkemPriv.fill('\0');
+    mirrorIdentity = {};
+    const QString repoKey = catalogPublishKey(repo);
+    const QString controlKey =
+        privateControlPlaneKey(catalogApiUrl(), repoKey, ownerKeyId);
+    if (m_privateControlReady.contains(controlKey)) {
+        publishRepository(index, showDialogOnError);
+        return;
+    }
+    if (m_privateControlInFlight.contains(controlKey))
+        return;
+    m_privateControlInFlight.insert(controlKey);
+
+    auto fail = [this, controlKey, showDialogOnError](
+                    const QString &message) {
+        m_privateControlInFlight.remove(controlKey);
+        logSystem(QStringLiteral("Private mirror: ") + message);
+        if (showDialogOnError)
+            flashMessage(message, true);
+    };
+
+    QUrl ownerKeysUrl = catalogApiUrl();
+    ownerKeysUrl.setPath(QStringLiteral("/api/security/owner-keys"));
+    ownerKeysUrl.setQuery(QString());
+    ownerKeysUrl.setFragment(QString());
+    QNetworkRequest keyRequest(ownerKeysUrl);
+    keyRequest.setHeader(QNetworkRequest::ContentTypeHeader,
+                         QStringLiteral("application/json"));
+    keyRequest.setRawHeader(
+        "Authorization",
+        QByteArrayLiteral("Bearer ") +
+            m_accountSessionToken.toUtf8());
+    QNetworkReply *keyReply = m_networkAccess->post(
+        keyRequest,
+        QJsonDocument(QJsonObject{
+                          {QStringLiteral("publicBundle"), publicBundle},
+                      })
+            .toJson(QJsonDocument::Compact));
+    connect(
+        keyReply, &QNetworkReply::finished, this,
+        [this, keyReply, index, repo, repoKey, controlKey, ownerKeyId,
+         showDialogOnError, fail] {
+            const QByteArray body = keyReply->readAll();
+            const int status =
+                keyReply->attribute(
+                            QNetworkRequest::HttpStatusCodeAttribute)
+                    .toInt();
+            const QJsonObject response =
+                QJsonDocument::fromJson(body).object();
+            keyReply->deleteLater();
+            if (status < 200 || status >= 300 ||
+                !response.value(QStringLiteral("ok")).toBool() ||
+                response.value(QStringLiteral("privateKeysStored"))
+                    .toBool(true) ||
+                response.value(QStringLiteral("keyId")).toString() !=
+                    ownerKeyId) {
+                fail(QStringLiteral(
+                    "Private publication is blocked: the relay did not accept "
+                    "the public-only owner encryption key."));
+                return;
+            }
+
+            QUrl policyUrl = catalogApiUrl();
+            policyUrl.setPath(
+                QStringLiteral("/api/repo/") +
+                repoSegment(catalogOwner(repo), QStringLiteral("owner")) +
+                QLatin1Char('/') +
+                repoSegment(repo.name, QStringLiteral("repository")) +
+                QStringLiteral("/privacy"));
+            policyUrl.setQuery(QString());
+            policyUrl.setFragment(QString());
+            QNetworkRequest policyRequest(policyUrl);
+            policyRequest.setHeader(
+                QNetworkRequest::ContentTypeHeader,
+                QStringLiteral("application/json"));
+            policyRequest.setRawHeader(
+                "Authorization",
+                QByteArrayLiteral("Bearer ") +
+                    m_accountSessionToken.toUtf8());
+            QNetworkReply *policyReply = m_networkAccess->post(
+                policyRequest,
+                QJsonDocument(QJsonObject{
+                                  {QStringLiteral("ownerKeyId"),
+                                   ownerKeyId},
+                              })
+                    .toJson(QJsonDocument::Compact));
+            connect(
+                policyReply, &QNetworkReply::finished, this,
+                [this, policyReply, index, repoKey, controlKey, ownerKeyId,
+                 showDialogOnError, fail] {
+                    const QByteArray policyBody = policyReply->readAll();
+                    const int policyStatus =
+                        policyReply
+                            ->attribute(
+                                QNetworkRequest::
+                                    HttpStatusCodeAttribute)
+                            .toInt();
+                    const QJsonObject policy =
+                        QJsonDocument::fromJson(policyBody).object();
+                    policyReply->deleteLater();
+                    if (policyStatus < 200 || policyStatus >= 300 ||
+                        !policy.value(QStringLiteral("ok")).toBool() ||
+                        policy.value(QStringLiteral("ownerKeyId"))
+                                .toString() != ownerKeyId ||
+                        !policy
+                             .value(QStringLiteral(
+                                 "requireMirrorEncryption"))
+                             .toBool() ||
+                        !policy
+                             .value(QStringLiteral("requireAgentE2EE"))
+                             .toBool()) {
+                        fail(QStringLiteral(
+                            "Private publication is blocked: the relay did not "
+                            "confirm the mandatory owner-only encryption policy."));
+                        return;
+                    }
+                    m_privateControlInFlight.remove(controlKey);
+                    m_privateControlReady.insert(controlKey);
+                    if (repositoryIndexForCatalogPublishKey(repoKey) >= 0)
+                        publishRepository(
+                            repositoryIndexForCatalogPublishKey(repoKey),
+                            showDialogOnError);
+                });
+        });
+}
+
+void MainWindow::registerPrivateReplicaRoute(int index)
+{
+    if (index < 0 || index >= m_repositories.size() || !m_networkAccess ||
+        !m_profileIdentity.isValid())
+        return;
+    const RepositoryRecord repo = m_repositories.at(index);
+    if (!repo.isPrivate ||
+        !PrivateMirrorStore::isOpaqueId(repo.privateReplicaId))
+        return;
+    const QString node = configuredPrivateMirrorNode();
+    if (node.isEmpty()) {
+        logSystem(QStringLiteral(
+            "Private mirror: route registration remains blocked until the "
+            "configured Cloudflare node name matches a direct-HTTPS endpoint."));
+        return;
+    }
+    PrivateMirrorStore::Metadata metadata;
+    QString error;
+    if (!PrivateMirrorStore::inspectReplica(
+            privateReplicaRoot(), repo.privateReplicaId, &metadata, &error) ||
+        metadata.replicaFileSha256.size() != 64) {
+        logSystem(QStringLiteral(
+            "Private mirror: route registration refused an unauthenticated "
+            "local replica."));
+        return;
+    }
+    const qint64 issuedAt =
+        QDateTime::currentDateTimeUtc().toMSecsSinceEpoch();
+    const QString owner = catalogOwner(repo);
+    const QString name =
+        repoSegment(repo.name, QStringLiteral("repository"));
+    const QByteArray canonical =
+        forkmesh::control::privateReplicaRouteSigningPayload(
+            owner, name, node, repo.privateReplicaId,
+            metadata.replicaFileSha256, metadata.keyEpoch, true, issuedAt,
+            &error);
+    const QString signature =
+        canonical.isEmpty() ? QString()
+                            : m_profileIdentity.signData(canonical);
+    if (signature.isEmpty()) {
+        logSystem(QStringLiteral(
+            "Private mirror: route registration could not create the local "
+            "owner signature."));
+        return;
+    }
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/mirrors/private"));
+    url.setQuery(QString());
+    url.setFragment(QString());
+    const QJsonObject payload{
+        {QStringLiteral("owner"), owner},
+        {QStringLiteral("repository"), name},
+        {QStringLiteral("node"), node},
+        {QStringLiteral("opaqueId"), repo.privateReplicaId},
+        {QStringLiteral("replicaSha256"),
+         metadata.replicaFileSha256},
+        {QStringLiteral("keyEpoch"), double(metadata.keyEpoch)},
+        {QStringLiteral("active"), true},
+        {QStringLiteral("issuedAt"), double(issuedAt)},
+        {QStringLiteral("signature"), signature},
+    };
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, metadata, expectedOpaqueId = repo.privateReplicaId] {
+        const QByteArray body = reply->readAll();
+        const int status =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                .toInt();
+        const QJsonObject response =
+            QJsonDocument::fromJson(body).object();
+        reply->deleteLater();
+        const QString expectedAccessPath =
+            QStringLiteral("/api/private-replicas/") + expectedOpaqueId;
+        if (status >= 200 && status < 300 &&
+            response.value(QStringLiteral("ok")).toBool() &&
+            response.value(QStringLiteral("active")).toBool() &&
+            quint64(response.value(QStringLiteral("keyEpoch")).toDouble()) ==
+                metadata.keyEpoch &&
+            response.value(QStringLiteral("accessPath")).toString() ==
+                expectedAccessPath) {
+            logSystem(QStringLiteral(
+                          "Private mirror: owner-signed opaque HTTPS route is "
+                          "active for encrypted epoch %1.")
+                          .arg(metadata.keyEpoch));
+            return;
+        }
+        logSystem(QStringLiteral(
+            "Private mirror: ciphertext remains local and undiscoverable "
+            "because route registration was not accepted. Confirm the exact "
+            "Cloudflare node endpoint is registered and healthy."));
+    });
+}
+
 void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
 {
     if (index < 0 || index >= m_repositories.size())
@@ -2845,14 +3647,14 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
     if (publishKey.isEmpty())
         return;
     if (!hasOwnerSigningCapability(catalogOwner(repo))) {
-        // Publishing/hosting is the opt-in, paid side of the app. Point the user
-        // at the "Get paid to mirror" button on their node profile rather than
-        // failing silently; the core flow (clone, mirror, issues, PRs) is
-        // unaffected by staying opted out.
+        // Public hosting requires an already registered, locally signable node
+        // identity. Reward configuration is separate and never creates an
+        // account or guarantees a transfer.
         const QString message = QStringLiteral(
             "Mirroring this repo locally needs nothing extra. To host it on the "
-            "network and get paid, open your node profile and choose \"Get paid "
-            "to mirror\".");
+            "network, register or sign in from Account settings. A healthy host "
+            "with reward settings configured may be eligible for voluntary "
+            "community incentives.");
         logSystem(message);
         if (showDialogOnError)
             flashMessage(message, /*error=*/true);
@@ -2861,6 +3663,32 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
     if (!m_profileIdentity.isValid() && !m_profileIdentity.load()) {
         logSystem("Catalog: could not load identity for repository publishing.");
         return;
+    }
+
+    PrivateMirrorStore::Metadata privateMetadata;
+    if (repo.isPrivate) {
+        QString privateError;
+        if (!PrivateMirrorStore::isOpaqueId(repo.privateReplicaId) ||
+            !PrivateMirrorStore::inspectReplica(
+                privateReplicaRoot(), repo.privateReplicaId,
+                &privateMetadata, &privateError) ||
+            privateMetadata.keyEpoch == 0 ||
+            privateMetadata.ciphertextSha256.size() != 64 ||
+            privateMetadata.replicaFileSha256.size() != 64) {
+            const QString message = QStringLiteral(
+                "Private publication is blocked until this repository has an "
+                "authenticated owner-sealed .fm-private replica.");
+            logSystem(QStringLiteral("Private mirror: ") + message);
+            if (showDialogOnError)
+                flashMessage(message, true);
+            return;
+        }
+        const QString controlKey = privateControlPlaneKey(
+            catalogApiUrl(), publishKey, privateMetadata.ownerKeyId);
+        if (!m_privateControlReady.contains(controlKey)) {
+            ensurePrivateRepositoryControlPlane(index, showDialogOnError);
+            return;
+        }
     }
 
     const QString servedHeadBranch = mirrorHeadBranch(repo.mirrorPath);
@@ -2877,8 +3705,8 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     // Always publish under the registered account name so the catalog dedups by
     // account/name (one entry per fork) and the server can verify ownership.
-    // catalogOwner() is shared with the live host tunnel so the website browses
-    // the same owner the host registers under.
+    // catalogOwner() is shared with the direct-HTTPS route and update channel
+    // so every layer resolves the same logical repository.
     const QString owner = catalogOwner(repo);
     const QString name = repoSegment(repo.name, QStringLiteral("repository"));
     QString updatedAt = QString::number(now);
@@ -2942,11 +3770,21 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
     // description typed in locally (adhoc #86).
     QString publishedWebsite;
     QString publishedDescription = repo.description;
+    QString publishedPrimaryLanguage;
+    QStringList publishedTopics;
     if (!repo.localPath.trimmed().isEmpty()) {
         QFile file(QDir(repo.localPath).filePath(kRepoInfoPath));
         if (file.open(QIODevice::ReadOnly)) {
             const QJsonObject info = QJsonDocument::fromJson(file.readAll()).object();
             publishedWebsite = info.value(QStringLiteral("website")).toString();
+            publishedPrimaryLanguage =
+                info.value(QStringLiteral("language")).toString().trimmed();
+            for (const QJsonValue &topic :
+                 info.value(QStringLiteral("topics")).toArray()) {
+                const QString value = topic.toString().trimmed();
+                if (!value.isEmpty())
+                    publishedTopics.append(value);
+            }
             const QString about =
                 info.value(QStringLiteral("about")).toString().trimmed();
             if (!about.isEmpty())
@@ -2959,6 +3797,10 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
         if (publishedDescription.trimmed().isEmpty() &&
             !m_repoInfo.about.trimmed().isEmpty())
             publishedDescription = m_repoInfo.about;
+        if (publishedPrimaryLanguage.isEmpty())
+            publishedPrimaryLanguage = m_repoInfo.language;
+        if (publishedTopics.isEmpty())
+            publishedTopics = m_repoInfo.topics;
     }
     // Node facts the live Mirror nodes view shows per node (latest commit, issue
     // count, platform, version, node id). Published alongside the mirror so those
@@ -2988,6 +3830,7 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
             m_profileIdentity.publicKey(),
             QStringLiteral("dependency-scan"));
     QString contributionSnapshotKey;
+    QJsonObject contributionLogoPayload;
     if (repo.isPrivate) {
         const QString previousScanKey =
             m_catalogContributionScanKey.take(publishKey);
@@ -3109,6 +3952,7 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
         }
 
         if (cachedSnapshot->complete && cachedSnapshot->error.isEmpty()) {
+            contributionLogoPayload = cachedSnapshot->payload;
             const qint64 capturedAt = qint64(
                 cachedSnapshot->payload.value(QStringLiteral("capturedAt"))
                     .toDouble(-1));
@@ -3122,6 +3966,15 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
             }
         }
     }
+    RepoLogoMetadataInput logoInput;
+    logoInput.workTreePath = repo.localPath;
+    logoInput.mirrorPath = repo.mirrorPath;
+    logoInput.head = headCommit;
+    logoInput.description = publishedDescription;
+    logoInput.primaryLanguage = publishedPrimaryLanguage;
+    logoInput.topics = publishedTopics;
+    logoInput.contributionPayload = contributionLogoPayload;
+    const QJsonObject logoMetadata = buildRepoLogoMetadata(logoInput);
     const int issueCount = mirrorIssueCount(repo.mirrorPath, headBranch);
     // Highest issue number ever assigned (not just the open count), so the
     // relay can propose the same next number the desktop would for a ForkBot-
@@ -3136,11 +3989,40 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
     const int worktreeCount = mirrorWorktreeCount(repo.localPath);
     const int artifactCount = mirrorArtifactCount(repo.mirrorPath);
     QString selfPlatform, selfVersion, selfNodeId;
+    int selfCpuPercent = -1;
+    qint64 selfMemUsedBytes = 0;
+    qint64 selfMemTotalBytes = 0;
+    qint64 selfDiskUsedBytes = 0;
+    qint64 selfDiskTotalBytes = 0;
+    const QSettings telemetrySettings;
+    const bool shareCpu =
+        telemetrySettings.value(TelemetrySettings::kReportCpu, false).toBool();
+    const bool shareMemory =
+        telemetrySettings.value(TelemetrySettings::kReportMemory, false).toBool();
+    const bool shareDisk =
+        telemetrySettings.value(TelemetrySettings::kReportDisk, false).toBool();
     for (const MemberInfo &member : std::as_const(m_homeRoster)) {
         if (member.self) {
             selfPlatform = member.platform;
             selfVersion = member.version;
             selfNodeId = member.id;
+            if (shareCpu && std::isfinite(member.cpuPercent) &&
+                member.cpuPercent >= 0.0) {
+                selfCpuPercent =
+                    qRound(qBound(0.0, member.cpuPercent, 100.0));
+            }
+            if (shareMemory && member.memTotalBytes > 0) {
+                selfMemTotalBytes = member.memTotalBytes;
+                selfMemUsedBytes =
+                    qBound<qint64>(0, member.memUsedBytes,
+                                   member.memTotalBytes);
+            }
+            if (shareDisk && member.diskTotalBytes > 0) {
+                selfDiskTotalBytes = member.diskTotalBytes;
+                selfDiskUsedBytes =
+                    qBound<qint64>(0, member.diskUsedBytes,
+                                   member.diskTotalBytes);
+            }
             break;
         }
     }
@@ -3153,8 +4035,57 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
         m_repoStats.value(owner + "/" + repo.name);
     const int clonesServed = serveStats.second;
     const int websiteServed = qMax(0, serveStats.first - serveStats.second);
+    const QString opaqueRepoId =
+        repo.isPrivate
+            ? privateOpaqueRepositoryId(repo.privateReplicaId)
+            : QString();
+    QString encryptedManifestSignature;
+    if (repo.isPrivate) {
+        const QByteArray manifestCanonical =
+            QByteArrayLiteral("forkmesh-private-manifest-v1\n") +
+            owner.toUtf8() + '\n' + name.toUtf8() + '\n' +
+            opaqueRepoId.toUtf8() + '\n' +
+            QByteArray::number(privateMetadata.keyEpoch) + '\n' +
+            privateMetadata.ciphertextSha256.toUtf8() + '\n' +
+            updatedAt.toUtf8();
+        encryptedManifestSignature =
+            m_profileIdentity.signData(manifestCanonical);
+        if (opaqueRepoId.size() != 32 ||
+            encryptedManifestSignature.isEmpty()) {
+            const QString message = QStringLiteral(
+                "Private publication is blocked because its encrypted manifest "
+                "could not be signed locally.");
+            logSystem(QStringLiteral("Private mirror: ") + message);
+            if (showDialogOnError)
+                flashMessage(message, true);
+            return;
+        }
+    }
+    const qint64 reportedMirrorBytes =
+        repo.isPrivate
+            ? QFileInfo(
+                  QDir(privateReplicaRoot())
+                      .filePath(repo.privateReplicaId +
+                                QStringLiteral(".fm-private")))
+                  .size()
+            : mirrorRepoSizeBytes(repo.mirrorPath);
     QJsonObject metadata{{"owner", owner},
                          {"name", name},
+                         {"mirrorEncryption",
+                          repo.isPrivate
+                              ? QStringLiteral("owner-sealed-v1")
+                              : QString()},
+                         {"opaqueRepoId", opaqueRepoId},
+                         {"keyEpoch",
+                          repo.isPrivate
+                              ? double(privateMetadata.keyEpoch)
+                              : 0},
+                         {"encryptedManifestHash",
+                          repo.isPrivate
+                              ? privateMetadata.ciphertextSha256
+                              : QString()},
+                         {"encryptedManifestSig",
+                          encryptedManifestSignature},
                          {"ownerUser", nodeOwnerDisplayName()},
                          {"commit", headCommit},
                          {"branch", headBranch},
@@ -3173,8 +4104,10 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                          {"clonesServed", QString::number(clonesServed)},
                          {"websiteServed", QString::number(websiteServed)},
                          {"description", publishedDescription},
+                         {"logoMetadata", logoMetadata},
                          {"website", publishedWebsite},
-                         {"cloneUrl", repo.cloneUrl},
+                         {"cloneUrl",
+                          repo.isPrivate ? QString() : repo.cloneUrl},
                          {"solana", repo.solanaAddress},
                          {"channel", repositoryChannel(repo)},
                          {"hostedSince", QString::number(repo.hostedSinceMs)},
@@ -3184,14 +4117,37 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                          // On-disk mirror size so the network page can show how
                          // much data each owner/repo is hosting. Not signed.
                          {"sizeBytes",
-                          QString::number(mirrorRepoSizeBytes(repo.mirrorPath))},
+                          QString::number(qMax<qint64>(
+                              0, reportedMirrorBytes))},
                          {"visibility", repo.isPrivate
                                             ? QStringLiteral("private")
                                             : QStringLiteral("public")},
-                         {"source", repo.localPath.trimmed().isEmpty()
-                                        ? QStringLiteral("remote-clone")
-                                        : QStringLiteral("local-node")},
+                         {"source",
+                          repo.isPrivate
+                              ? QStringLiteral("owner-sealed-opaque")
+                              : (repo.localPath.trimmed().isEmpty()
+                                     ? QStringLiteral("remote-clone")
+                                     : QStringLiteral("local-node"))},
                          {"maintainer", m_profileIdentity.publicKey()}};
+    // These values come from our self roster entry, which ServerNode populates
+    // only for the per-metric telemetry toggles the operator enabled. Do not
+    // insert disabled/unknown metrics: safe_catalog_record normalizes them to
+    // null, preserving "not shared" through the signed catalog and public
+    // mirror/World views.
+    if (selfCpuPercent >= 0)
+        metadata.insert(QStringLiteral("cpuPercent"), selfCpuPercent);
+    if (selfMemTotalBytes > 0) {
+        metadata.insert(QStringLiteral("memUsedBytes"),
+                        double(selfMemUsedBytes));
+        metadata.insert(QStringLiteral("memTotalBytes"),
+                        double(selfMemTotalBytes));
+    }
+    if (selfDiskTotalBytes > 0) {
+        metadata.insert(QStringLiteral("diskUsedBytes"),
+                        double(selfDiskUsedBytes));
+        metadata.insert(QStringLiteral("diskTotalBytes"),
+                        double(selfDiskTotalBytes));
+    }
     for (auto it = contributionFields.constBegin();
          it != contributionFields.constEnd(); ++it) {
         metadata.insert(it.key(), it.value());
@@ -3200,11 +4156,6 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
         metadata.contains(QStringLiteral("contributionPayload")) &&
         metadata.contains(QStringLiteral("contributionSig"));
     metadata.insert("signature", m_profileIdentity.signJson(metadata));
-    // The server verifies this against the account's registered pubkey: only the
-    // account key holder can write its namespace (prevents impersonation/dups).
-    const QByteArray catalogCanonical =
-        ("forkmesh-catalog-v1\n" + owner + "\n" + name + "\n" + updatedAt).toUtf8();
-    metadata.insert("catalogSig", m_profileIdentity.signData(catalogCanonical));
     // Attest the served refs so the relay can detect a tampered/stale mirror.
     // Signed with the same account key the relay verifies for the catalog write.
     if (!stateHash.isEmpty()) {
@@ -3215,6 +4166,30 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                 .toUtf8();
         metadata.insert("stateSig", m_profileIdentity.signData(stateCanonical));
     }
+    // Catalog-v2 binds the complete normalized record for both public and
+    // private publications. In particular, visibility, encryption metadata,
+    // served-ref state, and the bounded native-logo factors cannot be altered
+    // independently by a relay or replay holder.
+    QString canonicalError;
+    const QJsonObject normalized = normalizedCatalogV2Record(metadata);
+    const QByteArray catalogCanonical =
+        forkmesh::control::catalogV2SigningPayload(
+            normalized, &canonicalError);
+    const QString catalogSignature =
+        catalogCanonical.isEmpty()
+            ? QString()
+            : m_profileIdentity.signData(catalogCanonical);
+    if (catalogSignature.isEmpty()) {
+        const QString message = QStringLiteral(
+            "Repository publication is blocked because the complete catalog-v2 "
+            "record could not be signed.");
+        logSystem(QStringLiteral("Catalog: ") + message);
+        if (showDialogOnError)
+            flashMessage(message, true);
+        return;
+    }
+    metadata.insert(QStringLiteral("catalogSigVersion"), 2);
+    metadata.insert(QStringLiteral("catalogSig"), catalogSignature);
 
     // Skip the network write when nothing the catalog shows has changed since
     // the last successful publish. Roster presence flickers re-request a
@@ -3384,6 +4359,8 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                     // "clones are being rejected" banner for the open repo.
                     if (index == m_repoDetailIndex)
                         refreshRepoPinBanner();
+                    if (repo.isPrivate)
+                        registerPrivateReplicaRoute(index);
                     publishQueuedUpdate();
                     return;
                 }
@@ -3488,7 +4465,7 @@ void repairMirrorHead(const QString &mirrorPath, const QString &sourcePath)
 // next auto-sync will simply retry, rather than a real, persistent problem. Two
 // families qualify: connectivity failures (HTTP 5xx, resets, DNS) and — the case
 // that surfaced on fresh installs cloning a large repo — a truncated pack, where
-// the streaming host tunnel gets cut mid-transfer and git reports "unexpected
+// the direct HTTPS transfer gets cut mid-response and git reports "unexpected
 // disconnect while reading sideband packet" / "early EOF" / "fetch-pack: invalid
 // index-pack output". A partial clone leaves no mirror behind, so autoSyncMirrors
 // re-attempts it; classifying it transient keeps that self-healing quiet instead
@@ -3507,7 +4484,7 @@ bool isTransientSyncError(const QString &errors)
                            Qt::CaseInsensitive) ||
            errors.contains(QStringLiteral("Connection reset"),
                            Qt::CaseInsensitive) ||
-           // Truncated pack over the streaming clone tunnel.
+           // Truncated pack over the direct HTTPS clone response.
            errors.contains(QStringLiteral("early EOF"), Qt::CaseInsensitive) ||
            errors.contains(QStringLiteral("unexpected disconnect"),
                            Qt::CaseInsensitive) ||
@@ -3986,6 +4963,1055 @@ void MainWindow::applyRepoMentions(
     }
 }
 
+void MainWindow::syncPrivateRepository(int index, bool quiet)
+{
+    if (index < 0 || index >= m_repositories.size() ||
+        m_syncingRepos.contains(index))
+        return;
+    const RepositoryRecord repo = m_repositories.at(index);
+    const bool ownerCapable =
+        hasOwnerSigningCapability(repo.owner);
+    const QUrl sourceUrl(repo.cloneUrl.trimmed());
+    const bool sourceIsForkMeshRoute =
+        repo.localPath.trimmed().isEmpty() &&
+        sourceUrl.isValid() && !sourceUrl.host().isEmpty() &&
+        sourceUrl.host().compare(catalogApiUrl().host(),
+                                Qt::CaseInsensitive) == 0;
+    const bool hasPublicTransitionSource =
+        PublicMirrorRuntime::isArchiveId(repo.publicArchiveId) &&
+        QDir(repo.mirrorPath).exists();
+    // Shared repositories—and an owner's route-backed copy without another
+    // upstream—must use the authorized opaque archive endpoint. Private Git
+    // smart HTTP intentionally returns 426 and never carries plaintext.
+    if (!ownerCapable ||
+        (sourceIsForkMeshRoute && !hasPublicTransitionSource)) {
+        downloadPrivateReplica(index, quiet);
+        return;
+    }
+
+    // Once a private catalog record exists, every content refresh first loads
+    // the relay's exact public-only recipient set. Missing/malformed recipient
+    // keys block rotation and publication instead of silently dropping or
+    // retaining a collaborator.
+    if (PrivateMirrorStore::isOpaqueId(repo.privateReplicaId) &&
+        repo.publishToNetwork) {
+        m_syncingRepos.insert(index);
+        refreshRepositoryList();
+        requestPrivateRecipientBundles(
+            repo, /*updateCollaboratorList=*/false,
+            [this, index, quiet](bool ready,
+                                QList<QJsonObject> recipientBundles,
+                                QStringList, QString error) {
+                m_syncingRepos.remove(index);
+                if (!ready) {
+                    logSystem(QStringLiteral(
+                        "Private mirror: recipient-key verification blocked "
+                        "the refresh; the previous encrypted epoch remains "
+                        "unchanged."));
+                    if (!quiet)
+                        flashMessage(
+                            QStringLiteral(
+                                "Private mirror refresh blocked: %1")
+                                .arg(error),
+                            true);
+                    refreshRepositoryList();
+                    return;
+                }
+                syncPrivateRepositoryWithRecipients(
+                    index, quiet, recipientBundles);
+            });
+        return;
+    }
+    syncPrivateRepositoryWithRecipients(index, quiet, {});
+}
+
+void MainWindow::syncPrivateRepositoryWithRecipients(
+    int index, bool quiet,
+    const QList<QJsonObject> &recipientBundles)
+{
+    if (index < 0 || index >= m_repositories.size() ||
+        m_syncingRepos.contains(index))
+        return;
+    if (!m_profileIdentity.isValid() && !m_profileIdentity.load()) {
+        if (!quiet)
+            flashMessage(
+                QStringLiteral("The local owner identity is required before a "
+                               "private mirror can be sealed."),
+                true);
+        return;
+    }
+    const QByteArray vaultSecret =
+        privateIdentityVaultSecret(m_profileIdentity);
+    if (vaultSecret.size() < 32) {
+        if (!quiet)
+            flashMessage(QStringLiteral(
+                             "Could not unlock the owner-only private-mirror vault."),
+                         true);
+        return;
+    }
+
+    RepositoryRecord &repo = m_repositories[index];
+    const QString existingOpaqueId = repo.privateReplicaId;
+    QString runtimePath;
+    const auto currentMaterialization =
+        m_privateMirrorMaterializations.value(existingOpaqueId);
+    if (currentMaterialization && currentMaterialization->isValid())
+        runtimePath = currentMaterialization->repositoryPath();
+
+    // A pre-encryption install may still have a persistent bare mirror under
+    // the managed mirror root. It is a one-time migration source and is removed
+    // only after both the encrypted replica and a fresh authenticated temporary
+    // materialization have succeeded.
+    QString legacyMirrorPath;
+    if (!repo.mirrorPath.trimmed().isEmpty() &&
+        repo.mirrorPath != runtimePath && QDir(repo.mirrorPath).exists()) {
+        legacyMirrorPath = repo.mirrorPath;
+    }
+
+    QString source;
+    if (!repo.localPath.trimmed().isEmpty() &&
+        (QDir(repo.localPath).exists(QStringLiteral(".git")) ||
+         QFileInfo(QDir(repo.localPath).filePath(QStringLiteral("HEAD")))
+             .isFile())) {
+        source = repo.localPath;
+    } else if (!legacyMirrorPath.isEmpty()) {
+        source = legacyMirrorPath;
+    } else {
+        source = repo.cloneUrl.trimmed();
+    }
+    QStringList authArgs = viewAuthGitArgs(repo, source);
+    if (authArgs.isEmpty() &&
+        QUrl(source).scheme().compare(QStringLiteral("https"),
+                                     Qt::CaseInsensitive) == 0) {
+        authArgs = importAuthGitArgs(source);
+    }
+    const QString replicaRoot = privateReplicaRoot();
+    const QString vaultPath = privateIdentityVaultPath();
+    const QString managedMirrorRoot = repositoryMirrorRoot();
+
+    auto result = std::make_shared<PrivateSyncWorkerResult>();
+    m_syncingRepos.insert(index);
+    // Recompute publication state before encryption/migration; private
+    // repository names remain absent from public presence and catalogs.
+    startRepoHosts();
+    refreshRepositoryList();
+    if (!quiet)
+        logSystem(QStringLiteral(
+            "Private mirror: sealing an owner-only opaque replica."));
+
+    QThread *worker = QThread::create(
+        [result, source, authArgs, recipientBundles, replicaRoot, vaultPath,
+         mutableVaultSecret = vaultSecret, existingOpaqueId,
+         legacyMirrorPath, managedMirrorRoot]() mutable {
+            if (!source.isEmpty()) {
+                result->sync = PrivateMirrorRuntime::syncSource(
+                    source, authArgs, replicaRoot, vaultPath,
+                    mutableVaultSecret, existingOpaqueId,
+                    recipientBundles, &result->error);
+            }
+            // Offline fallback: preserve the last authenticated Git archive but
+            // still rotate it to the relay-verified exact recipient set. This
+            // ensures a revocation is not postponed by an unavailable upstream.
+            if (!result->sync.isValid() &&
+                PrivateMirrorStore::isOpaqueId(existingOpaqueId)) {
+                PrivateMirrorStore::Metadata metadata;
+                QString resealError;
+                if (PrivateMirrorRuntime::resealRecipients(
+                        replicaRoot, vaultPath, mutableVaultSecret,
+                        existingOpaqueId, recipientBundles, &metadata,
+                        &resealError)) {
+                    result->sync.opaqueId = existingOpaqueId;
+                    result->sync.metadata = metadata;
+                    result->error.clear();
+                    result->notice = QStringLiteral(
+                        "Source refresh was deferred; the last authenticated "
+                        "archive was re-keyed to the verified recipient set.");
+                }
+            }
+            if (result->sync.isValid()) {
+                auto opened = PrivateMirrorRuntime::materialize(
+                    replicaRoot, vaultPath, mutableVaultSecret,
+                    result->sync.opaqueId, &result->error);
+                if (opened)
+                    result->materialization =
+                        std::shared_ptr<PrivateMirrorMaterialization>(
+                            std::move(opened));
+            }
+            if (result->sync.isValid() && result->materialization &&
+                !legacyMirrorPath.isEmpty()) {
+                const QString root =
+                    QFileInfo(managedMirrorRoot).canonicalFilePath();
+                const QString target =
+                    QFileInfo(legacyMirrorPath).canonicalFilePath();
+                if (!root.isEmpty() && !target.isEmpty() &&
+                    target.startsWith(
+                        QDir::cleanPath(root) + QLatin1Char('/'))) {
+                    result->legacyRemoved =
+                        PrivateMirrorRuntime::removeManagedPlaintextMirror(
+                            legacyMirrorPath, managedMirrorRoot,
+                            &result->error);
+                }
+            }
+            mutableVaultSecret.fill('\0');
+            mutableVaultSecret.clear();
+        });
+    connect(worker, &QThread::finished, this,
+            [this, worker, result, index, quiet, legacyMirrorPath] {
+                worker->deleteLater();
+                m_syncingRepos.remove(index);
+                if (index < 0 || index >= m_repositories.size()) {
+                    refreshRepositoryList();
+                    return;
+                }
+                if (!result->sync.isValid() || !result->materialization ||
+                    !result->materialization->isValid() ||
+                    !result->legacyRemoved) {
+                    // Retain a legacy path in settings when cleanup failed so a
+                    // later pass can retry; never silently declare a plaintext
+                    // migration complete.
+                    logSystem(QStringLiteral(
+                                  "Private mirror: encryption/runtime setup failed: %1")
+                                  .arg(result->error.isEmpty()
+                                           ? QStringLiteral("unknown local error")
+                                           : result->error.left(240)));
+                    if (!quiet) {
+                        flashMessage(
+                            QStringLiteral(
+                                "Private mirror was not activated: %1")
+                                .arg(result->error.isEmpty()
+                                         ? QStringLiteral(
+                                               "could not authenticate the "
+                                               "encrypted replica")
+                                         : result->error.left(160)),
+                            true);
+                    }
+                    refreshRepositoryList();
+                    return;
+                }
+
+                RepositoryRecord &current = m_repositories[index];
+                const QString previousPublicArchive =
+                    current.publicArchiveId;
+                current.privateReplicaId = result->sync.opaqueId;
+                current.publicArchiveId.clear();
+                current.mirrorPath =
+                    result->materialization->repositoryPath();
+                current.lastSyncMs =
+                    QDateTime::currentDateTimeUtc().toMSecsSinceEpoch();
+                m_privateMirrorMaterializations.insert(
+                    result->sync.opaqueId, result->materialization);
+                if (PublicMirrorRuntime::isArchiveId(
+                        previousPublicArchive)) {
+                    m_publicMirrorMaterializations.remove(
+                        previousPublicArchive);
+                }
+                saveRepositories();
+                refreshRepositoryList();
+                // Same as the public path: the materialization is temporary,
+                // so the working copy's push URL/hook must track its path.
+                ensurePushHook(current);
+                if (index == m_repoDetailIndex)
+                    refreshOpenRepoDetail();
+                startRepoHosts(); // private repos remain categorically excluded
+                logSystem(QStringLiteral(
+                              "Private mirror: authenticated encrypted epoch %1 "
+                              "is ready in owner-only temporary storage.")
+                              .arg(result->sync.metadata.keyEpoch));
+                if (!legacyMirrorPath.isEmpty()) {
+                    logSystem(QStringLiteral(
+                        "Private mirror: removed the migrated managed plaintext "
+                        "bare replica."));
+                }
+                if (!result->notice.isEmpty())
+                    logSystem(QStringLiteral("Private mirror: ") + result->notice);
+                if (!quiet) {
+                    flashMessage(
+                        QStringLiteral(
+                            "Private mirror sealed (encrypted epoch %1).")
+                            .arg(result->sync.metadata.keyEpoch));
+                }
+                if (current.publishToNetwork) {
+                    QString gatewayError;
+                    if (rebuildDirectMirrorGatewayConfiguration(
+                            &gatewayError, true)) {
+                        publishRepository(index, false);
+                    } else {
+                        logSystem(
+                            QStringLiteral(
+                                "Private publication remains blocked until "
+                                "the direct HTTPS gateway is configured: %1")
+                                .arg(gatewayError));
+                    }
+                }
+            });
+    worker->start();
+}
+
+void MainWindow::resealPrivateRepositoryRecipients(
+    const RepositoryRecord &repo,
+    const QList<QJsonObject> &recipientBundles,
+    std::function<void(bool, QString)> onDone)
+{
+    auto finish =
+        [onDone = std::move(onDone)](
+            bool ok, const QString &error = QString()) mutable {
+            if (onDone)
+                onDone(ok, error);
+        };
+    int index = -1;
+    for (int candidate = 0; candidate < m_repositories.size();
+         ++candidate) {
+        const RepositoryRecord &current =
+            m_repositories.at(candidate);
+        if (current.isPrivate && current.owner == repo.owner &&
+            current.name == repo.name &&
+            current.privateReplicaId == repo.privateReplicaId) {
+            index = candidate;
+            break;
+        }
+    }
+    if (index < 0 ||
+        !PrivateMirrorStore::isOpaqueId(repo.privateReplicaId) ||
+        m_syncingRepos.contains(index) ||
+        !hasOwnerSigningCapability(repo.owner)) {
+        finish(false,
+               QStringLiteral(
+                   "the local owner-sealed replica is unavailable"));
+        return;
+    }
+    if (!m_profileIdentity.isValid() &&
+        !m_profileIdentity.load()) {
+        finish(false,
+               QStringLiteral(
+                   "the local owner identity is unavailable"));
+        return;
+    }
+    QByteArray vaultSecret =
+        privateIdentityVaultSecret(m_profileIdentity);
+    if (vaultSecret.size() < 32) {
+        finish(false,
+               QStringLiteral(
+                   "the local encryption identity vault is unavailable"));
+        return;
+    }
+
+    const QString replicaRoot = privateReplicaRoot();
+    const QString vaultPath = privateIdentityVaultPath();
+    const QString opaqueId = repo.privateReplicaId;
+    auto result = std::make_shared<PrivateDownloadWorkerResult>();
+    m_syncingRepos.insert(index);
+    refreshRepositoryList();
+    QThread *worker = QThread::create(
+        [result, replicaRoot, vaultPath, opaqueId, recipientBundles,
+         mutableVaultSecret = std::move(vaultSecret)]() mutable {
+            if (PrivateMirrorRuntime::resealRecipients(
+                    replicaRoot, vaultPath, mutableVaultSecret,
+                    opaqueId, recipientBundles, &result->metadata,
+                    &result->error)) {
+                result->opaqueId = opaqueId;
+                auto opened = PrivateMirrorRuntime::materialize(
+                    replicaRoot, vaultPath, mutableVaultSecret,
+                    opaqueId, &result->error);
+                if (opened) {
+                    result->materialization =
+                        std::shared_ptr<PrivateMirrorMaterialization>(
+                            std::move(opened));
+                }
+            }
+            mutableVaultSecret.fill('\0');
+            mutableVaultSecret.clear();
+        });
+    connect(
+        worker, &QThread::finished, this,
+        [this, worker, result, index, opaqueId,
+         finish = std::move(finish)]() mutable {
+            worker->deleteLater();
+            m_syncingRepos.remove(index);
+            if (index < 0 || index >= m_repositories.size() ||
+                m_repositories.at(index).privateReplicaId !=
+                    opaqueId ||
+                result->opaqueId != opaqueId ||
+                !result->materialization ||
+                !result->materialization->isValid()) {
+                refreshRepositoryList();
+                finish(
+                    false,
+                    QStringLiteral(
+                        "the encrypted replica could not be authenticated "
+                        "after rotation"));
+                return;
+            }
+            RepositoryRecord &current = m_repositories[index];
+            current.mirrorPath =
+                result->materialization->repositoryPath();
+            current.lastSyncMs =
+                QDateTime::currentDateTimeUtc().toMSecsSinceEpoch();
+            m_privateMirrorMaterializations.insert(
+                opaqueId, result->materialization);
+            saveRepositories();
+            refreshRepositoryList();
+            if (index == m_repoDetailIndex)
+                refreshOpenRepoDetail();
+            startRepoHosts();
+            if (current.publishToNetwork) {
+                QString gatewayError;
+                if (rebuildDirectMirrorGatewayConfiguration(
+                        &gatewayError, true)) {
+                    publishRepository(index, false);
+                } else {
+                    logSystem(
+                        QStringLiteral(
+                            "Private publication remains blocked until the "
+                            "direct HTTPS gateway is configured: %1")
+                            .arg(gatewayError));
+                }
+            }
+            finish(true, QString());
+        });
+    worker->start();
+}
+
+void MainWindow::downloadPrivateReplica(int index, bool quiet)
+{
+    if (index < 0 || index >= m_repositories.size() ||
+        m_syncingRepos.contains(index))
+        return;
+    const RepositoryRecord repo = m_repositories.at(index);
+    auto unavailable = [this, index, quiet](const QString &logDetail) {
+        m_syncingRepos.remove(index);
+        if (!logDetail.isEmpty())
+            logSystem(QStringLiteral(
+                "Private mirror: authorized encrypted replica download "
+                "was unavailable."));
+        if (!quiet)
+            flashMessage(
+                QStringLiteral(
+                    "Private repository is unavailable or this account is "
+                    "not authorized."),
+                true);
+        refreshRepositoryList();
+    };
+    if (!repo.isPrivate || !m_networkAccess ||
+        !m_profileIdentity.isValid() ||
+        !hasOwnerSigningCapability(accountOwner())) {
+        unavailable(QStringLiteral("local authorization unavailable"));
+        return;
+    }
+
+    m_syncingRepos.insert(index);
+    refreshRepositoryList();
+    ensurePrivateMirrorRecipientIdentityRegistered(
+        [this, index, repo, quiet, unavailable](
+            bool registered, QString) {
+            if (!registered || index < 0 ||
+                index >= m_repositories.size() ||
+                m_repositories.at(index).owner != repo.owner ||
+                m_repositories.at(index).name != repo.name) {
+                unavailable(
+                    QStringLiteral("recipient identity unavailable"));
+                return;
+            }
+            const QByteArray authorization =
+                privateReplicaAuthorization(repo);
+            QUrl url = catalogApiUrl();
+            // The edge-visible route contains only a random opaque archive id.
+            // Owner/repository names remain inside the existing signed
+            // authorization proof and are resolved after ACL lookup; there is
+            // deliberately no named-route or query-string fallback.
+            url.setPath(
+                QStringLiteral("/api/private-replicas/") +
+                repo.privateReplicaId);
+            url.setQuery(QString());
+            url.setFragment(QString());
+            if (authorization.isEmpty() ||
+                url.scheme().compare(QStringLiteral("https"),
+                                     Qt::CaseInsensitive) != 0) {
+                unavailable(
+                    QStringLiteral("secure route unavailable"));
+                return;
+            }
+
+            QNetworkRequest request(url);
+            request.setRawHeader("Authorization", authorization);
+            request.setAttribute(
+                QNetworkRequest::RedirectPolicyAttribute,
+                QNetworkRequest::ManualRedirectPolicy);
+            request.setAttribute(
+                QNetworkRequest::CacheLoadControlAttribute,
+                QNetworkRequest::AlwaysNetwork);
+            request.setAttribute(
+                QNetworkRequest::CacheSaveControlAttribute, false);
+            QNetworkReply *reply = m_networkAccess->get(request);
+            auto bytes = std::make_shared<QByteArray>();
+            auto overflowed = std::make_shared<bool>(false);
+            auto appendChunk =
+                [reply, bytes, overflowed]() {
+                    QByteArray chunk = reply->readAll();
+                    const qint64 maximum =
+                        PrivateMirrorRuntime::
+                            maximumSerializedReplicaBytes();
+                    if (*overflowed ||
+                        qint64(bytes->size()) + chunk.size() >
+                            maximum) {
+                        chunk.fill('\0');
+                        chunk.clear();
+                        bytes->fill('\0');
+                        bytes->clear();
+                        *overflowed = true;
+                        reply->abort();
+                        return;
+                    }
+                    bytes->append(chunk);
+                };
+            connect(reply, &QIODevice::readyRead, this,
+                    appendChunk);
+            connect(
+                reply, &QNetworkReply::finished, this,
+                [this, reply, index, repo, quiet, unavailable,
+                 bytes, overflowed, appendChunk]() mutable {
+                    appendChunk();
+                    const int status =
+                        reply->attribute(
+                                 QNetworkRequest::
+                                     HttpStatusCodeAttribute)
+                            .toInt();
+                    const QString contentType =
+                        reply->header(
+                                 QNetworkRequest::ContentTypeHeader)
+                            .toString()
+                            .section(QLatin1Char(';'), 0, 0)
+                            .trimmed()
+                            .toLower();
+                    const QByteArray etag =
+                        reply->rawHeader("ETag").trimmed();
+                    bool lengthOk = false;
+                    const qint64 announcedLength =
+                        reply->rawHeader("Content-Length")
+                            .toLongLong(&lengthOk);
+                    const bool networkOk =
+                        reply->error() ==
+                        QNetworkReply::NoError;
+                    reply->deleteLater();
+
+                    static const QRegularExpression etagPattern(
+                        QStringLiteral(
+                            "^\"sha256-([0-9a-f]{64})\"$"));
+                    const QRegularExpressionMatch etagMatch =
+                        etagPattern.match(
+                            QString::fromLatin1(etag));
+                    const bool responseValid =
+                        networkOk && !*overflowed &&
+                        status == 200 &&
+                        contentType ==
+                            QLatin1String(
+                                "application/vnd.forkmesh."
+                                "private-replica+json") &&
+                        etagMatch.hasMatch() && lengthOk &&
+                        announcedLength > 0 &&
+                        announcedLength ==
+                            qint64(bytes->size()) &&
+                        announcedLength <=
+                            PrivateMirrorRuntime::
+                                maximumSerializedReplicaBytes();
+                    if (!responseValid) {
+                        bytes->fill('\0');
+                        bytes->clear();
+                        unavailable(
+                            QStringLiteral(
+                                "ciphertext response invalid"));
+                        return;
+                    }
+
+                    const QString expectedDigest =
+                        etagMatch.captured(1);
+                    const QString replicaRoot =
+                        privateReplicaRoot();
+                    const QString vaultPath =
+                        privateIdentityVaultPath();
+                    QByteArray vaultSecret =
+                        privateIdentityVaultSecret(
+                            m_profileIdentity);
+                    auto result =
+                        std::make_shared<
+                            PrivateDownloadWorkerResult>();
+                    QThread *worker = QThread::create(
+                        [result, replicaRoot, vaultPath,
+                         serialized = std::move(*bytes),
+                         expectedDigest,
+                         mutableVaultSecret =
+                             std::move(vaultSecret)]() mutable {
+                            result->opaqueId =
+                                PrivateMirrorStore::
+                                    importReplica(
+                                        replicaRoot, serialized,
+                                        expectedDigest,
+                                        &result->metadata,
+                                        &result->error);
+                            serialized.fill('\0');
+                            serialized.clear();
+                            if (!result->opaqueId.isEmpty()) {
+                                auto opened =
+                                    PrivateMirrorRuntime::
+                                        materialize(
+                                            replicaRoot,
+                                            vaultPath,
+                                            mutableVaultSecret,
+                                            result->opaqueId,
+                                            &result->error);
+                                if (opened) {
+                                    result->materialization =
+                                        std::shared_ptr<
+                                            PrivateMirrorMaterialization>(
+                                            std::move(opened));
+                                }
+                            }
+                            mutableVaultSecret.fill('\0');
+                            mutableVaultSecret.clear();
+                        });
+                    connect(
+                        worker, &QThread::finished, this,
+                        [this, worker, result, index, repo,
+                         quiet, unavailable] {
+                            worker->deleteLater();
+                            if (index < 0 ||
+                                index >=
+                                    m_repositories.size() ||
+                                m_repositories.at(index).owner !=
+                                    repo.owner ||
+                                m_repositories.at(index).name !=
+                                    repo.name ||
+                                !PrivateMirrorStore::isOpaqueId(
+                                    result->opaqueId) ||
+                                !result->materialization ||
+                                !result->materialization
+                                     ->isValid()) {
+                                unavailable(QStringLiteral(
+                                    "ciphertext authentication "
+                                    "failed"));
+                                return;
+                            }
+                            RepositoryRecord &current =
+                                m_repositories[index];
+                            const QString previousId =
+                                current.privateReplicaId;
+                            current.privateReplicaId =
+                                result->opaqueId;
+                            current.mirrorPath =
+                                result->materialization
+                                    ->repositoryPath();
+                            current.lastSyncMs =
+                                QDateTime::
+                                    currentDateTimeUtc()
+                                        .toMSecsSinceEpoch();
+                            if (!previousId.isEmpty() &&
+                                previousId !=
+                                    result->opaqueId) {
+                                m_privateMirrorMaterializations
+                                    .remove(previousId);
+                            }
+                            m_privateMirrorMaterializations
+                                .insert(
+                                    result->opaqueId,
+                                    result->materialization);
+                            m_syncingRepos.remove(index);
+                            saveRepositories();
+                            refreshRepositoryList();
+                            if (index ==
+                                m_repoDetailIndex) {
+                                refreshOpenRepoDetail();
+                            }
+                            startRepoHosts();
+                            logSystem(QStringLiteral(
+                                          "Private mirror: "
+                                          "authenticated "
+                                          "encrypted epoch %1 "
+                                          "opened in temporary "
+                                          "recipient-only "
+                                          "storage.")
+                                          .arg(result->metadata
+                                                   .keyEpoch));
+                            if (!quiet)
+                                flashMessage(
+                                    QStringLiteral(
+                                        "Private repository "
+                                        "opened from encrypted "
+                                        "epoch %1.")
+                                        .arg(
+                                            result->metadata
+                                                .keyEpoch));
+                        });
+                    worker->start();
+                });
+        });
+}
+
+void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
+{
+    if (index < 0 || index >= m_repositories.size() ||
+        m_syncingRepos.contains(index))
+        return;
+    const RepositoryRecord repo = m_repositories.at(index);
+    if (repo.previewOnly || repo.isPrivate)
+        return;
+
+    QByteArray vaultSecret =
+        publicIdentityVaultSecret(m_profileIdentity);
+    if (vaultSecret.size() < 32) {
+        if (!quiet)
+            flashMessage(
+                QStringLiteral(
+                    "Encrypted public mirror unavailable: the local device "
+                    "identity could not unlock its age-key vault."),
+                true);
+        return;
+    }
+
+    const QString existingArchiveId = repo.publicArchiveId;
+    const QString legacyMirrorPath = repo.mirrorPath;
+    const QString managedMirrorRoot = repositoryMirrorRoot();
+    QString source = repositorySource(repo);
+    // During a private→public transition, the authenticated private
+    // materialization is the only name-free source. Prefer it over the legacy
+    // named relay clone URL, which is intentionally inert for private bytes.
+    if (PrivateMirrorStore::isOpaqueId(repo.privateReplicaId) &&
+        QDir(legacyMirrorPath).exists()) {
+        source = legacyMirrorPath;
+    }
+    if (source.isEmpty() && QDir(legacyMirrorPath).exists())
+        source = legacyMirrorPath;
+    if (source.isEmpty() &&
+        !PublicMirrorRuntime::isArchiveId(existingArchiveId)) {
+        vaultSecret.fill('\0');
+        vaultSecret.clear();
+        if (!quiet)
+            flashMessage(
+                QStringLiteral(
+                    "Encrypted public mirror unavailable: no authenticated "
+                    "source or sealed archive exists."),
+                true);
+        return;
+    }
+
+    m_syncingRepos.insert(index);
+    refreshRepositoryList();
+    logSystem(QStringLiteral(
+        "Public mirror: sealing %1/%2 with official age encryption; "
+        "plaintext is limited to owner-only temporary storage.")
+                  .arg(repo.owner, repo.name));
+
+    auto result = std::make_shared<PublicSyncWorkerResult>();
+    const QString archiveRoot = publicArchiveRoot();
+    const QString vaultPath = publicIdentityVaultPath();
+    const QString owner = repo.owner;
+    const QString name = repo.name;
+    QThread *worker = QThread::create(
+        [result, source, archiveRoot, vaultPath,
+         mutableVaultSecret = std::move(vaultSecret), existingArchiveId,
+         legacyMirrorPath, managedMirrorRoot]() mutable {
+            if (source.isEmpty()) {
+                result->metadata = PublicMirrorRuntime::readMetadata(
+                    archiveRoot, existingArchiveId, &result->error);
+                if (result->metadata.isValid()) {
+                    std::unique_ptr<PublicMirrorMaterialization>
+                        materialization =
+                            PublicMirrorRuntime::materialize(
+                                archiveRoot, vaultPath,
+                                mutableVaultSecret, existingArchiveId,
+                                PublicMirrorRuntime::Tools(),
+                                &result->error);
+                    if (materialization) {
+                        result->materialization =
+                            std::shared_ptr<PublicMirrorMaterialization>(
+                                std::move(materialization));
+                    }
+                }
+            } else {
+                PublicMirrorRuntime::SyncResult sync =
+                    PublicMirrorRuntime::syncSource(
+                        source, {}, archiveRoot, vaultPath,
+                        mutableVaultSecret, existingArchiveId,
+                        PublicMirrorRuntime::Tools(), &result->error);
+                result->metadata = sync.metadata;
+                result->created = sync.created;
+                if (sync.materialization) {
+                    result->materialization =
+                        std::shared_ptr<PublicMirrorMaterialization>(
+                            std::move(sync.materialization));
+                }
+            }
+
+            // A replacement must be sealed and successfully reopened before a
+            // legacy durable bare repository may be removed. User working
+            // copies (repo.localPath) are never considered legacy mirror data.
+            if (result->metadata.isValid() &&
+                result->materialization &&
+                result->materialization->isValid() &&
+                !legacyMirrorPath.isEmpty() &&
+                QDir(legacyMirrorPath).exists() &&
+                legacyMirrorPath !=
+                    result->materialization->repositoryPath()) {
+                const QString root =
+                    QFileInfo(managedMirrorRoot).canonicalFilePath();
+                const QString target =
+                    QFileInfo(legacyMirrorPath).canonicalFilePath();
+                // Runtime materializations and user working copies are outside
+                // the managed durable mirror root and must never be deleted as
+                // migration artifacts.
+                if (!root.isEmpty() && !target.isEmpty() &&
+                    target.startsWith(
+                        QDir::cleanPath(root) + QLatin1Char('/'))) {
+                    QString cleanupError;
+                    result->legacyRemoved =
+                        PublicMirrorRuntime::removeManagedPlaintextMirror(
+                            legacyMirrorPath, managedMirrorRoot,
+                            &cleanupError);
+                    if (!result->legacyRemoved) {
+                        result->notice = QStringLiteral(
+                            "The encrypted replacement is ready, but the legacy "
+                            "plaintext mirror could not be removed. Publication "
+                            "remains blocked until it is cleaned up.");
+                    }
+                }
+            }
+            mutableVaultSecret.fill('\0');
+            mutableVaultSecret.clear();
+        });
+    connect(
+        worker, &QThread::finished, this,
+        [this, worker, result, index, owner, name, existingArchiveId,
+         quiet] {
+            worker->deleteLater();
+            m_syncingRepos.remove(index);
+            if (index < 0 || index >= m_repositories.size() ||
+                m_repositories.at(index).owner != owner ||
+                m_repositories.at(index).name != name ||
+                m_repositories.at(index).isPrivate ||
+                m_repositories.at(index).publicArchiveId !=
+                    existingArchiveId) {
+                refreshRepositoryList();
+                return;
+            }
+            RepositoryRecord &current = m_repositories[index];
+            if (!result->metadata.isValid() ||
+                !result->materialization ||
+                !result->materialization->isValid()) {
+                refreshRepositoryList();
+                logSystem(QStringLiteral(
+                              "Public mirror: encrypted sync failed for %1/%2. "
+                              "No new durable plaintext mirror was created.")
+                              .arg(owner, name));
+                if (!quiet) {
+                    flashMessage(
+                        QStringLiteral(
+                            "Encrypted public mirror failed for %1/%2: %3")
+                            .arg(owner, name,
+                                 result->error.isEmpty()
+                                     ? QStringLiteral(
+                                           "age, age-keygen, tar, Git, and a "
+                                           "valid source are required")
+                                     : result->error),
+                        true);
+                }
+                return;
+            }
+
+            if (PublicMirrorRuntime::isArchiveId(existingArchiveId) &&
+                existingArchiveId != result->metadata.archiveId) {
+                m_publicMirrorMaterializations.remove(
+                    existingArchiveId);
+            }
+            current.publicArchiveId = result->metadata.archiveId;
+            const QString previousPrivateReplica =
+                current.privateReplicaId;
+            current.privateReplicaId.clear();
+            current.mirrorPath =
+                result->materialization->repositoryPath();
+            current.lastSyncMs =
+                QDateTime::currentMSecsSinceEpoch();
+            m_publicMirrorMaterializations.insert(
+                result->metadata.archiveId, result->materialization);
+            if (PrivateMirrorStore::isOpaqueId(
+                    previousPrivateReplica)) {
+                m_privateMirrorMaterializations.remove(
+                    previousPrivateReplica);
+            }
+            saveRepositories(); // never persists the temporary mirrorPath
+            refreshRepositoryList();
+            // The served mirror now lives in a fresh temporary
+            // materialization (a new path on every seal/app start), so the
+            // working copy's push URL and the post-receive hook must follow
+            // it — otherwise a plain `git push` keeps targeting the removed
+            // plaintext mirror and fails.
+            ensurePushHook(current);
+
+            if (!result->legacyRemoved) {
+                logSystem(QStringLiteral("Public mirror: ") +
+                          result->notice);
+                if (!quiet)
+                    flashMessage(result->notice, true);
+                return;
+            }
+
+            logSystem(
+                QStringLiteral(
+                    "Public mirror: %1/%2 is stored as age ciphertext %3; "
+                    "the authenticated repository is temporary.")
+                    .arg(owner, name,
+                         result->metadata.archiveId.left(12)));
+            if (!quiet)
+                flashMessage(
+                    QStringLiteral(
+                        "Encrypted public mirror ready for %1/%2.")
+                        .arg(owner, name));
+            if (index == m_repoDetailIndex)
+                refreshOpenRepoDetail();
+            scanRepoMentionsFor(current);
+            if (current.publishToNetwork) {
+                QString gatewayError;
+                if (rebuildDirectMirrorGatewayConfiguration(
+                        &gatewayError, true)) {
+                    publishRepository(index, false);
+                } else {
+                    logSystem(
+                        QStringLiteral(
+                            "Public publication remains blocked until the "
+                            "direct HTTPS gateway is configured: %1")
+                            .arg(gatewayError));
+                    if (!quiet)
+                        flashMessage(gatewayError, true);
+                }
+            }
+            startRepoHosts();
+            replicateReleaseArtifacts(index);
+            // Propagate the freshly sealed state to the SSH-fed headless
+            // mirrors too — they don't hear the relay's mirror-update frames.
+            pushToSshMirrorRemotes(index);
+        });
+    worker->start();
+}
+
+// Push the served bare mirror's stable refs (heads + tags) to every ssh://
+// push remote configured on the working copy — e.g. the ssh.<worker> Git
+// gateway feeding the headless mirror fleet, whose post-receive hook re-seals
+// and republishes each mirror. The relay's "mirror-update" websocket frame
+// only reaches desktop peers in the live room; without this push the SSH-fed
+// mirrors sat frozen at whatever the owner last pushed by hand (adhoc #272).
+// Best-effort and fully async; runs after every successful mirror sync, so the
+// 15-minute auto-sync doubles as the self-heal for a push a gateway missed.
+void MainWindow::pushToSshMirrorRemotes(int index)
+{
+    if (index < 0 || index >= m_repositories.size())
+        return;
+    // By value: runGitCapture below pumps the event loop, and a reference into
+    // m_repositories can dangle across it (git-pump UAF family, adhoc #106).
+    const RepositoryRecord repo = m_repositories.at(index);
+    // Only the source of truth propagates (a node holding the working copy);
+    // mirrors and previews just pull, and private repos travel as sealed
+    // replicas, never over a public mirror gateway.
+    if (repo.previewOnly || repo.isPrivate ||
+        repo.localPath.trimmed().isEmpty() ||
+        repo.mirrorPath.trimmed().isEmpty() || !QDir(repo.mirrorPath).exists())
+        return;
+    const QString repoKey = repo.owner + "/" + repo.name;
+    if (m_sshMirrorPushing.contains(repoKey))
+        return;
+
+    QByteArray remotesOut;
+    if (!runGitCapture(repo.localPath,
+                       {QStringLiteral("remote"), QStringLiteral("-v")},
+                       &remotesOut, nullptr))
+        return;
+    QStringList urls;
+    for (const QString &line :
+         QString::fromUtf8(remotesOut).split(QLatin1Char('\n'))) {
+        const QString simplified = line.simplified();
+        if (!simplified.endsWith(QLatin1String("(push)")))
+            continue;
+        const QStringList parts = simplified.split(QLatin1Char(' '));
+        if (parts.size() < 2)
+            continue;
+        const QString url = parts.at(1);
+        if (url.startsWith(QLatin1String("ssh://")) && !urls.contains(url))
+            urls.append(url);
+    }
+    if (urls.isEmpty())
+        return;
+
+    m_sshMirrorPushing.insert(repoKey);
+    auto remaining = std::make_shared<int>(urls.size());
+    for (const QString &url : urls) {
+        auto *process = new QProcess(this);
+        // Never let an unreachable/unauthorized gateway hang the push on an
+        // interactive credential or host-key prompt: this runs unattended.
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert(QStringLiteral("GIT_TERMINAL_PROMPT"), QStringLiteral("0"));
+        if (!env.contains(QStringLiteral("GIT_SSH_COMMAND")))
+            env.insert(QStringLiteral("GIT_SSH_COMMAND"),
+                       QStringLiteral("ssh -oBatchMode=yes"));
+        process->setProcessEnvironment(env);
+        const QString gatewayHost = QUrl(url).host();
+        connect(process, &QProcess::finished, this,
+                [this, process, repoKey, remaining, gatewayHost](
+                    int exitCode, QProcess::ExitStatus) {
+                    const QString output =
+                        QString::fromUtf8(process->readAllStandardOutput());
+                    const QString errors =
+                        QString::fromUtf8(process->readAllStandardError())
+                            .trimmed();
+                    process->deleteLater();
+                    if (--*remaining <= 0)
+                        m_sshMirrorPushing.remove(repoKey);
+                    if (exitCode != 0) {
+                        logSystem(QStringLiteral(
+                                      "Mirror: SSH mirror push of %1 to %2 "
+                                      "failed: %3")
+                                      .arg(repoKey, gatewayHost,
+                                           errors.right(300)));
+                        return;
+                    }
+                    // --porcelain: one status line per ref; '=' means already
+                    // up to date. Only speak up when something actually moved,
+                    // so the quiet auto-sync cadence doesn't spam the log.
+                    bool updated = false;
+                    for (const QString &line :
+                         output.split(QLatin1Char('\n'))) {
+                        if (!line.isEmpty() && !line.startsWith('=') &&
+                            !line.startsWith(QLatin1String("To ")) &&
+                            !line.startsWith(QLatin1String("Done")))
+                            updated = true;
+                    }
+                    if (updated)
+                        logSystem(QStringLiteral(
+                                      "Mirror: pushed %1 to SSH mirror %2.")
+                                      .arg(repoKey, gatewayHost));
+                });
+        connect(process, &QProcess::errorOccurred, this,
+                [this, process, repoKey, remaining,
+                 gatewayHost](QProcess::ProcessError error) {
+                    // finished still fires for a crash after start; only a
+                    // failed start ends the attempt here (avoids double
+                    // decrement).
+                    if (error != QProcess::FailedToStart)
+                        return;
+                    process->deleteLater();
+                    if (--*remaining <= 0)
+                        m_sshMirrorPushing.remove(repoKey);
+                    logSystem(QStringLiteral("Mirror: could not run git to "
+                                             "push %1 to SSH mirror %2.")
+                                  .arg(repoKey, gatewayHost));
+                });
+        // Push from the served bare mirror so the gateway receives exactly the
+        // refs this node serves; forced, because the source of truth wins over
+        // whatever state a mirror gateway holds. Heads + tags only — the same
+        // stable namespaces every mirror serves (issues/PRs live on heads).
+        process->start(QStringLiteral("git"),
+                       {QStringLiteral("-C"), repo.mirrorPath,
+                        QStringLiteral("push"), QStringLiteral("--porcelain"),
+                        url, QStringLiteral("+refs/heads/*:refs/heads/*"),
+                        QStringLiteral("+refs/tags/*:refs/tags/*")});
+    }
+}
+
 void MainWindow::syncRepository(int index, bool quiet)
 {
     if (index < 0 || index >= m_repositories.size() ||
@@ -3994,6 +6020,14 @@ void MainWindow::syncRepository(int index, bool quiet)
 
     RepositoryRecord &repo = m_repositories[index];
     const bool preview = repo.previewOnly;
+    if (!preview && repo.isPrivate) {
+        syncPrivateRepository(index, quiet);
+        return;
+    }
+    if (!preview) {
+        syncPublicEncryptedRepository(index, quiet);
+        return;
+    }
     if (!QDir().mkpath(QFileInfo(repo.mirrorPath).absolutePath())) {
         if (!quiet)
             QMessageBox::warning(this, "Sync repository",
@@ -4005,15 +6039,14 @@ void MainWindow::syncRepository(int index, bool quiet)
     const bool hasMirror = QDir(repo.mirrorPath).exists();
     const QString source = repositorySource(repo);
 
-    // A repository we publish and host ourselves, with no separate upstream
-    // working copy, IS the source of truth. Re-fetching it would loop back
-    // through the relay to our own host tunnel and fail (HTTP 5xx), so there is
-    // nothing to sync.
+    // A repository we publish ourselves, with no separate upstream working
+    // copy, IS the source of truth. Re-fetching its own public route would be a
+    // pointless loop through the HTTPS gateway, so there is nothing to sync.
     if (!preview && hasMirror && repo.publishToNetwork &&
         repo.localPath.trimmed().isEmpty() && repo.owner == accountOwner()) {
         if (!quiet)
-            flashMessage(QStringLiteral("Nothing to sync for %1/%2 — this node "
-                                        "hosts it directly.")
+            flashMessage(QStringLiteral("Nothing to sync for %1/%2 — this "
+                                        "machine hosts it directly.")
                              .arg(repo.owner, repo.name));
         return;
     }
@@ -4244,8 +6277,8 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                         }
                         if (!stillPreview && repo.publishToNetwork) {
                             publishRepository(index, false);
-                            // Serve this repo's files live to the web now that a
-                            // mirror exists (pure live tunnel, nothing uploaded).
+                            // Refresh the compatibility lifecycle hook after the
+                            // direct-HTTPS mirror is published.
                             startRepoHosts();
                         }
                         // Also mirror the repo's release artifacts: pull any binary
@@ -4260,10 +6293,10 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                 } else {
                     m_syncingRepos.remove(index);
                     refreshRepositoryList();
-                    // Relay/host hiccups (HTTP 5xx, RPC failed, connection
-                    // resets) and truncated packs from the streaming clone
-                    // tunnel are transient: the host serving this repo is
-                    // momentarily unavailable and the next sync will retry. Log
+                    // HTTPS gateway hiccups (HTTP 5xx, RPC failed, connection
+                    // resets) and truncated responses are transient: the
+                    // selected mirror endpoint is momentarily unavailable and
+                    // the next sync will retry. Log
                     // them quietly rather than raising a persistent red error.
                     const bool transient = isTransientSyncError(errors);
                     logSystem((repo.previewOnly ? QStringLiteral("Preview cache: sync failed for ")
@@ -4373,6 +6406,44 @@ void MainWindow::logout()
     leaveSession();
 }
 
+void MainWindow::loginToUserAccount()
+{
+    // Ask which account to sign in to (defaulting to the current node name), then
+    // run the shared email/password login flow. verifyTotpLogin() (via
+    // runLoginFlow) sets m_accountName, the session token and auth state on
+    // success, so we just sync the Settings fields afterwards.
+    bool ok = false;
+    const QString suggested = m_accountName.isEmpty()
+                                  ? QSettings().value(kAccountNameSetting).toString()
+                                  : m_accountName;
+    const QString accountName =
+        QInputDialog::getText(this, "Log in to a user account",
+                              "ForkMesh username:", QLineEdit::Normal, suggested,
+                              &ok)
+            .trimmed()
+            .toLower();
+    if (!ok || accountName.isEmpty())
+        return;
+    if (!isValidNodeName(accountName)) {
+        QMessageBox::warning(this, "Log in",
+                             "Enter a valid username (lowercase letters, numbers "
+                             "and hyphens; start with a letter).");
+        return;
+    }
+    if (!runLoginFlow(accountName))
+        return;
+
+    // Persist and reflect the freshly signed-in account in the Settings UI.
+    QSettings().setValue(kAccountNameSetting, m_accountName);
+    if (m_settingsNameEdit)
+        m_settingsNameEdit->setText(m_accountName);
+    if (m_settingsMachineNodeEdit)
+        m_settingsMachineNodeEdit->setText(machineNodeName());
+    refreshSettingsEmailVerifiedBadge();
+    QMessageBox::information(this, "Log in",
+                             "Signed in as " + m_accountName + ".");
+}
+
 void MainWindow::uninstallForkMesh()
 {
     const QString sourceDir = QStringLiteral(FORKMESH_SOURCE_DIR);
@@ -4419,7 +6490,7 @@ void MainWindow::uninstallForkMesh()
         "This permanently and irreversibly erases ForkMesh from this computer, "
         "including:\n\n"
         "  •  every mirrored repository\n"
-        "  •  this node's identity key (your account cannot be recovered)\n"
+        "  •  this machine's identity key (your account cannot be recovered)\n"
         "  •  all chat history, settings and caches\n"
         "  •  the desktop launcher and icons\n"
         "  •  the ForkMesh program files\n\nFolders removed:\n");

@@ -280,7 +280,9 @@ def test_login_persists_returned_session_details():
     assert "isAdmin: Boolean(body.isAdmin)" in login_js
     assert 'solana: body.solana || ""' in login_js
     assert "hasPayoutAddress: Boolean(body.hasPayoutAddress)" in login_js
-    assert 'sessionToken: body.sessionToken || ""' in login_js
+    assert 'location.protocol === "https:" && body.sessionToken' in login_js
+    assert '? "cookie"' in login_js
+    assert ': body.sessionToken || ""' in login_js
     assert 'profileBio: body.profileBio || ""' in login_js
     assert 'profileAbout: body.profileAbout || body.profileReadme || ""' in login_js
     assert 'profileLocation: body.profileLocation || ""' in login_js
@@ -377,8 +379,7 @@ def test_login_exposes_localhost_only_demo_credentials():
     assert 'const DEMO_PASSWORD = "forkmesh-demo";' in login_js
     assert 'location.hostname === "localhost"' in login_js
     assert 'location.hostname === "127.0.0.1"' in login_js
-    # Demo login lands on the dashboard unless a ?next= bounce (e.g. a pending
-    # link-node grant, adhoc #120) asked to resume somewhere specific.
-    assert 'location.href = nextPath() || "/dashboard"' in login_js
+    assert 'fetch("/api/accounts/login"' in login_js
+    assert "email.toLowerCase() === DEMO_EMAIL" not in login_js
+    assert 'nodeName: "demo-node"' not in login_js
     assert '"/dashboard.html"' not in login_js
-    assert 'nodeName: "demo-node"' in login_js

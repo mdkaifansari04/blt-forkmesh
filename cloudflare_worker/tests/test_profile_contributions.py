@@ -15,6 +15,8 @@ from urllib.parse import parse_qs, quote, urlparse
 
 import pytest
 
+from worker_test_helpers import json_from_request_double
+
 # Allow ``import src.*`` regardless of the working directory pytest is run from
 # (the collector may load this module from the repo root, where the worker
 # package dir is not otherwise on sys.path).
@@ -685,6 +687,7 @@ def _load_entry_contribution_functions(extra_globals):
     ]
     module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
     namespace = dict(extra_globals)
+    namespace.setdefault("bounded_json_request", json_from_request_double)
     exec(compile(module, str(ENTRY), "exec"), namespace)
     return namespace
 
@@ -1223,11 +1226,15 @@ def test_ingest_catalog_handler_keeps_repository_write_on_optional_failure():
         "stateSig": "",
     }
     namespace = {
+        "bounded_json_request": json_from_request_double,
         "ensure_schema": noop,
         "method_name": lambda request: request.method,
         "safe_catalog_record": lambda _data: dict(record),
         "_is_blocked_catalog_identity": lambda *_args: False,
         "_account_row": account_row,
+        "_catalog_publication_key": (
+            lambda _env, _owner, maintainer: asyncio.sleep(
+                0, result=maintainer)),
         "clean_string": lambda value, maximum=240: str(value or "")[:maximum],
         "ed25519_verify": always_verify,
         "blind_index": lambda _env, value: asyncio.sleep(0, result=_blind(value)),
@@ -1239,6 +1246,7 @@ def test_ingest_catalog_handler_keeps_repository_write_on_optional_failure():
         "decrypt_row": lambda _env, value: asyncio.sleep(0, result=value),
         "encrypt_row": lambda _env, value: asyncio.sleep(0, result=value),
         "purge_catalog_related_caches": noop,
+        "_https_mirror_refresh_catalog_publisher_health": noop,
         "_contribution_ingest_snapshot": contribution_failure,
         "_contribution_write_catalog_state": catalog_state,
         "json_response": response,

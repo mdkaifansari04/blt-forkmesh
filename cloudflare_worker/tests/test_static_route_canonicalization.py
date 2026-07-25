@@ -37,6 +37,7 @@ CANONICAL_PAGE_ROUTES = {
     "/security-report": "/security-report.html",
     "/docs": "/docs/index.html",
     "/network": "/network.html",
+    "/world": "/world/index.html",
     "/chat": "/chat.html",
     "/desktop": "/desktop.html",
     "/about": "/about.html",
@@ -52,6 +53,7 @@ CANONICAL_PAGE_ROUTES = {
 
 BLOCKED_HTML_ALIASES = {
     "/index.html",
+    "/world/index.html",
     "/dashboard.html",
     "/blog.html",
     "/login.html",
@@ -221,9 +223,9 @@ def test_worker_does_not_own_static_page_alias_routes():
         else:
             assert route not in run_worker_first
 
-    # / and /dashboard ARE worker-owned: / must vary on the login presence
-    # cookie (302 vs homepage) and /dashboard must see the query string to 308
-    # legacy ?section= URLs — _redirects cannot match either.
+    # / and /dashboard ARE worker-owned: / selects the world shell and
+    # /dashboard must see the query string to 308 legacy ?section= URLs —
+    # _redirects cannot match either.
     assert "/" in run_worker_first
     assert "/dashboard" in run_worker_first
 
@@ -236,7 +238,9 @@ def test_repo_shortcuts_are_worker_owned_without_hijacking_static_assets():
     run_worker_first = WRANGLER["assets"]["run_worker_first"]
 
     assert "/*/*" in run_worker_first
-    for exception in ("/assets/*", "/favicon/*", "/blog/*", "/docs/*"):
+    for exception in (
+        "/assets/*", "/favicon/*", "/blog/*", "/docs/*", "/world/*",
+    ):
         assert "!" + exception in run_worker_first
 
     assert "!/network/*" not in run_worker_first
@@ -252,6 +256,7 @@ def test_repo_shortcuts_are_worker_owned_without_hijacking_static_assets():
         "/favicon/site.webmanifest",
         "/docs/guide",
         "/blog/introducing-forkmesh/index.html",
+        "/world/world.js",
         "/dashboard/partials/header.html",
     ):
         assert not static_routes.looks_like_repo_route(path)

@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""Server-side homepage login redirect via the forkmesh_session presence cookie.
-
-Logged-in visitors to / get an instant 302 to /dashboard from the Worker —
-keyed off the presence cookie set by login/signup JS — replacing the old inline
-localStorage redirect in index.html that painted the homepage first. The cookie
-is a hint (value "1"), never a credential: the real session stays in
-localStorage and the signed sessionToken gates privileged APIs.
-"""
+"""The root keeps the regular site and embeds ForkMesh World."""
 
 import sys
 import tomllib
@@ -23,6 +16,7 @@ from static_routes import dashboard_section_redirect  # noqa: E402
 WRANGLER = tomllib.loads((ROOT / "wrangler.toml").read_text(encoding="utf-8"))
 ENTRY_TEXT = (SRC / "entry.py").read_text(encoding="utf-8")
 INDEX_HTML = (PUBLIC / "index.html").read_text(encoding="utf-8")
+WORLD_HTML = (PUBLIC / "world" / "index.html").read_text(encoding="utf-8")
 
 COOKIE_SET = 'forkmesh_session=1; Path=/; Max-Age=2592000; SameSite=Lax'
 COOKIE_CLEAR = 'forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax'
@@ -35,30 +29,38 @@ def _read(rel):
 def test_homepage_no_longer_client_redirects():
     assert 'location.replace("/dashboard")' not in INDEX_HTML
     assert "forkmesh.session" not in INDEX_HTML
+    assert 'data-world-mode="public"' in WORLD_HTML
+    # The World embed moved from a mid-page index.html section to a
+    # site-footer.js band pinned to the bottom of every page (adhoc #280).
+    footer_js = _read("site-footer.js")
+    assert 'src="/world/"' not in INDEX_HTML
+    assert 'src="/world/"' in footer_js
+    assert 'title="Interactive ForkMesh World"' in footer_js
+    assert "Open World full screen" in footer_js
+    assert "repositories, source code, documentation" in footer_js
+    assert 'src="/site-footer.js"' in INDEX_HTML
 
 
-def test_worker_owns_root_and_checks_cookie_before_serving():
+def test_worker_owns_root_without_cookie_routing():
     assert "/" in WRANGLER["assets"]["run_worker_first"]
     root_branch = ENTRY_TEXT[
         ENTRY_TEXT.index('if url.path == "/" and method_name(request)'):
         ENTRY_TEXT.index("if url.path in BLOCKED_STATIC_HTML_PATHS")
     ]
-    # Cookie check comes before any asset fetch; strict equality with "1".
-    assert '_cookie_value(request, "forkmesh_session") == "1"' in root_branch
-    assert '"location": "/dashboard"' in root_branch
-    assert "status=302" in root_branch
-    # The 302 must never be cached: a logout must not replay it.
-    assert "no-store" in root_branch
+    assert '_cookie_value(request, "forkmesh_session")' not in root_branch
+    assert '"location": "/dashboard"' not in root_branch
+    assert "return await self._serve_homepage(url)" in root_branch
 
 
-def test_logged_out_homepage_revalidates_and_varies_on_cookie():
+def test_regular_homepage_revalidates_without_varying_on_cookie():
     serve = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _serve_homepage"):
         ENTRY_TEXT.index("async def _serve_homepage") + 1500
     ]
     assert '"cache-control": "no-cache"' in serve
-    assert '"vary": "cookie"' in serve
+    assert '"vary": "cookie"' not in serve
     assert 'base + "index.html"' in serve
+    assert 'base + "world/index.html"' not in serve
 
 
 def test_presence_cookie_lifecycle_is_complete():

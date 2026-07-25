@@ -29,7 +29,8 @@ def test_node_profile_features_user_card_before_node_details():
     assert "m_profileUserAvatar" not in header
     assert "m_profileUserName" not in header
     assert 'm_profileAccountSection->setObjectName("profileUserCard");' in build
-    assert 'auto *accountLabel = makeProfileSection("USER PROFILE");' in build
+    assert 'm_profileAccountLabel = makeProfileSection("NODES");' in build
+    assert "accountLayout->addWidget(m_profileAccountLabel);" in build
     # adhoc #177: the "USER PROFILE" card lists every node linked to the user
     # account (not just this node), so it is shown in the right column. It is
     # not a redundant identity repeat — it surfaces the user's *other* nodes.
@@ -46,9 +47,9 @@ def test_node_profile_user_card_lists_owned_nodes_with_icons():
     )
 
     assert "m_profileUserNodesList->clear();" in render
-    assert "nodeMachineFavicon(nodeName, 28)" in render
-    assert "roundedRectPixmap(nodeMachineFavicon(nodeName, 28), 28, 8)" in render
-    assert 'nodeName + QStringLiteral(" (this node)")' in render
+    assert "nodeMachineFavicon(nodeName, 32)" in render
+    assert "roundedRectPixmap(nodeMachineFavicon(nodeName, 32), 32, 8)" in render
+    assert 'QStringLiteral("  (this machine)")' in render
     assert "m_profileUserNodesList->setFixedHeight" in render
 
 

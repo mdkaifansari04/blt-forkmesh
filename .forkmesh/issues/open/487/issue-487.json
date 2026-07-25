@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751268,
+    "endDate": 1809057600000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nTeams can buy a secure managed workspace with private repositories, centralized policy, identity administration, auditability, compliance controls, and priority support.\n\n## Scope\n\n- Deliver organization lifecycle, billing, private workspaces, RBAC, SSO/passkey administration, policy templates, and tamper-evident audit records.\n- Add retention, export, legal hold, compliance evidence, support entitlements, and tenant isolation.\n- Keep repository and collaboration data portable to a self-hosted deployment or another provider.\n\n## Acceptance criteria\n\n- Admin, maintainer, member, auditor, and guest roles pass an authorization matrix with deny-by-default behavior.\n- Tenant-isolation and private-data recovery tests pass an independent security review.\n- Trial, upgrade, downgrade, cancellation, export, and support escalation work end to end.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 commercial gate**\n- Milestone: **Hosted teams & revenue GA**\n- Numeric priority: **25 of 44** (1 is highest)\n- Depends on: #485, #486, #497, #498, #519\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**5% as of 2026-07-22.** Account and repository primitives exist, but paid organization tenancy, policy, billing, compliance, and support operations are largely net new. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Paid teams, activation, seat growth, retention, support load, security events, and gross margin. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-487",
+            "sig": "LCv0v4TTLRK5UUPgneKPAEdm1Au3noarUZ6tY6QnR2-hLCFup3cTbhwPYYfJVqCzPIDaMdTgIOsOkO9dWXEICg",
+            "title": "Launch paid organization workspaces",
+            "ts": 1784729751268,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "b94c97eb-1a20-4177-bbe5-9c5f6741404f",
+            "labels": [
+                "revenue",
+                "security",
+                "feature"
+            ],
+            "sig": "QnmoyokxnnkZ4mR3qUksYBO-yph2u5BnT9De4yFDQVuiAEn5e-zm2CnhGcpFirAdcMitbl6lPrDPziwSdkiMBQ",
+            "ts": 1784729751269,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "3bbab6d9-69aa-48ac-8a96-ea14757c4183",
+            "milestone": "Hosted teams & revenue GA",
+            "sig": "bJQ_qV6nWrs_IMJrTqlf9qZZDuVE6FfgRDmlO8bauRLsH6kUpWtFgZ8QAB5zvJElx9qXGB_HANd3InSNnjh1DQ",
+            "ts": 1784729751270,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1809057600000,
+            "id": "cafb5382-9831-4d0b-a251-46024705aa96",
+            "sig": "CQLSmhbOnmpcYojTjpe7S8h4Lw-B-BtW6xWwbbr8HNXNEIOWL0Pn6RlP5ekeiinTPrvATaSgVaK6NZuVZKZhDA",
+            "startDate": 1786939200000,
+            "ts": 1784729751271,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "285ac746-471b-43cc-a98f-e11226d49768",
+            "priority": 25,
+            "sig": "aobAFXunBm3Elge8T3Uo-UEMBRVo07fDyHAvEtwtRSeY_YvFdpxlxoYQaQDNhFNselFlunlEjsGZt7Rw2NPFAw",
+            "ts": 1784729751272,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "d53e5313-2316-4a44-8fa2-bae9f714f9b3",
+            "progress": 5,
+            "sig": "0rryj-C4VzHkdh-oUT3TlcCP2uiTWFXvZaW_nKkRc2rlBCzs1QUvnklRkVdSgdXIkgHGqnAL5_r-86aiiUXFDQ",
+            "ts": 1784729751273,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "revenue",
+        "security",
+        "feature"
+    ],
+    "milestone": "Hosted teams & revenue GA",
+    "number": 487,
+    "priority": 25,
+    "progress": 5,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1786939200000,
+    "status": "open",
+    "title": "Launch paid organization workspaces",
+    "updatedAt": 1784729751273,
+    "votes": 0
+}

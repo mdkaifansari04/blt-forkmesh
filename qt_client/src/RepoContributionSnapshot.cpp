@@ -229,7 +229,9 @@ RepoContributionSnapshot failedSnapshot(const QString &error)
 }
 
 GitResult runGit(const QString &dir, const QStringList &args,
-                 const QByteArray *input = nullptr)
+                 const QByteArray *input = nullptr,
+                 qsizetype maxOutputBytes = kMaxGitOutputBytes,
+                 int timeoutMs = kGitTimeoutMs)
 {
     GitResult result;
     if (dir.trimmed().isEmpty()) {
@@ -268,7 +270,7 @@ GitResult runGit(const QString &dir, const QStringList &args,
     };
     auto drainOutput = [&] {
         return drainChannel(QProcess::StandardOutput, &result.output,
-                            kMaxGitOutputBytes) &&
+                            maxOutputBytes) &&
                drainChannel(QProcess::StandardError, &standardError,
                             kMaxGitErrorBytes);
     };
@@ -286,7 +288,7 @@ GitResult runGit(const QString &dir, const QStringList &args,
         }
         if (finished || process.state() == QProcess::NotRunning)
             break;
-        if (timer.hasExpired(kGitTimeoutMs)) {
+        if (timer.hasExpired(timeoutMs)) {
             process.kill();
             process.waitForFinished(1000);
             result.error = QStringLiteral("Git command timed out.");
@@ -705,6 +707,120 @@ QJsonObject makePayload(const RepoContributionSnapshotInput &input,
 QByteArray compactPayload(const QJsonObject &payload)
 {
     return QJsonDocument(payload).toJson(QJsonDocument::Compact);
+}
+
+QString logoLanguageForExtension(const QString &extension)
+{
+    static const QHash<QString, QString> names{
+        {QStringLiteral("c"), QStringLiteral("C")},
+        {QStringLiteral("h"), QStringLiteral("C/C++")},
+        {QStringLiteral("cc"), QStringLiteral("C++")},
+        {QStringLiteral("cpp"), QStringLiteral("C++")},
+        {QStringLiteral("cxx"), QStringLiteral("C++")},
+        {QStringLiteral("hh"), QStringLiteral("C++")},
+        {QStringLiteral("hpp"), QStringLiteral("C++")},
+        {QStringLiteral("hxx"), QStringLiteral("C++")},
+        {QStringLiteral("cs"), QStringLiteral("C#")},
+        {QStringLiteral("go"), QStringLiteral("Go")},
+        {QStringLiteral("html"), QStringLiteral("HTML")},
+        {QStringLiteral("htm"), QStringLiteral("HTML")},
+        {QStringLiteral("css"), QStringLiteral("CSS")},
+        {QStringLiteral("java"), QStringLiteral("Java")},
+        {QStringLiteral("js"), QStringLiteral("JavaScript")},
+        {QStringLiteral("mjs"), QStringLiteral("JavaScript")},
+        {QStringLiteral("cjs"), QStringLiteral("JavaScript")},
+        {QStringLiteral("jsx"), QStringLiteral("JavaScript")},
+        {QStringLiteral("json"), QStringLiteral("JSON")},
+        {QStringLiteral("kt"), QStringLiteral("Kotlin")},
+        {QStringLiteral("kts"), QStringLiteral("Kotlin")},
+        {QStringLiteral("md"), QStringLiteral("Markdown")},
+        {QStringLiteral("markdown"), QStringLiteral("Markdown")},
+        {QStringLiteral("mdown"), QStringLiteral("Markdown")},
+        {QStringLiteral("mkdn"), QStringLiteral("Markdown")},
+        {QStringLiteral("php"), QStringLiteral("PHP")},
+        {QStringLiteral("py"), QStringLiteral("Python")},
+        {QStringLiteral("pyw"), QStringLiteral("Python")},
+        {QStringLiteral("rb"), QStringLiteral("Ruby")},
+        {QStringLiteral("rs"), QStringLiteral("Rust")},
+        {QStringLiteral("sh"), QStringLiteral("Shell")},
+        {QStringLiteral("bash"), QStringLiteral("Shell")},
+        {QStringLiteral("zsh"), QStringLiteral("Shell")},
+        {QStringLiteral("fish"), QStringLiteral("Shell")},
+        {QStringLiteral("sql"), QStringLiteral("SQL")},
+        {QStringLiteral("swift"), QStringLiteral("Swift")},
+        {QStringLiteral("ts"), QStringLiteral("TypeScript")},
+        {QStringLiteral("tsx"), QStringLiteral("TypeScript")},
+        {QStringLiteral("mts"), QStringLiteral("TypeScript")},
+        {QStringLiteral("cts"), QStringLiteral("TypeScript")},
+        {QStringLiteral("yaml"), QStringLiteral("YAML")},
+        {QStringLiteral("yml"), QStringLiteral("YAML")},
+        {QStringLiteral("dart"), QStringLiteral("Dart")},
+        {QStringLiteral("vue"), QStringLiteral("Vue")},
+        {QStringLiteral("svelte"), QStringLiteral("Svelte")},
+    };
+    return names.value(extension.toLower());
+}
+
+void addLogoLanguage(QMap<QString, qint64> *languages,
+                     const QString &extension, qint64 bytes)
+{
+    if (!languages || bytes <= 0)
+        return;
+    const QString language = logoLanguageForExtension(extension);
+    if (language.isEmpty())
+        return;
+    constexpr qint64 kMaxLanguageBytes = qint64(1) << 50;
+    const qint64 prior = languages->value(language);
+    languages->insert(
+        language, qMin(kMaxLanguageBytes, prior + qMin(bytes, kMaxLanguageBytes)));
+}
+
+QString logoProjectCategory(const QString &description,
+                            const QStringList &topics,
+                            const QSet<QString> &frameworks,
+                            const QSet<QString> &topLevel)
+{
+    const QString clues =
+        (description + QLatin1Char(' ') + topics.join(QLatin1Char(' ')))
+            .toLower();
+    auto mentions = [&clues](std::initializer_list<const char *> needles) {
+        for (const char *needle : needles) {
+            if (clues.contains(QString::fromLatin1(needle)))
+                return true;
+        }
+        return false;
+    };
+    if (mentions({"developer platform", "dev platform", "git forge"}))
+        return QStringLiteral("developer platform");
+    if (mentions({"game", "three.js", "threejs"}))
+        return QStringLiteral("game or interactive experience");
+    if (mentions({"command line", "cli", "terminal tool"}))
+        return QStringLiteral("command-line tool");
+    if (mentions({"library", "sdk", "framework"}))
+        return QStringLiteral("library or framework");
+    if (mentions({"documentation", "docs", "handbook"}))
+        return QStringLiteral("documentation");
+    if (mentions({"mobile", "android", "ios"}) ||
+        frameworks.contains(QStringLiteral("Flutter"))) {
+        return QStringLiteral("mobile application");
+    }
+    if (frameworks.contains(QStringLiteral("Cloudflare Workers")) ||
+        topLevel.contains(QStringLiteral("terraform")) ||
+        topLevel.contains(QStringLiteral("infrastructure"))) {
+        return QStringLiteral("cloud or infrastructure");
+    }
+    if (frameworks.contains(QStringLiteral("Next.js")) ||
+        frameworks.contains(QStringLiteral("Vite")) ||
+        frameworks.contains(QStringLiteral("Node.js"))) {
+        return QStringLiteral("web application");
+    }
+    if (frameworks.contains(QStringLiteral("CMake")) ||
+        frameworks.contains(QStringLiteral("Qt"))) {
+        return QStringLiteral("native application or library");
+    }
+    if (mentions({"api", "service", "server"}))
+        return QStringLiteral("service or API");
+    return QStringLiteral("software project");
 }
 
 } // namespace
@@ -1144,6 +1260,178 @@ RepoContributionPreparation prepareRepoContributionSnapshot(
     }
     preparation.rebuiltSnapshot = std::move(snapshot);
     return preparation;
+}
+
+QJsonObject buildRepoLogoMetadata(const RepoLogoMetadataInput &input)
+{
+    // Logo factors are deliberately metadata-only: aggregated extension byte
+    // counts plus bounded path/manifest names. Source blobs are never requested.
+    constexpr qsizetype kMaxLogoTreeBytes = 2 * 1024 * 1024;
+    constexpr int kMaxLogoTreeEntries = 4096;
+    constexpr int kMaxTopLevelCandidates = 128;
+    constexpr int kMaxTopLevelPublished = 24;
+    constexpr int kMaxFrameworks = 12;
+    constexpr int kMaxTopics = 12;
+
+    QMap<QString, qint64> languages;
+    const QJsonArray extensionRows =
+        input.contributionPayload.value(QStringLiteral("extensions")).toArray();
+    for (const QJsonValue &value : extensionRows) {
+        const QJsonArray row = value.toArray();
+        if (row.size() < 2)
+            continue;
+        addLogoLanguage(&languages, row.at(0).toString(),
+                        qint64(row.at(1).toDouble()));
+    }
+    const bool reusedContributionLanguages = !languages.isEmpty();
+
+    QSet<QString> topLevel;
+    QSet<QString> frameworks;
+    auto inspectPath = [&](const QString &rawPath, qint64 bytes) {
+        const QString path = rawPath.left(240);
+        if (path.isEmpty() || path == QLatin1String(".forkmesh") ||
+            path.startsWith(QLatin1String(".forkmesh/"))) {
+            return;
+        }
+        const QString first = path.section(QLatin1Char('/'), 0, 0);
+        if (!first.isEmpty() && topLevel.size() < kMaxTopLevelCandidates)
+            topLevel.insert(path.contains(QLatin1Char('/')) ? first + QLatin1Char('/')
+                                                           : first);
+
+        const QString lower = path.toLower();
+        const QString base = lower.section(QLatin1Char('/'), -1);
+        if (base == QLatin1String("package.json"))
+            frameworks.insert(QStringLiteral("Node.js"));
+        if (base.startsWith(QLatin1String("next.config.")))
+            frameworks.insert(QStringLiteral("Next.js"));
+        if (base.startsWith(QLatin1String("vite.config.")))
+            frameworks.insert(QStringLiteral("Vite"));
+        if (base == QLatin1String("wrangler.toml") ||
+            base == QLatin1String("wrangler.jsonc"))
+            frameworks.insert(QStringLiteral("Cloudflare Workers"));
+        if (base == QLatin1String("cmakelists.txt"))
+            frameworks.insert(QStringLiteral("CMake"));
+        if (base.endsWith(QLatin1String(".pro")))
+            frameworks.insert(QStringLiteral("Qt"));
+        if (base == QLatin1String("pyproject.toml") ||
+            base == QLatin1String("setup.py"))
+            frameworks.insert(QStringLiteral("Python packaging"));
+        if (base == QLatin1String("cargo.toml"))
+            frameworks.insert(QStringLiteral("Cargo"));
+        if (base == QLatin1String("go.mod"))
+            frameworks.insert(QStringLiteral("Go modules"));
+        if (base == QLatin1String("pubspec.yaml"))
+            frameworks.insert(QStringLiteral("Flutter"));
+        if (base == QLatin1String("composer.json"))
+            frameworks.insert(QStringLiteral("Composer"));
+        if (base == QLatin1String("gemfile"))
+            frameworks.insert(QStringLiteral("Ruby Bundler"));
+        if (base == QLatin1String("pom.xml") ||
+            base.startsWith(QLatin1String("build.gradle")))
+            frameworks.insert(QStringLiteral("JVM build"));
+        if (base == QLatin1String("dockerfile") ||
+            base.startsWith(QLatin1String("docker-compose.")))
+            frameworks.insert(QStringLiteral("Docker"));
+
+        if (!reusedContributionLanguages) {
+            const QString name = path.section(QLatin1Char('/'), -1);
+            const int dot = name.lastIndexOf(QLatin1Char('.'));
+            if (dot > 0)
+                addLogoLanguage(&languages, name.mid(dot + 1), bytes);
+        }
+    };
+
+    const QStringList sources{input.workTreePath, input.mirrorPath};
+    for (const QString &source : sources) {
+        if (source.trimmed().isEmpty() || input.head.trimmed().isEmpty())
+            continue;
+        const GitResult tree =
+            runGit(source,
+                   {QStringLiteral("ls-tree"), QStringLiteral("-r"),
+                    QStringLiteral("-l"), QStringLiteral("-z"), input.head},
+                   nullptr, kMaxLogoTreeBytes, 10000);
+        if (!tree.ok)
+            continue;
+        int entries = 0;
+        for (const QByteArray &record : tree.output.split('\0')) {
+            if (record.isEmpty() || entries++ >= kMaxLogoTreeEntries)
+                break;
+            const int tab = record.indexOf('\t');
+            if (tab < 0)
+                continue;
+            const QList<QByteArray> fields =
+                record.left(tab).simplified().split(' ');
+            if (fields.size() < 4 || fields.at(1) != QByteArrayLiteral("blob"))
+                continue;
+            bool sizeOk = false;
+            const qint64 bytes = fields.at(3).toLongLong(&sizeOk);
+            inspectPath(QString::fromUtf8(record.mid(tab + 1)),
+                        sizeOk ? qMax<qint64>(1, bytes) : 1);
+        }
+        break;
+    }
+
+    const QString primaryLanguage = input.primaryLanguage.trimmed().left(80);
+    if (!primaryLanguage.isEmpty() && !languages.contains(primaryLanguage))
+        languages.insert(primaryLanguage, 1);
+
+    QList<QPair<QString, qint64>> rankedLanguages;
+    for (auto it = languages.constBegin(); it != languages.constEnd(); ++it)
+        rankedLanguages.append({it.key().left(80), it.value()});
+    std::sort(rankedLanguages.begin(), rankedLanguages.end(),
+              [](const auto &left, const auto &right) {
+                  if (left.second != right.second)
+                      return left.second > right.second;
+                  return left.first < right.first;
+              });
+    QJsonObject languageObject;
+    for (int i = 0; i < qMin(12, rankedLanguages.size()); ++i)
+        languageObject.insert(rankedLanguages.at(i).first,
+                              double(rankedLanguages.at(i).second));
+
+    QStringList structure = topLevel.values();
+    std::sort(structure.begin(), structure.end(),
+              [](const QString &left, const QString &right) {
+                  return left.compare(right, Qt::CaseInsensitive) < 0;
+              });
+    structure = structure.mid(0, kMaxTopLevelPublished);
+
+    QStringList frameworkList = frameworks.values();
+    std::sort(frameworkList.begin(), frameworkList.end(),
+              [](const QString &left, const QString &right) {
+                  return left.compare(right, Qt::CaseInsensitive) < 0;
+              });
+    frameworkList = frameworkList.mid(0, kMaxFrameworks);
+
+    QStringList topics;
+    for (const QString &topic : input.topics) {
+        const QString bounded = topic.trimmed().left(80);
+        if (!bounded.isEmpty() && !topics.contains(bounded))
+            topics.append(bounded);
+        if (topics.size() >= kMaxTopics)
+            break;
+    }
+
+    QJsonArray structureJson;
+    for (const QString &item : std::as_const(structure))
+        structureJson.append(item);
+    QJsonArray frameworkJson;
+    for (const QString &item : std::as_const(frameworkList))
+        frameworkJson.append(item);
+    QJsonArray topicsJson;
+    for (const QString &item : std::as_const(topics))
+        topicsJson.append(item);
+
+    const QString category = logoProjectCategory(
+        input.description.left(500), topics, frameworks, topLevel);
+    return {
+        {QStringLiteral("description"), input.description.trimmed().left(500)},
+        {QStringLiteral("languages"), languageObject},
+        {QStringLiteral("topics"), topicsJson},
+        {QStringLiteral("fileStructure"), structureJson},
+        {QStringLiteral("frameworks"), frameworkJson},
+        {QStringLiteral("projectCategory"), category.left(80)},
+    };
 }
 
 bool repoContributionResponseNeedsRefresh(const QJsonObject &response,

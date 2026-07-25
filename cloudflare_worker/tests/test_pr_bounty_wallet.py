@@ -1,67 +1,111 @@
 #!/usr/bin/env python3
-"""Per-PR bounty + inbuilt bounty wallet contracts (issue #347).
+"""Per-PR reward compatibility without Worker-held wallets."""
 
-Source-level contract checks (entry.py depends on the Workers Python JS runtime,
-so behaviour is asserted against the source). They pin the product decision:
-every merged PR can reward its author with a fixed bounty, funded either per-PR
-(a QR) or from a pre-funded inbuilt wallet, and PR bounties are keyed separately
-from issue bounties so a shared number never collides.
-"""
 from pathlib import Path
 
+
 ROOT = Path(__file__).resolve().parents[1]
-# SCHEMA_STATEMENTS (D1 DDL) was extracted from entry.py into schema.py;
-# concatenate it so the schema source-contract assertions below still resolve.
 ENTRY_TEXT = (
-    (ROOT / "src" / "entry.py").read_text(encoding="utf-8") + "\n"
-    + (ROOT / "src" / "schema.py").read_text(encoding="utf-8"))
+    (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
+    + "\n" + (ROOT / "src" / "schema.py").read_text(encoding="utf-8")
+)
 QT_SRC = Path(__file__).resolve().parents[2] / "qt_client" / "src"
 QT_TEXT = "\n".join(
-    p.read_text(encoding="utf-8") for p in sorted(QT_SRC.glob("MainWindow*.cpp"))
-)
-QT_HEADERS = "\n".join(
-    p.read_text(encoding="utf-8") for p in sorted(QT_SRC.glob("MainWindow*.h"))
+    path.read_text(encoding="utf-8")
+    for path in sorted(QT_SRC.glob("MainWindow*.cpp"))
 )
 
 
-def test_bounty_key_separates_issues_from_pull_requests():
-    # _bounty_bi takes a kind so an issue and a PR sharing a number don't collide.
+def test_bounty_key_still_separates_issues_from_pull_requests():
     assert "async def _bounty_bi(env, owner, repo, number, kind=" in ENTRY_TEXT
-    body = ENTRY_TEXT[
-        ENTRY_TEXT.index("async def _bounty_bi"):
-        ENTRY_TEXT.index("async def _bounty_wallet_bi")
-    ]
+    start = ENTRY_TEXT.index("async def _bounty_bi")
+    body = ENTRY_TEXT[start:ENTRY_TEXT.index(
+        "async def _load_bounty", start)]
     assert '(kind + "-") if kind else ""' in body
 
 
-def test_worker_has_inbuilt_bounty_wallet():
-    assert 'CREATE TABLE IF NOT EXISTS bounty_wallet' in ENTRY_TEXT
-    assert "async def _bounty_wallet_bi(env, owner)" in ENTRY_TEXT
-    assert 'blind_index(env, "bounty-wallet:" + owner)' in ENTRY_TEXT
-    # A dedicated owner-signed "wallet" action mints/returns the deposit address.
-    assert 'if action == "wallet":' in ENTRY_TEXT
-    assert '"forkmesh-bounty-wallet-v1\\n"' in ENTRY_TEXT
-
-
-def test_wallet_mode_pays_split_directly_from_wallet():
-    # fromWallet debits the pre-funded wallet and pays the author/treasury split
-    # in one step, rejecting an underfunded wallet.
-    create = ENTRY_TEXT[
-        ENTRY_TEXT.index('if action == "create":'):
-        ENTRY_TEXT.index("if rec is None:")
+def test_inbuilt_wallet_and_worker_escrow_creation_are_frozen():
+    start = ENTRY_TEXT.index("async def bounties_handler")
+    handler = ENTRY_TEXT[
+        start:ENTRY_TEXT.index("\n\n# Cap on collaborators", start)
     ]
-    assert 'if data.get("fromWallet"):' in create
-    assert '"insufficient_wallet_balance"' in create
-    assert "_solana_send_transfers(" in create
-    assert 'BOUNTY_TREASURY_BPS' in create
+    assert 'if action in ("wallet", "create", "payout"):' in handler
+    assert '"legacy_custody_disabled"' in handler
+    assert '"external-self-custodial"' in handler
+    assert "reviewed Solana program or multisig" in handler
 
 
-def test_desktop_rewards_every_merged_pull_request():
-    assert "void MainWindow::autoBountyForMergedPull" in QT_TEXT
-    # Wired into the merge flow, and keyed to the PR (kind "pr").
-    assert "autoBountyForMergedPull(current);" in QT_TEXT
-    assert '{"kind", QStringLiteral("pr")}' in QT_TEXT
-    # Settings drive it: enable flag, amount, and per-PR vs wallet mode.
-    assert "kAutoPrBountyEnabledSetting" in QT_HEADERS
-    assert "kAutoPrBountyModeSetting" in QT_HEADERS
-    assert "showBountyWalletDialog" in QT_TEXT
+def test_desktop_merge_hook_is_a_fail_closed_compatibility_noop():
+    # Existing call sites may still invoke the merge hook, but its active body
+    # only clears stale preferences and returns without making a custody request.
+    start = QT_TEXT.index("void MainWindow::autoBountyForMergedPull")
+    body = QT_TEXT[start:QT_TEXT.index(
+        "void MainWindow::pollBountyPayout", start)]
+    active = body[:body.index("return;") + len("return;")]
+    assert "Q_UNUSED(pr);" in active
+    assert "setValue(kAutoPrBountyEnabledSetting, false)" in active
+    assert "m_networkAccess->post" not in active
+    assert "forkmesh-bounty-create-v1" not in active
+    assert "privateKeyStoredByWorker" in ENTRY_TEXT
+    assert '"external-local-signer"' in ENTRY_TEXT
+
+
+def test_reward_settings_never_launch_account_or_donation_setup():
+    chat = (QT_SRC / "MainWindowChat.cpp").read_text(encoding="utf-8")
+    start = chat.index("void MainWindow::enablePaidMirroring")
+    body = chat[start:chat.index("\nvoid MainWindow::showSection", start)]
+    assert "ensureNodeAccount" not in body
+    assert "postAccount" not in body
+    assert "donation-address" not in body
+    assert "donation-status" not in body
+    assert "Reward eligibility configured" in body
+    assert "Selection and payment are not guaranteed" in body
+
+
+def test_qt_wallet_check_has_no_deposit_or_account_join_gate():
+    setup = (QT_SRC / "MainWindowSetup.cpp").read_text(encoding="utf-8")
+    start = setup.index("void MainWindow::verifyWallet")
+    body = setup[start:setup.index("\nvoid MainWindow::persistProfile", start)]
+    assert "isValidSolanaPublicAddress" in body
+    assert "hasOwnerSigningCapability" in body
+    assert "sendNodeHeartbeat" in body
+    assert "ensureNodeAccount" not in body
+    assert "donation-address" not in body
+    assert "donation-status" not in body
+    assert "request a deposit" in body
+    assert "Selection and payment are not guaranteed" in body
+
+
+def test_active_qt_reward_copy_has_no_wallet_deposit_requirement():
+    chat = (QT_SRC / "MainWindowChat.cpp").read_text(encoding="utf-8")
+    assert "Verify wallet (deposit >= 0.001 SOL)" not in chat
+    assert "Revenue-sharing eligibility" not in chat
+    assert "Check reward settings" in chat
+    assert "never requests a deposit or guarantees a reward" in chat
+    assert "collecting rewards" not in chat
+    assert "Earnings:" not in chat
+    assert "Public wallet balance:" in chat
+    assert "may be eligible" in chat
+    assert "externalWalletBalanceTooltip" in chat
+    assert (
+        "Non-custodial: this is a public external-wallet balance."
+        in chat
+    )
+    assert "Public wallet balance increased" in chat
+    assert "external self-custodial " in chat
+    assert "wallet. New public balance:" in chat
+
+
+def test_qt_legacy_bounty_qr_fails_closed_before_any_historical_code():
+    issues = (QT_SRC / "MainWindowIssues.cpp").read_text(encoding="utf-8")
+    start = issues.index("void MainWindow::showBountyQrDialog")
+    body = issues[start:issues.index(
+        "\nvoid MainWindow::showBountyWalletDialog", start)]
+    active = body[:body.index("return;") + len("return;")]
+    assert "Legacy bounty funding disabled" in active
+    assert "migration-only" in active
+    assert "external self-custodial wallet" in active
+    assert "m_networkAccess" not in active
+    assert "QGuiApplication::clipboard" not in active
+    assert "Fund the bounty" not in body
+    assert "address to fund the bounty" not in body

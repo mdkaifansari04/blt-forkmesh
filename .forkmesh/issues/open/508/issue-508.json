@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751394,
+    "endDate": 1786680000000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nEvery user-facing surface says repository, pull request, review, branch, fork, mirror, seed, and trusted maintainer consistently, while protocol terms stay in advanced detail.\n\n## Scope\n\n- Create an approved glossary, voice guide, compatibility aliases, and lintable discouraged-term list.\n- Audit web, desktop, mobile, CLI, APIs, errors, onboarding, docs, and commercial copy.\n- Explain necessary network concepts contextually instead of renaming established Git workflows.\n\n## Acceptance criteria\n\n- Automated and human audits find no unexplained discouraged terms on primary journeys.\n- Compatibility aliases preserve scripts and deep links during terminology changes.\n- Usability participants complete core tasks without needing a protocol glossary.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 product contract**\n- Milestone: **Product contract & measurement**\n- Numeric priority: **29 of 44** (1 is highest)\n- Depends on: #476\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**70% as of 2026-07-22.** Most current interfaces already use familiar forge and Git terms; a formal glossary, exhaustive audit, compatibility policy, and usability proof remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Discouraged-term count, task comprehension, support vocabulary, and alias usage. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-508",
+            "sig": "Q8NPsM7hw-gMsT7dZlKunQxiPSOoiItikzkotlPHCGuqg6wzumlwU1uLuqL1-h4jnCt2TJTsefOcDvvSPCg-Bw",
+            "title": "Standardize familiar developer terminology",
+            "ts": 1784729751394,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "f71918d3-a51b-441b-8de6-098d49ea57b4",
+            "labels": [
+                "ux",
+                "docs",
+                "product"
+            ],
+            "sig": "A-ENIhG9yzOp_okiGNZH_ciulEuJtNCOQLdoe81qVvHlJgjQArfW0FvL9UGs9pU0Fv05YV3FK-0x7WZp3HDHBA",
+            "ts": 1784729751395,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "b552ce7d-d360-4b68-ac36-fc2b02c08722",
+            "milestone": "Product contract & measurement",
+            "sig": "l5pSXsBvvnzjExTU7MT65NrDTyE3LFXWybvficcJh7nzS7r6lj2lkbnx_OdYV-Mk_GMPrSzUNR08-UCgLkwBAw",
+            "ts": 1784729751396,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1786680000000,
+            "id": "6ece7d98-003a-4769-b53d-0bd0c28d617b",
+            "sig": "7cCI4IOALT7JRAsQqTvusakf7qLM7OFOVs8q0BHLqDI_oMgnatlkO_Xf47OJynrumgMJJQcKgWjmBCz40b24Ag",
+            "startDate": 1784692800000,
+            "ts": 1784729751397,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "79540586-2fb1-4c5d-b206-25a6ad703e7a",
+            "priority": 29,
+            "sig": "4lBRdifs6ChLn7Z_CB4QYNng8FWARpsZTl3UKKPm4HvHjpPoNe6jIegE79lcSLpdNxQXIIfFAVk-EaWi2UN2Cg",
+            "ts": 1784729751398,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "c5b46789-e3f2-47be-949e-42d6b460682d",
+            "progress": 70,
+            "sig": "V160tYKaMjm3zdowhLVP2VIGuP2ITuP5ao7ou2-xlYS_h4HqJw-aQ9sAdvZ747iEUjUvR1DxvFoq1zXcU8eSBA",
+            "ts": 1784729751399,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "ux",
+        "docs",
+        "product"
+    ],
+    "milestone": "Product contract & measurement",
+    "number": 508,
+    "priority": 29,
+    "progress": 70,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784692800000,
+    "status": "open",
+    "title": "Standardize familiar developer terminology",
+    "updatedAt": 1784729751399,
+    "votes": 0
+}

@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>ForkMesh World</title>
+    <meta
+      name="description"
+      content="Enter ForkMesh World: a multiplayer, three-dimensional city for repositories, mirror nodes, organizations, security, and developer community activity."
+    />
+    <meta name="application-name" content="ForkMesh" />
+    <meta name="apple-mobile-web-app-title" content="ForkMesh" />
+    <meta name="theme-color" content="#090909" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="canonical" href="https://forkmesh.com/world/" />
+    <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
+    <link rel="manifest" href="/favicon/site.webmanifest" />
+    <link rel="stylesheet" href="/world/world.css" />
+    <!-- Warm the connection and prefetch the 3D runtime during HTML parse so the
+         world can render the instant the page scripts run, instead of waiting on
+         a cold fetch after bootstrap. -->
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+    <link rel="modulepreload" href="/world/world-scene.js" />
+    <link
+      rel="modulepreload"
+      href="https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.min.js"
+      crossorigin
+    />
+    <script src="/posthog.js"></script>
+    <script type="module" src="/world/world.js"></script>
+  </head>
+  <body>
+    <a class="world-skip-link" href="#world-information">Skip to world information</a>
+    <forkmesh-world data-world-mode="public"></forkmesh-world>
+    <section class="world-load-error" data-world-load-error hidden>
+      <a class="brand world-load-error-brand" href="/" aria-label="ForkMesh home">
+        <img
+          class="brand-mark"
+          src="/assets/logo.png"
+          alt=""
+          aria-hidden="true"
+          width="36"
+          height="42"
+        />
+        <span>ForkMesh World</span>
+      </a>
+      <p class="world-load-error-kicker">WORLD UNAVAILABLE</p>
+      <p>
+        The interactive world script did not load within 10 seconds. Check
+        your connection and reload, or continue with the standard web pages.
+      </p>
+      <nav aria-label="ForkMesh destinations">
+        <a href="/world/">Reload the world</a>
+        <a href="/dashboard">Open operations console</a>
+        <a href="/chat">Open ForkMesh chat</a>
+        <a href="/docs">Read the technical docs</a>
+        <a href="/network">Inspect the live network</a>
+      </nav>
+    </section>
+    <script>
+      // The page intentionally stays blank while the world module boots so
+      // there is no static-content jump; this watchdog is the only fallback
+      // if that module never arrives.
+      setTimeout(function () {
+        var world = document.querySelector("forkmesh-world");
+        if (world && world.dataset.worldReady === "true") return;
+        var failure = document.querySelector("[data-world-load-error]");
+        if (failure) failure.hidden = false;
+      }, 10000);
+    </script>
+    <noscript>
+      <div class="world-noscript">
+        The 3D world needs JavaScript. You can still use the
+        <a href="/dashboard">ForkMesh operations console</a>.
+      </div>
+    </noscript>
+  </body>
+</html>

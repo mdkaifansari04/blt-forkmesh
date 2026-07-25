@@ -1,0 +1,75 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784405500035,
+    "endDate": 1785124800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nProvide browser and command-line review conversations anchored to exact diff context, with signed suggestions and deterministic stale-state handling.\n\n## Implementation\n\n- Create signed line and range comment events bound to file, side, base object, head object, and patchset.\n- Support replies, reactions, resolve, reopen, suggested changes, approval, and requested-change review states.\n- Render anchors against current and historical patchsets and mark moved or missing context as stale without losing the thread.\n- Allow authenticated browser submission through #446 and local command-line review through the same event schema.\n- Fold concurrent replies, edits, resolution, and review-state changes through #440.\n\n## Acceptance criteria\n\n- Desktop, browser, and command-line clients render the same thread and current review state.\n- Suggestions apply only when their base context and target bytes match.\n- Patchset changes invalidate stale approvals and preserve historical anchors.\n- Anonymous readers cannot mutate threads.\n- Invalid, duplicate, replayed, or unauthorized events never enter the fold.\n\n## Dependencies\n\nDepends on #440 and #446; ownership and patchset navigation continue in #468.\n\n## Verification\n\nExercise single-line, range, old-side, reply, edit, reaction, resolve/reopen, suggestion apply/reject, moved context, deleted file, duplicate, unauthorized, and shuffled-event fixtures.",
+            "id": "open-463",
+            "sig": "rGSP3WcLOrAL--M0CJ7yLTI4aGoA14DZipVTwIC22SRbaUPmkOXMQ3S4YdB2WEq1YbquR8jT7SHJdDd72ilaBA",
+            "title": "Support signed inline web review threads and suggestions",
+            "ts": 1784405500035,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1785211200000,
+            "id": "767dca5c-ce83-43d4-a852-bc5983c84b83",
+            "sig": "gaXiFaaYlMDxDj1HQ9-btPAkcLwUhYfSadBbxJyWrw905uB1_tUBdQPczTZh8Nnf4mV5C1KrG3jdeP1pGgPXBw",
+            "startDate": 1784779200000,
+            "ts": 1784405500036,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1785124800000,
+            "id": "03f36a82-5bb1-4e7d-91f1-cccfe12917c8",
+            "sig": "VYyLuTUnoIIoyn3MT6G3xWFZmJu_3Aewo3iI7uCn6my-EXU4IyMRMOO8ppzRecev_jfALQpVeA7s0XVhCqnpAw",
+            "startDate": 1784779200000,
+            "ts": 1784405765201,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "9cf4a789-ccd1-42bd-906a-d3f66a2dc611",
+            "sig": "MgMfUuFaSBpddSHdYMUouHicSrhHCtlMRBIG-sJbPGi4XFrdf-WIrfSUaxTVHjB1CHZSDJV9NnoLcva9IF76Dg",
+            "ts": 1784729751173,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "edf1f55e-b283-4937-80d2-b3ad214ad8fe",
+            "sig": "ImxMkzRBXIviBVh7Ey2Ob-oeGCkA9Qbvwk4DFKymHswoui8tBhQjAJUSw2-pJLc1mrkSmQeStCTnmYNs3vTDBA",
+            "status": "closed",
+            "ts": 1784729751174,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "feature"
+    ],
+    "milestone": "Secure collaboration",
+    "number": 463,
+    "priority": 31,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784779200000,
+    "status": "closed",
+    "title": "Support signed inline web review threads and suggestions",
+    "updatedAt": 1784729751174,
+    "votes": 0
+}

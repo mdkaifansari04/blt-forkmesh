@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751208,
+    "endDate": 1793332800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nA maintainer can connect an existing forge, choose a repository, and start a resumable import in under three minutes without learning network internals.\n\n## Scope\n\n- Import Git refs plus issues, pull requests, reviews, releases, documentation, labels, users, timestamps, and collaboration history through provider adapters.\n- Make imports idempotent, resumable, rate-limit aware, and safe to rerun while the source remains active.\n- Separate hands-on setup time from transfer time and preserve source identifiers for audit and later two-way sync.\n\n## Acceptance criteria\n\n- Median hands-on setup is at most three minutes for supported providers, with p95 reported separately.\n- Fixture repositories round-trip every supported object type with no silent loss or duplicate records.\n- Interrupted imports resume from checkpoints and repeated imports converge on the same signed state.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 release gate**\n- Milestone: **Preservation public alpha**\n- Numeric priority: **10 of 44** (1 is highest)\n- Depends on: #476, #480\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**25% as of 2026-07-22.** ForkMesh can add and mirror a remote Git repository today; provider metadata, resumable orchestration, and full collaboration import remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Setup p50/p95, migration completion, fidelity by object type, retries, and abandonment. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-477",
+            "sig": "6Sy-QNNbOf19tRa8pAUXGh29kSWRVhgoofT51lNd2FFRrWCpGVrECa0EwzOleQs1uwL7kOmYtaBUjEravovhAA",
+            "title": "Deliver a three-minute, full-fidelity repository migration",
+            "ts": 1784729751208,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "cc9afd7a-cd5a-42de-8229-dce9e2fa0051",
+            "labels": [
+                "product",
+                "feature",
+                "infra"
+            ],
+            "sig": "SRzmBGc1-wJn1OJhiQdLvxZByKVhrk_ODqAXmZtlNdY0x9lVc_66ShABPtxx9FEm28SfOByFoUpCWdSNr4D8Bg",
+            "ts": 1784729751209,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "b14f5a9a-96cd-4847-95a4-56cb8ff32fc7",
+            "milestone": "Preservation public alpha",
+            "sig": "S__0zWS4xiiUIthgIeap7aykjOohigAjn_EnjuBHQf10IYpzqhtSdLY1Q3Bw3acVBdga9_sJAGxHjrz_DpvrCQ",
+            "ts": 1784729751210,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1793332800000,
+            "id": "bce39472-0fc6-4c95-8e69-9e0ff75f041c",
+            "sig": "HRXlJtMyG6IMbN0NflIwhehRu7KWATyd-KJZah04dJYWwP0yVdTqu4UqJ1nmYCaf_qajJoos2OGYeq1_mXohBA",
+            "startDate": 1784692800000,
+            "ts": 1784729751211,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "4c08e644-7bb4-4d1d-86a9-03d3acc8b046",
+            "priority": 10,
+            "sig": "DvWNVLL0FGWGLmxyGC8vp8vNDOEjL_6huzNBvdoyRViWPafk-G8-xTDzrBx7YABO-hj_IbiIIqNCY2HrNzLKBA",
+            "ts": 1784729751212,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "26f23c27-e4b6-46e4-b02c-3d90efbf6ed2",
+            "progress": 25,
+            "sig": "H6tdGaUjQeMV1R_fxD8HBb1hE0Ci-Kpnm7bxV8NjOyOuER93D1ziBOaUNdWP947gVCuSOnQm2zATt3aTZbH4DQ",
+            "ts": 1784729751213,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "product",
+        "feature",
+        "infra"
+    ],
+    "milestone": "Preservation public alpha",
+    "number": 477,
+    "priority": 10,
+    "progress": 25,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784692800000,
+    "status": "open",
+    "title": "Deliver a three-minute, full-fidelity repository migration",
+    "updatedAt": 1784729751213,
+    "votes": 0
+}

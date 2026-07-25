@@ -86,7 +86,7 @@ PAGES = {
         "route": "/dashboard/chat",
         "asset": "dashboard/chat/index.html",
         "title": "Chat - ForkMesh",
-        "description": "Encrypted #general chat relayed through ForkMesh - messages are encrypted in your browser.",
+        "description": "ForkMesh #general chat uses a relay-derived authenticated shared key; the relay can decrypt messages.",
     },
     "settings": {
         "view": "settings",
@@ -185,15 +185,27 @@ def content_version(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 
-def asset_versions(dashboard_js, dashboard_chat_js):
-    """Version map for the two client bundles, keyed by their served filename.
+# Single source of truth for cache-busting: the first-party client bundles that
+# receive a content-hash ``?v=`` query. ``dashboard.js`` is composed in memory
+# at build time; the rest are authored files served straight from ``public/``.
+# Adding a bundle is one edit here (plus its ``<script>`` tag) — the build tool,
+# the stamper, and the frontend tests all derive from this list.
+CACHE_BUSTED_BUNDLES = ("dashboard.js", "dashboard-chat.js")
 
-    Shared by the build tool and the frontend tests so the ``?v=`` stamped into
-    the built documents is reproduced identically off the same source.
+
+def asset_versions(read, composed=None):
+    """Content-hash ``?v=`` map for every :data:`CACHE_BUSTED_BUNDLES` entry.
+
+    ``read(public_relative_path) -> str`` loads authored bundles off disk;
+    ``composed`` optionally supplies the text of bundles the caller built in
+    memory (e.g. ``dashboard.js``) so they are hashed without a disk round-trip.
+    Keyed by served filename. Shared by the build tool and the frontend tests so
+    the ``?v=`` stamped into the built documents is reproduced identically.
     """
+    composed = composed or {}
     return {
-        "dashboard.js": content_version(dashboard_js),
-        "dashboard-chat.js": content_version(dashboard_chat_js),
+        name: content_version(composed[name] if name in composed else read(name))
+        for name in CACHE_BUSTED_BUNDLES
     }
 
 

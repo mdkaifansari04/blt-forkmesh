@@ -1,0 +1,75 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784405500027,
+    "endDate": 1785211200000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nMake discovery signals portable signed objects whose visibility and trusted indexes are chosen by each user.\n\n## Implementation\n\n- Define star, watch, bookmark, follow, recommend, mirror, production-use, and security-review assertion events.\n- Include subject identity, optional evidence, visibility scope, creation, expiry, and undo references in the signed schema.\n- Derive watch notifications and aggregate counts through deterministic folds without treating popularity as trust.\n- Allow private local bookmarks, shared assertions, portable export and import, and user-selected trusted index sources.\n- Deduplicate replayed events and preserve conflicting independent opinions.\n\n## Acceptance criteria\n\n- Undo and expiry remove an assertion from current state without erasing history.\n- Private assertions never enter public catalog or notification payloads.\n- Imported assertions retain original signatures and source provenance.\n- Index selection changes aggregation without changing the underlying records.\n- Shuffled and duplicated event sets converge across clients.\n\n## Dependencies\n\nUses convergence rules from #440 and identity scopes from #447.\n\n## Verification\n\nRun every assertion, visibility, evidence, expiry, undo, import, duplicate, conflicting-opinion, trusted-index, and derived-notification fixture through all folds and renderers.",
+            "id": "open-459",
+            "sig": "RRd2d8947cK58ltpDdQQchE3QZInQTQKMIhBGZXHX-1q1zRtOI0PGa-RRKNSTi7Y_G0l-EQ7HJWPDsS3QGcxAA",
+            "title": "Add signed portable social and trust assertions",
+            "ts": 1784405500027,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1785038400000,
+            "id": "06e10ddd-f529-48e9-b9a0-1015f62fb929",
+            "sig": "0qyaZXa-3etc3tAmXQYfnqHlB-99EeoZlN8zB5DEmUsbEKfbRcNMq5dadjH1-3o7n78Q6UXjtDsAYJQM1J8rAw",
+            "startDate": 1784779200000,
+            "ts": 1784405500028,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1785211200000,
+            "id": "d0776bf4-6231-4d2b-817c-cd5b67c5a735",
+            "sig": "i-MeuqS8tefTIcq_PsuyibcBkRo73_2CqQyZJq9GPLA2z_BRQp1imWtBvNcICnu70AZkoUtDLn2VR4Xbua57Dg",
+            "startDate": 1784779200000,
+            "ts": 1784405765199,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "bf8ed527-945d-4060-b012-7d03b0a1d67e",
+            "sig": "6BW4VDq1LqupvS6F3KJVmp8PVEclSZhcyrfHRfG6Rq_yGOfoP8HRrNmMJlG4DW5PlDvwKztakgSGzRxv7x-7Aw",
+            "ts": 1784729751165,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "528ef85d-aaa2-4dc8-99a0-7b46aa602491",
+            "sig": "QXcPTNiMh4tU2kySR59uZUP6rX8b8LAI3nbwOMNRIBpnLaehTt46CP7-hf4NfBT3TOVK-kiVTw5D2Y8rp4xTBA",
+            "status": "closed",
+            "ts": 1784729751166,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "feature"
+    ],
+    "milestone": "Secure collaboration",
+    "number": 459,
+    "priority": 27,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784779200000,
+    "status": "closed",
+    "title": "Add signed portable social and trust assertions",
+    "updatedAt": 1784729751166,
+    "votes": 0
+}

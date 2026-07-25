@@ -223,17 +223,19 @@ def test_worker_profile_public_edits_and_follows_accept_signed_session_token():
     ]
     follow_body = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _account_follow"):
-        ENTRY_TEXT.index("# Step 1 of the funnel")
+        ENTRY_TEXT.index("async def _account_reserve")
     ]
     login_body = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _account_login"):
         ENTRY_TEXT.index("async def _account_logout")
     ]
 
-    assert "def _account_session_token(env, name)" in ENTRY_TEXT
+    assert "async def _account_session_token(env, name" in ENTRY_TEXT
     assert "async def _account_session_record(env, request, data=None)" in ENTRY_TEXT
-    assert '"sessionToken": _account_session_token(env, name)' in ENTRY_TEXT
-    assert '"sessionToken": _account_session_token(env, rec.get("name", ""))' in login_body
+    assert "else await _account_session_token(" in ENTRY_TEXT
+    assert "env, name, session_device_label)" in ENTRY_TEXT
+    assert "_account_session_cookie(payload[\"sessionToken\"])" in login_body
+    assert "account_sessions" in ENTRY_TEXT
     assert 'await _account_session_record(env, request, data)' in profile_body
     assert 'await _account_session_record(env, request, data)' in follow_body
     public_edit_block = profile_body[
@@ -321,7 +323,9 @@ def test_worker_exposes_public_user_directory_for_chat_without_private_fields():
         ENTRY_TEXT.index("def _donation_expiry_fields")
     ]
 
-    assert '"SELECT data FROM users ORDER BY username COLLATE NOCASE LIMIT ?"' in body
+    assert '"LEFT JOIN world_user_activity a ON a.account_bi=u.user_bi "' in body
+    assert '"ORDER BY u.username COLLATE NOCASE LIMIT ?"' in body
+    assert "last_touch_at" not in body
     assert "FROM accounts" not in body
     assert '_account_kind(rec) != "user"' in body
     assert 'rec.get("status") != "active"' in body
@@ -411,6 +415,7 @@ def test_hard_delete_removes_account_identity_and_owned_namespace_state():
         "DELETE FROM pending_verifications WHERE name_bi=?",
         "DELETE FROM notifications WHERE recipient_bi=?",
         "DELETE FROM login_attempts WHERE id_bi=?",
+        "_delete_chat_channel_memberships(env, name_bi)",
         "DELETE FROM users WHERE user_bi=?",
         "DELETE FROM nodes WHERE node_bi=?",
         "purge_catalog_related_caches()",
@@ -453,6 +458,7 @@ def test_namespace_rename_moves_account_repo_and_repo_scoped_state():
         "SELECT data, email_bi, ip_bi, is_admin FROM users WHERE user_bi=?",
         "DELETE FROM users WHERE user_bi=?",
         "UPDATE account_presence SET name_bi=? WHERE name_bi=?",
+        "_move_chat_channel_memberships(",
         "UPDATE pending_verifications SET name_bi=? WHERE name_bi=?",
         "UPDATE notifications SET recipient_bi=? WHERE recipient_bi=?",
         "UPDATE catalog_rate SET owner_bi=? WHERE owner_bi=?",

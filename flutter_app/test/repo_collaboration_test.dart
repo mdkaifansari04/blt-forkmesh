@@ -712,70 +712,51 @@ void main() {
         initialTab: RepoDetailTab.about,
       );
 
-      expect(find.text('Owner bounty wallet'), findsOneWidget);
+      expect(find.text('Legacy bounty wallet'), findsOneWidget);
       expect(
-        find.text('Worker-custodied bounty wallet deposit address'),
+        find.text('Custodial wallet disabled · migration status only'),
         findsOneWidget,
       );
       expect(
         find.textContaining(
-          'Sign in as owner with this mobile device paired to the owner key',
+          'Legacy Worker-custodied bounty wallets are frozen',
         ),
         findsOneWidget,
       );
       final button = tester.widget<FilledButton>(
-        find.widgetWithText(FilledButton, 'Prepare/view wallet deposit'),
+        find.widgetWithText(FilledButton, 'Custodial wallet disabled'),
       );
       expect(button.onPressed, isNull);
     },
   );
 
-  testWidgets(
-    'repo funding panel prepares signed owner bounty wallet deposit',
-    (tester) async {
-      SharedPreferences.setMockInitialValues({});
-      final settings = await SettingsService.create();
-      final identity = await Identity.loadOrCreate();
-      final auth = await _ownerAuth(settings, identity);
-      final api = CollaborationApiService(settings);
-      await _pumpRepo(
-        tester,
-        api,
-        identity: identity,
-        auth: auth,
-        initialTab: RepoDetailTab.about,
-      );
+  testWidgets('repo funding panel stays disabled for an authenticated owner', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.create();
+    final identity = await Identity.loadOrCreate();
+    final auth = await _ownerAuth(settings, identity);
+    final api = CollaborationApiService(settings);
+    await _pumpRepo(
+      tester,
+      api,
+      identity: identity,
+      auth: auth,
+      initialTab: RepoDetailTab.about,
+    );
 
-      final prepareButton = find.widgetWithText(
-        FilledButton,
-        'Prepare/view wallet deposit',
-      );
-      expect(prepareButton, findsOneWidget);
-      await tester.tap(prepareButton);
-      await tester.pumpAndSettle();
-
-      final wallet = api.bountyRequests.last;
-      expect(wallet['action'], 'wallet');
-      expect(wallet['owner'], 'owner');
-      expect(wallet['repo'], 'repo');
-      expect(wallet['ts'], isNotEmpty);
-      expect(wallet['sig'], isNotEmpty);
-      final expectedSig = await identity.sign(
-        utf8.encode('forkmesh-bounty-wallet-v1\nowner\n${wallet['ts']}'),
-      );
-      expect(wallet['sig'], expectedSig);
-      expect(find.text('owner-wallet-fixture'), findsOneWidget);
-      expect(find.text('2.5 SOL (2500000000 lamports)'), findsOneWidget);
-      expect(find.text('solana:owner-wallet-fixture'), findsOneWidget);
-      expect(
-        find.text('https://explorer.solana.com/address/owner-wallet-fixture'),
-        findsOneWidget,
-      );
-    },
-  );
+    final prepareButton = find.widgetWithText(
+      FilledButton,
+      'Custodial wallet disabled',
+    );
+    expect(prepareButton, findsOneWidget);
+    expect(tester.widget<FilledButton>(prepareButton).onPressed, isNull);
+    expect(api.bountyRequests, isEmpty);
+  });
 
   testWidgets(
-    'issue detail shows bounty funding card and prepares signed deposit request',
+    'issue detail shows migration-only bounty state and disables funding',
     (tester) async {
       SharedPreferences.setMockInitialValues({});
       final settings = await SettingsService.create();
@@ -792,11 +773,13 @@ void main() {
       expect(find.text('Bounty funding'), findsOneWidget);
       expect(find.text(r'$150 pledged'), findsOneWidget);
       expect(find.text('Status: funded'), findsOneWidget);
-      expect(find.text('Deposit address'), findsOneWidget);
+      expect(find.text('Legacy address (do not fund)'), findsOneWidget);
       expect(find.text('escrow-fixture'), findsOneWidget);
       expect(find.text('750000000 / 1500000000 lamports'), findsOneWidget);
       expect(
-        find.textContaining('Worker-custodied Solana escrow'),
+        find.textContaining(
+          'live Worker creation, funding, signing, and payout',
+        ),
         findsOneWidget,
       );
       expect(find.text('payout-fixture'), findsOneWidget);
@@ -809,25 +792,8 @@ void main() {
         180,
         scrollable: find.byType(Scrollable).last,
       );
-      await tester.tap(prepareButton);
-      await tester.pumpAndSettle();
-
-      final create = api.bountyRequests.last;
-      expect(create['action'], 'create');
-      expect(create['owner'], 'owner');
-      expect(create['repo'], 'repo');
-      expect(create['number'], 12);
-      expect(create['amountUsd'], 150);
-      expect(create['payee'], '');
-      expect(create['payeeNode'], 'maintainer-node');
-      expect(create['ts'], isNotEmpty);
-      final expectedSig = await identity.sign(
-        utf8.encode(
-          'forkmesh-bounty-create-v1\nowner\nrepo\n12\nmaintainer-node\n${create['ts']}',
-        ),
-      );
-      expect(create['sig'], expectedSig);
-      expect(find.text('escrow-created'), findsOneWidget);
+      expect(tester.widget<FilledButton>(prepareButton).onPressed, isNull);
+      expect(api.bountyRequests, isEmpty);
     },
   );
 
@@ -850,7 +816,7 @@ void main() {
     );
 
     expect(find.text('escrow-fixture'), findsOneWidget);
-    expect(find.text('solana:escrow-fixture?amount=1.5'), findsOneWidget);
+    expect(find.text('solana:escrow-fixture?amount=1.5'), findsNothing);
     expect(find.text('payout-fixture'), findsOneWidget);
     expect(
       find.text('https://explorer.solana.com/address/escrow-fixture'),
@@ -861,7 +827,7 @@ void main() {
       findsOneWidget,
     );
     expect(find.byKey(const Key('issue-bounty-copy-address')), findsOneWidget);
-    expect(find.byKey(const Key('issue-bounty-copy-pay-uri')), findsOneWidget);
+    expect(find.byKey(const Key('issue-bounty-copy-pay-uri')), findsNothing);
     expect(
       find.byKey(const Key('issue-bounty-copy-payout-sig')),
       findsOneWidget,
@@ -869,7 +835,7 @@ void main() {
   });
 
   testWidgets(
-    'bounty refresh without worker deposit preserves published payee for prepare',
+    'bounty refresh without a legacy record keeps custodial funding disabled',
     (tester) async {
       SharedPreferences.setMockInitialValues({});
       final settings = await SettingsService.create();
@@ -897,26 +863,17 @@ void main() {
       await tester.tap(refreshButton);
       await tester.pumpAndSettle();
       expect(
-        find.text('No Worker bounty deposit has been prepared yet.'),
+        find.text('No historical bounty migration record was found.'),
         findsOneWidget,
       );
 
       final prepareButton = find
           .byKey(const Key('issue-bounty-prepare-deposit'))
           .last;
-      await tester.tap(prepareButton);
-      await tester.pumpAndSettle();
-
-      final create = api.bountyRequests.last;
-      expect(create['action'], 'create');
-      expect(create['payee'], '');
-      expect(create['payeeNode'], 'maintainer-node');
-      final expectedSig = await identity.sign(
-        utf8.encode(
-          'forkmesh-bounty-create-v1\nowner\nrepo\n12\nmaintainer-node\n${create['ts']}',
-        ),
-      );
-      expect(create['sig'], expectedSig);
+      expect(tester.widget<FilledButton>(prepareButton).onPressed, isNull);
+      expect(api.bountyRequests, [
+        {'action': 'status', 'owner': 'owner', 'repo': 'repo', 'number': 12},
+      ]);
     },
   );
 

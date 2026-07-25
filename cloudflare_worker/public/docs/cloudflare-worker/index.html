@@ -95,11 +95,13 @@
           local filesystem paths or Git object data.
         </p>
         <p>
-          The desktop client encrypts every room payload with AES-256-GCM
-          before it leaves the machine. The Durable Object only sees
-          ciphertext envelopes and keeps them ephemeral: each text frame is
-          broadcast to currently connected clients and is not written to
-          storage.
+          Clients encrypt room payloads with AES-256-GCM before sending. For
+          default rooms, the Worker derives a shared passphrase from
+          <code>DATA_KEY</code> and releases it to authenticated accounts or
+          signed nodes, so the relay operator can derive the room key and
+          decrypt messages. Frames marked <code>persist: true</code> are kept
+          for at most 7 days, with only the newest 500 retained per room;
+          other frames are broadcast without history storage.
         </p>
         <p>
           There are no npm, npx, TypeScript, or package-lock dependencies in

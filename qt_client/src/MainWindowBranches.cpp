@@ -152,7 +152,6 @@ QWidget *MainWindow::buildWorktreesTab()
     m_worktreeDiffView = new QTextBrowser;
     m_worktreeDiffView->setObjectName("diffView");
     m_worktreeDiffView->setOpenExternalLinks(false);
-    m_worktreeDiffView->setLineWrapMode(QTextEdit::NoWrap);
     registerDiffView(m_worktreeDiffView);
 
     // Detail pane: a toolbar with a prominent "Merge into main" for the selected
@@ -1733,7 +1732,6 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchDiffView->setObjectName("diffView");
     m_branchDiffView->setOpenExternalLinks(false);
     m_branchDiffView->setOpenLinks(false); // we handle "viewed:" anchors ourselves
-    m_branchDiffView->setLineWrapMode(QTextEdit::NoWrap);
     connect(m_branchDiffView, &QTextBrowser::anchorClicked, this,
             &MainWindow::onBranchDiffAnchorClicked);
     registerDiffView(m_branchDiffView);
@@ -2396,9 +2394,10 @@ void MainWindow::loadBranchesPanel()
 
     // Remote-tracking branches, listed read-only under their full ref-qualified
     // name (e.g. "origin/feature", "nnn/issue-9") so the panel shows every branch
-    // in the repo, not just the local heads (adhoc #55). No row actions here (these
-    // aren't checked out locally), but the Status column shows their ahead/behind
-    // vs the default branch from the batched probe above so the divergence info
+    // in the repo, not just the local heads (adhoc #55). The only row action is a
+    // delete that pushes the removal to the remote (adhoc #196); the Status column
+    // shows their ahead/behind vs the default branch from the batched probe above
+    // so the divergence info
     // matches the local rows (adhoc #61). Clicking one still renders its diff vs
     // the default branch.
     for (const QString &branch : remoteBranches) {
@@ -2464,7 +2463,47 @@ void MainWindow::loadBranchesPanel()
         }
         m_branchesTable->setItem(row, 3, new QTableWidgetItem);
         m_branchesTable->setItem(row, 4, new QTableWidgetItem);
+
+        // Row action: delete the branch on its remote (git push <remote> --delete).
+        // A remote-tracking ref is always "<remote>/<branch>"; the remote's own
+        // default branch is skipped since it can't be deleted. Unlike the local
+        // rows this doesn't need a working tree — it's a network push to the origin.
+        const QString remoteName = branch.section('/', 0, 0);
+        const QString remoteRef = branch.section('/', 1);
+        const bool canDeleteRemote =
+            !remoteName.isEmpty() && !remoteRef.isEmpty() && remoteRef != base;
+        auto *ractions = new QWidget;
+        ractions->setObjectName("branchActions");
+        ractions->setStyleSheet("#branchActions { background: transparent; }");
+        auto *ractionRow = new QHBoxLayout(ractions);
+        ractionRow->setContentsMargins(0, 0, 8, 0);
+        ractionRow->setSpacing(4);
+        auto *rdel = new QPushButton;
+        rdel->setObjectName("issueIconButton");
+        rdel->setFlat(true);
+        rdel->setCursor(Qt::PointingHandCursor);
+        rdel->setIcon(themedOcticon("trash", QColor("#f85149"), 15));
+        rdel->setIconSize(QSize(15, 15));
+        rdel->setEnabled(canDeleteRemote);
+        rdel->setToolTip(canDeleteRemote
+                             ? QStringLiteral("Delete branch %1 on %2")
+                                   .arg(remoteRef, remoteName)
+                             : QStringLiteral("Can't delete the remote's default "
+                                              "branch"));
+        connect(rdel, &QPushButton::clicked, this,
+                [this, branch] { deleteRemoteBranch(branch); });
+        ractionRow->addWidget(rdel);
+        m_branchesTable->setCellWidget(row, 5, ractions);
+        ractions->ensurePolished();
+        for (QPushButton *b : ractions->findChildren<QPushButton *>()) {
+            b->ensurePolished();
+            b->setMinimumWidth(b->sizeHint().width());
+        }
+        ractionRow->invalidate();
+        actionWidth = qMax(actionWidth, ractions->sizeHint().width());
     }
+    if (actionWidth > 0)
+        m_branchesTable->horizontalHeader()->resizeSection(5, actionWidth + 8);
 
     // Header "Pull <base> into all" reflects the current base and is enabled only
     // when there's at least one behind branch to update.
@@ -2590,6 +2629,59 @@ void MainWindow::deleteBranch(const QString &branch)
     // empty value falls back to the default branch ("go to main") (adhoc #256).
     m_branchDiffBranch = nextSelection;
     loadBranchesAndTags();
+}
+
+// Delete a remote-tracking branch on its origin: "git push <remote> --delete
+// <ref>". The list shows remote refs as "<remote>/<branch>"; split off the first
+// path component as the remote and push a deletion of the rest. This is a network
+// push, so it runs detached (runGitDetached) rather than blocking the UI, and on
+// success we prune the now-stale remote-tracking ref before reloading the panel.
+void MainWindow::deleteRemoteBranch(const QString &branch)
+{
+    const QString remote = branch.section('/', 0, 0);
+    const QString ref = branch.section('/', 1);
+    if (remote.isEmpty() || ref.isEmpty())
+        return;
+    const QString dir = repoGitDir();
+    if (dir.isEmpty())
+        return;
+    if (QMessageBox::question(
+            this, "Delete remote branch",
+            QStringLiteral("Delete branch \"%1\" on the remote \"%2\"? This "
+                           "removes it for everyone and cannot be undone.")
+                .arg(ref, remote),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
+    const QString nextSelection = neighbourBranchInList(branch);
+    setRepoDetailNotice(
+        QStringLiteral("Deleting %1 on %2\xE2\x80\xA6").arg(ref, remote));
+    runGitDetached(
+        dir, {"push", remote, "--delete", ref},
+        [this, branch, remote, ref, dir, nextSelection](bool ok,
+                                                         const QByteArray &out) {
+            if (!ok) {
+                const QString detail = QString::fromUtf8(out).trimmed();
+                setRepoDetailNotice(
+                    detail.isEmpty()
+                        ? QStringLiteral("Could not delete %1 on %2.")
+                              .arg(ref, remote)
+                        : QStringLiteral("Could not delete %1 on %2: %3")
+                              .arg(ref, remote, detail.left(200)),
+                    true);
+                return;
+            }
+            // Drop the now-stale remote-tracking ref so the row disappears without
+            // waiting for the next fetch/prune.
+            runGitCapture(dir, {"branch", "-dr", branch}, nullptr, nullptr);
+            logSystem(
+                QStringLiteral("Git: deleted branch %1 on remote %2.")
+                    .arg(ref, remote));
+            setRepoDetailNotice(
+                QStringLiteral("Deleted %1 on %2.").arg(ref, remote));
+            m_branchesCache.clear();
+            m_branchDiffBranch = nextSelection;
+            loadBranchesAndTags();
+        });
 }
 
 // The branch sitting next to `branch` in the Branches table — the row just below

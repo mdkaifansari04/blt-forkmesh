@@ -16,6 +16,7 @@
 # Usage:
 #   tools/package/package-release.sh --os <os> --arch <arch> --binary <path> \
 #       [--channel latest] [--tag vX.Y.Z] [--outdir DIR]
+#       [--install-root <cmake-install-prefix>]
 #
 #   --os      linux | macos | windows   (defaults to autodetected uname)
 #   --arch    x86_64 | arm64
@@ -23,12 +24,14 @@
 #   --channel release channel (default: $RELEASE_CHANNEL or "latest")
 #   --tag     release tag (default: $FORKMESH_TAG)
 #   --outdir  where to drop the installer (default: current dir)
+#   --install-root staged `cmake --install` prefix containing the bundled
+#              ForkMesh Cloudflare deployment resources
 #
 # Prints the produced installer path on the last stdout line.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-os=""; arch=""; binary=""; outdir="."
+os=""; arch=""; binary=""; outdir="."; install_root=""
 channel="${RELEASE_CHANNEL:-latest}"; tag="${FORKMESH_TAG:-}"
 
 while [ $# -gt 0 ]; do
@@ -39,6 +42,7 @@ while [ $# -gt 0 ]; do
     --channel) channel="$2"; shift 2 ;;
     --tag)     tag="$2"; shift 2 ;;
     --outdir)  outdir="$2"; shift 2 ;;
+    --install-root) install_root="$2"; shift 2 ;;
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
@@ -70,6 +74,7 @@ export FORKMESH_PKG_ARCH="$arch"
 export FORKMESH_PKG_TAG="$tag"
 export FORKMESH_PKG_CHANNEL="$channel"
 export FORKMESH_PKG_VERSION="${tag#v}"
+export FORKMESH_PKG_INSTALL_ROOT="$install_root"
 
 case "$os" in
   linux)   installer="$(bash "$here/appimage.sh" "$binary" "$outdir")" ;;

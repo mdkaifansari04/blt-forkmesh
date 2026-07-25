@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751334,
+    "endDate": 1809057600000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nOperators can decide what they store and serve, predict resource use, and respond to abuse or legal requests without imposing a network-wide policy.\n\n## Scope\n\n- Control repository and file size, types, storage, bandwidth, communities, replication, retention, and public/private seeding.\n- Support blocklists, allowlists, quarantine, reports, appeals, local removal, evidence retention, and jurisdiction-specific runbooks.\n- Preview policy effects and estimate capacity before applying destructive or availability-reducing changes.\n\n## Acceptance criteria\n\n- Policy fixtures prove disallowed content is rejected or quarantined without corrupting permitted repositories.\n- Changes are auditable, reversible where possible, and explicit about network availability consequences.\n- Operator defaults are safe for home, community, and commercial-hosting profiles.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 operational gate**\n- Milestone: **Hosted teams & revenue GA**\n- Numeric priority: **33 of 44** (1 is highest)\n- Depends on: #497\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**25% as of 2026-07-22.** Nodes already manage selected repositories and local resources, with some moderation foundations; the complete policy, forecasting, and legal-response surface remains. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Policy violations prevented, capacity accuracy, moderation time, appeals, and operator retention. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-498",
+            "sig": "lorhL5M94YvwCUICQyhh85H24gZZolTmVIZ6cYQ2v3i1ZYPZ3sjfn_3obR632KA_upxPWbuFqfx8Wc-sxTz7Cg",
+            "title": "Give node operators granular policy and legal-response controls",
+            "ts": 1784729751334,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "908c03c9-ee27-4c80-8de8-daae8c4cb21b",
+            "labels": [
+                "infra",
+                "security",
+                "product"
+            ],
+            "sig": "XXld5Vfd3Gmb87YZezfwqJaICopVuY9_O04AJLFTkSDx0hDvjQctM4J5JKq5DaBEWwHKIdJK8kYCWIDb5ri7CA",
+            "ts": 1784729751335,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "48b3a5f3-3674-40ae-affe-3d03046a5061",
+            "milestone": "Hosted teams & revenue GA",
+            "sig": "ioNyx9FUtxIXBKnEIHmbb7iFK0fYPjFDPZKFAUi2bL6Fm0rAxXHtFv7A0YYJPNxfMkWqHqSx4KQIdQ95HmPNCA",
+            "ts": 1784729751336,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1809057600000,
+            "id": "8e1ba794-2aad-496a-87a7-f4844af55dc3",
+            "sig": "BlX04qhxISWuCXp9E2RQL6a0SOK6_xjqbmkU6Cx4GW9WNifxEbzH3Norj_X-Pzrp1Pr7G0z57w8wTrxvm4EkAQ",
+            "startDate": 1786939200000,
+            "ts": 1784729751337,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "8f59d240-4f5a-4224-a5ad-d53d499221e5",
+            "priority": 33,
+            "sig": "yBwJYJBam-ZDpbYsmfmveF3j2EIZ120scABlLEKw8V5Mya5u3dK_SrnRlj7zKyl2ktYhRHvGUJ7ZkSqTKmzxBA",
+            "ts": 1784729751338,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "d9d78f36-ac41-46fa-a8f1-97d9bac6161e",
+            "progress": 25,
+            "sig": "Lt5w24epRY0N5MyiCz2wgqSfV_MdleDXL7AuD1EpMaBFn2dvMaVxGDQONePq7DWFvh56E-1qJ__XOeyTmszfCg",
+            "ts": 1784729751339,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "infra",
+        "security",
+        "product"
+    ],
+    "milestone": "Hosted teams & revenue GA",
+    "number": 498,
+    "priority": 33,
+    "progress": 25,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1786939200000,
+    "status": "open",
+    "title": "Give node operators granular policy and legal-response controls",
+    "updatedAt": 1784729751339,
+    "votes": 0
+}

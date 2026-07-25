@@ -1,24 +1,45 @@
+import {
+  b64ToBytes,
+  b64UrlToBytes as b64urlToBytes,
+  bytesToB64,
+  decryptObject,
+  derivePassphraseKey,
+} from "./chat-crypto.js";
+import {
+  MAX_ATTACHMENT_BYTES,
+  attachmentFromEntry,
+  formatAttachmentSize,
+  safeAttachmentMime,
+  safeAttachmentName,
+} from "./chat-attachments.js";
+import { createChatRoomTransport } from "./chat-room-transport.js";
+
 // Browser-side ForkMesh room chat. Reimplements the desktop client's room
 // crypto (PBKDF2 + AES-256-GCM) and message envelope so the website can join
-// the public encrypted rooms and talk to connected clients. The relay only
-// ever sees ciphertext.
+// the public encrypted rooms and talk to connected clients. Frames are
+// ciphertext on the wire, but the relay derives the default shared passphrase
+// and can therefore decrypt them; this is not end-to-end encryption.
 //
-// Layout: rooms on the left (channels multiplex over the ONE "general" room
-// socket via each message's `channel` field, exactly like the desktop),
-// conversation in the middle (ts-ordered, newest at the bottom, avatars +
-// timestamps + reactions), people on the right (roster built from hello/
-// presence/chat frames, online = seen within the desktop's 3-minute window).
+// Layout: rooms on the left, conversation in the middle (ts-ordered, newest at
+// the bottom, avatars + timestamps + reactions), and people on the right.
+// Public #general uses its own "world-general" room. Each authorized private
+// channel uses a ticketed room and key version returned by the relay.
 
 const ROOM_NAME = "general";
+const PUBLIC_WORLD_GENERAL_ROOM = "world-general";
 // The room key is no longer a public constant. Every client fetches a shared
 // passphrase (derived server-side from the relay's DATA_KEY) from
 // /api/chat/room-key and feeds it into the same PBKDF2 room-key derivation, so
-// all clients still converge on the same AES key — but only signed-in accounts
-// can obtain it. Fetched once and cached here.
-const ROOM_KEY_ENDPOINT = "/api/chat/room-key";
-let roomPassphrase = null;
-const DEFAULT_CHANNELS = ["#general", "#welcome", "#random"];
-const CHAT_WS_PATH = "/api/repo/mainnode/forkmesh/rooms/general/ws";
+// clients in a given scope converge on the same AES key. The public World
+// #general endpoint is intentionally guest-readable; every other room-key
+// request still requires repository-authorized authentication. The relay
+// controls DATA_KEY and can derive either key too. Keys are cached by scope.
+const PUBLIC_WORLD_ROOM_KEY_ENDPOINT =
+  "/api/chat/room-key?owner=mainnode&repo=forkmesh&room=world-general";
+const PUBLIC_WORLD_CHAT_WS_PATH =
+  "/api/repo/mainnode/forkmesh/rooms/world-general/ws";
+const PRIVATE_CHANNELS_ENDPOINT = "/api/chat/channels";
+const PRIVATE_CHANNEL_REFRESH_MS = 30000;
 const FORKBOT_ENDPOINT = "/api/forkbot/chat";
 const FORKBOT_SENDER_ID = "forkbot";
 const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
@@ -30,30 +51,78 @@ const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
 const RELAY_HOST = window.FORKMESH_RELAY_HOST || location.host;
 const MAX_TEXT = 16000;
 const MAX_NAME = 32;
+const MAX_ACCOUNT_NAME = 63;
 const CHAT_MENTION_RE = /(^|[^A-Za-z0-9_-])@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)\b/gi;
 // Presence cadence + staleness mirror the desktop node (ServerNode.cpp:
 // kPresenceIntervalMs / kPeerStaleMs). The beat doubles as the keep-alive the
 // relay's room DO needs — it closes sockets with no frames for 3 minutes, which
 // is why the old web client (which sent nothing while idle) kept disconnecting.
 const PRESENCE_INTERVAL_MS = 60000;
+// Registered-user directory (public, no secrets — see _account_users_directory
+// in the Worker). Seeds the people pane so every account shows even before it
+// has ever spoken in the room, and a light poll (the endpoint is edge-cached,
+// and a signup invalidates that cache) surfaces brand-new signups right away
+// with a welcome line in the log.
+const USERS_DIRECTORY_ENDPOINT = "/api/accounts/users";
+const USERS_DIRECTORY_REFRESH_MS = 60000;
+// Counters behind the site-header chat badge; the chat page re-baselines them
+// while open so time spent reading here counts as "seen".
+const CHAT_ACTIVITY_ENDPOINT = "/api/chat/activity";
+const CHAT_ACTIVITY_SEEN_KEY = "forkmesh.chat.activitySeen";
+// Only a directory entry created this recently gets the "just joined" welcome
+// line — an account merely missing from the previous (top-1000) page isn't news.
+const NEW_USER_ANNOUNCE_WINDOW_MS = 10 * 60 * 1000;
 const PEER_STALE_MS = 180000;
 const GROUP_WINDOW_MS = 5 * 60 * 1000; // same-sender messages collapse under one header
 const REACTION_EMOJI = ["👍", "❤️", "😂", "🎉", "👀", "🚀"];
 const ACTIVE_CHANNEL_KEY = "forkmesh.chat.channel";
+const CHAT_SIGN_IN_REQUIRED = "Sign in again to join chat";
+const OFFICE_SESSION_EXPIRED =
+  "Your session expired. Log in again to use authorized channels.";
+const OFFICE_RELAY_UNAVAILABLE = "Chat relay unavailable. Try again.";
+const chatQuery = new URLSearchParams(window.location.search);
+const isOfficeEmbed = chatQuery.get("embed") === "office";
 
 const logEl = document.querySelector("#chat-log");
 const nameInput = document.querySelector("#chat-name");
 const input = document.querySelector("#chat-input");
 const sendBtn = document.querySelector("#chat-send");
+const attachmentInput = document.querySelector("#chat-attachment-input");
+const attachmentBtn = document.querySelector("#chat-attachment-button");
+const attachmentFeedback = document.querySelector("#chat-attachment-feedback");
 const clearBtn = document.querySelector("#chat-clear");
 const statusEl = document.querySelector("#chat-status");
 const roomsEl = document.querySelector("#chat-rooms");
 const peopleEl = document.querySelector("#chat-people");
 const peopleTitleEl = document.querySelector("#chat-people-title");
 const channelTitleEl = document.querySelector("#chat-channel-title");
+const channelVisibilityBadge = document.querySelector("#chat-channel-visibility-badge");
+const channelCreateBtn = document.querySelector("#chat-channel-create");
+const channelManageBtn = document.querySelector("#chat-channel-manage");
+const channelDialog = document.querySelector("#chat-channel-dialog");
+const channelDialogClose = document.querySelector("#chat-channel-dialog-close");
+const channelError = document.querySelector("#chat-channel-error");
+const channelCreateForm = document.querySelector("#chat-channel-create-form");
+const channelNameInput = document.querySelector("#chat-channel-name");
+const channelVisibilitySelect = document.querySelector("#chat-channel-visibility");
+const channelVisibilityHelp = document.querySelector("#chat-channel-visibility-help");
+const channelInitialMembers = document.querySelector("#chat-channel-initial-members");
+const channelUserSearch = document.querySelector("#chat-channel-user-search");
+const channelUserOptions = document.querySelector("#chat-channel-user-options");
+const channelUserEmpty = document.querySelector("#chat-channel-user-empty");
+const channelSelectedCount = document.querySelector("#chat-channel-selected-count");
+const channelMembersSection = document.querySelector("#chat-channel-members-section");
+const channelMembersTitle = document.querySelector("#chat-channel-members-title");
+const channelInviteForm = document.querySelector("#chat-channel-invite-form");
+const channelUsernameInput = document.querySelector("#chat-channel-username");
+const channelMembersEl = document.querySelector("#chat-channel-members");
+const officeManageLink = document.querySelector("#chat-office-manage");
+const officeAlert = document.querySelector("#chat-office-alert");
+const officeAlertCopy = document.querySelector("#chat-office-alert-copy");
+const officeLoginLink = document.querySelector("#chat-office-login");
+const officeRetryBtn = document.querySelector("#chat-office-retry");
 
 const enc = new TextEncoder();
-const dec = new TextDecoder();
 // A stable per-browser chat id. The relay holds no roster — every participant
 // is reconstructed client-side from the senderId on decrypted frames — so a
 // fresh random id per page load made each reload/tab of the same person show up
@@ -73,13 +142,14 @@ const selfId = (() => {
   return fresh;
 })();
 
-let roomKey = null;
-let socket = null;
-let connecting = false;
+const roomPassphrases = new Map();
+const roomKeys = new Map();
+const privateChannels = new Map();
+let roomTransport = null;
 let openCallbacks = [];
 let cachedUserSession = null;
-let reconnectDelayMs = 2000;
-let reconnectTimer = null;
+let chatSuspended = false;
+let officeAuthorizationExpired = false;
 const seen = new Set();
 // messageId -> message record { id, channel, ts, senderId, sender, text, self,
 // el, body, reactionsEl }. `el`/`body` reference the on-screen row while the
@@ -93,18 +163,19 @@ const channelMeta = new Map();
 // messageId -> Map(emoji -> Map(reactorId -> reactorName)); same shape as the
 // desktop's m_reactions so toggles converge across clients.
 const reactions = new Map();
-// senderId -> { id, name, kind: "user"|"bot"|"node", lastSeenMs } built from
+// senderId -> { id, name, kind: "user"|"guest"|"bot"|"node", lastSeenMs } built from
 // every decrypted frame; drives the right-hand people pane.
 const roster = new Map();
-let activeChannel = DEFAULT_CHANNELS[0];
+let activeChannel = "#general";
+let savedPrivateChannelId = "";
 try {
   const saved = localStorage.getItem(ACTIVE_CHANNEL_KEY);
-  if (saved && saved.startsWith("#")) activeChannel = saved;
+  if (/^[0-9a-f]{32}$/.test(saved || "")) savedPrivateChannelId = saved;
 } catch (_) {}
 // Rolling per-channel buffer of the most recent decrypted messages, forwarded
 // to ForkBot so it can resolve references like "that bug" from the
-// conversation. The room is end-to-end encrypted, so the relay only ever sees
-// what we choose to send here.
+// conversation. The relay can decrypt the default shared-key room; this buffer
+// controls only the narrower context we explicitly send to ForkBot.
 const recentContext = new Map(); // channel -> [{sender, text}]
 const RECENT_CONTEXT_MAX = 20;
 function rememberContext(channel, sender, text) {
@@ -122,27 +193,16 @@ let mentionHideTimer = null;
 let emojiPickerEl = null;
 let emojiPickerTarget = null;
 
-// ---- base64 <-> bytes -------------------------------------------------------
-
-function bytesToB64(bytes) {
-  const arr = new Uint8Array(bytes);
-  let bin = "";
-  for (let i = 0; i < arr.length; i += 1) bin += String.fromCharCode(arr[i]);
-  return btoa(bin);
-}
-
-function b64ToBytes(value) {
-  const bin = atob(value);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-// The desktop identity encodes keys/signatures as unpadded base64url.
-function b64urlToBytes(value) {
-  let s = (value || "").replace(/-/g, "+").replace(/_/g, "/");
-  while (s.length % 4) s += "=";
-  return b64ToBytes(s);
+function setAttachmentFeedback(message) {
+  if (!attachmentFeedback) return;
+  attachmentFeedback.textContent = String(message || "");
+  if (message) {
+    setTimeout(() => {
+      if (attachmentFeedback.textContent === message) {
+        attachmentFeedback.textContent = "";
+      }
+    }, 5000);
+  }
 }
 
 // Verify an Ed25519 signature (raw 32-byte key, 64-byte sig) over a UTF-8
@@ -170,88 +230,114 @@ async function ed25519Verify(pubB64url, sigB64url, dataStr) {
 
 // ---- room crypto (matches RoomCrypto.cpp) -----------------------------------
 
-// Fetch the shared room passphrase (server-derived from DATA_KEY) once and cache
-// it. Requires a signed-in account session; anonymous callers get 401, which is
-// the point — the key is no longer a constant anyone can read from the source.
-async function fetchRoomPassphrase() {
-  if (roomPassphrase) return roomPassphrase;
-  const session = userSession();
-  const token = session && session.sessionToken;
+function roomScopeForChannel(channel = activeChannel) {
+  return channel === "#general" ? "public-world-general" : channel;
+}
+
+function isPrivateChannelKey(channel) {
+  return /^private:[0-9a-f]{32}$/.test(String(channel || ""));
+}
+
+function privateChannelKey(channelId) {
+  return "private:" + String(channelId || "");
+}
+
+function privateChannelForKey(channel) {
+  if (!isPrivateChannelKey(channel)) return null;
+  return privateChannels.get(String(channel).slice("private:".length)) || null;
+}
+
+function channelDisplayLabel(channel = activeChannel) {
+  if (channel === "#general") return "#general";
+  const record = privateChannelForKey(channel);
+  return record ? "#" + record.name : "Channel";
+}
+
+function canJoinChannel(channel = activeChannel) {
+  return roomScopeForChannel(channel) === "public-world-general" ||
+    Boolean(userSession() && privateChannelForKey(channel));
+}
+
+// The public World #general passphrase is intentionally available to guests
+// and is isolated in its own DO room. Private channel keys come only from the
+// authenticated room-access endpoint below.
+async function fetchRoomPassphrase(scope = roomScopeForChannel()) {
+  if (scope !== "public-world-general") {
+    throw new Error("Private channel room access required.");
+  }
+  if (roomPassphrases.has(scope)) return roomPassphrases.get(scope);
   const headers = { accept: "application/json" };
-  if (token) headers.authorization = "Bearer " + token;
-  const res = await fetch(ROOM_KEY_ENDPOINT, { headers, cache: "no-store" });
+  const res = await fetch(PUBLIC_WORLD_ROOM_KEY_ENDPOINT, {
+    headers,
+    cache: "no-store",
+  });
   if (!res.ok) {
-    const err = new Error("Sign in to join chat — could not fetch the room key.");
+    const err = new Error("Public World #general key unavailable.");
     err.code = res.status === 401 || res.status === 403 ? "auth" : "server";
     throw err;
   }
   const data = await res.json().catch(() => ({}));
   if (!data || !data.passphrase) throw new Error("Room key unavailable.");
-  roomPassphrase = String(data.passphrase);
-  return roomPassphrase;
+  const passphrase = String(data.passphrase);
+  roomPassphrases.set(scope, passphrase);
+  return passphrase;
 }
 
-async function deriveRoomKey() {
-  const passphrase = await fetchRoomPassphrase();
-  const saltDigest = new Uint8Array(
-    await crypto.subtle.digest("SHA-256", enc.encode("ForkMesh room:" + ROOM_NAME))
-  );
-  const salt = saltDigest.slice(0, 16);
-  const baseKey = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(passphrase),
-    "PBKDF2",
-    false,
-    ["deriveKey"]
-  );
-  return crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt, iterations: 210000, hash: "SHA-256" },
-    baseKey,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["encrypt", "decrypt"]
-  );
-}
-
-async function encryptObject(obj) {
-  const nonce = crypto.getRandomValues(new Uint8Array(12));
-  const combined = new Uint8Array(
-    await crypto.subtle.encrypt(
-      { name: "AES-GCM", iv: nonce, tagLength: 128 },
-      roomKey,
-      enc.encode(JSON.stringify(obj))
-    )
-  );
-  // The desktop stores ciphertext and the 16-byte GCM tag separately.
-  const body = combined.slice(0, combined.length - 16);
-  const tag = combined.slice(combined.length - 16);
-  return {
-    kind: "cipher",
-    v: 1,
-    nonce: bytesToB64(nonce),
-    tag: bytesToB64(tag),
-    body: bytesToB64(body),
-  };
-}
-
-async function decryptObject(envelope) {
-  if (!envelope || envelope.kind !== "cipher") return null;
-  try {
-    const nonce = b64ToBytes(envelope.nonce);
-    const body = b64ToBytes(envelope.body);
-    const tag = b64ToBytes(envelope.tag);
-    const combined = new Uint8Array(body.length + tag.length);
-    combined.set(body, 0);
-    combined.set(tag, body.length);
-    const plain = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: nonce, tagLength: 128 },
-      roomKey,
-      combined
-    );
-    return JSON.parse(dec.decode(plain));
-  } catch (error) {
-    return null;
+async function deriveRoomKey(scope = roomScopeForChannel()) {
+  if (scope !== "public-world-general") {
+    throw new Error("Private channel room access required.");
   }
+  if (roomKeys.has(scope)) return roomKeys.get(scope);
+  const passphrase = await fetchRoomPassphrase(scope);
+  const key = await derivePassphraseKey(passphrase, PUBLIC_WORLD_GENERAL_ROOM);
+  roomKeys.set(scope, key);
+  return key;
+}
+
+async function privateChannelRequest(path, options = {}) {
+  const session = userSession();
+  if (!session?.sessionToken) {
+    const error = new Error("Sign in required");
+    error.code = "auth";
+    throw error;
+  }
+  const headers = new Headers(options.headers || {});
+  headers.set("accept", "application/json");
+  headers.set("Authorization", `Bearer ${session.sessionToken}`);
+  if (options.body) headers.set("content-type", "application/json");
+  let response;
+  try {
+    response = await fetch(path, {
+      ...options,
+      headers,
+      cache: "no-store",
+    });
+  } catch (_) {
+    const error = new Error("unavailable");
+    error.code = "unavailable";
+    throw error;
+  }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(data.error || "unavailable");
+    error.code = response.status === 401 ? "auth" :
+      data.error || (response.status >= 500 ? "unavailable" : "request_failed");
+    error.status = response.status;
+    throw error;
+  }
+  return data;
+}
+
+async function fetchRoomAccess(channelKey = activeChannel) {
+  const channel = privateChannelForKey(channelKey);
+  if (!channel) throw new Error("Channel unavailable.");
+  const access = await privateChannelRequest(
+    PRIVATE_CHANNELS_ENDPOINT + "/" + channel.id + "/room-access"
+  );
+  if (!access.passphrase || !access.room || !access.webSocketUrl) {
+    throw new Error("Channel room access unavailable.");
+  }
+  return access;
 }
 
 // ---- session ----------------------------------------------------------------
@@ -266,7 +352,17 @@ function readSession() {
 
 function writeSession(session) {
   try {
-    localStorage.setItem("forkmesh.session", JSON.stringify(session));
+    const stored = session && typeof session === "object"
+      ? {
+          ...session,
+          sessionToken: (
+            location.protocol === "https:" && session.sessionToken
+              ? "cookie"
+              : session.sessionToken || ""
+          ),
+        }
+      : session;
+    localStorage.setItem("forkmesh.session", JSON.stringify(stored));
   } catch (error) {
     /* storage disabled */
   }
@@ -331,36 +427,81 @@ function userSession() {
   return isUserLikeSession(session) ? session : null;
 }
 
+// Everyone in the public World room shows under the plain name they assert.
+// The old "World visitor · jett" prefix read as a second, different person
+// sitting next to the signed-in "jett", so it is stripped from anything that
+// still carries it (session names, replayed history frames).
+function publicWorldName(value) {
+  return String(value || "")
+    .replace(/^World visitor\s*·\s*/i, "")
+    .trim()
+    .slice(0, MAX_NAME) || "guest";
+}
+
 function displayName() {
   const session = userSession();
-  if (session) return String(session.nodeName).trim().slice(0, MAX_NAME);
-  const value = (nameInput.value || "").trim();
-  return (value || "web-guest").slice(0, MAX_NAME);
+  let value;
+  if (session) {
+    value = String(session.nodeName).trim().slice(0, MAX_NAME);
+  } else {
+    value = (nameInput.value || "").trim();
+    value = (value || "web-guest").slice(0, MAX_NAME);
+  }
+  return roomScopeForChannel() === "public-world-general"
+    ? publicWorldName(value)
+    : value;
 }
 
 function setStatus(text) {
   if (statusEl) statusEl.textContent = text;
 }
 
+function showOfficeFailure(kind = "") {
+  if (!isOfficeEmbed || !officeAlert) return;
+  const expired = kind === "auth";
+  const relay = kind === "relay";
+  officeAlert.hidden = !expired && !relay;
+  if (officeAlertCopy) {
+    officeAlertCopy.textContent = expired
+      ? OFFICE_SESSION_EXPIRED
+      : relay
+        ? OFFICE_RELAY_UNAVAILABLE
+        : "";
+  }
+  if (officeLoginLink) officeLoginLink.hidden = !expired;
+  if (officeRetryBtn) officeRetryBtn.hidden = !relay;
+}
+
 function lockChatForNonUser() {
-  setStatus("User login required");
-  [input, sendBtn, nameInput].forEach((el) => {
+  setStatus("User login required for this channel");
+  [input, sendBtn, nameInput, attachmentBtn, attachmentInput].forEach((el) => {
     if (el) el.disabled = true;
   });
   if (logEl) {
     const empty = logEl.querySelector(".chat-empty");
-    if (empty) empty.textContent = "Log in as a user to join the room.";
+    if (empty) {
+      empty.textContent = (
+        "Log in as a user to join this channel. " +
+        "Guests can participate only in public World #general."
+      );
+    }
   }
 }
 
 function unlockChatForUser() {
-  [input, sendBtn].forEach((el) => {
+  [input, sendBtn, attachmentBtn, attachmentInput].forEach((el) => {
     if (el) el.disabled = false;
   });
   const session = userSession();
-  if (nameInput && session) {
-    nameInput.value = session.nodeName || "";
-    nameInput.disabled = true;
+  if (nameInput) {
+    if (session) {
+      nameInput.value = session.nodeName || "";
+      nameInput.disabled = true;
+    } else {
+      nameInput.value =
+        `World Guest ${String(selfId).replace(/[^A-Za-z0-9]/g, "").slice(0, 6)}`;
+      nameInput.disabled = true;
+    }
   }
 }
 
@@ -693,14 +834,14 @@ function moveMentionSuggest(step) {
 
 // ---- rooms (left pane) --------------------------------------------------------
 
-function normalizeChannel(name) {
-  const value = String(name || "").trim();
-  if (!value || value.length > 40) return "";
-  return value.startsWith("#") ? value : "#" + value;
+function normalizeChannelKey(channel) {
+  const value = String(channel || "").trim();
+  if (value === "#general") return value;
+  return isPrivateChannelKey(value) && privateChannelForKey(value) ? value : "";
 }
 
-function ensureChannel(name) {
-  const channel = normalizeChannel(name);
+function ensureChannel(channelKey) {
+  const channel = normalizeChannelKey(channelKey);
   if (!channel) return "";
   if (!channelMeta.has(channel)) {
     channelMeta.set(channel, { unread: 0 });
@@ -721,10 +862,8 @@ function renderRooms() {
   if (!roomsEl) return;
   roomsEl.textContent = "";
   const names = [...channelMeta.keys()].sort((a, b) => {
-    const ai = DEFAULT_CHANNELS.indexOf(a);
-    const bi = DEFAULT_CHANNELS.indexOf(b);
-    if (ai >= 0 || bi >= 0) return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
-    return a.localeCompare(b);
+    if (a === "#general" || b === "#general") return a === "#general" ? -1 : 1;
+    return channelDisplayLabel(a).localeCompare(channelDisplayLabel(b));
   });
   for (const name of names) {
     const meta = channelMeta.get(name);
@@ -733,7 +872,18 @@ function renderRooms() {
     btn.className = "chat-room" + (name === activeChannel ? " is-active" : "");
     const label = document.createElement("span");
     label.className = "chat-room-name";
-    label.textContent = name;
+    label.textContent = channelDisplayLabel(name);
+    if (isPrivateChannelKey(name)) {
+      const channel = privateChannelForKey(name);
+      const visibilityLabel = channel?.visibility === "public"
+        ? "Public channel"
+        : "Private channel";
+      btn.setAttribute(
+        "aria-label",
+        `${visibilityLabel} ${channelDisplayLabel(name)}`,
+      );
+      btn.title = visibilityLabel;
+    }
     btn.append(label);
     if (meta.unread > 0 && name !== activeChannel) {
       const badge = document.createElement("span");
@@ -746,19 +896,308 @@ function renderRooms() {
   }
 }
 
-function setActiveChannel(name) {
-  const channel = ensureChannel(name);
-  if (!channel || channel === activeChannel) return;
+function updateChannelHeading() {
+  const channel = privateChannelForKey(activeChannel);
+  const label = channelDisplayLabel(activeChannel);
+  if (channelTitleEl) channelTitleEl.textContent = label;
+  if (channelVisibilityBadge) {
+    channelVisibilityBadge.hidden = !channel;
+    channelVisibilityBadge.textContent = channel
+      ? channel.visibility
+      : "";
+  }
+}
+
+function updateAdminChannelControls() {
+  const session = userSession();
+  const channel = privateChannelForKey(activeChannel);
+  if (officeManageLink) {
+    officeManageLink.hidden = !(isOfficeEmbed && userSession()?.isAdmin);
+  }
+  if (channelCreateBtn) channelCreateBtn.hidden = !session?.isAdmin;
+  if (channelManageBtn) {
+    channelManageBtn.hidden = !(
+      session?.isAdmin &&
+      channel?.canManage &&
+      channel?.visibility === "private"
+    );
+  }
+}
+
+function setActiveChannel(name, options = {}) {
+  const normalized = normalizeChannelKey(name);
+  if (!normalized) return;
+  if (!userSession() && normalized !== "#general") {
+    setStatus("Guests can participate only in public World #general");
+    return;
+  }
+  const channel = ensureChannel(normalized);
+  if (channel === activeChannel) return;
+  const previousScope = roomScopeForChannel(activeChannel);
   activeChannel = channel;
   try {
-    localStorage.setItem(ACTIVE_CHANNEL_KEY, channel);
+    const record = privateChannelForKey(channel);
+    if (record) {
+      savedPrivateChannelId = record.id;
+      localStorage.setItem(ACTIVE_CHANNEL_KEY, record.id);
+    } else {
+      savedPrivateChannelId = "";
+      localStorage.removeItem(ACTIVE_CHANNEL_KEY);
+    }
   } catch (_) {}
   const meta = channelMeta.get(channel);
   if (meta) meta.unread = 0;
-  if (channelTitleEl) channelTitleEl.textContent = channel;
-  if (input) input.placeholder = `Message ${channel}…`;
+  const label = channelDisplayLabel(channel);
+  updateChannelHeading();
+  if (input) input.placeholder = `Message ${label}…`;
+  updateAdminChannelControls();
   renderRooms();
   renderActiveChannel();
+  if (isOfficeEmbed && window.parent !== window) {
+    window.parent.postMessage(
+      { type: "office-chat-room-changed" },
+      window.location.origin,
+    );
+  }
+  if (options.connect !== false && previousScope !== roomScopeForChannel(activeChannel)) {
+    switchChatRoom();
+  }
+}
+
+function releaseChannelMessages(channelKey) {
+  for (const record of channelMessages.get(channelKey) || []) {
+    revokeAttachmentUrl(record);
+    rows.delete(record.id);
+    reactions.delete(record.id);
+  }
+  channelMessages.delete(channelKey);
+  channelMeta.delete(channelKey);
+}
+
+function reconcilePrivateChannels(records, options = {}) {
+  const previous = new Map(privateChannels);
+  privateChannels.clear();
+  for (const value of Array.isArray(records) ? records : []) {
+    const id = String(value?.id || "");
+    const name = String(value?.name || "").trim().toLowerCase();
+    if (!/^[0-9a-f]{32}$/.test(id) || !name) continue;
+    privateChannels.set(id, {
+      id,
+      name,
+      updatedAt: Number(value.updatedAt) || 0,
+      keyVersion: Number(value.keyVersion) || 1,
+      canManage: Boolean(value.canManage),
+      visibility: value.visibility === "public" ? "public" : "private",
+    });
+    ensureChannel(privateChannelKey(id));
+  }
+  for (const id of previous.keys()) {
+    if (!privateChannels.has(id)) releaseChannelMessages(privateChannelKey(id));
+  }
+
+  if (savedPrivateChannelId && !privateChannels.has(savedPrivateChannelId)) {
+    savedPrivateChannelId = "";
+    try { localStorage.removeItem(ACTIVE_CHANNEL_KEY); } catch (_) {}
+  }
+
+  const activeRecord = privateChannelForKey(activeChannel);
+  if (isPrivateChannelKey(activeChannel) && !activeRecord) {
+    setActiveChannel("#general");
+    return;
+  }
+  if (activeRecord) {
+    const old = previous.get(activeRecord.id);
+    if (old && old.keyVersion !== activeRecord.keyVersion) switchChatRoom();
+  } else if (
+    options.selectSaved !== false &&
+    savedPrivateChannelId &&
+    privateChannels.has(savedPrivateChannelId)
+  ) {
+    setActiveChannel(privateChannelKey(savedPrivateChannelId), {
+      connect: options.connect,
+    });
+  }
+  updateAdminChannelControls();
+  renderRooms();
+}
+
+async function refreshPrivateChannels(options = {}) {
+  if (!userSession()) {
+    reconcilePrivateChannels([], options);
+    return;
+  }
+  try {
+    const data = await privateChannelRequest(PRIVATE_CHANNELS_ENDPOINT);
+    officeAuthorizationExpired = false;
+    showOfficeFailure("");
+    reconcilePrivateChannels(data.channels || [], options);
+  } catch (error) {
+    if (error?.code === "auth") {
+      officeAuthorizationExpired = true;
+      reconcilePrivateChannels([], options);
+      showOfficeFailure("auth");
+    } else {
+      showOfficeFailure("relay");
+    }
+  }
+}
+
+function privateChannelErrorMessage(error) {
+  const messages = {
+    invalid_channel_name: "Use lowercase letters, numbers, and hyphens.",
+    channel_name_taken: "That channel name is already in use.",
+    user_not_found: "That active registered user was not found.",
+    too_many_channels: "This relay has reached its channel limit.",
+    too_many_members: "This channel has reached its member limit.",
+    invalid_visibility: "Choose Public or Private visibility.",
+    invalid_members: "Choose registered users from the list.",
+    members_not_allowed: "Public channels do not use member invitations.",
+    admin_required: "Administrator access is required.",
+    auth: OFFICE_SESSION_EXPIRED,
+    invalid_session: OFFICE_SESSION_EXPIRED,
+    unavailable: OFFICE_RELAY_UNAVAILABLE,
+    request_failed: OFFICE_RELAY_UNAVAILABLE,
+  };
+  return messages[error?.code] || "The channel request could not be completed.";
+}
+
+function setChannelError(message) {
+  if (channelError) channelError.textContent = String(message || "");
+}
+
+function activeManageableChannel() {
+  const channel = privateChannelForKey(activeChannel);
+  return channel?.canManage && channel?.visibility === "private"
+    ? channel
+    : null;
+}
+
+function renderChannelMembers(members) {
+  if (!channelMembersEl) return;
+  channelMembersEl.textContent = "";
+  const list = Array.isArray(members) ? members : [];
+  if (!list.length) {
+    const empty = document.createElement("p");
+    empty.textContent = "No invited members yet.";
+    empty.className = "chat-attachment-meta";
+    channelMembersEl.append(empty);
+    return;
+  }
+  for (const member of list) {
+    const username = String(member?.username || "").trim();
+    if (!username) continue;
+    const row = document.createElement("div");
+    row.className = "chat-channel-member";
+    const label = document.createElement("span");
+    label.textContent = "@" + username;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "chat-member-remove";
+    remove.textContent = "Remove";
+    remove.setAttribute("aria-label", `Remove ${username} from channel`);
+    remove.addEventListener("click", () => removeChannelMember(username));
+    row.append(label, remove);
+    channelMembersEl.append(row);
+  }
+}
+
+async function refreshChannelMembers() {
+  const channel = activeManageableChannel();
+  if (!channel) return;
+  if (channelMembersTitle) {
+    channelMembersTitle.textContent = `Members of #${channel.name}`;
+  }
+  try {
+    const data = await privateChannelRequest(
+      `/api/chat/channels/${channel.id}/members`
+    );
+    renderChannelMembers(data.members || []);
+  } catch (error) {
+    setChannelError(privateChannelErrorMessage(error));
+  }
+}
+
+async function createChannel(name, visibility, members) {
+  setChannelError("");
+  try {
+    const data = await privateChannelRequest(PRIVATE_CHANNELS_ENDPOINT, {
+      method: "POST",
+      body: JSON.stringify({
+        name: String(name || "").trim().toLowerCase(),
+        visibility: visibility === "public" ? "public" : "private",
+        members: Array.isArray(members) ? members : [],
+      }),
+    });
+    await refreshPrivateChannels({ selectSaved: false });
+    const channel = data.channel;
+    if (channel?.id && privateChannels.has(channel.id)) {
+      setActiveChannel(privateChannelKey(channel.id));
+      const created = privateChannels.get(channel.id);
+      const canManageMembers = created?.visibility === "private";
+      if (channelMembersSection) {
+        channelMembersSection.hidden = !canManageMembers;
+      }
+      if (canManageMembers) await refreshChannelMembers();
+    }
+    channelCreateForm?.reset();
+    selectedInitialMembers.clear();
+    if (channelUserSearch) channelUserSearch.value = "";
+    syncInitialMemberVisibility();
+  } catch (error) {
+    setChannelError(privateChannelErrorMessage(error));
+  }
+}
+
+async function inviteChannelMember(username) {
+  const channel = activeManageableChannel();
+  if (!channel) return;
+  setChannelError("");
+  try {
+    await privateChannelRequest(`/api/chat/channels/${channel.id}/members`, {
+      method: "POST",
+      body: JSON.stringify({ username: String(username || "").trim().toLowerCase() }),
+    });
+    if (channelUsernameInput) channelUsernameInput.value = "";
+    await refreshChannelMembers();
+  } catch (error) {
+    setChannelError(privateChannelErrorMessage(error));
+  }
+}
+
+async function removeChannelMember(username) {
+  const channel = activeManageableChannel();
+  if (!channel) return;
+  setChannelError("");
+  try {
+    await privateChannelRequest(`/api/chat/channels/${channel.id}/members`, {
+      method: "DELETE",
+      body: JSON.stringify({ username }),
+    });
+    await refreshChannelMembers();
+    await refreshPrivateChannels({ selectSaved: false });
+  } catch (error) {
+    setChannelError(privateChannelErrorMessage(error));
+  }
+}
+
+function openChannelDialog(showMembers = false) {
+  const session = userSession();
+  if (!session?.isAdmin || !channelDialog) return;
+  setChannelError("");
+  const channel = activeManageableChannel();
+  if (channelMembersSection) {
+    channelMembersSection.hidden = !(showMembers && channel);
+  }
+  syncInitialMemberVisibility();
+  renderInitialMemberPicker();
+  refreshUsersDirectory();
+  if (showMembers && channel) refreshChannelMembers();
+  if (typeof channelDialog.showModal === "function") channelDialog.showModal();
+  else channelDialog.setAttribute("open", "");
+  const focusTarget = showMembers && channel
+    ? channelUsernameInput
+    : channelNameInput;
+  focusTarget?.focus();
 }
 
 // ---- people (right pane) -------------------------------------------------------
@@ -780,7 +1219,9 @@ function noteRoster(plain) {
   const name = String(plain.sender || "").trim().slice(0, MAX_NAME) || "peer";
   const kind = plain.accountKind === "user"
     ? (id === FORKBOT_SENDER_ID ? "bot" : "user")
-    : "node";
+    : plain.accountKind === "guest"
+      ? "guest"
+      : "node";
   // Use the frame's own timestamp (bounded by now): the relay replays retained
   // frames to a joining client, and a days-old replayed message must not paint
   // its author online. Never move lastSeen backwards either — a replayed old
@@ -799,11 +1240,16 @@ function noteRoster(plain) {
 }
 
 function noteSelfRoster() {
-  if (!userSession()) return;
   roster.set(selfId, {
     id: selfId,
     name: displayName(),
-    kind: "user",
+    // Only an anonymous browser sits in the guest section: a signed-in person
+    // in the public room stays a user, so their live entry dedupes against the
+    // account-directory row instead of showing up as a second person.
+    kind:
+      roomScopeForChannel() === "public-world-general" && !userSession()
+        ? "guest"
+        : "user",
     lastSeenMs: Date.now(),
   });
   schedulePeopleRender();
@@ -811,6 +1257,140 @@ function noteSelfRoster() {
 
 function personIsOnline(person) {
   return person.lastSeenMs > 0 && Date.now() - person.lastSeenMs <= PEER_STALE_MS;
+}
+
+// ---- registered-user directory ------------------------------------------------
+// The room roster only knows senders it has decrypted frames from, so a user
+// who signed up on the website but never opened chat was invisible here. Merge
+// in the public account directory: every registered user gets a (offline)
+// roster entry, and a signup that appears between polls is announced in the
+// log so the room can welcome them right away.
+
+const directoryKnown = new Set(); // lowercased account names already merged
+const registeredUsers = new Map();
+const selectedInitialMembers = new Set();
+let directorySeeded = false;
+
+function renderInitialMemberPicker() {
+  if (!channelUserOptions) return;
+  channelUserOptions.textContent = "";
+  const query = String(channelUserSearch?.value || "").trim().toLowerCase();
+  const currentName = String(userSession()?.nodeName || "").trim().toLowerCase();
+  const users = [...registeredUsers.values()]
+    .filter((user) => user.name !== currentName)
+    .filter((user) => !query || user.name.includes(query))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  for (const user of users) {
+    const option = document.createElement("label");
+    option.className = "chat-channel-user-option";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = user.name;
+    checkbox.checked = selectedInitialMembers.has(user.name);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) selectedInitialMembers.add(user.name);
+      else selectedInitialMembers.delete(user.name);
+      if (channelSelectedCount) {
+        const count = selectedInitialMembers.size;
+        channelSelectedCount.textContent = `${count} selected`;
+      }
+    });
+    const label = document.createElement("span");
+    label.textContent = "@" + user.name;
+    option.append(checkbox, label);
+    channelUserOptions.append(option);
+  }
+
+  if (channelSelectedCount) {
+    const count = selectedInitialMembers.size;
+    channelSelectedCount.textContent = `${count} selected`;
+  }
+  if (channelUserEmpty) {
+    channelUserEmpty.hidden = users.length > 0;
+    channelUserEmpty.textContent = registeredUsers.size
+      ? "No registered users match your search."
+      : "No registered users are available yet.";
+  }
+}
+
+function syncInitialMemberVisibility() {
+  const isPrivate = channelVisibilitySelect?.value !== "public";
+  if (channelInitialMembers) channelInitialMembers.hidden = !isPrivate;
+  if (channelVisibilityHelp) {
+    channelVisibilityHelp.textContent = isPrivate
+      ? "Only selected users and administrators can join."
+      : "Every registered user can discover and join this channel.";
+  }
+  if (!isPrivate) {
+    selectedInitialMembers.clear();
+    if (channelUserSearch) channelUserSearch.value = "";
+  }
+  renderInitialMemberPicker();
+}
+
+async function refreshUsersDirectory() {
+  let users;
+  try {
+    const res = await fetch(USERS_DIRECTORY_ENDPOINT, {
+      headers: { accept: "application/json" },
+    });
+    if (!res.ok) return;
+    const data = await res.json().catch(() => null);
+    users = data && Array.isArray(data.users) ? data.users : [];
+  } catch (_) {
+    return;
+  }
+  for (const user of users) {
+    const name = String(user.name || "")
+      .trim()
+      .toLowerCase()
+      .slice(0, MAX_ACCOUNT_NAME);
+    if (!name) continue;
+    registeredUsers.set(name, {
+      name,
+      createdAt: Number(user.createdAt) || 0,
+    });
+    const fresh = !directoryKnown.has(name);
+    directoryKnown.add(name);
+    // Namespaced id so this offline placeholder never collides with a live
+    // senderId entry for the same account; renderPeople dedupes the pair by
+    // name, keeping the freshest sighting (i.e. the live one).
+    const id = "account:" + name;
+    const prev = roster.get(id);
+    roster.set(id, {
+      id,
+      name,
+      kind: "user",
+      lastSeenMs: prev ? prev.lastSeenMs : 0,
+    });
+    if (fresh && directorySeeded &&
+        Date.now() - Number(user.createdAt || 0) < NEW_USER_ANNOUNCE_WINDOW_MS) {
+      appendSystem("🎉 " + name + " just joined ForkMesh - say hi!");
+    }
+  }
+  directorySeeded = true;
+  renderInitialMemberPicker();
+  schedulePeopleRender();
+}
+
+// Record the current activity counters as "seen" so the chat icon in the site
+// header (site-header.js reads the same key) shows no badge for what's on
+// screen right now.
+async function markChatActivitySeen() {
+  try {
+    const res = await fetch(CHAT_ACTIVITY_ENDPOINT, {
+      headers: { accept: "application/json" },
+    });
+    if (!res.ok) return;
+    const data = await res.json().catch(() => null);
+    if (!data || !data.ok) return;
+    localStorage.setItem(CHAT_ACTIVITY_SEEN_KEY, JSON.stringify({
+      messageCount: Number(data.messageCount) || 0,
+      userCount: Number(data.userCount) || 0,
+      at: Date.now(),
+    }));
+  } catch (_) {}
 }
 
 function renderPeople() {
@@ -831,20 +1411,27 @@ function renderPeople() {
     }
     return [...byIdentity.values()];
   };
-  const bySection = { user: [], node: [] };
+  const bySection = { user: [], guest: [], node: [] };
   for (const person of roster.values()) {
-    (person.kind === "node" ? bySection.node : bySection.user).push(person);
+    const section = person.kind === "node"
+      ? "node"
+      : person.kind === "guest"
+        ? "guest"
+        : "user";
+    bySection[section].push(person);
   }
   bySection.user = dedupePeople(bySection.user);
+  bySection.guest = dedupePeople(bySection.guest);
   bySection.node = dedupePeople(bySection.node);
   const sortPeople = (list) =>
     list.sort((a, b) =>
       (personIsOnline(b) - personIsOnline(a)) ||
       a.name.localeCompare(b.name));
   const onlineCount =
-    [...bySection.user, ...bySection.node].filter(personIsOnline).length;
+    [...bySection.user, ...bySection.guest, ...bySection.node]
+      .filter(personIsOnline).length;
   if (peopleTitleEl) {
-    peopleTitleEl.textContent = `People — ${onlineCount} online`;
+    peopleTitleEl.textContent = `People - ${onlineCount} online`;
   }
   const renderSection = (title, list) => {
     if (!list.length) return;
@@ -856,12 +1443,12 @@ function renderPeople() {
       // Each row links to the person's profile at /@username on this relay
       // (relative URL — a self-hosted relay links to its own pages). ForkBot
       // isn't an account, so its row stays a plain div.
-      const isBot = person.kind === "bot";
-      const row = document.createElement(isBot ? "div" : "a");
+      const hasProfile = person.kind === "user";
+      const row = document.createElement(hasProfile ? "a" : "div");
       const online = personIsOnline(person);
       row.className = "chat-person" + (online ? "" : " is-offline");
       row.title = person.name + (online ? " · online" : " · offline");
-      if (!isBot) row.href = mentionProfilePath(person.name);
+      if (hasProfile) row.href = mentionProfilePath(person.name);
       row.append(makeAvatar(person.name, person.kind));
       const label = document.createElement("span");
       label.className = "chat-person-name";
@@ -873,6 +1460,7 @@ function renderPeople() {
     }
   };
   renderSection("Users", bySection.user);
+  renderSection("World guests", bySection.guest);
   renderSection("Nodes", bySection.node);
 }
 
@@ -924,14 +1512,14 @@ function renderReactions(messageId) {
 }
 
 function toggleReaction(messageId, emoji) {
-  if (!userSession()) {
+  if (!canJoinChannel()) {
     lockChatForNonUser();
     return;
   }
   const rec = rows.get(messageId);
   const mine = Boolean(reactions.get(messageId)?.get(emoji)?.has(selfId));
   const plain = makePlain("reaction", {
-    conversation: (rec && rec.channel) || activeChannel,
+    conversation: channelDisplayLabel((rec && rec.channel) || activeChannel),
     target: messageId,
     emoji,
     reactorId: selfId,
@@ -993,6 +1581,63 @@ function scrollLogToBottom() {
   logEl.scrollTop = logEl.scrollHeight;
 }
 
+function revokeAttachmentUrl(record) {
+  if (!record || !record.attachmentUrl) return;
+  URL.revokeObjectURL(record.attachmentUrl);
+  record.attachmentUrl = "";
+}
+
+function renderAttachment(record) {
+  const attachment = record && record.attachment;
+  if (!attachment) return null;
+  let bytes;
+  try {
+    bytes = b64ToBytes(attachment.file);
+  } catch (_) {
+    return null;
+  }
+  revokeAttachmentUrl(record);
+  const blob = new Blob([bytes], { type: attachment.fileMime });
+  const objectUrl = URL.createObjectURL(blob);
+  record.attachmentUrl = objectUrl;
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "chat-attachment";
+  if (attachment.fileMime.startsWith("image/")) {
+    const image = document.createElement("img");
+    image.className = "chat-attachment-image";
+    image.src = objectUrl;
+    image.alt = attachment.fileName;
+    image.loading = "lazy";
+    wrapper.append(image);
+  }
+
+  const card = document.createElement("div");
+  card.className = "chat-attachment-card";
+  const icon = document.createElement("span");
+  icon.textContent = attachment.fileMime.startsWith("image/") ? "Image" : "File";
+  icon.setAttribute("aria-hidden", "true");
+  const info = document.createElement("div");
+  info.className = "chat-attachment-info";
+  const name = document.createElement("div");
+  name.className = "chat-attachment-name";
+  name.textContent = attachment.fileName;
+  name.title = attachment.fileName;
+  const meta = document.createElement("div");
+  meta.className = "chat-attachment-meta";
+  meta.textContent = `${attachment.fileMime} - ${formatAttachmentSize(attachment.size)}`;
+  info.append(name, meta);
+  const link = document.createElement("a");
+  link.className = "chat-attachment-download";
+  link.href = objectUrl;
+  link.download = attachment.fileName;
+  link.textContent = "Download";
+  link.setAttribute("aria-label", `Download ${attachment.fileName}`);
+  card.append(icon, info, link);
+  wrapper.append(card);
+  return wrapper;
+}
+
 // Render one message record into the log. `prev` is the record already above
 // it; consecutive same-sender messages within GROUP_WINDOW_MS collapse under a
 // single avatar + name/time header, Discord-style.
@@ -1042,10 +1687,15 @@ function buildRow(record, prev) {
     head.append(author, time);
     main.append(head);
   }
-  const body = document.createElement("span");
-  body.className = "chat-text";
-  appendMentionText(body, record.text);
-  main.append(body);
+  let body = null;
+  if (record.text) {
+    body = document.createElement("span");
+    body.className = "chat-text";
+    appendMentionText(body, record.text);
+    main.append(body);
+  }
+  const attachment = renderAttachment(record);
+  if (attachment) main.append(attachment);
   const reactionsEl = document.createElement("div");
   reactionsEl.className = "chat-reactions";
   main.append(reactionsEl);
@@ -1067,14 +1717,18 @@ function buildRow(record, prev) {
 }
 
 function renderActiveChannel() {
+  for (const record of rows.values()) revokeAttachmentUrl(record);
   logEl.textContent = "";
   const list = channelMessages.get(activeChannel) || [];
   if (!list.length) {
     const empty = document.createElement("div");
     empty.className = "chat-empty";
-    empty.textContent = userSession()
-      ? `No messages in ${activeChannel} yet. Say hi!`
-      : "Log in as a user to join the room.";
+    empty.textContent = canJoinChannel()
+      ? `No messages in ${channelDisplayLabel(activeChannel)} yet. Say hi!`
+      : (
+          "Log in as a user to join this channel. " +
+          "Guests can participate only in public World #general."
+        );
     logEl.append(empty);
     return;
   }
@@ -1113,14 +1767,16 @@ function insertMessage(record) {
   }
 }
 
-function appendMessage(kind, who, text, id, senderId, ts, channel) {
+function appendMessage(kind, who, text, id, senderId, ts, channel, attachment = null) {
+  const channelKey = normalizeChannelKey(channel) || activeChannel;
   const record = {
     id: id || String(Math.random()).slice(2) + Date.now(),
-    channel: ensureChannel(channel) || activeChannel,
+    channel: ensureChannel(channelKey) || activeChannel,
     ts: Number(ts) || Date.now(),
     senderId: senderId || "",
     sender: who,
     text,
+    attachment,
     self: kind === "self",
   };
   insertMessage(record);
@@ -1132,6 +1788,7 @@ function appendMessage(kind, who, text, id, senderId, ts, channel) {
 function removeMessage(id) {
   const rec = rows.get(id);
   if (!rec) return;
+  revokeAttachmentUrl(rec);
   rows.delete(id);
   reactions.delete(id);
   const list = channelMessages.get(rec.channel) || [];
@@ -1148,6 +1805,7 @@ function removeMessage(id) {
 function clearChat() {
   const list = channelMessages.get(activeChannel) || [];
   for (const record of list) {
+    revokeAttachmentUrl(record);
     rows.delete(record.id);
     reactions.delete(record.id);
   }
@@ -1175,11 +1833,54 @@ function makePlain(type, extra) {
         String(Math.random()).slice(2) + Date.now(),
       senderId: selfId,
       sender: displayName(),
-      accountKind: "user",
+      // Only people without a session speak as guests. A signed-in browser
+      // keeps its account kind in the public room too, so logging in no
+      // longer spawns a second "guest" person beside the account.
+      accountKind:
+        roomScopeForChannel() === "public-world-general" && !userSession()
+          ? "guest"
+          : "user",
       ts: Date.now(),
     },
     extra || {}
   );
+}
+
+function allowedChatAccountKind(value, scope = roomScopeForChannel()) {
+  return value === "user" ||
+    (scope === "public-world-general" && value === "guest");
+}
+
+function normalizedPublicWorldFrame(
+  plain,
+  scope = roomScopeForChannel(),
+) {
+  if (scope !== "public-world-general" ||
+      !plain || typeof plain !== "object") {
+    return plain;
+  }
+  return {
+    ...plain,
+    accountKind: plain.accountKind === "user" ? "user" : "guest",
+    sender: publicWorldName(plain.sender),
+  };
+}
+
+function frameMatchesScope(plain, scope) {
+  if (scope !== "public-world-general") {
+    if (!isPrivateChannelKey(scope)) return false;
+    if (plain.type === "history" || plain.type === "hello" ||
+        plain.type === "presence" || plain.type === "bye") return true;
+    return plain.channel === channelDisplayLabel(scope) ||
+      plain.conversation === channelDisplayLabel(scope);
+  }
+  if (plain.type === "history") return true;
+  if (plain.type === "hello" || plain.type === "presence" ||
+      plain.type === "bye") {
+    return allowedChatAccountKind(plain.accountKind, scope);
+  }
+  return plain.channel === "#general" ||
+    plain.conversation === "#general";
 }
 
 function once(id) {
@@ -1188,8 +1889,12 @@ function once(id) {
   return true;
 }
 
-function renderChatEntry(entry, kind) {
-  if (!entry || entry.accountKind !== "user") return;
+function renderChatEntry(entry, kind, scope = roomScopeForChannel()) {
+  if (!entry || !allowedChatAccountKind(entry.accountKind, scope)) return;
+  entry = normalizedPublicWorldFrame(entry, scope);
+  const channelKey = scope === "public-world-general" ? "#general" : scope;
+  if (scope === "public-world-general" && entry.channel !== "#general") return;
+  if (isPrivateChannelKey(scope) && entry.channel !== channelDisplayLabel(scope)) return;
   // A private-room message from a room we weren't invited to is ignored, the
   // same honour-model as the desktop client.
   if (entry.private) return;
@@ -1198,11 +1903,20 @@ function renderChatEntry(entry, kind) {
   noteRoster(entry);
   if (!once(entry.id)) return;
   const who = (entry.sender || "peer").slice(0, MAX_NAME);
-  const text = entry.fileName
-    ? "📎 " + entry.fileName
-    : entry.text || "";
-  if (text) {
-    appendMessage(kind, who, text, entry.id, entry.senderId, entry.ts, entry.channel);
+  const text = entry.text || "";
+  const attachment = attachmentFromEntry(entry);
+  if (text || attachment) {
+    const renderedKind = entry.senderId === selfId ? "self" : kind;
+    appendMessage(
+      renderedKind,
+      who,
+      text,
+      entry.id,
+      entry.senderId,
+      entry.ts,
+      channelKey,
+      attachment,
+    );
   }
 }
 
@@ -1237,26 +1951,26 @@ async function verifyAdminDelete(plain) {
   }
 }
 
-function handlePlain(plain) {
+function handlePlain(plain, scope = roomScopeForChannel()) {
   const type = plain.type;
+  if (!frameMatchesScope(plain, scope)) return;
+  if (type !== "history" && !allowedChatAccountKind(plain.accountKind, scope)) {
+    return;
+  }
+  plain = normalizedPublicWorldFrame(plain, scope);
   // Roster + channel discovery run for EVERY decrypted frame — desktop nodes
   // announce themselves (hello/presence) without accountKind, and the people
   // pane should still show them with their online status.
   noteRoster(plain);
-  if (type === "hello" || type === "channel") {
-    const announced = type === "channel" ? [plain.name] : plain.channels || [];
-    for (const name of announced) {
-      if (name) ensureChannel(name);
-    }
-  }
-  if (type !== "history" && plain.accountKind !== "user") return;
+  if (scope === "public-world-general" &&
+      (type === "hello" || type === "channel")) ensureChannel("#general");
   const sender = (plain.sender || "peer").slice(0, MAX_NAME);
   if (type === "chat") {
-    renderChatEntry(plain, "peer");
+    renderChatEntry(plain, "peer", scope);
   } else if (type === "history") {
     for (const entry of plain.entries || []) {
       if (entry && (entry.channel || entry.text || entry.fileName)) {
-        renderChatEntry(entry, "peer");
+        renderChatEntry(entry, "peer", scope);
       }
     }
   } else if (type === "reaction") {
@@ -1280,13 +1994,14 @@ function handlePlain(plain) {
       removeMessage(plain.target);
     });
   } else if (type === "hello" && !plain.to) {
-    appendSystem(sender + " joined");
+    // Presence is shown in the World itself; do not add join noise to the
+    // message timeline or push the composer upward.
   } else if (type === "bye") {
     appendSystem(sender + " left");
   }
 }
 
-async function onFrame(event) {
+async function onFrame(event, key = null, scope = roomScopeForChannel()) {
   if (typeof event.data !== "string") return;
   let envelope;
   try {
@@ -1294,29 +2009,35 @@ async function onFrame(event) {
   } catch (error) {
     return;
   }
-  const plain = await decryptObject(envelope);
-  if (!plain || plain.senderId === selfId) return;
-  handlePlain(plain);
+  const plain = await decryptObject(envelope, key);
+  if (!plain) return;
+  handlePlain(plain, scope);
 }
 
 const DURABLE_TYPES = new Set(["chat", "edit", "delete", "reaction", "admin-delete"]);
 
 function send(plain) {
-  if (!userSession()) {
+  if (!canJoinChannel()) {
     lockChatForNonUser();
     return Promise.resolve();
   }
-  return encryptObject(plain).then((envelope) => {
-    if (DURABLE_TYPES.has(plain && plain.type)) envelope.persist = true;
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify(envelope));
-    }
-  });
+  const scope = roomTransport?.room?.scope || roomScopeForChannel();
+  if (
+    scope === "public-world-general" &&
+    plain?.channel &&
+    plain.channel !== "#general"
+  ) {
+    return Promise.resolve();
+  }
+  const envelope = { persist: false };
+  if (DURABLE_TYPES.has(plain && plain.type)) envelope.persist = true;
+  if (!roomTransport) return Promise.resolve(false);
+  return roomTransport.send(plain, { persist: envelope.persist });
 }
 
 function makeForkbotPlain(text) {
   return makePlain("chat", {
-    channel: activeChannel,
+    channel: channelDisplayLabel(activeChannel),
     text: String(text || "").slice(0, MAX_TEXT),
     sender: "forkbot",
     senderId: FORKBOT_SENDER_ID,
@@ -1328,10 +2049,12 @@ function broadcastForkbotMessage(text) {
   const plain = makeForkbotPlain(text);
   send(plain);
   seen.add(plain.id);
-  appendMessage("peer", plain.sender, plain.text, plain.id, plain.senderId, plain.ts, plain.channel);
+  appendMessage("peer", plain.sender, plain.text, plain.id, plain.senderId, plain.ts, activeChannel);
 }
 
 async function maybeAskForkbot(text) {
+  if (!userSession()) return;
+  if (isPrivateChannelKey(activeChannel)) return;
   if (!FORKBOT_MENTION_RE.test(text || "")) return;
   // The triggering line is the last buffer entry (appendMessage ran just
   // before this) and is sent separately as `message`; drop it, drop ForkBot's
@@ -1355,78 +2078,195 @@ async function maybeAskForkbot(text) {
   }
 }
 
-function scheduleReconnect() {
-  if (reconnectTimer || !userSession()) return;
-  setStatus("Disconnected · reconnecting…");
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
+function switchChatRoom() {
+  roomTransport?.dispose();
+  roomTransport = null;
+  openCallbacks = [];
+  if (canJoinChannel()) {
+    unlockChatForUser();
     connect();
-  }, reconnectDelayMs);
-  reconnectDelayMs = Math.min(reconnectDelayMs * 2, 30000);
+  } else {
+    lockChatForNonUser();
+  }
+}
+
+function scheduleReconnect() {
+  if (chatSuspended) return;
+  if (!canJoinChannel()) return;
+  setStatus("Disconnected · reconnecting…");
+  if (!roomTransport || roomTransport.state === "unauthorized") connect();
+}
+
+async function authorizeChatRoom(room) {
+  if (room.scope === "public-world-general") {
+    return {
+      scope: room.scope,
+      key: await deriveRoomKey(room.scope),
+      roomName: PUBLIC_WORLD_GENERAL_ROOM,
+      webSocketUrl: PUBLIC_WORLD_CHAT_WS_PATH,
+    };
+  }
+  const access = await fetchRoomAccess(room.scope);
+  return {
+    scope: room.scope,
+    passphrase: access.passphrase,
+    roomName: access.room,
+    webSocketUrl: access.webSocketUrl,
+  };
+}
+
+function handleTransportState(state, detail) {
+  const scope = detail.room?.scope || roomScopeForChannel();
+  if (state === "connected") {
+    if (scope !== roomScopeForChannel()) {
+      switchChatRoom();
+      return;
+    }
+    if (!officeAuthorizationExpired) showOfficeFailure("");
+    setStatus(
+      scope === "public-world-general"
+        ? "Connected · public World #general"
+        : `Connected · ${
+          privateChannelForKey(scope)?.visibility || "private"
+        } ${channelDisplayLabel(scope)}`
+    );
+    send(makePlain("hello", {
+      channels: [channelDisplayLabel(activeChannel)],
+    }));
+    noteSelfRoster();
+    const callbacks = openCallbacks;
+    openCallbacks = [];
+    callbacks.forEach((callback) => callback());
+    return;
+  }
+  if (state === "authorizing" || state === "connecting") {
+    setStatus("Connecting...");
+    return;
+  }
+  if (state === "reconnecting") {
+    setStatus("Disconnected · reconnecting…");
+    return;
+  }
+  if (state === "unauthorized") {
+    setStatus(CHAT_SIGN_IN_REQUIRED);
+    showOfficeFailure("auth");
+    return;
+  }
+  if (state === "unavailable") {
+    setStatus(OFFICE_RELAY_UNAVAILABLE);
+    showOfficeFailure("relay");
+  }
+}
+
+function newRoomTransport() {
+  return createChatRoomTransport({
+    authorize: authorizeChatRoom,
+    onPlain: (plain, room) => handlePlain(plain, room.scope),
+    onState: handleTransportState,
+    locationLike: { protocol: location.protocol, host: RELAY_HOST },
+  });
 }
 
 async function connect() {
-  if (socket || connecting) return;
-  if (!userSession()) {
+  if (chatSuspended) return;
+  const scope = roomScopeForChannel();
+  if (!canJoinChannel()) {
     lockChatForNonUser();
     return;
   }
   // WebCrypto (crypto.subtle) only exists in a secure context. Served over
-  // plain HTTP — a self-hosted node or LAN IP opened on mobile — it is
+  // plain HTTP - a self-hosted node or LAN IP opened on mobile - it is
   // undefined, so the room key can never derive. Say so plainly.
   if (!window.isSecureContext || !(window.crypto && window.crypto.subtle)) {
     setStatus("Chat needs a secure (HTTPS) connection");
     return;
   }
-  connecting = true;
-  setStatus("Connecting...");
-  try {
-    if (!roomKey) roomKey = await deriveRoomKey();
-  } catch (error) {
-    connecting = false;
-    // An expired/absent session token 401s the room-key fetch; point the user
-    // at re-authenticating instead of blaming the browser's crypto.
-    setStatus(error && error.code === "auth"
-      ? "Sign in again to join chat"
-      : "Encryption unavailable in this browser");
+  if (roomTransport?.room?.scope === scope) {
+    if (roomTransport.state === "suspended") await roomTransport.resume();
     return;
   }
-  const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-  socket = new WebSocket(`${scheme}//${RELAY_HOST}${CHAT_WS_PATH}`);
-
-  socket.addEventListener("open", () => {
-    connecting = false;
-    reconnectDelayMs = 2000;
-    setStatus("Connected · end-to-end encrypted");
-    // Announce ourselves so clients add us to their roster and replay history.
-    send(makePlain("hello", { channels: [...channelMeta.keys()] }));
-    noteSelfRoster();
-    const callbacks = openCallbacks;
-    openCallbacks = [];
-    callbacks.forEach((cb) => cb());
-  });
-  socket.addEventListener("message", onFrame);
-  socket.addEventListener("close", () => {
-    socket = null;
-    connecting = false;
-    scheduleReconnect();
-  });
-  socket.addEventListener("error", () => {
-    if (socket) socket.close();
-  });
+  roomTransport?.dispose();
+  roomTransport = newRoomTransport();
+  await roomTransport.connect({ scope });
 }
 
 function runWhenConnected(callback) {
-  if (socket && socket.readyState === WebSocket.OPEN) {
+  const scope = roomScopeForChannel();
+  if (
+    roomTransport?.connected &&
+    roomTransport.room?.scope === scope
+  ) {
     callback();
     return;
   }
   openCallbacks.push(callback);
+  if (roomTransport && roomTransport.room?.scope !== scope) {
+    switchChatRoom();
+    return;
+  }
   connect();
 }
 
+async function sendAttachment(file) {
+  if (!file || !canJoinChannel()) {
+    if (!canJoinChannel()) lockChatForNonUser();
+    return;
+  }
+  if (file.size > MAX_ATTACHMENT_BYTES) {
+    setAttachmentFeedback("Attachments must be 1 MiB or smaller.");
+    return;
+  }
+  if (!file.size) {
+    setAttachmentFeedback("That file is empty.");
+    return;
+  }
+  let buffer;
+  try {
+    buffer = await file.arrayBuffer();
+  } catch (_) {
+    setAttachmentFeedback("Could not read that attachment.");
+    return;
+  }
+  const fileName = safeAttachmentName(file.name);
+  const fileMime = safeAttachmentMime(file.type);
+  const encodedFile = bytesToB64(buffer);
+  runWhenConnected(() => {
+    const plain = makePlain("chat", {
+      channel: channelDisplayLabel(activeChannel),
+      fileName,
+      fileMime,
+      file: encodedFile,
+    });
+    const attachment = attachmentFromEntry(plain);
+    if (!attachment) {
+      setAttachmentFeedback("Could not prepare that attachment.");
+      return;
+    }
+    send(plain);
+    seen.add(plain.id);
+    appendMessage(
+      "self",
+      plain.sender,
+      "",
+      plain.id,
+      plain.senderId,
+      plain.ts,
+      activeChannel,
+      attachment,
+    );
+    setAttachmentFeedback(`Shared ${fileName}`);
+  });
+}
+
+function clipboardImage(event) {
+  const items = Array.from(event.clipboardData?.items || []);
+  const item = items.find((candidate) =>
+    candidate.kind === "file" && String(candidate.type || "").startsWith("image/"));
+  return item ? item.getAsFile() : null;
+}
+
 function sendCurrentMessage() {
-  if (!userSession()) {
+  if (!canJoinChannel()) {
     lockChatForNonUser();
     return;
   }
@@ -1435,24 +2275,60 @@ function sendCurrentMessage() {
   input.value = "";
   runWhenConnected(() => {
     const clipped = text.slice(0, MAX_TEXT);
-    const plain = makePlain("chat", { channel: activeChannel, text: clipped });
+    const plain = makePlain("chat", {
+      channel: channelDisplayLabel(activeChannel),
+      text: clipped,
+    });
     send(plain);
     seen.add(plain.id); // we render it here; ignore the echo if one comes back
-    appendMessage("self", plain.sender, clipped, plain.id, plain.senderId, plain.ts, plain.channel);
+    appendMessage("self", plain.sender, clipped, plain.id, plain.senderId, plain.ts, activeChannel);
     maybeAskForkbot(clipped);
   });
 }
 
+function suspendOfficeChat() {
+  if (!isOfficeEmbed || chatSuspended) return;
+  chatSuspended = true;
+  roomTransport?.suspend();
+  openCallbacks = [];
+  setStatus("Chat paused outside ForkMesh Office");
+}
+
+function receiveOfficeMessage(event) {
+  if (!isOfficeEmbed) return;
+  if (event.origin !== window.location.origin) return;
+  if (event.source !== window.parent) return;
+  const message = event.data;
+  if (!message || message.type !== "office-chat-suspend") return;
+  suspendOfficeChat();
+}
+
+if (isOfficeEmbed) {
+  window.addEventListener("message", receiveOfficeMessage);
+}
+
 async function initChat() {
-  for (const channel of DEFAULT_CHANNELS) ensureChannel(channel);
-  if (channelTitleEl) channelTitleEl.textContent = activeChannel;
-  if (input) input.placeholder = `Message ${activeChannel}…`;
+  await hydrateUserSession();
+  ensureChannel("#general");
+  await refreshPrivateChannels({ connect: false });
+  const label = channelDisplayLabel(activeChannel);
+  updateChannelHeading();
+  if (input) input.placeholder = `Message ${label}…`;
+  updateAdminChannelControls();
   renderRooms();
   renderPeople();
-  await hydrateUserSession();
-  // Connect right away for signed-in users so retained room history is visible
-  // without first focusing an input.
-  if (userSession()) {
+  // Fill the people pane with every registered user (and thereafter pick up
+  // brand-new signups), and baseline the header badge counters for this visit.
+  refreshUsersDirectory();
+  markChatActivitySeen();
+  setInterval(() => {
+    refreshUsersDirectory();
+    markChatActivitySeen();
+  }, USERS_DIRECTORY_REFRESH_MS);
+  setInterval(refreshPrivateChannels, PRIVATE_CHANNEL_REFRESH_MS);
+  // Public World #general connects for everyone. Private channels remain
+  // session-gated and each uses its own ticketed room and current key version.
+  if (canJoinChannel()) {
     unlockChatForUser();
     connect();
     renderActiveChannel();
@@ -1461,6 +2337,42 @@ async function initChat() {
   }
   sendBtn.addEventListener("click", sendCurrentMessage);
   if (clearBtn) clearBtn.addEventListener("click", clearChat);
+  channelCreateBtn?.addEventListener("click", () => openChannelDialog(false));
+  channelManageBtn?.addEventListener("click", () => openChannelDialog(true));
+  channelDialogClose?.addEventListener("click", () => channelDialog?.close());
+  channelCreateForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    createChannel(
+      channelNameInput?.value || "",
+      channelVisibilitySelect?.value || "private",
+      [...selectedInitialMembers],
+    );
+  });
+  channelVisibilitySelect?.addEventListener(
+    "change", syncInitialMemberVisibility);
+  channelUserSearch?.addEventListener("input", renderInitialMemberPicker);
+  channelInviteForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    inviteChannelMember(channelUsernameInput?.value || "");
+  });
+  officeRetryBtn?.addEventListener("click", () => {
+    showOfficeFailure("");
+    connect();
+  });
+  if (attachmentBtn && attachmentInput) {
+    attachmentBtn.addEventListener("click", () => attachmentInput.click());
+    attachmentInput.addEventListener("change", () => {
+      const file = attachmentInput.files && attachmentInput.files[0];
+      attachmentInput.value = "";
+      if (file) sendAttachment(file);
+    });
+  }
+  input.addEventListener("paste", (event) => {
+    const file = clipboardImage(event);
+    if (!file) return;
+    event.preventDefault();
+    sendAttachment(file);
+  });
   input.addEventListener("keydown", (event) => {
     // While the @mention popup is open it owns the keyboard: Tab (or Enter)
     // accepts the highlighted name, arrows move, Escape dismisses — only then
@@ -1505,13 +2417,19 @@ async function initChat() {
   // (it reaps sockets that send nothing for 3 minutes — the old web client's
   // idle disconnects).
   setInterval(() => {
-    if (socket && socket.readyState === WebSocket.OPEN && userSession()) {
+    if (roomTransport?.connected && canJoinChannel()) {
       send(makePlain("presence"));
       noteSelfRoster();
     }
   }, PRESENCE_INTERVAL_MS);
   // Re-evaluate online dots as peers go stale even with no traffic.
   setInterval(renderPeople, 30000);
+  if (isOfficeEmbed && window.parent !== window) {
+    window.parent.postMessage(
+      { type: "office-chat-ready" },
+      window.location.origin,
+    );
+  }
 }
 
 if (logEl && input && sendBtn) {

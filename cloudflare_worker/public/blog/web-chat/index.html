@@ -46,13 +46,13 @@
         <article class="body">
           <h2>Why it matters</h2>
           <p>Web chat gives ForkMesh a concrete mechanism for browser participation in the same room protocol as the desktop app. Join the conversation from the browser too, the website speaks the same room protocol as the desktop app.</p>
-          <p>Project conversations often carry design, access, and coordination context that infrastructure should not read. In ForkMesh, web chat addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
+          <p>Project conversations often carry design, access, and coordination context, so web chat states the relay trust boundary directly.</p>
           <h2>How ForkMesh handles it</h2>
-          <p>ForkMesh handles web chat through the same split it uses across the product: ForkMesh attaches rooms, direct messages, discussions, and browser chat to repository identity while encrypting sensitive payloads before relay.</p>
-          <p>The behavior is intentionally narrow: Join the conversation from the browser too, the website speaks the same room protocol as the desktop app. The mainnode can coordinate reachability and relay traffic without custody of plaintext message bodies.</p>
-          <div class="note">Title focus: Web chat stays tied to browser participation in the same room protocol as the desktop app and the local-first repository model.</div>
+          <p>The website uses the same AES-256-GCM envelopes as desktop and Flutter. It fetches the default shared passphrase from the relay after authentication, so the relay operator can derive the key and decrypt messages.</p>
+          <p>The mainnode retains only marked history, capped at the newest 500 persisted frames per room for 7 days.</p>
+          <div class="note">Web chat's default mode is relay-readable authenticated shared-key transport, not end-to-end encryption.</div>
           <h2>Where it fits</h2>
-          <p>Use web chat when teams need repository-aware conversation without central plaintext custody.</p>
+          <p>Use web chat when teams need repository-aware conversation and accept the relay operator in the trust boundary.</p>
           <p>It pairs with the rest of Chat &amp; private sharing because Web chat keeps browser participation in the same room protocol as the desktop app connected to the repository, its signatures, and the nodes that serve it.</p>
         </article>
         <nav class="next" aria-label="Feature posts">

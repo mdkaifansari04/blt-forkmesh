@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/models.dart';
 import '../services/api_service.dart';
@@ -1109,7 +1110,7 @@ class _AboutTab extends StatelessWidget {
             title: 'Repository funding',
             children: [
               Text(
-                'Optional donations use an external Solana wallet and the public repository donation address.',
+                'Optional donations use an external self-custodial Solana wallet and the public repository donation address. ForkMesh never holds the funds or stores wallet private keys; independently verify the address and network before signing.',
                 style: TextStyle(
                   color: FmTheme.textSecondary(context),
                   height: 1.35,
@@ -1139,95 +1140,23 @@ class _AboutTab extends StatelessWidget {
   }
 }
 
-class _OwnerBountyWalletPanel extends StatefulWidget {
+class _OwnerBountyWalletPanel extends StatelessWidget {
   const _OwnerBountyWalletPanel({required this.repo});
 
   final Repository repo;
 
-  @override
-  State<_OwnerBountyWalletPanel> createState() =>
-      _OwnerBountyWalletPanelState();
-}
-
-class _OwnerBountyWalletPanelState extends State<_OwnerBountyWalletPanel> {
-  BountyWallet? _wallet;
-  bool _busy = false;
-  String _message = '';
-
-  Repository get repo => widget.repo;
-
-  String _gateCopy(BuildContext context) {
-    final auth = context.watch<AuthService?>();
-    final identity = context.watch<Identity?>();
-    final session = auth?.session;
-    final account = session?.nodeName.trim().toLowerCase() ?? '';
-    if (session == null || identity == null || account.isEmpty) {
-      return 'Sign in as ${repo.owner} with this mobile device paired to the owner key to prepare the Worker-custodied bounty wallet deposit address.';
-    }
-    if (account != repo.owner.trim().toLowerCase()) {
-      return 'Signed in as $account. Only ${repo.owner} can prepare this owner bounty wallet deposit address.';
-    }
-    if (session.pubkey.trim() != identity.publicKeyB64url) {
-      return 'Owner account is present, but this mobile identity is not the owner key.';
-    }
-    return '';
-  }
-
-  Future<void> _prepareWallet() async {
-    if (_busy) return;
-    final auth = context.read<AuthService?>();
-    final identity = context.read<Identity?>();
-    final api = context.read<ApiService>();
-    final session = auth?.session;
-    final account = session?.nodeName.trim().toLowerCase() ?? '';
-    try {
-      if (session == null || identity == null || account.isEmpty) {
-        throw Exception(
-          'Sign in as ${repo.owner} with this mobile device paired to the owner key.',
-        );
-      }
-      if (account != repo.owner.trim().toLowerCase()) {
-        throw Exception('Only ${repo.owner} can prepare this wallet deposit.');
-      }
-      if (session.pubkey.trim() != identity.publicKeyB64url) {
-        throw Exception('This mobile identity is not the owner key.');
-      }
-      final ts = DateTime.now().millisecondsSinceEpoch.toString();
-      final canonical = 'forkmesh-bounty-wallet-v1\n${repo.owner}\n$ts';
-      setState(() {
-        _busy = true;
-        _message = '';
-      });
-      final sig = await identity.sign(utf8.encode(canonical));
-      final wallet = await api.bountyWallet(
-        repo.owner,
-        repo.name,
-        ts: ts,
-        sig: sig,
-      );
-      if (!mounted) return;
-      setState(() {
-        _wallet = wallet;
-        _message = 'Wallet deposit state refreshed.';
-      });
-    } catch (error) {
-      if (!mounted) return;
-      setState(() => _message = '$error');
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
+  String _gateCopy() {
+    return 'Legacy Worker-custodied bounty wallets are frozen for an offline, balance-reconciled migration. Do not send funds to a historical deposit address. New bounties require an external self-custodial wallet, program, or multisig.';
   }
 
   @override
   Widget build(BuildContext context) {
-    final gateCopy = _gateCopy(context);
-    final canPrepare = gateCopy.isEmpty && !_busy;
-    final wallet = _wallet;
+    final gateCopy = _gateCopy();
     return _InfoCard(
-      title: 'Owner bounty wallet',
+      title: 'Legacy bounty wallet',
       children: [
         Text(
-          'Worker-custodied bounty wallet deposit address',
+          'Custodial wallet disabled · migration status only',
           style: TextStyle(
             color: FmTheme.textPrimary(context),
             fontWeight: FontWeight.w800,
@@ -1235,17 +1164,15 @@ class _OwnerBountyWalletPanelState extends State<_OwnerBountyWalletPanel> {
         ),
         const SizedBox(height: 6),
         Text(
-          'Prepare this owner-scoped deposit address from a repo funding panel, then fund it from an external Solana wallet. Mobile never receives private keys and cannot spend or debit this wallet.',
+          'ForkMesh no longer creates or uses Worker-held bounty keys. Historical public status may be shown for reconciliation, but this app never prepares or funds a custodial address.',
           style: TextStyle(color: FmTheme.textSecondary(context), height: 1.35),
         ),
         const SizedBox(height: 12),
         FilledButton.icon(
           key: const Key('repo-owner-bounty-wallet-prepare'),
-          onPressed: canPrepare ? _prepareWallet : null,
+          onPressed: null,
           icon: const Icon(Icons.account_balance_wallet_outlined, size: 18),
-          label: Text(
-            _busy ? 'Preparing wallet...' : 'Prepare/view wallet deposit',
-          ),
+          label: const Text('Custodial wallet disabled'),
         ),
         if (gateCopy.isNotEmpty) ...[
           const SizedBox(height: 10),
@@ -1258,52 +1185,11 @@ class _OwnerBountyWalletPanelState extends State<_OwnerBountyWalletPanel> {
             ),
           ),
         ],
-        if (wallet != null && wallet.hasWallet) ...[
-          const SizedBox(height: 14),
-          _CopyableValue(
-            label: 'Deposit address',
-            value: wallet.address,
-            copyLabel: 'Owner bounty wallet address',
-            copyKey: const Key('repo-owner-bounty-wallet-copy-address'),
-          ),
-          const SizedBox(height: 10),
-          _CopyableValue(
-            label: 'Balance',
-            value: wallet.balanceLabel,
-            copyLabel: 'Owner bounty wallet balance',
-            copyKey: const Key('repo-owner-bounty-wallet-copy-balance'),
-          ),
-          if (wallet.payUri.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            _CopyableValue(
-              label: 'Payment URI',
-              value: wallet.payUri,
-              copyLabel: 'Owner bounty wallet payment URI',
-              copyKey: const Key('repo-owner-bounty-wallet-copy-pay-uri'),
-            ),
-          ],
-          if (wallet.explorerAddressUrl.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            _CopyableValue(
-              label: 'Address explorer URL',
-              value: wallet.explorerAddressUrl,
-              copyLabel: 'Owner bounty wallet explorer URL',
-              copyKey: const Key('repo-owner-bounty-wallet-copy-explorer'),
-            ),
-          ],
-        ],
-        if (_message.isNotEmpty) ...[
-          const SizedBox(height: 10),
-          Text(
-            _message,
-            style: TextStyle(
-              color: _message.startsWith('Exception')
-                  ? FmTheme.danger(context)
-                  : FmTheme.textSecondary(context),
-              fontSize: 12,
-            ),
-          ),
-        ],
+        const SizedBox(height: 10),
+        Text(
+          '${repo.owner} can review historical public signatures here, but no wallet or payment URI can be created from this client.',
+          style: TextStyle(color: FmTheme.textTertiary(context), fontSize: 12),
+        ),
       ],
     );
   }
@@ -2895,19 +2781,10 @@ class _IssueDetailScreen extends StatefulWidget {
 
 class _IssueDetailScreenState extends State<_IssueDetailScreen> {
   late Issue _issue = widget.issue;
-  late final TextEditingController _bountyAmount = TextEditingController(
-    text: (_issue.bountyUsd > 0 ? _issue.bountyUsd : 1.0).toStringAsFixed(2),
-  );
   bool _bountyBusy = false;
   String _bountyMessage = '';
 
   Repository get repo => widget.repo;
-
-  @override
-  void dispose() {
-    _bountyAmount.dispose();
-    super.dispose();
-  }
 
   Future<void> _refreshBounty() async {
     if (_bountyBusy) return;
@@ -2925,9 +2802,9 @@ class _IssueDetailScreenState extends State<_IssueDetailScreen> {
       setState(() {
         if (bounty.hasFunding) {
           _issue = _issue.copyWithBounty(bounty);
-          _bountyMessage = 'Bounty status refreshed.';
+          _bountyMessage = 'Historical migration status refreshed.';
         } else {
-          _bountyMessage = 'No Worker bounty deposit has been prepared yet.';
+          _bountyMessage = 'No historical bounty migration record was found.';
         }
       });
     } catch (error) {
@@ -2938,92 +2815,8 @@ class _IssueDetailScreenState extends State<_IssueDetailScreen> {
     }
   }
 
-  Future<void> _prepareBountyDeposit() async {
-    if (_bountyBusy) return;
-    final auth = context.read<AuthService?>();
-    final identity = context.read<Identity?>();
-    final api = context.read<ApiService>();
-    final session = auth?.session;
-    final account = session?.nodeName.trim().toLowerCase() ?? '';
-    final amount = double.tryParse(_bountyAmount.text.trim());
-    if (amount == null || amount <= 0) {
-      setState(() => _bountyMessage = 'Enter a funding amount above \$0.');
-      return;
-    }
-    try {
-      if (session == null || identity == null || account.isEmpty) {
-        throw Exception(
-          'Sign in with the repo owner account to prepare a funding deposit.',
-        );
-      }
-      if (account != repo.owner.trim().toLowerCase()) {
-        throw Exception(
-          'Only the repo owner can prepare a funding deposit for this repo.',
-        );
-      }
-      if (session.pubkey.trim() != identity.publicKeyB64url) {
-        throw Exception(
-          'Pair this mobile device with the owner key before preparing a funding deposit.',
-        );
-      }
-      final rawPayee = _issue.bountyPayee.trim();
-      if (rawPayee.isEmpty) {
-        throw Exception(
-          'Publish or refresh a bounty payee before preparing a funding deposit.',
-        );
-      }
-      final payeeIsAddress = _looksLikeSolanaAddress(rawPayee);
-      final payeeId = payeeIsAddress ? rawPayee : rawPayee.toLowerCase();
-      final ts = DateTime.now().millisecondsSinceEpoch.toString();
-      final canonical =
-          'forkmesh-bounty-create-v1\n${repo.owner}\n${repo.name}\n${_issue.number}\n$payeeId\n$ts';
-      setState(() {
-        _bountyBusy = true;
-        _bountyMessage = '';
-      });
-      final sig = await identity.sign(utf8.encode(canonical));
-      final bounty = await api.createIssueBounty(
-        repo.owner,
-        repo.name,
-        number: _issue.number,
-        amountUsd: amount,
-        payee: payeeIsAddress ? payeeId : '',
-        payeeNode: payeeIsAddress ? '' : payeeId,
-        ts: ts,
-        sig: sig,
-      );
-      if (!mounted) return;
-      setState(() {
-        _issue = _issue.copyWithBounty(bounty);
-        _bountyMessage =
-            'Deposit address prepared. Fund it externally from a Solana wallet.';
-      });
-    } catch (error) {
-      if (!mounted) return;
-      setState(() => _bountyMessage = '$error');
-    } finally {
-      if (mounted) setState(() => _bountyBusy = false);
-    }
-  }
-
   String _fundingGateCopy(BuildContext context) {
-    final auth = context.watch<AuthService?>();
-    final identity = context.watch<Identity?>();
-    final session = auth?.session;
-    final account = session?.nodeName.trim().toLowerCase() ?? '';
-    if (session == null || identity == null || account.isEmpty) {
-      return 'Sign in with the repo owner account and local owner key to prepare funding deposits.';
-    }
-    if (account != repo.owner.trim().toLowerCase()) {
-      return 'Signed in as $account. Only ${repo.owner} can prepare funding deposits.';
-    }
-    if (session.pubkey.trim() != identity.publicKeyB64url) {
-      return 'Owner account is present, but this mobile identity is not the owner key.';
-    }
-    if (_issue.bountyPayee.trim().isEmpty) {
-      return 'Publish or refresh a bounty payee before preparing a funding deposit.';
-    }
-    return '';
+    return 'Custodial funding is disabled. Do not fund a legacy deposit address. New bounty transfers require an owner-controlled external wallet, program, or multisig.';
   }
 
   @override
@@ -3088,14 +2881,18 @@ class _IssueDetailScreenState extends State<_IssueDetailScreen> {
             ],
           ),
           const SizedBox(height: 12),
+          _FederatedRepliesCard(
+            repo: repo,
+            kind: 'issue',
+            number: issue.number,
+          ),
+          const SizedBox(height: 12),
           _BountyFundingCard(
             issue: issue,
-            amountController: _bountyAmount,
             busy: _bountyBusy,
             message: _bountyMessage,
             gateCopy: _fundingGateCopy(context),
             onRefresh: _refreshBounty,
-            onPrepare: _prepareBountyDeposit,
           ),
         ],
       ),
@@ -3106,25 +2903,20 @@ class _IssueDetailScreenState extends State<_IssueDetailScreen> {
 class _BountyFundingCard extends StatelessWidget {
   const _BountyFundingCard({
     required this.issue,
-    required this.amountController,
     required this.busy,
     required this.message,
     required this.gateCopy,
     required this.onRefresh,
-    required this.onPrepare,
   });
 
   final Issue issue;
-  final TextEditingController amountController;
   final bool busy;
   final String message;
   final String gateCopy;
   final VoidCallback onRefresh;
-  final VoidCallback onPrepare;
 
   @override
   Widget build(BuildContext context) {
-    final canPrepare = gateCopy.isEmpty && !busy;
     final addressExplorerUrl = solanaExplorerAddressUrl(issue.bountyAddress);
     final payoutExplorerUrl = solanaExplorerSignatureUrl(issue.bountyPayoutSig);
     return _InfoCard(
@@ -3152,7 +2944,7 @@ class _BountyFundingCard extends StatelessWidget {
         if (issue.bountyAddress.isNotEmpty) ...[
           const SizedBox(height: 12),
           _CopyableValue(
-            label: 'Deposit address',
+            label: 'Legacy address (do not fund)',
             value: issue.bountyAddress,
             copyLabel: 'Bounty deposit address',
             copyKey: const Key('issue-bounty-copy-address'),
@@ -3166,15 +2958,6 @@ class _BountyFundingCard extends StatelessWidget {
               copyKey: const Key('issue-bounty-copy-address-explorer'),
             ),
           ],
-        ],
-        if (issue.bountyPayUri.isNotEmpty) ...[
-          const SizedBox(height: 8),
-          _CopyableValue(
-            label: 'Payment URI',
-            value: issue.bountyPayUri,
-            copyLabel: 'Bounty payment URI',
-            copyKey: const Key('issue-bounty-copy-pay-uri'),
-          ),
         ],
         if (issue.bountyPayoutSig.isNotEmpty) ...[
           const SizedBox(height: 12),
@@ -3196,29 +2979,11 @@ class _BountyFundingCard extends StatelessWidget {
         ],
         const SizedBox(height: 12),
         Text(
-          'Worker-custodied Solana escrow. Desktop and owner-key flows apply or pay bounties; mobile only prepares a deposit address and shows public funding state.',
+          'Non-custodial boundary: live Worker creation, funding, signing, and payout of bounty wallets are disabled. Historical addresses and signatures are migration-only public status. Wallet keys must stay in an owner-controlled external wallet.',
           style: TextStyle(
             color: FmTheme.textSecondary(context),
             fontSize: 12,
             height: 1.35,
-          ),
-        ),
-        const SizedBox(height: 14),
-        TextField(
-          controller: amountController,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: InputDecoration(
-            labelText: 'Funding amount USD',
-            filled: true,
-            fillColor: FmTheme.bgBase(context),
-            contentPadding: const EdgeInsets.symmetric(
-              horizontal: FmSpace.x3,
-              vertical: FmSpace.x2,
-            ),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(FmRadius.md),
-              borderSide: BorderSide.none,
-            ),
           ),
         ),
         const SizedBox(height: 12),
@@ -3235,9 +3000,9 @@ class _BountyFundingCard extends StatelessWidget {
             ),
             FilledButton.icon(
               key: const Key('issue-bounty-prepare-deposit'),
-              onPressed: canPrepare ? onPrepare : null,
+              onPressed: null,
               icon: const Icon(Icons.account_balance_wallet_outlined, size: 18),
-              label: const Text('Prepare funding deposit'),
+              label: const Text('Custodial funding disabled'),
             ),
           ],
         ),
@@ -3559,6 +3324,8 @@ class _PullDetailScreen extends StatelessWidget {
           children: [_PullTimeline(pull: pull)],
         ),
         const SizedBox(height: 12),
+        _FederatedRepliesCard(repo: repo, kind: 'pull', number: pull.number),
+        const SizedBox(height: 12),
         _InfoCard(
           title: 'Ship controls',
           children: [
@@ -3801,6 +3568,12 @@ class _DiscussionDetailScreen extends StatelessWidget {
             children: [_DiscussionTimeline(discussion: discussion)],
           ),
           const SizedBox(height: 12),
+          _FederatedRepliesCard(
+            repo: repo,
+            kind: 'discussion',
+            number: discussion.number,
+          ),
+          const SizedBox(height: 12),
           _InfoCard(
             title: 'Signed discussion reply',
             children: [
@@ -3843,6 +3616,180 @@ class _DiscussionDetailScreen extends StatelessWidget {
             ],
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _FederatedRepliesCard extends StatelessWidget {
+  const _FederatedRepliesCard({
+    required this.repo,
+    required this.kind,
+    required this.number,
+  });
+
+  final Repository repo;
+  final String kind;
+  final int number;
+
+  @override
+  Widget build(BuildContext context) {
+    final api = context.read<ApiService>();
+    return _InfoCard(
+      title: 'Fediverse thread',
+      children: [
+        Text(
+          'Remote ActivityPub replies are shown with their original instance and backlink. They are separate from ForkMesh’s signed native event log.',
+          style: TextStyle(
+            color: FmTheme.textSecondary(context),
+            fontSize: 12,
+            height: 1.35,
+          ),
+        ),
+        const SizedBox(height: 12),
+        FutureBuilder<List<FederatedReply>>(
+          future: api.federatedReplies(
+            repo.owner,
+            repo.name,
+            kind: kind,
+            number: number,
+          ),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const LinearProgressIndicator();
+            }
+            if (snapshot.hasError) {
+              return Text(
+                'Remote replies are currently unavailable.',
+                style: TextStyle(color: FmTheme.textTertiary(context)),
+              );
+            }
+            final replies = snapshot.data ?? const <FederatedReply>[];
+            if (replies.isEmpty) {
+              return Text(
+                'No remote ActivityPub replies yet.',
+                style: TextStyle(color: FmTheme.textTertiary(context)),
+              );
+            }
+            return Column(
+              children: replies
+                  .map((reply) => _FederatedReplyTile(reply: reply))
+                  .toList(),
+            );
+          },
+        ),
+      ],
+    );
+  }
+}
+
+class _FederatedReplyTile extends StatelessWidget {
+  const _FederatedReplyTile({required this.reply});
+
+  final FederatedReply reply;
+
+  Future<void> _openBacklink() async {
+    final uri = Uri.tryParse(reply.backlink);
+    if (uri == null ||
+        uri.scheme != 'https' ||
+        uri.host.isEmpty ||
+        uri.userInfo.isNotEmpty) {
+      return;
+    }
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final author = reply.authorName.isNotEmpty
+        ? reply.authorName
+        : reply.author.isNotEmpty
+        ? reply.author
+        : 'Remote participant';
+    final provenance = [
+      if (reply.sourceSoftware.isNotEmpty) reply.sourceSoftware,
+      if (reply.sourceInstance.isNotEmpty) reply.sourceInstance,
+    ].join(' · ');
+    final unavailable = reply.tombstone || reply.moderated;
+    final backlinkUri = Uri.tryParse(reply.backlink);
+    final canOpen =
+        backlinkUri?.scheme == 'https' &&
+        (backlinkUri?.host.isNotEmpty ?? false) &&
+        (backlinkUri?.userInfo.isEmpty ?? false);
+    return Padding(
+      padding: EdgeInsets.only(left: reply.depth * 14.0, top: 8, bottom: 8),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border(
+            left: BorderSide(color: FmTheme.border(context), width: 2),
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.only(left: 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Text(
+                    author,
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  if (reply.edited)
+                    Text(
+                      '(edited)',
+                      style: TextStyle(
+                        color: FmTheme.textTertiary(context),
+                        fontSize: 11,
+                      ),
+                    ),
+                  if (provenance.isNotEmpty)
+                    Text(
+                      provenance,
+                      style: TextStyle(
+                        color: FmTheme.textTertiary(context),
+                        fontSize: 11,
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              SelectableText(
+                reply.displayBody,
+                style: TextStyle(
+                  color: unavailable
+                      ? FmTheme.textTertiary(context)
+                      : FmTheme.textPrimary(context),
+                  fontStyle: unavailable ? FontStyle.italic : FontStyle.normal,
+                  height: 1.4,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Text(
+                    'Remote ActivityPub · not a signed native event',
+                    style: TextStyle(
+                      color: FmTheme.textTertiary(context),
+                      fontSize: 10,
+                    ),
+                  ),
+                  if (canOpen)
+                    TextButton.icon(
+                      onPressed: _openBacklink,
+                      icon: const Icon(Icons.open_in_new, size: 14),
+                      label: const Text('Original'),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -5149,9 +5096,6 @@ String _formatUsd(double value) {
   return '\$${value.toStringAsFixed(2)}';
 }
 
-bool _looksLikeSolanaAddress(String value) =>
-    RegExp(r'^[1-9A-HJ-NP-Za-km-z]{32,44}$').hasMatch(value.trim());
-
 List<String> _splitCommaSeparated(String value) => value
     .split(',')
     .map((part) => part.trim())
@@ -5833,10 +5777,7 @@ class _WorktreesTab extends StatelessWidget {
           subtitle: branch.worktreePath,
           onTap: () => Navigator.of(context).push(
             MaterialPageRoute<void>(
-              builder: (_) => _WorktreeDetailScreen(
-                repo: repo,
-                branch: branch,
-              ),
+              builder: (_) => _WorktreeDetailScreen(repo: repo, branch: branch),
             ),
           ),
           chips: [
@@ -5850,10 +5791,7 @@ class _WorktreesTab extends StatelessWidget {
 }
 
 class _WorktreeDetailScreen extends StatelessWidget {
-  const _WorktreeDetailScreen({
-    required this.repo,
-    required this.branch,
-  });
+  const _WorktreeDetailScreen({required this.repo, required this.branch});
 
   final Repository repo;
   final RepoBranch branch;
@@ -5872,10 +5810,7 @@ class _WorktreeDetailScreen extends StatelessWidget {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  _Chip(
-                    icon: Icons.account_tree_outlined,
-                    label: branch.name,
-                  ),
+                  _Chip(icon: Icons.account_tree_outlined, label: branch.name),
                   if (branch.isDefault)
                     const _Chip(
                       icon: Icons.flag_outlined,

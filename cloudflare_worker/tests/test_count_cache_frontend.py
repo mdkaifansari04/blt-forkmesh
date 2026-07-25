@@ -37,6 +37,16 @@ def test_static_page_skips_priming_in_file_preview():
     assert 'location.protocol === "file:"' in prime
 
 
-def test_mirror_payouts_loads_stats_once_without_interval():
-    assert "loadStats();" in MIRROR_PAYOUTS
+def test_mirror_payouts_loads_network_and_pool_status_once_without_interval():
+    assert "loadStatus();" in MIRROR_PAYOUTS
+    assert 'api("/api/network/stats")' in MIRROR_PAYOUTS
+    assert 'api("/api/rewards/pool")' in MIRROR_PAYOUTS
+    for selector in (
+        "#calc-nodes",
+        "#calc-reward",
+        "#pool-network",
+        "#pool-balance",
+        "#pool-transfers",
+    ):
+        assert selector in MIRROR_PAYOUTS
     assert "setInterval(" not in MIRROR_PAYOUTS

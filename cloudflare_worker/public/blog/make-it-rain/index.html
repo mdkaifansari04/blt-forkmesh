@@ -5,7 +5,7 @@
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Make it rain · ForkMesh Blog</title>
-    <meta name="description" content="Donate to a single node, or spray a contribution across every node in the federation at once.">
+    <meta name="description" content="Choose an immediate all-eligible-node distribution or add a voluntary contribution to ForkMesh's transparent trickle reward pool, without surrendering wallet custody.">
     <meta name="application-name" content="ForkMesh">
     <meta name="apple-mobile-web-app-title" content="ForkMesh">
     <meta name="theme-color" content="#090909">
@@ -23,7 +23,7 @@
     <meta property="og:url" content="https://forkmesh.com/blog/make-it-rain/">
     <meta property="og:site_name" content="ForkMesh">
     <meta property="og:title" content="Make it rain">
-    <meta property="og:description" content="Donate to a single node, or spray a contribution across every node in the federation at once.">
+    <meta property="og:description" content="Choose an immediate all-eligible-node distribution or add a voluntary contribution to the transparent trickle reward pool, without surrendering wallet custody.">
     <meta property="og:image" content="https://forkmesh.com/assets/blog/features/make-it-rain.webp">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:image" content="https://forkmesh.com/assets/blog/features/make-it-rain.webp">
@@ -38,22 +38,22 @@
           <div>
             <p class="eyebrow">Accounts &amp; rewards</p>
             <h1>Make it rain</h1>
-            <p class="lede">Donate to a single node, or spray a contribution across every node in the federation at once.</p>
+            <p class="lede">Choose an immediate all-eligible-node distribution or add a voluntary contribution to the transparent trickle reward pool.</p>
             <div class="meta"><span class="pill">Feature 64 of 72</span><span>Feature</span><span>Accounts, money &amp; rewards</span><span>3 min read</span></div>
           </div>
           <img class="hero-img" src="/assets/blog/features/make-it-rain.webp" alt="Abstract ForkMesh artwork for Make it rain">
         </section>
         <article class="body">
           <h2>Why it matters</h2>
-          <p>Make it rain gives ForkMesh a concrete mechanism for one donation split across the federation or sent to a chosen node. Donate to a single node, or spray a contribution across every node in the federation at once.</p>
+          <p>One community contribution can support the currently eligible mirror set, while a pooled contribution can fund smaller randomized incentives over time. Both modes begin with a direct, reference-bound transfer that the contributor approves in their own wallet.</p>
           <p>Preservation costs time, disk, bandwidth, and maintenance, so incentives need to point at the nodes and people doing the work. In ForkMesh, make it rain addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
-          <p>ForkMesh handles make it rain through the same split it uses across the product: ForkMesh links node identity, repository activity, public profiles, and Solana payment flows without changing Git ownership.</p>
-          <p>The behavior is intentionally narrow: Donate to a single node, or spray a contribution across every node in the federation at once. Support can move to maintainers, mirror operators, and contributors while repositories remain local-first.</p>
-          <div class="note">Title focus: Make it rain stays tied to one donation split across the federation or sent to a chosen node and the local-first repository model.</div>
+          <p>The “instant” mode takes one fresh, deduplicated eligibility snapshot and creates bounded unsigned transfer jobs for every eligible node. The “trickle” mode leaves the finalized contribution in the public pool for later configurable randomized rounds. The instance owner’s local Qt signer shows the exact recipients and amounts before any outgoing transaction can be approved.</p>
+          <p>Eligibility requires signed node identity, fresh online and health observations, an integrity-verified ForkMesh mirror, no active abuse restriction, minimum observed contribution or uptime, and a valid self-custodial payout address. Public snapshot and selection hashes make the decision auditable, while documented Sybil limitations remain visible.</p>
+          <div class="note"><strong>Non-custodial notice:</strong> ForkMesh never stores community members’ wallet private keys and cannot silently sign a transfer. Visual coins are illustrative; a distribution is complete only after the exact public transaction reaches finality. Contributions are community incentives, not investments.</div>
           <h2>Where it fits</h2>
-          <p>Use make it rain when identity, support, and incentives should follow verifiable node and repository activity.</p>
-          <p>It pairs with the rest of Accounts, money &amp; rewards because Make it rain keeps one donation split across the federation or sent to a chosen node connected to the repository, its signatures, and the nodes that serve it.</p>
+          <p>Use the instant mode to support the current verified set, or the pool mode to fund later rounds. Neither mode guarantees any node a payment or rate of return.</p>
+          <p>The public status view keeps user-owned funds, pool funds, pending unsigned jobs, and finalized transfers distinct.</p>
         </article>
         <nav class="next" aria-label="Feature posts">
           <a href="/blog/solana-donations/">← Solana donations</a>

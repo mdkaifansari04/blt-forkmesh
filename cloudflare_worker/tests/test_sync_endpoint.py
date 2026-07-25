@@ -10,6 +10,9 @@ see notify_repo_host / sync_handler in entry.py.
 
 import ast
 import asyncio
+import base64
+import hashlib
+import importlib.util
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -18,6 +21,10 @@ ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
 CATALOG = ENTRY.parent / "catalog.py"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8") + "\n" + CATALOG.read_text(encoding="utf-8")
+SECURITY_SPEC = importlib.util.spec_from_file_location(
+    "sync_security_controls", ROOT / "src" / "security_controls.py")
+SECURITY_CONTROL = importlib.util.module_from_spec(SECURITY_SPEC)
+SECURITY_SPEC.loader.exec_module(SECURITY_CONTROL)
 
 FUNCS = {
     "sync_handler",
@@ -52,7 +59,7 @@ class _Request:
         self.url = url
 
 
-def _harness():
+def _harness(owner_e2ee=False):
     """In-memory D1 stand-ins, in the style of test_repo_agents.py."""
     repositories = []   # {"key_bi","owner_bi","data"}
     inboxes = {
@@ -134,7 +141,7 @@ def _harness():
         # enough for these tests' well-formed owner names.
         return str(value or "").strip().lower()[:max_length]
 
-    ns = _load_functions({
+    globals_for_handler = {
         "Date": _DateStub,
         "safe_segment": safe_segment,
         "json_response": json_response,
@@ -152,13 +159,39 @@ def _harness():
         "urlparse": urlparse,
         "LOGIN_MAX_SKEW_MS": 5 * 60 * 1000,
         "MAX_REPO_SEGMENT": 100,
-    })
+    }
+    if owner_e2ee:
+        globals_for_handler["security_control"] = SECURITY_CONTROL
+    ns = _load_functions(globals_for_handler)
     return ns, repositories, inboxes, agent_prompts
 
 
 def _sync_url(owner="alice", ts=1_000_000_000, sig="good-sig"):
     return ("https://forkmesh.test/api/sync?owner=%s&ts=%d&sig=%s"
             % (owner, ts, sig))
+
+
+def _b64url(raw):
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _owner_envelope():
+    return {
+        "kind": "forkmesh.owner-sealed",
+        "v": 1,
+        "alg": "x25519+mlkem768/aes256gcm",
+        "nonce": _b64url(b"n" * 12),
+        "tag": _b64url(b"t" * 16),
+        "body": _b64url(b"opaque encrypted prompt"),
+        "recipients": [{
+            "kid": _b64url(hashlib.sha256(b"owner-key").digest()),
+            "x25519": _b64url(b"x" * 32),
+            "mlkem768": _b64url(b"m" * 1088),
+            "nonce": _b64url(b"w" * 12),
+            "tag": _b64url(b"g" * 16),
+            "key": _b64url(b"k" * 32),
+        }],
+    }
 
 
 def test_sync_returns_all_topics_and_drains_prompts():
@@ -194,6 +227,39 @@ def test_sync_returns_all_topics_and_drains_prompts():
     # NOT — the node still acks a merged inbox with its per-topic DELETE.
     assert agent_prompts == []
     assert len(inboxes["issue_inbox"]) == 1
+
+
+def test_sync_returns_owner_sealed_prompt_and_waits_for_explicit_ack():
+    ns, repositories, _inboxes, agent_prompts = _harness(owner_e2ee=True)
+    repositories.append({
+        "key_bi": "bi:alice/repo-one",
+        "owner_bi": "bi:alice",
+        "data": {"name": "repo-one", "owner": "alice"},
+    })
+    envelope = _owner_envelope()
+    agent_prompts.append({
+        "id": 17,
+        "repo_bi": "bi:alice/repo-one",
+        "data": SECURITY_CONTROL.encode_owner_envelope(
+            envelope, {"agentId": 42, "queuedAt": 999}),
+    })
+
+    response = asyncio.run(
+        ns["sync_handler"](object(), _Request(_sync_url())))
+    entry = response["data"]["repos"][0]
+    assert entry["agentPrompts"] == [{
+        "queueId": 17,
+        "agentId": 42,
+        "queuedAt": 999,
+        "encrypted": True,
+        "envelope": envelope,
+    }]
+    assert entry["agentPromptAckPath"] == (
+        "/api/repo/alice/repo-one/agents/ack")
+    assert "opaque encrypted prompt" not in str(entry)
+    # Sync is non-destructive for ciphertext. The owner desktop opens and
+    # journals it before calling /agents/ack.
+    assert len(agent_prompts) == 1
 
 
 def test_sync_rejects_bad_signature_and_stale_ts():

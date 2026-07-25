@@ -117,7 +117,15 @@ def _inbox_env(log, known_remote=False):
     async def _ap_forget_remote(env, actor_id):
         log.append(("forget", actor_id))
 
-    return _load("ap_inbox_handler", "_ap_note_repo_mention", extra_globals={
+    async def blind_index(env, value):
+        return "bi:" + value
+
+    async def decrypt_row(env, value):
+        return None
+
+    return _load(
+        "ap_inbox_handler", "_ap_note_repo_mention",
+        "_ap_comment_by_remote_id", extra_globals={
         "json": json,
         "urlparse": urlparse,
         "method_name": lambda request: request.method,
@@ -130,6 +138,8 @@ def _inbox_env(log, known_remote=False):
         "_ap_domain_blocked": _ap_domain_blocked,
         "_ap_forget_remote": _ap_forget_remote,
         "d1_first": d1_first,
+        "blind_index": blind_index,
+        "decrypt_row": decrypt_row,
         "ap": ap,
         "AP_MAX_INBOX_BYTES": 128 * 1024,
         "AP_DATE_SKEW_MS": 12 * 60 * 60 * 1000,

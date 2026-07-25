@@ -62,6 +62,25 @@ def _load_sentry_dsn_parts():
     return ns["_sentry_dsn_parts"]
 
 
+def _load_sentry_request_payload():
+    tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    want = {
+        "method_name",
+        "_sentry_header",
+        "_sentry_safe_url",
+        "_sentry_host",
+        "_sentry_request_payload",
+    }
+    selected = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name in want
+    ]
+    module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
+    namespace = {"urlparse": urlparse}
+    exec(compile(module, str(ENTRY), "exec"), namespace)
+    return namespace["_sentry_request_payload"]
+
+
 def _load_capture_worker_exception():
     tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
     want = {
@@ -228,18 +247,129 @@ def test_background_tasks_observe_exceptions_instead_of_default_handler():
         if "asyncio.ensure_future(" in line
     ]
     assert ensure_future_lines == ["task = asyncio.ensure_future(coro)"]
-    assert '_fire_and_forget(self._stream_watchdog(req_id), "git stream watchdog")' in ENTRY_TEXT
-    assert '"release download log"' in ENTRY_TEXT
+    # Repository transfers are awaited direct-HTTPS fetches, not detached
+    # socket watchdog tasks.
+    proxy = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _https_mirror_proxy"):
+        ENTRY_TEXT.index("\n\nclass Default")
+    ]
+    assert "await asyncio.wait_for(" in proxy
+    assert "_stream_watchdog" not in ENTRY_TEXT
 
 
 def test_sentry_request_metadata_is_allowlisted_and_sanitized():
-    assert 'for name in ("host", "user-agent", "accept", "cf-ray")' in ENTRY_TEXT
-    assert '"url": _sentry_safe_url(request)' in ENTRY_TEXT
+    assert 'for name in ("host", "cf-ray")' in ENTRY_TEXT
+    assert '"url": safe_url' in ENTRY_TEXT
     assert "return parsed.scheme + \"://\" + parsed.netloc + (parsed.path or \"/\")" in ENTRY_TEXT
+    assert "req = _sentry_request_payload(request, path)" in ENTRY_TEXT
     request_payload = ENTRY_TEXT.split("def _sentry_request_payload", 1)[1] \
         .split("def _sentry_cloudflare_context", 1)[0]
     assert '"authorization"' not in request_payload.lower()
     assert '"cookie"' not in request_payload.lower()
+    assert '"user-agent"' not in request_payload.lower()
+    assert '"accept"' not in request_payload.lower()
+    cloudflare_context = ENTRY_TEXT.split(
+        "def _sentry_cloudflare_context", 1)[1].split(
+        "def _sentry_environment", 1)[0]
+    assert '"country"' not in cloudflare_context
+    assert '"timezone"' not in cloudflare_context
+    assert '"clientTcpRtt"' not in cloudflare_context
+
+
+def test_private_route_error_text_is_redacted_in_sentry_and_d1():
+    assert "def _privacy_redacted_log_path(path):" in ENTRY_TEXT
+    assert "def _privacy_safe_error_text(path, message):" in ENTRY_TEXT
+    assert "text = _privacy_safe_error_text(path, message)" in ENTRY_TEXT
+    assert "message = _privacy_safe_error_text(path, message)" in ENTRY_TEXT
+    assert "Repository-route exception details redacted." in ENTRY_TEXT
+    assert "Repository-route error details redacted." in ENTRY_TEXT
+
+    tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    selected = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {
+            "_privacy_redacted_log_path",
+            "_privacy_safe_error_text",
+        }
+    ]
+    namespace = {}
+    exec(
+        compile(
+            ast.fix_missing_locations(
+                ast.Module(body=selected, type_ignores=[])),
+            str(ENTRY),
+            "exec",
+        ),
+        namespace,
+    )
+    safe = namespace["_privacy_safe_error_text"]
+    secret = "alice/top-secret?token=do-not-log"
+    for path in (
+        "/private-or-unpublished-repository",
+        "/repository-route-redacted",
+        "/api/private-replicas/[opaque]",
+    ):
+        rendered = safe(path, secret)
+        assert rendered == "Repository-route error details redacted."
+        assert "alice" not in rendered
+        assert "token" not in rendered
+    assert safe("/health", "probe failed") == "probe failed"
+
+
+def test_sentry_request_url_reuses_private_repository_path_redaction():
+    request_payload = _load_sentry_request_payload()
+
+    class Request:
+        method = "GET"
+        url = (
+            "https://forkmesh.test/api/repo/alice/top-secret/"
+            "private-replica?credential=never-log"
+        )
+        headers = {
+            "host": "forkmesh.test",
+            "user-agent": "test-browser",
+        }
+
+    payload = request_payload(
+        Request(), "/private-or-unpublished-repository")
+
+    assert payload["url"] == (
+        "https://forkmesh.test/private-or-unpublished-repository")
+    assert "alice" not in repr(payload)
+    assert "top-secret" not in repr(payload)
+    assert "credential" not in repr(payload)
+
+
+def test_sentry_redacts_opaque_private_access_locator_and_query():
+    opaque_id = "a" * 64
+    privacy_filter = ENTRY_TEXT.split(
+        "async def _privacy_safe_log_path", 1)[1].split(
+            "async def capture_worker_exception", 1)[0]
+    assert '"/api/private-replicas/[opaque]"' in privacy_filter
+    assert 'path.startswith(\n            "/api/private-replicas/")' in (
+        privacy_filter)
+
+    request_payload = _load_sentry_request_payload()
+
+    class Request:
+        method = "GET"
+        url = (
+            "https://forkmesh.test/api/private-replicas/" + opaque_id
+            + "?credential=never-log"
+        )
+        headers = {
+            "host": "forkmesh.test",
+            "user-agent": "test-browser",
+        }
+
+    payload = request_payload(
+        Request(), "/api/private-replicas/[opaque]")
+    rendered = repr(payload)
+    assert payload["url"] == (
+        "https://forkmesh.test/api/private-replicas/[opaque]")
+    assert opaque_id not in rendered
+    assert "credential" not in rendered
 
 
 def test_simulate_sentry_error_route_is_worker_owned_and_raises():
@@ -271,7 +401,14 @@ def test_forkmesh_actions_run_full_worker_pytest_suite():
 
 
 def test_action_runner_does_not_override_installer_source_in_ci_jobs():
-    assert "if (isReleaseRun() && !m_run.owner.isEmpty() && !m_run.name.isEmpty())" in ACTION_RUNNER_CPP_TEXT
+    # Repository identity is only injected for release jobs. Keep the owner/name
+    # guard nested in that release-only block so ordinary CI runs retain the
+    # installer source chosen by their workflow environment.
+    assert "if (isReleaseRun()) {" in ACTION_RUNNER_CPP_TEXT
+    assert (
+        "if (!m_run.owner.isEmpty() && !m_run.name.isEmpty())\n"
+        "                env.insert(QStringLiteral(\"FORKMESH_REPO\"),"
+    ) in ACTION_RUNNER_CPP_TEXT
     assert "env.insert(QStringLiteral(\"FORKMESH_REPO\")," in ACTION_RUNNER_CPP_TEXT
     assert "if (!m_run.owner.isEmpty() && !m_run.name.isEmpty())\n        env.insert(QStringLiteral(\"FORKMESH_REPO\")," not in ACTION_RUNNER_CPP_TEXT
 
@@ -288,7 +425,9 @@ def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
     assert "emitSuppressedProcessOutputTail()" in ACTION_RUNNER_CPP_TEXT
     assert "rememberCrashProcessOutput(const QByteArray &bytes)" in ACTION_RUNNER_CPP_TEXT
     assert "updateCrashContext()" in ACTION_RUNNER_CPP_TEXT
-    assert "logFailureDiagnostic(finalMessage)" in ACTION_RUNNER_CPP_TEXT
+    # Artifact validation can replace the caller's original finalMessage, so
+    # diagnostics must capture the effective result shown to the user.
+    assert "logFailureDiagnostic(resultMessage)" in ACTION_RUNNER_CPP_TEXT
     assert "m_processOutputBytes = 0;" in ACTION_RUNNER_CPP_TEXT
     assert "m_processOutputSuppressedBytes = 0;" in ACTION_RUNNER_CPP_TEXT
     assert "m_processOutputTail.clear();" in ACTION_RUNNER_CPP_TEXT
@@ -384,3 +523,93 @@ def test_worker_observability_is_enabled_at_full_sampling_in_wrangler():
     assert observability["logs"]["invocation_logs"] is False
     assert observability["traces"]["enabled"] is False
     assert "destinations" not in observability["traces"]
+
+
+def test_expected_degraded_responses_skip_the_generic_5xx_logger():
+    # Deliberate degraded answers — DO-abort 503s whose real reason
+    # log_durable_object_abort already recorded, the fail-closed git push
+    # 501, and central-fund/office "upstream unavailable" 503s — used to be
+    # re-logged by the outer fetch as anonymous "response status N" Sentry
+    # events (one DO abort produced TWO error-log rows). They now carry the
+    # expected-degraded marker and the generic logger skips them.
+    assert 'EXPECTED_DEGRADED_HEADER = "x-forkmesh-expected-degraded"' in (
+        ENTRY_TEXT)
+    assert "def _response_is_expected_degraded(response):" in ENTRY_TEXT
+
+    logger_block = ENTRY_TEXT.split(
+        "_is_tunnel_content_path(url.path):", 1)[1][:700]
+    assert "_response_is_expected_degraded(response)" in logger_block
+    assert logger_block.index("_response_is_expected_degraded") < (
+        logger_block.index("await log_error("))
+
+    # Every DO-abort 503 fallback is marked, so the detailed abort row stays
+    # the only record of the event.
+    for site_start in [
+        match for match in range(len(ENTRY_TEXT))
+        if ENTRY_TEXT.startswith("await log_durable_object_abort(", match)
+    ]:
+        tail = ENTRY_TEXT[site_start:site_start + 700]
+        assert "EXPECTED_DEGRADED_HEADERS" in tail, ENTRY_TEXT[
+            site_start:site_start + 120]
+
+    # The deliberate not-implemented push answer and the central-fund
+    # unavailable answers are marked too.
+    push_block = ENTRY_TEXT.split("direct_https_receive_pack_required", 1)[1]
+    assert "EXPECTED_DEGRADED_HEADERS" in push_block[:300]
+    fund_block = ENTRY_TEXT.split(
+        "async def _account_central_fund", 1)[1][:1600]
+    assert fund_block.count("EXPECTED_DEGRADED_HEADERS") == 2
+
+
+def test_redacted_repo_routes_keep_identity_free_route_family_tags():
+    # /private-or-unpublished-repository collapsed EVERY failing private or
+    # unknown repo route into one bucket; recurring failures could not even
+    # be told apart by endpoint. The redacted path now keeps only the fixed
+    # route-family name — never owner/repo or user-named path parts.
+    tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    selected = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_privacy_redacted_route_kind"
+    ]
+    assert selected, "_privacy_redacted_route_kind not found"
+    import re as re_module
+    namespace = {
+        "GIT_INFO_RE": re_module.compile(r"^/([^/]+)/([^/]+)/info/refs$"),
+        "GIT_PACK_RE": re_module.compile(
+            r"^/([^/]+)/([^/]+)/git-upload-pack$"),
+        "GIT_RECEIVE_RE": re_module.compile(
+            r"^/([^/]+)/([^/]+)/git-receive-pack$"),
+        "RELEASE_BLOB_RE": re_module.compile(
+            r"^/([^/]+)/([^/]+)/releases/blob/"),
+        "REPO_API_PREFIX_RE": re_module.compile(
+            r"^/api/repo/([^/]+)/([^/]+)(?:/.*)?$"),
+        "safe_segment": lambda value: (
+            value if re_module.fullmatch(r"[A-Za-z0-9._-]{1,100}", value or "")
+            else ""),
+    }
+    exec(
+        compile(
+            ast.fix_missing_locations(
+                ast.Module(body=selected, type_ignores=[])),
+            str(ENTRY),
+            "exec",
+        ),
+        namespace,
+    )
+    kind = namespace["_privacy_redacted_route_kind"]
+    assert kind("/alice/top-secret/info/refs") == "[git-info-refs]"
+    assert kind("/alice/top-secret/git-receive-pack") == "[git-receive-pack]"
+    assert kind("/api/repo/alice/top-secret/tree") == "[api:tree]"
+    assert kind("/api/repo/alice/top-secret/star") == "[api:star]"
+    assert kind("/alice/top-secret/blob/src/keys.pem") == "[page]"
+    # User-named data never survives into the tag.
+    for rendered in (
+        kind("/api/repo/alice/top-secret/" + "x" * 60),
+        kind("/api/repo/alice/top-secret/%2e%2e"),
+    ):
+        assert "top-secret" not in rendered
+        assert "alice" not in rendered
+        assert rendered in ("[api]", "[api:x]")
+    assert "response status " in ENTRY_TEXT.split(
+        "def _privacy_safe_error_text", 1)[1][:900]

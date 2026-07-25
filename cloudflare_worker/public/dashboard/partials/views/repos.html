@@ -73,5 +73,21 @@
                   </div>
                 </div>
               </div>
+
+              <div data-external-repo-panel class="mt-6 w-full rounded-lg border border-border bg-card overflow-hidden">
+                <div class="px-4 sm:px-5 py-4 border-b border-border flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div class="min-w-0">
+                    <h2 class="text-base font-semibold text-foreground">External repositories &amp; stubs</h2>
+                    <p class="mt-1 text-sm text-muted-foreground">Metadata imported from GitHub or GitLab. These entries are separate from live mirrors and always link back to the provider.</p>
+                  </div>
+                  <span data-external-repo-count class="self-start text-xs text-muted-foreground font-mono px-2.5 py-1 rounded-full border border-border bg-secondary">Loading</span>
+                </div>
+                <div class="border-b border-border bg-background/50 px-4 sm:px-5 py-3 text-xs leading-5 text-muted-foreground">
+                  ForkMesh does not own or control external repositories. “Stub only” and “External repository” do not mean the repository is mirrored or available through ForkMesh.
+                </div>
+                <div data-external-repo-list class="divide-y divide-border" aria-live="polite">
+                  <div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground"><span class="fm-spinner" aria-hidden="true"></span>Loading external repository metadata...</div>
+                </div>
+              </div>
             </div>
           </section>

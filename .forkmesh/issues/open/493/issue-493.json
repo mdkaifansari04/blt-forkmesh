@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751304,
+    "endDate": 1801198800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nPeople can carry stars, watches, bookmarks, follows, recommendations, usage endorsements, security reviews, and mirroring commitments across services.\n\n## Scope\n\n- Represent signals as signed scoped records with provenance, timestamps, revocation, export, and privacy choices.\n- Separate lightweight interest from stronger production-use, security-review, and public-mirroring claims.\n- Build recommendations with transparent controls, sybil resistance, moderation, and no required global graph.\n\n## Acceptance criteria\n\n- Signals export, import, merge, revoke, and verify across at least two implementations.\n- High-trust endorsements show scope and evidence and cannot be confused with casual stars.\n- Users can disable recommendations and inspect why a project was recommended.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P1 community loop**\n- Milestone: **Collaboration public beta**\n- Numeric priority: **31 of 44** (1 is highest)\n- Depends on: #478, #484, #485\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**20% as of 2026-07-22.** Profiles, repository metadata, donations, discussions, and federation groundwork exist; the portable social graph and scoped endorsements remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Signal portability, follows retained, recommendation engagement, abuse rate, and mirror commitments fulfilled. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-493",
+            "sig": "tMHyCIgy8HadGkvZ6_cIdbtxfxywDO_Y9xrVtHZ8nzHO-T5fwkRbi1PBclt03qBKppGDiHoGjgDR8yF9md8cCA",
+            "title": "Add portable social discovery and project trust signals",
+            "ts": 1784729751304,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "196b9994-f349-4c2f-8fc3-389bd498ff5c",
+            "labels": [
+                "community",
+                "product",
+                "protocol"
+            ],
+            "sig": "RBVYSMDrfQrGi7QLmkCyB67beNwLmglrjzW-3NPD6SARboL9c2tAndD6hbDaq-8WvDd3UwDIwPLBJOV1J0j0AA",
+            "ts": 1784729751305,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "1d69fb12-d8c0-4fe1-9fde-991387729c6b",
+            "milestone": "Collaboration public beta",
+            "sig": "fxjIUyF88PSCIf2lVPaD0Np0LMjOQGDcBs-uMIfNeKD1959zRZfr9igU0Q1kjSYE7kKXGVABlJBNi5PfQmb-BA",
+            "ts": 1784729751306,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1801198800000,
+            "id": "b2b566b4-1ec4-458a-9338-dc30670a30bc",
+            "sig": "B5daGo0L9iW0z7W_QKMO0t0m6cJAeQmnYuTNfnRbbPtFON_KGENa9KETmPlYYOLZXbwgv36_1p2qwVaGTfVZDA",
+            "startDate": 1786939200000,
+            "ts": 1784729751307,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "79a6c90d-5517-4fa2-90f2-f5a59a3e126c",
+            "priority": 31,
+            "sig": "vanT_pSC-slwMpmKOg4r0N4YWfH6OmLFqQP_VVH4jP60CJktOP-C3oMp7C373eVxCjowK6ugSBJTsmwN9xABAw",
+            "ts": 1784729751308,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "9101cba9-1a29-4c52-aca0-67a963e4053a",
+            "progress": 20,
+            "sig": "cMql8iYzaqRWyFdhoR8Unyuzyv0MQJlc2l2CAgAeKXVZj8Hb09tR-QaShDWdkjTypiHvcNmjiRgBr7nR9CahDQ",
+            "ts": 1784729751309,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "community",
+        "product",
+        "protocol"
+    ],
+    "milestone": "Collaboration public beta",
+    "number": 493,
+    "priority": 31,
+    "progress": 20,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1786939200000,
+    "status": "open",
+    "title": "Add portable social discovery and project trust signals",
+    "updatedAt": 1784729751309,
+    "votes": 0
+}

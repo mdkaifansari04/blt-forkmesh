@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751418,
+    "endDate": 1816920000000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nIndependent clients, relays, indexes, and providers can prove compatibility through public tests, vectors, badges, and a fair certification process.\n\n## Scope\n\n- Package positive, negative, adversarial, version-skew, and performance tests with reference implementations and deterministic fixtures.\n- Define badge scope, version, evidence, expiry, retesting, appeals, trademark use, and certification governance.\n- Run public interoperability events and accept test contributions from independent implementers.\n\n## Acceptance criteria\n\n- At least one non-ForkMesh implementation passes a documented core profile.\n- Badges link to reproducible results and automatically expire when evidence or version becomes stale.\n- The suite detects malformed signatures, divergence, downgrade, replay, data loss, and incompatible version behavior.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P1 ecosystem expansion**\n- Milestone: **Open platform & ecosystem**\n- Numeric priority: **40 of 44** (1 is highest)\n- Depends on: #507, #511, #502\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**10% as of 2026-07-22.** Repository tests and several native fixtures exist, but packaged cross-implementation suites, badges, certification rules, and independent passes remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Independent implementations, certified profiles, conformance coverage, failures found, and retest latency. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-512",
+            "sig": "EPu0vPyoVjGM4YFbk9zmSrub6zDwYznWYljLMa72NdVa8ScYaUSyY03nalwwjLVV_1lnuupFI1uXJGIrHVYMCw",
+            "title": "Release conformance suites and interoperability certification",
+            "ts": 1784729751418,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "9f4ce3a8-9e1c-4d76-9c7a-b1c083b0b720",
+            "labels": [
+                "protocol",
+                "infra",
+                "community"
+            ],
+            "sig": "AOKDkAKT14Mc9c0sHRRqCI5-oh3seOVxjzotVdS-L4cjv-VM8ed71J8pZLw567SCDST7KVXbPGJdGqsWEMHrAw",
+            "ts": 1784729751419,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "764fbba3-0123-405d-a63e-48af02770d34",
+            "milestone": "Open platform & ecosystem",
+            "sig": "jhVBU7oJ1Ik225JbepcWLc_fFu8pYO-cnsr_bWe3mGG_jvWiCJCB3PTBUhtWOuE_7mFUQlCEluBT2JgdN2DjDg",
+            "ts": 1784729751420,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1816920000000,
+            "id": "fa391dcc-ac79-47b0-86a7-cf200eb64d50",
+            "sig": "O2P27sI1TYvztXS9U1UeW0wxQYW2e3aZdVFJMO9fCcOdxaBwTuNs4dz54-f9EafTaugJwnAXJrJghJqvC8qaBQ",
+            "startDate": 1792382400000,
+            "ts": 1784729751421,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "e2785599-decb-41b0-b98d-8f56801d7589",
+            "priority": 40,
+            "sig": "Rl5ZbDrnBV7iiYE5g39M_9ooRXtOohl1NHGCvKdnKQvVGsZ6sipNTmQS6uNI2gldJrY-kpDqLP5GMpUTuRkZCw",
+            "ts": 1784729751422,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "ec6bfd2b-e330-49d2-9387-96b1c1bea1a4",
+            "progress": 10,
+            "sig": "SnVzRY8vC1O0isps8XEBgiqGIIENuILcmi_i2AvbBAustAHZcjnt0U8sfBLL8u7fwV-GWwSv1ISgAD7DT9PzBA",
+            "ts": 1784729751423,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "protocol",
+        "infra",
+        "community"
+    ],
+    "milestone": "Open platform & ecosystem",
+    "number": 512,
+    "priority": 40,
+    "progress": 10,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1792382400000,
+    "status": "open",
+    "title": "Release conformance suites and interoperability certification",
+    "updatedAt": 1784729751423,
+    "votes": 0
+}

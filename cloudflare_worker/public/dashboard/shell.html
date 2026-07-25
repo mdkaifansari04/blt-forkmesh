@@ -29,7 +29,8 @@
         document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "light" ? "#f6f8fb" : "#090909");
       })();
     </script>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/dashboard/tailwind.css" />
+    <script>window.tailwind = window.tailwind || {};</script>
     <script>
       tailwind.config = {
         theme: {
@@ -62,7 +63,7 @@
         },
       };
     </script>
-    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js"></script>
     <style>
       @font-face {
         font-family: "ForkMesh Dashboard Mono";

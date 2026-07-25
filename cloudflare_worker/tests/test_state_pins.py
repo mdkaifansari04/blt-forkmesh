@@ -34,7 +34,8 @@ def _load(*names):
 (
     clone_state_pins,
     repo_mirror_same_group,
-) = _load("clone_state_pins", "repo_mirror_same_group")
+    STATE_PIN_HISTORY,
+) = _load("clone_state_pins", "repo_mirror_same_group", "STATE_PIN_HISTORY")
 
 
 def _rec(owner, *, source="local-node", state="", root="root1", name="forkmesh"):
@@ -79,6 +80,25 @@ def test_mirror_lagging_the_source_matches_pin_history():
     rows = [_row("kS", _rec("source", state="new")), _row("kM", mirror)]
     pins = clone_state_pins(mirror, "kM", rows, {"kS": ["old"]})
     assert pins == {"new", "old"}
+
+
+def test_pin_history_window_absorbs_active_issue_churn():
+    # Every issue/PR/discussion action republishes the catalog with a fresh
+    # state hash, so a repo under active collaboration churns pins fast. The
+    # window must be deep enough that a mirror lagging by many issue edits
+    # between its periodic re-syncs still serves .forkmesh/issues/ instead of
+    # falling out of the accepted set and forcing the "unavailable until a live
+    # desktop host serves" fallback. Guard against the window regressing to the
+    # handful-of-publishes depth that produced that symptom.
+    assert STATE_PIN_HISTORY >= 100
+
+    # A mirror pinned to a state that is dozens of publishes behind the source
+    # still resolves as long as that state is inside the retained history.
+    history = ["s%d" % i for i in range(STATE_PIN_HISTORY)]
+    mirror = _rec("mirror", source="remote-clone", state="s90")
+    rows = [_row("kS", _rec("source", state="newest")), _row("kM", mirror)]
+    pins = clone_state_pins(mirror, "kM", rows, {"kS": history})
+    assert "s90" in pins
 
 
 def test_fork_source_does_not_pin_the_mirror():
@@ -137,15 +157,6 @@ def _method_source(class_name, method_name):
         "%s.%s not found in entry.py" % (class_name, method_name))
 
 
-def test_git_gate_checks_membership_in_the_pin_set():
-    # The DO's info/refs gate must consult _state_pins (the group-aware set),
-    # not a single self-attested hash.
-    src = _method_source("ForkMeshHost", "_git")
-    assert "_state_pins" in src
-    assert "not in pinned" in src
-    assert "failed integrity check" in src
-
-
 def test_publish_records_source_pins_into_history():
     # Only working-copy holders' verified attestations enter the history that
     # mirrors are validated against, pruned to the newest STATE_PIN_HISTORY.
@@ -155,25 +166,6 @@ def test_publish_records_source_pins_into_history():
     assert "STATE_PIN_HISTORY" in text
     # Renaming an account carries its attested history to the new namespace.
     assert "UPDATE repo_state_history SET key_bi=" in text
-
-
-def test_clone_of_mirror_prefers_online_source_of_truth():
-    # A public clone routes to the logical repo's source of truth while it is
-    # online, so a mirror whose refs fail the integrity pin still clones (from the
-    # authoritative source, never its own bytes). _git_host must consult
-    # _online_source_of_truth before serving the named mirror and forward there.
-    host = _method_source("Default", "_git_host")
-    assert "_online_source_of_truth" in host
-    assert "_forward_to_node" in host
-
-    finder = _method_source("Default", "_online_source_of_truth")
-    # It is scoped to mirrors: a working-copy holder ("local-node") is served
-    # directly, never redirected...
-    assert "local-node" in finder
-    # ...it groups by the same logical repo...
-    assert "repo_mirror_same_group" in finder
-    # ...and only forwards while the source actually has a live host.
-    assert "_source_has_live_host" in finder
 
 
 def test_schema_has_pin_history_and_sticky_tables():

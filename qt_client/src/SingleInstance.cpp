@@ -17,11 +17,11 @@ const char kServerName[] = "forkmesh-single-instance";
 
 QLockFile *g_lockFile = nullptr;
 QLocalServer *g_server = nullptr;
-std::function<void()> g_activationHandler;
+std::function<void(const QString &)> g_activationHandler;
 
 } // namespace
 
-bool acquireSingleInstance()
+bool acquireSingleInstance(const QString &activationTarget)
 {
     const QString dir = QDir::homePath() + QStringLiteral("/.forkmesh");
     QDir().mkpath(dir);
@@ -39,7 +39,10 @@ bool acquireSingleInstance()
         QLocalSocket socket;
         socket.connectToServer(QString::fromLatin1(kServerName));
         if (socket.waitForConnected(500)) {
-            socket.write("activate");
+            const QByteArray target = activationTarget.toUtf8();
+            socket.write(target.isEmpty() ? QByteArray("activate")
+                                          : QByteArray("activate\n") +
+                                                target.left(128));
             socket.waitForBytesWritten(500);
             socket.disconnectFromServer();
         }
@@ -57,9 +60,16 @@ bool acquireSingleInstance()
     QObject::connect(g_server, &QLocalServer::newConnection, g_server, [] {
         while (QLocalSocket *socket = g_server->nextPendingConnection()) {
             socket->waitForReadyRead(200);
+            const QByteArray message = socket->read(160);
             socket->deleteLater();
-            if (g_activationHandler)
-                g_activationHandler();
+            if (g_activationHandler) {
+                const QByteArray prefix("activate\n");
+                const QString target =
+                    message.startsWith(prefix)
+                        ? QString::fromUtf8(message.mid(prefix.size()))
+                        : QString();
+                g_activationHandler(target);
+            }
         }
     });
     if (!g_server->listen(QString::fromLatin1(kServerName))) {
@@ -72,7 +82,8 @@ bool acquireSingleInstance()
     return true;
 }
 
-void onSingleInstanceActivation(std::function<void()> handler)
+void onSingleInstanceActivation(
+    std::function<void(const QString &activationTarget)> handler)
 {
     g_activationHandler = std::move(handler);
 }

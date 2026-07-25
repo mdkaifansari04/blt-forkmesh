@@ -4,7 +4,7 @@
   // The only client-routed state left is within-page: repo tabs/tree/blob on
   // the repo page, and the settings sub-tabs below.
 
-  const SETTINGS_SECTIONS = ["public-profile", "account", "appearance", "notifications", "payout", "nodes", "organizations", "danger"];
+  const SETTINGS_SECTIONS = ["public-profile", "account", "ssh-keys", "appearance", "notifications", "payout", "nodes", "organizations", "danger"];
 
   function normalizeSettingsSection(section) {
     return SETTINGS_SECTIONS.includes(section) ? section : "public-profile";
@@ -50,6 +50,280 @@
 
     // The Organizations tab is data-driven and only fetched when first opened.
     if (activeSection === "organizations") initOrgsSection();
+    if (activeSection === "ssh-keys") loadSshKeys();
+    // Session state changes on other devices, so re-entering this tab always
+    // performs a fresh no-store read instead of keeping a page-lifetime copy.
+    if (activeSection === "account") loadAccountSessions({ force: true });
+  }
+
+  // ---- Active account sessions ---------------------------------------------
+  let accountSessionsLoaded = false;
+  let accountSessionsLoading = null;
+
+  function setAccountSessionStatus(message, kind = "") {
+    const target = $("[data-account-session-status]");
+    if (!target) return;
+    target.textContent = message || "";
+    target.className = "min-h-4 text-xs " + (
+      kind === "bad" ? "text-red-400"
+        : kind === "good" ? "text-emerald-400"
+          : "text-muted-foreground"
+    );
+  }
+
+  async function accountSessionApi(method, path = "") {
+    const token = state.session?.sessionToken || "";
+    if (!token) throw new Error("invalid_session");
+    const response = await fetch("/api/accounts/sessions" + path, {
+      method,
+      headers: {
+        accept: "application/json",
+        authorization: "Bearer " + token,
+      },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `http_${response.status}`);
+    }
+    return data;
+  }
+
+  function renderAccountSessions(data) {
+    const list = $("[data-account-session-list]");
+    if (!list) return;
+    const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
+    if (!sessions.length) {
+      list.innerHTML = '<p class="p-4 text-sm text-muted-foreground">No active sessions were returned.</p>';
+      return;
+    }
+    list.innerHTML = sessions.map((session, index) => `
+      <article class="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between ${index ? "border-t border-border" : ""}">
+        <div class="min-w-0">
+          <p class="text-sm font-semibold text-foreground">
+            ${escapeHtml(session.deviceLabel || "Unknown device")}
+            ${session.current ? '<span class="ml-2 rounded-full border border-emerald-500/50 px-2 py-0.5 text-[11px] text-emerald-300">This device</span>' : ""}
+          </p>
+          <p class="mt-1 text-xs text-muted-foreground">Last active ${escapeHtml(formatTimeAgo(Number(session.lastSeenAt || 0)))} · signed in ${escapeHtml(formatDate(Number(session.createdAt || 0)))} · expires ${escapeHtml(formatDate(Number(session.expiresAt || 0)))}</p>
+        </div>
+        <button type="button" data-account-session-revoke="${escapeHtml(session.id || "")}" data-account-session-current="${session.current ? "true" : "false"}" class="inline-flex h-8 shrink-0 items-center justify-center rounded-md border border-red-500/50 px-3 text-xs font-semibold text-red-300 hover:bg-red-500/10">
+          ${session.current ? "Sign out here" : "Sign out"}
+        </button>
+      </article>`).join("");
+  }
+
+  function bindAccountSessionControls() {
+    const list = $("[data-account-session-list]");
+    if (list && list.dataset.controlsBound !== "true") {
+      list.dataset.controlsBound = "true";
+      list.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-account-session-revoke]");
+        if (!button) return;
+        revokeAccountSession(
+          button.dataset.accountSessionRevoke || "",
+          button.dataset.accountSessionCurrent === "true");
+      });
+    }
+    const others = $("[data-account-sessions-revoke-others]");
+    if (others && others.dataset.controlsBound !== "true") {
+      others.dataset.controlsBound = "true";
+      others.addEventListener("click", () => revokeOtherAccountSessions());
+    }
+  }
+
+  async function loadAccountSessions({ force = false } = {}) {
+    if (!$("[data-account-session-list]")) return;
+    bindAccountSessionControls();
+    if (accountSessionsLoaded && !force) return;
+    if (accountSessionsLoading) return accountSessionsLoading;
+    accountSessionsLoading = (async () => {
+      try {
+        const data = await accountSessionApi("GET");
+        renderAccountSessions(data);
+        accountSessionsLoaded = true;
+        setAccountSessionStatus(data.privacyNotice || "");
+      } catch (error) {
+        const list = $("[data-account-session-list]");
+        if (list) {
+          list.innerHTML = `<p class="p-4 text-sm text-red-400">${error.message === "invalid_session" ? "Sign in to manage active sessions." : "Could not load active sessions."}</p>`;
+        }
+      } finally {
+        accountSessionsLoading = null;
+      }
+    })();
+    return accountSessionsLoading;
+  }
+
+  async function revokeAccountSession(sessionId, current) {
+    if (!sessionId || !window.confirm(current
+      ? "Sign out this device now?"
+      : "Sign out that device?")) return;
+    try {
+      const result = await accountSessionApi(
+        "DELETE", "/" + encodeURIComponent(sessionId));
+      if (current || result.currentRevoked) {
+        logout();
+        return;
+      }
+      accountSessionsLoaded = false;
+      await loadAccountSessions({ force: true });
+      setAccountSessionStatus("That device was signed out.", "good");
+    } catch (_) {
+      setAccountSessionStatus("Could not sign out that device.", "bad");
+    }
+  }
+
+  async function revokeOtherAccountSessions() {
+    if (!window.confirm("Sign out every other active device?")) return;
+    const button = $("[data-account-sessions-revoke-others]");
+    if (button) button.disabled = true;
+    try {
+      await accountSessionApi("DELETE", "/others");
+      accountSessionsLoaded = false;
+      await loadAccountSessions({ force: true });
+      setAccountSessionStatus("All other devices were signed out.", "good");
+    } catch (_) {
+      setAccountSessionStatus("Could not sign out the other devices.", "bad");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  // ---- SSH public keys (settings tab) ---------------------------------------
+  // Public keys are account-scoped and encrypted at rest by the Worker. The
+  // browser never handles a private key; every push is authorized again by the
+  // Worker and executed by a separately operated node-side SSH gateway.
+  let sshKeysLoaded = false;
+  let sshKeysLoading = null;
+
+  function setSshKeyStatus(message, kind = "") {
+    const target = $("[data-ssh-key-status]");
+    if (!target) return;
+    target.textContent = message || "";
+    target.className = "min-h-4 text-xs " + (
+      kind === "bad" ? "text-red-400"
+        : kind === "good" ? "text-emerald-400"
+          : "text-muted-foreground"
+    );
+  }
+
+  async function sshKeyApi(method, path = "", body) {
+    const token = state.session?.sessionToken || "";
+    if (!token) throw new Error("invalid_session");
+    const headers = {
+      accept: "application/json",
+      authorization: "Bearer " + token,
+    };
+    if (body !== undefined) headers["content-type"] = "application/json";
+    const response = await fetch("/api/accounts/ssh-keys" + path, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `http_${response.status}`);
+    }
+    return data;
+  }
+
+  function renderSshKeys(data) {
+    const list = $("[data-ssh-key-list]");
+    if (!list) return;
+    const keys = Array.isArray(data?.keys) ? data.keys : [];
+    const gateway = $("[data-ssh-gateway-status]");
+    if (gateway) {
+      gateway.textContent = data?.gatewayConfigured
+        ? `SSH gateway: ${data.gatewayHost}${Number(data.gatewayPort) === 22 ? "" : `:${data.gatewayPort}`}`
+        : "SSH gateway is not configured";
+    }
+    if (!keys.length) {
+      list.innerHTML = '<p class="p-4 text-sm text-muted-foreground">No SSH keys registered.</p>';
+      return;
+    }
+    list.innerHTML = keys.map((key, index) => {
+      const used = Number(key.lastUsedAt || 0);
+      return `
+        <article class="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between ${index ? "border-t border-border" : ""}">
+          <div class="min-w-0">
+            <p class="truncate text-sm font-semibold text-foreground">${escapeHtml(key.label || "SSH key")}</p>
+            <p class="mt-1 break-all font-mono text-xs text-muted-foreground">${escapeHtml(key.fingerprint || "")}</p>
+            <p class="mt-1 text-xs text-muted-foreground">${escapeHtml(key.keyType || "SSH")} · added ${escapeHtml(formatDate(key.createdAt))}${used ? ` · last used ${escapeHtml(formatTimeAgo(used))}` : " · never used"}</p>
+          </div>
+          <button type="button" data-ssh-key-revoke="${escapeHtml(key.id || "")}" class="inline-flex h-8 shrink-0 items-center justify-center rounded-md border border-red-500/50 px-3 text-xs font-semibold text-red-300 hover:bg-red-500/10">
+            Revoke
+          </button>
+        </article>`;
+    }).join("");
+  }
+
+  async function loadSshKeys({ force = false } = {}) {
+    if (!$("[data-ssh-key-list]")) return;
+    if (sshKeysLoaded && !force) return;
+    if (sshKeysLoading) return sshKeysLoading;
+    sshKeysLoading = (async () => {
+      try {
+        const data = await sshKeyApi("GET");
+        renderSshKeys(data);
+        sshKeysLoaded = true;
+      } catch (error) {
+        const list = $("[data-ssh-key-list]");
+        if (list) {
+          list.innerHTML = `<p class="p-4 text-sm text-red-400">${error.message === "invalid_session" ? "Sign in to manage SSH keys." : "Could not load SSH keys."}</p>`;
+        }
+      } finally {
+        sshKeysLoading = null;
+      }
+    })();
+    return sshKeysLoading;
+  }
+
+  async function addSshKey() {
+    const publicKey = ($("[data-ssh-public-key]")?.value || "").trim();
+    const label = ($("[data-ssh-key-label]")?.value || "").trim();
+    if (!publicKey) {
+      setSshKeyStatus("Paste one OpenSSH public key.", "bad");
+      return;
+    }
+    const button = $("[data-ssh-key-add]");
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Adding…";
+    }
+    try {
+      await sshKeyApi("POST", "", { publicKey, label });
+      if ($("[data-ssh-public-key]")) $("[data-ssh-public-key]").value = "";
+      if ($("[data-ssh-key-label]")) $("[data-ssh-key-label]").value = "";
+      setSshKeyStatus("SSH public key registered.", "good");
+      sshKeysLoaded = false;
+      await loadSshKeys({ force: true });
+    } catch (error) {
+      const messages = {
+        unsupported_key_type: "Use an Ed25519, ECDSA, security-key, or RSA (3072-bit or stronger) public key.",
+        rsa_key_too_small: "RSA keys must be at least 3072 bits.",
+        ssh_key_already_registered: "That public key is already registered or was previously revoked. Use a fresh keypair.",
+        ssh_key_limit_reached: "Revoke an unused key before adding another.",
+        one_public_key_required: "Paste exactly one public key.",
+        invalid_session: "Sign in to manage SSH keys.",
+      };
+      setSshKeyStatus(messages[error.message] || "That SSH public key could not be registered.", "bad");
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = "Add SSH key";
+      }
+    }
+  }
+
+  async function revokeSshKey(keyId) {
+    if (!keyId || !window.confirm("Revoke this SSH key? It will stop authenticating immediately.")) return;
+    try {
+      await sshKeyApi("DELETE", "/" + encodeURIComponent(keyId));
+      setSshKeyStatus("SSH key revoked.", "good");
+      sshKeysLoaded = false;
+      await loadSshKeys({ force: true });
+    } catch (_) {
+      setSshKeyStatus("Could not revoke that SSH key.", "bad");
+    }
   }
 
   // ---- Organizations (settings tab) -----------------------------------------
@@ -59,6 +333,7 @@
   // [data-orgs-root] the first time the Organizations settings tab is opened.
   const ORG_ROLE_OPTIONS = ["owner", "admin", "member"];
   const ORG_TEAM_PERMISSIONS = ["read", "write", "maintain", "admin"];
+  const ORG_WORLD_ACCESS_OPTIONS = ["public", "restricted", "private"];
 
   // Worker org-endpoint error codes -> human text. Unknown codes fall through
   // to a generic message so the UI never shows a raw slug.
@@ -82,6 +357,9 @@
     repo_required: "Enter a repository name.",
     not_your_node: "You can only link repositories from your own node.",
     unknown_repo: "That repository is not published on your node.",
+    enabled_required: "Choose whether organization digests are enabled.",
+    invalid_logo_url: "Logo URLs must use HTTPS and cannot contain credentials or fragments.",
+    invalid_world_access: "Choose a valid access level for every organization space.",
   };
 
   function orgErrorText(code) {
@@ -232,6 +510,7 @@
     let members = [];
     let teams = [];
     let repos = [];
+    let fediverse = { controls: { enabled: true }, repos: [] };
     try {
       const [profileData, membersData, teamsData, reposData] = await Promise.all([
         orgApiRequest("GET", "/api/orgs/" + encodeURIComponent(name)),
@@ -243,6 +522,10 @@
       members = membersData.members || [];
       teams = teamsData.teams || [];
       repos = reposData.repos || [];
+      if (profile.viewerRole === "owner" || profile.viewerRole === "admin") {
+        fediverse = await orgApiRequest(
+          "GET", "/api/orgs/" + encodeURIComponent(name) + "/fediverse");
+      }
     } catch (error) {
       root.innerHTML =
         '<button type="button" data-org-back class="mb-4 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">' +
@@ -252,13 +535,45 @@
       root.querySelector("[data-org-back]")?.addEventListener("click", showOrgsList);
       return;
     }
-    renderOrgDetail(root, name, profile, members, teams, repos);
+    renderOrgDetail(root, name, profile, members, teams, repos, fediverse);
   }
 
-  function renderOrgDetail(root, name, profile, members, teams, repos) {
+  function renderOrgDetail(root, name, profile, members, teams, repos, fediverse) {
     const canManage = profile.viewerRole === "owner" || profile.viewerRole === "admin";
     const isOwner = profile.viewerRole === "owner";
     const title = escapeHtml(profile.displayName || profile.org || name);
+    const worldAccess = {
+      lobby: profile.worldAccess?.lobby || "public",
+      floors: profile.worldAccess?.floors || "restricted",
+      offices: profile.worldAccess?.offices || "restricted",
+    };
+    const worldSettings = canManage
+      ? '<form data-org-world-settings class="mt-5 grid gap-3 rounded-md border border-border bg-card p-4">' +
+          '<div><h4 class="text-sm font-semibold text-foreground">World building</h4>' +
+          '<p class="mt-1 text-xs leading-5 text-muted-foreground">Set the public identity of this building and independently control its lobby, repository floors, and personal offices. Restricted spaces are visible to organization members; private spaces are limited to owners and administrators.</p></div>' +
+          '<div class="grid gap-3 md:grid-cols-2">' +
+            '<label class="grid gap-1 text-xs font-semibold text-foreground">Display name' +
+              '<input data-org-world-display maxlength="80" value="' + escapeHtml(profile.displayName || "") + '" class="' + ORG_INPUT_CLASS + '" /></label>' +
+            '<label class="grid gap-1 text-xs font-semibold text-foreground">HTTPS logo URL' +
+              '<input data-org-world-logo type="url" inputmode="url" maxlength="500" value="' + escapeHtml(profile.logoUrl || "") + '" placeholder="https://…" class="' + ORG_INPUT_CLASS + '" /></label>' +
+          '</div>' +
+          '<label class="grid gap-1 text-xs font-semibold text-foreground">Description' +
+            '<textarea data-org-world-description maxlength="500" rows="3" class="' + ORG_INPUT_CLASS + ' h-auto py-2">' + escapeHtml(profile.description || "") + "</textarea></label>" +
+          '<div class="grid gap-3 sm:grid-cols-3">' +
+            '<label class="grid gap-1 text-xs font-semibold text-foreground">Lobby access<select data-org-world-lobby class="' + ORG_INPUT_CLASS + '">' +
+              orgOptionTags(ORG_WORLD_ACCESS_OPTIONS, worldAccess.lobby) + "</select></label>" +
+            '<label class="grid gap-1 text-xs font-semibold text-foreground">Repository floors<select data-org-world-floors class="' + ORG_INPUT_CLASS + '">' +
+              orgOptionTags(ORG_WORLD_ACCESS_OPTIONS, worldAccess.floors) + "</select></label>" +
+            '<label class="grid gap-1 text-xs font-semibold text-foreground">Personal offices<select data-org-world-offices class="' + ORG_INPUT_CLASS + '">' +
+              orgOptionTags(ORG_WORLD_ACCESS_OPTIONS, worldAccess.offices) + "</select></label>" +
+          "</div>" +
+          '<button type="submit" class="' + ORG_BTN_PRIMARY + ' w-fit">Save world settings</button>' +
+        "</form>"
+      : '<section class="mt-5 rounded-md border border-border bg-card p-4">' +
+          '<h4 class="text-sm font-semibold text-foreground">World building access</h4>' +
+          '<p class="mt-1 text-xs text-muted-foreground">Lobby: ' + escapeHtml(worldAccess.lobby) +
+          " · floors: " + escapeHtml(worldAccess.floors) +
+          " · offices: " + escapeHtml(worldAccess.offices) + "</p></section>";
 
     const memberRows = members.map((member) => {
       const memberName = escapeHtml(member.name || "");
@@ -322,6 +637,33 @@
           '<input data-repo-node value="' + escapeHtml(account) + '" placeholder="your node" autocomplete="off" class="' + ORG_INPUT_CLASS + '" />' +
           '<button type="submit" class="' + ORG_BTN_SECONDARY + '">Link repo</button></form>'
       : "";
+    const digestRows = (fediverse?.repos || []).map((item) => {
+      const repoName = escapeHtml(item.repo || "");
+      const preview = String(item.preview?.text || "").trim();
+      const status = !item.ownerEnabled
+        ? "Disabled by repository owner"
+        : item.enabled ? "Eligible for daily digest" : "Disabled for organization";
+      return '<details class="rounded-md border border-border bg-card p-3">' +
+        '<summary class="cursor-pointer text-sm font-medium text-foreground">' +
+          escapeHtml(name) + "/" + repoName +
+          ' <span class="ml-1 text-xs font-normal text-muted-foreground">· ' +
+          escapeHtml(status) + "</span></summary>" +
+        '<pre class="mt-2 max-h-52 overflow-auto whitespace-pre-wrap break-words rounded bg-background p-2 font-mono text-[10px] leading-4 text-foreground">' +
+          escapeHtml(preview || "No meaningful public updates are queued.") +
+        "</pre></details>";
+    }).join("") || '<p class="text-sm text-muted-foreground">No public linked repositories have queued updates.</p>';
+    const digestControls = canManage
+      ? '<section class="mt-6" data-org-fediverse-controls>' +
+          '<div class="flex items-start justify-between gap-4">' +
+            '<div><h4 class="text-sm font-semibold text-foreground">Fediverse daily digests</h4>' +
+            '<p class="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">Combine meaningful public updates for each organization alias into at most one clearly automated post per 24 hours. Repository-owner federation settings remain authoritative; empty posts are never sent.</p></div>' +
+            '<label class="inline-flex shrink-0 items-center gap-2 text-xs font-semibold text-foreground"><input data-org-fediverse-enabled type="checkbox" class="h-4 w-4"' +
+              (fediverse?.controls?.enabled !== false ? " checked" : "") +
+              " />Enabled</label>" +
+          "</div>" +
+          '<div class="mt-3 grid gap-2">' + digestRows + "</div>" +
+        "</section>"
+      : "";
 
     root.innerHTML =
       '<div class="flex items-center gap-3">' +
@@ -335,13 +677,15 @@
         (profile.viewerRole ? orgRoleBadge(profile.viewerRole) : "") +
       "</div>" +
       (profile.description ? '<p class="mt-1 text-sm text-muted-foreground">' + escapeHtml(profile.description) + "</p>" : "") +
+      worldSettings +
       '<p data-org-status class="mt-2 min-h-4 text-xs text-muted-foreground"></p>' +
       '<section class="mt-5"><h4 class="text-sm font-semibold text-foreground">Members</h4>' +
         '<div class="mt-2 grid gap-2">' + memberRows + "</div>" + memberAdd + "</section>" +
       '<section class="mt-6"><h4 class="text-sm font-semibold text-foreground">Teams</h4>' +
         '<div class="mt-2 grid gap-2">' + teamRows + "</div>" + teamAdd + "</section>" +
       '<section class="mt-6"><h4 class="text-sm font-semibold text-foreground">Linked repos</h4>' +
-        '<div class="mt-2 grid gap-2">' + repoRows + "</div>" + repoAdd + "</section>";
+        '<div class="mt-2 grid gap-2">' + repoRows + "</div>" + repoAdd + "</section>" +
+      digestControls;
 
     window.lucide?.createIcons();
     wireOrgDetail(root, name, members);
@@ -363,6 +707,21 @@
     root.querySelector("[data-org-delete]")?.addEventListener("click", () => {
       if (!window.confirm("Delete " + name + "? This dissolves the org, its members, teams, and repo links. Linked repos are not deleted.")) return;
       guard(() => orgApiRequest("DELETE", "/api/orgs/" + encodeURIComponent(name), {}).then(showOrgsList));
+    });
+
+    root.querySelector("[data-org-world-settings]")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const worldAccess = {
+        lobby: root.querySelector("[data-org-world-lobby]")?.value || "public",
+        floors: root.querySelector("[data-org-world-floors]")?.value || "restricted",
+        offices: root.querySelector("[data-org-world-offices]")?.value || "restricted",
+      };
+      guard(() => orgApiRequest("PATCH", "/api/orgs/" + encodeURIComponent(name), {
+        displayName: (root.querySelector("[data-org-world-display]")?.value || "").trim(),
+        description: (root.querySelector("[data-org-world-description]")?.value || "").trim(),
+        logoUrl: (root.querySelector("[data-org-world-logo]")?.value || "").trim(),
+        worldAccess,
+      }));
     });
 
     root.querySelector("[data-org-member-add]")?.addEventListener("submit", (event) => {
@@ -426,6 +785,12 @@
         guard(() => orgApiRequest("DELETE", "/api/orgs/" + encodeURIComponent(name) + "/repos", { repo }));
       });
     });
+    root.querySelector("[data-org-fediverse-enabled]")?.addEventListener(
+      "change", (event) => {
+        guard(() => orgApiRequest(
+          "POST", "/api/orgs/" + encodeURIComponent(name) + "/fediverse",
+          { enabled: Boolean(event.target.checked) }));
+      });
   }
 
   async function showOrgTeamDetail(name, team, orgMembers) {
@@ -683,6 +1048,11 @@
     applyAvatar(avatar, session);
     applyAvatar($("[data-home-user-avatar]"), session);
     applyAvatar($("[data-home-compose-avatar]"), session);
+    const publicProfileLink = $("[data-account-menu-public-profile]");
+    if (publicProfileLink && session?.nodeName) {
+      publicProfileLink.href =
+        "/@" + encodeURIComponent(String(session.nodeName).toLowerCase());
+    }
     if (adminButton) {
       let adminUrl = session?.isAdmin ? (session?.adminUrl || "") : "";
       if (adminUrl && session?.nodeName && !/[?&]admin=/.test(adminUrl)) {

@@ -1,0 +1,44 @@
+name: ForkMesh World browser E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: forkmesh-world-browser-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  world-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Configure Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: cloudflare_worker/browser_tests/package-lock.json
+          package-manager-cache: true
+
+      - name: Install pinned browser test dependencies
+        working-directory: cloudflare_worker/browser_tests
+        run: npm ci
+
+      - name: Install the pinned Chromium headless shell
+        working-directory: cloudflare_worker/browser_tests
+        run: npx playwright install --with-deps --only-shell chromium
+
+      - name: Exercise WebGL, keyboard, touch, and two-client privacy
+        working-directory: cloudflare_worker/browser_tests
+        run: npm test

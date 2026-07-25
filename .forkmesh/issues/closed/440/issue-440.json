@@ -1,0 +1,87 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784402987625,
+    "endDate": 1784692800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nEnsure every node computes the same issue, project, review, and thread state from the same signed event set even when events arrive in a different order.\n\n## Implementation\n\n- Specify a total event order using timestamp, event id, and author as deterministic tie-breakers.\n- Define duplicate-id handling, authorized tombstone precedence, edit targeting, status conflict behavior, latest review state, and thread resolve/reopen rules.\n- Apply the same rules in `IssueStore`, `ProjectStore`, `PullStore`, relay validation, and browser rendering.\n- Reject invalid signatures before folding and make replay of an already-seen event idempotent.\n- Add shared shuffled-event fixtures consumed by each implementation.\n\n## Acceptance criteria\n\n- Random permutations of the same fixture always produce identical metadata and rendered state.\n- Duplicate and replayed event ids do not change the result.\n- Unauthorized tombstones never hide an object.\n- Invalid signatures never enter a fold.\n- Desktop, relay, and browser fixture results match.\n\n## Dependencies\n\nDepends on #433 so automation and readers share current native fixtures.\n\n## Verification\n\nAdd property-style shuffle tests for issues, projects, reviews, inline threads, edits, deletes, status conflicts, and equal-timestamp events.",
+            "id": "open-440",
+            "sig": "pPLlMJZFYTtXSM3r5kYNItmqXRmQsEqBNdpe4kImz_SEwNWvZjSHdF5ugb0UsBetS-k38vgtdOmmul4kZC_lDA",
+            "title": "Make collaboration-event folding deterministic",
+            "ts": 1784402987625,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1785211200000,
+            "id": "42ee46da-5e7f-4b4a-a491-bc65e21ac56d",
+            "sig": "0xDsk2A2kkOb_OlT_e2JoNWZwF2yGH3IuxqwcradpjPmrU8mnvHk1VXVuqGdRcpAeyEiuoEA7G2AcPXISGdaCA",
+            "startDate": 1784952000000,
+            "ts": 1784402987626,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nEnsure every node computes the same collaboration state from the same signed event set, even under concurrent or reordered delivery.\n\n## Implementation\n\n- Specify a total event order using timestamp, event id, and author tie-breakers plus duplicate-id and replay handling.\n- Define conflict and tombstone rules for issues, pull requests, comments, labels, reactions, reviews, patchsets, projects, boards, milestones, social objects, moderation actions, and notification cursors.\n- Represent concurrent merge, reject, requested-change, waiting, resolve, reopen, and status decisions without discarding independent state.\n- Apply the same rules in native stores, relay validation, browser rendering, receipts, and imports.\n- Reject invalid signatures before folding and publish shuffled positive and negative fixtures for every object family.\n\n## Acceptance criteria\n\n- Random permutations of the same event set always produce identical metadata and rendered state.\n- Duplicate and replayed ids do not change results; conflicting distinct events remain auditable.\n- Unauthorized tombstones and moderation actions never hide an object.\n- Derived notifications and counts can be rebuilt from the event log and user cursor.\n- Desktop, relay, browser, reference verifier, and import folds match.\n\n## Dependencies\n\nDepends on #433 so automation and readers share the native signed format.\n\n## Verification\n\nRun property-style shuffled, duplicated, concurrent, unauthorized, invalid-signature, edit, delete, review, reaction, project, social, moderation, and notification fixtures through every implementation.",
+            "id": "43fbfda7-a65d-47e1-9ee0-03df95839b92",
+            "sig": "t-HtPuwPuhw1pAbFEFhGASOhmmmKxxJAmOj1Z3Ao8vwMauE230UeEI-xHw-R-El5phu7JTM8yZJIx-LdQ7hsBg",
+            "target": "open-440",
+            "ts": 1784405500062,
+            "type": "edit"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1784692800000,
+            "id": "4ff90cde-f060-463d-a951-7134e502addc",
+            "sig": "o_XeP0HDs0__NXCmIKbjishOnDtPdDqpGP98u47m8rFMD0IVSC3iV_d7Y0FlJjrWUuqLI68Z82iM2kAd8PUZDg",
+            "startDate": 1784520000000,
+            "ts": 1784405500070,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "26dd1016-ab7a-492c-bf6d-b01a42181d9e",
+            "sig": "EAB3IiL1yMcaJNZPo7hemtym4VHPqCROPfT_Sp35zuFpJLFwwYvu_71An_A6BNI9gn-Seb7HSOJRvA1qdjuRBg",
+            "ts": 1784729751127,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "f42e55ee-6211-410a-b69c-05c084d6d284",
+            "sig": "DmBXCMVA762M_bGakMx-OZq3dO6ZTWT_gGp8zwDByfJhp8Pr7Ldxz5Cfs5x-z9Dkv8oq6uBQUQ7BJcAwlsDbAQ",
+            "status": "closed",
+            "ts": 1784729751128,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "security",
+        "enhancement"
+    ],
+    "milestone": "Resilient operation",
+    "number": 440,
+    "priority": 7,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784520000000,
+    "status": "closed",
+    "title": "Make collaboration-event folding deterministic",
+    "updatedAt": 1784729751128,
+    "votes": 0
+}

@@ -1,0 +1,65 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784405500011,
+    "endDate": 1785038400000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nUse one bounded scanner across local hooks, publication, and mirror intake so risky content is caught before replication whenever possible.\n\n## Implementation\n\n- Create a shared scanner interface for secret fingerprints, private-key formats, malware rules, and operator-supplied detectors.\n- Provide opt-in pre-commit hook installation plus mandatory configurable pre-push or pre-publish evaluation.\n- Scan newly fetched public objects before a mirror advertises them and quarantine failures through #450.\n- Log only rule identifiers, fingerprints, paths, and locations; never log matching secret bytes.\n- Require an explicit signed local override and show that redaction cannot be guaranteed after data has replicated.\n\n## Acceptance criteria\n\n- The same fixture produces the same decision in hook, publish, and mirror paths.\n- Private ciphertext is not mis-scanned before authorized decryption.\n- A clean replacement clears quarantine only after a complete rescan.\n- Overrides are scoped, expiring, auditable, and cannot silently disable other rules.\n- Scanner time, memory, file count, and object size are bounded for hostile input.\n\n## Dependencies\n\nIntegrates with the node-local policy engine in #450.\n\n## Verification\n\nSeed secret, malware, binary, oversized, renamed, deleted, encrypted, overridden, and cleaned fixtures through each entry point and scan all diagnostics for the original match bytes.",
+            "id": "open-451",
+            "sig": "oQhe5U_4IWdZtoEjRMJfEHECINSfzjNVtbEa_3SVeKeZk7mgM5vWaPE4Ya0x89lLwZKmney0c8rySq8alT4SDg",
+            "title": "Scan commits, publications, and mirrors for secrets and malware",
+            "ts": 1784405500011,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1785038400000,
+            "id": "a32be6ba-cd17-460c-9439-3798e0099b92",
+            "sig": "fQ_WbyAy6sW8Z08OtH1699BuSs7zYd5TQ6fyIFf4oETKUBxqNnaK6fhCBsH8AelCX1Vv4jToWEWheu_6bngFCg",
+            "startDate": 1784692800000,
+            "ts": 1784405500012,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "c96331e4-07c4-4e15-8c0f-8888ff3b45b7",
+            "sig": "-WZY13IPYOfdroe1HFV97t2Gfjecl0aJOaYNo1Tzm_bnC9hIXOZJ_pe8qK90Hu_PlC9w7PLK9j1ZUcn9oWkJCQ",
+            "ts": 1784729751149,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "4581a043-4619-4951-a930-cea10d8a125f",
+            "sig": "ILD4lxBuCd4mfXqmJVduqb9qXKJx94AbqLpSa9yLme8MsGQsOuLg2wSf3-JLmqc1rWin9oNGWWBbPuSFm871AA",
+            "status": "closed",
+            "ts": 1784729751150,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "security"
+    ],
+    "milestone": "Secure collaboration",
+    "number": 451,
+    "priority": 19,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784692800000,
+    "status": "closed",
+    "title": "Scan commits, publications, and mirrors for secrets and malware",
+    "updatedAt": 1784729751150,
+    "votes": 0
+}

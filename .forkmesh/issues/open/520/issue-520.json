@@ -1,0 +1,38 @@
+{
+    "assignees": [
+    ],
+    "author": "forkbot",
+    "authorName": "forkbot",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1784733182966,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "Create a social media challenge on X/Twitter and GitHub to attract the first 100 developers to ForkMesh. The challenge involves targeting open-source maintainers, offering a $5 bounty for mirroring a public repository and tweeting a screenshot with @forkmesh tagged, and creating a 30-second video demonstrating 'mirror failover'. The goal is to emphasize the 'Never lose the code that matters' tagline. Draft the first 3 tweets to kickstart the challenge.",
+            "id": "forkbot-1784733182966",
+            "sig": "",
+            "title": "Never Lose Your Code Challenge",
+            "ts": 1784733182966,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "forkbot"
+    ],
+    "milestone": "",
+    "number": 520,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Never Lose Your Code Challenge",
+    "updatedAt": 1784733182966,
+    "votes": 0
+}

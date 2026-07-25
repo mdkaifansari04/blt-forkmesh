@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751256,
+    "endDate": 1801198800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nA person or organization can keep a stable identity through new devices, lost keys, provider changes, and delegated work without surrendering control to ForkMesh hosting.\n\n## Scope\n\n- Support passkeys, hardware keys, device enrollment and revocation, key rotation, social recovery, and offline recovery kits.\n- Model organizations, scoped delegated roles, expiry, and least-privilege signing authority.\n- Attach signed proofs of external accounts with revocation and privacy controls.\n\n## Acceptance criteria\n\n- Lost-device, compromised-device, key-rotation, social-recovery, and organization-delegation drills preserve identity safely.\n- Revoked keys cannot create accepted new events while historical signatures remain verifiable.\n- Identity exports are provider-neutral, documented, encrypted, and interoperable with at least two clients.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 release gate**\n- Milestone: **Collaboration public beta**\n- Numeric priority: **8 of 44** (1 is highest)\n- Depends on: #484\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**25% as of 2026-07-22.** Local Ed25519 identities and web accounts exist; passkeys, portable recovery, hardware keys, organizations, and delegated proofs remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Recovery success, revocation propagation, passkey adoption, delegated-access incidents, and identity portability. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-485",
+            "sig": "SzGj8Hrmrl1XqZV3QbJ_zWaXZpcDYLRc_ICiKP-1h-YFTkKjVaKdwv9PeHW1l9WSPDmfm-IiHaR6fb6lPxvcCw",
+            "title": "Introduce recoverable portable identities",
+            "ts": 1784729751256,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "c83f3ca8-181a-432b-9562-a66359ac2898",
+            "labels": [
+                "security",
+                "product",
+                "protocol"
+            ],
+            "sig": "UrhMNp8vSQq1BuEWPaaYnGplk-e_bvpDNWeODrSrzyeI2oCjTHkWJj5T-FpbBJG1L06X4dpFxfHvn1h56-WHDQ",
+            "ts": 1784729751257,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "1e7e25a8-c0d0-4c3a-9a0c-9ff820737c38",
+            "milestone": "Collaboration public beta",
+            "sig": "O6RapVi2yXORKl2eHs3X2PwCWRwrZoLnjejxjBUsuW-wCdjKeEP4RpwcR5cHu6eXqUOvWqxo3eEMmycS4f4oCw",
+            "ts": 1784729751258,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1801198800000,
+            "id": "b8b4f902-8ff2-4442-8b53-e87f12a08141",
+            "sig": "64POpR3rgs9V39bA1CZaFBwF4DrFCZvnRBJcrlW-wQSgc0pedl0vr4ZkPP5r0OABZsP-DOC-q83tjaNBw--xAw",
+            "startDate": 1786939200000,
+            "ts": 1784729751259,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "4ff936fb-9fff-4b0b-aea4-50fcb91caef6",
+            "priority": 8,
+            "sig": "mBLUmQiIRem33A0O7R-eiYzIQs4uqbnNMDAFvTCOyEhVEo8ESyLf3tO8BFg-OHyMZTts-1PkrPxeGYLag4s4BQ",
+            "ts": 1784729751260,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "4207d40d-67b7-4029-b95b-555e4e7f24eb",
+            "progress": 25,
+            "sig": "NFZKS21emAk0Fmkr_zd7SI1rOStOF67bohAm6XxnUnWTzlShPEqaFis6u2OajYOH0_lJO0X6128jhQpWMno4Ag",
+            "ts": 1784729751261,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "security",
+        "product",
+        "protocol"
+    ],
+    "milestone": "Collaboration public beta",
+    "number": 485,
+    "priority": 8,
+    "progress": 25,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1786939200000,
+    "status": "open",
+    "title": "Introduce recoverable portable identities",
+    "updatedAt": 1784729751261,
+    "votes": 0
+}

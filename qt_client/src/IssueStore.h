@@ -34,9 +34,9 @@ struct IssueEvent {
     int agentSessionId = 0; // agent
     QString agentStatus;   // agent
     bool agentCreatePr = false; // agent
-    double bountyUsd = 0.0;     // bounty: amount pledged, in USD
-    QString bountyAddress;      // bounty: worker-issued Solana deposit address
-    QString bountyStatus;       // bounty: open | funded | paid
+    double bountyUsd = 0.0;     // legacy bounty audit metadata, in USD
+    QString bountyAddress;      // legacy escrow address; migration-only/read-only
+    QString bountyStatus;       // historical open | funded | paid state
     QString sig;
 
     QJsonObject toJson() const;
@@ -210,8 +210,8 @@ public:
                   QString *error = nullptr);
     bool setPriority(int number, int priority, QString *error = nullptr);
     bool setProgress(int number, int progress, QString *error = nullptr);
-    // Pledge (or update) a bounty on an issue. address is the worker-issued
-    // Solana deposit address; status is open|funded|paid.
+    // Compatibility writer for imported historical bounty metadata. New
+    // Worker-held funding is disabled; address/status are migration-only.
     bool setBounty(int number, double amountUsd, const QString &address,
                    const QString &status, QString *error = nullptr);
     bool setAssignees(int number, const QStringList &assignees, QString *error = nullptr);

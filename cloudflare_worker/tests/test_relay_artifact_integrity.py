@@ -2,11 +2,10 @@
 
 Two halves of the same guarantee:
 
-1. Relay-side: a content-addressed release artifact is hashed as it streams
-   through the Durable Object and the transfer is ABORTED at git-end if the
-   bytes don't match the requested sha256 — so a tampered mirror can't serve
-   forged bytes for a hash even to a client that never re-verifies. The pin is
-   enforced at the relay, not delegated to the downloader.
+1. Gateway-side: a content-addressed release artifact is hashed before the
+   direct-HTTPS gateway opens its bounded file stream. A mismatch is rejected
+   before response construction, so the retired repository socket is not part
+   of the integrity boundary.
 
 2. Client-side: the desktop Mirror-nodes table underlines any content column
    whose value doesn't match the source of truth, so a node quietly serving
@@ -18,35 +17,30 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 ENTRY = ROOT / "cloudflare_worker" / "src" / "entry.py"
+GATEWAY = ROOT / "tools" / "mirror_gateway.py"
 RELEASES = ROOT / "qt_client" / "src" / "MainWindowReleases.cpp"
 
 
-def test_release_blob_relay_verifies_content_hash_server_side():
-    source = ENTRY.read_text(encoding="utf-8")
+def test_release_blob_gateway_verifies_content_hash_before_streaming():
+    worker = ENTRY.read_text(encoding="utf-8")
+    gateway = GATEWAY.read_text(encoding="utf-8")
 
-    # _stream_request takes an optional expected hash and seeds a running hasher
-    # only when it's set (clone packs stay unhashed — they aren't content-addressed).
-    assert (
-        "async def _stream_request(self, host, message, headers, verify_sha256=None):"
-        in source
-    )
-    assert '"hasher": hashlib.sha256() if verify_sha256 else None,' in source
-
-    # Each chunk is folded into the hash before it leaves for the client.
-    assert 'stream["hasher"].update(data)' in source
-
-    # git-end aborts (not close) when the digest doesn't match, so the forged
-    # bytes never land as a complete or edge-cacheable download.
-    assert 'hasher.hexdigest() != stream.get("verify")' in source
-    assert 'await stream["writer"].abort("integrity check failed")' in source
-
-    # The release-blob endpoint is the caller that opts into verification, keyed
-    # on the content-addressed sha256 from the URL.
-    blob = source[
-        source.index("async def _release_blob(")
-        : source.index("async def _raw_blob(")
+    route = worker[
+        worker.index("release_blob_match = RELEASE_BLOB_RE.match"):
+        worker.index("host_match = REPO_HOST_RE.match")
     ]
-    assert "verify_sha256=sha256.lower()," in blob
+    assert 'operation="release-blob"' not in route
+    assert '"release-blob"' in route
+    assert "release_sha=sha256" in route
+    release_spec = gateway[
+        gateway.index("def release_spec("):
+        gateway.index("\n    def ", gateway.index("def release_spec(") + 1)
+    ]
+    assert "SHA256_RE.fullmatch(digest)" in release_spec
+    assert "(root / \"sha256\" / digest[:2] / digest / \"data\").resolve()" in release_spec
+    assert "hmac.compare_digest(_sha256_file(path), digest)" in release_spec
+    assert 'raise GatewayError("release blob integrity check failed")' in release_spec
+    assert "return StreamSpec(" in release_spec
 
 
 def test_mirror_nodes_table_underlines_mismatched_columns():

@@ -37,6 +37,7 @@ class SettingsService extends ChangeNotifier {
 
   String get displayName => _prefs.getString('profile/name') ?? '';
   String get serverUrl => _prefs.getString('server/url') ?? defaultServerUrl;
+  Uri get worldUri => worldUriForServerUrl(serverUrl);
   String get room => _prefs.getString('server/room') ?? defaultRoom;
   String get passphrase {
     final stored = _prefs.getString('server/passphrase');
@@ -66,5 +67,26 @@ class SettingsService extends ChangeNotifier {
   Future<void> _set(String key, String value) async {
     await _prefs.setString(key, value);
     notifyListeners();
+  }
+
+  /// Convert the configured relay WebSocket URL into its public World origin.
+  ///
+  /// Authentication tokens and room paths are deliberately discarded. An
+  /// invalid or credential-bearing value falls back to the production origin
+  /// instead of being handed to the platform URL launcher.
+  static Uri worldUriForServerUrl(String value) {
+    final relay = Uri.tryParse(value.trim());
+    if (relay == null ||
+        !const {'ws', 'wss'}.contains(relay.scheme.toLowerCase()) ||
+        relay.host.isEmpty ||
+        relay.userInfo.isNotEmpty) {
+      return Uri.https('forkmesh.com', '/');
+    }
+    return Uri(
+      scheme: relay.scheme.toLowerCase() == 'wss' ? 'https' : 'http',
+      host: relay.host,
+      port: relay.hasPort ? relay.port : null,
+      path: '/',
+    );
   }
 }

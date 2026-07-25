@@ -23,7 +23,11 @@ from js import crypto as js_crypto
 from pyodide.ffi import to_js as _to_js
 
 from catalog import clean_string
-from releases import release_manifest_content, release_signing_message
+from releases import (
+    release_manifest_content,
+    release_signing_message,
+    valid_git_commit,
+)
 
 
 def to_js(value):
@@ -216,8 +220,15 @@ async def verify_pull_event(pr):
         return False
     fields = [pr.get("title", ""), pr.get("base", ""), pr.get("head", ""),
               pr.get("patch", "")]
-    for content in ("\x00".join(fields + [pr.get("commits", "")]),
-                    "\x00".join(fields)):
+    commits = pr.get("commits", "")
+    # A legacy signature never authenticated a commit mbox. Only try that
+    # four-field form when the submission carries no commits; otherwise an
+    # attacker could append unsigned commits that Qt would replay in preference
+    # to the signed flat patch.
+    contents = ["\x00".join(fields + [commits])]
+    if not commits:
+        contents.append("\x00".join(fields))
+    for content in contents:
         content_hash = await sha256_hex(content)
         canonical = (
             "forkmesh-pull-event-v1\n" + author + "\n" + str(ts) + "\n" + content_hash
@@ -330,6 +341,9 @@ async def verify_release_manifest(manifest):
     repo = manifest.get("repo", "") or ""
     tag = manifest.get("tag", "") or ""
     if not author or not signature or not repo or not tag:
+        return False
+    build_commit = manifest.get("build_commit", "") or ""
+    if build_commit and not valid_git_commit(build_commit):
         return False
     try:
         ts = int(manifest.get("published_at", 0))

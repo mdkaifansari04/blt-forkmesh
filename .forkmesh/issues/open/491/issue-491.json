@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751292,
+    "endDate": 1793332800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nA project remains buildable and distributable after its original forge or documentation host disappears.\n\n## Scope\n\n- Replicate tags, binaries, checksums, release notes, provenance, dependency manifests, SBOMs, documentation sites, and package references.\n- Address large artifacts by content, retain source metadata, and verify downloads through independent mirrors.\n- Expose retention, coverage, licensing, malware scan, and missing-artifact status per release.\n\n## Acceptance criteria\n\n- Supported provider fixtures preserve every release field and artifact byte-for-byte.\n- Downloads fail over across independent mirrors while checksum and provenance verification remain valid.\n- Coverage reports identify every missing tag, artifact, manifest, or documentation asset.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 release gate**\n- Milestone: **Preservation public alpha**\n- Numeric priority: **18 of 44** (1 is highest)\n- Depends on: #477, #480\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**50% as of 2026-07-22.** ForkMesh already has signed release metadata, content-addressed artifacts, checksums, and downloads; provider migration and complete coverage/provenance remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Release fidelity, artifact coverage, verified download success, restore time, and storage cost. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-491",
+            "sig": "S2o1IK7-KUHxR81MpDQbAT2O1HzEYYIaI-Jw2oMJFKpNPK1uinC6I4Lrs6FAUvk_Ktkbbo9AY6M10eBOvjvsBg",
+            "title": "Preserve releases and downloadable artifacts as first-class objects",
+            "ts": 1784729751292,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "3ee81587-93f2-47d9-a8ec-e12c428eb2fc",
+            "labels": [
+                "product",
+                "security",
+                "feature"
+            ],
+            "sig": "ipyhReRphp91OI1bbic2LTbmGfzmy9JqsbOYYUpXiwHSziUJi7uZdkq6HczN-gtxiv4G2cRHQzE5S1OhGeGUAA",
+            "ts": 1784729751293,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "8c6453d1-f97b-434d-8565-986869c24eb4",
+            "milestone": "Preservation public alpha",
+            "sig": "lQmloYhilTZ28O4yX52kfxiiQX7mU9LSSCQsdmINJBXv1MfZkhPDNX2xBZZlgxFJcpLyagEu1sfmvAUFBAt8DA",
+            "ts": 1784729751294,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1793332800000,
+            "id": "7a481ea0-a5ea-47d5-abe7-60a346cac6f4",
+            "sig": "I3tdV9GXB0Und-YouIZ593Bfsi3QLkRzJyiX69o5MGHgLAaS_cVjYrJPKAFvM2LsB6pJaVBrRjiSYjD2APReBA",
+            "startDate": 1784692800000,
+            "ts": 1784729751295,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "b4fbd6a3-7704-4274-a7f0-8e433f79dbcc",
+            "priority": 18,
+            "sig": "0H16roEK23-Hm_Hxla2XTqPi1BoP7UnQY5hG_EOFBMeD9RkU9eA0j70IEuNqAN6IhjUq73Rr6XRs6HYehCLGBA",
+            "ts": 1784729751296,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "0bd81b10-e41d-4db7-8918-d85970067030",
+            "progress": 50,
+            "sig": "tWU9uHYILg76pEWnkPgTcpXeXKjd0jmwCZ_V4X53DKQQAhph516iwbI3G5YhedDltKMqzO0SOtZ1VTDC-sV9Dg",
+            "ts": 1784729751297,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "product",
+        "security",
+        "feature"
+    ],
+    "milestone": "Preservation public alpha",
+    "number": 491,
+    "priority": 18,
+    "progress": 50,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784692800000,
+    "status": "open",
+    "title": "Preserve releases and downloadable artifacts as first-class objects",
+    "updatedAt": 1784729751297,
+    "votes": 0
+}

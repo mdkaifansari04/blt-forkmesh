@@ -18,10 +18,29 @@ import re
 # (/clients); the Durable Object picks behavior from the upgrade header.
 ROOM_RE = re.compile(r"^/api/room/([^/]+)/(?:ws|clients)$")
 REPO_ROOM_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/rooms/([^/]+)/(?:ws|clients)$")
+# Platform-administrator-created private chat channels. Public paths use only
+# opaque 128-bit identifiers; human-readable channel names stay encrypted.
+CHAT_CHANNELS_RE = re.compile(r"^/api/chat/channels/?$")
+CHAT_CHANNEL_MEMBERS_RE = re.compile(
+    r"^/api/chat/channels/([0-9a-f]{32})/members/?$")
+CHAT_CHANNEL_ROOM_ACCESS_RE = re.compile(
+    r"^/api/chat/channels/([0-9a-f]{32})/room-access/?$")
+CHAT_CHANNEL_WS_RE = re.compile(
+    r"^/api/chat/channels/([0-9a-f]{32})/ws/?$")
 # Issue inbox: signed submissions from people without write access to the repo.
 REPO_ISSUES_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/issues$")
 # Pull-request inbox: signed PR submissions from any node.
 REPO_PULLS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/pulls$")
+# Authenticated, asynchronous merge of one exact open pull request.  The
+# repository alias rewrite runs before this route, so the handler always
+# authorizes and dispatches against the canonical backing-node namespace.
+REPO_PULL_MERGE_RE = re.compile(
+    r"^/api/repo/([^/]+)/([^/]+)/pulls/([1-9][0-9]{0,8})/merge$")
+# Owner/write-authorized, bounded redacted run summaries from an attested
+# mirror Actions executor. No workflow variables or public catalog data use
+# this endpoint.
+REPO_ACTION_RUNS_RE = re.compile(
+    r"^/api/repo/([^/]+)/([^/]+)/actions/runs$")
 # Commit-comment inbox: signed per-commit comments from any node.
 REPO_COMMITS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/commits$")
 # Discussion inbox: signed discussion open/comment submissions from any node.
@@ -33,36 +52,57 @@ REPO_PENDING_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/pending$")
 # Thread subscriptions (issue #361): a node signs a subscribe/unsubscribe for one
 # issue or PR so it gets notified of every reply, not just mentions of it.
 REPO_SUBSCRIBE_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/subscribe$")
-# Issue bounty escrow: mint a per-bounty Solana deposit address, confirm funding,
-# and split it 90/10 to the PR author + treasury when the issue's PR merges.
+# Frozen issue-bounty compatibility route. New wallet/create/payout actions fail
+# closed; status reads expose migration-only historical metadata without keys.
 REPO_BOUNTY_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/bounty$")
 # Private-repo collaborator ACL (issue #9): owner-signed grant/revoke/list of the
 # accounts a private repo is shared with.
 REPO_SHARES_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/shares$")
+# Authenticated daily security-scan ingest and visibility-gated read models.
+# Public readers receive the compact redacted clipboard only; rich history is
+# owner-authorized and private repositories otherwise remain indistinguishable
+# from missing repositories.
+REPO_SECURITY_SCANS_RE = re.compile(
+    r"^/api/repo/([^/]+)/([^/]+)/security-scans/"
+    r"(lease|ingest|latest|history|triage)$")
 # Public mirror health for a logical repo group.
 REPO_MIRRORS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/mirrors$")
 # Catalog-facing About details editable from the dashboard by the source owner.
 REPO_ABOUT_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/about$")
+REPO_LOGO_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/logo$")
+REPO_LOGO_SUGGESTIONS_RE = re.compile(
+    r"^/api/repo/([^/]+)/([^/]+)/logo-suggestions$")
 # Agent-session sync (adhoc #182): desktop node push/drain of Claude Code agent
 # sessions for a repo (signed the same way as issue-inbox drain), the
-# website's password-gated read of that same list, and a queued text prompt
-# the owner sends from the website to one running agent.
+# owner-authorized retrieval of that same ciphertext list, and owner-sealed
+# prompts consumed only by the local recipient key.
 REPO_AGENTS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/agents$")
 REPO_AGENTS_LIST_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/agents/list$")
+REPO_AGENTS_ACK_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/agents/ack$")
 REPO_AGENTS_PROMPT_RE = re.compile(
     r"^/api/repo/([^/]+)/([^/]+)/agents/([^/]+)/prompt$")
-# One agent session's live transcript (adhoc #259): the desktop pushes a bounded
-# tail of each session's run log with the sessions snapshot; the website's agent
-# detail page polls this to render (and keep live) the transcript.
+# One agent session's owner-sealed snapshot (including its bounded transcript
+# tail). An authorized client can retrieve the ciphertext, but only the owner
+# device holding the hybrid private key can decrypt it.
 REPO_AGENTS_TRANSCRIPT_RE = re.compile(
     r"^/api/repo/([^/]+)/([^/]+)/agents/([^/]+)/transcript$")
-# Live tunnel: desktop clients connect to /host; the website pulls /tree and
-# /blob, which the worker forwards to the best-connected host.
+# Owner-only encryption policy and recipient-key registration for private
+# repository/agent data. The relay stores public bundles and opaque envelopes,
+# never recipient private keys.
+REPO_PRIVACY_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/privacy$")
+# Authorized download of one owner-sealed private mirror archive. Client-facing
+# private transport is deliberately identity-free: platform request logs see
+# only a random 256-bit ciphertext locator, never an owner or repository name.
+# Authorization is carried in the non-forwarded HTTP Authorization header.
+PRIVATE_REPLICA_ACCESS_RE = re.compile(
+    r"^/api/private-replicas/([0-9a-f]{64})$")
+# `/host` is a control-only presence/update WebSocket. The other legacy path
+# shapes remain parseable for compatibility, but Default routes authorized
+# reads through direct HTTPS; the former repository tunnel is retired.
 REPO_HOST_RE = re.compile(
-    r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches|search|stats|sizes)$")
-# Release asset download (issue #304): the bytes live in the node's
-# content-addressed store (never in git), streamed back over the host tunnel.
-# Stable, content-addressed URL — immutable, so it caches forever at the edge.
+    r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|compare|branches|search|stats|sizes)$")
+# Stable content-addressed release URL. Default streams it from an attested
+# direct-HTTPS endpoint; the host control socket rejects this path.
 RELEASE_BLOB_RE = re.compile(
     r"^/api/repo/([^/]+)/([^/]+)/releases/blob/sha256/([0-9a-f]{64})$")
 # Per-artifact download counts for a repo's releases (issue: Releases tab).
@@ -71,8 +111,8 @@ REPO_RELEASE_DOWNLOADS_RE = re.compile(
 # Git smart-HTTP clone endpoints: git clone https://host/<node>/<repo>
 GIT_INFO_RE = re.compile(r"^/([^/]+)/([^/]+)/info/refs$")
 GIT_PACK_RE = re.compile(r"^/([^/]+)/([^/]+)/git-upload-pack$")
-# git push endpoint (issue #358): receive-pack over the same relay tunnel, gated
-# by an owner-key-signed HTTP Basic token (see verify_push_token).
+# Reserved receive-pack path. It fails closed until a direct-HTTPS write
+# protocol is available and never falls back to the control socket.
 GIT_RECEIVE_RE = re.compile(r"^/([^/]+)/([^/]+)/git-receive-pack$")
 # --- Organizations + teams (issue #388) ---------------------------------------
 # Orgs are user-created namespaces that serve linked repos at /<org>/<repo>
@@ -85,6 +125,14 @@ ORG_MEMBERS_RE = re.compile(r"^/api/orgs/([^/]+)/members$")
 ORG_TEAMS_RE = re.compile(r"^/api/orgs/([^/]+)/teams$")
 ORG_TEAM_MEMBERS_RE = re.compile(r"^/api/orgs/([^/]+)/teams/([^/]+)/members$")
 ORG_REPOS_RE = re.compile(r"^/api/orgs/([^/]+)/repos$")
+# Organization-only, non-custodial succession. The optional action is parsed by
+# the isolated API module; the general ORG_RE cannot swallow this subresource.
+ORG_SUCCESSION_RE = re.compile(
+    r"^/api/orgs/([^/]+)/succession(?:/([^/]+))?$")
+# Organization-admin digest controls and previews for the org's linked public
+# repositories. These controls can suppress org-alias digests, but never
+# override the backing repository owner's federation switch.
+ORG_FEDIVERSE_RE = re.compile(r"^/api/orgs/([^/]+)/fediverse$")
 # Repo-scoped API prefix, matched once by the org-alias rewrite so an org's
 # /api/repo/<org>/<repo>/... URLs are re-routed to the linked node's repo
 # before any of the per-endpoint patterns above run.
@@ -118,6 +166,11 @@ REPO_FEDI_COMMENTS_RE = re.compile(
 # Owner-node push of canonical repo announcements (releases, merged PRs) into
 # the fediverse — events the relay never observes through the signed inboxes.
 REPO_AP_PUBLISH_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/ap-publish$")
+# Repo-owner digest preview. Automatic repository events are accumulated in an
+# encrypted, bounded queue and published at most once per 24 hours; this route
+# lets the owner inspect the exact public digest text without publishing it.
+REPO_AP_DIGEST_RE = re.compile(
+    r"^/api/repo/([^/]+)/([^/]+)/fediverse-digest$")
 # Repo owner's fediverse-post management surface (dashboard): list the repo
 # actor's federated posts and delete one (broadcasts a Delete(Tombstone) so it
 # disappears from Mastodon). Session/owner-key authed, never public.

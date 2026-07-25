@@ -5,7 +5,7 @@
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Network · ForkMesh</title>
-    <meta name="description" content="ForkMesh network architecture, relay status, and host tunnel model.">
+    <meta name="description" content="ForkMesh network architecture, relay status, and authenticated direct-HTTPS mirror routing.">
     <meta name="application-name" content="ForkMesh" />
     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
     <meta name="theme-color" content="#090909" />
@@ -203,7 +203,7 @@
       <section class="network-command-hero" aria-labelledby="network-title">
         <div class="network-hero-copy">
           <h1 id="network-title">A clean relay view for a local-first Git mesh.</h1>
-          <p class="hero-copy">ForkMesh keeps repository data on independently operated desktop hosts while the Worker coordinates discovery, tunnels, encrypted rooms, and clone routing.</p>
+          <p class="hero-copy">ForkMesh keeps encrypted repository data on independently operated desktop hosts while the Worker coordinates discovery, authenticated HTTPS routing, encrypted rooms, and clone failover.</p>
           <div class="hero-actions">
             <a class="primary-button" href="/dashboard">Browse repositories</a>
             <a class="secondary-button" href="/docs/">Read docs</a>
@@ -247,8 +247,8 @@
             </div>
             <div class="network-route-step">
               <span>03</span>
-              <strong>Outbound host tunnel</strong>
-              <small>Streams from a desktop mirror without exposing its IP.</small>
+              <strong>Signed direct-HTTPS origin</strong>
+              <small>Cloudflare-proxied routing keeps the selected mirror hostname and origin address out of the public URL.</small>
             </div>
           </div>
           <div class="network-console-boundary">
@@ -290,6 +290,10 @@
             <div id="network-wallets" class="wallet-table network-wallet-table" aria-live="polite">
               <div class="online-graph-empty"><span class="fm-spinner" aria-hidden="true"></span>Loading wallets...</div>
             </div>
+            <p class="network-console-boundary">
+              <span>Non-custodial</span>
+              <strong>These are public payout addresses only. ForkMesh never stores payout-wallet private keys or controls node funds. Federated nodes are eligible only after an approved relay forwards the original fresh node-signed health and ForkMesh-mirroring proof; wallet-only claims are excluded. User-owned funds, the community-funded pool, pending allocations, and completed on-chain transfers are separate states. Eligibility does not guarantee selection or payment.</strong>
+            </p>
           </article>
 
           <article class="network-ops-card network-ops-card-leaderboards">
@@ -328,15 +332,15 @@
             <li class="network-architecture-step">
               <span>02</span>
               <div>
-                <h3>Host tunnel</h3>
-                <p>Desktop nodes keep outbound WebSocket tunnels open.</p>
+                <h3>HTTPS mirror gateway</h3>
+                <p>Desktop nodes expose loopback gateways through authenticated Cloudflare Tunnels; game sockets carry no repository bytes.</p>
               </div>
             </li>
             <li class="network-architecture-step">
               <span>03</span>
               <div>
                 <h3>Git clone protocol</h3>
-                <p><code>git clone https://forkmesh.com/owner/repo</code> streams upload-pack data from the active host.</p>
+                <p><code>git clone https://forkmesh.com/owner/repo</code> streams upload-pack data from a healthy, integrity-verified mirror under the original URL.</p>
               </div>
             </li>
             <li class="network-architecture-step">
@@ -350,7 +354,7 @@
               <span>05</span>
               <div>
                 <h3>Encrypted rooms</h3>
-                <p>Chat payloads encrypt before relay while room objects broadcast ciphertext and live counts.</p>
+                <p>Default chat uses a relay-derived authenticated shared key. Frames encrypt on the wire, but the relay can decrypt them; persisted history is capped at 500 frames for 7 days.</p>
               </div>
             </li>
             <li class="network-architecture-step">
@@ -604,13 +608,13 @@
             "Contributor activity", "Issues + pull requests + commits",
             arr("contributors"), (row) => plural(Number(row.total) || 0, "contribution")));
           root.appendChild(board(
-            "Funds · mainnodes", "Most received from the node split",
+            "Legacy funds · mainnodes", "Historical finalized transfers; not a ForkMesh balance",
             arr("fundsMainnodes"), fmtSol));
           root.appendChild(board(
-            "Funds · contributors", "Most received from bounties",
+            "Legacy funds · contributors", "Frozen bounty history; not pending or guaranteed funds",
             arr("fundsContributors"), fmtSol));
           root.appendChild(board(
-            "Funds · projects", "Most bounty funds earned",
+            "Legacy funds · projects", "Historical migration records; do not fund old addresses",
             arr("fundsProjects"), fmtSol));
           return true;
         }

@@ -1,0 +1,75 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784402987629,
+    "endDate": 1784606400000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nProvide a reproducible, non-interactive service install that can be monitored, stopped cleanly, backed up, restored, and verified before use.\n\n## Implementation\n\n- Add a checked-in service-manager unit template plus install, uninstall, start, stop, and status commands around existing headless mode.\n- Run as an unprivileged account with explicit configuration, identity, mirror, and log directories.\n- Add a health command that verifies process state, relay connectivity, and readability of configured mirrors.\n- Implement graceful shutdown with a bounded timeout and clear recovery after an unclean stop.\n- Add a cold-backup manifest with relative paths, sizes, and checksums plus restore validation into an empty target directory.\n\n## Acceptance criteria\n\n- Runtime requires no display server and does not run as root.\n- Mutable data lives only in documented directories.\n- Backup output never prints key material and detects checksum mismatch.\n- Restore rejects unsafe permissions, corrupt manifests, and non-empty targets.\n- CI installs the service in a temporary root, starts a fixture node, checks health, stops it, restores a backup, and reads the restored mirror.\n\n## Dependencies\n\nNone.\n\n## Verification\n\nRun install/uninstall idempotency, unprivileged execution, health, graceful and forced stop, backup consistency, corrupt restore, and restored-mirror tests.",
+            "id": "open-442",
+            "sig": "LhvF-ztNwSWuGqh4wBDE_OW1IQf3ielt4uSba6iZA8kiHgLfxL2wnYJrBYovT6RpFxfpksm-nG1wJn9UxZRVDQ",
+            "title": "Package the headless node as an installable system service",
+            "ts": 1784402987629,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1785384000000,
+            "id": "d6f83731-5115-42cc-9955-48f975cbbfd5",
+            "sig": "k0YFaOzuFUHuN9Wql3fLqz0tgiP8z-UhG6GQpT9G2776ngwF23i0Y3GPyO_vYPXs4jmETEd7ayWxo31evrAJAw",
+            "startDate": 1785124800000,
+            "ts": 1784402987630,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1784606400000,
+            "id": "cc2304b6-0c7c-45d5-b12a-2c71898a0155",
+            "sig": "KsiZkvLQEN4xgoS70mmTGvWxFoJAoeICcArz2rLfQ9Ou44maSRtrHSKhVgQKHE40ERKIhMUJhzt50C4ljz8XDQ",
+            "startDate": 1784347200000,
+            "ts": 1784405500072,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "0269534f-e569-423b-b965-e2c7bc4b9e5e",
+            "sig": "GD1HLGLELFjtop4wbhSFIlxcGRneL4m6uIWH6EeeU_3o3h1gBxEV4-KUyiAHqihs3JjrnvQ1bdrGuFSDbAlxDA",
+            "ts": 1784729751131,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "e1abf5e1-4982-4539-8f26-ffaf55238671",
+            "sig": "jFqB-ZgerVtngAjnXm_B1cVtmQ_ITSKnDo3q2Q1izxLigvhJecaHwb4xphuERjaSNGvPYJQd_W4kuU6uq27eDw",
+            "status": "closed",
+            "ts": 1784729751132,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "infra"
+    ],
+    "milestone": "Resilient operation",
+    "number": 442,
+    "priority": 11,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784347200000,
+    "status": "closed",
+    "title": "Package the headless node as an installable system service",
+    "updatedAt": 1784729751132,
+    "votes": 0
+}

@@ -81,6 +81,72 @@ def clean_int_series(value, length=52, max_value=1000000):
     return ([0] * max(0, length - len(series))) + series
 
 
+def clean_optional_integer(value, max_value):
+    """Return a bounded integer metric, or None when it was not shared."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and (
+            value != value or value in (float("inf"), float("-inf"))
+            or not value.is_integer()):
+        return None
+    if value < 0:
+        return None
+    return min(int(value), max_value)
+
+
+def clean_optional_usage(used_value, total_value):
+    """Normalize a used/total byte pair without manufacturing partial data."""
+    maximum = 1 << 50
+    used = clean_optional_integer(used_value, maximum)
+    total = clean_optional_integer(total_value, maximum)
+    if used is None or total is None or total <= 0:
+        return None, None
+    return min(used, total), total
+
+
+def clean_logo_metadata(value):
+    """Keep only bounded, content-free inputs for native logo generation."""
+    value = value if isinstance(value, dict) else {}
+
+    def labels(name, limit, max_length):
+        raw = value.get(name)
+        if not isinstance(raw, list):
+            return []
+        output = []
+        for item in raw:
+            label = clean_string(item, max_length)
+            if label:
+                output.append(label)
+            if len(output) >= limit:
+                break
+        return output
+
+    languages = {}
+    raw_languages = value.get("languages")
+    if isinstance(raw_languages, dict):
+        for raw_name, raw_bytes in raw_languages.items():
+            name = clean_string(raw_name, 80)
+            if not name:
+                continue
+            try:
+                byte_count = int(raw_bytes)
+            except (TypeError, ValueError):
+                byte_count = 0
+            languages[name] = max(0, min(byte_count, 1 << 50))
+            if len(languages) >= 12:
+                break
+
+    return {
+        "description": clean_string(value.get("description", ""), 500),
+        "languages": languages,
+        "topics": labels("topics", 12, 80),
+        "fileStructure": labels("fileStructure", 24, 120),
+        "frameworks": labels("frameworks", 12, 80),
+        "projectCategory": clean_string(
+            value.get("projectCategory", ""), 80),
+    }
+
+
 def safe_catalog_record(data):
     if not isinstance(data, dict):
         return None
@@ -92,9 +158,12 @@ def safe_catalog_record(data):
         return None
 
     now = clean_string(data.get("updatedAt", ""), 32)
-    # Visibility: anything other than the literal "private" is treated as public,
-    # so an absent/garbled field can never accidentally hide a repo.
-    visibility = "private" if data.get("visibility") == "private" else "public"
+    # Visibility fails closed. Older/malformed publishers that omit the field
+    # may hide a public repository until they republish, but they can never make
+    # a private repository discoverable by accident.
+    visibility = (
+        "public" if data.get("visibility") == "public" else "private"
+    )
     # On-disk mirror size (bytes) the publishing node reports. Clamped to a sane
     # non-negative integer; 0 when absent or unparseable. Drives the size figures
     # and "data hosted" leaderboards on the network page.
@@ -102,14 +171,48 @@ def safe_catalog_record(data):
         size_bytes = max(0, min(int(data.get("sizeBytes", 0) or 0), 1 << 50))
     except (TypeError, ValueError):
         size_bytes = 0
-    return {
+    try:
+        key_epoch = max(0, min(int(data.get("keyEpoch", 0) or 0), 1 << 31))
+    except (TypeError, ValueError):
+        key_epoch = 0
+    solana = clean_string(data.get("solana", ""), 64)
+    if not re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]{32,44}", solana):
+        solana = ""
+    mem_used, mem_total = clean_optional_usage(
+        data.get("memUsedBytes"), data.get("memTotalBytes"))
+    disk_used, disk_total = clean_optional_usage(
+        data.get("diskUsedBytes"), data.get("diskTotalBytes"))
+    actions_fields = {"actionsEnabled", "actionsState"}.intersection(data)
+    if actions_fields and actions_fields != {"actionsEnabled", "actionsState"}:
+        return None
+    actions_enabled = data.get("actionsEnabled")
+    actions_state = data.get("actionsState")
+    if actions_fields and (
+        not isinstance(actions_enabled, bool)
+        or (
+            (not actions_enabled and actions_state != "disabled")
+            or (actions_enabled and actions_state not in {"enabled", "running"})
+        )
+    ):
+        return None
+    record = {
         "owner": owner,
         "name": name,
         "visibility": visibility,
+        "mirrorEncryption": (
+            "owner-sealed-v1"
+            if data.get("mirrorEncryption") == "owner-sealed-v1" else ""),
+        "opaqueRepoId": clean_string(data.get("opaqueRepoId", ""), 64).lower(),
+        "keyEpoch": key_epoch,
+        "encryptedManifestHash": clean_string(
+            data.get("encryptedManifestHash", ""), 64).lower(),
+        "encryptedManifestSig": clean_string(
+            data.get("encryptedManifestSig", ""), 220),
         "sizeBytes": size_bytes,
         "description": clean_string(data.get("description", ""), 240),
+        "logoMetadata": clean_logo_metadata(data.get("logoMetadata")),
         "cloneUrl": clean_string(data.get("cloneUrl", ""), 2048),
-        "solana": clean_string(data.get("solana", ""), 64),
+        "solana": solana,
         "channel": clean_string(data.get("channel", f"#{owner}-{name}"), 120),
         "hostedSince": clean_string(data.get("hostedSince", ""), 32),
         "lastSync": clean_string(data.get("lastSync", ""), 32),
@@ -154,3 +257,23 @@ def safe_catalog_record(data):
         "stateHash": clean_string(data.get("stateHash", ""), 64),
         "stateSig": clean_string(data.get("stateSig", ""), 220),
     }
+    # Keep this pair absent on legacy records so their catalog-v2 signatures
+    # still verify. New reports are a strict, signed capability/status only:
+    # arbitrary Actions configuration never reaches the stored public record.
+    if actions_fields:
+        record["actionsEnabled"] = actions_enabled
+        record["actionsState"] = actions_state
+    # Keep absent telemetry absent (rather than adding null fields) so a
+    # catalog-v2 signature produced by an older, opted-out client continues to
+    # verify after this schema extension. Consumers still expose unknown values
+    # as null in their response shape.
+    cpu_percent = clean_optional_integer(data.get("cpuPercent"), 100)
+    if cpu_percent is not None:
+        record["cpuPercent"] = cpu_percent
+    if mem_total is not None:
+        record["memUsedBytes"] = mem_used
+        record["memTotalBytes"] = mem_total
+    if disk_total is not None:
+        record["diskUsedBytes"] = disk_used
+        record["diskTotalBytes"] = disk_total
+    return record

@@ -48,6 +48,9 @@ struct MemberInfo {
     // callers should treat the same as "node" for backward compatibility.
     QString accountKind;
     QString note;     // e.g. "(discovered)"
+    // Account creation time (ms since epoch) from the accounts directory, so
+    // the UI can show when a user joined. 0 = unknown (live-roster-only peer).
+    qint64 createdAtMs = 0;
     bool self = false;
     bool online = false; // live link right now (green dot)
     QString solanaAddress;
@@ -249,6 +252,11 @@ public:
     // Live WebSocket / Durable Object diagnostics for the Network tab. Backends
     // without a socket return an empty list.
     virtual QList<QJsonObject> networkDiagnostics() const { return {}; }
+    // Let a continuously connected backend react immediately to an operating
+    // system reachability transition. The default is a no-op for local/offline
+    // backends; relay sockets use it to cancel a stale dial while offline and
+    // perform one immediate, deterministic dial when connectivity returns.
+    virtual void setNetworkAvailable(bool available) { Q_UNUSED(available); }
     virtual void shutdown() = 0;
     virtual QString modeName() const = 0;
 

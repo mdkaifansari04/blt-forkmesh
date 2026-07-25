@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forkmesh.com/schemas/ssh-authorization-broker-v1.json",
+  "title": "ForkMesh local SSH authorization broker configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "type",
+    "apiOrigin",
+    "gatewayTokenFile",
+    "socketPath",
+    "socketGroup",
+    "lookupUser",
+    "gitUser"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "type": {"const": "forkmesh.ssh-authorization-broker"},
+    "apiOrigin": {
+      "type": "string",
+      "pattern": "^https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?/?$"
+    },
+    "gatewayTokenFile": {
+      "type": "string",
+      "pattern": "^/[^\\r\\n\\u0000]+$",
+      "description": "Owner-only file readable by the broker account and by neither SSH-facing account."
+    },
+    "socketPath": {
+      "type": "string",
+      "pattern": "^/[^\\r\\n\\u0000]+$"
+    },
+    "socketGroup": {
+      "type": "string",
+      "pattern": "^[a-z_][a-z0-9_-]{0,62}$"
+    },
+    "lookupUser": {
+      "type": "string",
+      "pattern": "^[a-z_][a-z0-9_-]{0,62}$"
+    },
+    "gitUser": {
+      "type": "string",
+      "pattern": "^[a-z_][a-z0-9_-]{0,62}$"
+    }
+  }
+}

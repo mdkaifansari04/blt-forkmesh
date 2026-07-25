@@ -22,10 +22,15 @@ Covered:
 
 import ast
 import asyncio
+import base64
+import hashlib
 import hmac
+import importlib.util
 import re
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+from worker_test_helpers import json_from_request_double
 
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
@@ -33,22 +38,24 @@ ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 # so the AST loader below still finds it.
 CATALOG = ENTRY.parent / "catalog.py"
 SCHEMA = ENTRY.parent / "schema.py"
+SECURITY_SPEC = importlib.util.spec_from_file_location(
+    "repo_agents_security_controls", ENTRY.parent / "security_controls.py")
+SECURITY_CONTROL = importlib.util.module_from_spec(SECURITY_SPEC)
+SECURITY_SPEC.loader.exec_module(SECURITY_CONTROL)
 ENTRY_TEXT = (
     ENTRY.read_text(encoding="utf-8") + "\n" + CATALOG.read_text(encoding="utf-8")
     + "\n" + SCHEMA.read_text(encoding="utf-8"))
 
 FUNCS = {
     "agents_handler", "agents_list_handler", "agents_prompt_handler",
-    "agents_transcript_handler",
+    "agents_transcript_handler", "agents_ack_handler",
     "_clean_agent_session", "_authorize_owner",
     "_verify_owner_signature", "_owner_signing_pubkeys",
     "_authorize_owner_account", "_owner_pubkey", "_login_locked_until",
     "_login_record_fail", "_login_clear", "method_name", "clean_string",
     # Session-based owner authorization (agents tab): the caller proves identity
-    # with a signed session token, not a self-asserted ownerAccount string.
-    "_account_session_record", "_account_session_token",
-    "_account_session_token_name", "_account_session_signature",
-    "_account_session_secret", "_account_kind", "valid_node_name",
+    # with a revocable session, not a self-asserted ownerAccount string.
+    "valid_node_name",
     "_account_owns_node", "_owned_nodes",
 }
 
@@ -64,6 +71,7 @@ def _load_functions(extra_globals):
     assert found == FUNCS, "missing functions: %s" % sorted(FUNCS - found)
     module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
     namespace = dict(extra_globals)
+    namespace.setdefault("bounded_json_request", json_from_request_double)
     exec(compile(module, str(ENTRY), "exec"), namespace)
     return namespace
 
@@ -92,7 +100,7 @@ class _Request:
         return self._body
 
 
-def _harness(accounts):
+def _harness(accounts, enforce_e2ee=False):
     """accounts: name (lowercase) -> {"pass_hash": bool-ish, "is_admin": bool}.
 
     D1 tables are plain in-memory containers; encrypt/decrypt are identity
@@ -135,6 +143,24 @@ def _harness(accounts):
 
     async def _is_admin(_env, name):
         return bool(accounts.get(str(name or "").strip().lower(), {}).get("is_admin"))
+
+    def _account_session_token(_env, name):
+        return "test-session:" + str(name or "").strip().lower()
+
+    async def _account_session_record(_env, request, data=None):
+        payload = data if isinstance(data, dict) else {}
+        token = str(payload.get("sessionToken") or "")
+        if not token:
+            auth = request.headers.get("authorization") or ""
+            token = auth[7:] if auth.lower().startswith("bearer ") else ""
+        prefix = "test-session:"
+        name = token[len(prefix):] if token.startswith(prefix) else ""
+        rec = accounts.get(name)
+        if not rec or rec.get("status") != "active":
+            return "", None
+        record = dict(rec)
+        record.setdefault("name", name)
+        return "bi:" + name, record
 
     async def ed25519_verify(_pubkey, sig, _canonical):
         # A stand-in signature scheme: only the literal "good-sig" verifies.
@@ -188,6 +214,15 @@ def _harness(accounts):
                     "UNIQUE constraint failed: repo_agents.repo_bi, repo_agents.agent_id")
             repo_agents[(repo_bi, agent_id)] = {"data": data, "updated_at": updated_at}
             return
+        if sql.startswith(
+                "DELETE FROM agent_prompts WHERE repo_bi=? AND id IN"):
+            repo_bi = args[0]
+            drained = set(args[1:])
+            agent_prompts[:] = [
+                r for r in agent_prompts
+                if r["repo_bi"] != repo_bi or r["id"] not in drained
+            ]
+            return
         if sql.startswith("DELETE FROM agent_prompts WHERE id IN"):
             drained = set(args)
             agent_prompts[:] = [r for r in agent_prompts
@@ -233,6 +268,8 @@ def _harness(accounts):
         "blind_index": blind_index,
         "notify_repo_host": noop_notify_repo_host,
         "_account_row": _account_row,
+        "_account_session_token": _account_session_token,
+        "_account_session_record": _account_session_record,
         "_account_devices_list": _account_devices_list,
         "verify_password": verify_password,
         "_is_admin": _is_admin,
@@ -257,13 +294,38 @@ def _harness(accounts):
         "MAX_AGENT_PROMPT_IMAGE_BYTES": 1_400_000,
         "MAX_AGENT_PROMPT_IMAGES_TOTAL_BYTES": 2_400_000,
         "MAX_AGENT_TRANSCRIPT": 16000,
+        "security_control": SECURITY_CONTROL,
         # Session-token proof (agents-tab owner authorization).
         "hmac": hmac,
         "NODE_NAME_RE": re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"),
         "MAX_NODE_NAME": 63,
         "ADMIN_SESSION_TTL_MS": 12 * 60 * 60 * 1000,
     })
+    if enforce_e2ee:
+        async def _repo_privacy_policy(_env, owner, repo):
+            return {
+                "repoBi": "bi:" + owner + "/" + repo,
+                "ownerKeyId": _owner_envelope()["recipients"][0]["kid"],
+                "requireAgentE2EE": True,
+                "requireMirrorEncryption": True,
+            }
+        ns["_repo_privacy_policy"] = _repo_privacy_policy
+    else:
+        # Explicit legacy fixture only: production's policy reader is
+        # mandatory/fail-closed.  These historical compatibility tests opt
+        # into the old branch deliberately rather than relying on a missing
+        # global to create a silent plaintext fallback.
+        async def _legacy_repo_privacy_policy(_env, owner, repo):
+            return {
+                "repoBi": "bi:" + owner + "/" + repo,
+                "ownerKeyId": "",
+                "requireAgentE2EE": False,
+                "requireMirrorEncryption": False,
+            }
+        ns["_repo_privacy_policy"] = _legacy_repo_privacy_policy
     ns["_now"] = now
+    ns["_repo_agents"] = repo_agents
+    ns["_agent_prompts"] = agent_prompts
     return ns
 
 
@@ -286,6 +348,29 @@ def _session(agent_id=42, **overrides):
 
 def _push_url(ts="1000000000", sig="good-sig"):
     return "https://forkmesh.test/api/repo/alice/proj/agents?ts=%s&sig=%s" % (ts, sig)
+
+
+def _b64url(raw):
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _owner_envelope(body=b"opaque owner ciphertext", kid=None):
+    return {
+        "kind": "forkmesh.owner-sealed",
+        "v": 1,
+        "alg": "x25519+mlkem768/aes256gcm",
+        "nonce": _b64url(b"n" * 12),
+        "tag": _b64url(b"t" * 16),
+        "body": _b64url(body),
+        "recipients": [{
+            "kid": kid or _b64url(hashlib.sha256(b"owner-key").digest()),
+            "x25519": _b64url(b"x" * 32),
+            "mlkem768": _b64url(b"m" * 1088),
+            "nonce": _b64url(b"w" * 12),
+            "tag": _b64url(b"g" * 16),
+            "key": _b64url(b"k" * 32),
+        }],
+    }
 
 
 def test_post_agents_valid_signature_stores_sessions_visible_via_list():
@@ -527,7 +612,7 @@ def test_non_owner_forbidden_even_without_password():
     assert prompt_resp == {"status": 403, "data": {"error": "not_authorized"}}
 
 
-def test_admin_account_may_list_and_prompt_a_non_owned_repo():
+def test_admin_account_cannot_read_non_owned_agent_data():
     accounts = {
         "alice": _owner_account(),
         "root-admin": {"pubkey": "PK-admin", "status": "active",
@@ -548,8 +633,8 @@ def test_admin_account_may_list_and_prompt_a_non_owned_repo():
         }),
         "alice", "proj",
     ))
-    assert listed["status"] == 200
-    assert len(listed["data"]["agents"]) == 1
+    assert listed == {"status": 403, "data": {"error": "not_authorized"}}
+    assert "Fix the thing" not in str(listed)
 
 
 def test_prompt_validates_text_and_queue_cap():
@@ -658,6 +743,173 @@ def test_transcript_non_owner_403_and_missing_agent_404():
         "alice", "proj", "999",
     ))
     assert missing == {"status": 404, "data": {"error": "not_found"}}
+
+
+def test_mandatory_e2ee_rejects_plaintext_session_and_prompt_payloads():
+    ns = _harness({"alice": _owner_account()}, enforce_e2ee=True)
+    env = object()
+
+    session = asyncio.run(ns["agents_handler"](
+        env, _Request("POST", _push_url(), {
+            "sessions": [_session(
+                issueTitle="must never cross in plaintext",
+                transcript="private transcript tail")],
+        }),
+        "alice", "proj",
+    ))
+    assert session == {
+        "status": 426,
+        "data": {
+            "error": "owner_encryption_required",
+            "requiredKeyId": _owner_envelope()["recipients"][0]["kid"],
+        },
+    }
+    assert ns["_repo_agents"] == {}
+
+    prompt = asyncio.run(ns["agents_prompt_handler"](
+        env, _Request("POST", body={
+            "ownerAccount": "alice",
+            "sessionToken": ns["_account_session_token"](env, "alice"),
+            "text": "private steering prompt",
+        }),
+        "alice", "proj", "42",
+    ))
+    assert prompt["status"] == 426
+    assert prompt["data"]["error"] == "owner_encryption_required"
+    assert ns["_agent_prompts"] == []
+
+    auth = {
+        "ownerAccount": "alice",
+        "sessionToken": ns["_account_session_token"](env, "alice"),
+    }
+    empty_list = asyncio.run(ns["agents_list_handler"](
+        env, _Request("POST", body=auth), "alice", "proj"))
+    assert empty_list["data"]["privacyBoundary"] == "owner-only-e2ee"
+    assert empty_list["data"]["serverCanDecryptEncryptedAgents"] is False
+    empty_drain = asyncio.run(ns["agents_handler"](
+        env, _Request("GET", _push_url()), "alice", "proj"))
+    assert empty_drain["data"]["privacyBoundary"] == "owner-only-e2ee"
+    assert empty_drain["data"]["serverCanDecryptEncryptedPrompts"] is False
+
+
+def test_missing_privacy_reader_fails_closed_instead_of_legacy_fallback():
+    ns = _harness({"alice": _owner_account()})
+    ns.pop("_repo_privacy_policy", None)
+    response = asyncio.run(ns["agents_handler"](
+        object(), _Request("POST", _push_url(), {
+            "sessions": [_session(transcript="must remain local")],
+        }),
+        "alice", "proj",
+    ))
+    assert response == {
+        "status": 428,
+        "data": {
+            "error": "active_owner_key_required",
+            "setupPath": "/api/security/owner-keys",
+        },
+    }
+    assert ns["_repo_agents"] == {}
+
+
+def test_owner_sealed_session_stays_opaque_through_list_and_transcript():
+    ns = _harness({"alice": _owner_account()}, enforce_e2ee=True)
+    env = object()
+    envelope = _owner_envelope(b"ciphertext for session snapshot")
+
+    pushed = asyncio.run(ns["agents_handler"](
+        env, _Request("POST", _push_url(), {
+            "encryptedSessions": [{"id": 42, "envelope": envelope}],
+        }),
+        "alice", "proj",
+    ))
+    assert pushed["status"] == 200
+    assert pushed["data"]["privacyBoundary"] == "owner-only-e2ee"
+    assert pushed["data"]["serverCanDecrypt"] is False
+    stored = next(iter(ns["_repo_agents"].values()))["data"]
+    assert isinstance(stored, str)
+    assert stored.startswith("owner-sealed-v1:")
+    assert "private transcript" not in stored
+
+    auth = {
+        "ownerAccount": "alice",
+        "sessionToken": ns["_account_session_token"](env, "alice"),
+    }
+    listed = asyncio.run(ns["agents_list_handler"](
+        env, _Request("POST", body=auth), "alice", "proj"))
+    assert listed["status"] == 200
+    assert listed["data"]["agents"] == []
+    assert listed["data"]["encryptedAgents"] == [{
+        "id": 42, "envelope": envelope,
+    }]
+    assert listed["data"]["serverCanDecryptEncryptedAgents"] is False
+
+    transcript = asyncio.run(ns["agents_transcript_handler"](
+        env, _Request("POST", body=auth), "alice", "proj", "42"))
+    assert transcript["status"] == 200
+    assert transcript["data"] == {
+        "ok": True,
+        "encrypted": True,
+        "envelope": envelope,
+        "privacyBoundary": "owner-only-e2ee",
+        "serverCanDecrypt": False,
+    }
+
+
+def test_owner_sealed_prompt_requires_local_open_and_explicit_ack():
+    ns = _harness({"alice": _owner_account()}, enforce_e2ee=True)
+    env = object()
+    envelope = _owner_envelope(b"ciphertext for steering prompt")
+    auth = {
+        "ownerAccount": "alice",
+        "sessionToken": ns["_account_session_token"](env, "alice"),
+        "envelope": envelope,
+    }
+
+    queued = asyncio.run(ns["agents_prompt_handler"](
+        env, _Request("POST", body=auth), "alice", "proj", "42"))
+    assert queued["status"] == 200
+    assert queued["data"]["privacyBoundary"] == "owner-only-e2ee"
+    assert queued["data"]["serverCanDecrypt"] is False
+
+    drained = asyncio.run(ns["agents_handler"](
+        env, _Request("GET", _push_url()), "alice", "proj"))
+    assert drained["status"] == 200
+    assert drained["data"]["prompts"] == []
+    assert drained["data"]["encryptedPrompts"] == [{
+        "queueId": 1,
+        "agentId": 42,
+        "queuedAt": 1_000_000_000,
+        "envelope": envelope,
+    }]
+    # Owner-sealed prompts are not destructive-read: a client must first open
+    # and accept the ciphertext locally, then explicitly acknowledge its id.
+    assert len(ns["_agent_prompts"]) == 1
+
+    acked = asyncio.run(ns["agents_ack_handler"](
+        env,
+        _Request("POST", _push_url(), {"queueIds": [1]}),
+        "alice", "proj",
+    ))
+    assert acked == {
+        "status": 200,
+        "data": {"ok": True, "acknowledged": 1},
+    }
+    assert ns["_agent_prompts"] == []
+
+
+def test_owner_sealed_write_rejects_wrong_policy_recipient():
+    ns = _harness({"alice": _owner_account()}, enforce_e2ee=True)
+    wrong = _owner_envelope(
+        kid=_b64url(hashlib.sha256(b"another-owner-key").digest()))
+    response = asyncio.run(ns["agents_handler"](
+        object(), _Request("POST", _push_url(), {
+            "encryptedSessions": [{"id": 42, "envelope": wrong}],
+        }),
+        "alice", "proj",
+    ))
+    assert response["status"] == 409
+    assert response["data"]["error"] == "wrong_owner_key"
+    assert ns["_repo_agents"] == {}
 
 
 def test_worker_wires_up_all_three_agent_routes():

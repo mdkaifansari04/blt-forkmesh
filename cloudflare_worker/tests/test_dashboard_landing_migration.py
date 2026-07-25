@@ -18,11 +18,9 @@ URLS_TEXT = (ROOT / "src" / "urls.py").read_text(encoding="utf-8")
 WRANGLER = tomllib.loads((ROOT / "wrangler.toml").read_text(encoding="utf-8"))
 REDIRECTS = (PUBLIC / "_redirects").read_text(encoding="utf-8")
 REPO_HOST_ROUTE_RE = (
-    'r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches|search|stats|sizes)$"'
+    'r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|compare|branches|search|stats|sizes)$"'
 )
-REPO_HOST_BROWSE_ACTIONS = (
-    'elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches", "search", "stats", "sizes"):'
-)
+REPO_DIRECT_BROWSE_GATE = "and action in {"
 
 
 def _read(path: Path) -> str:
@@ -55,21 +53,29 @@ def test_dashboard_shell_is_split_into_composable_partials():
     assert "tools/build_dashboard_assets.py" in ENTRY_TEXT
 
 
-def test_feature_landing_is_promoted_to_index_with_worker_owned_signed_in_redirect():
+def test_root_keeps_regular_site_and_embeds_world_for_every_visitor():
     index = _read(PUBLIC / "index.html")
+    world = _read(PUBLIC / "world" / "index.html")
 
-    assert "Never lose the code that matters" in index
+    assert "Protect the code that matters from a single-host failure" in index
     assert "Code hosting that lives on the network." not in index
-    # The old inline localStorage redirect (paint the homepage, then swap) is
-    # gone: the Worker answers / with an instant server-side 302 keyed off the
-    # forkmesh_session presence cookie.
+    # The World drops visitors straight into the interactive city: the old
+    # "A living city for code." marketing hero is gone, and the shell stays
+    # blank while it boots — only a watchdog-revealed load error remains.
+    assert "A living city for code." not in world
+    assert "ENTERING THE WORLD" not in world
+    assert "data-world-load-error" in world
+    assert 'data-world-mode="public"' in world
+    # The Worker answers / with the same regular site regardless of login state,
+    # and the World remains available inside its bounded window and at /world/.
     assert "forkmesh.session" not in index
     assert 'location.replace("/dashboard")' not in index
     assert 'location.replace("/dashboard.html")' not in index
     assert "/" in WRANGLER["assets"]["run_worker_first"]
     assert 'if url.path == "/" and method_name(request) in ("GET", "HEAD"):' in ENTRY_TEXT
-    assert 'if _cookie_value(request, "forkmesh_session") == "1":' in ENTRY_TEXT
-    assert '"location": "/dashboard",' in ENTRY_TEXT
+    assert 'base + "index.html"' in ENTRY_TEXT
+    assert 'src="/world/"' in index
+    assert "Open World full screen" in index
 
 
 def test_dashboard_exposes_live_hydration_targets():
@@ -934,12 +940,19 @@ def test_dashboard_repository_detail_keeps_code_comments_issues_shell():
         "Copy clone",
         "Open clean URL",
         "data-dashboard-repo-tab=\"${tab}\"",
-        '"code", "commits", "insights", "releases", "issues", "projects", "pulls", "discussions", "mirrors"',
+        '"code", "commits", "insights", "sizemap", "releases", "issues", "projects", "pulls", "discussions", "mirrors"',
         # Releases load lazily on first tab view from .forkmesh/releases/<channel>/release.json.
         "loadRepoReleases(state.selectedRepo)",
         "loadRepoInsights(state.selectedRepo)",
     ):
         assert marker in dashboard_js
+
+
+def test_dashboard_release_probes_use_the_committed_forkmesh_directory():
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+
+    assert dashboard_js.count('{ path: ".forkmesh/releases" }') == 2
+    assert '{ path: "releases" }' not in dashboard_js
 
 
 def test_dashboard_repository_cards_are_clickable_metric_summaries():
@@ -1266,7 +1279,9 @@ def test_dashboard_latest_commit_history_button_opens_commits_tab():
 
 def test_dashboard_code_tree_rows_use_live_commit_messages():
     dashboard_js = _read(PUBLIC / "dashboard.js")
-    repo_host = (ROOT.parent / "qt_client" / "src" / "RepoHost.cpp").read_text(encoding="utf-8")
+    mirror_gateway = (
+        ROOT.parent / "tools" / "mirror_gateway.py"
+    ).read_text(encoding="utf-8")
     render = dashboard_js[
         dashboard_js.index("function renderRepoDetail")
         : dashboard_js.index("function findRepository")
@@ -1294,16 +1309,17 @@ def test_dashboard_code_tree_rows_use_live_commit_messages():
         assert marker in render
 
     for marker in (
-        "QJsonObject commitSummaryForPath",
-        '"log", "-1", "--date=iso-strict"',
-        '"--format=%H%x1f%an%x1f%cd%x1f%s"',
-        'args << "--" << path;',
-        'entry.insert(QStringLiteral("message"), commit.value(QStringLiteral("subject")));',
-        'entry.insert(QStringLiteral("commitMessage"),',
-        '{"latestCommit", commitSummaryForPath(mirrorPath, ref)}',
-        "return treeReplyFor(m_mirrorPath, path, branch);",
+        "def _commit_summary(self, commit: str, path: str = \"\")",
+        '"log",',
+        '"--format=%H%x1f%an%x1f%ad%x1f%s"',
+        'args += ["--", path]',
+        '"message": fields[3]',
+        '"commitMessage": fields[3]',
+        'entry.update(self._commit_summary(commit, full_path))',
+        '"latestCommit": self._commit_summary(commit)',
+        '"tree": repository.tree',
     ):
-        assert marker in repo_host
+        assert marker in mirror_gateway
 
     # The commit summary now paints a loading skeleton on first render and is
     # filled by the live-commit updater; the placeholder text survives only as
@@ -1345,6 +1361,33 @@ def test_dashboard_repository_issue_and_pull_tabs_match_github_lists():
     assert "data-repo-collection-sidebar" not in dashboard_js
     assert 'renderRepoCollectionPanel("issues", repo, issuesCount, repoCount(repo, ["closedIssues", "closedIssueCount"]))' in render
     assert 'renderRepoCollectionPanel("pulls", repo, pullsCount, repoCount(repo, ["closedPulls", "closedPullCount"]))' in render
+
+
+def test_web_pull_submission_signs_a_portable_mirror_comparison():
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    submit = dashboard_js[
+        dashboard_js.index("async function submitWebPullOpen")
+        : dashboard_js.index("async function handleDiscussionReplySubmit")
+    ]
+
+    for marker in (
+        'repoLiveUrl(repo, "compare", {',
+        "const patch = String(comparison.patch || \"\");",
+        "const commits = String(comparison.commits || \"\");",
+        "const content = [title, base, head, patch, commits].join(NUL);",
+        "description: cleanBody",
+        "creationBaseOid",
+        "creationHeadOid",
+    ):
+        if marker.startswith("creation"):
+            assert marker not in submit
+        else:
+            assert marker in submit
+    assert "const patch = \"\";" not in submit
+    assert "body: cleanBody" not in submit
+    assert 'throw new Error("no_changes")' in submit
+    assert '"compare", "branches"' in ENTRY_TEXT
+    assert 'elif operation == "compare":' in ENTRY_TEXT
 
 
 def test_dashboard_repository_issue_and_pull_tabs_paginate_records_at_the_bottom():
@@ -1466,15 +1509,17 @@ def test_dashboard_pull_detail_reads_committed_patch_for_files_changed():
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
     for marker in (
-        "async function loadRepoPullPatch(repo, number)",
+        'const PULL_METADATA_BRANCH = "forkmesh/pulls";',
+        "async function resolveRepoPullMetadataCommit(repo)",
+        'async function loadRepoPullPatch(repo, number, metadataCommit = "")',
         "function parsePatchStats(patch)",
         "function renderRepoPullFiles(files)",
         "function renderRepoPullPatch(patch, key = \"\")",
         "data-repo-pull-files",
         "data-repo-pull-patch",
         "pulls/${number}/changes.patch",
-        "fetchRepoJson(repoLiveUrl(repo, \"blob\", { path: patchPath, ref: \"\" }))",
-        "const pullPatch = kind === \"pulls\" ? await loadRepoPullPatch(repo, number) : null;",
+        "ref: commit,",
+        "? await loadRepoPullPatch(repo, number, pullMetadataCommit)",
         "renderRepoPullFiles(pullPatch.files)",
         "renderRepoPullPatch(pullPatch.patch, `pull:${repoKey(repo)}:${number}`)",
         "data-show-full-diff",
@@ -1484,6 +1529,49 @@ def test_dashboard_pull_detail_reads_committed_patch_for_files_changed():
 
     assert "pulls/${number}/changes.patch" in dashboard_js
     assert "fetchJson(`${repoApiBase(repo)}/pulls" not in dashboard_js
+
+
+def test_dashboard_pull_metadata_reads_pin_the_dedicated_branch_commit():
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    resolver = dashboard_js[
+        dashboard_js.index("const PULL_METADATA_BRANCH")
+        : dashboard_js.index("function isMissingMirrorFolder")
+    ]
+    records = dashboard_js[
+        dashboard_js.index("async function loadRepoRecordsFromMirror")
+        : dashboard_js.index("function renderRepoCollectionPagination")
+    ]
+    detail = dashboard_js[
+        dashboard_js.index("async function loadRepoRecordDetail")
+        : dashboard_js.index("function setRepoTabCount")
+    ]
+    patch = dashboard_js[
+        dashboard_js.index("async function loadRepoPullPatch")
+        : dashboard_js.index("// A pull's conversation")
+    ]
+    conversation = dashboard_js[
+        dashboard_js.index("async function loadRepoPullConversation")
+        : dashboard_js.index("// A discussion's replies")
+    ]
+
+    assert 'const PULL_METADATA_BRANCH = "forkmesh/pulls";' in resolver
+    assert "`${repoApiBase(repo)}/branches`" in resolver
+    assert ".find((candidate) => candidate.name === PULL_METADATA_BRANCH)" in resolver
+    assert "const commit = immutableGitCommit(branch?.commit);" in resolver
+    assert 'throw new Error("pull_metadata_unavailable")' in resolver
+    assert "if (!repo || repo.isPrivate)" in resolver
+
+    assert "{ ref: await resolveRepoPullMetadataCommit(repo) }" in records
+    assert "fetchRepoBlobs(repo, dirs.map(recordPath), refParams)" in records
+    assert "await resolveRepoPullMetadataCommit(repo)" in detail
+    assert "? { ref: pullMetadataCommit }" in detail
+    assert "ref: commit," in patch
+    assert "ref: commit," in conversation
+    assert "{ ref: commit }" in conversation
+
+    # Pull readers must never ask the mirror to guess a mutable/default ref.
+    for source in (records, detail, patch, conversation):
+        assert 'ref: ""' not in source
 
 
 def test_dashboard_commit_history_opens_live_commit_detail_not_inbox_route():
@@ -1554,25 +1642,25 @@ def test_dashboard_formats_catalog_millisecond_timestamps():
     assert "function formatTimeAgo(value) {" in formatter
 
 
-def test_worker_routes_public_history_through_live_host_not_commit_inbox():
+def test_worker_routes_public_history_through_direct_https_not_commit_inbox():
     route = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _route")
-        : ENTRY_TEXT.index("async def _select_clone_fallback")
+        : ENTRY_TEXT.index("async def _git_host")
     ]
-    live_history_dispatch = route.index("host_match = REPO_HOST_RE.match")
+    public_history_dispatch = route.index("host_match = REPO_HOST_RE.match")
     owner_inbox_dispatch = route.index("commits_match = REPO_COMMITS_RE.match")
 
-    assert owner_inbox_dispatch < live_history_dispatch
+    assert owner_inbox_dispatch < public_history_dispatch
     assert REPO_HOST_ROUTE_RE in URLS_TEXT
-    assert 'op = "commits" if action == "history" else action' in ENTRY_TEXT
+    assert "return await _https_mirror_proxy(" in route
 
 
 def test_worker_keeps_commit_inbox_route_separate_from_public_history_route():
     assert 'REPO_COMMITS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/commits$")' in URLS_TEXT
     assert REPO_HOST_ROUTE_RE in URLS_TEXT
-    assert REPO_HOST_BROWSE_ACTIONS in ENTRY_TEXT
-    assert 'if action in ("tree", "blob", "history", "commit", "branches", "stats", "sizes"):' in ENTRY_TEXT
-    assert 'op = "commits" if action == "history" else action' in ENTRY_TEXT
+    assert REPO_DIRECT_BROWSE_GATE in ENTRY_TEXT
+    assert '"history", "commit"' in ENTRY_TEXT
+    assert "return await _https_mirror_proxy(" in ENTRY_TEXT
 
 
 def test_worker_routes_repo_about_catalog_update_for_source_owner():
@@ -1828,82 +1916,77 @@ def test_dashboard_repository_blob_viewer_previews_media_csv_pdf_and_binary():
     assert "setRepoFileMode(viewer, \"code\", lines, path, meta);" in blob_loader
 
 
-def test_worker_routes_raw_repository_blobs_through_private_gated_host_tunnel():
+def test_worker_routes_raw_repository_blobs_through_direct_https_gateway():
+    gateway = (
+        ROOT.parent / "tools" / "mirror_gateway.py"
+    ).read_text(encoding="utf-8")
     assert REPO_HOST_ROUTE_RE in URLS_TEXT
-    assert REPO_HOST_BROWSE_ACTIONS in ENTRY_TEXT
-    assert 'if action == "raw":' in ENTRY_TEXT
-    assert 'return await self._raw_blob(rel_path, ref, ua)' in ENTRY_TEXT
-    assert 'op": "raw-blob"' in ENTRY_TEXT
-    # Raw blobs stream chunk-by-chunk through the tunnel (never reassembled in
-    # DO memory - buffering large media is what blew the isolate memory limit),
-    # keeping the same content-type headers repo_blob_bytes_response used.
-    assert '"content-type": repo_blob_content_type(rel_path),' in ENTRY_TEXT
-    assert "response, err = await self._stream_request(" in ENTRY_TEXT
+    assert REPO_DIRECT_BROWSE_GATE in ENTRY_TEXT
+    assert "return await _https_mirror_proxy(" in ENTRY_TEXT
+    assert "upstream.body," in ENTRY_TEXT
+    assert 'response_headers["X-ForkMesh-Served-By"] = endpoint["node"]' in ENTRY_TEXT
+    assert "The private endpoint origin remains masked" in ENTRY_TEXT
+    # The node gateway streams `git cat-file blob` directly to the masked edge
+    # response. It does not base64-encode/reassemble media in a Durable Object.
+    assert 'if operation == "raw":' in gateway
+    assert "stream=repository.raw_spec(query)" in gateway
+    assert 'kind="process"' in gateway
+    assert '["cat-file", "blob", object_name]' in gateway
+    assert 'if guessed_type in active_types:' in gateway
+    assert 'disposition = "attachment"' in gateway
 
 
-def test_worker_and_desktop_host_route_live_repository_branches():
+def test_direct_https_gateway_routes_live_repository_branches():
+    gateway = (
+        ROOT.parent / "tools" / "mirror_gateway.py"
+    ).read_text(encoding="utf-8")
     repo_host = (ROOT.parent / "qt_client" / "src" / "RepoHost.cpp").read_text(encoding="utf-8")
     repo_host_h = (ROOT.parent / "qt_client" / "src" / "RepoHost.h").read_text(encoding="utf-8")
 
     for marker in (
-        'if action in ("tree", "blob", "history", "commit", "branches", "stats", "sizes"):',
-        'ref = (parse_qs(url.query).get("ref", [""])[0] or "").strip()',
-        'op = "commits" if action == "history" else action',
-        'return await self._tunnel(op, rel_path, ref, served_by, ua)',
-        '"ref": ref',
+        '"tree": repository.tree',
+        '"blob": repository.blob',
+        '"history": repository.history',
+        '"commit": repository.commit',
+        '"branches": repository.branches',
+        '"stats": repository.stats',
+        '"sizes": repository.sizes',
+        '"tree": frozenset({"path", "ref"})',
+        '"history": frozenset({"ref"})',
     ):
-        assert marker in ENTRY_TEXT
+        assert marker in gateway
     assert REPO_HOST_ROUTE_RE in URLS_TEXT
-    assert REPO_HOST_BROWSE_ACTIONS in ENTRY_TEXT
+    assert REPO_DIRECT_BROWSE_GATE in ENTRY_TEXT
 
+    # The desktop compatibility object opens no repository socket. Reads and
+    # update discovery are direct/bounded HTTPS.
     for marker in (
-        'else if (op == "branches")',
-        'action = QStringLiteral("list branches")',
-        'const QString branch = request.value("ref").toString();',
-        'QString displayBranchNameForRef(const QString &ref)',
-        'QStringList RepoHost::branchRefCandidates(const QString &branch) const',
-        'QString RepoHost::refForBranch(const QString &branch) const',
-        '"refs/heads/%1"',
-        'ref + QStringLiteral("^{commit}")',
-        '"refs/remotes/"',
-        'displayBranchNameForRef(ref) == raw',
-        'if (seen.contains(name))',
-        'QJsonObject RepoHost::buildBranchesReply() const',
-        'QJsonObject RepoHost::buildTreeReply(const QString &path, const QString &branch) const',
-        'QJsonObject RepoHost::buildBlobReply(const QString &path, const QString &branch) const',
-        'QJsonObject RepoHost::buildCommitsReply(const QString &branch) const',
-        'void RepoHost::streamRawBlob(const QString &reqId, const QString &path, const QString &branch)',
-        'else if (op == "branches")',
-        'streamRawBlob(reqId, path, branch);',
-        'treeReplyFor(mirrorPath, path, branch)',
-        # Blob replies build off-thread so large files don't stall the GUI.
-        'return blobReplyFor(mirrorPath, path, branch);',
-        'reply = buildCommitsReply(branch);',
-        'reply = buildBranchesReply();',
-        '"for-each-ref"',
-        '"--format=%(refname)%x1f%(objectname)%x1f%(committerdate:iso8601)"',
-        '"refs/heads/"',
-        '{"branches", branches}',
+        '"persistentSocket"), false',
+        'QStringLiteral("direct-https")',
+        'QStringLiteral("bounded-https-poll")',
     ):
         assert marker in repo_host
-    assert "QStringList branchRefCandidates(const QString &branch) const;" in repo_host_h
-    assert "QJsonObject buildBranchesReply() const;" in repo_host_h
+    assert "opens no socket and serves no bytes" in repo_host_h
+    assert "QTcpSocket" not in repo_host
+    assert "connectSocket" not in repo_host_h
 
 
-def test_desktop_host_streams_raw_repository_blobs_without_json_base64_cap():
-    repo_host = (ROOT.parent / "qt_client" / "src" / "RepoHost.cpp").read_text(encoding="utf-8")
-    repo_host_h = (ROOT.parent / "qt_client" / "src" / "RepoHost.h").read_text(encoding="utf-8")
+def test_direct_gateway_streams_raw_repository_blobs_without_json_base64_cap():
+    gateway = (
+        ROOT.parent / "tools" / "mirror_gateway.py"
+    ).read_text(encoding="utf-8")
 
     for marker in (
-        'else if (op == "raw-blob")',
-        'action = QStringLiteral("stream raw file',
-        'if (op == "raw-blob")',
-        'streamRawBlob(reqId, path, branch);',
-        'void RepoHost::streamRawBlob(const QString &reqId, const QString &path, const QString &branch)',
-        'runGitStream(reqId, {"-C", m_mirrorPath, "cat-file", "-p", ref + ":" + path}, QByteArray());',
-        "void streamRawBlob(const QString &reqId, const QString &path, const QString &branch);",
+        "def raw_spec(self, query:",
+        '["cat-file", "-s", object_name]',
+        '["cat-file", "blob", object_name]',
+        "content_length=size",
+        'kind="process"',
+        "process = subprocess.Popen(",
+        "selector = selectors.DefaultSelector()",
+        "chunk = os.read(process.stdout.fileno(), 256 * 1024)",
     ):
-        assert marker in (repo_host + repo_host_h)
+        assert marker in gateway
 
 
 def test_dashboard_network_chat_uses_real_room_integration_without_mock_messages():
@@ -1912,11 +1995,19 @@ def test_dashboard_network_chat_uses_real_room_integration_without_mock_messages
     visible = _strip_html_comments(dashboard)
 
     assert 'src="/dashboard-chat.js?v=' in dashboard
-    assert 'CHAT_WS_PATH = "/api/repo/mainnode/forkmesh/rooms/general/ws"' in chat_js
+    assert "const CHAT_WS_PATH =" in chat_js
+    assert "`/api/repo/${encodeURIComponent(ROOM_OWNER)}`" in chat_js
+    assert (
+        "`/${encodeURIComponent(ROOM_REPO)}/rooms/"
+        "${encodeURIComponent(ACTIVE_ROOM)}/ws`"
+    ) in chat_js
     # The room key is fetched from the relay (server-derived from DATA_KEY), not a
     # public baked-in constant.
     assert 'forkmesh-shared-room-key-v1' not in chat_js
-    assert 'ROOM_KEY_ENDPOINT = "/api/chat/room-key"' in chat_js
+    assert "`/api/chat/room-key?owner=${encodeURIComponent(ROOM_OWNER)}`" in chat_js
+    assert "`&repo=${encodeURIComponent(ROOM_REPO)}`" in chat_js
+    assert "`&room=${encodeURIComponent(ACTIVE_ROOM)}`" in chat_js
+    assert 'PUBLIC_WORLD_GENERAL_ROOM = "world-general"' in chat_js
     assert "fetchRoomPassphrase" in chat_js
     assert "deriveRoomKey" in chat_js
     assert "encryptObject" in chat_js
@@ -2028,7 +2119,7 @@ def test_dashboard_restores_feature_tab_on_hard_refresh():
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
     assert "function repoRouteParts()" in dashboard_js
-    assert 'const REPO_TAB_ROUTES = ["commits", "insights", "releases", "issues", "projects", "pulls", "discussions", "mirrors"];' in dashboard_js
+    assert 'const REPO_TAB_ROUTES = ["commits", "insights", "sizemap", "releases", "issues", "projects", "pulls", "discussions", "mirrors"];' in dashboard_js
 
     render_start = dashboard_js.index("function renderRepoDetail(repo)")
     render_body = dashboard_js[render_start:dashboard_js.index("\n  function findRepository(key)")]
