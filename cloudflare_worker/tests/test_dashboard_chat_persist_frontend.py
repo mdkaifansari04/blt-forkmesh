@@ -77,12 +77,14 @@ def test_dashboard_chat_allows_guests_only_in_public_world_general():
         "    !ACTIVE_SPACE && !scopedWorkshop && !requestedOrganization"
     ) in CHAT
     assert "return PUBLIC_WORLD_GENERAL || Boolean(userSession())" in CHAT
-    assert 'return PUBLIC_WORLD_GENERAL ? "guest" : "user"' in CHAT
+    assert 'return PUBLIC_WORLD_GENERAL && !userSession() ? "guest" : "user"' in CHAT
     assert 'value === "user" || (PUBLIC_WORLD_GENERAL && value === "guest")' in CHAT
     assert "function normalizedPublicWorldFrame(entry)" in CHAT
-    assert 'accountKind: "guest"' in CHAT
-    assert "sender: worldVisitorName(entry.sender)" in CHAT
-    assert "World visitor · ${asserted}" in CHAT
+    assert 'accountKind: entry.accountKind === "user" ? "user" : "guest"' in CHAT
+    assert "sender: publicWorldName(entry.sender)" in CHAT
+    # Public-room names are shown as asserted - no "World visitor - jett".
+    assert "World visitor · ${" not in CHAT
+    assert 'function publicWorldName(value)' in CHAT
     assert "Guests can use only public World #general" in CHAT
     assert "`&room=${encodeURIComponent(ACTIVE_ROOM)}`" in CHAT
     assert "`/${encodeURIComponent(ROOM_REPO)}/rooms/${encodeURIComponent(ACTIVE_ROOM)}/ws`" in CHAT
@@ -101,14 +103,16 @@ def test_public_chat_splits_guest_general_from_authenticated_channels():
     assert '"public-world-general"' in PUBLIC_CHAT
     assert 'normalized !== "#general"' in PUBLIC_CHAT
     assert (
-        'roomScopeForChannel() === "public-world-general" ? "guest" : "user"'
+        'roomScopeForChannel() === "public-world-general" && !userSession()'
         in PUBLIC_CHAT
     )
     assert 'scope === "public-world-general" && value === "guest"' in PUBLIC_CHAT
     assert "function normalizedPublicWorldFrame(" in PUBLIC_CHAT
-    assert 'accountKind: "guest"' in PUBLIC_CHAT
-    assert "sender: worldVisitorName(plain.sender)" in PUBLIC_CHAT
-    assert "World visitor · ${asserted}" in PUBLIC_CHAT
+    assert 'accountKind: plain.accountKind === "user" ? "user" : "guest"' in PUBLIC_CHAT
+    assert "sender: publicWorldName(plain.sender)" in PUBLIC_CHAT
+    # Public-room names are shown as asserted - no "World visitor - jett".
+    assert "World visitor · ${" not in PUBLIC_CHAT
+    assert "function publicWorldName(value)" in PUBLIC_CHAT
     assert "PUBLIC_WORLD_ROOM_KEY_ENDPOINT" in PUBLIC_CHAT
     assert "PRIVATE_CHANNELS_ENDPOINT" in PUBLIC_CHAT
     assert "fetchRoomAccess" in PUBLIC_CHAT

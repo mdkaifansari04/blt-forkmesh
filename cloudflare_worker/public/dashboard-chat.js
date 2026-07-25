@@ -419,15 +419,18 @@
   }
 
   function chatAccountKind() {
-    return PUBLIC_WORLD_GENERAL ? "guest" : "user";
+    return PUBLIC_WORLD_GENERAL && !userSession() ? "guest" : "user";
   }
 
-  function worldVisitorName(value) {
-    const asserted = String(value || "")
+  // Everyone in the public World room shows under the plain name they assert.
+  // The old "World visitor · jett" prefix read as a second, different person
+  // sitting next to the signed-in "jett", so it is stripped from anything that
+  // still carries it (session names, replayed history frames).
+  function publicWorldName(value) {
+    return String(value || "")
       .replace(/^World visitor\s*·\s*/i, "")
       .trim()
-      .slice(0, 16) || "guest";
-    return `World visitor · ${asserted}`.slice(0, MAX_NAME);
+      .slice(0, MAX_NAME) || "guest";
   }
 
   function displayName() {
@@ -437,7 +440,7 @@
       session?.email ||
       `World Guest ${String(selfId).replace(/[^A-Za-z0-9]/g, "").slice(0, 6)}`;
     const name = String(value).trim().slice(0, MAX_NAME) || "World Guest";
-    return PUBLIC_WORLD_GENERAL ? worldVisitorName(name) : name;
+    return PUBLIC_WORLD_GENERAL ? publicWorldName(name) : name;
   }
 
   function escapeHtml(value) {
@@ -880,8 +883,8 @@
     }
     return {
       ...entry,
-      accountKind: "guest",
-      sender: worldVisitorName(entry.sender),
+      accountKind: entry.accountKind === "user" ? "user" : "guest",
+      sender: publicWorldName(entry.sender),
     };
   }
 

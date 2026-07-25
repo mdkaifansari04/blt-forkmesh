@@ -427,12 +427,15 @@ function userSession() {
   return isUserLikeSession(session) ? session : null;
 }
 
-function worldVisitorName(value) {
-  const asserted = String(value || "")
+// Everyone in the public World room shows under the plain name they assert.
+// The old "World visitor · jett" prefix read as a second, different person
+// sitting next to the signed-in "jett", so it is stripped from anything that
+// still carries it (session names, replayed history frames).
+function publicWorldName(value) {
+  return String(value || "")
     .replace(/^World visitor\s*·\s*/i, "")
     .trim()
-    .slice(0, 16) || "guest";
-  return `World visitor · ${asserted}`.slice(0, MAX_NAME);
+    .slice(0, MAX_NAME) || "guest";
 }
 
 function displayName() {
@@ -445,7 +448,7 @@ function displayName() {
     value = (value || "web-guest").slice(0, MAX_NAME);
   }
   return roomScopeForChannel() === "public-world-general"
-    ? worldVisitorName(value)
+    ? publicWorldName(value)
     : value;
 }
 
@@ -1240,11 +1243,11 @@ function noteSelfRoster() {
   roster.set(selfId, {
     id: selfId,
     name: displayName(),
-    // Public-room frames cannot prove a session identity to peers, even when
-    // this browser happens to be signed in, so the local roster uses the same
-    // explicitly unverified guest treatment as received public frames.
+    // Only an anonymous browser sits in the guest section: a signed-in person
+    // in the public room stays a user, so their live entry dedupes against the
+    // account-directory row instead of showing up as a second person.
     kind:
-      roomScopeForChannel() === "public-world-general"
+      roomScopeForChannel() === "public-world-general" && !userSession()
         ? "guest"
         : "user",
     lastSeenMs: Date.now(),
@@ -1830,8 +1833,13 @@ function makePlain(type, extra) {
         String(Math.random()).slice(2) + Date.now(),
       senderId: selfId,
       sender: displayName(),
+      // Only people without a session speak as guests. A signed-in browser
+      // keeps its account kind in the public room too, so logging in no
+      // longer spawns a second "guest" person beside the account.
       accountKind:
-        roomScopeForChannel() === "public-world-general" ? "guest" : "user",
+        roomScopeForChannel() === "public-world-general" && !userSession()
+          ? "guest"
+          : "user",
       ts: Date.now(),
     },
     extra || {}
@@ -1853,8 +1861,8 @@ function normalizedPublicWorldFrame(
   }
   return {
     ...plain,
-    accountKind: "guest",
-    sender: worldVisitorName(plain.sender),
+    accountKind: plain.accountKind === "user" ? "user" : "guest",
+    sender: publicWorldName(plain.sender),
   };
 }
 
