@@ -1188,6 +1188,31 @@ function addSectionPlaque(THREE, group, position, title, subtitle, color, distan
   );
 }
 
+// Worn on the head when a visitor has never stored a world-status emoji.
+const AVATAR_DEFAULT_FACE_EMOJI = "🙂";
+
+function avatarFaceTexture(THREE, emoji) {
+  return canvasTexture(THREE, 128, 128, (context) => {
+    context.clearRect(0, 0, 128, 128);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = '92px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
+    context.fillStyle = "#1d130c";
+    context.fillText(emoji, 64, 70);
+  });
+}
+
+function syncAvatarFace(THREE, avatar) {
+  const face = avatar.userData.faceMesh;
+  if (!face?.material) return;
+  const worn = avatar.userData.statusEmoji || AVATAR_DEFAULT_FACE_EMOJI;
+  if (avatar.userData.faceEmojiShown === worn) return;
+  face.material.map?.dispose?.();
+  face.material.map = avatarFaceTexture(THREE, worn);
+  face.material.needsUpdate = true;
+  avatar.userData.faceEmojiShown = worn;
+}
+
 function syncAvatarStatus(THREE, avatar, identity) {
   if (!avatar?.userData) return;
   const status = normalizeWorldStatus(
@@ -1208,7 +1233,8 @@ function syncAvatarStatus(THREE, avatar, identity) {
   avatar.userData.emojiStatusSprite = null;
   // Status remains available to the accessible player label and presence
   // payload, but the large duplicate overhead banner is intentionally not
-  // rendered in-world.
+  // rendered in-world. The last-used emoji is worn on the face instead.
+  syncAvatarFace(THREE, avatar);
 }
 
 function makeConsentedProfileFace(THREE, follower) {
@@ -1323,6 +1349,17 @@ function createAvatar(THREE, identity, options = {}) {
   hair.position.y = 3.48;
   group.add(hair);
 
+  // The face wears the last world-status emoji the visitor set (default
+  // smile). Avatar fronts face -Z; the card floats just clear of the head
+  // sphere and syncAvatarFace keeps its texture current.
+  const faceMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.56, 0.56),
+    new THREE.MeshBasicMaterial({ transparent: true }),
+  );
+  faceMesh.position.set(0, 3.38, -0.47);
+  faceMesh.rotation.y = Math.PI;
+  group.add(faceMesh);
+
   const limbGeometry = new THREE.BoxGeometry(0.29, 1.25, 0.32);
   const leftArm = new THREE.Mesh(limbGeometry, shirt);
   leftArm.position.set(-0.73, 2.08, 0);
@@ -1399,6 +1436,8 @@ function createAvatar(THREE, identity, options = {}) {
     statusNote: "",
     emojiStatusKey: "",
     emojiStatusSprite: null,
+    faceMesh,
+    faceEmojiShown: "",
   };
   syncOperatorBelt(THREE, group, identity.nodes?.length || 0);
   syncAvatarStatus(THREE, group, identity);
@@ -4445,12 +4484,13 @@ export function createWorldScene({
     innerFlame.scale.set(size * 0.82, size * 0.9, size * 0.82);
     fireLight.intensity = 3.2 * fireLevel + Math.sin(time * 0.013) * 0.7;
   });
-  // Stools sit back far enough from the pit to leave a wide walkable ring
+  // Benches sit back far enough from the pit to leave a wide walkable ring
   // between the seats and the stones (and to clear the log pile at ~2.6). The
-  // circle carries one log stool per registered member — occupied by a seated
-  // directory figure while the member is away, left empty (and sittable) while
-  // they walk the world as a live avatar — and widens whenever a new account
-  // joins so everyone still fits around the fire.
+  // circle carries one wooden bench per registered member — occupied by a
+  // seated directory figure while the member is away, left empty (and
+  // sittable) while they walk the world as a live avatar — plus one bench
+  // that always stays open so an arriving guest has a spot by the fire, and
+  // widens whenever a new account joins so everyone still fits.
   const CAMPFIRE_BENCH_RADIUS = 6.2;
   const CAMPFIRE_CIRCLE_MIN_SEATS = 6;
   const CAMPFIRE_CIRCLE_MAX_SEATS = 96;
@@ -4484,24 +4524,33 @@ export function createWorldScene({
     const seatOffsets = [];
     for (let index = 0; index < count; index += 1) {
       const angle = (index / count) * Math.PI * 2;
+      const bench = new THREE.Group();
+      bench.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
+      // Long axis tangent to the ring so every bench fronts the flames.
+      bench.rotation.y = -angle + Math.PI / 2;
       const seat = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.42, 0.5, 0.5, 10),
-        makeMaterial(THREE, "#70472a", { roughness: 0.86 }),
+        new THREE.BoxGeometry(1.6, 0.14, 0.6),
+        makeMaterial(THREE, "#8a5a33", { roughness: 0.86 }),
       );
-      seat.position.set(
-        Math.cos(angle) * radius,
-        0.25,
-        Math.sin(angle) * radius,
-      );
+      seat.position.y = 0.48;
       // Seat coordinates are read from the live world matrix at click time, so a
       // relocated campfire needs no bookkeeping and the seats can never drift.
       seat.userData.campfireBench = true;
       interactive.push(seat);
-      ring.add(seat);
-      // Offsets land sitters just above the stool top, matching the local
+      bench.add(seat);
+      [-0.62, 0.62].forEach((end) => {
+        const leg = new THREE.Mesh(
+          new THREE.BoxGeometry(0.16, 0.41, 0.5),
+          makeMaterial(THREE, "#4f3018", { roughness: 0.9 }),
+        );
+        leg.position.set(end, 0.205, 0);
+        bench.add(leg);
+      });
+      ring.add(bench);
+      // Offsets land sitters just above the plank, matching the local
       // player's bench-seat pose height.
       seatOffsets.push(
-        new THREE.Vector3(seat.position.x, seat.position.y + 0.1, seat.position.z),
+        new THREE.Vector3(bench.position.x, seat.position.y + 0.1, bench.position.z),
       );
     }
     setShadows(ring);
@@ -6608,9 +6657,10 @@ export function createWorldScene({
         const offset = seat || new THREE.Vector3();
         avatar.userData.targetPosition.copy(campfire.position);
         avatar.userData.targetPosition.add(offset);
-        // Face the flames at the circle's centre (remote headings use
-        // atan2(dx, dz) toward the walk direction).
-        avatar.userData.targetHeading = Math.atan2(-offset.x, -offset.z);
+        // Face the flames at the circle's centre: avatar fronts face local
+        // -Z, so the inward heading is atan2(x, z) — the same heading
+        // sitOnCampfireBench gives the local player.
+        avatar.userData.targetHeading = Math.atan2(offset.x, offset.z);
       } else if (sharedInactive) {
         const restArea = landmarkById("neighborhood").position;
         const seat = hashNumber(remote.id) % 8;
@@ -6781,13 +6831,15 @@ export function createWorldScene({
       activeLeaderboardSign.userData.key = leaderboardKey;
     }
     // Registered members sit in a circle around the campfire facing the
-    // flames. The circle holds one stool per registered account, so members
+    // flames. The circle holds one bench per registered account, so members
     // currently walking the world as live avatars leave visibly empty seats,
-    // and it expands whenever a new account joins so everyone still fits.
+    // plus one extra bench that always stays open for the next guest: when a
+    // new account joins and takes it, the roster grows and the rebuilt ring
+    // brings a fresh open bench with it.
     const roster = (Array.isArray(members) ? members : []).filter((member) =>
       String(member?.name || "").trim(),
     );
-    const seats = rebuildCampfireCircle(Math.max(total, roster.length));
+    const seats = rebuildCampfireCircle(Math.max(total, roster.length) + 1);
     const seen = new Set();
     roster
       .slice(0, Math.max(1, seats.length))
@@ -6829,8 +6881,10 @@ export function createWorldScene({
         figure.position.copy(campfire.position);
         if (seat) figure.position.add(seat);
         // Face the fire at the circle's centre and hold a seated pose on the
-        // stool, matching the local player's bench-seat legs.
-        figure.rotation.y = seat ? Math.atan2(-seat.x, -seat.z) : 0;
+        // bench, matching the local player's bench-seat legs. Avatar fronts
+        // face local -Z, so the inward heading is atan2(x, z), matching
+        // sitOnCampfireBench.
+        figure.rotation.y = seat ? Math.atan2(seat.x, seat.z) : 0;
         figure.userData.leftLeg.rotation.x = -1.3;
         figure.userData.rightLeg.rotation.x = -1.3;
       });
