@@ -96,6 +96,21 @@
 
   if (!fullLog && !sideLog) return;
 
+  // The World's ForkBot avatar and CHAT bar ask this embed (parent frame,
+  // same-origin) to drop starting text into the composer — e.g. "@forkbot "
+  // so a visitor can start typing straight away. See world.js openChatTerminal.
+  window.addEventListener("message", (event) => {
+    if (event.origin !== location.origin) return;
+    const data = event.data;
+    if (!data || data.type !== "forkmesh:chat-prefill") return;
+    const input = fullInput || sideInput;
+    if (!input) return;
+    input.value = String(data.text || "");
+    input.focus();
+    const caret = input.value.length;
+    input.setSelectionRange?.(caret, caret);
+  });
+
   const enc = new TextEncoder();
   const dec = new TextDecoder();
   // Stable per-browser chat id, shared with the full chat page (same storage

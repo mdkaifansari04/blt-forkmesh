@@ -1817,6 +1817,33 @@ def test_system_capacity_tables_open_a_sortable_scrollable_panel():
     assert "position: sticky" in CSS
 
 
+def test_detail_panels_resize_from_their_left_border_and_never_drift():
+    # The left border is a real drag grip, and the chosen width is a
+    # device-local preference floored by each panel's base width.
+    assert 'data-world-detail-resize' in APP
+    assert 'role="separator"' in APP
+    assert 'aria-orientation="vertical"' in APP
+    assert "bindDetailResize()" in APP
+    assert 'localStorage.setItem(DETAIL_WIDTH_KEY' in APP
+    assert '"--world-detail-user-width"' in APP
+    assert "anchorRight - event.clientX" in APP
+    assert ".world-detail-resize" in CSS
+    assert '.world-detail[data-open="true"] ~ .world-detail-resize' in CSS
+    assert "--world-detail-width: min(" in CSS
+    assert "max(var(--world-detail-user-width), var(--world-detail-base-width))" in CSS
+    assert (
+        '.fm-world:has(.world-detail[data-repository-review="true"])' in CSS
+    )
+    # A long unbreakable title must not widen the header past the panel: that
+    # pushes the close button out of view, and focusing it scrolls the clipped
+    # panel sideways into blank space with the text cut off.
+    assert "grid-template-columns: minmax(0, 1fr) auto;" in CSS
+    assert "overflow-wrap: anywhere;" in CSS
+    assert "detail.scrollLeft = 0;" in APP
+    assert "?.focus({ preventScroll: true });" in APP
+    assert "scrollIntoView({ block: \"center\" })" not in APP
+
+
 def test_world_lighting_is_static_daylight_with_a_local_persisted_control():
     assert "DAYLIGHT_ENVIRONMENT" in SCENE
     assert "function updateWorldEnvironment" in SCENE
@@ -2066,6 +2093,26 @@ def test_forkbot_rolls_through_the_world_for_explicit_chat_interactions():
         in DASHBOARD_CHAT
     )
     assert "if (!canJoinChat()) return;" in DASHBOARD_CHAT
+
+
+def test_clicking_forkbot_opens_the_terminal_bar_with_a_mention_prefilled():
+    # adhoc #284: ForkBot should drop a visitor into the small, docked CHAT
+    # bar (not the full-screen chat overlay), with "@forkbot " already typed
+    # in so they can start chatting immediately.
+    assert 'onForkbotChat: () => {\n          this.openChatTerminal("@forkbot ");' in APP
+    terminal = APP[
+        APP.index("  openChatTerminal("):
+        APP.index("\n  }", APP.index("  openChatTerminal("))
+    ]
+    assert 'this.$("[data-world-chat-terminal]")' in terminal
+    assert "this.closeWorldChat();" in terminal
+    assert "details.open = true;" in terminal
+    assert '"forkmesh:chat-prefill"' in terminal
+    assert "frame.contentWindow?.postMessage(" in terminal
+    # The embedded /dashboard/chat page (used by both the terminal bar and the
+    # full overlay) listens for that message and fills + focuses its composer.
+    assert 'data.type !== "forkmesh:chat-prefill"' in DASHBOARD_CHAT
+    assert "input.focus();" in DASHBOARD_CHAT
 
 
 def test_signed_in_visitors_keep_their_account_name_for_every_peer():

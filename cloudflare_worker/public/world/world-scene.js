@@ -108,6 +108,9 @@ const TREE_LANDMARK_CLEARANCE = Object.freeze({
   broadcast: 9,
   office: 10,
 });
+// Shared by the seated pose and the presence frame so other visitors can render
+// a bench sitter sitting rather than standing on the plank.
+const CAMPFIRE_SEATED_ACTIVITY = "sitting beside the campfire";
 const REGISTERED_LOUNGE_STATUSES = new Set([
   "Registered",
   "Supporting member",
@@ -1940,11 +1943,11 @@ function createMirrorServerCabinet(THREE, node, id) {
   const integrity = String(node?.integrity || "unknown").toLowerCase();
   const statusColor =
     integrity === "rejected" || integrity === "degraded"
-      ? "#ff7e88"
+      ? "#ff0000"
       : integrity === "healing" || (online && node?.cloneAvailable !== true)
-        ? "#f7c96b"
+        ? "#ffcc00"
         : online
-          ? "#73f0ad"
+          ? "#00cc44"
           : "#71837a";
   const statusLight = new THREE.Mesh(
     new THREE.SphereGeometry(0.12, 14, 10),
@@ -2406,6 +2409,83 @@ function repositoryStonePlaqueTexture(THREE, repositoryName) {
     context.textBaseline = "middle";
     context.font = '800 76px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(String(repositoryName || "repository").slice(0, 42), 512, 112);
+  });
+}
+
+const REPOSITORY_RECORD_STATE_COLORS = {
+  open: "#9ef7c6",
+  closed: "#8fa39a",
+  merged: "#d5b6ff",
+};
+
+function repositoryIssuePageTexture(THREE, issue, expanded, repositoryName) {
+  const width = expanded ? 512 : 256;
+  const height = expanded ? 672 : 336;
+  return canvasTexture(THREE, width, height, (context) => {
+    context.fillStyle = "#f6f1e2";
+    context.fillRect(0, 0, width, height);
+    context.strokeStyle = "#c8bfa4";
+    context.lineWidth = expanded ? 6 : 4;
+    context.strokeRect(2, 2, width - 4, height - 4);
+    const accent =
+      REPOSITORY_RECORD_STATE_COLORS[issue.state] || "#f7c96b";
+    context.fillStyle = accent;
+    context.fillRect(0, 0, width, expanded ? 88 : 52);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillStyle = "#17251d";
+    context.font = `900 ${expanded ? 52 : 30}px "ForkMesh Mono", ui-monospace, monospace`;
+    context.fillText(`ISSUE #${issue.number}`, width / 2, expanded ? 46 : 27);
+    context.fillStyle = "#3d4a41";
+    context.font = `700 ${expanded ? 34 : 24}px "ForkMesh Mono", ui-monospace, monospace`;
+    context.fillText(
+      (issue.state || "recorded").toUpperCase(),
+      width / 2,
+      expanded ? 140 : 88,
+    );
+    // Ruled page lines keep the sheet reading as a document, not a button.
+    context.strokeStyle = "rgba(84, 96, 88, 0.35)";
+    context.lineWidth = expanded ? 3 : 2;
+    const firstRule = expanded ? 200 : 120;
+    const ruleGap = expanded ? 46 : 30;
+    for (let y = firstRule; y < height - (expanded ? 130 : 36); y += ruleGap) {
+      context.beginPath();
+      context.moveTo(width * 0.12, y);
+      context.lineTo(width * 0.88, y);
+      context.stroke();
+    }
+    if (expanded) {
+      context.fillStyle = "#3d4a41";
+      context.font = '700 26px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(String(repositoryName || "").slice(0, 30), 256, 580);
+      context.fillStyle = "#1f6b46";
+      context.font = '800 28px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("CLICK AGAIN TO OPEN", 256, 622);
+    }
+  });
+}
+
+function repositoryPullCardTexture(THREE, pull) {
+  return canvasTexture(THREE, 1024, 232, (context) => {
+    context.fillStyle = "#171429";
+    context.fillRect(0, 0, 1024, 232);
+    const accent =
+      REPOSITORY_RECORD_STATE_COLORS[pull.state] || "#d5b6ff";
+    context.fillStyle = accent;
+    context.fillRect(0, 0, 18, 232);
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    context.fillStyle = "#d5b6ff";
+    context.font = '900 62px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(`#${pull.number}`, 52, 66);
+    context.fillStyle = accent;
+    context.font = '800 40px "ForkMesh Mono", ui-monospace, monospace';
+    context.textAlign = "right";
+    context.fillText((pull.state || "recorded").toUpperCase(), 984, 66);
+    context.textAlign = "left";
+    context.fillStyle = "#f1edff";
+    context.font = '700 44px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(String(pull.title || "").slice(0, 40), 52, 164);
   });
 }
 
@@ -4365,12 +4445,13 @@ export function createWorldScene({
     innerFlame.scale.set(size * 0.82, size * 0.9, size * 0.82);
     fireLight.intensity = 3.2 * fireLevel + Math.sin(time * 0.013) * 0.7;
   });
-  // Seats sit back far enough from the pit to leave a walkable ring between
-  // the stools and the stones (and to clear the log pile at ~2.6). The circle
-  // carries one log stool per registered member — occupied by a directory
-  // figure when the member is away, left empty while they walk the world as a
-  // live avatar — and widens whenever a new account joins so everyone fits.
-  const CAMPFIRE_CIRCLE_MIN_RADIUS = 4;
+  // Stools sit back far enough from the pit to leave a wide walkable ring
+  // between the seats and the stones (and to clear the log pile at ~2.6). The
+  // circle carries one log stool per registered member — occupied by a seated
+  // directory figure while the member is away, left empty (and sittable) while
+  // they walk the world as a live avatar — and widens whenever a new account
+  // joins so everyone still fits around the fire.
+  const CAMPFIRE_BENCH_RADIUS = 6.2;
   const CAMPFIRE_CIRCLE_MIN_SEATS = 6;
   const CAMPFIRE_CIRCLE_MAX_SEATS = 96;
   const CAMPFIRE_SEAT_SPACING = 2.1;
@@ -4397,30 +4478,30 @@ export function createWorldScene({
     const ring = new THREE.Group();
     ring.name = "campfire-member-circle";
     const radius = Math.max(
-      CAMPFIRE_CIRCLE_MIN_RADIUS,
+      CAMPFIRE_BENCH_RADIUS,
       (count * CAMPFIRE_SEAT_SPACING) / (2 * Math.PI),
     );
     const seatOffsets = [];
     for (let index = 0; index < count; index += 1) {
       const angle = (index / count) * Math.PI * 2;
-      const stool = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.42, 0.5, 0.34, 10),
+      const seat = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.42, 0.5, 0.5, 10),
         makeMaterial(THREE, "#70472a", { roughness: 0.86 }),
       );
-      stool.position.set(
+      seat.position.set(
         Math.cos(angle) * radius,
-        0.17,
+        0.25,
         Math.sin(angle) * radius,
       );
-      stool.userData.campfireBench = new THREE.Vector3(
-        campfire.position.x + stool.position.x,
-        0.38,
-        campfire.position.z + stool.position.z,
-      );
-      interactive.push(stool);
-      ring.add(stool);
+      // Seat coordinates are read from the live world matrix at click time, so a
+      // relocated campfire needs no bookkeeping and the seats can never drift.
+      seat.userData.campfireBench = true;
+      interactive.push(seat);
+      ring.add(seat);
+      // Offsets land sitters just above the stool top, matching the local
+      // player's bench-seat pose height.
       seatOffsets.push(
-        new THREE.Vector3(stool.position.x, 0.38, stool.position.z),
+        new THREE.Vector3(seat.position.x, seat.position.y + 0.1, seat.position.z),
       );
     }
     setShadows(ring);
@@ -4927,6 +5008,9 @@ export function createWorldScene({
   let moveAccelScale = 1;
   let keyboardMovementSpeed = PLAYER_SPEED;
   let dashTarget = null;
+  // Set while the player is sitting on a campfire bench: the seat pose is held
+  // every frame until the visitor walks, dashes or jumps away from it.
+  let benchSeat = null;
   let primaryPointerId = null;
   let draggedCampfireLog = null;
   let pointerGestureMoved = false;
@@ -6029,6 +6113,55 @@ export function createWorldScene({
     animateAvatarActivity(officeLobbyPlayer, time, delta, reducedMotion);
   }
 
+  // Sitting is a local pose, not a teleport: the avatar lands on the plank it
+  // was clicked on, faces the flames and keeps that pose until it moves again.
+  function sitOnCampfireBench(seat) {
+    const seatPoint = seat.getWorldPosition(new THREE.Vector3());
+    benchSeat = {
+      // Just above the plank so the avatar rests on the seat rather than in it.
+      position: new THREE.Vector3(seatPoint.x, seatPoint.y + 0.1, seatPoint.z),
+      // Face the flames: headings elsewhere use atan2(-dx, -dz), so pointing at
+      // the pit means negating the seat -> campfire vector.
+      heading: Math.atan2(
+        seatPoint.x - campfire.position.x,
+        seatPoint.z - campfire.position.z,
+      ),
+    };
+    cancelDash();
+    cameraFocus = null;
+    jumpVelocity = 0;
+    jumpQueued = false;
+    applyBenchSeatPose();
+    lastPosition.copy(player.position);
+    onMovement({
+      x: Number(player.position.x.toFixed(2)),
+      y: Number(player.position.y.toFixed(2)),
+      z: Number(player.position.z.toFixed(2)),
+      heading: Number(player.rotation.y.toFixed(3)),
+      space: currentSpace,
+      moving: false,
+      activity: CAMPFIRE_SEATED_ACTIVITY,
+    });
+  }
+
+  function applyBenchSeatPose() {
+    if (!benchSeat) return;
+    player.position.copy(benchSeat.position);
+    player.rotation.y = benchSeat.heading;
+    player.userData.leftArm.rotation.x = 0;
+    player.userData.rightArm.rotation.x = 0;
+    player.userData.leftLeg.rotation.x = -1.3;
+    player.userData.rightLeg.rotation.x = -1.3;
+  }
+
+  function standUpFromBench() {
+    if (!benchSeat) return;
+    benchSeat = null;
+    player.position.y = currentFloorY;
+    player.userData.leftLeg.rotation.x = 0;
+    player.userData.rightLeg.rotation.x = 0;
+  }
+
   function walkPlayer(delta, time) {
     const previousHorizontalPosition = player.position.clone();
     const {
@@ -6037,6 +6170,19 @@ export function createWorldScene({
       inputStrength,
       movement,
     } = movementInput();
+    if (benchSeat) {
+      // Anything that relocates the avatar (a space change, a teleport) also
+      // ends the sit; otherwise the held pose would drag it back to the bench.
+      const displaced =
+        player.position.distanceToSquared(benchSeat.position) > 9;
+      if (!displaced && !movement.lengthSq() && !dashTarget && !jumpQueued) {
+        applyBenchSeatPose();
+        animateAvatarActivity(player, time, delta, reducedMotion);
+        wasWalking = false;
+        return;
+      }
+      standUpFromBench();
+    }
     if (jumpQueued && player.position.y <= currentFloorY + 0.02) {
       jumpVelocity = 5.4;
       jumpQueued = false;
@@ -6161,10 +6307,16 @@ export function createWorldScene({
         : recentlyActiveInLounge
           ? Math.sin(time * 0.012 + avatar.userData.phase) * 0.18
           : 0;
+      // Members occupying a stool in the campfire circle sit like local bench
+      // sitters do once they arrive at their seat.
+      const seatedAtCampfire =
+        (avatar.userData.campfireSeated === true ||
+          Boolean(avatar.userData.loungeActivity)) &&
+        !walking;
       avatar.userData.leftArm.rotation.x = gait;
       avatar.userData.rightArm.rotation.x = -gait;
-      avatar.userData.leftLeg.rotation.x = -gait * 0.7;
-      avatar.userData.rightLeg.rotation.x = gait * 0.7;
+      avatar.userData.leftLeg.rotation.x = seatedAtCampfire ? -1.3 : -gait * 0.7;
+      avatar.userData.rightLeg.rotation.x = seatedAtCampfire ? -1.3 : gait * 0.7;
       if (recentlyActiveInLounge && !walking && !reducedMotion) {
         avatar.position.y =
           avatar.userData.targetPosition.y +
@@ -6441,6 +6593,8 @@ export function createWorldScene({
           ? "recent"
           : "idle"
         : "";
+      avatar.userData.campfireSeated =
+        String(remote.activity || "") === CAMPFIRE_SEATED_ACTIVITY;
       if (useRegisteredLounge) {
         // Idle and returning members walk to the empty stools left after the
         // seated directory figures, joining the same circle around the fire.
@@ -6674,8 +6828,11 @@ export function createWorldScene({
         const seat = seats[index % Math.max(1, seats.length)];
         figure.position.copy(campfire.position);
         if (seat) figure.position.add(seat);
-        // Face the fire at the circle's centre.
+        // Face the fire at the circle's centre and hold a seated pose on the
+        // stool, matching the local player's bench-seat legs.
         figure.rotation.y = seat ? Math.atan2(-seat.x, -seat.z) : 0;
+        figure.userData.leftLeg.rotation.x = -1.3;
+        figure.userData.rightLeg.rotation.x = -1.3;
       });
     campfire.userData.memberFigureCount = Math.min(seen.size, seats.length);
     loungeMembers.forEach((figure, id) => {
@@ -7561,6 +7718,9 @@ export function createWorldScene({
     world.userData.repositoryCatalogLayer = null;
     world.userData.repositorySizeLayer = null;
     world.userData.repositorySizeMount = null;
+    world.userData.repositoryRecordDeskLayer = null;
+    world.userData.repositoryRecordDeskMount = null;
+    world.userData.repositoryRecordDeskData = null;
     world.userData.repositoryPortalMeshes = [];
     world.userData.repositoryCatalogSignature = catalogSignature;
     repositoryPortals.clear();
@@ -8184,6 +8344,245 @@ export function createWorldScene({
       "repository-size-map-perimeter",
     );
     if (perimeter) perimeter.userData.loading = Boolean(loading);
+  }
+
+  const REPOSITORY_ISSUE_PAGES_VISIBLE = 10;
+  const REPOSITORY_PULL_CARDS_VISIBLE = 5;
+
+  function safeRecordNumber(value) {
+    const number = Number(value);
+    return Number.isSafeInteger(number) && number >= 1 && number <= 10_000_000
+      ? number
+      : 0;
+  }
+
+  // The open crate of issue pages and the pull-request review board that stand
+  // beside the selected repository portal. Both are rebuilt from bounded,
+  // commit-matched records the shell already verified; the scene never invents
+  // an issue or pull number of its own.
+  function updateRepositoryRecordDesk(selection = {}, records = {}) {
+    const previousLayer = world.userData.repositoryRecordDeskLayer;
+    const previousMount =
+      world.userData.repositoryRecordDeskMount || previousLayer?.parent;
+    removeGeneratedLayer(previousMount, previousLayer, interactive);
+    world.userData.repositoryRecordDeskLayer = null;
+    world.userData.repositoryRecordDeskMount = null;
+    world.userData.repositoryRecordDeskData = null;
+
+    const owner = String(selection?.owner || "").slice(0, 40);
+    const name = String(selection?.repo || selection?.name || "").slice(0, 60);
+    const repositoryKey =
+      `${owner.toLocaleLowerCase()}/${name.toLocaleLowerCase()}`;
+    const mount = repositoryPortals.get(repositoryKey)?.group;
+    const issues = (Array.isArray(records?.issues) ? records.issues : [])
+      .map((record) => ({
+        number: safeRecordNumber(record?.number),
+        state: ["open", "closed"].includes(record?.state) ? record.state : "",
+      }))
+      .filter((record) => record.number)
+      .sort((left, right) =>
+        (left.state === "closed") === (right.state === "closed")
+          ? right.number - left.number
+          : left.state === "closed"
+            ? 1
+            : -1,
+      )
+      .slice(0, REPOSITORY_ISSUE_PAGES_VISIBLE);
+    const pulls = (Array.isArray(records?.pulls) ? records.pulls : [])
+      .map((record) => ({
+        number: safeRecordNumber(record?.number),
+        state: ["open", "closed", "merged"].includes(record?.state)
+          ? record.state
+          : "",
+        title: String(record?.title || "").slice(0, 80),
+      }))
+      .filter((record) => record.number)
+      .sort((left, right) =>
+        (left.state === "open") === (right.state === "open")
+          ? right.number - left.number
+          : left.state === "open"
+            ? -1
+            : 1,
+      )
+      .slice(0, REPOSITORY_PULL_CARDS_VISIBLE);
+    if (!mount || (!issues.length && !pulls.length)) return;
+
+    const expandedIssue = safeRecordNumber(records?.expandedIssue);
+    const layer = new THREE.Group();
+    layer.name = "repository-record-desk";
+    const repositoryName = `${owner}/${name}`;
+    // Ground level beside the portal plinth; the plinth base sits at -2.38 and
+    // the follower gallery stands on -2.53.
+    const groundY = -2.53;
+
+    if (issues.length) {
+      const box = new THREE.Group();
+      // The portal face points at the ring centre, so the visitor's left is
+      // the portal's +x: the issue crate keeps clear of the follower gallery.
+      box.name = `repository-issue-box:${repositoryKey}`;
+      box.position.set(4.4, 0, 1.35);
+      const crateMaterial = makeMaterial(THREE, "#8a6b4a", {
+        roughness: 0.86,
+        metalness: 0.04,
+      });
+      const floor = new THREE.Mesh(
+        new THREE.BoxGeometry(2.5, 0.12, 1.3),
+        crateMaterial,
+      );
+      floor.position.y = groundY + 0.06;
+      box.add(floor);
+      [
+        // An open box: four walls, no lid, pages standing up out of it.
+        { size: [2.5, 1.0, 0.1], position: [0, groundY + 0.56, 0.6] },
+        { size: [2.5, 1.0, 0.1], position: [0, groundY + 0.56, -0.6] },
+        { size: [0.1, 1.0, 1.3], position: [-1.2, groundY + 0.56, 0] },
+        { size: [0.1, 1.0, 1.3], position: [1.2, groundY + 0.56, 0] },
+      ].forEach(({ size, position }) => {
+        const wall = new THREE.Mesh(
+          new THREE.BoxGeometry(...size),
+          crateMaterial,
+        );
+        wall.position.set(...position);
+        box.add(wall);
+      });
+      issues.forEach((issue, index) => {
+        const page = new THREE.Mesh(
+          new THREE.PlaneGeometry(0.72, 0.96),
+          new THREE.MeshBasicMaterial({
+            map: repositoryIssuePageTexture(THREE, issue, false, repositoryName),
+            side: THREE.DoubleSide,
+            toneMapped: false,
+          }),
+        );
+        page.name = `repository-issue-page:${issue.number}`;
+        const spread = issues.length > 1 ? index / (issues.length - 1) : 0.5;
+        page.position.set(
+          -0.95 + spread * 1.9,
+          groundY + 1.06,
+          -0.34 + (index % 3) * 0.34,
+        );
+        page.rotation.y = (spread - 0.5) * -0.5;
+        page.rotation.z = (index % 2 ? -1 : 1) * 0.05;
+        page.userData.landmark = "repositories";
+        page.userData.repositoryIssuePage = {
+          owner,
+          name,
+          number: issue.number,
+          state: issue.state,
+        };
+        box.add(page);
+        interactive.push(page);
+      });
+      if (expandedIssue && issues.some((issue) => issue.number === expandedIssue)) {
+        const issue = issues.find((candidate) => candidate.number === expandedIssue);
+        const sheet = new THREE.Mesh(
+          new THREE.PlaneGeometry(2.5, 3.28),
+          new THREE.MeshBasicMaterial({
+            map: repositoryIssuePageTexture(THREE, issue, true, repositoryName),
+            side: THREE.DoubleSide,
+            toneMapped: false,
+          }),
+        );
+        sheet.name = `repository-issue-page-expanded:${issue.number}`;
+        sheet.position.set(0, groundY + 3.1, 0.75);
+        sheet.userData.landmark = "repositories";
+        sheet.userData.repositoryIssuePage = {
+          owner,
+          name,
+          number: issue.number,
+          state: issue.state,
+          expanded: true,
+        };
+        box.add(sheet);
+        interactive.push(sheet);
+      }
+      const caption = repositorySizeLabelSprite(
+        THREE,
+        `${issues.length} ISSUE ${issues.length === 1 ? "PAGE" : "PAGES"}`,
+        expandedIssue ? "CLICK AGAIN TO OPEN" : "CLICK A PAGE TO EXPAND",
+        "#f7c96b",
+      );
+      caption.name = `repository-issue-box-caption:${repositoryKey}`;
+      caption.scale.set(2.9, 0.82, 1);
+      caption.position.set(0, groundY + 1.86, 0.9);
+      box.add(caption);
+      layer.add(box);
+    }
+
+    if (pulls.length) {
+      const desk = new THREE.Group();
+      // Mirrored to the visitor's right: the review board for pull requests.
+      desk.name = `repository-pull-desk:${repositoryKey}`;
+      desk.position.set(-4.4, 0, 1.35);
+      const boardHeight = 0.62 + pulls.length * 0.6;
+      const board = new THREE.Mesh(
+        new THREE.BoxGeometry(2.75, boardHeight, 0.12),
+        makeMaterial(THREE, "#171429", {
+          emissive: "#241d45",
+          emissiveIntensity: 0.32,
+          roughness: 0.6,
+        }),
+      );
+      board.position.set(0, groundY + 0.8 + boardHeight / 2, 0);
+      desk.add(board);
+      [-1.05, 1.05].forEach((legX) => {
+        const leg = new THREE.Mesh(
+          new THREE.BoxGeometry(0.14, 0.9, 0.14),
+          makeMaterial(THREE, "#0e0c1c", { roughness: 0.7 }),
+        );
+        leg.position.set(legX, groundY + 0.45, 0);
+        desk.add(leg);
+      });
+      pulls.forEach((pull, index) => {
+        const card = new THREE.Mesh(
+          new THREE.PlaneGeometry(2.45, 0.54),
+          new THREE.MeshBasicMaterial({
+            map: repositoryPullCardTexture(THREE, pull),
+            toneMapped: false,
+          }),
+        );
+        card.name = `repository-pull-card:${pull.number}`;
+        card.position.set(
+          0,
+          groundY + 0.8 + boardHeight - 0.56 - index * 0.6,
+          0.08,
+        );
+        card.userData.landmark = "repositories";
+        card.userData.repositoryPullPage = {
+          owner,
+          name,
+          number: pull.number,
+          state: pull.state,
+        };
+        desk.add(card);
+        interactive.push(card);
+      });
+      const caption = repositorySizeLabelSprite(
+        THREE,
+        `${pulls.length} PULL ${pulls.length === 1 ? "REQUEST" : "REQUESTS"}`,
+        "CLICK TO REVIEW THE DIFF",
+        "#d5b6ff",
+      );
+      caption.name = `repository-pull-desk-caption:${repositoryKey}`;
+      caption.scale.set(2.9, 0.82, 1);
+      caption.position.set(0, groundY + boardHeight + 1.4, 0.4);
+      desk.add(caption);
+      layer.add(desk);
+    }
+
+    mount.add(layer);
+    world.userData.repositoryRecordDeskLayer = layer;
+    world.userData.repositoryRecordDeskMount = mount;
+    world.userData.repositoryRecordDeskData = { selection, records };
+  }
+
+  function setRepositoryIssuePageExpanded(number = 0) {
+    const data = world.userData.repositoryRecordDeskData;
+    if (!data) return;
+    updateRepositoryRecordDesk(data.selection, {
+      ...data.records,
+      expandedIssue: safeRecordNumber(number),
+    });
   }
 
   function updateRepositoryGraph(entries = [], entities = []) {
@@ -9001,24 +9400,7 @@ export function createWorldScene({
       return;
     }
     if (hit?.object?.userData?.campfireBench) {
-      const seat = hit.object.userData.campfireBench;
-      player.position.copy(seat);
-      // Face the flames: headings elsewhere use atan2(-dx, -dz), so pointing at
-      // the pit means negating the seat -> campfire vector.
-      player.rotation.y = Math.atan2(
-        seat.x - campfire.position.x,
-        seat.z - campfire.position.z,
-      );
-      jumpVelocity = 0;
-      onMovement({
-        x: Number(player.position.x.toFixed(2)),
-        y: 0.38,
-        z: Number(player.position.z.toFixed(2)),
-        heading: Number(player.rotation.y.toFixed(3)),
-        space: currentSpace,
-        moving: false,
-        activity: "sitting beside the campfire",
-      });
+      sitOnCampfireBench(hit.object);
       return;
     }
     if (hit?.object?.userData?.forkbotChat) {
@@ -9093,11 +9475,21 @@ export function createWorldScene({
         id === "repositories" && hit.object.userData.repositoryBase
           ? { ...hit.object.userData.repositoryBase }
           : null;
+      const repositoryIssuePage =
+        id === "repositories" && hit.object.userData.repositoryIssuePage
+          ? { ...hit.object.userData.repositoryIssuePage }
+          : null;
+      const repositoryPullPage =
+        id === "repositories" && hit.object.userData.repositoryPullPage
+          ? { ...hit.object.userData.repositoryPullPage }
+          : null;
       if (
         !repository &&
         !repositorySizeNode &&
         !repositoryStar &&
-        !repositoryBase
+        !repositoryBase &&
+        !repositoryIssuePage &&
+        !repositoryPullPage
       ) {
         focusLandmark(id);
       } else if (repository || repositorySizeNode) {
@@ -9113,6 +9505,8 @@ export function createWorldScene({
         repositorySizeNode,
         repositoryStar,
         repositoryBase,
+        repositoryIssuePage,
+        repositoryPullPage,
         graphNode:
           id === "repositories" && hit.object.userData.graphNode
             ? { ...hit.object.userData.graphNode }
@@ -9158,15 +9552,6 @@ export function createWorldScene({
     if (!deltaX && !deltaZ) return;
     object.position.x = x;
     object.position.z = z;
-    // Campfire bench seats capture absolute seat coordinates at build time;
-    // keep them attached to the benches when the campfire is repositioned.
-    object.traverse((child) => {
-      const seat = child.userData?.campfireBench;
-      if (seat?.isVector3) {
-        seat.x += deltaX;
-        seat.z += deltaZ;
-      }
-    });
     // Landmark proximity and focus math read LANDMARKS positions, not the
     // group transform, so a relocated landmark must update its record too.
     const layoutId = String(object.userData.layoutId || "");
@@ -9240,6 +9625,21 @@ export function createWorldScene({
   function handleDoubleClick(event) {
     if (event.button !== undefined && event.button !== 0) return;
     if (lastGestureDragged) return;
+    // A quick double tap on a bench is still a request to sit on it, not to
+    // dash to the patch of ground the bench happens to stand on.
+    pointerCoordinates(event);
+    raycaster.setFromCamera(pointer, camera);
+    const benchHit = raycaster
+      .intersectObjects(interactive, false)
+      .find(
+        ({ object }) =>
+          object.userData?.campfireBench && objectIsEffectivelyVisible(object),
+      );
+    if (benchHit) {
+      event.preventDefault();
+      sitOnCampfireBench(benchHit.object);
+      return;
+    }
     const point = groundPointAt(event.clientX, event.clientY);
     if (!point) return;
     event.preventDefault();
@@ -9775,6 +10175,8 @@ export function createWorldScene({
     updateRepositoryCatalog,
     updateRepositoryGraph,
     updateRepositorySizeMap,
+    updateRepositoryRecordDesk,
+    setRepositoryIssuePageExpanded,
     setRepositorySizeLoading,
     applyWorldLayout,
     setLayoutEditor,
