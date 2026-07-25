@@ -254,7 +254,7 @@ def test_avatar_chest_activity_country_shirt_and_input_state_are_privacy_safe():
         "identity.visitCount",
         "function countryShirtTexture",
         "identity.countryCode",
-        'bracelet.name = "mouse-activity-bracelet"',
+        'antenna.name = "mouse-activity-antenna"',
         "function syncAvatarActivity",
         "function animateAvatarActivity",
         'avatar.userData.accountStatus === "Guest"',
@@ -342,7 +342,13 @@ def test_presence_client_uses_only_coarse_ephemeral_world_protocol():
         'this.fetchJSON("/api/accounts/users", {\n          auth: false,'
         in APP
     )
-    assert APP.count("/api/accounts/users") == 1
+    # Boot fetch plus the throttled refresh that seats accounts created after
+    # the tab opened; both anonymous, and nothing else touches the endpoint.
+    assert APP.count("/api/accounts/users") == 2
+    assert (
+        'this.fetchJSON("/api/accounts/users", {\n        auth: false,' in APP
+    )
+    assert "async refreshMemberDirectory()" in APP
     assert 'type: "presence"' in APP
     assert "shareCountry: Boolean(this.settings.privacy.country)" in APP
     assert "shareName: Boolean(this.settings.privacy.name)" in APP
@@ -1544,7 +1550,9 @@ def test_world_supports_bounded_pinch_wheel_and_drag_controls():
         "pinchStartDistance / distance",
         'addEventListener("pointermove", handlePointerMove',
         'addEventListener("wheel", handleWheel',
-        "Math.exp(deltaPixels * 0.0015)",
+        # First person inverts the wheel: through the visitor's own eyes,
+        # scrolling down zooms in on what they are looking at (adhoc #303).
+        "Math.exp(deltaPixels * (firstPerson ? -0.0015 : 0.0015))",
         "getCameraState",
     ):
         assert contract in SCENE
@@ -1712,10 +1720,22 @@ def test_world_members_sit_in_an_expanding_circle_around_the_campfire():
     # members appear as seated figures facing the fire, members walking the
     # world as live avatars leave their bench empty, and the ring rebuilds
     # wider whenever a new account joins so everyone still fits. adhoc #291
-    # adds one extra bench that always stays open for the next guest.
+    # adds one extra bench that always stays open for the next guest, and
+    # adhoc #303 one more per guest already in the world, names every bench
+    # so an empty one says who is out and about, and seats accounts that
+    # signed up after the tab loaded straight from their presence frame.
     assert "function rebuildCampfireCircle" in SCENE
     assert '"campfire-member-circle"' in SCENE
-    assert "rebuildCampfireCircle(Math.max(total, roster.length) + 1)" in SCENE
+    assert (
+        "rebuildCampfireCircle(\n      Math.max(total, roster.length) "
+        "+ guestSeats + 1,\n    )" in SCENE
+    )
+    assert "function setCampfireSeatLabel" in SCENE
+    assert "function campfireSeatPlateTexture" in SCENE
+    assert '"OPEN SEAT"' in SCENE
+    assert '"OUT AND ABOUT"' in SCENE
+    assert "campfire.userData.seatByName" in SCENE
+    assert "noteDirectoryMembers" in APP
     assert "(count * CAMPFIRE_SEAT_SPACING) / (2 * Math.PI)" in SCENE
     assert '"sitting around the campfire"' in SCENE
     # Figures and idle live avatars both face the pit at the circle's centre.
