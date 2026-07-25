@@ -1989,17 +1989,35 @@ function createMirrorServerCabinet(THREE, node, id) {
         : online
           ? "#00cc44"
           : "#71837a";
-  const statusLight = new THREE.Mesh(
-    new THREE.SphereGeometry(0.12, 14, 10),
-    makeMaterial(THREE, statusColor, {
-      emissive: statusColor,
-      emissiveIntensity: online ? 1.4 : 0.25,
-      metalness: 0.22,
-      roughness: 0.26,
+  // A single beacon lamp sits on the cabinet roof; its color is the status.
+  // The lens is an unlit cylinder so the status reads as one flat, solid
+  // colour from every camera angle instead of shading into a gradient.
+  const statusLight = new THREE.Group();
+  const beaconBase = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.17, 0.19, 0.08, 20),
+    makeMaterial(THREE, "#35463e", {
+      metalness: 0.82,
+      roughness: 0.3,
     }),
   );
-  // A single status lamp sits on the cabinet roof; its color is the status.
-  statusLight.position.set(0, 3.43, 0);
+  beaconBase.position.y = 0.04;
+  statusLight.add(beaconBase);
+  const beaconLens = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.15, 0.15, 0.24, 20),
+    new THREE.MeshBasicMaterial({ color: statusColor, toneMapped: false }),
+  );
+  beaconLens.position.y = 0.2;
+  statusLight.add(beaconLens);
+  const beaconCap = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.16, 0.16, 0.05, 20),
+    makeMaterial(THREE, "#35463e", {
+      metalness: 0.82,
+      roughness: 0.3,
+    }),
+  );
+  beaconCap.position.y = 0.345;
+  statusLight.add(beaconCap);
+  statusLight.position.set(0, 3.29, 0);
   group.add(statusLight);
 
   const vent = new THREE.Mesh(
@@ -4457,46 +4475,11 @@ export function createWorldScene({
   ground.userData.ground = true;
   world.add(ground);
 
-  // The room assigns one of 64 ephemeral slots: ten columns per row. The
-  // outline makes the arrival contract visible without turning it into a
-  // barrier once a visitor starts walking.
+  // The room still assigns one of 64 ephemeral slots, but the grid itself is
+  // no longer drawn: the plaques at the front edge carry the arrival story and
+  // the lawn reads as open ground.
   const arrivalBox = new THREE.Group();
   arrivalBox.name = "world-arrival-box";
-  const arrivalFloor = new THREE.Mesh(
-    new THREE.BoxGeometry(19.8, 0.05, 15.8),
-    makeMaterial(THREE, "#143d31", {
-      emissive: "#1f7b57",
-      emissiveIntensity: 0.18,
-      transparent: true,
-      opacity: 0.78,
-    }),
-  );
-  arrivalFloor.position.set(0, 0.04, 23.7);
-  arrivalFloor.receiveShadow = true;
-  arrivalFloor.userData.ground = true;
-  arrivalBox.add(arrivalFloor);
-  for (let column = 0; column <= 10; column += 1) {
-    const line = new THREE.Mesh(
-      new THREE.BoxGeometry(0.025, 0.035, 14.7),
-      makeMaterial(THREE, "#61dca0", {
-        emissive: "#2e9f70",
-        emissiveIntensity: 0.7,
-      }),
-    );
-    line.position.set(-9 + column * 1.8, 0.09, 23.7);
-    arrivalBox.add(line);
-  }
-  for (let row = 0; row <= 7; row += 1) {
-    const line = new THREE.Mesh(
-      new THREE.BoxGeometry(18.1, 0.035, 0.025),
-      makeMaterial(THREE, "#61dca0", {
-        emissive: "#2e9f70",
-        emissiveIntensity: 0.7,
-      }),
-    );
-    line.position.set(0, 0.09, 30.95 - row * 2.1);
-    arrivalBox.add(line);
-  }
   const arrivalPlaque = makeArrivalPlaque(THREE);
   // Just past the grid's front edge (cells end at z ≈ 17.4), facing inward
   // toward the Town Square center as visitors leave the welcome grid.
@@ -10027,7 +10010,7 @@ export function createWorldScene({
       );
       handle.name = "world-layout-handle-" + id;
       // Anchor the handle to the object's visible mass, not the group
-      // origin: the arrival grid keeps its geometry ~24 units away from its
+      // origin: the arrival plaques sit ~15 units away from their group
       // origin, where a fixed-origin handle would float in the town center.
       const center = new THREE.Box3()
         .setFromObject(object)
@@ -10321,13 +10304,8 @@ export function createWorldScene({
       }
     }
     if (!reducedMotion) {
-      nodeInfrastructure.forEach((pylon, id) => {
-        const phase = hashNumber(id) * 0.0001;
-        pylon.userData.signalRing.rotation.z = time * 0.0015 + phase;
-        pylon.userData.signalRing.scale.setScalar(
-          1 + Math.sin(time * 0.002 + phase) * 0.08,
-        );
-      });
+      // Node beacons intentionally hold a steady colour and size — no spin or
+      // pulse — so a status reads the same in a screenshot as it does live.
       botAgents.forEach((robot, id) => {
         const phase = hashNumber(id) * 0.0001;
         robot.position.y =
