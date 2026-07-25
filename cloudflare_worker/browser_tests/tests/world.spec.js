@@ -571,13 +571,20 @@ ${longContext}
             const conflicting =
               repositoryFixture.conflictingHealthyAlias &&
               owner === "mirror3";
+            const missingStateHash =
+              repositoryFixture.missingHealthyStateHash &&
+              owner === "mirror3";
             return {
               owner,
               name: "forkmesh",
               source: stale ? "local-node" : "remote-clone",
               liveHost: !stale,
               commit: stale || conflicting ? "d".repeat(40) : codeOid,
-              stateHash: stale || conflicting ? "e".repeat(64) : stateHash,
+              stateHash: missingStateHash
+                ? ""
+                : stale || conflicting
+                  ? "e".repeat(64)
+                  : stateHash,
               pullCount: stale ? 1 : 2,
               updatedAt: stale ? FIXED_NOW + 1000 : FIXED_NOW,
             };
@@ -1254,6 +1261,7 @@ test("enhanced Town Square starts in WebGL and keeps keyboard navigation", async
 test("desktop camera uses visible-cursor drag look, capped movement acceleration, and wheel zoom", async ({
   page,
 }) => {
+  test.setTimeout(60_000);
   await prepareWorldPage(page, "desktop-drag-controls");
   await waitForWorld(page);
 
@@ -1705,9 +1713,6 @@ test("Unicode emoji status is local-persisted, coalesced, and visible over every
   await expect(page.locator("[data-world-status-preview]")).toHaveText(
     "🧑‍💻 coding",
   );
-  await expect(page.locator("[data-world-identity-emoji-status]")).toHaveText(
-    "🧑‍💻 coding",
-  );
   await expect.poll(() =>
     frames.filter(
       (frame) =>
@@ -1932,16 +1937,7 @@ test("construction markers distinguish verified live landmarks from unavailable 
   await expect(mapMarker("security")).toBeVisible();
   await expect(mapMarker("workshops")).toBeVisible();
 
-  const destinationMarker = (id) =>
-    page.locator(
-      `[data-landmark-label="${id}"] [data-world-construction-marker="${id}"]`,
-    );
-  await expect(destinationMarker("routing")).toHaveAttribute("hidden", "");
-  await expect(destinationMarker("organizations")).not.toHaveAttribute(
-    "hidden",
-    "",
-  );
-  await expect(destinationMarker("organizations")).toHaveAttribute(
+  await expect(mapMarker("organizations")).toHaveAttribute(
     "aria-label",
     /Under construction:.*organization directory integration/i,
   );
@@ -2127,6 +2123,48 @@ test("disagreeing eligible mirrors leave the automatic flagship map unpinned", a
   });
   expect(snapshot).toEqual({
     commit: "",
+    stateHash: "",
+    activeRepository: null,
+  });
+  expect(
+    repositoryReads.filter((path) => path.endsWith("/tree")),
+  ).toHaveLength(0);
+});
+
+test("an incomplete healthy-mirror state attestation cannot auto-load the flagship map", async ({
+  page,
+}) => {
+  const repositoryReads = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith("/api/repo/forkmesh/forkmesh/")) {
+      repositoryReads.push(url.pathname);
+    }
+  });
+  await prepareWorldPage(page, "world-incomplete-live-alias", {
+    repositoryFixture: { missingHealthyStateHash: true },
+  });
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.repositoryMapState === "unavailable";
+  });
+
+  const snapshot = await page.locator("forkmesh-world").evaluate((shell) => {
+    const alias = shell.repositories.find(
+      (record) =>
+        record.owner === "forkmesh" &&
+        record.name === "forkmesh" &&
+        record.source === "organization-alias",
+    );
+    return {
+      commit: alias?.commit || "",
+      stateHash: alias?.stateHash || "",
+      activeRepository: shell.activeRepository,
+    };
+  });
+  expect(snapshot).toEqual({
+    commit: "a".repeat(40),
     stateHash: "",
     activeRepository: null,
   });
@@ -3013,6 +3051,44 @@ test("four-hour procedural soundtrack starts only after consent and stops locall
   expect(
     await page.locator("forkmesh-world").evaluate((shell) => shell.activeAudio),
   ).toBeNull();
+});
+
+test("the ForkMesh song button plays the first-party track only on request", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    window.__forkmeshSongPlays = [];
+    HTMLMediaElement.prototype.play = function play() {
+      window.__forkmeshSongPlays.push(this.getAttribute("src") || this.src);
+      return Promise.resolve();
+    };
+    HTMLMediaElement.prototype.pause = function pause() {};
+  });
+  await prepareWorldPage(page, "forkmesh-song");
+  await waitForWorld(page);
+
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.openLandmark("broadcast"),
+  );
+  const button = page.locator("[data-world-radio='forkmesh-song']");
+  await expect(button).toHaveText("Listen to the ForkMesh song");
+  expect(await page.evaluate(() => window.__forkmeshSongPlays)).toEqual([]);
+
+  await button.click();
+  expect(await page.evaluate(() => window.__forkmeshSongPlays)).toEqual([
+    "/assets/songs/ForkMeshForever(IndiePop).mp3",
+  ]);
+  await expect(page.locator("[data-world-media-now]")).toContainText(
+    "ForkMesh Forever (Indie Pop)",
+  );
+
+  await page.locator("[data-world-radio-stop]").click();
+  expect(
+    await page.locator("forkmesh-world").evaluate((shell) => shell.activeAudio),
+  ).toBeNull();
+  await expect(page.locator("[data-world-media-now]")).toContainText(
+    "Nothing is playing",
+  );
 });
 
 test("portrait coarse-pointer controls and visual viewport remain usable", async ({

@@ -111,7 +111,7 @@ forkmesh-world {
   transform: translateY(0);
 }
 
-.world-static-fallback {
+.world-load-error {
   min-height: 100svh;
   display: grid;
   place-content: center;
@@ -119,12 +119,17 @@ forkmesh-world {
   gap: 18px;
   max-width: 760px;
   padding: 48px clamp(24px, 7vw, 96px);
+  color: var(--world-copy);
   background:
     radial-gradient(circle at 75% 10%, rgb(57 199 131 / 0.2), transparent 32%),
     linear-gradient(145deg, #07110f, #0b2019);
 }
 
-.world-static-brand {
+.world-load-error[hidden] {
+  display: none;
+}
+
+.world-load-error-brand {
   display: inline-flex;
   align-items: center;
   gap: 12px;
@@ -134,13 +139,13 @@ forkmesh-world {
   text-decoration: none;
 }
 
-.world-static-brand img {
+.world-load-error-brand img {
   width: 36px;
   height: 42px;
   object-fit: contain;
 }
 
-.world-static-fallback p {
+.world-load-error p {
   max-width: 640px;
   margin: 0;
   color: var(--world-muted);
@@ -148,13 +153,21 @@ forkmesh-world {
   line-height: 1.65;
 }
 
-.world-static-fallback nav {
+.world-load-error .world-load-error-kicker {
+  color: var(--world-mint);
+  font-family: "ForkMesh Mono", monospace;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.world-load-error nav {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
 }
 
-.world-static-fallback nav a {
+.world-load-error nav a {
   border-bottom: 1px solid var(--world-mint);
   padding: 8px 0;
   margin-right: 16px;
@@ -162,7 +175,6 @@ forkmesh-world {
   text-decoration: none;
 }
 
-.world-static-kicker,
 .world-eyebrow,
 .world-mono {
   font-family: "ForkMesh Mono", monospace;
@@ -191,11 +203,6 @@ forkmesh-world {
 
 .world-information-anchor p {
   margin: 0 0 8px;
-}
-
-.world-static-kicker {
-  color: var(--world-mint) !important;
-  font-size: 0.72rem !important;
 }
 
 .world-noscript {
@@ -1042,21 +1049,6 @@ forkmesh-world {
   font-family: "ForkMesh Mono", monospace;
 }
 
-.world-identity {
-  position: absolute;
-  left: var(--safe-left);
-  bottom: calc(var(--safe-bottom) + var(--world-diagnostics-height));
-  display: grid;
-  grid-template-columns: 50px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  width: min(292px, calc(100vw - 28px));
-  border: 1px solid var(--world-line);
-  background: var(--world-panel);
-  padding: 9px;
-  backdrop-filter: blur(22px);
-}
-
 .world-shirt-badge {
   position: relative;
   display: grid;
@@ -1066,9 +1058,17 @@ forkmesh-world {
   height: 50px;
   overflow: hidden;
   border: 1px solid rgb(255 255 255 / 0.22);
+  border-radius: 0;
   background: #143528;
   padding: 3px;
   color: white;
+  cursor: pointer;
+}
+
+.world-shirt-badge:hover,
+.world-shirt-badge:focus-visible {
+  border-color: var(--world-mint);
+  outline: none;
 }
 
 .world-shirt-account {
@@ -1099,51 +1099,6 @@ forkmesh-world {
   white-space: nowrap;
   font-family: "ForkMesh Mono", monospace;
   font-size: 0.42rem;
-}
-
-.world-identity-copy {
-  min-width: 0;
-}
-
-.world-identity-copy strong,
-.world-identity-copy span {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.world-identity-copy strong {
-  font-size: 0.8rem;
-}
-
-.world-identity-copy span {
-  margin-top: 3px;
-  color: var(--world-muted);
-  font-size: 0.64rem;
-}
-
-.world-identity-copy .world-identity-emoji-status {
-  color: var(--world-mint);
-  font-family: "ForkMesh Mono", monospace;
-  text-transform: none;
-}
-
-.world-identity-edit {
-  min-width: 34px;
-  min-height: 34px;
-  border: 1px solid var(--world-line);
-  border-radius: 0;
-  background: transparent;
-  color: var(--world-muted);
-  cursor: pointer;
-}
-
-.world-identity-edit:hover,
-.world-identity-edit:focus-visible {
-  border-color: var(--world-mint);
-  color: var(--world-mint);
-  outline: none;
 }
 
 .world-controls {
@@ -1253,7 +1208,8 @@ forkmesh-world {
   letter-spacing: 0.1em;
 }
 
-.world-diagnostics summary [data-world-diagnostics-summary] {
+.world-diagnostics summary [data-world-diagnostics-summary],
+.world-diagnostics summary [data-world-chat-terminal-last] {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4547,48 +4503,6 @@ forkmesh-world.world-office-active .world-metrics {
   pointer-events: none;
 }
 
-.world-object-label {
-  position: absolute;
-  display: grid;
-  transform: translate(-50%, -100%);
-  justify-items: center;
-  gap: 4px;
-  transition: opacity 120ms ease;
-}
-
-.world-object-label button {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  border: 1px solid var(--label-color, var(--world-line-strong));
-  border-radius: 0;
-  background: rgb(7 17 15 / 0.82);
-  color: var(--world-copy);
-  padding: 5px 8px;
-  cursor: pointer;
-  font-size: 0.62rem;
-  white-space: nowrap;
-  backdrop-filter: blur(10px);
-}
-
-.world-construction-mark-destination {
-  font-size: 0.58rem;
-}
-
-.world-object-label button:hover,
-.world-object-label button:focus-visible {
-  background: var(--label-color, var(--world-mint));
-  color: #07110f;
-  outline: none;
-}
-
-.world-object-label::after {
-  content: "";
-  width: 1px;
-  height: 12px;
-  background: var(--label-color, var(--world-line-strong));
-}
-
 .world-player-label {
   position: absolute;
   display: grid;
@@ -4651,8 +4565,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     gap: 4px;
   }
 
-  .world-construction-mark-map,
-  .world-construction-mark-destination {
+  .world-construction-mark-map {
     width: 1.2em;
     height: 1.2em;
     font-size: 0.56rem;
@@ -4816,11 +4729,6 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     display: none;
   }
 
-  .world-identity {
-    width: min(218px, calc(100vw - 180px));
-    grid-template-columns: 42px minmax(0, 1fr) auto;
-  }
-
   .world-shirt-badge {
     width: 42px;
     height: 42px;
@@ -4914,11 +4822,6 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   .world-tour {
     bottom: calc(var(--safe-bottom) + 122px);
   }
-
-  .world-object-label button {
-    padding: 4px 6px;
-    font-size: 0.55rem;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -4966,12 +4869,6 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     );
     grid-template-columns: repeat(3, 40px);
     grid-template-rows: repeat(2, 40px);
-  }
-
-  .world-identity {
-    bottom: calc(
-      var(--safe-bottom) + var(--world-diagnostics-height) + 8px
-    );
   }
 
   .world-detail {
@@ -5032,14 +4929,6 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 
   .world-arrival-actions .world-secondary-action {
-    display: none;
-  }
-
-  .world-identity {
-    width: 160px;
-  }
-
-  .world-identity-copy span {
     display: none;
   }
 

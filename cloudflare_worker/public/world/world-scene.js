@@ -2867,38 +2867,6 @@ function animateWeather(points, time, delta, kind) {
   points.geometry.attributes.position.needsUpdate = true;
 }
 
-function makeObjectLabel(landmark, labelLayer, onSelect) {
-  const wrapper = document.createElement("div");
-  wrapper.className = "world-object-label";
-  wrapper.dataset.landmarkLabel = landmark.id;
-  wrapper.style.setProperty("--label-color", landmark.color);
-  const button = document.createElement("button");
-  button.type = "button";
-  const copy = document.createElement("span");
-  copy.textContent = landmark.shortLabel;
-  const construction = document.createElement("span");
-  construction.className =
-    "world-construction-mark world-construction-mark-destination";
-  construction.dataset.worldConstructionMarker = landmark.id;
-  construction.setAttribute("role", "img");
-  construction.setAttribute(
-    "aria-label",
-    "Under construction: this integration has not been verified in this session.",
-  );
-  construction.title =
-    "Under construction: this integration has not been verified in this session.";
-  const icon = document.createElement("span");
-  icon.setAttribute("aria-hidden", "true");
-  icon.textContent = "🚧";
-  construction.appendChild(icon);
-  button.append(copy, construction);
-  button.setAttribute("aria-label", `Open ${landmark.label}`);
-  button.addEventListener("click", () => onSelect(landmark.id, { source: "label" }));
-  wrapper.appendChild(button);
-  labelLayer.appendChild(wrapper);
-  return wrapper;
-}
-
 function updatePlayerLabel(element, identity) {
   const status = normalizeWorldStatus(
     identity?.statusEmoji,
@@ -3008,7 +2976,6 @@ export function createWorldScene({
   const interactive = [];
   const animated = [];
   const landmarkObjects = new Map();
-  const landmarkLabels = new Map();
 
   const ground = new THREE.Mesh(
     new THREE.CircleGeometry(WORLD_GROUND_RADIUS, 128),
@@ -3128,13 +3095,6 @@ export function createWorldScene({
     );
     landmarkObjects.set(landmark.id, object);
     world.add(object);
-    landmarkLabels.set(
-      landmark.id,
-      makeObjectLabel(landmark, labelLayer, (id, meta) => {
-        focusLandmark(id);
-        onLandmarkSelect(id, meta);
-      }),
-    );
   });
 
   const treeColors = ["#2f8c5f", "#397655", "#4b9e68", "#27634a"];
@@ -3311,7 +3271,6 @@ export function createWorldScene({
   const pointer = new THREE.Vector2();
   const pointerStart = new THREE.Vector2();
   const pointerLast = new THREE.Vector2();
-  let selectedLandmark = "information";
   let currentLocation = "Town Square";
   let currentRegion = "central";
   let currentSpace = "town-square";
@@ -3345,6 +3304,9 @@ export function createWorldScene({
   let pinchActive = false;
   let lightLevel = LIGHT_LEVEL_DEFAULT;
   let officeSceneMode = "town";
+  // main dropped its own selectedLandmark when the floating landmark labels went
+  // away (adhoc #243); the Office still tracks it to frame the camera on entry.
+  let selectedLandmark = "";
   let officeLocalParticipantId = "";
   let lastOfficeMovementEmit = 0;
   let officeWasMoving = false;
@@ -3551,7 +3513,6 @@ export function createWorldScene({
     currentSpace = "town-square";
     currentFloorY = 0.38;
     player.position.y = currentFloorY;
-    selectedLandmark = landmark.id;
     cameraFocus = new THREE.Vector3(
       landmark.position[0],
       1.5,
@@ -3589,7 +3550,8 @@ export function createWorldScene({
     officeSceneMode = "lobby";
     selectedLandmark = "office";
     currentSpace = "office";
-    hasMoveTarget = false;
+    // No click-to-move target to clear -- main removed that control, and pull/46
+    // already applied the same fix to enterOffice().
     cameraFocus = new THREE.Vector3(0, 2.15, 0);
     world.visible = false;
     officeInterior.visible = true;
@@ -3741,7 +3703,9 @@ export function createWorldScene({
     setOfficeParticipants([]);
     officeBubbles.forEach((element) => element.remove());
     officeBubbles.clear();
-    applyTheme(currentTheme);
+    // Re-apply the theme to restore the town background/fog the Office overrode.
+    // PR #47 called applyTheme(); main's equivalent is setTheme().
+    setTheme(currentTheme);
   }
 
   function clearFocus() {
@@ -3804,7 +3768,7 @@ export function createWorldScene({
     const presence = avatar.userData.officePresence || {};
     const movement = presence.pose === "seated"
       ? new THREE.Vector3()
-      : movementVector();
+      : movementInput().movement;
     const walking = movement.lengthSq() > 0;
     if (walking) {
       avatar.position.addScaledVector(movement, PLAYER_SPEED * 0.72 * delta);
@@ -4413,7 +4377,6 @@ export function createWorldScene({
       }
     });
     if (!target) return false;
-    selectedLandmark = "routing";
     cameraFocus = target.position.clone();
     cameraFocus.y += 1.65;
     return true;
@@ -5720,20 +5683,9 @@ export function createWorldScene({
       animateWeather(weather.snow, time, delta, "snow");
     }
     const rect = container.getBoundingClientRect();
+    // main removed the floating landmark labels (adhoc #243); only the player
+    // and remote name plates remain, and they are a town-scene concern.
     if (officeSceneMode === "town") {
-      LANDMARKS.forEach((landmark) => {
-        const object = landmarkObjects.get(landmark.id);
-        const element = landmarkLabels.get(landmark.id);
-        const height =
-          landmark.id === "organizations" ? 10.2 :
-          landmark.id === "office" ? 8.1 :
-          landmark.id === "repositories" ? 7.6 :
-          landmark.id === "fountain" ? 6.9 : 6.5;
-        updateScreenLabel(THREE, object, element, camera, rect.width, rect.height, height);
-        element.dataset.selected = String(selectedLandmark === landmark.id);
-      });
-      // Label heights stay emoji-status aware (main): a visitor showing an emoji
-      // status needs the name plate lifted clear of the sprite.
       updateScreenLabel(
         THREE,
         player,
@@ -5761,9 +5713,6 @@ export function createWorldScene({
         element.style.visibility = "hidden";
       });
     } else {
-      landmarkLabels.forEach((element) => {
-        element.style.visibility = "hidden";
-      });
       playerLabel.style.visibility = "hidden";
       remoteLabels.forEach((element) => {
         element.style.visibility = "hidden";
@@ -5850,32 +5799,6 @@ export function createWorldScene({
     };
   }
 
-  function updateLandmarkConstruction(capabilities = {}) {
-    LANDMARKS.forEach((landmark) => {
-      const label = landmarkLabels.get(landmark.id);
-      const marker = label?.querySelector(
-        `[data-world-construction-marker="${landmark.id}"]`,
-      );
-      const button = label?.querySelector("button");
-      if (!marker || !button) return;
-      const capability = capabilities?.[landmark.id];
-      const live = capability?.live === true;
-      const reason =
-        String(capability?.reason || "").trim() ||
-        "This integration has not been verified in this session.";
-      marker.hidden = live;
-      marker.setAttribute("aria-label", `Under construction: ${reason}`);
-      marker.title = `Under construction: ${reason}`;
-      button.dataset.worldUnderConstruction = String(!live);
-      button.setAttribute(
-        "aria-label",
-        live
-          ? `Open ${landmark.label}`
-          : `Open ${landmark.label} — under construction: ${reason}`,
-      );
-    });
-  }
-
   function dispose() {
     disposed = true;
     renderer.setAnimationLoop(null);
@@ -5946,7 +5869,6 @@ export function createWorldScene({
     updateMediaSpaces,
     updateIdentity,
     updateRepositoryGraph,
-    updateLandmarkConstruction,
     playEmote,
     showChatBubble,
     playRewardEvent,

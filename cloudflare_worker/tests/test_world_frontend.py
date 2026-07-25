@@ -63,17 +63,25 @@ BOT_DIRECTORY = json.loads(
 )
 
 
-def test_world_is_an_immediate_accessible_game_shell():
-    assert '<forkmesh-world data-world-mode="public">' in INDEX
-    assert 'class="world-static-fallback"' in INDEX
+def test_world_boots_blank_with_a_ten_second_load_error_watchdog():
+    # The shell stays blank while the world module boots (adhoc #240): no
+    # static fallback content to jump away from, only a hidden error panel
+    # that an inline watchdog reveals if the module never arrives.
+    assert '<forkmesh-world data-world-mode="public"></forkmesh-world>' in INDEX
+    assert "world-static-fallback" not in INDEX
+    assert "JavaScript and WebGL enhance this page" not in INDEX
+    assert 'data-world-load-error hidden' in INDEX
+    assert 'world.dataset.worldReady === "true"' in INDEX
+    assert "}, 10000);" in INDEX
+    assert "did not load within 10 seconds" in INDEX
+    assert ".world-load-error[hidden]" in CSS
+    assert 'document.querySelector("[data-world-load-error]")?.remove()' in APP
     assert 'href="#world-information"' in INDEX
-    assert 'id="world-information" tabindex="-1"' in INDEX
     assert 'class="world-information-anchor"' in APP
     assert 'id="world-information"' in APP
     assert ".world-information-anchor:focus" in CSS
     assert 'src="/world/world.js"' in INDEX
     assert 'href="/world/world.css"' in INDEX
-    assert "JavaScript and WebGL enhance this page" in INDEX
 
 
 def test_world_contains_the_initial_city_districts_without_a_clock():
@@ -466,6 +474,22 @@ def test_world_has_consent_aware_activity_events_workshops_and_media():
     assert "This is the only path that creates the shared cue context" in APP
     assert "if (!this.soundEnabled)" in APP
     assert "Audio never starts automatically" in APP
+
+
+def test_broadcast_garden_offers_the_first_party_forkmesh_song_on_demand():
+    assert (PUBLIC / "assets" / "songs" / "ForkMeshForever(IndiePop).mp3").exists()
+    assert "Listen to the ForkMesh song" in DATA
+    assert '"/assets/songs/ForkMeshForever(IndiePop).mp3"' in DATA
+    assert 'playMode: "hosted"' in DATA
+    assert "station.actionLabel" in APP
+    assert 'station.playMode === "hosted"' in APP
+    assert "async playHostedTrack(station, now)" in APP
+    hosted = APP[APP.index("  async playHostedTrack("):APP.index(
+        "\n  stopRadio(", APP.index("  async playHostedTrack(")
+    )]
+    assert "element.loop = false" in hosted
+    assert "await element.play()" in hosted
+    assert "data-world-radio-stop" in hosted
 
 
 def test_join_cues_are_country_specific_local_opt_in_and_rate_limited():
@@ -1450,3 +1474,29 @@ def test_linked_payout_page_has_a_truthful_non_custodial_notice():
     assert "community incentives, not investments" in PAYOUTS
     assert "guaranteed returns." in PAYOUTS
     assert "never its private key" in PAYOUTS
+
+
+def test_world_updates_arrive_via_a_gentle_in_place_reload():
+    # A deploy flips BUILD_REV on /api/version. The world notices on a slow
+    # watcher, flushes the player's position, and reloads once behind a toast,
+    # so the new build appears in place without anyone touching refresh.
+    assert "const WORLD_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;" in APP
+    assert "startUpdateWatch()" in APP
+    assert "async checkForWorldUpdate()" in APP
+    assert (
+        "window.setTimeout(() => location.reload(), "
+        "WORLD_UPDATE_RELOAD_DELAY_MS)" in APP
+    )
+    # Gentle means the position survives: it is flushed before the reload so
+    # the restored spawn puts the player exactly where they were.
+    assert "this.captureWorldPosition(true);\n    this.toast(" in APP
+    # Bounded: hidden tabs never poll, visibility bursts are throttled to one
+    # request per minute, and one reload per revision prevents reload loops
+    # behind a stale cache.
+    assert (
+        "if (this.destroyed || this.updateReloadPending || document.hidden) "
+        "return;" in APP
+    )
+    assert "const WORLD_UPDATE_CHECK_MIN_GAP_MS = 60 * 1000;" in APP
+    assert "sessionStorage.getItem(WORLD_UPDATE_RELOADED_REV_KEY)" in APP
+    assert "window.clearInterval(this.updateCheckTimer);" in APP
