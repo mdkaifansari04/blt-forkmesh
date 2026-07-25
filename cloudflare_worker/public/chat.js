@@ -457,7 +457,17 @@ function readSession() {
 
 function writeSession(session) {
   try {
-    localStorage.setItem("forkmesh.session", JSON.stringify(session));
+    const stored = session && typeof session === "object"
+      ? {
+          ...session,
+          sessionToken: (
+            location.protocol === "https:" && session.sessionToken
+              ? "cookie"
+              : session.sessionToken || ""
+          ),
+        }
+      : session;
+    localStorage.setItem("forkmesh.session", JSON.stringify(stored));
   } catch (error) {
     /* storage disabled */
   }

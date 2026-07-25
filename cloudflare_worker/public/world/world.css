@@ -2740,6 +2740,13 @@ forkmesh-world {
   text-overflow: ellipsis;
 }
 
+.world-repo-map-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: end;
+  gap: 6px;
+}
+
 .world-repo-summary {
   grid-template-columns: repeat(5, 1fr);
 }
@@ -3409,6 +3416,165 @@ forkmesh-world {
   padding: 0 11px 11px;
 }
 
+.world-focus-music {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+  border: 1px solid color-mix(in srgb, var(--detail-color) 55%, var(--world-line));
+  background: #071712;
+  padding: 12px;
+}
+
+.world-focus-music > header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.world-focus-music > header span,
+.world-focus-music > header > strong {
+  color: var(--detail-color);
+  font: 600 0.5rem "ForkMesh Mono", monospace;
+  letter-spacing: 0.08em;
+}
+
+.world-focus-music h3 {
+  margin: 3px 0 0;
+  font-size: 0.9rem;
+}
+
+.world-focus-music-intro,
+.world-focus-status {
+  margin: 0;
+  color: var(--world-muted);
+  font-size: 0.58rem;
+  line-height: 1.45;
+}
+
+.world-focus-track-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.world-focus-track {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 7px;
+  border: 1px solid var(--world-line);
+  background: #0d211b;
+  padding: 9px;
+  cursor: pointer;
+}
+
+.world-focus-track[data-selected="true"] {
+  border-color: var(--detail-color);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--detail-color) 35%, transparent);
+}
+
+.world-focus-track:focus-within {
+  outline: 2px solid var(--detail-color);
+  outline-offset: 2px;
+}
+
+.world-focus-track input {
+  margin: 2px 0 0;
+  accent-color: var(--detail-color);
+}
+
+.world-focus-track > span {
+  min-width: 0;
+}
+
+.world-focus-track strong,
+.world-focus-track small {
+  display: block;
+}
+
+.world-focus-track strong {
+  overflow: hidden;
+  font-size: 0.65rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-focus-track small {
+  margin-top: 3px;
+  color: var(--world-muted);
+  font-size: 0.48rem;
+}
+
+.world-focus-track-links {
+  grid-column: 2;
+  display: flex;
+  gap: 8px;
+}
+
+.world-focus-track-links a {
+  color: var(--detail-color);
+  font-size: 0.5rem;
+}
+
+.world-focus-transport {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.world-focus-transport button {
+  min-height: 30px;
+  border: 1px solid var(--world-line);
+  background: #102b22;
+  padding: 0 9px;
+  color: var(--world-copy);
+  cursor: pointer;
+  font: 600 0.54rem "ForkMesh Mono", monospace;
+}
+
+.world-focus-transport button:hover,
+.world-focus-transport button:focus-visible {
+  border-color: var(--detail-color);
+  color: var(--detail-color);
+  outline: none;
+}
+
+.world-focus-transport button[aria-pressed="true"] {
+  border-color: var(--detail-color);
+  color: var(--detail-color);
+}
+
+.world-focus-transport button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.world-focus-transport label {
+  display: grid;
+  grid-template-columns: auto minmax(90px, 1fr) 36px;
+  align-items: center;
+  flex: 1 1 190px;
+  gap: 6px;
+  color: var(--world-muted);
+  font: 0.5rem "ForkMesh Mono", monospace;
+}
+
+.world-focus-transport input {
+  width: 100%;
+  accent-color: var(--detail-color);
+}
+
+.world-focus-transport output {
+  color: var(--world-copy);
+  text-align: right;
+}
+
+.world-focus-status {
+  min-height: 1.3em;
+  color: var(--world-copy);
+}
+
 .world-media-list {
   display: grid;
   gap: 8px;
@@ -3623,6 +3789,52 @@ forkmesh-world {
   border-color: var(--world-mint);
   color: var(--world-copy);
   outline: none;
+}
+
+.world-outfit-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+
+.world-outfit-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--world-line);
+  border-radius: 0;
+  background: #0b1c17;
+  color: var(--world-muted);
+  cursor: pointer;
+  font-size: 0.7rem;
+}
+
+.world-outfit-option::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--outfit-color, var(--world-line));
+  flex: none;
+}
+
+.world-outfit-option:hover,
+.world-outfit-option:focus-visible,
+.world-outfit-option[aria-pressed="true"] {
+  border-color: var(--world-mint);
+  color: var(--world-copy);
+  outline: none;
+}
+
+.world-outfit-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.world-upgrade-link {
+  color: #f2793a;
 }
 
 .world-light-control {
@@ -4098,6 +4310,14 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     grid-template-columns: repeat(2, 1fr);
   }
 
+  .world-repo-explorer > header {
+    grid-template-columns: 1fr;
+  }
+
+  .world-repo-map-actions {
+    justify-content: start;
+  }
+
   .world-pull-review-summary {
     grid-template-columns: 1fr;
   }
@@ -4241,6 +4461,14 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 
   .world-code-map {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .world-focus-music > header {
+    display: grid;
+  }
+
+  .world-focus-track-list {
+    grid-template-columns: 1fr;
   }
 
   .world-media-list article,

@@ -650,6 +650,20 @@ ${longContext}
               },
             ],
           };
+        } else if (treePath === "src" && ref === codeOid) {
+          body = {
+            ok: true,
+            commit: codeOid,
+            entries: [
+              {
+                name: "[id]+C++.tsx",
+                path: "src/[id]+C++.tsx",
+                type: "blob",
+                size: 4096,
+                author: "Alice",
+              },
+            ],
+          };
         } else if (treePath.startsWith(".forkmesh/issues")) {
           repositoryFixture.issueTreeRequestStarted = true;
           const issueDelay = Math.max(
@@ -681,7 +695,35 @@ ${longContext}
           body = { ok: false, error: "not_found" };
         }
       } else if (url.pathname === `${repoBase}/sizes`) {
-        body = { ok: true, commit: codeOid, size: 5296, fileCount: 2 };
+        body = {
+          ok: true,
+          commit: codeOid,
+          name: "",
+          type: "directory",
+          size: 5296,
+          fileCount: 2,
+          children: [
+            {
+              name: "src",
+              type: "directory",
+              size: 4096,
+              children: [
+                {
+                  name: "[id]+C++.tsx",
+                  path: "src/[id]+C++.tsx",
+                  type: "file",
+                  size: 4096,
+                },
+              ],
+            },
+            {
+              name: "README.md",
+              path: "README.md",
+              type: "file",
+              size: 1200,
+            },
+          ],
+        };
       } else if (url.pathname === `${repoBase}/stats`) {
         body = {
           ok: true,
@@ -802,6 +844,10 @@ function encryptChatEnvelope(message, passphrase, room) {
 
 async function waitForWorld(page, url = "/world/") {
   await page.goto(url);
+  await waitForWorldReady(page);
+}
+
+async function waitForWorldReady(page) {
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
     return Boolean(shell?.world?.renderer?.domElement);
@@ -951,6 +997,7 @@ test("account signup and login complete inside the World without leaking into UR
   page,
   context,
 }) => {
+  const testAccountPassword = ["correct-horse", "battery-staple"].join("-");
   const accountRequests = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
@@ -962,7 +1009,7 @@ test("account signup and login complete inside the World without leaking into UR
       });
     }
     expect(request.url()).not.toContain("world-user@example.test");
-    expect(request.url()).not.toContain("correct-horse-battery-staple");
+    expect(request.url()).not.toContain(testAccountPassword);
   });
   await prepareWorldPage(page, "world-account", {
     accountFixture: true,
@@ -982,7 +1029,7 @@ test("account signup and login complete inside the World without leaking into UR
   await signup.locator("[name='email']").fill("world-user@example.test");
   await signup
     .locator("[name='password']")
-    .fill("correct-horse-battery-staple");
+    .fill(testAccountPassword);
   await signup.locator("[name='terms']").check();
   await signup.getByRole("button", { name: /Create account inside/ }).click();
   await expect(account.locator("[data-world-account-verification]")).toBeVisible();
@@ -993,7 +1040,7 @@ test("account signup and login complete inside the World without leaking into UR
     body: {
       nodeName: "world-user",
       email: "world-user@example.test",
-      password: "correct-horse-battery-staple",
+      password: testAccountPassword,
     },
   });
 
@@ -1003,7 +1050,7 @@ test("account signup and login complete inside the World without leaking into UR
   await login.locator("[name='email']").fill("world-user@example.test");
   await login
     .locator("[name='password']")
-    .fill("correct-horse-battery-staple");
+    .fill(testAccountPassword);
   const reloaded = page.waitForNavigation({ waitUntil: "domcontentloaded" });
   await login.getByRole("button", { name: /Log in inside/ }).click();
   await reloaded;
@@ -1029,7 +1076,7 @@ test("account signup and login complete inside the World without leaking into UR
     method: "POST",
     body: {
       email: "world-user@example.test",
-      password: "correct-horse-battery-staple",
+      password: testAccountPassword,
       totp: "",
     },
   });
@@ -1208,6 +1255,111 @@ async function holdTouch(page, locator, durationMs = 300) {
   await client.detach();
 }
 
+async function installFocusMusicAudioProbe(page) {
+  await page.addInitScript(() => {
+    const probe = {
+      created: [],
+      intervalRegistrations: 0,
+    };
+    const nativeSetInterval = window.setInterval.bind(window);
+    window.setInterval = (...args) => {
+      probe.intervalRegistrations += 1;
+      return nativeSetInterval(...args);
+    };
+    class FocusMusicAudio {
+      constructor(src) {
+        this.src = String(src || "");
+        this.currentTime = 0;
+        this.loop = false;
+        this.muted = false;
+        this.paused = true;
+        this.preload = "";
+        this.readyState = 4;
+        this.volume = 1;
+        this.playCalls = 0;
+        this.pauseCalls = 0;
+        this.loadCalls = 0;
+        this.listeners = new Map();
+        probe.created.push(this);
+      }
+      addEventListener(type, listener) {
+        const listeners = this.listeners.get(type) || [];
+        listeners.push(listener);
+        this.listeners.set(type, listeners);
+      }
+      removeEventListener(type, listener) {
+        this.listeners.set(
+          type,
+          (this.listeners.get(type) || []).filter(
+            (candidate) => candidate !== listener,
+          ),
+        );
+      }
+      load() {
+        this.loadCalls += 1;
+      }
+      pause() {
+        this.paused = true;
+        this.pauseCalls += 1;
+      }
+      async play() {
+        this.paused = false;
+        this.playCalls += 1;
+      }
+    }
+    Object.defineProperty(window, "Audio", {
+      configurable: true,
+      writable: true,
+      value: FocusMusicAudio,
+    });
+    window.__forkmeshFocusMusicProbe = probe;
+  });
+}
+
+async function focusMusicProbeSnapshot(page) {
+  return page.evaluate(() => {
+    const probe = window.__forkmeshFocusMusicProbe;
+    return {
+      intervalRegistrations: probe.intervalRegistrations,
+      created: probe.created.map((audio) => ({
+        src: audio.src,
+        currentTime: audio.currentTime,
+        loop: audio.loop,
+        muted: audio.muted,
+        paused: audio.paused,
+        preload: audio.preload,
+        volume: audio.volume,
+        playCalls: audio.playCalls,
+        pauseCalls: audio.pauseCalls,
+        loadCalls: audio.loadCalls,
+      })),
+    };
+  });
+}
+
+async function chooseFocusMusicTrack(page, trackId) {
+  await page
+    .locator(`[data-world-focus-track='${trackId}']`)
+    .evaluate((control) => {
+      const input = control.matches("input[type='radio']")
+        ? control
+        : control.querySelector("input[type='radio']");
+      if (!input) throw new Error("focus music card has no radio control");
+      if (!input.checked) input.click();
+    });
+}
+
+async function focusMusicTrackIsChecked(page, trackId) {
+  return page
+    .locator(`[data-world-focus-track='${trackId}']`)
+    .evaluate((control) => {
+      const input = control.matches("input[type='radio']")
+        ? control
+        : control.querySelector("input[type='radio']");
+      return input?.checked === true;
+    });
+}
+
 test("enhanced Town Square starts in WebGL and keeps keyboard navigation", async ({
   page,
 }) => {
@@ -1383,10 +1535,12 @@ test("refresh restores one bounded identity-local position without private histo
   await waitForWorld(page);
 
   await page.locator("forkmesh-world").evaluate((shell) => {
+    // The space station is parked in the works-in-progress barn, so its floor
+    // is the same walkable 0.38 as the Town Square.
     const position = {
-      x: 21.25,
-      y: 18.45,
-      z: -13.5,
+      x: 16.3,
+      y: 0.38,
+      z: 66.5,
       heading: 1.2,
       space: "space-station",
       moving: false,
@@ -1423,9 +1577,9 @@ test("refresh restores one bounded identity-local position without private histo
   }));
   expect(restored.currentSpace).toBe("space-station");
   expect(restored.position.space).toBe("space-station");
-  expect(restored.position.x).toBeCloseTo(21.25, 3);
-  expect(restored.position.y).toBeCloseTo(18.45, 3);
-  expect(restored.position.z).toBeCloseTo(-13.5, 3);
+  expect(restored.position.x).toBeCloseTo(16.3, 3);
+  expect(restored.position.y).toBeCloseTo(0.38, 3);
+  expect(restored.position.z).toBeCloseTo(66.5, 3);
   expect(restored.position.heading).toBeCloseTo(1.2, 3);
   expect(restored.storedRecords).toBe(1);
 });
@@ -2068,6 +2222,166 @@ test("a stale offline alias cannot erase the live mirrors' flagship pin", async 
     mapState: "ready",
     activeCommit: "a".repeat(40),
   });
+});
+
+test("repository portals and the 3D size sunburst use the verified catalog tree", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  await prepareWorldPage(page, "world-repository-size-rings", {
+    repositoryFixture: { staleOfflineAlias: true },
+  });
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.repositoryMapState === "ready";
+  });
+
+  const initial = await page.locator("forkmesh-world").evaluate((shell) => {
+    const scene = shell.world.scene;
+    const segments = [];
+    const portals = [];
+    const sizeLayer = scene.getObjectByName("repository-3d-size-map");
+    scene.traverse((object) => {
+      if (String(object.name || "").startsWith("repository-portal:")) {
+        portals.push(object.name);
+      }
+      if (String(object.name || "").startsWith("repository-size-segment-")) {
+        segments.push(object.userData.repositorySizeNode);
+      }
+    });
+    return {
+      repositories: shell.repositories.map(
+        (record) => `${record.owner}/${record.name}`,
+      ),
+      portals,
+      segments,
+      portalUuid: sizeLayer?.parent?.uuid,
+      sizeMount: sizeLayer?.parent?.name,
+      sizeMountRadius: sizeLayer?.parent
+        ? Math.hypot(sizeLayer.parent.position.x, sizeLayer.parent.position.z)
+        : 0,
+      legacyVisible:
+        scene.getObjectByName("repository-legacy-file-graph")?.visible,
+      relationshipsVisible:
+        scene.getObjectByName("repository-entity-layer")?.visible,
+    };
+  });
+  expect(initial.portals).toEqual(["repository-portal:forkmesh/forkmesh"]);
+  expect(initial.portals).toHaveLength(initial.repositories.length);
+  expect(initial.sizeMount).toBe("repository-portal:forkmesh/forkmesh");
+  expect(initial.sizeMountRadius).toBeCloseTo(62, 5);
+  expect(initial.legacyVisible).toBe(false);
+  expect(initial.relationshipsVisible).toBe(false);
+  expect(
+    initial.segments.map(({ path, type, size }) => ({ path, type, size })),
+  ).toEqual([
+    { path: "src", type: "directory", size: 4096 },
+    { path: "src/[id]+C++.tsx", type: "file", size: 4096 },
+    { path: "README.md", type: "file", size: 1200 },
+  ]);
+  expect(initial.segments[0].percent).toBeCloseTo((4096 / 5296) * 100, 4);
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.selectRepositorySizeNode({
+      owner: "forkmesh",
+      name: "forkmesh",
+      type: "directory",
+      path: "src",
+    });
+  });
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.activeRepository?.path === "src";
+  });
+  const focused = await page.locator("forkmesh-world").evaluate((shell) => {
+    const layer = shell.world.scene.getObjectByName("repository-3d-size-map");
+    const hub = layer?.getObjectByName("repository-size-map-hub");
+    const segment = layer?.getObjectByName("repository-size-segment-0");
+    return {
+      focus: layer?.userData?.repositorySizeFocus,
+      portalUuid: layer?.parent?.uuid,
+      hubTarget: hub?.userData?.repositorySizeNode?.targetPath,
+      segment: segment?.userData?.repositorySizeNode,
+      camera: shell.world.getCameraState(),
+    };
+  });
+  expect(focused.focus).toBe("src");
+  expect(focused.portalUuid).toBe(initial.portalUuid);
+  expect(focused.hubTarget).toBe("");
+  expect(focused.segment).toMatchObject({
+    path: "src/[id]+C++.tsx",
+    type: "file",
+    size: 4096,
+    percent: 100,
+  });
+  expect(focused.camera.yaw).toBeCloseTo(-Math.PI, 5);
+  expect(focused.camera.pitch).toBeCloseTo(0.16, 5);
+  expect(focused.camera.zoom).toBeLessThanOrEqual(0.55);
+
+  const injectedPortals = await page
+    .locator("forkmesh-world")
+    .evaluate((shell) => {
+      shell.world.updateRepositoryCatalog(
+        Array.from({ length: 200 }, (_, index) => ({
+          owner: "orbit",
+          name: `repo-${index + 1}`,
+          liveHost: index % 2 === 0,
+          sizeBytes: (index + 1) * 1024,
+        })),
+        {},
+      );
+      const portals = [];
+      shell.world.scene.traverse((object) => {
+        if (String(object.name || "").startsWith("repository-portal:")) {
+          portals.push({
+            name: object.name,
+            radius: Math.hypot(object.position.x, object.position.z),
+            faceScale: object.userData.repositoryFace?.scale.x,
+            labelVisible: object.userData.repositoryLabel?.visible,
+          });
+        }
+      });
+      return portals;
+    });
+  expect(injectedPortals).toHaveLength(200);
+  expect(injectedPortals.map(({ name }) => name)).toContain(
+    "repository-portal:orbit/repo-1",
+  );
+  expect(injectedPortals.map(({ name }) => name)).toContain(
+    "repository-portal:orbit/repo-200",
+  );
+  injectedPortals.forEach(({ radius }) => expect(radius).toBeCloseTo(62, 5));
+  injectedPortals.forEach(({ faceScale }) =>
+    expect(faceScale).toBeLessThan(0.7),
+  );
+  expect(injectedPortals.filter(({ labelVisible }) => labelVisible)).toHaveLength(
+    0,
+  );
+
+  await page.route("**/forkmesh/forkmesh/blob/**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "text/html; charset=utf-8",
+      body: "<!doctype html><title>Repository blob</title>",
+    }),
+  );
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    setTimeout(() => {
+      shell.selectRepositorySizeNode({
+        owner: "forkmesh",
+        name: "forkmesh",
+        type: "file",
+        path: "src/[id]+C++.tsx",
+      });
+    }, 0);
+  });
+  await page.waitForURL((url) => url.pathname.includes("/blob/"));
+  const destination = new URL(page.url());
+  expect(decodeURIComponent(destination.pathname)).toBe(
+    "/forkmesh/forkmesh/blob/src/[id]+C++.tsx",
+  );
+  expect(destination.searchParams.get("ref")).toBe("a".repeat(40));
 });
 
 test("disagreeing eligible mirrors leave the automatic flagship map unpinned", async ({
@@ -2810,6 +3124,99 @@ test("live mirror cabinets expose a readable truthful technical panel", async ({
   );
 });
 
+test("the member lounge plaque carries the count and one account button", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "lounge-plaque");
+  await waitForWorld(page);
+  const logoutRequests = [];
+  await page.route("**/api/accounts/logout", async (route) => {
+    logoutRequests.push(route.request().method());
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true }),
+    });
+  });
+
+  // No floating count card hovers over the lounge any more: the total and the
+  // account button live on the one ground plaque.
+  const lounge = await page.locator("forkmesh-world").evaluate((shell) => {
+    const group = shell.world.scene.getObjectByName("registered-user-lounge");
+    shell.world.updateMemberLounge([{ name: "ada", nodes: [] }], 9);
+    return {
+      sprites: group.children.filter((child) => child.isSprite).length,
+      plaque: Boolean(
+        group.getObjectByName("forkmesh-member-lounge-plaque"),
+      ),
+      countOnPlaque:
+        group.userData.memberCountSign ===
+        group.getObjectByName("forkmesh-member-lounge-plaque").userData.face,
+      action: group.userData.authButton.userData.worldAuthAction,
+    };
+  });
+  expect(lounge).toEqual({
+    sprites: 0,
+    plaque: true,
+    countOnPlaque: true,
+    action: "login",
+  });
+
+  // Park the camera on the plaque and pause so the button projects to a stable
+  // point, then tap it exactly like a visitor walking up to the lounge.
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.closeLandmark();
+    shell.world.player.position.set(-36.5, 0.38, 23.5);
+    shell.world.setCameraZoom(0.42);
+  });
+  await page.waitForTimeout(1800);
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.setPaused(true),
+  );
+  const buttonPoint = async () =>
+    page.locator("forkmesh-world").evaluate((shell) => {
+      const button = shell.world.scene
+        .getObjectByName("registered-user-lounge")
+        .userData.authButton;
+      const target = button.getWorldPosition(button.position.clone());
+      target.project(shell.world.camera);
+      const rect = shell.world.renderer.domElement.getBoundingClientRect();
+      return {
+        x: rect.left + (target.x * 0.5 + 0.5) * rect.width,
+        y: rect.top + (-target.y * 0.5 + 0.5) * rect.height,
+      };
+    });
+  const guestPoint = await buttonPoint();
+  await page.mouse.click(guestPoint.x, guestPoint.y);
+  await expect(page.locator("[data-world-account]")).toHaveAttribute(
+    "data-open",
+    "true",
+  );
+  expect(logoutRequests).toEqual([]);
+
+  // Signed in, the same tiny button becomes the log-out control.
+  await page
+    .locator("[data-world-account] [data-world-account-close]")
+    .click();
+  const signedIn = await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.updateIdentity({ accountStatus: "Registered", name: "ada" });
+    return shell.world.scene.getObjectByName("registered-user-lounge").userData
+      .authButton.userData.worldAuthAction;
+  });
+  expect(signedIn).toBe("logout");
+  // The dismissed backdrop stays hit-testable until its visibility transition
+  // finishes, so wait for it to stop covering the plaque.
+  await page.waitForFunction(() => {
+    const backdrop = document
+      .querySelector("forkmesh-world")
+      .querySelector(".world-account-backdrop");
+    return getComputedStyle(backdrop).visibility === "hidden";
+  });
+  const memberPoint = await buttonPoint();
+  await page.mouse.click(memberPoint.x, memberPoint.y);
+  await expect.poll(() => logoutRequests).toEqual(["POST"]);
+});
+
 test("Town Square placement is contextual, tracking-free, and collapses safely", async ({
   page,
 }) => {
@@ -3070,6 +3477,193 @@ test("the ForkMesh song button plays the first-party track only on request", asy
   await expect(page.locator("[data-world-media-now]")).toContainText(
     "Nothing is playing",
   );
+});
+
+test("focus music defaults to Heavenly and loops only after explicit playback", async ({
+  page,
+}) => {
+  const mediaRequests = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname.startsWith("/assets/music/")) {
+      mediaRequests.push(request.url());
+    }
+  });
+  await installFocusMusicAudioProbe(page);
+  await prepareWorldPage(page, "focus-music-consent");
+  await waitForWorld(page);
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.openLandmark("broadcast"),
+  );
+
+  const tracks = page.locator("[data-world-focus-track]");
+  await expect(tracks).toHaveCount(3);
+  const heavenly = page.locator(
+    "[data-world-focus-track='heavenly-loop']",
+  );
+  await expect(heavenly).toBeVisible();
+  expect(await focusMusicTrackIsChecked(page, "heavenly-loop")).toBe(true);
+  await expect(page.locator("[data-world-focus-now]")).toContainText(
+    "Heavenly Loop is selected. Press Play",
+  );
+
+  const idle = await focusMusicProbeSnapshot(page);
+  expect(idle.created).toEqual([]);
+  expect(mediaRequests).toEqual([]);
+  const intervalRegistrationsBeforePlay = idle.intervalRegistrations;
+
+  await page.locator("[data-world-focus-play]").click();
+  await expect(page.locator("[data-world-focus-now]")).toContainText(
+    "Heavenly Loop is playing",
+  );
+  let playback = await focusMusicProbeSnapshot(page);
+  expect(playback.created).toHaveLength(1);
+  expect(playback.created[0]).toMatchObject({
+    src: "/assets/music/heavenly-loop.ogg",
+    loop: true,
+    muted: false,
+    paused: false,
+    volume: 0.35,
+    playCalls: 1,
+  });
+  expect(playback.intervalRegistrations).toBe(
+    intervalRegistrationsBeforePlay,
+  );
+  expect(mediaRequests).toEqual([]);
+
+  await chooseFocusMusicTrack(page, "forgotten-victory");
+  await expect(page.locator("[data-world-focus-now]")).toContainText(
+    "Forgotten Victory is playing",
+  );
+  playback = await focusMusicProbeSnapshot(page);
+  expect(playback.created).toHaveLength(2);
+  expect(playback.created[0]).toMatchObject({
+    currentTime: 0,
+    paused: true,
+    pauseCalls: 1,
+  });
+  expect(playback.created[1]).toMatchObject({
+    src: "/assets/music/forgotten-victory.ogg",
+    loop: true,
+    paused: false,
+    playCalls: 1,
+  });
+
+  await page.locator("[data-world-focus-pause]").click();
+  await expect(page.locator("[data-world-focus-now]")).toContainText(
+    "Forgotten Victory is paused",
+  );
+  playback = await focusMusicProbeSnapshot(page);
+  expect(playback.created[1]).toMatchObject({
+    paused: true,
+    pauseCalls: 1,
+  });
+  await expect(page.locator("[data-world-focus-pause]")).toHaveText("Resume");
+
+  await page.locator("[data-world-focus-pause]").click();
+  playback = await focusMusicProbeSnapshot(page);
+  expect(playback.created[1]).toMatchObject({
+    paused: false,
+    playCalls: 2,
+  });
+
+  await page.locator("[data-world-focus-volume]").fill("62");
+  await expect(page.locator("[data-world-focus-volume]")).toHaveValue("62");
+  playback = await focusMusicProbeSnapshot(page);
+  expect(playback.created[1].volume).toBeCloseTo(0.62, 5);
+
+  await page.locator("[data-world-focus-mute]").click();
+  await expect(page.locator("[data-world-focus-mute]")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  playback = await focusMusicProbeSnapshot(page);
+  expect(playback.created[1].muted).toBe(true);
+
+  const stored = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("forkmesh.world.settings.v1")),
+  );
+  expect(stored).toMatchObject({
+    focusMusicTrackId: "forgotten-victory",
+    focusMusicVolume: 62,
+    focusMusicMuted: true,
+  });
+
+  await page.locator("[data-world-focus-stop]").click();
+  await expect(page.locator("[data-world-focus-now]")).toContainText(
+    "Press Play",
+  );
+  playback = await focusMusicProbeSnapshot(page);
+  expect(playback.created[1]).toMatchObject({
+    currentTime: 0,
+    paused: true,
+  });
+  expect(
+    await page.locator("forkmesh-world").evaluate((shell) => shell.activeAudio),
+  ).toBeNull();
+  expect(playback.intervalRegistrations).toBe(
+    intervalRegistrationsBeforePlay,
+  );
+});
+
+test("focus music selection and controls persist without autoplaying on reload", async ({
+  page,
+}) => {
+  await installFocusMusicAudioProbe(page);
+  await prepareWorldPage(page, "focus-music-persistence");
+  await waitForWorld(page);
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.openLandmark("broadcast"),
+  );
+
+  await chooseFocusMusicTrack(page, "tarlite-slumber");
+  await page.locator("[data-world-focus-volume]").fill("48");
+  await page.locator("[data-world-focus-mute]").click();
+  expect((await focusMusicProbeSnapshot(page)).created).toEqual([]);
+
+  await page.reload();
+  await waitForWorldReady(page);
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.openLandmark("broadcast"),
+  );
+  expect(await focusMusicTrackIsChecked(page, "tarlite-slumber")).toBe(true);
+  await expect(page.locator("[data-world-focus-volume]")).toHaveValue("48");
+  await expect(page.locator("[data-world-focus-mute]")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(page.locator("[data-world-focus-now]")).toContainText(
+    "Press Play",
+  );
+  expect((await focusMusicProbeSnapshot(page)).created).toEqual([]);
+
+  await page.locator("[data-world-focus-play]").click();
+  const restoredPlayback = await focusMusicProbeSnapshot(page);
+  expect(restoredPlayback.created).toHaveLength(1);
+  expect(restoredPlayback.created[0]).toMatchObject({
+    src: "/assets/music/tarlite-trycor-slumber-area.ogg",
+    loop: true,
+    muted: true,
+    paused: false,
+    volume: 0.48,
+    playCalls: 1,
+  });
+
+  await page.evaluate(() => {
+    const key = "forkmesh.world.settings.v1";
+    const settings = JSON.parse(localStorage.getItem(key));
+    settings.focusMusicTrackId = "not-a-bundled-track";
+    localStorage.setItem(key, JSON.stringify(settings));
+  });
+  await page.reload();
+  await waitForWorldReady(page);
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.openLandmark("broadcast"),
+  );
+  expect(await focusMusicTrackIsChecked(page, "heavenly-loop")).toBe(true);
+  await expect(page.locator("[data-world-focus-now]")).toContainText(
+    "Heavenly Loop is selected. Press Play",
+  );
+  expect((await focusMusicProbeSnapshot(page)).created).toEqual([]);
 });
 
 test("portrait coarse-pointer controls and visual viewport remain usable", async ({
