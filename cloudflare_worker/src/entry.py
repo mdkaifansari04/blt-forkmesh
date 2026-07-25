@@ -28379,6 +28379,37 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
                     json_cols.append(k)
     json_cols = json_cols[:ADMIN_MAX_JSON_COLS]
 
+    # Surface which columns the admin is looking at plaintext vs. ciphertext:
+    # the `data` blob is AES-GCM encrypted at rest and only decrypted for this
+    # view, so operators should not mistake a successful decrypt for the data
+    # having been stored unencrypted.
+    enc_notice = ""
+    if "data" in columns:
+        encrypted_total = sum(
+            1 for r in rows if isinstance(r.get("data"), str) and r.get("data"))
+        decrypted_ok = sum(
+            1 for _r, decoded in decoded_rows if decoded is not None)
+        plain_cols = [c for c in columns if c != "data"]
+        sentence = (
+            "🔒 <code>data</code> is stored AES-GCM encrypted and decrypted "
+            "here for display (%d/%d row(s) decrypted)"
+            % (decrypted_ok, encrypted_total)
+        )
+        if json_cols:
+            sentence += ", expanded into " + ", ".join(
+                "<code>%s</code>" % _html_escape(c) for c in json_cols)
+        sentence += "."
+        if plain_cols:
+            sentence += " Column(s) " + ", ".join(
+                "<code>%s</code>" % _html_escape(c) for c in plain_cols
+            ) + " are stored as plaintext."
+        enc_notice = '<div class="meta">%s</div>' % sentence
+    else:
+        enc_notice = (
+            '<div class="meta">No encrypted columns in this table; all '
+            'values are stored as plaintext.</div>'
+        )
+
     body = []
     for r, decoded_data in decoded_rows:
         rid = r.get("_rowid_", "")
@@ -28413,6 +28444,7 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
         + '<div class="title">%s · %d row(s)%s%s</div>'
         % (_html_escape(table), total,
            " (showing 500)" if total > 500 else "", add_link)
+        + enc_notice
         + table_markup
     )
 
