@@ -3843,6 +3843,7 @@ class ForkMeshWorld extends HTMLElement {
       if (this.visitorStats) {
         this.world.updateArrivalStats?.(this.visitorStats);
       }
+      this.world.updateRewardPool?.(this.rewardState);
       this.world.updateBots(this.botDirectory);
       this.world.updateFediverseDirectory(this.fediverseDirectory);
       this.world.updateMediaSpaces?.(this.mediaSpaces, this.mediaRoom);
@@ -4369,6 +4370,7 @@ class ForkMeshWorld extends HTMLElement {
     this.renderDiagnostics();
     this.rewardState =
       rewardResult.status === "fulfilled" ? rewardResult.value || {} : {};
+    this.world?.updateRewardPool?.(this.rewardState);
     this.pendingRewards =
       pendingRewardsResult.status === "fulfilled" &&
       Array.isArray(pendingRewardsResult.value?.rewards)
@@ -4477,6 +4479,9 @@ class ForkMeshWorld extends HTMLElement {
         ? membersResult.value.users
             .map((user) => ({
               name: sanitizePresenceText(user?.name, "", 32),
+              createdAt: Number.isFinite(Number(user?.createdAt))
+                ? Math.max(0, Number(user.createdAt))
+                : 0,
               nodes: Array.isArray(user?.nodes) ? user.nodes.slice(0, 6) : [],
               totalActiveMs: Number.isFinite(Number(user?.totalActiveMs))
                 ? Math.max(0, Number(user.totalActiveMs))
@@ -6204,6 +6209,7 @@ class ForkMeshWorld extends HTMLElement {
     ]);
     if (pool.status === "fulfilled") {
       this.rewardState = pool.value || {};
+      this.world?.updateRewardPool?.(this.rewardState);
       this.captureRewardEvents(true);
     }
     this.setLandmarkCapability(
