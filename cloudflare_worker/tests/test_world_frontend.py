@@ -2044,6 +2044,26 @@ def test_forkbot_rolls_through_the_world_for_explicit_chat_interactions():
     assert "if (!canJoinChat()) return;" in DASHBOARD_CHAT
 
 
+def test_clicking_forkbot_opens_the_terminal_bar_with_a_mention_prefilled():
+    # adhoc #284: ForkBot should drop a visitor into the small, docked CHAT
+    # bar (not the full-screen chat overlay), with "@forkbot " already typed
+    # in so they can start chatting immediately.
+    assert 'onForkbotChat: () => {\n          this.openChatTerminal("@forkbot ");' in APP
+    terminal = APP[
+        APP.index("  openChatTerminal("):
+        APP.index("\n  }", APP.index("  openChatTerminal("))
+    ]
+    assert 'this.$("[data-world-chat-terminal]")' in terminal
+    assert "this.closeWorldChat();" in terminal
+    assert "details.open = true;" in terminal
+    assert '"forkmesh:chat-prefill"' in terminal
+    assert "frame.contentWindow?.postMessage(" in terminal
+    # The embedded /dashboard/chat page (used by both the terminal bar and the
+    # full overlay) listens for that message and fills + focuses its composer.
+    assert 'data.type !== "forkmesh:chat-prefill"' in DASHBOARD_CHAT
+    assert "input.focus();" in DASHBOARD_CHAT
+
+
 def test_signed_in_visitors_keep_their_account_name_for_every_peer():
     # adhoc #276: a world ticket is the only account proof peers receive, so
     # applying one must never be gated on the optional activity accounting that
