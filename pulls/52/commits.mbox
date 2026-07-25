@@ -1,57 +1,17 @@
-From efb21a17db55d13d54ab9aea76c3568f6459862f Mon Sep 17 00:00:00 2001
+From e19afffc36e31884d7c96e9bc7b088c179060967 Mon Sep 17 00:00:00 2001
 From: ForkMesh Deploy <deploy@forkmesh.local>
 Date: Sat, 25 Jul 2026 04:26:20 -0400
 Subject: [PATCH] update
 
 ---
- cloudflare_worker/deploy.sh                    |  1 +
- .../public/dashboard/chat/index.html           | 18 +++++++++++++++---
- cloudflare_worker/public/world/world-scene.js  | 18 +++++++++++++++++-
- cloudflare_worker/public/world/world.css       | 10 +++++-----
- cloudflare_worker/wrangler.toml                |  4 ++++
- 5 files changed, 42 insertions(+), 9 deletions(-)
+ cloudflare_worker/public/dashboard/chat/index.html | 7 +++++++
+ 1 file changed, 7 insertions(+)
 
-diff --git a/cloudflare_worker/deploy.sh b/cloudflare_worker/deploy.sh
-index 841e669d7..6851140d8 100755
---- a/cloudflare_worker/deploy.sh
-+++ b/cloudflare_worker/deploy.sh
-@@ -322,6 +322,7 @@ verify_public_assets() {
-         "/assets/video/network.jpg image/jpeg"
-         "/assets/video/network.mp4 video/mp4"
-         "/assets/music/heavenly-loop.ogg audio/ogg"
-+        "/dashboard/tailwind.css text/css"
-     )
- 
-     echo "Verifying public static assets on $base ..."
 diff --git a/cloudflare_worker/public/dashboard/chat/index.html b/cloudflare_worker/public/dashboard/chat/index.html
-index 612352bb2..280c3565f 100644
+index c5cf5cb9b..baeb8d713 100644
 --- a/cloudflare_worker/public/dashboard/chat/index.html
 +++ b/cloudflare_worker/public/dashboard/chat/index.html
-@@ -1001,15 +1001,20 @@
- 
-                 html[data-world-embed="1"] #fullChatMessages {
-                   min-height: 0;
-+                  padding-bottom: calc(
-+                    5rem + env(safe-area-inset-bottom, 0px)
-+                  );
-                   overflow-y: auto;
-                   overscroll-behavior-y: contain;
-                   -webkit-overflow-scrolling: touch;
-                 }
- 
-                 html[data-world-embed="1"] [data-dashboard-chat-composer] {
--                  position: relative;
--                  z-index: 0;
--                  flex: 0 0 auto;
-+                  position: absolute;
-+                  z-index: 1;
-+                  right: 0;
-+                  bottom: 0;
-+                  left: 0;
-                   box-sizing: border-box;
-                   padding-right: max(1rem, env(safe-area-inset-right, 0px));
-                   padding-bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
-@@ -1088,6 +1093,13 @@
+@@ -1093,6 +1093,13 @@
                </span>
              </div>
  
@@ -65,109 +25,6 @@ index 612352bb2..280c3565f 100644
              <div id="fullChatMessages" class="flex-1 overflow-y-scroll px-4 py-3 flex flex-col gap-1 min-h-0"></div>
  
              <div data-dashboard-chat-composer class="px-4 pb-4 pt-2 shrink-0 border-t border-border">
-diff --git a/cloudflare_worker/public/world/world-scene.js b/cloudflare_worker/public/world/world-scene.js
-index 4088f0cdf..78ecee786 100644
---- a/cloudflare_worker/public/world/world-scene.js
-+++ b/cloudflare_worker/public/world/world-scene.js
-@@ -7730,6 +7730,11 @@ export function createWorldScene({
-       base.name = `repository-portal-base:${record.owner}/${record.name}`;
-       base.position.set(0, -2.38, 0);
-       base.scale.x = portalDensityScale;
-+      // The foundation is a direct link to the repository page. Keep its
-+      // action distinct from the face, which selects the portal in-world.
-+      base.userData.landmark = "repositories";
-+      base.userData.repositoryBase = repositoryPortal;
-+      interactive.push(base);
-       node.add(base);
-       if (isActive) {
-         // The selected repository's canonical name is engraved into a physical
-@@ -7751,6 +7756,11 @@ export function createWorldScene({
-           }),
-         );
-         plaqueFace.position.set(0, -2.0, 0.295);
-+        plaqueStone.userData.landmark = "repositories";
-+        plaqueStone.userData.repositoryBase = repositoryPortal;
-+        plaqueFace.userData.landmark = "repositories";
-+        plaqueFace.userData.repositoryBase = repositoryPortal;
-+        interactive.push(plaqueStone, plaqueFace);
-         node.add(plaqueStone, plaqueFace);
-       }
-       // Who follows this repository over ActivityPub, seated on the ground
-@@ -8949,10 +8959,15 @@ export function createWorldScene({
-         id === "repositories" && hit.object.userData.repositoryStar
-           ? { ...hit.object.userData.repositoryStar }
-           : null;
-+      const repositoryBase =
-+        id === "repositories" && hit.object.userData.repositoryBase
-+          ? { ...hit.object.userData.repositoryBase }
-+          : null;
-       if (
-         !repository &&
-         !repositorySizeNode &&
--        !repositoryStar
-+        !repositoryStar &&
-+        !repositoryBase
-       ) {
-         focusLandmark(id);
-       } else if (repository || repositorySizeNode) {
-@@ -8967,6 +8982,7 @@ export function createWorldScene({
-         repository,
-         repositorySizeNode,
-         repositoryStar,
-+        repositoryBase,
-         graphNode:
-           id === "repositories" && hit.object.userData.graphNode
-             ? { ...hit.object.userData.graphNode }
-diff --git a/cloudflare_worker/public/world/world.css b/cloudflare_worker/public/world/world.css
-index 26dbb3f9b..2250bc648 100644
---- a/cloudflare_worker/public/world/world.css
-+++ b/cloudflare_worker/public/world/world.css
-@@ -361,8 +361,8 @@ forkmesh-world {
- }
- 
- .world-brand img {
--  width: 25px;
--  height: 25px;
-+  width: 22px;
-+  height: 22px;
-   border-radius: 50%;
-   object-fit: cover;
-   flex: 0 0 auto;
-@@ -372,7 +372,7 @@ forkmesh-world {
- 
- .world-connection-ring {
-   position: absolute;
--  inset: 3px;
-+  inset: 0;
-   border: 2px solid var(--world-mint);
-   border-radius: 50%;
-   box-shadow: 0 0 12px rgb(158 247 198 / 0.42);
-@@ -5361,8 +5361,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
-   }
- 
-   .world-brand img {
--    width: 28px;
--    height: 32px;
-+    width: 22px;
-+    height: 22px;
-   }
- 
-   .world-brand-name {
-diff --git a/cloudflare_worker/wrangler.toml b/cloudflare_worker/wrangler.toml
-index e0224579e..7b993f655 100644
---- a/cloudflare_worker/wrangler.toml
-+++ b/cloudflare_worker/wrangler.toml
-@@ -63,6 +63,10 @@ run_worker_first = [
-   "/*/*",
-   "!/dashboard/partials/*",
-   "!/dashboard/js/*",
-+  # The precompiled dashboard utility stylesheet is requested by every
-+  # dashboard page. Keep it asset-first instead of letting the dashboard
-+  # application router turn it into a JSON 404.
-+  "!/dashboard/tailwind.css",
-   "!/assets/*",
-   "!/favicon/*",
-   "!/blog/*",
 -- 
-2.50.1 (Apple Git-155)
+2.47.3
 
