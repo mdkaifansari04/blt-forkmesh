@@ -2488,14 +2488,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
       <div class="world-canvas-wrap" data-world-canvas-wrap></div>
       <div class="world-label-layer" data-world-label-layer></div>
 
-      <nav class="world-quick-dock" aria-label="Quick world destinations">
-        <button type="button" data-world-landmark="information"><span aria-hidden="true">i</span><span>Start</span></button>
-        <button type="button" data-world-landmark="repositories"><span aria-hidden="true">{ }</span><span>Code</span></button>
-        <button type="button" data-world-landmark="workshops"><span aria-hidden="true">⌘</span><span>Workshops</span></button>
-        <a href="/dashboard/chat" data-world-chat-open><span aria-hidden="true">⌁</span><span>Chat</span></a>
-        <button type="button" data-world-landmark="support"><span aria-hidden="true">♥</span><span>Support</span></button>
-      </nav>
-
       <div class="world-loading-screen" data-world-loading aria-live="polite">
         <div class="world-loading-lockup">
           <div class="world-loading-mark" aria-hidden="true"></div>
