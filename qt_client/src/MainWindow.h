@@ -930,12 +930,6 @@ private:
     // true if an agent was started. Backs the dialog's "Send to a new agent" button.
     bool sendStallLogToAgent();
     void showDiagnosticsDialog();
-    // Opt-in crash/stall telemetry upload (issue #354). No-op unless the user
-    // enabled kUploadTelemetrySetting. On startup, reads the not-yet-uploaded
-    // tail of ~/.forkmesh/diagnostics/crashes.log and stalls.log, scrubs repo
-    // names / filesystem paths out, and POSTs a size-capped, anonymized payload
-    // (app version, OS, node hash) to /api/telemetry. Best-effort and silent.
-    void maybeUploadDiagnostics();
     // Full-height "Log" section (section 4) showing the whole network log.
     QWidget *buildLogSection();
     void showCloudflareWorkerLogs();
