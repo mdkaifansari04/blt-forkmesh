@@ -2781,25 +2781,11 @@ const QString kAutoUpdateSetting = QStringLiteral("update/autoUpdate");
 // freeze gets fixed automatically. On by default (adhoc #205).
 const QString kAutoAgentOnStallSetting =
     QStringLiteral("diagnostics/autoAgentOnStall");
-// Opt-in (OFF by default): on startup, upload the previous session's crash
-// summary and UI-stall records to the mainnode so bugs users hit reach a triage
-// queue instead of dying in a local log (issue #354). Only the app version, OS,
-// and an anonymized node hash go with it; repo names and filesystem paths are
-// scrubbed client-side before the payload is built. kTelemetryCrashOffsetSetting
-// / kTelemetryStallOffsetSetting remember how many bytes of each log were already
-// sent, so a restart never re-uploads the same records.
-const QString kUploadTelemetrySetting =
-    QStringLiteral("diagnostics/uploadTelemetry");
-const QString kTelemetryCrashOffsetSetting =
-    QStringLiteral("diagnostics/telemetryCrashOffset");
-const QString kTelemetryStallOffsetSetting =
-    QStringLiteral("diagnostics/telemetryStallOffset");
 // How many bytes of crashes.log had already been seen as of the last startup,
 // so a crash that ended the previous session (which never gets a chance to log
 // itself — the process is gone) shows up as a line in *this* session's own log
 // instead of only ever living in crashes.log/stderr/journalctl (adhoc #200).
-// Independent of kTelemetryCrashOffsetSetting/telemetry opt-in: this in-app
-// notice always fires, regardless of whether the user enabled the upload.
+// Purely local: the notice is shown in-app and nothing leaves the machine.
 const QString kCrashLogSeenOffsetSetting =
     QStringLiteral("diagnostics/crashLogSeenOffset");
 const QString kVotesSpentSetting = QStringLiteral("votes/spent");

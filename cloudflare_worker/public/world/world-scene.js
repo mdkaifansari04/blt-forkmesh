@@ -3407,45 +3407,214 @@ function worldBulletinTexture(THREE, events = [], offset = 0) {
   });
 }
 
-function mastodonKioskTexture(THREE) {
-  return canvasTexture(THREE, 1024, 1280, (context) => {
+const MASTODON_KIOSK_VISIBLE_TOOTS = 3;
+
+function wrapCanvasText(context, text, x, y, maxWidth, lineHeight, maxLines = Infinity) {
+  const words = String(text || "").split(/\s+/).filter(Boolean);
+  let line = "";
+  let lines = 0;
+  for (const word of words) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (line && context.measureText(candidate).width > maxWidth) {
+      context.fillText(line, x, y + lines * lineHeight);
+      lines += 1;
+      if (lines >= maxLines) return lines;
+      line = word;
+    } else {
+      line = candidate;
+    }
+  }
+  if (line && lines < maxLines) {
+    context.fillText(line, x, y + lines * lineHeight);
+    lines += 1;
+  }
+  return lines;
+}
+
+function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage = null) {
+  return canvasTexture(THREE, 1280, 1600, (context) => {
     context.fillStyle = "#191a2e";
-    context.fillRect(0, 0, 1024, 1280);
-    context.strokeStyle = "#6364ff";
-    context.lineWidth = 16;
-    context.strokeRect(12, 12, 1000, 1256);
-    context.fillStyle = "#6364ff";
-    context.fillRect(12, 12, 1000, 178);
+    context.fillRect(0, 0, 1280, 1600);
+    if (!snapshot) {
+      // No live profile yet (still fetching, or mastodon.social unreachable):
+      // fall back to the static kiosk sign describing the board.
+      context.fillStyle = "#6364ff";
+      context.fillRect(12, 12, 1256, 222);
+      context.fillStyle = "#f2f3ff";
+      context.font = '800 132px "ForkMesh Favorit", sans-serif';
+      context.fillText("MASTODON", 82, 172);
+      context.fillStyle = "#c8c9ff";
+      context.font = '700 64px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("@forkmesh", 82, 400);
+      context.font = '600 50px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("@mastodon.social", 82, 482);
+      context.strokeStyle = "rgba(99,100,255,0.5)";
+      context.lineWidth = 4;
+      context.beginPath();
+      context.moveTo(82, 564);
+      context.lineTo(1198, 564);
+      context.stroke();
+      context.fillStyle = "#e8e9ff";
+      context.font = '700 56px "ForkMesh Mono", ui-monospace, monospace';
+      [
+        "LIVE PUBLIC PROFILE",
+        "FOLLOWERS · FOLLOWING · POSTS",
+        "BIO · VERIFIED LINKS",
+        "LATEST TOOTS, SCROLLABLE",
+      ].forEach((line, index) => {
+        context.fillText(line, 82, 700 + index * 120);
+      });
+      context.fillStyle = "#8b9bf4";
+      context.font = '800 64px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("TAP / CLICK TO OPEN", 82, 1350);
+      context.fillStyle = "#7a7ca8";
+      context.font = '600 42px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("READ-ONLY · FETCHED FROM MASTODON.SOCIAL", 82, 1475);
+      context.strokeStyle = "#6364ff";
+      context.lineWidth = 16;
+      context.strokeRect(12, 12, 1256, 1576);
+      return;
+    }
+    const image = (url) =>
+      typeof resolveImage === "function" ? resolveImage(url) : null;
+    // Header banner, cover-cropped like the profile page. Text over the band
+    // sits on a darkening gradient so it stays readable on any artwork.
+    const header = image(snapshot.headerURL);
+    context.save();
+    context.beginPath();
+    context.rect(16, 16, 1248, 300);
+    context.clip();
+    if (header?.naturalWidth > 0 && header?.naturalHeight > 0) {
+      const scale = Math.max(
+        1248 / header.naturalWidth,
+        300 / header.naturalHeight,
+      );
+      const width = header.naturalWidth * scale;
+      const height = header.naturalHeight * scale;
+      context.drawImage(
+        header,
+        16 + (1248 - width) / 2,
+        16 + (300 - height) / 2,
+        width,
+        height,
+      );
+    } else {
+      context.fillStyle = "#43389c";
+      context.fillRect(16, 16, 1248, 300);
+    }
+    const shade = context.createLinearGradient(0, 96, 0, 316);
+    shade.addColorStop(0, "rgba(15,16,36,0)");
+    shade.addColorStop(1, "rgba(15,16,36,0.9)");
+    context.fillStyle = shade;
+    context.fillRect(16, 16, 1248, 300);
+    context.fillStyle = "rgba(15,16,36,0.62)";
+    roundedRect(context, 36, 36, 386, 64, 18);
+    context.fill();
     context.fillStyle = "#f2f3ff";
-    context.font = '800 108px "ForkMesh Favorit", sans-serif';
-    context.fillText("MASTODON", 66, 138);
+    context.font = '800 40px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("MASTODON · LIVE", 58, 82);
+    context.restore();
+    // Avatar overlapping the banner edge, then identity beside it.
+    const avatar = image(snapshot.avatarURL);
+    context.fillStyle = "#191a2e";
+    roundedRect(context, 38, 226, 188, 188, 40);
+    context.fill();
+    context.save();
+    roundedRect(context, 48, 236, 168, 168, 32);
+    context.clip();
+    if (avatar?.naturalWidth > 0) {
+      context.drawImage(avatar, 48, 236, 168, 168);
+    } else {
+      context.fillStyle = "#43389c";
+      context.fillRect(48, 236, 168, 168);
+      context.fillStyle = "#c8c9ff";
+      context.font = '800 104px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("@", 92, 358);
+    }
+    context.restore();
+    context.fillStyle = "#f2f3ff";
+    context.font = '800 58px "ForkMesh Favorit", sans-serif';
+    context.fillText(String(snapshot.displayName || "ForkMesh"), 248, 392);
     context.fillStyle = "#c8c9ff";
-    context.font = '700 52px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("@forkmesh", 66, 320);
-    context.font = '600 40px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("@mastodon.social", 66, 386);
+    context.font = '600 34px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(String(snapshot.acct || "@forkmesh@mastodon.social"), 248, 442);
+    [
+      ["FOLLOWERS", snapshot.followers],
+      ["FOLLOWING", snapshot.following],
+      ["POSTS", snapshot.posts],
+      ["JOINED", snapshot.joined],
+    ].forEach(([label, value], index) => {
+      const x = 48 + index * 308;
+      context.fillStyle = "#8b8db8";
+      context.font = '700 26px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(label, x, 510);
+      context.fillStyle = "#f2f3ff";
+      context.font = '800 54px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(String(value ?? "—"), x, 572);
+    });
     context.strokeStyle = "rgba(99,100,255,0.5)";
     context.lineWidth = 4;
     context.beginPath();
-    context.moveTo(66, 452);
-    context.lineTo(958, 452);
+    context.moveTo(48, 616);
+    context.lineTo(1232, 616);
     context.stroke();
-    context.fillStyle = "#e8e9ff";
-    context.font = '700 46px "ForkMesh Mono", ui-monospace, monospace';
-    [
-      "LIVE PUBLIC PROFILE",
-      "FOLLOWERS · FOLLOWING · POSTS",
-      "BIO · VERIFIED LINKS",
-      "LATEST TOOTS, SCROLLABLE",
-    ].forEach((line, index) => {
-      context.fillText(line, 66, 560 + index * 96);
+    context.fillStyle = "#8b9bf4";
+    context.font = '800 36px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("LATEST TOOTS", 48, 674);
+    const toots = Array.isArray(snapshot.toots) ? snapshot.toots : [];
+    const start = clamp(
+      Number(offset) || 0,
+      0,
+      Math.max(0, toots.length - MASTODON_KIOSK_VISIBLE_TOOTS),
+    );
+    if (toots.length > MASTODON_KIOSK_VISIBLE_TOOTS) {
+      context.textAlign = "right";
+      context.fillStyle = "#7a7ca8";
+      context.font = '700 28px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        `${start + 1}–${Math.min(
+          start + MASTODON_KIOSK_VISIBLE_TOOTS,
+          toots.length,
+        )} / ${toots.length} · SCROLL ▲▼`,
+        1232,
+        672,
+      );
+      context.textAlign = "left";
+    }
+    const entries = toots.slice(start, start + MASTODON_KIOSK_VISIBLE_TOOTS);
+    if (!entries.length) {
+      context.fillStyle = "#c8c9ff";
+      context.font = '600 36px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("NO PUBLIC TOOTS YET", 48, 770);
+    }
+    entries.forEach((toot, index) => {
+      const y = 712 + index * 262;
+      context.fillStyle = "#c8c9ff";
+      context.font = '700 30px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        [toot.author, toot.date].filter(Boolean).join(" · "),
+        48,
+        y + 30,
+      );
+      context.fillStyle = "#e8e9ff";
+      context.font = '600 32px "ForkMesh Mono", ui-monospace, monospace';
+      wrapCanvasText(context, toot.text, 48, y + 86, 1184, 44, 4);
+      context.strokeStyle = "rgba(99,100,255,0.28)";
+      context.lineWidth = 3;
+      context.beginPath();
+      context.moveTo(48, y + 240);
+      context.lineTo(1232, y + 240);
+      context.stroke();
     });
     context.fillStyle = "#8b9bf4";
-    context.font = '800 52px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("TAP / CLICK TO OPEN", 66, 1080);
+    context.font = '800 34px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("TAP / CLICK TO OPEN THE FULL PROFILE", 48, 1534);
     context.fillStyle = "#7a7ca8";
-    context.font = '600 34px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("READ-ONLY · FETCHED FROM MASTODON.SOCIAL", 66, 1180);
+    context.font = '600 26px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("LIVE · READ-ONLY · FETCHED FROM MASTODON.SOCIAL", 48, 1576);
+    context.strokeStyle = "#6364ff";
+    context.lineWidth = 16;
+    context.strokeRect(12, 12, 1256, 1576);
   });
 }
 
@@ -3457,7 +3626,7 @@ function createMastodonKiosk(THREE, interactive) {
   group.position.set(33.5, 0, -18.5);
   group.rotation.y = Math.atan2(-group.position.x, -group.position.z);
   const base = new THREE.Mesh(
-    new THREE.BoxGeometry(4.6, 0.4, 2.0),
+    new THREE.BoxGeometry(5.8, 0.4, 2.2),
     makeMaterial(THREE, "#20213a", { metalness: 0.2, roughness: 0.7 }),
   );
   base.position.y = 0.2;
@@ -3466,23 +3635,53 @@ function createMastodonKiosk(THREE, interactive) {
     makeMaterial(THREE, "#2c2d4d", { metalness: 0.4, roughness: 0.5 }),
   );
   post.position.y = 1.3;
+  // A larger billboard so the live profile header, stats, and latest toots
+  // are readable from the Office approach.
   const frame = new THREE.Mesh(
-    new THREE.BoxGeometry(4.2, 5.1, 0.36),
+    new THREE.BoxGeometry(5.5, 7.2, 0.36),
     makeMaterial(THREE, "#43389c", { metalness: 0.35, roughness: 0.45 }),
   );
-  frame.position.y = 4.4;
+  frame.position.y = 5.35;
   const face = new THREE.Mesh(
-    new THREE.PlaneGeometry(3.8, 4.75),
+    new THREE.PlaneGeometry(5.0, 6.25),
     new THREE.MeshBasicMaterial({
       map: mastodonKioskTexture(THREE),
       toneMapped: false,
     }),
   );
-  face.position.set(0, 4.4, 0.2);
-  group.add(base, post, frame, face);
+  face.name = "forkmesh-mastodon-kiosk-face";
+  face.position.set(0, 5.35, 0.2);
+  const makeKioskControl = (label, direction, y) => {
+    const control = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.7, 0.7),
+      new THREE.MeshBasicMaterial({
+        map: canvasTexture(THREE, 256, 256, (context) => {
+          context.fillStyle = "#20213a";
+          context.fillRect(0, 0, 256, 256);
+          context.strokeStyle = "#8b9bf4";
+          context.lineWidth = 14;
+          context.strokeRect(8, 8, 240, 240);
+          context.fillStyle = "#e8e9ff";
+          context.font = '800 160px "ForkMesh Mono", ui-monospace, monospace';
+          context.textAlign = "center";
+          context.textBaseline = "middle";
+          context.fillText(label, 128, 136);
+        }),
+        toneMapped: false,
+      }),
+    );
+    control.position.set(2.15, y, 0.3);
+    control.userData.interactive = `mastodon-kiosk-scroll-${direction}`;
+    return control;
+  };
+  const scrollUp = makeKioskControl("▲", "up", 8.4);
+  const scrollDown = makeKioskControl("▼", "down", 2.3);
+  group.add(base, post, frame, face, scrollUp, scrollDown);
   group.traverse((child) => {
     if (!child.isMesh) return;
-    child.userData.interactive = "mastodon-board";
+    if (!child.userData.interactive) {
+      child.userData.interactive = "mastodon-board";
+    }
     interactive.push(child);
   });
   setShadows(group);
@@ -4164,6 +4363,13 @@ export function createWorldScene({
   const mastodonKiosk = createMastodonKiosk(THREE, interactive);
   world.add(mastodonKiosk);
   registerMovableObject("mastodon-kiosk", mastodonKiosk);
+  let mastodonKioskSnapshot = null;
+  let mastodonKioskOffset = 0;
+  const mastodonKioskImages = new Map();
+  const mastodonKioskWheelTargets = [];
+  mastodonKiosk.traverse((child) => {
+    if (child.isMesh) mastodonKioskWheelTargets.push(child);
+  });
 
   const campfire = new THREE.Group();
   campfire.position.set(8, 0, 8);
@@ -5562,6 +5768,78 @@ export function createWorldScene({
     if (nextOffset === worldBulletinOffset) return false;
     worldBulletinOffset = nextOffset;
     return updateWorldBulletin(worldBulletinEvents);
+  }
+
+  // Header art and avatars come from mastodon.social's media host. They only
+  // reach the board texture when they load CORS-clean; otherwise the board
+  // keeps its text-only rendering (a tainted canvas cannot feed WebGL).
+  function mastodonKioskImage(url) {
+    const key = String(url || "");
+    if (!key) return null;
+    const cached = mastodonKioskImages.get(key);
+    if (cached) return cached.image;
+    const record = { image: null };
+    mastodonKioskImages.set(key, record);
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.onload = () => {
+      if (disposed) return;
+      record.image = image;
+      repaintMastodonKiosk();
+    };
+    image.src = key;
+    return null;
+  }
+
+  function repaintMastodonKiosk() {
+    const face = mastodonKiosk.getObjectByName("forkmesh-mastodon-kiosk-face");
+    if (!face?.material) return false;
+    face.material.map?.dispose?.();
+    face.material.map = mastodonKioskTexture(
+      THREE,
+      mastodonKioskSnapshot,
+      mastodonKioskOffset,
+      mastodonKioskImage,
+    );
+    face.material.needsUpdate = true;
+    return true;
+  }
+
+  function mastodonKioskMaxOffset() {
+    return Math.max(
+      0,
+      (mastodonKioskSnapshot?.toots?.length || 0) -
+        MASTODON_KIOSK_VISIBLE_TOOTS,
+    );
+  }
+
+  function updateMastodonKiosk(snapshot = null) {
+    mastodonKioskSnapshot =
+      snapshot && typeof snapshot === "object"
+        ? {
+            ...snapshot,
+            toots: Array.isArray(snapshot.toots)
+              ? snapshot.toots.filter(Boolean)
+              : [],
+          }
+        : null;
+    mastodonKioskOffset = clamp(
+      mastodonKioskOffset,
+      0,
+      mastodonKioskMaxOffset(),
+    );
+    return repaintMastodonKiosk();
+  }
+
+  function scrollMastodonKiosk(direction) {
+    const nextOffset = clamp(
+      mastodonKioskOffset + direction,
+      0,
+      mastodonKioskMaxOffset(),
+    );
+    if (nextOffset === mastodonKioskOffset) return false;
+    mastodonKioskOffset = nextOffset;
+    return repaintMastodonKiosk();
   }
 
   function enterOfficeMeeting({
@@ -9104,6 +9382,14 @@ export function createWorldScene({
       onWorldBulletinSelect();
       return;
     }
+    if (hit?.object?.userData?.interactive === "mastodon-kiosk-scroll-up") {
+      scrollMastodonKiosk(-1);
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "mastodon-kiosk-scroll-down") {
+      scrollMastodonKiosk(1);
+      return;
+    }
     if (hit?.object?.userData?.interactive === "mastodon-board") {
       onMastodonBoardSelect();
       return;
@@ -9429,6 +9715,15 @@ export function createWorldScene({
     if (bulletinHit) {
       scrollWorldBulletin(Math.sign(deltaPixels));
       return;
+    }
+    if (mastodonKioskMaxOffset() > 0) {
+      const kioskHit = raycaster
+        .intersectObjects(mastodonKioskWheelTargets, false)
+        .find(({ object }) => objectIsEffectivelyVisible(object));
+      if (kioskHit) {
+        scrollMastodonKiosk(Math.sign(deltaPixels));
+        return;
+      }
     }
     const currentZoom =
       cameraMode === "first-person" ? firstPersonZoom : cameraZoom;
@@ -9901,6 +10196,7 @@ export function createWorldScene({
     setOfficeParticipants,
     updateOfficeMarketingTasks,
     updateWorldBulletin,
+    updateMastodonKiosk,
     setOfficeSeatState,
     showOfficeBubble,
     leaveOfficeInterior,
