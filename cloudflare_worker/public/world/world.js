@@ -2014,17 +2014,36 @@ function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
     // unanimously reported by the mirrors that can actually serve the clone.
     // Conversely, duplicate or disagreeing eligible reports remain ambiguous
     // and fail closed instead of selecting a majority or freshest timestamp.
-    const attestedCandidates = candidates.filter(({ record }) => {
+    const attestedCandidatesByNode = new Map();
+    candidates.forEach((candidate) => {
+      const { record } = candidate;
+      const node = record.owner.toLowerCase();
       const reportedCommits = attestedMirrorCommits.get(
-        record.owner.toLowerCase(),
+        node,
       );
       const commit = immutableGitOid(record.commit);
-      return (
-        commit &&
-        reportedCommits?.size === 1 &&
-        reportedCommits.has(commit)
-      );
+      if (
+        !commit ||
+        reportedCommits?.size !== 1 ||
+        !reportedCommits.has(commit)
+      ) {
+        return;
+      }
+      if (!attestedCandidatesByNode.has(node)) {
+        attestedCandidatesByNode.set(node, []);
+      }
+      attestedCandidatesByNode.get(node).push(candidate);
     });
+    const completeAttestation =
+      attestedMirrorCommits.size > 0 &&
+      [...attestedMirrorCommits.entries()].every(
+        ([node, commits]) =>
+          commits.size === 1 &&
+          attestedCandidatesByNode.get(node)?.length === 1,
+      );
+    const attestedCandidates = completeAttestation
+      ? [...attestedCandidatesByNode.values()].map(([candidate]) => candidate)
+      : [];
     const preferredNode = String(healthy[0]?.node || "").toLowerCase();
     const preferred =
       attestedCandidates.find(
@@ -2046,6 +2065,12 @@ function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
         .map(({ record }) => String(record.stateHash || "").toLowerCase())
         .filter((value) => /^[0-9a-f]{64}$/.test(value)),
     );
+    const completeStateHashAttestation =
+      attestedCandidates.length > 0 &&
+      stateHashes.size === 1 &&
+      attestedCandidates.every(({ record }) =>
+        /^[0-9a-f]{64}$/.test(String(record.stateHash || "").toLowerCase()),
+      );
     const reportedPullCounts = mirrors
       .map((mirror) => Number(mirror?.pullCount))
       .filter(
@@ -2070,7 +2095,7 @@ function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
       mirrorCount: mirrors.length,
       pullCount,
       commit: commits.size === 1 ? [...commits][0] : "",
-      stateHash: stateHashes.size === 1 ? [...stateHashes][0] : "",
+      stateHash: completeStateHashAttestation ? [...stateHashes][0] : "",
       mirrorAliases: candidates.map(({ record }) => ({
         owner: record.owner,
         name: record.name,
