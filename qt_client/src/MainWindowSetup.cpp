@@ -2470,9 +2470,23 @@ bool MainWindow::authenticateSilently(const QString &accountName)
         m_accountSolanaVerified = true;
         setDesktopCapability(accountName, true);
         m_nodeOwnerUser = lookup.value("owner").toString();
+        // The same lookup says whether this account is a user account (kind ==
+        // "user") — that's what nodeOwnerDisplayName() keys on, so without it a
+        // signed-in user's own node showed no owner (and advertised none to
+        // peers) until the profile panel happened to be opened (adhoc #267).
+        m_profileIsUserAccount =
+            lookup.value(QStringLiteral("kind")).toString() ==
+            QStringLiteral("user");
         QSettings().setValue(kAuthedAccountSetting, accountName);
         applyAccountEmailVerified(accountName,
                                   lookup.value("emailVerified").toBool());
+        // Push the freshly resolved identity (node name + owner) into the
+        // roster hello, and reflect the signed-in username in Settings if that
+        // section was built before auth completed. Both no-op harmlessly when
+        // the backend/section don't exist yet.
+        updateChatIdentity();
+        if (m_settingsNameEdit && m_settingsNameEdit->text().trimmed().isEmpty())
+            m_settingsNameEdit->setText(m_accountName);
         return true;
     }
     // The relay says the account is active but bound to another desktop key
@@ -2535,6 +2549,9 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
         m_nodeOwnerUser = owner;
         QSettings().setValue(kAuthedAccountSetting, accountName);
         applyAccountEmailVerified(accountName, emailVerified);
+        // Advertise the owner link to the roster right away, so peers' Mirror
+        // nodes views can fill this node's Owner column (adhoc #267).
+        updateChatIdentity();
     };
 
     const QString linkCode =

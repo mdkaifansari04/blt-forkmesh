@@ -46,6 +46,11 @@ QWidget *MainWindow::buildSettingsSection()
     m_settingsNameEdit->setToolTip(
         "Your ForkMesh user account. One user account can own many nodes; "
         "changing this changes who you are, not this machine's node name.");
+    // This section is built lazily on first open — long after startup signed us
+    // in — so seed the field with the account we're signed in as here; the
+    // login/setup flows keep it fresh from then on. Without this the Username
+    // sat blank while the top-bar chip showed the signed-in user (adhoc #267).
+    m_settingsNameEdit->setText(settingsAccountName());
     connect(m_settingsNameEdit, &QLineEdit::editingFinished, this,
             [this] { onProfileNameChanged(m_settingsNameEdit->text()); });
 
