@@ -4479,6 +4479,9 @@ class ForkMeshWorld extends HTMLElement {
         ? membersResult.value.users
             .map((user) => ({
               name: sanitizePresenceText(user?.name, "", 32),
+              createdAt: Number.isFinite(Number(user?.createdAt))
+                ? Math.max(0, Number(user.createdAt))
+                : 0,
               nodes: Array.isArray(user?.nodes) ? user.nodes.slice(0, 6) : [],
               totalActiveMs: Number.isFinite(Number(user?.totalActiveMs))
                 ? Math.max(0, Number(user.totalActiveMs))
