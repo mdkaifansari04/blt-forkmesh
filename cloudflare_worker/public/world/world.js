@@ -2474,6 +2474,23 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <span aria-hidden="true">▦</span><span>Console</span>
             </a>
             <button class="world-icon-button" type="button" data-world-settings-open aria-label="World and privacy settings">⚙</button>
+            <button
+              class="world-shirt-badge"
+              type="button"
+              data-world-shirt-badge
+              data-world-settings-open
+              aria-label="Your public avatar badge — open World and privacy settings"
+              title="World and privacy settings"
+            >
+              <span class="world-shirt-flag" data-world-shirt-flag>${escapeHTML(identity.flag)}</span>
+              <span class="world-shirt-account" data-world-shirt-account title="${escapeHTML(
+                identity.accountStatus,
+              )}">${escapeHTML(
+                ACCOUNT_STATUS_ICONS[identity.accountStatus] || "○",
+              )}</span>
+              <span class="world-shirt-tech" data-world-shirt-tech>${escapeHTML(identity.browser)} · ${escapeHTML(identity.os)}</span>
+              <span class="world-shirt-name" data-world-shirt-name>${escapeHTML(identity.name)}</span>
+            </button>
           </nav>
         </header>
 
@@ -2542,31 +2559,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             </div>
           </div>
         </aside>
-
-        <section class="world-identity" aria-label="Your public avatar badge">
-          <div class="world-shirt-badge" data-world-shirt-badge>
-            <span class="world-shirt-flag" data-world-shirt-flag>${escapeHTML(identity.flag)}</span>
-            <span class="world-shirt-account" data-world-shirt-account title="${escapeHTML(
-              identity.accountStatus,
-            )}">${escapeHTML(
-              ACCOUNT_STATUS_ICONS[identity.accountStatus] || "○",
-            )}</span>
-            <span class="world-shirt-tech" data-world-shirt-tech>${escapeHTML(identity.browser)} · ${escapeHTML(identity.os)}</span>
-            <span class="world-shirt-name" data-world-shirt-name>${escapeHTML(identity.name)}</span>
-          </div>
-          <div class="world-identity-copy">
-            <strong data-world-identity-name>${escapeHTML(identity.name)}</strong>
-            <span data-world-identity-status>${escapeHTML(accountBadgeCopy(identity, settings))}</span>
-            <span
-              class="world-identity-emoji-status"
-              data-world-identity-emoji-status
-              ${publicStatus.emoji ? "" : "hidden"}
-            >${escapeHTML(
-              [publicStatus.emoji, publicStatus.note].filter(Boolean).join(" "),
-            )}</span>
-          </div>
-          <button class="world-identity-edit" type="button" data-world-settings-open aria-label="Edit public badge">✎</button>
-        </section>
 
         <div class="world-controls" aria-label="Movement and camera controls">
           <div class="world-control-keys" aria-hidden="true">
@@ -3078,6 +3070,9 @@ class ForkMeshWorld extends HTMLElement {
   connectedCallback() {
     if (this.dataset.worldReady === "true") return;
     this.dataset.worldReady = "true";
+    // If the module arrived after the index watchdog already surfaced the
+    // load error, retract it — the world is taking over the page now.
+    document.querySelector("[data-world-load-error]")?.remove();
     this.mode = this.dataset.worldMode || "public";
     if (this.mode === "public") document.body.classList.add("world-active");
     this.identity = accountIdentity(readSession());
@@ -4985,13 +4980,8 @@ class ForkMeshWorld extends HTMLElement {
     const copy = [status.emoji, status.note].filter(Boolean).join(" ");
     const preview = this.$("[data-world-status-preview]");
     const clear = this.$("[data-world-status-clear]");
-    const identityStatus = this.$("[data-world-identity-emoji-status]");
     if (preview) preview.textContent = copy || "Off";
     if (clear) clear.disabled = !status.emoji;
-    if (identityStatus) {
-      identityStatus.textContent = copy;
-      identityStatus.hidden = !status.emoji;
-    }
   }
 
   syncInactivePresence() {
@@ -5099,8 +5089,7 @@ class ForkMeshWorld extends HTMLElement {
     const account = this.$("[data-world-shirt-account]");
     const tech = this.$("[data-world-shirt-tech]");
     const shirtName = this.$("[data-world-shirt-name]");
-    const name = this.$("[data-world-identity-name]");
-    const status = this.$("[data-world-identity-status]");
+    const badge = this.$("[data-world-shirt-badge]");
     if (flag) flag.textContent = visible.flag;
     if (account) {
       account.textContent =
@@ -5109,8 +5098,13 @@ class ForkMeshWorld extends HTMLElement {
     }
     if (tech) tech.textContent = `${visible.browser} · ${visible.os}`;
     if (shirtName) shirtName.textContent = visible.name;
-    if (name) name.textContent = visible.name;
-    if (status) status.textContent = accountBadgeCopy(this.identity, this.settings);
+    if (badge) {
+      // The badge is the settings entry point; keep the name/status copy that
+      // used to sit beside it reachable as its tooltip and accessible name.
+      const copy = `${visible.name} · ${accountBadgeCopy(this.identity, this.settings)}`;
+      badge.title = `${copy} — World and privacy settings`;
+      badge.setAttribute("aria-label", `${copy} — open World and privacy settings`);
+    }
     this.updateWorldStatusUI();
   }
 

@@ -60,10 +60,11 @@ def test_root_keeps_regular_site_and_embeds_world_for_every_visitor():
     assert "Protect the code that matters from a single-host failure" in index
     assert "Code hosting that lives on the network." not in index
     # The World drops visitors straight into the interactive city: the old
-    # "A living city for code." marketing hero is gone, leaving only the
-    # accessible no-JS loading fallback that hydrates into the 3D world.
+    # "A living city for code." marketing hero is gone, and the shell stays
+    # blank while it boots — only a watchdog-revealed load error remains.
     assert "A living city for code." not in world
-    assert "ENTERING THE WORLD" in world
+    assert "ENTERING THE WORLD" not in world
+    assert "data-world-load-error" in world
     assert 'data-world-mode="public"' in world
     # The Worker answers / with the same regular site regardless of login state,
     # and the World remains available inside its bounded window and at /world/.

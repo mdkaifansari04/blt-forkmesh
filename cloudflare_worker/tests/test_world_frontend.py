@@ -63,17 +63,25 @@ BOT_DIRECTORY = json.loads(
 )
 
 
-def test_world_is_an_immediate_accessible_game_shell():
-    assert '<forkmesh-world data-world-mode="public">' in INDEX
-    assert 'class="world-static-fallback"' in INDEX
+def test_world_boots_blank_with_a_ten_second_load_error_watchdog():
+    # The shell stays blank while the world module boots (adhoc #240): no
+    # static fallback content to jump away from, only a hidden error panel
+    # that an inline watchdog reveals if the module never arrives.
+    assert '<forkmesh-world data-world-mode="public"></forkmesh-world>' in INDEX
+    assert "world-static-fallback" not in INDEX
+    assert "JavaScript and WebGL enhance this page" not in INDEX
+    assert 'data-world-load-error hidden' in INDEX
+    assert 'world.dataset.worldReady === "true"' in INDEX
+    assert "}, 10000);" in INDEX
+    assert "did not load within 10 seconds" in INDEX
+    assert ".world-load-error[hidden]" in CSS
+    assert 'document.querySelector("[data-world-load-error]")?.remove()' in APP
     assert 'href="#world-information"' in INDEX
-    assert 'id="world-information" tabindex="-1"' in INDEX
     assert 'class="world-information-anchor"' in APP
     assert 'id="world-information"' in APP
     assert ".world-information-anchor:focus" in CSS
     assert 'src="/world/world.js"' in INDEX
     assert 'href="/world/world.css"' in INDEX
-    assert "JavaScript and WebGL enhance this page" in INDEX
 
 
 def test_world_contains_the_initial_city_districts_without_a_clock():
