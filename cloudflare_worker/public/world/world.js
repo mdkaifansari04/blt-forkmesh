@@ -47,6 +47,7 @@ const GUEST_ID_KEY = "forkmesh.world.guestId.v1";
 const FIRST_VISIT_KEY = "forkmesh.world.firstVisitAt.v1";
 const VISIT_COUNT_KEY = "forkmesh.world.publicVisitCount.v1";
 const INTRO_DISMISSED_KEY = "forkmesh.world.introDismissed.v1";
+const FORKBOT_GREETED_KEY = "forkmesh.world.forkbotGreeted.v1";
 const POSITION_KEY_PREFIX = "forkmesh.world.position.v1.";
 const POSITION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const POSITION_WRITE_INTERVAL_MS = 1000;
@@ -3189,6 +3190,7 @@ class ForkMeshWorld extends HTMLElement {
 
   handlePublicInputActivity = () => {
     if (this.destroyed || !this.identity) return;
+    this.maybeGreetForkbot();
     if (!this.identity.inputActive) {
       this.identity.inputActive = true;
       this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
@@ -3226,6 +3228,12 @@ class ForkMeshWorld extends HTMLElement {
     }
     const senderName = sender.toLowerCase();
     if (!senderName) return;
+    // ForkBot replies are broadcast into the room with the fixed sender
+    // "forkbot"; float them over the wandering ForkBot avatar.
+    if (senderName === "forkbot") {
+      this.world?.showChatBubble?.("forkbot", text);
+      return;
+    }
     for (const [id, peer] of this.remotePlayers) {
       const peerName = String(peer?.name || "").trim().toLowerCase();
       // The public room truncates asserted names to 16 characters, so a
@@ -3239,6 +3247,28 @@ class ForkMeshWorld extends HTMLElement {
       }
     }
   };
+
+  // ForkBot walks over and welcomes a visitor the first time this browser
+  // shows signs of life — movement (handleMovement) or mouse/keyboard
+  // activity (handlePublicInputActivity). Once ever per browser, so
+  // returning visitors are not re-greeted every session.
+  maybeGreetForkbot() {
+    if (this.forkbotGreeted || this.destroyed || !this.world?.greetForkbot) {
+      return;
+    }
+    this.forkbotGreeted = true;
+    let alreadyGreeted = false;
+    try {
+      alreadyGreeted = localStorage.getItem(FORKBOT_GREETED_KEY) === "1";
+      localStorage.setItem(FORKBOT_GREETED_KEY, "1");
+    } catch (_) {}
+    if (alreadyGreeted) return;
+    const name = String(this.identity?.name || "").trim().slice(0, 24);
+    this.world.greetForkbot(
+      `Welcome${name ? `, ${name}` : ""}! I'm ForkBot — open the CHAT bar ` +
+        "below and mention @forkbot to talk with me.",
+    );
+  }
 
   recordPublicVisit(place) {
     const safePlace = String(place || "").toLowerCase().slice(0, 64);
@@ -12320,6 +12350,7 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   handleMovement(movement) {
+    this.maybeGreetForkbot();
     const space = WORLD_SPACE_IDS.has(String(movement?.space || ""))
       ? String(movement.space)
       : this.currentSpace;
