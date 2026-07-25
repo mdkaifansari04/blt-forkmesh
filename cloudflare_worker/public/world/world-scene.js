@@ -1,9 +1,14 @@
 import {
   LANDMARKS,
+  OUTFIT_COLOR_OPTIONS,
   WORLD_REGIONS,
   landmarkById,
   normalizeWorldStatus,
 } from "./world-data.js";
+
+const OUTFIT_COLOR_HEX = Object.fromEntries(
+  OUTFIT_COLOR_OPTIONS.map((option) => [option.id, option.color]),
+);
 
 const WORLD_RADIUS = 72;
 const WORLD_GROUND_RADIUS = 88;
@@ -12,6 +17,11 @@ const WORLD_GROUND_RADIUS = 88;
 const PLAYER_SPEED = 6.4;
 const PLAYER_MAX_SPEED = 13;
 const PLAYER_ACCELERATION = 5.4;
+// Double-clicking the ground sends the avatar to that spot at a dash speed far
+// above the walking cap, so crossing the whole square takes a couple of seconds
+// without teleporting the avatar out from under the camera.
+const PLAYER_DASH_SPEED = 48;
+const PLAYER_DASH_ARRIVE_DISTANCE = 0.3;
 const CAMERA_OFFSET = [17, 16, 21];
 const CAMERA_DISTANCE = Math.hypot(...CAMERA_OFFSET);
 const CAMERA_ZOOM_MIN = 0.12;
@@ -22,16 +32,73 @@ const CAMERA_PITCH_MAX = 1.24;
 const LIGHT_LEVEL_MIN = 40;
 const LIGHT_LEVEL_MAX = 140;
 const LIGHT_LEVEL_DEFAULT = 100;
+// Nothing hovers over the Town Square any more. The five unfinished
+// destinations are parked on the ground inside the works-in-progress barn, so
+// every space shares the same walkable floor as the square itself.
 const WORLD_SPACE_FLOORS = Object.freeze({
   "town-square": 0.38,
   east: 0.38,
   central: 0.38,
   west: 0.38,
-  "sky-campus": 15.45,
-  "space-station": 18.45,
-  "code-planet": 15.45,
-  "organization-region": 14.45,
-  "planet-atlas": 22.45,
+  "sky-campus": 0.38,
+  "space-station": 0.38,
+  "code-planet": 0.38,
+  "organization-region": 0.38,
+  "planet-atlas": 0.38,
+});
+// The barn sits south of the square, past the last ring of trees and benches
+// and behind the default chase camera, and is wide enough that every parked
+// destination fits in its own bay.
+const WORKSHOP_BARN_CENTER_Z = 62;
+const WORKSHOP_BARN_HALF_WIDTH = 22;
+const WORKSHOP_BARN_HALF_DEPTH = 8;
+const WORKSHOP_BARN_WALL_HEIGHT = 10;
+const WORKSHOP_BARN_DOOR_HEIGHT = 5.6;
+// The chase camera always sits south of the player and looks north, so the bays
+// go at the north end of the barn and visitors arrive in the aisle south of
+// them, with the plaques in between.
+const WORKSHOP_BARN_BAY_Z = WORKSHOP_BARN_CENTER_Z - 3;
+const WORKSHOP_BARN_PLAQUE_Z = WORKSHOP_BARN_CENTER_Z + 1.6;
+const WORKSHOP_BARN_AISLE_Z = WORKSHOP_BARN_CENTER_Z + 4.5;
+// Bay centres in world coordinates. `y` lifts each exhibit onto its cradle so
+// it rests in the barn instead of floating; `plaque` is the work-in-progress
+// note standing in front of it.
+const WORKSHOP_BARN_BAYS = Object.freeze({
+  "sky-campus": Object.freeze({
+    x: -16.5,
+    y: 0.5,
+    radius: 3,
+    color: "#d5b6ff",
+    plaque: "sky office · unfinished",
+  }),
+  "organization-region": Object.freeze({
+    x: -9,
+    y: 0.75,
+    radius: 3.7,
+    color: "#d5b6ff",
+    plaque: "garden campus · unfinished",
+  }),
+  "code-planet": Object.freeze({
+    x: -1,
+    y: 3.4,
+    radius: 3.4,
+    color: "#77d9ff",
+    plaque: "code planet · unfinished",
+  }),
+  "planet-atlas": Object.freeze({
+    x: 8,
+    y: 1.4,
+    radius: 4.1,
+    color: "#f7c96b",
+    plaque: "community planets · unfinished",
+  }),
+  "space-station": Object.freeze({
+    x: 16.3,
+    y: 2.2,
+    radius: 2.9,
+    color: "#b6d8ff",
+    plaque: "space station · unfinished",
+  }),
 });
 const MOVEMENT_KEYS = new Set([
   "KeyW",
@@ -300,6 +367,70 @@ function wordTexture(THREE, title, subtitle, color = "#9ef7c6") {
     context.fillStyle = color;
     context.font = '400 25px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(String(subtitle || "").toUpperCase().slice(0, 36), 42, 165);
+  });
+}
+
+// The Member Lounge plaque carries the section name, the live registered-user
+// total, and room for the tiny account button — one surface instead of a
+// floating count card hovering over the lounge.
+function memberLoungePlaqueTexture(THREE, totalCount, color = "#9ef7c6") {
+  // Until the directory loads the plaque says it is counting rather than
+  // claiming a total of zero.
+  const known = totalCount !== null && Number.isFinite(Number(totalCount));
+  const total = Math.max(0, Math.min(999999, Number(totalCount) || 0));
+  return canvasTexture(THREE, 768, 352, (context) => {
+    context.clearRect(0, 0, 768, 352);
+    roundedRect(context, 4, 4, 760, 344, 14);
+    context.fillStyle = "rgba(6,17,14,0.92)";
+    context.fill();
+    context.strokeStyle = color;
+    context.lineWidth = 4;
+    context.stroke();
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    context.fillStyle = "#f1fff6";
+    context.font = '700 52px "ForkMesh Favorit", system-ui, sans-serif';
+    context.fillText("MEMBER LOUNGE", 42, 72);
+    context.fillStyle = color;
+    context.font = '700 44px "ForkMesh Favorit", system-ui, sans-serif';
+    context.fillText(
+      known ? `${total} MEMBER${total === 1 ? "" : "S"}` : "MEMBERS",
+      42,
+      142,
+    );
+    context.font = '400 23px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      (known ? "total registered users" : "counting registered users")
+        .toUpperCase(),
+      42,
+      192,
+    );
+    context.fillStyle = "rgba(217,255,234,0.66)";
+    context.font = '400 20px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      "registered contributors · recent activity glows".toUpperCase(),
+      42,
+      232,
+    );
+  });
+}
+
+// Tiny plaque button: log in / sign up while signed out, log out once signed
+// in. Filled while signed out so the call to action reads from a distance.
+function memberLoungeAuthTexture(THREE, signedIn, color = "#9ef7c6") {
+  return canvasTexture(THREE, 384, 88, (context) => {
+    context.clearRect(0, 0, 384, 88);
+    roundedRect(context, 4, 4, 376, 80, 40);
+    context.fillStyle = signedIn ? "rgba(6,17,14,0.94)" : color;
+    context.fill();
+    context.strokeStyle = color;
+    context.lineWidth = 4;
+    context.stroke();
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillStyle = signedIn ? color : "#06110e";
+    context.font = '700 34px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(signedIn ? "LOG OUT" : "LOG IN / SIGN UP", 192, 47);
   });
 }
 
@@ -660,21 +791,71 @@ function makeArrivalPlaque(THREE) {
   return plaque;
 }
 
-// Places a section's name plaque on the ground in front of the section — on
-// the side facing the Town Square center, where visitors walk up. `position`
-// is the section's world position; sections at the center face the arrival
-// grid instead.
-function addSectionPlaque(THREE, group, position, title, subtitle, color, distance) {
+// A taller Member Lounge plaque: the same ground slab, with the member total
+// on its face and a tiny account button mounted at the bottom of the face.
+function makeMemberLoungePlaque(THREE, color = "#9ef7c6") {
+  const plaque = new THREE.Group();
+  plaque.name = "forkmesh-member-lounge-plaque";
+  const base = new THREE.Mesh(
+    new THREE.BoxGeometry(3.9, 0.22, 1.5),
+    makeMaterial(THREE, "#233b33", { roughness: 0.82 }),
+  );
+  base.position.y = 0.11;
+  plaque.add(base);
+  const slab = new THREE.Mesh(
+    new THREE.BoxGeometry(3.6, 1.72, 0.14),
+    makeMaterial(THREE, "#101d18", { roughness: 0.55, metalness: 0.12 }),
+  );
+  slab.position.set(0, 0.95, 0.12);
+  slab.rotation.x = -0.42;
+  plaque.add(slab);
+  const face = new THREE.Mesh(
+    new THREE.PlaneGeometry(3.44, 1.577),
+    new THREE.MeshBasicMaterial({
+      map: memberLoungePlaqueTexture(THREE, null, color),
+      transparent: true,
+    }),
+  );
+  face.position.z = 0.08;
+  slab.add(face);
+  const authButton = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.42, 0.33),
+    new THREE.MeshBasicMaterial({
+      map: memberLoungeAuthTexture(THREE, false, color),
+      transparent: true,
+    }),
+  );
+  authButton.name = "forkmesh-member-lounge-auth-button";
+  authButton.position.set(-0.84, -0.55, 0.012);
+  authButton.userData.worldAuthAction = "login";
+  face.add(authButton);
+  plaque.userData.face = face;
+  plaque.userData.authButton = authButton;
+  return plaque;
+}
+
+// Places a plaque on the ground in front of the section — on the side facing
+// the Town Square center, where visitors walk up. `position` is the section's
+// world position; sections at the center face the arrival grid instead.
+function placeSectionPlaque(group, plaque, position, distance) {
   const x = Array.isArray(position) ? position[0] : 0;
   const z = Array.isArray(position) ? position[2] : 0;
   const length = Math.hypot(x, z);
   const ux = length > 0.001 ? -x / length : 0;
   const uz = length > 0.001 ? -z / length : 1;
-  const plaque = makeGroundPlaque(THREE, title, subtitle, color);
   plaque.position.set(ux * distance, 0, uz * distance);
   plaque.rotation.y = Math.atan2(ux, uz);
   group.add(plaque);
   return plaque;
+}
+
+function addSectionPlaque(THREE, group, position, title, subtitle, color, distance) {
+  return placeSectionPlaque(
+    group,
+    makeGroundPlaque(THREE, title, subtitle, color),
+    position,
+    distance,
+  );
 }
 
 function avatarStatusTexture(THREE, emoji, note) {
@@ -828,7 +1009,7 @@ function createAvatar(THREE, identity, options = {}) {
   const shirt = makeMaterial(THREE, "#ffffff", {
     roughness: 0.8,
   });
-  shirt.map = countryShirtTexture(THREE, identity);
+  applyOutfit(THREE, shirt, identity);
   shirt.needsUpdate = true;
   const dark = makeMaterial(THREE, "#101d19", { roughness: 0.85 });
   const shoe = makeMaterial(THREE, "#07100e", { roughness: 0.82 });
@@ -932,14 +1113,24 @@ function createAvatar(THREE, identity, options = {}) {
   return group;
 }
 
+function applyOutfit(THREE, shirt, identity) {
+  const outfitColor = OUTFIT_COLOR_HEX[identity.outfitColor];
+  const previous = shirt.map;
+  if (outfitColor) {
+    shirt.map = null;
+    shirt.color.set(outfitColor);
+  } else {
+    shirt.map = countryShirtTexture(THREE, identity);
+    shirt.color.set("#ffffff");
+  }
+  shirt.needsUpdate = true;
+  if (previous !== shirt.map) previous?.dispose?.();
+}
+
 function syncCountryShirt(THREE, avatar, identity) {
   const shirt = avatar?.userData?.shirt;
   if (!shirt) return;
-  const previous = shirt.map;
-  shirt.map = countryShirtTexture(THREE, identity);
-  shirt.color.set("#ffffff");
-  shirt.needsUpdate = true;
-  previous?.dispose?.();
+  applyOutfit(THREE, shirt, identity);
 }
 
 function syncAvatarActivity(avatar, identity) {
@@ -1532,7 +1723,7 @@ function createAgentRobot(THREE, bot, id) {
   return group;
 }
 
-function createRegisteredUserLounge(THREE, animated) {
+function createRegisteredUserLounge(THREE, animated, interactive) {
   const lounge = new THREE.Group();
   lounge.name = "registered-user-lounge";
   lounge.userData.spaceKind = "registered-user-lounge";
@@ -1584,27 +1775,18 @@ function createRegisteredUserLounge(THREE, animated) {
     }
   }
   lounge.userData.seatOffsets = seatOffsets;
-  addSectionPlaque(
-    THREE,
+  // The lounge plaque carries the member total and the account button, so no
+  // separate floating count card hovers over the lounge.
+  const plaque = placeSectionPlaque(
     lounge,
+    makeMemberLoungePlaque(THREE, "#9ef7c6"),
     REGISTERED_LOUNGE_POSITION,
-    "MEMBER LOUNGE",
-    "registered contributors · recent activity glows",
-    "#9ef7c6",
     9.2,
   );
-  const memberCountSign = makeLabelSprite(
-    THREE,
-    "MEMBERS",
-    "counting registered users",
-    "#9ef7c6",
-  );
-  memberCountSign.scale.set(5.6, 1.9, 1);
-  // At the base edge facing the Town Square center, so the total reads
-  // before a visitor walks into the lounge itself.
-  memberCountSign.position.set(6.9, 1.8, -4.6);
-  lounge.add(memberCountSign);
-  lounge.userData.memberCountSign = memberCountSign;
+  lounge.userData.memberCountSign = plaque.userData.face;
+  lounge.userData.authButton = plaque.userData.authButton;
+  lounge.userData.authSignedIn = false;
+  interactive.push(plaque.userData.authButton);
   const activityBeacon = new THREE.PointLight("#9ef7c6", 1.4, 18, 2);
   activityBeacon.position.set(0, 4.2, 0);
   lounge.add(activityBeacon);
@@ -2882,8 +3064,215 @@ function createSupportCenter(THREE, position, interactive, animated) {
   return group;
 }
 
-function createSkyOffice(THREE, animated) {
+// The barn that replaced the sky. Every destination that used to hover over the
+// Town Square is parked here on the ground, one per bay, under a roof frame
+// that is itself unfinished, behind doorways wide enough to roll them back out
+// once the work is done.
+function createWorkshopBarn(THREE) {
+  const barn = new THREE.Group();
+  barn.name = "works-in-progress-barn";
+  const plank = makeMaterial(THREE, "#8c3f2e", { roughness: 0.86 });
+  const trim = makeMaterial(THREE, "#e7d8bd", { roughness: 0.72 });
+  const roofing = makeMaterial(THREE, "#5a4335", { roughness: 0.82 });
+  const halfWidth = WORKSHOP_BARN_HALF_WIDTH;
+  const halfDepth = WORKSHOP_BARN_HALF_DEPTH;
+  const wallHeight = WORKSHOP_BARN_WALL_HEIGHT;
+
+  const floor = new THREE.Mesh(
+    new THREE.BoxGeometry(halfWidth * 2, 0.3, halfDepth * 2),
+    makeMaterial(THREE, "#4b453d", { roughness: 0.94 }),
+  );
+  floor.position.y = 0.15;
+  barn.add(floor);
+
+  // Both ends are full-width doorways and the long sides are stall-height plank
+  // walls under open timber framing. Nothing above knee height stands between
+  // the chase camera and the parked work, whichever way a visitor faces.
+  const stallHeight = 3.2;
+  for (const side of [-1, 1]) {
+    const stall = new THREE.Mesh(
+      new THREE.BoxGeometry(0.6, stallHeight, halfDepth * 2),
+      plank,
+    );
+    stall.position.set(side * (halfWidth - 0.3), stallHeight / 2, 0);
+    barn.add(stall);
+    const plate = new THREE.Mesh(
+      new THREE.BoxGeometry(0.6, 0.5, halfDepth * 2),
+      trim,
+    );
+    plate.position.set(side * (halfWidth - 0.3), wallHeight - 0.25, 0);
+    barn.add(plate);
+  }
+
+  // Posts and header beams frame both doorways. The mid posts land in the gaps
+  // between bays, so each end reads as a row of garage doors rather than one
+  // undivided hole.
+  const headerHeight = wallHeight - WORKSHOP_BARN_DOOR_HEIGHT;
+  for (const end of [-1, 1]) {
+    const endZ = end * (halfDepth - 0.3);
+    for (const x of [-(halfWidth - 0.3), -13.1, 12.75, halfWidth - 0.3]) {
+      const post = new THREE.Mesh(
+        new THREE.BoxGeometry(0.7, wallHeight, 0.7),
+        plank,
+      );
+      post.position.set(x, wallHeight / 2, endZ);
+      barn.add(post);
+    }
+    // Only the town-facing side carries a header. Leaving the aisle side open
+    // to the trusses keeps the beam out of the arriving camera's sightline.
+    if (end > 0) continue;
+    const header = new THREE.Mesh(
+      new THREE.BoxGeometry(halfWidth * 2, headerHeight, 0.6),
+      plank,
+    );
+    header.position.set(
+      0,
+      WORKSHOP_BARN_DOOR_HEIGHT + headerHeight / 2,
+      endZ,
+    );
+    barn.add(header);
+  }
+  for (const side of [-1, 1]) {
+    for (const half of [-1, 1]) {
+      const brace = new THREE.Mesh(
+        new THREE.BoxGeometry(0.18, 0.34, 8.4),
+        trim,
+      );
+      brace.position.set(
+        side * (halfWidth - 0.3),
+        stallHeight + 1.9,
+        (half * halfDepth) / 2,
+      );
+      brace.rotation.x = half * 0.55;
+      barn.add(brace);
+    }
+  }
+
+  // The gambrel roof is still only its frame: six trusses carrying five
+  // purlins, and no decking. That keeps the barn itself honestly unfinished and
+  // leaves the bays lit and readable from the raised camera.
+  const trussSegments = [
+    { z: 6.7, y: 11.2, length: 4.84, tilt: 0.519 },
+    { z: 2.3, y: 13.3, length: 4.94, tilt: 0.373 },
+  ];
+  for (const x of [-halfWidth + 0.3, -13.1, -4.4, 4.4, 12.75, halfWidth - 0.3]) {
+    trussSegments.forEach((segment) => {
+      for (const side of [-1, 1]) {
+        const beam = new THREE.Mesh(
+          new THREE.BoxGeometry(0.34, 0.34, segment.length),
+          roofing,
+        );
+        beam.position.set(x, segment.y, side * segment.z);
+        beam.rotation.x = side * segment.tilt;
+        barn.add(beam);
+      }
+    });
+  }
+  const purlins = [
+    { y: wallHeight, z: halfDepth + 0.8 },
+    { y: wallHeight, z: -halfDepth - 0.8 },
+    { y: 12.4, z: 4.6 },
+    { y: 12.4, z: -4.6 },
+    { y: 14.2, z: 0 },
+  ];
+  purlins.forEach((purlin) => {
+    const beam = new THREE.Mesh(
+      new THREE.BoxGeometry(halfWidth * 2 + 1.2, 0.26, 0.26),
+      roofing,
+    );
+    beam.position.set(0, purlin.y, purlin.z);
+    barn.add(beam);
+  });
+
+  // The barn name goes on both faces of the north header: the outer face reads
+  // on the walk down from the Town Square, the inner one from the aisle.
+  const signTexture = wordTexture(
+    THREE,
+    "WORKS IN PROGRESS BARN",
+    "parked destinations · unfinished",
+    "#f7c96b",
+  );
+  for (const facing of [-1, 1]) {
+    const sign = new THREE.Mesh(
+      new THREE.PlaneGeometry(13.2, 4.4),
+      new THREE.MeshBasicMaterial({ map: signTexture, transparent: true }),
+    );
+    sign.position.set(
+      0,
+      WORKSHOP_BARN_DOOR_HEIGHT + headerHeight / 2,
+      -halfDepth + 0.3 + facing * 0.35,
+    );
+    if (facing < 0) sign.rotation.y = Math.PI;
+    barn.add(sign);
+  }
+
+  // Bay furniture: a plinth per destination, a mount post under the ones that
+  // are held clear of the floor, and a plaque saying the work is unfinished.
+  const bayZ = WORKSHOP_BARN_BAY_Z - WORKSHOP_BARN_CENTER_Z;
+  Object.values(WORKSHOP_BARN_BAYS).forEach((bay) => {
+    const plinth = new THREE.Mesh(
+      new THREE.CylinderGeometry(bay.radius, bay.radius + 0.3, 0.5, 14),
+      makeMaterial(THREE, "#2c2a25", { roughness: 0.88 }),
+    );
+    plinth.position.set(bay.x, 0.4, bayZ);
+    barn.add(plinth);
+    if (bay.y > 1.1) {
+      const post = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.32, 0.5, bay.y - 0.65, 10),
+        makeMaterial(THREE, "#6b665c", { metalness: 0.3, roughness: 0.6 }),
+      );
+      post.position.set(bay.x, 0.65 + (bay.y - 0.65) / 2, bayZ);
+      barn.add(post);
+      const cradle = new THREE.Mesh(
+        new THREE.TorusGeometry(0.75, 0.12, 8, 20),
+        makeMaterial(THREE, "#f7c96b", {
+          emissive: "#7a5a17",
+          emissiveIntensity: 0.4,
+        }),
+      );
+      cradle.rotation.x = Math.PI / 2;
+      cradle.position.set(bay.x, bay.y - 0.6, bayZ);
+      barn.add(cradle);
+    }
+    const plaque = makeGroundPlaque(
+      THREE,
+      "WORK IN PROGRESS",
+      bay.plaque,
+      bay.color,
+    );
+    plaque.position.set(
+      bay.x,
+      0.3,
+      WORKSHOP_BARN_PLAQUE_Z - WORKSHOP_BARN_CENTER_Z,
+    );
+    // makeGroundPlaque faces +z, which is already the aisle side.
+    barn.add(plaque);
+  });
+
+  for (const x of [-15, -5, 5, 15]) {
+    const lamp = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.55, 0.42, 0.22, 12),
+      makeMaterial(THREE, "#ffe9b0", {
+        emissive: "#ffd27a",
+        emissiveIntensity: 0.7,
+      }),
+    );
+    lamp.position.set(x, wallHeight - 0.7, 0);
+    barn.add(lamp);
+  }
+
+  // The barn never casts: a 44-unit roof would drop the whole interior into
+  // shadow and hide the work parked underneath it.
+  setShadows(barn, false, true);
+  barn.position.set(0, 0, WORKSHOP_BARN_CENTER_Z);
+  return barn;
+}
+
+// The sky office kept its name and its cloud raft, but the raft is now a
+// deflated prop sitting on the barn floor under the office it used to carry.
+function createSkyOffice(THREE) {
   const group = new THREE.Group();
+  const bay = WORKSHOP_BARN_BAYS["sky-campus"];
   const cloudMaterial = makeMaterial(THREE, "#d8edf2", {
     transparent: true,
     opacity: 0.72,
@@ -2894,8 +3283,8 @@ function createSkyOffice(THREE, animated) {
       new THREE.SphereGeometry(1.2 + (index % 3) * 0.28, 16, 12),
       cloudMaterial,
     );
-    cloud.scale.y = 0.5;
-    cloud.position.set((index % 3) * 1.7 - 1.7, Math.floor(index / 3) * 0.35, (index % 2) * 1.35);
+    cloud.scale.y = 0.22;
+    cloud.position.set((index % 3) * 1.7 - 1.7, 0.16, (index % 2) * 1.35 - 0.68);
     group.add(cloud);
   }
   const office = new THREE.Mesh(
@@ -2907,28 +3296,39 @@ function createSkyOffice(THREE, animated) {
       roughness: 0.34,
     }),
   );
-  office.position.y = 1.75;
+  office.position.y = 1.55;
   group.add(office);
   const roof = new THREE.Mesh(
     new THREE.ConeGeometry(3.2, 1.15, 4),
     makeMaterial(THREE, "#4b3b6b"),
   );
-  roof.position.y = 3.45;
+  roof.position.y = 3.25;
   roof.rotation.y = Math.PI / 4;
   group.add(roof);
-  group.position.set(-17, 15, 18);
+  const label = makeLabelSprite(
+    THREE,
+    "SKY OFFICE",
+    "work in progress · parked indoors",
+    "#d5b6ff",
+  );
+  label.position.y = 4.6;
+  group.add(label);
+  group.position.set(bay.x, bay.y, WORKSHOP_BARN_BAY_Z);
   group.scale.setScalar(0.86);
   setShadows(group);
-  animated.push((time) => {
-    group.position.y = 15 + Math.sin(time * 0.00038) * 0.7;
-    group.rotation.y = Math.sin(time * 0.00011) * 0.15;
-  });
   return group;
 }
 
+// The other worlds are unfinished, so none of them orbits overhead any more:
+// each one stands in its own barn bay, on the plinth and mount post that
+// createWorkshopBarn puts under it.
 function createOtherWorlds(THREE, animated) {
   const destinations = new THREE.Group();
   destinations.name = "functional-world-destinations";
+  const bayPosition = (spaceId) => {
+    const bay = WORKSHOP_BARN_BAYS[spaceId];
+    return [bay.x, bay.y, WORKSHOP_BARN_BAY_Z];
+  };
 
   const station = new THREE.Group();
   const stationCore = new THREE.Mesh(
@@ -2954,12 +3354,12 @@ function createOtherWorlds(THREE, animated) {
   const stationLabel = makeLabelSprite(
     THREE,
     "SPACE STATION",
-    "chat · watch rooms · broadcasts",
+    "work in progress · chat rooms",
     "#b6d8ff",
   );
   stationLabel.position.y = 3.7;
   station.add(stationLabel);
-  station.position.set(24, 18, 24);
+  station.position.set(...bayPosition("space-station"));
   destinations.add(station);
 
   const codePlanet = new THREE.Group();
@@ -2987,12 +3387,12 @@ function createOtherWorlds(THREE, animated) {
   const codeLabel = makeLabelSprite(
     THREE,
     "CODE PLANET",
-    "repository world + workshops",
+    "work in progress · repository world",
     "#77d9ff",
   );
   codeLabel.position.y = 4.1;
   codePlanet.add(codeLabel);
-  codePlanet.position.set(28, 15, -22);
+  codePlanet.position.set(...bayPosition("code-planet"));
   destinations.add(codePlanet);
 
   const orgRegion = new THREE.Group();
@@ -3016,12 +3416,12 @@ function createOtherWorlds(THREE, animated) {
   const orgLabel = makeLabelSprite(
     THREE,
     "GARDEN CAMPUS",
-    "organization-owned region",
+    "work in progress · org region",
     "#d5b6ff",
   );
   orgLabel.position.y = 3.8;
   orgRegion.add(orgLabel);
-  orgRegion.position.set(-29, 14, -23);
+  orgRegion.position.set(...bayPosition("organization-region"));
   destinations.add(orgRegion);
 
   const planetAtlas = new THREE.Group();
@@ -3039,19 +3439,20 @@ function createOtherWorlds(THREE, animated) {
   const atlasLabel = makeLabelSprite(
     THREE,
     "COMMUNITY PLANETS",
-    "events · achievements · regions",
+    "work in progress · events · regions",
     "#f7c96b",
   );
   atlasLabel.position.y = 3.8;
   planetAtlas.add(atlasLabel);
-  planetAtlas.position.set(-2, 22, -31);
+  planetAtlas.position.set(...bayPosition("planet-atlas"));
   destinations.add(planetAtlas);
 
+  // Parked exhibits still turn on their mounts; nothing drifts up and down any
+  // more, because everything is resting on the barn floor.
   animated.push((time) => {
     station.rotation.y = time * 0.00016;
     stationRing.rotation.z = time * 0.0004;
     codePlanet.rotation.y = -time * 0.00011;
-    orgRegion.position.y = 14 + Math.sin(time * 0.00035) * 0.55;
     planetAtlas.children.forEach((child, index) => {
       if (child.isMesh) child.rotation.y += 0.0008 * (index + 1);
     });
@@ -3173,6 +3574,7 @@ export function createWorldScene({
   onRegionChange = () => {},
   onMovement = () => {},
   onModeration = () => {},
+  onAccountAction = () => {},
 }) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color("#93c9b3");
@@ -3348,8 +3750,58 @@ export function createWorldScene({
     world.add(createTree(THREE, x, z, 0.72 + (index % 5) * 0.1, treeColors[index % treeColors.length]));
   }
 
-  for (let index = 0; index < 28; index += 1) {
-    const angle = (index / 28) * Math.PI * 2;
+  const campfire = new THREE.Group();
+  campfire.position.set(8, 0, 8);
+  const firePit = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.85, 1.0, 0.22, 12),
+    makeMaterial(THREE, "#4a4038", { roughness: 0.9 }),
+  );
+  firePit.position.y = 0.11;
+  campfire.add(firePit);
+  for (let index = 0; index < 8; index += 1) {
+    const stoneAngle = (index / 8) * Math.PI * 2;
+    const stone = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(0.22, 0),
+      makeMaterial(THREE, "#7d766c", { roughness: 0.95 }),
+    );
+    stone.position.set(
+      Math.cos(stoneAngle) * 1.05,
+      0.16,
+      Math.sin(stoneAngle) * 1.05,
+    );
+    campfire.add(stone);
+  }
+  for (let index = 0; index < 3; index += 1) {
+    const log = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.09, 0.09, 1.15, 8),
+      makeMaterial(THREE, "#5a3b24", { roughness: 0.9 }),
+    );
+    log.rotation.z = Math.PI / 2;
+    log.rotation.y = (index / 3) * Math.PI;
+    log.position.y = 0.3;
+    campfire.add(log);
+  }
+  const flame = new THREE.Mesh(
+    new THREE.ConeGeometry(0.42, 1.05, 8),
+    makeMaterial(THREE, "#ffb547", {
+      emissive: "#ff7a2f",
+      emissiveIntensity: 1.6,
+      transparent: true,
+      opacity: 0.92,
+    }),
+  );
+  flame.position.y = 0.82;
+  campfire.add(flame);
+  const fireLight = new THREE.PointLight("#ffa14d", 3.2, 14, 1.8);
+  fireLight.position.y = 1.1;
+  campfire.add(fireLight);
+  animated.push((time) => {
+    const flicker = 1 + Math.sin(time * 0.011) * 0.12 + Math.sin(time * 0.023) * 0.06;
+    flame.scale.set(flicker, 1 + Math.sin(time * 0.017) * 0.16, flicker);
+    fireLight.intensity = 3.2 + Math.sin(time * 0.013) * 0.7;
+  });
+  for (let index = 0; index < 6; index += 1) {
+    const angle = (index / 6) * Math.PI * 2;
     const bench = new THREE.Group();
     const seat = new THREE.Mesh(
       new THREE.BoxGeometry(2.1, 0.15, 0.52),
@@ -3365,16 +3817,22 @@ export function createWorldScene({
       leg.position.set(x, 0.3, 0);
       bench.add(leg);
     }
-    const radius = index % 2 ? 18.2 : 25;
-    bench.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
+    bench.position.set(Math.cos(angle) * 2.9, 0, Math.sin(angle) * 2.9);
     bench.rotation.y = -angle + Math.PI / 2;
     setShadows(bench);
-    world.add(bench);
+    campfire.add(bench);
   }
+  setShadows(campfire);
+  world.add(campfire);
 
-  world.add(createSkyOffice(THREE, animated));
+  world.add(createWorkshopBarn(THREE));
+  world.add(createSkyOffice(THREE));
   world.add(createOtherWorlds(THREE, animated));
-  const registeredUserLounge = createRegisteredUserLounge(THREE, animated);
+  const registeredUserLounge = createRegisteredUserLounge(
+    THREE,
+    animated,
+    interactive,
+  );
   world.add(registeredUserLounge);
   const durableObjectDistrict = createDurableObjectDistrict(THREE);
   world.add(durableObjectDistrict);
@@ -3400,6 +3858,7 @@ export function createWorldScene({
   const touchKeys = new Set();
   const touchPointers = new Map();
   const raycaster = new THREE.Raycaster();
+  const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   const pointer = new THREE.Vector2();
   const pointerStart = new THREE.Vector2();
   const pointerLast = new THREE.Vector2();
@@ -3429,8 +3888,10 @@ export function createWorldScene({
   let moveSpeedScale = 1;
   let moveAccelScale = 1;
   let keyboardMovementSpeed = PLAYER_SPEED;
+  let dashTarget = null;
   let primaryPointerId = null;
   let pointerGestureMoved = false;
+  let lastGestureDragged = false;
   let pinchStartDistance = 0;
   let pinchStartZoom = cameraZoom;
   let pinchActive = false;
@@ -3520,6 +3981,10 @@ export function createWorldScene({
       PLAYER_MAX_SPEED * moveSpeedScale,
     );
     return { speed: moveSpeedScale, acceleration: moveAccelScale };
+  }
+
+  function cancelDash() {
+    dashTarget = null;
   }
 
   function nearestLandmark() {
@@ -3616,6 +4081,7 @@ export function createWorldScene({
     currentFloorY = 0.38;
     player.position.copy(destination);
     cameraFocus = null;
+    cancelDash();
     focusedRepositoryKey = "";
     nearestLandmark();
     onMovement({
@@ -3631,19 +4097,18 @@ export function createWorldScene({
   }
 
   function travelToSpace(spaceId) {
-    const destinations = {
-      "sky-campus": new THREE.Vector3(-17, 15.45, 18),
-      "space-station": new THREE.Vector3(24, 18.45, 24),
-      "code-planet": new THREE.Vector3(28, 15.45, -22),
-      "organization-region": new THREE.Vector3(-29, 14.45, -23),
-      "planet-atlas": new THREE.Vector3(-2, 22.45, -31),
-    };
-    const destination = destinations[spaceId];
+    // Every space is a barn bay now, so arrivals land in the aisle in front of
+    // the parked destination rather than on a platform in the sky.
+    const bay = WORKSHOP_BARN_BAYS[spaceId];
+    const destination = bay
+      ? new THREE.Vector3(bay.x, WORLD_SPACE_FLOORS[spaceId], WORKSHOP_BARN_AISLE_Z)
+      : null;
     if (!destination) return false;
     currentSpace = spaceId;
     currentFloorY = destination.y;
     player.position.copy(destination);
     cameraFocus = null;
+    cancelDash();
     focusedRepositoryKey = "";
     currentLocation = spaceId
       .split("-")
@@ -3669,6 +4134,7 @@ export function createWorldScene({
     currentSpace = "town-square";
     currentFloorY = 0.38;
     player.position.y = currentFloorY;
+    cancelDash();
     focusedRepositoryKey = "";
     cameraFocus = new THREE.Vector3(
       landmark.position[0],
@@ -3686,6 +4152,7 @@ export function createWorldScene({
     currentSpace = "town-square";
     currentFloorY = 0.38;
     player.position.y = currentFloorY;
+    cancelDash();
     cameraFocus = record.group.position.clone();
     cameraFocus.y += 0.1;
     focusedRepositoryKey = key;
@@ -3700,6 +4167,7 @@ export function createWorldScene({
 
   function clearFocus() {
     cameraFocus = null;
+    cancelDash();
     focusedRepositoryKey = "";
   }
 
@@ -3758,6 +4226,8 @@ export function createWorldScene({
     let walking = false;
     if (movement.lengthSq()) {
       cameraFocus = null;
+      // Any manual input takes the wheel back from a double-click dash.
+      cancelDash();
       focusedRepositoryKey = "";
       const topSpeed = PLAYER_MAX_SPEED * moveSpeedScale;
       // Infinite acceleration collapses the ramp: keyboardMovementSpeed jumps to
@@ -3773,6 +4243,28 @@ export function createWorldScene({
         keyboardMovementSpeed * delta,
       );
       player.rotation.y = Math.atan2(-movement.x, -movement.z);
+      walking = true;
+    } else if (dashTarget) {
+      // Double-click travel: run straight at the clicked ground point, then
+      // land exactly on it instead of jittering around the destination.
+      const toTarget = new THREE.Vector3(
+        dashTarget.x - player.position.x,
+        0,
+        dashTarget.z - player.position.z,
+      );
+      const remaining = toTarget.length();
+      const step = PLAYER_DASH_SPEED * moveSpeedScale * delta;
+      if (remaining <= Math.max(step, PLAYER_DASH_ARRIVE_DISTANCE)) {
+        player.position.x = dashTarget.x;
+        player.position.z = dashTarget.z;
+        cancelDash();
+      } else {
+        toTarget.divideScalar(remaining);
+        player.position.x += toTarget.x * step;
+        player.position.z += toTarget.z * step;
+        player.rotation.y = Math.atan2(-toTarget.x, -toTarget.z);
+      }
+      keyboardMovementSpeed = baseMoveSpeed();
       walking = true;
     } else {
       keyboardMovementSpeed = baseMoveSpeed();
@@ -3886,6 +4378,7 @@ export function createWorldScene({
     lastPosition.copy(player.position);
     wasWalking = false;
     cameraFocus = null;
+    cancelDash();
     focusedRepositoryKey = "";
     if (space === "town-square") {
       nearestLandmark();
@@ -4155,10 +4648,9 @@ export function createWorldScene({
     const countSign = registeredUserLounge.userData.memberCountSign;
     if (countSign && registeredUserLounge.userData.memberCountShown !== total) {
       countSign.material.map?.dispose?.();
-      countSign.material.map = wordTexture(
+      countSign.material.map = memberLoungePlaqueTexture(
         THREE,
-        `${total} MEMBER${total === 1 ? "" : "S"}`,
-        "total registered users",
+        total,
         "#9ef7c6",
       );
       countSign.material.needsUpdate = true;
@@ -4226,6 +4718,7 @@ export function createWorldScene({
     currentFloorY = 0.38;
     player.position.copy(destination);
     cameraFocus = null;
+    cancelDash();
     focusedRepositoryKey = "";
     currentLocation = `${home.name}'s front yard`;
     onLocationChange(currentLocation, "neighborhood");
@@ -4830,11 +5323,28 @@ export function createWorldScene({
     garden.userData.sharedMediaSpaces = layer;
   }
 
+  // Signed-out visitors get "log in / sign up" on the lounge plaque; signed-in
+  // members get "log out". Only the account status drives it, never the name.
+  function syncLoungeAuthButton() {
+    const button = registeredUserLounge.userData.authButton;
+    if (!button) return;
+    const signedIn = String(identity?.accountStatus || "Guest") !== "Guest";
+    if (registeredUserLounge.userData.authSignedIn === signedIn) return;
+    registeredUserLounge.userData.authSignedIn = signedIn;
+    button.material.map?.dispose?.();
+    button.material.map = memberLoungeAuthTexture(THREE, signedIn, "#9ef7c6");
+    button.material.needsUpdate = true;
+    button.userData.worldAuthAction = signedIn ? "logout" : "login";
+  }
+
+  syncLoungeAuthButton();
+
   function updateIdentity(nextIdentity) {
     Object.assign(identity, nextIdentity);
     updateAvatarBadge(THREE, player, identity, false);
     syncOperatorBelt(THREE, player, identity.nodes?.length || 0);
     updatePlayerLabel(playerLabel, identity);
+    syncLoungeAuthButton();
     if (identity.isAdmin !== true) {
       remotePlayers.forEach((avatar, peerId) => {
         removeRemoteModerationControls(avatar, peerId);
@@ -5719,7 +6229,7 @@ export function createWorldScene({
       chat: true,
       startedAt: performance.now(),
       // Longer messages linger longer before fading out.
-      duration: Math.min(7500, 3200 + message.length * 30),
+      duration: Math.min(14000, 10000 + message.length * 30),
       baseHeight: 5.2,
       rise: 0.5,
       fadeStart: 0.75,
@@ -5807,9 +6317,9 @@ export function createWorldScene({
 
   function rotateCamera(deltaX, deltaY) {
     if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) return;
-    cameraYaw -= deltaX * CAMERA_LOOK_SENSITIVITY;
+    cameraYaw += deltaX * CAMERA_LOOK_SENSITIVITY;
     cameraPitch = clamp(
-      cameraPitch + deltaY * CAMERA_LOOK_SENSITIVITY,
+      cameraPitch - deltaY * CAMERA_LOOK_SENSITIVITY,
       CAMERA_PITCH_MIN,
       CAMERA_PITCH_MAX,
     );
@@ -5904,6 +6414,9 @@ export function createWorldScene({
       cancelled ||
       wasPinching ||
       pointerGestureMoved;
+    // Remembered past the reset below so a double-click that ended in a camera
+    // drag or pinch does not also fire off a dash.
+    lastGestureDragged = suppressTap;
     pointerGestureMoved = false;
     if (suppressTap) return;
 
@@ -5927,6 +6440,11 @@ export function createWorldScene({
         peerId: moderationAction.peerId,
         name: moderationAction.name,
       });
+      return;
+    }
+    const authAction = String(hit?.object?.userData?.worldAuthAction || "");
+    if (authAction === "login" || authAction === "logout") {
+      onAccountAction(authAction);
       return;
     }
     if (hit?.object?.userData?.nodeCabinet) {
@@ -5974,6 +6492,41 @@ export function createWorldScene({
 
   function handlePointerUp(event) {
     finishPointer(event, false);
+  }
+
+  // The visible floor of the current space, as a math plane: raycasting against
+  // it keeps double-click travel working on the sky campus and other elevated
+  // spaces, where the ground disc is far below the walkable floor.
+  function groundPointAt(clientX, clientY) {
+    pointerCoordinates({ clientX, clientY });
+    raycaster.setFromCamera(pointer, camera);
+    groundPlane.constant = -currentFloorY;
+    const point = raycaster.ray.intersectPlane(
+      groundPlane,
+      new THREE.Vector3(),
+    );
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.z)) {
+      return null;
+    }
+    const radius = Math.hypot(point.x, point.z);
+    if (radius > WORLD_RADIUS) {
+      point.x *= WORLD_RADIUS / radius;
+      point.z *= WORLD_RADIUS / radius;
+    }
+    point.y = currentFloorY;
+    return point;
+  }
+
+  function handleDoubleClick(event) {
+    if (event.button !== undefined && event.button !== 0) return;
+    if (lastGestureDragged) return;
+    const point = groundPointAt(event.clientX, event.clientY);
+    if (!point) return;
+    event.preventDefault();
+    // Following the avatar again keeps the dash visible; a landmark focus left
+    // over from the two selection clicks would pin the camera in place.
+    cameraFocus = null;
+    dashTarget = point;
   }
 
   function handlePointerCancel(event) {
@@ -6025,6 +6578,7 @@ export function createWorldScene({
     touchKeys.clear();
     touchPointers.clear();
     keyboardMovementSpeed = baseMoveSpeed();
+    cancelDash();
     primaryPointerId = null;
     pointerGestureMoved = false;
     pinchActive = false;
@@ -6033,6 +6587,7 @@ export function createWorldScene({
   }
 
   renderer.domElement.addEventListener("pointerdown", handlePointerDown);
+  renderer.domElement.addEventListener("dblclick", handleDoubleClick);
   renderer.domElement.addEventListener("pointermove", handlePointerMove, {
     passive: false,
   });
@@ -6209,6 +6764,7 @@ export function createWorldScene({
     renderer.setAnimationLoop(null);
     resizeObserver.disconnect();
     renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
+    renderer.domElement.removeEventListener("dblclick", handleDoubleClick);
     renderer.domElement.removeEventListener("pointermove", handlePointerMove);
     renderer.domElement.removeEventListener("wheel", handleWheel);
     window.removeEventListener("pointerup", handlePointerUp);

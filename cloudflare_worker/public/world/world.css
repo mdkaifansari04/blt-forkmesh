@@ -230,50 +230,6 @@ forkmesh-world {
   color: var(--world-copy);
 }
 
-.world-quick-dock {
-  position: absolute;
-  z-index: 9;
-  left: 50%;
-  bottom: calc(var(--safe-bottom) + var(--world-diagnostics-height));
-  display: flex;
-  overflow: hidden;
-  transform: translateX(-50%);
-  border: 1px solid var(--world-line-strong);
-  background: rgb(7 17 15 / 0.82);
-  backdrop-filter: blur(18px);
-}
-
-.world-quick-dock button,
-.world-quick-dock a {
-  display: inline-flex;
-  min-width: 62px;
-  min-height: 44px;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  border: 0;
-  border-right: 1px solid var(--world-line);
-  background: transparent;
-  padding: 0 10px;
-  color: var(--world-copy);
-  cursor: pointer;
-  text-decoration: none;
-  font-size: 0.68rem;
-}
-
-.world-quick-dock > :last-child {
-  border-right: 0;
-}
-
-.world-quick-dock button:hover,
-.world-quick-dock button:focus-visible,
-.world-quick-dock a:hover,
-.world-quick-dock a:focus-visible {
-  background: var(--world-mint);
-  color: #07110f;
-  outline: none;
-}
-
 .fm-world::before {
   content: "";
   position: absolute;
@@ -3835,6 +3791,52 @@ forkmesh-world {
   outline: none;
 }
 
+.world-outfit-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+
+.world-outfit-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--world-line);
+  border-radius: 0;
+  background: #0b1c17;
+  color: var(--world-muted);
+  cursor: pointer;
+  font-size: 0.7rem;
+}
+
+.world-outfit-option::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--outfit-color, var(--world-line));
+  flex: none;
+}
+
+.world-outfit-option:hover,
+.world-outfit-option:focus-visible,
+.world-outfit-option[aria-pressed="true"] {
+  border-color: var(--world-mint);
+  color: var(--world-copy);
+  outline: none;
+}
+
+.world-outfit-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.world-upgrade-link {
+  color: #f2793a;
+}
+
 .world-light-control {
   display: grid;
   gap: 8px;
@@ -4381,16 +4383,6 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     display: grid;
   }
 
-  .world-quick-dock button,
-  .world-quick-dock a {
-    min-width: 44px;
-    min-height: 44px;
-    padding-inline: 8px;
-  }
-
-  .world-quick-dock span:not([aria-hidden="true"]) {
-    display: none;
-  }
 }
 
 @media (max-height: 520px) and (orientation: landscape) {
@@ -4439,25 +4431,6 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 
   .world-emoji-grid {
     grid-template-columns: repeat(5, minmax(34px, 1fr));
-  }
-
-  .world-quick-dock {
-    top: calc(var(--safe-top) + 54px);
-    right: var(--safe-right);
-    bottom: auto;
-    left: auto;
-    flex-direction: column;
-    transform: none;
-  }
-
-  .world-quick-dock button,
-  .world-quick-dock a {
-    border-right: 0;
-    border-bottom: 1px solid var(--world-line);
-  }
-
-  .world-quick-dock > :last-child {
-    border-bottom: 0;
   }
 
   .world-arrival-card {
