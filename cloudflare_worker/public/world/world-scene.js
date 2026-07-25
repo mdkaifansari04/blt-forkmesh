@@ -9153,11 +9153,60 @@ export function createWorldScene({
       time - lastRenderStallLogAt >= RENDER_STALL_LOG_COOLDOWN_MS
     ) {
       lastRenderStallLogAt = time;
+      const drawingBuffer = renderer.getDrawingBufferSize(new THREE.Vector2());
+      const memory = performance.memory;
       console.warn("[ForkMesh World] Render stall detected", {
+        observedAt: new Date().toISOString(),
         frameMs: Math.round(rawFrameMs),
+        estimatedMissedFrames: Math.max(0, Math.round(rawFrameMs / 16.67) - 1),
+        detectionPoint: "world-scene animate()",
         cameraMode,
+        camera: {
+          zoom: Number(
+            (cameraMode === "first-person" ? firstPersonZoom : cameraZoom).toFixed(3),
+          ),
+          yaw: Number(cameraYaw.toFixed(3)),
+          pitch: Number(
+            (cameraMode === "first-person" ? firstPersonPitch : cameraPitch).toFixed(3),
+          ),
+          position: camera.position.toArray().map((value) => Number(value.toFixed(2))),
+        },
+        player: {
+          position: player.position.toArray().map((value) => Number(value.toFixed(2))),
+          moving: wasWalking,
+        },
         space: currentSpace,
+        region: currentRegion,
+        officeSceneMode,
+        input: {
+          dragging: primaryPointerId !== null,
+          pinching: pinchActive,
+          pressedKeys: [...keys],
+          touchPointers: touchPointers.size,
+        },
+        renderer: {
+          pixelRatio: renderer.getPixelRatio(),
+          drawingBuffer: [drawingBuffer.x, drawingBuffer.y],
+          calls: Number(renderer.info?.render?.calls) || 0,
+          triangles: Number(renderer.info?.render?.triangles) || 0,
+          geometries: Number(renderer.info?.memory?.geometries) || 0,
+          textures: Number(renderer.info?.memory?.textures) || 0,
+        },
+        viewport: {
+          width: window.innerWidth,
+          height: window.innerHeight,
+          devicePixelRatio: window.devicePixelRatio || 1,
+        },
+        jsHeap: memory
+          ? {
+              usedMB: Math.round(memory.usedJSHeapSize / 1024 / 1024),
+              totalMB: Math.round(memory.totalJSHeapSize / 1024 / 1024),
+              limitMB: Math.round(memory.jsHeapSizeLimit / 1024 / 1024),
+            }
+          : null,
         interactiveObjects: interactive.length,
+        animatedObjects: animated.length,
+        stack: new Error("Render stall observed").stack,
       });
     }
     // Only the town scene walks the shared avatar and its neighbours; inside an
