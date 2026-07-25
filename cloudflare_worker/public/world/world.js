@@ -2560,6 +2560,14 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <span aria-hidden="true">♪</span><span data-world-sound-label>Sound</span>
             </button>
             <button
+              class="world-top-link"
+              type="button"
+              data-world-screenshot
+              title="Capture and annotate a screenshot"
+            >
+              <span aria-hidden="true">📷</span><span>Capture</span>
+            </button>
+            <button
               class="world-shirt-badge"
               type="button"
               data-world-shirt-badge
@@ -3283,6 +3291,7 @@ class ForkMeshWorld extends HTMLElement {
     this.securityScan = null;
     this.securityHistory = [];
     this.securityRepository = "";
+    this.screenshotUI = null;
     this.fediverseDirectory = {
       mastodon: [],
       lemmy: [],
@@ -5063,6 +5072,10 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-camera-toggle]")) {
         this.toggleWorldCameraMode();
+        return;
+      }
+      if (event.target.closest("[data-world-screenshot]")) {
+        this.startScreenshotCapture();
         return;
       }
       const mapToggle = event.target.closest("[data-world-map-toggle]");
@@ -13034,6 +13047,404 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  closeScreenshotUI() {
+    const active = this.screenshotUI;
+    if (!active) return;
+    this.screenshotUI = null;
+    window.removeEventListener("keydown", active.onKeyDown, true);
+    active.element.remove();
+    this.$("[data-world-screenshot]")?.focus?.();
+  }
+
+  startScreenshotCapture() {
+    if (this.screenshotUI) return;
+    if (!this.world?.renderer?.domElement) {
+      this.toast("Screenshot capture needs the 3D world to finish loading.");
+      return;
+    }
+    const overlay = document.createElement("div");
+    overlay.className = "world-shot-overlay";
+    overlay.innerHTML = `
+      <p class="world-shot-hint">Drag to select the area to capture — Esc cancels</p>
+      <div class="world-shot-marquee" hidden></div>
+    `;
+    const marquee = overlay.querySelector(".world-shot-marquee");
+    const onKeyDown = (event) => {
+      if (event.code !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeScreenshotUI();
+    };
+    this.screenshotUI = { element: overlay, onKeyDown };
+    window.addEventListener("keydown", onKeyDown, true);
+    let origin = null;
+    const selectionRect = (event) => ({
+      left: Math.min(origin.x, event.clientX),
+      top: Math.min(origin.y, event.clientY),
+      width: Math.abs(event.clientX - origin.x),
+      height: Math.abs(event.clientY - origin.y),
+    });
+    overlay.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      origin = { x: event.clientX, y: event.clientY };
+      overlay.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    });
+    overlay.addEventListener("pointermove", (event) => {
+      if (!origin || !marquee) return;
+      const rect = selectionRect(event);
+      marquee.hidden = false;
+      marquee.style.left = `${rect.left}px`;
+      marquee.style.top = `${rect.top}px`;
+      marquee.style.width = `${rect.width}px`;
+      marquee.style.height = `${rect.height}px`;
+    });
+    overlay.addEventListener("pointerup", (event) => {
+      if (!origin) return;
+      const rect = selectionRect(event);
+      origin = null;
+      this.closeScreenshotUI();
+      if (rect.width < 8 || rect.height < 8) {
+        this.toast("Drag a larger area to capture a screenshot.");
+        return;
+      }
+      const shot = this.captureWorldRegion(rect);
+      if (!shot) {
+        this.toast("That area is outside the 3D world view.");
+        return;
+      }
+      this.openScreenshotAnnotator(shot);
+    });
+    overlay.addEventListener("pointercancel", () => {
+      origin = null;
+      this.closeScreenshotUI();
+    });
+    this.appendChild(overlay);
+  }
+
+  captureWorldRegion(rect) {
+    const world = this.world;
+    const canvas = world?.renderer?.domElement;
+    if (!canvas) return null;
+    try {
+      // The renderer runs without preserveDrawingBuffer, so paint a fresh
+      // frame and read it back synchronously before the buffer is cleared.
+      world.renderer.render(world.scene, world.camera);
+    } catch (_) {
+      return null;
+    }
+    const bounds = canvas.getBoundingClientRect();
+    const left = Math.max(rect.left, bounds.left);
+    const top = Math.max(rect.top, bounds.top);
+    const right = Math.min(rect.left + rect.width, bounds.right);
+    const bottom = Math.min(rect.top + rect.height, bounds.bottom);
+    if (right - left < 4 || bottom - top < 4) return null;
+    const scaleX = canvas.width / Math.max(1, bounds.width);
+    const scaleY = canvas.height / Math.max(1, bounds.height);
+    const shot = document.createElement("canvas");
+    shot.width = Math.max(1, Math.round((right - left) * scaleX));
+    shot.height = Math.max(1, Math.round((bottom - top) * scaleY));
+    const context = shot.getContext("2d");
+    if (!context) return null;
+    context.drawImage(
+      canvas,
+      (left - bounds.left) * scaleX,
+      (top - bounds.top) * scaleY,
+      (right - left) * scaleX,
+      (bottom - top) * scaleY,
+      0,
+      0,
+      shot.width,
+      shot.height,
+    );
+    return shot;
+  }
+
+  openScreenshotAnnotator(shot) {
+    if (this.screenshotUI) this.closeScreenshotUI();
+    const tools = [
+      ["pencil", "Pencil"],
+      ["line", "Line"],
+      ["arrow", "Arrow"],
+      ["rect", "Rectangle"],
+      ["ellipse", "Ellipse"],
+      ["text", "Text"],
+    ];
+    // Same palette as the desktop Screenshot & Markup window.
+    const colors = [
+      "#ff3232",
+      "#ffa500",
+      "#ffe600",
+      "#32c850",
+      "#3282ff",
+      "#c832ff",
+      "#000000",
+      "#ffffff",
+    ];
+    const modal = document.createElement("div");
+    modal.className = "world-shot-annotator";
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    modal.setAttribute("aria-label", "Annotate screenshot");
+    modal.innerHTML = `
+      <div class="world-shot-dialog">
+        <header class="world-shot-header">
+          <strong>Annotate Screenshot</strong>
+          <button type="button" class="world-shot-close" data-shot-close aria-label="Discard screenshot">×</button>
+        </header>
+        <div class="world-shot-toolbar">
+          <div class="world-shot-tools" role="group" aria-label="Annotation tools">
+            ${tools
+              .map(
+                ([id, label], index) => `<button
+                  type="button"
+                  data-shot-tool="${id}"
+                  aria-pressed="${index === 0 ? "true" : "false"}"
+                >${label}</button>`,
+              )
+              .join("")}
+          </div>
+          <div class="world-shot-colors" role="group" aria-label="Annotation colors">
+            ${colors
+              .map(
+                (color, index) => `<button
+                  type="button"
+                  data-shot-color="${color}"
+                  style="--shot-swatch:${color}"
+                  aria-pressed="${index === 0 ? "true" : "false"}"
+                  aria-label="Annotation color ${color}"
+                ></button>`,
+              )
+              .join("")}
+          </div>
+          <button type="button" class="world-shot-undo" data-shot-undo>Undo</button>
+        </div>
+        <div class="world-shot-stage"></div>
+        <footer class="world-shot-footer">
+          <button type="button" class="world-shot-ghost" data-shot-close>Discard</button>
+          <button type="button" class="world-shot-primary" data-shot-download>Download PNG</button>
+        </footer>
+      </div>
+    `;
+    const stage = modal.querySelector(".world-shot-stage");
+    const canvas = document.createElement("canvas");
+    canvas.className = "world-shot-canvas";
+    canvas.width = shot.width;
+    canvas.height = shot.height;
+    stage.appendChild(canvas);
+    const context = canvas.getContext("2d");
+    const onKeyDown = (event) => {
+      if (event.code !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeScreenshotUI();
+    };
+    this.screenshotUI = { element: modal, onKeyDown };
+    window.addEventListener("keydown", onKeyDown, true);
+
+    const shapes = [];
+    let tool = "pencil";
+    let color = colors[0];
+    let active = null;
+    const strokeWidth = Math.max(3, Math.round(shot.width / 240));
+    const fontSize = Math.max(18, strokeWidth * 6);
+    const drawShape = (shape) => {
+      context.strokeStyle = shape.color;
+      context.fillStyle = shape.color;
+      context.lineWidth = strokeWidth;
+      context.lineCap = "round";
+      context.lineJoin = "round";
+      if (shape.type === "pencil") {
+        if (shape.points.length < 2) return;
+        context.beginPath();
+        context.moveTo(shape.points[0].x, shape.points[0].y);
+        for (const point of shape.points.slice(1)) {
+          context.lineTo(point.x, point.y);
+        }
+        context.stroke();
+      } else if (shape.type === "line" || shape.type === "arrow") {
+        context.beginPath();
+        context.moveTo(shape.from.x, shape.from.y);
+        context.lineTo(shape.to.x, shape.to.y);
+        context.stroke();
+        if (shape.type === "arrow") {
+          const angle = Math.atan2(
+            shape.to.y - shape.from.y,
+            shape.to.x - shape.from.x,
+          );
+          const head = strokeWidth * 4.5;
+          context.beginPath();
+          for (const spread of [-0.45, 0.45]) {
+            context.moveTo(shape.to.x, shape.to.y);
+            context.lineTo(
+              shape.to.x - head * Math.cos(angle + spread),
+              shape.to.y - head * Math.sin(angle + spread),
+            );
+          }
+          context.stroke();
+        }
+      } else if (shape.type === "rect") {
+        context.strokeRect(
+          Math.min(shape.from.x, shape.to.x),
+          Math.min(shape.from.y, shape.to.y),
+          Math.abs(shape.to.x - shape.from.x),
+          Math.abs(shape.to.y - shape.from.y),
+        );
+      } else if (shape.type === "ellipse") {
+        context.beginPath();
+        context.ellipse(
+          (shape.from.x + shape.to.x) / 2,
+          (shape.from.y + shape.to.y) / 2,
+          Math.abs(shape.to.x - shape.from.x) / 2,
+          Math.abs(shape.to.y - shape.from.y) / 2,
+          0,
+          0,
+          Math.PI * 2,
+        );
+        context.stroke();
+      } else if (shape.type === "text") {
+        context.font = `600 ${fontSize}px "ForkMesh Favorit", sans-serif`;
+        context.textBaseline = "top";
+        context.fillText(shape.text, shape.x, shape.y);
+      }
+    };
+    const redraw = (preview) => {
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(shot, 0, 0);
+      for (const shape of shapes) drawShape(shape);
+      if (preview) drawShape(preview);
+    };
+    const canvasPoint = (event) => {
+      const bounds = canvas.getBoundingClientRect();
+      return {
+        x: ((event.clientX - bounds.left) / Math.max(1, bounds.width)) *
+          canvas.width,
+        y: ((event.clientY - bounds.top) / Math.max(1, bounds.height)) *
+          canvas.height,
+      };
+    };
+    const placeTextInput = (point) => {
+      stage.querySelector(".world-shot-text-input")?.remove();
+      const bounds = canvas.getBoundingClientRect();
+      const stageBounds = stage.getBoundingClientRect();
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "world-shot-text-input";
+      input.placeholder = "Type, then press Enter";
+      input.style.left = `${
+        bounds.left - stageBounds.left + (point.x / canvas.width) * bounds.width
+      }px`;
+      input.style.top = `${
+        bounds.top - stageBounds.top + (point.y / canvas.height) * bounds.height
+      }px`;
+      input.style.color = color;
+      const commit = () => {
+        const text = input.value.trim();
+        input.remove();
+        if (!text) return;
+        shapes.push({ type: "text", x: point.x, y: point.y, text, color });
+        redraw();
+      };
+      input.addEventListener("keydown", (event) => {
+        event.stopPropagation();
+        if (event.code === "Enter") commit();
+        else if (event.code === "Escape") input.remove();
+      });
+      input.addEventListener("blur", commit);
+      stage.appendChild(input);
+      input.focus();
+    };
+    canvas.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      const point = canvasPoint(event);
+      if (tool === "text") {
+        placeTextInput(point);
+        return;
+      }
+      active =
+        tool === "pencil"
+          ? { type: "pencil", color, points: [point] }
+          : { type: tool, color, from: point, to: point };
+      canvas.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    });
+    canvas.addEventListener("pointermove", (event) => {
+      if (!active) return;
+      const point = canvasPoint(event);
+      if (active.type === "pencil") active.points.push(point);
+      else active.to = point;
+      redraw(active);
+    });
+    const commitActive = () => {
+      if (!active) return;
+      const moved =
+        active.type === "pencil"
+          ? active.points.length > 1
+          : Math.abs(active.to.x - active.from.x) > 2 ||
+            Math.abs(active.to.y - active.from.y) > 2;
+      if (moved) shapes.push(active);
+      active = null;
+      redraw();
+    };
+    canvas.addEventListener("pointerup", commitActive);
+    canvas.addEventListener("pointercancel", () => {
+      active = null;
+      redraw();
+    });
+    modal.addEventListener("click", (event) => {
+      const toolButton = event.target.closest("[data-shot-tool]");
+      if (toolButton) {
+        tool = toolButton.dataset.shotTool;
+        modal.querySelectorAll("[data-shot-tool]").forEach((button) => {
+          button.setAttribute(
+            "aria-pressed",
+            String(button === toolButton),
+          );
+        });
+        return;
+      }
+      const colorButton = event.target.closest("[data-shot-color]");
+      if (colorButton) {
+        color = colorButton.dataset.shotColor;
+        modal.querySelectorAll("[data-shot-color]").forEach((button) => {
+          button.setAttribute(
+            "aria-pressed",
+            String(button === colorButton),
+          );
+        });
+        return;
+      }
+      if (event.target.closest("[data-shot-undo]")) {
+        shapes.pop();
+        redraw();
+        return;
+      }
+      if (event.target.closest("[data-shot-close]")) {
+        this.closeScreenshotUI();
+        return;
+      }
+      if (event.target.closest("[data-shot-download]")) {
+        const stamp = new Date()
+          .toISOString()
+          .replace(/[:T]/g, "-")
+          .slice(0, 19);
+        canvas.toBlob((blob) => {
+          if (!blob) return;
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = `forkmesh-world-${stamp}.png`;
+          link.click();
+          window.setTimeout(() => URL.revokeObjectURL(url), 4000);
+        }, "image/png");
+        this.toast("Annotated screenshot downloaded.");
+      }
+    });
+    redraw();
+    this.appendChild(modal);
+    modal.querySelector("[data-shot-tool='pencil']")?.focus();
+  }
+
   playCountryJoinSound(countryCode, force = false) {
     const context = this.soundContext;
     if (!this.soundEnabled || !context || context.state === "closed") return;
@@ -14438,6 +14849,7 @@ class ForkMeshWorld extends HTMLElement {
     if (this.destroyed) return;
     if (this.spawnSelected) this.captureWorldPosition(true);
     this.destroyed = true;
+    this.closeScreenshotUI();
     this.clearPullReviewScrollTracking();
     document.removeEventListener("visibilitychange", this.handleVisibility);
     window.visualViewport?.removeEventListener(
