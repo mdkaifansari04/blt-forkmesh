@@ -6131,8 +6131,9 @@ class ForkMeshWorld extends HTMLElement {
     // the R key turns things, so say it once per session.
     this.layoutEditorAnnounced = true;
     this.toast(
-      "Layout editing on: drag an object's handle to move it, press R " +
-        "(Shift+R to reverse) to rotate it.",
+      "Layout editing on: drag an object's handle to move it; roll the " +
+        "mouse wheel while dragging (or press R, Shift+R to reverse) to " +
+        "rotate it.",
     );
   }
 
