@@ -115,6 +115,19 @@ def test_world_contains_the_initial_city_districts_without_a_clock():
     assert "world-clock" not in CSS
 
 
+def test_forkmesh_office_is_a_navigable_world_landmark():
+    assert 'id: "office"' in DATA
+    assert 'label: "ForkMesh Office"' in DATA
+    assert 'shortLabel: "Office"' in DATA
+    assert "position: [11, 0, -21]" in DATA
+    assert 'id: "visiting-office"' in DATA
+
+
+def test_static_world_fallback_links_to_chat():
+    assert 'href="/chat"' in INDEX
+    assert "Open ForkMesh chat" in INDEX
+
+
 def test_scene_builds_playable_landmarks_and_badged_avatars():
     for builder in (
         "createAvatar",
@@ -446,7 +459,6 @@ def test_world_has_consent_aware_activity_events_workshops_and_media():
     assert "function playRewardEvent" in SCENE
     assert "syncOperatorBelt" in SCENE
     assert "this.inactivePlayers" in APP
-    assert "/dashboard/chat?space=sky-campus" in APP
     assert "SPACE_CHANNELS" in DASHBOARD_CHAT
     for channel in (
         "#world-sky-campus",
@@ -614,12 +626,20 @@ def test_join_cues_are_country_specific_local_opt_in_and_rate_limited():
     assert "speechSynthesis" not in cue
 
 
-def test_chat_opens_inside_the_world_without_popup_permission():
-    assert "data-world-chat-open" in APP
-    assert "data-world-chat-frame" in APP
-    assert 'role="dialog"' in APP
+def test_chat_opens_through_the_spatial_forkmesh_office_and_terminal():
+    assert "data-world-office-focus" in APP
+    assert "data-world-office-enter" in APP
+    assert "data-world-office-chat" in APP
+    assert "data-world-office-frame" in APP
+    assert "Visit ForkMesh Office" in APP
+    assert "ForkMesh Office chat" in APP
+    assert 'office: "visiting-office"' in APP
+    assert "/chat?embed=office" not in APP
     assert 'sandbox="allow-forms allow-same-origin allow-scripts"' in APP
     assert "allow-popups" not in APP
+    # Two doors to the same encrypted chat: the spatial Office walk-in (above)
+    # and the docked chat terminal panel. The Office deliberately does not
+    # replace the terminal, so both entrances are asserted here.
     assert "openWorldChat(" in APP
     assert "closeWorldChat()" in APP
     assert "destination.origin !== location.origin" in APP

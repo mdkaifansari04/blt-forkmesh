@@ -57,7 +57,8 @@ WORLD_STATUS_VALUES = frozenset({
 })
 WORLD_ACTIVITY_VALUES = frozenset({
     "browsing-code-visualization", "exploring-town-square", "hidden",
-    "reading-documentation", "viewing-repository", "visiting-organization",
+    "reading-documentation", "viewing-repository", "visiting-office",
+    "visiting-organization",
 })
 WORLD_FIRST_VISIT_AGE_VALUES = frozenset({
     "this-session", "today", "this-week", "this-month", "this-year",
@@ -84,6 +85,26 @@ WORLD_INACTIVITY_VALUES = frozenset({
 WORLD_NODE_BADGE_MAX = 6
 WORLD_STATUS_NOTE_MAX = 20
 
+# Office meetings use a separate authorized socket from the global World.
+# This protocol carries only ephemeral room-local avatar and chair state. Chat
+# messages, channel identifiers, attachments, and encryption material are not
+# valid fields here.
+OFFICE_MESSAGE_MAX_BYTES = 4096
+OFFICE_RATE_WINDOW_MS = 1000
+OFFICE_RATE_MAX_PER_WINDOW = 8
+OFFICE_BROADCAST_WINDOW_MS = 1000
+OFFICE_BROADCAST_MAX_PER_WINDOW = 64
+OFFICE_CLIENT_STALE_MS = 90 * 1000
+OFFICE_MAX_CONNECTIONS = 16
+OFFICE_COORD_LIMIT = 32.0
+OFFICE_CHAIR_IDS = frozenset(
+    "chair-%d" % index for index in range(1, 9))
+OFFICE_POSES = frozenset({"standing", "seated"})
+OFFICE_PUBLIC_FIELDS = (
+    "id", "name", "accountStatus", "x", "y", "z", "yaw", "moving",
+    "pose", "chairId", "bindingKey", "updatedAt",
+)
+
 # This is the complete state that may leave the Durable Object.  Keeping the
 # list explicit is the privacy boundary for snapshots and presence frames.
 WORLD_PUBLIC_FIELDS = (
@@ -97,6 +118,7 @@ WORLD_PUBLIC_FIELDS = (
 _COUNTRY_RE = re.compile(r"^[A-Z]{2}$")
 _LOCAL_TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 _PEER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+_P256_COORDINATE_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 
 
 def approximate_country_code(value):
@@ -380,6 +402,156 @@ def default_presence(peer_id, now):
     }
 
 
+def default_office_presence(participant_id, now):
+    """Create one privacy-minimal live Office participant state."""
+    participant_id = str(participant_id or "")[:32]
+    if not _PEER_ID_RE.fullmatch(participant_id):
+        participant_id = "participant"
+    suffix = "".join(ch for ch in participant_id[:4] if ch.isalnum())
+    return {
+        "id": participant_id,
+        "name": clean_display_name(
+            "", "Guest " + suffix if suffix else "Guest"),
+        "accountStatus": "Guest",
+        "x": 0.0,
+        "y": 0.38,
+        "z": 0.0,
+        "yaw": 0.0,
+        "moving": False,
+        "pose": "standing",
+        "chairId": "",
+        "bindingKey": None,
+        "updatedAt": int(now),
+    }
+
+
+def public_office_presence(state):
+    """Return exactly the fields authorized Office participants may receive."""
+    state = state if isinstance(state, dict) else {}
+    return {field: state.get(field) for field in OFFICE_PUBLIC_FIELDS}
+
+
+def _office_binding_key(value):
+    """Return a bounded public P-256 JWK or ``None``.
+
+    Exact keys prevent extensions such as a private coordinate from being
+    reflected to meeting peers.
+    """
+    if not isinstance(value, dict) or set(value) != {"kty", "crv", "x", "y"}:
+        return None
+    if value.get("kty") != "EC" or value.get("crv") != "P-256":
+        return None
+    x = str(value.get("x") or "")
+    y = str(value.get("y") or "")
+    if not _P256_COORDINATE_RE.fullmatch(x):
+        return None
+    if not _P256_COORDINATE_RE.fullmatch(y):
+        return None
+    return {"kty": "EC", "crv": "P-256", "x": x, "y": y}
+
+
+def _bounded_office_number(value, fallback):
+    if isinstance(value, bool):
+        return fallback
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if not math.isfinite(number):
+        return fallback
+    number = max(-OFFICE_COORD_LIMIT, min(OFFICE_COORD_LIMIT, number))
+    return round(number, 2)
+
+
+def sanitize_office_message(payload, current, now, trusted_name="",
+                            trusted_account_status="Guest"):
+    """Apply an allowlisted Office avatar frame.
+
+    Seat requests are intentionally handled separately so the Durable Object
+    can decide ownership from its complete live-socket snapshot.
+    """
+    if not isinstance(payload, dict) or not isinstance(current, dict):
+        return None
+    kind = str(payload.get("type") or "").strip().lower()
+    state = dict(current)
+
+    if kind == "presence":
+        if trusted_name:
+            state["name"] = clean_display_name(
+                trusted_name, state.get("name") or "Contributor")
+        elif "name" in payload:
+            state["name"] = clean_display_name(
+                payload.get("name"), state.get("name") or "Guest")
+        status = str(trusted_account_status or "Guest").strip()
+        state["accountStatus"] = (
+            status if status in WORLD_ACCOUNT_STATUS_VALUES else "Guest")
+        if "bindingKey" in payload:
+            state["bindingKey"] = _office_binding_key(
+                payload.get("bindingKey"))
+        state["updatedAt"] = int(now)
+        return kind, state
+
+    if kind == "move":
+        if state.get("pose") == "seated":
+            state["moving"] = False
+            state["updatedAt"] = int(now)
+            return kind, state
+        for field in ("x", "y", "z"):
+            if field in payload:
+                state[field] = _bounded_office_number(
+                    payload.get(field), state.get(field, 0.0))
+        if "yaw" in payload:
+            state["yaw"] = _bounded_yaw(
+                payload.get("yaw"), state.get("yaw", 0.0))
+        if isinstance(payload.get("moving"), bool):
+            state["moving"] = payload["moving"]
+        state["updatedAt"] = int(now)
+        return kind, state
+
+    if kind == "ping":
+        return kind, state
+
+    return None
+
+
+def allocate_office_seat(current, requested_chair, occupied):
+    """Grant, release, or reject one server-authoritative chair request."""
+    if not isinstance(current, dict):
+        return "invalid", current
+    state = dict(current)
+    chair_id = str(requested_chair or "").strip()
+    if not chair_id:
+        state["chairId"] = ""
+        state["pose"] = "standing"
+        state["moving"] = False
+        return "released", state
+    if chair_id not in OFFICE_CHAIR_IDS:
+        return "invalid", state
+    occupied = occupied if isinstance(occupied, dict) else {}
+    owner = str(occupied.get(chair_id) or "")
+    if owner and owner != str(state.get("id") or ""):
+        return "denied", state
+    state["chairId"] = chair_id
+    state["pose"] = "seated"
+    state["moving"] = False
+    return "granted", state
+
+
+def office_movement_delta(state):
+    """Return one bounded Office movement frame without identity secrets."""
+    state = state if isinstance(state, dict) else {}
+    return {
+        "type": "move",
+        "id": state.get("id"),
+        "x": state.get("x"),
+        "y": state.get("y"),
+        "z": state.get("z"),
+        "yaw": state.get("yaw"),
+        "moving": bool(state.get("moving")),
+        "updatedAt": state.get("updatedAt"),
+    }
+
+
 def public_presence(state):
     """Return exactly the allowlisted public fields from a socket state."""
     state = state if isinstance(state, dict) else {}
@@ -636,6 +808,42 @@ def advance_connection_window(start, count, now):
     return count <= WORLD_CONNECT_MAX_PER_WINDOW, start, count
 
 
+def advance_office_rate_window(start, count, now):
+    """Advance the per-participant Office frame rate window."""
+    try:
+        start = int(start or 0)
+        count = int(count or 0)
+    except (TypeError, ValueError):
+        start, count = 0, 0
+    now = int(now)
+    if (
+        start <= 0
+        or now < start
+        or now - start >= OFFICE_RATE_WINDOW_MS
+    ):
+        start, count = now, 0
+    count += 1
+    return count <= OFFICE_RATE_MAX_PER_WINDOW, start, count
+
+
+def advance_office_broadcast_window(start, count, now):
+    """Advance the room-wide Office broadcast amplification budget."""
+    try:
+        start = int(start or 0)
+        count = int(count or 0)
+    except (TypeError, ValueError):
+        start, count = 0, 0
+    now = int(now)
+    if (
+        start <= 0
+        or now < start
+        or now - start >= OFFICE_BROADCAST_WINDOW_MS
+    ):
+        start, count = now, 0
+    count += 1
+    return count <= OFFICE_BROADCAST_MAX_PER_WINDOW, start, count
+
+
 def presence_is_stale(last_seen, now):
     """Whether a socket should be removed from live snapshots/broadcasts."""
     try:
@@ -644,6 +852,16 @@ def presence_is_stale(last_seen, now):
     except (TypeError, ValueError):
         return True
     return last_seen <= 0 or now - last_seen > WORLD_CLIENT_STALE_MS
+
+
+def office_presence_is_stale(last_seen, now):
+    """Whether a live Office participant should be removed and its seat freed."""
+    try:
+        last_seen = int(last_seen or 0)
+        now = int(now)
+    except (TypeError, ValueError):
+        return True
+    return last_seen <= 0 or now - last_seen > OFFICE_CLIENT_STALE_MS
 
 
 def context_payload(country_code, now, chat_connections=0):

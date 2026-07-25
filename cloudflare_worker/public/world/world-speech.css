@@ -22,6 +22,14 @@
   background: #8df5c7;
 }
 
+body:has(.world-office-chat[data-open="true"]) .world-speech-launcher,
+body:has(.world-office-lobby[data-open="true"]) .world-speech-launcher,
+body:has(.world-office-room[data-open="true"]) .world-speech-launcher {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .world-speech-panel {
   position: fixed;
   z-index: 100;

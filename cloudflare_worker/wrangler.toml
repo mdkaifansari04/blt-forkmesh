@@ -153,6 +153,10 @@ class_name = "ForkMeshRoom"
 name = "FORKMESH_WORLD"
 class_name = "ForkMeshWorld"
 
+[[durable_objects.bindings]]
+name = "FORKMESH_OFFICE_ROOM"
+class_name = "ForkMeshOfficeRoom"
+
 # Persistent storage: repo catalog, accounts, and the issue/pull inboxes.
 # Create once with:  uvx --from workers-py pywrangler d1 create forkmesh
 # then paste the printed database_id below.
@@ -186,6 +190,10 @@ class_name = "ForkMeshRoom"
 [[env.dev.durable_objects.bindings]]
 name = "FORKMESH_WORLD"
 class_name = "ForkMeshWorld"
+
+[[env.dev.durable_objects.bindings]]
+name = "FORKMESH_OFFICE_ROOM"
+class_name = "ForkMeshOfficeRoom"
 
 [[migrations]]
 tag = "v1"
@@ -236,6 +244,12 @@ new_sqlite_classes = ["ForkMeshWorld"]
 tag = "v10"
 # Repository bytes and control traffic moved to the direct HTTPS mirror layer.
 deleted_classes = ["ForkMeshHost"]
+
+[[migrations]]
+tag = "v11"
+# Office meeting rooms keep only live WebSocket state, but Cloudflare requires
+# every bound Durable Object class to be registered through a migration.
+new_sqlite_classes = ["ForkMeshOfficeRoom"]
 
 
 [observability]

@@ -72,6 +72,12 @@ CHAT_HISTORY_INGRESS_MAX_BYTES = 8 * 1024 * 1024
 CHAT_CHANNEL_TICKET_TTL_MS = 60 * 1000
 CHAT_CHANNEL_DO_RE = re.compile(
     r"^/api/chat/channels/([0-9a-f]{32})/v([1-9][0-9]*)/(ws|revoke)$")
+OFFICE_MEETING_TICKET_TTL_MS = 60 * 1000
+OFFICE_CHANNEL_WS_RE = re.compile(
+    r"^/api/world/office/channels/([0-9a-f]{32})/ws/?$")
+OFFICE_INTERNAL_RE = re.compile(
+    r"^/api/world/office/(world-general|[0-9a-f]{32})/"
+    r"v([1-9][0-9]*)/(ws|revoke)$")
 LOCAL_DEMO_EMAIL = "demo@forkmesh.local"
 LOCAL_DEMO_NAME = "demo-node"
 LOCAL_DEMO_PASSWORD = "forkmesh-demo"
@@ -2850,6 +2856,40 @@ async def world_durable_object_request(
     )
 
 
+async def office_durable_object_request(request, claims, target_url=None):
+    """Rebuild an Office upgrade from one explicit handshake allowlist."""
+    headers = {}
+    for name in (
+        "upgrade", "connection", "sec-websocket-version", "sec-websocket-key",
+    ):
+        try:
+            value = request.headers.get(name)
+        except Exception:
+            value = None
+        if value:
+            headers[name] = value
+    safe_claim = {
+        "scope": str((claims or {}).get("scope") or ""),
+        "version": int((claims or {}).get("version") or 0),
+        "account_bi": str((claims or {}).get("account_bi") or ""),
+        "name": world_protocol.clean_display_name(
+            (claims or {}).get("name"), "Guest"),
+        "accountStatus": str(
+            (claims or {}).get("accountStatus") or "Guest"),
+    }
+    encoded_claim = base64.urlsafe_b64encode(
+        json.dumps(safe_claim, separators=(",", ":")).encode()
+    ).decode().rstrip("=")
+    headers["x-forkmesh-office-claim"] = encoded_claim
+    source_url = urlparse(str(target_url or request.url))
+    safe_target_url = (
+        source_url.scheme + "://" + source_url.netloc + source_url.path)
+    return JsRequest.new(
+        safe_target_url,
+        to_js({"method": "GET", "headers": headers}),
+    )
+
+
 WORLD_TICKET_TTL_MS = 60 * 1000
 WORLD_INACTIVE_RETAIN_MS = 30 * 24 * 60 * 60 * 1000
 WORLD_MANUAL_BLOCK_MIN_MS = 60 * 1000
@@ -3291,6 +3331,102 @@ async def _chat_channel_passphrase(env, channel_id, key_version):
     return bytes(Uint8Array.new(digest).to_py()).hex()
 
 
+def _office_meeting_ticket(env, scope, key_version, account_bi="", name=""):
+    """Issue a short-lived claim for one authorized spatial meeting."""
+    scope = str(scope or "").strip()
+    if scope != "world-general" and not re.fullmatch(
+            r"[0-9a-f]{32}", scope):
+        raise ValueError("invalid_office_scope")
+    try:
+        key_version = int(key_version)
+    except (TypeError, ValueError):
+        raise ValueError("invalid_office_version") from None
+    if key_version < 1 or key_version > 999999999:
+        raise ValueError("invalid_office_version")
+    account_bi = str(account_bi or "").strip()
+    if account_bi and not re.fullmatch(r"[0-9a-f]{64}", account_bi):
+        raise ValueError("invalid_office_account")
+    name = str(name or "").strip()
+    if len(name) > 64 or any(ord(ch) < 32 for ch in name):
+        raise ValueError("invalid_office_name")
+    encoded_name = base64.urlsafe_b64encode(name.encode()).decode().rstrip("=")
+    expires = int(Date.now()) + OFFICE_MEETING_TICKET_TTL_MS
+    nonce = new_world_peer_id()
+    canonical = ".".join((
+        "v1",
+        scope,
+        str(key_version),
+        account_bi or "-",
+        encoded_name or "-",
+        str(expires),
+        nonce,
+    ))
+    signature = hmac.new(
+        (_require_data_secret(env) + ":office-meeting-ticket-v1").encode(),
+        canonical.encode(),
+        "sha256",
+    ).hexdigest()
+    return canonical + "." + signature
+
+
+def _office_meeting_ticket_claims(env, token):
+    """Verify and decode one Office meeting claim without side effects."""
+    parts = str(token or "").split(".")
+    if len(parts) != 8:
+        return None
+    (version_tag, scope, version_raw, account_raw, name_raw, expires_raw,
+     nonce, signature) = parts
+    if version_tag != "v1":
+        return None
+    if scope != "world-general" and not re.fullmatch(
+            r"[0-9a-f]{32}", scope):
+        return None
+    account_bi = "" if account_raw == "-" else account_raw
+    if account_bi and not re.fullmatch(r"[0-9a-f]{64}", account_bi):
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,32}", nonce):
+        return None
+    if not re.fullmatch(r"[0-9a-f]{64}", signature):
+        return None
+    try:
+        key_version = int(version_raw)
+        expires = int(expires_raw)
+    except (TypeError, ValueError):
+        return None
+    now = int(Date.now())
+    if (
+        key_version < 1
+        or key_version > 999999999
+        or expires <= now
+        or expires - now > OFFICE_MEETING_TICKET_TTL_MS
+    ):
+        return None
+    canonical = ".".join(parts[:7])
+    expected = hmac.new(
+        (_require_data_secret(env) + ":office-meeting-ticket-v1").encode(),
+        canonical.encode(),
+        "sha256",
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return None
+    try:
+        encoded_name = "" if name_raw == "-" else name_raw
+        padded = encoded_name + "=" * ((4 - len(encoded_name) % 4) % 4)
+        name = base64.urlsafe_b64decode(padded).decode()
+    except Exception:
+        return None
+    if len(name) > 64 or any(ord(ch) < 32 for ch in name):
+        return None
+    return {
+        "scope": scope,
+        "version": key_version,
+        "account_bi": account_bi,
+        "name": name,
+        "expires": expires,
+        "nonce": nonce,
+    }
+
+
 def _chat_channel_ticket(env, channel_id, key_version, account_bi):
     expires = int(Date.now()) + CHAT_CHANNEL_TICKET_TTL_MS
     canonical = ".".join((
@@ -3431,6 +3567,173 @@ async def _chat_channel_socket_handler(env, request, channel_id):
     return json_response({"error": "unavailable"}, status=503)
 
 
+async def office_general_access_handler(env, request):
+    """Issue a short-lived anonymous or account-bound general meeting claim."""
+    if method_name(request) != "GET":
+        return json_response(
+            {"error": "method_not_allowed"},
+            status=405,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"allow": "GET"},
+        )
+    account_bi = ""
+    name = ""
+    account_status = "Guest"
+    try:
+        account_bi, record = await _account_session_record(env, request)
+        if record:
+            name = world_protocol.clean_display_name(
+                record.get("name"), "Contributor")
+            account_status = "Registered"
+        else:
+            account_bi = ""
+    except Exception:
+        account_bi = ""
+    token = _office_meeting_ticket(
+        env, "world-general", 1, account_bi, name)
+    claims = _office_meeting_ticket_claims(env, token) or {}
+    return json_response(
+        {
+            "room": {
+                "id": "general",
+                "name": "general",
+                "visibility": "public",
+            },
+            "meetingWebSocketUrl": (
+                "/api/world/office/general/ws?ticket="
+                + quote(token, safe="")
+            ),
+            "expiresAt": int(claims.get("expires") or 0),
+            "accountStatus": account_status,
+        },
+        cache_control="no-store, max-age=0, must-revalidate",
+        extra_headers={"x-content-type-options": "nosniff"},
+    )
+
+
+async def _forward_office_socket(env, request, claims, room_name, path):
+    room_id = env.FORKMESH_OFFICE_ROOM.idFromName(room_name)
+    source_url = urlparse(request.url)
+    target_url = source_url.scheme + "://" + source_url.netloc + path
+    last_error = None
+    for _attempt in range(2):
+        room_object = env.FORKMESH_OFFICE_ROOM.get(room_id)
+        try:
+            return await room_object.fetch(
+                await office_durable_object_request(
+                    request, claims, target_url=target_url))
+        except Exception as error:
+            last_error = error
+    await log_durable_object_abort(
+        env, request, urlparse(request.url).path, last_error)
+    return json_response({"error": "unavailable"}, status=503)
+
+
+async def _office_general_socket_handler(env, request):
+    if (
+        method_name(request) != "GET"
+        or (request.headers.get("upgrade") or "").lower() != "websocket"
+        or not world_websocket_origin_allowed(request)
+    ):
+        return _private_replica_not_found()
+    url = urlparse(request.url)
+    ticket_values = parse_qs(
+        url.query, keep_blank_values=False).get("ticket") or []
+    claims = (
+        _office_meeting_ticket_claims(env, ticket_values[0])
+        if len(ticket_values) == 1 else None
+    )
+    if not claims or claims["scope"] != "world-general":
+        return _private_replica_not_found()
+    claims["accountStatus"] = (
+        "Registered" if claims.get("account_bi") else "Guest")
+    return await _forward_office_socket(
+        env,
+        request,
+        claims,
+        "office:world-general:v1",
+        "/api/world/office/world-general/v1/ws",
+    )
+
+
+async def _office_channel_socket_handler(env, request, channel_id):
+    if (
+        method_name(request) != "GET"
+        or (request.headers.get("upgrade") or "").lower() != "websocket"
+        or not world_websocket_origin_allowed(request)
+    ):
+        return _private_replica_not_found()
+    url = urlparse(request.url)
+    ticket_values = parse_qs(
+        url.query, keep_blank_values=False).get("ticket") or []
+    claims = (
+        _office_meeting_ticket_claims(env, ticket_values[0])
+        if len(ticket_values) == 1 else None
+    )
+    if not claims or claims["scope"] != channel_id:
+        return _private_replica_not_found()
+    try:
+        await ensure_schema(env)
+        channel = await d1_first(
+            env,
+            "SELECT data,key_version FROM chat_channels WHERE channel_id=?",
+            channel_id,
+        )
+        if (
+            not channel
+            or int(channel.get("key_version") or 0)
+                != int(claims["version"])
+        ):
+            return _private_replica_not_found()
+        channel_record = await decrypt_row(env, channel.get("data"))
+        if not isinstance(channel_record, dict):
+            return _private_replica_not_found()
+        visibility = (
+            "public"
+            if channel_record.get("visibility") == "public"
+            else "private"
+        )
+        account = await d1_first(
+            env,
+            "SELECT data,is_admin FROM users WHERE user_bi=?",
+            claims["account_bi"],
+        )
+        if not account:
+            return _private_replica_not_found()
+        account_record = await decrypt_row(env, account.get("data"))
+        if (
+            not account_record
+            or account_record.get("status") != "active"
+            or _account_kind(account_record) != "user"
+        ):
+            return _private_replica_not_found()
+        is_admin = bool(int(account.get("is_admin") or 0))
+        if not is_admin and visibility != "public":
+            membership = await d1_first(
+                env,
+                "SELECT 1 AS allowed FROM chat_channel_members "
+                "WHERE channel_id=? AND member_bi=?",
+                channel_id,
+                claims["account_bi"],
+            )
+            if not membership:
+                return _private_replica_not_found()
+        claims["name"] = world_protocol.clean_display_name(
+            account_record.get("name"), "Contributor")
+        claims["accountStatus"] = "Registered"
+    except Exception:
+        return _private_replica_not_found()
+
+    version = int(claims["version"])
+    return await _forward_office_socket(
+        env,
+        request,
+        claims,
+        "office:chat-channel:" + channel_id + ":v" + str(version),
+        "/api/world/office/" + channel_id + "/v" + str(version) + "/ws",
+    )
+
+
 async def _revoke_chat_channel_room(env, channel_id, key_version):
     room_name = (
         "chat-channel:" + str(channel_id) + ":v" + str(int(key_version))
@@ -3454,6 +3757,32 @@ async def _revoke_chat_channel_room(env, channel_id, key_version):
     if last_error is not None:
         raise last_error
     raise RuntimeError("chat_channel_revoke_failed")
+
+
+async def _revoke_office_channel_room(env, channel_id, key_version):
+    room_name = (
+        "office:chat-channel:" + str(channel_id)
+        + ":v" + str(int(key_version))
+    )
+    room_id = env.FORKMESH_OFFICE_ROOM.idFromName(room_name)
+    target_url = (
+        "https://forkmesh.internal/api/world/office/" + str(channel_id)
+        + "/v" + str(int(key_version)) + "/revoke"
+    )
+    last_error = None
+    for _attempt in range(2):
+        room_object = env.FORKMESH_OFFICE_ROOM.get(room_id)
+        try:
+            request = JsRequest.new(
+                target_url, to_js({"method": "POST"}))
+            response = await room_object.fetch(request)
+            if int(getattr(response, "status", 200) or 200) < 400:
+                return
+        except Exception as error:
+            last_error = error
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("office_channel_revoke_failed")
 
 
 class _WorldCommunityRuntime:
@@ -3680,12 +4009,14 @@ class _WorldCommunityRuntime:
 
 
 class _ChatChannelsRuntime(_WorldCommunityRuntime):
-    async def room_access(self, channel_id, key_version, account_bi):
+    async def room_access(self, channel_id, key_version, account_bi, actor):
         room = (
             "chat-channel:" + str(channel_id) + ":v" + str(int(key_version))
         )
         ticket = _chat_channel_ticket(
             self.env, channel_id, key_version, account_bi)
+        meeting_ticket = _office_meeting_ticket(
+            self.env, channel_id, key_version, account_bi, actor)
         return {
             "room": room,
             "passphrase": await _chat_channel_passphrase(
@@ -3694,10 +4025,16 @@ class _ChatChannelsRuntime(_WorldCommunityRuntime):
                 "/api/chat/channels/" + str(channel_id) + "/ws?ticket="
                 + quote(ticket, safe="")
             ),
+            "meetingWebSocketUrl": (
+                "/api/world/office/channels/" + str(channel_id)
+                + "/ws?ticket=" + quote(meeting_ticket, safe="")
+            ),
         }
 
     async def revoke_room(self, channel_id, key_version):
         await _revoke_chat_channel_room(
+            self.env, channel_id, key_version)
+        await _revoke_office_channel_room(
             self.env, channel_id, key_version)
 
 
@@ -7356,6 +7693,11 @@ async def _delete_chat_channel_memberships(env, member_bi):
         env, "DELETE FROM chat_channel_members WHERE member_bi=?", member_bi)
     for row in rows:
         await _revoke_chat_channel_room(
+            env,
+            row.get("channel_id", ""),
+            int(row.get("key_version") or 1),
+        )
+        await _revoke_office_channel_room(
             env,
             row.get("channel_id", ""),
             int(row.get("key_version") or 1),
@@ -29517,6 +29859,21 @@ class Default(WorkerEntrypoint):
                 "/api/world/moderation", "/api/world/moderation/"):
             return await world_moderation_handler(self.env, request)
 
+        if url.path in (
+                "/api/world/office/general/access",
+                "/api/world/office/general/access/"):
+            return await office_general_access_handler(self.env, request)
+
+        if url.path in (
+                "/api/world/office/general/ws",
+                "/api/world/office/general/ws/"):
+            return await _office_general_socket_handler(self.env, request)
+
+        office_channel_socket = OFFICE_CHANNEL_WS_RE.fullmatch(url.path)
+        if office_channel_socket:
+            return await _office_channel_socket_handler(
+                self.env, request, office_channel_socket.group(1))
+
         if url.path in ("/api/world/ws", "/api/world/ws/"):
             if method_name(request) != "GET":
                 return json_response(
@@ -31217,6 +31574,414 @@ class ForkMeshWorld(DurableObject):
             ws.send(json.dumps(frame, separators=(",", ":")))
         except Exception:
             self._safe_close(ws, 1011, "unavailable")
+
+    def _safe_close(self, ws, code, reason):
+        try:
+            ws.close(code, reason)
+        except Exception:
+            pass
+
+
+class ForkMeshOfficeRoom(DurableObject):
+    """Ephemeral authorized avatar and chair relay for one Office room."""
+
+    async def fetch(self, request):
+        path = urlparse(request.url).path
+        match = OFFICE_INTERNAL_RE.fullmatch(path)
+        if not match:
+            return json_response({"error": "not_found"}, status=404)
+        scope, version_raw, action = match.groups()
+        if action == "revoke" and method_name(request) == "POST":
+            self._close_all(1008, "room access revoked")
+            return json_response({"ok": True})
+        if (
+            action != "ws"
+            or method_name(request) != "GET"
+            or (request.headers.get("upgrade") or "").lower() != "websocket"
+        ):
+            return json_response({"error": "not_found"}, status=404)
+
+        claim = self._claim(request)
+        if (
+            not claim
+            or claim.get("scope") != scope
+            or int(claim.get("version") or 0) != int(version_raw)
+        ):
+            return json_response({"error": "not_found"}, status=404)
+        now = int(Date.now())
+        peers = self._live_sockets(cleanup=True)
+        if len(peers) >= world_protocol.OFFICE_MAX_CONNECTIONS:
+            return json_response({"error": "room_full"}, status=429)
+
+        participant_id = new_world_peer_id()
+        state = world_protocol.default_office_presence(participant_id, now)
+        sanitized = world_protocol.sanitize_office_message(
+            {"type": "presence"},
+            state,
+            now,
+            trusted_name=claim.get("name", ""),
+            trusted_account_status=claim.get("accountStatus", "Guest"),
+        )
+        if sanitized is not None:
+            _kind, state = sanitized
+        client, server = WebSocketPair.new().object_values()
+        self.ctx.acceptWebSocket(server, to_js(["office"]))
+        self._save_socket(
+            server,
+            state,
+            last=now,
+            rate_start=now,
+            rate_count=0,
+            account_bi=claim.get("account_bi", ""),
+            scope=scope,
+            version=int(version_raw),
+            trusted_name=claim.get("name", ""),
+            trusted_status=claim.get("accountStatus", "Guest"),
+        )
+        self._safe_send(server, {
+            "type": "welcome",
+            "id": participant_id,
+            "participants": [
+                world_protocol.public_office_presence(
+                    self._socket_state(peer))
+                for peer in peers
+            ],
+        })
+        self._broadcast({
+            "type": "join",
+            "participant": world_protocol.public_office_presence(state),
+        }, exclude_id=participant_id, budgeted=True)
+        return JsResponse.new(
+            None, to_js({"status": 101, "webSocket": client}))
+
+    def _claim(self, request):
+        try:
+            raw = request.headers.get("x-forkmesh-office-claim") or ""
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,2048}", raw):
+                return None
+            padded = raw + "=" * ((4 - len(raw) % 4) % 4)
+            claim = json.loads(base64.urlsafe_b64decode(padded).decode())
+        except Exception:
+            return None
+        if not isinstance(claim, dict):
+            return None
+        scope = str(claim.get("scope") or "")
+        if scope != "world-general" and not re.fullmatch(
+                r"[0-9a-f]{32}", scope):
+            return None
+        account_bi = str(claim.get("account_bi") or "")
+        if account_bi and not re.fullmatch(r"[0-9a-f]{64}", account_bi):
+            return None
+        try:
+            version = int(claim.get("version") or 0)
+        except (TypeError, ValueError):
+            return None
+        if version < 1:
+            return None
+        trusted = world_protocol.trusted_presence_claim(
+            claim.get("name", ""),
+            claim.get("accountStatus", "Guest"),
+            0,
+        )
+        return {
+            "scope": scope,
+            "version": version,
+            "account_bi": account_bi,
+            "name": trusted["name"] if claim.get("name") else "",
+            "accountStatus": trusted["accountStatus"],
+        }
+
+    def _socket_state(self, ws):
+        return {
+            field: _ws_attr(ws, field)
+            for field in world_protocol.OFFICE_PUBLIC_FIELDS
+        }
+
+    def _save_socket(self, ws, state, last, rate_start, rate_count,
+                     departed=False, account_bi=None, scope=None, version=None,
+                     trusted_name=None, trusted_status=None):
+        if account_bi is None:
+            account_bi = _ws_attr(ws, "account_bi", "")
+        if scope is None:
+            scope = _ws_attr(ws, "scope", "")
+        if version is None:
+            version = _ws_attr(ws, "version", 0)
+        if trusted_name is None:
+            trusted_name = _ws_attr(ws, "trusted_name", "")
+        if trusted_status is None:
+            trusted_status = _ws_attr(ws, "trusted_status", "Guest")
+        record = {
+            **world_protocol.public_office_presence(state),
+            "account_bi": str(account_bi or ""),
+            "scope": str(scope or ""),
+            "version": int(version or 0),
+            "trusted_name": str(trusted_name or ""),
+            "trusted_status": str(trusted_status or "Guest"),
+            "last": int(last or 0),
+            "rl_start": int(rate_start or 0),
+            "rl_count": int(rate_count or 0),
+            "departed": bool(departed),
+        }
+        try:
+            ws.serializeAttachment(to_js(record))
+        except Exception:
+            pass
+
+    def _mark_departed(self, ws):
+        self._save_socket(
+            ws,
+            self._socket_state(ws),
+            last=_ws_attr(ws, "last", 0),
+            rate_start=_ws_attr(ws, "rl_start", 0),
+            rate_count=_ws_attr(ws, "rl_count", 0),
+            departed=True,
+        )
+
+    def _live_sockets(self, cleanup=False):
+        now = int(Date.now())
+        try:
+            sockets = self.ctx.getWebSockets("office")
+        except Exception:
+            sockets = []
+        live = []
+        stale_ids = []
+        for socket in sockets:
+            if bool(_ws_attr(socket, "departed", False)):
+                if cleanup:
+                    self._safe_close(socket, 1000, "")
+                continue
+            if world_protocol.office_presence_is_stale(
+                    _ws_attr(socket, "last", 0), now):
+                stale_id = _ws_attr(socket, "id", "")
+                if stale_id:
+                    stale_ids.append(stale_id)
+                if cleanup:
+                    self._mark_departed(socket)
+                    self._safe_close(socket, 1001, "stale")
+                continue
+            live.append(socket)
+        if cleanup:
+            for stale_id in stale_ids:
+                for peer in live:
+                    self._safe_send(peer, {"type": "leave", "id": stale_id})
+        return live
+
+    def _rate_step(self, ws, state, now):
+        allowed, start, count = world_protocol.advance_office_rate_window(
+            _ws_attr(ws, "rl_start", 0),
+            _ws_attr(ws, "rl_count", 0),
+            now,
+        )
+        self._save_socket(
+            ws,
+            state,
+            last=_ws_attr(ws, "last", 0),
+            rate_start=start,
+            rate_count=count,
+            departed=bool(_ws_attr(ws, "departed", False)),
+        )
+        return allowed, start, count
+
+    def _broadcast_admitted(self, now):
+        allowed, start, count = world_protocol.advance_office_broadcast_window(
+            getattr(self, "_broadcast_window", 0),
+            getattr(self, "_broadcast_count", 0),
+            now,
+        )
+        self._broadcast_window = start
+        self._broadcast_count = count
+        return allowed
+
+    async def _access_current(self, ws):
+        account_bi = str(_ws_attr(ws, "account_bi", "") or "")
+        scope = str(_ws_attr(ws, "scope", "") or "")
+        version = int(_ws_attr(ws, "version", 0) or 0)
+        if not account_bi:
+            return scope == "world-general"
+        try:
+            account = await d1_first(
+                self.env,
+                "SELECT data,is_admin FROM users WHERE user_bi=?",
+                account_bi,
+            )
+            if not account:
+                return False
+            account_record = await decrypt_row(self.env, account.get("data"))
+            if (
+                not account_record
+                or account_record.get("status") != "active"
+                or _account_kind(account_record) != "user"
+            ):
+                return False
+            if scope == "world-general":
+                return True
+            channel = await d1_first(
+                self.env,
+                "SELECT data,key_version FROM chat_channels WHERE channel_id=?",
+                scope,
+            )
+            if (
+                not channel
+                or int(channel.get("key_version") or 0) != version
+            ):
+                return False
+            channel_record = await decrypt_row(
+                self.env, channel.get("data"))
+            if (
+                isinstance(channel_record, dict)
+                and channel_record.get("visibility") == "public"
+            ):
+                return True
+            if bool(int(account.get("is_admin") or 0)):
+                return True
+            membership = await d1_first(
+                self.env,
+                "SELECT 1 AS allowed FROM chat_channel_members "
+                "WHERE channel_id=? AND member_bi=?",
+                scope,
+                account_bi,
+            )
+            return bool(membership)
+        except Exception:
+            return False
+
+    async def webSocketMessage(self, ws, message):
+        if not isinstance(message, str):
+            self._safe_close(ws, 1003, "text frames only")
+            return
+        if len(message.encode("utf-8")) > world_protocol.OFFICE_MESSAGE_MAX_BYTES:
+            self._safe_close(ws, 1009, "message too large")
+            return
+        state = self._socket_state(ws)
+        if not state.get("id"):
+            self._safe_close(ws, 1008, "invalid presence")
+            return
+        now = int(Date.now())
+        if world_protocol.office_presence_is_stale(
+                _ws_attr(ws, "last", 0), now):
+            self._depart(ws, 1001, "stale")
+            return
+        allowed, rate_start, rate_count = self._rate_step(ws, state, now)
+        if not allowed:
+            self._safe_close(ws, 1008, "rate limit")
+            return
+        if not await self._access_current(ws):
+            self._depart(ws, 1008, "room access revoked")
+            return
+        self._live_sockets(cleanup=True)
+        try:
+            payload = json.loads(message)
+        except Exception:
+            return
+        if isinstance(payload, dict) and payload.get("type") == "seat-request":
+            requested = str(payload.get("chairId") or "")
+            occupied = {
+                str(_ws_attr(peer, "chairId", "")): str(
+                    _ws_attr(peer, "id", ""))
+                for peer in self._live_sockets(cleanup=True)
+                if peer is not ws and _ws_attr(peer, "chairId", "")
+            }
+            result, next_state = world_protocol.allocate_office_seat(
+                state, requested, occupied)
+            if result == "invalid":
+                return
+            if result == "denied":
+                self._safe_send(ws, {
+                    "type": "seat-denied",
+                    "chairId": requested,
+                    "message": "Seat just taken.",
+                })
+                return
+            next_state["updatedAt"] = now
+            self._save_socket(
+                ws,
+                next_state,
+                last=now,
+                rate_start=rate_start,
+                rate_count=rate_count,
+            )
+            self._broadcast({
+                "type": "seat",
+                "participant": world_protocol.public_office_presence(
+                    next_state),
+            }, budgeted=True)
+            return
+        sanitized = world_protocol.sanitize_office_message(
+            payload,
+            state,
+            now,
+            trusted_name=_ws_attr(ws, "trusted_name", ""),
+            trusted_account_status=_ws_attr(
+                ws, "trusted_status", "Guest"),
+        )
+        if sanitized is None:
+            return
+        kind, next_state = sanitized
+        self._save_socket(
+            ws,
+            next_state,
+            last=now,
+            rate_start=rate_start,
+            rate_count=rate_count,
+        )
+        if kind == "ping":
+            self._safe_send(ws, {"type": "pong", "serverTimeMs": now})
+            return
+        if kind == "presence":
+            frame = {
+                "type": "presence",
+                "participant": world_protocol.public_office_presence(
+                    next_state),
+            }
+        else:
+            frame = world_protocol.office_movement_delta(next_state)
+        self._broadcast(
+            frame, exclude_id=state.get("id"), budgeted=True)
+
+    async def webSocketClose(self, ws, code, reason, was_clean):
+        self._depart(ws, 1000, "")
+
+    async def webSocketError(self, ws, error):
+        self._depart(ws, 1011, "socket error")
+
+    web_socket_message = webSocketMessage
+    web_socket_close = webSocketClose
+    web_socket_error = webSocketError
+
+    def _depart(self, ws, code, reason):
+        participant_id = _ws_attr(ws, "id", "")
+        departed = bool(_ws_attr(ws, "departed", False))
+        self._mark_departed(ws)
+        self._safe_close(ws, code, reason)
+        if participant_id and not departed:
+            self._broadcast(
+                {"type": "leave", "id": participant_id},
+                exclude_id=participant_id,
+                budgeted=True,
+            )
+
+    def _broadcast(self, frame, exclude_id=None, budgeted=False):
+        if budgeted and not self._broadcast_admitted(int(Date.now())):
+            return
+        for peer in self._live_sockets(cleanup=False):
+            if exclude_id and _ws_attr(peer, "id", "") == exclude_id:
+                continue
+            self._safe_send(peer, frame)
+
+    def _safe_send(self, ws, frame):
+        try:
+            ws.send(json.dumps(frame, separators=(",", ":")))
+        except Exception:
+            self._safe_close(ws, 1011, "unavailable")
+
+    def _close_all(self, code, reason):
+        try:
+            peers = self.ctx.getWebSockets("office")
+        except Exception:
+            peers = []
+        for peer in peers:
+            self._mark_departed(peer)
+            self._safe_close(peer, code, reason)
 
     def _safe_close(self, ws, code, reason):
         try:

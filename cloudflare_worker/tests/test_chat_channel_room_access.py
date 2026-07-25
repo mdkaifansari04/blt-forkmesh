@@ -495,7 +495,14 @@ def test_runtime_adapter_and_routes_use_private_channel_gates():
     )
     assert "_chat_channel_passphrase" in runtime_source
     assert "_chat_channel_ticket" in runtime_source
+    assert "_office_meeting_ticket" in runtime_source
+    assert "meetingWebSocketUrl" in runtime_source
+    assert "_revoke_office_channel_room" in runtime_source
     assert "quote(" in runtime_source
+
+    cleanup_source = _function_source("_delete_chat_channel_memberships")
+    assert "_revoke_chat_channel_room" in cleanup_source
+    assert "_revoke_office_channel_room" in cleanup_source
 
     route = _function_source("_route")
     api_at = route.index("chat_channels_api.handle")

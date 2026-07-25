@@ -554,6 +554,16 @@ def test_connects_land_in_open_grid_cells_never_on_a_standing_visitor():
     assert (newcomer["self"]["x"], newcomer["self"]["z"]) == (-2.7, 30.0)
 
 
+def test_world_presence_allows_the_consent_aware_office_activity():
+    current = world.default_presence("peer", 1000)
+    _, result = world.sanitize_message({
+        "type": "presence",
+        "activityCategory": "visiting-office",
+    }, current, 2000)
+
+    assert result["activityCategory"] == "visiting-office"
+
+
 def test_public_door_state_is_explicit_and_allowlisted():
     current = world.default_presence("peer", 1000)
     assert current["publicDoor"] == "closed"
@@ -1002,6 +1012,7 @@ def test_world_route_binding_and_migration_are_registered():
     assert bindings == {
         "FORKMESH_MAINNODE_ROOM": "ForkMeshRoom",
         "FORKMESH_WORLD": "ForkMeshWorld",
+        "FORKMESH_OFFICE_ROOM": "ForkMeshOfficeRoom",
     }
     dev_bindings = {
         item["name"]: item["class_name"]
@@ -1010,10 +1021,13 @@ def test_world_route_binding_and_migration_are_registered():
     assert dev_bindings == {
         "FORKMESH_MAINNODE_ROOM": "ForkMeshRoom",
         "FORKMESH_WORLD": "ForkMeshWorld",
+        "FORKMESH_OFFICE_ROOM": "ForkMeshOfficeRoom",
     }
     migrations = {item["tag"]: item for item in config["migrations"]}
     assert migrations["v9"]["new_sqlite_classes"] == ["ForkMeshWorld"]
     assert migrations["v10"]["deleted_classes"] == ["ForkMeshHost"]
+    assert migrations["v11"]["new_sqlite_classes"] == [
+        "ForkMeshOfficeRoom"]
 
 
 def test_world_static_route_is_reserved_and_asset_first():

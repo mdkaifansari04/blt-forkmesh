@@ -5,6 +5,7 @@ import {
   landmarkById,
   normalizeWorldStatus,
 } from "./world-data.js";
+import { nextOfficeZoneState } from "./world-office.js";
 
 const OUTFIT_COLOR_HEX = Object.fromEntries(
   OUTFIT_COLOR_OPTIONS.map((option) => [option.id, option.color]),
@@ -3075,6 +3076,164 @@ function createSupportCenter(THREE, position, interactive, animated) {
   return group;
 }
 
+function createForkMeshOffice(THREE, position, interactive, animated) {
+  const group = new THREE.Group();
+  const concrete = makeMaterial(THREE, "#18231f", {
+    metalness: 0.08,
+    roughness: 0.88,
+  });
+  const structure = makeMaterial(THREE, "#163f32", {
+    metalness: 0.48,
+    roughness: 0.42,
+  });
+  const glass = makeMaterial(THREE, "#9ef7c6", {
+    transparent: true,
+    opacity: 0.42,
+    metalness: 0.08,
+    roughness: 0.22,
+  });
+  const wood = makeMaterial(THREE, "#7b5a38", {
+    roughness: 0.72,
+  });
+  const warm = makeMaterial(THREE, "#ffd18a", {
+    emissive: "#e28b35",
+    emissiveIntensity: 0.85,
+    roughness: 0.4,
+  });
+
+  const slab = new THREE.Mesh(
+    new THREE.BoxGeometry(8.4, 0.46, 7.4),
+    concrete,
+  );
+  slab.position.y = 0.23;
+  group.add(slab);
+
+  const rearWall = new THREE.Mesh(
+    new THREE.BoxGeometry(8.4, 5.7, 0.36),
+    concrete,
+  );
+  rearWall.position.set(0, 3.05, -3.45);
+  group.add(rearWall);
+
+  for (const x of [-4.02, 4.02]) {
+    const sideWall = new THREE.Mesh(
+      new THREE.BoxGeometry(0.36, 5.7, 7.1),
+      concrete,
+    );
+    sideWall.position.set(x, 3.05, 0);
+    group.add(sideWall);
+    const frontColumn = new THREE.Mesh(
+      new THREE.BoxGeometry(0.42, 6.3, 0.42),
+      structure,
+    );
+    frontColumn.position.set(x, 3.25, 3.3);
+    group.add(frontColumn);
+  }
+
+  const roof = new THREE.Mesh(
+    new THREE.BoxGeometry(8.7, 0.38, 7.5),
+    structure,
+  );
+  roof.position.y = 6.05;
+  group.add(roof);
+
+  for (const x of [-2.9, 2.9]) {
+    const window = new THREE.Mesh(
+      new THREE.BoxGeometry(1.9, 3.7, 0.12),
+      glass,
+    );
+    window.position.set(x, 3.15, 3.34);
+    group.add(window);
+  }
+
+  const reception = new THREE.Mesh(
+    new THREE.BoxGeometry(3.15, 1.18, 0.95),
+    wood,
+  );
+  reception.position.set(-1.9, 1.05, 1.35);
+  reception.rotation.y = -0.12;
+  group.add(reception);
+
+  const sharedTable = new THREE.Mesh(
+    new THREE.BoxGeometry(3.8, 0.28, 1.5),
+    wood,
+  );
+  sharedTable.position.set(0.65, 1.55, -0.65);
+  group.add(sharedTable);
+  for (const x of [-0.75, 2.05]) {
+    for (const z of [-1.05, -0.25]) {
+      const leg = new THREE.Mesh(
+        new THREE.BoxGeometry(0.18, 1.25, 0.18),
+        structure,
+      );
+      leg.position.set(x, 0.9, z);
+      group.add(leg);
+    }
+  }
+
+  const terminal = new THREE.Mesh(
+    new THREE.BoxGeometry(1.3, 0.82, 0.16),
+    warm,
+  );
+  terminal.position.set(0.65, 2.22, -0.78);
+  terminal.rotation.x = -0.12;
+  group.add(terminal);
+
+  const wallDisplay = new THREE.Mesh(
+    new THREE.BoxGeometry(3.5, 1.65, 0.14),
+    glass,
+  );
+  wallDisplay.position.set(1.6, 3.55, -3.22);
+  group.add(wallDisplay);
+
+  for (const x of [-2.55, 0, 2.55]) {
+    const light = new THREE.Mesh(
+      new THREE.BoxGeometry(1.2, 0.08, 0.22),
+      warm,
+    );
+    light.position.set(x, 5.72, 0.25);
+    group.add(light);
+  }
+
+  const signTexture = canvasTexture(THREE, 1024, 192, (context) => {
+    context.fillStyle = "#0b1713";
+    context.fillRect(0, 0, 1024, 192);
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 10;
+    context.strokeRect(8, 8, 1008, 176);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = '800 72px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#d9ffea";
+    context.fillText("FORKMESH OFFICE", 512, 96);
+  });
+  const sign = new THREE.Mesh(
+    new THREE.PlaneGeometry(6.4, 1.2),
+    new THREE.MeshBasicMaterial({
+      map: signTexture,
+      transparent: false,
+      toneMapped: false,
+    }),
+  );
+  sign.position.set(0, 6.85, 3.73);
+  group.add(sign);
+
+  group.position.set(...position);
+  group.userData.landmark = "office";
+  group.traverse((child) => {
+    if (!child.isMesh) return;
+    child.userData.landmark = "office";
+    interactive.push(child);
+  });
+  setShadows(group);
+  sign.castShadow = false;
+  animated.push((time) => {
+    terminal.material.emissiveIntensity = 0.72 + Math.sin(time * 0.002) * 0.13;
+  });
+  return group;
+}
+
+function createSkyOffice(THREE, animated) {
 // The barn that replaced the sky. Every destination that used to hover over the
 // Town Square is parked here on the ground, one per bay, under a roof frame
 // that is itself unfinished, behind doorways wide enough to roll them back out
@@ -3581,6 +3740,9 @@ export function createWorldScene({
   identity,
   reducedMotion = false,
   onLandmarkSelect = () => {},
+  onOfficeProximity = () => {},
+  onOfficeChairSelect = () => {},
+  onOfficeMovement = () => {},
   onLocationChange = () => {},
   onRegionChange = () => {},
   onMovement = () => {},
@@ -3737,6 +3899,7 @@ export function createWorldScene({
     workshops: createCodeWorkshops,
     broadcast: createBroadcastGarden,
     support: createSupportCenter,
+    office: createForkMeshOffice,
   };
   LANDMARKS.forEach((landmark) => {
     const object = landmarkFactories[landmark.id](
@@ -3878,6 +4041,114 @@ export function createWorldScene({
   const remoteLabels = new Map();
   const moderationActions = new WeakMap();
   const moderationControlKeys = new Map();
+  const officeParticipants = new Map();
+  const officeParticipantLabels = new Map();
+  const officeBubbles = new Map();
+  const officeChairs = new Map();
+  const officeInterior = new THREE.Group();
+  officeInterior.name = "forkmesh-office-interior";
+  officeInterior.visible = false;
+  scene.add(officeInterior);
+
+  const officeFloor = new THREE.Mesh(
+    new THREE.BoxGeometry(17, 0.4, 12),
+    makeMaterial(THREE, "#15231f", { roughness: 0.9 }),
+  );
+  officeFloor.position.y = 0.2;
+  officeFloor.receiveShadow = true;
+  officeInterior.add(officeFloor);
+  const officeBackWall = new THREE.Mesh(
+    new THREE.BoxGeometry(17, 7, 0.35),
+    makeMaterial(THREE, "#18322a", { roughness: 0.84 }),
+  );
+  officeBackWall.position.set(0, 3.5, -5.8);
+  officeInterior.add(officeBackWall);
+  for (const x of [-8.3, 8.3]) {
+    const wall = new THREE.Mesh(
+      new THREE.BoxGeometry(0.35, 7, 12),
+      makeMaterial(THREE, "#163029", { roughness: 0.86 }),
+    );
+    wall.position.set(x, 3.5, 0);
+    officeInterior.add(wall);
+  }
+  const windowMaterial = makeMaterial(THREE, "#8eeac5", {
+    transparent: true,
+    opacity: 0.3,
+    emissive: "#1f8b65",
+    emissiveIntensity: 0.36,
+  });
+  for (const x of [-5.5, -1.85, 1.85, 5.5]) {
+    const windowPane = new THREE.Mesh(
+      new THREE.BoxGeometry(2.7, 3.4, 0.08),
+      windowMaterial,
+    );
+    windowPane.position.set(x, 3.6, -5.58);
+    officeInterior.add(windowPane);
+  }
+  const officeTable = new THREE.Mesh(
+    new THREE.BoxGeometry(7.4, 0.34, 3.6),
+    makeMaterial(THREE, "#715238", { roughness: 0.66 }),
+  );
+  officeTable.position.set(0, 1.45, 0);
+  officeInterior.add(officeTable);
+  for (const x of [-3, 3]) {
+    for (const z of [-1.2, 1.2]) {
+      const tableLeg = new THREE.Mesh(
+        new THREE.BoxGeometry(0.22, 1.25, 0.22),
+        makeMaterial(THREE, "#10231e", { metalness: 0.35 }),
+      );
+      tableLeg.position.set(x, 0.78, z);
+      officeInterior.add(tableLeg);
+    }
+  }
+  const chairTransforms = [
+    [-4.75, -1.35, Math.PI / 2],
+    [-2.2, -2.85, 0],
+    [0, -2.85, 0],
+    [2.2, -2.85, 0],
+    [4.75, 1.35, -Math.PI / 2],
+    [2.2, 2.85, Math.PI],
+    [0, 2.85, Math.PI],
+    [-2.2, 2.85, Math.PI],
+  ];
+  chairTransforms.forEach(([x, z, yaw], index) => {
+    const chairId = `chair-${index + 1}`;
+    const chair = new THREE.Group();
+    const seat = new THREE.Mesh(
+      new THREE.BoxGeometry(1.05, 0.18, 1.05),
+      makeMaterial(THREE, "#2f6d56", { roughness: 0.72 }),
+    );
+    seat.position.y = 0.82;
+    chair.add(seat);
+    const back = new THREE.Mesh(
+      new THREE.BoxGeometry(1.05, 1.45, 0.18),
+      makeMaterial(THREE, "#347a61", { roughness: 0.7 }),
+    );
+    back.position.set(0, 1.42, 0.48);
+    chair.add(back);
+    chair.position.set(x, 0, z);
+    chair.rotation.y = yaw;
+    chair.userData.officeChairId = chairId;
+    chair.traverse((child) => {
+      if (!child.isMesh) return;
+      child.userData.officeChairId = chairId;
+      child.userData.interactive = "office-chair";
+      interactive.push(child);
+    });
+    officeChairs.set(chairId, chair);
+    officeInterior.add(chair);
+  });
+  const officeRoomSign = makeLabelSprite(
+    THREE,
+    "FORKMESH OFFICE",
+    "encrypted meeting room",
+    "#9ef7c6",
+  );
+  officeRoomSign.position.set(0, 6.2, -5.35);
+  officeInterior.add(officeRoomSign);
+  const officeLight = new THREE.PointLight("#ffd8a3", 5.5, 28, 1.6);
+  officeLight.position.set(0, 6.2, 0);
+  officeInterior.add(officeLight);
   const neighborhoodHomes = new Map();
   const nodeInfrastructure = new Map();
   const botAgents = new Map();
@@ -3912,6 +4183,7 @@ export function createWorldScene({
   let lastPosition = player.position.clone();
   let wasWalking = false;
   let cameraFocus = null;
+  let officeZoneState = "distant";
   let focusedRepositoryKey = "";
   let cameraZoom = 1;
   let cameraYaw = Math.atan2(CAMERA_OFFSET[0], CAMERA_OFFSET[2]);
@@ -3930,6 +4202,13 @@ export function createWorldScene({
   let pinchStartZoom = cameraZoom;
   let pinchActive = false;
   let lightLevel = LIGHT_LEVEL_DEFAULT;
+  let officeSceneMode = "town";
+  // main dropped its own selectedLandmark when the floating landmark labels went
+  // away (adhoc #243); the Office still tracks it to frame the camera on entry.
+  let selectedLandmark = "";
+  let officeLocalParticipantId = "";
+  let lastOfficeMovementEmit = 0;
+  let officeWasMoving = false;
   const weather = createWeather(THREE, scene);
 
   function updateWorldEnvironment() {
@@ -4025,6 +4304,10 @@ export function createWorldScene({
     if (
       !["town-square", "east", "central", "west"].includes(currentSpace)
     ) {
+      if (officeZoneState !== "distant") {
+        officeZoneState = "distant";
+        onOfficeProximity(officeZoneState);
+      }
       return;
     }
     let nearest = null;
@@ -4039,6 +4322,19 @@ export function createWorldScene({
         distance = next;
       }
     });
+    const office = landmarkById("office");
+    const officeEntranceDistance = Math.hypot(
+      player.position.x - office.position[0],
+      player.position.z - (office.position[2] + 3.3),
+    );
+    const nextOfficeState = nextOfficeZoneState(
+      officeZoneState,
+      officeEntranceDistance,
+    );
+    if (nextOfficeState !== officeZoneState) {
+      officeZoneState = nextOfficeState;
+      onOfficeProximity(officeZoneState);
+    }
     let nearestRepository = null;
     let repositoryDistance = Infinity;
     repositoryPortals.forEach((record) => {
@@ -4177,6 +4473,194 @@ export function createWorldScene({
     );
   }
 
+  function enterOffice() {
+    if (officeZoneState !== "nearby") return false;
+    const office = landmarkById("office");
+    selectedLandmark = "office";
+    currentSpace = "town-square";
+    currentFloorY = 0.38;
+    cameraFocus = new THREE.Vector3(
+      office.position[0],
+      2.5,
+      office.position[2] - 0.4,
+    );
+    player.position.set(
+      office.position[0],
+      currentFloorY,
+      office.position[2] + 2.2,
+    );
+    if (reducedMotion) {
+      const target = cameraFocus.clone();
+      camera.position.copy(target.clone().add(
+        new THREE.Vector3(9.5, 8.2, 11.5),
+      ));
+      camera.lookAt(target);
+    }
+    return true;
+  }
+
+  function enterOfficeLobby() {
+    officeSceneMode = "lobby";
+    selectedLandmark = "office";
+    currentSpace = "office";
+    // No click-to-move target to clear -- main removed that control, and pull/46
+    // already applied the same fix to enterOffice().
+    cameraFocus = new THREE.Vector3(0, 2.15, 0);
+    world.visible = false;
+    officeInterior.visible = true;
+    scene.background.set("#0d1e19");
+    scene.fog.color.set("#0d1e19");
+    return true;
+  }
+
+  function officeChairTransform(chairId) {
+    const chair = officeChairs.get(String(chairId || ""));
+    if (!chair) return null;
+    return {
+      position: chair.position.clone(),
+      yaw: chair.rotation.y,
+    };
+  }
+
+  function applyOfficeParticipantPose(avatar, participant) {
+    const seated = participant?.pose === "seated" && participant?.chairId;
+    const chair = seated ? officeChairTransform(participant.chairId) : null;
+    if (chair) {
+      avatar.position.copy(chair.position);
+      avatar.position.y = 0.72;
+      avatar.rotation.y = chair.yaw + Math.PI;
+      avatar.userData.leftLeg.rotation.x = -1.3;
+      avatar.userData.rightLeg.rotation.x = -1.3;
+    } else {
+      const seed = hashNumber(participant?.id || "office-participant");
+      avatar.position.set(
+        clamp(Number(participant?.x) || ((seed % 7) - 3) * 0.55, -6.8, 6.8),
+        0.38,
+        clamp(Number(participant?.z) || 4.15 + ((seed >> 3) % 3) * 0.35, -4.7, 4.7),
+      );
+      avatar.rotation.y = Number(participant?.yaw) || Math.PI;
+      avatar.userData.leftLeg.rotation.x = 0;
+      avatar.userData.rightLeg.rotation.x = 0;
+    }
+    avatar.userData.leftArm.rotation.x = 0;
+    avatar.userData.rightArm.rotation.x = 0;
+    avatar.userData.officePresence = { ...participant };
+  }
+
+  function setOfficeParticipants(participants = []) {
+    const seenOfficeParticipants = new Set();
+    participants.forEach((participant) => {
+      const id = String(participant?.id || "");
+      if (!id) return;
+      seenOfficeParticipants.add(id);
+      let avatar = officeParticipants.get(id);
+      const participantIdentity = {
+        id,
+        name: String(participant.name || "Office visitor").slice(0, 32),
+        flag: "◌",
+        browser: "Browser",
+        os: "Device",
+        status: participant.pose === "seated" ? "seated" : "in meeting",
+        accountStatus: participant.accountStatus || "Guest",
+        nodes: [],
+      };
+      if (!avatar) {
+        avatar = createAvatar(THREE, participantIdentity, {
+          remote: true,
+          scale: 0.9,
+        });
+        officeInterior.add(avatar);
+        officeParticipants.set(id, avatar);
+        officeParticipantLabels.set(
+          id,
+          makePlayerLabel(avatar, labelLayer),
+        );
+      } else if (avatar.userData.name !== participantIdentity.name) {
+        updateAvatarBadge(THREE, avatar, participantIdentity, true);
+        officeParticipantLabels.get(id).textContent = participantIdentity.name;
+      }
+      applyOfficeParticipantPose(avatar, participant);
+    });
+    officeParticipants.forEach((avatar, id) => {
+      if (seenOfficeParticipants.has(id)) return;
+      officeInterior.remove(avatar);
+      avatar.traverse((child) => {
+        child.geometry?.dispose?.();
+        child.material?.map?.dispose?.();
+        child.material?.dispose?.();
+      });
+      officeParticipants.delete(id);
+      officeParticipantLabels.get(id)?.remove();
+      officeParticipantLabels.delete(id);
+      officeBubbles.get(id)?.remove();
+      officeBubbles.delete(id);
+    });
+  }
+
+  function enterOfficeMeeting({
+    roomName = "general",
+    participants = [],
+    participantId = "",
+  } = {}) {
+    enterOfficeLobby();
+    officeSceneMode = "meeting";
+    officeLocalParticipantId = String(participantId || officeLocalParticipantId);
+    officeRoomSign.userData.roomName = String(roomName || "general");
+    setOfficeParticipants(participants);
+    return true;
+  }
+
+  function setOfficeSeatState({ participantId, chairId = "", pose = "standing" } = {}) {
+    const avatar = officeParticipants.get(String(participantId || ""));
+    if (!avatar) return false;
+    applyOfficeParticipantPose(avatar, {
+      ...(avatar.userData.officePresence || {}),
+      id: String(participantId),
+      chairId: String(chairId || ""),
+      pose: pose === "seated" ? "seated" : "standing",
+    });
+    return true;
+  }
+
+  function showOfficeBubble(participantId, bubble = {}) {
+    const id = String(participantId || "");
+    const avatar = officeParticipants.get(id);
+    if (!avatar) return false;
+    officeBubbles.get(id)?.remove();
+    const element = document.createElement("div");
+    element.className = "world-office-bubble";
+    element.dataset.worldOfficeBubble = id;
+    element.textContent = String(bubble.text || bubble.fileName || "Shared an attachment")
+      .trim()
+      .slice(0, 180);
+    element.style.left = "50%";
+    element.style.top = "76px";
+    labelLayer.appendChild(element);
+    officeBubbles.set(id, element);
+    window.setTimeout(() => {
+      if (officeBubbles.get(id) !== element) return;
+      element.remove();
+      officeBubbles.delete(id);
+    }, 7000);
+    return true;
+  }
+
+  function leaveOfficeInterior() {
+    officeSceneMode = "town";
+    officeInterior.visible = false;
+    world.visible = true;
+    currentSpace = "town-square";
+    officeLocalParticipantId = "";
+    officeWasMoving = false;
+    cameraFocus = null;
+    setOfficeParticipants([]);
+    officeBubbles.forEach((element) => element.remove());
+    officeBubbles.clear();
+    // Re-apply the theme to restore the town background/fog the Office overrode.
+    // PR #47 called applyTheme(); main's equivalent is setTheme().
+    setTheme(currentTheme);
+  }
+
   function focusRepositoryPortal(owner, name) {
     const key = `${String(owner || "").toLocaleLowerCase()}/${String(
       name || "",
@@ -4253,6 +4737,50 @@ export function createWorldScene({
       keyboardActive: Boolean(forwardInput || rightInput),
       movement: movement.lengthSq() ? movement.normalize() : movement,
     };
+  }
+
+  function walkOfficeParticipant(delta, time) {
+    const avatar = officeParticipants.get(officeLocalParticipantId);
+    if (!avatar) return;
+    const presence = avatar.userData.officePresence || {};
+    const movement = presence.pose === "seated"
+      ? new THREE.Vector3()
+      : movementInput().movement;
+    const walking = movement.lengthSq() > 0;
+    if (walking) {
+      avatar.position.addScaledVector(movement, PLAYER_SPEED * 0.72 * delta);
+      avatar.position.x = clamp(avatar.position.x, -7.1, 7.1);
+      avatar.position.z = clamp(avatar.position.z, -4.8, 4.8);
+      avatar.position.y = 0.38;
+      avatar.rotation.y = Math.atan2(movement.x, movement.z);
+    }
+    const gait = walking ? Math.sin(time * 0.012) * 0.48 : 0;
+    avatar.userData.leftArm.rotation.x = gait;
+    avatar.userData.rightArm.rotation.x = -gait;
+    avatar.userData.leftLeg.rotation.x = -gait * 0.72;
+    avatar.userData.rightLeg.rotation.x = gait * 0.72;
+    avatar.userData.officePresence = {
+      ...presence,
+      x: avatar.position.x,
+      y: 0.38,
+      z: avatar.position.z,
+      yaw: avatar.rotation.y,
+      moving: walking,
+    };
+    const shouldEmit = walking
+      ? performance.now() - lastOfficeMovementEmit >= 120
+      : officeWasMoving;
+    if (shouldEmit) {
+      lastOfficeMovementEmit = performance.now();
+      onOfficeMovement({
+        x: Number(avatar.position.x.toFixed(2)),
+        y: 0.38,
+        z: Number(avatar.position.z.toFixed(2)),
+        yaw: Number(avatar.rotation.y.toFixed(3)),
+        moving: walking,
+      });
+    }
+    officeWasMoving = walking;
   }
 
   function walkPlayer(delta, time) {
@@ -4455,8 +4983,21 @@ export function createWorldScene({
     const target = cameraFocus
       ? cameraFocus.clone()
       : player.position.clone().add(new THREE.Vector3(0, 2.2, 0));
-    const distance =
-      CAMERA_DISTANCE * cameraZoom * (cameraFocus ? 0.78 : 1);
+    const officeFocused = Boolean(cameraFocus && selectedLandmark === "office");
+    const officeInteriorFocused = officeSceneMode !== "town";
+    // PR #47's Office framing, expressed as a distance scale so the orbital
+    // camera keeps its yaw/pitch/pinch-zoom control instead of being pinned to
+    // a fixed offset: the interior sits closer (0.60x of the default distance),
+    // the exterior landmark reads slightly wider, and narrow viewports pull
+    // back far enough to fit the whole building.
+    const focusScale = officeInteriorFocused
+      ? 0.6
+      : officeFocused
+        ? camera.aspect < 0.75 ? 1.36 : 0.87
+        : cameraFocus
+          ? 0.78
+          : 1;
+    const distance = CAMERA_DISTANCE * cameraZoom * focusScale;
     const horizontalDistance = Math.cos(cameraPitch) * distance;
     const desired = target.clone().add(
       new THREE.Vector3(
@@ -4465,7 +5006,8 @@ export function createWorldScene({
         Math.cos(cameraYaw) * horizontalDistance,
       ),
     );
-    camera.position.lerp(desired, 1 - Math.pow(0.0008, delta));
+    if (reducedMotion) camera.position.copy(desired);
+    else camera.position.lerp(desired, 1 - Math.pow(0.0008, delta));
     camera.lookAt(target);
   }
 
@@ -6538,6 +7080,13 @@ export function createWorldScene({
     const hit = raycaster
       .intersectObjects(interactive, false)
       .find(({ object }) => objectIsEffectivelyVisible(object));
+    if (
+      officeSceneMode === "meeting" &&
+      hit?.object?.userData?.interactive === "office-chair"
+    ) {
+      onOfficeChairSelect(hit.object.userData.officeChairId);
+      return;
+    }
     const moderationAction = hit?.object
       ? moderationActions.get(hit.object)
       : null;
@@ -6730,9 +7279,15 @@ export function createWorldScene({
     if (!running || disposed) return;
     const delta = clamp((time - lastFrame) / 1000, 0, 0.05);
     lastFrame = time;
-    walkPlayer(delta, time);
-    updateRemotePlayers(delta, time);
-    updateForkbot(delta, time);
+    // Only the town scene walks the shared avatar and its neighbours; inside an
+    // Office meeting the seated participant is driven instead (PR #47).
+    if (officeSceneMode === "town") {
+      walkPlayer(delta, time);
+      updateRemotePlayers(delta, time);
+      updateForkbot(delta, time);
+    } else if (officeSceneMode === "meeting") {
+      walkOfficeParticipant(delta, time);
+    }
     if (!reducedMotion) {
       nodeInfrastructure.forEach((pylon, id) => {
         const phase = hashNumber(id) * 0.0001;
@@ -6791,34 +7346,86 @@ export function createWorldScene({
       }
     }
     updateCamera(delta);
-    nearestLandmark();
-    updateRepositoryPortalLabels();
+    // Landmark/portal proximity is a town-scene concern only (PR #47). PR #47
+    // also called updateWorldSun() here; main removed wall-clock sun entirely
+    // in favour of fixed full daylight, so that call is not restored.
+    if (officeSceneMode === "town") {
+      nearestLandmark();
+      updateRepositoryPortalLabels();
+    }
     if (!reducedMotion) {
       animated.forEach((callback) => callback(time, delta));
       animateWeather(weather.rain, time, delta, "rain");
       animateWeather(weather.snow, time, delta, "snow");
     }
     const rect = container.getBoundingClientRect();
-    updateScreenLabel(
-      THREE,
-      player,
-      playerLabel,
-      camera,
-      rect.width,
-      rect.height,
-      player.userData.emojiStatusSprite ? 5.7 : 4.5,
-    );
-    remotePlayers.forEach((avatar, id) => {
+    // main removed the floating landmark labels (adhoc #243); only the player
+    // and remote name plates remain, and they are a town-scene concern.
+    if (officeSceneMode === "town") {
       updateScreenLabel(
         THREE,
-        avatar,
-        remoteLabels.get(id),
+        player,
+        playerLabel,
         camera,
         rect.width,
         rect.height,
-        avatar.userData.emojiStatusSprite ? 5.35 : 4.2,
+        player.userData.emojiStatusSprite ? 5.7 : 4.5,
       );
-    });
+      remotePlayers.forEach((avatar, id) => {
+        updateScreenLabel(
+          THREE,
+          avatar,
+          remoteLabels.get(id),
+          camera,
+          rect.width,
+          rect.height,
+          avatar.userData.emojiStatusSprite ? 5.35 : 4.2,
+        );
+      });
+      officeParticipantLabels.forEach((element) => {
+        element.style.visibility = "hidden";
+      });
+      officeBubbles.forEach((element) => {
+        element.style.visibility = "hidden";
+      });
+    } else {
+      playerLabel.style.visibility = "hidden";
+      remoteLabels.forEach((element) => {
+        element.style.visibility = "hidden";
+      });
+      officeParticipants.forEach((avatar, id) => {
+        updateScreenLabel(
+          THREE,
+          avatar,
+          officeParticipantLabels.get(id),
+          camera,
+          rect.width,
+          rect.height,
+          4.2,
+        );
+        const bubble = officeBubbles.get(id);
+        if (bubble) {
+          updateScreenLabel(
+            THREE,
+            avatar,
+            bubble,
+            camera,
+            rect.width,
+            rect.height,
+            5.1,
+          );
+          const bubbleHalfWidth = Math.min(136, Math.max(84, rect.width / 2 - 12));
+          const bubbleLeft = Number.parseFloat(bubble.style.left) || rect.width / 2;
+          const bubbleTop = Number.parseFloat(bubble.style.top) || 72;
+          bubble.style.left = `${clamp(
+            bubbleLeft,
+            bubbleHalfWidth,
+            rect.width - bubbleHalfWidth,
+          )}px`;
+          bubble.style.top = `${clamp(bubbleTop, 68, rect.height - 18)}px`;
+        }
+      });
+    }
     renderer.render(scene, camera);
     diagnosticsFrameCount = Math.min(
       1_000_000,
@@ -6911,6 +7518,13 @@ export function createWorldScene({
     player,
     renderer,
     focusLandmark,
+    enterOffice,
+    enterOfficeLobby,
+    enterOfficeMeeting,
+    setOfficeParticipants,
+    setOfficeSeatState,
+    showOfficeBubble,
+    leaveOfficeInterior,
     focusRepositoryPortal,
     clearFocus,
     setTheme,

@@ -1,11 +1,5 @@
 const { test, expect } = require("@playwright/test");
 const path = require("node:path");
-const {
-  createCipheriv,
-  createDecipheriv,
-  createHash,
-  pbkdf2Sync,
-} = require("node:crypto");
 
 const THREE_MODULE_URL =
   "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.min.js";
@@ -17,6 +11,7 @@ const THREE_MODULE_PATH = path.resolve(
   "build",
   "three.module.min.js",
 );
+const CHAT_HTML_PATH = path.resolve(__dirname, "..", "..", "public", "chat.html");
 
 const PRIVATE_SETTINGS = {
   theme: "world",
@@ -51,6 +46,8 @@ async function prepareWorldPage(
     repositoryFixture = null,
     accountFixture = null,
     unavailablePaths = [],
+    chatChannels = [],
+    chatChannelStatus = 200,
   } = {},
 ) {
   let mentionState = "review";
@@ -86,6 +83,12 @@ async function prepareWorldPage(
     route.fulfill({
       path: THREE_MODULE_PATH,
       contentType: "text/javascript; charset=utf-8",
+    }),
+  );
+  await page.route("**/chat?embed=office", (route) =>
+    route.fulfill({
+      path: CHAT_HTML_PATH,
+      contentType: "text/html; charset=utf-8",
     }),
   );
   await page.route("**/api/**", async (route) => {
@@ -242,6 +245,10 @@ async function prepareWorldPage(
                 passphrase: chatPassphrase,
               }
             : ((status = 401), { error: "unauthorized" })
+        : url.pathname === "/api/chat/channels"
+          ? chatChannelStatus === 200
+            ? { ok: true, channels: chatChannels }
+            : ((status = chatChannelStatus), { error: "invalid_session" })
         : url.pathname === "/api/world/events"
           ? { events }
           : url.pathname === "/api/notifications"
@@ -801,47 +808,6 @@ ${longContext}
   });
 }
 
-function decryptChatEnvelope(envelope, passphrase, room) {
-  const salt = createHash("sha256")
-    .update(`ForkMesh room:${room}`, "utf8")
-    .digest()
-    .subarray(0, 16);
-  const key = pbkdf2Sync(passphrase, salt, 210000, 32, "sha256");
-  const decipher = createDecipheriv(
-    "aes-256-gcm",
-    key,
-    Buffer.from(envelope.nonce, "base64"),
-  );
-  decipher.setAuthTag(Buffer.from(envelope.tag, "base64"));
-  return JSON.parse(
-    Buffer.concat([
-      decipher.update(Buffer.from(envelope.body, "base64")),
-      decipher.final(),
-    ]).toString("utf8"),
-  );
-}
-
-function encryptChatEnvelope(message, passphrase, room) {
-  const salt = createHash("sha256")
-    .update(`ForkMesh room:${room}`, "utf8")
-    .digest()
-    .subarray(0, 16);
-  const key = pbkdf2Sync(passphrase, salt, 210000, 32, "sha256");
-  const nonce = Buffer.alloc(12, 7);
-  const cipher = createCipheriv("aes-256-gcm", key, nonce);
-  const body = Buffer.concat([
-    cipher.update(JSON.stringify(message), "utf8"),
-    cipher.final(),
-  ]);
-  return {
-    kind: "cipher",
-    v: 1,
-    nonce: nonce.toString("base64"),
-    tag: cipher.getAuthTag().toString("base64"),
-    body: body.toString("base64"),
-  };
-}
-
 async function waitForWorld(page, url = "/world/") {
   await page.goto(url);
   await waitForWorldReady(page);
@@ -1084,32 +1050,16 @@ test("account signup and login complete inside the World without leaking into UR
   expect(new URL(page.url()).pathname).toBe("/world/");
 });
 
-test("World chat stays embedded without navigating or opening a tab", async ({
+test("ForkMesh Office opens encrypted chat only after explicit entry", async ({
   page,
   context,
 }) => {
   const passphrase = "playwright-public-world-general-passphrase";
-  const roomKeyRequests = [];
   const chatSocketURLs = [];
-  const chatFrames = [];
-  let publicChatSocket = null;
-  page.on("request", (request) => {
-    const url = new URL(request.url());
-    if (url.pathname === "/api/chat/room-key") {
-      roomKeyRequests.push({
-        room: url.searchParams.get("room"),
-        authorization: request.headers().authorization || "",
-      });
-    }
-  });
   await page.routeWebSocket(
     "**/api/repo/mainnode/forkmesh/rooms/world-general/ws",
     (socket) => {
-      publicChatSocket = socket;
       chatSocketURLs.push(socket.url());
-      socket.onMessage((message) => {
-        chatFrames.push(JSON.parse(String(message)));
-      });
     },
   );
   await prepareWorldPage(page, "world-chat", {
@@ -1119,79 +1069,133 @@ test("World chat stays embedded without navigating or opening a tab", async ({
 
   const worldURL = page.url();
   const pageCount = context.pages().length;
-  await page.locator("[data-world-chat-open]").first().click();
-
-  const chat = page.locator("[data-world-chat]");
-  await expect(chat).toBeVisible();
-  const chatFrame = page.frameLocator("[data-world-chat-frame]");
-  const chatInput = chatFrame.locator("#fullChatInput");
-  await expect(chatInput).toBeVisible();
-  await expect(
-    chatFrame.locator("[data-dashboard-chat-status]").first(),
-  ).toHaveText("Connected · public World #general");
-  publicChatSocket.send(JSON.stringify(encryptChatEnvelope(
-    {
-      type: "chat",
-      id: "forged-user-claim",
-      senderId: "self-asserted-peer",
-      sender: "Verified Admin",
-      accountKind: "user",
-      channel: "#general",
-      text: "This identity claim is not verified.",
-      ts: FIXED_NOW,
-    },
-    passphrase,
-    "world-general",
-  )));
-  await expect(chatFrame.locator("#fullChatMessages")).toContainText(
-    "World visitor · Verified Admin",
-  );
-  await expect(chatFrame.locator("#fullChatMessages")).toContainText(
-    "This identity claim is not verified.",
-  );
-  await chatInput.fill("Hello from the public World");
-  await chatFrame.locator("#fullChatSend").click();
-  await expect.poll(
-    () => chatFrames.filter((frame) => frame.persist === true).length,
-  ).toBe(1);
-
-  const envelope = chatFrames.find((frame) => frame.persist === true);
-  const message = decryptChatEnvelope(
-    envelope,
-    passphrase,
-    "world-general",
-  );
-  expect(message).toMatchObject({
-    type: "chat",
-    channel: "#general",
-    text: "Hello from the public World",
-    accountKind: "guest",
-  });
-  expect(message.sender).toMatch(/^World visitor · /);
-  expect(roomKeyRequests).toContainEqual({
-    room: "world-general",
-    authorization: "",
-  });
-  expect(chatSocketURLs).toHaveLength(1);
-  expect(new URL(chatSocketURLs[0]).pathname).toBe(
-    "/api/repo/mainnode/forkmesh/rooms/world-general/ws",
-  );
-  expect(page.url()).toBe(worldURL);
-  expect(context.pages()).toHaveLength(pageCount);
+  expect(chatSocketURLs).toHaveLength(0);
+  await page.locator("[data-world-office-focus]").first().click();
+  expect(chatSocketURLs).toHaveLength(0);
 
   await page.locator("forkmesh-world").evaluate((shell) => {
-    shell.openWorldChat("/dashboard/chat?space=sky-campus");
+    shell.world.player.position.set(11, 0.38, -17.7);
   });
-  const restrictedFrame = page.frameLocator("[data-world-chat-frame]");
-  await expect(restrictedFrame.locator("#fullChatInput")).toBeDisabled();
-  await expect(
-    restrictedFrame.locator("[data-dashboard-chat-status]").first(),
-  ).toHaveText("User login required for this channel");
-  expect(chatSocketURLs).toHaveLength(1);
+  const entry = page.locator("[data-world-office-enter]");
+  await expect(entry).toBeVisible();
+  expect(chatSocketURLs).toHaveLength(0);
+  await page.evaluate(() => document.activeElement?.blur());
+  await page.keyboard.press("e");
+  await page.locator("[data-world-office-fallback]").click();
 
-  await chat.getByRole("button", { name: "Close World chat" }).click();
+  const chat = page.locator("[data-world-office-chat]");
+  await expect(chat).toBeVisible();
+  const officeFrame = page.locator("[data-world-office-frame]");
+  await expect(officeFrame).toHaveAttribute("src", "/chat?embed=office");
+  const chatFrame = page.frameLocator("[data-world-office-frame]");
+  const chatInput = chatFrame.locator("#chat-input");
+  await expect(chatInput).toBeVisible();
+  await expect(chatFrame.locator("#chat-status")).toHaveText(
+    "Connected · public World #general",
+  );
+  await chat.getByRole("button", {
+    name: "Close accessible chat fallback",
+  }).click();
   await expect(chat).toBeHidden();
+  await expect(officeFrame).not.toHaveAttribute("src", /.+/, {
+    timeout: 3500,
+  });
+  expect(chatSocketURLs).toHaveLength(1);
   expect(page.url()).toBe(worldURL);
+  expect(context.pages()).toHaveLength(pageCount);
+});
+
+test("ForkMesh Office preserves registered channel authorization", async ({
+  page,
+}) => {
+  await page.routeWebSocket(
+    "**/api/repo/mainnode/forkmesh/rooms/world-general/ws",
+    () => {},
+  );
+  await prepareWorldPage(page, "office-admin", {
+    session: {
+      kind: "user",
+      nodeName: "admin",
+      email: "admin@example.test",
+      sessionToken: "admin-token",
+      isAdmin: true,
+    },
+    chatPassphrase: "playwright-office-admin-passphrase",
+    chatChannels: [
+      {
+        id: "a".repeat(32),
+        name: "announcements",
+        visibility: "public",
+        canManage: true,
+        keyVersion: 1,
+        updatedAt: FIXED_NOW,
+      },
+      {
+        id: "b".repeat(32),
+        name: "leadership",
+        visibility: "private",
+        canManage: true,
+        keyVersion: 1,
+        updatedAt: FIXED_NOW,
+      },
+    ],
+  });
+  await waitForWorld(page);
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.player.position.set(11, 0.38, -17.7);
+  });
+  await page.locator("[data-world-office-enter]").click();
+  const nativeRooms = page.locator("[data-world-office-room-board]");
+  await expect(nativeRooms).toContainText("#general");
+  await expect(nativeRooms).toContainText("#announcements");
+  await expect(nativeRooms).toContainText("#leadership");
+  await page.locator("[data-world-office-fallback]").click();
+
+  const office = page.frameLocator("[data-world-office-frame]");
+  await expect(office.locator("#chat-rooms")).toContainText("#general");
+  await expect(office.locator("#chat-rooms")).toContainText("#announcements");
+  await expect(office.locator("#chat-rooms")).toContainText("#leadership");
+  await expect(office.locator("#chat-office-manage")).toBeVisible();
+  await expect(office.locator("#chat-channel-create")).toBeHidden();
+  await expect(office.locator("#chat-channel-manage")).toBeHidden();
+});
+
+test("ForkMesh Office explains an expired authorized session", async ({
+  page,
+}) => {
+  await page.routeWebSocket(
+    "**/api/repo/mainnode/forkmesh/rooms/world-general/ws",
+    () => {},
+  );
+  await prepareWorldPage(page, "office-expired", {
+    session: {
+      kind: "user",
+      nodeName: "alice",
+      email: "alice@example.test",
+      sessionToken: "expired-token",
+    },
+    chatPassphrase: "playwright-office-expired-passphrase",
+    chatChannelStatus: 401,
+  });
+  await waitForWorld(page);
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.player.position.set(11, 0.38, -17.7);
+  });
+  await page.locator("[data-world-office-enter]").click();
+  await expect(page.locator("[data-world-office-room-board]")).toContainText(
+    "#general",
+  );
+  await expect(page.locator("[data-world-office-lobby-status]")).toContainText(
+    "Channels are temporarily unavailable",
+  );
+  await page.locator("[data-world-office-fallback]").click();
+
+  const office = page.frameLocator("[data-world-office-frame]");
+  await expect(office.locator("#chat-office-alert")).toContainText(
+    "Your session expired. Log in again to use authorized channels.",
+  );
+  await expect(office.locator("#chat-office-login")).toBeVisible();
+  await expect(office.locator("#chat-rooms")).toContainText("#general");
 });
 
 test("reward-program links deep-link to the self-custodial fountain controls", async ({
@@ -1221,6 +1225,9 @@ async function freezeWorld(page) {
     // participates in scene lighting.
     shell.world.setTheme("world");
     shell.world.setLightLevel(100);
+    // Frame the Office for the baseline so the meeting-room work is visible in
+    // every viewport's shot (adhoc: PR #47). Retakes world-*.png baselines.
+    shell.world.focusLandmark("office", { move: false });
   });
   // The camera intentionally eases from its spawn position. Let that bounded
   // interpolation converge before pausing so the WebGL baseline does not
@@ -1231,6 +1238,18 @@ async function freezeWorld(page) {
     shell.world.setPaused(true);
     const toast = shell.querySelector("[data-world-toast]");
     if (toast) toast.dataset.open = "false";
+  });
+}
+
+async function openOfficeForVisual(page) {
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setPaused(false);
+    shell.world.player.position.set(11, 0.38, -17.7);
+  });
+  await page.locator("[data-world-office-enter]").click();
+  await expect(page.locator("[data-world-office-lobby]")).toBeVisible();
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setPaused(true);
   });
 }
 
@@ -3771,10 +3790,17 @@ for (const viewport of [
     },
   },
 ]) {
-  test(`visual acceptance ${viewport.name}`, async ({ browser }) => {
+  test(`visual acceptance ${viewport.name}`, async ({ browser }, testInfo) => {
+    testInfo.snapshotSuffix = "linux";
     const context = await browser.newContext(viewport.options);
     const page = await context.newPage();
-    await prepareWorldPage(page, `visual-${viewport.name}`);
+    await page.routeWebSocket(
+      "**/api/repo/mainnode/forkmesh/rooms/world-general/ws",
+      () => {},
+    );
+    await prepareWorldPage(page, `visual-${viewport.name}`, {
+      chatPassphrase: `visual-${viewport.name}-office-passphrase`,
+    });
     await waitForWorld(page);
     await freezeWorld(page);
     await expect(page).toHaveScreenshot(`world-${viewport.name}.png`, {
@@ -3782,6 +3808,50 @@ for (const viewport of [
       caret: "hide",
       maxDiffPixelRatio: 0.01,
     });
+    await openOfficeForVisual(page);
+    const dock = page.locator("[data-world-office-lobby]");
+    const dockBox = await dock.boundingBox();
+    expect(dockBox).not.toBeNull();
+    if (viewport.options.viewport.width <= 720) {
+      expect(dockBox.height).toBeLessThanOrEqual(viewport.options.viewport.height);
+    } else {
+      expect(dockBox.width).toBeLessThanOrEqual(621);
+    }
+    await expect(page.locator("canvas.world-canvas")).toBeVisible();
+    expect(await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    )).toBe(true);
+    await expect(page).toHaveScreenshot(`world-office-${viewport.name}.png`, {
+      animations: "disabled",
+      caret: "hide",
+      maxDiffPixelRatio: 0.01,
+    });
     await context.close();
   });
 }
+
+test("ForkMesh Office lobby stays bounded at 320 CSS pixels", async ({
+  browser,
+}) => {
+  const context = await browser.newContext({
+    viewport: { width: 320, height: 640 },
+    hasTouch: true,
+    isMobile: true,
+  });
+  const page = await context.newPage();
+  await page.routeWebSocket(
+    "**/api/repo/mainnode/forkmesh/rooms/world-general/ws",
+    () => {},
+  );
+  await prepareWorldPage(page, "office-320", {
+    chatPassphrase: "playwright-office-320-passphrase",
+  });
+  await waitForWorld(page);
+  await openOfficeForVisual(page);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(320);
+  const dockBox = await page.locator("[data-world-office-lobby]").boundingBox();
+  expect(dockBox).not.toBeNull();
+  expect(dockBox.width).toBeLessThanOrEqual(320);
+  expect(dockBox.height).toBeLessThanOrEqual(640);
+  await context.close();
+});

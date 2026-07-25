@@ -114,13 +114,18 @@ class FakeRuntime:
             "details": details or {},
         })
 
-    async def room_access(self, channel_id, key_version, account_bi):
+    async def room_access(self, channel_id, key_version, account_bi, actor):
+        assert actor == self.actor
         return {
             "room": f"private-{channel_id}-v{key_version}",
             "passphrase": f"key:{channel_id}:{key_version}",
             "webSocketUrl": (
                 f"/api/chat/channels/{channel_id}/ws?ticket="
                 f"ticket:{account_bi}"
+            ),
+            "meetingWebSocketUrl": (
+                f"/api/world/office/channels/{channel_id}/ws?ticket="
+                f"meeting:{account_bi}"
             ),
         }
 
@@ -420,6 +425,8 @@ async def test_invited_user_lists_and_accesses_only_their_channel():
     assert access["status"] == 200
     assert access["data"]["channel"]["name"] == "release-team"
     assert access["data"]["passphrase"].startswith("key:")
+    assert access["data"]["meetingWebSocketUrl"].startswith(
+        f"/api/world/office/channels/{channel_id}/ws?ticket=")
     assert access["cache_control"].startswith("no-store")
 
 
