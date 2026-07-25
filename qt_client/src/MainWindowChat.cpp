@@ -7374,8 +7374,11 @@ QWidget *MainWindow::buildHostsSection()
 {
     auto *page = new QWidget;
     auto *outer = new QVBoxLayout(page);
-    outer->setContentsMargins(24, 20, 24, 24);
-    outer->setSpacing(12);
+    // Compact page chrome (adhoc #315): tighter margins/spacing everywhere so
+    // all areas — install form, Vultr provisioning, live output and the host
+    // list — fit on screen together, while every hint keeps its full text.
+    outer->setContentsMargins(16, 12, 16, 14);
+    outer->setSpacing(8);
 
     auto *titleRow = new QHBoxLayout;
     titleRow->setContentsMargins(0, 0, 0, 0);
@@ -7446,7 +7449,8 @@ QWidget *MainWindow::buildHostsSection()
         "(binary) on one saved host uploads this app's own binary. Install from "
         "binary (all hosts) instead makes every host download and checksum-verify "
         "the current published release, then confirms the installed version and "
-        "exact source commit."));
+        "exact source commit. No server yet? Create a Vultr mirror below "
+        "provisions a brand-new VPS from just an API key."));
     subtitle->setObjectName("mutedLabel");
     subtitle->setWordWrap(true);
     outer->addWidget(subtitle);
@@ -7458,19 +7462,19 @@ QWidget *MainWindow::buildHostsSection()
     auto *body = new QWidget;
     auto *bodyCol = new QVBoxLayout(body);
     bodyCol->setContentsMargins(0, 0, 0, 0);
-    bodyCol->setSpacing(16);
+    bodyCol->setSpacing(10);
 
     // --- Install form ------------------------------------------------------
     auto *formCard = new QFrame;
     formCard->setObjectName("leaderboardCard");
     formCard->setFrameShape(QFrame::StyledPanel);
     auto *formCol = new QVBoxLayout(formCard);
-    formCol->setContentsMargins(16, 14, 16, 14);
-    formCol->setSpacing(10);
+    formCol->setContentsMargins(12, 10, 12, 10);
+    formCol->setSpacing(6);
 
     auto *form = new QFormLayout;
     form->setLabelAlignment(Qt::AlignRight);
-    form->setSpacing(8);
+    form->setSpacing(6);
 
     m_hostIpEdit = new QLineEdit;
     m_hostIpEdit->setPlaceholderText(QStringLiteral("203.0.113.10"));
@@ -7536,6 +7540,73 @@ QWidget *MainWindow::buildHostsSection()
     formCol->addLayout(runRow);
     bodyCol->addWidget(formCard);
 
+    // --- Create a Vultr mirror (adhoc #315) --------------------------------
+    // Fully automated alternative to the manual form above: given only a Vultr
+    // API key, deploy a brand-new VPS (cheapest plan, newest Debian), with the
+    // SSH key created and managed by ForkMesh, then run the same hosted
+    // installer over SSH so the node auto-links to this account and starts
+    // mirroring/syncing on its own.
+    auto *vultrCard = new QFrame;
+    vultrCard->setObjectName("leaderboardCard");
+    vultrCard->setFrameShape(QFrame::StyledPanel);
+    auto *vultrCol = new QVBoxLayout(vultrCard);
+    vultrCol->setContentsMargins(12, 10, 12, 10);
+    vultrCol->setSpacing(6);
+
+    auto *vultrTitle = new QLabel(QStringLiteral("Create a Vultr mirror"));
+    QFont vtf = vultrTitle->font();
+    vtf.setBold(true);
+    vultrTitle->setFont(vtf);
+    vultrCol->addWidget(vultrTitle);
+
+    auto *vultrHint = new QLabel(QString::fromUtf8(
+        "One click deploys a brand-new cloud mirror on your Vultr account: "
+        "ForkMesh picks the cheapest available plan running the latest Debian, "
+        "creates and manages the SSH key for it automatically, boots the "
+        "instance, installs ForkMesh over SSH and links the new node to your "
+        "account so it starts mirroring and syncing right away. The API key "
+        "(Vultr panel \xE2\x86\x92 Account \xE2\x86\x92 API) is used from "
+        "memory only and never saved to disk \xE2\x80\x94 store it as a "
+        "VULTR_API_KEY device variable to prefill it. The instance is billed "
+        "by Vultr to your account until you destroy it there."));
+    vultrHint->setObjectName("mutedLabel");
+    vultrHint->setWordWrap(true);
+    vultrCol->addWidget(vultrHint);
+
+    auto *vultrForm = new QFormLayout;
+    vultrForm->setLabelAlignment(Qt::AlignRight);
+    vultrForm->setSpacing(6);
+    m_vultrApiKeyEdit = new QLineEdit;
+    m_vultrApiKeyEdit->setEchoMode(QLineEdit::Password);
+    m_vultrApiKeyEdit->setPlaceholderText(
+        QStringLiteral("Vultr API key — kept in memory only"));
+    vultrForm->addRow(QStringLiteral("Vultr API key"), m_vultrApiKeyEdit);
+    m_vultrNameEdit = new QLineEdit;
+    m_vultrNameEdit->setPlaceholderText(
+        QStringLiteral("Optional — defaults to vultr-mirror-1, -2, \xE2\x80\xA6"));
+    vultrForm->addRow(QStringLiteral("Node name"), m_vultrNameEdit);
+    vultrCol->addLayout(vultrForm);
+
+    auto *vultrRow = new QHBoxLayout;
+    vultrRow->setContentsMargins(0, 0, 0, 0);
+    m_vultrCreateButton = new QPushButton(QStringLiteral("Create Vultr mirror"));
+    m_vultrCreateButton->setObjectName("primaryButton");
+    m_vultrCreateButton->setCursor(Qt::PointingHandCursor);
+    m_vultrCreateButton->setToolTip(QStringLiteral(
+        "Deploy the cheapest Debian instance on your Vultr account, install "
+        "ForkMesh v" FORKMESH_VERSION " on it and link it to your account. "
+        "Progress streams into Live output below."));
+    setOcticon(m_vultrCreateButton, "rocket", 14);
+    connect(m_vultrCreateButton, &QPushButton::clicked, this,
+            &MainWindow::createVultrMirrorFromForm);
+    vultrRow->addWidget(m_vultrCreateButton);
+    m_vultrStatus = new QLabel;
+    m_vultrStatus->setObjectName("mutedLabel");
+    m_vultrStatus->setWordWrap(true);
+    vultrRow->addWidget(m_vultrStatus, 1);
+    vultrCol->addLayout(vultrRow);
+    bodyCol->addWidget(vultrCard);
+
     // --- Live session / install output ------------------------------------
     auto *logLabel = new QLabel(QStringLiteral("Live output"));
     QFont llf = logLabel->font();
@@ -7547,7 +7618,7 @@ QWidget *MainWindow::buildHostsSection()
     m_hostInstallLog->setObjectName("actionLog");
     m_hostInstallLog->setReadOnly(true);
     m_hostInstallLog->setLineWrapMode(QPlainTextEdit::NoWrap);
-    m_hostInstallLog->setMinimumHeight(220);
+    m_hostInstallLog->setMinimumHeight(170);
     QFont mono(QStringLiteral("monospace"));
     mono.setStyleHint(QFont::Monospace);
     m_hostInstallLog->setFont(mono);
@@ -7933,7 +8004,9 @@ void MainWindow::runHostActionsConfiguration(
     QString error;
     forkmesh::control::MirrorActionsSshCommand command =
         forkmesh::control::buildMirrorActionsSshCommand(
-            request, sshPassword, &error);
+            request, sshPassword, &error,
+            savedHostIdentityFile(request.nodeName, request.host,
+                                  request.sshUser));
     if (command.program.isEmpty()) {
         for (QString &value : request.variables)
             value.fill(QChar::Null);
@@ -10346,7 +10419,8 @@ void MainWindow::runHostLogSession(const QString &ip, const QString &user,
     QString sshError;
     const forkmesh::control::HostSshCommand ssh =
         forkmesh::control::buildHostSshCommand(
-            ip, user, pass, remoteCmd, &sshError);
+            ip, user, pass, remoteCmd, &sshError,
+            savedHostIdentityFile(node, ip, user));
     if (ssh.program.isEmpty()) {
         appendLog(QStringLiteral("[error] %1\n").arg(sshError));
         status->setText(sshError);
@@ -10421,7 +10495,8 @@ void MainWindow::addHostFromForm()
 }
 
 void MainWindow::rememberHost(const QString &name, const QString &ip,
-                              const QString &user, const QString &pass, const QString &status)
+                              const QString &user, const QString &pass, const QString &status,
+                              const QString &identityFile)
 {
     QSettings settings;
     QJsonArray hosts = forkmesh::control::loadSavedHosts(
@@ -10432,10 +10507,19 @@ void MainWindow::rememberHost(const QString &name, const QString &ip,
     entry.insert(QStringLiteral("ip"), ip);
     entry.insert(QStringLiteral("user"), user);
     entry.insert(QStringLiteral("status"), status);
+    if (!identityFile.trimmed().isEmpty())
+        entry.insert(QStringLiteral("identityFile"), identityFile.trimmed());
     bool replaced = false;
     for (int i = 0; i < hosts.size(); ++i) {
         if (hosts.at(i).toObject().value("name").toString() == name) {
             const QJsonObject old = hosts.at(i).toObject();
+            // A saved managed-key path survives status updates that do not
+            // explicitly change it (every install/uninstall re-remember).
+            if (!entry.contains(QStringLiteral("identityFile")) &&
+                old.contains(QStringLiteral("identityFile"))) {
+                entry.insert(QStringLiteral("identityFile"),
+                             old.value(QStringLiteral("identityFile")));
+            }
             const QString oldCredentialKey =
                 forkmesh::control::savedHostCredentialKey(
                     old.value(QStringLiteral("name")).toString(),
@@ -10467,6 +10551,549 @@ void MainWindow::rememberHost(const QString &name, const QString &ip,
     }
     forkmesh::control::saveSavedHosts(settings, kHostsSetting, hosts);
     refreshHostsTable();
+}
+
+QString MainWindow::savedHostIdentityFile(const QString &name, const QString &ip,
+                                          const QString &user) const
+{
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, nullptr);
+    for (const QJsonValue &value : hosts) {
+        const QJsonObject host = value.toObject();
+        if (host.value(QStringLiteral("name")).toString() != name ||
+            host.value(QStringLiteral("ip")).toString() != ip ||
+            host.value(QStringLiteral("user")).toString() != user) {
+            continue;
+        }
+        const QString identity =
+            host.value(QStringLiteral("identityFile")).toString().trimmed();
+        if (!identity.isEmpty() && QFileInfo(identity).isFile())
+            return identity;
+        return {};
+    }
+    return {};
+}
+
+// --- One-click Vultr mirror provisioning (adhoc #315) -----------------------
+//
+// createVultrMirrorFromForm drives an async chain over the Vultr v2 API:
+// managed keypair → SSH-key registration → cheapest plan → newest Debian →
+// instance create → boot poll → the normal runHostInstall handoff, which
+// installs ForkMesh over SSH and auto-links the fresh node to this account so
+// it starts mirroring and syncing on its own. Every step streams into the
+// shared Live output pane. The API key is captured by value through the chain
+// and lives only in these closures and the Authorization headers.
+
+void MainWindow::finishVultrProvision(bool ok, const QString &message)
+{
+    m_vultrProvisionActive = false;
+    if (m_vultrCreateButton)
+        m_vultrCreateButton->setEnabled(true);
+    if (m_vultrStatus)
+        m_vultrStatus->setText(
+            (ok ? QString::fromUtf8("\xE2\x9C\x94 ")
+                : QString::fromUtf8("\xE2\x9C\x98 ")) + message);
+    if (!message.isEmpty())
+        appendHostInstallLog(
+            (ok ? QString::fromUtf8("\n\xE2\x9C\x94 ")
+                : QString::fromUtf8("\n\xE2\x9C\x98 ")) +
+            message + QStringLiteral("\n"));
+}
+
+void MainWindow::vultrApiCall(const QString &apiKey, const QString &path,
+                              const QByteArray &method, const QJsonObject &body,
+                              std::function<void(QJsonObject, QString)> onDone)
+{
+    QNetworkRequest request(
+        QUrl(QStringLiteral("https://api.vultr.com") + path));
+    request.setRawHeader(QByteArrayLiteral("Authorization"),
+                         QByteArrayLiteral("Bearer ") + apiKey.toUtf8());
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    QNetworkReply *reply =
+        method == QByteArrayLiteral("POST")
+            ? m_networkAccess->post(
+                  request,
+                  QJsonDocument(body).toJson(QJsonDocument::Compact))
+            : m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this, [reply, onDone] {
+        reply->deleteLater();
+        const int status =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                .toInt();
+        const QJsonObject object =
+            QJsonDocument::fromJson(reply->read(1024 * 1024)).object();
+        if (reply->error() != QNetworkReply::NoError || status < 200 ||
+            status >= 300) {
+            QString detail =
+                object.value(QStringLiteral("error")).toString();
+            if (detail.isEmpty())
+                detail = reply->errorString();
+            onDone({}, QStringLiteral("Vultr API error (HTTP %1): %2")
+                           .arg(status)
+                           .arg(detail));
+            return;
+        }
+        onDone(object, QString());
+    });
+}
+
+void MainWindow::ensureVultrManagedKeypair(
+    std::function<void(QString, QString, QString)> onDone)
+{
+    const QString appDataDir =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    const QString sshDir = QDir(appDataDir).filePath(QStringLiteral("ssh"));
+    if (appDataDir.isEmpty() || !QDir().mkpath(sshDir)) {
+        onDone({}, {}, QStringLiteral(
+            "ForkMesh could not create its managed SSH key directory."));
+        return;
+    }
+    QFile::setPermissions(sshDir,
+                          QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                              QFileDevice::ExeOwner);
+    const QString keyPath =
+        QDir(sshDir).filePath(QStringLiteral("vultr_mirror_ed25519"));
+    const QString pubPath = keyPath + QStringLiteral(".pub");
+    const auto readPublicKey = [pubPath]() {
+        QFile pub(pubPath);
+        if (!pub.open(QIODevice::ReadOnly))
+            return QString();
+        return QString::fromUtf8(pub.read(64 * 1024)).trimmed();
+    };
+    if (QFileInfo(keyPath).isFile()) {
+        const QString publicKey = readPublicKey();
+        if (!publicKey.isEmpty()) {
+            onDone(keyPath, publicKey, {});
+            return;
+        }
+    }
+    appendHostInstallLog(QString::fromUtf8(
+        "Generating the managed SSH key for Vultr mirrors\xE2\x80\xA6\n"));
+    auto *keygen = new QProcess(this);
+    keygen->setProcessChannelMode(QProcess::MergedChannels);
+    connect(keygen, &QProcess::errorOccurred, this,
+            [keygen, onDone](QProcess::ProcessError processError) {
+                if (processError != QProcess::FailedToStart)
+                    return;
+                keygen->deleteLater();
+                onDone({}, {}, QStringLiteral(
+                    "Could not start ssh-keygen. Install OpenSSH and try "
+                    "again."));
+            });
+    connect(keygen, &QProcess::finished, this,
+            [keygen, keyPath, readPublicKey, onDone](
+                int code, QProcess::ExitStatus exitStatus) {
+                keygen->deleteLater();
+                if (exitStatus != QProcess::NormalExit || code != 0 ||
+                    !QFileInfo(keyPath).isFile()) {
+                    onDone({}, {}, QStringLiteral(
+                        "ssh-keygen could not create the managed key "
+                        "(exit %1).").arg(code));
+                    return;
+                }
+                QFile::setPermissions(
+                    keyPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+                const QString publicKey = readPublicKey();
+                if (publicKey.isEmpty()) {
+                    onDone({}, {}, QStringLiteral(
+                        "The managed key was created but its public half "
+                        "could not be read."));
+                    return;
+                }
+                onDone(keyPath, publicKey, {});
+            });
+    keygen->start(QStringLiteral("ssh-keygen"),
+                  {QStringLiteral("-q"), QStringLiteral("-t"),
+                   QStringLiteral("ed25519"), QStringLiteral("-N"),
+                   QString(), QStringLiteral("-C"),
+                   QStringLiteral("forkmesh-vultr-mirror"),
+                   QStringLiteral("-f"), keyPath});
+}
+
+void MainWindow::resolveVultrSshKeyId(
+    const QString &apiKey, const QString &publicKey,
+    std::function<void(QString, QString)> onDone)
+{
+    // Match on the key blob (type + base64) so the managed key is found even
+    // if it was renamed in the Vultr panel; register it once otherwise.
+    const QStringList parts =
+        publicKey.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    const QString blob = parts.size() >= 2
+                             ? parts.at(0) + QLatin1Char(' ') + parts.at(1)
+                             : publicKey;
+    vultrApiCall(
+        apiKey, QStringLiteral("/v2/ssh-keys?per_page=500"),
+        QByteArrayLiteral("GET"), {},
+        [this, apiKey, publicKey, blob, onDone](QJsonObject result,
+                                                QString error) {
+            if (!error.isEmpty()) {
+                onDone({}, error);
+                return;
+            }
+            for (const QJsonValue &value :
+                 result.value(QStringLiteral("ssh_keys")).toArray()) {
+                const QJsonObject key = value.toObject();
+                const QString id =
+                    key.value(QStringLiteral("id")).toString();
+                if (!id.isEmpty() &&
+                    key.value(QStringLiteral("ssh_key"))
+                        .toString()
+                        .trimmed()
+                        .startsWith(blob)) {
+                    onDone(id, {});
+                    return;
+                }
+            }
+            const QJsonObject body{
+                {QStringLiteral("name"),
+                 QStringLiteral("forkmesh-mirror-controller")},
+                {QStringLiteral("ssh_key"), publicKey},
+            };
+            vultrApiCall(
+                apiKey, QStringLiteral("/v2/ssh-keys"),
+                QByteArrayLiteral("POST"), body,
+                [onDone](QJsonObject created, QString postError) {
+                    if (!postError.isEmpty()) {
+                        onDone({}, postError);
+                        return;
+                    }
+                    const QString id =
+                        created.value(QStringLiteral("ssh_key"))
+                            .toObject()
+                            .value(QStringLiteral("id"))
+                            .toString();
+                    if (id.isEmpty()) {
+                        onDone({}, QStringLiteral(
+                            "Vultr did not return an SSH key id."));
+                        return;
+                    }
+                    onDone(id, {});
+                });
+        });
+}
+
+void MainWindow::createVultrMirrorFromForm()
+{
+    if (m_vultrProvisionActive) {
+        if (m_vultrStatus)
+            m_vultrStatus->setText(
+                QStringLiteral("A Vultr mirror is already being created."));
+        return;
+    }
+    if ((m_hostInstallProcess &&
+         m_hostInstallProcess->state() != QProcess::NotRunning) ||
+        m_hostDeployRemaining > 0) {
+        if (m_vultrStatus)
+            m_vultrStatus->setText(QStringLiteral(
+                "Wait for the running install to finish first."));
+        return;
+    }
+    QString apiKey =
+        m_vultrApiKeyEdit ? m_vultrApiKeyEdit->text().trimmed() : QString();
+    bool storedKey = false;
+    if (apiKey.isEmpty()) {
+        // Same convenience as the Cloudflare tooling: reuse a credential this
+        // node already stores as a device-local Actions variable.
+        apiKey = forkmesh::control::vultrApiKeyFromVariables(
+            ActionStore::variables());
+        storedKey = !apiKey.isEmpty();
+    }
+    QString node =
+        m_vultrNameEdit ? m_vultrNameEdit->text().trimmed() : QString();
+    if (node.isEmpty()) {
+        // First unused vultr-mirror-N so repeated one-click deploys never
+        // collide with a saved host.
+        QSettings settings;
+        const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+            settings, kHostsSetting, &m_hostSessionPasswords);
+        QSet<QString> used;
+        for (const QJsonValue &value : hosts)
+            used.insert(value.toObject()
+                            .value(QStringLiteral("name"))
+                            .toString());
+        for (int i = 1; i <= 999 && node.isEmpty(); ++i) {
+            const QString candidate =
+                QStringLiteral("vultr-mirror-%1").arg(i);
+            if (!used.contains(candidate))
+                node = candidate;
+        }
+    }
+    const QString invalid =
+        forkmesh::control::validateVultrMirrorRequest(apiKey, node);
+    if (!invalid.isEmpty()) {
+        if (m_vultrStatus)
+            m_vultrStatus->setText(invalid);
+        return;
+    }
+
+    m_vultrProvisionActive = true;
+    m_vultrPollCount = 0;
+    m_vultrInstallAttempts = 0;
+    if (m_vultrCreateButton)
+        m_vultrCreateButton->setEnabled(false);
+    if (m_hostInstallLog) {
+        m_hostInstallLog->clear();
+        m_hostInstallLogCarry.clear();
+        m_hostInstallLogFg = -1;
+        m_hostInstallLogBold = false;
+    }
+    appendHostInstallLog(QString::fromUtf8(
+        "Creating Vultr mirror \"%1\" \xE2\x80\x94 cheapest plan, latest "
+        "Debian, managed SSH key\xE2\x80\xA6\n").arg(node));
+    if (storedKey)
+        appendHostInstallLog(QStringLiteral(
+            "Using the VULTR_API_KEY stored as a device variable.\n"));
+    if (m_vultrStatus)
+        m_vultrStatus->setText(
+            QString::fromUtf8("Preparing the managed SSH key\xE2\x80\xA6"));
+
+    ensureVultrManagedKeypair([this, apiKey, node](
+                                  QString keyPath, QString publicKey,
+                                  QString keyError) {
+        if (!keyError.isEmpty()) {
+            finishVultrProvision(false, keyError);
+            return;
+        }
+        appendHostInstallLog(
+            QStringLiteral("Managed SSH key: %1\n").arg(keyPath));
+        if (m_vultrStatus)
+            m_vultrStatus->setText(QString::fromUtf8(
+                "Registering the SSH key with Vultr\xE2\x80\xA6"));
+        resolveVultrSshKeyId(apiKey, publicKey, [this, apiKey, node, keyPath](
+                                                    QString sshKeyId,
+                                                    QString sshError) {
+            if (!sshError.isEmpty()) {
+                finishVultrProvision(false, sshError);
+                return;
+            }
+            if (m_vultrStatus)
+                m_vultrStatus->setText(QString::fromUtf8(
+                    "Choosing the cheapest plan\xE2\x80\xA6"));
+            vultrApiCall(
+                apiKey, QStringLiteral("/v2/plans?per_page=500"),
+                QByteArrayLiteral("GET"), {},
+                [this, apiKey, node, keyPath, sshKeyId](
+                    QJsonObject plansResult, QString planError) {
+                    if (!planError.isEmpty()) {
+                        finishVultrProvision(false, planError);
+                        return;
+                    }
+                    const QJsonObject plan =
+                        forkmesh::control::cheapestVultrPlan(
+                            plansResult.value(QStringLiteral("plans"))
+                                .toArray());
+                    const QString region =
+                        forkmesh::control::vultrPlanRegion(plan);
+                    if (plan.isEmpty() || region.isEmpty()) {
+                        finishVultrProvision(false, QStringLiteral(
+                            "No deployable plan is available on this Vultr "
+                            "account."));
+                        return;
+                    }
+                    appendHostInstallLog(
+                        QStringLiteral(
+                            "Cheapest plan: %1 ($%2/month, %3 MB RAM, %4 GB "
+                            "disk) in region %5\n")
+                            .arg(plan.value(QStringLiteral("id")).toString())
+                            .arg(plan.value(QStringLiteral("monthly_cost"))
+                                     .toDouble())
+                            .arg(plan.value(QStringLiteral("ram")).toInt())
+                            .arg(plan.value(QStringLiteral("disk")).toInt())
+                            .arg(region));
+                    vultrApiCall(
+                        apiKey, QStringLiteral("/v2/os?per_page=500"),
+                        QByteArrayLiteral("GET"), {},
+                        [this, apiKey, node, keyPath, sshKeyId, plan, region](
+                            QJsonObject osResult, QString osError) {
+                            if (!osError.isEmpty()) {
+                                finishVultrProvision(false, osError);
+                                return;
+                            }
+                            const QJsonObject debian =
+                                forkmesh::control::latestVultrDebianOs(
+                                    osResult.value(QStringLiteral("os"))
+                                        .toArray());
+                            if (debian.isEmpty()) {
+                                finishVultrProvision(false, QStringLiteral(
+                                    "Vultr offers no Debian x64 image right "
+                                    "now."));
+                                return;
+                            }
+                            appendHostInstallLog(
+                                QStringLiteral("Operating system: %1\n")
+                                    .arg(debian.value(QStringLiteral("name"))
+                                             .toString()));
+                            if (m_vultrStatus)
+                                m_vultrStatus->setText(QString::fromUtf8(
+                                    "Creating the instance\xE2\x80\xA6"));
+                            const QJsonObject payload =
+                                forkmesh::control::vultrInstanceCreatePayload(
+                                    node,
+                                    plan.value(QStringLiteral("id"))
+                                        .toString(),
+                                    region,
+                                    debian.value(QStringLiteral("id"))
+                                        .toInt(),
+                                    sshKeyId);
+                            vultrApiCall(
+                                apiKey, QStringLiteral("/v2/instances"),
+                                QByteArrayLiteral("POST"), payload,
+                                [this, apiKey, node, keyPath](
+                                    QJsonObject createResult,
+                                    QString createError) {
+                                    if (!createError.isEmpty()) {
+                                        finishVultrProvision(false,
+                                                             createError);
+                                        return;
+                                    }
+                                    const QString instanceId =
+                                        createResult
+                                            .value(QStringLiteral("instance"))
+                                            .toObject()
+                                            .value(QStringLiteral("id"))
+                                            .toString();
+                                    if (instanceId.isEmpty()) {
+                                        finishVultrProvision(
+                                            false,
+                                            QStringLiteral(
+                                                "Vultr did not return an "
+                                                "instance id."));
+                                        return;
+                                    }
+                                    appendHostInstallLog(QString::fromUtf8(
+                                        "Instance %1 created \xE2\x80\x94 "
+                                        "waiting for it to boot\xE2\x80\xA6\n")
+                                        .arg(instanceId));
+                                    if (m_vultrStatus)
+                                        m_vultrStatus->setText(
+                                            QString::fromUtf8(
+                                                "Waiting for the instance to "
+                                                "boot\xE2\x80\xA6"));
+                                    pollVultrInstance(apiKey, instanceId,
+                                                      node, keyPath);
+                                });
+                        });
+                });
+        });
+    });
+}
+
+void MainWindow::pollVultrInstance(const QString &apiKey,
+                                   const QString &instanceId,
+                                   const QString &node,
+                                   const QString &identityFile)
+{
+    constexpr int kMaxPolls = 60; // ~10 minutes at one poll every 10 s
+    if (!m_vultrProvisionActive)
+        return;
+    vultrApiCall(
+        apiKey, QStringLiteral("/v2/instances/") + instanceId,
+        QByteArrayLiteral("GET"), {},
+        [this, apiKey, instanceId, node, identityFile](QJsonObject result,
+                                                       QString error) {
+            if (!m_vultrProvisionActive)
+                return;
+            if (!error.isEmpty()) {
+                finishVultrProvision(false, error);
+                return;
+            }
+            const QJsonObject instance =
+                result.value(QStringLiteral("instance")).toObject();
+            const QString ip =
+                forkmesh::control::vultrInstanceReadyIp(instance);
+            if (ip.isEmpty()) {
+                if (++m_vultrPollCount >= kMaxPolls) {
+                    finishVultrProvision(false, QStringLiteral(
+                        "The instance did not become ready in time. Check "
+                        "it in the Vultr panel, then Add host + Install "
+                        "ForkMesh manually once it is up."));
+                    return;
+                }
+                if (m_vultrStatus)
+                    m_vultrStatus->setText(
+                        QString::fromUtf8(
+                            "Waiting for the instance to boot "
+                            "(status: %1)\xE2\x80\xA6")
+                            .arg(instance.value(QStringLiteral("status"))
+                                     .toString()));
+                QTimer::singleShot(
+                    10000, this,
+                    [this, apiKey, instanceId, node, identityFile] {
+                        pollVultrInstance(apiKey, instanceId, node,
+                                          identityFile);
+                    });
+                return;
+            }
+            appendHostInstallLog(
+                QStringLiteral("Instance is up at %1.\n").arg(ip));
+            // Persist the host with its managed key path before the install
+            // so every later SSH action (install, logs, uninstall, Actions)
+            // authenticates with that key. Vultr Debian images boot as root.
+            rememberHost(node, ip, QStringLiteral("root"), QString(),
+                         QStringLiteral("vultr booting"), identityFile);
+            if (m_vultrStatus)
+                m_vultrStatus->setText(QString::fromUtf8(
+                    "Giving SSH a moment to come up\xE2\x80\xA6"));
+            QTimer::singleShot(15000, this, [this, node, ip, identityFile] {
+                startVultrHostInstall(node, ip, identityFile);
+            });
+        });
+}
+
+void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
+                                       const QString &identityFile)
+{
+    constexpr int kMaxInstallAttempts = 6;
+    if (!m_vultrProvisionActive)
+        return;
+    // Hand off to the shared install path through the form it reads; the
+    // managed key is picked up from the saved host's identityFile.
+    if (m_hostIpEdit)
+        m_hostIpEdit->setText(ip);
+    if (m_hostUserEdit)
+        m_hostUserEdit->setText(QStringLiteral("root"));
+    if (m_hostPassEdit)
+        m_hostPassEdit->clear();
+    if (m_hostNameEdit)
+        m_hostNameEdit->setText(node);
+    if (m_hostUploadBinaryCheck)
+        m_hostUploadBinaryCheck->setChecked(false);
+    ++m_vultrInstallAttempts;
+    if (m_vultrStatus)
+        m_vultrStatus->setText(
+            QString::fromUtf8(
+                "Installing ForkMesh (attempt %1 of %2)\xE2\x80\xA6")
+                .arg(m_vultrInstallAttempts)
+                .arg(kMaxInstallAttempts));
+    runHostInstall(false, [this, node, ip, identityFile](bool ok) {
+        if (!m_vultrProvisionActive)
+            return;
+        if (ok) {
+            finishVultrProvision(true, QString::fromUtf8(
+                "Vultr mirror \"%1\" (%2) is installed and linking to your "
+                "account \xE2\x80\x94 it will start mirroring and syncing "
+                "shortly.").arg(node, ip));
+            return;
+        }
+        if (m_vultrInstallAttempts >= kMaxInstallAttempts) {
+            finishVultrProvision(false, QString::fromUtf8(
+                "Install did not succeed after %1 attempts. The instance is "
+                "saved under Hosts \xE2\x80\x94 click Update there to retry.")
+                .arg(kMaxInstallAttempts));
+            return;
+        }
+        // A fresh instance often refuses SSH for a short while after it
+        // reports active; back off and retry.
+        if (m_vultrStatus)
+            m_vultrStatus->setText(QString::fromUtf8(
+                "Host not reachable yet \xE2\x80\x94 retrying in 30 "
+                "seconds\xE2\x80\xA6"));
+        QTimer::singleShot(30000, this, [this, node, ip, identityFile] {
+            startVultrHostInstall(node, ip, identityFile);
+        });
+    });
 }
 
 namespace {
@@ -11046,7 +11673,8 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     QString sshError;
     const forkmesh::control::HostSshCommand ssh =
         forkmesh::control::buildHostSshCommand(
-            ip, user, pass, remoteCmd, &sshError);
+            ip, user, pass, remoteCmd, &sshError,
+            savedHostIdentityFile(node, ip, user));
     if (ssh.program.isEmpty()) {
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(sshError);
@@ -11472,7 +12100,8 @@ void MainWindow::startHostDeploySession(HostDeploySession *session,
     QString sshError;
     const forkmesh::control::HostSshCommand ssh =
         forkmesh::control::buildHostSshCommand(
-            session->ip, session->user, session->pass, remoteCmd, &sshError);
+            session->ip, session->user, session->pass, remoteCmd, &sshError,
+            savedHostIdentityFile(session->node, session->ip, session->user));
     if (ssh.program.isEmpty()) {
         appendHostDeployLog(
             session, QString::fromUtf8("\n\xE2\x9C\x98 %1\n").arg(sshError));
@@ -11680,7 +12309,8 @@ void MainWindow::runHostUninstall()
     QString sshError;
     const forkmesh::control::HostSshCommand ssh =
         forkmesh::control::buildHostSshCommand(
-            ip, user, pass, remoteCmd, &sshError);
+            ip, user, pass, remoteCmd, &sshError,
+            savedHostIdentityFile(node, ip, user));
     if (ssh.program.isEmpty()) {
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(sshError);

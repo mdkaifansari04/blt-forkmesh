@@ -69,11 +69,15 @@ struct HostSshCommand {
 
 // Build the common authenticated transport used by install, logs, uninstall,
 // and Actions. The caller owns remoteCommand, which must not contain credentials.
+// identityFile optionally pins authentication to one ForkMesh-managed private
+// key (used for auto-provisioned Vultr mirrors); the path is public metadata,
+// the key material never leaves disk.
 HostSshCommand buildHostSshCommand(const QString &host,
                                    const QString &sshUser,
                                    const QString &sshPassword,
                                    const QString &remoteCommand,
-                                   QString *error = nullptr);
+                                   QString *error = nullptr,
+                                   const QString &identityFile = QString());
 
 // Stable, metadata-only key for a password retained in MainWindow memory for
 // this process lifetime. It is never written to QSettings.
@@ -108,7 +112,8 @@ QByteArray buildMirrorActionsConfigurationPayload(
 MirrorActionsSshCommand buildMirrorActionsSshCommand(
     const MirrorActionsConfigurationRequest &request,
     const QString &sshPassword,
-    QString *error = nullptr);
+    QString *error = nullptr,
+    const QString &identityFile = QString());
 
 // Decode the remote helper's single bounded, base64url result sentinel.
 // Success is not inferred from an SSH exit code alone.
@@ -268,5 +273,49 @@ QByteArray httpsMirrorRegistrationSigningPayload(
     const QString &node, const QString &baseUrl,
     const QString &publicKey, qint64 issuedAtMs,
     QString *error = nullptr);
+
+// --- One-click Vultr mirror provisioning (adhoc #315) ----------------------
+// Pure helpers behind the Hosts page's "Create a Vultr mirror" flow. All
+// networking, key generation and polling stay in the UI layer; everything here
+// is deterministic over the raw Vultr v2 JSON so the selection and payload
+// contracts are testable. The API key travels only in the Authorization header
+// of the desktop's HTTPS calls — never in argv, QSettings, or logs.
+
+// Empty string when the key and node name are safe to use, otherwise a
+// user-facing error. The key shape is deliberately loose (alphanumeric,
+// bounded) so future Vultr formats keep working.
+QString validateVultrMirrorRequest(const QString &apiKey,
+                                   const QString &nodeName);
+
+// From GET /v2/plans: the cheapest plan that can actually be deployed
+// (monthly_cost > 0 and at least one location). Ties break toward more RAM,
+// then the lexicographically smallest id, so selection is deterministic.
+QJsonObject cheapestVultrPlan(const QJsonArray &plans);
+
+// Deterministic region for a chosen plan: its lexicographically first
+// location. Empty when the plan has none.
+QString vultrPlanRegion(const QJsonObject &plan);
+
+// From GET /v2/os: the newest x64 Debian image (highest version number in the
+// name; ties break toward the higher os id).
+QJsonObject latestVultrDebianOs(const QJsonArray &osList);
+
+// Exact POST /v2/instances body for a ForkMesh mirror: chosen plan/region/OS,
+// the managed SSH key, no backups, no activation email, tagged so the instance
+// is recognizable in the Vultr panel.
+QJsonObject vultrInstanceCreatePayload(const QString &nodeName,
+                                       const QString &planId,
+                                       const QString &regionId,
+                                       int osId,
+                                       const QString &sshKeyId);
+
+// The instance's routable IPv4 once it is ready for SSH provisioning
+// (status active, power running, real main_ip); empty while it is still
+// booting or when the object is malformed.
+QString vultrInstanceReadyIp(const QJsonObject &instance);
+
+// Resolve a Vultr API key this node already stores as a device-local Actions
+// variable (same contract as cloudflareApiTokenFromVariables).
+QString vultrApiKeyFromVariables(const QMap<QString, QString> &variables);
 
 } // namespace forkmesh::control

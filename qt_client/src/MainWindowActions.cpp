@@ -10,6 +10,8 @@
 #include "KebabHeaderView.h"
 #include "MirrorActionsConfiguration.h"
 #include "MirrorActionsSummary.h"
+#include "PrivateMirrorRuntime.h"
+#include "PublicMirrorRuntime.h"
 
 #include <QCryptographicHash>
 #include <QSaveFile>
@@ -1032,6 +1034,49 @@ void MainWindow::saveActionNodeLabels(const QString &labels)
         refreshRepoActions();
 }
 
+std::shared_ptr<void> MainWindow::pinActionMirror(const RepositoryRecord &repo,
+                                                  QString *mirrorPath) const
+{
+    const auto publicPin =
+        m_publicMirrorMaterializations.value(repo.publicArchiveId);
+    if (publicPin && publicPin->isValid()) {
+        if (mirrorPath)
+            *mirrorPath = publicPin->repositoryPath();
+        return publicPin;
+    }
+    const auto privatePin =
+        m_privateMirrorMaterializations.value(repo.privateReplicaId);
+    if (privatePin && privatePin->isValid()) {
+        if (mirrorPath)
+            *mirrorPath = privatePin->repositoryPath();
+        return privatePin;
+    }
+    return {};
+}
+
+void MainWindow::releaseActionMirrorPin(int runId)
+{
+    const ActionMirrorPin pin = m_actionMirrorPins.take(runId);
+    if (!pin.materialization)
+        return;
+    // A release run stages its binaries into <mirror>/forkmesh-releases. If the
+    // repository was re-sealed while the build ran, that mirror is the retired
+    // one this pin was keeping alive, so hand the blobs to the live mirror
+    // before the directory goes away with the pin.
+    const int index = repoIndexFor(pin.owner, pin.name);
+    if (index < 0)
+        return;
+    const int carried =
+        carryMirrorReleaseCas(pin.path, m_repositories.at(index).mirrorPath);
+    if (carried > 0)
+        logSystem(QStringLiteral(
+                      "Actions: moved %1 release artifact blob(s) from run #%2 "
+                      "into the mirror now serving %3/%4.")
+                      .arg(carried)
+                      .arg(runId)
+                      .arg(pin.owner, pin.name));
+}
+
 void MainWindow::processActionQueue()
 {
     if (m_actionRunners.isEmpty())
@@ -1059,8 +1104,15 @@ void MainWindow::processActionQueue()
             scheduleMirrorActionsSummary(0);
             continue;
         }
-        const QString mirror = m_repositories.at(repoIndex).mirrorPath;
+        QString mirror = m_repositories.at(repoIndex).mirrorPath;
         const QString workTree = m_repositories.at(repoIndex).localPath;
+        // Encrypted mirrors live in a temporary materialization that every
+        // sealing pass replaces and deletes. Resolve the one that is live right
+        // now and hold it open for the whole run, so a re-seal (publishing a
+        // release kicks one off) cannot pull the checkout source out from under
+        // an in-flight build.
+        const std::shared_ptr<void> mirrorPin =
+            pinActionMirror(m_repositories.at(repoIndex), &mirror);
         ActionRun verified = *run;
         QString snapshotError;
         const QString repositoryWorkflow =
@@ -1116,6 +1168,9 @@ void MainWindow::processActionQueue()
         // start() emits statusChanged synchronously (which reloads m_actionRuns),
         // so copy the run out first and don't touch the pointer afterwards.
         const ActionRun snapshot = *run;
+        if (mirrorPin)
+            m_actionMirrorPins.insert(
+                runId, {mirrorPin, mirror, snapshot.owner, snapshot.name});
         idle->start(snapshot, wf, mirror, workTree, ActionStore::variables());
     }
 }
@@ -1225,6 +1280,10 @@ void MainWindow::onRunStatusChanged(int runId, const QString &status)
 
 void MainWindow::onRunFinished(int runId, bool ok)
 {
+    // The run is done with the mirror (the runner has already detached its
+    // worktree and landed any release artifacts), so stop holding the
+    // materialization open — a superseded one is deleted here.
+    releaseActionMirrorPin(runId);
     m_actionRuns = m_actionStore->loadAllRuns();
     scheduleMirrorActionsSummary(0);
     refreshActionsTable();
