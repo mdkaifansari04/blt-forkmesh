@@ -99,7 +99,6 @@ const TREES_PER_LANDMARK = 3;
 const TREE_MIN_SPACING = 3.2;
 const TREE_PORTAL_CLEARANCE = 7;
 const TREE_LANDMARK_CLEARANCE = Object.freeze({
-  information: 7,
   fountain: 9,
   repositories: 9,
   organizations: 10,
@@ -2217,59 +2216,6 @@ function createTree(THREE, x, z, scale = 1, color = "#2f8c5f") {
   return group;
 }
 
-function createInformationBooth(THREE, position, interactive) {
-  const group = new THREE.Group();
-  const base = new THREE.Mesh(
-    new THREE.BoxGeometry(4.4, 0.35, 3.3),
-    makeMaterial(THREE, "#dbeee3"),
-  );
-  base.position.y = 0.18;
-  group.add(base);
-
-  const counter = new THREE.Mesh(
-    new THREE.BoxGeometry(4, 1.45, 0.72),
-    makeMaterial(THREE, "#164c37"),
-  );
-  counter.position.set(0, 1, -0.92);
-  group.add(counter);
-
-  for (const x of [-1.75, 1.75]) {
-    const post = new THREE.Mesh(
-      new THREE.BoxGeometry(0.18, 2.8, 0.18),
-      makeMaterial(THREE, "#e8fff1"),
-    );
-    post.position.set(x, 1.6, 0);
-    group.add(post);
-  }
-
-  const canopy = new THREE.Mesh(
-    new THREE.BoxGeometry(4.55, 0.2, 3.05),
-    makeMaterial(THREE, "#9ef7c6", {
-      emissive: "#1e704a",
-      emissiveIntensity: 0.42,
-    }),
-  );
-  canopy.position.y = 3.02;
-  group.add(canopy);
-
-  addSectionPlaque(THREE, group, position, "START HERE", "information booth", "#9ef7c6", 3.6);
-
-  const beacon = new THREE.PointLight("#9ef7c6", 2.4, 10, 1.8);
-  beacon.position.set(0, 3.5, 0);
-  group.add(beacon);
-
-  group.position.set(...position);
-  group.userData.landmark = "information";
-  group.traverse((child) => {
-    if (child.isMesh) {
-      child.userData.landmark = "information";
-      interactive.push(child);
-    }
-  });
-  setShadows(group);
-  return group;
-}
-
 function createFountain(THREE, position, interactive, animated) {
   const group = new THREE.Group();
   const stone = makeMaterial(THREE, "#c5d8cf", { roughness: 0.62 });
@@ -4234,7 +4180,6 @@ export function createWorldScene({
   world.add(arrivalBox);
 
   const landmarkFactories = {
-    information: createInformationBooth,
     fountain: createFountain,
     repositories: createRepositoryDistrict,
     office: createForkMeshOffice,

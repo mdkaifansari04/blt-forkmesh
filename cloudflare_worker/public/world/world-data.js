@@ -1,29 +1,5 @@
 export const LANDMARKS = [
   {
-    id: "information",
-    label: "Information booth",
-    shortLabel: "Start here",
-    eyebrow: "WELCOME / 01",
-    icon: "i",
-    color: "#9ef7c6",
-    position: [-40, 0, 30],
-    summary: "Your orientation point for the mesh, privacy, wallets, and running a node.",
-    metaphor: "A staffed welcome booth at the Town Square entrance.",
-    reality:
-      "A guide to ForkMesh’s local-first Git mirrors, edge routing, encrypted collaboration, account setup, and desktop node.",
-    status: "Available now",
-    statusTone: "live",
-    bullets: [
-      "Repositories stay on independently operated nodes.",
-      "In the active community-member reward path, self-custodial payout keys stay on the user’s device and the Worker stores only public payout addresses, unsigned intents, and finalized signatures. The separate community-pool signer stays in the first instance operator’s encrypted local Qt client.",
-      "The Worker coordinates discovery and routes; it is not canonical Git storage.",
-      "Country is approximate. Raw IP addresses are never shown in the world.",
-      "Encryption reduces exposure but does not eliminate endpoint, authorization, or operational risk.",
-    ],
-    primary: { label: "Take the 90-second tour", action: "tour" },
-    secondary: { label: "Read technical docs", href: "/docs" },
-  },
-  {
     id: "fountain",
     label: "SOL reward fountain",
     shortLabel: "Reward pool",
@@ -100,11 +76,6 @@ export const LANDMARKS = [
 ];
 
 export const TOUR_STEPS = [
-  {
-    landmark: "information",
-    title: "Welcome to ForkMesh",
-    copy: "You entered as a guest immediately. Move with WASD, arrow keys, or the touch controls. Drag with a visible cursor to rotate the camera.",
-  },
   {
     landmark: "fountain",
     title: "Rewards are transparent, not custodial",
