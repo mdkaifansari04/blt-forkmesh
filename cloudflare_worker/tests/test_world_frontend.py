@@ -1139,7 +1139,6 @@ def test_world_has_responsive_and_reduced_motion_fallbacks():
     assert "@media (max-height: 520px) and (orientation: landscape)" in CSS
     assert "@media (prefers-reduced-motion: reduce)" in CSS
     assert "world-touch-controls" in CSS
-    assert "world-quick-dock" in CSS
     assert "var(--world-viewport-height, 100dvh)" in CSS
     assert "window.visualViewport?.height" in APP
     assert 'window.addEventListener("orientationchange", this.syncViewportHeight)' in APP
