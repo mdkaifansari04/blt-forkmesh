@@ -1,9 +1,14 @@
 import {
   LANDMARKS,
+  OUTFIT_COLOR_OPTIONS,
   WORLD_REGIONS,
   landmarkById,
   normalizeWorldStatus,
 } from "./world-data.js";
+
+const OUTFIT_COLOR_HEX = Object.fromEntries(
+  OUTFIT_COLOR_OPTIONS.map((option) => [option.id, option.color]),
+);
 
 const WORLD_RADIUS = 72;
 const WORLD_GROUND_RADIUS = 88;
@@ -887,7 +892,7 @@ function createAvatar(THREE, identity, options = {}) {
   const shirt = makeMaterial(THREE, "#ffffff", {
     roughness: 0.8,
   });
-  shirt.map = countryShirtTexture(THREE, identity);
+  applyOutfit(THREE, shirt, identity);
   shirt.needsUpdate = true;
   const dark = makeMaterial(THREE, "#101d19", { roughness: 0.85 });
   const shoe = makeMaterial(THREE, "#07100e", { roughness: 0.82 });
@@ -991,14 +996,24 @@ function createAvatar(THREE, identity, options = {}) {
   return group;
 }
 
+function applyOutfit(THREE, shirt, identity) {
+  const outfitColor = OUTFIT_COLOR_HEX[identity.outfitColor];
+  const previous = shirt.map;
+  if (outfitColor) {
+    shirt.map = null;
+    shirt.color.set(outfitColor);
+  } else {
+    shirt.map = countryShirtTexture(THREE, identity);
+    shirt.color.set("#ffffff");
+  }
+  shirt.needsUpdate = true;
+  if (previous !== shirt.map) previous?.dispose?.();
+}
+
 function syncCountryShirt(THREE, avatar, identity) {
   const shirt = avatar?.userData?.shirt;
   if (!shirt) return;
-  const previous = shirt.map;
-  shirt.map = countryShirtTexture(THREE, identity);
-  shirt.color.set("#ffffff");
-  shirt.needsUpdate = true;
-  previous?.dispose?.();
+  applyOutfit(THREE, shirt, identity);
 }
 
 function syncAvatarActivity(avatar, identity) {
