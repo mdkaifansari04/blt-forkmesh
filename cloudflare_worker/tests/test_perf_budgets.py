@@ -57,7 +57,11 @@ def _run_catalog_get(count):
     async def d1_all(_env, sql, *_args):
         if "FROM repositories" in sql:
             return [
-                {"key_bi": f"bi{index}", "data": record}
+                {
+                    "key_bi": f"bi{index}",
+                    "owner_bi": f"owner-bi{index}",
+                    "data": record,
+                }
                 for index, record in enumerate(repositories)
             ]
         return []
@@ -80,6 +84,8 @@ def _run_catalog_get(count):
         extra_globals={
             "Date": type("D", (), {"now": staticmethod(lambda: NOW)}),
             "HOST_PRESENCE_STALE_MS": 600_000,
+            "HTTPS_MIRROR_STATUS_FRESH_MS": 600_000,
+            "MAX_NODE_NAME": 80,
             "MAX_REPO_SEGMENT": 80,
             "MAX_CATALOG_REPOS": 200,
             "CATALOG_TTL": 30,

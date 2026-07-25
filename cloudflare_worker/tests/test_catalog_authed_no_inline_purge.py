@@ -78,6 +78,7 @@ def _run(url, *, cached=False):
     handler = _load_catalog_handler({
         "Date": type("D", (), {"now": staticmethod(lambda: NOW)}),
         "HOST_PRESENCE_STALE_MS": 10 * 60 * 1000,
+        "HTTPS_MIRROR_STATUS_FRESH_MS": 10 * 60 * 1000,
         "MAX_CATALOG_REPOS": 200,
         "CATALOG_TTL": 10,
         "CATALOG_CACHE_KEY": "catalog",

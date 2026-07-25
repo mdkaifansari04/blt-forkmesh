@@ -1085,9 +1085,13 @@ async def purge_catalog_related_caches():
         )), return_exceptions=True)
 
 
-# Versioned so the fail-closed visibility contract never reuses an edge entry
-# produced by the historical plaintext-flag-only catalog.
-CATALOG_CACHE_KEY = "https://forkmesh.internal/api/repositories?privacy=v2"
+# Versioned so neither the fail-closed visibility contract nor signed-endpoint
+# availability reuses an edge entry produced by the historical plaintext flag /
+# host_presence catalog.
+CATALOG_CACHE_KEY = (
+    "https://forkmesh.internal/api/repositories"
+    "?privacy=v2&availability=signed-v1"
+)
 # Guest (viewer-less) GET /api/accounts/<name> payloads, keyed by name.
 ACCOUNT_LOOKUP_CACHE_PREFIX = "https://forkmesh.internal/api/accounts/"
 PROFILE_CONTRIBUTION_CACHE_PREFIX = (
@@ -1512,7 +1516,7 @@ async def _live_online_nodes(env, now):
              FROM mirror_https_endpoints e
              JOIN nodes n ON lower(n.name)=lower(e.node_name)
             WHERE e.healthy=1 AND e.abuse_blocked=0
-              AND e.integrity='verified' AND e.checked_at>=?""",
+              AND e.integrity='ok' AND e.checked_at>=?""",
         now - ONLINE_SAMPLE_WINDOW_MS,
     )
     for row in endpoint_rows:
@@ -1870,7 +1874,7 @@ async def record_status_sample(env):
             "SELECT COUNT(*) AS n FROM mirror_https_endpoints "
             "WHERE checked_at>=? AND forkmesh_verified_at>=? "
             "AND healthy=1 AND forkmesh_active=1 "
-            "AND integrity IN ('ok','verified') AND abuse_blocked=0",
+            "AND integrity='ok' AND abuse_blocked=0",
             cutoff, cutoff,
         )
         ok["git_hosting"] = int((row or {}).get("n", 0) or 0) > 0
@@ -2229,7 +2233,7 @@ async def status_history(env):
             env,
             "SELECT MAX(forkmesh_verified_at) AS ts "
             "FROM mirror_https_endpoints WHERE healthy=1 "
-            "AND forkmesh_active=1 AND integrity IN ('ok','verified') "
+            "AND forkmesh_active=1 AND integrity='ok' "
             "AND abuse_blocked=0",
         )
         last_ts = int((endpoint_row or {}).get("ts") or 0) or None
@@ -5291,7 +5295,7 @@ async def active_registered_node_bis(env, now=None):
              FROM mirror_https_endpoints e
              JOIN nodes n ON lower(n.name)=lower(e.node_name)
             WHERE e.healthy=1 AND e.abuse_blocked=0
-              AND e.integrity='verified' AND e.checked_at >= ?
+              AND e.integrity='ok' AND e.checked_at >= ?
            UNION
            SELECT r.owner_bi AS key
              FROM host_presence hp
@@ -7165,15 +7169,30 @@ async def catalog_handler(env, request):
                 viewer_bi, viewer_bi)
         else:
             rows = await d1_all(
-                env, "SELECT key_bi, data FROM repositories WHERE is_private = 0")
-        # Annotate each repo with whether a host is currently live, computed once
-        # here from the presence table (keyed by the same blind index as the repo)
-        # instead of the catalog page probing every repo's tunnel DO per visit.
-        cutoff = int(Date.now()) - HOST_PRESENCE_STALE_MS
+                env,
+                "SELECT key_bi, owner_bi, data FROM repositories "
+                "WHERE is_private = 0")
+        # Repository sockets and their host_presence heartbeat were retired when
+        # repository bytes moved to signed direct-HTTPS mirrors. Derive catalog
+        # availability from that same trust boundary: a fresh, non-blocked
+        # endpoint whose account-bound Ed25519 challenge proved the flagship
+        # refs and required operations. node_bi and repositories.owner_bi use
+        # the same blind-index domain, so no plaintext node join or client probe
+        # is needed here.
+        cutoff = int(Date.now()) - HTTPS_MIRROR_STATUS_FRESH_MS
         live_rows = await d1_all(
-            env, "SELECT repo_bi FROM host_presence WHERE ts >= ?", cutoff
+            env,
+            """SELECT node_bi FROM mirror_https_endpoints
+                WHERE checked_at>=? AND forkmesh_verified_at>=?
+                  AND healthy=1 AND forkmesh_active=1
+                  AND integrity='ok' AND abuse_blocked=0""",
+            cutoff, cutoff,
         )
-        live = {r["repo_bi"] for r in live_rows}
+        live_endpoint_nodes = {
+            str(row.get("node_bi") or "")
+            for row in live_rows or []
+            if str(row.get("node_bi") or "")
+        }
         repos = []
         ssh_gateway = _ssh_gateway_settings(env)
         for r in rows:
@@ -7188,15 +7207,15 @@ async def catalog_handler(env, request):
                 # requires an owner/share ACL recheck.
                 if visibility not in ("public", "private"):
                     continue
+                if not owner_bi:
+                    rec_owner = clean_string(
+                        rec.get("owner", ""), MAX_NODE_NAME).lower()
+                    owner_bi = (
+                        await blind_index(env, rec_owner)
+                        if rec_owner else "")
                 if visibility == "private":
                     if not authed_viewer:
                         continue
-                    if not owner_bi:
-                        rec_owner = clean_string(
-                            rec.get("owner", ""), MAX_NODE_NAME).lower()
-                        owner_bi = (
-                            await blind_index(env, rec_owner)
-                            if rec_owner else "")
                     if str(owner_bi or "") != str(viewer_bi):
                         shared = await d1_first(
                             env,
@@ -7207,9 +7226,6 @@ async def catalog_handler(env, request):
                         if not shared:
                             continue
                 if active_nodes is not None:
-                    if not owner_bi:
-                        owner = clean_string(rec.get("owner", ""), MAX_NODE_NAME).lower()
-                        owner_bi = await blind_index(env, owner) if owner else ""
                     if str(owner_bi or "") not in active_nodes:
                         continue
                 # Defense in depth: never surface a blocked identity even if a
@@ -7217,7 +7233,9 @@ async def catalog_handler(env, request):
                 if _is_blocked_catalog_identity(
                         env, rec.get("owner"), rec.get("name")):
                     continue
-                rec["liveHost"] = r["key_bi"] in live
+                rec["liveHost"] = (
+                    str(owner_bi or "") in live_endpoint_nodes
+                )
                 # Plaintext flag so clients can badge private repos without
                 # re-deriving it from the visibility string.
                 rec["isPrivate"] = rec.get("visibility") == "private"
@@ -17124,7 +17142,7 @@ async def world_relay_instances_handler(env, request):
         "MAX(fp.ts) AS last_seen,"
         "MAX(CASE WHEN fp.checked_at>=? AND fp.forkmesh_verified_at>=? "
         "AND fp.healthy=1 AND fp.forkmesh_active=1 "
-        "AND fp.integrity IN ('ok','verified') AND fp.abuse_blocked=0 "
+        "AND fp.integrity='ok' AND fp.abuse_blocked=0 "
         "THEN 1 ELSE 0 END) AS fresh_verified "
         "FROM relays r LEFT JOIN federated_presence fp "
         "ON fp.relay_bi=r.relay_bi "
