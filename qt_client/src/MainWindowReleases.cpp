@@ -1587,9 +1587,10 @@ void MainWindow::loadMirrorNodesPanel()
             isSelf
                 ? QString::fromUtf8(
                       "Clones of this repo are being rejected: the relay's pinned "
-                      "hash no longer matches the refs this node serves. Use "
-                      "\xE2\x80\x9CReset integrity pin\xE2\x80\x9D above to re-sign "
-                      "the current refs and clear it.")
+                      "hash no longer matches the refs this node serves. As the "
+                      "source of truth this node re-signs its current refs "
+                      "automatically within seconds; \xE2\x80\x9CReset integrity "
+                      "pin\xE2\x80\x9D above forces it now.")
                 : QString::fromUtf8(
                       "Clones from this node are being rejected: the refs it serves "
                       "match no state the source of truth attested (integrity pin). "
