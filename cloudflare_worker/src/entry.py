@@ -100,6 +100,10 @@ CHAT_HISTORY_INGRESS_MAX_BYTES = 8 * 1024 * 1024
 CHAT_CHANNEL_TICKET_TTL_MS = 60 * 1000
 CHAT_CHANNEL_DO_RE = re.compile(
     r"^/api/chat/channels/([0-9a-f]{32})/v([1-9][0-9]*)/(ws|revoke)$")
+CHAT_DIRECT_TICKET_TTL_MS = 60 * 1000
+CHAT_DIRECT_MESSAGE_DO_RE = re.compile(
+    r"^/api/chat/direct-messages/([0-9a-f]{32})/"
+    r"v([1-9][0-9]*)/(ws|revoke)$")
 OFFICE_MEETING_TICKET_TTL_MS = 60 * 1000
 OFFICE_ENTRY_TICKET_TTL_MS = 5 * 60 * 1000
 # Revalidate an Office socket's exact revocable account session at most once
@@ -308,6 +312,9 @@ from urls import (  # noqa: E402
     CHAT_CHANNEL_ROOM_ACCESS_RE,
     CHAT_CHANNEL_HISTORY_RE,
     CHAT_CHANNEL_WS_RE,
+    CHAT_DIRECT_MESSAGES_RE,
+    CHAT_DIRECT_MESSAGE_ROOM_ACCESS_RE,
+    CHAT_DIRECT_MESSAGE_WS_RE,
     REPO_ISSUES_RE,
     REPO_PULLS_RE,
     REPO_PULL_MERGE_RE,
@@ -534,6 +541,9 @@ import world_office_tasks  # noqa: E402
 # Private administrator-created channel policy is kept in a pure module and
 # receives only this Worker's narrow session, crypto, D1, and audit adapter.
 import chat_channels_api  # noqa: E402
+# Direct messages have a stricter participant-only authorization policy and
+# therefore use a separate pure API module instead of channel admin semantics.
+import chat_direct_messages_api  # noqa: E402
 # Pull-request badge (adhoc #44/#83): a pure, js-free generator for the visual
 # "fingerprint" attached to federated PR-opened notes. The federated copy is a
 # square PNG — fediverse clients won't preview an SVG attachment.
@@ -5772,6 +5782,19 @@ async def _chat_channel_passphrase(env, channel_id, key_version):
     return bytes(Uint8Array.new(digest).to_py()).hex()
 
 
+async def _chat_direct_passphrase(env, conversation_id, key_version):
+    secret = (
+        _require_data_secret(env)
+        + ":chat-direct-passphrase-v1:"
+        + str(conversation_id)
+        + ":v"
+        + str(int(key_version))
+    )
+    digest = await js_crypto.subtle.digest(
+        "SHA-256", _to_js(secret.encode()))
+    return bytes(Uint8Array.new(digest).to_py()).hex()
+
+
 def _office_entry_ticket(env, account_bi):
     """Issue a short-lived, account-bound proof of Office admission."""
     account_bi = str(account_bi or "")
@@ -6141,6 +6164,143 @@ async def _office_attendance_recent(env, observed_at=None):
         if visit is not None:
             visits.append(visit)
     return visits
+
+
+def _chat_direct_ticket(env, conversation_id, key_version, account_bi):
+    expires = int(Date.now()) + CHAT_DIRECT_TICKET_TTL_MS
+    canonical = ".".join((
+        "v1",
+        str(conversation_id),
+        str(int(key_version)),
+        str(account_bi),
+        str(expires),
+    ))
+    signature = hmac.new(
+        (_require_data_secret(env) + ":chat-direct-ticket-v1").encode(),
+        canonical.encode(),
+        "sha256",
+    ).hexdigest()
+    return canonical + "." + signature
+
+
+def _chat_direct_ticket_claims(env, token):
+    parts = str(token or "").split(".")
+    if len(parts) != 6:
+        return None
+    version_tag, conversation_id, version_raw, account_bi, expires_raw, signature = (
+        parts
+    )
+    if (
+        version_tag != "v1"
+        or not re.fullmatch(r"[0-9a-f]{32}", conversation_id)
+        or not re.fullmatch(r"[0-9a-f]{64}", account_bi)
+    ):
+        return None
+    try:
+        key_version = int(version_raw)
+        expires = int(expires_raw)
+    except (TypeError, ValueError):
+        return None
+    now = int(Date.now())
+    if (
+        key_version < 1
+        or expires <= now
+        or expires - now > CHAT_DIRECT_TICKET_TTL_MS
+    ):
+        return None
+    canonical = ".".join(parts[:5])
+    expected = hmac.new(
+        (_require_data_secret(env) + ":chat-direct-ticket-v1").encode(),
+        canonical.encode(),
+        "sha256",
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return None
+    return {
+        "conversation_id": conversation_id,
+        "key_version": key_version,
+        "account_bi": account_bi,
+    }
+
+
+async def _chat_direct_socket_handler(env, request, conversation_id):
+    if (
+        method_name(request) != "GET"
+        or (request.headers.get("upgrade") or "").lower() != "websocket"
+    ):
+        return _private_replica_not_found()
+    url = urlparse(request.url)
+    ticket_values = parse_qs(
+        url.query, keep_blank_values=False).get("ticket") or []
+    claims = (
+        _chat_direct_ticket_claims(env, ticket_values[0])
+        if len(ticket_values) == 1 else None
+    )
+    if not claims or claims["conversation_id"] != conversation_id:
+        return _private_replica_not_found()
+    try:
+        await ensure_schema(env)
+        conversation = await d1_first(
+            env,
+            "SELECT data,key_version FROM chat_direct_conversations "
+            "WHERE conversation_id=?",
+            conversation_id,
+        )
+        if (
+            not conversation
+            or int(conversation.get("key_version") or 0)
+                != int(claims["key_version"])
+        ):
+            return _private_replica_not_found()
+        record = await decrypt_row(env, conversation.get("data"))
+        if not isinstance(record, dict):
+            return _private_replica_not_found()
+        account = await d1_first(
+            env,
+            "SELECT data,is_admin FROM users WHERE user_bi=?",
+            claims["account_bi"],
+        )
+        if not account:
+            return _private_replica_not_found()
+        account_record = await decrypt_row(env, account.get("data"))
+        if (
+            not account_record
+            or account_record.get("status") != "active"
+            or _account_kind(account_record) != "user"
+        ):
+            return _private_replica_not_found()
+        participant = await d1_first(
+            env,
+            "SELECT 1 AS allowed FROM chat_direct_participants "
+            "WHERE conversation_id=? AND participant_bi=?",
+            conversation_id,
+            claims["account_bi"],
+        )
+        if not participant:
+            return _private_replica_not_found()
+    except Exception:
+        return _private_replica_not_found()
+
+    room_name = (
+        "chat-direct:" + conversation_id + ":v"
+        + str(claims["key_version"])
+    )
+    room_id = env.FORKMESH_MAINNODE_ROOM.idFromName(room_name)
+    target_url = (
+        url.scheme + "://" + url.netloc + "/api/chat/direct-messages/"
+        + conversation_id + "/v" + str(claims["key_version"])
+        + "/ws?account=" + quote(claims["account_bi"], safe="")
+    )
+    last_error = None
+    for _attempt in range(2):
+        room_object = env.FORKMESH_MAINNODE_ROOM.get(room_id)
+        try:
+            return await room_object.fetch(
+                await durable_object_request(request, target_url=target_url))
+        except Exception as error:
+            last_error = error
+    await log_durable_object_abort(env, request, url.path, last_error)
+    return json_response({"error": "unavailable"}, status=503)
 
 
 async def office_attendance_handler(env, request):
@@ -6706,6 +6866,32 @@ async def _revoke_chat_channel_room(env, channel_id, key_version):
     raise RuntimeError("chat_channel_revoke_failed")
 
 
+async def _revoke_chat_direct_room(env, conversation_id, key_version):
+    room_name = (
+        "chat-direct:" + str(conversation_id)
+        + ":v" + str(int(key_version))
+    )
+    room_id = env.FORKMESH_MAINNODE_ROOM.idFromName(room_name)
+    target_url = (
+        "https://forkmesh.internal/api/chat/direct-messages/"
+        + str(conversation_id) + "/v" + str(int(key_version)) + "/revoke"
+    )
+    last_error = None
+    for _attempt in range(2):
+        room_object = env.FORKMESH_MAINNODE_ROOM.get(room_id)
+        try:
+            request = JsRequest.new(
+                target_url, to_js({"method": "POST"}))
+            response = await room_object.fetch(request)
+            if int(getattr(response, "status", 200) or 200) < 400:
+                return
+        except Exception as error:
+            last_error = error
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("chat_direct_revoke_failed")
+
+
 async def _revoke_office_channel_room(env, channel_id, key_version):
     room_name = (
         "office:chat-channel:" + str(channel_id)
@@ -7151,6 +7337,26 @@ class _ChatChannelsRuntime(_WorldCommunityRuntime):
         )
 
 
+class _ChatDirectMessagesRuntime(_WorldCommunityRuntime):
+    async def room_access(
+            self, conversation_id, key_version, account_bi):
+        room = (
+            "chat-direct:" + str(conversation_id)
+            + ":v" + str(int(key_version))
+        )
+        ticket = _chat_direct_ticket(
+            self.env, conversation_id, key_version, account_bi)
+        return {
+            "room": room,
+            "passphrase": await _chat_direct_passphrase(
+                self.env, conversation_id, key_version),
+            "webSocketUrl": (
+                "/api/chat/direct-messages/" + str(conversation_id)
+                + "/ws?ticket=" + quote(ticket, safe="")
+            ),
+        }
+
+
 async def world_fediverse_directory_handler(env, request, path):
     return await world_community_api.handle_fediverse(
         _WorldCommunityRuntime(env, request), path)
@@ -7197,6 +7403,27 @@ async def cleanup_world_media_records(env):
 
 
 def room_key_from_path(pathname, account_bi=""):
+    direct_pattern = globals().get("CHAT_DIRECT_MESSAGE_DO_RE")
+    match = direct_pattern.match(pathname) if direct_pattern else None
+    if match and match.group(3) == "ws":
+        conversation_id = match.group(1)
+        direct_version = int(match.group(2))
+        info = {
+            "key": (
+                "chat-direct:" + conversation_id + ":v"
+                + str(direct_version)
+            ),
+            "owner": "",
+            "repo": "",
+            "room": conversation_id,
+            "compat": False,
+            "direct_id": conversation_id,
+            "direct_version": direct_version,
+        }
+        if re.fullmatch(r"[0-9a-f]{64}", str(account_bi or "")):
+            info["account_bi"] = str(account_bi)
+        return info
+
     match = CHAT_CHANNEL_DO_RE.match(pathname)
     if match and match.group(3) == "ws":
         channel_id = match.group(1)
@@ -11202,6 +11429,40 @@ async def _delete_chat_channel_memberships(env, member_bi):
         )
 
 
+async def _delete_chat_direct_conversations(env, participant_bi):
+    rows = await d1_all(
+        env,
+        "SELECT c.conversation_id,c.key_version "
+        "FROM chat_direct_participants p "
+        "JOIN chat_direct_conversations c "
+        "ON c.conversation_id=p.conversation_id "
+        "WHERE p.participant_bi=?",
+        participant_bi,
+    )
+    for row in rows:
+        conversation_id = str(row.get("conversation_id") or "")
+        key_version = int(row.get("key_version") or 1)
+        if not conversation_id:
+            continue
+        await _revoke_chat_direct_room(
+            env, conversation_id, key_version)
+        await d1_run(
+            env,
+            "DELETE FROM chat_direct_participants WHERE conversation_id=?",
+            conversation_id,
+        )
+        await d1_run(
+            env,
+            "DELETE FROM chat_direct_conversations WHERE conversation_id=?",
+            conversation_id,
+        )
+        await d1_run(
+            env,
+            "DELETE FROM chat_history WHERE room_key=?",
+            "chat-direct:" + conversation_id + ":v" + str(key_version),
+        )
+
+
 async def _move_chat_channel_memberships(
         env, old_member_bi, new_member_bi, new_name):
     if old_member_bi == new_member_bi:
@@ -11360,6 +11621,10 @@ async def _rename_account_namespace(env, name_bi, rec, new_name):
         env, name_bi, old_name, new_name_bi, new_name)
     await _move_chat_channel_memberships(
         env, name_bi, new_name_bi, new_name)
+    # A username move changes the participant blind index and pair identity.
+    # Close old DM rooms instead of leaving orphaned membership or silently
+    # merging conversations under a different account identity.
+    await _delete_chat_direct_conversations(env, name_bi)
     await d1_run(
         env, "UPDATE account_presence SET name_bi=? WHERE name_bi=?",
         new_name_bi, name_bi)
@@ -11518,6 +11783,7 @@ async def _delete_account_namespace(env, name_bi, rec):
     await d1_run(
         env, "DELETE FROM account_sessions WHERE account_bi=?", name_bi)
     await _delete_chat_channel_memberships(env, name_bi)
+    await _delete_chat_direct_conversations(env, name_bi)
     if email:
         email_bi = await blind_index(env, email)
         await d1_run(env, "DELETE FROM login_attempts WHERE id_bi=?", email_bi)
@@ -35123,6 +35389,19 @@ class Default(WorkerEntrypoint):
             return await chat_channels_api.handle(
                 _ChatChannelsRuntime(self.env, request), url.path)
 
+        # Direct messages never inherit platform-administrator channel access.
+        # Both HTTP room access and WebSocket admission check participant rows.
+        chat_direct_socket = CHAT_DIRECT_MESSAGE_WS_RE.match(url.path)
+        if chat_direct_socket:
+            return await _chat_direct_socket_handler(
+                self.env, request, chat_direct_socket.group(1))
+        if (
+            CHAT_DIRECT_MESSAGES_RE.match(url.path)
+            or CHAT_DIRECT_MESSAGE_ROOM_ACCESS_RE.match(url.path)
+        ):
+            return await chat_direct_messages_api.handle(
+                _ChatDirectMessagesRuntime(self.env, request), url.path)
+
         # Chat-triggered Cloudflare AI interface. Clients forward explicit
         # "forkbot ..." mentions here; the Worker queues compatible issue-inbox
         # records and returns a bot reply for the encrypted room.
@@ -37533,7 +37812,10 @@ class ForkMeshRoom(DurableObject):
     async def fetch(self, request):
         parsed_url = urlparse(request.url)
         path = parsed_url.path
-        private_path = CHAT_CHANNEL_DO_RE.match(path)
+        private_path = (
+            CHAT_CHANNEL_DO_RE.match(path)
+            or CHAT_DIRECT_MESSAGE_DO_RE.match(path)
+        )
         if (
             private_path
             and private_path.group(3) == "revoke"
@@ -37570,6 +37852,8 @@ class ForkMeshRoom(DurableObject):
             "id": new_socket_id(), "room": room_key,
             "channel_id": (info or {}).get("channel_id", ""),
             "channel_version": (info or {}).get("channel_version", 0),
+            "direct_id": (info or {}).get("direct_id", ""),
+            "direct_version": (info or {}).get("direct_version", 0),
             "account_bi": (info or {}).get("account_bi", ""),
             "last": int(Date.now()),
         }))
@@ -37636,6 +37920,8 @@ class ForkMeshRoom(DurableObject):
                 "id": _ws_attr(ws, "id"), "room": _ws_attr(ws, "room"),
                 "channel_id": _ws_attr(ws, "channel_id", ""),
                 "channel_version": _ws_attr(ws, "channel_version", 0),
+                "direct_id": _ws_attr(ws, "direct_id", ""),
+                "direct_version": _ws_attr(ws, "direct_version", 0),
                 "account_bi": _ws_attr(ws, "account_bi", ""),
                 "last": now, "rl_start": start, "rl_count": count,
             }))
@@ -37701,6 +37987,58 @@ class ForkMeshRoom(DurableObject):
             pass
 
     async def _private_room_current(self, ws):
+        direct_id = _ws_attr(ws, "direct_id", "")
+        if direct_id:
+            try:
+                direct_version = int(
+                    _ws_attr(ws, "direct_version", 0) or 0)
+                account_bi = str(_ws_attr(ws, "account_bi", "") or "")
+                if not re.fullmatch(r"[0-9a-f]{64}", account_bi):
+                    return False
+                await ensure_schema(self.env)
+                conversation = await d1_first(
+                    self.env,
+                    "SELECT data,key_version "
+                    "FROM chat_direct_conversations "
+                    "WHERE conversation_id=?",
+                    direct_id,
+                )
+                if (
+                    not conversation
+                    or int(conversation.get("key_version") or 0)
+                        != direct_version
+                ):
+                    return False
+                record = await decrypt_row(
+                    self.env, conversation.get("data"))
+                if not isinstance(record, dict):
+                    return False
+                account = await d1_first(
+                    self.env,
+                    "SELECT data,is_admin FROM users WHERE user_bi=?",
+                    account_bi,
+                )
+                if not account:
+                    return False
+                account_record = await decrypt_row(
+                    self.env, account.get("data"))
+                if (
+                    not account_record
+                    or account_record.get("status") != "active"
+                    or _account_kind(account_record) != "user"
+                ):
+                    return False
+                participant = await d1_first(
+                    self.env,
+                    "SELECT 1 AS allowed FROM chat_direct_participants "
+                    "WHERE conversation_id=? AND participant_bi=?",
+                    direct_id,
+                    account_bi,
+                )
+                return bool(participant)
+            except Exception:
+                return False
+
         channel_id = _ws_attr(ws, "channel_id", "")
         if not channel_id:
             return True
