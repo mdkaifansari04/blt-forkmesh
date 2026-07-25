@@ -1,9 +1,14 @@
 import {
   LANDMARKS,
+  OUTFIT_COLOR_OPTIONS,
   WORLD_REGIONS,
   landmarkById,
   normalizeWorldStatus,
 } from "./world-data.js";
+
+const OUTFIT_COLOR_HEX = Object.fromEntries(
+  OUTFIT_COLOR_OPTIONS.map((option) => [option.id, option.color]),
+);
 
 const WORLD_RADIUS = 72;
 const WORLD_GROUND_RADIUS = 88;
@@ -12,6 +17,11 @@ const WORLD_GROUND_RADIUS = 88;
 const PLAYER_SPEED = 6.4;
 const PLAYER_MAX_SPEED = 13;
 const PLAYER_ACCELERATION = 5.4;
+// Double-clicking the ground sends the avatar to that spot at a dash speed far
+// above the walking cap, so crossing the whole square takes a couple of seconds
+// without teleporting the avatar out from under the camera.
+const PLAYER_DASH_SPEED = 48;
+const PLAYER_DASH_ARRIVE_DISTANCE = 0.3;
 const CAMERA_OFFSET = [17, 16, 21];
 const CAMERA_DISTANCE = Math.hypot(...CAMERA_OFFSET);
 const CAMERA_ZOOM_MIN = 0.12;
@@ -22,6 +32,17 @@ const CAMERA_PITCH_MAX = 1.24;
 const LIGHT_LEVEL_MIN = 40;
 const LIGHT_LEVEL_MAX = 140;
 const LIGHT_LEVEL_DEFAULT = 100;
+// ForkBot's world presence: a wandering guide anchored to the Town Square.
+// Chat bubbles addressed to this peer id float over its avatar, mirroring how
+// visitor bubbles work (world.js handleWorldChatMessage).
+const FORKBOT_PEER_ID = "forkbot";
+const FORKBOT_HOME = Object.freeze([6, 0.38, 12]);
+const FORKBOT_WANDER_RADIUS = 14;
+const FORKBOT_SPEED = 3.4;
+const FORKBOT_GREETING_RANGE = 3.2;
+// If a visitor is out of reach (travelled to another space, moderation walls,
+// …) the greeting still fires from wherever ForkBot got to.
+const FORKBOT_GREETING_TIMEOUT_MS = 12000;
 // Nothing hovers over the Town Square any more. The five unfinished
 // destinations are parked on the ground inside the works-in-progress barn, so
 // every space shares the same walkable floor as the square itself.
@@ -887,7 +908,7 @@ function createAvatar(THREE, identity, options = {}) {
   const shirt = makeMaterial(THREE, "#ffffff", {
     roughness: 0.8,
   });
-  shirt.map = countryShirtTexture(THREE, identity);
+  applyOutfit(THREE, shirt, identity);
   shirt.needsUpdate = true;
   const dark = makeMaterial(THREE, "#101d19", { roughness: 0.85 });
   const shoe = makeMaterial(THREE, "#07100e", { roughness: 0.82 });
@@ -991,14 +1012,24 @@ function createAvatar(THREE, identity, options = {}) {
   return group;
 }
 
+function applyOutfit(THREE, shirt, identity) {
+  const outfitColor = OUTFIT_COLOR_HEX[identity.outfitColor];
+  const previous = shirt.map;
+  if (outfitColor) {
+    shirt.map = null;
+    shirt.color.set(outfitColor);
+  } else {
+    shirt.map = countryShirtTexture(THREE, identity);
+    shirt.color.set("#ffffff");
+  }
+  shirt.needsUpdate = true;
+  if (previous !== shirt.map) previous?.dispose?.();
+}
+
 function syncCountryShirt(THREE, avatar, identity) {
   const shirt = avatar?.userData?.shirt;
   if (!shirt) return;
-  const previous = shirt.map;
-  shirt.map = countryShirtTexture(THREE, identity);
-  shirt.color.set("#ffffff");
-  shirt.needsUpdate = true;
-  previous?.dispose?.();
+  applyOutfit(THREE, shirt, identity);
 }
 
 function syncAvatarActivity(avatar, identity) {
@@ -3713,6 +3744,26 @@ export function createWorldScene({
   world.add(player);
   const playerLabel = makePlayerLabel(player, labelLayer);
 
+  // ForkBot walks the Town Square like any visitor. It reuses the humanoid
+  // avatar so its walk reads the same as everyone else's, with a floating
+  // label telling visitors how to talk to it from the CHAT bar.
+  const forkbot = createAvatar(THREE, {
+    id: FORKBOT_PEER_ID,
+    name: "ForkBot",
+    accountStatus: "Bot",
+  });
+  forkbot.position.set(...FORKBOT_HOME);
+  const forkbotLabel = makeLabelSprite(
+    THREE,
+    "FORKBOT",
+    "community guide · say @forkbot in chat",
+    "#9ef7c6",
+  );
+  forkbotLabel.scale.set(4.6, 1.5, 1);
+  forkbotLabel.position.y = 4.6;
+  forkbot.add(forkbotLabel);
+  world.add(forkbot);
+
   const remotePlayers = new Map();
   const remoteLabels = new Map();
   const moderationActions = new WeakMap();
@@ -3724,10 +3775,14 @@ export function createWorldScene({
   const repositoryPortals = new Map();
   const emoteSprites = [];
   const rewardFlights = [];
+  const forkbotWanderTarget = new THREE.Vector3(...FORKBOT_HOME);
+  let forkbotNextWanderAt = 0;
+  let forkbotGreeting = null;
   const keys = new Set();
   const touchKeys = new Set();
   const touchPointers = new Map();
   const raycaster = new THREE.Raycaster();
+  const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   const pointer = new THREE.Vector2();
   const pointerStart = new THREE.Vector2();
   const pointerLast = new THREE.Vector2();
@@ -3757,8 +3812,10 @@ export function createWorldScene({
   let moveSpeedScale = 1;
   let moveAccelScale = 1;
   let keyboardMovementSpeed = PLAYER_SPEED;
+  let dashTarget = null;
   let primaryPointerId = null;
   let pointerGestureMoved = false;
+  let lastGestureDragged = false;
   let pinchStartDistance = 0;
   let pinchStartZoom = cameraZoom;
   let pinchActive = false;
@@ -3848,6 +3905,10 @@ export function createWorldScene({
       PLAYER_MAX_SPEED * moveSpeedScale,
     );
     return { speed: moveSpeedScale, acceleration: moveAccelScale };
+  }
+
+  function cancelDash() {
+    dashTarget = null;
   }
 
   function nearestLandmark() {
@@ -3944,6 +4005,7 @@ export function createWorldScene({
     currentFloorY = 0.38;
     player.position.copy(destination);
     cameraFocus = null;
+    cancelDash();
     focusedRepositoryKey = "";
     nearestLandmark();
     onMovement({
@@ -3970,6 +4032,7 @@ export function createWorldScene({
     currentFloorY = destination.y;
     player.position.copy(destination);
     cameraFocus = null;
+    cancelDash();
     focusedRepositoryKey = "";
     currentLocation = spaceId
       .split("-")
@@ -3995,6 +4058,7 @@ export function createWorldScene({
     currentSpace = "town-square";
     currentFloorY = 0.38;
     player.position.y = currentFloorY;
+    cancelDash();
     focusedRepositoryKey = "";
     cameraFocus = new THREE.Vector3(
       landmark.position[0],
@@ -4012,6 +4076,7 @@ export function createWorldScene({
     currentSpace = "town-square";
     currentFloorY = 0.38;
     player.position.y = currentFloorY;
+    cancelDash();
     cameraFocus = record.group.position.clone();
     cameraFocus.y += 0.1;
     focusedRepositoryKey = key;
@@ -4026,6 +4091,7 @@ export function createWorldScene({
 
   function clearFocus() {
     cameraFocus = null;
+    cancelDash();
     focusedRepositoryKey = "";
   }
 
@@ -4084,6 +4150,8 @@ export function createWorldScene({
     let walking = false;
     if (movement.lengthSq()) {
       cameraFocus = null;
+      // Any manual input takes the wheel back from a double-click dash.
+      cancelDash();
       focusedRepositoryKey = "";
       const topSpeed = PLAYER_MAX_SPEED * moveSpeedScale;
       // Infinite acceleration collapses the ramp: keyboardMovementSpeed jumps to
@@ -4099,6 +4167,28 @@ export function createWorldScene({
         keyboardMovementSpeed * delta,
       );
       player.rotation.y = Math.atan2(-movement.x, -movement.z);
+      walking = true;
+    } else if (dashTarget) {
+      // Double-click travel: run straight at the clicked ground point, then
+      // land exactly on it instead of jittering around the destination.
+      const toTarget = new THREE.Vector3(
+        dashTarget.x - player.position.x,
+        0,
+        dashTarget.z - player.position.z,
+      );
+      const remaining = toTarget.length();
+      const step = PLAYER_DASH_SPEED * moveSpeedScale * delta;
+      if (remaining <= Math.max(step, PLAYER_DASH_ARRIVE_DISTANCE)) {
+        player.position.x = dashTarget.x;
+        player.position.z = dashTarget.z;
+        cancelDash();
+      } else {
+        toTarget.divideScalar(remaining);
+        player.position.x += toTarget.x * step;
+        player.position.z += toTarget.z * step;
+        player.rotation.y = Math.atan2(-toTarget.x, -toTarget.z);
+      }
+      keyboardMovementSpeed = baseMoveSpeed();
       walking = true;
     } else {
       keyboardMovementSpeed = baseMoveSpeed();
@@ -4179,6 +4269,78 @@ export function createWorldScene({
     });
   }
 
+  // ForkBot wanders the Town Square on its own; when world.js reports a
+  // visitor's first movement or mouse activity (greetForkbot) it walks over
+  // and floats a welcome bubble instead of picking the next wander spot.
+  function updateForkbot(delta, time) {
+    const data = forkbot.userData;
+    let target = forkbotWanderTarget;
+    if (forkbotGreeting) {
+      target = player.position;
+      const waited = performance.now() - forkbotGreeting.startedAt;
+      const reach = forkbot.position.distanceTo(player.position);
+      if (
+        reach <= FORKBOT_GREETING_RANGE ||
+        waited >= FORKBOT_GREETING_TIMEOUT_MS
+      ) {
+        showChatBubble(FORKBOT_PEER_ID, forkbotGreeting.message);
+        forkbotGreeting = null;
+        // Linger beside the visitor for a moment before wandering off.
+        forkbotWanderTarget.copy(forkbot.position);
+        forkbotNextWanderAt = time + 9000;
+        target = forkbotWanderTarget;
+      }
+    } else if (time >= forkbotNextWanderAt) {
+      const angle = Math.random() * Math.PI * 2;
+      const radius = 3 + Math.random() * FORKBOT_WANDER_RADIUS;
+      forkbotWanderTarget.set(
+        clamp(
+          FORKBOT_HOME[0] + Math.cos(angle) * radius,
+          -WORLD_RADIUS,
+          WORLD_RADIUS,
+        ),
+        FORKBOT_HOME[1],
+        clamp(
+          FORKBOT_HOME[2] + Math.sin(angle) * radius,
+          -WORLD_RADIUS,
+          WORLD_RADIUS,
+        ),
+      );
+      forkbotNextWanderAt = time + 4000 + Math.random() * 8000;
+    }
+    const dx = target.x - forkbot.position.x;
+    const dz = target.z - forkbot.position.z;
+    const distance = Math.hypot(dx, dz);
+    const arrive = forkbotGreeting ? FORKBOT_GREETING_RANGE * 0.8 : 0.4;
+    const walking = distance > arrive;
+    if (walking) {
+      const step = Math.min(distance - arrive, FORKBOT_SPEED * delta);
+      forkbot.position.x += (dx / distance) * step;
+      forkbot.position.z += (dz / distance) * step;
+    }
+    if (distance > 0.05) {
+      data.targetHeading = Math.atan2(dx, dz);
+    }
+    let headingDelta = data.targetHeading - forkbot.rotation.y;
+    headingDelta = Math.atan2(Math.sin(headingDelta), Math.cos(headingDelta));
+    forkbot.rotation.y += headingDelta * (1 - Math.pow(0.01, delta));
+    const gait = walking ? Math.sin(time * 0.009 + data.phase) * 0.42 : 0;
+    data.leftArm.rotation.x = gait;
+    data.rightArm.rotation.x = -gait;
+    data.leftLeg.rotation.x = -gait * 0.7;
+    data.rightLeg.rotation.x = gait * 0.7;
+  }
+
+  function greetForkbot(text) {
+    const message = String(text || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 140);
+    if (!message || forkbotGreeting) return false;
+    forkbotGreeting = { message, startedAt: performance.now() };
+    return true;
+  }
+
   function updateCamera(delta) {
     const target = cameraFocus
       ? cameraFocus.clone()
@@ -4212,6 +4374,7 @@ export function createWorldScene({
     lastPosition.copy(player.position);
     wasWalking = false;
     cameraFocus = null;
+    cancelDash();
     focusedRepositoryKey = "";
     if (space === "town-square") {
       nearestLandmark();
@@ -4527,6 +4690,7 @@ export function createWorldScene({
     currentFloorY = 0.38;
     player.position.copy(destination);
     cameraFocus = null;
+    cancelDash();
     focusedRepositoryKey = "";
     currentLocation = `${home.name}'s front yard`;
     onLocationChange(currentLocation, "neighborhood");
@@ -6003,7 +6167,9 @@ export function createWorldScene({
     const avatar =
       local || peerId === identity.id
         ? player
-        : remotePlayers.get(String(peerId || ""));
+        : peerId === FORKBOT_PEER_ID
+          ? forkbot
+          : remotePlayers.get(String(peerId || ""));
     if (!avatar) return false;
     // One bubble per speaker: a rapid follow-up message replaces the first
     // instead of stacking on top of it.
@@ -6222,6 +6388,9 @@ export function createWorldScene({
       cancelled ||
       wasPinching ||
       pointerGestureMoved;
+    // Remembered past the reset below so a double-click that ended in a camera
+    // drag or pinch does not also fire off a dash.
+    lastGestureDragged = suppressTap;
     pointerGestureMoved = false;
     if (suppressTap) return;
 
@@ -6299,6 +6468,41 @@ export function createWorldScene({
     finishPointer(event, false);
   }
 
+  // The visible floor of the current space, as a math plane: raycasting against
+  // it keeps double-click travel working on the sky campus and other elevated
+  // spaces, where the ground disc is far below the walkable floor.
+  function groundPointAt(clientX, clientY) {
+    pointerCoordinates({ clientX, clientY });
+    raycaster.setFromCamera(pointer, camera);
+    groundPlane.constant = -currentFloorY;
+    const point = raycaster.ray.intersectPlane(
+      groundPlane,
+      new THREE.Vector3(),
+    );
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.z)) {
+      return null;
+    }
+    const radius = Math.hypot(point.x, point.z);
+    if (radius > WORLD_RADIUS) {
+      point.x *= WORLD_RADIUS / radius;
+      point.z *= WORLD_RADIUS / radius;
+    }
+    point.y = currentFloorY;
+    return point;
+  }
+
+  function handleDoubleClick(event) {
+    if (event.button !== undefined && event.button !== 0) return;
+    if (lastGestureDragged) return;
+    const point = groundPointAt(event.clientX, event.clientY);
+    if (!point) return;
+    event.preventDefault();
+    // Following the avatar again keeps the dash visible; a landmark focus left
+    // over from the two selection clicks would pin the camera in place.
+    cameraFocus = null;
+    dashTarget = point;
+  }
+
   function handlePointerCancel(event) {
     finishPointer(event, true);
   }
@@ -6348,6 +6552,7 @@ export function createWorldScene({
     touchKeys.clear();
     touchPointers.clear();
     keyboardMovementSpeed = baseMoveSpeed();
+    cancelDash();
     primaryPointerId = null;
     pointerGestureMoved = false;
     pinchActive = false;
@@ -6356,6 +6561,7 @@ export function createWorldScene({
   }
 
   renderer.domElement.addEventListener("pointerdown", handlePointerDown);
+  renderer.domElement.addEventListener("dblclick", handleDoubleClick);
   renderer.domElement.addEventListener("pointermove", handlePointerMove, {
     passive: false,
   });
@@ -6392,6 +6598,7 @@ export function createWorldScene({
     lastFrame = time;
     walkPlayer(delta, time);
     updateRemotePlayers(delta, time);
+    updateForkbot(delta, time);
     if (!reducedMotion) {
       nodeInfrastructure.forEach((pylon, id) => {
         const phase = hashNumber(id) * 0.0001;
@@ -6532,6 +6739,7 @@ export function createWorldScene({
     renderer.setAnimationLoop(null);
     resizeObserver.disconnect();
     renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
+    renderer.domElement.removeEventListener("dblclick", handleDoubleClick);
     renderer.domElement.removeEventListener("pointermove", handlePointerMove);
     renderer.domElement.removeEventListener("wheel", handleWheel);
     window.removeEventListener("pointerup", handlePointerUp);
@@ -6595,6 +6803,7 @@ export function createWorldScene({
     updateRepositorySizeMap,
     playEmote,
     showChatBubble,
+    greetForkbot,
     playRewardEvent,
     setPaused,
     dispose,
