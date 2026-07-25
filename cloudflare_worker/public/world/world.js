@@ -3,6 +3,7 @@ import {
   AVAILABILITY_OPTIONS,
   FOCUS_MUSIC_TRACKS,
   LANDMARKS,
+  OUTFIT_COLOR_OPTIONS,
   RADIO_STATIONS,
   THEME_OPTIONS,
   TOUR_STEPS,
@@ -136,6 +137,8 @@ const ACCOUNT_STATUS_ICONS = Object.freeze({
   "Organization admin": "◆",
   "Verified bot": "⌘",
 });
+const OUTFIT_COLOR_VALUES = new Set(OUTFIT_COLOR_OPTIONS.map((option) => option.id));
+const PATREON_URL = "https://www.patreon.com/16434219/join";
 const WORLD_SPACE_IDS = new Set([
   "town-square",
   "east",
@@ -467,6 +470,7 @@ function defaultSettings() {
     displayName: "",
     statusEmoji: "",
     statusNote: "",
+    outfitColor: "",
     privacy: {
       name: true,
       country: true,
@@ -543,6 +547,9 @@ function mergeSettings(stored) {
     focusMusicMuted: stored?.focusMusicMuted === true,
     statusEmoji: publicStatus.emoji,
     statusNote: publicStatus.note,
+    outfitColor: OUTFIT_COLOR_VALUES.has(String(stored?.outfitColor || ""))
+      ? String(stored.outfitColor)
+      : defaults.outfitColor,
     privacy: {
       ...defaults.privacy,
       ...(stored?.privacy || {}),
@@ -608,6 +615,11 @@ function publicIdentity(identity, settings) {
       : "hidden",
     statusEmoji: publicStatus.emoji,
     statusNote: publicStatus.note,
+    outfitColor:
+      identity.accountStatus === "Supporting member" &&
+      OUTFIT_COLOR_VALUES.has(settings.outfitColor)
+        ? settings.outfitColor
+        : "",
   };
 }
 
@@ -733,6 +745,9 @@ function remotePlayer(peer) {
     accountStatus: ACCOUNT_STATUS_VALUES.has(String(peer.accountStatus || ""))
       ? String(peer.accountStatus)
       : "Guest",
+    outfitColor: OUTFIT_COLOR_VALUES.has(String(peer.outfitColor || ""))
+      ? String(peer.outfitColor)
+      : "",
     nodes: Array.from(
       { length: Math.max(0, Math.min(6, Number(peer.nodeCount) || 0)) },
       () => "node",
@@ -2379,6 +2394,19 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
       >${escapeHTML(theme.label)}</button>`,
   ).join("");
 
+  const isSupportingMember = identity.accountStatus === "Supporting member";
+  const outfitSwatches = OUTFIT_COLOR_OPTIONS.map(
+    (outfit) => `
+      <button
+        type="button"
+        class="world-outfit-option"
+        style="--outfit-color:${escapeHTML(outfit.color)}"
+        data-world-outfit="${escapeHTML(outfit.id)}"
+        aria-pressed="${String(settings.outfitColor === outfit.id)}"
+        ${isSupportingMember ? "" : "disabled"}
+      >${escapeHTML(outfit.label)}</button>`,
+  ).join("");
+
   const privacyOptions = [
     ["name", "Show chosen display name"],
     ["country", "Show approximate country flag"],
@@ -2461,14 +2489,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
       <div class="world-canvas-wrap" data-world-canvas-wrap></div>
       <div class="world-label-layer" data-world-label-layer></div>
 
-      <nav class="world-quick-dock" aria-label="Quick world destinations">
-        <button type="button" data-world-landmark="information"><span aria-hidden="true">i</span><span>Start</span></button>
-        <button type="button" data-world-landmark="repositories"><span aria-hidden="true">{ }</span><span>Code</span></button>
-        <button type="button" data-world-landmark="workshops"><span aria-hidden="true">⌘</span><span>Workshops</span></button>
-        <a href="/dashboard/chat" data-world-chat-open><span aria-hidden="true">⌁</span><span>Chat</span></a>
-        <button type="button" data-world-landmark="support"><span aria-hidden="true">♥</span><span>Support</span></button>
-      </nav>
-
       <div class="world-loading-screen" data-world-loading aria-live="polite">
         <div class="world-loading-lockup">
           <div class="world-loading-mark" aria-hidden="true"></div>
@@ -2500,6 +2520,19 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <a class="world-top-link" href="/dashboard/chat" data-world-chat-open title="Open chat inside the World">
               <span aria-hidden="true">⌁</span><span>Chat</span>
             </a>
+            ${
+              identity.accountStatus === "Supporting member"
+                ? ""
+                : `<a
+              class="world-top-link world-upgrade-link"
+              href="${escapeHTML(PATREON_URL)}"
+              target="_blank"
+              rel="noreferrer"
+              title="Support ForkMesh on Patreon to unlock outfit colors"
+            >
+              <span aria-hidden="true">♥</span><span>Upgrade</span>
+            </a>`
+            }
             <button
               class="world-top-link"
               type="button"
@@ -2596,14 +2629,13 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             class="world-fediverse-activity"
             data-world-fediverse-activity
             aria-labelledby="world-fediverse-activity-title"
+            hidden
           >
             <div class="world-panel-heading">
               <h2 id="world-fediverse-activity-title">Verified public feedback</h2>
               <span>MANUAL</span>
             </div>
-            <div data-world-fediverse-items>
-              <p class="world-rail-empty">No verified public repository feedback is currently listed.</p>
-            </div>
+            <div data-world-fediverse-items></div>
           </section>
           <div class="world-activity" aria-live="polite">
             <div class="world-activity-line" data-world-activity>
@@ -2621,7 +2653,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </div>
           <div class="world-controls-copy">
             <strong>Move and look around</strong>
-            <span>WASD or arrows · drag to rotate · wheel to zoom</span>
+            <span>WASD or arrows · double-click the ground to dash there · drag to rotate · wheel to zoom</span>
           </div>
           <span class="world-location" data-world-location>Town Square</span>
           <span class="world-location world-region-location" data-world-active-region>Central Campus</span>
@@ -2949,6 +2981,18 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               </select>
             </label>
             ${privacyOptions}
+          </fieldset>
+
+          <fieldset class="world-setting-group">
+            <legend>Outfit color · Supporting member perk</legend>
+            <div class="world-outfit-grid">${outfitSwatches}</div>
+            <small>
+              ${
+                isSupportingMember
+                  ? "Your outfit color replaces the default flag shirt and is visible to every visitor."
+                  : `<a href="${escapeHTML(PATREON_URL)}" target="_blank" rel="noreferrer">Become a Supporting member on Patreon</a> to unlock a custom outfit color everyone in the World can see.`
+              }
+            </small>
           </fieldset>
 
           <p class="world-setting-note">
@@ -3321,6 +3365,13 @@ class ForkMeshWorld extends HTMLElement {
         onRegionChange: (region) => this.updateRegion(region),
         onMovement: (movement) => this.handleMovement(movement),
         onModeration: (action) => this.moderateWorldPeer(action),
+        onAccountAction: (action) => {
+          if (action === "logout") {
+            void this.logoutFromWorld();
+            return;
+          }
+          this.toggleWorldAccount(true, "login");
+        },
       });
       this.syncConstructionMarkers();
       this.setLandmarkCapability(
@@ -3997,14 +4048,13 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   renderFediverseActivity() {
+    const section = this.$("[data-world-fediverse-activity]");
     const container = this.$("[data-world-fediverse-items]");
     if (!container) return;
     const items = this.fediverseMentions.slice(0, 3);
+    if (section) section.hidden = !items.length;
     if (!items.length) {
-      container.innerHTML = `
-        <p class="world-rail-empty">
-          No verified public repository feedback is currently listed.
-        </p>`;
+      container.replaceChildren();
       return;
     }
     const hasSession = Boolean(readSession()?.sessionToken);
@@ -4592,6 +4642,11 @@ class ForkMeshWorld extends HTMLElement {
       const themeButton = event.target.closest("[data-world-theme]");
       if (themeButton) {
         this.setTheme(themeButton.dataset.worldTheme);
+        return;
+      }
+      const outfitButton = event.target.closest("[data-world-outfit]");
+      if (outfitButton) {
+        this.setOutfitColor(outfitButton.dataset.worldOutfit);
         return;
       }
       if (event.target.closest("[data-world-contribution-prepare]")) {
@@ -7953,7 +8008,7 @@ class ForkMeshWorld extends HTMLElement {
         destination: "Patreon · published ForkMesh creator page",
         purpose:
           "Ongoing development, infrastructure, documentation, accessibility, and community operations.",
-        href: "https://www.patreon.com/16434219/join",
+        href: PATREON_URL,
         action: "Open Patreon",
       },
       {
@@ -11862,6 +11917,33 @@ class ForkMeshWorld extends HTMLElement {
     this.toast(`${label} is local to this device and never changes shared presence.`);
   }
 
+  setOutfitColor(outfit) {
+    if (this.identity.accountStatus !== "Supporting member") {
+      this.toast("Become a Supporting member on Patreon to unlock outfit colors.");
+      return;
+    }
+    if (!OUTFIT_COLOR_OPTIONS.some((option) => option.id === outfit)) return;
+    this.settings.outfitColor =
+      this.settings.outfitColor === outfit ? "" : outfit;
+    this.saveSettings();
+    this.$$("[data-world-outfit]").forEach((button) => {
+      button.setAttribute(
+        "aria-pressed",
+        String(button.dataset.worldOutfit === this.settings.outfitColor),
+      );
+    });
+    this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
+    this.sendPresence({ type: "presence" });
+    const label = OUTFIT_COLOR_OPTIONS.find(
+      (option) => option.id === this.settings.outfitColor,
+    )?.label;
+    this.toast(
+      label
+        ? `${label} outfit is now visible to every visitor.`
+        : "Outfit reset to the default flag shirt.",
+    );
+  }
+
   setLightLevel(value) {
     const numeric = Number(value);
     const next = Math.min(
@@ -12750,6 +12832,11 @@ class ForkMeshWorld extends HTMLElement {
           : "town-square",
         statusEmoji: publicStatus.emoji,
         statusNote: publicStatus.note,
+        outfitColor:
+          this.identity.accountStatus === "Supporting member" &&
+          OUTFIT_COLOR_VALUES.has(this.settings.outfitColor)
+            ? this.settings.outfitColor
+            : "",
       };
     } else if (message.type === "move") {
       safe = {
