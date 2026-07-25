@@ -134,6 +134,8 @@ set(FORKMESH_APP_SOURCES
     src/ChatHistoryLimits.h
     src/ServerNode.h
     src/ServerNode.cpp
+    src/NodeEventSocket.h
+    src/NodeEventSocket.cpp
     src/NetworkBackoff.h
     src/BackoffNetworkAccessManager.h
     src/BackoffNetworkAccessManager.cpp
