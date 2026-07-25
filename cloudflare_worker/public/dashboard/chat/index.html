@@ -683,7 +683,7 @@
         background-clip: padding-box;
       }
     </style>
-    <script src="/dashboard.js?v=3fe0b16afd5b" defer></script>
+    <script src="/dashboard.js?v=687b12cdf7c2" defer></script>
     <script src="/dashboard-chat.js?v=061728131b74" defer></script>
   </head>
   <body class="bg-background text-foreground" data-page="chat">
@@ -1155,6 +1155,14 @@
                       <a data-profile-website href="https://forkmesh.com" class="min-w-0 truncate text-foreground hover:text-accent hover:underline">https://forkmesh.com</a>
                     </li>
                   </ul>
+                  <section data-profile-fediverse hidden class="mt-4 overflow-hidden rounded-md border border-border bg-card">
+                    <div class="flex items-center gap-2 border-b border-border px-3 py-2">
+                      <i data-lucide="globe" class="h-4 w-4 shrink-0 text-muted-foreground"></i>
+                      <h2 class="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">Fediverse</h2>
+                      <a data-profile-fediverse-link href="#" target="_blank" rel="noopener noreferrer" class="min-w-0 truncate text-xs text-muted-foreground hover:text-accent hover:underline"></a>
+                    </div>
+                    <div data-profile-fediverse-posts class="grid text-sm"></div>
+                  </section>
                 </template>
         </div>
       </main>

@@ -1220,6 +1220,29 @@ function normalizeMediaSpaces(value) {
     .slice(0, 50);
 }
 
+// Public chat roster directory (user profiles only) doubles as the
+// campfire-circle population: every public registered account gets a bench
+// around the fire, and the roster length sizes the circle.
+function normalizeMemberDirectory(value) {
+  return (Array.isArray(value?.users) ? value.users : [])
+    .map((user) => ({
+      name: sanitizePresenceText(user?.name, "", 32),
+      createdAt: Number.isFinite(Number(user?.createdAt))
+        ? Math.max(0, Number(user.createdAt))
+        : 0,
+      nodes: Array.isArray(user?.nodes) ? user.nodes.slice(0, 6) : [],
+      totalActiveMs: Number.isFinite(Number(user?.totalActiveMs))
+        ? Math.max(0, Number(user.totalActiveMs))
+        : Number.isFinite(Number(user?.activeMs))
+          ? Math.max(0, Number(user.activeMs))
+          : null,
+      avatar: sanitizePresenceText(user?.avatar, "", 240),
+      countryCode: sanitizePresenceText(user?.countryCode, "", 2),
+      status: sanitizePresenceText(user?.status, "", 80),
+    }))
+    .filter((user) => user.name);
+}
+
 function normalizeFederatedInstances(value) {
   return (Array.isArray(value?.instances) ? value.instances : [])
     .map((item) => ({
@@ -3352,6 +3375,7 @@ class ForkMeshWorld extends HTMLElement {
     this.localPeers = new Map();
     this.inactivePlayers = [];
     this.memberDirectory = [];
+    this.memberDirectoryFetchedAt = 0;
     this.pendingKnocks = new Map();
     this.serverPeerId = "";
     this.sessionAuthenticated = false;
@@ -4476,30 +4500,11 @@ class ForkMeshWorld extends HTMLElement {
             persistedInactive: true,
           }))
         : [];
-    // Public chat roster directory (user profiles only) doubles as the
-    // campfire-circle population: every public registered account gets a
-    // stool around the fire, and the roster length sizes the circle.
-        this.memberDirectory =
-      membersResult.status === "fulfilled" &&
-      Array.isArray(membersResult.value?.users)
-        ? membersResult.value.users
-            .map((user) => ({
-              name: sanitizePresenceText(user?.name, "", 32),
-              createdAt: Number.isFinite(Number(user?.createdAt))
-                ? Math.max(0, Number(user.createdAt))
-                : 0,
-              nodes: Array.isArray(user?.nodes) ? user.nodes.slice(0, 6) : [],
-              totalActiveMs: Number.isFinite(Number(user?.totalActiveMs))
-                ? Math.max(0, Number(user.totalActiveMs))
-                : Number.isFinite(Number(user?.activeMs))
-                  ? Math.max(0, Number(user.activeMs))
-                  : null,
-              avatar: sanitizePresenceText(user?.avatar, "", 240),
-              countryCode: sanitizePresenceText(user?.countryCode, "", 2),
-              status: sanitizePresenceText(user?.status, "", 80),
-            }))
-            .filter((user) => user.name)
+    this.memberDirectory =
+      membersResult.status === "fulfilled"
+        ? normalizeMemberDirectory(membersResult.value)
         : [];
+    this.memberDirectoryFetchedAt = Date.now();
     this.visitorStats =
       visitorsResult.status === "fulfilled" &&
       visitorsResult.value?.ok === true
@@ -6126,8 +6131,9 @@ class ForkMeshWorld extends HTMLElement {
     // the R key turns things, so say it once per session.
     this.layoutEditorAnnounced = true;
     this.toast(
-      "Layout editing on: drag an object's handle to move it, press R " +
-        "(Shift+R to reverse) to rotate it.",
+      "Layout editing on: drag an object's handle to move it; roll the " +
+        "mouse wheel while dragging (or press R, Shift+R to reverse) to " +
+        "rotate it.",
     );
   }
 
@@ -8444,7 +8450,12 @@ class ForkMeshWorld extends HTMLElement {
   startEventPolling() {
     window.clearInterval(this.eventsTimer);
     this.eventsTimer = window.setInterval(() => {
+      if (document.hidden) return;
       this.refreshCommunityEvents(this.isEventsPanelOpen());
+      // Rides the same tick so accounts that signed up while this tab has
+      // been open get their bench at the fire without a reload. The endpoint
+      // is edge-cached, and a signup purges that cache.
+      void this.refreshMemberDirectory();
     }, 60000);
   }
 
@@ -15713,27 +15724,96 @@ class ForkMeshWorld extends HTMLElement {
     void this.loadReferralLeaderboard();
   }
 
+  // An account created after this tab loaded is missing from the directory
+  // snapshot, so its owner would have no bench until the next refresh. Seat
+  // them from their own presence frame instead, and pull a fresh directory in
+  // the background to fill in their joined date and node count.
+  noteDirectoryMembers(names) {
+    const known = new Set(
+      this.memberDirectory.map((member) => member.name.toLowerCase()),
+    );
+    const added = [];
+    names.forEach((name) => {
+      const key = name.toLowerCase();
+      if (!name || known.has(key)) return;
+      known.add(key);
+      added.push({
+        name,
+        createdAt: 0,
+        nodes: [],
+        totalActiveMs: null,
+        avatar: "",
+        countryCode: "",
+        status: "",
+      });
+    });
+    if (!added.length) return false;
+    this.memberDirectory = [...this.memberDirectory, ...added];
+    void this.refreshMemberDirectory();
+    return true;
+  }
+
+  // Shares the edge-cached directory endpoint the chat roster uses. Throttled
+  // to its server-side TTL so a burst of arrivals still costs one request.
+  async refreshMemberDirectory() {
+    const now = Date.now();
+    if (now - (this.memberDirectoryFetchedAt || 0) < 30000) return;
+    this.memberDirectoryFetchedAt = now;
+    try {
+      const data = await this.fetchJSON("/api/accounts/users", {
+        auth: false,
+        timeout: 5000,
+      });
+      const directory = normalizeMemberDirectory(data);
+      if (!directory.length || this.destroyed) return;
+      this.memberDirectory = directory;
+      this.syncMemberLounge();
+    } catch (_) {}
+  }
+
   syncMemberLounge() {
     if (!this.world?.updateMemberLounge) return;
-    // Seat every public registered account in the circle around the campfire,
-    // except the ones already rendered as live or opted-in idle avatars —
-    // those keep their richer presence avatar instead of a duplicate
-    // directory figure, leaving their campfire stool visibly empty.
-    const present = new Set([
-      String(this.identity?.name || "").trim().toLowerCase(),
-    ]);
+    // Seat every public registered account in the circle around the campfire.
+    // Members already rendered as live or opted-in idle avatars keep their
+    // richer presence avatar instead of a duplicate directory figure, leaving
+    // their own named bench visibly empty while they are out and about.
+    const present = new Set();
+    const registered = [];
+    let guests = 0;
+    const note = (name, accountStatus) => {
+      const clean = String(name || "").trim();
+      if (!clean) return;
+      present.add(clean.toLowerCase());
+      const status = String(accountStatus || "Guest");
+      // A member who hides their name broadcasts the "Private visitor"
+      // sentinel, and the public directory omits private profiles entirely —
+      // neither owns a named bench.
+      if (
+        ACCOUNT_STATUS_VALUES.has(status) &&
+        status !== "Guest" &&
+        clean !== "Private visitor"
+      ) {
+        registered.push(clean.slice(0, 32));
+      } else {
+        guests += 1;
+      }
+    };
+    note(this.identity?.name, this.identity?.accountStatus);
     this.remotePlayers.forEach((player) =>
-      present.add(String(player?.name || "").trim().toLowerCase()),
+      note(player?.name, player?.accountStatus),
     );
     this.inactivePlayers.forEach((player) =>
-      present.add(String(player?.name || "").trim().toLowerCase()),
+      note(player?.name, player?.accountStatus),
     );
+    this.noteDirectoryMembers(registered);
     this.world.updateMemberLounge(
-      this.memberDirectory.filter(
-        (member) => !present.has(member.name.toLowerCase()),
-      ),
+      this.memberDirectory.map((member) => ({
+        ...member,
+        away: present.has(member.name.toLowerCase()),
+      })),
       this.memberDirectory.length,
       this.leaderboardMembers(),
+      guests,
     );
   }
 
