@@ -4500,9 +4500,6 @@ class ForkMeshWorld extends HTMLElement {
             persistedInactive: true,
           }))
         : [];
-    // Public chat roster directory (user profiles only) doubles as the
-    // campfire-circle population: every public registered account gets a
-    // stool around the fire, and the roster length sizes the circle.
     this.memberDirectory =
       membersResult.status === "fulfilled"
         ? normalizeMemberDirectory(membersResult.value)
