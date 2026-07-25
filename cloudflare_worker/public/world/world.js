@@ -3009,6 +3009,9 @@ class ForkMeshWorld extends HTMLElement {
   connectedCallback() {
     if (this.dataset.worldReady === "true") return;
     this.dataset.worldReady = "true";
+    // If the module arrived after the index watchdog already surfaced the
+    // load error, retract it — the world is taking over the page now.
+    document.querySelector("[data-world-load-error]")?.remove();
     this.mode = this.dataset.worldMode || "public";
     if (this.mode === "public") document.body.classList.add("world-active");
     this.identity = accountIdentity(readSession());
