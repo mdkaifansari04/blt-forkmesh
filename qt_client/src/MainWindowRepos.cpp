@@ -842,6 +842,24 @@ bool MainWindow::reconcileMirrorPath(RepositoryRecord &repo)
     return true;
 }
 
+void MainWindow::adoptMaterializedMirror(RepositoryRecord &repo,
+                                         const QString &repositoryPath)
+{
+    if (repositoryPath.trimmed().isEmpty() ||
+        QDir::cleanPath(repo.mirrorPath) == QDir::cleanPath(repositoryPath)) {
+        repo.mirrorPath = repositoryPath;
+        return;
+    }
+    const int carried = carryMirrorReleaseCas(repo.mirrorPath, repositoryPath);
+    if (carried > 0)
+        logSystem(QStringLiteral(
+                      "Mirror: carried %1 release artifact blob(s) for %2/%3 "
+                      "into the freshly sealed mirror.")
+                      .arg(carried)
+                      .arg(repo.owner, repo.name));
+    repo.mirrorPath = repositoryPath;
+}
+
 void MainWindow::saveRepositories() const
 {
     QSettings settings;
@@ -5284,8 +5302,8 @@ void MainWindow::syncPrivateRepositoryWithRecipients(
                     current.publicArchiveId;
                 current.privateReplicaId = result->sync.opaqueId;
                 current.publicArchiveId.clear();
-                current.mirrorPath =
-                    result->materialization->repositoryPath();
+                adoptMaterializedMirror(
+                    current, result->materialization->repositoryPath());
                 current.lastSyncMs =
                     QDateTime::currentDateTimeUtc().toMSecsSinceEpoch();
                 m_privateMirrorMaterializations.insert(
@@ -5432,8 +5450,8 @@ void MainWindow::resealPrivateRepositoryRecipients(
                 return;
             }
             RepositoryRecord &current = m_repositories[index];
-            current.mirrorPath =
-                result->materialization->repositoryPath();
+            adoptMaterializedMirror(
+                current, result->materialization->repositoryPath());
             current.lastSyncMs =
                 QDateTime::currentDateTimeUtc().toMSecsSinceEpoch();
             m_privateMirrorMaterializations.insert(
@@ -5686,9 +5704,10 @@ void MainWindow::downloadPrivateReplica(int index, bool quiet)
                                 current.privateReplicaId;
                             current.privateReplicaId =
                                 result->opaqueId;
-                            current.mirrorPath =
+                            adoptMaterializedMirror(
+                                current,
                                 result->materialization
-                                    ->repositoryPath();
+                                    ->repositoryPath());
                             current.lastSyncMs =
                                 QDateTime::
                                     currentDateTimeUtc()
@@ -5914,8 +5933,8 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
             const QString previousPrivateReplica =
                 current.privateReplicaId;
             current.privateReplicaId.clear();
-            current.mirrorPath =
-                result->materialization->repositoryPath();
+            adoptMaterializedMirror(
+                current, result->materialization->repositoryPath());
             current.lastSyncMs =
                 QDateTime::currentMSecsSinceEpoch();
             m_publicMirrorMaterializations.insert(
