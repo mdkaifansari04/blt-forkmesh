@@ -4137,6 +4137,7 @@ export function createWorldScene({
   // visitor when the world loads.
   const movableWorldObjects = new Map();
   const layoutHandles = new Map();
+  const layoutDragOffset = new THREE.Vector3();
   let layoutEditingEnabled = false;
   let draggedLayoutObject = null;
 
@@ -8705,6 +8706,20 @@ export function createWorldScene({
         ? movableWorldObjects.get(handleHit.object.userData.layoutHandle) ||
           null
         : null;
+      if (draggedLayoutObject) {
+        // Drag by delta from the press point so grabbing the tiny handle
+        // never snaps the object's origin to the pointer.
+        const point = groundPointAt(event.clientX, event.clientY);
+        if (point) {
+          layoutDragOffset.set(
+            draggedLayoutObject.position.x - point.x,
+            0,
+            draggedLayoutObject.position.z - point.z,
+          );
+        } else {
+          draggedLayoutObject = null;
+        }
+      }
     }
     const logHit = draggedLayoutObject
       ? null
@@ -8765,7 +8780,13 @@ export function createWorldScene({
     if (event.pointerId !== primaryPointerId) return;
     if (draggedLayoutObject) {
       const point = groundPointAt(event.clientX, event.clientY);
-      if (point) moveWorldObject(draggedLayoutObject, point.x, point.z);
+      if (point) {
+        moveWorldObject(
+          draggedLayoutObject,
+          point.x + layoutDragOffset.x,
+          point.z + layoutDragOffset.z,
+        );
+      }
       pointerGestureMoved = true;
       return;
     }
@@ -9105,7 +9126,11 @@ export function createWorldScene({
     return point;
   }
 
-  function moveWorldObject(object, x, z) {
+  function moveWorldObject(object, targetX, targetZ) {
+    const radius = Math.hypot(targetX, targetZ);
+    const scale = radius > WORLD_RADIUS ? WORLD_RADIUS / radius : 1;
+    const x = targetX * scale;
+    const z = targetZ * scale;
     const deltaX = x - object.position.x;
     const deltaZ = z - object.position.z;
     if (!deltaX && !deltaZ) return;
@@ -9140,9 +9165,7 @@ export function createWorldScene({
       const x = Number(entry?.x);
       const z = Number(entry?.z);
       if (!object || !Number.isFinite(x) || !Number.isFinite(z)) return;
-      const radius = Math.hypot(x, z);
-      const scale = radius > WORLD_RADIUS ? WORLD_RADIUS / radius : 1;
-      moveWorldObject(object, x * scale, z * scale);
+      moveWorldObject(object, x, z);
     });
   }
 
@@ -9162,7 +9185,18 @@ export function createWorldScene({
         }),
       );
       handle.name = "world-layout-handle-" + id;
-      handle.position.set(0, 0.34, 0);
+      // Anchor the handle to the object's visible mass, not the group
+      // origin: the arrival grid keeps its geometry ~24 units away from its
+      // origin, where a fixed-origin handle would float in the town center.
+      const center = new THREE.Box3()
+        .setFromObject(object)
+        .getCenter(new THREE.Vector3());
+      object.worldToLocal(center);
+      handle.position.set(
+        Number.isFinite(center.x) ? center.x : 0,
+        0.34,
+        Number.isFinite(center.z) ? center.z : 0,
+      );
       handle.renderOrder = 30;
       handle.userData.layoutHandle = id;
       handle.visible = false;
