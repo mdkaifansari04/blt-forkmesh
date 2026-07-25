@@ -116,10 +116,42 @@ const TREE_LANDMARK_CLEARANCE = Object.freeze({
 // a bench sitter sitting rather than standing on the plank. Exported because
 // the shell must keep it out of the landmark-proximity activity label.
 export const CAMPFIRE_SEATED_ACTIVITY = "sitting beside the campfire";
-// Seated legs swing out in front of the sitter. Avatar fronts face local -Z,
-// so the positive pitch about X is the one that puts the knees over the front
-// edge of the bench instead of out behind it.
-const SEATED_LEG_PITCH = 1.3;
+// Legs hinge at the hip and again at the knee. Avatar fronts face local -Z, so
+// the positive pitch about X is the one that swings the knee over the front
+// edge of the bench instead of out behind the sitter; the knee then folds back
+// by the same amount, which drops the shin straight down and leaves the shoe
+// flat on the floor.
+const SEATED_LEG_PITCH = 1.45;
+const SEATED_KNEE_PITCH = -SEATED_LEG_PITCH;
+// Walking swings the whole leg from the hip, so the stride pitch is about half
+// what the old mid-leg pivot needed for the same amount of foot travel.
+const GAIT_LEG_SWING = 0.38;
+// Avatar leg metrics, in local (unscaled) avatar units: the hip joint height,
+// the length of one leg segment (thigh and shin are the same), and how far the
+// sole of the shoe hangs below the knee.
+const AVATAR_HIP_Y = 1.405;
+const AVATAR_LEG_SEGMENT = 0.625;
+const AVATAR_SHOE_Y = 0.15;
+const AVATAR_SHOE_HEIGHT = 0.26;
+const AVATAR_KNEE_TO_SOLE =
+  AVATAR_HIP_Y - AVATAR_LEG_SEGMENT - AVATAR_SHOE_Y + AVATAR_SHOE_HEIGHT / 2;
+// A seated avatar is placed by its hips, not by its feet: the folded thigh
+// rests on top of the plank (its half-depth once pitched over, so it lies on
+// the seat instead of sinking through it) and the shin carries the shoe down
+// to the floor, which lands the sole SEATED_SEAT_TO_SOLE below the plank.
+const SEATED_HIP_ABOVE_SEAT = 0.3;
+// How far below the plank a sitter's soles end up, which is what a bench has
+// to be built up to for the feet to reach the floor.
+const SEATED_SEAT_TO_SOLE =
+  AVATAR_LEG_SEGMENT * Math.cos(SEATED_LEG_PITCH) +
+  AVATAR_KNEE_TO_SOLE -
+  SEATED_HIP_ABOVE_SEAT;
+// Standing avatars are parked with their origin on the floor height (0.38),
+// which puts the soles of their shoes on the walking plane just above it.
+const WORLD_WALKING_PLANE_Y = 0.4;
+function seatedAvatarY(seatTopY, scale = 1) {
+  return seatTopY - (AVATAR_HIP_Y - SEATED_HIP_ABOVE_SEAT) * scale;
+}
 const REGISTERED_LOUNGE_STATUSES = new Set([
   "Registered",
   "Supporting member",
@@ -1330,11 +1362,24 @@ function embossPlankText(context, text, x, y, font, glow) {
   context.fillText(text, x, y);
 }
 
+// Straight-legged pitches (standing, walking) leave the knees locked, so the
+// leg reads as the one block it draws as.
+function applyLegPitch(avatar, leftPitch, rightPitch) {
+  const legs = avatar?.userData;
+  if (!legs?.leftLeg || !legs?.rightLeg) return;
+  legs.leftLeg.rotation.x = leftPitch;
+  legs.rightLeg.rotation.x = rightPitch;
+  if (legs.leftKnee) legs.leftKnee.rotation.x = 0;
+  if (legs.rightKnee) legs.rightKnee.rotation.x = 0;
+}
+
 function applySeatedLegPose(avatar) {
   const legs = avatar?.userData;
   if (!legs?.leftLeg || !legs?.rightLeg) return;
   legs.leftLeg.rotation.x = SEATED_LEG_PITCH;
   legs.rightLeg.rotation.x = SEATED_LEG_PITCH;
+  if (legs.leftKnee) legs.leftKnee.rotation.x = SEATED_KNEE_PITCH;
+  if (legs.rightKnee) legs.rightKnee.rotation.x = SEATED_KNEE_PITCH;
 }
 
 // Stable, server-safe layout id built from the only durable name a scene prop
@@ -1950,20 +1995,36 @@ function createAvatar(THREE, identity, options = {}) {
   antenna.visible = identity.inputActive === true;
   group.add(antenna);
 
-  const legGeometry = new THREE.BoxGeometry(0.42, 1.25, 0.45);
-  const leftLeg = new THREE.Mesh(legGeometry, dark);
-  leftLeg.position.set(-0.3, 0.78, 0);
-  group.add(leftLeg);
-  const rightLeg = leftLeg.clone();
-  rightLeg.position.x = 0.3;
-  group.add(rightLeg);
-
-  const leftShoe = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.26, 0.7), shoe);
-  leftShoe.position.set(-0.3, 0.15, -0.09);
-  group.add(leftShoe);
-  const rightShoe = leftShoe.clone();
-  rightShoe.position.x = 0.3;
-  group.add(rightShoe);
+  // Each leg is a hip pivot carrying a thigh, and a knee pivot carrying the
+  // shin plus that leg's shoe. Standing (every pitch at zero) the two segments
+  // stack into the same block the single-box leg used to be, but the joints let
+  // a sitter fold the thigh forward and keep the shin and foot under the knee
+  // instead of swinging one rigid block — and shoes now travel with the leg
+  // they belong to rather than staying planted on the plank.
+  const legGeometry = new THREE.BoxGeometry(0.42, AVATAR_LEG_SEGMENT, 0.45);
+  const shoeGeometry = new THREE.BoxGeometry(0.46, AVATAR_SHOE_HEIGHT, 0.7);
+  const buildLeg = (side) => {
+    const hip = new THREE.Group();
+    hip.position.set(side * 0.3, AVATAR_HIP_Y, 0);
+    const thigh = new THREE.Mesh(legGeometry, dark);
+    thigh.position.y = -AVATAR_LEG_SEGMENT / 2;
+    hip.add(thigh);
+    const knee = new THREE.Group();
+    knee.position.y = -AVATAR_LEG_SEGMENT;
+    const shin = new THREE.Mesh(legGeometry, dark);
+    shin.position.y = -AVATAR_LEG_SEGMENT / 2;
+    knee.add(shin);
+    const foot = new THREE.Mesh(shoeGeometry, shoe);
+    foot.position.set(0, AVATAR_SHOE_Y - AVATAR_HIP_Y + AVATAR_LEG_SEGMENT, -0.09);
+    knee.add(foot);
+    hip.add(knee);
+    group.add(hip);
+    return { hip, knee };
+  };
+  const leftLegRig = buildLeg(-1);
+  const rightLegRig = buildLeg(1);
+  const leftLeg = leftLegRig.hip;
+  const rightLeg = rightLegRig.hip;
 
   const badge = new THREE.Mesh(
     new THREE.PlaneGeometry(0.76, 0.76),
@@ -1989,6 +2050,8 @@ function createAvatar(THREE, identity, options = {}) {
     rightArm,
     leftLeg,
     rightLeg,
+    leftKnee: leftLegRig.knee,
+    rightKnee: rightLegRig.knee,
     badge,
     badgeIdentity: identity,
     badgeRemote: remote,
@@ -5753,6 +5816,13 @@ export function createWorldScene({
   // that always stays open so an arriving guest has a spot by the fire, and
   // widens whenever a new account joins so everyone still fits.
   const CAMPFIRE_BENCH_RADIUS = 6.2;
+  // Bench height is set by the sitters, not the other way round: the plank top
+  // lands SEATED_SEAT_TO_SOLE above the walking plane so a seated avatar's
+  // shins reach the ground instead of dangling (or folding through it).
+  const CAMPFIRE_SEAT_HALF_THICKNESS = 0.07;
+  const CAMPFIRE_SEAT_TOP_Y = WORLD_WALKING_PLANE_Y + SEATED_SEAT_TO_SOLE;
+  const CAMPFIRE_SEAT_Y = CAMPFIRE_SEAT_TOP_Y - CAMPFIRE_SEAT_HALF_THICKNESS;
+  const CAMPFIRE_BENCH_LEG_HEIGHT = CAMPFIRE_SEAT_Y - CAMPFIRE_SEAT_HALF_THICKNESS;
   const CAMPFIRE_CIRCLE_MIN_SEATS = 6;
   const CAMPFIRE_CIRCLE_MAX_SEATS = 96;
   const CAMPFIRE_SEAT_SPACING = 2.1;
@@ -5808,7 +5878,7 @@ export function createWorldScene({
         plankSideMaterial,
         plankSideMaterial,
       ]);
-      seat.position.y = 0.48;
+      seat.position.y = CAMPFIRE_SEAT_Y;
       // Seat coordinates are read from the live world matrix at click time, so a
       // relocated campfire needs no bookkeeping and the seats can never drift.
       seat.userData.campfireBench = true;
@@ -5816,18 +5886,22 @@ export function createWorldScene({
       bench.add(seat);
       [-0.62, 0.62].forEach((end) => {
         const leg = new THREE.Mesh(
-          new THREE.BoxGeometry(0.16, 0.41, 0.5),
+          new THREE.BoxGeometry(0.16, CAMPFIRE_BENCH_LEG_HEIGHT, 0.5),
           makeMaterial(THREE, "#4f3018", { roughness: 0.9 }),
         );
-        leg.position.set(end, 0.205, 0);
+        leg.position.set(end, CAMPFIRE_BENCH_LEG_HEIGHT / 2, 0);
         bench.add(leg);
       });
       benches.push({ bench, seat, labelKey: null });
       ring.add(bench);
-      // Offsets land sitters just above the plank, matching the local
-      // player's bench-seat pose height.
+      // Offsets carry the top of the plank; sitters are placed by their hips
+      // off it (seatedAvatarY), the same way the local player is.
       seatOffsets.push(
-        new THREE.Vector3(bench.position.x, seat.position.y + 0.1, bench.position.z),
+        new THREE.Vector3(
+          bench.position.x,
+          seat.position.y + CAMPFIRE_SEAT_HALF_THICKNESS,
+          bench.position.z,
+        ),
       );
     }
     setShadows(ring);
@@ -6218,6 +6292,9 @@ export function createWorldScene({
       officeInterior.add(tableLeg);
     }
   }
+  // Meeting chairs are already about a seated avatar's hip height above the
+  // office floor (0.4), so their sitters' shins reach the floor unchanged.
+  const OFFICE_CHAIR_SEAT_TOP_Y = 0.91;
   const chairTransforms = [
     [-4.75, -1.35, Math.PI / 2],
     [-2.2, -2.85, 0],
@@ -6235,7 +6312,7 @@ export function createWorldScene({
       new THREE.BoxGeometry(1.05, 0.18, 1.05),
       makeMaterial(THREE, "#2f6d56", { roughness: 0.72 }),
     );
-    seat.position.y = 0.82;
+    seat.position.y = OFFICE_CHAIR_SEAT_TOP_Y - 0.09;
     chair.add(seat);
     const back = new THREE.Mesh(
       new THREE.BoxGeometry(1.05, 1.45, 0.18),
@@ -7042,7 +7119,10 @@ export function createWorldScene({
     const chair = seated ? officeChairTransform(participant.chairId) : null;
     if (chair) {
       avatar.position.copy(chair.position);
-      avatar.position.y = 0.72;
+      avatar.position.y = seatedAvatarY(
+        chair.position.y + OFFICE_CHAIR_SEAT_TOP_Y,
+        avatar.scale.x,
+      );
       avatar.rotation.y = chair.yaw + Math.PI;
       applySeatedLegPose(avatar);
     } else {
@@ -7053,8 +7133,7 @@ export function createWorldScene({
         clamp(Number(participant?.z) || 4.15 + ((seed >> 3) % 3) * 0.35, -4.7, 4.7),
       );
       avatar.rotation.y = Number(participant?.yaw) || Math.PI;
-      avatar.userData.leftLeg.rotation.x = 0;
-      avatar.userData.rightLeg.rotation.x = 0;
+      applyLegPitch(avatar, 0, 0);
     }
     avatar.userData.leftArm.rotation.x = 0;
     avatar.userData.rightArm.rotation.x = 0;
@@ -7582,8 +7661,7 @@ export function createWorldScene({
     const gait = walking ? Math.sin(time * 0.012) * 0.48 : 0;
     avatar.userData.leftArm.rotation.x = gait;
     avatar.userData.rightArm.rotation.x = -gait;
-    avatar.userData.leftLeg.rotation.x = -gait * 0.72;
-    avatar.userData.rightLeg.rotation.x = gait * 0.72;
+    applyLegPitch(avatar, -gait * GAIT_LEG_SWING, gait * GAIT_LEG_SWING);
     avatar.userData.officePresence = {
       ...presence,
       x: avatar.position.x,
@@ -7624,8 +7702,11 @@ export function createWorldScene({
     const gait = walking ? Math.sin(time * 0.012) * 0.48 : 0;
     officeLobbyPlayer.userData.leftArm.rotation.x = gait;
     officeLobbyPlayer.userData.rightArm.rotation.x = -gait;
-    officeLobbyPlayer.userData.leftLeg.rotation.x = -gait * 0.72;
-    officeLobbyPlayer.userData.rightLeg.rotation.x = gait * 0.72;
+    applyLegPitch(
+      officeLobbyPlayer,
+      -gait * GAIT_LEG_SWING,
+      gait * GAIT_LEG_SWING,
+    );
     animateAvatarActivity(officeLobbyPlayer, time, delta, reducedMotion);
   }
 
@@ -7634,8 +7715,16 @@ export function createWorldScene({
   function sitOnCampfireBench(seat) {
     const seatPoint = seat.getWorldPosition(new THREE.Vector3());
     benchSeat = {
-      // Just above the plank so the avatar rests on the seat rather than in it.
-      position: new THREE.Vector3(seatPoint.x, seatPoint.y + 0.1, seatPoint.z),
+      // Hips on the plank, not feet: the avatar drops until its thighs rest on
+      // the seat and its shins hang off the front edge down to the ground.
+      position: new THREE.Vector3(
+        seatPoint.x,
+        seatedAvatarY(
+          seatPoint.y + CAMPFIRE_SEAT_HALF_THICKNESS,
+          player.scale.x,
+        ),
+        seatPoint.z,
+      ),
       // Face the flames: headings elsewhere use atan2(-dx, -dz), so pointing at
       // the pit means negating the seat -> campfire vector.
       heading: Math.atan2(
@@ -7673,8 +7762,7 @@ export function createWorldScene({
     if (!benchSeat) return;
     benchSeat = null;
     player.position.y = currentFloorY;
-    player.userData.leftLeg.rotation.x = 0;
-    player.userData.rightLeg.rotation.x = 0;
+    applyLegPitch(player, 0, 0);
   }
 
   // The world map's Campfire spot is a trip home: it puts the avatar on the
@@ -7791,8 +7879,7 @@ export function createWorldScene({
     const gait = walking ? Math.sin(time * 0.012) * 0.52 : 0;
     player.userData.leftArm.rotation.x = gait;
     player.userData.rightArm.rotation.x = -gait;
-    player.userData.leftLeg.rotation.x = -gait * 0.72;
-    player.userData.rightLeg.rotation.x = gait * 0.72;
+    applyLegPitch(player, -gait * GAIT_LEG_SWING, gait * GAIT_LEG_SWING);
     if (jumpVelocity === 0) {
       player.position.y += walking ? Math.abs(Math.sin(time * 0.012)) * 0.035 : 0;
     }
@@ -7855,12 +7942,11 @@ export function createWorldScene({
         !walking;
       avatar.userData.leftArm.rotation.x = gait;
       avatar.userData.rightArm.rotation.x = -gait;
-      avatar.userData.leftLeg.rotation.x = seatedAtCampfire
-        ? SEATED_LEG_PITCH
-        : -gait * 0.7;
-      avatar.userData.rightLeg.rotation.x = seatedAtCampfire
-        ? SEATED_LEG_PITCH
-        : gait * 0.7;
+      if (seatedAtCampfire) {
+        applySeatedLegPose(avatar);
+      } else {
+        applyLegPitch(avatar, -gait * GAIT_LEG_SWING, gait * GAIT_LEG_SWING);
+      }
       if (recentlyActiveInLounge && !walking && !reducedMotion) {
         avatar.position.y =
           avatar.userData.targetPosition.y +
@@ -8258,6 +8344,11 @@ export function createWorldScene({
         const offset = seat || new THREE.Vector3();
         avatar.userData.targetPosition.copy(campfire.position);
         avatar.userData.targetPosition.add(offset);
+        // Seat offsets carry the plank top; the sitter rides its hips on it.
+        avatar.userData.targetPosition.y = seatedAvatarY(
+          campfire.position.y + offset.y,
+          avatar.scale.x,
+        );
         // Face the flames at the circle's centre: avatar fronts face local
         // -Z, so the inward heading is atan2(x, z) — the same heading
         // sitOnCampfireBench gives the local player.
@@ -8506,6 +8597,10 @@ export function createWorldScene({
         const seat = seats[index % Math.max(1, seats.length)];
         figure.position.copy(campfire.position);
         if (seat) figure.position.add(seat);
+        figure.position.y = seatedAvatarY(
+          campfire.position.y + (seat ? seat.y : 0),
+          figure.scale.x,
+        );
         // Face the fire at the circle's centre and hold a seated pose on the
         // bench, matching the local player's bench-seat legs. Avatar fronts
         // face local -Z, so the inward heading is atan2(x, z), matching
