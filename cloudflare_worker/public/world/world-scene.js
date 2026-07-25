@@ -4983,6 +4983,29 @@ export function createWorldScene({
     innerFlame.scale.set(size * 0.82, size * 0.9, size * 0.82);
     fireLight.intensity = 3.2 * fireLevel + Math.sin(time * 0.013) * 0.7;
   });
+  // The real bench count depends on the member roster, which is still an
+  // in-flight network request when the scene first renders. Rather than
+  // seat a placeholder ring that immediately resizes (and jumps every seated
+  // avatar) once the roster arrives, show a spark orbiting the flames until
+  // rebuildCampfireCircle first runs with real data.
+  const benchLoadingSpark = new THREE.Mesh(
+    new THREE.SphereGeometry(0.09, 12, 8),
+    makeMaterial(THREE, "#ffffff", {
+      emissive: "#ffd27a",
+      emissiveIntensity: 2.4,
+    }),
+  );
+  const BENCH_LOADING_SPARK_RADIUS = 1.6;
+  campfire.add(benchLoadingSpark);
+  animated.push((time) => {
+    if (!benchLoadingSpark.visible) return;
+    const spin = time * 0.004;
+    benchLoadingSpark.position.set(
+      Math.cos(spin) * BENCH_LOADING_SPARK_RADIUS,
+      0.9 + Math.sin(time * 0.01) * 0.05,
+      Math.sin(spin) * BENCH_LOADING_SPARK_RADIUS,
+    );
+  });
   // Benches sit back far enough from the pit to leave a wide walkable ring
   // between the seats and the stones (and to clear the log pile at ~2.6). The
   // circle carries one wooden bench per registered member — occupied by a
@@ -5002,6 +5025,7 @@ export function createWorldScene({
         Math.round(Number(neededSeats) || 0),
       ),
     );
+    benchLoadingSpark.visible = false;
     if (campfire.userData.seatCount === count) {
       return campfire.userData.seatOffsets;
     }
@@ -5059,7 +5083,9 @@ export function createWorldScene({
     campfire.userData.seatOffsets = seatOffsets;
     return seatOffsets;
   }
-  rebuildCampfireCircle(CAMPFIRE_CIRCLE_MIN_SEATS);
+  // No placeholder ring here: the spark above keeps the fire lively until
+  // updateMemberLounge below runs with the real roster and calls
+  // rebuildCampfireCircle with an accurate seat count.
   setShadows(campfire);
   world.add(campfire);
   registerMovableObject("campfire", campfire);
