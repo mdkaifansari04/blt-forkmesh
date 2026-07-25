@@ -41,7 +41,10 @@ import { buildRepositoryGraphEntities } from "./world-repository-graph.js";
 import { createWorldOfficeController } from "./world-office.js";
 import { createWorldOfficeMeeting } from "./world-office-meeting.js";
 import { createWorldOfficeTasksController } from "./world-office-tasks.js";
-import { createWorldScene } from "./world-scene.js";
+import {
+  CAMPFIRE_SEATED_ACTIVITY,
+  createWorldScene,
+} from "./world-scene.js";
 
 const THREE_MODULE_URL =
   "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.min.js";
@@ -2311,6 +2314,7 @@ function liveNodeRecords(network, mirrorCatalogs = []) {
 }
 
 const LOCAL_LIVE_LANDMARKS = new Set([
+  "campfire",
   "neighborhood",
   "broadcast",
 ]);
@@ -5137,6 +5141,12 @@ class ForkMeshWorld extends HTMLElement {
           this.officeController?.focusOffice(landmarkButton);
           return;
         }
+        // The campfire spot is a destination rather than a reading panel:
+        // choosing it walks you straight back to your own bench.
+        if (id === "campfire") {
+          this.returnToCampfireBench();
+          return;
+        }
         // Map, alert, and navigation controls open a readable overlay without
         // moving the player or reframing the camera. Clicking the 3D landmark
         // itself remains the explicit spatial-focus interaction.
@@ -6385,11 +6395,14 @@ class ForkMeshWorld extends HTMLElement {
       );
     });
     this.recordPublicVisit(id || "town-square");
-    if (this.settings.privacy.activity) {
+    if (!this.settings.privacy.activity) {
+      this.lastMovement.activity = "online";
+    } else if (this.lastMovement.activity !== CAMPFIRE_SEATED_ACTIVITY) {
+      // Sitting down lands inside the campfire's own label radius. The seated
+      // activity is what other visitors render the pose from, so proximity
+      // must not relabel it as merely visiting the circle.
       this.lastMovement.activity =
         label === "Town Square" ? "exploring the Town Square" : `visiting ${label}`;
-    } else {
-      this.lastMovement.activity = "online";
     }
     this.currentActivityCategory = {
       repositories: "viewing-repository",
@@ -8742,6 +8755,22 @@ class ForkMeshWorld extends HTMLElement {
         ? `${owner.name || "The owner"} accepted your knock. You entered their visual front yard; normal collaboration permissions still apply.`
         : `Entered ${owner.name || "the owner"}’s public front yard. Normal collaboration permissions still apply.`,
     );
+  }
+
+  // The Campfire map spot seats you on the bench that carries your own name;
+  // guests, and members the roster has not seated yet, land on one of the
+  // benches the circle keeps open.
+  returnToCampfireBench() {
+    if (!this.world?.returnToCampfireBench?.(this.identity?.name || "")) {
+      this.toast(
+        this.officeController?.active
+          ? "Walk out through the Office door first, then head back to the fire."
+          : "The campfire benches are still being seated. Try again in a moment.",
+      );
+      return;
+    }
+    this.closeLandmark();
+    this.toast("Back on your bench around the campfire. Move to stand up.");
   }
 
   focusMusicPanelHTML() {
@@ -13247,6 +13276,10 @@ class ForkMeshWorld extends HTMLElement {
     if (action === "office") {
       this.closeLandmark();
       this.officeController?.focusOffice();
+      return;
+    }
+    if (action === "campfire") {
+      this.returnToCampfireBench();
       return;
     }
     const messages = {

@@ -113,8 +113,9 @@ const TREE_LANDMARK_CLEARANCE = Object.freeze({
   office: 10,
 });
 // Shared by the seated pose and the presence frame so other visitors can render
-// a bench sitter sitting rather than standing on the plank.
-const CAMPFIRE_SEATED_ACTIVITY = "sitting beside the campfire";
+// a bench sitter sitting rather than standing on the plank. Exported because
+// the shell must keep it out of the landmark-proximity activity label.
+export const CAMPFIRE_SEATED_ACTIVITY = "sitting beside the campfire";
 // Seated legs swing out in front of the sitter. Avatar fronts face local -Z,
 // so the positive pitch about X is the one that puts the knees over the front
 // edge of the bench instead of out behind it.
@@ -249,6 +250,9 @@ function deterministicTreeLayout() {
     maxZ: SYSTEM_CAPACITY_PLATFORM_POSITION[2] + 8,
   };
   LANDMARKS.forEach((landmark) => {
+    // The campfire's clearing is filled by its bench circle, whose radius
+    // reaches past where these trees would stand.
+    if (landmark.id === "campfire") return;
     for (let treeIndex = 0; treeIndex < TREES_PER_LANDMARK; treeIndex += 1) {
       const angle =
         deterministicFraction(`tree-angle:${landmark.id}:${treeIndex}`) * Math.PI * 2;
@@ -5219,7 +5223,11 @@ export function createWorldScene({
     office: createForkMeshOffice,
   };
   LANDMARKS.forEach((landmark) => {
-    const object = landmarkFactories[landmark.id](
+    // The campfire owns a map spot but no district factory: its group and
+    // bench circle are built below and registered under their own layout id.
+    const factory = landmarkFactories[landmark.id];
+    if (!factory) return;
+    const object = factory(
       THREE,
       landmark.position,
       interactive,
@@ -5247,7 +5255,9 @@ export function createWorldScene({
   });
 
   const campfire = new THREE.Group();
-  campfire.position.set(8, 0, 8);
+  // The fire stands on its own map landmark, so the world-map spot and the
+  // benches can never drift apart.
+  campfire.position.set(...landmarkById("campfire").position);
   const firePit = new THREE.Mesh(
     new THREE.CylinderGeometry(0.85, 1.0, 0.22, 12),
     makeMaterial(THREE, "#4a4038", { roughness: 0.9 }),
@@ -5463,6 +5473,7 @@ export function createWorldScene({
   // rebuildCampfireCircle with an accurate seat count.
   setShadows(campfire);
   world.add(campfire);
+  landmarkObjects.set("campfire", campfire);
   registerMovableObject("campfire", campfire);
 
   const activeLeaderboardSign = makeActiveLeaderboardSign(THREE);
@@ -7272,6 +7283,29 @@ export function createWorldScene({
     player.position.y = currentFloorY;
     player.userData.leftLeg.rotation.x = 0;
     player.userData.rightLeg.rotation.x = 0;
+  }
+
+  // The world map's Campfire spot is a trip home: it puts the avatar on the
+  // bench that carries this member's name and holds the same seated pose
+  // clicking the plank gives. Guests — and members the directory has not
+  // seated yet — take the bench the circle always keeps open. Leaving the
+  // Office stays a deliberate walk through its door, so this refuses while
+  // the interior is open rather than teleporting out of it.
+  function returnToCampfireBench(name) {
+    if (officeSceneMode !== "town") return false;
+    const benches = campfire.userData.seatBenches || [];
+    if (!benches.length) return false;
+    const owned = campfire.userData.seatByName?.get(
+      String(name || "").trim().toLowerCase(),
+    );
+    const index = Number.isInteger(owned) ? owned : benches.length - 1;
+    const seat = benches[index]?.seat;
+    if (!seat) return false;
+    currentSpace = "town-square";
+    currentFloorY = 0.38;
+    focusedRepositoryKey = "";
+    sitOnCampfireBench(seat);
+    return true;
   }
 
   function walkPlayer(delta, time) {
@@ -10762,15 +10796,18 @@ export function createWorldScene({
     object.position.z = z;
     // Landmark proximity and focus math read LANDMARKS positions, not the
     // group transform, so a relocated landmark must update its record too.
+    // Districts register under a "landmark-" prefix; the campfire keeps its
+    // own id but owns a map spot all the same, so match either form.
     const layoutId = String(object.userData.layoutId || "");
-    if (layoutId.startsWith("landmark-")) {
-      const landmark = LANDMARKS.find(
-        (entry) => "landmark-" + entry.id === layoutId,
-      );
-      if (Array.isArray(landmark?.position)) {
-        landmark.position[0] = x;
-        landmark.position[2] = z;
-      }
+    const landmark = layoutId
+      ? LANDMARKS.find(
+          (entry) =>
+            layoutId === "landmark-" + entry.id || layoutId === entry.id,
+        )
+      : null;
+    if (Array.isArray(landmark?.position)) {
+      landmark.position[0] = x;
+      landmark.position[2] = z;
     }
   }
 
@@ -11537,6 +11574,7 @@ export function createWorldScene({
     setSpawn,
     travelToRegion,
     visitNeighborhoodHome,
+    returnToCampfireBench,
     setRemotePlayers,
     updateArrivalStats,
     updateMemberLounge,
