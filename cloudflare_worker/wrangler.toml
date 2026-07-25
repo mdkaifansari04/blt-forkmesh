@@ -63,6 +63,10 @@ run_worker_first = [
   "/*/*",
   "!/dashboard/partials/*",
   "!/dashboard/js/*",
+  # The precompiled dashboard utility stylesheet is requested by every
+  # dashboard page. Keep it asset-first instead of letting the dashboard
+  # application router turn it into a JSON 404.
+  "!/dashboard/tailwind.css",
   "!/assets/*",
   "!/favicon/*",
   "!/blog/*",

@@ -7730,6 +7730,11 @@ export function createWorldScene({
       base.name = `repository-portal-base:${record.owner}/${record.name}`;
       base.position.set(0, -2.38, 0);
       base.scale.x = portalDensityScale;
+      // The foundation is a direct link to the repository page. Keep its
+      // action distinct from the face, which selects the portal in-world.
+      base.userData.landmark = "repositories";
+      base.userData.repositoryBase = repositoryPortal;
+      interactive.push(base);
       node.add(base);
       if (isActive) {
         // The selected repository's canonical name is engraved into a physical
@@ -7751,6 +7756,11 @@ export function createWorldScene({
           }),
         );
         plaqueFace.position.set(0, -2.0, 0.295);
+        plaqueStone.userData.landmark = "repositories";
+        plaqueStone.userData.repositoryBase = repositoryPortal;
+        plaqueFace.userData.landmark = "repositories";
+        plaqueFace.userData.repositoryBase = repositoryPortal;
+        interactive.push(plaqueStone, plaqueFace);
         node.add(plaqueStone, plaqueFace);
       }
       // Who follows this repository over ActivityPub, seated on the ground
@@ -8949,10 +8959,15 @@ export function createWorldScene({
         id === "repositories" && hit.object.userData.repositoryStar
           ? { ...hit.object.userData.repositoryStar }
           : null;
+      const repositoryBase =
+        id === "repositories" && hit.object.userData.repositoryBase
+          ? { ...hit.object.userData.repositoryBase }
+          : null;
       if (
         !repository &&
         !repositorySizeNode &&
-        !repositoryStar
+        !repositoryStar &&
+        !repositoryBase
       ) {
         focusLandmark(id);
       } else if (repository || repositorySizeNode) {
@@ -8967,6 +8982,7 @@ export function createWorldScene({
         repository,
         repositorySizeNode,
         repositoryStar,
+        repositoryBase,
         graphNode:
           id === "repositories" && hit.object.userData.graphNode
             ? { ...hit.object.userData.graphNode }

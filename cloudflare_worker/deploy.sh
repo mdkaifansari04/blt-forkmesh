@@ -322,6 +322,7 @@ verify_public_assets() {
         "/assets/video/network.jpg image/jpeg"
         "/assets/video/network.mp4 video/mp4"
         "/assets/music/heavenly-loop.ogg audio/ogg"
+        "/dashboard/tailwind.css text/css"
     )
 
     echo "Verifying public static assets on $base ..."

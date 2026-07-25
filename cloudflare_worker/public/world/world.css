@@ -361,8 +361,8 @@ forkmesh-world {
 }
 
 .world-brand img {
-  width: 25px;
-  height: 25px;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
   object-fit: cover;
   flex: 0 0 auto;
@@ -372,7 +372,7 @@ forkmesh-world {
 
 .world-connection-ring {
   position: absolute;
-  inset: 3px;
+  inset: 0;
   border: 2px solid var(--world-mint);
   border-radius: 50%;
   box-shadow: 0 0 12px rgb(158 247 198 / 0.42);
@@ -5361,8 +5361,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 
   .world-brand img {
-    width: 28px;
-    height: 32px;
+    width: 22px;
+    height: 22px;
   }
 
   .world-brand-name {
