@@ -684,7 +684,7 @@
       }
     </style>
     <script src="/dashboard.js?v=61e5be7caeae" defer></script>
-    <script src="/dashboard-chat.js?v=bbe5d22fc441" defer></script>
+    <script src="/dashboard-chat.js?v=c11ef4925bda" defer></script>
   </head>
   <body class="bg-background text-foreground" data-page="chat">
     <div data-dashboard-root data-dashboard-section="chat" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
@@ -1091,13 +1091,6 @@
                 <i data-lucide="circle" class="w-1.5 h-1.5 fill-primary text-primary"></i>
                 <span data-dashboard-chat-status class="font-mono">Not connected</span>
               </span>
-            </div>
-
-            <div class="mx-4 mt-4 mb-2 px-4 py-3 rounded-lg border border-border bg-card flex items-start gap-2.5 shrink-0">
-              <i data-lucide="lock" class="w-3.5 h-3.5 text-primary mt-0.5 shrink-0"></i>
-              <p class="text-xs text-muted-foreground leading-relaxed">
-                Public World <strong class="text-foreground">#general</strong> is open to guests and members with a separate relay-derived shared key. Treat it as public: participants and the relay can decrypt messages, and the relay retains at most 500 persisted frames for 7 days. Other channels still require an authenticated account.
-              </p>
             </div>
 
             <div id="fullChatMessages" class="flex-1 overflow-y-scroll px-4 py-3 flex flex-col gap-1 min-h-0"></div>

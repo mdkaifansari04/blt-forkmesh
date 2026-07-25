@@ -566,7 +566,8 @@ def test_broadcast_garden_offers_the_first_party_forkmesh_song_on_demand():
     assert "data-world-radio-stop" in hosted
 
 
-def test_focus_music_catalog_manifest_and_bundles_are_complete_and_lightweight():
+def test_focus_music_catalog_manifest_and_bundles_are_complete_long_form_and_platform_safe(
+):
     music_dir = PUBLIC / "assets" / "music"
     manifest = json.loads(
         (music_dir / "music-manifest.json").read_text(encoding="utf-8")
@@ -589,13 +590,13 @@ def test_focus_music_catalog_manifest_and_bundles_are_complete_and_lightweight()
     tracks = json.loads(completed.stdout)
 
     assert len(tracks) == 3
-    assert tracks[0]["id"] == "heavenly-loop"
-    assert tracks[0]["name"] == "Heavenly Loop"
+    assert tracks[0]["id"] == "cosmic-waves"
+    assert tracks[0]["name"] == "Cosmic Waves"
     assert "const DEFAULT_FOCUS_MUSIC_TRACK_ID = FOCUS_MUSIC_TRACKS[0].id;" in APP
     assert len({track["id"] for track in tracks}) == 3
     assert len({track["trackUrl"] for track in tracks}) == 3
 
-    assert manifest["schemaVersion"] == 1
+    assert manifest["schemaVersion"] == 2
     assert manifest["license"] == {
         "id": "CC0-1.0",
         "url": "https://creativecommons.org/publicdomain/zero/1.0/",
@@ -618,22 +619,36 @@ def test_focus_music_catalog_manifest_and_bundles_are_complete_and_lightweight()
         assert track["sourceUrl"] == record["sourcePage"]
         assert track["license"] == "CC0 1.0"
         assert track["licenseUrl"] == manifest["license"]["url"]
-        assert record["sourcePage"].startswith("https://opengameart.org/content/")
-        assert record["sourceFile"].startswith("https://opengameart.org/")
-        assert record["durationSeconds"] >= 30
+        assert record["sourcePage"].startswith(
+            "https://freemusicarchive.org/music/holiznacc0/"
+        )
+        assert record["sourceFile"].startswith(
+            "https://files.freemusicarchive.org/"
+        )
+        assert len(record["sourceSha256"]) == 64
+        assert set(record["sourceSha256"]) <= set("0123456789abcdef")
+        assert record["sourceDurationSeconds"] >= 20 * 60
+        assert record["sourceBytes"] > size
+        assert abs(
+            record["sourceDurationSeconds"] - record["durationSeconds"]
+        ) < 0.1
+        assert record["durationSeconds"] >= 20 * 60
+        assert record["bundledCodec"] == "Ogg Vorbis"
+        assert record["bundledSampleRateHz"] == 44100
+        assert record["bundledChannels"] == 2
         assert record["modification"]
         assert size == record["bundledBytes"]
-        assert size <= 4 * 1024 * 1024
+        assert size <= 25 * 1024 * 1024
         assert hashlib.sha256(payload).hexdigest() == record["bundledSha256"]
 
     assert total_bytes == sum(
         record["bundledBytes"] for record in manifest_tracks
     )
-    assert total_bytes <= 8 * 1024 * 1024
-    assert max(record["durationSeconds"] for record in manifest_tracks) >= 9 * 60
+    assert total_bytes <= 50 * 1024 * 1024
+    assert max(record["durationSeconds"] for record in manifest_tracks) >= 45 * 60
 
 
-def test_focus_music_is_local_looped_playback_without_polling():
+def test_focus_music_is_local_long_form_playback_without_polling():
     for selector in (
         "data-world-focus-track",
         "data-world-focus-play",
@@ -644,8 +659,8 @@ def test_focus_music_is_local_looped_playback_without_polling():
         "data-world-focus-now",
     ):
         assert selector in APP
-    assert "Three lightweight tracks ship with ForkMesh." in APP
-    assert "The selected loop starts automatically" in APP
+    assert "Three full-length ambient instrumentals ship with ForkMesh." in APP
+    assert "Each plays for 22–45 minutes before repeating" in APP
     assert "focusMusicTrackId: DEFAULT_FOCUS_MUSIC_TRACK_ID" in APP
     assert "focusMusicVolume: DEFAULT_FOCUS_MUSIC_VOLUME" in APP
     assert "focusMusicMuted: false" in APP

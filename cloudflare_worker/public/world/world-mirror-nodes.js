@@ -81,6 +81,16 @@ function commitMetadata(source) {
   });
 }
 
+function repositoryRecency(record) {
+  return Math.max(
+    0,
+    Number(record?.lastSync) || 0,
+    Number(record?.updatedAt) || 0,
+    Number(record?.lastCommitAt) || 0,
+    Number(record?.lastSeen) || 0,
+  );
+}
+
 function publicRepositoryRecord(mirror, payload) {
   return omitUnknownValues({
     owner: text(payload?.requestedOwner || payload?.owner, "", 80),
@@ -97,6 +107,7 @@ function publicRepositoryRecord(mirror, payload) {
     behind: mirror?.behind === true,
     lastSeen: timestamp(mirror?.lastSeen),
     lastSync: timestamp(mirror?.lastSync),
+    updatedAt: timestamp(mirror?.updatedAt),
     syncAgeMs: knownInteger(mirror?.syncAgeMs),
     hostedSince: timestamp(mirror?.hostedSince),
     sizeBytes: knownInteger(mirror?.sizeBytes, 2 ** 50),
@@ -131,6 +142,7 @@ function nodeAggregateRecord(node) {
     commit: commitHash(node?.commit),
     branch: text(node?.branch, "", 120),
     lastSync: timestamp(node?.lastSync),
+    updatedAt: timestamp(node?.updatedAt),
     platform: text(node?.platform, "", 24).toLowerCase(),
     version: text(node?.version, "", 32),
     nodeId: text(node?.nodeId || node?.id, "", 120),
@@ -213,13 +225,12 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
     });
   });
 
-  return [...onlineLookup.entries()]
-    .sort((left, right) => left[1].localeCompare(right[1]))
-    .slice(0, 64)
+  const nodes = [...onlineLookup.entries()]
     .map(([key, displayName]) => {
       const detail = detailByName.get(key) || {};
       const repositories = (repositoriesByNode.get(key) || [])
         .sort((left, right) =>
+          repositoryRecency(right) - repositoryRecency(left) ||
           `${left.owner}/${left.name}`.localeCompare(
             `${right.owner}/${right.name}`,
           ),
@@ -269,6 +280,7 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
           : aggregate.lastCommitAt,
         lastSeen: primary.lastSeen || null,
         lastSync: hasPrimary ? primary.lastSync : aggregate.lastSync,
+        updatedAt: hasPrimary ? primary.updatedAt : aggregate.updatedAt,
         syncAgeMs: primary.syncAgeMs ?? null,
         sizeBytes: hasPrimary ? primary.sizeBytes : aggregate.sizeBytes,
         issueCount: hasPrimary ? primary.issueCount : aggregate.issueCount,
@@ -294,4 +306,13 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
         ...resources,
       });
     });
+  // The freshest mirror is placed first in the cabinet yard. This also keeps a
+  // multi-repository node's displayed commit tied to its newest reported state,
+  // rather than whichever repository happens to sort first by name.
+  return nodes
+    .sort((left, right) =>
+      repositoryRecency(right) - repositoryRecency(left) ||
+      left.name.localeCompare(right.name),
+    )
+    .slice(0, 64);
 }

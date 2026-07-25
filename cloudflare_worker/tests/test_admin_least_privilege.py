@@ -20,12 +20,13 @@ def _function_source(name):
     raise AssertionError(name)
 
 
-def test_generic_admin_tables_are_an_explicit_read_only_allowlist():
-    assert "ADMIN_VISIBLE_TABLES = frozenset({" in TEXT
+def test_admin_inventory_lists_all_application_tables_but_keeps_sensitive_rows_restricted():
+    assert "ADMIN_VISIBLE_TABLES" not in TEXT
     assert "ADMIN_PURGE_TABLES = frozenset({" in TEXT
     table_list = _function_source("_admin_list_tables")
-    assert "r.get(\"name\") in ADMIN_VISIBLE_TABLES" in table_list
-    assert "r.get(\"name\") not in ADMIN_HIDDEN_TABLES" in table_list
+    assert "sqlite_%" in table_list
+    assert "_cf_%" in table_list
+    assert "ADMIN_HIDDEN_TABLES" not in table_list
 
     hidden = TEXT.split("ADMIN_HIDDEN_TABLES = (", 1)[1].split(")", 1)[0]
     for table in (
@@ -41,6 +42,10 @@ def test_generic_admin_tables_are_an_explicit_read_only_allowlist():
         "clone_rr",
     ):
         assert f'"{table}"' in hidden
+
+    table_view = _function_source("_render_table_view")
+    assert "if table in ADMIN_HIDDEN_TABLES" in table_view
+    assert "This table is restricted." in table_view
 
 
 def test_generic_insert_and_update_fail_closed_without_database_writes():

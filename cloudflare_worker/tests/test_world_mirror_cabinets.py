@@ -120,6 +120,58 @@ def test_live_node_builder_keeps_long_names_distinct_and_rejected_routes_blocked
     assert all(node["cloneAvailable"] is False for node in nodes)
 
 
+def test_live_node_builder_uses_the_freshest_repository_state_per_node():
+    script = f"""
+      import {{ buildLiveMirrorNodes }} from {json.dumps(MODULE.as_uri())};
+      const payloads = [
+        {{
+          requestedOwner: "forkmesh", requestedRepo: "alpha",
+          mirrors: [{{
+            node: "mirror2", status: "online", integrity: "ok",
+            cloneAvailable: true, commit: "a".repeat(40), branch: "main",
+            lastSync: 1000
+          }}]
+        }},
+        {{
+          requestedOwner: "forkmesh", requestedRepo: "zeta",
+          mirrors: [{{
+            node: "mirror2", status: "online", integrity: "ok",
+            cloneAvailable: true, commit: "b".repeat(40), branch: "main",
+            lastSync: 2000
+          }}]
+        }},
+        {{
+          requestedOwner: "forkmesh", requestedRepo: "fresh",
+          mirrors: [{{
+            node: "mirror3", status: "online", integrity: "ok",
+            cloneAvailable: true, commit: "c".repeat(40), branch: "main",
+            lastSync: 3000
+          }}]
+        }}
+      ];
+      process.stdout.write(JSON.stringify(buildLiveMirrorNodes({{
+        stats: {{ onlineNodes: ["mirror2", "mirror3"] }}
+      }}, payloads)));
+    """
+    result = subprocess.run(
+        [
+            "node",
+            "--experimental-default-type=module",
+            "--input-type=module",
+            "-e",
+            script,
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    nodes = json.loads(result.stdout)
+    assert [node["name"] for node in nodes] == ["mirror3", "mirror2"]
+    mirror2 = nodes[1]
+    assert mirror2["commit"] == "b" * 40
+    assert [repo["name"] for repo in mirror2["repositories"]] == ["zeta", "alpha"]
+
+
 def test_world_fetches_the_flagship_mirror_snapshot_once_and_uses_cabinets():
     # One bootstrap fetch plus one bounded visible-page HTTPS poller. This data
     # never travels on the multiplayer socket.

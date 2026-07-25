@@ -3835,7 +3835,7 @@ class ForkMeshWorld extends HTMLElement {
       this.startEventPolling();
       this.startNotificationPolling();
       this.startMediaPlaybackPolling();
-      // Start the selected bundled loop as the World opens. Browsers that
+      // Start the selected long-form track as the World opens. Browsers that
       // require a gesture are retried from the first pointer/key activity.
       void this.playFocusMusic({ autoplay: true });
       this.announceWorldNotifications();
@@ -8069,12 +8069,12 @@ class ForkMeshWorld extends HTMLElement {
     const status = this.focusMusicError
       ? this.focusMusicError
       : state === "playing"
-        ? `${selected.name} is playing locally and will loop.`
+        ? `${selected.name} is playing locally and will repeat after ${selected.duration}.`
         : state === "paused"
           ? `${selected.name} is paused on this device.`
           : state === "loading"
             ? `Loading ${selected.name}…`
-            : `${selected.name} is selected and will start automatically.`;
+            : `${selected.name} is selected. Press Play to begin.`;
     const volume = this.settings.focusMusicVolume;
     const muted = this.settings.focusMusicMuted === true;
     return `
@@ -8082,11 +8082,11 @@ class ForkMeshWorld extends HTMLElement {
         <header>
           <div>
             <span>LOCAL FOCUS MUSIC</span>
-            <h3 id="world-focus-music-title">Choose a coding loop</h3>
+            <h3 id="world-focus-music-title">Choose a long-play coding track</h3>
           </div>
-          <strong>CC0 · on this device only</strong>
+          <strong>CC0 · 22–45 min · local only</strong>
         </header>
-        <p class="world-focus-music-intro">Three lightweight tracks ship with ForkMesh. The selected loop starts automatically and stays local to this device.</p>
+        <p class="world-focus-music-intro">Three full-length ambient instrumentals ship with ForkMesh. Each plays for 22–45 minutes before repeating and stays local to this device.</p>
         <div class="world-focus-track-list" role="radiogroup" aria-label="Focus music selection">
           ${FOCUS_MUSIC_TRACKS.map(
             (track) => `
@@ -8104,7 +8104,7 @@ class ForkMeshWorld extends HTMLElement {
                   <strong>${escapeHTML(track.name)}</strong>
                   <small>${escapeHTML(track.artist)} · ${escapeHTML(
                     track.duration,
-                  )} · loops</small>
+                  )} · full track</small>
                 </span>
                 <span class="world-focus-track-links">
                   <a href="${escapeHTML(track.sourceUrl)}" target="_blank" rel="noopener noreferrer">Source</a>
@@ -12194,7 +12194,7 @@ class ForkMeshWorld extends HTMLElement {
     }
 
     // Exactly one local soundtrack may run at a time. This stops procedural
-    // radio, a hosted station, or a prior focus loop before creating this one.
+    // radio, a hosted station, or a prior focus track before creating this one.
     this.stopRadio(false);
     const element = new AudioElement(track.trackUrl);
     element.preload = "metadata";
@@ -12231,7 +12231,9 @@ class ForkMeshWorld extends HTMLElement {
       if (this.activeAudio !== playback) return;
       this.focusMusicState = "playing";
       this.renderFocusMusicPanel();
-      this.toast(`${track.name} is looping on this device only.`);
+      this.toast(
+        `${track.name} is playing on this device only and repeats after the full track.`,
+      );
     } catch (error) {
       if (autoplay && error?.name === "NotAllowedError") {
         playback.stop();
@@ -12283,8 +12285,8 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async playForkmeshSong() {
-    // The entrance plaque plays the actual ForkMesh song, not a focus loop.
-    // Remember a currently playing loop so it can return once the song ends.
+    // The entrance plaque plays the actual ForkMesh song, not a focus track.
+    // Remember a currently playing track so it can return once the song ends.
     const resumeTrackId =
       this.activeAudio?.kind === "focus-music" &&
       this.focusMusicState === "playing"
@@ -12329,7 +12331,7 @@ class ForkMeshWorld extends HTMLElement {
     this.activeAudio = playback;
     try {
       await element.play();
-      this.toast("ForkMesh Forever is playing locally. Your coding loop will resume after it ends.");
+      this.toast("ForkMesh Forever is playing locally. Your focus track will resume after it ends.");
     } catch (_) {
       if (this.activeAudio === playback) this.activeAudio = null;
       await resumeLoop();

@@ -1556,6 +1556,7 @@ function nodeDataKey(node) {
     version: node?.version,
     platform: node?.platform,
     lastSync: node?.lastSync,
+    updatedAt: node?.updatedAt,
     sizeBytes: node?.sizeBytes,
     issueCount: node?.issueCount,
     commitCount: node?.commitCount,

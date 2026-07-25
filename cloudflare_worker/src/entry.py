@@ -4029,12 +4029,43 @@ async def _chat_channel_socket_handler(env, request, channel_id):
         except Exception as error:
             last_error = error
     await log_durable_object_abort(env, request, url.path, last_error)
-    return json_response({"error": "unavailable"}, status=503)
+    return json_response(
+        {"error": "unavailable"}, status=503,
+        extra_headers=EXPECTED_DEGRADED_HEADERS)
+
+
+# Per-isolate memo of the last door state the Office room actually answered
+# with, keyed by occupant_bi ("" for guests — canSetCode is occupant-specific).
+# The platform can abort the Office Durable Object mid-request (free-tier
+# duration cap, or a co-located DO blowing the isolate's limits); browsers
+# polling the door then saw 503 bursts (2026-07-25 error-log entries) even
+# though nothing about the door had changed. A read-only status probe may fall
+# back to the last confirmed state for a bounded window; entry stays atomic
+# and never uses this.
+_OFFICE_STATUS_MEMO = {}
+OFFICE_STATUS_MEMO_STALE_MS = 5 * 60 * 1000
+OFFICE_STATUS_MEMO_MAX = 256
+
+
+def _office_status_memo_fallback(occupant_bi):
+    hit = _OFFICE_STATUS_MEMO.get(str(occupant_bi or ""))
+    if hit and int(Date.now()) - hit["ts"] < OFFICE_STATUS_MEMO_STALE_MS:
+        return dict(hit["state"])
+    return None
+
+
+def _office_status_memo_store(occupant_bi, state):
+    if len(_OFFICE_STATUS_MEMO) >= OFFICE_STATUS_MEMO_MAX:
+        _OFFICE_STATUS_MEMO.clear()
+    _OFFICE_STATUS_MEMO[str(occupant_bi or "")] = {
+        "ts": int(Date.now()),
+        "state": dict(state),
+    }
 
 
 async def _office_general_room_state(
         env, rate_key="", code_approved=None, code_digest="",
-        occupant_bi=""):
+        occupant_bi="", request=None):
     """Read occupancy or atomically ask the Office room to admit an entry."""
     entry_request = code_approved is not None
     action = "entry" if entry_request else "status"
@@ -4046,6 +4077,7 @@ async def _office_general_room_state(
                 {"error": "office_unavailable"},
                 status=503,
                 cache_control="no-store, max-age=0, must-revalidate",
+                extra_headers=EXPECTED_DEGRADED_HEADERS,
             )
         headers["x-forkmesh-office-rate-key"] = str(rate_key)
         headers["x-forkmesh-office-code-approved"] = (
@@ -4057,23 +4089,46 @@ async def _office_general_room_state(
     try:
         room_id = env.FORKMESH_OFFICE_ROOM.idFromName(
             "office:world-general:v1")
-        room_object = env.FORKMESH_OFFICE_ROOM.get(room_id)
         target_url = (
             "https://forkmesh.internal/api/world/office/"
             "world-general/v1/" + action
         )
-        internal_request = JsRequest.new(
-            target_url,
-            to_js({"method": method, "headers": headers}),
-        )
-        response = await room_object.fetch(internal_request)
+        # The platform can abort the Office DO mid-request; a fresh stub lands
+        # on a replacement isolate, so retry once — the same transient-abort
+        # policy as the world/room Durable Object paths. Status is a GET and
+        # entry is an idempotent header-only POST the room applies atomically,
+        # so re-driving either is safe.
+        last_error = None
+        response = None
+        for _attempt in range(2):
+            room_object = env.FORKMESH_OFFICE_ROOM.get(room_id)
+            try:
+                internal_request = JsRequest.new(
+                    target_url,
+                    to_js({"method": method, "headers": headers}),
+                )
+                response = await room_object.fetch(internal_request)
+                last_error = None
+                break
+            except Exception as error:
+                last_error = error
+        if last_error is not None or response is None:
+            raise last_error or Exception("office room unavailable")
         status = int(getattr(response, "status", 503) or 503)
         payload = await _response_json(response)
-    except Exception:
+    except Exception as error:
+        if request is not None:
+            await log_durable_object_abort(
+                env, request, "/api/world/office/general/" + action, error)
+        if not entry_request:
+            stale = _office_status_memo_fallback(occupant_bi)
+            if stale is not None:
+                return stale, None
         return None, json_response(
             {"error": "office_unavailable"},
             status=503,
             cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers=EXPECTED_DEGRADED_HEADERS,
         )
     if not isinstance(payload, dict):
         payload = {}
@@ -4112,19 +4167,25 @@ async def _office_general_room_state(
         or not isinstance(code_configured, bool)
         or not isinstance(can_set_code, bool)
     ):
+        # A malformed ANSWER from the room (unlike a platform abort above) is
+        # a real bug signal, so this 503 stays visible to the generic logger.
         return None, json_response(
             {"error": "office_unavailable"},
             status=503,
             cache_control="no-store, max-age=0, must-revalidate",
         )
-    return {
+    state = {
         "occupied": occupied,
         "codeConfigured": code_configured,
         "canSetCode": can_set_code,
-    }, None
+    }
+    if not entry_request:
+        _office_status_memo_store(occupant_bi, state)
+    return state, None
 
 
-async def _office_general_set_code(env, account_bi, code_digest):
+async def _office_general_set_code(env, account_bi, code_digest,
+                                   request=None):
     """Forward only keyed material to the live general-Office room."""
     if (
         not re.fullmatch(r"[0-9a-f]{64}", str(account_bi or ""))
@@ -4134,6 +4195,7 @@ async def _office_general_set_code(env, account_bi, code_digest):
             {"error": "office_unavailable"},
             status=503,
             cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers=EXPECTED_DEGRADED_HEADERS,
         )
     headers = {
         "x-forkmesh-office-account-bi": str(account_bi),
@@ -4142,20 +4204,39 @@ async def _office_general_set_code(env, account_bi, code_digest):
     try:
         room_id = env.FORKMESH_OFFICE_ROOM.idFromName(
             "office:world-general:v1")
-        room_object = env.FORKMESH_OFFICE_ROOM.get(room_id)
-        internal_request = JsRequest.new(
+        target_url = (
             "https://forkmesh.internal/api/world/office/"
-            "world-general/v1/code",
-            to_js({"method": "POST", "headers": headers}),
+            "world-general/v1/code"
         )
-        response = await room_object.fetch(internal_request)
+        # Same transient-abort retry as the status/entry path: the room
+        # applies the digested code atomically, so re-driving is safe.
+        last_error = None
+        response = None
+        for _attempt in range(2):
+            room_object = env.FORKMESH_OFFICE_ROOM.get(room_id)
+            try:
+                internal_request = JsRequest.new(
+                    target_url,
+                    to_js({"method": "POST", "headers": headers}),
+                )
+                response = await room_object.fetch(internal_request)
+                last_error = None
+                break
+            except Exception as error:
+                last_error = error
+        if last_error is not None or response is None:
+            raise last_error or Exception("office room unavailable")
         status = int(getattr(response, "status", 503) or 503)
         payload = await _response_json(response)
-    except Exception:
+    except Exception as error:
+        if request is not None:
+            await log_durable_object_abort(
+                env, request, "/api/world/office/general/code", error)
         return None, json_response(
             {"error": "office_unavailable"},
             status=503,
             cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers=EXPECTED_DEGRADED_HEADERS,
         )
     if not isinstance(payload, dict):
         payload = {}
@@ -4210,7 +4291,7 @@ async def office_general_status_handler(env, request):
     except Exception:
         occupant_bi = ""
     state, error = await _office_general_room_state(
-        env, occupant_bi=occupant_bi)
+        env, occupant_bi=occupant_bi, request=request)
     if error is not None:
         return error
     fallback = getattr(env, "OFFICE_ENTRY_CODE", None)
@@ -4299,6 +4380,7 @@ async def office_general_entry_handler(env, request):
             rate_key,
             code_approved=code_approved,
             code_digest=code_digest,
+            request=request,
         )
     except Exception:
         return json_response(
@@ -4411,7 +4493,7 @@ async def office_general_code_handler(env, request):
     try:
         code_digest = _office_entry_code_digest(env, transient_code)
         state, error = await _office_general_set_code(
-            env, str(account_bi), code_digest)
+            env, str(account_bi), code_digest, request=request)
     except Exception:
         return json_response(
             {"error": "office_unavailable"},
@@ -4510,7 +4592,9 @@ async def _forward_office_socket(env, request, claims, room_name, path):
             last_error = error
     await log_durable_object_abort(
         env, request, urlparse(request.url).path, last_error)
-    return json_response({"error": "unavailable"}, status=503)
+    return json_response(
+        {"error": "unavailable"}, status=503,
+        extra_headers=EXPECTED_DEGRADED_HEADERS)
 
 
 async def _office_general_socket_handler(env, request):
@@ -12226,6 +12310,20 @@ async def _reward_solana_rpc(env, method, params):
     return await _solana_rpc(_RewardRpcEnvironment(env), method, params)
 
 
+# Per-isolate memo of the reward-pool network proof. The proof is two Solana
+# RPC round trips (getGenesisHash + getAccountInfo) whose answers are stable
+# configuration facts — a cluster's genesis hash is immutable and the funded
+# pool account does not stop existing — yet it used to run on EVERY
+# /api/accounts/central-fund view. Public RPC endpoints rate-limit, so each
+# transient 429/timeout surfaced as a 503 on the page (2026-07-24 error-log
+# burst). A verified (network, rpc_url, address) triple is trusted for the
+# fresh TTL without touching the RPC, and kept as a stale fallback when a
+# re-proof attempt fails, bounded so a truly dead RPC still fails closed.
+_REWARD_POOL_VERIFY_MEMO = {"key": None, "ts": 0}
+REWARD_POOL_VERIFY_FRESH_MS = 60 * 60 * 1000
+REWARD_POOL_VERIFY_STALE_MAX_MS = 24 * 60 * 60 * 1000
+
+
 async def _reward_pool_network_verified(env, address):
     """Prove the RPC cluster and configured public pool account fail closed."""
     network = _reward_network(env)
@@ -12237,6 +12335,14 @@ async def _reward_pool_network_verified(env, address):
         or not SOLANA_RE.match(address)
     ):
         return False
+    memo_key = (network, rpc_url, address)
+    now = int(Date.now())
+    memo = _REWARD_POOL_VERIFY_MEMO
+    if (
+        memo["key"] == memo_key
+        and now - memo["ts"] < REWARD_POOL_VERIFY_FRESH_MS
+    ):
+        return True
     genesis = await _reward_solana_rpc(env, "getGenesisHash", [])
     if (
         not isinstance(genesis, dict)
@@ -12245,19 +12351,37 @@ async def _reward_pool_network_verified(env, address):
             REWARD_CLUSTER_GENESIS_HASHES[network],
         )
     ):
-        return False
+        # A wrong-cluster ANSWER is disqualifying and clears the fallback; a
+        # missing answer (rate limit, timeout → None) is transient and may
+        # still serve from the bounded stale window.
+        if isinstance(genesis, dict):
+            memo["key"] = None
+            return False
+        return bool(
+            memo["key"] == memo_key
+            and now - memo["ts"] < REWARD_POOL_VERIFY_STALE_MAX_MS
+        )
     account = await _reward_solana_rpc(
         env,
         "getAccountInfo",
         [address, {"encoding": "base64", "commitment": "finalized"}],
     )
     if not isinstance(account, dict):
-        return False
+        return bool(
+            memo["key"] == memo_key
+            and now - memo["ts"] < REWARD_POOL_VERIFY_STALE_MAX_MS
+        )
     result = account.get("result")
-    return bool(
+    verified = bool(
         isinstance(result, dict)
         and isinstance(result.get("value"), dict)
     )
+    if verified:
+        memo["key"] = memo_key
+        memo["ts"] = now
+    else:
+        memo["key"] = None
+    return verified
 
 
 async def _reward_balance_lamports(env, address):
@@ -17768,7 +17892,9 @@ async def _federation_central_fund(env, request):
         return json_response({"error": "not_main_relay"}, status=404)
     payload = await _central_fund_public(env)
     if not payload or not payload.get("address"):
-        return json_response({"error": "central_fund_unavailable"}, status=503)
+        return json_response(
+            {"error": "central_fund_unavailable"}, status=503,
+            extra_headers=EXPECTED_DEGRADED_HEADERS)
     return json_response(payload)
 
 
@@ -18616,10 +18742,17 @@ async def _account_central_fund(env, request):
         if reply and reply.get("address"):
             reply.pop("_status", None)
             return json_response(reply)
-        return json_response({"address": ""}, status=503)
+        # Expected degraded states — the main relay unreachable, or no pool
+        # configured — not worker failures; the client already renders
+        # "unavailable" for them.
+        return json_response(
+            {"address": ""}, status=503,
+            extra_headers=EXPECTED_DEGRADED_HEADERS)
     payload = await _central_fund_public(env)
     if not payload or not payload.get("address"):
-        return json_response({"address": ""}, status=503)
+        return json_response(
+            {"address": ""}, status=503,
+            extra_headers=EXPECTED_DEGRADED_HEADERS)
     return json_response(payload)
 
 
@@ -25748,8 +25881,49 @@ def _privacy_redacted_log_path(path):
 def _privacy_safe_error_text(path, message):
     """Remove exception/detail text when the route identity was redacted."""
     if _privacy_redacted_log_path(path):
+        # Two fixed, worker-authored message shapes carry no route identity
+        # (no path, no exception text) and are the only diagnostic signal a
+        # redacted row has — blanket-redacting them made every private-route
+        # 5xx indistinguishable from every other.
+        text = str(message or "")
+        if (
+            text.startswith("response status ")
+            and len(text) == len("response status ") + 3
+            and text[-3:].isdigit()
+        ):
+            return text
         return "Repository-route error details redacted."
     return str(message or "")
+
+
+def _privacy_redacted_route_kind(path):
+    """An identity-free route-family tag for a redacted repository path.
+
+    Owner/repo (and any deeper user-named path parts) are dropped entirely —
+    what survives is only WHICH fixed route family failed: the git protocol
+    step, a release blob, the browser page, or the /api/repo sub-route's fixed
+    name (issues/tree/star/…). Without this, every redacted 5xx collapsed
+    into one indistinguishable bucket and recurring failures could not even
+    be told apart by endpoint (2026-07-24 error-log entries)."""
+    if GIT_INFO_RE.match(path):
+        return "[git-info-refs]"
+    if GIT_PACK_RE.match(path):
+        return "[git-upload-pack]"
+    if GIT_RECEIVE_RE.match(path):
+        return "[git-receive-pack]"
+    if RELEASE_BLOB_RE.match(path):
+        return "[release-blob]"
+    api = REPO_API_PREFIX_RE.match(path)
+    if api:
+        rest = path[api.end(2):].strip("/")
+        route = safe_segment(rest.split("/", 1)[0]) if rest else ""
+        # The first segment after /api/repo/<o>/<r>/ is a fixed route name
+        # from the worker's own routing table, never user data; anything
+        # unrecognizably long is a probe and collapses to a generic tag.
+        if route and len(route) <= 32:
+            return "[api:" + route + "]"
+        return "[api]"
+    return "[page]"
 
 
 async def _privacy_safe_log_path(env, path):
@@ -25785,9 +25959,11 @@ async def _privacy_safe_log_path(env, path):
     else:
         return path
     if not owner or not repo:
-        return "/repository-route-redacted"
+        return "/repository-route-redacted/" + _privacy_redacted_route_kind(
+            path)
     if await _repo_is_private(env, owner, repo):
-        return "/private-or-unpublished-repository"
+        return ("/private-or-unpublished-repository/"
+                + _privacy_redacted_route_kind(path))
     return path
 
 
@@ -25929,6 +26105,26 @@ def _is_tunnel_content_path(path):
         RELEASE_BLOB_RE.match(path) or REPO_HOST_RE.match(path) or
         GIT_INFO_RE.match(path) or GIT_PACK_RE.match(path) or
         GIT_RECEIVE_RE.match(path))
+
+
+# Marks a 5xx/501 the worker produced ON PURPOSE for an expected, already-
+# degraded condition: a Durable Object abort that log_durable_object_abort has
+# already recorded with its real reason, a fail-closed not-implemented answer,
+# or an upstream dependency being unavailable. The outer fetch's generic 5xx
+# logger skips marked responses — without this every DO abort double-logged
+# (the detailed D1 row AND a vague "response status 503" Sentry event, exactly
+# the noise the abort logger exists to avoid), and deliberate degraded answers
+# buried real bugs.
+EXPECTED_DEGRADED_HEADER = "x-forkmesh-expected-degraded"
+EXPECTED_DEGRADED_HEADERS = {EXPECTED_DEGRADED_HEADER: "1"}
+
+
+def _response_is_expected_degraded(response):
+    try:
+        js_obj = getattr(response, "js_object", None) or response
+        return bool(js_obj.headers.get(EXPECTED_DEGRADED_HEADER))
+    except Exception:
+        return False
 
 
 async def log_error(env, status, method, path, message, ray="", request=None,
@@ -27459,11 +27655,10 @@ ADMIN_STYLE = """
  .ab-root .diagcol table{width:auto;min-width:220px}
 """
 
-# Cloudflare D1 keeps internal bookkeeping tables out of the browser. Owner
-# ciphertext, reviewer evidence, wallet-custody migration rows, role grants and
-# the append-only audit trail are also deliberately absent: being a platform
-# administrator is not a decryption capability and the generic CRUD UI is not a
-# least-privilege security-review interface.
+# Cloudflare D1 internal bookkeeping stays out of the browser. The following
+# application tables remain in the inventory but their rows are restricted:
+# platform administration is not a decryption capability and the generic UI is
+# not a least-privilege security-review interface.
 ADMIN_HIDDEN_TABLES = (
     "_cf_KV",
     "accounts",
@@ -27520,17 +27715,10 @@ ADMIN_HIDDEN_TABLES = (
     "edge_route_cursor",
 )
 
-# The generic browser is deliberately a small operational, read-only surface.
-# Account support remains purpose-built on the users view; all other tables
-# require an explicit audited API rather than inheriting platform-admin CRUD.
-ADMIN_VISIBLE_TABLES = frozenset({
-    "users",
-    "error_log",
-    "install_diag",
-    "telemetry",
-    "system_status_daily",
-    "system_status_hourly",
-})
+# The admin navigation is a live inventory of every application table. Tables
+# that hold credentials, encrypted owner data, or audit evidence stay listed so
+# an operator can account for the whole schema, but _render_table_view keeps
+# their contents restricted.
 ADMIN_PURGE_TABLES = frozenset({
     "error_log",
     "install_diag",
@@ -27549,8 +27737,6 @@ async def _admin_list_tables(env):
         for r in rows
         if (
             r.get("name")
-            and r.get("name") in ADMIN_VISIBLE_TABLES
-            and r.get("name") not in ADMIN_HIDDEN_TABLES
         )
     ]
 
@@ -30882,6 +31068,12 @@ class Default(WorkerEntrypoint):
             # path is a real worker bug and still logs.
             if status in (502, 503, 504) and _is_tunnel_content_path(url.path):
                 return response
+            # Deliberate degraded answers (DO aborts already recorded with
+            # their real reason, fail-closed 501s, unavailable upstreams) are
+            # marked at the source; re-logging them as anonymous "response
+            # status N" events only buried real bugs.
+            if _response_is_expected_degraded(response):
+                return response
             await log_error(
                 self.env, status, method_name(request), url.path,
                 "response status %d" % status, request.headers.get("cf-ray") or "",
@@ -31351,7 +31543,9 @@ class Default(WorkerEntrypoint):
                     last_error = error
             await log_durable_object_abort(
                 self.env, request, url.path, last_error)
-            return json_response({"error": "unavailable"}, status=503)
+            return json_response(
+                {"error": "unavailable"}, status=503,
+                extra_headers=EXPECTED_DEGRADED_HEADERS)
 
         if url.path in ("/simulate-sentry-error", "/simulate-sentry-error/"):
             division_by_zero = 1 / 0
@@ -32029,7 +32223,9 @@ class Default(WorkerEntrypoint):
                     last_error = error
             await log_durable_object_abort(
                 self.env, request, url.path, last_error)
-            return json_response({"error": "unavailable"}, status=503)
+            return json_response(
+                {"error": "unavailable"}, status=503,
+                extra_headers=EXPECTED_DEGRADED_HEADERS)
 
         # Repo shortcut URLs (/owner/repo and tab/tree/blob deep links) all
         # serve the prebuilt repo-detail page; its JS resolves the path. The
@@ -32441,11 +32637,15 @@ class Default(WorkerEntrypoint):
         repo = safe_segment(repo_raw)
         if not owner or not repo:
             return Response("not found", status=404)
+        # Deliberate fail-closed protocol answer (every push probe by a git
+        # client or crawler lands here) — not a worker failure, so it carries
+        # the expected-degraded marker instead of logging an error per probe.
         return json_response({
             "error": "direct_https_receive_pack_required",
             "repositoryBytesAccepted": False,
             "socketFallback": False,
-        }, status=501, cache_control="no-store")
+        }, status=501, cache_control="no-store",
+            extra_headers=EXPECTED_DEGRADED_HEADERS)
 
 
 async def chat_history_recent(env, room_key):

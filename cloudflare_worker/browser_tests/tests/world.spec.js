@@ -2833,7 +2833,7 @@ test("local diagnostics report renderer and existing socket state without new te
     shell.sendPresence({ type: "presence" });
     shell.activeAudio = {
       kind: "focus-music",
-      trackId: "heavenly-loop",
+      trackId: "cosmic-waves",
       element: {
         currentTime: 75,
         duration: 240,
@@ -2851,7 +2851,7 @@ test("local diagnostics report renderer and existing socket state without new te
   await expect(diagnostics.locator("summary")).toContainText("1p");
   await expect(diagnostics.locator("summary")).toContainText("v0.7.0");
   await expect(diagnostics.locator("summary")).toContainText(
-    "Heavenly Loop",
+    "Cosmic Waves",
   );
   await expect(
     diagnostics.locator("[data-world-diagnostics-music-position]"),
@@ -2866,7 +2866,7 @@ test("local diagnostics report renderer and existing socket state without new te
   expect(playbackPosition).toEqual({
     value: 75_000,
     max: 240_000,
-    text: "Heavenly Loop, 1:15 of 4:00, playing",
+    text: "Cosmic Waves, 1:15 of 4:00, playing",
   });
   for (const compactMetric of [
     "renderer",
@@ -2915,7 +2915,7 @@ test("local diagnostics report renderer and existing socket state without new te
   });
   expect(snapshot.music).toEqual({
     state: "playing",
-    title: "Heavenly Loop",
+    title: "Cosmic Waves",
     positionMs: 75_000,
     durationMs: 240_000,
   });
@@ -5266,7 +5266,7 @@ test("the ForkMesh song button plays the first-party track only on request", asy
   );
 });
 
-test("focus music defaults to Heavenly and loops only after explicit playback", async ({
+test("focus music defaults to Cosmic Waves and preserves local controls", async ({
   page,
 }) => {
   const mediaRequests = [];
@@ -5284,13 +5284,13 @@ test("focus music defaults to Heavenly and loops only after explicit playback", 
 
   const tracks = page.locator("[data-world-focus-track]");
   await expect(tracks).toHaveCount(3);
-  const heavenly = page.locator(
-    "[data-world-focus-track='heavenly-loop']",
+  const cosmic = page.locator(
+    "[data-world-focus-track='cosmic-waves']",
   );
-  await expect(heavenly).toBeVisible();
-  expect(await focusMusicTrackIsChecked(page, "heavenly-loop")).toBe(true);
+  await expect(cosmic).toBeVisible();
+  expect(await focusMusicTrackIsChecked(page, "cosmic-waves")).toBe(true);
   await expect(page.locator("[data-world-focus-now]")).toContainText(
-    "Heavenly Loop is selected. Press Play",
+    "Cosmic Waves is selected. Press Play",
   );
 
   const idle = await focusMusicProbeSnapshot(page);
@@ -5300,12 +5300,12 @@ test("focus music defaults to Heavenly and loops only after explicit playback", 
 
   await page.locator("[data-world-focus-play]").click();
   await expect(page.locator("[data-world-focus-now]")).toContainText(
-    "Heavenly Loop is playing",
+    "Cosmic Waves is playing",
   );
   let playback = await focusMusicProbeSnapshot(page);
   expect(playback.created).toHaveLength(1);
   expect(playback.created[0]).toMatchObject({
-    src: "/assets/music/heavenly-loop.ogg",
+    src: "/assets/music/cosmic-waves.ogg",
     loop: true,
     muted: false,
     paused: false,
@@ -5317,9 +5317,9 @@ test("focus music defaults to Heavenly and loops only after explicit playback", 
   );
   expect(mediaRequests).toEqual([]);
 
-  await chooseFocusMusicTrack(page, "forgotten-victory");
+  await chooseFocusMusicTrack(page, "dreamscape");
   await expect(page.locator("[data-world-focus-now]")).toContainText(
-    "Forgotten Victory is playing",
+    "DreamScape is playing",
   );
   playback = await focusMusicProbeSnapshot(page);
   expect(playback.created).toHaveLength(2);
@@ -5329,7 +5329,7 @@ test("focus music defaults to Heavenly and loops only after explicit playback", 
     pauseCalls: 1,
   });
   expect(playback.created[1]).toMatchObject({
-    src: "/assets/music/forgotten-victory.ogg",
+    src: "/assets/music/dreamscape.ogg",
     loop: true,
     paused: false,
     playCalls: 1,
@@ -5337,7 +5337,7 @@ test("focus music defaults to Heavenly and loops only after explicit playback", 
 
   await page.locator("[data-world-focus-pause]").click();
   await expect(page.locator("[data-world-focus-now]")).toContainText(
-    "Forgotten Victory is paused",
+    "DreamScape is paused",
   );
   playback = await focusMusicProbeSnapshot(page);
   expect(playback.created[1]).toMatchObject({
@@ -5370,7 +5370,7 @@ test("focus music defaults to Heavenly and loops only after explicit playback", 
     JSON.parse(localStorage.getItem("forkmesh.world.settings.v1")),
   );
   expect(stored).toMatchObject({
-    focusMusicTrackId: "forgotten-victory",
+    focusMusicTrackId: "dreamscape",
     focusMusicVolume: 62,
     focusMusicMuted: true,
   });
@@ -5402,7 +5402,7 @@ test("focus music selection and controls persist without autoplaying on reload",
     shell.openLandmark("broadcast"),
   );
 
-  await chooseFocusMusicTrack(page, "tarlite-slumber");
+  await chooseFocusMusicTrack(page, "too-brief-a-time");
   await page.locator("[data-world-focus-volume]").fill("48");
   await page.locator("[data-world-focus-mute]").click();
   expect((await focusMusicProbeSnapshot(page)).created).toEqual([]);
@@ -5412,7 +5412,7 @@ test("focus music selection and controls persist without autoplaying on reload",
   await page.locator("forkmesh-world").evaluate((shell) =>
     shell.openLandmark("broadcast"),
   );
-  expect(await focusMusicTrackIsChecked(page, "tarlite-slumber")).toBe(true);
+  expect(await focusMusicTrackIsChecked(page, "too-brief-a-time")).toBe(true);
   await expect(page.locator("[data-world-focus-volume]")).toHaveValue("48");
   await expect(page.locator("[data-world-focus-mute]")).toHaveAttribute(
     "aria-pressed",
@@ -5427,7 +5427,7 @@ test("focus music selection and controls persist without autoplaying on reload",
   const restoredPlayback = await focusMusicProbeSnapshot(page);
   expect(restoredPlayback.created).toHaveLength(1);
   expect(restoredPlayback.created[0]).toMatchObject({
-    src: "/assets/music/tarlite-trycor-slumber-area.ogg",
+    src: "/assets/music/too-brief-a-time.ogg",
     loop: true,
     muted: true,
     paused: false,
@@ -5446,9 +5446,9 @@ test("focus music selection and controls persist without autoplaying on reload",
   await page.locator("forkmesh-world").evaluate((shell) =>
     shell.openLandmark("broadcast"),
   );
-  expect(await focusMusicTrackIsChecked(page, "heavenly-loop")).toBe(true);
+  expect(await focusMusicTrackIsChecked(page, "cosmic-waves")).toBe(true);
   await expect(page.locator("[data-world-focus-now]")).toContainText(
-    "Heavenly Loop is selected. Press Play",
+    "Cosmic Waves is selected. Press Play",
   );
   expect((await focusMusicProbeSnapshot(page)).created).toEqual([]);
 });

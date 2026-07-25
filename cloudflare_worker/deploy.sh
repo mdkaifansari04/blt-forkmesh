@@ -321,7 +321,7 @@ verify_public_assets() {
         "/favicon/site.webmanifest application/manifest+json"
         "/assets/video/network.jpg image/jpeg"
         "/assets/video/network.mp4 video/mp4"
-        "/assets/music/heavenly-loop.ogg audio/ogg"
+        "/assets/music/cosmic-waves.ogg audio/ogg"
         "/dashboard/tailwind.css text/css"
     )
 

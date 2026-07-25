@@ -523,3 +523,93 @@ def test_worker_observability_is_enabled_at_full_sampling_in_wrangler():
     assert observability["logs"]["invocation_logs"] is False
     assert observability["traces"]["enabled"] is False
     assert "destinations" not in observability["traces"]
+
+
+def test_expected_degraded_responses_skip_the_generic_5xx_logger():
+    # Deliberate degraded answers — DO-abort 503s whose real reason
+    # log_durable_object_abort already recorded, the fail-closed git push
+    # 501, and central-fund/office "upstream unavailable" 503s — used to be
+    # re-logged by the outer fetch as anonymous "response status N" Sentry
+    # events (one DO abort produced TWO error-log rows). They now carry the
+    # expected-degraded marker and the generic logger skips them.
+    assert 'EXPECTED_DEGRADED_HEADER = "x-forkmesh-expected-degraded"' in (
+        ENTRY_TEXT)
+    assert "def _response_is_expected_degraded(response):" in ENTRY_TEXT
+
+    logger_block = ENTRY_TEXT.split(
+        "_is_tunnel_content_path(url.path):", 1)[1][:700]
+    assert "_response_is_expected_degraded(response)" in logger_block
+    assert logger_block.index("_response_is_expected_degraded") < (
+        logger_block.index("await log_error("))
+
+    # Every DO-abort 503 fallback is marked, so the detailed abort row stays
+    # the only record of the event.
+    for site_start in [
+        match for match in range(len(ENTRY_TEXT))
+        if ENTRY_TEXT.startswith("await log_durable_object_abort(", match)
+    ]:
+        tail = ENTRY_TEXT[site_start:site_start + 700]
+        assert "EXPECTED_DEGRADED_HEADERS" in tail, ENTRY_TEXT[
+            site_start:site_start + 120]
+
+    # The deliberate not-implemented push answer and the central-fund
+    # unavailable answers are marked too.
+    push_block = ENTRY_TEXT.split("direct_https_receive_pack_required", 1)[1]
+    assert "EXPECTED_DEGRADED_HEADERS" in push_block[:300]
+    fund_block = ENTRY_TEXT.split(
+        "async def _account_central_fund", 1)[1][:1600]
+    assert fund_block.count("EXPECTED_DEGRADED_HEADERS") == 2
+
+
+def test_redacted_repo_routes_keep_identity_free_route_family_tags():
+    # /private-or-unpublished-repository collapsed EVERY failing private or
+    # unknown repo route into one bucket; recurring failures could not even
+    # be told apart by endpoint. The redacted path now keeps only the fixed
+    # route-family name — never owner/repo or user-named path parts.
+    tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    selected = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_privacy_redacted_route_kind"
+    ]
+    assert selected, "_privacy_redacted_route_kind not found"
+    import re as re_module
+    namespace = {
+        "GIT_INFO_RE": re_module.compile(r"^/([^/]+)/([^/]+)/info/refs$"),
+        "GIT_PACK_RE": re_module.compile(
+            r"^/([^/]+)/([^/]+)/git-upload-pack$"),
+        "GIT_RECEIVE_RE": re_module.compile(
+            r"^/([^/]+)/([^/]+)/git-receive-pack$"),
+        "RELEASE_BLOB_RE": re_module.compile(
+            r"^/([^/]+)/([^/]+)/releases/blob/"),
+        "REPO_API_PREFIX_RE": re_module.compile(
+            r"^/api/repo/([^/]+)/([^/]+)(?:/.*)?$"),
+        "safe_segment": lambda value: (
+            value if re_module.fullmatch(r"[A-Za-z0-9._-]{1,100}", value or "")
+            else ""),
+    }
+    exec(
+        compile(
+            ast.fix_missing_locations(
+                ast.Module(body=selected, type_ignores=[])),
+            str(ENTRY),
+            "exec",
+        ),
+        namespace,
+    )
+    kind = namespace["_privacy_redacted_route_kind"]
+    assert kind("/alice/top-secret/info/refs") == "[git-info-refs]"
+    assert kind("/alice/top-secret/git-receive-pack") == "[git-receive-pack]"
+    assert kind("/api/repo/alice/top-secret/tree") == "[api:tree]"
+    assert kind("/api/repo/alice/top-secret/star") == "[api:star]"
+    assert kind("/alice/top-secret/blob/src/keys.pem") == "[page]"
+    # User-named data never survives into the tag.
+    for rendered in (
+        kind("/api/repo/alice/top-secret/" + "x" * 60),
+        kind("/api/repo/alice/top-secret/%2e%2e"),
+    ):
+        assert "top-secret" not in rendered
+        assert "alice" not in rendered
+        assert rendered in ("[api]", "[api:x]")
+    assert "response status " in ENTRY_TEXT.split(
+        "def _privacy_safe_error_text", 1)[1][:900]

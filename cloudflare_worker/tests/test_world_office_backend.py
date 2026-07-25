@@ -126,7 +126,8 @@ def _entry_handler():
         return "a" * 64
 
     async def room_state(
-            _env, _rate_key, code_approved=None, code_digest=""):
+            _env, _rate_key, code_approved=None, code_digest="",
+            request=None):
         assert isinstance(code_approved, bool)
         assert code_digest == (
             "digest:" + str(request_code[0])
@@ -437,7 +438,7 @@ def _code_handler():
         assert max_bytes == 128
         return request.data
 
-    async def set_code(_env, account_bi, digest):
+    async def set_code(_env, account_bi, digest, request=None):
         state["forwarded"].append((account_bi, digest))
         if not state["live"]:
             return None, {
@@ -531,7 +532,7 @@ def test_office_status_exposes_boolean_state_without_secret_or_count():
             "kind": "user",
         }
 
-    async def room_state(_env, occupant_bi=""):
+    async def room_state(_env, occupant_bi="", request=None):
         assert occupant_bi == "a" * 64
         return {
             "occupied": True,
@@ -808,3 +809,140 @@ def test_office_room_uses_hibernation_attachments_without_storage():
         "attachment",
     ):
         assert forbidden not in source
+
+
+def _room_state_harness(fetch_results, memo, now=1_800_000_000_000):
+    """Load the real _office_general_room_state over a scripted Office DO.
+
+    fetch_results: one entry per room fetch attempt — an Exception instance
+    to raise, or a (status, payload) tuple to answer with.
+    """
+    names = {
+        "_office_general_room_state",
+        "_office_status_memo_fallback",
+        "_office_status_memo_store",
+    }
+    nodes = [
+        node for node in ast.parse(ENTRY_TEXT, filename=str(ENTRY)).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in names
+    ]
+    assert {node.name for node in nodes} == names
+    module = ast.fix_missing_locations(
+        ast.Module(body=nodes, type_ignores=[]))
+    attempts = []
+    aborts = []
+
+    class _Response:
+        def __init__(self, status, payload):
+            self.status = status
+            self.payload = payload
+
+    class _RoomObject:
+        async def fetch(self, _request):
+            attempts.append("fetch")
+            result = fetch_results.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return _Response(*result)
+
+    class _RoomBinding:
+        @staticmethod
+        def idFromName(name):
+            assert name == "office:world-general:v1"
+            return "room-id"
+
+        @staticmethod
+        def get(_room_id):
+            return _RoomObject()
+
+    class _Date:
+        @staticmethod
+        def now():
+            return now
+
+    async def response_json(response):
+        return response.payload
+
+    async def log_abort(_env, _request, path, error):
+        aborts.append((path, str(error)))
+
+    def json_response(data, status=200, **_kwargs):
+        return {"status": status, "data": data}
+
+    namespace = {
+        "Date": _Date,
+        "EXPECTED_DEGRADED_HEADERS": {"x-forkmesh-expected-degraded": "1"},
+        "JsRequest": SimpleNamespace(new=lambda _url, _options: "request"),
+        "OFFICE_STATUS_MEMO_MAX": 256,
+        "OFFICE_STATUS_MEMO_STALE_MS": 5 * 60 * 1000,
+        "_OFFICE_STATUS_MEMO": memo,
+        "_response_json": response_json,
+        "json_response": json_response,
+        "log_durable_object_abort": log_abort,
+        "re": re,
+        "to_js": lambda value: value,
+    }
+    exec(compile(module, str(ENTRY), "exec"), namespace)
+    env = SimpleNamespace(FORKMESH_OFFICE_ROOM=_RoomBinding())
+    return namespace, env, attempts, aborts
+
+
+def test_office_status_retries_the_aborted_room_then_serves_stale_state():
+    # The platform can abort the Office DO mid-request (free-tier duration
+    # cap / co-located isolate overload). A read-only status poll retries
+    # once, records the real abort reason, and falls back to the last state
+    # the room actually confirmed — the 2026-07-25 burst of bare
+    # "response status 503" rows carried no diagnostic value at all.
+    ok_payload = (200, {
+        "ok": True, "occupied": True,
+        "codeConfigured": True, "canSetCode": False,
+    })
+    memo = {}
+    ns, env, attempts, aborts = _room_state_harness([ok_payload], memo)
+    state, error = asyncio.run(ns["_office_general_room_state"](
+        env, occupant_bi="b" * 64, request=object()))
+    assert error is None
+    assert state["occupied"] is True
+    assert memo[("b" * 64)]["state"] == state
+
+    # Both attempts abort: the memoized answer serves, the abort is logged
+    # with its reason, and no 503 reaches the client.
+    ns, env, attempts, aborts = _room_state_harness(
+        [Exception("internal error; reference = x")] * 2, memo)
+    state, error = asyncio.run(ns["_office_general_room_state"](
+        env, occupant_bi="b" * 64, request=object()))
+    assert error is None
+    assert state["occupied"] is True
+    assert attempts == ["fetch", "fetch"]
+    assert aborts == [(
+        "/api/world/office/general/status",
+        "internal error; reference = x",
+    )]
+
+    # A different occupant has no memoized state: the 503 still happens but
+    # carries the expected-degraded marker so it is not double-logged.
+    ns, env, _attempts, aborts = _room_state_harness(
+        [Exception("internal error; reference = y")] * 2, memo)
+    state, error = asyncio.run(ns["_office_general_room_state"](
+        env, occupant_bi="c" * 64, request=object()))
+    assert state is None
+    assert error == {"status": 503, "data": {"error": "office_unavailable"}}
+    assert len(aborts) == 1
+
+
+def test_office_entry_never_uses_the_stale_status_memo():
+    memo = {"": {
+        "ts": 1_800_000_000_000,
+        "state": {
+            "occupied": False, "codeConfigured": False, "canSetCode": False,
+        },
+    }}
+    ns, env, attempts, aborts = _room_state_harness(
+        [Exception("aborted")] * 2, memo)
+    state, error = asyncio.run(ns["_office_general_room_state"](
+        env, "a" * 64, code_approved=True, request=object()))
+    assert state is None
+    assert error == {"status": 503, "data": {"error": "office_unavailable"}}
+    assert attempts == ["fetch", "fetch"]
+    assert len(aborts) == 1

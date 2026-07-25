@@ -263,4 +263,8 @@ def test_error_logs_redact_browser_repository_routes_too():
         :worker.index("async def capture_worker_exception")
     ]
     assert "looks_like_repo_route(path)" in body
-    assert '"/private-or-unpublished-repository"' in body
+    # The redacted bucket keeps an identity-free route-family suffix
+    # ([page] / [git-*] / [api:<fixed-route-name>]) so recurring failures can
+    # be told apart by endpoint without re-exposing owner/repo.
+    assert '"/private-or-unpublished-repository/"' in body
+    assert "_privacy_redacted_route_kind(path)" in body
