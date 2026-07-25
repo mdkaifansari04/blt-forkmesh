@@ -7790,6 +7790,28 @@ inline QString nodeListIdentityKey(const MemberInfo &m)
     return m.name.trimmed();
 }
 
+// A temporary world/website chat visitor — a human passing through the public
+// room, never a serving node — so every node surface (Nodes directory, top-bar
+// node dropdown, relay nodes dialog) must skip them (adhoc #308: "World Guest
+// fb9d" rows in the Nodes list). The web chat stamps these accountKind "guest";
+// frames sent before that stamp existed are recognised by the placeholder names
+// the world assigns ("World visitor · <name>", "World Guest ab12", "Guest 1234")
+// — but only when the peer never advertised a registered node identity, so a
+// real node someone happens to have named "Guest ..." keeps its row.
+inline bool isTemporaryChatGuest(const MemberInfo &m)
+{
+    const QString kind = m.accountKind.trimmed().toLower();
+    if (kind == QLatin1String("guest"))
+        return true;
+    if (!kind.isEmpty() || !m.nodeName.trimmed().isEmpty())
+        return false;
+    static const QRegularExpression legacyGuestName(
+        QString::fromUtf8("^(?:world visitor\\s*\xC2\xB7.*|world guest\\s+\\S+|"
+                          "guest\\s+\\d+)$"),
+        QRegularExpression::CaseInsensitiveOption);
+    return legacyGuestName.match(m.name.trimmed()).hasMatch();
+}
+
 // Open issue count for the advertised catalog issueCount. Closed issues keep
 // their .forkmesh/issues/<n>/ directory on disk, so a bare directory count
 // (mirrorNumberedDirCount) overstates the open total the website badges the

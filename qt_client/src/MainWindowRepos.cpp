@@ -981,6 +981,11 @@ void MainWindow::refreshRepositoryList()
                   return a.name.localeAwareCompare(b.name) < 0;
               });
     for (const MemberInfo &m : std::as_const(ranked)) {
+        // Temporary world/website chat visitors are humans passing through the
+        // public room, not serving nodes — never turn them into node entries
+        // (adhoc #308: "World Guest fb9d" rows in the Nodes list / dropdown).
+        if (isTemporaryChatGuest(m))
+            continue;
         // Key by the node's stable identity, not just its chat display name, so a
         // headless mirror that shares/omits the owner's chat name still gets its
         // own row instead of collapsing into the owner (adhoc: mirror2/mirror3
