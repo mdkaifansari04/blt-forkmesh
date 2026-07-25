@@ -1020,33 +1020,59 @@ function makeLabelSprite(THREE, title, subtitle, color) {
   return sprite;
 }
 
-// Name plate carried by every campfire bench: the account the seat belongs
-// to, and whether they are on it or out walking the world. An unclaimed seat
-// reads as the open guest bench.
+// Branded onto the plank itself (the seat's top face texture) instead of a
+// floating sign, so an empty bench still says whose seat it is: the account
+// it belongs to, and whether they are on it or out walking the world. An
+// unclaimed seat reads as the open guest bench. Canvas aspect (480x180)
+// matches the seat top's width:depth ratio (1.6:0.6) so the wood grain and
+// lettering aren't stretched.
 function campfireSeatPlateTexture(THREE, name, away) {
   const label = String(name || "").trim().slice(0, 18);
-  const accent = label ? (away ? "#ffd479" : "#9ef7c6") : "#77d9ff";
-  return canvasTexture(THREE, 512, 160, (context) => {
-    context.clearRect(0, 0, 512, 160);
-    roundedRect(context, 6, 6, 500, 148, 16);
-    context.fillStyle = "rgba(6,17,14,0.88)";
-    context.fill();
-    context.strokeStyle = accent;
-    context.lineWidth = 5;
-    context.stroke();
+  const glow = label ? (away ? "#ffd479" : "#9ef7c6") : "#77d9ff";
+  return canvasTexture(THREE, 480, 180, (context) => {
+    context.fillStyle = "#8a5a33";
+    context.fillRect(0, 0, 480, 180);
+    context.strokeStyle = "rgba(63,38,17,0.35)";
+    context.lineWidth = 2;
+    for (let grain = 20; grain < 180; grain += 24) {
+      context.beginPath();
+      context.moveTo(0, grain);
+      context.bezierCurveTo(120, grain - 5, 360, grain + 5, 480, grain);
+      context.stroke();
+    }
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.fillStyle = "#f1fff6";
-    context.font = '700 56px "ForkMesh Favorit", system-ui, sans-serif';
-    context.fillText(label || "OPEN SEAT", 256, 62);
-    context.fillStyle = accent;
-    context.font = '400 28px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(
+    embossPlankText(
+      context,
+      label || "OPEN SEAT",
+      240,
+      74,
+      '700 52px "ForkMesh Favorit", system-ui, sans-serif',
+      glow,
+    );
+    embossPlankText(
+      context,
       label ? (away ? "OUT AND ABOUT" : "AT THE FIRE") : "GUESTS WELCOME",
-      256,
-      116,
+      240,
+      124,
+      '400 24px "ForkMesh Mono", ui-monospace, monospace',
+      glow,
     );
   });
+}
+
+// Carves rather than paints: a dark shadow above and a warm highlight below
+// read as a groove branded into the wood instead of ink sitting on top of it.
+function embossPlankText(context, text, x, y, font, glow) {
+  context.font = font;
+  context.fillStyle = "rgba(20,10,4,0.6)";
+  context.fillText(text, x, y - 1.4);
+  context.fillStyle = glow;
+  context.globalAlpha = 0.5;
+  context.fillText(text, x, y + 1.4);
+  context.globalAlpha = 1;
+  context.fillStyle = "#2a160a";
+  context.fillText(text, x, y);
 }
 
 function applySeatedLegPose(avatar) {
@@ -1054,15 +1080,6 @@ function applySeatedLegPose(avatar) {
   if (!legs?.leftLeg || !legs?.rightLeg) return;
   legs.leftLeg.rotation.x = SEATED_LEG_PITCH;
   legs.rightLeg.rotation.x = SEATED_LEG_PITCH;
-}
-
-function makeCampfireSeatPlate(THREE) {
-  const sprite = new THREE.Sprite(
-    new THREE.SpriteMaterial({ transparent: true, depthWrite: false }),
-  );
-  sprite.scale.set(1.5, 0.47, 1);
-  sprite.visible = false;
-  return sprite;
 }
 
 // Stable, server-safe layout id built from the only durable name a scene prop
@@ -5247,10 +5264,23 @@ export function createWorldScene({
       bench.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
       // Long axis tangent to the ring so every bench fronts the flames.
       bench.rotation.y = -angle + Math.PI / 2;
-      const seat = new THREE.Mesh(
-        new THREE.BoxGeometry(1.6, 0.14, 0.6),
-        makeMaterial(THREE, "#8a5a33", { roughness: 0.86 }),
-      );
+      const plankSideMaterial = makeMaterial(THREE, "#8a5a33", {
+        roughness: 0.86,
+      });
+      // The top face gets its own material so a seat's name can be branded
+      // into just that face without a texture atlas stretching across the
+      // sides and legs too.
+      const plankTopMaterial = makeMaterial(THREE, "#8a5a33", {
+        roughness: 0.86,
+      });
+      const seat = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.14, 0.6), [
+        plankSideMaterial,
+        plankSideMaterial,
+        plankTopMaterial,
+        plankSideMaterial,
+        plankSideMaterial,
+        plankSideMaterial,
+      ]);
       seat.position.y = 0.48;
       // Seat coordinates are read from the live world matrix at click time, so a
       // relocated campfire needs no bookkeeping and the seats can never drift.
@@ -5265,12 +5295,7 @@ export function createWorldScene({
         leg.position.set(end, 0.205, 0);
         bench.add(leg);
       });
-      // Name plate for whoever owns this bench, floated just above the
-      // plank so an empty seat still says who is out walking the world.
-      const plate = makeCampfireSeatPlate(THREE);
-      plate.position.set(0, 1.02, 0);
-      bench.add(plate);
-      benches.push({ bench, plate, labelKey: null });
+      benches.push({ bench, seat, labelKey: null });
       ring.add(bench);
       // Offsets land sitters just above the plank, matching the local
       // player's bench-seat pose height.
@@ -5287,19 +5312,19 @@ export function createWorldScene({
     return seatOffsets;
   }
 
-  // Repaints one bench plate, skipping the canvas work when the seat already
-  // shows this name and away state. The ring is not built until the first
-  // updateMemberLounge, so an earlier call simply finds no bench.
+  // Rebrands one bench's plank top, skipping the canvas work when the seat
+  // already shows this name and away state. The ring is not built until the
+  // first updateMemberLounge, so an earlier call simply finds no bench.
   function setCampfireSeatLabel(index, name, away) {
     const bench = (campfire.userData.seatBenches || [])[index];
     if (!bench) return;
-    const key = `${name} ${away ? "away" : "here"}`;
+    const key = `${name} ${away ? "away" : "here"}`;
     if (bench.labelKey === key) return;
     bench.labelKey = key;
-    bench.plate.visible = true;
-    bench.plate.material.map?.dispose?.();
-    bench.plate.material.map = campfireSeatPlateTexture(THREE, name, away);
-    bench.plate.material.needsUpdate = true;
+    const topMaterial = bench.seat.material[2];
+    topMaterial.map?.dispose?.();
+    topMaterial.map = campfireSeatPlateTexture(THREE, name, away);
+    topMaterial.needsUpdate = true;
   }
   // No placeholder ring here: the spark above keeps the fire lively until
   // updateMemberLounge below runs with the real roster and calls
