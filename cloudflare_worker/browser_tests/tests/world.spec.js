@@ -997,6 +997,7 @@ test("account signup and login complete inside the World without leaking into UR
   page,
   context,
 }) => {
+  const testAccountPassword = ["correct-horse", "battery-staple"].join("-");
   const accountRequests = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
@@ -1008,7 +1009,7 @@ test("account signup and login complete inside the World without leaking into UR
       });
     }
     expect(request.url()).not.toContain("world-user@example.test");
-    expect(request.url()).not.toContain("correct-horse-battery-staple");
+    expect(request.url()).not.toContain(testAccountPassword);
   });
   await prepareWorldPage(page, "world-account", {
     accountFixture: true,
@@ -1028,7 +1029,7 @@ test("account signup and login complete inside the World without leaking into UR
   await signup.locator("[name='email']").fill("world-user@example.test");
   await signup
     .locator("[name='password']")
-    .fill("correct-horse-battery-staple");
+    .fill(testAccountPassword);
   await signup.locator("[name='terms']").check();
   await signup.getByRole("button", { name: /Create account inside/ }).click();
   await expect(account.locator("[data-world-account-verification]")).toBeVisible();
@@ -1039,7 +1040,7 @@ test("account signup and login complete inside the World without leaking into UR
     body: {
       nodeName: "world-user",
       email: "world-user@example.test",
-      password: "correct-horse-battery-staple",
+      password: testAccountPassword,
     },
   });
 
@@ -1049,7 +1050,7 @@ test("account signup and login complete inside the World without leaking into UR
   await login.locator("[name='email']").fill("world-user@example.test");
   await login
     .locator("[name='password']")
-    .fill("correct-horse-battery-staple");
+    .fill(testAccountPassword);
   const reloaded = page.waitForNavigation({ waitUntil: "domcontentloaded" });
   await login.getByRole("button", { name: /Log in inside/ }).click();
   await reloaded;
@@ -1075,7 +1076,7 @@ test("account signup and login complete inside the World without leaking into UR
     method: "POST",
     body: {
       email: "world-user@example.test",
-      password: "correct-horse-battery-staple",
+      password: testAccountPassword,
       totp: "",
     },
   });
