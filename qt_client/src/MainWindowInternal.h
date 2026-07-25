@@ -4322,11 +4322,11 @@ private:
     QList<IssueBurnupPoint> m_series;
 };
 
-// One directory in the Size map tab's tree: total bytes of everything beneath
-// it, with subdirectories as children (largest first). The gap between a
-// node's size and the sum of its children is the bytes sitting in files
-// directly inside it — the sunburst renders that share as unfilled span, the
-// HDGraph convention the tab mirrors (adhoc #189).
+// One entry in the Size map tab's tree: total bytes of everything beneath
+// it, with subdirectories and direct files as children (largest first,
+// adhoc #189/#262). A file is a leaf — no children — so the chart offers
+// zoom only on directories, and zooming into a files-only directory shows
+// one slice per file, matching the website's size map.
 struct SunburstNode {
     QString name;
     qint64 size = 0;
@@ -4335,7 +4335,8 @@ struct SunburstNode {
 };
 
 // The Size map tab's multi-level pie (adhoc #189): ring 1 is the working
-// tree's top-level directories, each deeper ring subdivides its parent.
+// tree's top-level directories and files, each deeper ring subdivides its
+// parent down to individual files.
 // Hover shows the exact path/size/share, clicking a directory re-centres the
 // chart on it and clicking the hub goes back up one level. Top-level
 // directories take fixed categorical hues in size order (never cycled —
@@ -4541,9 +4542,16 @@ protected:
             QWidget::contextMenuEvent(event);
             return;
         }
-        const QString dir =
+        const QString target =
             rel.isEmpty() ? m_basePath : QDir(m_basePath).filePath(rel);
-        if (!QDir(dir).exists()) {
+        // File slices reveal their containing directory (a file itself can't
+        // be opened as a folder).
+        const QFileInfo targetInfo(target);
+        const QString dir = targetInfo.isDir()
+                                ? target
+                                : (targetInfo.isFile() ? targetInfo.absolutePath()
+                                                       : QString());
+        if (dir.isEmpty() || !QDir(dir).exists()) {
             QWidget::contextMenuEvent(event);
             return;
         }

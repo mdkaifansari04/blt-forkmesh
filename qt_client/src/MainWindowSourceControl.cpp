@@ -2444,11 +2444,14 @@ void MainWindow::refreshRepoQuality()
 namespace {
 // Working-tree scan for the Size map tab (adhoc #189): raw on-disk bytes,
 // .git excluded, symlinks skipped so link cycles can't loop or inflate the
-// totals. Depth is capped — deeper directories still count toward every
-// ancestor's size, they just stop producing children of their own. Runs on a
-// QtConcurrent thread, so nothing here may touch widgets or MainWindow state.
-// `ignored` holds absolute paths to prune (the .gitignore hide toggle, adhoc
-// #197); it is empty when the toggle is off.
+// totals. Files become leaf children alongside subdirectories (adhoc #262),
+// so zooming into a directory that holds only files still shows a ring of
+// its individual files — matching the website's size map. Depth is capped —
+// deeper entries still count toward every ancestor's size, they just stop
+// producing children of their own. Runs on a QtConcurrent thread, so nothing
+// here may touch widgets or MainWindow state. `ignored` holds absolute paths
+// to prune (the .gitignore hide toggle, adhoc #197); it is empty when the
+// toggle is off.
 constexpr int kSizeMapMaxDepth = 8;
 
 SunburstNode scanDirectorySizes(const QString &path, int depth,
@@ -2474,6 +2477,13 @@ SunburstNode scanDirectorySizes(const QString &path, int depth,
         } else {
             node.size += info.size();
             node.fileCount += 1;
+            if (depth < kSizeMapMaxDepth && info.size() > 0) {
+                SunburstNode leaf;
+                leaf.name = info.fileName();
+                leaf.size = info.size();
+                leaf.fileCount = 1;
+                node.children.append(std::move(leaf));
+            }
         }
     }
     std::sort(node.children.begin(), node.children.end(),
@@ -2496,10 +2506,9 @@ QWidget *MainWindow::buildSizeMapTab()
     auto *heading = new QLabel("Size map");
     heading->setObjectName("channelTitle");
     auto *subtitle = new QLabel(
-        "How the working tree's bytes spread across directories (.git "
-        "excluded). Click a directory to zoom in, the centre to zoom back out; "
-        "a ring's unfilled span is the files sitting directly in that "
-        "directory.");
+        "How the working tree's bytes spread across directories and files "
+        "(.git excluded). Click a directory to zoom in, the centre to zoom "
+        "back out; slices with no further subdivision are individual files.");
     subtitle->setObjectName("statusLine");
     subtitle->setWordWrap(true);
 
