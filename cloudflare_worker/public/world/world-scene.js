@@ -4438,46 +4438,11 @@ export function createWorldScene({
   ground.userData.ground = true;
   world.add(ground);
 
-  // The room assigns one of 64 ephemeral slots: ten columns per row. The
-  // outline makes the arrival contract visible without turning it into a
-  // barrier once a visitor starts walking.
+  // The room still assigns one of 64 ephemeral slots, but the grid itself is
+  // no longer drawn: the plaques at the front edge carry the arrival story and
+  // the lawn reads as open ground.
   const arrivalBox = new THREE.Group();
   arrivalBox.name = "world-arrival-box";
-  const arrivalFloor = new THREE.Mesh(
-    new THREE.BoxGeometry(19.8, 0.05, 15.8),
-    makeMaterial(THREE, "#143d31", {
-      emissive: "#1f7b57",
-      emissiveIntensity: 0.18,
-      transparent: true,
-      opacity: 0.78,
-    }),
-  );
-  arrivalFloor.position.set(0, 0.04, 23.7);
-  arrivalFloor.receiveShadow = true;
-  arrivalFloor.userData.ground = true;
-  arrivalBox.add(arrivalFloor);
-  for (let column = 0; column <= 10; column += 1) {
-    const line = new THREE.Mesh(
-      new THREE.BoxGeometry(0.025, 0.035, 14.7),
-      makeMaterial(THREE, "#61dca0", {
-        emissive: "#2e9f70",
-        emissiveIntensity: 0.7,
-      }),
-    );
-    line.position.set(-9 + column * 1.8, 0.09, 23.7);
-    arrivalBox.add(line);
-  }
-  for (let row = 0; row <= 7; row += 1) {
-    const line = new THREE.Mesh(
-      new THREE.BoxGeometry(18.1, 0.035, 0.025),
-      makeMaterial(THREE, "#61dca0", {
-        emissive: "#2e9f70",
-        emissiveIntensity: 0.7,
-      }),
-    );
-    line.position.set(0, 0.09, 30.95 - row * 2.1);
-    arrivalBox.add(line);
-  }
   const arrivalPlaque = makeArrivalPlaque(THREE);
   // Just past the grid's front edge (cells end at z ≈ 17.4), facing inward
   // toward the Town Square center as visitors leave the welcome grid.
@@ -9846,7 +9811,7 @@ export function createWorldScene({
       );
       handle.name = "world-layout-handle-" + id;
       // Anchor the handle to the object's visible mass, not the group
-      // origin: the arrival grid keeps its geometry ~24 units away from its
+      // origin: the arrival plaques sit ~15 units away from their group
       // origin, where a fixed-origin handle would float in the town center.
       const center = new THREE.Box3()
         .setFromObject(object)
