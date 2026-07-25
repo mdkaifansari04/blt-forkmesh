@@ -4124,6 +4124,10 @@ function worldBulletinTexture(THREE, events = [], offset = 0) {
 // post's image attachments. The board is repainted from the same snapshot the
 // mini-app renders.
 const MASTODON_KIOSK_VISIBLE_TOOTS = 2;
+const MASTODON_KIOSK_VISIBLE_REPLIES = 3;
+// Vertical pitch of one toot card. Tightened from 556 so the replies strip
+// fits under the two cards without pushing the footer off the board.
+const MASTODON_KIOSK_TOOT_PITCH = 470;
 const MASTODON_KIOSK_WIDTH = 1536;
 const MASTODON_KIOSK_HEIGHT = 2048;
 const MASTODON_KIOSK_REFRESH_MS = 10 * 60 * 1000;
@@ -4162,6 +4166,18 @@ function wrapCanvasText(context, text, x, y, maxWidth, lineHeight, maxLines = In
   return lines;
 }
 
+// One-line fit for the reply rows: replies get a single line each, so long
+// bodies are cut at the card width with an ellipsis rather than wrapped away.
+function clipCanvasText(context, text, maxWidth) {
+  const flat = String(text || "").replace(/\s+/g, " ").trim();
+  if (!flat || context.measureText(flat).width <= maxWidth) return flat;
+  let cut = flat;
+  while (cut.length > 1 && context.measureText(`${cut}…`).width > maxWidth) {
+    cut = cut.slice(0, -1);
+  }
+  return `${cut.trimEnd()}…`;
+}
+
 function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage = null) {
   const WIDTH = MASTODON_KIOSK_WIDTH;
   const HEIGHT = MASTODON_KIOSK_HEIGHT;
@@ -4193,6 +4209,7 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
         "LIVE PUBLIC PROFILE",
         "FOLLOWERS · FOLLOWING · POSTS",
         "FULL POSTS WITH IMAGES",
+        "REPLIES WITH AUTHOR ICONS",
         "REFRESHED EVERY 10 MINUTES",
       ].forEach((line, index) => {
         context.fillText(line, 96, 810 + index * 136);
@@ -4315,7 +4332,7 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
       context.fillText("NO PUBLIC TOOTS YET", 56, 860);
     }
     entries.forEach((toot, index) => {
-      const top = 800 + index * 556;
+      const top = 800 + index * MASTODON_KIOSK_TOOT_PITCH;
       const images = (Array.isArray(toot.images) ? toot.images : [])
         .map((url) => String(url || ""))
         .filter(Boolean)
@@ -4338,13 +4355,13 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
         top + 100,
         1424,
         46,
-        images.length ? 4 : 7,
+        images.length ? 3 : 6,
       );
       if (images.length) {
         // Attachments below the text, cover-cropped into equal tiles. Tiles
         // that have not loaded CORS-clean stay as empty plates.
         const gap = 18;
-        const height = 180;
+        const height = 150;
         const width = Math.min(
           360,
           (1424 - gap * (images.length - 1)) / images.length,
@@ -4381,19 +4398,60 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
       context.strokeStyle = "rgba(99,100,255,0.28)";
       context.lineWidth = 3;
       context.beginPath();
-      context.moveTo(56, top + 526);
-      context.lineTo(1480, top + 526);
+      context.moveTo(56, top + 440);
+      context.lineTo(1480, top + 440);
       context.stroke();
+    });
+    // Replies section: the newest public replies other accounts left on those
+    // toots, each with the replier's own avatar so the board shows who is
+    // talking back rather than just a reply count.
+    const replies = (Array.isArray(snapshot.replies) ? snapshot.replies : [])
+      .filter(Boolean)
+      .slice(0, MASTODON_KIOSK_VISIBLE_REPLIES);
+    context.fillStyle = "#8b9bf4";
+    context.font = '800 38px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("REPLIES", 56, 1750);
+    if (!replies.length) {
+      context.fillStyle = "#7a7ca8";
+      context.font = '600 32px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("NO PUBLIC REPLIES YET", 56, 1812);
+    }
+    replies.forEach((reply, index) => {
+      const top = 1764 + index * 58;
+      const icon = image(reply.avatar);
+      context.save();
+      roundedRect(context, 56, top, 50, 50, 14);
+      context.clip();
+      if (icon?.naturalWidth > 0) {
+        context.drawImage(icon, 56, top, 50, 50);
+      } else {
+        context.fillStyle = "#43389c";
+        context.fillRect(56, top, 50, 50);
+        context.fillStyle = "#c8c9ff";
+        context.font = '800 34px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("@", 68, top + 38);
+      }
+      context.restore();
+      context.fillStyle = "#c8c9ff";
+      context.font = '700 26px "ForkMesh Mono", ui-monospace, monospace';
+      const who = [reply.author, reply.acct, reply.date]
+        .map((part) => String(part || "").trim())
+        .filter(Boolean)
+        .join(" · ");
+      context.fillText(clipCanvasText(context, who, 1344), 128, top + 20);
+      context.fillStyle = "#e8e9ff";
+      context.font = '600 30px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(clipCanvasText(context, reply.text, 1344), 128, top + 50);
     });
     context.fillStyle = "#8b9bf4";
     context.font = '800 38px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("TAP / CLICK TO OPEN THE FULL PROFILE", 56, 1958);
+    context.fillText("TAP / CLICK TO OPEN THE FULL PROFILE", 56, 1980);
     context.fillStyle = "#7a7ca8";
     context.font = '600 28px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(
       "LIVE · READ-ONLY · REFRESHED EVERY 10 MINUTES FROM MASTODON.SOCIAL",
       56,
-      2006,
+      2020,
     );
     context.strokeStyle = "#6364ff";
     context.lineWidth = 16;
@@ -4401,11 +4459,20 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
   });
 }
 
-// The countdown dial that rides on the kiosk frame: a plain ring that is
-// whole right after a fetch and opens up (empties clockwise) as the
-// ten-minute refresh window elapses. It repaints once a second on its own
-// small texture so the big board texture is only rebuilt when the snapshot
-// itself changes.
+// MM:SS left before the next fetch, floored at 00:00.
+function mastodonCountdownClock(remainingMs) {
+  const seconds = Math.max(0, Math.ceil((Number(remainingMs) || 0) / 1000));
+  const minutes = Math.floor(seconds / 60);
+  return `${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(
+    2,
+    "0",
+  )}`;
+}
+
+// The refresh timer that rides on the kiosk frame: a small MM:SS readout of
+// the time left in the ten-minute refresh window. It repaints once a second
+// on its own small texture so the big board texture is only rebuilt when the
+// snapshot itself changes.
 function mastodonCountdownTexture(
   THREE,
   remainingMs = MASTODON_KIOSK_REFRESH_MS,
@@ -4414,32 +4481,25 @@ function mastodonCountdownTexture(
 ) {
   const total = Math.max(1000, Number(totalMs) || MASTODON_KIOSK_REFRESH_MS);
   const remaining = clamp(Number(remainingMs) || 0, 0, total);
-  const progress = loading ? 1 : remaining / total;
-  return canvasTexture(THREE, 256, 256, (context) => {
+  return canvasTexture(THREE, 256, 128, (context) => {
     context.fillStyle = "rgba(15,16,36,0.88)";
-    roundedRect(context, 6, 6, 244, 244, 36);
+    roundedRect(context, 4, 4, 248, 120, 22);
     context.fill();
     context.strokeStyle = "#6364ff";
-    context.lineWidth = 6;
-    roundedRect(context, 6, 6, 244, 244, 36);
+    context.lineWidth = 5;
+    roundedRect(context, 4, 4, 248, 120, 22);
     context.stroke();
-    const centerX = 128;
-    const centerY = 128;
-    const radius = 82;
-    const ringWidth = 22;
-    context.strokeStyle = "rgba(139,141,184,0.35)";
-    context.lineWidth = ringWidth;
-    context.beginPath();
-    context.arc(centerX, centerY, radius, 0, Math.PI * 2);
-    context.stroke();
-    const start = -Math.PI / 2;
-    const end = start + Math.PI * 2 * clamp(progress, 0, 1);
-    context.strokeStyle = loading ? "#8b9bf4" : "#ffd257";
-    context.lineWidth = ringWidth;
-    context.lineCap = "round";
-    context.beginPath();
-    context.arc(centerX, centerY, radius, start, end);
-    context.stroke();
+    context.textAlign = "center";
+    context.fillStyle = "#8b8db8";
+    context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(loading ? "REFRESHING" : "NEXT SYNC", 128, 44);
+    context.fillStyle = loading ? "#8b9bf4" : "#ffd257";
+    context.font = '800 54px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      loading ? "--:--" : mastodonCountdownClock(remaining),
+      128,
+      100,
+    );
   });
 }
 
@@ -4477,9 +4537,10 @@ function createMastodonKiosk(THREE, interactive) {
   face.name = "forkmesh-mastodon-kiosk-face";
   face.position.set(0, 6.95, 0.2);
   // Sits beside the avatar/identity block now that the header no longer
-  // carries a "MASTODON · LIVE" pill of its own.
+  // carries a "MASTODON · LIVE" pill of its own. Wide and short: it reads a
+  // MM:SS clock, not a dial.
   const countdown = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.1, 1.1),
+    new THREE.PlaneGeometry(1.3, 0.65),
     new THREE.MeshBasicMaterial({
       map: mastodonCountdownTexture(THREE),
       transparent: true,
@@ -4545,8 +4606,8 @@ function createMastodonKiosk(THREE, interactive) {
   // visible toot cards, each opening that item's mastodon.social page in a
   // new tab instead of the in-app board.
   const openProfile = makeOpenButton("profile", 3.25, 9.55);
-  const openToot0 = makeOpenButton("toot-0", 3.25, 6.7);
-  const openToot1 = makeOpenButton("toot-1", 3.25, 4.09);
+  const openToot0 = makeOpenButton("toot-0", 3.25, 6.9);
+  const openToot1 = makeOpenButton("toot-1", 3.25, 4.7);
   group.add(
     base,
     post,
@@ -6825,6 +6886,9 @@ export function createWorldScene({
             ...snapshot,
             toots: Array.isArray(snapshot.toots)
               ? snapshot.toots.filter(Boolean)
+              : [],
+            replies: Array.isArray(snapshot.replies)
+              ? snapshot.replies.filter(Boolean)
               : [],
           }
         : null;
