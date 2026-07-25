@@ -3020,6 +3020,133 @@ async def durable_object_request(request, target_url=None, include_body=False,
     return JsRequest.new(str(target_url or request.url), to_js(init))
 
 
+# A Durable Object binding name as wrangler.toml declares it. The same grammar
+# gates both discovery (which env properties may be reported) and accounting
+# (which binding names may reach D1).
+DURABLE_OBJECT_BINDING_RE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
+# Content-free relay accounting behind the System Capacity card. A Durable
+# Object counts the bytes it relays in the live instance and folds them into
+# one small D1 row per binding at most once a minute (or once a batch of bytes
+# has gone by), so even a busy room costs a handful of writes an hour.
+# Hibernation can only ever drop the current window, never a recorded total.
+DURABLE_OBJECT_TRAFFIC_FLUSH_MS = 60 * 1000
+DURABLE_OBJECT_TRAFFIC_FLUSH_BYTES = 262_144
+DURABLE_OBJECT_TRAFFIC_MAX = 9_007_199_254_740_991
+
+
+def durable_object_bindings(env):
+    """Every Durable Object namespace bound to this Worker, discovered live.
+
+    The System Capacity display must not carry a hand-maintained list: a class
+    bound in wrangler.toml appears here on the next deploy. Namespaces are
+    duck-typed — `idFromName` plus `newUniqueId` is unique to a
+    DurableObjectNamespace among D1, KV, R2, AI, and assets bindings.
+    """
+    try:
+        keys = [str(key) for key in Object.keys(env)]
+    except Exception:
+        return []
+    bindings = []
+    for name in sorted(set(keys)):
+        if not DURABLE_OBJECT_BINDING_RE.fullmatch(name):
+            continue
+        try:
+            namespace = getattr(env, name, None)
+        except Exception:
+            continue
+        if namespace is None:
+            continue
+        if not (
+            hasattr(namespace, "idFromName")
+            and hasattr(namespace, "newUniqueId")
+        ):
+            continue
+        bindings.append(name)
+    return bindings
+
+
+def durable_object_label(binding):
+    """Human display name for an auto-discovered binding (no hardcoding)."""
+    words = [
+        word for word in str(binding or "").split("_")
+        if word and word != "FORKMESH"
+    ]
+    if not words:
+        return str(binding or "")
+    return " ".join(words).capitalize()
+
+
+def durable_object_traffic_note(do, bytes_in=0, bytes_out=0, messages=0):
+    """Record relayed bytes for one frame in this live Durable Object."""
+    state = getattr(do, "_traffic", None)
+    if not isinstance(state, dict):
+        state = {
+            "bytes_in": 0, "bytes_out": 0, "messages": 0, "flushed_at": 0}
+        try:
+            do._traffic = state
+        except Exception:
+            return None
+    try:
+        state["bytes_in"] += max(0, int(bytes_in or 0))
+        state["bytes_out"] += max(0, int(bytes_out or 0))
+        state["messages"] += max(0, int(messages or 0))
+    except (TypeError, ValueError):
+        return state
+    return state
+
+
+async def durable_object_traffic_flush(do, force=False):
+    """Fold the pending byte counts into this binding's single D1 row."""
+    state = getattr(do, "_traffic", None)
+    if not isinstance(state, dict):
+        return False
+    pending = (
+        int(state.get("bytes_in") or 0) + int(state.get("bytes_out") or 0))
+    if pending <= 0 and not int(state.get("messages") or 0):
+        return False
+    binding = str(getattr(do, "traffic_binding", "") or "")
+    if not DURABLE_OBJECT_BINDING_RE.fullmatch(binding):
+        return False
+    now = int(Date.now())
+    if (
+        not force
+        and pending < DURABLE_OBJECT_TRAFFIC_FLUSH_BYTES
+        and now - int(state.get("flushed_at") or 0)
+            < DURABLE_OBJECT_TRAFFIC_FLUSH_MS
+    ):
+        return False
+    bytes_in = int(state.get("bytes_in") or 0)
+    bytes_out = int(state.get("bytes_out") or 0)
+    messages = int(state.get("messages") or 0)
+    state["bytes_in"] = 0
+    state["bytes_out"] = 0
+    state["messages"] = 0
+    state["flushed_at"] = now
+    try:
+        await d1_run(
+            do.env,
+            "INSERT INTO durable_object_traffic "
+            "(binding, bytes_in, bytes_out, messages, updated_at) "
+            "VALUES (?,?,?,?,?) ON CONFLICT(binding) DO UPDATE SET "
+            "bytes_in=MIN("
+            "durable_object_traffic.bytes_in+excluded.bytes_in,?), "
+            "bytes_out=MIN("
+            "durable_object_traffic.bytes_out+excluded.bytes_out,?), "
+            "messages=MIN("
+            "durable_object_traffic.messages+excluded.messages,?), "
+            "updated_at=excluded.updated_at",
+            binding, bytes_in, bytes_out, messages, now,
+            DURABLE_OBJECT_TRAFFIC_MAX,
+            DURABLE_OBJECT_TRAFFIC_MAX,
+            DURABLE_OBJECT_TRAFFIC_MAX,
+        )
+    except Exception:
+        # Capacity counters are optional telemetry. A migrating or overloaded
+        # database must never break a live relay; the window is simply lost.
+        return False
+    return True
+
+
 def world_request_country(request):
     """Trusted coarse country from request.cf, with a local-dev fallback."""
     try:
@@ -3226,6 +3353,10 @@ WORLD_INACTIVE_DELAY_MS = 15 * 60 * 1000
 # number of sqlite_master rows and the resulting COUNT queries hard-bounded so a
 # ticket refresh cannot turn into an unbounded database-inspection endpoint.
 WORLD_SYSTEM_CAPACITY_MAX_TABLES = 256
+# Durable Object bindings are discovered from the runtime environment rather
+# than listed here, so the card stays truthful as classes are added; the cap
+# keeps an unexpectedly large environment from inflating the ticket.
+WORLD_SYSTEM_CAPACITY_MAX_DURABLE_OBJECTS = 32
 WORLD_SYSTEM_CAPACITY_MAX_SAFE_ROWS = 9_007_199_254_740_991
 WORLD_SYSTEM_CAPACITY_TABLE_RE = re.compile(
     r"[A-Za-z_][A-Za-z0-9_]{0,127}")
@@ -3501,6 +3632,60 @@ async def _world_system_capacity(env):
     return capacity
 
 
+async def _world_durable_objects(env):
+    """Auto-detected Durable Object bindings with their relayed byte totals.
+
+    The binding list comes from the runtime environment, so a newly bound
+    class shows up on the System Capacity platform without a code change here.
+    Totals are content-free: bytes and frame counts relayed per class, with no
+    room key, account, peer id, or payload.
+    """
+    bindings = durable_object_bindings(env)
+    if not bindings:
+        return []
+    totals = {}
+    try:
+        rows = await d1_all(
+            env,
+            "SELECT binding, bytes_in, bytes_out, messages, updated_at "
+            "FROM durable_object_traffic ORDER BY binding LIMIT ?",
+            WORLD_SYSTEM_CAPACITY_MAX_DURABLE_OBJECTS,
+        )
+    except Exception:
+        # The counter table is optional (a rolling migration may not have
+        # created it yet). Bindings are still discovered and reported at zero.
+        rows = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        totals[str(row.get("binding") or "")] = row
+
+    def _count(row, field):
+        try:
+            value = int(row.get(field) or 0)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, min(value, DURABLE_OBJECT_TRAFFIC_MAX))
+
+    objects = []
+    for binding in bindings[:WORLD_SYSTEM_CAPACITY_MAX_DURABLE_OBJECTS]:
+        row = totals.get(binding) or {}
+        bytes_in = _count(row, "bytes_in")
+        bytes_out = _count(row, "bytes_out")
+        objects.append({
+            "id": binding,
+            "binding": binding,
+            "name": durable_object_label(binding),
+            "bytesIn": bytes_in,
+            "bytesOut": bytes_out,
+            "bytesTotal": min(
+                bytes_in + bytes_out, DURABLE_OBJECT_TRAFFIC_MAX),
+            "messages": _count(row, "messages"),
+            "updatedAt": _count(row, "updated_at"),
+        })
+    return objects
+
+
 async def world_ticket_handler(env, request):
     if method_name(request) != "GET":
         return json_response(
@@ -3587,11 +3772,13 @@ async def world_ticket_handler(env, request):
         try:
             response_data["systemCapacity"] = {
                 "tables": await _world_system_capacity(env),
+                "durableObjects": await _world_durable_objects(env),
             }
         except Exception:
             # Capacity telemetry is optional; authentication and multiplayer
             # entry continue to work while D1 is unavailable or migrating.
-            response_data["systemCapacity"] = {"tables": []}
+            response_data["systemCapacity"] = {
+                "tables": [], "durableObjects": []}
     return json_response(
         response_data,
         cache_control="no-store, max-age=0, must-revalidate",
@@ -33144,9 +33331,13 @@ class ForkMeshWorld(DurableObject):
 
     The object uses the WebSocket Hibernation API, with the current allowlisted
     public state held only in each live socket's attachment. It never opens
-    Durable Object storage, D1, KV, R2, or chat history. Once a socket closes
-    there is no history to read back and its random peer id is gone.
+    Durable Object storage, KV, R2, or chat history, and the only D1 rows it
+    writes are content-free aggregates (moderation blocks and the System
+    Capacity byte counters). Once a socket closes there is no history to read
+    back and its random peer id is gone.
     """
+
+    traffic_binding = "FORKMESH_WORLD"
 
     async def fetch(self, request):
         path = urlparse(request.url).path
@@ -33479,6 +33670,9 @@ class ForkMeshWorld(DurableObject):
         if len(message.encode("utf-8")) > world_protocol.WORLD_MESSAGE_MAX_BYTES:
             self._safe_close(ws, 1009, "message too large")
             return
+        durable_object_traffic_note(
+            self, bytes_in=len(message.encode("utf-8")), messages=1)
+        await durable_object_traffic_flush(self)
 
         state = self._socket_state(ws)
         if not state.get("id"):
@@ -33611,6 +33805,9 @@ class ForkMeshWorld(DurableObject):
 
     async def webSocketClose(self, ws, code, reason, was_clean):
         self._depart(ws, 1000, "")
+        # A closing socket is the last chance to bank this instance's pending
+        # byte counts before the object hibernates.
+        await durable_object_traffic_flush(self, force=True)
 
     async def webSocketError(self, ws, error):
         self._depart(ws, 1011, "socket error")
@@ -33654,10 +33851,14 @@ class ForkMeshWorld(DurableObject):
             self._safe_send(peer, outgoing)
 
     def _safe_send(self, ws, frame):
+        payload = json.dumps(frame, separators=(",", ":"))
         try:
-            ws.send(json.dumps(frame, separators=(",", ":")))
+            ws.send(payload)
         except Exception:
             self._safe_close(ws, 1011, "unavailable")
+            return
+        durable_object_traffic_note(
+            self, bytes_out=len(payload.encode("utf-8")))
 
     def _safe_close(self, ws, code, reason):
         try:
@@ -33668,6 +33869,8 @@ class ForkMeshWorld(DurableObject):
 
 class ForkMeshOfficeRoom(DurableObject):
     """Ephemeral authorized avatar and chair relay for one Office room."""
+
+    traffic_binding = "FORKMESH_OFFICE_ROOM"
 
     async def fetch(self, request):
         path = urlparse(request.url).path
@@ -34103,6 +34306,9 @@ class ForkMeshOfficeRoom(DurableObject):
         if len(message.encode("utf-8")) > world_protocol.OFFICE_MESSAGE_MAX_BYTES:
             self._safe_close(ws, 1009, "message too large")
             return
+        durable_object_traffic_note(
+            self, bytes_in=len(message.encode("utf-8")), messages=1)
+        await durable_object_traffic_flush(self)
         state = self._socket_state(ws)
         if not state.get("id"):
             self._safe_close(ws, 1008, "invalid presence")
@@ -34191,6 +34397,7 @@ class ForkMeshOfficeRoom(DurableObject):
 
     async def webSocketClose(self, ws, code, reason, was_clean):
         self._depart(ws, 1000, "")
+        await durable_object_traffic_flush(self, force=True)
 
     async def webSocketError(self, ws, error):
         self._depart(ws, 1011, "socket error")
@@ -34222,10 +34429,14 @@ class ForkMeshOfficeRoom(DurableObject):
             self._safe_send(peer, frame)
 
     def _safe_send(self, ws, frame):
+        payload = json.dumps(frame, separators=(",", ":"))
         try:
-            ws.send(json.dumps(frame, separators=(",", ":")))
+            ws.send(payload)
         except Exception:
             self._safe_close(ws, 1011, "unavailable")
+            return
+        durable_object_traffic_note(
+            self, bytes_out=len(payload.encode("utf-8")))
 
     def _close_all(self, code, reason):
         try:
@@ -34252,6 +34463,8 @@ class ForkMeshRoom(DurableObject):
     # (ctx.getWebSockets("chat")), never in instance attributes — those would not
     # survive eviction. The read-only "observer" count socket was retired: the
     # live count is now served over HTTP via the cached /api/network/stats.
+    traffic_binding = "FORKMESH_MAINNODE_ROOM"
+
     async def fetch(self, request):
         parsed_url = urlparse(request.url)
         path = parsed_url.path
@@ -34306,8 +34519,12 @@ class ForkMeshRoom(DurableObject):
                         server.send(body)
                     except Exception:
                         pass
+                    else:
+                        durable_object_traffic_note(
+                            self, bytes_out=len(str(body).encode("utf-8")))
             except Exception:
                 pass
+            await durable_object_traffic_flush(self)
 
         return JsResponse.new(None, to_js({"status": 101, "webSocket": client}))
 
@@ -34374,6 +34591,8 @@ class ForkMeshRoom(DurableObject):
         if not await self._private_room_current(ws):
             self._close_all_chat_sockets(1008, "room access revoked")
             return
+        frame_bytes = len(message.encode("utf-8"))
+        durable_object_traffic_note(self, bytes_in=frame_bytes, messages=1)
         sender_id = _ws_attr(ws, "id")
         for peer in self._live_chat_sockets(close_stale=True):
             if _ws_attr(peer, "id") == sender_id:
@@ -34382,6 +34601,9 @@ class ForkMeshRoom(DurableObject):
                 peer.send(message)
             except Exception:
                 pass
+            else:
+                durable_object_traffic_note(self, bytes_out=frame_bytes)
+        await durable_object_traffic_flush(self)
 
         # Retain durable conversation messages (still encrypted) for late joiners.
         await self._maybe_retain(ws, message)
@@ -34516,6 +34738,7 @@ class ForkMeshRoom(DurableObject):
 
     async def webSocketClose(self, ws, code, reason, was_clean):
         self._safe_close(ws, 1000, "")
+        await durable_object_traffic_flush(self, force=True)
 
     async def webSocketError(self, ws, error):
         return
@@ -34546,6 +34769,8 @@ class ForkMeshNodes(DurableObject):
     # items and control commands all stay on their existing signed HTTPS
     # routes; a pushed frame only tells the node to run the one consolidated
     # GET /api/sync it would otherwise run on the slow fallback poll.
+    traffic_binding = "FORKMESH_NODES"
+
     async def fetch(self, request):
         parsed_url = urlparse(request.url)
         path = parsed_url.path
@@ -34564,12 +34789,17 @@ class ForkMeshNodes(DurableObject):
                     "repo": clean_string(query.get("repo", [""])[0], 200),
                 })
                 delivered = 0
+                frame_bytes = len(frame.encode("utf-8"))
                 for peer in self._live_node_sockets(close_stale=True):
                     try:
                         peer.send(frame)
                         delivered += 1
                     except Exception:
                         pass
+                    else:
+                        durable_object_traffic_note(
+                            self, bytes_out=frame_bytes, messages=1)
+                await durable_object_traffic_flush(self)
                 return json_response({"ok": True, "delivered": delivered})
             # One-shot snapshot of the live node count (internal diagnostics).
             return json_response(
@@ -34615,6 +34845,9 @@ class ForkMeshNodes(DurableObject):
         if len(message.encode("utf-8")) > NODE_EVENT_MAX_FRAME_BYTES:
             self._safe_close(ws, 1009, "message too large")
             return
+        durable_object_traffic_note(
+            self, bytes_in=len(message.encode("utf-8")), messages=1)
+        await durable_object_traffic_flush(self)
         now = int(Date.now())
         try:
             start = int(_ws_attr(ws, "rl_start", 0) or 0)
@@ -34638,13 +34871,18 @@ class ForkMeshNodes(DurableObject):
         except Exception:
             return
         if kind == "ping":
+            pong = json.dumps({"type": "pong"})
             try:
-                ws.send(json.dumps({"type": "pong"}))
+                ws.send(pong)
             except Exception:
                 pass
+            else:
+                durable_object_traffic_note(
+                    self, bytes_out=len(pong.encode("utf-8")))
 
     async def webSocketClose(self, ws, code, reason, was_clean):
         self._safe_close(ws, 1000, "")
+        await durable_object_traffic_flush(self, force=True)
 
     async def webSocketError(self, ws, error):
         return
