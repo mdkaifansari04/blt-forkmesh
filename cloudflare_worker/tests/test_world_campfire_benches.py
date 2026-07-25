@@ -33,7 +33,13 @@ def test_sitting_holds_a_seated_pose_facing_the_fire():
     # adhoc #303: the pitch is positive so the legs swing forward over the
     # front edge of the bench instead of out behind the sitter.
     assert "applySeatedLegPose(player);" in sit
-    assert "const SEATED_LEG_PITCH = 1.3;" in SCENE
+    assert "const SEATED_LEG_PITCH = 1.45;" in SCENE
+    # adhoc #323: the knee folds back by the same amount, so the shin drops
+    # straight down off the front edge instead of the whole leg pivoting.
+    assert "const SEATED_KNEE_PITCH = -SEATED_LEG_PITCH;" in SCENE
+    # Sitters land by their hips, not by their feet: the pose used to leave the
+    # avatar standing on the plank with its shoes still flat on it.
+    assert "seatedAvatarY(" in sit
     # The pose is held every frame instead of applied once as a teleport.
     assert "applyBenchSeatPose();" in SCENE
     assert "function standUpFromBench()" in SCENE
@@ -137,4 +143,51 @@ def test_remote_bench_sitters_render_seated():
         'const CAMPFIRE_SEATED_ACTIVITY = "sitting beside the campfire";' in SCENE
     )
     assert "avatar.userData.campfireSeated" in SCENE
-    assert "seatedAtCampfire\n        ? SEATED_LEG_PITCH" in SCENE
+    assert "if (seatedAtCampfire) {\n        applySeatedLegPose(avatar);" in SCENE
+    # Remote sitters ride the plank by their hips too, so the whole circle
+    # reads the same way the local player does.
+    assert "avatar.userData.targetPosition.y = seatedAvatarY(" in SCENE
+    assert "figure.position.y = seatedAvatarY(" in SCENE
+
+
+def test_legs_hinge_at_the_hip_and_knee_with_the_shoe_on_the_shin():
+    # adhoc #323: a single leg box pivoting about its own centre pushed half
+    # the leg out behind the sitter and left the shoes behind on the plank.
+    avatar = SCENE.split("function createAvatar", 1)[1].split(
+        "function updateAvatarBadge", 1
+    )[0]
+    assert "const buildLeg = (side) => {" in avatar
+    assert "hip.position.set(side * 0.3, AVATAR_HIP_Y, 0);" in avatar
+    assert "knee.position.y = -AVATAR_LEG_SEGMENT;" in avatar
+    # The shoe is a child of the knee, so feet travel with the leg they belong
+    # to instead of staying planted under the body.
+    assert "knee.add(foot);" in avatar
+    assert "leftKnee: leftLegRig.knee," in avatar
+    assert "rightKnee: rightLegRig.knee," in avatar
+    # Straight-legged poses lock the knees back out.
+    assert "function applyLegPitch" in SCENE
+    assert "if (legs.leftKnee) legs.leftKnee.rotation.x = 0;" in SCENE
+
+
+def test_bench_height_is_derived_from_the_seated_pose():
+    # A plank the sitter's shins cannot reach the ground from reads as
+    # hovering, so the bench is built up to the seated hip height instead.
+    # Derived from the pose, so retuning the pitch cannot leave the bench at a
+    # height the sitter's legs no longer match.
+    assert (
+        "const SEATED_SEAT_TO_SOLE =\n"
+        "  AVATAR_LEG_SEGMENT * Math.cos(SEATED_LEG_PITCH) +\n"
+        "  AVATAR_KNEE_TO_SOLE -\n"
+        "  SEATED_HIP_ABOVE_SEAT;" in SCENE
+    )
+    assert (
+        "const CAMPFIRE_SEAT_TOP_Y = WORLD_WALKING_PLANE_Y + SEATED_SEAT_TO_SOLE;"
+        in SCENE
+    )
+    ring = SCENE.split("function rebuildCampfireCircle", 1)[1].split(
+        "setShadows(campfire);", 1
+    )[0]
+    assert "seat.position.y = CAMPFIRE_SEAT_Y;" in ring
+    # The legs grow with the plank so the bench still stands on the ground.
+    assert "new THREE.BoxGeometry(0.16, CAMPFIRE_BENCH_LEG_HEIGHT, 0.5)" in ring
+    assert "leg.position.set(end, CAMPFIRE_BENCH_LEG_HEIGHT / 2, 0);" in ring
