@@ -339,6 +339,24 @@ def test_layout_editor_rotates_with_the_r_key_and_saves_the_heading():
     assert "rotation: Number.isFinite(rotation) ? rotation : 0," in world_js
 
 
+def test_layout_editor_rotates_with_the_wheel_while_dragging():
+    scene_js = WORLD_SCENE_JS.read_text(encoding="utf-8")
+    # While a handle drag is live the wheel turns the object instead of
+    # zooming the camera; the release then saves position and heading.
+    assert "rotateActiveLayoutObject(Math.sign(deltaPixels))" in scene_js
+    wheel_grab = scene_js.index(
+        "rotateActiveLayoutObject(Math.sign(deltaPixels))")
+    zoom = scene_js.index("setCameraZoom(currentZoom", wheel_grab)
+    assert wheel_grab < zoom
+    # A mid-drag turn folds its recentring shift into the drag offset so the
+    # next pointer move does not snap the object back.
+    assert "layoutDragOffset.x += pivot.x - moved.x;" in scene_js
+    assert "layoutDragOffset.z += pivot.z - moved.z;" in scene_js
+    # The one-per-session hint tells administrators the wheel gesture exists.
+    world_js = WORLD_JS.read_text(encoding="utf-8")
+    assert "mouse wheel while dragging" in world_js
+
+
 def test_individual_placards_and_node_cabinets_are_movable():
     scene_js = WORLD_SCENE_JS.read_text(encoding="utf-8")
     # Each placard carries its own layout id, so a sign can be nudged without

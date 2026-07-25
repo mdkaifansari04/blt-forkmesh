@@ -9967,6 +9967,12 @@ export function createWorldScene({
     );
     const moved = pivot ? layoutHandlePoint(target) : null;
     if (pivot && moved) {
+      // A mid-drag turn shifts the object to keep its centre still; fold the
+      // shift into the drag offset or the next pointer move would undo it.
+      if (draggedLayoutObject === target) {
+        layoutDragOffset.x += pivot.x - moved.x;
+        layoutDragOffset.z += pivot.z - moved.z;
+      }
       moveWorldObject(
         target,
         target.position.x + (pivot.x - moved.x),
@@ -10087,6 +10093,13 @@ export function createWorldScene({
           : 1);
     if (!Number.isFinite(deltaPixels) || deltaPixels === 0) return;
     event.preventDefault();
+    // While an object is being dragged by its pink move handle the wheel
+    // turns it one step per notch instead of zooming the camera; releasing
+    // the drag saves the settled position and heading together.
+    if (draggedLayoutObject) {
+      rotateActiveLayoutObject(Math.sign(deltaPixels));
+      return;
+    }
     pointerCoordinates(event);
     raycaster.setFromCamera(pointer, camera);
     const bulletinHit = raycaster
