@@ -4473,9 +4473,10 @@ class ForkMeshWorld extends HTMLElement {
             persistedInactive: true,
           }))
         : [];
-    // Public chat roster directory (user profiles only) doubles as the Member
-    // Lounge population: every public registered account gets a seat, and the
-    // roster length feeds the total-members sign at the lounge front.
+    // Public chat roster directory (user profiles only) doubles as the
+    // campfire-circle population: every public registered account gets a
+    // stool around the fire, and the roster length feeds the total-members
+    // sign at the lounge front.
         this.memberDirectory =
       membersResult.status === "fulfilled" &&
       Array.isArray(membersResult.value?.users)
@@ -15606,9 +15607,10 @@ class ForkMeshWorld extends HTMLElement {
 
   syncMemberLounge() {
     if (!this.world?.updateMemberLounge) return;
-    // Seat every public registered account in the Member Lounge, except the
-    // ones already rendered as live or opted-in idle avatars — those keep
-    // their richer presence avatar instead of a duplicate directory figure.
+    // Seat every public registered account in the circle around the campfire,
+    // except the ones already rendered as live or opted-in idle avatars —
+    // those keep their richer presence avatar instead of a duplicate
+    // directory figure, leaving their campfire stool visibly empty.
     const present = new Set([
       String(this.identity?.name || "").trim().toLowerCase(),
     ]);
