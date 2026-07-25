@@ -32,12 +32,14 @@ const CAMERA_ZOOM_MIN = 0.06;
 const CAMERA_ZOOM_MAX = 28;
 const CAMERA_FAR_PLANE = 1200;
 const CAMERA_LOOK_SENSITIVITY = 0.0022;
-const CAMERA_PITCH_MIN = 0.08;
+// Dragging upward lowers the orbit eye beneath the target, which is how this
+// camera looks into the sky. Allow the full arc in both directions.
+const CAMERA_PITCH_MIN = -Math.PI / 2 + 0.01;
 // Stop just shy of vertical so the camera stays numerically stable while a
 // player can still look directly into the sky.
 const CAMERA_PITCH_MAX = Math.PI / 2 - 0.01;
 const FIRST_PERSON_EYE_HEIGHT = 2.2;
-const FIRST_PERSON_PITCH_MIN = -1.1;
+const FIRST_PERSON_PITCH_MIN = -Math.PI / 2 + 0.01;
 const FIRST_PERSON_PITCH_MAX = Math.PI / 2 - 0.01;
 const REPOSITORY_FIRST_PERSON_DISTANCE = 5.5;
 const REPOSITORY_FIRST_PERSON_PITCH = -0.08;
@@ -388,25 +390,6 @@ function badgeTexture(THREE, identity, accent = "#9ef7c6") {
       86,
       453,
     );
-  });
-}
-
-function repositorySubscriberIconTexture(THREE, subscriber, accent = "#d5b6ff") {
-  return canvasTexture(THREE, 128, 128, (context) => {
-    context.clearRect(0, 0, 128, 128);
-    context.beginPath();
-    context.arc(64, 64, 58, 0, Math.PI * 2);
-    context.fillStyle = "#0b1c19";
-    context.fill();
-    context.strokeStyle = accent;
-    context.lineWidth = 7;
-    context.stroke();
-    context.textAlign = "center";
-    context.textBaseline = "middle";
-    context.font = '52px "Apple Color Emoji", "Segoe UI Emoji", sans-serif';
-    context.fillStyle = "#f1fff6";
-    const flag = String(subscriber?.flag || "◌").slice(0, 2);
-    context.fillText(flag, 64, 62);
   });
 }
 
@@ -2441,12 +2424,29 @@ function repositorySizeLabelSprite(THREE, title, subtitle, color) {
   return sprite;
 }
 
-function repositoryStarTextTexture(THREE, count) {
-  // The real repo_stars total, in black, sitting inside the star itself. The
-  // number is the whole label: it shrinks to fit so a five-figure count still
-  // stays inside the points instead of spilling into empty sky.
-  return canvasTexture(THREE, 512, 256, (context) => {
+function repositoryStarPlaneTexture(THREE, count, starred = false) {
+  // A single, fixed upright plane avoids the chunky extruded-star silhouette
+  // at close range. Its transparent texture preserves the actual star shape
+  // while keeping the complete repo_stars value readable at its centre.
+  return canvasTexture(THREE, 512, 512, (context) => {
     context.clearRect(0, 0, 512, 256);
+    const outerRadius = 224;
+    const innerRadius = 104;
+    context.beginPath();
+    for (let point = 0; point < 10; point += 1) {
+      const angle = -Math.PI / 2 + point * (Math.PI / 5);
+      const radius = point % 2 === 0 ? outerRadius : innerRadius;
+      const x = 256 + Math.cos(angle) * radius;
+      const y = 256 + Math.sin(angle) * radius;
+      if (point === 0) context.moveTo(x, y);
+      else context.lineTo(x, y);
+    }
+    context.closePath();
+    context.fillStyle = starred ? "#f7c96b" : "#9ef7c6";
+    context.fill();
+    context.lineWidth = 14;
+    context.strokeStyle = starred ? "#b87418" : "#20764f";
+    context.stroke();
     context.textAlign = "center";
     context.textBaseline = "middle";
     context.fillStyle = "#07120e";
@@ -2457,9 +2457,262 @@ function repositoryStarTextTexture(THREE, count) {
     do {
       context.font = `900 ${size}px "ForkMesh Mono", ui-monospace, monospace`;
       size -= 8;
-    } while (size > 40 && context.measureText(value).width > 336);
-    context.fillText(value, 256, 132);
+    } while (size > 40 && context.measureText(value).width > 230);
+    context.fillText(value, 256, 265);
   });
+}
+
+const REPOSITORY_FOLLOWER_ACCENTS = [
+  "#d5b6ff",
+  "#8c8dff",
+  "#ff9eb7",
+  "#77d9ff",
+  "#9ef7c6",
+  "#f7c96b",
+];
+const REPOSITORY_FOLLOWER_SKINS = [
+  "#d59a70",
+  "#9a6043",
+  "#f0bd91",
+  "#704832",
+  "#c98255",
+];
+const REPOSITORY_FOLLOWERS_VISIBLE = 8;
+
+function repositoryFollowerSeed(follower) {
+  return hashNumber(
+    `${follower?.handle || ""}|${follower?.profileUrl || ""}`,
+  );
+}
+
+function repositoryFollowerInitials(follower) {
+  const source = String(follower?.name || follower?.handle || "")
+    .replace(/^@+/, "")
+    .trim();
+  const parts = source.split(/[\s._@\-/]+/u).filter(Boolean);
+  const initials = parts
+    .slice(0, 2)
+    .map((part) => [...part][0] || "")
+    .join("");
+  return (initials || "?").toLocaleUpperCase().slice(0, 2);
+}
+
+function repositoryFollowerFollowedLabel(followedAt) {
+  const stamp = Number(followedAt);
+  if (!Number.isSafeInteger(stamp) || stamp <= 0) return "";
+  const date = new Date(stamp);
+  if (Number.isNaN(date.getTime())) return "";
+  return `FOLLOWING SINCE ${date.toISOString().slice(0, 10)}`;
+}
+
+function loadRepositoryFollowerAvatar(url, onLoad) {
+  // The follower's published avatar, fetched anonymously (no cookies, no
+  // referrer) and only used once it decodes. A server without CORS headers
+  // simply fails here and the card keeps its generated initials plate.
+  if (!url) return;
+  const image = new Image();
+  image.crossOrigin = "anonymous";
+  image.referrerPolicy = "no-referrer";
+  image.decoding = "async";
+  image.onload = () => {
+    if (image.naturalWidth > 0 && image.naturalHeight > 0) onLoad(image);
+  };
+  image.onerror = () => {};
+  image.src = url;
+}
+
+function drawRepositoryFollowerAvatar(
+  context,
+  follower,
+  accent,
+  image,
+  x,
+  y,
+  size,
+) {
+  const radius = size / 2;
+  context.save();
+  context.beginPath();
+  context.arc(x + radius, y + radius, radius, 0, Math.PI * 2);
+  context.closePath();
+  context.clip();
+  if (image) {
+    // Cover-crop the remote avatar into the circle without distorting it.
+    const scale = size / Math.min(image.naturalWidth, image.naturalHeight);
+    const width = image.naturalWidth * scale;
+    const height = image.naturalHeight * scale;
+    context.drawImage(
+      image,
+      x + (size - width) / 2,
+      y + (size - height) / 2,
+      width,
+      height,
+    );
+  } else {
+    context.fillStyle = "#0b1c19";
+    context.fillRect(x, y, size, size);
+    context.fillStyle = accent;
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = `800 ${Math.round(size * 0.42)}px "ForkMesh Mono", ui-monospace, monospace`;
+    context.fillText(
+      repositoryFollowerInitials(follower),
+      x + radius,
+      y + radius + size * 0.02,
+    );
+  }
+  context.restore();
+  context.beginPath();
+  context.arc(x + radius, y + radius, radius - 2, 0, Math.PI * 2);
+  context.strokeStyle = accent;
+  context.lineWidth = 5;
+  context.stroke();
+}
+
+function repositoryFollowerCardTexture(THREE, follower, accent, image = null) {
+  // One follower, with everything the fediverse publishes about them: avatar,
+  // display name, full @handle, home instance, bio, and when the follow landed.
+  return canvasTexture(THREE, 560, 320, (context) => {
+    context.clearRect(0, 0, 560, 320);
+    context.fillStyle = "rgba(7, 18, 15, 0.9)";
+    roundedRect(context, 6, 6, 548, 308, 26);
+    context.fill();
+    context.strokeStyle = accent;
+    context.lineWidth = 4;
+    context.stroke();
+    drawRepositoryFollowerAvatar(context, follower, accent, image, 30, 34, 108);
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    const name = String(follower?.name || "").trim();
+    const handle = String(follower?.handle || "").trim();
+    context.font = '800 40px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#f1fff6";
+    context.fillText((name || handle || "fediverse account").slice(0, 20), 158, 66);
+    context.font = '700 27px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = accent;
+    context.fillText((handle || follower?.instance || "").slice(0, 28), 158, 106);
+    context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#9fb8ad";
+    const meta = [
+      String(follower?.instance || "").slice(0, 26),
+      repositoryFollowerFollowedLabel(follower?.followedAt),
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    context.fillText(meta.slice(0, 46), 158, 140);
+    const about = String(follower?.about || "").trim();
+    context.font = '600 24px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = about ? "#d9ffea" : "#65776f";
+    const words = (about || "No public bio.").split(/\s+/u);
+    let line = "";
+    let row = 0;
+    for (const word of words) {
+      const candidate = line ? `${line} ${word}` : word;
+      if (context.measureText(candidate).width > 494 && line) {
+        context.fillText(line, 32, 196 + row * 36);
+        row += 1;
+        line = word;
+        if (row >= 3) break;
+      } else {
+        line = candidate;
+      }
+    }
+    if (row < 3 && line) context.fillText(line, 32, 196 + row * 36);
+  });
+}
+
+function makeRepositoryFollowerFigure(THREE, follower) {
+  // A seated visitor on the ground under the repository circle, leaning back to
+  // look up at it. Purpose-built (not the player avatar) so the crowd stays
+  // small, cheap, and clearly a gallery rather than another walking body.
+  const seed = repositoryFollowerSeed(follower);
+  const accent =
+    REPOSITORY_FOLLOWER_ACCENTS[seed % REPOSITORY_FOLLOWER_ACCENTS.length];
+  const group = new THREE.Group();
+  group.name = `repository-follower:${follower.handle || follower.profileUrl}`;
+  const cloth = makeMaterial(THREE, accent, {
+    emissive: accent,
+    emissiveIntensity: 0.14,
+    roughness: 0.74,
+    metalness: 0.06,
+  });
+  const skin = makeMaterial(
+    THREE,
+    REPOSITORY_FOLLOWER_SKINS[seed % REPOSITORY_FOLLOWER_SKINS.length],
+    { roughness: 0.92 },
+  );
+  const dark = makeMaterial(THREE, "#12241f", { roughness: 0.86 });
+
+  const legs = new THREE.Mesh(new THREE.BoxGeometry(1.12, 0.34, 0.94), dark);
+  legs.position.set(0, 0.19, -0.2);
+  group.add(legs);
+  const torso = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.38, 0.56, 6, 14),
+    cloth,
+  );
+  torso.position.set(0, 0.82, 0.06);
+  // Leaning back is what makes the pose read as "looking up at the circle".
+  torso.rotation.x = 0.22;
+  group.add(torso);
+  const armGeometry = new THREE.CapsuleGeometry(0.12, 0.44, 5, 10);
+  const leftArm = new THREE.Mesh(armGeometry, cloth);
+  leftArm.position.set(-0.46, 0.62, -0.1);
+  leftArm.rotation.set(0.5, 0, 0.42);
+  group.add(leftArm);
+  const rightArm = new THREE.Mesh(armGeometry, cloth);
+  rightArm.position.set(0.46, 0.62, -0.1);
+  rightArm.rotation.set(0.5, 0, -0.42);
+  group.add(rightArm);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.33, 20, 16), skin);
+  head.position.set(0, 1.44, 0.16);
+  group.add(head);
+  const hair = new THREE.Mesh(
+    new THREE.SphereGeometry(0.35, 18, 12, 0, Math.PI * 2, 0, Math.PI * 0.55),
+    dark,
+  );
+  hair.position.set(0, 1.5, 0.14);
+  // Tilted back with the head, so the face stays clear while they look up.
+  hair.rotation.x = 0.3;
+  group.add(hair);
+  const halo = new THREE.Mesh(
+    new THREE.TorusGeometry(0.42, 0.03, 6, 28),
+    makeMaterial(THREE, accent, {
+      emissive: accent,
+      emissiveIntensity: 1.1,
+      metalness: 0.3,
+      roughness: 0.3,
+    }),
+  );
+  halo.position.set(0, 0.03, -0.16);
+  halo.rotation.x = Math.PI / 2;
+  group.add(halo);
+  setShadows(group, true, true);
+
+  const card = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: repositoryFollowerCardTexture(THREE, follower, accent),
+      transparent: true,
+      depthTest: true,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  card.name = `repository-follower-card:${follower.handle || follower.profileUrl}`;
+  card.scale.set(2.45, 1.4, 1);
+  card.position.set(0, 2.05, 0);
+  card.renderOrder = 13;
+  group.add(card);
+  loadRepositoryFollowerAvatar(follower.avatar, (image) => {
+    // The layer may have been rebuilt (catalog refresh) while the avatar was
+    // in flight; a detached card is dropped instead of repainted.
+    if (!card.parent) return;
+    const next = repositoryFollowerCardTexture(THREE, follower, accent, image);
+    card.material.map?.dispose?.();
+    card.material.map = next;
+    card.material.needsUpdate = true;
+  });
+  group.userData.repositoryFollower = { ...follower };
+  return group;
 }
 
 function safeRepositoryPath(value) {
@@ -7161,6 +7414,7 @@ export function createWorldScene({
             ? Math.min(rawBytes, 2 ** 50)
             : 0;
         const rawStarCount = Number(record.starCount);
+        const rawFollowerCount = Number(record.fediverseFollowerCount);
         return {
           owner,
           name,
@@ -7174,6 +7428,16 @@ export function createWorldScene({
               ? Math.min(rawStarCount, 10_000_000)
               : null,
           starred: record.starred === true,
+          fediverseFollowerCount:
+            Number.isSafeInteger(rawFollowerCount) && rawFollowerCount >= 0
+              ? Math.min(rawFollowerCount, 10_000_000)
+              : null,
+          fediverseFollowerStatus: String(
+            record.fediverseFollowerStatus || "idle",
+          ).slice(0, 20),
+          fediverseFollowers: Array.isArray(record.fediverseFollowers)
+            ? record.fediverseFollowers.slice(0, REPOSITORY_FOLLOWERS_VISIBLE)
+            : [],
         };
       })
       .sort((left, right) => left.key.localeCompare(right.key));
@@ -7194,6 +7458,11 @@ export function createWorldScene({
         record.source,
         record.starCount,
         record.starred,
+        record.fediverseFollowerCount,
+        record.fediverseFollowerStatus,
+        // Identity only: a follower's avatar/bio arriving does not need a
+        // portal rebuild, but a different follower does.
+        record.fediverseFollowers.map((follower) => follower?.handle || ""),
       ]),
     ]);
     const previousCatalog = world.userData.repositoryCatalogLayer;
@@ -7383,58 +7652,29 @@ export function createWorldScene({
           starCount: record.starCount,
           starred: record.starred,
         };
-        const starShape = new THREE.Shape();
-        for (let point = 0; point < 10; point += 1) {
-          // Start at the top so the star reads point-up, and keep the inner
-          // radius wide enough for the count to sit legibly in the middle.
-          const angle = Math.PI / 2 + point * (Math.PI / 5);
-          const radius = point % 2 === 0 ? 0.94 : 0.44;
-          const x = Math.cos(angle) * radius;
-          const y = Math.sin(angle) * radius;
-          if (point === 0) starShape.moveTo(x, y);
-          else starShape.lineTo(x, y);
-        }
-        starShape.closePath();
+        // This is intentionally a fixed plane, not a 3D extrusion or a
+        // camera-following sprite. Every repository therefore gets the same
+        // readable, point-up star control when approached from the ring.
         const starButton = new THREE.Mesh(
-          new THREE.ExtrudeGeometry(starShape, {
-            depth: 0.14,
-            bevelEnabled: true,
-            bevelSize: 0.025,
-            bevelThickness: 0.025,
-            bevelSegments: 2,
-          }),
-          makeMaterial(THREE, record.starred ? "#f7c96b" : "#9ef7c6", {
-            emissive: record.starred ? "#d69721" : "#2ca76c",
-            emissiveIntensity: 1.15,
-            metalness: 0.58,
-            roughness: 0.22,
-          }),
-        );
-        starButton.name = `repository-star-button:${record.owner}/${record.name}`;
-        starButton.position.set(0, 4.05, 0.35);
-        starButton.userData.landmark = "repositories";
-        starButton.userData.repositoryStar = starData;
-        node.add(starButton);
-        interactive.push(starButton);
-        // The total belongs directly on the control. This avoids a floating
-        // count bubble and makes the action read as a single star button. The
-        // plane spans the star's inner pentagon, so the black digits read
-        // against the gold/green face and never over open sky.
-        const starText = new THREE.Mesh(
-          new THREE.PlaneGeometry(0.84, 0.42),
+          new THREE.PlaneGeometry(1.92, 1.92),
           new THREE.MeshBasicMaterial({
-            map: repositoryStarTextTexture(THREE, record.starCount),
+            map: repositoryStarPlaneTexture(
+              THREE,
+              record.starCount,
+              record.starred,
+            ),
             transparent: true,
+            side: THREE.DoubleSide,
             depthWrite: false,
             toneMapped: false,
           }),
         );
-        starText.name = `repository-star-count:${record.owner}/${record.name}`;
-        starText.position.set(0, 4.05, 0.5);
-        starText.userData.landmark = "repositories";
-        starText.userData.repositoryStar = starData;
-        node.add(starText);
-        interactive.push(starText);
+        starButton.name = `repository-star-button:${record.owner}/${record.name}`;
+        starButton.position.set(0, 4.05, 0.5);
+        starButton.userData.landmark = "repositories";
+        starButton.userData.repositoryStar = starData;
+        node.add(starButton);
+        interactive.push(starButton);
         const starCaption = repositorySizeLabelSprite(
           THREE,
           Number.isSafeInteger(record.starCount)
@@ -7473,42 +7713,69 @@ export function createWorldScene({
       base.position.set(0, -2.38, 0);
       base.scale.x = portalDensityScale;
       node.add(base);
-      const subscribers = Array.isArray(record.mastodonSubscribers)
-        ? record.mastodonSubscribers
-            .filter((subscriber) => String(subscriber?.name || subscriber?.handle || "").trim())
-            .slice(0, 6)
-        : [];
-      if (subscribers.length) {
-        const subscriberLayer = new THREE.Group();
-        subscriberLayer.name = "repository-mastodon-subscribers";
-        subscribers.forEach((subscriber, subscriberIndex) => {
-          const name = String(
-            subscriber.name || subscriber.handle || "subscriber",
-          ).slice(0, 20);
-          const icon = new THREE.Mesh(
-            new THREE.PlaneGeometry(0.46, 0.46),
-            new THREE.MeshBasicMaterial({
-              map: repositorySubscriberIconTexture(THREE, subscriber),
-              transparent: true,
-              depthWrite: false,
-            }),
+      // Who follows this repository over ActivityPub, seated on the ground
+      // inside the ring and looking back up at the circle. Only the selected
+      // repository draws its gallery: these are real remote accounts read from
+      // ap_followers, not a decoration, and 200 crowds would bury the district.
+      if (isActive && !record.isPrivate) {
+        const followers = Array.isArray(record.fediverseFollowers)
+          ? record.fediverseFollowers.filter(
+              (follower) =>
+                follower &&
+                String(follower.handle || follower.profileUrl || "").trim(),
+            )
+          : [];
+        const reportedFollowers = Number.isSafeInteger(
+          record.fediverseFollowerCount,
+        )
+          ? record.fediverseFollowerCount
+          : followers.length;
+        const followerStatus = String(record.fediverseFollowerStatus || "idle");
+        const gallery = new THREE.Group();
+        gallery.name = `repository-fediverse-followers:${record.owner}/${record.name}`;
+        // Ground level for this portal (the plinth sits at -2.38) and inside
+        // the perimeter ring, so the crowd faces back out at the circle.
+        const seated = followers.slice(0, REPOSITORY_FOLLOWERS_VISIBLE);
+        seated.forEach((follower, followerIndex) => {
+          // Two per row, rows stepping inward: each card then sits at its own
+          // depth, so eight of them never overlap into an unreadable pile.
+          const column = followerIndex % 2;
+          const row = Math.floor(followerIndex / 2);
+          const figure = makeRepositoryFollowerFigure(THREE, follower);
+          figure.position.set(
+            (column - 0.5) * 2.72,
+            // The portal plinth ends at -2.38; -2.53 puts them on the ground.
+            -2.53,
+            2.2 + row * 2.4,
           );
-          const column = subscriberIndex % 3;
-          const row = Math.floor(subscriberIndex / 3);
-          icon.position.set((column - 1) * 0.7, -1.05 - row * 0.72, 0.52);
-          icon.rotation.y = Math.PI;
-          subscriberLayer.add(icon);
-          const details = [
-            subscriber.handle || subscriber.network || "Mastodon",
-            subscriber.status || subscriber.instance || "subscribed",
-          ].filter(Boolean).join(" · ").slice(0, 34);
-          const label = makeLabelSprite(THREE, name, details, "#d5b6ff");
-          label.scale.set(1.05, 0.34, 1);
-          label.position.set(icon.position.x, icon.position.y - 0.36, 0.53);
-          subscriberLayer.add(label);
+          // Turn around to look back up at the circle they follow.
+          figure.rotation.y = Math.PI;
+          gallery.add(figure);
         });
-        node.add(subscriberLayer);
-        node.userData.mastodonSubscribers = subscribers;
+        const caption = repositorySizeLabelSprite(
+          THREE,
+          followerStatus === "loading" && !reportedFollowers
+            ? "FEDIVERSE FOLLOWERS"
+            : `${reportedFollowers.toLocaleString("en-US")} FEDIVERSE ${
+                reportedFollowers === 1 ? "FOLLOWER" : "FOLLOWERS"
+              }`,
+          followerStatus === "unavailable"
+            ? "FOLLOWER LIST UNAVAILABLE"
+            : followerStatus === "loading"
+              ? "READING ap_followers…"
+              : reportedFollowers > seated.length
+                ? `WATCHING · SHOWING ${seated.length}`
+                : reportedFollowers
+                  ? "WATCHING THIS REPOSITORY"
+                  : "NOBODY FOLLOWS THIS REPOSITORY YET",
+          "#d5b6ff",
+        );
+        caption.name = `repository-fediverse-follower-caption:${record.owner}/${record.name}`;
+        caption.scale.set(3.4, 0.96, 1);
+        caption.position.set(0, -1.86, 1.1);
+        gallery.add(caption);
+        node.add(gallery);
+        node.userData.fediverseFollowers = seated;
       }
       node.userData.repositoryPortal = repositoryPortal;
       node.userData.repositoryFace = face;
