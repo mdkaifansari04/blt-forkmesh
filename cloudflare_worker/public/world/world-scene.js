@@ -3514,8 +3514,58 @@ export function createWorldScene({
     world.add(createTree(THREE, x, z, 0.72 + (index % 5) * 0.1, treeColors[index % treeColors.length]));
   }
 
-  for (let index = 0; index < 28; index += 1) {
-    const angle = (index / 28) * Math.PI * 2;
+  const campfire = new THREE.Group();
+  campfire.position.set(8, 0, 8);
+  const firePit = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.85, 1.0, 0.22, 12),
+    makeMaterial(THREE, "#4a4038", { roughness: 0.9 }),
+  );
+  firePit.position.y = 0.11;
+  campfire.add(firePit);
+  for (let index = 0; index < 8; index += 1) {
+    const stoneAngle = (index / 8) * Math.PI * 2;
+    const stone = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(0.22, 0),
+      makeMaterial(THREE, "#7d766c", { roughness: 0.95 }),
+    );
+    stone.position.set(
+      Math.cos(stoneAngle) * 1.05,
+      0.16,
+      Math.sin(stoneAngle) * 1.05,
+    );
+    campfire.add(stone);
+  }
+  for (let index = 0; index < 3; index += 1) {
+    const log = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.09, 0.09, 1.15, 8),
+      makeMaterial(THREE, "#5a3b24", { roughness: 0.9 }),
+    );
+    log.rotation.z = Math.PI / 2;
+    log.rotation.y = (index / 3) * Math.PI;
+    log.position.y = 0.3;
+    campfire.add(log);
+  }
+  const flame = new THREE.Mesh(
+    new THREE.ConeGeometry(0.42, 1.05, 8),
+    makeMaterial(THREE, "#ffb547", {
+      emissive: "#ff7a2f",
+      emissiveIntensity: 1.6,
+      transparent: true,
+      opacity: 0.92,
+    }),
+  );
+  flame.position.y = 0.82;
+  campfire.add(flame);
+  const fireLight = new THREE.PointLight("#ffa14d", 3.2, 14, 1.8);
+  fireLight.position.y = 1.1;
+  campfire.add(fireLight);
+  animated.push((time) => {
+    const flicker = 1 + Math.sin(time * 0.011) * 0.12 + Math.sin(time * 0.023) * 0.06;
+    flame.scale.set(flicker, 1 + Math.sin(time * 0.017) * 0.16, flicker);
+    fireLight.intensity = 3.2 + Math.sin(time * 0.013) * 0.7;
+  });
+  for (let index = 0; index < 6; index += 1) {
+    const angle = (index / 6) * Math.PI * 2;
     const bench = new THREE.Group();
     const seat = new THREE.Mesh(
       new THREE.BoxGeometry(2.1, 0.15, 0.52),
@@ -3531,12 +3581,13 @@ export function createWorldScene({
       leg.position.set(x, 0.3, 0);
       bench.add(leg);
     }
-    const radius = index % 2 ? 18.2 : 25;
-    bench.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
+    bench.position.set(Math.cos(angle) * 2.9, 0, Math.sin(angle) * 2.9);
     bench.rotation.y = -angle + Math.PI / 2;
     setShadows(bench);
-    world.add(bench);
+    campfire.add(bench);
   }
+  setShadows(campfire);
+  world.add(campfire);
 
   world.add(createWorkshopBarn(THREE));
   world.add(createSkyOffice(THREE));
