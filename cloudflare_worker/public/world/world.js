@@ -3800,6 +3800,9 @@ class ForkMeshWorld extends HTMLElement {
         },
         onWorldBulletinSelect: () => this.openLandmark("events"),
         onMastodonBoardSelect: () => this.openMastodonBoard(),
+        onMastodonOpenLink: (url) => {
+          if (url) window.open(url, "_blank", "noopener,noreferrer");
+        },
         onReferralBoardSelect: () => void this.copyReferralLink(),
         onSystemCapacityTableSelect: (table) =>
           this.openSystemCapacityTables(table),
@@ -6915,6 +6918,7 @@ class ForkMeshWorld extends HTMLElement {
     this.world?.updateMastodonKiosk?.({
       displayName: account.displayName,
       acct: `@${account.acct}@mastodon.social`,
+      profileURL: account.url || MASTODON_PROFILE_URL,
       headerURL: account.header,
       avatarURL: account.avatar,
       followers: formatMastodonCount(account.followersCount),
@@ -6939,6 +6943,7 @@ class ForkMeshWorld extends HTMLElement {
           (status.images.length ? "(image attachment)" : "Open toot");
         return {
           author: status.authorName,
+          url: status.url,
           date: status.createdAt
             ? new Date(status.createdAt).toLocaleDateString([], {
                 year: "numeric",

@@ -3978,6 +3978,18 @@ const MASTODON_KIOSK_WIDTH = 1536;
 const MASTODON_KIOSK_HEIGHT = 2048;
 const MASTODON_KIOSK_REFRESH_MS = 10 * 60 * 1000;
 
+// Shared by the board texture and the "open in a new tab" buttons so both
+// agree on which two toots are on screen for a given scroll offset.
+function mastodonKioskVisibleToots(snapshot, offset) {
+  const toots = Array.isArray(snapshot?.toots) ? snapshot.toots : [];
+  const start = clamp(
+    Number(offset) || 0,
+    0,
+    Math.max(0, toots.length - MASTODON_KIOSK_VISIBLE_TOOTS),
+  );
+  return toots.slice(start, start + MASTODON_KIOSK_VISIBLE_TOOTS);
+}
+
 function wrapCanvasText(context, text, x, y, maxWidth, lineHeight, maxLines = Infinity) {
   const words = String(text || "").split(/\s+/).filter(Boolean);
   let line = "";
@@ -4078,12 +4090,6 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
     shade.addColorStop(1, "rgba(15,16,36,0.9)");
     context.fillStyle = shade;
     context.fillRect(16, 16, 1504, 360);
-    context.fillStyle = "rgba(15,16,36,0.62)";
-    roundedRect(context, 40, 40, 420, 70, 20);
-    context.fill();
-    context.fillStyle = "#f2f3ff";
-    context.font = '800 44px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("MASTODON · LIVE", 64, 92);
     context.restore();
     // Avatar overlapping the banner edge, then identity beside it.
     const avatar = image(snapshot.avatarURL);
@@ -4152,7 +4158,7 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
       );
       context.textAlign = "left";
     }
-    const entries = toots.slice(start, start + MASTODON_KIOSK_VISIBLE_TOOTS);
+    const entries = mastodonKioskVisibleToots(snapshot, offset);
     if (!entries.length) {
       context.fillStyle = "#c8c9ff";
       context.font = '600 40px "ForkMesh Mono", ui-monospace, monospace';
@@ -4245,10 +4251,11 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
   });
 }
 
-// The pac-man dial that rides on the kiosk frame: the disc is whole right
-// after a fetch and is eaten away as the ten-minute refresh window elapses.
-// It repaints once a second on its own small texture so the big board texture
-// is only rebuilt when the snapshot itself changes.
+// The countdown dial that rides on the kiosk frame: a plain ring that is
+// whole right after a fetch and opens up (empties clockwise) as the
+// ten-minute refresh window elapses. It repaints once a second on its own
+// small texture so the big board texture is only rebuilt when the snapshot
+// itself changes.
 function mastodonCountdownTexture(
   THREE,
   remainingMs = MASTODON_KIOSK_REFRESH_MS,
@@ -4257,7 +4264,7 @@ function mastodonCountdownTexture(
 ) {
   const total = Math.max(1000, Number(totalMs) || MASTODON_KIOSK_REFRESH_MS);
   const remaining = clamp(Number(remainingMs) || 0, 0, total);
-  const seconds = Math.ceil(remaining / 1000);
+  const progress = loading ? 1 : remaining / total;
   return canvasTexture(THREE, 256, 256, (context) => {
     context.fillStyle = "rgba(15,16,36,0.88)";
     roundedRect(context, 6, 6, 244, 244, 36);
@@ -4267,38 +4274,22 @@ function mastodonCountdownTexture(
     roundedRect(context, 6, 6, 244, 244, 36);
     context.stroke();
     const centerX = 128;
-    const centerY = 108;
-    const radius = 66;
-    // A closed mouth would read as a plain disc, so keep a chomp that flips
-    // every second even when the window has only just reset.
-    const chomp = seconds % 2 === 0 ? 0.42 : 0.14;
-    const mouth = loading
-      ? 0.42
-      : clamp(Math.max(chomp, (1 - remaining / total) * Math.PI), 0, Math.PI);
-    context.fillStyle = loading ? "#8b9bf4" : "#ffd257";
+    const centerY = 128;
+    const radius = 82;
+    const ringWidth = 22;
+    context.strokeStyle = "rgba(139,141,184,0.35)";
+    context.lineWidth = ringWidth;
     context.beginPath();
-    context.moveTo(centerX, centerY);
-    context.arc(centerX, centerY, radius, mouth, Math.PI * 2 - mouth);
-    context.closePath();
-    context.fill();
-    context.fillStyle = "#191a2e";
+    context.arc(centerX, centerY, radius, 0, Math.PI * 2);
+    context.stroke();
+    const start = -Math.PI / 2;
+    const end = start + Math.PI * 2 * clamp(progress, 0, 1);
+    context.strokeStyle = loading ? "#8b9bf4" : "#ffd257";
+    context.lineWidth = ringWidth;
+    context.lineCap = "round";
     context.beginPath();
-    context.arc(centerX + 8, centerY - 32, 9, 0, Math.PI * 2);
-    context.fill();
-    context.textAlign = "center";
-    context.fillStyle = "#e8e9ff";
-    context.font = '800 46px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(
-      loading
-        ? "SYNC"
-        : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`,
-      centerX,
-      206,
-    );
-    context.fillStyle = "#8b8db8";
-    context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(loading ? "FETCHING" : "NEXT SYNC", centerX, 236);
-    context.textAlign = "left";
+    context.arc(centerX, centerY, radius, start, end);
+    context.stroke();
   });
 }
 
@@ -4335,6 +4326,8 @@ function createMastodonKiosk(THREE, interactive) {
   );
   face.name = "forkmesh-mastodon-kiosk-face";
   face.position.set(0, 6.95, 0.2);
+  // Sits beside the avatar/identity block now that the header no longer
+  // carries a "MASTODON · LIVE" pill of its own.
   const countdown = new THREE.Mesh(
     new THREE.PlaneGeometry(1.1, 1.1),
     new THREE.MeshBasicMaterial({
@@ -4344,8 +4337,8 @@ function createMastodonKiosk(THREE, interactive) {
     }),
   );
   countdown.name = "forkmesh-mastodon-kiosk-countdown";
-  countdown.position.set(2.0, 10.75, 0.3);
-  const makeKioskControl = (label, direction, y) => {
+  countdown.position.set(1.9, 9.85, 0.3);
+  const makeKioskControl = (label, direction, x, y) => {
     const control = new THREE.Mesh(
       new THREE.PlaneGeometry(0.7, 0.7),
       new THREE.MeshBasicMaterial({
@@ -4364,13 +4357,58 @@ function createMastodonKiosk(THREE, interactive) {
         toneMapped: false,
       }),
     );
-    control.position.set(3.1, y, 0.3);
+    control.position.set(x, y, 0.3);
     control.userData.interactive = `mastodon-kiosk-scroll-${direction}`;
     return control;
   };
-  const scrollUp = makeKioskControl("▲", "up", 11.35);
-  const scrollDown = makeKioskControl("▼", "down", 2.55);
-  group.add(base, post, frame, face, countdown, scrollUp, scrollDown);
+  // Both scroll controls now live at the bottom of the board, up to the left
+  // of down, out of the way of the toot cards above them.
+  const scrollUp = makeKioskControl("▲", "up", 2.2, 2.55);
+  const scrollDown = makeKioskControl("▼", "down", 3.1, 2.55);
+  const makeOpenButton = (name, x, y) => {
+    const button = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.55, 0.55),
+      new THREE.MeshBasicMaterial({
+        map: canvasTexture(THREE, 256, 256, (context) => {
+          context.fillStyle = "#20213a";
+          context.fillRect(0, 0, 256, 256);
+          context.strokeStyle = "#8b9bf4";
+          context.lineWidth = 14;
+          context.strokeRect(8, 8, 240, 240);
+          context.fillStyle = "#e8e9ff";
+          context.font = '800 150px "ForkMesh Mono", ui-monospace, monospace';
+          context.textAlign = "center";
+          context.textBaseline = "middle";
+          context.fillText("↗", 128, 136);
+        }),
+        toneMapped: false,
+      }),
+    );
+    button.name = `forkmesh-mastodon-kiosk-open-${name}`;
+    button.position.set(x, y, 0.3);
+    button.userData.interactive = `mastodon-kiosk-open-${name}`;
+    button.userData.href = "";
+    button.visible = false;
+    return button;
+  };
+  // One button beside the profile identity, one beside each of the two
+  // visible toot cards, each opening that item's mastodon.social page in a
+  // new tab instead of the in-app board.
+  const openProfile = makeOpenButton("profile", 3.25, 9.55);
+  const openToot0 = makeOpenButton("toot-0", 3.25, 6.7);
+  const openToot1 = makeOpenButton("toot-1", 3.25, 4.09);
+  group.add(
+    base,
+    post,
+    frame,
+    face,
+    countdown,
+    scrollUp,
+    scrollDown,
+    openProfile,
+    openToot0,
+    openToot1,
+  );
   group.traverse((child) => {
     if (!child.isMesh) return;
     if (!child.userData.interactive) {
@@ -4796,6 +4834,7 @@ export function createWorldScene({
   onOfficeMeetingBoardSelect = () => {},
   onWorldBulletinSelect = () => {},
   onMastodonBoardSelect = () => {},
+  onMastodonOpenLink = () => {},
   onReferralBoardSelect = () => {},
   onSystemCapacityTableSelect = () => {},
   onRendererStateChange = () => {},
@@ -6583,6 +6622,15 @@ export function createWorldScene({
     return null;
   }
 
+  function setMastodonOpenButton(name, href) {
+    const button = mastodonKiosk.getObjectByName(
+      `forkmesh-mastodon-kiosk-open-${name}`,
+    );
+    if (!button) return;
+    button.userData.href = href || "";
+    button.visible = Boolean(href);
+  }
+
   function repaintMastodonKiosk() {
     const face = mastodonKiosk.getObjectByName("forkmesh-mastodon-kiosk-face");
     if (!face?.material) return false;
@@ -6594,6 +6642,13 @@ export function createWorldScene({
       mastodonKioskImage,
     );
     face.material.needsUpdate = true;
+    setMastodonOpenButton("profile", mastodonKioskSnapshot?.profileURL);
+    const visibleToots = mastodonKioskVisibleToots(
+      mastodonKioskSnapshot,
+      mastodonKioskOffset,
+    );
+    setMastodonOpenButton("toot-0", visibleToots[0]?.url);
+    setMastodonOpenButton("toot-1", visibleToots[1]?.url);
     return true;
   }
 
@@ -10317,6 +10372,15 @@ export function createWorldScene({
     }
     if (hit?.object?.userData?.interactive === "mastodon-kiosk-scroll-down") {
       scrollMastodonKiosk(1);
+      return;
+    }
+    if (
+      String(hit?.object?.userData?.interactive || "").startsWith(
+        "mastodon-kiosk-open-",
+      )
+    ) {
+      const href = String(hit.object.userData.href || "");
+      if (href) onMastodonOpenLink(href);
       return;
     }
     if (hit?.object?.userData?.interactive === "mastodon-board") {
