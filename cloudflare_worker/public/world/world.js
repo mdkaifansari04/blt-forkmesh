@@ -3799,13 +3799,6 @@ class ForkMeshWorld extends HTMLElement {
         onLayoutObjectMoved: (move) => {
           void this.lockWorldObjectPlacement(move);
         },
-        onAccountAction: (action) => {
-          if (action === "logout") {
-            void this.logoutFromWorld();
-            return;
-          }
-          this.toggleWorldAccount(true, "login");
-        },
       });
       this.syncWorldCameraModeButton();
       this.syncConstructionMarkers();
@@ -3836,7 +3829,6 @@ class ForkMeshWorld extends HTMLElement {
         tasks: this.officeTasks,
       });
       this.world.setTheme(this.settings.theme);
-      this.world.setMemberLoungeLoading?.(true);
       this.world.setLightLevel(this.settings.lightLevel);
       this.world.setMovementTuning?.(this.movementTuning());
       void layoutPromise.then((layout) => {
@@ -3857,8 +3849,13 @@ class ForkMeshWorld extends HTMLElement {
       this.world.updateFediverseDirectory(this.fediverseDirectory);
       this.world.updateMediaSpaces?.(this.mediaSpaces, this.mediaRoom);
       this.world.updateWorldBulletin?.(this.events);
+      // Populate the Mastodon kiosk billboard on entry; the fetch is public,
+      // credential-free, and cached for five minutes. When a fresh snapshot
+      // is already cached the load resolves without refetching, so push the
+      // cached profile onto the rebuilt scene explicitly.
+      void this.loadMastodonBoard();
+      this.syncMastodonKiosk();
       this.syncMemberLounge();
-      this.world.setMemberLoungeLoading?.(false);
       void this.loadReferralLeaderboard();
       this.syncRepositoryScene();
       // Do not fan out a star request for every perimeter portal at startup.
@@ -4475,8 +4472,7 @@ class ForkMeshWorld extends HTMLElement {
         : [];
     // Public chat roster directory (user profiles only) doubles as the
     // campfire-circle population: every public registered account gets a
-    // stool around the fire, and the roster length feeds the total-members
-    // sign at the lounge front.
+    // stool around the fire, and the roster length sizes the circle.
         this.memberDirectory =
       membersResult.status === "fulfilled" &&
       Array.isArray(membersResult.value?.users)
@@ -6834,9 +6830,56 @@ class ForkMeshWorld extends HTMLElement {
       } finally {
         this.mastodonLoad = null;
         this.renderMastodonBoard();
+        this.syncMastodonKiosk();
       }
     })();
     return this.mastodonLoad;
+  }
+
+  // Mirror the mini-app's live profile onto the in-world kiosk billboard so
+  // the header, avatar, counts, and latest toots are visible without opening
+  // the panel. All strings are bounded by normalizeMastodonAccount/Status.
+  syncMastodonKiosk() {
+    const account = this.mastodonProfile;
+    if (!account) return;
+    this.world?.updateMastodonKiosk?.({
+      displayName: account.displayName,
+      acct: `@${account.acct}@mastodon.social`,
+      headerURL: account.header,
+      avatarURL: account.avatar,
+      followers: formatMastodonCount(account.followersCount),
+      following: formatMastodonCount(account.followingCount),
+      posts: formatMastodonCount(account.statusesCount),
+      joined: account.createdAt
+        ? new Date(account.createdAt).toLocaleDateString([], {
+            month: "short",
+            day: "2-digit",
+          })
+        : "—",
+      toots: this.mastodonStatuses.map((status) => {
+        const marker = [
+          status.pinned ? "📌" : "",
+          status.boostedFrom ? `🔁 @${status.boostedFrom}` : "",
+          status.spoiler ? `⚠ ${status.spoiler}` : "",
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        const body =
+          status.text ||
+          (status.images.length ? "(image attachment)" : "Open toot");
+        return {
+          author: status.authorName,
+          date: status.createdAt
+            ? new Date(status.createdAt).toLocaleDateString([], {
+                year: "numeric",
+                month: "short",
+                day: "numeric",
+              })
+            : "",
+          text: marker ? `${marker} — ${body}` : body,
+        };
+      }),
+    });
   }
 
   openSystemCapacityTables(table = null, { returnFocus = null } = {}) {
