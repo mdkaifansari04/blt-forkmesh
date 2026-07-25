@@ -1927,6 +1927,15 @@ SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_world_manual_blocks_active "
     "ON world_manual_blocks(target_type, subject_token, expires_at) "
     "WHERE revoked_at=0",
+    # Shared, administrator-curated placement overrides for the fixed Town
+    # Square scene objects. One row per scene object id holding only ground
+    # coordinates; no visitor, account, or session data is stored here.
+    """CREATE TABLE IF NOT EXISTS world_object_layout (
+        object_id TEXT PRIMARY KEY,
+        x REAL NOT NULL,
+        z REAL NOT NULL,
+        updated_by_bi TEXT NOT NULL,
+        updated_at INTEGER NOT NULL)""",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the

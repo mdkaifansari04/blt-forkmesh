@@ -3308,6 +3308,8 @@ class ForkMeshWorld extends HTMLElement {
     this.botDirectory = [];
     this.worldLimits = null;
     this.systemCapacityTables = [];
+    this.systemCapacityFocus = "";
+    this.systemCapacitySort = { key: "rowCount", direction: "desc" };
     this.detailReturnFocus = null;
     this.activeAudio = null;
     this.focusMusicState = "stopped";
@@ -3682,6 +3684,13 @@ class ForkMeshWorld extends HTMLElement {
   async bootstrap() {
     try {
       const contextPromise = this.loadContext();
+      // The shared object layout is a tiny, edge-cached public document.
+      // Request it immediately so administrator-locked placements are already
+      // available by the time the scene finishes constructing.
+      const layoutPromise = this.fetchJSON("/api/world/layout", {
+        auth: false,
+        timeout: 5000,
+      }).catch(() => null);
       // Validate the optional persisted account session before issuing any
       // private World reads. This prevents an expired local token from
       // fanning out into a page full of avoidable 401/403 requests.
@@ -3744,6 +3753,8 @@ class ForkMeshWorld extends HTMLElement {
         },
         onWorldBulletinSelect: () => this.openLandmark("events"),
         onMastodonBoardSelect: () => this.openMastodonBoard(),
+        onSystemCapacityTableSelect: (table) =>
+          this.openSystemCapacityTables(table),
         onRendererStateChange: (state) => {
           this.handleRendererStateChange(state);
         },
@@ -3764,6 +3775,9 @@ class ForkMeshWorld extends HTMLElement {
         onRegionChange: (region) => this.updateRegion(region),
         onMovement: (movement) => this.handleMovement(movement),
         onModeration: (action) => this.moderateWorldPeer(action),
+        onLayoutObjectMoved: (move) => {
+          void this.lockWorldObjectPlacement(move);
+        },
         onAccountAction: (action) => {
           if (action === "logout") {
             void this.logoutFromWorld();
@@ -3804,8 +3818,13 @@ class ForkMeshWorld extends HTMLElement {
       this.world.setMemberLoungeLoading?.(true);
       this.world.setLightLevel(this.settings.lightLevel);
       this.world.setMovementTuning?.(this.movementTuning());
+      void layoutPromise.then((layout) => {
+        if (this.destroyed) return;
+        this.world?.applyWorldLayout?.(layout?.objects);
+      });
       await Promise.allSettled([contextPromise, dataPromise]);
       this.world.updateIdentity(publicIdentity(this.identity, this.settings));
+      this.world.setLayoutEditor?.(this.identity.isAdmin === true);
       this.world.updateNetworkNodes(
         liveNodeRecords(this.network, this.mirrorCatalogs),
       );
@@ -4138,6 +4157,7 @@ class ForkMeshWorld extends HTMLElement {
       : [];
     this.updateIdentityUI();
     this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
+    this.world?.setLayoutEditor?.(this.identity.isAdmin === true);
     this.updateSystemCapacityMetrics();
   }
 
@@ -5174,6 +5194,13 @@ class ForkMeshWorld extends HTMLElement {
         this.setTheme(themeButton.dataset.worldTheme);
         return;
       }
+      const capacitySort = event.target.closest("[data-world-capacity-sort]");
+      if (capacitySort) {
+        this.sortSystemCapacityTables(
+          capacitySort.dataset.worldCapacitySort,
+        );
+        return;
+      }
       if (event.target.closest("[data-world-mastodon-retry]")) {
         void this.loadMastodonBoard(true);
         return;
@@ -5870,6 +5897,9 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   updateSystemCapacityMetrics() {
+    // Keeps an open table browser in step with each refreshed ticket; it is a
+    // no-op while the panel is closed.
+    this.renderSystemCapacityTables();
     if (!this.world?.updateSystemCapacity) return;
     const limits = this.worldLimits;
     if (!limits && !this.systemCapacityTables.length) {
@@ -5945,6 +5975,30 @@ class ForkMeshWorld extends HTMLElement {
       );
     } catch (error) {
       this.toast(`Temporary block was not applied: ${error.message}`);
+    }
+  }
+
+  async lockWorldObjectPlacement(move) {
+    if (!this.identity?.isAdmin) return;
+    const id = String(move?.id || "");
+    const x = Number(move?.x);
+    const z = Number(move?.z);
+    if (!id || !Number.isFinite(x) || !Number.isFinite(z)) return;
+    try {
+      const result = await this.postJSON("/api/world/layout", { id, x, z });
+      this.world?.applyWorldLayout?.(result?.objects);
+      this.toast("Object position locked in for every visitor.");
+    } catch (error) {
+      this.toast(`The new object position was not saved: ${error.message}`);
+      // Re-apply the persisted layout so this scene matches what everyone
+      // else still sees.
+      try {
+        const layout = await this.fetchJSON("/api/world/layout", {
+          auth: false,
+          timeout: 5000,
+        });
+        this.world?.applyWorldLayout?.(layout?.objects);
+      } catch (_) {}
     }
   }
 
@@ -6636,6 +6690,112 @@ class ForkMeshWorld extends HTMLElement {
       }
     })();
     return this.mastodonLoad;
+  }
+
+  openSystemCapacityTables(table = null, { returnFocus = null } = {}) {
+    const detail = this.$("[data-world-detail]");
+    const backdrop = this.$("[data-world-detail-backdrop]");
+    if (!detail || !backdrop) return;
+    const name = String(table?.name || "").trim();
+    this.systemCapacityFocus = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(name)
+      ? name
+      : "";
+    detail.dataset.openLandmark = "system-capacity-tables";
+    detail.style.setProperty("--detail-color", "#9ef7c6");
+    this.renderSystemCapacityTables();
+    this.showDetailOverlay(detail, backdrop, { returnFocus });
+  }
+
+  sortSystemCapacityTables(key) {
+    const next = key === "name" ? "name" : "rowCount";
+    const current = this.systemCapacitySort;
+    this.systemCapacitySort =
+      current.key === next
+        ? { key: next, direction: current.direction === "asc" ? "desc" : "asc" }
+        : { key: next, direction: next === "name" ? "asc" : "desc" };
+    this.renderSystemCapacityTables();
+  }
+
+  renderSystemCapacityTables() {
+    const detail = this.$("[data-world-detail]");
+    if (
+      !detail ||
+      detail.dataset.openLandmark !== "system-capacity-tables"
+    ) {
+      return;
+    }
+    const { key, direction } = this.systemCapacitySort;
+    const factor = direction === "asc" ? 1 : -1;
+    const tables = [...this.systemCapacityTables].sort((left, right) =>
+      key === "name"
+        ? factor * left.name.localeCompare(right.name)
+        : factor * (left.rowCount - right.rowCount) ||
+          left.name.localeCompare(right.name),
+    );
+    const totalRows = tables.reduce((sum, entry) => sum + entry.rowCount, 0);
+    const focus = this.systemCapacityFocus;
+    const sortState = (column) =>
+      key === column
+        ? direction === "asc"
+          ? "ascending"
+          : "descending"
+        : "none";
+    const sortArrow = (column) =>
+      key === column ? (direction === "asc" ? "▲" : "▼") : "";
+    detail.innerHTML = `
+      <header class="world-detail-header">
+        <div>
+          <p class="world-eyebrow">SYSTEM CAPACITY / DATABASE TABLES</p>
+          <h2 id="world-detail-title">${
+            focus ? escapeHTML(focus) : "Database tables"
+          }</h2>
+        </div>
+        <button class="world-detail-close" type="button" data-world-detail-close aria-label="Close database tables">×</button>
+      </header>
+      <div class="world-capacity-tables">
+        <p class="world-capacity-summary">${
+          tables.length
+            ? `${tables.length.toLocaleString("en-US")} tables · ${totalRows.toLocaleString(
+                "en-US",
+              )} rows counted live from D1.`
+            : "No table counts are available in this session."
+        }</p>
+        <div class="world-capacity-scroll">
+          <table class="world-capacity-table">
+            <thead>
+              <tr>
+                <th scope="col" aria-sort="${sortState("name")}">
+                  <button type="button" data-world-capacity-sort="name">Table <span aria-hidden="true">${sortArrow("name")}</span></button>
+                </th>
+                <th scope="col" class="is-numeric" aria-sort="${sortState("rowCount")}">
+                  <button type="button" data-world-capacity-sort="rowCount">Rows <span aria-hidden="true">${sortArrow("rowCount")}</span></button>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              ${tables
+                .map(
+                  (entry) => `<tr${
+                    entry.name === focus ? ' data-current="true"' : ""
+                  }>
+                    <th scope="row">${escapeHTML(entry.name)}</th>
+                    <td class="is-numeric">${escapeHTML(
+                      entry.rowCount.toLocaleString("en-US"),
+                    )}</td>
+                  </tr>`,
+                )
+                .join("")}
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+    if (focus) {
+      window.requestAnimationFrame(() => {
+        detail
+          .querySelector("[data-current='true']")
+          ?.scrollIntoView({ block: "center" });
+      });
+    }
   }
 
   openMastodonBoard({ returnFocus = null } = {}) {
