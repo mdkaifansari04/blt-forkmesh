@@ -230,10 +230,11 @@ def test_worker_profile_public_edits_and_follows_accept_signed_session_token():
         ENTRY_TEXT.index("async def _account_logout")
     ]
 
-    assert "def _account_session_token(env, name)" in ENTRY_TEXT
+    assert "async def _account_session_token(env, name" in ENTRY_TEXT
     assert "async def _account_session_record(env, request, data=None)" in ENTRY_TEXT
-    assert '"sessionToken": _account_session_token(env, name)' in ENTRY_TEXT
-    assert '"sessionToken": _account_session_token(env, rec.get("name", ""))' in login_body
+    assert "else await _account_session_token(env, name)" in ENTRY_TEXT
+    assert "_account_session_cookie(payload[\"sessionToken\"])" in login_body
+    assert "account_sessions" in ENTRY_TEXT
     assert 'await _account_session_record(env, request, data)' in profile_body
     assert 'await _account_session_record(env, request, data)' in follow_body
     public_edit_block = profile_body[

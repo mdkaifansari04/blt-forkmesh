@@ -201,9 +201,19 @@
   }
 
   function writeSession(nextSession) {
-    state.session = nextSession;
+    const storedSession = nextSession && typeof nextSession === "object"
+      ? {
+          ...nextSession,
+          sessionToken: (
+            location.protocol === "https:" && nextSession.sessionToken
+              ? "cookie"
+              : nextSession.sessionToken || ""
+          ),
+        }
+      : nextSession;
+    state.session = storedSession;
     try {
-      localStorage.setItem("forkmesh.session", JSON.stringify(nextSession));
+      localStorage.setItem("forkmesh.session", JSON.stringify(storedSession));
       document.cookie = "forkmesh_session=1; Path=/; Max-Age=2592000; SameSite=Lax"
         + (location.protocol === "https:" ? "; Secure" : "");
     } catch (_) {}

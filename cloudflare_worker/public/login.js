@@ -50,7 +50,11 @@
         adminUrl: body.adminUrl || "",
         solana: body.solana || "",
         hasPayoutAddress: Boolean(body.hasPayoutAddress),
-        sessionToken: body.sessionToken || "",
+        sessionToken: (
+          location.protocol === "https:" && body.sessionToken
+            ? "cookie"
+            : body.sessionToken || ""
+        ),
         avatarPng: body.avatarPng || "",
         avatarUpdatedAt: Number(body.avatarUpdatedAt) || 0,
         profileBio: body.profileBio || "",

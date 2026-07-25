@@ -22,6 +22,15 @@ def _publish_function() -> str:
     return source[start:end]
 
 
+def _release_signing_key(directory: Path) -> Path:
+    key = directory / "release-signing-key.pem"
+    subprocess.run(
+        ["openssl", "genpkey", "-algorithm", "Ed25519", "-out", str(key)],
+        check=True,
+    )
+    return key
+
+
 def test_deploy_script_has_valid_shell_syntax():
     result = subprocess.run(
         ["bash", "-n", str(DEPLOY)],
@@ -87,6 +96,7 @@ def test_refresh_publishes_from_repo_root_and_verifies_revision_hash_and_cas():
         in function
     )
     assert "git add ../.forkmesh/releases/latest/SHASUMS256.txt" in function
+    assert "../.forkmesh/releases/latest/release.json.sig" in function
 
 
 def test_publisher_records_explicit_binary_source_commit(tmp_path):
@@ -95,6 +105,7 @@ def test_publisher_records_explicit_binary_source_commit(tmp_path):
     artifact.write_bytes(payload)
     tag_commit = "d4" * 20
     build_commit = "e5" * 20
+    signing_key = _release_signing_key(tmp_path)
     result = subprocess.run(
         [
             str(PUBLISH),
@@ -110,6 +121,8 @@ def test_publisher_records_explicit_binary_source_commit(tmp_path):
             "forkmesh/forkmesh",
             "--cas-dir",
             str(tmp_path / "cas"),
+            "--signing-key",
+            str(signing_key),
             str(artifact),
         ],
         cwd=tmp_path,
@@ -228,6 +241,7 @@ def test_publisher_rejects_tag_commit_that_is_not_the_peeled_tag(tmp_path):
         ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
     ).strip()
     wrong = "f" * 40 if target != "f" * 40 else "e" * 40
+    signing_key = _release_signing_key(repo)
 
     result = subprocess.run(
         [
@@ -240,6 +254,8 @@ def test_publisher_rejects_tag_commit_that_is_not_the_peeled_tag(tmp_path):
             target,
             "--cas-dir",
             str(tmp_path / "cas"),
+            "--signing-key",
+            str(signing_key),
             str(artifact),
         ],
         cwd=repo,
@@ -260,6 +276,8 @@ def test_publisher_rejects_tag_commit_that_is_not_the_peeled_tag(tmp_path):
             target,
             "--cas-dir",
             str(tmp_path / "cas"),
+            "--signing-key",
+            str(signing_key),
             str(artifact),
         ],
         cwd=repo,

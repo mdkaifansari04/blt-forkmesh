@@ -517,6 +517,29 @@ if(FORKMESH_BUILD_TESTS)
         set_target_properties(forkmesh-control-tests PROPERTIES MACOSX_BUNDLE FALSE)
     endif()
 
+    # ForkMesh Actions trust boundary: repository-state-bound approvals plus
+    # real Linux namespace/resource isolation. The integration cases execute
+    # hostile workflows and prove host secrets, source writes, egress, runaway
+    # files/output/processes, and deadlines fail closed.
+    qt_add_executable(forkmesh-action-security-tests
+        tests/test_action_security.cpp
+        src/CrashHandler.h
+        src/CrashHandler.cpp
+        src/ActionFile.h
+        src/ActionFile.cpp
+        src/ActionStore.h
+        src/ActionStore.cpp
+        src/ActionRunner.h
+        src/ActionRunner.cpp
+    )
+    target_include_directories(forkmesh-action-security-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(forkmesh-action-security-tests PRIVATE Qt6::Core)
+    if(APPLE)
+        set_target_properties(forkmesh-action-security-tests PROPERTIES
+            MACOSX_BUNDLE FALSE)
+    endif()
+
     # Private control-node runtime: device-bound encrypted identity vault,
     # opaque whole-repository replicas, per-sync key rotation, recipient
     # revocation, owner-only temporary materialization, and legacy plaintext
@@ -725,7 +748,8 @@ if(FORKMESH_BUILD_TESTS)
     set_target_properties(
         forkmesh-tests forkmesh-ide-tests forkmesh-world-speech-tests
         forkmesh-codex-tests
-        forkmesh-control-tests forkmesh-private-mirror-tests
+        forkmesh-control-tests forkmesh-action-security-tests
+        forkmesh-private-mirror-tests
         forkmesh-public-mirror-tests
         forkmesh-e2e-stub-agent forkmesh-e2e
         forkmesh-window-tests forkmesh-perf-tests
@@ -750,6 +774,8 @@ if(FORKMESH_BUILD_TESTS)
              COMMAND forkmesh-world-speech-tests)
     add_test(NAME forkmesh-codex-tests COMMAND forkmesh-codex-tests)
     add_test(NAME forkmesh-control-tests COMMAND forkmesh-control-tests)
+    add_test(NAME forkmesh-action-security-tests
+             COMMAND forkmesh-action-security-tests)
     add_test(NAME forkmesh-private-mirror-tests
              COMMAND forkmesh-private-mirror-tests)
     add_test(NAME forkmesh-public-mirror-tests
@@ -768,7 +794,8 @@ if(FORKMESH_BUILD_TESTS)
         USES_TERMINAL)
     add_dependencies(check forkmesh-tests forkmesh-ide-tests
         forkmesh-world-speech-tests forkmesh-codex-tests
-        forkmesh-control-tests forkmesh-private-mirror-tests
+        forkmesh-control-tests forkmesh-action-security-tests
+        forkmesh-private-mirror-tests
         forkmesh-public-mirror-tests
         forkmesh-window-tests forkmesh-perf-tests forkmesh-e2e
         forkmesh-e2e-stub-agent)
@@ -779,6 +806,7 @@ if(FORKMESH_BUILD_TESTS)
     foreach(_forkmesh_test_target
             forkmesh-tests forkmesh-ide-tests forkmesh-world-speech-tests
             forkmesh-codex-tests forkmesh-control-tests
+            forkmesh-action-security-tests
             forkmesh-private-mirror-tests forkmesh-public-mirror-tests
             forkmesh-reward-pool-tests forkmesh-e2e-stub-agent forkmesh-e2e
             forkmesh-window-tests forkmesh-perf-tests)

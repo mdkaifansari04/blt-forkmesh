@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QHash>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QMap>
@@ -7,6 +9,8 @@
 #include <QString>
 #include <QStringList>
 #include <QUrl>
+
+class QSettings;
 
 namespace forkmesh::control {
 
@@ -50,6 +54,40 @@ struct MirrorActionsSshCommand {
     QProcessEnvironment environment;
     QByteArray standardInput;
 };
+
+// A direct controller-to-host SSH command. Host verification always uses
+// OpenSSH's persistent known_hosts database in accept-new (TOFU) mode: a first
+// key is retained, and a later mismatch fails closed. An empty password selects
+// the user's SSH agent/default keys; a non-empty password is exposed only to
+// sshpass through SSHPASS and public-key authentication is still attempted
+// first.
+struct HostSshCommand {
+    QString program;
+    QStringList arguments;
+    QProcessEnvironment environment;
+};
+
+// Build the common authenticated transport used by install, logs, uninstall,
+// and Actions. The caller owns remoteCommand, which must not contain credentials.
+HostSshCommand buildHostSshCommand(const QString &host,
+                                   const QString &sshUser,
+                                   const QString &sshPassword,
+                                   const QString &remoteCommand,
+                                   QString *error = nullptr);
+
+// Stable, metadata-only key for a password retained in MainWindow memory for
+// this process lifetime. It is never written to QSettings.
+QString savedHostCredentialKey(const QString &nodeName, const QString &host,
+                               const QString &sshUser);
+
+// Load saved host metadata and atomically migrate legacy plaintext password
+// fields out of QSettings. When supplied, sessionPasswords receives those
+// values in memory so the current app session is not interrupted. saveSavedHosts
+// also strips password-like fields defensively before persisting.
+QJsonArray loadSavedHosts(QSettings &settings, const QString &settingsKey,
+                          QHash<QString, QString> *sessionPasswords = nullptr);
+void saveSavedHosts(QSettings &settings, const QString &settingsKey,
+                    const QJsonArray &hosts);
 
 // Validate the bounded v1 mirror-Actions controller contract. An empty string
 // means the request is safe to serialize and send.

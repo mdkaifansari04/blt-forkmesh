@@ -321,6 +321,7 @@ verify_public_assets() {
         "/favicon/site.webmanifest application/manifest+json"
         "/assets/video/network.jpg image/jpeg"
         "/assets/video/network.mp4 video/mp4"
+        "/assets/music/heavenly-loop.ogg audio/ogg"
     )
 
     echo "Verifying public static assets on $base ..."
@@ -803,7 +804,8 @@ publish_release_binary() {
 
     # Bind the mutable "latest" channel to the exact source revision just
     # compiled. A same-semver republish is only complete when release.json,
-    # SHASUMS256.txt and the served CAS all agree on these new bytes.
+    # SHASUMS256.txt, the signed manifest, and the served CAS all agree on these
+    # new bytes.
     local asset_hash
     if command -v sha256sum >/dev/null 2>&1; then
         asset_hash="$(sha256sum "$asset" | awk '{print $1}')"
@@ -820,6 +822,8 @@ publish_release_binary() {
             ../.forkmesh/releases/latest/release.json ||
        ! grep -Fq "\"name\":\"$asset\",\"blob_sha256\":\"$asset_hash\"" \
             ../.forkmesh/releases/latest/release.json ||
+       [ ! -f ../.forkmesh/releases/latest/release.json.sig ] ||
+       [ "$(wc -c < ../.forkmesh/releases/latest/release.json.sig | tr -d ' ')" != "64" ] ||
        [ ! -f "$cas_dir/sha256/${asset_hash:0:2}/$asset_hash/data" ]; then
         rm -f "$asset"
         echo "ERROR: release metadata/CAS verification did not match the freshly built commit and binary." >&2
@@ -829,7 +833,9 @@ publish_release_binary() {
     rm -f "$asset"
 
     # Stage the release metadata for commit.
-    git add ../.forkmesh/releases/latest/SHASUMS256.txt ../.forkmesh/releases/latest/release.json || return 1
+    git add ../.forkmesh/releases/latest/SHASUMS256.txt \
+        ../.forkmesh/releases/latest/release.json \
+        ../.forkmesh/releases/latest/release.json.sig || return 1
 }
 
 # Commit release metadata changes if any were staged.

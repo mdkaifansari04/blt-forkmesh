@@ -1,10 +1,14 @@
 #include "ActionStore.h"
 
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QProcess>
+#include <QRegularExpression>
 #include <QSettings>
 
 namespace {
@@ -37,6 +41,8 @@ QJsonObject ActionRun::toJson() const
     o["workflowContent"] = workflowContent;
     o["commit"] = commit;
     o["ref"] = ref;
+    o["repositoryTree"] = repositoryTree;
+    o["executionDigest"] = executionDigest;
     o["status"] = status;
     o["createdAtMs"] = createdAtMs;
     o["startedAtMs"] = startedAtMs;
@@ -55,6 +61,8 @@ ActionRun ActionRun::fromJson(const QJsonObject &o)
     r.workflowContent = o.value("workflowContent").toString();
     r.commit = o.value("commit").toString();
     r.ref = o.value("ref").toString();
+    r.repositoryTree = o.value("repositoryTree").toString();
+    r.executionDigest = o.value("executionDigest").toString();
     r.status = o.value("status").toString(ActionStatus::Queued);
     r.createdAtMs = o.value("createdAtMs").toVariant().toLongLong();
     r.startedAtMs = o.value("startedAtMs").toVariant().toLongLong();
@@ -70,6 +78,12 @@ ActionStore::ActionStore(QString rootDir) : m_root(std::move(rootDir))
 
 QString ActionStore::runsDir() const { return m_root + QStringLiteral("/runs"); }
 QString ActionStore::spoolDir() const { return m_root + QStringLiteral("/spool"); }
+QString ActionStore::artifactsDir() const
+{
+    const QString path = m_root + QStringLiteral("/artifacts");
+    QDir().mkpath(path);
+    return path;
+}
 
 QString ActionStore::runDir(const ActionRun &run) const
 {
@@ -194,18 +208,44 @@ static QString approvalKey(const QString &repoKey)
 }
 
 bool ActionStore::isApproved(const QString &repoKey, const QString &path,
-                             const QString &content)
+                             const QString &content,
+                             const QString &repositoryTree,
+                             const QString &executionDigest)
 {
-    return lastApprovedContent(repoKey, path) == content;
+    if (repositoryTree.isEmpty() || executionDigest.isEmpty())
+        return false;
+    const QByteArray raw =
+        QSettings().value(approvalKey(repoKey)).toByteArray();
+    const QJsonValue stored =
+        QJsonDocument::fromJson(raw).object().value(path);
+    if (!stored.isObject())
+        return false; // legacy YAML-only approvals deliberately fail closed
+    const QJsonObject approval = stored.toObject();
+    return approval.value(QStringLiteral("schema")).toInt() == 2 &&
+           approval.value(QStringLiteral("workflowContent")).toString() == content &&
+           approval.value(QStringLiteral("repositoryTree")).toString() ==
+               repositoryTree &&
+           approval.value(QStringLiteral("executionDigest")).toString() ==
+               executionDigest;
 }
 
 void ActionStore::approve(const QString &repoKey, const QString &path,
-                          const QString &content)
+                          const QString &content,
+                          const QString &repositoryTree,
+                          const QString &executionDigest)
 {
+    if (repositoryTree.isEmpty() || executionDigest.isEmpty())
+        return; // an unbound approval is never persisted
     const QByteArray raw =
         QSettings().value(approvalKey(repoKey)).toByteArray();
     QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    obj.insert(path, content);
+    obj.insert(path,
+               QJsonObject{
+                   {QStringLiteral("schema"), 2},
+                   {QStringLiteral("workflowContent"), content},
+                   {QStringLiteral("repositoryTree"), repositoryTree},
+                   {QStringLiteral("executionDigest"), executionDigest},
+               });
     QSettings().setValue(approvalKey(repoKey),
                          QJsonDocument(obj).toJson(QJsonDocument::Compact));
 }
@@ -215,5 +255,123 @@ QString ActionStore::lastApprovedContent(const QString &repoKey,
 {
     const QByteArray raw =
         QSettings().value(approvalKey(repoKey)).toByteArray();
-    return QJsonDocument::fromJson(raw).object().value(path).toString();
+    const QJsonValue value =
+        QJsonDocument::fromJson(raw).object().value(path);
+    // Keep showing the previous YAML in the review diff while migrating a
+    // legacy approval, but never treat that string-only entry as executable.
+    return value.isObject()
+               ? value.toObject()
+                     .value(QStringLiteral("workflowContent"))
+                     .toString()
+               : value.toString();
+}
+
+bool ActionStore::repositoryStateDigest(const QString &repository,
+                                        const QString &commit,
+                                        QString *repositoryTree,
+                                        QString *executionDigest,
+                                        QString *error)
+{
+    if (repositoryTree)
+        repositoryTree->clear();
+    if (executionDigest)
+        executionDigest->clear();
+    if (error)
+        error->clear();
+    if (repository.trimmed().isEmpty() || commit.trimmed().isEmpty()) {
+        if (error)
+            *error = QStringLiteral("repository and commit are required");
+        return false;
+    }
+
+    auto fail = [&](const QString &message) {
+        if (error)
+            *error = message;
+        return false;
+    };
+    auto capture = [&](const QStringList &arguments, int timeoutMs,
+                       QByteArray *output) {
+        QProcess process;
+        process.setProcessChannelMode(QProcess::SeparateChannels);
+        process.start(QStringLiteral("git"), arguments);
+        if (!process.waitForStarted(3000))
+            return false;
+        if (!process.waitForFinished(timeoutMs)) {
+            process.kill();
+            process.waitForFinished(1000);
+            return false;
+        }
+        if (process.exitStatus() != QProcess::NormalExit ||
+            process.exitCode() != 0)
+            return false;
+        *output = process.readAllStandardOutput();
+        return true;
+    };
+
+    const QStringList base{QStringLiteral("-C"), repository};
+    QByteArray treeBytes;
+    if (!capture(base +
+                     QStringList{QStringLiteral("rev-parse"),
+                                 QStringLiteral("--verify"),
+                                 commit + QStringLiteral("^{tree}")},
+                 10000, &treeBytes)) {
+        return fail(QStringLiteral("could not resolve the repository tree"));
+    }
+    const QString tree = QString::fromLatin1(treeBytes).trimmed().toLower();
+    static const QRegularExpression objectId(
+        QStringLiteral("^(?:[0-9a-f]{40}|[0-9a-f]{64})$"));
+    if (!objectId.match(tree).hasMatch())
+        return fail(QStringLiteral("repository returned an invalid tree id"));
+
+    // Hash the raw recursive manifest first. This binds executable bits,
+    // symlinks, paths, object ids, and submodule commit pins.
+    QByteArray manifest;
+    if (!capture(base +
+                     QStringList{QStringLiteral("ls-tree"),
+                                 QStringLiteral("-r"), QStringLiteral("-z"),
+                                 QStringLiteral("--full-tree"), commit},
+                 120000, &manifest)) {
+        return fail(QStringLiteral("could not read the recursive repository tree"));
+    }
+    QCryptographicHash digest(QCryptographicHash::Sha256);
+    digest.addData(QByteArray("forkmesh-action-snapshot-v2\0", 28));
+    digest.addData(tree.toLatin1());
+    digest.addData(QByteArray("\0tree-manifest\0", 15));
+    digest.addData(manifest);
+    digest.addData(QByteArray("\0archive\0", 9));
+
+    // Hash actual file bytes as well as Git object ids. Streaming keeps memory
+    // bounded even for a large repository, while a hard deadline prevents a
+    // corrupt or hostile repository from wedging workflow review.
+    QProcess archive;
+    archive.setProcessChannelMode(QProcess::SeparateChannels);
+    archive.start(QStringLiteral("git"),
+                  base +
+                      QStringList{QStringLiteral("archive"),
+                                  QStringLiteral("--format=tar"), commit});
+    if (!archive.waitForStarted(3000))
+        return fail(QStringLiteral("could not start repository snapshot hashing"));
+    QElapsedTimer timer;
+    timer.start();
+    constexpr qint64 kDigestTimeoutMs = 5 * 60 * 1000;
+    while (archive.state() != QProcess::NotRunning) {
+        if (archive.waitForReadyRead(100))
+            digest.addData(archive.readAllStandardOutput());
+        if (timer.elapsed() > kDigestTimeoutMs) {
+            archive.kill();
+            archive.waitForFinished(1000);
+            return fail(QStringLiteral("repository snapshot hashing timed out"));
+        }
+    }
+    digest.addData(archive.readAllStandardOutput());
+    if (archive.exitStatus() != QProcess::NormalExit ||
+        archive.exitCode() != 0) {
+        return fail(QStringLiteral("could not archive the repository snapshot"));
+    }
+
+    if (repositoryTree)
+        *repositoryTree = tree;
+    if (executionDigest)
+        *executionDigest = QString::fromLatin1(digest.result().toHex());
+    return true;
 }
