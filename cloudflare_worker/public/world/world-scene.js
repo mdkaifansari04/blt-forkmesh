@@ -7922,7 +7922,10 @@ export function createWorldScene({
   /** Attach a loaded (or failed) fediverse card to one avatar's chest. */
   function setAvatarFediverseProfile(peerId, profile) {
     const id = String(peerId || "");
-    const avatar = id === identity.id ? player : remotePlayers.get(id);
+    const avatar =
+      id === identity.id
+        ? player
+        : remotePlayers.get(id) || loungeMembers.get(id);
     if (!avatar?.userData?.badge) return;
     avatar.userData.fediverseProfile =
       profile && typeof profile === "object" ? profile : { state: "unavailable" };
@@ -8311,6 +8314,7 @@ export function createWorldScene({
         if (member.away === true) {
           const parked = loungeMembers.get(id);
           if (parked) {
+            unregisterAvatarChestControls(parked);
             world.remove(parked);
             disposeObject3D(parked);
             loungeMembers.delete(id);
@@ -8354,6 +8358,9 @@ export function createWorldScene({
           );
           world.add(figure);
           loungeMembers.set(id, figure);
+          // Directory figures are real accounts, so their chest tabs work the
+          // same way a live peer's do.
+          registerAvatarChestControls(figure, id);
         }
         const seat = seats[index % Math.max(1, seats.length)];
         figure.position.copy(campfire.position);
@@ -8373,6 +8380,7 @@ export function createWorldScene({
     campfire.userData.memberFigureCount = Math.min(roster.length, seats.length);
     loungeMembers.forEach((figure, id) => {
       if (seen.has(id)) return;
+      unregisterAvatarChestControls(figure);
       world.remove(figure);
       disposeObject3D(figure);
       loungeMembers.delete(id);
