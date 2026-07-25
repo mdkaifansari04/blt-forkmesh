@@ -4651,25 +4651,25 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
       context.font = '600 34px "ForkMesh Mono", ui-monospace, monospace';
       // The full post text runs until it hits the card's image strip; posts
       // longer than the card still end at a whole line rather than mid-word.
-      const lines = wrapCanvasText(
+      // Cards with attachments give the text two tighter lines so the taller
+      // image strip below still clears the bottom of the card.
+      wrapCanvasText(
         context,
         toot.text,
         56,
-        top + 100,
+        images.length ? top + 78 : top + 100,
         1424,
-        46,
-        images.length ? 3 : 6,
+        images.length ? 40 : 46,
+        images.length ? 2 : 6,
       );
       if (images.length) {
-        // Attachments below the text, cover-cropped into equal tiles. Tiles
-        // that have not loaded CORS-clean stay as empty plates.
+        // Attachments below the text, cover-cropped into tiles that divide the
+        // full card width at double the old height. Tiles that have not loaded
+        // CORS-clean stay as empty plates.
         const gap = 18;
-        const height = 150;
-        const width = Math.min(
-          360,
-          (1424 - gap * (images.length - 1)) / images.length,
-        );
-        const y = top + 116 + Math.max(lines, 1) * 46;
+        const height = 300;
+        const width = (1424 - gap * (images.length - 1)) / images.length;
+        const y = top + 126;
         images.forEach((url, position) => {
           const x = 56 + position * (width + gap);
           context.save();
@@ -4698,12 +4698,16 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
           context.restore();
         });
       }
-      context.strokeStyle = "rgba(99,100,255,0.28)";
-      context.lineWidth = 3;
-      context.beginPath();
-      context.moveTo(56, top + 440);
-      context.lineTo(1480, top + 440);
-      context.stroke();
+      // Rule between the cards only: the last card runs straight into the
+      // replies strip so the taller image tiles keep their clearance.
+      if (index < entries.length - 1) {
+        context.strokeStyle = "rgba(99,100,255,0.28)";
+        context.lineWidth = 3;
+        context.beginPath();
+        context.moveTo(56, top + 450);
+        context.lineTo(1480, top + 450);
+        context.stroke();
+      }
     });
     // Replies section: the newest public replies other accounts left on those
     // toots, each with the replier's own avatar so the board shows who is
@@ -4785,13 +4789,11 @@ function mastodonCountdownTexture(
   const total = Math.max(1000, Number(totalMs) || MASTODON_KIOSK_REFRESH_MS);
   const remaining = clamp(Number(remainingMs) || 0, 0, total);
   return canvasTexture(THREE, 256, 128, (context) => {
-    context.fillStyle = "rgba(15,16,36,0.88)";
+    // Unframed: just the label over a soft backing plate, no border, so it
+    // reads as lettering on the stand rather than a badge on the board.
+    context.fillStyle = "rgba(15,16,36,0.72)";
     roundedRect(context, 4, 4, 248, 120, 22);
     context.fill();
-    context.strokeStyle = "#6364ff";
-    context.lineWidth = 5;
-    roundedRect(context, 4, 4, 248, 120, 22);
-    context.stroke();
     context.textAlign = "center";
     context.fillStyle = "#8b8db8";
     context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
@@ -4839,11 +4841,11 @@ function createMastodonKiosk(THREE, interactive) {
   );
   face.name = "forkmesh-mastodon-kiosk-face";
   face.position.set(0, 6.95, 0.2);
-  // Sits beside the avatar/identity block now that the header no longer
-  // carries a "MASTODON · LIVE" pill of its own. Wide and short: it reads a
-  // MM:SS clock, not a dial.
+  // Sits on the stand under the board, off the artwork entirely, so the board
+  // itself is all profile and posts. Wide and short: it reads a MM:SS clock,
+  // not a dial.
   const countdown = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.3, 0.65),
+    new THREE.PlaneGeometry(1.6, 0.8),
     new THREE.MeshBasicMaterial({
       map: mastodonCountdownTexture(THREE),
       transparent: true,
@@ -4851,7 +4853,7 @@ function createMastodonKiosk(THREE, interactive) {
     }),
   );
   countdown.name = "forkmesh-mastodon-kiosk-countdown";
-  countdown.position.set(1.9, 9.85, 0.3);
+  countdown.position.set(0, 1.15, 0.3);
   const makeKioskControl = (label, direction, x, y) => {
     const control = new THREE.Mesh(
       new THREE.PlaneGeometry(0.7, 0.7),
