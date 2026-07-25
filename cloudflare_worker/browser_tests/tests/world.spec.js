@@ -564,13 +564,20 @@ ${longContext}
             const conflicting =
               repositoryFixture.conflictingHealthyAlias &&
               owner === "mirror3";
+            const missingStateHash =
+              repositoryFixture.missingHealthyStateHash &&
+              owner === "mirror3";
             return {
               owner,
               name: "forkmesh",
               source: stale ? "local-node" : "remote-clone",
               liveHost: !stale,
               commit: stale || conflicting ? "d".repeat(40) : codeOid,
-              stateHash: stale || conflicting ? "e".repeat(64) : stateHash,
+              stateHash: missingStateHash
+                ? ""
+                : stale || conflicting
+                  ? "e".repeat(64)
+                  : stateHash,
               pullCount: stale ? 1 : 2,
               updatedAt: stale ? FIXED_NOW + 1000 : FIXED_NOW,
             };
@@ -2108,6 +2115,48 @@ test("disagreeing eligible mirrors leave the automatic flagship map unpinned", a
   });
   expect(snapshot).toEqual({
     commit: "",
+    stateHash: "",
+    activeRepository: null,
+  });
+  expect(
+    repositoryReads.filter((path) => path.endsWith("/tree")),
+  ).toHaveLength(0);
+});
+
+test("an incomplete healthy-mirror state attestation cannot auto-load the flagship map", async ({
+  page,
+}) => {
+  const repositoryReads = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith("/api/repo/forkmesh/forkmesh/")) {
+      repositoryReads.push(url.pathname);
+    }
+  });
+  await prepareWorldPage(page, "world-incomplete-live-alias", {
+    repositoryFixture: { missingHealthyStateHash: true },
+  });
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.repositoryMapState === "unavailable";
+  });
+
+  const snapshot = await page.locator("forkmesh-world").evaluate((shell) => {
+    const alias = shell.repositories.find(
+      (record) =>
+        record.owner === "forkmesh" &&
+        record.name === "forkmesh" &&
+        record.source === "organization-alias",
+    );
+    return {
+      commit: alias?.commit || "",
+      stateHash: alias?.stateHash || "",
+      activeRepository: shell.activeRepository,
+    };
+  });
+  expect(snapshot).toEqual({
+    commit: "a".repeat(40),
     stateHash: "",
     activeRepository: null,
   });
