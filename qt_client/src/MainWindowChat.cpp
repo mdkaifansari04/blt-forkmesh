@@ -4942,7 +4942,13 @@ void MainWindow::showNodesWindow()
             delete item;
         }
 
-        QList<MemberInfo> nodes = m_homeRoster;
+        // Temporary world-chat visitors are chat users, not network nodes —
+        // keep them out of this window too (adhoc #308).
+        QList<MemberInfo> nodes;
+        for (const MemberInfo &m : std::as_const(m_homeRoster)) {
+            if (!isTemporaryChatGuest(m))
+                nodes.append(m);
+        }
         std::sort(nodes.begin(), nodes.end(), [](const MemberInfo &a,
                                                  const MemberInfo &b) {
             if (a.self != b.self)
@@ -8146,11 +8152,13 @@ enum NodeCol {
     kNodeColStatus,
     kNodeColOwner,
     kNodeColVersion,
+    kNodeColPlatform,
     kNodeColRepos,
     kNodeColMirrors,
     kNodeColCpu,
     kNodeColRam,
     kNodeColDisk,
+    kNodeColId,
     kNodeColCount,
 };
 } // namespace
@@ -8207,8 +8215,10 @@ QWidget *MainWindow::buildNodesSection()
     m_nodesTable->setHorizontalHeaderLabels(
         {QStringLiteral("Node"), QStringLiteral("Status"),
          QStringLiteral("Owner"), QStringLiteral("Version"),
-         QStringLiteral("Repos"), QStringLiteral("Mirrors"),
-         QStringLiteral("CPU"), QStringLiteral("RAM"), QStringLiteral("Disk")});
+         QStringLiteral("Platform"), QStringLiteral("Repos"),
+         QStringLiteral("Mirrors"), QStringLiteral("CPU"),
+         QStringLiteral("RAM"), QStringLiteral("Disk"),
+         QStringLiteral("Node id")});
     m_nodesTable->verticalHeader()->setVisible(false);
     m_nodesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_nodesTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -8366,6 +8376,11 @@ void MainWindow::refreshNodesTable()
         const MemberInfo mi = rosterInfo(e.name);
         if (mi.accountKind == QLatin1String("user"))
             continue;
+        // Temporary world-chat visitors are filtered before they become menu
+        // entries (refreshRepositoryList); re-check here so one can never show
+        // as a node even if it slips in by another path (adhoc #308).
+        if (isTemporaryChatGuest(mi))
+            continue;
         if (e.self && selfIsUserAccount)
             continue;
         visible.append(e);
@@ -8428,6 +8443,14 @@ void MainWindow::refreshNodesTable()
         m_nodesTable->setItem(i, kNodeColVersion, new QTableWidgetItem(
             version.isEmpty() ? dash : version));
 
+        // Platform / node id as text columns too, matching the repo detail's
+        // Mirror nodes table (the badge on the name only hints the platform).
+        QString platformText = e.platform.trimmed();
+        if (platformText.isEmpty())
+            platformText = mi.platform.trimmed();
+        m_nodesTable->setItem(i, kNodeColPlatform, new QTableWidgetItem(
+            platformText.isEmpty() ? dash : platformText));
+
         auto *repoItem = new QTableWidgetItem;
         repoItem->setData(Qt::DisplayRole, e.repoCount); // int -> numeric sort
         repoItem->setTextAlignment(Qt::AlignCenter);
@@ -8447,6 +8470,19 @@ void MainWindow::refreshNodesTable()
         m_nodesTable->setItem(i, kNodeColDisk,
             makeByteUsageCell(QStringLiteral("Disk"), mi.diskUsedBytes,
                               mi.diskTotalBytes));
+
+        // Stable node id (public key), shortened like the Mirror nodes table;
+        // the full key stays readable via the tooltip.
+        const QString nodeId = mi.id.trimmed();
+        auto *idItem = new QTableWidgetItem(
+            nodeId.isEmpty()
+                ? dash
+                : nodeId.left(12) + (nodeId.size() > 12
+                                         ? QString::fromUtf8("\xE2\x80\xA6")
+                                         : QString()));
+        if (!nodeId.isEmpty())
+            idItem->setToolTip(nodeId);
+        m_nodesTable->setItem(i, kNodeColId, idItem);
     }
     m_nodesTable->setSortingEnabled(true);
 
@@ -8692,6 +8728,20 @@ void MainWindow::showNodeDetailForRow(int row)
         if (advert.updatedMs > 0)
             line += QStringLiteral(" \xC2\xB7 synced %1 ago")
                         .arg(formatShortRelativeTime(advert.updatedMs / 1000));
+        // The same per-mirror tallies the repo detail's Mirror nodes table
+        // shows, when the node advertised them (-1 = older peer / unknown).
+        auto appendCount = [&line](int value, const char *noun) {
+            if (value >= 0)
+                line += QString::fromUtf8(" \xC2\xB7 %1 %2")
+                            .arg(value)
+                            .arg(QLatin1String(noun));
+        };
+        appendCount(advert.commitCount, "commits");
+        appendCount(advert.branchCount, "branches");
+        appendCount(advert.issueCount, "issues");
+        appendCount(advert.pullCount, "pulls");
+        appendCount(advert.discussionCount, "discussions");
+        appendCount(advert.artifactCount, "artifacts");
         auto *m = new QLabel(line);
         m->setTextFormat(Qt::RichText);
         m->setWordWrap(true);
