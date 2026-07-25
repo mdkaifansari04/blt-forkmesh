@@ -7707,6 +7707,40 @@ inline QList<MirrorReleaseBlob> mirrorReleaseBlobs(const QString &mirrorPath)
     return blobs;
 }
 
+// Carry a node's release artifact store from a retiring mirror directory into
+// the one that will serve the repository next. An encrypted repository is
+// served out of a temporary materialization that every sealing pass replaces,
+// and release binaries live beside the git data rather than in it (issue #304),
+// so without this every artifact this node hosts is dropped the moment the old
+// materialization is released — install.sh then 404s on a release it just
+// published. Blobs are content-addressed and immutable, so a hard link is
+// enough (and costs nothing); copying is only the cross-device fallback.
+// Returns the number of blobs carried over.
+inline int carryMirrorReleaseCas(const QString &fromMirror,
+                                 const QString &toMirror)
+{
+    if (fromMirror.trimmed().isEmpty() || toMirror.trimmed().isEmpty() ||
+        QDir::cleanPath(fromMirror) == QDir::cleanPath(toMirror) ||
+        !QDir(toMirror).exists())
+        return 0;
+    int carried = 0;
+    for (const MirrorReleaseBlob &blob : mirrorReleaseBlobs(fromMirror)) {
+        const QString destination = mirrorReleaseBlobPath(toMirror, blob.hash);
+        if (QFile::exists(destination))
+            continue;
+        if (!QDir().mkpath(QFileInfo(destination).absolutePath()))
+            continue;
+        bool linked = false;
+#ifndef Q_OS_WIN
+        linked = ::link(QFile::encodeName(blob.path).constData(),
+                        QFile::encodeName(destination).constData()) == 0;
+#endif
+        if (linked || QFile::copy(blob.path, destination))
+            ++carried;
+    }
+    return carried;
+}
+
 // How many numbered subdirectories a node's bare mirror holds under <subdir>/ on
 // the served branch (the same tally the issues / pulls / discussions tabs show).
 // Advertised to peers so the mirror-nodes view can show what each node is

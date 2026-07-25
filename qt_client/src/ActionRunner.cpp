@@ -248,6 +248,20 @@ void ActionRunner::start(const ActionRun &run, const ActionWorkflow &workflow,
     emitLog(QString::fromUtf8(
         "==> \xF0\x9F\x8C\xBF Checking out into a temporary worktree\xE2\x80\xA6")); // 🌿 …
 
+    // An encrypted repository is served out of a temporary materialization, so
+    // say plainly that the mirror went away rather than leaving a bare "fatal:
+    // cannot change to '/tmp/ForkMesh-XXXXXX/repository.git'" behind a generic
+    // "Checkout failed." (adhoc #314).
+    if (m_mirror.trimmed().isEmpty() || !QDir(m_mirror).exists()) {
+        complete(false,
+                 QStringLiteral("The served mirror for %1/%2 is no longer "
+                                "available at %3.")
+                     .arg(m_run.owner, m_run.name,
+                          m_mirror.isEmpty() ? QStringLiteral("(unset)")
+                                             : m_mirror));
+        return;
+    }
+
     QString sandboxReason;
     if (!sandboxAvailable(&sandboxReason)) {
         complete(false, QStringLiteral("Actions isolation unavailable: %1.")
