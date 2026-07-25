@@ -111,7 +111,7 @@ forkmesh-world {
   transform: translateY(0);
 }
 
-.world-static-fallback {
+.world-load-error {
   min-height: 100svh;
   display: grid;
   place-content: center;
@@ -119,12 +119,17 @@ forkmesh-world {
   gap: 18px;
   max-width: 760px;
   padding: 48px clamp(24px, 7vw, 96px);
+  color: var(--world-copy);
   background:
     radial-gradient(circle at 75% 10%, rgb(57 199 131 / 0.2), transparent 32%),
     linear-gradient(145deg, #07110f, #0b2019);
 }
 
-.world-static-brand {
+.world-load-error[hidden] {
+  display: none;
+}
+
+.world-load-error-brand {
   display: inline-flex;
   align-items: center;
   gap: 12px;
@@ -134,13 +139,13 @@ forkmesh-world {
   text-decoration: none;
 }
 
-.world-static-brand img {
+.world-load-error-brand img {
   width: 36px;
   height: 42px;
   object-fit: contain;
 }
 
-.world-static-fallback p {
+.world-load-error p {
   max-width: 640px;
   margin: 0;
   color: var(--world-muted);
@@ -148,13 +153,21 @@ forkmesh-world {
   line-height: 1.65;
 }
 
-.world-static-fallback nav {
+.world-load-error .world-load-error-kicker {
+  color: var(--world-mint);
+  font-family: "ForkMesh Mono", monospace;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.world-load-error nav {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
 }
 
-.world-static-fallback nav a {
+.world-load-error nav a {
   border-bottom: 1px solid var(--world-mint);
   padding: 8px 0;
   margin-right: 16px;
@@ -162,7 +175,6 @@ forkmesh-world {
   text-decoration: none;
 }
 
-.world-static-kicker,
 .world-eyebrow,
 .world-mono {
   font-family: "ForkMesh Mono", monospace;
@@ -191,11 +203,6 @@ forkmesh-world {
 
 .world-information-anchor p {
   margin: 0 0 8px;
-}
-
-.world-static-kicker {
-  color: var(--world-mint) !important;
-  font-size: 0.72rem !important;
 }
 
 .world-noscript {
@@ -1201,7 +1208,8 @@ forkmesh-world {
   letter-spacing: 0.1em;
 }
 
-.world-diagnostics summary [data-world-diagnostics-summary] {
+.world-diagnostics summary [data-world-diagnostics-summary],
+.world-diagnostics summary [data-world-chat-terminal-last] {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
