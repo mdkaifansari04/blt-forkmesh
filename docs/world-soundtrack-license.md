@@ -5,6 +5,13 @@ downtempo ambient instrumental score locally with the Web Audio API. No audio
 recording, provider stream, or third-party composition is downloaded,
 embedded, proxied, recorded, or rebroadcast.
 
+The “Listen to the ForkMesh song” control plays *ForkMesh Forever (Indie Pop)*,
+a first-party track published by the project at
+`cloudflare_worker/public/assets/songs/ForkMeshForever(IndiePop).mp3`. It is
+served from ForkMesh’s own origin, starts only after that button is pressed,
+stops with the same Mute/stop control, and is never streamed from or relayed to
+a third-party provider.
+
 The score’s source is `cloudflare_worker/public/world/world.js`, function
 `createProceduralWorldSoundtrack`. ForkMesh’s project authors dedicate the
 generated score and its sequencing code, to the extent they own copyright in
