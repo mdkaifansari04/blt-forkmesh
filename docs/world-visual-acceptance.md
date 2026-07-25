@@ -19,7 +19,7 @@ details are not copied.
 
 ForkMesh applies those general patterns through its original Town Square,
 quick destination dock, organization and repository districts, routing
-station, information booth, chat destination, and separate Support Center.
+station, chat destination, and separate Support Center.
 Every spatial metaphor keeps a technical explanation panel.
 
 ## Reproducible acceptance viewports
