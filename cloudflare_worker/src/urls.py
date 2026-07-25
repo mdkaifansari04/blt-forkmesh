@@ -32,6 +32,13 @@ CHAT_CHANNEL_HISTORY_RE = re.compile(
     r"^/api/chat/channels/([0-9a-f]{32})/history/?$")
 CHAT_CHANNEL_WS_RE = re.compile(
     r"^/api/chat/channels/([0-9a-f]{32})/ws/?$")
+# One-to-one direct messages use opaque conversation identifiers and a
+# participant-only authorization policy with no administrator bypass.
+CHAT_DIRECT_MESSAGES_RE = re.compile(r"^/api/chat/direct-messages/?$")
+CHAT_DIRECT_MESSAGE_ROOM_ACCESS_RE = re.compile(
+    r"^/api/chat/direct-messages/([0-9a-f]{32})/room-access/?$")
+CHAT_DIRECT_MESSAGE_WS_RE = re.compile(
+    r"^/api/chat/direct-messages/([0-9a-f]{32})/ws/?$")
 # Issue inbox: signed submissions from people without write access to the repo.
 REPO_ISSUES_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/issues$")
 # Pull-request inbox: signed PR submissions from any node.
