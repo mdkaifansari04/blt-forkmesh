@@ -475,6 +475,11 @@ const QLatin1String kWorktreeLinkScheme("forkmesh-worktree:");
 // the Branches tab (adhoc #123). Shared by the link builder and its handler.
 const QLatin1String kBranchLinkScheme("forkmesh-branch:");
 
+// "forkmesh-copy-branch:<branch>" link next to the branch chip in the agent-detail
+// header (adhoc #259): clicking it copies the branch name to the clipboard
+// instead of navigating anywhere.
+const QLatin1String kCopyBranchLinkScheme("forkmesh-copy-branch:");
+
 // "forkmesh-pull:<number>" link in the agent-detail meta line: when a session
 // has a pull request, its "PR #N" reference links to that PR's tab. Shared by
 // the link builder and its linkActivated handler.
