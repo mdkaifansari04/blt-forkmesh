@@ -316,6 +316,15 @@ function badgeTexture(THREE, identity, accent = "#9ef7c6") {
     "over-a-year": "FIRST SEEN 1Y+ AGO",
     hidden: "FIRST SEEN HIDDEN",
   };
+  const statusColors = {
+    online: "#9ef7c6",
+    available: "#9ef7c6",
+    away: "#f7c96b",
+    inactive: "#91a39a",
+    recent: "#91a39a",
+    returning: "#77d9ff",
+    hidden: "#65776f",
+  };
   return canvasTexture(THREE, 512, 512, (context) => {
     context.fillStyle = "#0c2019";
     context.fillRect(0, 0, 512, 512);
@@ -325,48 +334,23 @@ function badgeTexture(THREE, identity, accent = "#9ef7c6") {
 
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.font = '128px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
+    context.font = '170px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
     context.fillStyle = "#ffffff";
-    context.fillText(identity.flag || "◌", 256, 86);
-
-    roundedRect(context, 42, 158, 428, 62, 10);
-    context.fillStyle = "rgba(255,255,255,0.11)";
-    context.fill();
-    context.font = '700 27px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillStyle = "#d9ffea";
-    context.fillText(
-      `${String(identity.browser || "BROWSER").toUpperCase()} · ${String(identity.os || "DEVICE").toUpperCase()}`,
-      256,
-      189,
-    );
-
-    context.font = '700 43px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillStyle = "#ffffff";
-    const name = String(identity.name || "guest").slice(0, 15);
-    context.fillText(name, 256, 265);
+    context.fillText(identity.flag || "◌", 256, 150);
 
     context.font = '700 21px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#9ef7c6";
     context.fillText(
       firstSeenLabels[identity.firstVisitAge] || firstSeenLabels.hidden,
       256,
-      324,
+      280,
     );
     const activity =
       activityLabels[identity.activityCategory] || activityLabels.hidden;
     const visits = Math.max(0, Math.min(999, Number(identity.visitCount) || 0));
     context.fillStyle = "#77d9ff";
-    context.fillText(`${activity} · ${visits} PUBLIC URL VISITS`, 256, 366);
+    context.fillText(`${activity} · ${visits} PUBLIC URL VISITS`, 256, 322);
 
-    const statusColors = {
-      online: "#9ef7c6",
-      available: "#9ef7c6",
-      away: "#f7c96b",
-      inactive: "#91a39a",
-      recent: "#91a39a",
-      returning: "#77d9ff",
-      hidden: "#65776f",
-    };
     context.beginPath();
     context.arc(60, 452, 12, 0, Math.PI * 2);
     context.fillStyle = statusColors[identity.status] || "#9ef7c6";

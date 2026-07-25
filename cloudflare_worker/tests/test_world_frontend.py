@@ -241,8 +241,6 @@ def test_user_agent_is_reduced_locally_to_generalized_badge_categories():
     assert "/Linux/i.test(platform)" in DATA
     assert "navigator.userAgent" in DATA
     assert "userAgent:" not in APP
-    assert "identity.browser" in SCENE
-    assert "identity.os" in SCENE
     assert "presenceBrowser(" in APP
     assert "presenceOS(" in APP
 
