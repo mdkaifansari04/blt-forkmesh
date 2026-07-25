@@ -2391,7 +2391,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           class="world-map-button"
           data-world-landmark="${escapeHTML(landmark.id)}"
           style="--map-color:${escapeHTML(landmark.color)}"
-          aria-current="${landmark.id === "information" ? "true" : "false"}"
+          aria-current="${landmark.id === LANDMARKS[0]?.id ? "true" : "false"}"
         >
           <span class="world-map-icon" aria-hidden="true">${escapeHTML(landmark.icon)}</span>
           <span class="world-map-label-copy">
@@ -2506,7 +2506,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         aria-label="ForkMesh World information"
       >
         <p><strong>ForkMesh World controls</strong></p>
-        <button type="button" data-world-landmark="information">Open the information booth</button>
+        <button type="button" data-world-action="tour">Take the 90-second tour</button>
         <a href="/dashboard">Open the standard operations console</a>
       </section>
       <div class="world-canvas-wrap" data-world-canvas-wrap></div>
@@ -6183,7 +6183,6 @@ class ForkMeshWorld extends HTMLElement {
       repositories: "viewing-repository",
       organizations: "visiting-organization",
       office: "visiting-office",
-      information: "reading-documentation",
     }[id] || "exploring-town-square";
     this.identity.activityCategory = this.currentActivityCategory;
     this.sendPresence({ type: "presence" });
