@@ -33,10 +33,12 @@ const CAMERA_ZOOM_MAX = 28;
 const CAMERA_FAR_PLANE = 1200;
 const CAMERA_LOOK_SENSITIVITY = 0.0022;
 const CAMERA_PITCH_MIN = 0.08;
-const CAMERA_PITCH_MAX = 1.24;
+// Stop just shy of vertical so the camera stays numerically stable while a
+// player can still look directly into the sky.
+const CAMERA_PITCH_MAX = Math.PI / 2 - 0.01;
 const FIRST_PERSON_EYE_HEIGHT = 2.2;
 const FIRST_PERSON_PITCH_MIN = -1.1;
-const FIRST_PERSON_PITCH_MAX = 1.1;
+const FIRST_PERSON_PITCH_MAX = Math.PI / 2 - 0.01;
 const REPOSITORY_FIRST_PERSON_DISTANCE = 5.5;
 const REPOSITORY_FIRST_PERSON_PITCH = -0.08;
 const OFFICE_WIDTH = 17;
@@ -2440,14 +2442,23 @@ function repositorySizeLabelSprite(THREE, title, subtitle, color) {
 }
 
 function repositoryStarTextTexture(THREE, count) {
-  return canvasTexture(THREE, 640, 180, (context) => {
-    context.clearRect(0, 0, 640, 180);
+  // The real repo_stars total, in black, sitting inside the star itself. The
+  // number is the whole label: it shrinks to fit so a five-figure count still
+  // stays inside the points instead of spilling into empty sky.
+  return canvasTexture(THREE, 512, 256, (context) => {
+    context.clearRect(0, 0, 512, 256);
     context.textAlign = "center";
     context.textBaseline = "middle";
     context.fillStyle = "#07120e";
-    context.font = '900 82px "ForkMesh Mono", ui-monospace, monospace';
-    const value = Number.isSafeInteger(count) ? count.toLocaleString("en-US") : "…";
-    context.fillText(`${value} STARS`, 320, 94);
+    const value = Number.isSafeInteger(count)
+      ? count.toLocaleString("en-US")
+      : "—";
+    let size = 168;
+    do {
+      context.font = `900 ${size}px "ForkMesh Mono", ui-monospace, monospace`;
+      size -= 8;
+    } while (size > 40 && context.measureText(value).width > 336);
+    context.fillText(value, 256, 132);
   });
 }
 
@@ -3824,7 +3835,13 @@ export function createWorldScene({
   worldBulletin.name = "forkmesh-world-bulletin";
   // Keep this well outside the arrival / join grid: it is a destination, not
   // another object visitors need to navigate around when they first arrive.
-  worldBulletin.position.set(-29, 0, 13.5);
+  worldBulletin.position.set(-68, 0, 30);
+  // Plane textures face local +Z. Rotate the board so its readable face looks
+  // back into the World from the outer edge of the circular terrain.
+  worldBulletin.rotation.y = Math.atan2(
+    -worldBulletin.position.x,
+    -worldBulletin.position.z,
+  );
   let worldBulletinEvents = [];
   let worldBulletinOffset = 0;
   const bulletinFrame = new THREE.Mesh(
@@ -7368,8 +7385,10 @@ export function createWorldScene({
         };
         const starShape = new THREE.Shape();
         for (let point = 0; point < 10; point += 1) {
-          const angle = -Math.PI / 2 + point * (Math.PI / 5);
-          const radius = point % 2 === 0 ? 0.34 : 0.15;
+          // Start at the top so the star reads point-up, and keep the inner
+          // radius wide enough for the count to sit legibly in the middle.
+          const angle = Math.PI / 2 + point * (Math.PI / 5);
+          const radius = point % 2 === 0 ? 0.94 : 0.44;
           const x = Math.cos(angle) * radius;
           const y = Math.sin(angle) * radius;
           if (point === 0) starShape.moveTo(x, y);
@@ -7392,15 +7411,17 @@ export function createWorldScene({
           }),
         );
         starButton.name = `repository-star-button:${record.owner}/${record.name}`;
-        starButton.position.set(0, 3.5, 0.35);
+        starButton.position.set(0, 4.05, 0.35);
         starButton.userData.landmark = "repositories";
         starButton.userData.repositoryStar = starData;
         node.add(starButton);
         interactive.push(starButton);
         // The total belongs directly on the control. This avoids a floating
-        // count bubble and makes the action read as a single star button.
+        // count bubble and makes the action read as a single star button. The
+        // plane spans the star's inner pentagon, so the black digits read
+        // against the gold/green face and never over open sky.
         const starText = new THREE.Mesh(
-          new THREE.PlaneGeometry(0.72, 0.2),
+          new THREE.PlaneGeometry(0.84, 0.42),
           new THREE.MeshBasicMaterial({
             map: repositoryStarTextTexture(THREE, record.starCount),
             transparent: true,
@@ -7409,11 +7430,23 @@ export function createWorldScene({
           }),
         );
         starText.name = `repository-star-count:${record.owner}/${record.name}`;
-        starText.position.set(0, 3.5, 0.5);
+        starText.position.set(0, 4.05, 0.5);
         starText.userData.landmark = "repositories";
         starText.userData.repositoryStar = starData;
         node.add(starText);
         interactive.push(starText);
+        const starCaption = repositorySizeLabelSprite(
+          THREE,
+          Number.isSafeInteger(record.starCount)
+            ? `${record.starCount.toLocaleString("en-US")} STARS`
+            : "STARS",
+          record.starred ? "STARRED · CLICK TO REMOVE" : "CLICK TO STAR",
+          record.starred ? "#f7c96b" : "#9ef7c6",
+        );
+        starCaption.name = `repository-star-caption:${record.owner}/${record.name}`;
+        starCaption.scale.set(2.4, 0.68, 1);
+        starCaption.position.set(0, 2.92, 0.5);
+        node.add(starCaption);
       }
       if (isActive) {
         const createButton = new THREE.Mesh(

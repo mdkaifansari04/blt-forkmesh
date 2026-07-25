@@ -2002,6 +2002,39 @@ function cleanRepositories(payload) {
     .slice(0, 200);
 }
 
+function normalizeRepositoryFollowers(value) {
+  // Public fediverse accounts following the repository actor, exactly as the
+  // relay read them out of ap_followers (joined with the cached remote actor
+  // document). Everything here is remote, attacker-controlled text: names and
+  // bios are flattened to bounded plain text and the avatar must be a public
+  // https media URL before the scene hands it to a texture loader.
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  const followers = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const profileUrl = safePublicHTTPSURL(entry.profileUrl || entry.url);
+    const handle = sanitizeNotificationText(entry.handle, "", 80);
+    if (!handle && !profileUrl) continue;
+    const key = (handle || profileUrl).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const followedAt = Number(entry.followedAt);
+    followers.push({
+      handle,
+      name: sanitizeNotificationText(entry.name, "", 80),
+      about: sanitizeNotificationText(entry.about, "", 240),
+      instance: sanitizeNotificationText(entry.instance, "", 80).toLowerCase(),
+      avatar: safePublicHTTPSURL(entry.avatarUrl),
+      profileUrl,
+      followedAt:
+        Number.isSafeInteger(followedAt) && followedAt > 0 ? followedAt : 0,
+    });
+    if (followers.length >= 24) break;
+  }
+  return followers;
+}
+
 function repositoryBlobText(blob) {
   const content = String(blob?.content ?? blob?.text ?? "");
   if (String(blob?.encoding || "").toLowerCase() !== "base64") {
@@ -2489,16 +2522,12 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         <header class="world-topbar">
           <a class="world-brand brand" href="/" aria-label="ForkMesh World home">
             <img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true" />
-            <span class="world-brand-name">ForkMesh <small>World</small></span>
-            <span class="world-live" data-world-presence-state="connecting">
-              <span data-world-presence-copy>Joining world</span>
+            <span class="world-connection-ring" data-world-presence-state="connecting">
+              <span class="world-visually-hidden" data-world-presence-copy>Joining world</span>
             </span>
           </a>
 
           <nav class="world-top-actions" aria-label="World tools">
-            <a class="world-top-link" href="/dashboard/chat" data-world-chat-open title="Open chat inside the World">
-              <span aria-hidden="true">⌁</span><span>Chat</span>
-            </a>
             ${
               identity.accountStatus === "Supporting member"
                 ? ""
@@ -2531,20 +2560,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <span aria-hidden="true">♪</span><span data-world-sound-label>Sound</span>
             </button>
             <button
-              class="world-top-link"
-              type="button"
-              data-world-account-open
-              title="${
-                signedInName
-                  ? `Account: ${escapeHTML(signedInName)}`
-                  : "Log in or create an account inside the World"
-              }"
-            >
-              <span aria-hidden="true">${signedInName ? "✓" : "○"}</span>
-              <span>${signedInName ? "Account" : "Login"}</span>
-            </button>
-            <button class="world-icon-button" type="button" data-world-settings-open aria-label="World and privacy settings">⚙</button>
-            <button
               class="world-shirt-badge"
               type="button"
               data-world-shirt-badge
@@ -2565,10 +2580,17 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         </header>
 
         <aside class="world-right-rail" aria-label="World navigation and activity">
-          <section class="world-map">
+          <section class="world-map" data-world-map>
             <div class="world-panel-heading">
               <h2>World map</h2>
               <span data-world-location-code>TS-01</span>
+              <button
+                class="world-map-toggle"
+                type="button"
+                data-world-map-toggle
+                aria-expanded="false"
+                aria-label="Expand world map"
+              >☰</button>
             </div>
             <ul class="world-map-list">${mapItems}</ul>
           </section>
@@ -3039,6 +3061,14 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <button class="world-settings-close" type="button" data-world-settings-close aria-label="Close settings">×</button>
           </div>
 
+          <section class="world-account-access" aria-label="ForkMesh account">
+            <div>
+              <strong>ForkMesh account</strong>
+              <span>Log in, create an account, or manage this device's session.</span>
+            </div>
+            <button type="button" data-world-account-open>Account</button>
+          </section>
+
           <fieldset class="world-setting-group">
             <legend>Personal environment · only changes this device</legend>
             <div class="world-theme-grid">${themes}</div>
@@ -3273,6 +3303,7 @@ class ForkMeshWorld extends HTMLElement {
     this.mediaRoom = normalizeMediaRoom(null);
     this.activeRepository = null;
     this.repositoryStarStates = new Map();
+    this.repositoryFollowerStates = new Map();
     this.repositoryMapState = "idle";
     this.repositoryMapTarget = "";
     this.repositoryMapSelection = 0;
@@ -5030,6 +5061,17 @@ class ForkMeshWorld extends HTMLElement {
         this.toggleWorldCameraMode();
         return;
       }
+      const mapToggle = event.target.closest("[data-world-map-toggle]");
+      if (mapToggle) {
+        const map = this.$("[data-world-map]");
+        const expanded = map?.classList.toggle("is-expanded") || false;
+        mapToggle.setAttribute("aria-expanded", String(expanded));
+        mapToggle.setAttribute(
+          "aria-label",
+          expanded ? "Collapse world map" : "Expand world map",
+        );
+        return;
+      }
       const landmarkButton = event.target.closest("[data-world-landmark]");
       if (landmarkButton) {
         const id = landmarkButton.dataset.worldLandmark;
@@ -5692,7 +5734,10 @@ class ForkMeshWorld extends HTMLElement {
 
   syncInactivePresence() {
     window.clearTimeout(this.inactiveSyncTimer);
-    window.clearTimeout(this.repositoryStarSceneSyncTimer);
+    // The coalesced repository-scene rebuild owns its own timer. Cancelling it
+    // from here (without clearing the handle) left a stale non-zero id behind,
+    // and every later refresh then short-circuited on it — so a resolved star
+    // total never reached the 3D portal again.
     this.inactiveSyncTimer = window.setTimeout(async () => {
       const session = readSession();
       if (!session?.sessionToken) return;
@@ -9118,6 +9163,123 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  repositoryFollowerStateFor(repository = {}) {
+    const key = this.repositoryStarKey(
+      repository.owner,
+      repository.repo || repository.name,
+    );
+    return (
+      this.repositoryFollowerStates.get(key) || {
+        status: repository.isPrivate ? "unavailable" : "idle",
+        count: null,
+        federates: false,
+        followers: [],
+      }
+    );
+  }
+
+  applyRepositoryFollowerState(key, nextState) {
+    if (!key) return null;
+    if (
+      !this.repositoryFollowerStates.has(key) &&
+      this.repositoryFollowerStates.size >= 60
+    ) {
+      this.repositoryFollowerStates.delete(
+        this.repositoryFollowerStates.keys().next().value,
+      );
+    }
+    const previous = this.repositoryFollowerStates.get(key) || {};
+    const count = Number(nextState?.count);
+    const state = {
+      status: String(nextState?.status || previous.status || "idle"),
+      count:
+        Number.isSafeInteger(count) && count >= 0
+          ? Math.min(count, 10_000_000)
+          : Number.isSafeInteger(previous.count)
+            ? previous.count
+            : null,
+      federates:
+        typeof nextState?.federates === "boolean"
+          ? nextState.federates
+          : previous.federates === true,
+      followers: Array.isArray(nextState?.followers)
+        ? nextState.followers
+        : Array.isArray(previous.followers)
+          ? previous.followers
+          : [],
+    };
+    this.repositoryFollowerStates.set(key, state);
+    return state;
+  }
+
+  async loadRepositoryFollowers(owner, name, isPrivate = false, force = false) {
+    // WHO follows this repository on the fediverse. The public About card is
+    // already the relay's answer for that question (handle, display name,
+    // avatar, bio, instance, followed-at), so the World reads the same
+    // endpoint instead of adding a second follower query to the free plan.
+    const key = this.repositoryStarKey(owner, name);
+    if (!key) return null;
+    if (isPrivate) {
+      const state = this.applyRepositoryFollowerState(key, {
+        status: "unavailable",
+        count: null,
+        federates: false,
+        followers: [],
+      });
+      return state;
+    }
+    const current = this.repositoryFollowerStates.get(key);
+    if (!force && ["loading", "ready"].includes(current?.status)) {
+      return current;
+    }
+    this.applyRepositoryFollowerState(key, { status: "loading" });
+    const [safeOwner, safeName] = key.split("/");
+    try {
+      const payload = await this.fetchJSON(
+        `/api/repo/${encodeURIComponent(safeOwner)}/${encodeURIComponent(
+          safeName,
+        )}/about`,
+        { timeout: 6000 },
+      );
+      if (payload?.ok !== true) throw new Error("invalid_repository_about");
+      const fediverse =
+        payload.fediverse && typeof payload.fediverse === "object"
+          ? payload.fediverse
+          : {};
+      const followers = normalizeRepositoryFollowers(fediverse.followersList);
+      const reported = Number(fediverse.followers);
+      const state = this.applyRepositoryFollowerState(key, {
+        status: "ready",
+        // The list is capped by the relay, so the reported total stays
+        // authoritative for the caption under the repository circle.
+        count:
+          Number.isSafeInteger(reported) && reported >= 0
+            ? reported
+            : followers.length,
+        federates: fediverse.enabled === true,
+        followers,
+      });
+      this.refreshRepositoryFollowerUI();
+      return state;
+    } catch (_) {
+      const state = this.applyRepositoryFollowerState(key, {
+        status: "unavailable",
+      });
+      this.refreshRepositoryFollowerUI();
+      return state;
+    }
+  }
+
+  refreshRepositoryFollowerUI() {
+    // Same coalescing as the star totals: one portal-layer rebuild, not one
+    // per resolved response.
+    if (this.repositoryFollowerSceneSyncTimer) return;
+    this.repositoryFollowerSceneSyncTimer = window.setTimeout(() => {
+      this.repositoryFollowerSceneSyncTimer = 0;
+      this.syncRepositoryScene();
+    }, 120);
+  }
+
   async toggleRepositoryStar(repository = {}) {
     const owner = sanitizePresenceText(repository.owner, "", 40);
     const name = sanitizePresenceText(
@@ -9225,7 +9387,10 @@ class ForkMeshWorld extends HTMLElement {
       this.repositoryMapState === "ready" && this.activeRepository
         ? this.activeRepository
         : null;
-    this.world.updateRepositoryCatalog?.(this.repositories, active || {});
+    this.world.updateRepositoryCatalog?.(
+      this.repositoriesWithLiveSocialState(),
+      active || {},
+    );
     if (!active) {
       this.world.updateRepositoryGraph?.([], []);
       this.world.updateRepositorySizeMap?.({}, {});
@@ -9240,6 +9405,35 @@ class ForkMeshWorld extends HTMLElement {
       repo: active.repo,
       commit: active.commit,
       path: active.path || "",
+    });
+  }
+
+  repositoriesWithLiveSocialState() {
+    // The catalog payload carries no star or follower totals, and a periodic
+    // catalog refresh replaces every record object — so the scene is handed the
+    // records with the state the relay actually answered with (repo_stars count
+    // and ap_followers) merged back on, instead of whatever the last catalog
+    // snapshot happened to contain.
+    return this.repositories.map((repository) => {
+      const key = this.repositoryStarKey(repository.owner, repository.name);
+      if (!key) return repository;
+      const star = this.repositoryStarStates.get(key);
+      const followers = this.repositoryFollowerStates.get(key);
+      if (!star && !followers) return repository;
+      return {
+        ...repository,
+        starCount: Number.isSafeInteger(star?.count)
+          ? star.count
+          : repository.starCount,
+        starred: star ? star.starred === true : repository.starred,
+        fediverseFollowerCount: Number.isSafeInteger(followers?.count)
+          ? followers.count
+          : null,
+        fediverseFollowerStatus: followers?.status || "idle",
+        fediverseFollowers: Array.isArray(followers?.followers)
+          ? followers.followers
+          : [],
+      };
     });
   }
 
@@ -9546,6 +9740,11 @@ class ForkMeshWorld extends HTMLElement {
         safeRepo,
         this.activeRepository?.isPrivate === true,
       );
+      void this.loadRepositoryFollowers(
+        safeOwner,
+        safeRepo,
+        this.activeRepository?.isPrivate === true,
+      );
       if (options.revealScene === true) this.revealRepositoryScene();
       return true;
     }
@@ -9619,6 +9818,11 @@ class ForkMeshWorld extends HTMLElement {
     this.syncRepositoryScene();
     this.world?.setRepositorySizeLoading?.(false);
     void this.loadRepositoryStarState(
+      safeOwner,
+      safeRepo,
+      this.activeRepository.isPrivate === true,
+    );
+    void this.loadRepositoryFollowers(
       safeOwner,
       safeRepo,
       this.activeRepository.isPrivate === true,
@@ -13275,6 +13479,7 @@ class ForkMeshWorld extends HTMLElement {
     const space = WORLD_SPACE_IDS.has(String(movement?.space || ""))
       ? String(movement.space)
       : this.currentSpace;
+    this.currentSpace = space;
     this.lastMovement = {
       ...movement,
       space,
@@ -13323,7 +13528,11 @@ class ForkMeshWorld extends HTMLElement {
 
   captureWorldPosition(flush = false) {
     const position = this.world?.getPosition?.();
-    if (position) this.rememberWorldPosition(position, flush);
+    if (!position) return;
+    const space = WORLD_SPACE_IDS.has(String(this.lastMovement?.space || ""))
+      ? String(this.lastMovement.space)
+      : this.currentSpace;
+    this.rememberWorldPosition({ ...position, space }, flush);
   }
 
   preserveWorldPositionForRefresh() {
@@ -14154,6 +14363,8 @@ class ForkMeshWorld extends HTMLElement {
     window.clearTimeout(this.toastTimer);
     window.clearTimeout(this.inactiveSyncTimer);
     window.clearTimeout(this.inputInactiveTimer);
+    window.clearTimeout(this.repositoryStarSceneSyncTimer);
+    window.clearTimeout(this.repositoryFollowerSceneSyncTimer);
     window.clearInterval(this.activityTimer);
     window.clearInterval(this.clockTimer);
     window.clearInterval(this.distanceTimer);

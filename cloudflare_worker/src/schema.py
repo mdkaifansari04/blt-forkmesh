@@ -627,10 +627,13 @@ SCHEMA_STATEMENTS = [
         PRIMARY KEY (actor_bi, follower_id))""",
     "CREATE INDEX IF NOT EXISTS idx_ap_followers_actor ON ap_followers(actor_bi)",
     # Cache of remote actor documents (public data, plaintext like `relays`).
+    # avatar_url/summary are the follower's published avatar and bio (migration
+    # 0078) — the same public presentation any fediverse client shows, cached so
+    # "who follows this repo" can be rendered without re-fetching every actor.
     """CREATE TABLE IF NOT EXISTS ap_remote_actors (
         actor_id TEXT PRIMARY KEY, inbox TEXT, shared_inbox TEXT,
         pubkey_pem TEXT, handle TEXT, display_name TEXT, url TEXT,
-        updated_at INTEGER NOT NULL)""",
+        updated_at INTEGER NOT NULL, avatar_url TEXT, summary TEXT)""",
     # Local ActivityPub objects (the Notes we publish), served at /ap/o/<uuid>.
     # context_bi = blind_index("ap-context:<owner>/<repo>#<kind>#<ref>") maps a
     # remote reply's inReplyTo back to its forkmesh thread.

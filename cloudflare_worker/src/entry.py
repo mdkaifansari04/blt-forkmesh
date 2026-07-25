@@ -7827,26 +7827,43 @@ async def _repo_about_public(env, request, owner, repo):
         # The newest followers, so the repo page can show WHO is watching —
         # follower_id/handle are public fediverse identifiers (the remote
         # server publishes the same follow), capped so a popular repo never
-        # ships thousands of rows in an About card.
+        # ships thousands of rows in an About card. The cached remote actor
+        # document (LEFT JOIN: absent until that actor is first fetched) adds
+        # the presentation every fediverse client already shows for them —
+        # display name, avatar, bio, profile URL.
         rows = await d1_all(
             env,
-            "SELECT follower_id, follower_handle FROM ap_followers"
+            "SELECT follower_id, follower_handle, created_at, display_name,"
+            " avatar_url, summary, url FROM ap_followers"
+            " LEFT JOIN ap_remote_actors ON actor_id = follower_id"
             " WHERE actor_bi=? ORDER BY created_at DESC LIMIT 50",
             actor_bi)
         for follower in rows or []:
             follower_url = str(follower.get("follower_id") or "")
             follower_handle = str(follower.get("follower_handle") or "")
+            parsed = urlparse(follower_url)
             if not follower_handle and follower_url:
                 # Older rows may lack the resolved handle; a readable
                 # fallback beats a bare URL in the UI.
-                parsed = urlparse(follower_url)
                 name = parsed.path.rstrip("/").rpartition("/")[2]
                 if name and parsed.hostname:
                     follower_handle = "@%s@%s" % (
                         name.lstrip("@"), parsed.hostname)
             if follower_handle or follower_url:
-                followers_list.append(
-                    {"handle": follower_handle, "url": follower_url})
+                followers_list.append({
+                    "handle": follower_handle,
+                    "url": follower_url,
+                    "name": clean_string(
+                        follower.get("display_name") or "", 80),
+                    "avatarUrl": ap.public_media_url(
+                        follower.get("avatar_url") or ""),
+                    "about": ap_threads.sanitize_remote_content(
+                        follower.get("summary") or "", 240),
+                    "instance": str(parsed.hostname or "").lower(),
+                    "profileUrl": ap.public_media_url(
+                        follower.get("url") or "") or follower_url,
+                    "followedAt": int(follower.get("created_at") or 0),
+                })
     return json_response({
         "ok": True,
         "description": clean_string(
@@ -19994,22 +20011,30 @@ async def _ap_remote_actor(env, actor_id, force_refresh=False):
     handle = ess["preferredUsername"]
     if handle:
         handle = handle + "@" + urlparse(ess["id"]).netloc
+    # Public presentation, cached alongside the routing fields: the avatar URL
+    # must be an https media URL (never a data: payload or a private host), and
+    # the bio is untrusted remote HTML flattened to bounded plain text.
+    avatar_url = ap.public_media_url(ess.get("icon"))
+    summary = ap_threads.sanitize_remote_content(ess.get("summary"), 500)
     await d1_run(
         env,
         "INSERT INTO ap_remote_actors (actor_id, inbox, shared_inbox,"
-        " pubkey_pem, handle, display_name, url, updated_at)"
-        " VALUES (?,?,?,?,?,?,?,?)"
+        " pubkey_pem, handle, display_name, url, updated_at, avatar_url,"
+        " summary) VALUES (?,?,?,?,?,?,?,?,?,?)"
         " ON CONFLICT(actor_id) DO UPDATE SET inbox=excluded.inbox,"
         " shared_inbox=excluded.shared_inbox, pubkey_pem=excluded.pubkey_pem,"
         " handle=excluded.handle, display_name=excluded.display_name,"
-        " url=excluded.url, updated_at=excluded.updated_at",
+        " url=excluded.url, updated_at=excluded.updated_at,"
+        " avatar_url=excluded.avatar_url, summary=excluded.summary",
         actor_id, ess["inbox"], ess["sharedInbox"], ess["pubkeyPem"],
-        handle, clean_string(ess["name"], 200), ess["url"], now)
+        handle, clean_string(ess["name"], 200), ess["url"], now,
+        avatar_url, summary)
     return {
         "actor_id": actor_id, "inbox": ess["inbox"],
         "shared_inbox": ess["sharedInbox"], "pubkey_pem": ess["pubkeyPem"],
         "handle": handle, "display_name": clean_string(ess["name"], 200),
-        "url": ess["url"], "updated_at": now,
+        "url": ess["url"], "updated_at": now, "avatar_url": avatar_url,
+        "summary": summary,
     }
 
 

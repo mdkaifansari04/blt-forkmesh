@@ -2472,14 +2472,14 @@ test("refresh restores one bounded identity-local position without private histo
   await waitForWorld(page);
 
   await page.locator("forkmesh-world").evaluate((shell) => {
-    // The space station is parked in the works-in-progress barn, so its floor
-    // is the same walkable 0.38 as the Town Square.
+    // A normal Town Square position survives while private activity copy does
+    // not become part of the local position record.
     const position = {
       x: 16.3,
       y: 0.38,
-      z: 66.5,
+      z: 26.5,
       heading: 1.2,
-      space: "space-station",
+      space: "town-square",
       moving: false,
       activity: "private/repository?token=must-not-persist",
     };
@@ -2500,23 +2500,51 @@ test("refresh restores one bounded identity-local position without private histo
   expect(Object.keys(storedBeforeRefresh.record).sort()).toEqual(
     ["heading", "space", "updatedAt", "x", "y", "z"].sort(),
   );
+  expect(storedBeforeRefresh.record.space).toBe("town-square");
+  const positionBeforeRefresh = await page
+    .locator("forkmesh-world")
+    .evaluate((shell) => shell.world.getPosition());
+  expect(positionBeforeRefresh.space).toBe("town-square");
   expect(JSON.stringify(storedBeforeRefresh.record)).not.toContain("private");
   expect(JSON.stringify(storedBeforeRefresh.record)).not.toContain("token");
 
   await page.reload();
-  await waitForWorld(page);
+  await waitForWorldReady(page);
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate((shell) => {
+      const position = shell.world.getPosition();
+      return (
+        shell.spawnSelected === true &&
+        position.space === "town-square" &&
+        Math.abs(position.x - 16.3) < 0.001 &&
+        Math.abs(position.z - 26.5) < 0.001
+      );
+    }),
+  ).toBe(true);
   const restored = await page.locator("forkmesh-world").evaluate((shell) => ({
     position: shell.world.getPosition(),
     currentSpace: shell.currentSpace,
+    restoredPosition: shell.restoredPosition,
+    storedRecord: JSON.parse(
+      localStorage.getItem(
+        Object.keys(localStorage).find((key) =>
+          key.startsWith("forkmesh.world.position.v1."),
+        ) || "",
+      ) || "null",
+    ),
     storedRecords: Object.keys(localStorage).filter((key) =>
       key.startsWith("forkmesh.world.position.v1."),
     ).length,
   }));
-  expect(restored.currentSpace).toBe("space-station");
-  expect(restored.position.space).toBe("space-station");
+  expect(restored).toMatchObject({
+    currentSpace: "town-square",
+    position: { space: "town-square" },
+    restoredPosition: { space: "town-square" },
+    storedRecord: { space: "town-square" },
+  });
   expect(restored.position.x).toBeCloseTo(16.3, 3);
   expect(restored.position.y).toBeCloseTo(0.38, 3);
-  expect(restored.position.z).toBeCloseTo(66.5, 3);
+  expect(restored.position.z).toBeCloseTo(26.5, 3);
   expect(restored.position.heading).toBeCloseTo(1.2, 3);
   expect(restored.storedRecords).toBe(1);
 });
