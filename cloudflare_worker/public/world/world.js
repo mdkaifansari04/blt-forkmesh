@@ -3768,7 +3768,7 @@ class ForkMeshWorld extends HTMLElement {
           this.handleRendererStateChange(state);
         },
         onForkbotChat: () => {
-          this.openWorldChat("/dashboard/chat", this.$("[data-world-chat-open]"));
+          this.openChatTerminal("@forkbot ");
         },
         onPlayForkmeshSong: () => {
           void this.playForkmeshSong();
@@ -13288,6 +13288,34 @@ class ForkMeshWorld extends HTMLElement {
     const frameURL = "/dashboard/chat?worldEmbed=1";
     frame.dataset.worldChatUrl = frameURL;
     frame.src = frameURL;
+  }
+
+  // Open the collapsed bottom-right CHAT bar (not the full chat overlay) and
+  // hand the composer a starting message so a visitor talking to ForkBot can
+  // start typing immediately. Uses postMessage rather than a query param
+  // because the terminal iframe is loaded once and kept alive across clicks.
+  openChatTerminal(prefillText = "") {
+    const details = this.$("[data-world-chat-terminal]");
+    const frame = this.$("[data-world-chat-terminal-frame]");
+    if (!details || !frame) return;
+    this.closeLandmark();
+    this.toggleSettings(false);
+    if (this.tourIndex >= 0) this.stopTour();
+    this.closeWorldChat();
+    const alreadyLoaded = Boolean(frame.dataset.worldChatUrl);
+    this.loadChatTerminalFrame();
+    details.open = true;
+    const sendPrefill = () => {
+      frame.contentWindow?.postMessage(
+        { type: "forkmesh:chat-prefill", text: prefillText },
+        location.origin,
+      );
+    };
+    if (alreadyLoaded) {
+      window.setTimeout(sendPrefill, 80);
+    } else {
+      frame.addEventListener("load", sendPrefill, { once: true });
+    }
   }
 
   // Mirror the newest live chat line into the collapsed CHAT bar so the
