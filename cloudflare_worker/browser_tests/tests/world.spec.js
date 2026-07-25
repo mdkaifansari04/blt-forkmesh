@@ -1383,10 +1383,12 @@ test("refresh restores one bounded identity-local position without private histo
   await waitForWorld(page);
 
   await page.locator("forkmesh-world").evaluate((shell) => {
+    // The space station is parked in the works-in-progress barn, so its floor
+    // is the same walkable 0.38 as the Town Square.
     const position = {
-      x: 21.25,
-      y: 18.45,
-      z: -13.5,
+      x: 16.3,
+      y: 0.38,
+      z: 66.5,
       heading: 1.2,
       space: "space-station",
       moving: false,
@@ -1423,9 +1425,9 @@ test("refresh restores one bounded identity-local position without private histo
   }));
   expect(restored.currentSpace).toBe("space-station");
   expect(restored.position.space).toBe("space-station");
-  expect(restored.position.x).toBeCloseTo(21.25, 3);
-  expect(restored.position.y).toBeCloseTo(18.45, 3);
-  expect(restored.position.z).toBeCloseTo(-13.5, 3);
+  expect(restored.position.x).toBeCloseTo(16.3, 3);
+  expect(restored.position.y).toBeCloseTo(0.38, 3);
+  expect(restored.position.z).toBeCloseTo(66.5, 3);
   expect(restored.position.heading).toBeCloseTo(1.2, 3);
   expect(restored.storedRecords).toBe(1);
 });

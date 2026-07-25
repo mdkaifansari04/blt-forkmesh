@@ -112,7 +112,7 @@ export const LANDMARKS = [
       "Public, restricted, and private floors are visually distinct.",
       "Members can display current work without revealing sensitive browsing data.",
       "Mirror nodes can be linked to a user or organization.",
-      "Sky offices remain functional collaboration rooms, not decorative NFTs.",
+      "The sky office is an unfinished collaboration room, parked in the works-in-progress barn.",
     ],
     primary: { label: "Visit organization lobby", action: "organizations" },
     secondary: { label: "Manage organizations", href: "/dashboard/settings/organizations" },
@@ -174,7 +174,7 @@ export const LANDMARKS = [
     summary: "Portals lead to repository worlds, sky campuses, events, and workshops.",
     metaphor: "Launch pads turn URLs and collaboration rooms into destinations.",
     reality:
-      "Each destination keeps standard permission checks and graceful HTML fallbacks. Travel never changes the viewer’s lighting; scheduled events remain UTC.",
+      "Each destination keeps standard permission checks and graceful HTML fallbacks. Travel never changes the viewer’s lighting; scheduled events remain UTC. None of the five destinations is finished, so they are parked on the ground in the works-in-progress barn south of the Town Square instead of floating overhead.",
     status: "Route preview",
     statusTone: "prototype",
     bullets: [
