@@ -433,11 +433,36 @@
       .slice(0, MAX_NAME) || "guest";
   }
 
+  // The World floats each chat line above the speaker's avatar by matching the
+  // sender against that avatar's presence name (world.js
+  // handleWorldChatMessage). A signed-out visitor stands in the World as
+  // "Guest ####" — derived from the same per-tab guest id this same-origin
+  // iframe can read — so the embedded chat has to introduce itself under that
+  // name or a guest's bubble never finds its avatar. Keep this in step with
+  // guestId()/hashSuffix()/accountIdentity() in public/world/world.js.
+  const WORLD_GUEST_ID_KEY = "forkmesh.world.guestId.v1";
+  function worldGuestPresenceName() {
+    if (requestedParams.get("worldEmbed") !== "1") return "";
+    let guest = "";
+    try {
+      guest = String(sessionStorage.getItem(WORLD_GUEST_ID_KEY) || "");
+    } catch (_) {
+      guest = "";
+    }
+    if (!guest) return "";
+    let hash = 0;
+    for (const char of `guest:${guest}`) {
+      hash = (Math.imul(hash, 31) + char.charCodeAt(0)) >>> 0;
+    }
+    return `Guest ${String(hash % 10000).padStart(4, "0")}`;
+  }
+
   function displayName() {
     const session = userSession() || readSession();
     const value =
       session?.nodeName ||
       session?.email ||
+      worldGuestPresenceName() ||
       `World Guest ${String(selfId).replace(/[^A-Za-z0-9]/g, "").slice(0, 6)}`;
     const name = String(value).trim().slice(0, MAX_NAME) || "World Guest";
     return PUBLIC_WORLD_GENERAL ? publicWorldName(name) : name;
