@@ -113,8 +113,9 @@ const TREE_LANDMARK_CLEARANCE = Object.freeze({
   office: 10,
 });
 // Shared by the seated pose and the presence frame so other visitors can render
-// a bench sitter sitting rather than standing on the plank.
-const CAMPFIRE_SEATED_ACTIVITY = "sitting beside the campfire";
+// a bench sitter sitting rather than standing on the plank. Exported because
+// the shell must keep it out of the landmark-proximity activity label.
+export const CAMPFIRE_SEATED_ACTIVITY = "sitting beside the campfire";
 // Seated legs swing out in front of the sitter. Avatar fronts face local -Z,
 // so the positive pitch about X is the one that puts the knees over the front
 // edge of the bench instead of out behind it.
@@ -249,6 +250,9 @@ function deterministicTreeLayout() {
     maxZ: SYSTEM_CAPACITY_PLATFORM_POSITION[2] + 8,
   };
   LANDMARKS.forEach((landmark) => {
+    // The campfire's clearing is filled by its bench circle, whose radius
+    // reaches past where these trees would stand.
+    if (landmark.id === "campfire") return;
     for (let treeIndex = 0; treeIndex < TREES_PER_LANDMARK; treeIndex += 1) {
       const angle =
         deterministicFraction(`tree-angle:${landmark.id}:${treeIndex}`) * Math.PI * 2;
@@ -338,6 +342,47 @@ function badgeActiveDurationLabel(value) {
   return `${minutes % 60}M`;
 }
 
+// "FIRST SEEN 14 MINUTES AGO". The exact reading only exists while the visitor
+// shares generalized activity; the coarse bucket label remains the fallback.
+function firstSeenAgoLabel(minutes) {
+  const total = Number(minutes);
+  if (!Number.isFinite(total) || total <= 0) return "";
+  const units = [
+    [365 * 24 * 60, "YEAR"],
+    [30 * 24 * 60, "MONTH"],
+    [7 * 24 * 60, "WEEK"],
+    [24 * 60, "DAY"],
+    [60, "HOUR"],
+    [1, "MINUTE"],
+  ];
+  for (const [size, unit] of units) {
+    const count = Math.floor(total / size);
+    if (count) {
+      return `FIRST SEEN ${count} ${unit}${count === 1 ? "" : "S"} AGO`;
+    }
+  }
+  return "";
+}
+
+// The visitor's own browser family and operating system, as the two coarse
+// categories world.js derived locally — never a raw user-agent string.
+function badgeClientLabel(identity) {
+  // "Hidden" is a privacy choice and "Browser"/"Device" are the placeholders a
+  // peer carries when its family is unrecognized: neither is worth a row.
+  const placeholders = new Set(["hidden", "browser", "device"]);
+  const parts = [identity.browser, identity.os]
+    .map((value) => String(value || "").trim())
+    .filter((value) => value && !placeholders.has(value.toLowerCase()));
+  return parts.length ? parts.join(" · ").toUpperCase().slice(0, 30) : "";
+}
+
+function badgeStatusLabel(identity) {
+  const note = String(identity.statusNote || "").trim();
+  const emoji = String(identity.statusEmoji || "").trim();
+  if (!emoji) return "";
+  return `${emoji} ${note}`.trim().slice(0, 24);
+}
+
 function badgeTexture(THREE, identity, accent = "#9ef7c6") {
   const activityLabels = {
     "browsing-code-visualization": "CODE MAP",
@@ -374,35 +419,57 @@ function badgeTexture(THREE, identity, accent = "#9ef7c6") {
 
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.font = '128px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
+    context.font = '104px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
     context.fillStyle = "#ffffff";
-    context.fillText(identity.flag || "◌", 256, 104);
+    context.fillText(identity.flag || "◌", 256, 88);
 
-    context.font = '700 44px "ForkMesh Mono", ui-monospace, monospace';
+    context.font = '700 42px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#ffffff";
-    context.fillText(String(identity.name || "guest").slice(0, 15), 256, 216);
+    context.fillText(String(identity.name || "guest").slice(0, 15), 256, 172);
 
-    context.font = '700 21px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillStyle = "#9ef7c6";
-    context.fillText(
-      joinedAgoLabel(identity.joinedAt) ||
-        firstSeenLabels[identity.firstVisitAge] ||
-        firstSeenLabels.hidden,
-      256,
-      292,
-    );
+    const joined = joinedAgoLabel(identity.joinedAt);
+    const firstSeen =
+      firstSeenAgoLabel(identity.firstSeenMinutes) ||
+      firstSeenLabels[identity.firstVisitAge] ||
+      // A directory figure carries a joined date but no live first-seen
+      // reading; leave the row out instead of stating "hidden" twice.
+      (joined ? "" : firstSeenLabels.hidden);
     const activity =
       activityLabels[identity.activityCategory] || activityLabels.hidden;
     const visits = Math.max(0, Math.min(999, Number(identity.visitCount) || 0));
-    context.fillStyle = "#77d9ff";
-    context.fillText(
-      identity.totalActiveMs != null &&
+    const rows = [
+      [firstSeen, "#9ef7c6"],
+      [joined ? `FIRST ${joined}` : "", "#77d9ff"],
+      [badgeClientLabel(identity), "#f7c96b"],
+      [
+        identity.totalActiveMs != null &&
         Number.isFinite(Number(identity.totalActiveMs))
-        ? `ACTIVE ${badgeActiveDurationLabel(identity.totalActiveMs)} IN WORLD`
-        : `${activity} · ${visits} PUBLIC URL VISITS`,
-      256,
-      334,
-    );
+          ? `ACTIVE ${badgeActiveDurationLabel(identity.totalActiveMs)} IN WORLD`
+          : `${activity} · ${visits} PUBLIC URL VISITS`,
+        "#b9cfc4",
+      ],
+    ].filter(([text]) => text);
+    context.font = '700 21px "ForkMesh Mono", ui-monospace, monospace';
+    rows.forEach(([text, color], index) => {
+      context.fillStyle = color;
+      context.fillText(text, 256, 224 + index * 34);
+    });
+
+    // The world status the visitor set for themselves, on the chest rather
+    // than only floating over the head.
+    const status = badgeStatusLabel(identity);
+    if (status) {
+      context.font = '600 24px "ForkMesh Mono", ui-monospace, monospace';
+      const width = Math.min(452, context.measureText(status).width + 44);
+      roundedRect(context, 256 - width / 2, 374, width, 46, 22);
+      context.fillStyle = "rgba(158,247,198,0.14)";
+      context.fill();
+      context.strokeStyle = "rgba(158,247,198,0.5)";
+      context.lineWidth = 2;
+      context.stroke();
+      context.fillStyle = "#eafff2";
+      context.fillText(status, 256, 398);
+    }
 
     context.beginPath();
     context.arc(60, 452, 12, 0, Math.PI * 2);
@@ -422,6 +489,194 @@ function badgeTexture(THREE, identity, accent = "#9ef7c6") {
       86,
       453,
     );
+  });
+}
+
+// The follow control lives inside the fediverse tab's canvas rather than on a
+// separate sliver of chest: the click handler hits it by UV rectangle.
+const BADGE_FOLLOW_PILL = Object.freeze({
+  minU: 96 / 512,
+  maxU: 416 / 512,
+  minV: 1 - 476 / 512,
+  maxV: 1 - 424 / 512,
+});
+
+function badgeFollowPillHit(uv) {
+  return Boolean(
+    uv &&
+      uv.x >= BADGE_FOLLOW_PILL.minU &&
+      uv.x <= BADGE_FOLLOW_PILL.maxU &&
+      uv.y >= BADGE_FOLLOW_PILL.minV &&
+      uv.y <= BADGE_FOLLOW_PILL.maxV,
+  );
+}
+
+function fediverseFollowLabel(profile) {
+  if (profile.state !== "ready") return "";
+  if (profile.self === true) return "THIS IS YOU";
+  if (profile.canFollow !== true) return "SIGN IN TO FOLLOW";
+  if (profile.pending === true) return "…";
+  return profile.isFollowing === true ? "✓ FOLLOWING" : "+ FOLLOW";
+}
+
+/**
+ * The second chest tab: the account's public ForkMesh profile, the activity
+ * ForkMesh federates for it, the fediverse handle its owner published, and a
+ * follow control. Every value comes from public /api/accounts/{name} data.
+ */
+function fediverseBadgeTexture(THREE, identity, accent, profile = {}) {
+  const state = String(profile.state || "loading");
+  const posts = Array.isArray(profile.posts) ? profile.posts.slice(0, 5) : [];
+  return canvasTexture(THREE, 512, 512, (context) => {
+    context.fillStyle = "#101724";
+    context.fillRect(0, 0, 512, 512);
+    context.strokeStyle = accent;
+    context.lineWidth = 12;
+    context.strokeRect(8, 8, 496, 496);
+
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#a9b8ff";
+    context.fillText("FEDIVERSE", 256, 52);
+
+    context.font = '700 27px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#ffffff";
+    context.fillText(
+      String(profile.handle || `@${identity.name || "guest"}`).slice(0, 24),
+      256,
+      96,
+    );
+
+    let cursor = 130;
+    // ForkMesh federates repositories, not accounts, so the fediverse address
+    // shown here is the one this account published on its own profile.
+    const fediverse = String(profile.fediverse || "").trim();
+    if (fediverse) {
+      context.font = '400 19px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillStyle = "#a9b8ff";
+      context.fillText(fediverse.slice(0, 30), 256, cursor);
+      cursor += 30;
+    }
+    context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#9ef7c6";
+    context.fillText(
+      state === "ready"
+        ? `${Math.max(0, Number(profile.followers) || 0)} FOLLOWERS · ` +
+            `${Math.max(0, Number(profile.following) || 0)} FOLLOWING`
+        : state === "unavailable"
+          ? "NO PUBLIC PROFILE"
+          : "LOADING…",
+      256,
+      cursor,
+    );
+    cursor += 26;
+
+    context.beginPath();
+    context.moveTo(48, cursor);
+    context.lineTo(464, cursor);
+    context.strokeStyle = "rgba(169,184,255,0.35)";
+    context.lineWidth = 2;
+    context.stroke();
+    cursor += 30;
+
+    context.font = '400 19px "ForkMesh Mono", ui-monospace, monospace';
+    const bio = String(profile.bio || "").trim();
+    if (bio) {
+      context.fillStyle = "#c9d6ff";
+      context.fillText(bio.slice(0, 34), 256, cursor);
+      cursor += 40;
+    }
+    if (posts.length) {
+      posts.forEach((post, index) => {
+        context.fillStyle = index % 2 ? "#93a4c8" : "#dfe8ff";
+        context.fillText(String(post).slice(0, 36), 256, cursor + index * 30);
+      });
+    } else if (state === "ready") {
+      context.fillStyle = "#7f8ea8";
+      context.fillText("NO FEDERATED ACTIVITY YET", 256, cursor);
+    }
+
+    const label = fediverseFollowLabel(profile);
+    if (label) {
+      const active = profile.isFollowing === true;
+      roundedRect(context, 96, 424, 320, 52, 26);
+      context.fillStyle = active
+        ? "rgba(158,247,198,0.18)"
+        : "rgba(169,184,255,0.2)";
+      context.fill();
+      context.strokeStyle = active ? "#9ef7c6" : "#a9b8ff";
+      context.lineWidth = 3;
+      context.stroke();
+      context.font = '700 23px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillStyle = active ? "#9ef7c6" : "#eaefff";
+      context.fillText(label, 256, 451);
+    }
+  });
+}
+
+// Two small tabs under the badge switch the chest display between the
+// visitor's world info and their fediverse card.
+function chestTabTexture(THREE, label, active) {
+  return canvasTexture(THREE, 256, 128, (context) => {
+    context.clearRect(0, 0, 256, 128);
+    roundedRect(context, 4, 4, 248, 120, 22);
+    context.fillStyle = active ? "rgba(158,247,198,0.9)" : "rgba(8,20,17,0.92)";
+    context.fill();
+    context.strokeStyle = active ? "#eafff2" : "#9ef7c6";
+    context.lineWidth = 6;
+    context.stroke();
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = '700 46px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = active ? "#08241a" : "#9ef7c6";
+    context.fillText(String(label).slice(0, 8), 128, 66);
+  });
+}
+
+function createAvatarChestTabs(THREE) {
+  const group = new THREE.Group();
+  group.name = "forkmesh-chest-tabs";
+  [
+    { tab: "info", label: "INFO", x: -0.19 },
+    { tab: "fediverse", label: "FEDI", x: 0.19 },
+  ].forEach((spec) => {
+    const button = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.35, 0.19),
+      new THREE.MeshBasicMaterial({
+        map: chestTabTexture(THREE, spec.label, spec.tab === "info"),
+        transparent: true,
+      }),
+    );
+    button.name = `world-chest-tab-${spec.tab}`;
+    // Avatar fronts face -Z, matching the badge just above these tabs.
+    button.position.set(spec.x, 1.7, -0.318);
+    button.rotation.y = Math.PI;
+    button.userData.chestTab = spec.tab;
+    button.renderOrder = 3;
+    group.add(button);
+  });
+  return group;
+}
+
+function syncChestTabs(THREE, avatar) {
+  const tabs = avatar?.userData?.chestTabs;
+  if (!tabs) return;
+  const active = avatar.userData.chestTab === "fediverse" ? "fediverse" : "info";
+  // Badge repaints are frequent; the two small tab textures only change when
+  // the selected tab does.
+  if (avatar.userData.chestTabRendered === active) return;
+  avatar.userData.chestTabRendered = active;
+  tabs.children.forEach((button) => {
+    const label = button.userData.chestTab === "fediverse" ? "FEDI" : "INFO";
+    const old = button.material.map;
+    button.material.map = chestTabTexture(
+      THREE,
+      label,
+      button.userData.chestTab === active,
+    );
+    button.material.needsUpdate = true;
+    old?.dispose?.();
   });
 }
 
@@ -1718,9 +1973,13 @@ function createAvatar(THREE, identity, options = {}) {
     }),
   );
   badge.scale.set(1, 1.14, 1);
-  badge.position.set(0, 2.25, -0.316);
+  badge.position.set(0, 2.32, -0.316);
   badge.rotation.y = Math.PI;
+  badge.userData.chestBadge = true;
   group.add(badge);
+
+  const chestTabs = createAvatarChestTabs(THREE);
+  group.add(chestTabs);
 
   group.scale.setScalar(scale);
   group.userData = {
@@ -1731,6 +1990,12 @@ function createAvatar(THREE, identity, options = {}) {
     leftLeg,
     rightLeg,
     badge,
+    badgeIdentity: identity,
+    badgeRemote: remote,
+    chestTabs,
+    chestTab: "info",
+    chestTabRendered: "info",
+    fediverseProfile: null,
     shirt,
     shirtMeshes: [torso, leftArm, rightArm],
     skin,
@@ -1793,13 +2058,31 @@ function syncAvatarActivity(avatar, identity) {
   if (avatar.userData.antenna) avatar.userData.antenna.visible = active;
 }
 
-function updateAvatarBadge(THREE, avatar, identity, remote = false) {
+function renderAvatarBadge(THREE, avatar, remote = false) {
   const badge = avatar?.userData?.badge;
   if (!badge?.material) return;
+  const identity = avatar.userData.badgeIdentity || {};
+  const accent = remote ? "#77d9ff" : "#9ef7c6";
   const old = badge.material.map;
-  badge.material.map = badgeTexture(THREE, identity, remote ? "#77d9ff" : "#9ef7c6");
+  badge.material.map =
+    avatar.userData.chestTab === "fediverse"
+      ? fediverseBadgeTexture(
+          THREE,
+          identity,
+          accent,
+          avatar.userData.fediverseProfile || { state: "loading" },
+        )
+      : badgeTexture(THREE, identity, accent);
   badge.material.needsUpdate = true;
   old?.dispose?.();
+  syncChestTabs(THREE, avatar);
+}
+
+function updateAvatarBadge(THREE, avatar, identity, remote = false) {
+  if (!avatar?.userData?.badge?.material) return;
+  avatar.userData.badgeIdentity = identity;
+  avatar.userData.badgeRemote = remote === true;
+  renderAvatarBadge(THREE, avatar, remote);
   avatar.userData.name = identity.name;
   syncCountryShirt(THREE, avatar, identity);
   syncAvatarActivity(avatar, identity);
@@ -4023,13 +4306,23 @@ function officeGuideBoardTexture(THREE) {
   });
 }
 
+// The board is a normal standing banner now, not a tower: five entries per
+// page keep it dense while every line stays readable at banner scale.
+const WORLD_BULLETIN_VISIBLE_EVENTS = 5;
+const WORLD_BULLETIN_WIDTH = 1536;
+const WORLD_BULLETIN_HEIGHT = 1024;
+
 function worldBulletinTexture(THREE, events = [], offset = 0) {
   const allEntries = (Array.isArray(events) ? events : [])
     .filter((event) => event && String(event.title || "").trim())
     // Newest alerts always take priority at the top of the board.
     .sort((left, right) => Date.parse(right.startsAt || 0) - Date.parse(left.startsAt || 0));
-  const start = clamp(Number(offset) || 0, 0, Math.max(0, allEntries.length - 10));
-  const entries = allEntries.slice(start, start + 10);
+  const start = clamp(
+    Number(offset) || 0,
+    0,
+    Math.max(0, allEntries.length - WORLD_BULLETIN_VISIBLE_EVENTS),
+  );
+  const entries = allEntries.slice(start, start + WORLD_BULLETIN_VISIBLE_EVENTS);
   const wrapText = (context, text, x, y, maxWidth, lineHeight, maxLines = Infinity) => {
     const words = String(text || "").split(/\s+/).filter(Boolean);
     let line = "";
@@ -4057,65 +4350,75 @@ function worldBulletinTexture(THREE, events = [], offset = 0) {
       ? new Date(timestamp).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })
       : "Time to be announced";
   };
-  // Stay within common mobile GPU texture limits (4096px) even though this is
-  // a deliberately oversized physical board.
-  return canvasTexture(THREE, 1536, 4096, (context) => {
-    context.scale(0.75, 2 / 3);
+  // The right-hand column is left clear for the ▲ / ▼ scroll controls, so no
+  // line is allowed to run under them.
+  const textWidth = 1276;
+  return canvasTexture(THREE, WORLD_BULLETIN_WIDTH, WORLD_BULLETIN_HEIGHT, (context) => {
     context.fillStyle = "#0b1820";
-    context.fillRect(0, 0, 2048, 6144);
+    context.fillRect(0, 0, WORLD_BULLETIN_WIDTH, WORLD_BULLETIN_HEIGHT);
     context.strokeStyle = "#7ed9ff";
-    context.lineWidth = 20;
-    context.strokeRect(16, 16, 2016, 6112);
+    context.lineWidth = 10;
+    context.strokeRect(8, 8, WORLD_BULLETIN_WIDTH - 16, WORLD_BULLETIN_HEIGHT - 16);
     context.fillStyle = "#e5f8ff";
-    context.font = '800 108px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("WORLD BULLETIN", 84, 142);
+    context.font = '800 54px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("WORLD BULLETIN", 42, 72);
     context.fillStyle = "#8eddf7";
-    context.font = '700 42px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("PUBLIC ALERTS · LIVE COMMUNITY EVENTS · NEWEST FIRST", 86, 210);
+    context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("PUBLIC ALERTS · LIVE COMMUNITY EVENTS · NEWEST FIRST", 44, 108);
     context.strokeStyle = "rgba(126,217,255,0.42)";
-    context.lineWidth = 3;
+    context.lineWidth = 2;
     context.beginPath();
-    context.moveTo(86, 250);
-    context.lineTo(1960, 250);
+    context.moveTo(44, 128);
+    context.lineTo(1492, 128);
     context.stroke();
     if (!entries.length) {
       context.fillStyle = "#c3dbe3";
-      context.font = '700 58px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("NO ACTIVE PUBLIC ALERTS", 86, 430);
-      context.font = '600 38px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("THE COMMUNITY SCHEDULE WILL APPEAR HERE.", 86, 520);
+      context.font = '700 34px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("NO ACTIVE PUBLIC ALERTS", 44, 210);
+      context.font = '600 24px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("THE COMMUNITY SCHEDULE WILL APPEAR HERE.", 44, 256);
       return;
     }
     entries.forEach((event, index) => {
-      const y = 350 + index * 565;
+      const y = 168 + index * 168;
       context.fillStyle = "#f7d58a";
-      context.font = '800 54px "ForkMesh Mono", ui-monospace, monospace';
-      wrapText(context, `${start + index + 1}. ${event.title}`, 86, y, 1840, 64, 2);
+      context.font = '800 28px "ForkMesh Mono", ui-monospace, monospace';
+      wrapText(context, `${start + index + 1}. ${event.title}`, 44, y, textWidth, 32, 1);
       context.fillStyle = "#bad0d8";
-      context.font = '700 35px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(`${event.type || "Community"} · ${event.destination || "Town Square"}`, 110, y + 150);
+      context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        `${event.type || "Community"} · ${event.destination || "Town Square"}`,
+        60,
+        y + 30,
+      );
       context.fillStyle = "#8eddf7";
-      context.font = '600 32px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(`START  ${formatTime(event.startsAt)}`, 110, y + 202);
-      context.fillText(`END    ${formatTime(event.endsAt)}`, 110, y + 248);
+      context.font = '600 19px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        `START ${formatTime(event.startsAt)} · END ${formatTime(event.endsAt)}`,
+        60,
+        y + 55,
+      );
       context.fillStyle = "#d5e6e9";
-      // Event descriptions are sanitized to 500 characters upstream. This
-      // compact body size fits that entire description in each of the ten
-      // slots rather than silently truncating the useful details.
-      context.font = '600 24px "ForkMesh Mono", ui-monospace, monospace';
-      wrapText(context, event.description || "Community event", 110, y + 308, 1780, 32);
-      context.strokeStyle = "rgba(126,217,255,0.28)";
-      context.beginPath();
-      context.moveTo(86, y + 520);
-      context.lineTo(1960, y + 520);
-      context.stroke();
+      // Event descriptions are sanitized to 500 characters upstream; three
+      // wrapped lines carry the opening of each one without pushing the five
+      // slots off the board.
+      context.font = '600 17px "ForkMesh Mono", ui-monospace, monospace';
+      wrapText(context, event.description || "Community event", 60, y + 80, textWidth - 16, 21, 3);
+      if (index < entries.length - 1) {
+        context.strokeStyle = "rgba(126,217,255,0.28)";
+        context.lineWidth = 2;
+        context.beginPath();
+        context.moveTo(44, y + 140);
+        context.lineTo(1492, y + 140);
+        context.stroke();
+      }
     });
     context.fillStyle = "#8eddf7";
-    context.font = '700 32px "ForkMesh Mono", ui-monospace, monospace';
+    context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(
-      `SHOWING ${start + 1}-${Math.min(start + 10, allEntries.length)} OF ${allEntries.length} · USE THE ▲ / ▼ CONTROLS OR SCROLL OVER THIS BOARD`,
-      86,
-      6090,
+      `SHOWING ${start + 1}-${Math.min(start + WORLD_BULLETIN_VISIBLE_EVENTS, allEntries.length)} OF ${allEntries.length} · ▲ / ▼ OR SCROLL OVER THIS BOARD`,
+      44,
+      998,
     );
   });
 }
@@ -5055,6 +5358,8 @@ export function createWorldScene({
   onRegionChange = () => {},
   onMovement = () => {},
   onModeration = () => {},
+  onFediverseProfile = () => {},
+  onFediverseFollow = () => {},
   onLayoutObjectMoved = () => {},
   onForkbotChat = () => {},
   onPlayForkmeshSong = () => {},
@@ -5178,9 +5483,10 @@ export function createWorldScene({
 
   const worldBulletin = new THREE.Group();
   worldBulletin.name = "forkmesh-world-bulletin";
-  // Keep this well outside the arrival / join grid: it is a destination, not
-  // another object visitors need to navigate around when they first arrive.
-  worldBulletin.position.set(-68, 0, 30);
+  // Banner-sized boards have to be walked up to, so it now stands just past
+  // the leaderboards instead of stranded near the rim of the terrain — still
+  // clear of the arrival / join grid visitors spawn onto.
+  worldBulletin.position.set(-24, 0, 33);
   // Plane textures face local +Z. Rotate the board so its readable face looks
   // back into the World from the outer edge of the circular terrain.
   worldBulletin.rotation.y = Math.atan2(
@@ -5189,25 +5495,43 @@ export function createWorldScene({
   );
   let worldBulletinEvents = [];
   let worldBulletinOffset = 0;
+  // Sized like the other standing banners in the square rather than the tower
+  // it used to be: the page holds five entries, and the ▲ / ▼ controls page
+  // through the rest.
+  const BULLETIN_FACE_CENTER_Y = 3.9;
+  const bulletinBase = new THREE.Mesh(
+    new THREE.BoxGeometry(7.9, 0.26, 1.5),
+    makeMaterial(THREE, "#123241", { roughness: 0.8 }),
+  );
+  bulletinBase.position.y = 0.13;
+  worldBulletin.add(bulletinBase);
+  for (const x of [-3.35, 3.35]) {
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(0.18, 6.5, 0.18),
+      makeMaterial(THREE, "#1d5570", { metalness: 0.26, roughness: 0.5 }),
+    );
+    post.position.set(x, 3.25, 0);
+    worldBulletin.add(post);
+  }
   const bulletinFrame = new THREE.Mesh(
-    new THREE.BoxGeometry(14.2, 36.9, 0.42),
+    new THREE.BoxGeometry(7.55, 5.1, 0.24),
     makeMaterial(THREE, "#163849", { metalness: 0.35, roughness: 0.44 }),
   );
-  bulletinFrame.position.y = 18.7;
+  bulletinFrame.position.y = BULLETIN_FACE_CENTER_Y;
   bulletinFrame.userData.interactive = "world-bulletin";
   const bulletinFace = new THREE.Mesh(
-    new THREE.PlaneGeometry(13.55, 36.13),
+    new THREE.PlaneGeometry(7.2, 4.8),
     new THREE.MeshBasicMaterial({
       map: worldBulletinTexture(THREE),
       toneMapped: false,
     }),
   );
   bulletinFace.name = "forkmesh-world-bulletin-face";
-  bulletinFace.position.set(0, 18.7, 0.24);
+  bulletinFace.position.set(0, BULLETIN_FACE_CENTER_Y, 0.14);
   bulletinFace.userData.interactive = "world-bulletin";
   const makeBulletinControl = (label, direction, y) => {
     const control = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.35, 1.35),
+      new THREE.PlaneGeometry(0.52, 0.52),
       new THREE.MeshBasicMaterial({
         map: canvasTexture(THREE, 256, 256, (context) => {
           context.fillStyle = "#12384b";
@@ -5224,12 +5548,14 @@ export function createWorldScene({
         toneMapped: false,
       }),
     );
-    control.position.set(5.9, y, 0.3);
+    control.position.set(2.99, y, 0.2);
     control.userData.interactive = `world-bulletin-scroll-${direction}`;
     return control;
   };
-  const bulletinScrollUp = makeBulletinControl("▲", "up", 34.7);
-  const bulletinScrollDown = makeBulletinControl("▼", "down", 2.65);
+  // Parked in the clear right-hand margin, level with the header and the
+  // footer so neither control covers an entry.
+  const bulletinScrollUp = makeBulletinControl("▲", "up", BULLETIN_FACE_CENTER_Y + 2.05);
+  const bulletinScrollDown = makeBulletinControl("▼", "down", BULLETIN_FACE_CENTER_Y - 2.05);
   worldBulletin.add(bulletinFrame, bulletinFace, bulletinScrollUp, bulletinScrollDown);
   interactive.push(bulletinFrame, bulletinFace, bulletinScrollUp, bulletinScrollDown);
   world.add(worldBulletin);
@@ -5280,7 +5606,11 @@ export function createWorldScene({
     office: createForkMeshOffice,
   };
   LANDMARKS.forEach((landmark) => {
-    const object = landmarkFactories[landmark.id](
+    // The campfire owns a map spot but no district factory: its group and
+    // bench circle are built below and registered under their own layout id.
+    const factory = landmarkFactories[landmark.id];
+    if (!factory) return;
+    const object = factory(
       THREE,
       landmark.position,
       interactive,
@@ -5308,7 +5638,9 @@ export function createWorldScene({
   });
 
   const campfire = new THREE.Group();
-  campfire.position.set(8, 0, 8);
+  // The fire stands on its own map landmark, so the world-map spot and the
+  // benches can never drift apart.
+  campfire.position.set(...landmarkById("campfire").position);
   const firePit = new THREE.Mesh(
     new THREE.CylinderGeometry(0.85, 1.0, 0.22, 12),
     makeMaterial(THREE, "#4a4038", { roughness: 0.9 }),
@@ -5524,6 +5856,7 @@ export function createWorldScene({
   // rebuildCampfireCircle with an accurate seat count.
   setShadows(campfire);
   world.add(campfire);
+  landmarkObjects.set("campfire", campfire);
   registerMovableObject("campfire", campfire);
 
   const activeLeaderboardSign = makeActiveLeaderboardSign(THREE);
@@ -5668,6 +6001,10 @@ export function createWorldScene({
   const remoteLabels = new Map();
   const moderationActions = new WeakMap();
   const moderationControlKeys = new Map();
+  // Badge plane and tab buttons -> the avatar they belong to, so one click
+  // handler can switch chest tabs and hit the follow pill.
+  const chestControls = new WeakMap();
+  registerAvatarChestControls(player, identity.id);
   const officeParticipants = new Map();
   const officeParticipantLabels = new Map();
   const officeBubbles = new Map();
@@ -6797,7 +7134,7 @@ export function createWorldScene({
     worldBulletinOffset = clamp(
       worldBulletinOffset,
       0,
-      Math.max(0, worldBulletinEvents.length - 10),
+      Math.max(0, worldBulletinEvents.length - WORLD_BULLETIN_VISIBLE_EVENTS),
     );
     face.material.map?.dispose?.();
     face.material.map = worldBulletinTexture(
@@ -6813,7 +7150,7 @@ export function createWorldScene({
     const nextOffset = clamp(
       worldBulletinOffset + direction,
       0,
-      Math.max(0, worldBulletinEvents.length - 10),
+      Math.max(0, worldBulletinEvents.length - WORLD_BULLETIN_VISIBLE_EVENTS),
     );
     if (nextOffset === worldBulletinOffset) return false;
     worldBulletinOffset = nextOffset;
@@ -7338,6 +7675,29 @@ export function createWorldScene({
     player.userData.rightLeg.rotation.x = 0;
   }
 
+  // The world map's Campfire spot is a trip home: it puts the avatar on the
+  // bench that carries this member's name and holds the same seated pose
+  // clicking the plank gives. Guests — and members the directory has not
+  // seated yet — take the bench the circle always keeps open. Leaving the
+  // Office stays a deliberate walk through its door, so this refuses while
+  // the interior is open rather than teleporting out of it.
+  function returnToCampfireBench(name) {
+    if (officeSceneMode !== "town") return false;
+    const benches = campfire.userData.seatBenches || [];
+    if (!benches.length) return false;
+    const owned = campfire.userData.seatByName?.get(
+      String(name || "").trim().toLowerCase(),
+    );
+    const index = Number.isInteger(owned) ? owned : benches.length - 1;
+    const seat = benches[index]?.seat;
+    if (!seat) return false;
+    currentSpace = "town-square";
+    currentFloorY = 0.38;
+    focusedRepositoryKey = "";
+    sitOnCampfireBench(seat);
+    return true;
+  }
+
   function walkPlayer(delta, time) {
     const previousHorizontalPosition = player.position.clone();
     const {
@@ -7660,6 +8020,103 @@ export function createWorldScene({
     }
   }
 
+  // The chest is clickable on the local player and on live peers: the two
+  // tabs under the badge swap the display, and the fediverse tab's follow
+  // pill is hit by UV inside the badge plane itself.
+  function registerAvatarChestControls(avatar, peerId) {
+    if (!avatar?.userData?.badge || avatar.userData.chestRegistered) return;
+    const meshes = [
+      avatar.userData.badge,
+      ...(avatar.userData.chestTabs?.children || []),
+    ];
+    meshes.forEach((mesh) => {
+      chestControls.set(mesh, { avatar, peerId: String(peerId || "") });
+      interactive.push(mesh);
+    });
+    avatar.userData.chestRegistered = true;
+  }
+
+  function unregisterAvatarChestControls(avatar) {
+    if (!avatar?.userData?.chestRegistered) return;
+    [
+      avatar.userData.badge,
+      ...(avatar.userData.chestTabs?.children || []),
+    ].forEach((mesh) => {
+      if (!mesh) return;
+      chestControls.delete(mesh);
+      const index = interactive.indexOf(mesh);
+      if (index >= 0) interactive.splice(index, 1);
+    });
+    avatar.userData.chestRegistered = false;
+  }
+
+  function setAvatarChestTab(avatar, tab) {
+    if (!avatar?.userData?.badge) return;
+    const next = tab === "fediverse" ? "fediverse" : "info";
+    if (avatar.userData.chestTab === next) return;
+    avatar.userData.chestTab = next;
+    renderAvatarBadge(THREE, avatar, avatar.userData.badgeRemote === true);
+  }
+
+  /** Attach a loaded (or failed) fediverse card to one avatar's chest. */
+  function setAvatarFediverseProfile(peerId, profile) {
+    const id = String(peerId || "");
+    const avatar =
+      id === identity.id
+        ? player
+        : remotePlayers.get(id) || loungeMembers.get(id);
+    if (!avatar?.userData?.badge) return;
+    avatar.userData.fediverseProfile =
+      profile && typeof profile === "object" ? profile : { state: "unavailable" };
+    if (avatar.userData.chestTab === "fediverse") {
+      renderAvatarBadge(THREE, avatar, avatar.userData.badgeRemote === true);
+    }
+    if (avatar === player && officeLobbyPlayer?.userData?.badge) {
+      officeLobbyPlayer.userData.fediverseProfile =
+        avatar.userData.fediverseProfile;
+      if (officeLobbyPlayer.userData.chestTab === "fediverse") {
+        renderAvatarBadge(THREE, officeLobbyPlayer, false);
+      }
+    }
+  }
+
+  function handleChestControl(control, hit) {
+    const avatar = control.avatar;
+    const tab = hit.object.userData?.chestTab;
+    if (tab) {
+      setAvatarChestTab(avatar, tab);
+      if (tab === "fediverse" && !avatar.userData.fediverseProfile) {
+        avatar.userData.fediverseProfile = { state: "loading" };
+        renderAvatarBadge(THREE, avatar, avatar.userData.badgeRemote === true);
+        onFediverseProfile({
+          peerId: control.peerId,
+          name: String(avatar.userData.badgeIdentity?.name || ""),
+          accountStatus: String(
+            avatar.userData.badgeIdentity?.accountStatus || "Guest",
+          ),
+          self: control.peerId === identity.id,
+        });
+      }
+      return;
+    }
+    // The badge plane: only the fediverse tab's follow pill is actionable.
+    if (
+      avatar.userData.chestTab !== "fediverse" ||
+      !badgeFollowPillHit(hit.uv)
+    ) {
+      return;
+    }
+    const profile = avatar.userData.fediverseProfile || {};
+    if (profile.state !== "ready" || profile.canFollow !== true) return;
+    avatar.userData.fediverseProfile = { ...profile, pending: true };
+    renderAvatarBadge(THREE, avatar, avatar.userData.badgeRemote === true);
+    onFediverseFollow({
+      peerId: control.peerId,
+      name: String(profile.account || avatar.userData.badgeIdentity?.name || ""),
+      following: profile.isFollowing === true,
+    });
+  }
+
   function removeRemoteModerationControls(avatar, peerId) {
     const controls = avatar?.userData?.moderationControls;
     if (controls) {
@@ -7738,6 +8195,8 @@ export function createWorldScene({
           Math.min(999, Number(remote.visitCount) || 0),
         ),
         firstVisitAge: remote.firstVisitAge || "hidden",
+        firstSeenMinutes: Math.max(0, Number(remote.firstSeenMinutes) || 0),
+        joinedAt: Math.max(0, Number(remote.joinedAt) || 0),
         nodes: Array.isArray(remote.nodes) ? remote.nodes.slice(0, 6) : [],
         statusEmoji: remote.statusEmoji || "",
         statusNote: remote.statusNote || "",
@@ -7760,6 +8219,7 @@ export function createWorldScene({
         world.add(avatar);
         remotePlayers.set(remote.id, avatar);
         remoteLabels.set(remote.id, makePlayerLabel(avatar, labelLayer));
+        registerAvatarChestControls(avatar, remote.id);
       }
       const sharedInactive = remote.activity === "idle";
       const loungeEligible = REGISTERED_LOUNGE_STATUSES.has(
@@ -7832,6 +8292,7 @@ export function createWorldScene({
     remotePlayers.forEach((avatar, id) => {
       if (seen.has(id)) return;
       removeRemoteModerationControls(avatar, id);
+      unregisterAvatarChestControls(avatar);
       world.remove(avatar);
       avatar.traverse((child) => {
         child.geometry?.dispose?.();
@@ -7992,6 +8453,7 @@ export function createWorldScene({
         if (member.away === true) {
           const parked = loungeMembers.get(id);
           if (parked) {
+            unregisterAvatarChestControls(parked);
             world.remove(parked);
             disposeObject3D(parked);
             loungeMembers.delete(id);
@@ -8035,6 +8497,9 @@ export function createWorldScene({
           );
           world.add(figure);
           loungeMembers.set(id, figure);
+          // Directory figures are real accounts, so their chest tabs work the
+          // same way a live peer's do.
+          registerAvatarChestControls(figure, id);
         }
         const seat = seats[index % Math.max(1, seats.length)];
         figure.position.copy(campfire.position);
@@ -8054,6 +8519,7 @@ export function createWorldScene({
     campfire.userData.memberFigureCount = Math.min(roster.length, seats.length);
     loungeMembers.forEach((figure, id) => {
       if (seen.has(id)) return;
+      unregisterAvatarChestControls(figure);
       world.remove(figure);
       disposeObject3D(figure);
       loungeMembers.delete(id);
@@ -10634,6 +11100,11 @@ export function createWorldScene({
       onOfficeChairSelect(hit.object.userData.officeChairId);
       return;
     }
+    const chestControl = hit?.object ? chestControls.get(hit.object) : null;
+    if (chestControl) {
+      handleChestControl(chestControl, hit);
+      return;
+    }
     const moderationAction = hit?.object
       ? moderationActions.get(hit.object)
       : null;
@@ -10826,15 +11297,18 @@ export function createWorldScene({
     object.position.z = z;
     // Landmark proximity and focus math read LANDMARKS positions, not the
     // group transform, so a relocated landmark must update its record too.
+    // Districts register under a "landmark-" prefix; the campfire keeps its
+    // own id but owns a map spot all the same, so match either form.
     const layoutId = String(object.userData.layoutId || "");
-    if (layoutId.startsWith("landmark-")) {
-      const landmark = LANDMARKS.find(
-        (entry) => "landmark-" + entry.id === layoutId,
-      );
-      if (Array.isArray(landmark?.position)) {
-        landmark.position[0] = x;
-        landmark.position[2] = z;
-      }
+    const landmark = layoutId
+      ? LANDMARKS.find(
+          (entry) =>
+            layoutId === "landmark-" + entry.id || layoutId === entry.id,
+        )
+      : null;
+    if (Array.isArray(landmark?.position)) {
+      landmark.position[0] = x;
+      landmark.position[2] = z;
     }
   }
 
@@ -11601,7 +12075,9 @@ export function createWorldScene({
     setSpawn,
     travelToRegion,
     visitNeighborhoodHome,
+    returnToCampfireBench,
     setRemotePlayers,
+    setAvatarFediverseProfile,
     updateArrivalStats,
     updateMemberLounge,
     updateReferralLeaderboard,

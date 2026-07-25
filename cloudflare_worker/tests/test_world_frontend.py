@@ -34,6 +34,7 @@ QT_ISSUES = (
     ROOT.parent / "qt_client" / "src" / "MainWindowIssues.cpp"
 ).read_text(encoding="utf-8")
 ENTRY = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
+WORLD_PROTOCOL = (ROOT / "src" / "world.py").read_text(encoding="utf-8")
 SCHEMA = (ROOT / "src" / "schema.py").read_text(encoding="utf-8")
 FEDIVERSE_REVIEW_DOC = (
     ROOT.parent / "docs" / "fediverse-mention-review.md"
@@ -271,6 +272,64 @@ def test_avatar_chest_activity_country_shirt_and_input_state_are_privacy_safe():
     assert "url:" not in APP[APP.index("  sendPresence(message) {"):APP.index(
         "\n  receivePresence(message)", APP.index("  sendPresence(message) {")
     )]
+
+
+def test_chest_badge_shows_client_categories_exact_ages_and_status_note():
+    for contract in (
+        "function firstSeenAgoLabel(minutes)",
+        "function badgeClientLabel(identity)",
+        "function badgeStatusLabel(identity)",
+        '!placeholders.has(value.toLowerCase())',
+        "firstSeenAgoLabel(identity.firstSeenMinutes)",
+        "`FIRST ${joined}`",
+    ):
+        assert contract in SCENE
+    # The badge shows the two coarse categories world-data.js derived; the raw
+    # user-agent string never reaches the scene.
+    assert "navigator.userAgent" not in SCENE
+    assert "userAgent" not in SCENE
+    for contract in (
+        "firstSeenMinutes:",
+        "joinedAt:",
+        "function firstSeenMinutes(timestamp, now = Date.now())",
+        "function boundedJoinedAt(value, now = Date.now())",
+    ):
+        assert contract in APP
+    assert '"firstSeenMinutes", "joinedAt",' in WORLD_PROTOCOL
+    assert "def _bounded_first_seen_minutes(value, fallback):" in WORLD_PROTOCOL
+    assert "def _bounded_joined_at(value, now, fallback):" in WORLD_PROTOCOL
+
+
+def test_chest_fediverse_tab_uses_public_profile_data_and_explicit_follow():
+    for contract in (
+        "function fediverseBadgeTexture(THREE, identity, accent, profile = {})",
+        "function createAvatarChestTabs(THREE)",
+        'button.userData.chestTab = spec.tab',
+        "function badgeFollowPillHit(uv)",
+        "function setAvatarChestTab(avatar, tab)",
+        "function setAvatarFediverseProfile(peerId, profile)",
+        "onFediverseProfile = () => {},",
+        "onFediverseFollow = () => {},",
+        "setAvatarFediverseProfile,",
+    ):
+        assert contract in SCENE
+    # The card is fetched on the click that opens the tab, never polled.
+    assert "async loadWorldFediverseProfile(target = {}) {" in APP
+    assert "async toggleWorldFediverseFollow(target = {}) {" in APP
+    assert "`/api/accounts/${encodeURIComponent(account)}${query}`" in APP
+    assert (
+        '`/api/accounts/${encodeURIComponent(account)}/follow`' in APP
+    )
+    assert 'method: following ? "DELETE" : "POST"' in APP
+    assert "function worldFediverseFeedLines(recentActivity)" in APP
+    for timer in ("setInterval", "setTimeout"):
+        assert (
+            timer
+            not in APP[
+                APP.index("  async loadWorldFediverseProfile(target = {}) {"):
+                APP.index("  applyWorldLayoutEditor() {")
+            ]
+        )
 
 
 def test_avatars_do_not_render_laptop_or_phone_props():
