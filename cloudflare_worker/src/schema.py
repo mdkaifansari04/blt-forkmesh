@@ -187,6 +187,7 @@ SCHEMA_STATEMENTS = [
         forkmesh_verified_at INTEGER NOT NULL DEFAULT 0,
         forkmesh_refs_sha256 TEXT NOT NULL DEFAULT '',
         forkmesh_operations_sha256 TEXT NOT NULL DEFAULT '',
+        forkmesh_operations_json TEXT NOT NULL DEFAULT '[]',
         forkmesh_active INTEGER NOT NULL DEFAULT 0,
         health_message TEXT NOT NULL DEFAULT '',
         updated_at INTEGER NOT NULL)""",
@@ -1788,6 +1789,23 @@ SCHEMA_STATEMENTS = [
         revoked_at INTEGER NOT NULL DEFAULT 0)""",
     "CREATE INDEX IF NOT EXISTS idx_account_ssh_keys_account "
     "ON account_ssh_keys(account_bi, revoked_at, created_at)",
+    # Revocable account sessions. The browser/desktop receives a random bearer
+    # value; D1 keeps only its keyed digest and opaque id. Logout, password
+    # reset, account disable/delete and identity-key rotation can therefore
+    # revoke immediately without storing a replayable credential.
+    """CREATE TABLE IF NOT EXISTS account_sessions (
+        session_id TEXT PRIMARY KEY,
+        account_bi TEXT NOT NULL,
+        token_digest TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        revoked_at INTEGER NOT NULL DEFAULT 0,
+        device_label TEXT NOT NULL DEFAULT '')""",
+    "CREATE INDEX IF NOT EXISTS idx_account_sessions_account "
+    "ON account_sessions(account_bi, revoked_at, expires_at)",
+    "CREATE INDEX IF NOT EXISTS idx_account_sessions_expiry "
+    "ON account_sessions(expires_at, revoked_at)",
     # Explicit, administrator-created World moderation blocks. Subjects are
     # rotating keyed tokens derived transiently at the edge; raw addresses and
     # user-agent strings never enter D1. This table is intentionally separate

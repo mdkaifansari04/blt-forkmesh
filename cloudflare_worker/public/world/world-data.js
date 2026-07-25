@@ -55,14 +55,15 @@ export const LANDMARKS = [
     icon: "{ }",
     color: "#77d9ff",
     position: [16, 0, 16],
-    summary: "Walk through live, stub, and mirrored repositories as navigable structures.",
-    metaphor: "Files orbit their repository entrance in architectural rings.",
+    summary: "Walk the world's perimeter, choose a repository portal, and open its size-weighted file rings.",
+    metaphor: "Repository portals span the world's edge; each one unfolds in place as a three-dimensional sunburst.",
     reality:
       "Public catalog records come from the relay API. A repository marked external or stub is not represented as actively mirrored.",
     status: "Live catalog connected",
     statusTone: "live",
     bullets: [
-      "Large files render as larger icons; directory rings show depth.",
+      "Every authorized catalog repository gets its own circular portal around the world perimeter; unavailable stubs remain visually distinct.",
+      "In a selected repository, arc width reflects commit-pinned bytes and each concentric ring adds one directory level.",
       "Signed state, checksums, and host health distinguish available mirrors.",
       "A healthy response proves availability, not automatic trust; identity and content integrity are verified separately.",
       "Authorized private repositories appear only to their owners and explicitly authorized collaborators, and are never broadcast into public presence.",
@@ -492,6 +493,40 @@ export const WORLD_REGIONS = [
   { id: "central", label: "Central Campus", phase: "Local daylight view" },
   { id: "west", label: "West Campus", phase: "Local daylight view" },
 ];
+
+export const FOCUS_MUSIC_TRACKS = Object.freeze([
+  Object.freeze({
+    id: "heavenly-loop",
+    name: "Heavenly Loop",
+    artist: "isaiah658",
+    duration: "0:34",
+    trackUrl: "/assets/music/heavenly-loop.ogg",
+    sourceUrl: "https://opengameart.org/content/heavenly-loop",
+    license: "CC0 1.0",
+    licenseUrl: "https://creativecommons.org/publicdomain/zero/1.0/",
+  }),
+  Object.freeze({
+    id: "forgotten-victory",
+    name: "Forgotten Victory",
+    artist: "yd",
+    duration: "~4:00",
+    trackUrl: "/assets/music/forgotten-victory.ogg",
+    sourceUrl: "https://opengameart.org/content/forgotten-victory",
+    license: "CC0 1.0",
+    licenseUrl: "https://creativecommons.org/publicdomain/zero/1.0/",
+  }),
+  Object.freeze({
+    id: "tarlite-slumber",
+    name: "Tarlite Trycor Slumber Area",
+    artist: "Tozan",
+    duration: ">9:00",
+    trackUrl: "/assets/music/tarlite-trycor-slumber-area.ogg",
+    sourceUrl:
+      "https://opengameart.org/content/tarlite-trycor-slumber-area",
+    license: "CC0 1.0",
+    licenseUrl: "https://creativecommons.org/publicdomain/zero/1.0/",
+  }),
+]);
 
 export const RADIO_STATIONS = [
   {

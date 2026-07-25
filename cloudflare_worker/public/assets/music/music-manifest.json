@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "fetchedAt": "2026-07-24",
+  "license": {
+    "id": "CC0-1.0",
+    "url": "https://creativecommons.org/publicdomain/zero/1.0/"
+  },
+  "tracks": [
+    {
+      "id": "heavenly-loop",
+      "title": "Heavenly Loop",
+      "creator": "isaiah658",
+      "sourcePage": "https://opengameart.org/content/heavenly-loop",
+      "sourceFile": "https://opengameart.org/sites/default/files/Heavenly%20Loop_0.ogg",
+      "sourceSha256": "a842e9e054019132cacc8fd352e7b31c000ebb51e0b227a2511e1bccb4eb166e",
+      "bundledFile": "heavenly-loop.ogg",
+      "bundledSha256": "7db5f178004fbae41b5324fb11a23024fa83f4215cbac489a19b77f875b0db04",
+      "durationSeconds": 33.652494,
+      "bundledBytes": 280235,
+      "modification": "Metadata removed and transcoded to Ogg Vorbis quality 2 to reduce transfer size."
+    },
+    {
+      "id": "forgotten-victory",
+      "title": "Forgotten Victory",
+      "creator": "yd",
+      "sourcePage": "https://opengameart.org/content/forgotten-victory",
+      "sourceFile": "https://opengameart.org/sites/default/files/ForgottenVictory.ogg",
+      "sourceSha256": "3a3f980a285588ad88ce47482a8663b17ec7c8cf6ff35e893d83c9cc0ba3f076",
+      "bundledFile": "forgotten-victory.ogg",
+      "bundledSha256": "918671c4d639f4aed2816296de7181e33a0a6b34433e3af2e6b8f0bb8df28972",
+      "durationSeconds": 248.57542,
+      "bundledBytes": 2403411,
+      "modification": "Metadata removed and transcoded to Ogg Vorbis quality 2 to reduce transfer size."
+    },
+    {
+      "id": "tarlite-slumber",
+      "title": "Tarlite Trycor Slumber Area",
+      "creator": "Tozan",
+      "sourcePage": "https://opengameart.org/content/tarlite-trycor-slumber-area",
+      "sourceFile": "https://opengameart.org/sites/default/files/tarlitetrycorarea_0.ogg",
+      "sourceSha256": "78aea750fc06ce585ebc4d1a86bb780cf7412b6796ce283d2335ea311b06bc6d",
+      "bundledFile": "tarlite-trycor-slumber-area.ogg",
+      "bundledSha256": "78aea750fc06ce585ebc4d1a86bb780cf7412b6796ce283d2335ea311b06bc6d",
+      "durationSeconds": 570.595563,
+      "bundledBytes": 3439775,
+      "modification": "Original Ogg Vorbis file retained without audio transcoding."
+    }
+  ]
+}

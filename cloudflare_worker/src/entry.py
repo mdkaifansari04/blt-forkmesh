@@ -757,6 +757,47 @@ def json_response(data, status=200, cache_seconds=None, cache_control=None,
                     status=status, headers=headers)
 
 
+class RequestBodyTooLarge(BaseException):
+    """Control-flow signal that bypasses route-local invalid-JSON handlers."""
+
+
+JSON_BODY_DEFAULT_MAX_BYTES = 2 * 1024 * 1024
+JSON_BODY_LARGE_MAX_BYTES = 8 * 1024 * 1024
+JSON_BODY_LARGE_PATH_PREFIXES = (
+    "/api/security/",
+    "/api/world/workshops/",
+    "/api/repositories/import",
+)
+
+
+def _json_request_limit(request):
+    try:
+        path = urlparse(request.url).path
+    except Exception:
+        path = ""
+    return (
+        JSON_BODY_LARGE_MAX_BYTES
+        if any(path.startswith(prefix)
+               for prefix in JSON_BODY_LARGE_PATH_PREFIXES)
+        else JSON_BODY_DEFAULT_MAX_BYTES
+    )
+
+
+async def bounded_json_request(request, max_bytes=None):
+    """Read one JSON body with a hard bound even without Content-Length."""
+    limit = int(max_bytes or _json_request_limit(request))
+    try:
+        announced = int(request.headers.get("content-length") or 0)
+    except Exception:
+        announced = 0
+    if announced < 0 or announced > limit:
+        raise RequestBodyTooLarge()
+    raw = str(await request.text())
+    if len(raw.encode("utf-8")) > limit:
+        raise RequestBodyTooLarge()
+    return json.loads(raw or "{}")
+
+
 def _legacy_custody_not_ready_response():
     """Public, identity-free readiness failure for an upgraded legacy D1."""
     return json_response({
@@ -3074,7 +3115,7 @@ async def world_inactive_handler(env, request):
             {"error": "method_not_allowed"}, status=405,
             extra_headers={"allow": "GET, POST, DELETE"})
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     account_bi, rec = await _account_session_record(env, request, data)
@@ -4034,6 +4075,12 @@ SCHEMA_ALTER_STATEMENTS = [
     # payload was added. Existing blind-index grants remain valid; new writes
     # always provide this ciphertext column.
     "ALTER TABLE chat_channel_members ADD COLUMN data TEXT",
+    # Reward eligibility independently re-verifies the exact signed health
+    # evidence. Keeping the normalized operation list lets that verifier
+    # recompute the signed digest and required-operation subset instead of
+    # trusting a mutable forkmesh_active boolean.
+    """ALTER TABLE mirror_https_endpoints
+       ADD COLUMN forkmesh_operations_json TEXT NOT NULL DEFAULT '[]'""",
 ]
 
 # Fingerprint of the DDL this build would apply. Stored in schema_meta after a
@@ -5546,32 +5593,34 @@ async def signup_rate_check(env, ip_bi):
     if not ip_bi:
         return None
     now = int(Date.now())
+    # One UPSERT owns reset+increment+readback. Parallel signup requests can no
+    # longer all observe the same old count and overwrite one another.
     row = await d1_first(
-        env, "SELECT count, window_start_ts FROM signup_rate WHERE ip_bi=?", ip_bi)
-    count = 0
-    window_start = now
-    if row:
-        try:
-            window_start = int(row.get("window_start_ts") or 0)
-            count = int(row.get("count") or 0)
-        except (TypeError, ValueError):
-            window_start, count = now, 0
-        if now - window_start >= SIGNUP_RATE_WINDOW_MS:
-            window_start, count = now, 0  # window elapsed; start a fresh count
-    if count >= SIGNUP_MAX_PER_IP:
+        env,
+        "INSERT INTO signup_rate (ip_bi,count,window_start_ts) VALUES (?,1,?) "
+        "ON CONFLICT(ip_bi) DO UPDATE SET "
+        "count=CASE WHEN ?-signup_rate.window_start_ts>=? "
+        "THEN 1 ELSE signup_rate.count+1 END,"
+        "window_start_ts=CASE WHEN ?-signup_rate.window_start_ts>=? "
+        "THEN ? ELSE signup_rate.window_start_ts END "
+        "RETURNING count,window_start_ts",
+        ip_bi,
+        now,
+        now,
+        SIGNUP_RATE_WINDOW_MS,
+        now,
+        SIGNUP_RATE_WINDOW_MS,
+        now,
+    )
+    count = int((row or {}).get("count") or 1)
+    window_start = int((row or {}).get("window_start_ts") or now)
+    if count > SIGNUP_MAX_PER_IP:
         retry_ms = max(1000, SIGNUP_RATE_WINDOW_MS - (now - window_start))
         return json_response(
             {"error": "rate_limited", "retryAfterMs": retry_ms},
             status=429,
             extra_headers={"Retry-After": str(max(1, (retry_ms + 999) // 1000))},
         )
-    new_count = count + 1
-    await d1_run(
-        env,
-        "INSERT INTO signup_rate (ip_bi, count, window_start_ts) VALUES (?,?,?) "
-        "ON CONFLICT(ip_bi) DO UPDATE SET count=?, window_start_ts=?",
-        ip_bi, new_count, window_start, new_count, window_start,
-    )
     return None
 
 
@@ -5758,7 +5807,7 @@ async def catalog_handler(env, request):
 
     if method == "POST":
         try:
-            data = await request.json()
+            data = await bounded_json_request(request)
         except Exception:
             return json_response({"error": "invalid_json"}, status=400)
         record = safe_catalog_record(data)
@@ -6282,7 +6331,7 @@ async def repo_about_handler(env, request, owner, repo):
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     # Only the repo owner (proven by their session token, not a self-asserted
@@ -6639,7 +6688,7 @@ async def waitlist_handler(env, request):
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     if not isinstance(data, dict):
@@ -7397,6 +7446,9 @@ async def _rename_account_namespace(env, name_bi, rec, new_name):
     await d1_run(
         env, "UPDATE account_ssh_keys SET account_bi=? WHERE account_bi=?",
         new_name_bi, name_bi)
+    await d1_run(
+        env, "UPDATE account_sessions SET account_bi=? WHERE account_bi=?",
+        new_name_bi, name_bi)
     await d1_run(env, "DELETE FROM users WHERE user_bi=?", name_bi)
     await d1_run(env, "DELETE FROM nodes WHERE node_bi=?", name_bi)
     await purge_catalog_related_caches()
@@ -7510,6 +7562,8 @@ async def _delete_account_namespace(env, name_bi, rec):
         env, "DELETE FROM account_devices WHERE account_bi=?", name_bi)
     await d1_run(
         env, "DELETE FROM account_ssh_keys WHERE account_bi=?", name_bi)
+    await d1_run(
+        env, "DELETE FROM account_sessions WHERE account_bi=?", name_bi)
     await _delete_chat_channel_memberships(env, name_bi)
     if email:
         email_bi = await blind_index(env, email)
@@ -7786,7 +7840,7 @@ async def _clean_profile_links(env, rec, raw_links):
     return out, None
 
 
-async def _account_public_payload(env, rec):
+async def _account_public_payload(env, rec, session_token=None):
     name = rec.get("name", "")
     solana = (rec.get("solana") or "").strip()
     has_payout = bool(solana and SOLANA_RE.match(solana))
@@ -7809,7 +7863,11 @@ async def _account_public_payload(env, rec):
             "external wallet owner; reward selection and payment are not "
             "guaranteed."
         ),
-        "sessionToken": _account_session_token(env, name),
+        "sessionToken": (
+            session_token
+            if session_token is not None
+            else await _account_session_token(env, name)
+        ),
         "avatarPng": rec.get("avatar_png", ""),
         "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
         "kind": _account_kind(rec),
@@ -7905,48 +7963,198 @@ def _account_session_secret(env):
             str(getattr(env, "DATA_KEY", "") or "")).encode()
 
 
-def _account_session_signature(env, name, expires):
-    canonical = ("forkmesh-account-session-v1\n" + name + "\n" +
-                 str(expires)).encode()
-    return hmac.new(_account_session_secret(env), canonical, "sha256").hexdigest()
+ACCOUNT_SESSION_COOKIE = "forkmesh_account"
+ACCOUNT_SESSION_TOKEN_RE = re.compile(
+    r"^v2\.([A-Za-z0-9_-]{24,64})\.([A-Za-z0-9_-]{32,96})$")
+ACCOUNT_SESSION_TOUCH_MS = 5 * 60 * 1000
+ACCOUNT_SESSION_MAX_ACTIVE = 20
 
 
-def _account_session_token(env, name):
+def _account_session_token_digest(env, token):
+    return hmac.new(
+        _account_session_secret(env),
+        ("forkmesh-account-session-token-v2\n" + str(token or "")).encode(),
+        "sha256",
+    ).hexdigest()
+
+
+async def _account_session_token(env, name, device_label=""):
+    """Mint one random, server-revocable session; D1 stores no bearer token."""
     name = clean_string(name or "", MAX_NODE_NAME).lower()
-    expires = int(Date.now()) + ADMIN_SESSION_TTL_MS
-    sig = _account_session_signature(env, name, expires)
-    return name + "." + str(expires) + "." + sig
-
-
-def _account_session_token_name(env, token):
-    parts = clean_string(token or "", 512).split(".")
-    if len(parts) != 3:
-        return ""
-    name, expires, sig = parts
     if not valid_node_name(name):
         return ""
+    await ensure_schema(env)
+    now = int(Date.now())
+    account_bi = await blind_index(env, name)
+    session_id = _b64url_encode(_random_bytes(24))
+    secret = _b64url_encode(_random_bytes(32))
+    token = "v2." + session_id + "." + secret
+    expires = now + ADMIN_SESSION_TTL_MS
+    await d1_run(
+        env,
+        "DELETE FROM account_sessions WHERE expires_at<=? OR "
+        "(revoked_at>0 AND revoked_at<=?)",
+        now,
+        now - 24 * 60 * 60 * 1000,
+    )
+    # Bound stolen-device persistence and table growth. Retain only the newest
+    # sessions for this account before adding the next one.
+    await d1_run(
+        env,
+        "DELETE FROM account_sessions WHERE session_id IN ("
+        "SELECT session_id FROM account_sessions WHERE account_bi=? "
+        "ORDER BY created_at DESC LIMIT -1 OFFSET ?)",
+        account_bi,
+        ACCOUNT_SESSION_MAX_ACTIVE - 1,
+    )
+    await d1_run(
+        env,
+        "INSERT INTO account_sessions "
+        "(session_id,account_bi,token_digest,created_at,last_seen_at,"
+        "expires_at,revoked_at,device_label) VALUES (?,?,?,?,?,?,0,?)",
+        session_id,
+        account_bi,
+        _account_session_token_digest(env, token),
+        now,
+        now,
+        expires,
+        clean_string(device_label or "", 80),
+    )
+    return token
+
+
+def _account_session_cookie(token):
+    token = clean_string(token or "", 512).strip()
+    return (
+        ACCOUNT_SESSION_COOKIE + "=" + token
+        + "; Path=/; Max-Age=%d; HttpOnly; Secure; SameSite=Strict"
+        % int(ADMIN_SESSION_TTL_MS / 1000)
+    )
+
+
+def _clear_account_session_cookie():
+    return (
+        ACCOUNT_SESSION_COOKIE
+        + "=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict"
+    )
+
+
+def _request_same_origin(request):
     try:
-        expires_ms = int(expires)
-    except (TypeError, ValueError):
-        return ""
-    if expires_ms < int(Date.now()):
-        return ""
-    expected = _account_session_signature(env, name, expires_ms)
-    return name if hmac.compare_digest(sig, expected) else ""
+        target = urlparse(request.url)
+        origin = urlparse(request.headers.get("origin") or "")
+    except Exception:
+        return False
+    target_port = target.port or (443 if target.scheme == "https" else 80)
+    origin_port = origin.port or (443 if origin.scheme == "https" else 80)
+    return bool(
+        origin.scheme == target.scheme
+        and origin.hostname == target.hostname
+        and origin_port == target_port
+    )
 
 
-async def _account_session_record(env, request, data=None):
-    payload = data if isinstance(data, dict) else {}
+def _request_account_session_token(request, payload=None):
+    payload = payload if isinstance(payload, dict) else {}
     token = clean_string(payload.get("sessionToken", ""), 512).strip()
     if not token:
         auth = request.headers.get("authorization") or ""
         if auth.lower().startswith("bearer "):
             token = clean_string(auth[7:], 512).strip()
-    name = _account_session_token_name(env, token)
-    if not name:
-        return "", None
-    name_bi, rec = await _account_row(env, name)
+    # Browser localStorage retains only this non-secret marker. Cookie auth is
+    # selected explicitly rather than trying to validate it as a bearer.
+    if token == "cookie":
+        token = ""
+    cookie_auth = not token
+    if cookie_auth:
+        token = clean_string(
+            _cookie_value(request, ACCOUNT_SESSION_COOKIE), 512
+        ).strip()
+    return token, cookie_auth
+
+
+async def _account_session_lookup(env, token, touch=True):
+    match = ACCOUNT_SESSION_TOKEN_RE.fullmatch(
+        clean_string(token or "", 512).strip())
+    if not match:
+        return "", None, ""
+    session_id = match.group(1)
+    row = await d1_first(
+        env,
+        "SELECT account_bi,token_digest,last_seen_at,expires_at,revoked_at "
+        "FROM account_sessions WHERE session_id=?",
+        session_id,
+    )
+    now = int(Date.now())
+    if (
+        not row
+        or int(row.get("revoked_at") or 0)
+        or int(row.get("expires_at") or 0) <= now
+        or not hmac.compare_digest(
+            str(row.get("token_digest") or ""),
+            _account_session_token_digest(env, token),
+        )
+    ):
+        return "", None, ""
+    account_bi = str(row.get("account_bi") or "")
+    account_row = await d1_first(
+        env, "SELECT data FROM users WHERE user_bi=?", account_bi)
+    rec = await decrypt_row(env, (account_row or {}).get("data", ""))
     if not rec or rec.get("status") != "active" or _account_kind(rec) != "user":
+        return "", None, ""
+    if (
+        touch
+        and now - int(row.get("last_seen_at") or 0)
+        >= ACCOUNT_SESSION_TOUCH_MS
+    ):
+        await d1_run(
+            env,
+            "UPDATE account_sessions SET last_seen_at=? "
+            "WHERE session_id=? AND revoked_at=0",
+            now,
+            session_id,
+        )
+    return account_bi, rec, session_id
+
+
+async def _account_session_token_name(env, token):
+    _, rec, _ = await _account_session_lookup(env, token)
+    return clean_string(
+        (rec or {}).get("name", ""), MAX_NODE_NAME).lower()
+
+
+async def _account_revoke_sessions(env, account_bi, session_id=""):
+    now = int(Date.now())
+    if session_id:
+        await d1_run(
+            env,
+            "UPDATE account_sessions SET revoked_at=? "
+            "WHERE account_bi=? AND session_id=? AND revoked_at=0",
+            now,
+            account_bi,
+            session_id,
+        )
+    else:
+        await d1_run(
+            env,
+            "UPDATE account_sessions SET revoked_at=? "
+            "WHERE account_bi=? AND revoked_at=0",
+            now,
+            account_bi,
+        )
+
+
+async def _account_session_record(env, request, data=None):
+    payload = data if isinstance(data, dict) else {}
+    token, cookie_auth = _request_account_session_token(request, payload)
+    if (
+        cookie_auth
+        and method_name(request) not in ("GET", "HEAD", "OPTIONS")
+        and not _request_same_origin(request)
+    ):
+        return "", None
+    name_bi, rec, _ = await _account_session_lookup(env, token)
+    if not name_bi or not rec:
         return "", None
     return name_bi, rec
 
@@ -8108,7 +8316,7 @@ async def world_moderation_handler(env, request):
             cache_control="no-store, max-age=0, must-revalidate",
             extra_headers={"allow": "POST"})
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response(
             {"error": "invalid_json"}, status=400,
@@ -8220,7 +8428,7 @@ async def world_moderation_handler(env, request):
 # Solana payout details are intentionally handled later from the dashboard profile.
 async def _account_signup(env, request):
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
@@ -8285,7 +8493,14 @@ async def _account_signup(env, request):
     # pick up the new account on their next poll instead of a TTL later.
     await edge_cache_delete(USERS_DIRECTORY_CACHE_KEY)
     await edge_cache_delete(CHAT_ACTIVITY_CACHE_KEY)
-    return json_response(await _account_public_payload(env, rec), status=201)
+    payload = await _account_public_payload(env, rec)
+    return json_response(
+        payload,
+        status=201,
+        extra_headers={
+            "Set-Cookie": _account_session_cookie(payload["sessionToken"])
+        },
+    )
 
 
 async def _account_password_record(env, data):
@@ -8320,7 +8535,7 @@ async def _account_password_record(env, data):
 
 async def _account_follow(env, request, target_name, method):
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     follower_bi, follower_rec = await _account_session_record(env, request, data)
@@ -8364,7 +8579,7 @@ async def _account_follow(env, request, target_name, method):
 # Legacy confirmed-deposit flags are honored only to avoid reclaiming old names.
 async def _account_reserve(env, request):
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
@@ -8531,7 +8746,7 @@ def _signup_metadata(request):
 # universal (any-surface) login. Email + password hash are stored encrypted.
 async def _account_finalize(env, request):
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
@@ -8625,12 +8840,19 @@ async def _account_finalize(env, request):
             env, link_code, node=name, pubkey=rec.get("pubkey", ""))
         if result.get("linked"):
             rec["owner"] = result.get("user", "")
-    return json_response(await _account_public_payload(env, rec), status=201)
+    payload = await _account_public_payload(env, rec)
+    return json_response(
+        payload,
+        status=201,
+        extra_headers={
+            "Set-Cookie": _account_session_cookie(payload["sessionToken"])
+        },
+    )
 
 
 async def _account_profile(env, request):
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     public_profile_fields = {
@@ -8877,11 +9099,18 @@ async def _account_profile(env, request):
             await _best_effort_inbox_side_effect(_ap_broadcast_actor_update(
                 env, request, AP_ACTOR_USER,
                 clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()))
-    payload = await _account_public_payload(env, rec)
+    current_token, _ = _request_account_session_token(request, data)
+    payload = await _account_public_payload(
+        env, rec, current_token if current_token else None)
     payload["verificationSent"] = bool(verification_sent)
     payload["verificationQueued"] = bool(verification_queued)
     payload["nodeNameChanged"] = bool(renamed)
-    return json_response(payload)
+    return json_response(
+        payload,
+        extra_headers={
+            "Set-Cookie": _account_session_cookie(payload["sessionToken"])
+        },
+    )
 
 
 # --- Users vs nodes: claiming & linking (adhoc #53) --------------------------
@@ -8994,7 +9223,7 @@ async def _link_node_to_user(env, node_name, node_bi, node_rec, user_name):
 
 async def _account_claim_node(env, request):
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     _, user_rec = await _resolve_user_by_password(env, data)
@@ -9034,7 +9263,7 @@ async def _account_claim_node(env, request):
 
 async def _account_claim_confirm(env, request):
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     _, user_rec = await _resolve_user_by_password(env, data)
@@ -9128,7 +9357,7 @@ async def _account_reclaim_node(env, request):
     # once the installing user's signed offer is present, re-home this node to
     # that user and rotate the node account's hosting key.
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
@@ -9167,7 +9396,7 @@ async def _account_link_node(env, request):
     # printed by install.sh on the fresh machine, offered here signed by the
     # installing account's own key.
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
@@ -9206,7 +9435,7 @@ async def _account_link_self(env, request):
     # code flow, which only proves the password and needs the on-node code to
     # prove the claimer can see the machine.
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     node_name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
@@ -9266,7 +9495,7 @@ async def _account_link_grant(env, request):
     # a user can be taken possession of — the node's key signed the grant, so
     # the machine's operator has authorized the hand-over.
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     node_name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
@@ -9339,31 +9568,93 @@ async def _login_locked_until(env, id_bi):
 
 
 async def _login_record_fail(env, id_bi):
-    # Increment the failure counter (resetting it once the rolling window passes)
-    # and lock the identifier once it crosses the threshold.
+    # Atomically increment/reset one source or source+identifier budget. The
+    # returned lock applies only to subsequent *failed* attempts; correct
+    # credentials are always verified and can clear the budget, preventing an
+    # attacker from locking a known victim out by name alone.
     now = int(Date.now())
     row = await d1_first(
-        env, "SELECT fails, first_fail_ts FROM login_attempts WHERE id_bi=?", id_bi)
-    fails = 0
-    first = now
-    if row:
-        try:
-            fails = int(row.get("fails") or 0)
-            first = int(row.get("first_fail_ts") or now)
-        except (TypeError, ValueError):
-            fails, first = 0, now
-    if now - first > LOGIN_FAIL_WINDOW_MS:
-        fails, first = 0, now
-    fails += 1
-    locked_until = now + LOGIN_LOCKOUT_MS if fails >= LOGIN_MAX_FAILS else 0
-    await d1_run(
         env,
         "INSERT INTO login_attempts (id_bi, fails, first_fail_ts, locked_until) "
-        "VALUES (?,?,?,?) ON CONFLICT(id_bi) DO UPDATE SET "
-        "fails=excluded.fails, first_fail_ts=excluded.first_fail_ts, "
-        "locked_until=excluded.locked_until",
-        id_bi, fails, first, locked_until,
+        "VALUES (?,1,?,0) ON CONFLICT(id_bi) DO UPDATE SET "
+        "fails=CASE WHEN ?-login_attempts.first_fail_ts>? "
+        "THEN 1 ELSE login_attempts.fails+1 END,"
+        "first_fail_ts=CASE WHEN ?-login_attempts.first_fail_ts>? "
+        "THEN ? ELSE login_attempts.first_fail_ts END,"
+        "locked_until=CASE WHEN "
+        "(CASE WHEN ?-login_attempts.first_fail_ts>? "
+        "THEN 1 ELSE login_attempts.fails+1 END)>=? "
+        "THEN ? ELSE 0 END "
+        "RETURNING fails,first_fail_ts,locked_until",
+        id_bi,
+        now,
+        now,
+        LOGIN_FAIL_WINDOW_MS,
+        now,
+        LOGIN_FAIL_WINDOW_MS,
+        now,
+        now,
+        LOGIN_FAIL_WINDOW_MS,
+        LOGIN_MAX_FAILS,
+        now + LOGIN_LOCKOUT_MS,
     )
+    return {
+        "fails": int((row or {}).get("fails") or 1),
+        "lockedUntil": int((row or {}).get("locked_until") or 0),
+    }
+
+
+async def _login_attempt_keys(env, request, identifier):
+    source = _transient_client_address(request)
+    source_bi = await blind_index(env, source) if source else ""
+    keys = []
+    if source_bi:
+        keys.append(await blind_index(
+            env, "login-source:" + source_bi))
+        keys.append(await blind_index(
+            env, "login-pair:" + source_bi + ":" + identifier))
+    else:
+        # Local/self-hosted requests without edge address metadata retain a
+        # bounded identifier budget, but valid credentials still bypass it.
+        keys.append(await blind_index(env, "login-local:" + identifier))
+    return keys
+
+
+async def _login_failure_response(env, attempt_keys, error):
+    locked_until = 0
+    highest_fail_count = 0
+    for attempt_key in attempt_keys:
+        result = await _login_record_fail(env, attempt_key)
+        if isinstance(result, dict):
+            locked_until = max(
+                locked_until, int(result.get("lockedUntil") or 0))
+            highest_fail_count = max(
+                highest_fail_count, int(result.get("fails") or 0))
+        else:
+            # Compatibility with an older/local rate-limit adapter.
+            locked_until = max(locked_until, int(result or 0))
+    now = int(Date.now())
+    if locked_until > now:
+        retry_ms = max(1000, locked_until - now)
+    elif highest_fail_count >= 3:
+        # Progressive source/pair backoff starts before the hard ceiling. This
+        # response is emitted only after credentials have failed verification;
+        # a subsequent correct password is still checked immediately.
+        retry_ms = min(
+            60 * 1000,
+            1000 * (2 ** min(6, highest_fail_count - 3)),
+        )
+    else:
+        retry_ms = 0
+    if retry_ms:
+        return json_response(
+            {"error": "too_many_attempts", "retryAfterMs": retry_ms},
+            status=429,
+            extra_headers={
+                "Retry-After": str(max(1, (retry_ms + 999) // 1000))
+            },
+        )
+    return json_response({"error": error}, status=401)
 
 
 async def _login_clear(env, id_bi):
@@ -9598,7 +9889,7 @@ async def _ensure_local_demo_account(
 
 async def _account_login(env, request):
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
 
@@ -9615,16 +9906,13 @@ async def _account_login(env, request):
     await _ensure_local_demo_account(
         env, request, identifier, password)
 
-    # Brute-force throttle, keyed by a blind index of the identifier (no plaintext
-    # stored). Checked before any account lookup so it also protects nonexistent
-    # identifiers (and so the lockout itself doesn't leak whether an account
-    # exists). A generic "invalid_credentials" is returned for every pre-TOTP
-    # failure so an attacker can't enumerate accounts by error code.
+    # Failed attempts consume atomic source and source+identifier budgets. They
+    # never block verification of correct credentials, so an attacker cannot
+    # lock a known victim out merely by submitting their identifier.
     id_bi = await blind_index(env, identifier) if identifier else ""
     if not id_bi:
         return json_response({"error": "invalid_credentials"}, status=401)
-    if await _login_locked_until(env, id_bi):
-        return json_response({"error": "too_many_attempts"}, status=429)
+    attempt_keys = await _login_attempt_keys(env, request, identifier)
 
     rec = None
     if "@" in identifier:
@@ -9639,7 +9927,8 @@ async def _account_login(env, request):
     if rec is not None and rec.get("status") != "active":
         if rec.get("pass_hash") and await verify_password(
                 password, rec.get("pass_salt", ""), rec.get("pass_hash", "")):
-            await _login_clear(env, id_bi)
+            for attempt_key in attempt_keys:
+                await _login_clear(env, attempt_key)
             return json_response({"error": "account_disabled"}, status=403)
 
     ok = (rec is not None and rec.get("status") == "active" and
@@ -9647,16 +9936,17 @@ async def _account_login(env, request):
           await verify_password(password, rec.get("pass_salt", ""),
                                 rec.get("pass_hash", "")))
     if not ok:
-        await _login_record_fail(env, id_bi)
-        return json_response({"error": "invalid_credentials"}, status=401)
+        return await _login_failure_response(
+            env, attempt_keys, "invalid_credentials")
     # TOTP is only enforced for accounts that have enrolled it. A bad code counts
     # toward the lockout but the password was already correct, so the distinct
     # error here doesn't aid account enumeration.
     if rec.get("totp_enrolled"):
         if not await totp_verify(rec.get("totp_secret", ""), totp):
-            await _login_record_fail(env, id_bi)
-            return json_response({"error": "bad_totp"}, status=401)
-    await _login_clear(env, id_bi)
+            return await _login_failure_response(
+                env, attempt_keys, "bad_totp")
+    for attempt_key in attempt_keys:
+        await _login_clear(env, attempt_key)
 
     # Multi-device account model: password/TOTP authenticates the human account;
     # a supplied pubkey identifies/registers this particular desktop node. Any
@@ -9715,33 +10005,27 @@ async def _account_login(env, request):
         desktop_capable = primary_key_matched and enabled and "owner_sign" in caps
         session_caps = caps if desktop_capable else CLIENT_CAPABILITIES.split(",")
         device_kind = device.get("kind", "desktop_node") if device else "desktop_node"
-        payload = {
-            **await _account_public_payload(env, rec),
-            "sessionToken": _account_session_token(env, rec.get("name", "")),
-        }
+        payload = await _account_public_payload(env, rec)
         payload = _with_session_capabilities(
             payload, session_kind="desktop_node", device_kind=device_kind,
             key_matched=True, desktop_capable=desktop_capable,
             capabilities=session_caps)
         return json_response(
             payload,
-            extra_headers={"Set-Cookie": _admin_session_cookie(env, payload["nodeName"])
-                           if payload.get("isAdmin")
-                           else _clear_admin_session_cookie()},
+            extra_headers={
+                "Set-Cookie": _account_session_cookie(payload["sessionToken"])
+            },
         )
 
-    payload = {
-        **await _account_public_payload(env, rec),
-        "sessionToken": _account_session_token(env, rec.get("name", "")),
-    }
+    payload = await _account_public_payload(env, rec)
     payload = _with_session_capabilities(
         payload, session_kind="account", device_kind="web_or_mobile",
         key_matched=False, desktop_capable=False)
     return json_response(
         payload,
-        extra_headers={"Set-Cookie": _admin_session_cookie(env, payload["nodeName"])
-                       if payload.get("isAdmin")
-                       else _clear_admin_session_cookie()},
+        extra_headers={
+            "Set-Cookie": _account_session_cookie(payload["sessionToken"])
+        },
     )
 
 
@@ -9753,7 +10037,7 @@ async def _account_rotate(env, request):
     newPubkey binding plus prev_pubkeys entry as an idempotent retry.
     """
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
 
@@ -9823,13 +10107,23 @@ async def _account_rotate(env, request):
     rec["prev_pubkeys"] = prev_pubkeys
     rec["rotated_at"] = int(Date.now())
     await _save_account(env, name_bi, rec)
+    await _account_revoke_sessions(env, name_bi)
     return json_response({"ok": True, "nodeName": name, "pubkey": new_pubkey})
 
 
 async def _account_logout(env, request):
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        data = {}
+    token, _ = _request_account_session_token(request, data)
+    account_bi, _rec, session_id = await _account_session_lookup(
+        env, token, touch=False)
+    if account_bi and session_id:
+        await _account_revoke_sessions(env, account_bi, session_id)
     return json_response(
         {"ok": True},
-        extra_headers={"Set-Cookie": _clear_admin_session_cookie()},
+        extra_headers={"Set-Cookie": _clear_account_session_cookie()},
         cache_control="no-store, max-age=0, must-revalidate",
     )
 
@@ -9845,27 +10139,25 @@ async def _account_admin_session(env, request):
     # already-authenticated caller and refreshed on every account poll — proves
     # identity here; is_admin gates the grant, so this never escalates.
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         data = {}
-    token = clean_string((data or {}).get("sessionToken", ""), 512).strip()
-    if not token:
-        auth = request.headers.get("authorization") or ""
-        if auth.lower().startswith("bearer "):
-            token = clean_string(auth[7:], 512).strip()
-    name = _account_session_token_name(env, token)
+    token, cookie_auth = _request_account_session_token(request, data)
+    if cookie_auth and not _request_same_origin(request):
+        token = ""
+    name = await _account_session_token_name(env, token)
     if not name or not await _is_admin(env, name):
         return json_response(
             {"error": "not_admin"},
             status=403,
-            extra_headers={"Set-Cookie": _clear_admin_session_cookie()},
+            extra_headers={"Set-Cookie": _clear_account_session_cookie()},
             cache_control="no-store, max-age=0, must-revalidate",
         )
     admin_path = _admin_path(env)
     admin_url = ("/" + admin_path + "?admin=" + quote(name)) if admin_path else ""
     return json_response(
         {"ok": True, "nodeName": name, "adminUrl": admin_url},
-        extra_headers={"Set-Cookie": _admin_session_cookie(env, name)},
+        extra_headers={"Set-Cookie": _account_session_cookie(token)},
         cache_control="no-store, max-age=0, must-revalidate",
     )
 
@@ -9879,7 +10171,7 @@ def _random_bytes(n):
 # online; optionally updates the payout Solana address.
 async def _account_heartbeat(env, request):
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
@@ -10333,9 +10625,10 @@ async def _eligible_reward_snapshot(env, now=None):
     expected_refs = await _https_mirror_expected_forkmesh_refs(env)
     rows = await d1_all(
         env,
-        "SELECT e.node_bi, e.node_name, e.public_key, e.checked_at, "
+        "SELECT e.node_bi, e.node_name, e.base_url, e.public_key, e.checked_at, "
         "e.healthy, e.integrity, e.abuse_blocked, "
         "e.forkmesh_verified_at, e.forkmesh_refs_sha256, "
+        "e.forkmesh_operations_sha256, e.forkmesh_operations_json, "
         "e.forkmesh_active, e.registration_sig, e.issued_at, "
         "e.health_sig, e.health_message, p.ts AS presence_ts, n.data, "
         "o.first_verified_at, o.last_verified_at, "
@@ -10387,20 +10680,53 @@ async def _eligible_reward_snapshot(env, now=None):
         public_key = clean_string(row.get("public_key"), 160).strip()
         refs_hash = clean_string(
             row.get("forkmesh_refs_sha256"), 64).lower()
+        operations_hash = clean_string(
+            row.get("forkmesh_operations_sha256"), 64).lower()
+        try:
+            operations = json.loads(
+                str(row.get("forkmesh_operations_json") or "[]"))
+        except Exception:
+            operations = []
+        normalized_operations_hash = https_routing.operations_sha256(operations)
+        required_operations_ok = bool(
+            normalized_operations_hash
+            and hmac.compare_digest(
+                normalized_operations_hash, operations_hash)
+            and HTTPS_MIRROR_REQUIRED_FORKMESH_OPERATIONS.issubset(
+                set(operations))
+        )
+        allowed_identity_keys = await _owner_signing_pubkeys(env, node_name)
+        signed_attestation = await _verified_federated_reward_attestation(
+            env,
+            {
+                "name": node_name,
+                "operator": owner,
+                "wallet": str(record.get("solana") or "").strip(),
+                "publicKey": public_key,
+                "baseUrl": row.get("base_url"),
+                "registrationSignature": row.get("registration_sig"),
+                "registrationIssuedAt": row.get("issued_at"),
+                "healthMessage": row.get("health_message"),
+                "healthSignature": row.get("health_sig"),
+                "checkedAt": row.get("checked_at"),
+                "healthy": True,
+                "integrity": "ok",
+                "mirrorsForkMesh": True,
+                "requiredOperationsVerified": required_operations_ok,
+                "abuseFlagged": False,
+                "forkmeshVerifiedAt": row.get("forkmesh_verified_at"),
+                "refsSha256": refs_hash,
+                "operationsSha256": operations_hash,
+            },
+            now,
+            expected_refs,
+            config["healthFreshMs"],
+        )
         endpoint_ok = bool(
-            int(row.get("healthy") or 0)
-            and int(row.get("forkmesh_active") or 0)
-            and str(row.get("integrity") or "") in ("ok", "verified")
-            and re.fullmatch(r"[0-9a-f]{64}", refs_hash)
-            and expected_refs
-            and hmac.compare_digest(refs_hash, expected_refs)
-            and re.fullmatch(
-                r"[A-Za-z0-9_-]{86}",
-                str(row.get("registration_sig") or ""))
-            and re.fullmatch(
-                r"[A-Za-z0-9_-]{86}",
-                str(row.get("health_sig") or ""))
-            and bool(row.get("health_message"))
+            signed_attestation
+            and public_key in allowed_identity_keys
+            and required_operations_ok
+            and not int(row.get("abuse_blocked") or 0)
         )
         candidates.append({
             "nodeId": node_name,
@@ -10408,7 +10734,7 @@ async def _eligible_reward_snapshot(env, now=None):
             "deviceId": hashlib.sha256(public_key.encode()).hexdigest(),
             "walletAddress": str(record.get("solana") or "").strip(),
             "attestationSourceApproved": True,
-            "identitySignatureVerified": bool(public_key),
+            "identitySignatureVerified": endpoint_ok,
             "healthAttestationSignatureVerified": endpoint_ok,
             "healthAttestationFresh": bool(
                 int(row.get("checked_at") or 0) >= cutoff
@@ -10430,6 +10756,7 @@ async def _eligible_reward_snapshot(env, now=None):
             "attestationId": hashlib.sha256(
                 (
                     node_bi + "\0" + refs_hash + "\0"
+                    + operations_hash + "\0"
                     + str(row.get("forkmesh_verified_at") or 0)
                 ).encode()
             ).hexdigest(),
@@ -11303,7 +11630,7 @@ async def reward_contributions_handler(env, request):
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     rec = await _central_fund_record(env)
@@ -11727,7 +12054,7 @@ async def reward_signing_jobs_handler(env, request):
         }, cache_control="no-store")
 
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     signer = clean_string(
@@ -11918,7 +12245,7 @@ async def pending_reward_award_handler(env, request):
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     signer = clean_string(
@@ -12015,7 +12342,7 @@ async def pending_rewards_handler(env, request):
     data = {}
     if method == "POST":
         try:
-            data = await request.json()
+            data = await bounded_json_request(request)
         except Exception:
             return json_response({"error": "invalid_json"}, status=400)
     account_bi, rec = await _account_session_record(env, request, data)
@@ -12253,7 +12580,7 @@ async def bounties_handler(env, request, owner, repo):
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     action = (data.get("action") or "create").strip()
@@ -12435,7 +12762,7 @@ async def shares_handler(env, request, owner, repo):
 
     if method in ("POST", "DELETE"):
         try:
-            data = await request.json()
+            data = await bounded_json_request(request)
         except Exception:
             data = {}
         # DELETE is accepted as an alias for action=remove so the verb can carry
@@ -13047,7 +13374,7 @@ async def orgs_handler(env, request):
     if method != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     account_bi, account_rec = await _account_session_record(env, request, data)
@@ -13159,7 +13486,7 @@ async def org_handler(env, request, org):
         }, cache_control="no-store")
     if method == "PATCH":
         try:
-            data = await request.json()
+            data = await bounded_json_request(request)
         except Exception:
             return json_response({"error": "invalid_json"}, status=400)
         _, account_rec = await _account_session_record(
@@ -13215,7 +13542,7 @@ async def org_handler(env, request, org):
         }, cache_control="no-store")
     if method == "DELETE":
         try:
-            data = await request.json()
+            data = await bounded_json_request(request)
         except Exception:
             data = {}
         _, account_rec = await _account_session_record(
@@ -13315,7 +13642,7 @@ async def org_members_handler(env, request, org):
     if method not in ("POST", "DELETE"):
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         data = {}
     _, account_rec = await _account_session_record(env, request, data)
@@ -13483,7 +13810,7 @@ async def org_teams_handler(env, request, org):
     if method not in ("POST", "DELETE"):
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         data = {}
     _, account_rec = await _account_session_record(env, request, data)
@@ -13589,7 +13916,7 @@ async def org_team_members_handler(env, request, org, team):
     if method not in ("POST", "DELETE"):
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         data = {}
     _, account_rec = await _account_session_record(env, request, data)
@@ -13698,7 +14025,7 @@ async def org_repos_handler(env, request, org):
     if method not in ("POST", "DELETE"):
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         data = {}
     _, account_rec = await _account_session_record(env, request, data)
@@ -13796,7 +14123,7 @@ async def org_fediverse_handler(env, request, org):
     data = {}
     if method == "POST":
         try:
-            data = await request.json()
+            data = await bounded_json_request(request)
         except Exception:
             return json_response({"error": "invalid_json"}, status=400)
     _, account_rec = await _account_session_record(env, request, data)
@@ -14002,7 +14329,7 @@ async def security_roles_handler(env, request):
     data = {}
     if method == "POST":
         try:
-            data = await request.json()
+            data = await bounded_json_request(request)
         except Exception:
             return json_response({"error": "invalid_json"}, status=400)
     _, actor_rec = await _account_session_record(env, request, data)
@@ -14201,7 +14528,7 @@ async def _admin_pending(env, request):
 
 async def _admin_verify_email(env, request):
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
@@ -14946,7 +15273,7 @@ async def outreach_handler(env, request):
     data = None
     if method == "POST":
         try:
-            data = await request.json()
+            data = await bounded_json_request(request)
         except Exception:
             return json_response({"error": "invalid_json"}, status=400)
         if not isinstance(data, dict):
@@ -14992,7 +15319,7 @@ async def outreach_handler(env, request):
 # which emails/nodes are registered.
 async def _account_forgot_password(env, request):
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     identifier = clean_string(
@@ -15022,7 +15349,7 @@ async def _account_forgot_password(env, request):
 # password is PBKDF2-hashed and stored.
 async def _account_reset_password(env, request):
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     name = clean_string(
@@ -15051,6 +15378,7 @@ async def _account_reset_password(env, request):
     rec["pass_salt"] = salt
     rec["pass_hash"] = phash
     await _save_account(env, name_bi, rec)
+    await _account_revoke_sessions(env, name_bi)
     # A successful reset also lifts any brute-force lockout so the user can log in
     # right away, whether they log in by node name or by email.
     await _login_clear(env, name_bi)
@@ -15881,7 +16209,7 @@ async def _admin_relays(env, request):
 
 async def _admin_relay_approve(env, request):
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
@@ -15944,7 +16272,7 @@ async def _park_ownership_transfer(env, target, new_owner):
 
 async def _admin_request_ownership(env, request):
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
@@ -15976,7 +16304,7 @@ async def _account_ownership_transfer_confirm(env, request):
     # heartbeat-delivered prompt, signed with the node's own key — the same
     # proof-of-control the node uses for its heartbeat, not the admin's.
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     node_name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
@@ -18924,7 +19252,7 @@ async def repo_star_handler(env, request, owner, repo):
         })
 
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     account_bi, account_rec = await _account_session_record(env, request, data)
@@ -19042,7 +19370,7 @@ async def ap_publish_handler(env, request, owner, repo):
     if callable(privacy_reader) and await privacy_reader(env, owner, repo):
         return json_response({"error": "not_found"}, status=404)
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     kind = clean_string(data.get("kind", ""), 20).lower()
@@ -19098,7 +19426,7 @@ async def ap_digest_handler(env, request, owner, repo):
     data = {}
     if method == "POST":
         try:
-            data = await request.json()
+            data = await bounded_json_request(request)
         except Exception:
             return json_response({"error": "invalid_json"}, status=400)
     if not await _authorize_repo_owner_web(env, request, owner, repo, data):
@@ -19127,7 +19455,7 @@ async def ap_posts_handler(env, request, owner, repo):
         return json_response({"error": "method_not_allowed"}, status=405)
     await ensure_schema(env)
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     if not await _authorize_repo_owner_web(env, request, owner, repo, data):
@@ -19241,7 +19569,7 @@ async def _admin_ap_settings(env, request):
 async def _admin_ap_update(env, request):
     await ensure_schema(env)
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
@@ -19822,7 +20150,7 @@ async def notifications_handler(env, request):
 
     if method == "POST":
         try:
-            data = await request.json()
+            data = await bounded_json_request(request)
         except Exception:
             return json_response({"error": "invalid_json"}, status=400)
         node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
@@ -19864,7 +20192,7 @@ async def mirror_requests_handler(env, request):
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     action = clean_string(data.get("action", "create"), 20) or "create"
@@ -19963,7 +20291,7 @@ async def subscribe_handler(env, request, owner, repo):
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
@@ -21479,7 +21807,7 @@ async def forkbot_chat_handler(env, request):
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     if not isinstance(data, dict):
@@ -21712,7 +22040,7 @@ async def issues_handler(env, request, owner, repo):
     repo_bi = await blind_index(env, owner + "/" + repo)
     if method == "POST":
         try:
-            data = await request.json()
+            data = await bounded_json_request(request)
         except Exception:
             return json_response({"error": "invalid_json"}, status=400)
         event = data.get("event")
@@ -21882,7 +22210,7 @@ async def pulls_handler(env, request, owner, repo):
     repo_bi = await blind_index(env, owner + "/" + repo)
     if method == "POST":
         try:
-            data = await request.json()
+            data = await bounded_json_request(request)
         except Exception:
             return json_response({"error": "invalid_json"}, status=400)
         # A submission is either a whole new PR ("pull") or a signed conversation
@@ -22037,7 +22365,7 @@ async def commits_handler(env, request, owner, repo):
     repo_bi = await blind_index(env, owner + "/" + repo)
     if method == "POST":
         try:
-            data = await request.json()
+            data = await bounded_json_request(request)
         except Exception:
             return json_response({"error": "invalid_json"}, status=400)
         comment = data.get("comment")
@@ -22104,7 +22432,7 @@ async def discussions_handler(env, request, owner, repo):
     repo_bi = await blind_index(env, owner + "/" + repo)
     if method == "POST":
         try:
-            data = await request.json()
+            data = await bounded_json_request(request)
         except Exception:
             return json_response({"error": "invalid_json"}, status=400)
         event = data.get("event")
@@ -22370,7 +22698,7 @@ async def owner_encryption_keys_handler(env, request):
     data = {}
     if method in ("POST", "DELETE"):
         try:
-            data = await request.json()
+            data = await bounded_json_request(request)
         except Exception:
             return json_response({"error": "invalid_json"}, status=400)
     account_bi, rec = await _account_session_record(env, request, data)
@@ -22517,7 +22845,7 @@ async def repo_privacy_handler(env, request, owner, repo):
     data = {}
     if method == "POST":
         try:
-            data = await request.json()
+            data = await bounded_json_request(request)
         except Exception:
             return json_response({"error": "invalid_json"}, status=400)
     ok, err = await _authorize_owner_account(
@@ -22652,7 +22980,7 @@ async def agents_handler(env, request, owner, repo):
         if not await _authorize_owner(env, request, owner):
             return json_response({"error": "unauthorized"}, status=401)
         try:
-            data = await request.json()
+            data = await bounded_json_request(request)
         except Exception:
             return json_response({"error": "invalid_json"}, status=400)
         if policy.get("requireAgentE2EE") and not policy.get("ownerKeyId"):
@@ -22860,7 +23188,7 @@ async def agents_list_handler(env, request, owner, repo):
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     ok, err = await _authorize_owner_account(
@@ -22923,7 +23251,7 @@ async def agents_transcript_handler(env, request, owner, repo, agent_id):
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     ok, err = await _authorize_owner_account(
@@ -22977,7 +23305,7 @@ async def agents_prompt_handler(env, request, owner, repo, agent_id):
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     ok, err = await _authorize_owner_account(
@@ -23104,7 +23432,7 @@ async def agents_ack_handler(env, request, owner, repo):
     if not await _authorize_owner(env, request, owner):
         return json_response({"error": "unauthorized"}, status=401)
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     raw_ids = data.get("queueIds")
@@ -23956,7 +24284,7 @@ async def install_diag_handler(env, request):
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
-        payload = await request.json()
+        payload = await bounded_json_request(request)
     except Exception:
         payload = None
     fields = _install_diag_fields(payload)
@@ -24161,7 +24489,7 @@ async def security_report_handler(env, request):
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
-        payload = await request.json()
+        payload = await bounded_json_request(request)
     except Exception:
         payload = None
     report = _validate_security_report(payload)
@@ -24356,7 +24684,7 @@ async def repository_security_scan_lease_handler(
             "privateDiagnosticsStored": False,
         }, cache_control="no-store")
     try:
-        data = await request.json()
+        data = await bounded_json_request(request)
     except Exception:
         return json_response(
             {"error": "invalid_json"}, status=400,
@@ -24701,7 +25029,7 @@ async def repository_security_scans_handler(
         data = {}
         if method == "PATCH":
             try:
-                data = await request.json()
+                data = await bounded_json_request(request)
             except Exception:
                 return json_response(
                     {"error": "invalid_json"},
@@ -25175,14 +25503,20 @@ def _admin_cookie_name(request):
 
 
 async def _check_admin_page_auth(env, request):
-    # Auth rides entirely on the signed HttpOnly cookie. The ?admin= query
-    # param is link-continuity state only: requiring it meant an admin who
-    # opened the bare admin path (or landed on it after login) always failed
-    # auth, and /login's silent admin-session resume then redirect-looped
-    # between the two pages forever (adhoc #168).
-    admin = _admin_cookie_name(request)
-    return bool(admin and await _is_admin(env, admin) and
-                _admin_session_valid(env, request, admin))
+    # The same revocable HttpOnly account session used by browser APIs protects
+    # this page. Platform-admin status is checked live, so logout, password
+    # reset, account disable and role removal take effect immediately. The
+    # historical stateless admin cookie is deliberately not accepted.
+    token = _cookie_value(request, ACCOUNT_SESSION_COOKIE)
+    _, rec, _ = await _account_session_lookup(env, token)
+    admin = clean_string(
+        (rec or {}).get("name", ""), MAX_NODE_NAME).lower()
+    return bool(admin and await _is_admin(env, admin))
+
+
+async def _account_cookie_name(env, request):
+    token = _cookie_value(request, ACCOUNT_SESSION_COOKIE)
+    return await _account_session_token_name(env, token)
 
 
 def _admin_query(admin):
@@ -25323,7 +25657,45 @@ ADMIN_HIDDEN_TABLES = (
     # Relay identity is not a Solana wallet, but its private signing seed is
     # likewise outside the generic platform-admin decryption boundary.
     "relay_self",
+    # Identity, authorization, mirror-routing and reward state are available
+    # only through their purpose-built, audited APIs. A platform administrator
+    # is not implicitly a repository owner, mirror signer, or reward signer.
+    "account_devices",
+    "account_presence",
+    "account_ssh_keys",
+    "nodes",
+    "org_members",
+    "org_repos",
+    "org_team_members",
+    "org_teams",
+    "orgs",
+    "mirror_https_endpoints",
+    "private_mirror_routes",
+    "reward_contribution_intents",
+    "reward_contributions",
+    "reward_node_observations",
+    "reward_rounds",
+    "funds_received",
+    "clone_rr",
+    "edge_route_cursor",
 )
+
+# The generic browser is deliberately a small operational, read-only surface.
+# Account support remains purpose-built on the users view; all other tables
+# require an explicit audited API rather than inheriting platform-admin CRUD.
+ADMIN_VISIBLE_TABLES = frozenset({
+    "users",
+    "error_log",
+    "install_diag",
+    "telemetry",
+    "system_status_daily",
+    "system_status_hourly",
+})
+ADMIN_PURGE_TABLES = frozenset({
+    "error_log",
+    "install_diag",
+    "telemetry",
+})
 
 
 async def _admin_list_tables(env):
@@ -25332,8 +25704,15 @@ async def _admin_list_tables(env):
         "SELECT name FROM sqlite_master WHERE type='table' "
         "AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name",
     )
-    return [str(r.get("name", "")) for r in rows
-            if r.get("name") and r.get("name") not in ADMIN_HIDDEN_TABLES]
+    return [
+        str(r.get("name", ""))
+        for r in rows
+        if (
+            r.get("name")
+            and r.get("name") in ADMIN_VISIBLE_TABLES
+            and r.get("name") not in ADMIN_HIDDEN_TABLES
+        )
+    ]
 
 
 # Generic-table cells render on a single compact line (CSS ellipsizes long
@@ -25464,56 +25843,14 @@ async def _admin_table_columns(env, table):
 
 
 async def _render_row_form(env, table, rowid, csrf_field="", admin_query=""):
-    # Full-page create/edit form for one row. Field per column; the encrypted
-    # `data` column is shown decrypted as JSON in a textarea and re-encrypted on
-    # save. Field names are prefixed "f_" so they never collide with rowid/action.
-    if table in ADMIN_HIDDEN_TABLES:
-        return '<div class="empty">This table is restricted.</div>'
-    columns = await _admin_table_columns(env, table)
-    row = {}
-    editing = bool(rowid) and str(rowid).isdigit()
-    if editing:
-        row = await d1_first(
-            env, "SELECT * FROM " + table + " WHERE rowid=?", int(rowid)) or {}
-    action = "update_row" if editing else "insert_row"
-    fields = []
-    for col in columns:
-        value = row.get(col)
-        if col == "data":
-            shown = ""
-            if isinstance(value, str) and value:
-                decoded = await decrypt_row(env, value)
-                if _admin_contains_wallet_key(decoded):
-                    return (
-                        '<div class="empty">This row contains frozen legacy '
-                        "wallet custody material. Generic web editing is "
-                        "disabled; use the explicit offline migration.</div>"
-                    )
-                shown = json.dumps(decoded, indent=2, sort_keys=True) if decoded is not None else value
-            fields.append(
-                '<label class="rowfield"><span>%s (JSON, encrypted on save)</span>'
-                '<textarea name="f_%s" rows="12">%s</textarea></label>'
-                % (_html_escape(col), _html_escape(col), _html_escape(shown)))
-        else:
-            text = "" if value is None else str(value)
-            fields.append(
-                '<label class="rowfield"><span>%s</span>'
-                '<input type="text" name="f_%s" value="%s"></label>'
-                % (_html_escape(col), _html_escape(col), _html_escape(text)))
-    hidden_rowid = ('<input type="hidden" name="rowid" value="%s">'
-                    % _html_escape(rowid)) if editing else ""
-    title = ("Edit row in %s" % table) if editing else ("Add row to %s" % table)
+    # Retained as a fail-closed target for old admin edit/new bookmarks.
+    # Generic create/update was an ambient authorization bypass: a platform
+    # admin could edit users, org membership, SSH keys, mirror proofs or reward
+    # state without satisfying the domain API's signature and policy checks.
+    # Keep this helper as a fail-closed response for stale bookmarks.
     return (
-        '<div class="title">%s</div>'
-        '<form method="post" action="%s" class="rowform">'
-        '%s%s%s'
-        '<div class="tools"><button type="submit">Save</button>'
-        '<a class="navlink" href="%s">Cancel</a></div>'
-        '</form>'
-        % (_html_escape(title),
-           _admin_href(admin_query, table=table, action=action),
-           csrf_field, hidden_rowid, "".join(fields),
-           _admin_href(admin_query, table=table))
+        '<div class="empty">Generic row editing is disabled. Use the '
+        "purpose-built, audited administration action for this resource.</div>"
     )
 
 
@@ -25541,38 +25878,17 @@ async def _admin_row_values(env, table, form):
 
 
 async def _admin_update_row(env, table, form):
-    rowid = form.get("rowid", [""])[0]
-    if not str(rowid).isdigit():
-        return "Update failed: missing row id."
-    if table in ("users", "nodes") and "f_data" in form:
-        current = await d1_first(
-            env,
-            "SELECT data FROM " + table + " WHERE rowid=?",
-            int(rowid),
-        )
-        decoded = await decrypt_row(env, (current or {}).get("data", ""))
-        if _admin_contains_wallet_key(decoded):
-            return (
-                "Update blocked: this row contains frozen legacy wallet "
-                "custody material. Use the explicit offline migration."
-            )
-    cols, values = await _admin_row_values(env, table, form)
-    if not cols:
-        return "Update: nothing to change."
-    assignments = ",".join(c + "=?" for c in cols)
-    await d1_run(env, "UPDATE " + table + " SET " + assignments + " WHERE rowid=?",
-                 *values, int(rowid))
-    return "Updated row in %s." % table
+    return (
+        "Update blocked: generic database mutation is disabled; use the "
+        "purpose-built audited administration action."
+    )
 
 
 async def _admin_insert_row(env, table, form):
-    cols, values = await _admin_row_values(env, table, form)
-    if not cols:
-        return "Insert failed: no fields provided."
-    placeholders = ",".join(["?"] * len(cols))
-    await d1_run(env, "INSERT INTO " + table + " (" + ",".join(cols) + ") VALUES ("
-                 + placeholders + ")", *values)
-    return "Added a row to %s." % table
+    return (
+        "Insert blocked: generic database mutation is disabled; use the "
+        "purpose-built audited administration action."
+    )
 
 
 async def _admin_selected_rows_have_wallet_keys(env, table, rowids):
@@ -25595,6 +25911,30 @@ async def _admin_selected_rows_have_wallet_keys(env, table, rowids):
             if _admin_contains_wallet_key(decoded):
                 return True
     return False
+
+
+async def _admin_selected_rows_digest(env, table, rowids):
+    """Return a content-free audit digest for a bounded operational purge."""
+    if table not in ADMIN_PURGE_TABLES or not rowids:
+        return ""
+    records = []
+    for start in range(0, min(len(rowids), 500), 90):
+        batch = rowids[start:start + 90]
+        placeholders = ",".join(["?"] * len(batch))
+        rows = await d1_all(
+            env,
+            "SELECT rowid AS _rowid_,* FROM " + table
+            + " WHERE rowid IN (" + placeholders + ") ORDER BY rowid",
+            *batch,
+        )
+        records.extend(rows or [])
+    canonical = json.dumps(
+        records,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def _render_diag_breakdown(title, pairs):
@@ -25816,8 +26156,8 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
                      + "".join(body) + "</tbody></table></form>")
         return ('<div class="title">Error logs · %d row(s)</div>' % total) + inner
 
-    add_link = (' <a class="navlink" href="%s">+ Add row</a>'
-                % _admin_href(admin_query, table=table, action="new"))
+    purge_allowed = table in ADMIN_PURGE_TABLES
+    add_link = ""
     if not rows:
         return (prefix
                 + '<div class="title">%s · 0 rows%s</div>'
@@ -25857,9 +26197,7 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
     body = []
     for r, decoded_data in decoded_rows:
         rid = r.get("_rowid_", "")
-        cells = [_admin_row_checkbox(rid),
-                 '<td><a class="navlink" href="%s">Edit</a></td>'
-                 % _admin_href(admin_query, table=table, action="edit", rowid=rid)]
+        cells = [_admin_row_checkbox(rid)] if purge_allowed else []
         for col in columns:
             value = r.get(col)
             if col == "data" and decoded_data is not None:
@@ -25871,18 +26209,26 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
                 None if decoded_data is None else decoded_data.get(col)))
         body.append("<tr>" + "".join(cells) + "</tr>")
 
-    head = (_admin_select_all_th() + "<th>Edit</th>") + "".join(
+    head = (_admin_select_all_th() if purge_allowed else "") + "".join(
         "<th>%s</th>" % _html_escape(c) for c in columns) + "".join(
         '<th class="jcol" title="from the data JSON">%s</th>' % _html_escape(c)
         for c in json_cols)
+    table_markup = (
+        '<table class="compact"><thead><tr>' + head + "</tr></thead><tbody>"
+        + "".join(body) + "</tbody></table>"
+    )
+    if purge_allowed:
+        table_markup = (
+            _admin_bulk_form_open(table, csrf_field, admin_query)
+            + table_markup
+            + "</form>"
+        )
     return (
         prefix
         + '<div class="title">%s · %d row(s)%s%s</div>'
         % (_html_escape(table), total,
            " (showing 500)" if total > 500 else "", add_link)
-        + _admin_bulk_form_open(table, csrf_field, admin_query)
-        + '<table class="compact"><thead><tr>' + head + "</tr></thead><tbody>"
-        + "".join(body) + "</tbody></table></form>"
+        + table_markup
     )
 
 
@@ -26024,6 +26370,7 @@ async def _admin_set_password(env, name, password):
     rec["pass_hash"] = phash
     rec.setdefault("status", "active")
     await _save_account(env, name_bi, rec)
+    await _account_revoke_sessions(env, name_bi)
     return "Password updated for '%s'. The user can log in with it now." % name
 
 
@@ -26419,9 +26766,10 @@ async def https_mirror_endpoint_handler(env, request):
              (node_bi,node_name,base_url,public_key,registration_sig,issued_at,
               checked_at,latency_ms,region,healthy,integrity,abuse_blocked,
               health_sig,forkmesh_verified_at,forkmesh_refs_sha256,
-              forkmesh_operations_sha256,forkmesh_active,health_message,
+              forkmesh_operations_sha256,forkmesh_operations_json,
+              forkmesh_active,health_message,
               updated_at)
-             VALUES (?,?,?,?,?,?,0,0,?,0,'unknown',0,'',0,'','',0,'',?)
+             VALUES (?,?,?,?,?,?,0,0,?,0,'unknown',0,'',0,'','','[]',0,'',?)
              ON CONFLICT(node_bi) DO UPDATE SET
                node_name=excluded.node_name,base_url=excluded.base_url,
                public_key=excluded.public_key,
@@ -26429,7 +26777,8 @@ async def https_mirror_endpoint_handler(env, request):
                issued_at=excluded.issued_at,region=excluded.region,
                healthy=0,integrity='unknown',health_sig='',
                forkmesh_verified_at=0,forkmesh_refs_sha256='',
-               forkmesh_operations_sha256='',forkmesh_active=0,
+               forkmesh_operations_sha256='',forkmesh_operations_json='[]',
+               forkmesh_active=0,
                health_message='',
                updated_at=excluded.updated_at""",
         node_bi,
@@ -26861,7 +27210,8 @@ async def _https_mirror_mark_failed(env, row, now):
         """UPDATE mirror_https_endpoints
               SET checked_at=?,healthy=0,integrity='failed',health_sig='',
                   forkmesh_verified_at=0,forkmesh_refs_sha256='',
-                  forkmesh_operations_sha256='',forkmesh_active=0,
+                  forkmesh_operations_sha256='',
+                  forkmesh_operations_json='[]',forkmesh_active=0,
                   health_message='',updated_at=?
             WHERE node_bi=?""",
         now, now, row.get("node_bi"),
@@ -26977,6 +27327,7 @@ async def _https_mirror_health_one(env, row, expected_forkmesh_refs):
               SET checked_at=?,latency_ms=?,healthy=?,integrity=?,
                   health_sig=?,forkmesh_verified_at=?,
                   forkmesh_refs_sha256=?,forkmesh_operations_sha256=?,
+                  forkmesh_operations_json=?,
                   forkmesh_active=?,health_message=?,updated_at=?
             WHERE node_bi=?""",
         now,
@@ -26987,6 +27338,10 @@ async def _https_mirror_health_one(env, row, expected_forkmesh_refs):
         verified_at,
         refs_digest if available else "",
         operations_digest if available else "",
+        json.dumps(
+            operations if available else [],
+            separators=(",", ":"),
+        ),
         1 if forkmesh_active else 0,
         message if valid else "",
         now,
@@ -28633,6 +28988,12 @@ class Default(WorkerEntrypoint):
                 return await self._admin(request)
 
             response = await self._route(request, url)
+        except RequestBodyTooLarge:
+            response = json_response(
+                {"error": "request_too_large"},
+                status=413,
+                cache_control="no-store, max-age=0, must-revalidate",
+            )
         except Exception as error:
             if str(error) == "legacy_custody_migration_required":
                 return _legacy_custody_not_ready_response()
@@ -28690,8 +29051,9 @@ class Default(WorkerEntrypoint):
         params = parse_qs(urlparse(request.url).query)
         # Nav links carry ?admin= for continuity; fall back to the cookie's
         # name when the page was opened without the param (adhoc #168).
-        admin_query = _admin_query(params.get("admin", [""])[0]
-                                   or _admin_cookie_name(request))
+        account_cookie_name = await _account_cookie_name(self.env, request)
+        admin_query = _admin_query(
+            params.get("admin", [""])[0] or account_cookie_name)
 
         # POST action ?action=disburse reports migration-only custody status;
         # ?action=set_password resets a user account's login password. Every
@@ -28699,6 +29061,7 @@ class Default(WorkerEntrypoint):
         # page, so a cross-site form cannot trigger these actions.
         banner = ""
         action = params.get("action", [""])[0]
+        audit_details = {}
         csrf_field = ('<input type="hidden" name="csrf" value="%s">'
                       % _html_escape(_admin_csrf_token(self.env)))
         if method_name(request) == "POST":
@@ -28748,6 +29111,11 @@ class Default(WorkerEntrypoint):
                     ids = [int(x) for x in form.get("ids", []) if str(x).isdigit()]
                     if table not in tables:
                         banner = "Delete failed: unknown table."
+                    elif table not in ADMIN_PURGE_TABLES:
+                        banner = (
+                            "Delete blocked: this table is read-only in the "
+                            "generic administration browser."
+                        )
                     elif not ids:
                         banner = "Delete: no rows were selected."
                     elif await _admin_selected_rows_have_wallet_keys(
@@ -28758,6 +29126,14 @@ class Default(WorkerEntrypoint):
                             "offline migration."
                         )
                     else:
+                        audit_details = {
+                            "rowCount": len(ids),
+                            "rowDigestBefore": (
+                                await _admin_selected_rows_digest(
+                                    self.env, table, ids
+                                )
+                            ),
+                        }
                         # D1 caps bound parameters per query (~100), so delete in
                         # chunks rather than one giant IN (...) list.
                         chunk = 90
@@ -28779,10 +29155,11 @@ class Default(WorkerEntrypoint):
                     table = params.get("table", [""])[0]
                     if table not in tables:
                         banner = "Save failed: unknown table."
-                    elif action == "update_row":
-                        banner = await _admin_update_row(self.env, table, form)
                     else:
-                        banner = await _admin_insert_row(self.env, table, form)
+                        banner = (
+                            "Save blocked: generic database mutation is "
+                            "disabled; use a purpose-built audited action."
+                        )
                 except Exception as error:
                     banner = "Save failed: " + repr(error)
 
@@ -28791,7 +29168,7 @@ class Default(WorkerEntrypoint):
                     "request_ownership", "delete_rows", "update_row",
                     "insert_row"):
                 audit_actor = (
-                    _admin_cookie_name(request)
+                    account_cookie_name
                     or params.get("admin", [""])[0])
                 target_type = (
                     "account" if action in (
@@ -28814,8 +29191,7 @@ class Default(WorkerEntrypoint):
                 await _audit_sensitive_action(
                     self.env, audit_actor, "admin.console_" + action,
                     target_type, target, outcome,
-                    {"rowCount": len(form.get("ids", []))}
-                    if action == "delete_rows" else {})
+                    audit_details)
 
         # Left-nav table browser: pick the requested table (validated against the
         # live list), defaulting to the error log.
@@ -30322,7 +30698,7 @@ class ForkMeshWorld(DurableObject):
         if method_name(request) != "POST":
             return json_response({"error": "method_not_allowed"}, status=405)
         try:
-            data = await request.json()
+            data = await bounded_json_request(request)
         except Exception:
             return json_response({"error": "invalid_json"}, status=400)
         if not isinstance(data, dict):
