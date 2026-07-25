@@ -591,6 +591,14 @@ QWidget *MainWindow::buildRepoOverviewPage()
         showOverviewWorktrees();
         loadWorktreesPanel();
     });
+    m_remotesButton = new QPushButton("Remotes");
+    m_remotesButton->setObjectName("ghostButton");
+    m_remotesButton->setCursor(Qt::PointingHandCursor);
+    m_remotesButton->setToolTip(
+        "List this repository's git remotes; pick one to copy its URL");
+    setOcticon(m_remotesButton, "server", 16);
+    // The menu itself is rebuilt with the remote list in loadBranchesAndTags,
+    // alongside the branch menu and the branches/worktrees counts.
     m_toolbarCommitsButton = new QPushButton("Commits");
     m_toolbarCommitsButton->setObjectName("ghostButton");
     m_toolbarCommitsButton->setCursor(Qt::PointingHandCursor);
@@ -637,6 +645,7 @@ QWidget *MainWindow::buildRepoOverviewPage()
     toolbar->addWidget(m_branchButton);
     toolbar->addWidget(m_branchesButton);
     toolbar->addWidget(m_worktreesButton);
+    toolbar->addWidget(m_remotesButton);
     toolbar->addWidget(m_toolbarCommitsButton);
     toolbar->addWidget(m_tagsButton);
     toolbar->addWidget(m_fileSearch, 1);
@@ -7740,6 +7749,89 @@ void MainWindow::loadBranchesAndTags()
                 .arg(formatCount(worktreeCount))
                 .arg(worktreeCount == 1 ? QStringLiteral("worktree")
                                         : QStringLiteral("worktrees")));
+    }
+
+    // Git remotes on the "N remotes" toolbar dropdown: one entry per remote,
+    // "name — url", picking one copies its URL. `git remote -v` is a config
+    // read, so it's cheap enough for this ref-change path.
+    if (m_remotesButton) {
+        struct RemoteEntry {
+            QString name;
+            QString fetchUrl;
+            QString pushUrl;
+        };
+        QList<RemoteEntry> remotes;
+        QByteArray remoteOut;
+        if (!dir.isEmpty() &&
+            runGitCapture(dir, {"remote", "-v"}, &remoteOut, nullptr)) {
+            for (const QString &raw :
+                 QString::fromUtf8(remoteOut).split('\n', Qt::SkipEmptyParts)) {
+                const int tab = raw.indexOf('\t');
+                if (tab <= 0)
+                    continue;
+                const QString name = raw.left(tab).trimmed();
+                QString rest = raw.mid(tab + 1).trimmed();
+                const bool isPush = rest.endsWith(QLatin1String("(push)"));
+                rest.remove(QLatin1String("(fetch)"));
+                rest.remove(QLatin1String("(push)"));
+                rest = rest.trimmed();
+                auto it = std::find_if(remotes.begin(), remotes.end(),
+                                       [&name](const RemoteEntry &e) {
+                                           return e.name == name;
+                                       });
+                if (it == remotes.end()) {
+                    remotes.append({name, QString(), QString()});
+                    it = remotes.end() - 1;
+                }
+                if (isPush)
+                    it->pushUrl = rest;
+                else
+                    it->fetchUrl = rest;
+            }
+        }
+        m_remotesButton->setText(
+            QStringLiteral("%1 %2")
+                .arg(formatCount(remotes.size()))
+                .arg(remotes.size() == 1 ? QStringLiteral("remote")
+                                         : QStringLiteral("remotes")));
+        auto *menu = new QMenu(m_remotesButton);
+        menu->setToolTipsVisible(true); // fetch/push URLs hover per row
+        for (const RemoteEntry &remote : remotes) {
+            const QString url =
+                remote.fetchUrl.isEmpty() ? remote.pushUrl : remote.fetchUrl;
+            QAction *action = menu->addAction(
+                url.isEmpty() ? remote.name
+                              : QStringLiteral("%1 \xE2\x80\x94 %2")
+                                    .arg(remote.name, url),
+                this, [this, name = remote.name, url] {
+                    if (url.isEmpty())
+                        return;
+                    QApplication::clipboard()->setText(url);
+                    setRepoDetailNotice(
+                        QStringLiteral("Copied %1 URL: %2").arg(name, url));
+                });
+            if (remote.pushUrl.isEmpty() || remote.pushUrl == remote.fetchUrl)
+                action->setToolTip(url);
+            else
+                action->setToolTip(QStringLiteral("fetch %1\npush %2")
+                                       .arg(remote.fetchUrl, remote.pushUrl));
+        }
+        if (remotes.isEmpty())
+            menu->addAction("No remotes")->setEnabled(false);
+        menu->addSeparator();
+        menu->addAction("Manage remotes\xE2\x80\xA6", this, [this] {
+            // The add/edit/delete controls live in the repo Settings tab.
+            if (m_settingsTabIndex >= 0 && m_repoDetailTabs &&
+                m_repoDetailTabs->button(m_settingsTabIndex)) {
+                m_repoDetailTabs->button(m_settingsTabIndex)->setChecked(true);
+                m_repoDetailStack->setCurrentIndex(m_settingsTabIndex);
+                refreshRepoSettings();
+            }
+        });
+        QMenu *old = m_remotesButton->menu();
+        m_remotesButton->setMenu(menu);
+        if (old)
+            old->deleteLater();
     }
 
     // Branch menu.

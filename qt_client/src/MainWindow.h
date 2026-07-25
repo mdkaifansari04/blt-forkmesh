@@ -4121,6 +4121,7 @@ private:
     QPushButton *m_branchButton = nullptr;
     QPushButton *m_branchesButton = nullptr;
     QPushButton *m_worktreesButton = nullptr; // "N worktrees" toggle in the Code toolbar
+    QPushButton *m_remotesButton = nullptr;   // "N remotes" dropdown in the Code toolbar
     QPushButton *m_tagsButton = nullptr;
     QPushButton *m_toolbarCommitsButton = nullptr; // -> commits panel, next to Branches/Tags
     // Persistent segmented toggle, always visible above the Code page, that
