@@ -87,7 +87,9 @@ const MOVEMENT_KEYS = new Set([
 ]);
 const REGISTERED_LOUNGE_POSITION = Object.freeze([-22, 0, 25]);
 const ACTIVE_LEADERBOARD_POSITION = Object.freeze([-11.5, 0, 25]);
-const REFERRAL_LEADERBOARD_POSITION = Object.freeze([-16.5, 0, 29]);
+// Beside the active leaderboard: outside the lounge platform (radius 7.8
+// around REGISTERED_LOUNGE_POSITION) but inside its tree-exclusion ring.
+const REFERRAL_LEADERBOARD_POSITION = Object.freeze([-13.5, 0, 30]);
 const SYSTEM_CAPACITY_PLATFORM_POSITION = Object.freeze([8, 0, -27]);
 const SERVER_CABINET_YARD_ORIGIN = Object.freeze([18, 0, 0]);
 const ARRIVAL_GRID_BOUNDS = Object.freeze({
