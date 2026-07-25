@@ -1586,26 +1586,27 @@ function createAvatar(THREE, identity, options = {}) {
   rightArm.position.x = 0.73;
   group.add(rightArm);
 
-  // Mouse activity reads as an antenna sticking up out of the visitor's back
+  // Mouse activity reads as a small antenna riding on the visitor's shoulder
   // that blinks solid green, faster the more their mouse is moving.
   const antenna = new THREE.Group();
   antenna.name = "mouse-activity-antenna";
   const antennaStalk = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.03, 0.038, 1.36, 10),
+    new THREE.CylinderGeometry(0.014, 0.018, 0.4, 10),
     new THREE.MeshBasicMaterial({ color: ANTENNA_STALK_COLOR }),
   );
-  antennaStalk.position.y = 0.68;
+  antennaStalk.position.y = 0.2;
   antenna.add(antennaStalk);
   const antennaBulb = new THREE.Mesh(
-    new THREE.SphereGeometry(0.12, 14, 12),
+    new THREE.SphereGeometry(0.045, 14, 12),
     new THREE.MeshBasicMaterial({ color: ANTENNA_LIT_COLOR }),
   );
-  antennaBulb.position.y = 1.42;
+  antennaBulb.position.y = 0.42;
   antenna.add(antennaBulb);
-  // Avatar fronts face -Z, so +Z is the back; leaned back far enough that the
-  // bulb clears the head instead of reading as a hat.
-  antenna.position.set(0, 2.55, 0.31);
-  antenna.rotation.x = 0.3;
+  // Avatar fronts face -Z; perched on the right shoulder (top corner of the
+  // torso, just inboard of the arm) and tipped outward away from the head.
+  antenna.position.set(0.52, 2.86, 0.06);
+  antenna.rotation.x = 0.1;
+  antenna.rotation.z = -0.35;
   antenna.visible = identity.inputActive === true;
   group.add(antenna);
 
