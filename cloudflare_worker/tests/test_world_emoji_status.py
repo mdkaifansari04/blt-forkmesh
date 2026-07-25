@@ -121,13 +121,10 @@ def test_settings_persist_only_normalized_status_and_publish_on_profile_frames()
     assert "location.assign" not in status_commit
 
 
-def test_scene_renders_a_real_overhead_sprite_and_accessible_dom_fallback():
+def test_scene_keeps_status_in_accessible_labels_without_duplicate_overhead_banner():
     for contract in (
-        "function avatarStatusTexture",
         "function syncAvatarStatus",
-        '"forkmesh-avatar-emoji-status"',
-        "new THREE.Sprite(",
-        "sprite.position.set(0, 4.75, 0)",
+        "the large duplicate overhead banner is intentionally not",
         "function updatePlayerLabel",
         '"world-player-label-status"',
         '"aria-label"',

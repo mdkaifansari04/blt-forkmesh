@@ -4,6 +4,7 @@
 from pathlib import Path
 import hashlib
 import json
+import math
 import subprocess
 
 
@@ -109,14 +110,19 @@ def test_world_contains_the_initial_city_districts_without_a_clock():
         "information",
         "fountain",
         "repositories",
-        "routing",
         "organizations",
         "fediverse",
         "security",
-        "launchpad",
+        "events",
+        "neighborhood",
+        "workshops",
+        "broadcast",
         "support",
+        "office",
     ):
         assert f'id: "{landmark}"' in DATA
+    assert 'id: "routing"' not in DATA
+    assert 'id: "launchpad"' not in DATA
     assert "utcClock" not in DATA
     assert "WORLD_DAY_MS" not in DATA
     for theme in (
@@ -138,8 +144,49 @@ def test_forkmesh_office_is_a_navigable_world_landmark():
     assert 'id: "office"' in DATA
     assert 'label: "ForkMesh Office"' in DATA
     assert 'shortLabel: "Office"' in DATA
-    assert "position: [11, 0, -21]" in DATA
+    assert "position: [45, 0, -27]" in DATA
     assert 'id: "visiting-office"' in DATA
+
+
+def test_landmarks_are_spread_out_inside_the_repository_portal_perimeter():
+    positions = {
+        "information": (-40, 30),
+        "fountain": (0, 0),
+        "repositories": (35, 38),
+        "organizations": (29, -36),
+        "fediverse": (-31, -34),
+        "security": (5, -47),
+        "events": (-48, 5),
+        "neighborhood": (-45, -17),
+        "workshops": (-17, -46),
+        "broadcast": (10, 46),
+        "support": (-18, 44),
+        "office": (45, -27),
+    }
+    for landmark, (x, z) in positions.items():
+        start = DATA.index(f'id: "{landmark}"')
+        block = DATA[start: DATA.index("\n  },", start)]
+        assert f"position: [{x}, 0, {z}]" in block
+
+    perimeter_radius = 68
+    noncentral = {
+        landmark: position
+        for landmark, position in positions.items()
+        if landmark != "fountain"
+    }
+    assert all(
+        math.hypot(x, z) <= perimeter_radius - 15
+        for x, z in noncentral.values()
+    )
+    assert min(
+        math.dist(left, right)
+        for index, left in enumerate(noncentral.values())
+        for right in list(noncentral.values())[index + 1:]
+    ) >= 18
+    assert "const REPOSITORY_EDGE_RADIUS = 68" in SCENE
+    assert "const SERVER_CABINET_YARD_ORIGIN = Object.freeze([18, 0, 0])" in SCENE
+    assert "const REGISTERED_LOUNGE_POSITION = Object.freeze([-22, 0, 25])" in SCENE
+    assert "const DURABLE_OBJECT_DISTRICT_POSITION = Object.freeze([8, 0, -27])" in SCENE
 
 
 def test_static_world_fallback_links_to_chat():
@@ -153,14 +200,15 @@ def test_scene_builds_playable_landmarks_and_badged_avatars():
         "createInformationBooth",
         "createFountain",
         "createRepositoryDistrict",
-        "createRoutingStation",
         "createOrganizationQuarter",
         "createFediverseCenter",
         "createSecurityWorkshop",
-        "createLaunchpad",
+        "createCommunityStage",
+        "createNeighborhood",
+        "createCodeWorkshops",
+        "createBroadcastGarden",
         "createSupportCenter",
-        "createSkyOffice",
-        "createOtherWorlds",
+        "createForkMeshOffice",
     ):
         assert f"function {builder}" in SCENE
     assert "badgeTexture" in SCENE
@@ -301,7 +349,7 @@ def test_presence_client_uses_only_coarse_ephemeral_world_protocol():
     assert 'this.fetchJSON("/api/world/ticket"' in APP
     assert 'this.fetchJSON("/api/world/inactive"' in APP
     assert 'this.fetchJSON("/api/network/overview"' in APP
-    assert 'this.fetchJSON("/api/repositories")' in APP
+    assert 'this.fetchJSON("/api/repositories", { auth: hasSession })' in APP
     # The Member Lounge (adhoc #228) reads the same public roster the chat
     # page uses — profile names only, fetched without credentials. Anything
     # beyond that anonymous directory stays off-limits to the world client.
@@ -333,10 +381,11 @@ def test_presence_client_uses_only_coarse_ephemeral_world_protocol():
     assert "session?.accountTier" not in APP
 
 
-def test_world_hud_counts_authoritative_connected_visitors_without_duplicates():
-    assert 'data-world-players>1</strong><span>in world</span>' in APP
-    assert "const socketOnline =" in APP
-    assert "1 + this.remotePlayers.size + (socketOnline ? 0 : this.localPeers.size)" in APP
+def test_world_hud_omits_the_redundant_repository_node_and_player_counts():
+    assert "world-metrics" not in APP
+    assert " data-world-repos>" not in APP
+    assert " data-world-nodes>" not in APP
+    assert " data-world-players>" not in APP
     render_peers = APP[APP.index("  renderPeers() {"):APP.index(
         "\n  destroy() {", APP.index("  renderPeers() {")
     )]
@@ -451,23 +500,27 @@ def test_world_has_consent_aware_activity_events_workshops_and_media():
         assert category in DATA
     assert "WORLD_REGIONS" in DATA
     assert "travelToRegion" in SCENE
-    assert "travelToSpace" in SCENE
+    assert "travelToSpace" not in SCENE
     assert "utcClock" not in APP
     assert "worldClock" not in SCENE
     assert "setClockOffset" not in SCENE
     assert "utcOffsetHours" not in SCENE
-    assert 'data-world-travel="sky-campus"' in APP
-    assert 'data-world-travel="code-planet"' in APP
-    assert 'data-world-travel="space-station"' in APP
-    assert 'data-world-travel="planet-atlas"' in APP
-    for destination in (
-        "SPACE STATION",
-        "CODE PLANET",
-        "GARDEN CAMPUS",
-        "COMMUNITY PLANETS",
-        "functional-world-destinations",
+    for retired in (
+        "createWorkshopBarn",
+        "WORKSHOP_BARN",
+        "createSkyOffice",
+        "createOtherWorlds",
+        "createLaunchpad",
+        "createRoutingStation",
+        "QUIET SEATING",
+        "sky-campus",
+        "space-station",
+        "code-planet",
+        "organization-region",
+        "planet-atlas",
     ):
-        assert destination in SCENE
+        assert retired not in SCENE
+        assert retired not in APP
     assert 'remote.activity === "idle"' in SCENE
     assert 'landmarkById("neighborhood").position' in SCENE
     assert "data-world-public-door" in APP
@@ -479,14 +532,6 @@ def test_world_has_consent_aware_activity_events_workshops_and_media():
     assert "syncOperatorBelt" in SCENE
     assert "this.inactivePlayers" in APP
     assert "SPACE_CHANNELS" in DASHBOARD_CHAT
-    for channel in (
-        "#world-sky-campus",
-        "#world-space-station",
-        "#world-code-planet",
-        "#world-organization-region",
-        "#world-planet-atlas",
-    ):
-        assert channel in DASHBOARD_CHAT
     assert "entry.channel === CHANNEL" in DASHBOARD_CHAT
     assert "startRewardPolling" in APP
     assert "confirmed community reward event" in APP
@@ -1303,6 +1348,9 @@ def test_world_has_responsive_and_reduced_motion_fallbacks():
     assert "@media (max-height: 520px) and (orientation: landscape)" in CSS
     assert "@media (prefers-reduced-motion: reduce)" in CSS
     assert "world-touch-controls" in CSS
+    assert "world-touch-thumbstick" in CSS
+    assert "world-touch-button" not in CSS
+    assert "left: calc(var(--safe-left) + 12px)" in CSS
     assert "var(--world-viewport-height, 100dvh)" in CSS
     assert "window.visualViewport?.height" in APP
     assert 'window.addEventListener("orientationchange", this.syncViewportHeight)' in APP
@@ -1327,14 +1375,17 @@ def test_world_supports_bounded_pinch_wheel_and_drag_controls():
         assert contract in SCENE
     assert 'addEventListener("pointermove", handlePointerMove, {' in SCENE
     assert "passive: false" in SCENE
-    assert 'aria-label="Movement and camera controls"' in APP
-    assert "drag to rotate" in APP
+    assert 'class="world-controls"' not in APP
+    assert "world-controls-hint" not in APP
+    assert "data-world-thumbstick" in APP
+    assert "data-world-thumbstick-handle" in APP
+    assert "data-move=" not in APP
     assert "click the plaza" not in APP
     assert "click on the plaza" not in DATA
 
     # Fine-pointer navigation keeps the cursor visible and rotates only while
-    # the primary pointer is dragged. WASD stays camera-relative, while touch
-    # arrows remain an independent fallback.
+    # the primary pointer is dragged. One touch rotates, two touches only pinch,
+    # and the proportional thumbstick stays camera-relative like WASD.
     for contract in (
         'dataset.cameraControl = "drag"',
         "function rotateCamera",
@@ -1345,7 +1396,13 @@ def test_world_supports_bounded_pinch_wheel_and_drag_controls():
         "CAMERA_LOOK_SENSITIVITY",
         "movement.addScaledVector(forward, forwardInput)",
         "movement.addScaledVector(right, rightInput)",
-        'if (touchKeys.has("KeyW")) movement.z -= 1',
+        "const touchMovement = new THREE.Vector2()",
+        "function setTouchMovement",
+        "movement.addScaledVector(forward, -touchMovement.y)",
+        "movement.addScaledVector(right, touchMovement.x)",
+        "touchPointers.size === 1",
+        "A two-finger gesture is zoom-only",
+        "topSpeed * inputStrength",
     ):
         assert contract in SCENE
     assert "requestPointerLock" not in SCENE
@@ -1379,12 +1436,13 @@ def test_world_supports_bounded_pinch_wheel_and_drag_controls():
         assert cleanup in SCENE
 
 
-def test_world_uses_nonhuman_infrastructure_a_member_lounge_and_city_grid():
+def test_world_uses_nonhuman_infrastructure_without_the_world_spanning_grid():
     assert "const WORLD_RADIUS = 72" in SCENE
     assert "const WORLD_GROUND_RADIUS = 88" in SCENE
-    assert "electric-mesh-city-block-grid" in SCENE
-    assert "electricMeshConduit" in SCENE
-    assert "electricMeshJunction" in SCENE
+    assert "electric-mesh-city-block-grid" not in SCENE
+    assert "electricMeshConduit" not in SCENE
+    assert "electricMeshJunction" not in SCENE
+    assert "createElectricMeshCityGrid" not in SCENE
     assert "registered-user-lounge" in SCENE
     assert "registered contributors · recent activity glows" in SCENE
     for status in (
@@ -1558,7 +1616,6 @@ def test_double_clicking_the_ground_dashes_the_avatar_to_that_point():
         SCENE.index('  renderer.domElement.addEventListener("pointerdown"')
     ]
     assert "cancelDash();" in blur
-    assert "double-click the ground to dash there" in APP
 
 
 def test_qt_main_navigation_opens_the_world_root():
@@ -1571,11 +1628,10 @@ def test_qt_main_navigation_opens_the_world_root():
 def test_approved_federated_instances_render_without_private_relay_material():
     assert 'this.fetchJSON("/api/world/instances"' in APP
     assert "normalizeFederatedInstances" in APP
-    assert "No approved federated instance has a publishable origin yet" in APP
-    assert "fresh signed node health through an approved relay" in APP
-    assert "Federation keys, signatures, tokens, wallets" in APP
     assert "function updateFederatedInstances" in SCENE
     assert "approved-federated-instances" in SCENE
+    assert "const district = durableObjectDistrict" in SCENE
+    assert 'landmarkObjects.get("routing")' not in SCENE
     assert "instance?.approved === true" in SCENE
 
 
@@ -1583,7 +1639,10 @@ def test_information_booth_deep_link_carries_no_cloudflare_secret():
     exact = "forkmesh://control/cloudflare"
     assert exact in APP
     assert "The hosted World never accepts, proxies, or stores a Cloudflare API token" in APP
-    assert 'type="password"' not in APP[APP.index("informationPanelHTML()"):APP.index("routingPanelHTML()")]
+    assert 'type="password"' not in APP[
+        APP.index("informationPanelHTML()"):
+        APP.index("rewardPanelHTML()")
+    ]
     assert exact in QT_MAIN
     assert "target == QLatin1String" in QT_MAIN
     assert "openCloudflareSetupFromSystemLink" in QT_CONTROL

@@ -51,9 +51,14 @@ def test_only_chat_documents_allow_same_origin_world_frames():
         assert "! X-Frame-Options" in chat_rule
         assert "X-Frame-Options: SAMEORIGIN" in chat_rule
         assert "X-Frame-Options: DENY" not in chat_rule
+        assert "https://cdn.jsdelivr.net" in chat_rule
+        assert "https://cdn.tailwindcss.com" in chat_rule
+        assert "https://static.cloudflareinsights.com" in chat_rule
 
     assert HEADERS.count("frame-ancestors 'self'") == 3
     assert HEADERS.count("X-Frame-Options: SAMEORIGIN") == 3
+    assert "https://cdn.tailwindcss.com" not in global_rule
+    assert "https://static.cloudflareinsights.com" not in global_rule
 
 
 def test_policy_does_not_grant_sensitive_device_capabilities():

@@ -9,7 +9,6 @@ import {
   TOUR_STEPS,
   WORKSHOP_TYPES,
   WORLD_EMOJI_CATEGORIES,
-  WORLD_REGIONS,
   WORLD_STATUS_NOTE_MAX,
   detectClient,
   flagEmoji,
@@ -2594,11 +2593,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             </div>
           </section>
 
-          <div class="world-metrics" aria-label="Live ForkMesh metrics">
-            <div class="world-metric"><strong data-world-repos>—</strong><span>repositories</span></div>
-            <div class="world-metric"><strong data-world-nodes>—</strong><span>live nodes</span></div>
-            <div class="world-metric"><strong data-world-players>1</strong><span>in world</span></div>
-          </div>
         </div>
 
         <aside class="world-right-rail" aria-label="World navigation and activity">
@@ -2634,26 +2628,15 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </div>
         </aside>
 
-        <div class="world-controls" aria-label="Movement and camera controls">
-          <div class="world-control-keys" aria-hidden="true">
-            <span class="world-control-key">W</span>
-            <span class="world-control-key">A</span>
-            <span class="world-control-key">S</span>
-            <span class="world-control-key">D</span>
-          </div>
-          <div class="world-controls-copy">
-            <strong>Move and look around</strong>
-            <span>WASD or arrows · double-click the ground to dash there · drag to rotate · wheel to zoom</span>
-          </div>
-          <span class="world-location" data-world-location>Town Square</span>
-          <span class="world-location world-region-location" data-world-active-region>Central Campus</span>
-        </div>
-
-        <div class="world-touch-controls" aria-label="Touch movement controls">
-          <button class="world-touch-button" type="button" data-move="forward" aria-label="Move forward">↑</button>
-          <button class="world-touch-button" type="button" data-move="left" aria-label="Move left">←</button>
-          <button class="world-touch-button" type="button" data-move="back" aria-label="Move back">↓</button>
-          <button class="world-touch-button" type="button" data-move="right" aria-label="Move right">→</button>
+        <div class="world-touch-controls" aria-label="Virtual movement controls">
+          <button
+            class="world-touch-thumbstick"
+            type="button"
+            data-world-thumbstick
+            aria-label="Drag the movement thumbstick in any direction"
+          >
+            <span class="world-touch-thumbstick-handle" data-world-thumbstick-handle aria-hidden="true"></span>
+          </button>
         </div>
 
         <details class="world-diagnostics" data-world-diagnostics>
@@ -3201,6 +3184,7 @@ class ForkMeshWorld extends HTMLElement {
     this.memberDirectory = [];
     this.pendingKnocks = new Map();
     this.serverPeerId = "";
+    this.sessionAuthenticated = false;
     this.worldTicket = "";
     this.worldTicketExpires = 0;
     this.worldTicketTimer = 0;
@@ -3448,7 +3432,10 @@ class ForkMeshWorld extends HTMLElement {
     try {
       loadingCopy.textContent = "Contacting the World relay";
       const contextPromise = this.loadContext();
-      const dataPromise = this.loadWorldData();
+      // Validate the optional persisted account session before issuing any
+      // private World reads. This prevents an expired local token from
+      // fanning out into a page full of avoidable 401/403 requests.
+      const dataPromise = contextPromise.then(() => this.loadWorldData());
       loadingCopy.textContent = "Building repositories, offices, and portals";
       const THREE = await THREE_MODULE;
       if (this.destroyed) return;
@@ -3595,7 +3582,8 @@ class ForkMeshWorld extends HTMLElement {
     } catch (error) {
       console.warn("ForkMesh World could not start WebGL", error);
       this.renderWebGLFallback();
-      await Promise.allSettled([this.loadContext(), this.loadWorldData()]);
+      await this.loadContext().catch(() => {});
+      await this.loadWorldData().catch(() => {});
       this.hideLoading();
       this.updateMetrics();
       this.startEventPolling();
@@ -3757,6 +3745,7 @@ class ForkMeshWorld extends HTMLElement {
       ACCOUNT_STATUS_VALUES.has(String(ticket.accountStatus || "")) &&
       ticket.accountStatus !== "Guest"
     ) {
+      this.sessionAuthenticated = true;
       this.identity.name = sanitizePresenceText(
         ticket.name,
         this.identity.name,
@@ -3776,6 +3765,7 @@ class ForkMeshWorld extends HTMLElement {
       this.worldTicket = String(ticket.ticket || "");
       this.worldTicketExpires = Number(ticket.expiresAt || 0);
     } else {
+      this.sessionAuthenticated = false;
       this.identity.accountStatus = "Guest";
       this.identity.isAdmin = false;
       this.identity.nodes = [];
@@ -3810,8 +3800,8 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async loadWorldData() {
-    const session = readSession();
-    const hasSession = Boolean(session?.sessionToken);
+    const session = validWorldSession();
+    const hasSession = this.sessionAuthenticated && Boolean(session);
     const [
       networkResult,
       mirrorResult,
@@ -3845,7 +3835,7 @@ class ForkMeshWorld extends HTMLElement {
           timeout: 5000,
           cache: "no-store",
         }),
-        this.fetchJSON("/api/repositories"),
+        this.fetchJSON("/api/repositories", { auth: hasSession }),
         this.fetchJSON("/api/version", { auth: false, timeout: 5000 }),
         this.fetchJSON("/api/accounts/central-fund", {
           auth: false,
@@ -3853,7 +3843,7 @@ class ForkMeshWorld extends HTMLElement {
           cache: "no-store",
         }),
         this.fetchJSON("/api/world/organizations", {
-          auth: false,
+          auth: hasSession,
           timeout: 5000,
           cache: "no-store",
         }),
@@ -4125,19 +4115,6 @@ class ForkMeshWorld extends HTMLElement {
         reposResult.status === "fulfilled" &&
         hasRepositoryCatalogSchema(reposResult.value),
       reason: LANDMARK_CONSTRUCTION_REASONS.repositories,
-    };
-    this.landmarkCapabilities.routing = {
-      live:
-        mirrorResult.status === "fulfilled" &&
-        mirrorResult.value?.ok === true &&
-        Array.isArray(mirrorResult.value?.mirrors) &&
-        liveMirrors.some(
-          (node) =>
-            node.healthy === true &&
-            node.cloneAvailable === true &&
-            /^[0-9a-f]{40,64}$/.test(String(node.commit || "")),
-        ),
-      reason: LANDMARK_CONSTRUCTION_REASONS.routing,
     };
     this.landmarkCapabilities.organizations = {
       live:
@@ -4636,10 +4613,25 @@ class ForkMeshWorld extends HTMLElement {
         const name = sanitizePresenceText(membership.name, "", 50);
         if (!name) return membership;
         const root = `/api/orgs/${encodeURIComponent(name)}`;
+        const viewerRole = sanitizePresenceText(
+          membership.role,
+          "",
+          32,
+        ).toLowerCase();
+        const canReadPrivateStructure =
+          this.sessionAuthenticated && Boolean(viewerRole);
         const [profile, members, teams] = await Promise.allSettled([
-          this.fetchJSON(root, { timeout: 5000 }),
-          this.fetchJSON(`${root}/members`, { timeout: 5000 }),
-          this.fetchJSON(`${root}/teams`, { timeout: 5000 }),
+          canReadPrivateStructure
+            ? this.fetchJSON(root, { timeout: 5000 })
+            : Promise.resolve({}),
+          canReadPrivateStructure &&
+          membership.worldCapabilities?.offices === true
+            ? this.fetchJSON(`${root}/members`, { timeout: 5000 })
+            : Promise.resolve({ members: [] }),
+          canReadPrivateStructure &&
+          membership.worldCapabilities?.floors === true
+            ? this.fetchJSON(`${root}/teams`, { timeout: 5000 })
+            : Promise.resolve({ teams: [] }),
         ]);
         return {
           ...membership,
@@ -5067,11 +5059,6 @@ class ForkMeshWorld extends HTMLElement {
         );
         return;
       }
-      const travel = event.target.closest("[data-world-travel]");
-      if (travel) {
-        this.travelTo(travel.dataset.worldTravel);
-        return;
-      }
       const homeGrant = event.target.closest("[data-world-home-grant]");
       if (homeGrant) {
         const target = homeGrant.dataset.worldHomeGrant;
@@ -5236,21 +5223,77 @@ class ForkMeshWorld extends HTMLElement {
       void this.submitWorldSignup(event.currentTarget);
     });
 
-    this.$$("[data-move]").forEach((button) => {
-      const start = (event) => {
-        event.preventDefault();
-        button.setPointerCapture?.(event.pointerId);
-        this.world?.setControl(button.dataset.move, true);
+    const thumbstick = this.$("[data-world-thumbstick]");
+    const thumbstickHandle = this.$("[data-world-thumbstick-handle]");
+    if (thumbstick && thumbstickHandle) {
+      let activePointerId = null;
+      const resetThumbstick = () => {
+        activePointerId = null;
+        thumbstick.dataset.active = "false";
+        thumbstickHandle.style.setProperty("--thumb-x", "0px");
+        thumbstickHandle.style.setProperty("--thumb-y", "0px");
+        this.world?.setTouchMovement?.(0, 0);
       };
-      const stop = (event) => {
-        event.preventDefault();
-        this.world?.setControl(button.dataset.move, false);
+      const updateThumbstick = (event) => {
+        const rect = thumbstick.getBoundingClientRect();
+        const handleSize = Math.max(
+          thumbstickHandle.offsetWidth,
+          thumbstickHandle.offsetHeight,
+        );
+        const travel = Math.max(
+          1,
+          Math.min(rect.width, rect.height) / 2 - handleSize / 2 - 5,
+        );
+        const rawX = event.clientX - (rect.left + rect.width / 2);
+        const rawY = event.clientY - (rect.top + rect.height / 2);
+        const rawDistance = Math.hypot(rawX, rawY);
+        const clampScale =
+          rawDistance > travel ? travel / rawDistance : 1;
+        const visualX = rawX * clampScale;
+        const visualY = rawY * clampScale;
+        thumbstickHandle.style.setProperty("--thumb-x", `${visualX}px`);
+        thumbstickHandle.style.setProperty("--thumb-y", `${visualY}px`);
+
+        const rawStrength = Math.min(1, rawDistance / travel);
+        const deadZone = 0.12;
+        const strength =
+          rawStrength <= deadZone
+            ? 0
+            : (rawStrength - deadZone) / (1 - deadZone);
+        const directionScale =
+          rawDistance > 0 ? strength / rawDistance : 0;
+        thumbstick.dataset.active = String(strength > 0);
+        this.world?.setTouchMovement?.(
+          rawX * directionScale,
+          rawY * directionScale,
+        );
       };
-      button.addEventListener("pointerdown", start);
-      button.addEventListener("pointerup", stop);
-      button.addEventListener("pointercancel", stop);
-      button.addEventListener("pointerleave", stop);
-    });
+      thumbstick.addEventListener("pointerdown", (event) => {
+        if (activePointerId !== null) return;
+        event.preventDefault();
+        activePointerId = event.pointerId;
+        thumbstick.setPointerCapture?.(event.pointerId);
+        updateThumbstick(event);
+      });
+      thumbstick.addEventListener("pointermove", (event) => {
+        if (event.pointerId !== activePointerId) return;
+        event.preventDefault();
+        updateThumbstick(event);
+      });
+      const stopThumbstick = (event) => {
+        if (event.pointerId !== activePointerId) return;
+        event.preventDefault();
+        try {
+          thumbstick.releasePointerCapture?.(event.pointerId);
+        } catch (_) {}
+        resetThumbstick();
+      };
+      thumbstick.addEventListener("pointerup", stopThumbstick);
+      thumbstick.addEventListener("pointercancel", stopThumbstick);
+      thumbstick.addEventListener("lostpointercapture", (event) => {
+        if (event.pointerId === activePointerId) resetThumbstick();
+      });
+    }
 
     this.addEventListener("keydown", (event) => {
       if (event.code !== "Escape") return;
@@ -5466,18 +5509,6 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   updateMetrics() {
-    const stats = this.network?.stats || this.network || {};
-    const repoCount = Number(stats.repos || stats.repositories || this.repositories.length);
-    const nodes = Number(
-      stats.hosts ||
-        stats.nodes ||
-        liveNodeRecords(this.network, this.mirrorCatalogs).length,
-    );
-    const reposEl = this.$("[data-world-repos]");
-    const nodesEl = this.$("[data-world-nodes]");
-    if (reposEl) reposEl.textContent = compactNumber(repoCount);
-    if (nodesEl) nodesEl.textContent = compactNumber(nodes);
-    this.updatePlayerCount();
     this.updateDurableObjectMetrics();
   }
 
@@ -5589,7 +5620,8 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async refreshRewardState() {
-    const hasSession = Boolean(readSession()?.sessionToken);
+    const hasSession =
+      this.sessionAuthenticated && Boolean(validWorldSession());
     const [pool, pending] = await Promise.allSettled([
       this.fetchJSON("/api/accounts/central-fund", {
         auth: false,
@@ -5741,18 +5773,6 @@ class ForkMeshWorld extends HTMLElement {
       },
     ];
     const liveMirrors = liveNodeRecords(this.network, this.mirrorCatalogs);
-    this.setLandmarkCapability(
-      "routing",
-      payload?.ok === true &&
-        Array.isArray(payload?.mirrors) &&
-        liveMirrors.some(
-          (node) =>
-            node.healthy === true &&
-            node.cloneAvailable === true &&
-            /^[0-9a-f]{40,64}$/.test(String(node.commit || "")),
-        ),
-      LANDMARK_CONSTRUCTION_REASONS.routing,
-    );
     this.world?.updateNetworkNodes(liveMirrors);
   }
 
@@ -5764,18 +5784,6 @@ class ForkMeshWorld extends HTMLElement {
         // Preserve the last verified snapshot during a transient HTTPS failure.
       });
     }, MIRROR_STATUS_POLL_MS);
-  }
-
-  updatePlayerCount() {
-    // BroadcastChannel is an offline/same-device fallback. Once the
-    // authoritative World socket is live, counting both maps would show the
-    // same browser tab twice.
-    const socketOnline =
-      this.socket?.readyState === WebSocket.OPEN && Boolean(this.serverPeerId);
-    const count =
-      1 + this.remotePlayers.size + (socketOnline ? 0 : this.localPeers.size);
-    const element = this.$("[data-world-players]");
-    if (element) element.textContent = compactNumber(count);
   }
 
   updateLocation(label, id) {
@@ -5986,9 +5994,45 @@ class ForkMeshWorld extends HTMLElement {
     this.clearPullReviewScrollTracking();
     const returnFocus = this.detailReturnFocus;
     this.detailReturnFocus = null;
-    window.setTimeout(() => {
-      if (returnFocus?.isConnected) returnFocus.focus();
-    }, 0);
+    const restoreFocus = () => {
+      if (detail?.dataset.open === "true") return;
+      const activeElement = document.activeElement;
+      if (
+        activeElement &&
+        activeElement !== document.body &&
+        activeElement !== detail &&
+        !detail?.contains(activeElement)
+      ) {
+        return;
+      }
+      let focusTarget = returnFocus?.isConnected ? returnFocus : null;
+      const landmarkId = returnFocus?.dataset?.worldLandmark;
+      const mirrorName = returnFocus?.dataset?.worldMirrorNode;
+      if (!focusTarget && landmarkId) {
+        const landmarkButtons = this.$$("[data-world-landmark]").filter(
+          (button) => button.dataset.worldLandmark === landmarkId,
+        );
+        focusTarget =
+          landmarkButtons.find(
+            (button) => button.className === returnFocus?.className,
+          ) || landmarkButtons[0];
+      }
+      if (!focusTarget && mirrorName) {
+        const mirrorButtons = this.$$("[data-world-mirror-node]").filter(
+          (button) => button.dataset.worldMirrorNode === mirrorName,
+        );
+        focusTarget =
+          mirrorButtons.find(
+            (button) => button.className === returnFocus?.className,
+          ) || mirrorButtons[0];
+      }
+      focusTarget?.focus({ preventScroll: true });
+    };
+    // Live capability updates can replace a map or mirror control just as its
+    // panel closes. Retry briefly while focus remains on the document body so
+    // the matching replacement control receives focus without stealing it
+    // after the user has moved elsewhere.
+    [0, 80, 240].forEach((delay) => window.setTimeout(restoreFocus, delay));
   }
 
   landmarkPanelHTML(id) {
@@ -5996,11 +6040,9 @@ class ForkMeshWorld extends HTMLElement {
       information: () => this.informationPanelHTML(),
       fountain: () => this.rewardPanelHTML(),
       repositories: () => this.repositoryPanelHTML(),
-      routing: () => this.routingPanelHTML(),
       organizations: () => this.organizationPanelHTML(),
       fediverse: () => this.fediversePanelHTML(),
       security: () => this.securityPanelHTML(),
-      launchpad: () => this.launchpadPanelHTML(),
       events: () => this.eventsPanelHTML(),
       neighborhood: () => this.neighborhoodPanelHTML(),
       workshops: () => this.workshopPanelHTML(),
@@ -6042,91 +6084,6 @@ class ForkMeshWorld extends HTMLElement {
           <a href="forkmesh://control/cloudflare" data-world-local-qt-link>Open local Qt Cloudflare setup</a>
           <a href="/docs/qt-client/#cloudflare">Desktop setup guide</a>
         </div>
-      </section>`;
-  }
-
-  routingPanelHTML() {
-    const instances = Array.isArray(this.federatedInstances)
-      ? this.federatedInstances
-      : [];
-    const mirrorNodes = liveNodeRecords(this.network, this.mirrorCatalogs);
-    return `
-      <section class="world-feature-card" aria-label="Live mirror server cabinets">
-        <h3>Live mirror server cabinets</h3>
-        <div class="world-instance-list" data-world-mirror-node-list>
-          ${
-            mirrorNodes.length
-              ? mirrorNodes
-                  .map((node) => {
-                    const commit = /^[0-9a-f]{40,64}$/.test(
-                      String(node.commit || ""),
-                    )
-                      ? String(node.commit).slice(0, 12)
-                      : "HEAD not reported";
-                    const route =
-                      node.cloneAvailable === true
-                        ? "verified clone route"
-                        : String(node.integrity || "") === "rejected"
-                          ? "integrity blocked"
-                          : "route not verified";
-                    return `<article>
-                      <span class="world-instance-icon" aria-hidden="true">${
-                        node.healthy ? "●" : "◐"
-                      }</span>
-                      <div>
-                        <strong>${escapeHTML(node.name)}</strong>
-                        <span>${escapeHTML(
-                          [node.platform, node.version ? `v${String(node.version).replace(/^v/i, "")}` : ""]
-                            .filter(Boolean)
-                            .join(" · ") || "platform/version not reported",
-                        )}</span>
-                        <p>${escapeHTML(`${commit} · ${route}`)}</p>
-                      </div>
-                      <button
-                        type="button"
-                        class="world-secondary-action"
-                        data-world-mirror-node="${escapeHTML(node.name)}"
-                      >Inspect live server</button>
-                    </article>`;
-                  })
-                  .join("")
-              : '<p class="world-empty-state">No live public mirror has a current presence record. ForkMesh does not invent server cabinets.</p>'
-          }
-        </div>
-        <p class="world-panel-footnote">CPU, memory, and disk are optional operator-reported values signed into the public catalog. A signature establishes publisher provenance, not automatic trust. Missing values remain “not shared.”</p>
-      </section>
-      <section class="world-feature-card" aria-label="Approved ForkMesh relay instances">
-        <h3>Approved federated instances</h3>
-        <div class="world-instance-list">
-          ${
-            instances.length
-              ? instances
-                  .map(
-                    (instance) => `<article>
-                      <span class="world-instance-icon" aria-hidden="true">${
-                        instance.online ? "●" : "○"
-                      }</span>
-                      <div><strong>${escapeHTML(
-                        instance.label,
-                      )}</strong><span>${escapeHTML(
-                        instance.health.replaceAll("_", " "),
-                      )}</span><p>${escapeHTML(
-                        instance.online
-                          ? "Online is backed by fresh signed node health through an approved relay."
-                          : "Listed as approved, but not claimed online without fresh verified health.",
-                      )}</p><small>${escapeHTML(
-                        instance.healthEvidence.replaceAll("-", " "),
-                      )}</small></div>
-                      <a href="${escapeHTML(
-                        instance.origin,
-                      )}" target="_blank" rel="noopener noreferrer">Open public instance</a>
-                    </article>`,
-                  )
-                  .join("")
-              : '<p class="world-empty-state">No approved federated instance has a publishable origin yet. ForkMesh does not invent map nodes.</p>'
-          }
-        </div>
-        <p class="world-panel-footnote">This projection includes only an approved public origin, generalized health, and a random public display id. Federation keys, signatures, tokens, wallets, node identities, raw IPs, private repositories, and exact activity are excluded.</p>
       </section>`;
   }
 
@@ -6282,7 +6239,7 @@ class ForkMeshWorld extends HTMLElement {
     const detail = this.$("[data-world-detail]");
     const backdrop = this.$("[data-world-detail-backdrop]");
     if (!detail || !backdrop || !node) return;
-    detail.dataset.openLandmark = "routing";
+    detail.dataset.openLandmark = "mirror-node";
     detail.style.setProperty("--detail-color", "#80e8ff");
     detail.innerHTML = `
       <header class="world-detail-header">
@@ -7277,31 +7234,6 @@ class ForkMeshWorld extends HTMLElement {
       </section>`;
   }
 
-  launchpadPanelHTML() {
-    return `
-      <section class="world-feature-card" aria-label="World destinations">
-        <div class="world-region-grid">
-          ${WORLD_REGIONS.map(
-            (region) => `
-              <article>
-                <span>${escapeHTML(region.phase)}</span>
-                <strong>${escapeHTML(region.label)}</strong>
-                <p>Walking here never changes your lighting. Events use the same UTC schedule everywhere.</p>
-                <button type="button" data-world-travel="${escapeHTML(
-                  region.id,
-                )}">Teleport to campus</button>
-              </article>`,
-          ).join("")}
-          <article><span>Work in progress</span><strong>Sky campus</strong><p>Collaboration room with standard permission checks. Unfinished, parked in the works-in-progress barn.</p><button type="button" data-world-travel="sky-campus">Walk to the barn bay</button></article>
-          <article><span>Work in progress</span><strong>Code planet</strong><p>Opens the selected repository map and workshop tools. Unfinished, parked in the works-in-progress barn.</p><button type="button" data-world-travel="code-planet">Walk to the barn bay</button></article>
-          <article><span>Work in progress</span><strong>Garden campus</strong><p>Organization-owned lobbies, offices, and project beds. Unfinished, parked in the works-in-progress barn.</p><button type="button" data-world-travel="organization-region">Walk to the barn bay</button></article>
-          <article><span>Work in progress</span><strong>Planet atlas</strong><p>Achievement, event, and community-owned destinations with UTC schedules. Unfinished, parked in the works-in-progress barn.</p><button type="button" data-world-travel="planet-atlas">Walk to the barn bay</button></article>
-          <article><span>Work in progress</span><strong>Space station</strong><p>Scheduled presentation, chat, and moderated media room. Unfinished, parked in the works-in-progress barn.</p><button type="button" data-world-travel="space-station">Walk to the barn bay</button></article>
-        </div>
-        <p class="world-panel-footnote">None of these five destinations is finished, so none of them floats over the Town Square any more: each one stands on the ground in its own bay of the works-in-progress barn south of the square, behind a work-in-progress plaque. Each button walks your live avatar into that bay. Signed-in collaborators can use its dedicated authenticated shared-key channel. The relay derives the default key and can read messages: <a href="/dashboard/chat?space=sky-campus">Sky campus</a> · <a href="/dashboard/chat?space=space-station">Space station</a> · <a href="/dashboard/chat?space=code-planet">Code planet</a> · <a href="/dashboard/chat?space=organization-region">Garden campus</a> · <a href="/dashboard/chat?space=planet-atlas">Planet atlas</a>.</p>
-      </section>`;
-  }
-
   setCurrentSpace(space) {
     this.currentSpace = WORLD_SPACE_IDS.has(space) ? space : "town-square";
     const url = new URL(location.href);
@@ -7312,35 +7244,6 @@ class ForkMeshWorld extends HTMLElement {
     }
     history.replaceState(history.state, "", `${url.pathname}${url.search}${url.hash}`);
     this.sendPresence({ type: "presence" });
-  }
-
-  travelTo(destination) {
-    if (WORLD_REGIONS.some((region) => region.id === destination)) {
-      this.setCurrentSpace(destination);
-      if (this.world?.travelToRegion(destination)) {
-        const region = WORLD_REGIONS.find((item) => item.id === destination);
-        this.toast(
-          `Arrived in ${region.label}. Your local light level is unchanged; shared events stay UTC-synchronized.`,
-        );
-        this.closeLandmark();
-      }
-      return;
-    }
-    const destinationPanels = {
-      "sky-campus": "workshops",
-      "space-station": "broadcast",
-      "code-planet": "repositories",
-      "organization-region": "organizations",
-      "planet-atlas": "events",
-    };
-    const panel = destinationPanels[destination];
-    if (panel && this.world?.travelToSpace?.(destination)) {
-      this.setCurrentSpace(destination);
-      this.openLandmark(panel);
-      this.toast(
-        `Arrived in ${destination.replaceAll("-", " ")}. Your avatar, realtime presence, tools, and dedicated encrypted collaboration channel now share this destination.`,
-      );
-    }
   }
 
   eventsPanelHTML() {
@@ -7590,8 +7493,8 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async refreshPersonalNotifications(render = false) {
-    const session = readSession();
-    if (!session?.sessionToken || !session?.nodeName) {
+    const session = validWorldSession();
+    if (!this.sessionAuthenticated || !session) {
       this.notifications = [];
       this.notificationUnread = 0;
       this.notificationsState = "signed-out";
@@ -8264,7 +8167,7 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async refreshMediaSpaces(preferredId = "", render = true) {
-    if (!readSession()?.sessionToken) {
+    if (!this.sessionAuthenticated || !validWorldSession()) {
       this.mediaSpaces = [];
       this.mediaRoom = normalizeMediaRoom(null);
       this.syncMediaWorld(render);
@@ -8896,7 +8799,7 @@ class ForkMeshWorld extends HTMLElement {
     const owner = sanitizePresenceText(portal?.owner, "", 40);
     const name = sanitizePresenceText(portal?.name, "", 60);
     if (!owner || !name) return;
-    this.toast(`Opening ${owner}/${name} at its world-edge portal…`);
+    this.toast(`Opening ${owner}/${name} at its perimeter portal…`);
     void this.loadRepositoryMap(owner, name, {
       automatic: false,
       revealScene: true,
@@ -11774,8 +11677,6 @@ class ForkMeshWorld extends HTMLElement {
         "Only public and explicitly consented social relationships belong in this district.",
       security:
         "The clipboard shows only the latest redacted artifact; private evidence stays restricted.",
-      launchpad:
-        "Destinations retain normal permissions while events remain synchronized through UTC.",
       events:
         "Event records remain usable over HTTPS even when multiplayer presence is offline.",
       neighborhood:
@@ -12755,6 +12656,7 @@ class ForkMeshWorld extends HTMLElement {
   async refreshWorldTicket() {
     if (this.destroyed || document.hidden) return;
     if (!readSession()?.sessionToken) {
+      this.sessionAuthenticated = false;
       this.worldTicket = "";
       this.worldTicketExpires = 0;
       return;
@@ -12769,6 +12671,7 @@ class ForkMeshWorld extends HTMLElement {
         ACCOUNT_STATUS_VALUES.has(String(ticket.accountStatus || "")) &&
         ticket.accountStatus !== "Guest"
       ) {
+        this.sessionAuthenticated = true;
         this.worldTicket = String(ticket.ticket || "");
         this.worldTicketExpires = Number(ticket.expiresAt || 0);
         this.identity.isAdmin = ticket.isAdmin === true;
@@ -12776,10 +12679,12 @@ class ForkMeshWorld extends HTMLElement {
       }
       this.worldTicket = "";
       this.worldTicketExpires = 0;
+      this.sessionAuthenticated = false;
       if (this.identity) this.identity.isAdmin = false;
     } catch (_) {
       // Keep a still-valid ticket for reconnect; clear only an expired one.
       if (this.worldTicketExpires <= Date.now()) {
+        this.sessionAuthenticated = false;
         this.worldTicket = "";
         this.worldTicketExpires = 0;
       }
@@ -13271,7 +13176,6 @@ class ForkMeshWorld extends HTMLElement {
     }
     this.world?.setRemotePlayers([...combined.values()]);
     this.syncMemberLounge();
-    this.updatePlayerCount();
     this.updateDurableObjectMetrics();
   }
 

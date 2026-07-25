@@ -62,9 +62,9 @@ const MOVEMENT_KEYS = new Set([
   "ArrowLeft",
   "ArrowRight",
 ]);
-const REGISTERED_LOUNGE_POSITION = Object.freeze([-54, 0, 40]);
-const DURABLE_OBJECT_DISTRICT_POSITION = Object.freeze([52, 0, -36]);
-const SERVER_CABINET_YARD_ORIGIN = Object.freeze([32, 0, 16]);
+const REGISTERED_LOUNGE_POSITION = Object.freeze([-22, 0, 25]);
+const DURABLE_OBJECT_DISTRICT_POSITION = Object.freeze([8, 0, -27]);
+const SERVER_CABINET_YARD_ORIGIN = Object.freeze([18, 0, 0]);
 const REGISTERED_LOUNGE_STATUSES = new Set([
   "Registered",
   "Supporting member",
@@ -142,7 +142,7 @@ const REPOSITORY_SIZE_MAP_GRAY = "#8a8a8a";
 const REPOSITORY_SIZE_MAP_MAX_RINGS = 4;
 const REPOSITORY_SIZE_MAP_MAX_SEGMENTS = 420;
 const REPOSITORY_CATALOG_MAX = 200;
-const REPOSITORY_EDGE_RADIUS = 62;
+const REPOSITORY_EDGE_RADIUS = 68;
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -522,7 +522,7 @@ function createAvatarModerationControls(THREE, handles) {
 }
 
 function makeMaterial(THREE, color, options = {}) {
-  return new THREE.MeshStandardMaterial({
+  const parameters = {
     color,
     roughness: options.roughness ?? 0.68,
     metalness: options.metalness ?? 0.08,
@@ -530,8 +530,11 @@ function makeMaterial(THREE, color, options = {}) {
     emissiveIntensity: options.emissiveIntensity ?? 0,
     transparent: Boolean(options.transparent),
     opacity: options.opacity ?? 1,
-    side: options.side,
-  });
+  };
+  // Three.js warns for explicitly supplied `undefined` enum values. Omit the
+  // option entirely unless a caller intentionally selected a rendering side.
+  if (options.side !== undefined) parameters.side = options.side;
+  return new THREE.MeshStandardMaterial(parameters);
 }
 
 function setShadows(object, cast = true, receive = true) {
@@ -809,31 +812,6 @@ function addSectionPlaque(THREE, group, position, title, subtitle, color, distan
   );
 }
 
-function avatarStatusTexture(THREE, emoji, note) {
-  return canvasTexture(THREE, 512, 192, (context) => {
-    context.clearRect(0, 0, 512, 192);
-    roundedRect(context, 8, 8, 496, 176, 32);
-    context.fillStyle = "rgba(7,17,15,0.94)";
-    context.fill();
-    context.strokeStyle = "#9ef7c6";
-    context.lineWidth = 6;
-    context.stroke();
-    context.textAlign = "center";
-    context.textBaseline = "middle";
-    context.font =
-      '82px system-ui, "Apple Color Emoji", "Segoe UI Emoji", sans-serif';
-    context.fillStyle = "#ffffff";
-    context.fillText(emoji, note ? 116 : 256, 96);
-    if (note) {
-      context.textAlign = "left";
-      context.font =
-        '700 42px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillStyle = "#d9ffea";
-      context.fillText(note.slice(0, 20), 188, 98, 282);
-    }
-  });
-}
-
 function syncAvatarStatus(THREE, avatar, identity) {
   if (!avatar?.userData) return;
   const status = normalizeWorldStatus(
@@ -852,21 +830,9 @@ function syncAvatarStatus(THREE, avatar, identity) {
   avatar.userData.statusEmoji = status.emoji;
   avatar.userData.statusNote = status.note;
   avatar.userData.emojiStatusSprite = null;
-  if (!status.emoji) return;
-  const sprite = new THREE.Sprite(
-    new THREE.SpriteMaterial({
-      map: avatarStatusTexture(THREE, status.emoji, status.note),
-      transparent: true,
-      depthTest: false,
-      depthWrite: false,
-    }),
-  );
-  sprite.name = "forkmesh-avatar-emoji-status";
-  sprite.position.set(0, 4.75, 0);
-  sprite.scale.set(status.note ? 3.25 : 1.6, 1.22, 1);
-  sprite.renderOrder = 12;
-  avatar.add(sprite);
-  avatar.userData.emojiStatusSprite = sprite;
+  // Status remains available to the accessible player label and presence
+  // payload, but the large duplicate overhead banner is intentionally not
+  // rendered in-world.
 }
 
 function makeConsentedProfileFace(THREE, follower) {
@@ -2610,6 +2576,18 @@ function createSecurityWorkshop(THREE, position, interactive, animated) {
   return group;
 }
 
+function finishLandmark(group, id, position, interactive) {
+  group.position.set(...position);
+  group.userData.landmark = id;
+  group.traverse((child) => {
+    if (!child.isMesh) return;
+    child.userData.landmark = id;
+    interactive.push(child);
+  });
+  setShadows(group);
+  return group;
+}
+
 function createCommunityStage(THREE, position, interactive, animated) {
   const group = new THREE.Group();
   const platform = new THREE.Mesh(
@@ -3545,6 +3523,7 @@ export function createWorldScene({
   let forkbotGreeting = null;
   const keys = new Set();
   const touchKeys = new Set();
+  const touchMovement = new THREE.Vector2();
   const touchPointers = new Map();
   const raycaster = new THREE.Raycaster();
   const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -4053,6 +4032,24 @@ export function createWorldScene({
     else touchKeys.delete(normalized);
   }
 
+  function setTouchMovement(x, y) {
+    const nextX = Number(x);
+    const nextY = Number(y);
+    if (!Number.isFinite(nextX) || !Number.isFinite(nextY)) {
+      touchMovement.set(0, 0);
+      return { x: 0, y: 0, strength: 0 };
+    }
+    const length = Math.hypot(nextX, nextY);
+    const scale = length > 1 ? 1 / length : 1;
+    touchMovement.set(nextX * scale, nextY * scale);
+    if (touchMovement.lengthSq() < 0.0001) touchMovement.set(0, 0);
+    return {
+      x: touchMovement.x,
+      y: touchMovement.y,
+      strength: touchMovement.length(),
+    };
+  }
+
   function movementInput() {
     const movement = new THREE.Vector3();
     const forwardInput =
@@ -4061,32 +4058,40 @@ export function createWorldScene({
     const rightInput =
       Number(keys.has("KeyD") || keys.has("ArrowRight")) -
       Number(keys.has("KeyA") || keys.has("ArrowLeft"));
-    if (forwardInput || rightInput) {
-      // Desktop movement follows the view direction, as in an FPS: W/S move
-      // toward/away from the camera reticle and A/D strafe. Only the horizontal
-      // yaw participates so looking up or down never changes walking speed.
-      const forward = new THREE.Vector3(
-        -Math.sin(cameraYaw),
-        0,
-        -Math.cos(cameraYaw),
-      );
-      const right = new THREE.Vector3(
-        Math.cos(cameraYaw),
-        0,
-        -Math.sin(cameraYaw),
-      );
+    const touchStrength = Math.min(1, touchMovement.length());
+    const forward = new THREE.Vector3(
+      -Math.sin(cameraYaw),
+      0,
+      -Math.cos(cameraYaw),
+    );
+    const right = new THREE.Vector3(
+      Math.cos(cameraYaw),
+      0,
+      -Math.sin(cameraYaw),
+    );
+    if (forwardInput || rightInput || touchStrength) {
+      // Keyboard and analog movement follow the view direction. Only yaw
+      // participates, so looking up or down never changes walking speed.
       movement.addScaledVector(forward, forwardInput);
       movement.addScaledVector(right, rightInput);
+      movement.addScaledVector(forward, -touchMovement.y);
+      movement.addScaledVector(right, touchMovement.x);
     }
 
-    // The coarse-pointer direction pad remains a predictable screen-independent
-    // fallback and does not require a mouse.
+    // Retain the programmatic directional API for older controllers, but the
+    // coarse-pointer UI now uses the proportional analog vector above.
     if (touchKeys.has("KeyW")) movement.z -= 1;
     if (touchKeys.has("KeyS")) movement.z += 1;
     if (touchKeys.has("KeyA")) movement.x -= 1;
     if (touchKeys.has("KeyD")) movement.x += 1;
+    const keyboardActive = Boolean(forwardInput || rightInput);
+    const legacyTouchActive = touchKeys.size > 0;
+    const inputStrength =
+      keyboardActive || legacyTouchActive ? 1 : touchStrength;
     return {
-      keyboardActive: Boolean(forwardInput || rightInput),
+      keyboardActive,
+      touchStrength,
+      inputStrength,
       movement: movement.lengthSq() ? movement.normalize() : movement,
     };
   }
@@ -4095,12 +4100,16 @@ export function createWorldScene({
     const avatar = officeParticipants.get(officeLocalParticipantId);
     if (!avatar) return;
     const presence = avatar.userData.officePresence || {};
-    const movement = presence.pose === "seated"
-      ? new THREE.Vector3()
-      : movementInput().movement;
+    const input = presence.pose === "seated"
+      ? { movement: new THREE.Vector3(), inputStrength: 0 }
+      : movementInput();
+    const movement = input.movement;
     const walking = movement.lengthSq() > 0;
     if (walking) {
-      avatar.position.addScaledVector(movement, PLAYER_SPEED * 0.72 * delta);
+      avatar.position.addScaledVector(
+        movement,
+        PLAYER_SPEED * 0.72 * Math.max(0, input.inputStrength) * delta,
+      );
       avatar.position.x = clamp(avatar.position.x, -7.1, 7.1);
       avatar.position.z = clamp(avatar.position.z, -4.8, 4.8);
       avatar.position.y = 0.38;
@@ -4136,7 +4145,12 @@ export function createWorldScene({
   }
 
   function walkPlayer(delta, time) {
-    const { keyboardActive, movement } = movementInput();
+    const {
+      keyboardActive,
+      touchStrength,
+      inputStrength,
+      movement,
+    } = movementInput();
     let walking = false;
     if (movement.lengthSq()) {
       cameraFocus = null;
@@ -4146,12 +4160,15 @@ export function createWorldScene({
       const topSpeed = PLAYER_MAX_SPEED * moveSpeedScale;
       // Infinite acceleration collapses the ramp: keyboardMovementSpeed jumps to
       // topSpeed on the first press instead of easing up over several frames.
-      keyboardMovementSpeed = keyboardActive
-        ? Math.min(
-            topSpeed,
-            keyboardMovementSpeed + PLAYER_ACCELERATION * moveAccelScale * delta,
-          )
-        : baseMoveSpeed();
+      keyboardMovementSpeed =
+        keyboardActive
+          ? Math.min(
+              topSpeed,
+              keyboardMovementSpeed + PLAYER_ACCELERATION * moveAccelScale * delta,
+            )
+          : touchStrength > 0
+            ? topSpeed * inputStrength
+            : baseMoveSpeed();
       player.position.addScaledVector(
         movement,
         keyboardMovementSpeed * delta,
@@ -4835,11 +4852,10 @@ export function createWorldScene({
   }
 
   function updateFederatedInstances(instances = []) {
-    const station = landmarkObjects.get("routing");
-    if (!station) return;
-    const existing = station.userData.federatedInstanceLayer;
+    const district = durableObjectDistrict;
+    const existing = district.userData.federatedInstanceLayer;
     if (existing) {
-      station.remove(existing);
+      district.remove(existing);
       existing.traverse((child) => {
         child.geometry?.dispose?.();
         child.material?.map?.dispose?.();
@@ -4879,8 +4895,8 @@ export function createWorldScene({
         );
         layer.add(label);
       });
-    station.add(layer);
-    station.userData.federatedInstanceLayer = layer;
+    district.add(layer);
+    district.userData.federatedInstanceLayer = layer;
   }
 
   function updateBots(bots = []) {
@@ -5378,9 +5394,8 @@ export function createWorldScene({
       })
       .sort((left, right) => left.key.localeCompare(right.key));
     const activeKey = `${
-      String(activeRepository?.owner || "").toLocaleLowerCase() +
-      "/"
-    }${
+      String(activeRepository?.owner || "").toLocaleLowerCase()
+    }/${
       String(
         activeRepository?.repo || activeRepository?.name || "",
       ).toLocaleLowerCase()
@@ -5438,7 +5453,7 @@ export function createWorldScene({
       (Math.PI * 2 * REPOSITORY_EDGE_RADIUS) /
       Math.max(1, records.length);
     const portalDensityScale = clamp(
-      (portalSpacing - 0.06) / 2.85,
+      (portalSpacing - 0.06) / 3.15,
       0.58,
       1,
     );
@@ -5649,6 +5664,9 @@ export function createWorldScene({
     if (!map.segments.length) return;
     const layer = new THREE.Group();
     layer.name = "repository-3d-size-map";
+    // Lift the sunburst clear of the portal base so its lowest wedges do not
+    // intersect the ground plane.
+    layer.position.y = 0.55;
     layer.position.z = 0.18;
     layer.userData.repositorySizeFocus = map.path;
     layer.userData.repositoryKey = repositoryKey;
@@ -6353,7 +6371,9 @@ export function createWorldScene({
   }
 
   function handlePointerMove(event) {
+    let trackedTouch = false;
     if (event.pointerType === "touch" && touchPointers.has(event.pointerId)) {
+      trackedTouch = true;
       touchPointers.set(event.pointerId, {
         x: event.clientX,
         y: event.clientY,
@@ -6370,12 +6390,23 @@ export function createWorldScene({
           );
           event.preventDefault();
         }
+        // A two-finger gesture is zoom-only. Never let either constituent
+        // pointer also rotate the camera.
+        pointerGestureMoved = true;
+        event.preventDefault();
+        return;
       }
     }
     if (event.pointerId !== primaryPointerId) return;
     const currentPointer = new THREE.Vector2(event.clientX, event.clientY);
     const movedDistance = pointerStart.distanceTo(currentPointer);
-    if (event.pointerType === "mouse" && movedDistance > 4) {
+    const canRotate =
+      event.pointerType === "mouse" ||
+      (event.pointerType === "touch" &&
+        trackedTouch &&
+        touchPointers.size === 1 &&
+        !pinchActive);
+    if (canRotate && movedDistance > 4) {
       if (pointerGestureMoved) {
         rotateCamera(
           currentPointer.x - pointerLast.x,
@@ -6397,18 +6428,35 @@ export function createWorldScene({
 
   function finishPointer(event, cancelled = false) {
     const wasPinching = pinchActive || touchPointers.size > 1;
+    let remainingTouch = null;
     if (event.pointerType === "touch") {
       touchPointers.delete(event.pointerId);
       if (touchPointers.size < 2) {
         pinchActive = false;
         pinchStartDistance = 0;
       }
+      remainingTouch = touchPointers.entries().next().value || null;
     }
     try {
       renderer.domElement.releasePointerCapture(event.pointerId);
     } catch (_) {}
     if (event.pointerId !== primaryPointerId) {
+      if (wasPinching && remainingTouch && primaryPointerId !== null) {
+        const [, point] = remainingTouch;
+        pointerStart.set(point.x, point.y);
+        pointerLast.copy(pointerStart);
+        pointerGestureMoved = true;
+      }
       if (!touchPointers.size) renderer.domElement.dataset.dragging = "false";
+      return;
+    }
+    if (event.pointerType === "touch" && remainingTouch) {
+      const [pointerId, point] = remainingTouch;
+      primaryPointerId = pointerId;
+      pointerStart.set(point.x, point.y);
+      pointerLast.copy(pointerStart);
+      pointerGestureMoved = true;
+      renderer.domElement.dataset.dragging = "true";
       return;
     }
     primaryPointerId = null;
@@ -6460,7 +6508,7 @@ export function createWorldScene({
     }
     if (hit?.object?.userData?.nodeCabinet) {
       focusNetworkNode(hit.object.userData.nodeCabinet.name);
-      onLandmarkSelect("routing", {
+      onLandmarkSelect("repositories", {
         source: "world",
         nodeCabinet: { ...hit.object.userData.nodeCabinet },
       });
@@ -6586,6 +6634,7 @@ export function createWorldScene({
   function handleWindowBlur() {
     keys.clear();
     touchKeys.clear();
+    touchMovement.set(0, 0);
     touchPointers.clear();
     keyboardMovementSpeed = baseMoveSpeed();
     cancelDash();
@@ -6844,6 +6893,7 @@ export function createWorldScene({
     touchPointers.clear();
     keys.clear();
     touchKeys.clear();
+    touchMovement.set(0, 0);
     scene.traverse((child) => {
       child.geometry?.dispose?.();
       if (Array.isArray(child.material)) {
@@ -6884,6 +6934,7 @@ export function createWorldScene({
     setLightLevel,
     setMovementTuning,
     setControl,
+    setTouchMovement,
     setSpawn,
     travelToRegion,
     visitNeighborhoodHome,
@@ -6925,6 +6976,10 @@ export function createWorldScene({
       speedScale: moveSpeedScale,
       accelerationScale: moveAccelScale,
       keyboardActive: [...keys].some((code) => MOVEMENT_KEYS.has(code)),
+      touchActive: touchMovement.lengthSq() > 0,
+      touchStrength: touchMovement.length(),
+      touchX: touchMovement.x,
+      touchY: touchMovement.y,
     }),
     getDiagnostics,
     getEnvironmentState: () => ({

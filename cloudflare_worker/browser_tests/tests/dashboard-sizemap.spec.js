@@ -19,7 +19,7 @@ async function prepareSizeMap(page) {
       body: "window.tailwind = {};",
     }),
   );
-  await page.route("https://unpkg.com/lucide@latest/dist/umd/lucide.min.js", (route) =>
+  await page.route("https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js", (route) =>
     route.fulfill({
       contentType: "text/javascript",
       body: "window.lucide = { createIcons() {} };",

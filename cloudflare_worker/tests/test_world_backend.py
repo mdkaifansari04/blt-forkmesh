@@ -697,7 +697,7 @@ def test_name_and_identity_badge_fields_are_privacy_controlled_not_claims():
             "shareNodes": True,
             "accountStatus": "Verified bot",
             "nodeCount": 99,
-            "space": "sky-campus",
+            "space": "east",
         },
         current,
         4000,
@@ -707,7 +707,7 @@ def test_name_and_identity_badge_fields_are_privacy_controlled_not_claims():
     assert authenticated["name"] == "Alice"
     assert authenticated["accountStatus"] == "Organization admin"
     assert authenticated["nodeCount"] == world.WORLD_NODE_BADGE_MAX
-    assert authenticated["space"] == "sky-campus"
+    assert authenticated["space"] == "east"
 
 
 def test_only_presence_movement_and_heartbeat_frames_are_accepted():

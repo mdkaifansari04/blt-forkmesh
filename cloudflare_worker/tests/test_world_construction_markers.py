@@ -23,8 +23,10 @@ def test_live_state_requires_loaded_schema_or_usable_capability_evidence():
     assert "Array.isArray(orgResult.value?.organizations)" in APP
     assert "Array.isArray(eventsResult.value?.events)" in APP
     assert "hasCompletedSecurityScan(this.securityScan)" in APP
-    assert "node.healthy === true" in APP
-    assert "node.cloneAvailable === true" in APP
+    # Mirror cabinets are live infrastructure, not a synthetic landmark whose
+    # state can be inferred from one remote response.
+    assert "liveNodeRecords(this.network, this.mirrorCatalogs)" in APP
+    assert "this.world?.updateNetworkNodes(" in APP
     assert "this.repositories.some((repo) => repo.liveHost || repo.isPrivate)" in APP
     assert "/^[1-9A-HJ-NP-Za-km-z]{32,44}$/" in APP
     assert "statusTone" not in APP[

@@ -654,46 +654,6 @@ forkmesh-world {
   outline: none;
 }
 
-.world-metrics {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  border: 1px solid var(--world-line);
-  background: var(--world-panel);
-  backdrop-filter: blur(18px);
-}
-
-.world-metric {
-  min-width: 0;
-  padding: 10px 11px;
-  border-right: 1px solid var(--world-line);
-}
-
-.world-metric:last-child {
-  border-right: 0;
-}
-
-.world-metric strong,
-.world-metric span {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.world-metric strong {
-  font-family: "ForkMesh Favorit", sans-serif;
-  font-size: 1rem;
-}
-
-.world-metric span {
-  margin-top: 3px;
-  color: var(--world-muted);
-  font-family: "ForkMesh Mono", monospace;
-  font-size: 0.52rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
 .world-right-rail {
   position: absolute;
   top: calc(var(--safe-top) + 68px);
@@ -1061,65 +1021,6 @@ forkmesh-world {
   font-size: 0.42rem;
 }
 
-.world-controls {
-  position: absolute;
-  left: 50%;
-  bottom: calc(var(--safe-bottom) + var(--world-diagnostics-height));
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  transform: translateX(-50%);
-  border-top: 1px solid var(--world-line-strong);
-  background: rgb(7 17 15 / 0.76);
-  padding: 8px 12px;
-  backdrop-filter: blur(18px);
-}
-
-.world-control-keys {
-  display: grid;
-  grid-template-columns: repeat(3, 22px);
-  grid-template-rows: repeat(2, 22px);
-  gap: 3px;
-}
-
-.world-control-key {
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--world-line);
-  color: var(--world-muted);
-  font-family: "ForkMesh Mono", monospace;
-  font-size: 0.54rem;
-}
-
-.world-control-key:first-child {
-  grid-column: 2;
-}
-
-.world-controls-copy strong,
-.world-controls-copy span {
-  display: block;
-}
-
-.world-controls-copy strong {
-  font-size: 0.72rem;
-}
-
-.world-controls-copy span {
-  margin-top: 2px;
-  color: var(--world-muted);
-  font-size: 0.58rem;
-}
-
-.world-location {
-  padding-left: 11px;
-  border-left: 1px solid var(--world-line);
-  color: var(--world-mint);
-  font-family: "ForkMesh Mono", monospace;
-  font-size: 0.58rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
 .world-diagnostics {
   position: absolute;
   z-index: 45;
@@ -1288,7 +1189,7 @@ forkmesh-world {
   visibility: visible;
 }
 
-.world-detail-backdrop {
+.world-hud .world-detail-backdrop {
   position: absolute;
   z-index: 19;
   inset: 0;
@@ -2142,8 +2043,7 @@ forkmesh-world.world-office-active .world-quick-dock {
   pointer-events: none;
 }
 
-forkmesh-world.world-office-active .world-arrival-card,
-forkmesh-world.world-office-active .world-metrics {
+forkmesh-world.world-office-active .world-arrival-card {
   visibility: hidden;
   opacity: 0;
   pointer-events: none;
@@ -4681,25 +4581,77 @@ forkmesh-world.world-office-active .world-metrics {
 .world-touch-controls {
   position: absolute;
   z-index: 8;
-  right: var(--safe-right);
-  bottom: calc(var(--safe-bottom) + 64px);
+  left: calc(var(--safe-left) + 12px);
+  bottom: calc(
+    var(--safe-bottom) + var(--world-diagnostics-height) + 12px
+  );
   display: none;
-  grid-template-columns: repeat(3, 46px);
-  grid-template-rows: repeat(2, 46px);
-  gap: 5px;
+  width: 94px;
+  height: 94px;
+  pointer-events: none;
 }
 
-.world-touch-button {
+.world-touch-thumbstick {
+  --thumb-x: 0px;
+  --thumb-y: 0px;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
   border: 1px solid var(--world-line-strong);
-  border-radius: 0;
-  background: rgb(7 17 15 / 0.68);
-  color: var(--world-copy);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, transparent 0 34%, rgb(158 247 198 / 0.09) 35% 36%, transparent 37%),
+    linear-gradient(90deg, transparent 49%, rgb(158 247 198 / 0.14) 50% 51%, transparent 52%),
+    linear-gradient(transparent 49%, rgb(158 247 198 / 0.14) 50% 51%, transparent 52%),
+    rgb(7 17 15 / 0.62);
   backdrop-filter: blur(12px);
   touch-action: none;
+  pointer-events: auto;
+  cursor: grab;
+  user-select: none;
 }
 
-.world-touch-button[data-move="forward"] {
-  grid-column: 2;
+.world-touch-thumbstick:focus-visible {
+  border-color: var(--world-mint);
+  outline: 2px solid rgb(158 247 198 / 0.4);
+  outline-offset: 2px;
+}
+
+.world-touch-thumbstick[data-active="true"] {
+  cursor: grabbing;
+}
+
+.world-touch-thumbstick-handle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 38px;
+  height: 38px;
+  transform:
+    translate(-50%, -50%)
+    translate(var(--thumb-x), var(--thumb-y));
+  border: 1px solid rgb(158 247 198 / 0.72);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 38% 32%, rgb(255 255 255 / 0.2), transparent 28%),
+    rgb(26 67 51 / 0.92);
+  box-shadow:
+    0 4px 16px rgb(0 0 0 / 0.38),
+    inset 0 0 12px rgb(158 247 198 / 0.13);
+  transition:
+    transform 70ms linear,
+    box-shadow 120ms ease;
+  pointer-events: none;
+}
+
+.world-touch-thumbstick[data-active="true"] .world-touch-thumbstick-handle {
+  box-shadow:
+    0 5px 18px rgb(0 0 0 / 0.42),
+    0 0 16px rgb(158 247 198 / 0.34),
+    inset 0 0 12px rgb(158 247 198 / 0.18);
+  transition: box-shadow 120ms ease;
 }
 
 .world-tour {
@@ -4840,9 +4792,6 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     width: 230px;
   }
 
-  .world-controls {
-    display: none;
-  }
 }
 
 @media (max-width: 720px) {
@@ -5006,10 +4955,6 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     margin-top: 10px;
   }
 
-  .world-metrics {
-    display: none;
-  }
-
   .world-right-rail {
     display: none;
   }
@@ -5017,10 +4962,6 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   .world-shirt-badge {
     width: 42px;
     height: 42px;
-  }
-
-  .world-touch-controls {
-    display: grid;
   }
 
   .world-detail {
@@ -5135,14 +5076,12 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 }
 
-/* Touch capability, not portrait width, determines whether an on-screen
-   movement pad is required. This keeps controls available on landscape phones
-   and tablets wider than the narrow-screen breakpoint. */
+/* Touch capability, not viewport width, determines whether the compact analog
+   thumbstick is needed. */
 @media (pointer: coarse), (hover: none) {
   .world-touch-controls {
     display: grid;
   }
-
 }
 
 @media (max-height: 520px) and (orientation: landscape) {
@@ -5155,12 +5094,12 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 
   .world-touch-controls {
-    right: calc(var(--safe-right) + 8px);
+    left: calc(var(--safe-left) + 8px);
     bottom: calc(
       var(--safe-bottom) + var(--world-diagnostics-height) + 8px
     );
-    grid-template-columns: repeat(3, 40px);
-    grid-template-rows: repeat(2, 40px);
+    width: 82px;
+    height: 82px;
   }
 
   .world-detail {
@@ -5206,8 +5145,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 
   .world-touch-controls {
-    grid-template-columns: repeat(3, 42px);
-    grid-template-rows: repeat(2, 42px);
+    width: 86px;
+    height: 86px;
   }
 
   .world-detail-scroll {

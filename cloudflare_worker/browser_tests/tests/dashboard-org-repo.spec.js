@@ -21,7 +21,7 @@ test("organization repository alias resolves its linked mirror catalog group", a
     }),
   );
   await page.route(
-    "https://unpkg.com/lucide@latest/dist/umd/lucide.min.js",
+    "https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js",
     (route) =>
       route.fulfill({
         contentType: "text/javascript",

@@ -1,11 +1,65 @@
 const { test, expect } = require("@playwright/test");
+const fs = require("node:fs");
+const path = require("node:path");
 
+const HEADER_RULES = fs.readFileSync(
+  path.resolve(__dirname, "..", "..", "public", "_headers"),
+  "utf8",
+);
+
+function headerValueForRule(rule, headerName) {
+  const lines = HEADER_RULES.split(/\r?\n/);
+  const start = lines.findIndex((line) => line.trim() === rule);
+  if (start < 0) throw new Error(`Missing ${rule} in public/_headers`);
+  const prefix = `${headerName.toLowerCase()}:`;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line && !/^\s/.test(line)) break;
+    const header = line.trim();
+    if (header.toLowerCase().startsWith(prefix)) {
+      return header.slice(header.indexOf(":") + 1).trim();
+    }
+  }
+  throw new Error(`Missing ${headerName} in ${rule}`);
+}
+
+const DASHBOARD_CHAT_CSP = headerValueForRule(
+  "/dashboard/chat*",
+  "Content-Security-Policy",
+);
 
 test("World embeds same-origin global chat and connects its real room transport", async ({
   page,
 }) => {
   const passphrase = "playwright-world-embed-passphrase";
   const socketURLs = [];
+  const browserErrors = [];
+
+  page.on("console", (message) => {
+    if (message.type() === "error") browserErrors.push(message.text());
+  });
+  page.on("pageerror", (error) => browserErrors.push(error.message));
+
+  // Keep this test deterministic while still asking Chromium to enforce the
+  // production CSP against the real script URLs used by the chat document.
+  await page.route("https://cdn.tailwindcss.com/**", (route) =>
+    route.fulfill({
+      contentType: "application/javascript",
+      body: "globalThis.tailwind = globalThis.tailwind || {};",
+    }),
+  );
+  await page.route("https://cdn.jsdelivr.net/**", (route) =>
+    route.fulfill({
+      contentType: "application/javascript",
+      body: "globalThis.lucide = { createIcons() {} };",
+    }),
+  );
+  await page.route("https://static.cloudflareinsights.com/**", (route) =>
+    route.fulfill({
+      contentType: "application/javascript",
+      body: "",
+    }),
+  );
 
   await page.route("**/api/**", (route) => {
     const url = new URL(route.request().url());
@@ -51,7 +105,7 @@ test("World embeds same-origin global chat and connects its real room transport"
         response,
         headers: {
           ...response.headers(),
-          "Content-Security-Policy": "frame-ancestors 'self'",
+          "Content-Security-Policy": DASHBOARD_CHAT_CSP,
           "X-Frame-Options": "SAMEORIGIN",
         },
       });
@@ -83,6 +137,13 @@ test("World embeds same-origin global chat and connects its real room transport"
   expect(
     await chat.locator("html").getAttribute("data-world-embed"),
   ).toBe("1");
+  expect(
+    browserErrors.filter((message) =>
+      /content security policy|refused to load the script|lucide is not defined/i.test(
+        message,
+      ),
+    ),
+  ).toEqual([]);
 });
 
 

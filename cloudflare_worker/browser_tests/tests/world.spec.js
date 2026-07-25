@@ -48,6 +48,7 @@ async function prepareWorldPage(
     unavailablePaths = [],
     chatChannels = [],
     chatChannelStatus = 200,
+    ticketAuthenticated = true,
   } = {},
 ) {
   let mentionState = "review";
@@ -267,13 +268,21 @@ async function prepareWorldPage(
                     : notifications.filter((item) => !item.readAt).length,
                 }
             : url.pathname === "/api/world/ticket" && session
-              ? {
-                  authenticated: true,
-                  accountStatus: "Registered",
-                  name: session.nodeName,
-                  ticket: "playwright-world-ticket",
-                  expiresAt: FIXED_NOW + 300_000,
-                }
+              ? ticketAuthenticated
+                ? {
+                    authenticated: true,
+                    accountStatus: "Registered",
+                    name: session.nodeName,
+                    ticket: "playwright-world-ticket",
+                    expiresAt: FIXED_NOW + 300_000,
+                  }
+                : {
+                    ok: true,
+                    authenticated: false,
+                    accountStatus: "Guest",
+                    nodeCount: 0,
+                    ticket: "",
+                  }
           : url.pathname === "/api/world/community-ads/placements"
             ? {
                 ok: true,
@@ -1230,6 +1239,105 @@ test("reward-program links deep-link to the self-custodial fountain controls", a
   ).toBeVisible();
 });
 
+test("detail panels overlay the desktop without dimming or reframing the World", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await prepareWorldPage(page, "non-modal-world-detail");
+  await waitForWorld(page);
+  await expect
+    .poll(() => page.evaluate(() => window.innerWidth))
+    .toBe(1280);
+  await expect
+    .poll(() =>
+      page.evaluate(() => matchMedia("(max-width: 720px)").matches),
+    )
+    .toBe(false);
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setPaused(true);
+    shell.detailTestFocusCalls = 0;
+    const focusLandmark = shell.world.focusLandmark;
+    shell.world.focusLandmark = (...args) => {
+      shell.detailTestFocusCalls += 1;
+      return focusLandmark(...args);
+    };
+  });
+
+  const before = await page.locator("forkmesh-world").evaluate((shell) => {
+    const canvas = shell.world.renderer.domElement;
+    const rect = canvas.getBoundingClientRect();
+    return {
+      canvas: {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+      },
+      camera: shell.world.camera.position.toArray(),
+    };
+  });
+  const trigger = page.locator(
+    '.world-map [data-world-landmark="information"]',
+  );
+  await trigger.click();
+  const detail = page.locator("[data-world-detail]");
+  await expect(detail).toBeVisible();
+  await expect(detail).toHaveAttribute("role", "dialog");
+  await expect(detail).toHaveAttribute("aria-modal", "false");
+  await expect(
+    detail.getByRole("button", { name: "Close Information booth" }),
+  ).toBeFocused();
+
+  const openState = await page.locator("forkmesh-world").evaluate((shell) => {
+    const canvas = shell.world.renderer.domElement;
+    const rect = canvas.getBoundingClientRect();
+    const backdrop = shell.querySelector("[data-world-detail-backdrop]");
+    const backdropStyle = getComputedStyle(backdrop);
+    return {
+      focusCalls: shell.detailTestFocusCalls,
+      canvas: {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+      },
+      camera: shell.world.camera.position.toArray(),
+      backdrop: {
+        opacity: backdropStyle.opacity,
+        visibility: backdropStyle.visibility,
+        pointerEvents: backdropStyle.pointerEvents,
+      },
+    };
+  });
+  expect(openState.focusCalls).toBe(0);
+  expect(openState.canvas).toEqual(before.canvas);
+  expect(openState.camera).toEqual(before.camera);
+  expect(openState.backdrop).toEqual({
+    opacity: "0",
+    visibility: "hidden",
+    pointerEvents: "none",
+  });
+  expect(
+    await page
+      .locator("forkmesh-world")
+      .evaluate((shell) => shell.detailReturnFocus?.dataset.worldLandmark),
+  ).toBe("information");
+
+  await page.locator("[data-world-detail-close]").click();
+  await expect(trigger).toBeFocused();
+
+  await page.setViewportSize({ width: 600, height: 800 });
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.openLandmark("information"),
+  );
+  await expect(detail).toBeVisible();
+  const mobileBackdrop = page.locator("[data-world-detail-backdrop]");
+  await expect(mobileBackdrop).toHaveCSS("visibility", "visible");
+  await expect(mobileBackdrop).toHaveCSS("pointer-events", "auto");
+  await mobileBackdrop.click({ position: { x: 8, y: 8 } });
+  await expect(detail).toHaveAttribute("data-open", "false");
+});
+
 async function freezeWorld(page) {
   await page.locator("forkmesh-world").evaluate((shell) => {
     // The default theme is fixed full daylight. Wall-clock time never
@@ -1264,17 +1372,31 @@ async function openOfficeForVisual(page) {
   });
 }
 
-async function holdTouch(page, locator, durationMs = 300) {
+async function dragThumbstick(
+  page,
+  locator,
+  { x = 0, y = -1, durationMs = 300 } = {},
+) {
   const box = await locator.boundingBox();
   expect(box).not.toBeNull();
   const client = await page.context().newCDPSession(page);
-  const point = {
+  const start = {
     x: Math.round(box.x + box.width / 2),
     y: Math.round(box.y + box.height / 2),
     id: 1,
   };
+  const travel = Math.max(1, Math.min(box.width, box.height) * 0.3);
+  const point = {
+    x: Math.round(start.x + x * travel),
+    y: Math.round(start.y + y * travel),
+    id: 1,
+  };
   await client.send("Input.dispatchTouchEvent", {
     type: "touchStart",
+    touchPoints: [start],
+  });
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchMove",
     touchPoints: [point],
   });
   await page.waitForTimeout(durationMs);
@@ -1419,6 +1541,45 @@ test("enhanced Town Square starts in WebGL and keeps keyboard navigation", async
   expect(Math.hypot(after.x - before.x, after.z - before.z)).toBeGreaterThan(
     0.05,
   );
+});
+
+test("an expired persisted session stays guest-only without private request fanout or Three.js material warnings", async ({
+  page,
+}) => {
+  const privateRequests = [];
+  const materialWarnings = [];
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (
+      path === "/api/world/media/spaces" ||
+      path === "/api/rewards/pending" ||
+      path === "/api/notifications" ||
+      path.startsWith("/api/orgs/")
+    ) {
+      privateRequests.push(path);
+    }
+  });
+  page.on("console", (message) => {
+    if (
+      message.type() === "warning" &&
+      message.text().includes("THREE.Material")
+    ) {
+      materialWarnings.push(message.text());
+    }
+  });
+  await prepareWorldPage(page, "expired-session", {
+    session: {
+      nodeName: "expired-user",
+      sessionToken: "expired-session-token",
+    },
+    ticketAuthenticated: false,
+  });
+  await waitForWorld(page);
+
+  await expect(page.locator("[data-world-canvas-wrap] canvas")).toHaveCount(1);
+  await expect(page.locator(".world-webgl-fallback")).toHaveCount(0);
+  expect(privateRequests).toEqual([]);
+  expect(materialWarnings).toEqual([]);
 });
 
 test("double-clicking the ground dashes the avatar to that spot", async ({
@@ -1833,7 +1994,7 @@ test("the topbar has no clock or emote actions and local light level survives mo
   expect(publicIdentityState.lightLevel).toBeUndefined();
 });
 
-test("Unicode emoji status is local-persisted, coalesced, and visible over every avatar", async ({
+test("Unicode emoji status is local-persisted, coalesced, and available to every avatar label", async ({
   page,
   context,
 }) => {
@@ -1887,7 +2048,7 @@ test("Unicode emoji status is local-persisted, coalesced, and visible over every
   expect(peerStatus).toEqual({
     emoji: "🚀",
     note: "shipping",
-    spriteVisible: true,
+    spriteVisible: false,
   });
 
   const firstChangeFrameIndex = frames.length;
@@ -1942,7 +2103,7 @@ test("Unicode emoji status is local-persisted, coalesced, and visible over every
   expect(ownStatus).toEqual({
     emoji: "🧑‍💻",
     note: "coding",
-    spriteVisible: true,
+    spriteVisible: false,
   });
 
   const codingFramesBeforeDuplicate = frames.filter(
@@ -2025,7 +2186,7 @@ test("two live clients synchronize movement without leaking disabled badge field
   expect(JSON.stringify(peer)).not.toContain("must-not-cross");
 });
 
-test("landscape touch controls remain visible and move the avatar", async ({
+test("landscape thumbstick remains visible and moves the avatar", async ({
   browser,
 }) => {
   const context = await browser.newContext({
@@ -2037,7 +2198,7 @@ test("landscape touch controls remain visible and move the avatar", async ({
   await prepareWorldPage(page, "landscape-touch");
   await waitForWorld(page);
 
-  const control = page.locator("[data-move='forward']");
+  const control = page.locator("[data-world-thumbstick]");
   await expect(control).toBeVisible();
   const canvasBox = await page.locator("[data-world-canvas-wrap]").boundingBox();
   expect(canvasBox).not.toBeNull();
@@ -2046,7 +2207,7 @@ test("landscape touch controls remain visible and move the avatar", async ({
   const before = await page.locator("forkmesh-world").evaluate((shell) =>
     shell.world.getPosition(),
   );
-  await holdTouch(page, control);
+  await dragThumbstick(page, control);
   const after = await page.locator("forkmesh-world").evaluate((shell) =>
     shell.world.getPosition(),
   );
@@ -2056,7 +2217,106 @@ test("landscape touch controls remain visible and move the avatar", async ({
   await context.close();
 });
 
-test("two-finger pinch traverses the complete bounded mobile camera range", async ({
+test("thumbstick motion is continuous, proportional, and recenters on release", async ({
+  browser,
+}) => {
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    isMobile: true,
+  });
+  const page = await context.newPage();
+  await prepareWorldPage(page, "analog-thumbstick");
+  await waitForWorld(page);
+
+  await expect(page.locator(".world-controls")).toHaveCount(0);
+  await expect(page.locator("[data-move]")).toHaveCount(0);
+  const thumbstick = page.locator("[data-world-thumbstick]");
+  const handle = page.locator("[data-world-thumbstick-handle]");
+  await expect(thumbstick).toBeVisible();
+  const box = await thumbstick.boundingBox();
+  const handleBox = await handle.boundingBox();
+  expect(box).not.toBeNull();
+  expect(handleBox).not.toBeNull();
+
+  const centre = {
+    x: Math.round(box.x + box.width / 2),
+    y: Math.round(box.y + box.height / 2),
+  };
+  const travel =
+    Math.min(box.width, box.height) / 2 -
+    Math.max(handleBox.width, handleBox.height) / 2 -
+    5;
+  const point = (strength) => ({
+    x: centre.x,
+    y: Math.round(centre.y - travel * strength),
+    id: 1,
+  });
+  const client = await page.context().newCDPSession(page);
+  const before = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.getPosition(),
+  );
+
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: [{ ...centre, id: 1 }],
+  });
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchMove",
+    touchPoints: [point(0.5)],
+  });
+  await page.waitForTimeout(300);
+  const partialState = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.getMovementState(),
+  );
+  const partialPosition = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getPosition(),
+  );
+
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchMove",
+    touchPoints: [point(1)],
+  });
+  await page.waitForTimeout(300);
+  const fullState = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.getMovementState(),
+  );
+  const fullPosition = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.getPosition(),
+  );
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchEnd",
+    touchPoints: [],
+  });
+
+  expect(partialState.touchStrength).toBeGreaterThan(0.3);
+  expect(partialState.touchStrength).toBeLessThan(0.7);
+  expect(fullState.touchStrength).toBeGreaterThan(0.9);
+  const partialDistance = Math.hypot(
+    partialPosition.x - before.x,
+    partialPosition.z - before.z,
+  );
+  const fullDistance = Math.hypot(
+    fullPosition.x - partialPosition.x,
+    fullPosition.z - partialPosition.z,
+  );
+  expect(fullDistance).toBeGreaterThan(partialDistance * 1.35);
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getMovementState().touchActive,
+    ),
+  ).toBe(false);
+  await expect(thumbstick).toHaveAttribute("data-active", "false");
+  expect(
+    await handle.evaluate((element) =>
+      getComputedStyle(element).getPropertyValue("--thumb-y").trim(),
+    ),
+  ).toBe("0px");
+  await client.detach();
+  await context.close();
+});
+
+test("one-finger look and two-finger pinch use distinct bounded gestures", async ({
   browser,
 }) => {
   const context = await browser.newContext({
@@ -2074,6 +2334,28 @@ test("two-finger pinch traverses the complete bounded mobile camera range", asyn
   const centreX = Math.round(box.x + box.width / 2);
   const centreY = Math.round(box.y + box.height * 0.62);
   const client = await page.context().newCDPSession(page);
+  const beforeLook = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.getCameraState(),
+  );
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: [{ x: centreX, y: centreY, id: 7 }],
+  });
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchMove",
+    touchPoints: [{ x: centreX + 80, y: centreY + 30, id: 7 }],
+  });
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchEnd",
+    touchPoints: [],
+  });
+  const afterLook = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.getCameraState(),
+  );
+  expect(afterLook.yaw).toBeLessThan(beforeLook.yaw);
+  expect(afterLook.pitch).toBeGreaterThan(beforeLook.pitch);
+  expect(afterLook.zoom).toBeCloseTo(beforeLook.zoom, 6);
+
   const points = (spread) => [
     { x: centreX - spread, y: centreY, id: 1 },
     { x: centreX + spread, y: centreY, id: 2 },
@@ -2328,7 +2610,7 @@ test("repository portals and the 3D size sunburst use the verified catalog tree"
   expect(initial.portals).toEqual(["repository-portal:forkmesh/forkmesh"]);
   expect(initial.portals).toHaveLength(initial.repositories.length);
   expect(initial.sizeMount).toBe("repository-portal:forkmesh/forkmesh");
-  expect(initial.sizeMountRadius).toBeCloseTo(62, 5);
+  expect(initial.sizeMountRadius).toBeCloseTo(68, 5);
   expect(initial.legacyVisible).toBe(false);
   expect(initial.relationshipsVisible).toBe(false);
   expect(
@@ -2409,7 +2691,7 @@ test("repository portals and the 3D size sunburst use the verified catalog tree"
   expect(injectedPortals.map(({ name }) => name)).toContain(
     "repository-portal:orbit/repo-200",
   );
-  injectedPortals.forEach(({ radius }) => expect(radius).toBeCloseTo(62, 5));
+  injectedPortals.forEach(({ radius }) => expect(radius).toBeCloseTo(68, 5));
   injectedPortals.forEach(({ faceScale }) =>
     expect(faceScale).toBeLessThan(0.7),
   );
@@ -3724,7 +4006,7 @@ test("focus music selection and controls persist without autoplaying on reload",
   expect((await focusMusicProbeSnapshot(page)).created).toEqual([]);
 });
 
-test("portrait coarse-pointer controls and visual viewport remain usable", async ({
+test("portrait coarse-pointer thumbstick and visual viewport remain usable", async ({
   browser,
 }) => {
   const context = await browser.newContext({
@@ -3736,7 +4018,7 @@ test("portrait coarse-pointer controls and visual viewport remain usable", async
   await prepareWorldPage(page, "portrait-touch");
   await waitForWorld(page);
 
-  await expect(page.locator("[data-move='forward']")).toBeVisible();
+  await expect(page.locator("[data-world-thumbstick]")).toBeVisible();
   await page.locator("[data-world-settings-open]").first().click();
   await expect(page.locator("[data-world-settings]")).toHaveAttribute(
     "data-open",
@@ -3767,11 +4049,11 @@ test("portrait coarse-pointer controls and visual viewport remain usable", async
     "false",
   );
 
-  const control = page.locator("[data-move='forward']");
+  const control = page.locator("[data-world-thumbstick]");
   // Leave enough time for more than one animation frame even when the release
   // gate is sharing a loaded CI host; the assertion still requires real
   // position movement from an actual CDP touch sequence.
-  await holdTouch(page, control, 600);
+  await dragThumbstick(page, control, { durationMs: 600 });
   const afterTouch = await page.locator("forkmesh-world").evaluate((shell) =>
     shell.world.getPosition(),
   );
