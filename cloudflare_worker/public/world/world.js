@@ -6410,7 +6410,6 @@ class ForkMeshWorld extends HTMLElement {
 
   landmarkPanelHTML(id) {
     const panels = {
-      information: () => this.informationPanelHTML(),
       fountain: () => this.rewardPanelHTML(),
       repositories: () => this.repositoryPanelHTML(),
       organizations: () => this.organizationPanelHTML(),
@@ -6421,41 +6420,6 @@ class ForkMeshWorld extends HTMLElement {
       broadcast: () => this.broadcastPanelHTML(),
     };
     return panels[id]?.() || "";
-  }
-
-  informationPanelHTML() {
-    const steps = [
-      ["What ForkMesh is", "A multiplayer developer city backed by independently operated Git mirrors."],
-      ["Create an account", "Register and verify email in the console; guests can explore immediately."],
-      ["Mirror a repository", "Install the desktop control node, choose an authorized repository, and publish signed health."],
-      ["Operate a node", "The desktop controls sync, health, logs, permissions, Cloudflare deployment, and local keys."],
-      ["Wallets and rewards", "Community members connect only a public self-custodial payout address; never enter its private key or recovery phrase."],
-      ["Privacy and encryption", "Country is approximate; presence is optional and generalized; private data follows owner-controlled encryption and authorization."],
-    ];
-    return `
-      <section class="world-feature-card" aria-label="ForkMesh orientation">
-        <h3>New contributor route</h3>
-        <ol class="world-orientation-list">
-          ${steps
-            .map(
-              ([title, copy]) => `
-                <li><strong>${escapeHTML(title)}</strong><span>${escapeHTML(copy)}</span></li>`,
-            )
-            .join("")}
-        </ol>
-        <div class="world-notice world-notice-safe">
-          <strong>Non-custodial by design</strong>
-          <span>User-owned funds and wallet keys remain on the user’s device. Community-pool funds, pending allocations, and completed on-chain transfers are separate states.</span>
-        </div>
-        <div class="world-notice">
-          <strong>One-click Cloudflare setup stays on your computer</strong>
-          <span>The hosted World never accepts, proxies, or stores a Cloudflare API token. Open the installed Qt Control Node and enter the scoped session-only token there.</span>
-        </div>
-        <div class="world-detail-actions">
-          <a href="forkmesh://control/cloudflare" data-world-local-qt-link>Open local Qt Cloudflare setup</a>
-          <a href="/docs/qt-client/#cloudflare">Desktop setup guide</a>
-        </div>
-      </section>`;
   }
 
   mirrorNodeTechnicalHTML(node) {

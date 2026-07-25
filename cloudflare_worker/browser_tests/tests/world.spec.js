@@ -1919,7 +1919,7 @@ test("detail panels overlay the desktop without dimming or reframing the World",
     };
   });
   const trigger = page.locator(
-    '.world-map [data-world-landmark="information"]',
+    '.world-map [data-world-landmark="fountain"]',
   );
   await trigger.click();
   const detail = page.locator("[data-world-detail]");
@@ -1927,7 +1927,7 @@ test("detail panels overlay the desktop without dimming or reframing the World",
   await expect(detail).toHaveAttribute("role", "dialog");
   await expect(detail).toHaveAttribute("aria-modal", "false");
   await expect(
-    detail.getByRole("button", { name: "Close Information booth" }),
+    detail.getByRole("button", { name: "Close SOL reward fountain" }),
   ).toBeFocused();
 
   const openState = await page.locator("forkmesh-world").evaluate((shell) => {
