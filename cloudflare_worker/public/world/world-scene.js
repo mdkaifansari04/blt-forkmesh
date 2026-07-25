@@ -1972,17 +1972,35 @@ function createMirrorServerCabinet(THREE, node, id) {
         : online
           ? "#00cc44"
           : "#71837a";
-  const statusLight = new THREE.Mesh(
-    new THREE.SphereGeometry(0.12, 14, 10),
-    makeMaterial(THREE, statusColor, {
-      emissive: statusColor,
-      emissiveIntensity: online ? 1.4 : 0.25,
-      metalness: 0.22,
-      roughness: 0.26,
+  // A single beacon lamp sits on the cabinet roof; its color is the status.
+  // The lens is an unlit cylinder so the status reads as one flat, solid
+  // colour from every camera angle instead of shading into a gradient.
+  const statusLight = new THREE.Group();
+  const beaconBase = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.17, 0.19, 0.08, 20),
+    makeMaterial(THREE, "#35463e", {
+      metalness: 0.82,
+      roughness: 0.3,
     }),
   );
-  // A single status lamp sits on the cabinet roof; its color is the status.
-  statusLight.position.set(0, 3.43, 0);
+  beaconBase.position.y = 0.04;
+  statusLight.add(beaconBase);
+  const beaconLens = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.15, 0.15, 0.24, 20),
+    new THREE.MeshBasicMaterial({ color: statusColor, toneMapped: false }),
+  );
+  beaconLens.position.y = 0.2;
+  statusLight.add(beaconLens);
+  const beaconCap = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.16, 0.16, 0.05, 20),
+    makeMaterial(THREE, "#35463e", {
+      metalness: 0.82,
+      roughness: 0.3,
+    }),
+  );
+  beaconCap.position.y = 0.345;
+  statusLight.add(beaconCap);
+  statusLight.position.set(0, 3.29, 0);
   group.add(statusLight);
 
   const vent = new THREE.Mesh(
@@ -10074,13 +10092,8 @@ export function createWorldScene({
       }
     }
     if (!reducedMotion) {
-      nodeInfrastructure.forEach((pylon, id) => {
-        const phase = hashNumber(id) * 0.0001;
-        pylon.userData.signalRing.rotation.z = time * 0.0015 + phase;
-        pylon.userData.signalRing.scale.setScalar(
-          1 + Math.sin(time * 0.002 + phase) * 0.08,
-        );
-      });
+      // Node beacons intentionally hold a steady colour and size — no spin or
+      // pulse — so a status reads the same in a screenshot as it does live.
       botAgents.forEach((robot, id) => {
         const phase = hashNumber(id) * 0.0001;
         robot.position.y =
