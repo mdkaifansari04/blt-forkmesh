@@ -37,7 +37,7 @@ def test_renderer_exposes_bounded_on_demand_frame_and_draw_diagnostics():
     diagnostics = _section(
         SCENE,
         "  function getDiagnostics(",
-        "\n  function updateLandmarkConstruction",
+        "\n  function dispose(",
     )
     assert "diagnosticsFrameCount" in diagnostics
     assert "(frames * 1000) / elapsedMs" in diagnostics
