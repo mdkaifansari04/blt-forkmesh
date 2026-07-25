@@ -152,7 +152,6 @@ QWidget *MainWindow::buildWorktreesTab()
     m_worktreeDiffView = new QTextBrowser;
     m_worktreeDiffView->setObjectName("diffView");
     m_worktreeDiffView->setOpenExternalLinks(false);
-    m_worktreeDiffView->setLineWrapMode(QTextEdit::NoWrap);
     registerDiffView(m_worktreeDiffView);
 
     // Detail pane: a toolbar with a prominent "Merge into main" for the selected
@@ -1733,7 +1732,6 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchDiffView->setObjectName("diffView");
     m_branchDiffView->setOpenExternalLinks(false);
     m_branchDiffView->setOpenLinks(false); // we handle "viewed:" anchors ourselves
-    m_branchDiffView->setLineWrapMode(QTextEdit::NoWrap);
     connect(m_branchDiffView, &QTextBrowser::anchorClicked, this,
             &MainWindow::onBranchDiffAnchorClicked);
     registerDiffView(m_branchDiffView);

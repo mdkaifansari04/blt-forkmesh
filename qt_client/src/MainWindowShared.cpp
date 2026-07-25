@@ -910,7 +910,8 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
         if (!viewed) {
             html += diffImagePreviewHtml(dir, base, head, f);
             html += QStringLiteral(
-                "<table class='difftable' cellspacing='0' cellpadding='0'>");
+                "<table class='difftable' width='100%' cellspacing='0' "
+                "cellpadding='0'>");
         }
     };
     auto closeFile = [&] {
@@ -1142,8 +1143,8 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
             const QString newLn = hasAdd ? QString::number(newNo++) : QString();
             const QString delCls = hasDel ? QStringLiteral("del") : QString();
             const QString addCls = hasAdd ? QStringLiteral("add") : QString();
-            fileBody += QStringLiteral("<tr>%1<td class='code ocode %2'>%3</td>"
-                                       "%4<td class='code ncode %5'>%6</td></tr>")
+            fileBody += QStringLiteral("<tr>%1<td class='code ocode %2' width='49%'>%3</td>"
+                                       "%4<td class='code ncode %5' width='49%'>%6</td></tr>")
                             .arg(gut(delCls, oldLn, QStringLiteral("old")), delCls,
                                  hasDel ? emitText(pendingDel.at(i)) : QStringLiteral("&nbsp;"),
                                  gut(QStringLiteral("nln ") + addCls, newLn,
@@ -1164,7 +1165,8 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
         if (!viewed) {
             html += diffImagePreviewHtml(dir, base, head, f);
             html += QStringLiteral(
-                "<table class='difftable' cellspacing='0' cellpadding='0'>");
+                "<table class='difftable' width='100%' cellspacing='0' "
+                "cellpadding='0'>");
         }
     };
     auto closeFile = [&] {
@@ -1295,8 +1297,8 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
             const QString ln1 = QString::number(oldNo++);
             const QString ln2 = QString::number(newNo++);
             fileBody += QStringLiteral(
-                            "<tr>%1<td class='code ocode'>%3</td>"
-                            "%2<td class='code ncode'>%3</td></tr>")
+                            "<tr>%1<td class='code ocode' width='49%'>%3</td>"
+                            "%2<td class='code ncode' width='49%'>%3</td></tr>")
                             .arg(gut(QString(), ln1, QStringLiteral("old")),
                                  gut(QStringLiteral("nln"), ln2, QStringLiteral("new")),
                                  emitText(text));

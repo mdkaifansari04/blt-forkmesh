@@ -4112,39 +4112,10 @@ class ForkMeshWorld extends HTMLElement {
       contextResult.status === "fulfilled" ? contextResult.value : null;
     const ticket =
       ticketResult.status === "fulfilled" ? ticketResult.value : null;
-    if (
-      ticket?.authenticated === true &&
-      ACCOUNT_STATUS_VALUES.has(String(ticket.accountStatus || "")) &&
-      ticket.accountStatus !== "Guest"
-    ) {
-      this.sessionAuthenticated = true;
-      this.identity.name = sanitizePresenceText(
-        ticket.name,
-        this.identity.name,
-        24,
-      );
-      this.identity.accountStatus = String(ticket.accountStatus);
-      this.identity.isAdmin = ticket.isAdmin === true;
-      this.identity.nodes = Array.from(
-        {
-          length: Math.max(
-            0,
-            Math.min(6, Number(ticket.nodeCount) || 0),
-          ),
-        },
-        () => "node",
-      );
-      this.worldTicket = String(ticket.ticket || "");
-      this.worldTicketExpires = Number(ticket.expiresAt || 0);
+    if (this.applyWorldTicketIdentity(ticket)) {
       this.applyWorldActivityTicket(ticket);
     } else {
-      this.sessionAuthenticated = false;
-      this.identity.accountStatus = "Guest";
-      this.identity.isAdmin = false;
-      this.identity.nodes = [];
-      this.worldTicket = "";
-      this.worldTicketExpires = 0;
-      this.resetWorldActivity();
+      this.clearWorldTicketIdentity();
     }
     const country = String(context?.country || context?.countryCode || "")
       .trim()
@@ -14654,6 +14625,56 @@ class ForkMeshWorld extends HTMLElement {
     this.syncMemberLounge();
   }
 
+  // A world ticket is the only account proof peers ever receive: the relay
+  // stamps the signed name and account status onto this connection, and a
+  // browser without a live ticket joins as an anonymous "Guest ####" even
+  // while it is signed in — which also breaks chat bubbles, because they are
+  // matched to an avatar by display name. Applying the identity therefore has
+  // to stand alone; it must never be gated on the optional activity-accounting
+  // fields (applyWorldActivityTicket) that ride along in the same response.
+  applyWorldTicketIdentity(ticket) {
+    if (
+      !this.identity ||
+      ticket?.authenticated !== true ||
+      !ACCOUNT_STATUS_VALUES.has(String(ticket.accountStatus || "")) ||
+      ticket.accountStatus === "Guest"
+    ) {
+      return false;
+    }
+    this.sessionAuthenticated = true;
+    this.identity.name = sanitizePresenceText(
+      ticket.name,
+      this.identity.name,
+      24,
+    );
+    this.identity.accountStatus = String(ticket.accountStatus);
+    this.identity.isAdmin = ticket.isAdmin === true;
+    this.identity.nodes = Array.from(
+      {
+        length: Math.max(
+          0,
+          Math.min(6, Number(ticket.nodeCount) || 0),
+        ),
+      },
+      () => "node",
+    );
+    this.worldTicket = String(ticket.ticket || "");
+    this.worldTicketExpires = Number(ticket.expiresAt || 0);
+    return true;
+  }
+
+  clearWorldTicketIdentity() {
+    this.sessionAuthenticated = false;
+    if (this.identity) {
+      this.identity.accountStatus = "Guest";
+      this.identity.isAdmin = false;
+      this.identity.nodes = [];
+    }
+    this.worldTicket = "";
+    this.worldTicketExpires = 0;
+    this.resetWorldActivity();
+  }
+
   applyWorldActivityTicket(ticket) {
     const total = Number(ticket?.totalActiveMs);
     const observedAt = Number(ticket?.activityObservedAt);
@@ -14766,11 +14787,11 @@ class ForkMeshWorld extends HTMLElement {
 
   async refreshWorldTicket() {
     if (this.destroyed || document.hidden) return;
-    if (!readSession()?.sessionToken) {
-      this.sessionAuthenticated = false;
-      this.worldTicket = "";
-      this.worldTicketExpires = 0;
-      this.resetWorldActivity();
+    // A browser authenticated by the session cookie alone keeps no bearer
+    // token in localStorage, so an already-authenticated page must still be
+    // allowed to renew — otherwise its next reconnect drops to guest.
+    if (!readSession()?.sessionToken && !this.sessionAuthenticated) {
+      this.clearWorldTicketIdentity();
       return;
     }
     try {
@@ -14786,31 +14807,32 @@ class ForkMeshWorld extends HTMLElement {
         timeout: 5000,
         cache: "no-store",
       });
-      if (
-        ticket?.authenticated === true &&
-        ACCOUNT_STATUS_VALUES.has(String(ticket.accountStatus || "")) &&
-        ticket.accountStatus !== "Guest"
-      ) {
-        this.sessionAuthenticated = true;
-        if (this.applyWorldActivityTicket(ticket)) {
-          this.worldTicket = String(ticket.ticket || "");
-          this.worldTicketExpires = Number(ticket.expiresAt || 0);
+      const previousName = this.identity?.name;
+      const previousStatus = this.identity?.accountStatus;
+      if (this.applyWorldTicketIdentity(ticket)) {
+        this.applyWorldActivityTicket(ticket);
+        // A ticket that failed (or timed out) during bootstrap leaves a
+        // signed-in visitor stranded under the placeholder guest name. Repair
+        // the presence the moment a later ticket arrives, and republish it so
+        // peers relabel the avatar instead of waiting for a reconnect.
+        if (
+          this.identity.name !== previousName ||
+          this.identity.accountStatus !== previousStatus
+        ) {
+          this.updateIdentityUI();
+          this.world?.updateIdentity(
+            publicIdentity(this.identity, this.settings),
+          );
+          this.sendPresence({ type: "presence" });
+          this.broadcastLocalPresence();
         }
-        this.identity.isAdmin = ticket.isAdmin === true;
         return;
       }
-      this.worldTicket = "";
-      this.worldTicketExpires = 0;
-      this.sessionAuthenticated = false;
-      this.resetWorldActivity();
-      if (this.identity) this.identity.isAdmin = false;
+      this.clearWorldTicketIdentity();
     } catch (_) {
       // Keep a still-valid ticket for reconnect; clear only an expired one.
       if (this.worldTicketExpires <= Date.now()) {
-        this.sessionAuthenticated = false;
-        this.worldTicket = "";
-        this.worldTicketExpires = 0;
-        this.resetWorldActivity();
+        this.clearWorldTicketIdentity();
       }
     }
   }
@@ -14818,7 +14840,10 @@ class ForkMeshWorld extends HTMLElement {
   startWorldTicketRefresh() {
     window.clearInterval(this.worldTicketTimer);
     this.worldTicketTimer = window.setInterval(() => {
-      if (!document.hidden && readSession()?.sessionToken) {
+      if (
+        !document.hidden &&
+        (readSession()?.sessionToken || this.sessionAuthenticated)
+      ) {
         this.refreshWorldTicket();
       }
     }, WORLD_TICKET_REFRESH_MS);
@@ -14871,10 +14896,17 @@ class ForkMeshWorld extends HTMLElement {
     this.setupBroadcastChannel();
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     if (
-      readSession()?.sessionToken &&
+      (readSession()?.sessionToken || this.sessionAuthenticated) &&
       (!this.worldTicket || this.worldTicketExpires <= Date.now() + 5000)
     ) {
       await this.refreshWorldTicket();
+    }
+    // An expired ticket proves nothing: the relay drops the claim and this
+    // connection would join as a guest under a stale name. Reconnect without
+    // it rather than pinning the guest label onto a signed-in visitor.
+    if (this.worldTicket && this.worldTicketExpires <= Date.now()) {
+      this.worldTicket = "";
+      this.worldTicketExpires = 0;
     }
     if (this.destroyed || document.hidden) {
       this.presenceConnecting = false;

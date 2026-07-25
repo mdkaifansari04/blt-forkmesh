@@ -38,27 +38,32 @@ def test_global_static_security_headers_are_enforced():
     assert "base-uri 'self'" in HEADERS
 
 
-def test_only_chat_documents_allow_same_origin_world_frames():
+def test_only_chat_and_world_documents_allow_same_origin_frames():
     global_rule = _rule("/*")
     assert "frame-ancestors 'none'" in global_rule
     assert "X-Frame-Options: DENY" in global_rule
     assert "https://static.cloudflareinsights.com" in global_rule
 
-    for path in ("/dashboard/chat*", "/chat", "/chat.html"):
-        chat_rule = _rule(path)
-        assert "! Content-Security-Policy" in chat_rule
-        assert "frame-ancestors 'self'" in chat_rule
-        assert "frame-ancestors 'none'" not in chat_rule
-        assert "! X-Frame-Options" in chat_rule
-        assert "X-Frame-Options: SAMEORIGIN" in chat_rule
-        assert "X-Frame-Options: DENY" not in chat_rule
-        assert "https://cdn.jsdelivr.net" in chat_rule
-        assert "https://cdn.tailwindcss.com" in chat_rule
-        assert "https://static.cloudflareinsights.com" in chat_rule
+    # Chat renders inside World frames; World renders inside the site-footer
+    # band on every page. Both stay same-origin only.
+    for path in ("/dashboard/chat*", "/chat", "/chat.html", "/world", "/world/*"):
+        rule = _rule(path)
+        assert "! Content-Security-Policy" in rule
+        assert "frame-ancestors 'self'" in rule
+        assert "frame-ancestors 'none'" not in rule
+        assert "! X-Frame-Options" in rule
+        assert "X-Frame-Options: SAMEORIGIN" in rule
+        assert "X-Frame-Options: DENY" not in rule
+        assert "https://cdn.jsdelivr.net" in rule
+        assert "https://static.cloudflareinsights.com" in rule
 
-    assert HEADERS.count("frame-ancestors 'self'") == 3
-    assert HEADERS.count("X-Frame-Options: SAMEORIGIN") == 3
-    assert "https://cdn.tailwindcss.com" not in global_rule
+    # The World application shell must never be cached across deployments.
+    for path in ("/world", "/world/*"):
+        assert "Cache-Control: no-store, max-age=0, must-revalidate" in _rule(path)
+
+    assert HEADERS.count("frame-ancestors 'self'") == 5
+    assert HEADERS.count("X-Frame-Options: SAMEORIGIN") == 5
+    assert "https://cdn.tailwindcss.com" not in HEADERS
 
 
 def test_policy_does_not_grant_sensitive_device_capabilities():
