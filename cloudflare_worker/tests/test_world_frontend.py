@@ -1705,3 +1705,27 @@ def test_world_updates_arrive_via_a_gentle_in_place_reload():
     assert "const WORLD_UPDATE_CHECK_MIN_GAP_MS = 60 * 1000;" in APP
     assert "sessionStorage.getItem(WORLD_UPDATE_RELOADED_REV_KEY)" in APP
     assert "window.clearInterval(this.updateCheckTimer);" in APP
+
+
+def test_arrival_grid_sign_is_a_front_plaque_with_visit_counters():
+    # The Arrival Grid sign stands at the grid's front edge as a physical
+    # plaque (no more floating sprite) and shows aggregate visit counters:
+    # all-time total, today vs the same time yesterday, and the past hour vs
+    # the same hour yesterday.
+    assert "function makeArrivalPlaque" in SCENE
+    assert "function arrivalPlaqueTexture" in SCENE
+    assert 'plaque.name = "world-arrival-plaque"' in SCENE
+    assert "arrivalPlaque.position.set(0, 0, 15.2)" in SCENE
+    assert "arrivalLabel" not in SCENE
+    assert '"TOTAL VISITORS"' in SCENE
+    assert '"TODAY"' in SCENE
+    assert '"PAST HOUR"' in SCENE
+    assert "function updateArrivalStats" in SCENE
+    assert "yesterdaySameTime" in SCENE
+    assert "pastHourYesterday" in SCENE
+    # The client feeds the plaque from the public aggregate endpoint; the
+    # response carries counters only, so it is shared and cacheable.
+    assert '"/api/world/visitors"' in APP
+    assert "updateArrivalStats" in APP
+    assert '"/api/world/visitors", "/api/world/visitors/"' in ENTRY
+    assert "record_world_visit" in ENTRY

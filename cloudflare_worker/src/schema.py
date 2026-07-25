@@ -876,6 +876,15 @@ SCHEMA_STATEMENTS = [
         expires_at INTEGER NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_world_inactive_presence_expiry "
     "ON world_inactive_presence(expires_at)",
+    # Aggregate-only Town Square arrival odometer for the Arrival Grid plaque
+    # (migration 0074). Each accepted world join adds one to a coarse
+    # 10-minute UTC bucket; rows never carry a visitor id, country, IP, or
+    # session field, so the plaque totals stay outside the world's no-history
+    # privacy contract. Buckets older than two days fold into the -1 archive
+    # row, keeping the table bounded.
+    """CREATE TABLE IF NOT EXISTS world_visit_stats (
+        bucket_start INTEGER PRIMARY KEY,
+        visits INTEGER NOT NULL DEFAULT 0)""",
     # Public-only, consent-attested social directory (migrations 0052/0061).
     # `data` is not encrypted because the validator permits only fields that
     # are intentionally public; account/follower/private activity data has no

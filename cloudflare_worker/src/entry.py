@@ -3165,6 +3165,119 @@ async def world_inactive_handler(env, request):
     )
 
 
+# --- Town Square arrival odometer -------------------------------------------
+# Aggregate-only visit counters for the Arrival Grid plaque. Each accepted
+# world join adds one to a coarse 10-minute UTC bucket; the table never holds
+# a visitor id, country, IP, or session field, so the plaque can show totals
+# without weakening the world object's no-history privacy contract. Live
+# buckets cover a touch over two days (today plus all the yesterday windows
+# the plaque compares against); older buckets fold into one archive row so
+# the table stays bounded.
+WORLD_VISIT_BUCKET_MS = 10 * 60 * 1000
+WORLD_VISIT_RETAIN_MS = 50 * 60 * 60 * 1000
+WORLD_VISIT_ARCHIVE_BUCKET = -1
+WORLD_VISITORS_CACHE_KEY = "https://forkmesh.internal/api/world/visitors"
+WORLD_VISITORS_TTL = 60
+
+
+async def record_world_visit(env, now=None):
+    """Count one anonymous Town Square arrival in the current time bucket."""
+    await ensure_schema(env)
+    if now is None:
+        now = int(Date.now())
+    bucket = now - (now % WORLD_VISIT_BUCKET_MS)
+    await d1_run(
+        env,
+        "INSERT INTO world_visit_stats (bucket_start, visits) VALUES (?,1) "
+        "ON CONFLICT(bucket_start) DO UPDATE SET visits=visits+1",
+        bucket)
+
+
+def world_visit_summary(rows, now):
+    """Fold visit buckets into the Arrival Grid plaque's counters.
+
+    Day boundaries are UTC (the shared world clock), and the two "yesterday"
+    comparisons are windows of the same length as their live counterpart:
+    yesterdaySameTime covers yesterday's midnight up to this time yesterday,
+    and pastHourYesterday covers the same 60 minutes one day earlier.
+    """
+    day_ms = 24 * 60 * 60 * 1000
+    hour_ms = 60 * 60 * 1000
+    midnight = now - (now % day_ms)
+    summary = {
+        "total": 0,
+        "today": 0,
+        "yesterday": 0,
+        "yesterdaySameTime": 0,
+        "pastHour": 0,
+        "pastHourYesterday": 0,
+    }
+    for row in rows or []:
+        try:
+            bucket = int(row.get("bucket_start"))
+            visits = int(row.get("visits"))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if visits <= 0:
+            continue
+        summary["total"] += visits
+        if bucket == WORLD_VISIT_ARCHIVE_BUCKET:
+            continue
+        if bucket >= midnight:
+            summary["today"] += visits
+        elif bucket >= midnight - day_ms:
+            summary["yesterday"] += visits
+            if bucket < now - day_ms:
+                summary["yesterdaySameTime"] += visits
+        if bucket >= now - hour_ms:
+            summary["pastHour"] += visits
+        if now - day_ms - hour_ms <= bucket < now - day_ms:
+            summary["pastHourYesterday"] += visits
+    return summary
+
+
+async def world_visitors_handler(env, request):
+    """Public aggregate arrival counts for the Arrival Grid plaque."""
+    if method_name(request) != "GET":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            extra_headers={"allow": "GET"})
+    cached = await edge_cache_match(WORLD_VISITORS_CACHE_KEY)
+    if cached is not None:
+        return cached
+    await ensure_schema(env)
+    now = int(Date.now())
+    # Fold expired buckets into the archive row so the all-time total keeps
+    # counting while the live table stays a bounded two-day window. Safe to
+    # run alongside joins: increments only ever touch the current bucket.
+    cutoff = now - WORLD_VISIT_RETAIN_MS
+    expired = await d1_first(
+        env,
+        "SELECT COALESCE(SUM(visits),0) AS visits FROM world_visit_stats "
+        "WHERE bucket_start>=0 AND bucket_start<?",
+        cutoff)
+    expired_visits = int((expired or {}).get("visits") or 0)
+    if expired_visits > 0:
+        await d1_run(
+            env,
+            "INSERT INTO world_visit_stats (bucket_start, visits) "
+            "VALUES (?,?) ON CONFLICT(bucket_start) DO UPDATE SET "
+            "visits=visits+excluded.visits",
+            WORLD_VISIT_ARCHIVE_BUCKET, expired_visits)
+        await d1_run(
+            env,
+            "DELETE FROM world_visit_stats "
+            "WHERE bucket_start>=0 AND bucket_start<?",
+            cutoff)
+    rows = await d1_all(
+        env, "SELECT bucket_start, visits FROM world_visit_stats")
+    payload = {"ok": True, "now": now}
+    payload.update(world_visit_summary(rows, now))
+    resp = json_response(payload, cache_seconds=WORLD_VISITORS_TTL)
+    await edge_cache_put(WORLD_VISITORS_CACHE_KEY, resp)
+    return resp
+
+
 async def _chat_channel_passphrase(env, channel_id, key_version):
     secret = (
         _require_data_secret(env)
@@ -29351,6 +29464,9 @@ class Default(WorkerEntrypoint):
         if url.path in ("/api/world/inactive", "/api/world/inactive/"):
             return await world_inactive_handler(self.env, request)
 
+        if url.path in ("/api/world/visitors", "/api/world/visitors/"):
+            return await world_visitors_handler(self.env, request)
+
         if url.path in (
                 "/api/world/organizations",
                 "/api/world/organizations/"):
@@ -29434,6 +29550,14 @@ class Default(WorkerEntrypoint):
                     status=403,
                     cache_control="no-store, max-age=0, must-revalidate",
                 )
+            try:
+                # Aggregate-only odometer for the Arrival Grid plaque,
+                # counted here so the world object itself stays free of any
+                # storage access. Reconnects count as fresh arrivals — peer
+                # ids are ephemeral, so there is nothing to dedupe against.
+                await record_world_visit(self.env)
+            except Exception:
+                pass
             world_id = self.env.FORKMESH_WORLD.idFromName("town-square-v1")
             last_error = None
             for _attempt in range(2):

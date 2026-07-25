@@ -3031,6 +3031,7 @@ class ForkMeshWorld extends HTMLElement {
     this.federatedInstances = [];
     this.communityPlacement = null;
     this.fediverseMentions = [];
+    this.visitorStats = null;
     this.activeFediverseMention = null;
     this.organizations = [];
     this.activeOffice = null;
@@ -3391,6 +3392,9 @@ class ForkMeshWorld extends HTMLElement {
         liveNodeRecords(this.network, this.mirrorCatalogs),
       );
       this.world.updateFederatedInstances?.(this.federatedInstances);
+      if (this.visitorStats) {
+        this.world.updateArrivalStats?.(this.visitorStats);
+      }
       this.world.updateBots(this.botDirectory);
       this.world.updateFediverseDirectory(this.fediverseDirectory);
       this.world.updateMediaSpaces?.(this.mediaSpaces, this.mediaRoom);
@@ -3687,6 +3691,7 @@ class ForkMeshWorld extends HTMLElement {
       placementResult,
       mentionResult,
       membersResult,
+      visitorsResult,
     ] =
       await Promise.allSettled([
         this.fetchJSON("/api/network/overview", { auth: false }),
@@ -3773,6 +3778,12 @@ class ForkMeshWorld extends HTMLElement {
           cache: "no-store",
         }),
         this.fetchJSON("/api/accounts/users", {
+          auth: false,
+          timeout: 5000,
+        }),
+        // Edge-cached for a minute server-side; no per-visitor variance, so
+        // the browser cache may reuse it too.
+        this.fetchJSON("/api/world/visitors", {
           auth: false,
           timeout: 5000,
         }),
@@ -3953,6 +3964,14 @@ class ForkMeshWorld extends HTMLElement {
             }))
             .filter((user) => user.name)
         : [];
+    this.visitorStats =
+      visitorsResult.status === "fulfilled" &&
+      visitorsResult.value?.ok === true
+        ? visitorsResult.value
+        : this.visitorStats;
+    if (this.visitorStats) {
+      this.world?.updateArrivalStats?.(this.visitorStats);
+    }
     const liveMirrors = liveNodeRecords(this.network, this.mirrorCatalogs);
     const rewardAddress = String(this.rewardState?.address || "").trim();
     this.landmarkCapabilities.fountain = {
