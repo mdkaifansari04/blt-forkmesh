@@ -25,13 +25,12 @@ const PLAYER_DASH_SPEED = 48;
 const PLAYER_DASH_ARRIVE_DISTANCE = 0.3;
 const CAMERA_OFFSET = [17, 16, 21];
 const CAMERA_DISTANCE = Math.hypot(...CAMERA_OFFSET);
-// Keep a useful strategic overview without pulling the finite 88-unit ground
-// into a small island against the clear-color background. At 3.2x the camera is
-// about 101 units from its target and the opposite ground edge remains inside
-// the 240-unit far plane; the former 8x limit put the target itself beyond it.
-const CAMERA_ZOOM_MIN = 0.12;
-const CAMERA_ZOOM_MAX = 3.2;
-const CAMERA_FAR_PLANE = 240;
+// Let players pull all the way back to a map-scale view where the World is a
+// small speck. The enlarged far plane keeps that overview visible instead of
+// clipping the ground and distant landmarks.
+const CAMERA_ZOOM_MIN = 0.06;
+const CAMERA_ZOOM_MAX = 28;
+const CAMERA_FAR_PLANE = 1200;
 const CAMERA_LOOK_SENSITIVITY = 0.0022;
 const CAMERA_PITCH_MIN = 0.08;
 const CAMERA_PITCH_MAX = 1.24;
@@ -3194,6 +3193,127 @@ function officeKeypadButtonTexture(THREE, label) {
   });
 }
 
+function officeGuideBoardTexture(THREE) {
+  return canvasTexture(THREE, 1024, 704, (context) => {
+    context.fillStyle = "#071b15";
+    context.fillRect(0, 0, 1024, 704);
+    context.strokeStyle = "#78e9b0";
+    context.lineWidth = 12;
+    context.strokeRect(10, 10, 1004, 684);
+    context.fillStyle = "#d9ffea";
+    context.font = '800 62px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("OFFICE GUIDE", 58, 96);
+    context.fillStyle = "#9bd1b5";
+    context.font = '600 33px "ForkMesh Mono", ui-monospace, monospace';
+    [
+      "1  ENTER THROUGH THE FRONT DOOR",
+      "2  CHOOSE #GENERAL ON THIS WALL",
+      "3  CLICK A CHAIR TO TAKE A SEAT",
+      "4  USE THE TASK BOARD FOR ORG WORK",
+    ].forEach((line, index) => context.fillText(line, 58, 196 + index * 92));
+    context.fillStyle = "#f7d58a";
+    context.font = '700 28px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("MEETINGS AND TASKS STAY INSIDE THE OFFICE.", 58, 600);
+  });
+}
+
+function worldBulletinTexture(THREE, events = [], offset = 0) {
+  const allEntries = (Array.isArray(events) ? events : [])
+    .filter((event) => event && String(event.title || "").trim())
+    // Newest alerts always take priority at the top of the board.
+    .sort((left, right) => Date.parse(right.startsAt || 0) - Date.parse(left.startsAt || 0));
+  const start = clamp(Number(offset) || 0, 0, Math.max(0, allEntries.length - 10));
+  const entries = allEntries.slice(start, start + 10);
+  const wrapText = (context, text, x, y, maxWidth, lineHeight, maxLines = Infinity) => {
+    const words = String(text || "").split(/\s+/).filter(Boolean);
+    let line = "";
+    let lines = 0;
+    for (const word of words) {
+      const candidate = line ? `${line} ${word}` : word;
+      if (line && context.measureText(candidate).width > maxWidth) {
+        context.fillText(line, x, y + lines * lineHeight);
+        lines += 1;
+        if (lines >= maxLines) return lines;
+        line = word;
+      } else {
+        line = candidate;
+      }
+    }
+    if (line && lines < maxLines) {
+      context.fillText(line, x, y + lines * lineHeight);
+      lines += 1;
+    }
+    return lines;
+  };
+  const formatTime = (value) => {
+    const timestamp = Date.parse(value || "");
+    return Number.isFinite(timestamp)
+      ? new Date(timestamp).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })
+      : "Time to be announced";
+  };
+  // Stay within common mobile GPU texture limits (4096px) even though this is
+  // a deliberately oversized physical board.
+  return canvasTexture(THREE, 1536, 4096, (context) => {
+    context.scale(0.75, 2 / 3);
+    context.fillStyle = "#0b1820";
+    context.fillRect(0, 0, 2048, 6144);
+    context.strokeStyle = "#7ed9ff";
+    context.lineWidth = 20;
+    context.strokeRect(16, 16, 2016, 6112);
+    context.fillStyle = "#e5f8ff";
+    context.font = '800 108px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("WORLD BULLETIN", 84, 142);
+    context.fillStyle = "#8eddf7";
+    context.font = '700 42px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("PUBLIC ALERTS · LIVE COMMUNITY EVENTS · NEWEST FIRST", 86, 210);
+    context.strokeStyle = "rgba(126,217,255,0.42)";
+    context.lineWidth = 3;
+    context.beginPath();
+    context.moveTo(86, 250);
+    context.lineTo(1960, 250);
+    context.stroke();
+    if (!entries.length) {
+      context.fillStyle = "#c3dbe3";
+      context.font = '700 58px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("NO ACTIVE PUBLIC ALERTS", 86, 430);
+      context.font = '600 38px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("THE COMMUNITY SCHEDULE WILL APPEAR HERE.", 86, 520);
+      return;
+    }
+    entries.forEach((event, index) => {
+      const y = 350 + index * 565;
+      context.fillStyle = "#f7d58a";
+      context.font = '800 54px "ForkMesh Mono", ui-monospace, monospace';
+      wrapText(context, `${start + index + 1}. ${event.title}`, 86, y, 1840, 64, 2);
+      context.fillStyle = "#bad0d8";
+      context.font = '700 35px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(`${event.type || "Community"} · ${event.destination || "Town Square"}`, 110, y + 150);
+      context.fillStyle = "#8eddf7";
+      context.font = '600 32px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(`START  ${formatTime(event.startsAt)}`, 110, y + 202);
+      context.fillText(`END    ${formatTime(event.endsAt)}`, 110, y + 248);
+      context.fillStyle = "#d5e6e9";
+      // Event descriptions are sanitized to 500 characters upstream. This
+      // compact body size fits that entire description in each of the ten
+      // slots rather than silently truncating the useful details.
+      context.font = '600 24px "ForkMesh Mono", ui-monospace, monospace';
+      wrapText(context, event.description || "Community event", 110, y + 308, 1780, 32);
+      context.strokeStyle = "rgba(126,217,255,0.28)";
+      context.beginPath();
+      context.moveTo(86, y + 520);
+      context.lineTo(1960, y + 520);
+      context.stroke();
+    });
+    context.fillStyle = "#8eddf7";
+    context.font = '700 32px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      `SHOWING ${start + 1}-${Math.min(start + 10, allEntries.length)} OF ${allEntries.length} · USE THE ▲ / ▼ CONTROLS OR SCROLL OVER THIS BOARD`,
+      86,
+      6090,
+    );
+  });
+}
+
 function createForkMeshOffice(THREE, position, interactive, animated) {
   const group = new THREE.Group();
   const wallThickness = 0.35;
@@ -3605,6 +3725,9 @@ export function createWorldScene({
   onOfficeProximity = () => {},
   onOfficeEnter = () => {},
   onOfficeTaskBoardSelect = () => {},
+  onOfficeMeetingBoardSelect = () => {},
+  onWorldBulletinSelect = () => {},
+  onRendererStateChange = () => {},
   onOfficeChairSelect = () => {},
   onOfficeMovement = () => {},
   onLocationChange = () => {},
@@ -3616,6 +3739,14 @@ export function createWorldScene({
   onPlayForkmeshSong = () => {},
   onCreateRepository = () => {},
 }) {
+  // Phones frequently expose a high-density screen to a comparatively small
+  // GPU.  Use the same scene, but avoid allocating multisample and shadow-map
+  // buffers that can make WebGL context creation fail outright on those
+  // devices.  Coarse pointer is capability-based, so a small desktop window
+  // keeps its full renderer.
+  const compactRenderer = Boolean(
+    window.matchMedia?.("(pointer: coarse)")?.matches,
+  );
   const scene = new THREE.Scene();
   scene.background = new THREE.Color("#174434");
   scene.fog = new THREE.FogExp2("#8ebaa8", 0.0085);
@@ -3629,28 +3760,47 @@ export function createWorldScene({
   camera.position.set(...CAMERA_OFFSET);
 
   const renderer = new THREE.WebGLRenderer({
-    antialias: true,
+    antialias: !compactRenderer,
     alpha: false,
-    powerPreference: "high-performance",
+    stencil: !compactRenderer,
+    powerPreference: compactRenderer ? "default" : "high-performance",
   });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.08;
-  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.enabled = !compactRenderer;
   renderer.shadowMap.type = THREE.PCFShadowMap;
   renderer.domElement.className = "world-canvas";
   renderer.domElement.setAttribute("aria-hidden", "true");
-  renderer.domElement.tabIndex = -1;
+  // The canvas is purely visual; leaving a tabindex (even -1) lets a pointer
+  // click move focus into an aria-hidden subtree.  A later dialog close then
+  // triggers the browser's hidden-focused-element accessibility warning.
+  renderer.domElement.removeAttribute("tabindex");
   renderer.domElement.dataset.cameraControl = "drag";
   renderer.domElement.dataset.cameraMode = "third-person";
   renderer.domElement.dataset.dragging = "false";
   container.appendChild(renderer.domElement);
+  const handleContextLost = () => {
+    onRendererStateChange("lost");
+  };
+  const handleContextRestored = () => {
+    resize();
+    onRendererStateChange("restored");
+  };
+  renderer.domElement.addEventListener(
+    "webglcontextlost",
+    handleContextLost,
+  );
+  renderer.domElement.addEventListener(
+    "webglcontextrestored",
+    handleContextRestored,
+  );
 
   const hemisphere = new THREE.HemisphereLight("#d5fff1", "#19362d", 2.1);
   scene.add(hemisphere);
   const sun = new THREE.DirectionalLight("#fff1c4", 3.4);
   sun.position.set(-24, 35, 18);
-  sun.castShadow = true;
+  sun.castShadow = !compactRenderer;
   // A 2k shadow map is disproportionately costly while the player is moving.
   // 1k keeps the soft, low-poly look while leaving far more frame budget for
   // input and world animation.
@@ -3669,6 +3819,58 @@ export function createWorldScene({
   const interactive = [];
   const animated = [];
   const landmarkObjects = new Map();
+
+  const worldBulletin = new THREE.Group();
+  worldBulletin.name = "forkmesh-world-bulletin";
+  // Keep this well outside the arrival / join grid: it is a destination, not
+  // another object visitors need to navigate around when they first arrive.
+  worldBulletin.position.set(-29, 0, 13.5);
+  let worldBulletinEvents = [];
+  let worldBulletinOffset = 0;
+  const bulletinFrame = new THREE.Mesh(
+    new THREE.BoxGeometry(14.2, 36.9, 0.42),
+    makeMaterial(THREE, "#163849", { metalness: 0.35, roughness: 0.44 }),
+  );
+  bulletinFrame.position.y = 18.7;
+  bulletinFrame.userData.interactive = "world-bulletin";
+  const bulletinFace = new THREE.Mesh(
+    new THREE.PlaneGeometry(13.55, 36.13),
+    new THREE.MeshBasicMaterial({
+      map: worldBulletinTexture(THREE),
+      toneMapped: false,
+    }),
+  );
+  bulletinFace.name = "forkmesh-world-bulletin-face";
+  bulletinFace.position.set(0, 18.7, 0.24);
+  bulletinFace.userData.interactive = "world-bulletin";
+  const makeBulletinControl = (label, direction, y) => {
+    const control = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.35, 1.35),
+      new THREE.MeshBasicMaterial({
+        map: canvasTexture(THREE, 256, 256, (context) => {
+          context.fillStyle = "#12384b";
+          context.fillRect(0, 0, 256, 256);
+          context.strokeStyle = "#7ed9ff";
+          context.lineWidth = 14;
+          context.strokeRect(8, 8, 240, 240);
+          context.fillStyle = "#e5f8ff";
+          context.font = '800 160px "ForkMesh Mono", ui-monospace, monospace';
+          context.textAlign = "center";
+          context.textBaseline = "middle";
+          context.fillText(label, 128, 136);
+        }),
+        toneMapped: false,
+      }),
+    );
+    control.position.set(5.9, y, 0.3);
+    control.userData.interactive = `world-bulletin-scroll-${direction}`;
+    return control;
+  };
+  const bulletinScrollUp = makeBulletinControl("▲", "up", 34.7);
+  const bulletinScrollDown = makeBulletinControl("▼", "down", 2.65);
+  worldBulletin.add(bulletinFrame, bulletinFace, bulletinScrollUp, bulletinScrollDown);
+  interactive.push(bulletinFrame, bulletinFace, bulletinScrollUp, bulletinScrollDown);
+  world.add(worldBulletin);
 
   const ground = new THREE.Mesh(
     new THREE.CircleGeometry(WORLD_GROUND_RADIUS, 128),
@@ -4268,6 +4470,18 @@ export function createWorldScene({
     officeMarketingTaskBoardFace,
   );
   officeInterior.add(officeMarketingTaskBoard);
+  const officeGuideBoard = new THREE.Mesh(
+    new THREE.PlaneGeometry(5.8, 3.98),
+    new THREE.MeshBasicMaterial({
+      map: officeGuideBoardTexture(THREE),
+      toneMapped: false,
+    }),
+  );
+  officeGuideBoard.name = "forkmesh-office-guide-board";
+  officeGuideBoard.position.set(4.65, 3.4, -OFFICE_FRONT_Z + 0.42);
+  officeGuideBoard.userData.interactive = "office-meeting-board";
+  interactive.push(officeGuideBoard);
+  officeInterior.add(officeGuideBoard);
   const officeRoomSign = makeLabelSprite(
     THREE,
     "FORKMESH OFFICE",
@@ -5077,6 +5291,36 @@ export function createWorldScene({
     officeMarketingTaskBoard.userData.taskState = snapshot.state;
     officeMarketingTaskBoard.userData.taskCount = snapshot.tasks.length;
     return snapshot;
+  }
+
+  function updateWorldBulletin(events = []) {
+    const face = worldBulletin.getObjectByName("forkmesh-world-bulletin-face");
+    if (!face?.material) return false;
+    worldBulletinEvents = Array.isArray(events) ? events : [];
+    worldBulletinOffset = clamp(
+      worldBulletinOffset,
+      0,
+      Math.max(0, worldBulletinEvents.length - 10),
+    );
+    face.material.map?.dispose?.();
+    face.material.map = worldBulletinTexture(
+      THREE,
+      worldBulletinEvents,
+      worldBulletinOffset,
+    );
+    face.material.needsUpdate = true;
+    return true;
+  }
+
+  function scrollWorldBulletin(direction) {
+    const nextOffset = clamp(
+      worldBulletinOffset + direction,
+      0,
+      Math.max(0, worldBulletinEvents.length - 10),
+    );
+    if (nextOffset === worldBulletinOffset) return false;
+    worldBulletinOffset = nextOffset;
+    return updateWorldBulletin(worldBulletinEvents);
   }
 
   function enterOfficeMeeting({
@@ -7353,20 +7597,6 @@ export function createWorldScene({
     loadingTail.visible = Boolean(world.userData.repositorySizeLoading);
     layer.add(loadingTail);
 
-    const perimeter = new THREE.Mesh(
-      new THREE.TorusGeometry(outerRadius + 0.1, 0.055, 8, 72),
-      makeMaterial(THREE, "#9ef7c6", {
-        emissive: "#2ca76c",
-        emissiveIntensity: 0.86,
-        metalness: 0.25,
-        roughness: 0.28,
-      }),
-    );
-    perimeter.name = "repository-size-map-perimeter";
-    perimeter.userData.loading = Boolean(world.userData.repositorySizeLoading);
-    perimeter.position.z = 0.04;
-    layer.add(perimeter);
-
     map.segments.forEach((segment, index) => {
       const radialGap = 0.025;
       const inner =
@@ -7988,8 +8218,8 @@ export function createWorldScene({
     const next = Number(value);
     if (!Number.isFinite(next)) return cameraZoom;
     if (cameraMode === "first-person") {
-      firstPersonZoom = clamp(next, 0.45, 3);
-      camera.fov = clamp(44 / firstPersonZoom, 18, 92);
+      firstPersonZoom = clamp(next, 0.25, 5);
+      camera.fov = clamp(44 / firstPersonZoom, 10, 110);
       camera.updateProjectionMatrix();
       return firstPersonZoom;
     }
@@ -8229,6 +8459,25 @@ export function createWorldScene({
       });
       return;
     }
+    if (hit?.object?.userData?.interactive === "world-bulletin-scroll-up") {
+      scrollWorldBulletin(-1);
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "world-bulletin-scroll-down") {
+      scrollWorldBulletin(1);
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "world-bulletin") {
+      onWorldBulletinSelect();
+      return;
+    }
+    if (
+      officeSceneMode !== "town" &&
+      hit?.object?.userData?.interactive === "office-meeting-board"
+    ) {
+      onOfficeMeetingBoardSelect();
+      return;
+    }
     if (
       officeSceneMode === "meeting" &&
       hit?.object?.userData?.interactive === "office-chair"
@@ -8432,6 +8681,15 @@ export function createWorldScene({
           : 1);
     if (!Number.isFinite(deltaPixels) || deltaPixels === 0) return;
     event.preventDefault();
+    pointerCoordinates(event);
+    raycaster.setFromCamera(pointer, camera);
+    const bulletinHit = raycaster
+      .intersectObjects([bulletinFrame, bulletinFace, bulletinScrollUp, bulletinScrollDown], false)
+      .find(({ object }) => objectIsEffectivelyVisible(object));
+    if (bulletinHit) {
+      scrollWorldBulletin(Math.sign(deltaPixels));
+      return;
+    }
     const currentZoom =
       cameraMode === "first-person" ? firstPersonZoom : cameraZoom;
     setCameraZoom(currentZoom * Math.exp(deltaPixels * 0.0015));
@@ -8498,14 +8756,19 @@ export function createWorldScene({
   window.addEventListener("keyup", handleKeyUp);
   window.addEventListener("blur", handleWindowBlur);
 
-  const resizeObserver = new ResizeObserver(() => {
+  const resize = () => {
     const rect = container.getBoundingClientRect();
     const width = Math.max(1, Math.floor(rect.width));
     const height = Math.max(1, Math.floor(rect.height));
     // Keep the drawing buffer deliberately modest. The previous 1.75 cap made
     // the GPU shade over three times as many pixels as a 1x canvas on dense
     // displays, which showed up as movement hitching.
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, width < 700 ? 1.1 : 1.35));
+    renderer.setPixelRatio(
+      Math.min(
+        window.devicePixelRatio || 1,
+        compactRenderer ? 1 : width < 700 ? 1.1 : 1.35,
+      ),
+    );
     renderer.setSize(width, height, false);
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
@@ -8516,8 +8779,15 @@ export function createWorldScene({
     if (running && !disposed) {
       renderer.render(scene, camera);
     }
-  });
-  resizeObserver.observe(container);
+  };
+  // ResizeObserver is unavailable in older mobile WebViews.  A window resize
+  // listener still gives those browsers a correctly sized, working World.
+  const resizeObserver =
+    typeof ResizeObserver === "function" ? new ResizeObserver(resize) : null;
+  resizeObserver?.observe(container);
+  window.addEventListener("resize", resize, { passive: true });
+  window.visualViewport?.addEventListener("resize", resize, { passive: true });
+  resize();
 
   function animate(time) {
     if (!running || disposed) return;
@@ -8544,16 +8814,6 @@ export function createWorldScene({
       if (spark?.material?.emissive) {
         spark.material.emissiveIntensity = 1.45 + Math.sin(time * 0.02) * 0.75;
       }
-    }
-    const repositoryRing = world.userData.repositorySizeLayer?.getObjectByName(
-      "repository-size-map-perimeter",
-    );
-    if (repositoryRing?.userData.loading) {
-      repositoryRing.rotation.z = time * 0.004;
-      repositoryRing.scale.setScalar(1 + Math.sin(time * 0.012) * 0.055);
-    } else if (repositoryRing) {
-      repositoryRing.rotation.z = 0;
-      repositoryRing.scale.setScalar(1);
     }
     if (!reducedMotion) {
       nodeInfrastructure.forEach((pylon, id) => {
@@ -8770,11 +9030,21 @@ export function createWorldScene({
   function dispose() {
     disposed = true;
     renderer.setAnimationLoop(null);
-    resizeObserver.disconnect();
+    resizeObserver?.disconnect();
+    window.removeEventListener("resize", resize);
+    window.visualViewport?.removeEventListener("resize", resize);
     renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
     renderer.domElement.removeEventListener("dblclick", handleDoubleClick);
     renderer.domElement.removeEventListener("pointermove", handlePointerMove);
     renderer.domElement.removeEventListener("wheel", handleWheel);
+    renderer.domElement.removeEventListener(
+      "webglcontextlost",
+      handleContextLost,
+    );
+    renderer.domElement.removeEventListener(
+      "webglcontextrestored",
+      handleContextRestored,
+    );
     window.removeEventListener("pointerup", handlePointerUp);
     window.removeEventListener("pointercancel", handlePointerCancel);
     window.removeEventListener("keydown", handleKeyDown);
@@ -8824,6 +9094,7 @@ export function createWorldScene({
     setOfficeOccupancy,
     setOfficeParticipants,
     updateOfficeMarketingTasks,
+    updateWorldBulletin,
     setOfficeSeatState,
     showOfficeBubble,
     leaveOfficeInterior,
@@ -8867,8 +9138,8 @@ export function createWorldScene({
       mode: cameraMode,
       firstPerson: cameraMode === "first-person",
       zoom: cameraMode === "first-person" ? firstPersonZoom : cameraZoom,
-      minZoom: cameraMode === "first-person" ? 0.45 : CAMERA_ZOOM_MIN,
-      maxZoom: cameraMode === "first-person" ? 3 : CAMERA_ZOOM_MAX,
+      minZoom: cameraMode === "first-person" ? 0.25 : CAMERA_ZOOM_MIN,
+      maxZoom: cameraMode === "first-person" ? 5 : CAMERA_ZOOM_MAX,
       yaw: cameraYaw,
       pitch:
         cameraMode === "first-person" ? firstPersonPitch : cameraPitch,

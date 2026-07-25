@@ -2521,6 +2521,160 @@ test("refresh restores one bounded identity-local position without private histo
   expect(restored.storedRecords).toBe(1);
 });
 
+test("mobile refresh keeps a live low-memory renderer and recovers cached pages and WebGL", async ({
+  browser,
+}) => {
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    isMobile: true,
+    deviceScaleFactor: 3,
+  });
+  const page = await context.newPage();
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await prepareWorldPage(page, "mobile-refresh");
+  await waitForWorld(page);
+
+  const readRenderer = () =>
+    page.locator("forkmesh-world").evaluate((shell) => {
+      const { renderer, scene, camera } = shell.world;
+      const canvas = renderer.domElement;
+      const gl = renderer.getContext();
+      renderer.render(scene, camera);
+      const pixel = new Uint8Array(4);
+      gl.readPixels(
+        Math.max(0, Math.floor(gl.drawingBufferWidth / 2)),
+        Math.max(0, Math.floor(gl.drawingBufferHeight / 2)),
+        1,
+        1,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        pixel,
+      );
+      const rect = canvas.getBoundingClientRect();
+      const summary = shell.querySelector(
+        "[data-world-diagnostics] > summary",
+      );
+      const summaryRect = summary?.getBoundingClientRect();
+      const compactItems = [
+        ...shell.querySelectorAll(
+          "[data-world-diagnostics-summary] > span",
+        ),
+      ];
+      return {
+        canvases: shell.querySelectorAll("[data-world-canvas-wrap] canvas")
+          .length,
+        cssWidth: Math.round(rect.width),
+        cssHeight: Math.round(rect.height),
+        bufferWidth: gl.drawingBufferWidth,
+        bufferHeight: gl.drawingBufferHeight,
+        pixelRatio: renderer.getPixelRatio(),
+        antialias: gl.getContextAttributes()?.antialias,
+        stencil: gl.getContextAttributes()?.stencil,
+        shadows: renderer.shadowMap.enabled,
+        contextLost: gl.isContextLost(),
+        frame: renderer.info.render.frame,
+        pixel: [...pixel],
+        coarse: matchMedia("(pointer: coarse)").matches,
+        compactDebugVisible:
+          Boolean(summaryRect) &&
+          compactItems.length === 9 &&
+          compactItems.every((item) => {
+            const itemRect = item.getBoundingClientRect();
+            return (
+              itemRect.width > 0 &&
+              itemRect.height > 0 &&
+              itemRect.left >= summaryRect.left + 58 &&
+              itemRect.right <= summaryRect.right + 1 &&
+              itemRect.top >= summaryRect.top - 1 &&
+              itemRect.bottom <= summaryRect.bottom + 1
+            );
+          }),
+      };
+    });
+
+  for (let cycle = 0; cycle < 3; cycle += 1) {
+    if (cycle) {
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await waitForWorldReady(page);
+    }
+    const renderer = await readRenderer();
+    expect(renderer).toMatchObject({
+      canvases: 1,
+      cssWidth: 390,
+      cssHeight: 844,
+      bufferWidth: 390,
+      bufferHeight: 844,
+      pixelRatio: 1,
+      antialias: false,
+      stencil: false,
+      shadows: false,
+      contextLost: false,
+      coarse: true,
+      compactDebugVisible: true,
+    });
+    expect(renderer.frame).toBeGreaterThan(0);
+    expect(renderer.pixel[0] + renderer.pixel[1] + renderer.pixel[2])
+      .toBeGreaterThan(0);
+  }
+
+  const frameBeforeCache = await page.locator("forkmesh-world").evaluate(
+    (shell) => {
+      window.__forkmeshMobileRenderer = shell.world.renderer;
+      const frame = shell.world.renderer.info.render.frame;
+      window.dispatchEvent(
+        new PageTransitionEvent("pagehide", { persisted: true }),
+      );
+      return frame;
+    },
+  );
+  const cachedState = await page.locator("forkmesh-world").evaluate(
+    (shell) => ({
+      destroyed: shell.destroyed,
+      sameRenderer: shell.world?.renderer === window.__forkmeshMobileRenderer,
+      canvases: shell.querySelectorAll("[data-world-canvas-wrap] canvas")
+        .length,
+    }),
+  );
+  expect(cachedState).toEqual({
+    destroyed: false,
+    sameRenderer: true,
+    canvases: 1,
+  });
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new PageTransitionEvent("pageshow", { persisted: true }),
+    );
+  });
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.renderer.info.render.frame,
+    ),
+  ).toBeGreaterThan(frameBeforeCache);
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.renderer.forceContextLoss();
+  });
+  await expect(page.locator("[data-world-renderer-recovery]")).toBeVisible();
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.renderer.getContext().isContextLost(),
+    ),
+  ).toBe(true);
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.renderer.forceContextRestore();
+  });
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.renderer.getContext().isContextLost(),
+    ),
+  ).toBe(false);
+  await expect(page.locator("[data-world-renderer-recovery]")).toBeHidden();
+  expect(pageErrors).toEqual([]);
+  await context.close();
+});
+
 test("busy walking stays connected while movement frames remain within the soft budget", async ({
   page,
 }) => {
@@ -2602,7 +2756,12 @@ test("local diagnostics report renderer and existing socket state without new te
     },
   });
   await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return Boolean(shell?.distanceTimer);
+  });
   await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.stopRadio(false);
     shell.lastMovementSentAt = performance.now();
     shell.queueMovementPresence({
       x: 1,
@@ -2620,14 +2779,59 @@ test("local diagnostics report renderer and existing socket state without new te
     });
     shell.sendPresence({ type: "presence" });
     shell.sendPresence({ type: "presence" });
+    shell.activeAudio = {
+      kind: "focus-music",
+      trackId: "heavenly-loop",
+      element: {
+        currentTime: 75,
+        duration: 240,
+      },
+    };
+    shell.focusMusicState = "playing";
+    shell.focusMusicAutoplayPending = false;
+    shell.renderDiagnostics();
   });
   await page.waitForTimeout(1150);
 
   const diagnostics = page.locator("[data-world-diagnostics]");
   await expect(diagnostics.locator("summary")).toContainText("FPS");
-  await expect(diagnostics.locator("summary")).toContainText("socket online");
-  await expect(diagnostics.locator("summary")).toContainText("1 peer");
+  await expect(diagnostics.locator("summary")).toContainText("N online");
+  await expect(diagnostics.locator("summary")).toContainText("1p");
   await expect(diagnostics.locator("summary")).toContainText("v0.7.0");
+  await expect(diagnostics.locator("summary")).toContainText(
+    "Heavenly Loop",
+  );
+  await expect(
+    diagnostics.locator("[data-world-diagnostics-music-position]"),
+  ).toHaveText("1:15/4:00");
+  const playbackPosition = await diagnostics
+    .locator("[data-world-diagnostics-music-progress]")
+    .evaluate((progress) => ({
+      value: progress.value,
+      max: progress.max,
+      text: progress.getAttribute("aria-valuetext"),
+    }));
+  expect(playbackPosition).toEqual({
+    value: 75_000,
+    max: 240_000,
+    text: "Heavenly Loop, 1:15 of 4:00, playing",
+  });
+  for (const compactMetric of [
+    "renderer",
+    "frame",
+    "input",
+    "world",
+    "connection",
+    "traffic",
+    "queues",
+    "build",
+  ]) {
+    await expect(
+      diagnostics.locator(
+        `[data-world-diagnostics-${compactMetric}-compact]`,
+      ),
+    ).not.toBeEmpty();
+  }
   await diagnostics.locator("summary").click();
   await expect(diagnostics).toHaveAttribute("open", "");
   await expect(diagnostics).toContainText("ms/frame");
@@ -2657,8 +2861,14 @@ test("local diagnostics report renderer and existing socket state without new te
     version: "0.7.0",
     revision: "d".repeat(40),
   });
+  expect(snapshot.music).toEqual({
+    state: "playing",
+    title: "Heavenly Loop",
+    positionMs: 75_000,
+    durationMs: 240_000,
+  });
   expect(Object.keys(snapshot).sort()).toEqual(
-    ["build", "connection", "queues", "renderer", "traffic"].sort(),
+    ["build", "connection", "music", "queues", "renderer", "traffic"].sort(),
   );
   expect(JSON.stringify(snapshot)).not.toContain("127.0.0.1");
   expect(JSON.stringify(snapshot)).not.toContain("/world/");
@@ -3091,17 +3301,17 @@ test("one-finger look and two-finger pinch use distinct bounded gestures", async
     page.locator("forkmesh-world").evaluate(
       (shell) => shell.world.getCameraState(),
     ),
-  ).toMatchObject({ zoom: 0.12, minZoom: 0.12 });
+  ).toMatchObject({ zoom: 0.06, minZoom: 0.06 });
 
   await client.send("Input.dispatchTouchEvent", {
     type: "touchMove",
-    touchPoints: points(1),
+    touchPoints: points(0.2),
   });
   await expect.poll(() =>
     page.locator("forkmesh-world").evaluate(
       (shell) => shell.world.getCameraState(),
     ),
-  ).toMatchObject({ zoom: 3.2, maxZoom: 3.2 });
+  ).toMatchObject({ zoom: 28, maxZoom: 28 });
 
   await client.send("Input.dispatchTouchEvent", {
     type: "touchEnd",
@@ -3375,6 +3585,8 @@ test("repository portals and the 3D size sunburst use the verified catalog tree"
         scene.getObjectByName("repository-legacy-file-graph")?.visible,
       relationshipsVisible:
         scene.getObjectByName("repository-entity-layer")?.visible,
+      hasPerimeter:
+        Boolean(scene.getObjectByName("repository-size-map-perimeter")),
     };
   });
   expect(initial.portals).toEqual(["repository-portal:forkmesh/forkmesh"]);
@@ -3383,6 +3595,7 @@ test("repository portals and the 3D size sunburst use the verified catalog tree"
   expect(initial.sizeMountRadius).toBeCloseTo(68, 5);
   expect(initial.legacyVisible).toBe(false);
   expect(initial.relationshipsVisible).toBe(false);
+  expect(initial.hasPerimeter).toBe(false);
   expect(
     initial.segments.map(({ path, type, size }) => ({ path, type, size })),
   ).toEqual([

@@ -1229,6 +1229,14 @@ int main(int argc, char **argv)
     QFile::setPermissions(actionSettingsPath,
                           QFileDevice::ReadOwner |
                               QFileDevice::WriteOwner);
+    {
+        QSettings restoredUntouchedSettings(actionSettingsPath,
+                                            QSettings::IniFormat);
+        restoredUntouchedSettings.setValue(
+            QStringLiteral("node/machineName"),
+            QStringLiteral("mirror2"));
+        restoredUntouchedSettings.sync();
+    }
 
     QSettings rollbackSettings(actionSettingsPath, QSettings::IniFormat);
     int failedCatalogRollbackCalls = 0;
