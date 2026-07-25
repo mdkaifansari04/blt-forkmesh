@@ -2309,9 +2309,14 @@ function createMirrorServerCabinet(THREE, node, id) {
         : online
           ? "#00cc44"
           : "#71837a";
+  // Yellow and red are the two statuses that want attention, so their lamps
+  // sweep like a rotating warning beacon; green and offline stay steady.
+  const alerting = statusColor === "#ff0000" || statusColor === "#ffcc00";
   // A single beacon lamp sits on the cabinet roof; its color is the status.
   // The lens is an unlit cylinder so the status reads as one flat, solid
-  // colour from every camera angle instead of shading into a gradient.
+  // colour from every camera angle instead of shading into a gradient. The
+  // top is left open — the world camera looks down on the yard, so a metal
+  // cap would hide the one part of the lamp that carries the status.
   const statusLight = new THREE.Group();
   const beaconBase = new THREE.Mesh(
     new THREE.CylinderGeometry(0.17, 0.19, 0.08, 20),
@@ -2323,20 +2328,57 @@ function createMirrorServerCabinet(THREE, node, id) {
   beaconBase.position.y = 0.04;
   statusLight.add(beaconBase);
   const beaconLens = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.15, 0.15, 0.24, 20),
+    new THREE.CylinderGeometry(0.15, 0.15, 0.3, 20),
     new THREE.MeshBasicMaterial({ color: statusColor, toneMapped: false }),
   );
-  beaconLens.position.y = 0.2;
+  beaconLens.position.y = 0.23;
   statusLight.add(beaconLens);
-  const beaconCap = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.16, 0.16, 0.05, 20),
+  // Only a thin collar rings the open mouth so the lens still reads as a
+  // fixture rather than a bare peg.
+  const beaconCollar = new THREE.Mesh(
+    new THREE.TorusGeometry(0.152, 0.016, 8, 20),
     makeMaterial(THREE, "#35463e", {
       metalness: 0.82,
       roughness: 0.3,
     }),
   );
-  beaconCap.position.y = 0.345;
-  statusLight.add(beaconCap);
+  beaconCollar.rotation.x = Math.PI / 2;
+  beaconCollar.position.y = 0.378;
+  statusLight.add(beaconCollar);
+  if (alerting) {
+    // Two opposed additive lobes hugging the lens: rotating the group reads as
+    // a sweeping light without an actual light source or a per-frame material
+    // rebuild, both of which are too expensive for a yard of 64 cabinets.
+    const beaconSweep = new THREE.Group();
+    const sweepMaterial = new THREE.MeshBasicMaterial({
+      color: statusColor,
+      toneMapped: false,
+      transparent: true,
+      opacity: 0.55,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    for (const thetaStart of [0, Math.PI]) {
+      const lobe = new THREE.Mesh(
+        new THREE.CylinderGeometry(
+          0.24,
+          0.24,
+          0.26,
+          10,
+          1,
+          true,
+          thetaStart,
+          Math.PI / 3,
+        ),
+        sweepMaterial,
+      );
+      beaconSweep.add(lobe);
+    }
+    beaconSweep.position.y = 0.23;
+    statusLight.add(beaconSweep);
+    group.userData.beaconSweep = beaconSweep;
+  }
   statusLight.position.set(0, 3.29, 0);
   group.add(statusLight);
 
@@ -2354,6 +2396,11 @@ function createMirrorServerCabinet(THREE, node, id) {
   group.userData.dataKey = nodeDataKey(node);
   group.userData.nodeRecord = { ...node };
   setShadows(group);
+  // The sweep is a glow, not geometry: shadow-casting it would paint a turning
+  // dark band across the cabinet roof.
+  if (group.userData.beaconSweep) {
+    setShadows(group.userData.beaconSweep, false, false);
+  }
   return group;
 }
 
@@ -11189,8 +11236,14 @@ export function createWorldScene({
       }
     }
     if (!reducedMotion) {
-      // Node beacons intentionally hold a steady colour and size — no spin or
-      // pulse — so a status reads the same in a screenshot as it does live.
+      // Node beacons hold a steady colour and size — no pulse — so a status
+      // reads the same in a screenshot as it does live. Only degraded and
+      // healing nodes carry a sweep, and it turns rather than fades, so the
+      // colour itself stays legible in a still frame.
+      nodeInfrastructure.forEach((cabinet) => {
+        const sweep = cabinet.userData?.beaconSweep;
+        if (sweep) sweep.rotation.y = time * 0.0038;
+      });
       botAgents.forEach((robot, id) => {
         const phase = hashNumber(id) * 0.0001;
         robot.position.y =
