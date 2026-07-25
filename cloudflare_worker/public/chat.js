@@ -1397,7 +1397,6 @@ function renderDirectMessagePicker() {
     const option = document.createElement("button");
     option.type = "button";
     option.className = "chat-direct-option";
-    option.setAttribute("role", "listitem");
     option.setAttribute("aria-label", `Message ${user.name}`);
     option.append(makeAvatar(user.name, "user"));
     const label = document.createElement("span");

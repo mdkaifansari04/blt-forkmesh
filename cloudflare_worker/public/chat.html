@@ -1200,20 +1200,31 @@
       @media (max-width: 680px) {
         .chat-panes { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
         .chat-rooms-pane {
-          flex-direction: row;
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr);
+          grid-template-rows: auto auto;
           align-items: center;
           border-right: none;
           border-bottom: 1px solid var(--border);
         }
         .chat-rooms-pane .chat-pane-title { padding: 10px 12px; }
         #chat-rooms,
-        #chat-direct-list { flex-direction: row; overflow-x: auto; overflow-y: hidden; padding: 6px 8px; }
-        .chat-direct-section {
+        #chat-direct-list {
           min-width: 0;
+          width: 100%;
           flex-direction: row;
+          overflow-x: auto;
+          overflow-y: hidden;
+          padding: 6px 8px;
+        }
+        .chat-direct-section {
+          grid-column: 1 / -1;
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr);
+          min-width: 0;
           align-items: center;
-          border-top: none;
-          border-left: 1px solid var(--border);
+          border-top: 1px solid var(--border);
+          border-left: none;
         }
         .chat-direct-section .chat-pane-title { padding: 10px 8px; }
         .chat-room { width: auto; white-space: nowrap; }
@@ -1411,7 +1422,7 @@
           </div>
           <p id="chat-direct-error" role="alert" aria-live="polite"></p>
           <input id="chat-direct-search" type="search" autocomplete="off" placeholder="Search people" aria-label="Search people to message" />
-          <div id="chat-direct-options" role="list" aria-label="People available to message"></div>
+          <div id="chat-direct-options" role="group" aria-label="People available to message"></div>
           <p id="chat-direct-empty" aria-live="polite">Loading registered users...</p>
         </div>
       </dialog>
