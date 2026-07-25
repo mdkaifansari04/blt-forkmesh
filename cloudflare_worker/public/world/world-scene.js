@@ -548,6 +548,118 @@ function makeGroundPlaque(THREE, title, subtitle, color) {
   return plaque;
 }
 
+function formatArrivalCount(value) {
+  return Math.max(0, Math.min(99999999, Math.round(Number(value) || 0)))
+    .toLocaleString("en-US");
+}
+
+function arrivalTrendText(current, previous) {
+  const now = Math.max(0, Math.round(Number(current) || 0));
+  const then = Math.max(0, Math.round(Number(previous) || 0));
+  const yesterday = `yesterday ${formatArrivalCount(then)}`.toUpperCase();
+  if (then <= 0) {
+    return now > 0 ? `▲ UP · ${yesterday}` : `= EVEN · ${yesterday}`;
+  }
+  const delta = Math.round(((now - then) / then) * 100);
+  if (delta > 0) return `▲ +${delta}% · ${yesterday}`;
+  if (delta < 0) return `▼ ${delta}% · ${yesterday}`;
+  return `= EVEN · ${yesterday}`;
+}
+
+function arrivalPlaqueTexture(THREE, stats) {
+  const ready = Boolean(stats);
+  const lines = [
+    {
+      label: "TOTAL VISITORS",
+      value: ready ? formatArrivalCount(stats.total) : "—",
+      note: ready ? "ALL TIME · EVERY ARRIVAL COUNTS ONCE" : "COUNTING…",
+    },
+    {
+      label: "TODAY",
+      value: ready ? formatArrivalCount(stats.today) : "—",
+      note: ready
+        ? arrivalTrendText(stats.today, stats.yesterdaySameTime)
+        : "COUNTING…",
+    },
+    {
+      label: "PAST HOUR",
+      value: ready ? formatArrivalCount(stats.pastHour) : "—",
+      note: ready
+        ? arrivalTrendText(stats.pastHour, stats.pastHourYesterday)
+        : "COUNTING…",
+    },
+  ];
+  return canvasTexture(THREE, 768, 512, (context) => {
+    context.clearRect(0, 0, 768, 512);
+    roundedRect(context, 6, 6, 756, 500, 18);
+    context.fillStyle = "rgba(6,17,14,0.94)";
+    context.fill();
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 6;
+    context.stroke();
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    context.fillStyle = "#f1fff6";
+    context.font = '700 54px "ForkMesh Favorit", system-ui, sans-serif';
+    context.fillText("ARRIVAL GRID", 46, 74);
+    context.fillStyle = "#9ef7c6";
+    context.font = '400 23px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      "10 visitors per row · face the square".toUpperCase(),
+      46,
+      126,
+    );
+    context.fillStyle = "rgba(158,247,198,0.35)";
+    context.fillRect(46, 158, 676, 3);
+    lines.forEach((line, index) => {
+      const top = 204 + index * 106;
+      context.textAlign = "left";
+      context.fillStyle = "#9ef7c6";
+      context.font = '700 26px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(line.label, 46, top);
+      context.fillStyle = "#77d9ff";
+      context.font = '400 20px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(line.note, 46, top + 40);
+      context.textAlign = "right";
+      context.fillStyle = "#f1fff6";
+      context.font = '700 46px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(line.value, 722, top + 14);
+    });
+  });
+}
+
+// The Arrival Grid's sign is a standing plaque at the grid's front edge:
+// fresh arrivals spawn facing the square, so the visit counters are the
+// first readable landmark, and the raised world camera sees the same face.
+function makeArrivalPlaque(THREE) {
+  const plaque = new THREE.Group();
+  plaque.name = "world-arrival-plaque";
+  const base = new THREE.Mesh(
+    new THREE.BoxGeometry(4.1, 0.24, 1.6),
+    makeMaterial(THREE, "#233b33", { roughness: 0.82 }),
+  );
+  base.position.y = 0.12;
+  plaque.add(base);
+  const slab = new THREE.Mesh(
+    new THREE.BoxGeometry(3.7, 2.5, 0.16),
+    makeMaterial(THREE, "#101d18", { roughness: 0.55, metalness: 0.12 }),
+  );
+  slab.position.set(0, 1.5, 0.1);
+  slab.rotation.x = -0.16;
+  plaque.add(slab);
+  const face = new THREE.Mesh(
+    new THREE.PlaneGeometry(3.54, 2.36),
+    new THREE.MeshBasicMaterial({
+      map: arrivalPlaqueTexture(THREE, null),
+      transparent: true,
+    }),
+  );
+  face.position.z = 0.09;
+  slab.add(face);
+  plaque.userData.statsFace = face;
+  return plaque;
+}
+
 // Places a section's name plaque on the ground in front of the section — on
 // the side facing the Town Square center, where visitors walk up. `position`
 // is the section's world position; sections at the center face the arrival
@@ -3187,15 +3299,13 @@ export function createWorldScene({
     line.position.set(0, 0.09, 30.95 - row * 2.1);
     arrivalBox.add(line);
   }
-  const arrivalLabel = makeLabelSprite(
-    THREE,
-    "ARRIVAL GRID",
-    "10 visitors per row · face the square",
-    "#9ef7c6",
-  );
-  arrivalLabel.scale.set(4.8, 1.6, 1);
-  arrivalLabel.position.set(0, 1.25, 31.3);
-  arrivalBox.add(arrivalLabel);
+  const arrivalPlaque = makeArrivalPlaque(THREE);
+  // Just past the grid's front edge (cells end at z ≈ 17.4), turned back
+  // toward the grid so arriving visitors — and the camera behind them —
+  // read it head-on.
+  arrivalPlaque.position.set(0, 0, 15.2);
+  setShadows(arrivalPlaque);
+  arrivalBox.add(arrivalPlaque);
   world.add(arrivalBox);
 
   world.add(createElectricMeshCityGrid(THREE, animated));
@@ -4014,6 +4124,30 @@ export function createWorldScene({
     neighborhood.add(group);
     neighborhood.userData.publicHomes = group;
     neighborhood.userData.homesKey = key;
+  }
+
+  function updateArrivalStats(stats) {
+    const face = arrivalPlaque.userData.statsFace;
+    if (!face || !stats || typeof stats !== "object") return;
+    const safe = {
+      total: Math.max(0, Math.round(Number(stats.total) || 0)),
+      today: Math.max(0, Math.round(Number(stats.today) || 0)),
+      yesterdaySameTime: Math.max(
+        0,
+        Math.round(Number(stats.yesterdaySameTime) || 0),
+      ),
+      pastHour: Math.max(0, Math.round(Number(stats.pastHour) || 0)),
+      pastHourYesterday: Math.max(
+        0,
+        Math.round(Number(stats.pastHourYesterday) || 0),
+      ),
+    };
+    const key = JSON.stringify(safe);
+    if (arrivalPlaque.userData.statsShown === key) return;
+    face.material.map?.dispose?.();
+    face.material.map = arrivalPlaqueTexture(THREE, safe);
+    face.material.needsUpdate = true;
+    arrivalPlaque.userData.statsShown = key;
   }
 
   function updateMemberLounge(members = [], totalCount = 0) {
@@ -6123,6 +6257,7 @@ export function createWorldScene({
     travelToSpace,
     visitNeighborhoodHome,
     setRemotePlayers,
+    updateArrivalStats,
     updateMemberLounge,
     updateNetworkNodes,
     focusNetworkNode,

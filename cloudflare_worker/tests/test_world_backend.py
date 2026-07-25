@@ -1097,3 +1097,73 @@ def test_world_ticket_and_inactive_routes_keep_auth_out_of_the_socket():
     for source in (schema, migration):
         assert "world_inactive_presence" in source
         assert "expires_at" in source
+
+
+def test_arrival_odometer_counts_aggregate_buckets_outside_the_world_object():
+    # The counter is incremented in the outer Worker's route handler, never in
+    # the storage-free ForkMeshWorld object (see the transient/hibernating
+    # test above). The write stores one time bucket and a count — no visitor
+    # identifier of any kind rides along.
+    route_source = ast.unparse(_top_level_node("Default"))
+    assert "record_world_visit" in route_source
+    assert "/api/world/visitors" in route_source
+
+    counter = _function_without_docstring("record_world_visit")
+    assert "world_visit_stats" in counter
+    assert "WORLD_VISIT_BUCKET_MS" in counter
+    assert "visits=visits+1" in counter
+    lowered = counter.lower()
+    for forbidden in (
+        "country", "account", "cookie", "header", "request", "peer",
+        "cf-connecting", "x-forwarded", "user-agent",
+    ):
+        assert forbidden not in lowered
+
+    handler = ast.unparse(_top_level_node("world_visitors_handler"))
+    assert "edge_cache_match" in handler
+    assert "edge_cache_put" in handler
+    assert "WORLD_VISIT_RETAIN_MS" in handler
+    assert "WORLD_VISIT_ARCHIVE_BUCKET" in handler
+    assert "world_visit_summary" in handler
+
+    schema = SCHEMA.read_text(encoding="utf-8")
+    migration = (ROOT / "migrations" / "0074_world_visit_stats.sql").read_text(
+        encoding="utf-8")
+    for source in (schema, migration):
+        assert "world_visit_stats" in source
+        assert "bucket_start" in source
+        # Two integer columns only: a bucket and a count.
+        assert "TEXT" not in source.split("world_visit_stats", 1)[1].split(")")[0]
+
+
+def test_arrival_visit_summary_windows_match_the_plaque_comparisons():
+    namespace = {"WORLD_VISIT_ARCHIVE_BUCKET": -1}
+    exec(_function_without_docstring("world_visit_summary"), namespace)
+    summarize = namespace["world_visit_summary"]
+    day = 24 * 60 * 60 * 1000
+    hour = 60 * 60 * 1000
+    minute = 60 * 1000
+    now = 3 * day + 5 * hour + 30 * minute  # 05:30 UTC, day three
+    rows = [
+        {"bucket_start": -1, "visits": 1000},  # archived pre-window total
+        {"bucket_start": now - 10 * minute, "visits": 3},  # today + past hour
+        {"bucket_start": now - 2 * hour, "visits": 4},  # today only
+        # Yesterday, inside both the same-time-yesterday and the
+        # same-hour-yesterday comparison windows.
+        {"bucket_start": now - day - 30 * minute, "visits": 5},
+        # Yesterday morning, before the past-hour-yesterday window.
+        {"bucket_start": now - day - 3 * hour, "visits": 6},
+        # Yesterday, but after 05:30 — full-day count only, not "same time".
+        {"bucket_start": now - day + hour, "visits": 7},
+        {"bucket_start": now + hour, "visits": 0},  # empty buckets are ignored
+    ]
+    summary = summarize(rows, now)
+    assert summary == {
+        "total": 1025,
+        "today": 7,
+        "yesterday": 18,
+        "yesterdaySameTime": 11,
+        "pastHour": 3,
+        "pastHourYesterday": 5,
+    }
+    assert summarize(None, now)["total"] == 0
