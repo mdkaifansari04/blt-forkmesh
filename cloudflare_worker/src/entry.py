@@ -92,16 +92,6 @@ MAX_ERROR_LOG = 500
 # same way as the error log so the unauthenticated POST endpoint can't grow D1.
 MAX_INSTALL_DIAG = 5000
 INSTALL_DIAG_RETAIN_MS = 30 * 24 * 60 * 60 * 1000  # surface a 30-day window
-# Opt-in crash/stall telemetry from desktop nodes (issue #354). Bounded like the
-# install diagnostics so the unauthenticated POST endpoint can't grow D1, with a
-# hard body cap and a per-request event cap so a single POST can never blow up
-# the (small) isolate — this must never become an outage vector.
-MAX_TELEMETRY = 5000
-TELEMETRY_RETAIN_MS = 30 * 24 * 60 * 60 * 1000  # surface a 30-day window
-TELEMETRY_MAX_BODY = 32 * 1024  # reject anything larger than this outright
-TELEMETRY_MAX_EVENTS = 4        # crash + stall (+ headroom) per node per startup
-TELEMETRY_MAX_SUMMARY = 8000    # per-event scrubbed report text
-TELEMETRY_KINDS = frozenset({"crash", "stall"})
 # Private vulnerability reports: bounded so the open endpoint can't grow D1.
 MAX_SECURITY_REPORTS = 1000
 SECURITY_AUDIT_RETAIN_MS = 365 * 24 * 60 * 60 * 1000
@@ -26577,99 +26567,6 @@ async def install_diag_handler(env, request):
     return json_response({"ok": True}, cache_control="no-store")
 
 
-def _sanitize_node_hash(value):
-    # The client's anonymized node hash is a hex SHA-256; keep only hex chars and
-    # clamp so a crafted value can't smuggle anything into the admin HTML or bloat
-    # a row. Empty (anonymous) is allowed.
-    if not isinstance(value, str):
-        return ""
-    return "".join(c for c in value.lower() if c in "0123456789abcdef")[:64]
-
-
-def _telemetry_rows(payload):
-    """Normalize a posted telemetry payload into rows to insert, or [].
-
-    Pure (no I/O) so it can be unit-tested. Anything malformed yields no rows —
-    the endpoint swallows it rather than 4xx-ing a best-effort background POST.
-    Every field is sanitized and hard-capped; at most TELEMETRY_MAX_EVENTS rows
-    come back, so one POST can never fan out unbounded work in the isolate.
-    Returns a list of (node, kind, version, os, summary) tuples.
-    """
-    if not isinstance(payload, dict):
-        return []
-    events = payload.get("events")
-    if not isinstance(events, list) or not events:
-        return []
-    node = _sanitize_node_hash(payload.get("node"))
-    version = _sanitize_diag_field(payload.get("version"), 48)
-    os_field = _sanitize_diag_field(payload.get("os"), 64)
-    rows = []
-    for event in events[:TELEMETRY_MAX_EVENTS]:
-        if not isinstance(event, dict):
-            continue
-        kind = event.get("kind")
-        if kind not in TELEMETRY_KINDS:
-            continue
-        summary = event.get("summary")
-        if not isinstance(summary, str):
-            continue
-        # Coarse control-character scrub + hard length cap. The client already
-        # removed repo names / paths; this is belt-and-braces so a crafted POST
-        # can't store arbitrarily large or binary junk.
-        summary = "".join(
-            c for c in summary if c == "\n" or c == "\t" or (c >= " " and c != "\x7f")
-        ).strip()[:TELEMETRY_MAX_SUMMARY]
-        if not summary:
-            continue
-        rows.append((node, kind, version, os_field, summary))
-    return rows
-
-
-async def telemetry_handler(env, request):
-    # Opt-in crash/stall telemetry from desktop nodes (issue #354). Unauthenticated
-    # and anonymous (a one-way node hash only, no account/email/IP). Best-effort:
-    # never errors out the caller, since the client fires this fire-and-forget on
-    # startup. The body is hard-capped BEFORE parsing so a huge POST can't blow up
-    # the small isolate — this must never become an outage vector.
-    if method_name(request) != "POST":
-        return json_response({"error": "method_not_allowed"}, status=405)
-    try:
-        raw = await request.text()
-    except Exception:
-        raw = ""
-    if len(raw) > TELEMETRY_MAX_BODY:
-        # Reject oversized payloads outright rather than parsing them.
-        return json_response({"error": "payload_too_large"}, status=413,
-                             cache_control="no-store")
-    try:
-        payload = json.loads(raw) if raw else None
-    except Exception:
-        payload = None
-    rows = _telemetry_rows(payload)
-    if not rows:
-        return json_response({"ok": True}, cache_control="no-store")
-    try:
-        await ensure_schema(env)
-        now = int(Date.now())
-        for node, kind, version, os_field, summary in rows:
-            await d1_run(
-                env,
-                """INSERT INTO telemetry (ts, node, kind, version, os, summary)
-                   VALUES (?,?,?,?,?,?)""",
-                now, node, kind, version, os_field, summary,
-            )
-        # Bound the table so this open endpoint can't grow D1 without limit.
-        await d1_run(
-            env,
-            """DELETE FROM telemetry WHERE id NOT IN
-               (SELECT id FROM telemetry ORDER BY id DESC LIMIT ?)""",
-            MAX_TELEMETRY,
-        )
-    except Exception:
-        pass
-    return json_response({"ok": True}, cache_control="no-store")
-
-
 async def feedback_handler(env, request):
     # Anonymous website feedback from static pages. This is intentionally
     # unauthenticated: the goal is click-level docs usefulness tracking, not user
@@ -27649,43 +27546,6 @@ async def install_diag_summary(env):
     }
 
 
-async def telemetry_summary(env):
-    # Aggregate opt-in crash/stall telemetry (issue #354) for the admin dashboard:
-    # totals by kind, distinct reporting nodes, and coarse version/OS breakdowns,
-    # over the retained window. `node` is already an anonymized one-way hash.
-    await ensure_schema(env)
-    since = int(Date.now()) - TELEMETRY_RETAIN_MS
-    totals = await d1_all(
-        env,
-        """SELECT kind, COUNT(*) AS n, COUNT(DISTINCT node) AS nodes
-             FROM telemetry WHERE ts >= ? GROUP BY kind""",
-        since,
-    )
-    by_kind = {str(r.get("kind", "")): r for r in totals}
-    crashes = int((by_kind.get("crash") or {}).get("n", 0) or 0)
-    stalls = int((by_kind.get("stall") or {}).get("n", 0) or 0)
-    nodes_row = await d1_first(
-        env, "SELECT COUNT(DISTINCT node) AS n FROM telemetry WHERE ts >= ?", since)
-
-    async def _breakdown(col):
-        return await d1_all(
-            env,
-            "SELECT COALESCE(NULLIF(%s,''),'(unknown)') AS k, COUNT(*) AS n "
-            "FROM telemetry WHERE ts >= ? GROUP BY k ORDER BY n DESC LIMIT 20" % col,
-            since,
-        )
-
-    versions = await _breakdown("version")
-    systems = await _breakdown("os")
-    return {
-        "crashes": crashes,
-        "stalls": stalls,
-        "nodes": int((nodes_row or {}).get("n", 0) or 0),
-        "versions": [(str(r.get("k", "")), int(r.get("n", 0) or 0)) for r in versions],
-        "systems": [(str(r.get("k", "")), int(r.get("n", 0) or 0)) for r in systems],
-    }
-
-
 def _admin_csrf_token(env):
     # A deterministic CSRF token derived from at-rest secrets. It is only rendered
     # inside the admin HTML after the requester names an is_admin account, so a
@@ -27950,7 +27810,6 @@ ADMIN_HIDDEN_TABLES = (
 ADMIN_PURGE_TABLES = frozenset({
     "error_log",
     "install_diag",
-    "telemetry",
 })
 
 
@@ -28234,33 +28093,6 @@ def _render_install_diag_overview(summary):
     )
 
 
-def _render_telemetry_overview(summary):
-    # Opt-in crash/stall telemetry: totals by kind + distinct reporting nodes,
-    # with coarse version / OS breakdowns. Counts are over a 30-day window and
-    # every node id is an anonymized one-way hash.
-    crashes = summary.get("crashes", 0)
-    stalls = summary.get("stalls", 0)
-    nodes = summary.get("nodes", 0)
-    cards = (
-        '<div class="cards">'
-        '<div class="card%s"><div class="n">%s</div><div class="l">crashes (30d)</div></div>'
-        '<div class="card"><div class="n">%s</div><div class="l">UI stalls (30d)</div></div>'
-        '<div class="card"><div class="n">%s</div><div class="l">reporting nodes</div></div>'
-        "</div>"
-        % (" warn" if crashes else "", _html_escape(crashes),
-           _html_escape(stalls), _html_escape(nodes)))
-    return (
-        '<div class="title">Crash &amp; stall telemetry</div>'
-        '<div class="meta">Opt-in (off by default). Anonymous: each node id is a '
-        'one-way hash of the node key, never tied to an account, email, or IP; '
-        'repo names and file paths are scrubbed client-side. 30-day window.</div>'
-        + cards
-        + '<div class="diaggrid">%s%s</div>'
-        % (_render_diag_breakdown("Version", summary.get("versions", [])),
-           _render_diag_breakdown("OS", summary.get("systems", [])))
-    )
-
-
 async def _render_table_view(env, table, csrf_field="", admin_query=""):
     # Generic "show all rows" view for one D1 table. The encrypted `data` column
     # (users/nodes/repos/inboxes store an AES-GCM blob there) is decrypted in place
@@ -28311,41 +28143,6 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
             '</div>'
         ) % (_admin_href(admin_query, table="users", action="set_password"),
              _admin_href(admin_query, table="users", action="resend_verify"))
-
-    if table == "telemetry":
-        # Purpose-built crash/stall dashboard + recent events, newest first.
-        summary = await telemetry_summary(env)
-        recent = await d1_all(
-            env,
-            "SELECT rowid AS _rowid_, * FROM telemetry ORDER BY id DESC LIMIT 200")
-        body = []
-        for r in recent:
-            kind = str(r.get("kind", ""))
-            cls = "s5" if kind == "crash" else ""
-            body.append(
-                "<tr>"
-                + _admin_row_checkbox(r.get("_rowid_", ""))
-                + '<td data-ts="%s">%s</td>'
-                '<td class="%s">%s</td><td>%s</td><td>%s</td>'
-                "<td>%s</td><td>%s</td></tr>"
-                % (_html_escape(r.get("ts", "")), _html_escape(r.get("ts", "")),
-                   cls, _html_escape(kind),
-                   _html_escape(r.get("version", "")), _html_escape(r.get("os", "")),
-                   _html_escape(str(r.get("node", ""))[:12]),
-                   _html_escape(r.get("summary", "")))
-            )
-        if not body:
-            events = '<div class="empty">No telemetry reported yet.</div>'
-        else:
-            events = (_admin_bulk_form_open(table, csrf_field, admin_query)
-                      + "<table><thead><tr>" + _admin_select_all_th()
-                      + "<th>Time</th><th>Kind</th><th>Version</th><th>OS</th>"
-                      "<th>Node</th><th>Report</th>"
-                      "</tr></thead><tbody>" + "".join(body)
-                      + "</tbody></table></form>")
-        return (_render_telemetry_overview(summary)
-                + '<div class="title">Recent events · %d of %d row(s)</div>'
-                % (len(recent), total) + events)
 
     if table == "install_diag":
         # Purpose-built anonymous install funnel + recent events, newest first.
@@ -31812,11 +31609,6 @@ class Default(WorkerEntrypoint):
         # Anonymous per-step diagnostics posted by install.sh (no auth, no IP).
         if url.path in ("/api/install-diag", "/api/install-diag/"):
             return await install_diag_handler(self.env, request)
-
-        # Opt-in crash/stall telemetry posted by desktop nodes (no auth, no IP;
-        # anonymized node hash only). See telemetry_handler / issue #354.
-        if url.path in ("/api/telemetry", "/api/telemetry/"):
-            return await telemetry_handler(self.env, request)
 
         # Anonymous docs/page feedback: like/dislike clicks with optional text.
         if url.path in ("/api/feedback", "/api/feedback/"):
