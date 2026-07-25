@@ -27937,10 +27937,14 @@ ADMIN_HIDDEN_TABLES = (
 # that hold credentials, encrypted owner data, or audit evidence stay listed so
 # an operator can account for the whole schema, but _render_table_view keeps
 # their contents restricted.
-ADMIN_PURGE_TABLES = frozenset({
-    "error_log",
-    "install_diag",
-})
+#
+# Row selection + bulk delete (the same "tick rows, Delete selected" UI as the
+# error log) is available for every table whose rows are actually rendered —
+# i.e. everything not in ADMIN_HIDDEN_TABLES. Sensitive/identity/custody
+# tables stay fully restricted above, so there is no separate purge allowlist
+# to keep in sync as tables are added.
+def _admin_purge_allowed(table):
+    return table not in ADMIN_HIDDEN_TABLES
 
 
 async def _admin_list_tables(env):
@@ -28158,7 +28162,7 @@ async def _admin_selected_rows_have_wallet_keys(env, table, rowids):
 
 async def _admin_selected_rows_digest(env, table, rowids):
     """Return a content-free audit digest for a bounded operational purge."""
-    if table not in ADMIN_PURGE_TABLES or not rowids:
+    if not _admin_purge_allowed(table) or not rowids:
         return ""
     records = []
     for start in range(0, min(len(rowids), 500), 90):
@@ -28337,7 +28341,7 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
                      + "".join(body) + "</tbody></table></form>")
         return ('<div class="title">Error logs · %d row(s)</div>' % total) + inner
 
-    purge_allowed = table in ADMIN_PURGE_TABLES
+    purge_allowed = _admin_purge_allowed(table)
     add_link = ""
     if not rows:
         return (prefix
@@ -31322,7 +31326,7 @@ class Default(WorkerEntrypoint):
                     ids = [int(x) for x in form.get("ids", []) if str(x).isdigit()]
                     if table not in tables:
                         banner = "Delete failed: unknown table."
-                    elif table not in ADMIN_PURGE_TABLES:
+                    elif not _admin_purge_allowed(table):
                         banner = (
                             "Delete blocked: this table is read-only in the "
                             "generic administration browser."

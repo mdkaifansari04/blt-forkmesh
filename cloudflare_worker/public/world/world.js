@@ -66,6 +66,9 @@ const RENDERER_RECOVERY_KEY = "forkmesh.world.renderer-recovery.v1";
 const RENDERER_RECOVERY_DELAY_MS = 1500;
 const RENDERER_RECOVERY_WINDOW_MS = 30 * 1000;
 const POSITION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+// The Mastodon kiosk refetches the public profile on this cadence; the pac-man
+// dial on the billboard counts the same window down.
+const MASTODON_REFRESH_MS = 10 * 60 * 1000;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const CHAT_BUBBLE_JOIN_GRACE_MS = 20 * 1000;
 const POSITION_RADIUS = 72;
@@ -3392,7 +3395,9 @@ class ForkMeshWorld extends HTMLElement {
     this.mastodonStatuses = [];
     this.mastodonState = "idle";
     this.mastodonFetchedAt = 0;
+    this.mastodonRequestedAt = 0;
     this.mastodonLoad = null;
+    this.mastodonRefreshTimer = 0;
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
     const requestedLandmark = worldQuery.get("landmark") || "";
@@ -3873,11 +3878,12 @@ class ForkMeshWorld extends HTMLElement {
       this.world.updateMediaSpaces?.(this.mediaSpaces, this.mediaRoom);
       this.world.updateWorldBulletin?.(this.events);
       // Populate the Mastodon kiosk billboard on entry; the fetch is public,
-      // credential-free, and cached for five minutes. When a fresh snapshot
+      // credential-free, and cached for ten minutes. When a fresh snapshot
       // is already cached the load resolves without refetching, so push the
       // cached profile onto the rebuilt scene explicitly.
       void this.loadMastodonBoard();
       this.syncMastodonKiosk();
+      this.startMastodonRefresh();
       this.syncMemberLounge();
       void this.loadReferralLeaderboard();
       this.syncRepositoryScene();
@@ -6829,9 +6835,12 @@ class ForkMeshWorld extends HTMLElement {
     if (this.mastodonLoad) return this.mastodonLoad;
     const fresh =
       this.mastodonProfile &&
-      Date.now() - this.mastodonFetchedAt < 5 * 60 * 1000;
+      Date.now() - this.mastodonFetchedAt < MASTODON_REFRESH_MS;
     if (fresh && !force) return Promise.resolve();
     this.mastodonState = "loading";
+    // The countdown runs from the attempt, not the last success, so a failed
+    // fetch waits out the full window instead of retrying every tick.
+    this.mastodonRequestedAt = Date.now();
     this.renderMastodonBoard();
     this.mastodonLoad = (async () => {
       try {
@@ -6858,9 +6867,45 @@ class ForkMeshWorld extends HTMLElement {
         this.mastodonLoad = null;
         this.renderMastodonBoard();
         this.syncMastodonKiosk();
+        this.syncMastodonCountdown();
       }
     })();
+    this.syncMastodonCountdown();
     return this.mastodonLoad;
+  }
+
+  // The kiosk billboard reloads on a fixed ten-minute cadence, and the pac-man
+  // dial on the board is repainted every second so visitors can see when the
+  // next fetch lands. The tick, not a ten-minute interval, drives the refresh
+  // so a manual "Refresh" from the mini-app restarts the same window.
+  startMastodonRefresh() {
+    window.clearInterval(this.mastodonRefreshTimer);
+    this.mastodonRefreshTimer = window.setInterval(() => {
+      this.syncMastodonCountdown();
+    }, 1000);
+    this.syncMastodonCountdown();
+  }
+
+  mastodonRefreshRemaining() {
+    if (!this.mastodonRequestedAt) return 0;
+    return Math.max(
+      0,
+      this.mastodonRequestedAt + MASTODON_REFRESH_MS - Date.now(),
+    );
+  }
+
+  syncMastodonCountdown() {
+    const loading = Boolean(this.mastodonLoad);
+    const remaining = this.mastodonRefreshRemaining();
+    if (!loading && remaining <= 0) {
+      void this.loadMastodonBoard(true);
+      return;
+    }
+    this.world?.updateMastodonCountdown?.({
+      remainingMs: loading ? MASTODON_REFRESH_MS : remaining,
+      totalMs: MASTODON_REFRESH_MS,
+      loading,
+    });
   }
 
   // Mirror the mini-app's live profile onto the in-world kiosk billboard so
@@ -6904,6 +6949,7 @@ class ForkMeshWorld extends HTMLElement {
               })
             : "",
           text: marker ? `${marker} — ${body}` : body,
+          images: status.images.map((media) => media.url).filter(Boolean),
         };
       }),
     });
@@ -15813,6 +15859,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.worldTicketTimer);
     window.clearInterval(this.diagnosticsTimer);
     window.clearInterval(this.updateCheckTimer);
+    window.clearInterval(this.mastodonRefreshTimer);
     window.clearTimeout(this.rendererRecoveryTimer);
     this.rendererRecoveryTimer = 0;
     this.peerGraceTimer = 0;
