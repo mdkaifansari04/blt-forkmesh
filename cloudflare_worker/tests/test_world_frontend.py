@@ -1720,9 +1720,10 @@ def test_world_member_lounge_plaque_carries_count_and_account_button():
 
 
 def test_world_member_lounge_seats_directory_users_with_total_count():
-    # The lounge is populated from the public users directory (adhoc #228):
-    # registered accounts appear seated even when offline, and the lounge
-    # plaque shows the total registered-user count.
+    # The directory figures come from the public users directory (adhoc #228)
+    # and, since adhoc #287, sit in a circle around the campfire facing the
+    # flames instead of inside the Member Lounge; the lounge plaque still
+    # shows the total registered-user count.
     assert "function updateMemberLounge" in SCENE
     assert "memberCountSign" in SCENE
     assert "total registered users" in SCENE
@@ -1733,6 +1734,29 @@ def test_world_member_lounge_seats_directory_users_with_total_count():
     assert '"/api/accounts/users"' in APP
     assert "syncMemberLounge" in APP
     assert "this.memberDirectory.length" in APP
+
+
+def test_world_members_sit_in_an_expanding_circle_around_the_campfire():
+    # adhoc #287: one stool per registered account rings the campfire. Away
+    # members appear as seated figures facing the fire, members walking the
+    # world as live avatars leave their stool empty, and the ring rebuilds
+    # wider whenever a new account joins so everyone still fits.
+    assert "function rebuildCampfireCircle" in SCENE
+    assert '"campfire-member-circle"' in SCENE
+    assert "rebuildCampfireCircle(Math.max(total, roster.length))" in SCENE
+    assert "(count * CAMPFIRE_SEAT_SPACING) / (2 * Math.PI)" in SCENE
+    assert '"sitting around the campfire"' in SCENE
+    # Figures and idle live avatars both face the pit at the circle's centre.
+    assert SCENE.count("Math.atan2(-offset.x, -offset.z)") >= 1
+    assert SCENE.count("Math.atan2(-seat.x, -seat.z)") >= 1
+    # Idle/returning live members take the empty tail stools.
+    assert "campfire.userData.memberFigureCount" in SCENE
+    # The old lounge seat grid is gone: nobody sits inside the lounge slab.
+    lounge = SCENE[
+        SCENE.index("function createRegisteredUserLounge"):
+        SCENE.index("function createSystemCapacityPlatform")
+    ]
+    assert "seatOffsets" not in lounge
 
     nodes = SCENE[
         SCENE.index("  function updateNetworkNodes"):
