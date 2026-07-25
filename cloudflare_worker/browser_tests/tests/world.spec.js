@@ -2573,6 +2573,49 @@ test("refresh restores one bounded identity-local position without private histo
   expect(restored.storedRecords).toBe(1);
 });
 
+test("refresh from the Office restores the last Town Square location", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-refresh-position");
+  await waitForWorld(page);
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    const position = {
+      x: -18.2,
+      y: 0.38,
+      z: 14.6,
+      heading: -0.7,
+      space: "town-square",
+      moving: false,
+      activity: "exploring the Town Square",
+    };
+    shell.currentSpace = position.space;
+    shell.world.setSpawn(position);
+    shell.handleMovement(position);
+    shell.world.enterOfficeLobby();
+  });
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getPosition().space,
+    ),
+  ).toBe("office");
+
+  await page.reload();
+  await waitForWorldReady(page);
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate((shell) => {
+      const position = shell.world.getPosition();
+      return (
+        shell.spawnSelected === true &&
+        position.space === "town-square" &&
+        Math.abs(position.x + 18.2) < 0.001 &&
+        Math.abs(position.z - 14.6) < 0.001
+      );
+    }),
+  ).toBe(true);
+  await expect(page.locator("[data-world-office-lobby]")).toBeHidden();
+});
+
 test("mobile refresh keeps a live low-memory renderer and recovers cached pages and WebGL", async ({
   browser,
 }) => {

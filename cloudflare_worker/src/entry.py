@@ -5726,6 +5726,9 @@ async def _apply_schema(env):
             env, "SELECT v FROM schema_meta WHERE k='fingerprint'")
         if row and row.get("v") == _SCHEMA_FINGERPRINT:
             await _assert_legacy_wallet_custody_ready(env)
+            prune_actors = globals().get("_ap_prune_actor_inventory")
+            if callable(prune_actors):
+                await prune_actors(env)
             _schema_ready = True
             return
     except Exception as exc:
@@ -5755,6 +5758,9 @@ async def _apply_schema(env):
         _SCHEMA_FINGERPRINT,
     )
     await _assert_legacy_wallet_custody_ready(env)
+    prune_actors = globals().get("_ap_prune_actor_inventory")
+    if callable(prune_actors):
+        await prune_actors(env)
     _schema_ready = True
 
 
@@ -19167,6 +19173,33 @@ async def _ap_local_actor(env, kind, handle, create=False):
     return rec
 
 
+async def _ap_instance_actor(env, create=False):
+    row = await d1_first(
+        env, "SELECT data FROM ap_service_keys WHERE key_name='instance'")
+    if row:
+        rec = await decrypt_row(env, row.get("data"))
+        if rec and rec.get("privkey") and rec.get("pubkeyPem"):
+            return rec
+    if not create:
+        return None
+    pub_pem, priv_b64 = await _ap_generate_keypair()
+    rec = {
+        "kind": "service",
+        "handle": AP_INSTANCE_HANDLE,
+        "pubkeyPem": pub_pem,
+        "privkey": priv_b64,
+        "createdAt": int(Date.now()),
+    }
+    await d1_run(
+        env,
+        "INSERT INTO ap_service_keys (key_name, pubkey_pem, data, created_at) "
+        "VALUES ('instance',?,?,?) ON CONFLICT(key_name) DO NOTHING",
+        pub_pem, await encrypt_row(env, rec), rec["createdAt"])
+    row = await d1_first(
+        env, "SELECT data FROM ap_service_keys WHERE key_name='instance'")
+    return await decrypt_row(env, row.get("data")) if row else rec
+
+
 async def _ap_user_federates(env, name):
     # Any active, non-private account federates as a Person — node-owner
     # accounts included, not just login ("user"-kind) accounts: the node name
@@ -19194,12 +19227,60 @@ async def _ap_org_alias_owner(env, owner, repo):
     return node or owner
 
 
+async def _ap_repo_is_official_actor(env, owner, repo):
+    # Mirror catalog rows are routing replicas, never their own public social
+    # identities. Official repositories are locally published records or an
+    # organization alias backed by one; remote/external clone records are not.
+    data_owner = await _ap_org_alias_owner(env, owner, repo)
+    key_bi = await blind_index(env, data_owner + "/" + repo)
+    row = await d1_first(
+        env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
+    if not row:
+        return False
+    rec = await decrypt_row(env, row.get("data"))
+    source = str((rec or {}).get("source") or "").strip().lower()
+    return source not in ("remote-clone", "external")
+
+
+async def _ap_prune_actor_inventory(env):
+    # Old deployments minted an instance actor and accepted remote-clone
+    # mirrors as repository actors. Reconcile the small local actor inventory
+    # on schema startup so the admin table reflects only official repos.
+    rows = await d1_all(
+        env, "SELECT actor_bi, kind, data FROM ap_actors")
+    for row in rows or []:
+        actor_bi = str(row.get("actor_bi") or "")
+        kind = str(row.get("kind") or "")
+        rec = await decrypt_row(env, row.get("data"))
+        handle = str((rec or {}).get("handle") or "").lower()
+        parsed = ap.split_handle(handle)
+        keep = (
+            kind == AP_ACTOR_REPO
+            and bool(parsed)
+            and parsed[0] != "user"
+            and await _ap_repo_is_official_actor(
+                env, parsed[1], parsed[2])
+        )
+        if keep or not actor_bi:
+            continue
+        await d1_run(
+            env, "DELETE FROM ap_followers WHERE actor_bi=?", actor_bi)
+        await d1_run(
+            env, "DELETE FROM ap_objects WHERE actor_bi=?", actor_bi)
+        await d1_run(
+            env, "DELETE FROM ap_actors WHERE actor_bi=?", actor_bi)
+
+
 async def _ap_repo_federates(env, owner, repo):
     # Only published, public repos federate. A missing catalog row means the
     # repo was never published — unlike the git-clone path (which stays open
     # for ad-hoc hosts), an unpublished repo has no fediverse presence. The
     # owner can also switch federation off per repo (web/Qt repo settings).
     data_owner = await _ap_org_alias_owner(env, owner, repo)
+    official_reader = globals().get("_ap_repo_is_official_actor")
+    if callable(official_reader) and not await official_reader(
+            env, owner, repo):
+        return False
     privacy_reader = globals().get("_repo_is_private")
     if callable(privacy_reader):
         if await privacy_reader(env, data_owner, repo):
@@ -19637,9 +19718,7 @@ async def ap_webfinger_handler(env, request):
         if not parsed:
             return await _ap_negative_response(cache_key)
         if parsed[0] == "user":
-            if not await _ap_user_federates(env, parsed[1]):
-                return await _ap_negative_response(cache_key)
-            kind, actor_handle, acct_name = AP_ACTOR_USER, parsed[1], parsed[1]
+            return await _ap_negative_response(cache_key)
         else:
             if not await _ap_repo_federates(env, parsed[1], parsed[2]):
                 return await _ap_negative_response(cache_key)
@@ -19818,6 +19897,11 @@ async def _ap_actor_doc_response(env, request, kind, handle):
     # document (/ap/users/x, /@x with an ActivityPub Accept header, /ap/actor)
     # shares one edge entry.
     cache_key = _ap_actor_url(origin, kind, handle)
+    # Only official repositories are followable local actors. The relay still
+    # has an internal signing identity for secure ActivityPub fetches, but it
+    # does not occupy ap_actors or expose a user/instance actor inventory.
+    if kind == AP_ACTOR_USER:
+        return await _ap_negative_response(cache_key)
     cached = await edge_cache_match(cache_key)
     if cached is not None:
         try:
@@ -19836,7 +19920,11 @@ async def _ap_actor_doc_response(env, request, kind, handle):
             return await _ap_negative_response(cache_key)
     if cached is not None:
         return cached
-    rec = await _ap_local_actor(env, kind, handle, create=True)
+    rec = (
+        await _ap_instance_actor(env, create=True)
+        if kind == AP_ACTOR_INSTANCE
+        else await _ap_local_actor(env, kind, handle, create=True)
+    )
     if not rec:
         return json_response({"error": "unavailable"}, status=503)
     doc = await _ap_build_actor_doc(env, origin, kind, handle, rec)
@@ -20107,8 +20195,7 @@ async def _ap_signed_request(key_id, priv_b64, method, url, body_str=None,
 
 async def _ap_instance_key(env):
     origin = _ap_origin(env)
-    rec = await _ap_local_actor(
-        env, AP_ACTOR_INSTANCE, AP_INSTANCE_HANDLE, create=True)
+    rec = await _ap_instance_actor(env, create=True)
     if not rec:
         return None, None
     key_id = _ap_actor_url(origin, AP_ACTOR_INSTANCE,

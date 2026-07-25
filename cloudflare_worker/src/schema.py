@@ -617,6 +617,12 @@ SCHEMA_STATEMENTS = [
         actor_bi TEXT PRIMARY KEY, kind TEXT NOT NULL,
         pubkey_pem TEXT NOT NULL, data TEXT NOT NULL,
         created_at INTEGER NOT NULL)""",
+    # The relay's secure-fetch signing key is infrastructure state, not a
+    # followable repository actor. Keeping it separate ensures ap_actors is an
+    # inventory of official repository actors only.
+    """CREATE TABLE IF NOT EXISTS ap_service_keys (
+        key_name TEXT PRIMARY KEY, pubkey_pem TEXT NOT NULL,
+        data TEXT NOT NULL, created_at INTEGER NOT NULL)""",
     # Remote accounts following a local actor. follower_id/inbox URLs stay
     # plaintext: they are public fediverse identifiers needed for cron
     # delivery fan-out without decrypting every row.

@@ -361,8 +361,8 @@ forkmesh-world {
 }
 
 .world-brand img {
-  width: 22px;
-  height: 22px;
+  width: 36px;
+  height: 36px;
   /* The mark asset is portrait, so cover cropped its top and bottom inside
      the status ring. Preserve the complete logo instead. */
   object-fit: contain;

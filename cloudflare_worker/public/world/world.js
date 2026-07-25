@@ -13557,6 +13557,10 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   handleMovement(movement) {
+    // The Office teardown returns the scene to Town Square. During a page
+    // teardown that callback must not overwrite the location captured just
+    // before it with the Office doorway.
+    if (this.destroyed) return;
     this.recordActivityArrival();
     const space = WORLD_SPACE_IDS.has(String(movement?.space || ""))
       ? String(movement.space)
@@ -13609,23 +13613,21 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   captureWorldPosition(flush = false) {
-    const position = this.world?.getPosition?.();
+    const position = this.positionForPersistence();
     if (!position) return;
-    const space = WORLD_SPACE_IDS.has(String(this.lastMovement?.space || ""))
-      ? String(this.lastMovement.space)
-      : this.currentSpace;
-    this.rememberWorldPosition({ ...position, space }, flush);
+    this.rememberWorldPosition(position, flush);
   }
 
   preserveWorldPositionForRefresh() {
-    const position = this.world?.getPosition?.();
+    const position = this.positionForPersistence();
+    if (!position) return false;
     const record = normalizedWorldPosition(
       {
         x: position?.x,
         y: position?.y,
         z: position?.z,
         heading: position?.heading ?? position?.yaw,
-        space: position?.space || this.currentSpace,
+        space: position?.space,
         updatedAt: Date.now(),
       },
       Date.now(),
@@ -13636,6 +13638,24 @@ class ForkMeshWorld extends HTMLElement {
       sessionStorage.setItem(REFRESH_POSITION_KEY, JSON.stringify(record));
     } catch (_) {}
     return true;
+  }
+
+  positionForPersistence() {
+    const scenePosition = this.world?.getPosition?.();
+    if (!scenePosition) return null;
+    const sceneSpace = String(scenePosition.space || "");
+    if (WORLD_SPACE_IDS.has(sceneSpace)) {
+      return { ...scenePosition, space: sceneSpace };
+    }
+    // Office rooms are intentionally session-only. The scene keeps a town
+    // avatar parked at the doorway while the interior is open, so storing that
+    // coordinate would make every refresh look like a new Office arrival.
+    // Restore the last actual walkable-world movement instead.
+    const previous = this.lastMovement;
+    const previousSpace = String(previous?.space || "");
+    return WORLD_SPACE_IDS.has(previousSpace)
+      ? { ...previous, space: previousSpace }
+      : null;
   }
 
   flushWorldPosition() {
