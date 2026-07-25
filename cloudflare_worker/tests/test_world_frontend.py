@@ -1350,10 +1350,38 @@ def test_world_uses_nonhuman_infrastructure_a_member_lounge_and_city_grid():
     assert 'avatar.userData.loungeActivity === "recent"' in SCENE
 
 
+def test_world_member_lounge_plaque_carries_count_and_account_button():
+    # adhoc #248: the floating member-count card is folded into the ground
+    # plaque, which also carries one tiny account button — log in / sign up for
+    # guests, log out for signed-in members.
+    assert "function memberLoungePlaqueTexture" in SCENE
+    assert "function memberLoungeAuthTexture" in SCENE
+    assert "function makeMemberLoungePlaque" in SCENE
+    lounge = SCENE[
+        SCENE.index("function createRegisteredUserLounge"):
+        SCENE.index("function createDurableObjectDistrict")
+    ]
+    # No floating count sprite hovers over the lounge any more.
+    assert "makeLabelSprite" not in lounge
+    assert "makeMemberLoungePlaque(THREE" in lounge
+    assert '"LOG OUT" : "LOG IN / SIGN UP"' in SCENE
+    assert 'authButton.userData.worldAuthAction = "login"' in SCENE
+    assert "function syncLoungeAuthButton" in SCENE
+    assert 'signedIn ? "logout" : "login"' in SCENE
+    # The button is raycast-selectable and reports through onAccountAction.
+    assert "interactive.push(plaque.userData.authButton)" in SCENE
+    assert "onAccountAction = () => {}" in SCENE
+    assert 'authAction === "login" || authAction === "logout"' in SCENE
+    # world.js opens the existing account panel or logs the device out.
+    assert "onAccountAction: (action) =>" in APP
+    assert "void this.logoutFromWorld();" in APP
+    assert 'this.toggleWorldAccount(true, "login");' in APP
+
+
 def test_world_member_lounge_seats_directory_users_with_total_count():
     # The lounge is populated from the public users directory (adhoc #228):
-    # registered accounts appear seated even when offline, and a sign at the
-    # lounge front shows the total registered-user count.
+    # registered accounts appear seated even when offline, and the lounge
+    # plaque shows the total registered-user count.
     assert "function updateMemberLounge" in SCENE
     assert "memberCountSign" in SCENE
     assert "total registered users" in SCENE
