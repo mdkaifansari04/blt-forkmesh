@@ -88,6 +88,7 @@ class CodexAppServerSession;
 class StallWatchdog;
 class ClaudeTranscriptView;
 class RepoHost;
+class NodeEventSocket;
 class WorldSpeechBridge;
 class PrivateMirrorMaterialization;
 class ActionRunner;
@@ -3286,6 +3287,11 @@ private:
     void updateRepoDetailStatus();
     void startRepoHosts();
     void stopRepoHosts();
+    // Live relay event channel (ForkMeshNodes DO): pushed event frames run
+    // scheduleRelaySync() the moment the relay records a change, so the
+    // m_inboxPollTimer HTTPS poll is only the reconnect-gap safety net.
+    void startNodeEventSocket();
+    void stopNodeEventSocket();
     void onRequestServed(const QString &owner, const QString &name, bool clone);
     void loadRepoStats();
     void saveRepoStats() const;
@@ -5540,6 +5546,7 @@ private:
     QHash<QString, QString> m_catalogContributionPreparedSnapshotKey;
     QList<RepoHost *> m_repoHosts;
     QSet<QString> m_repoHostKeys; // empty compatibility state; sockets retired
+    NodeEventSocket *m_nodeEventSocket = nullptr; // relay push -> /api/sync
     // Keeps authorized, owner-only private repository materializations alive
     // only for this app process. They are removed recursively on destruction
     // and their paths are never written to settings.

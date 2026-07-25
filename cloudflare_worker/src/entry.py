@@ -54,6 +54,17 @@ CATALOG_MAX_RECORDS_PER_OWNER = 50
 # direct-HTTPS gateway and never consume this socket budget.
 HOST_RATE_WINDOW_MS = 10 * 1000
 HOST_RATE_MAX_PER_WINDOW = 200
+# Per-owner node event channel (ForkMeshNodes). An owner's desktop/headless
+# nodes hold one hibernated WebSocket each; the relay pushes payload-free
+# {"type":"event","topic"} frames so a node runs its signed GET /api/sync the
+# moment the source of truth changes instead of waiting out the fallback poll.
+NODE_EVENT_MAX_SOCKETS = 64
+# App-level keepalive cadence is ~4 min on the client; protocol pings keep the
+# TCP path alive without waking the Durable Object between beats.
+NODE_SOCKET_STALE_MS = 15 * 60 * 1000
+NODE_EVENT_MSG_WINDOW_MS = 10 * 1000
+NODE_EVENT_MSG_MAX_PER_WINDOW = 20
+NODE_EVENT_MAX_FRAME_BYTES = 4 * 1024
 SENTRY_CLIENT = "forkmesh-cloudflare-python/1.0"
 SENTRY_CRON_MONITOR_SLUG = "forkmesh-relay"
 SENTRY_CRON_CHECKIN_MARGIN_MINUTES = 1
@@ -1120,10 +1131,76 @@ async def repo_live_host_count(env, owner, repo):
         return None
 
 
+def _node_events_do_name(owner):
+    # One Durable Object per OWNER account (not per repo): a node syncs all of
+    # its repos with one GET /api/sync, so one event channel per owner is the
+    # natural granularity and keeps the DO count bounded by accounts, not repos.
+    return "nodes:" + str(owner or "").strip().lower()
+
+
 async def notify_repo_host(env, owner, repo, topic):
-    # Repository control sockets were retired. Clients discover changes with
-    # bounded HTTPS polling; repository bytes always use the mirror gateway.
-    del env, owner, repo, topic
+    # Push a minimal "something changed" event frame to the owner's connected
+    # desktop/headless node(s) through the ForkMeshNodes Durable Object. The
+    # frame carries no payload — just a topic — and the node responds with one
+    # signed GET /api/sync, so the source of truth updates the instant a web
+    # submission lands instead of on the next fallback poll. Best-effort: an
+    # offline node simply picks the change up from its slow fallback sync, so
+    # a failure here must never fail the write that triggered it. (Unlike the
+    # retired ForkMeshHost tunnel, this channel never carries repository bytes
+    # or control commands — a compromised relay can at most make a node run
+    # one extra signed sync.)
+    owner = safe_segment(owner)
+    repo = safe_segment(repo)
+    if not owner or not repo:
+        return
+    try:
+        node_id = env.FORKMESH_NODES.idFromName(_node_events_do_name(owner))
+        node_object = env.FORKMESH_NODES.get(node_id)
+        await asyncio.wait_for(
+            node_object.fetch(
+                "https://forkmesh.internal/api/nodes/notify"
+                "?topic=" + quote(topic or "") +
+                "&repo=" + quote(owner + "/" + repo)
+            ),
+            timeout=HOST_COUNT_TIMEOUT_MS / 1000,
+        )
+    except Exception:
+        pass
+
+
+async def node_events_handler(env, request):
+    # GET /api/nodes/events?owner=&ts=&sig= (WebSocket upgrade only) — a
+    # desktop/headless node's live event channel. Auth reuses the same signed
+    # forkmesh-issues-pull-v1 drain token as GET /api/sync (_authorize_owner),
+    # checked here BEFORE any Durable Object is selected. The socket only ever
+    # receives payload-free {"type":"event","topic"} frames; all data still
+    # flows through the existing signed HTTPS sync, so this adds no new
+    # repository byte or control transport (the retired-tunnel contracts in
+    # test_https_mirror_routing_integration.py are unaffected).
+    upgrade = (request.headers.get("upgrade") or "").lower()
+    if upgrade != "websocket":
+        return json_response({"error": "upgrade_required"}, status=426)
+    params = parse_qs(urlparse(request.url).query)
+    owner = safe_segment(params.get("owner", [""])[0])
+    if not owner or not await _authorize_owner(env, request, owner):
+        return json_response({"error": "unauthorized"}, status=401)
+    node_id = env.FORKMESH_NODES.idFromName(_node_events_do_name(owner))
+    # Same retry-twice guard as the chat room router: a platform abort of the
+    # DO is transient, and the upgrade request carries no body so re-driving
+    # durable_object_request is safe.
+    last_error = None
+    for _attempt in range(2):
+        node_object = env.FORKMESH_NODES.get(node_id)
+        try:
+            return await node_object.fetch(
+                await durable_object_request(request))
+        except Exception as error:
+            last_error = error
+    await log_durable_object_abort(
+        env, request, urlparse(request.url).path, last_error)
+    return json_response(
+        {"error": "unavailable"}, status=503,
+        extra_headers=EXPECTED_DEGRADED_HEADERS)
 
 
 # Per-isolate memo of recent DO live-host probes: key_bi -> {"ts", "hosts"}
@@ -31890,6 +31967,12 @@ class Default(WorkerEntrypoint):
         if url.path in ("/api/sync", "/api/sync/"):
             return await sync_handler(self.env, request)
 
+        # Live push channel that makes /api/sync event-driven: an owner node
+        # holds one WebSocket here and each web submission triggers an instant
+        # payload-free event frame (see notify_repo_host / ForkMeshNodes).
+        if url.path in ("/api/nodes/events", "/api/nodes/events/"):
+            return await node_events_handler(self.env, request)
+
         if url.path in ("/api/forkbot/chat", "/api/forkbot/chat/"):
             return await forkbot_chat_handler(self.env, request)
 
@@ -34289,6 +34372,135 @@ class ForkMeshRoom(DurableObject):
             peers = []
         for peer in peers:
             self._safe_close(peer, code, reason)
+
+    async def webSocketClose(self, ws, code, reason, was_clean):
+        self._safe_close(ws, 1000, "")
+
+    async def webSocketError(self, ws, error):
+        return
+
+    # Hibernation events may be dispatched under either naming convention.
+    web_socket_message = webSocketMessage
+    web_socket_close = webSocketClose
+    web_socket_error = webSocketError
+
+    def _safe_close(self, ws, code, reason):
+        try:
+            ws.close(code, reason)
+        except Exception:
+            pass
+
+
+class ForkMeshNodes(DurableObject):
+    # Per-owner push channel for desktop/headless nodes, on the WebSocket
+    # Hibernation API like ForkMeshRoom: sockets are accepted via
+    # ctx.acceptWebSocket(["node"]) and the live set is read back from
+    # ctx.getWebSockets("node"), so an idle-but-connected fleet bills ~no
+    # duration. Connection state lives only in the runtime/socket attachments
+    # — instance attributes would not survive eviction.
+    #
+    # This DO deliberately carries NOTHING but payload-free
+    # {"type":"event","topic","repo"} frames (relay -> node) and
+    # {"type":"ping"} keepalives (node -> relay). Repository bytes, inbox
+    # items and control commands all stay on their existing signed HTTPS
+    # routes; a pushed frame only tells the node to run the one consolidated
+    # GET /api/sync it would otherwise run on the slow fallback poll.
+    async def fetch(self, request):
+        parsed_url = urlparse(request.url)
+        path = parsed_url.path
+        upgrade = request.headers.get("upgrade")
+        is_websocket = bool(upgrade) and upgrade.lower() == "websocket"
+
+        if not is_websocket:
+            if path.endswith("/notify"):
+                # Internal-only (node_events_handler forwards only WebSocket
+                # upgrades, so this action is unreachable from the public
+                # router): fan one event frame out to every live node socket.
+                query = parse_qs(parsed_url.query)
+                frame = json.dumps({
+                    "type": "event",
+                    "topic": clean_string(query.get("topic", [""])[0], 40),
+                    "repo": clean_string(query.get("repo", [""])[0], 200),
+                })
+                delivered = 0
+                for peer in self._live_node_sockets(close_stale=True):
+                    try:
+                        peer.send(frame)
+                        delivered += 1
+                    except Exception:
+                        pass
+                return json_response({"ok": True, "delivered": delivered})
+            # One-shot snapshot of the live node count (internal diagnostics).
+            return json_response(
+                {"ok": True, "nodes": len(self._live_node_sockets())})
+
+        if len(self._live_node_sockets(close_stale=True)) >= \
+                NODE_EVENT_MAX_SOCKETS:
+            return json_response({"error": "too_many_nodes"}, status=429)
+
+        client, server = WebSocketPair.new().object_values()
+        self.ctx.acceptWebSocket(server, to_js(["node"]))
+        server.serializeAttachment(to_js({
+            "id": new_socket_id(), "last": int(Date.now()),
+        }))
+        return JsResponse.new(None, to_js({"status": 101, "webSocket": client}))
+
+    def _live_node_sockets(self, close_stale=False):
+        now = int(Date.now())
+        sockets = []
+        try:
+            peers = self.ctx.getWebSockets("node")
+        except Exception:
+            return sockets
+        for peer in peers:
+            try:
+                last = int(_ws_attr(peer, "last", 0) or 0)
+            except (TypeError, ValueError):
+                last = 0
+            if not last or now - last > NODE_SOCKET_STALE_MS:
+                if close_stale:
+                    self._safe_close(peer, 1001, "stale")
+                continue
+            sockets.append(peer)
+        return sockets
+
+    async def webSocketMessage(self, ws, message):
+        # Nodes only ever send small {"type":"ping"} keepalives; anything else
+        # is dropped (rate-limited) or the socket is closed. Each accepted
+        # frame refreshes the socket's staleness clock in its attachment.
+        if not isinstance(message, str):
+            self._safe_close(ws, 1003, "text frames only")
+            return
+        if len(message.encode("utf-8")) > NODE_EVENT_MAX_FRAME_BYTES:
+            self._safe_close(ws, 1009, "message too large")
+            return
+        now = int(Date.now())
+        try:
+            start = int(_ws_attr(ws, "rl_start", 0) or 0)
+            count = int(_ws_attr(ws, "rl_count", 0) or 0)
+        except (TypeError, ValueError):
+            start, count = 0, 0
+        if now - start >= NODE_EVENT_MSG_WINDOW_MS:
+            start, count = now, 0
+        count += 1
+        try:
+            ws.serializeAttachment(to_js({
+                "id": _ws_attr(ws, "id"), "last": now,
+                "rl_start": start, "rl_count": count,
+            }))
+        except Exception:
+            pass
+        if count > NODE_EVENT_MSG_MAX_PER_WINDOW:
+            return
+        try:
+            kind = json.loads(message).get("type")
+        except Exception:
+            return
+        if kind == "ping":
+            try:
+                ws.send(json.dumps({"type": "pong"}))
+            except Exception:
+                pass
 
     async def webSocketClose(self, ws, code, reason, was_clean):
         self._safe_close(ws, 1000, "")

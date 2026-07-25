@@ -141,8 +141,9 @@ FORKBOT_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 # served at https://<host>/<ADMIN_PATH>, gated by a forkmesh login whose account
 # carries the is_admin flag (no static HTTP Basic credentials).
 
-# Durable Objects are used only for transient encrypted chat/world presence.
-# Repository content and control traffic use normal HTTPS.
+# Durable Objects are used only for transient state: encrypted chat/world
+# presence plus the per-owner node event channel (payload-free "something
+# changed" frames). Repository content and control traffic use normal HTTPS.
 #
 # ForkBot uses Cloudflare Workers AI when available to turn a chat mention into
 # a crisp issue title/body. The Worker falls back to deterministic parsing when
@@ -161,6 +162,10 @@ class_name = "ForkMeshWorld"
 [[durable_objects.bindings]]
 name = "FORKMESH_OFFICE_ROOM"
 class_name = "ForkMeshOfficeRoom"
+
+[[durable_objects.bindings]]
+name = "FORKMESH_NODES"
+class_name = "ForkMeshNodes"
 
 # Persistent storage: repo catalog, accounts, and the issue/pull inboxes.
 # Create once with:  uvx --from workers-py pywrangler d1 create forkmesh
@@ -199,6 +204,10 @@ class_name = "ForkMeshWorld"
 [[env.dev.durable_objects.bindings]]
 name = "FORKMESH_OFFICE_ROOM"
 class_name = "ForkMeshOfficeRoom"
+
+[[env.dev.durable_objects.bindings]]
+name = "FORKMESH_NODES"
+class_name = "ForkMeshNodes"
 
 [[migrations]]
 tag = "v1"
@@ -255,6 +264,13 @@ tag = "v11"
 # Office meeting rooms keep only live WebSocket state, but Cloudflare requires
 # every bound Durable Object class to be registered through a migration.
 new_sqlite_classes = ["ForkMeshOfficeRoom"]
+
+[[migrations]]
+tag = "v12"
+# Per-owner node event channel (unlike the retired per-repo ForkMeshHost
+# tunnel, it never carries repository bytes — see ForkMeshNodes in entry.py).
+# Live sockets are runtime state; SQLite registration is still required.
+new_sqlite_classes = ["ForkMeshNodes"]
 
 
 [observability]
