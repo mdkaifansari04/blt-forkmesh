@@ -11,6 +11,7 @@
 #include <QProcess>
 #include <QSettings>
 #include <QSet>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 
 #include <cstdio>
@@ -52,7 +53,10 @@ bool runProcess(const QString &program, const QStringList &arguments,
 
 int main(int argc, char **argv)
 {
+    QStandardPaths::setTestModeEnabled(true);
     QCoreApplication app(argc, argv);
+    app.setOrganizationName(QStringLiteral("ForkMeshTests"));
+    app.setApplicationName(QStringLiteral("control-node-security"));
 
     forkmesh::control::CloudflareBootstrapRequest request;
     request.hostname = QStringLiteral("mirror.example.com");
@@ -627,7 +631,7 @@ int main(int argc, char **argv)
         forkmesh::control::buildMirrorActionsSshCommand(
             actionsRequest, sshPassword, &actionsError);
     const QString actionsArgv =
-        actionsPasswordCommand.arguments.join(QChar(u'\0'));
+        actionsPasswordCommand.arguments.join(QLatin1Char(' '));
     check(actionsPasswordCommand.program == QStringLiteral("sshpass") &&
               actionsPasswordCommand.environment.value(
                   QStringLiteral("SSHPASS")) == sshPassword &&
@@ -642,8 +646,15 @@ int main(int argc, char **argv)
     check(actionsArgv.contains(
               QStringLiteral("--configure-mirror-actions-stdin")) &&
               actionsArgv.contains(
-                  QStringLiteral("StrictHostKeyChecking=accept-new")),
-          "Actions transport invokes only the fixed stdin helper and retains host keys");
+                  QStringLiteral("StrictHostKeyChecking=accept-new")) &&
+              actionsArgv.contains(
+                  QStringLiteral("PreferredAuthentications=publickey,password")) &&
+              actionsArgv.contains(QStringLiteral("UserKnownHostsFile=")) &&
+              !actionsPasswordCommand.arguments.contains(
+                  QStringLiteral("UserKnownHostsFile=/dev/null")) &&
+              !actionsArgv.contains(
+                  QStringLiteral("PubkeyAuthentication=no")),
+          "Actions transport invokes only the fixed helper, persists TOFU keys, and prefers public-key auth");
 
     const auto actionsKeyCommand =
         forkmesh::control::buildMirrorActionsSshCommand(
@@ -653,9 +664,96 @@ int main(int argc, char **argv)
                   QStringLiteral("BatchMode=yes")) &&
               actionsKeyCommand.arguments.contains(
                   QStringLiteral("PreferredAuthentications=publickey")) &&
+              actionsKeyCommand.arguments.contains(
+                  QStringLiteral("HashKnownHosts=yes")) &&
+              actionsKeyCommand.arguments.contains(
+                  QStringLiteral("UpdateHostKeys=yes")) &&
+              !actionsKeyCommand.arguments.contains(
+                  QStringLiteral("IdentitiesOnly=yes")) &&
               !actionsKeyCommand.environment.contains(
                   QStringLiteral("SSHPASS")),
           "empty password selects non-interactive SSH key authentication");
+
+    const auto genericKeyCommand =
+        forkmesh::control::buildHostSshCommand(
+            QStringLiteral("mirror.example.test"),
+            QStringLiteral("forkmesh"), QString(),
+            QStringLiteral("exec tail -f node.log"), &actionsError);
+    const QString genericKeyArgv =
+        genericKeyCommand.arguments.join(QChar(u'\0'));
+    check(actionsError.isEmpty() &&
+              genericKeyCommand.program == QStringLiteral("ssh") &&
+              genericKeyArgv.contains(
+                  QStringLiteral("StrictHostKeyChecking=accept-new")) &&
+              genericKeyArgv.contains(QStringLiteral("UserKnownHostsFile=")) &&
+              !genericKeyArgv.contains(QStringLiteral("/dev/null")) &&
+              !genericKeyArgv.contains(
+                  QStringLiteral("StrictHostKeyChecking=no")),
+          "all controller host operations use a persistent fail-closed TOFU trust store");
+    check(forkmesh::control::buildHostSshCommand(
+              QStringLiteral("-oProxyCommand=bad"),
+              QStringLiteral("forkmesh"), QString(),
+              QStringLiteral("true"), &actionsError)
+              .program.isEmpty(),
+          "generic controller SSH rejects option-shaped hosts");
+
+    QTemporaryDir hostSettingsDir;
+    const QString hostSettingsPath =
+        hostSettingsDir.filePath(QStringLiteral("controller.ini"));
+    QSettings hostSettings(hostSettingsPath, QSettings::IniFormat);
+    const QString legacyPassword =
+        QStringLiteral("legacy-admin-password-must-leave-settings");
+    const QJsonArray legacyHosts{
+        QJsonObject{
+            {QStringLiteral("name"), QStringLiteral("mirror2")},
+            {QStringLiteral("ip"), QStringLiteral("mirror2.example.test")},
+            {QStringLiteral("user"), QStringLiteral("forkmesh")},
+            {QStringLiteral("pass"), legacyPassword},
+            {QStringLiteral("status"), QStringLiteral("installed")},
+        }};
+    hostSettings.setValue(
+        QStringLiteral("hosts/list"),
+        QString::fromUtf8(
+            QJsonDocument(legacyHosts).toJson(QJsonDocument::Compact)));
+    hostSettings.sync();
+    QHash<QString, QString> sessionHostPasswords;
+    QJsonArray migratedHosts = forkmesh::control::loadSavedHosts(
+        hostSettings, QStringLiteral("hosts/list"),
+        &sessionHostPasswords);
+    hostSettings.sync();
+    QFile exportedSettings(hostSettingsPath);
+    check(exportedSettings.open(QIODevice::ReadOnly),
+          "migrated host settings file is readable");
+    const QByteArray persistedAfterMigration = exportedSettings.readAll();
+    exportedSettings.close();
+    const QJsonObject migratedHost = migratedHosts.at(0).toObject();
+    const QString migratedCredentialKey =
+        forkmesh::control::savedHostCredentialKey(
+            QStringLiteral("mirror2"),
+            QStringLiteral("mirror2.example.test"),
+            QStringLiteral("forkmesh"));
+    check(!migratedHost.contains(QStringLiteral("pass")) &&
+              sessionHostPasswords.value(migratedCredentialKey) ==
+                  legacyPassword &&
+              !persistedAfterMigration.contains(
+                  legacyPassword.toUtf8()) &&
+              !persistedAfterMigration.contains("\"pass\""),
+          "legacy plaintext host passwords migrate to memory and are deleted from QSettings");
+
+    QJsonObject accidentallySecretHost = migratedHost;
+    accidentallySecretHost.insert(QStringLiteral("sshPassword"),
+                                  legacyPassword);
+    forkmesh::control::saveSavedHosts(
+        hostSettings, QStringLiteral("hosts/list"),
+        QJsonArray{accidentallySecretHost});
+    hostSettings.sync();
+    exportedSettings.setFileName(hostSettingsPath);
+    check(exportedSettings.open(QIODevice::ReadOnly),
+          "defensively saved host settings file is readable");
+    const QByteArray persistedAfterSave = exportedSettings.readAll();
+    check(!persistedAfterSave.contains(legacyPassword.toUtf8()) &&
+              !persistedAfterSave.contains("sshPassword"),
+          "host settings writer strips password-like fields defensively");
 
     auto invalidActions = actionsRequest;
     invalidActions.replaceVariables = false;

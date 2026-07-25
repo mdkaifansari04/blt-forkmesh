@@ -47,6 +47,27 @@ def _load_account_login(extra_globals):
     return namespace["_account_login"]
 
 
+def _load_login_throttle(extra_globals):
+    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    selected = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name in {
+            "_login_record_fail",
+            "_login_failure_response",
+        }
+    ]
+    assert {node.name for node in selected} == {
+        "_login_record_fail",
+        "_login_failure_response",
+    }
+    module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
+    namespace = dict(extra_globals)
+    exec(compile(module, str(ENTRY), "exec"), namespace)
+    return namespace
+
+
 def _load_device_bind_canonical(extra_globals=None):
     tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
     selected = [
@@ -124,6 +145,9 @@ def _login_harness(rec, *, device_proof_valid=True, initial_devices=None,
     async def blind_index(_env, value):
         return "bi:" + str(value)
 
+    async def bounded_json_request(request):
+        return await request.json()
+
     async def d1_first(_env, sql, *args):
         if "FROM users WHERE email_bi" in sql:
             return {"data": "encrypted"} if args == ("bi:alice@example.com",) else None
@@ -199,9 +223,15 @@ def _login_harness(rec, *, device_proof_valid=True, initial_devices=None,
 
     async def _login_record_fail(_env, id_bi):
         login_fails.append(id_bi)
-
-    async def _login_locked_until(_env, _id_bi):
         return 0
+
+    async def _login_attempt_keys(env, _request, identifier):
+        return [await blind_index(env, identifier)]
+
+    async def _login_failure_response(env, attempt_keys, error):
+        for attempt_key in attempt_keys:
+            await _login_record_fail(env, attempt_key)
+        return _json_response({"error": error}, status=401)
 
     async def _login_clear(_env, id_bi):
         login_clears.append(id_bi)
@@ -224,6 +254,7 @@ def _login_harness(rec, *, device_proof_valid=True, initial_devices=None,
             "isAdmin": False,
             "solana": solana,
             "hasPayoutAddress": bool(solana),
+            "sessionToken": "v2.test-session.test-secret",
         }
 
     def _account_session_token(_env, name):
@@ -237,6 +268,7 @@ def _login_harness(rec, *, device_proof_valid=True, initial_devices=None,
     handler = _load_account_login(
         {
             "blind_index": blind_index,
+            "bounded_json_request": bounded_json_request,
             "clean_string": _clean_string,
             "d1_first": d1_first,
             "d1_all": d1_all,
@@ -252,14 +284,14 @@ def _login_harness(rec, *, device_proof_valid=True, initial_devices=None,
                 isinstance(value, str) and len(value) == 43
             ),
             "_login_record_fail": _login_record_fail,
-            "_login_locked_until": _login_locked_until,
+            "_login_attempt_keys": _login_attempt_keys,
+            "_login_failure_response": _login_failure_response,
             "_login_clear": _login_clear,
             "_save_account": _save_account,
             "_is_admin": _is_admin,
             "_account_public_payload": _account_public_payload,
             "_account_session_token": _account_session_token,
-            "_admin_session_cookie": lambda _env, _name: "admin-session",
-            "_clear_admin_session_cookie": lambda: "clear-admin-session",
+            "_account_session_cookie": lambda _token: "account-session",
             "json_response": _json_response,
             "Date": _Date,
             "urlparse": urlparse,
@@ -371,6 +403,67 @@ def test_login_without_desktop_pubkey_still_allows_plain_web_session():
     assert login_fails == []
 
 
+def test_login_failure_counter_is_atomic_and_progressive():
+    database = sqlite3.connect(":memory:")
+    database.execute(
+        "CREATE TABLE login_attempts ("
+        "id_bi TEXT PRIMARY KEY, fails INTEGER NOT NULL, "
+        "first_fail_ts INTEGER NOT NULL, locked_until INTEGER NOT NULL)"
+    )
+    now = 1_800_000_000_000
+
+    async def d1_first(_env, sql, *args):
+        row = database.execute(sql, args).fetchone()
+        database.commit()
+        return (
+            {"fails": row[0], "first_fail_ts": row[1], "locked_until": row[2]}
+            if row else None
+        )
+
+    def json_response(data, status=200, extra_headers=None, **_kwargs):
+        return {
+            "status": status,
+            "data": data,
+            "headers": dict(extra_headers or {}),
+        }
+
+    namespace = _load_login_throttle({
+        "Date": type("Date", (), {"now": staticmethod(lambda: now)}),
+        "d1_first": d1_first,
+        "json_response": json_response,
+        "LOGIN_FAIL_WINDOW_MS": 15 * 60 * 1000,
+        "LOGIN_MAX_FAILS": 10,
+        "LOGIN_LOCKOUT_MS": 15 * 60 * 1000,
+    })
+
+    first = asyncio.run(namespace["_login_failure_response"](
+        object(), ["source", "source+identifier"], "invalid_credentials"))
+    second = asyncio.run(namespace["_login_failure_response"](
+        object(), ["source", "source+identifier"], "invalid_credentials"))
+    third = asyncio.run(namespace["_login_failure_response"](
+        object(), ["source", "source+identifier"], "invalid_credentials"))
+
+    assert first["status"] == 401
+    assert second["status"] == 401
+    assert third["status"] == 429
+    assert third["data"]["retryAfterMs"] == 1000
+    assert third["headers"]["Retry-After"] == "1"
+    assert database.execute(
+        "SELECT fails FROM login_attempts WHERE id_bi='source'"
+    ).fetchone() == (3,)
+
+
+def test_valid_login_never_prechecks_an_attacker_created_lock():
+    source = ENTRY.read_text(encoding="utf-8")
+    login_source = source[
+        source.index("async def _account_login"):
+        source.index("async def _account_rotate")
+    ]
+    assert "_login_locked_until" not in login_source
+    assert login_source.index("verify_password(") < login_source.index(
+        "_login_clear(")
+
+
 def test_local_demo_credentials_bootstrap_a_real_admin_account():
     saved = []
     sql_null = object()
@@ -453,7 +546,7 @@ def test_local_demo_credentials_bootstrap_a_real_admin_account():
         login_source.index("async def _account_rotate")
     ]
     assert login_source.index("_ensure_local_demo_account") < (
-        login_source.index("_login_locked_until"))
+        login_source.index("_login_attempt_keys"))
 
 
 def test_device_bind_canonical_is_exact_and_normalizes_account_name():
@@ -658,13 +751,28 @@ def test_concurrent_first_device_bind_allows_exactly_one_account_winner():
         ).encode()
 
     async def account_payload(_env, rec):
-        return {"ok": True, "nodeName": rec["name"], "email": rec["email"]}
+        return {
+            "ok": True,
+            "nodeName": rec["name"],
+            "email": rec["email"],
+            "sessionToken": "v2.test-session.test-secret",
+        }
 
     async def noop(*_args, **_kwargs):
         return None
 
+    async def bounded_json_request(request):
+        return await request.json()
+
+    async def login_attempt_keys(env, _request, identifier):
+        return [await blind_index(env, identifier)]
+
+    async def login_failure_response(_env, _attempt_keys, error):
+        return _json_response({"error": error}, status=401)
+
     handler = _load_account_login({
         "blind_index": blind_index,
+        "bounded_json_request": bounded_json_request,
         "clean_string": _clean_string,
         "d1_first": d1_first,
         "d1_all": d1_all,
@@ -677,14 +785,14 @@ def test_concurrent_first_device_bind_allows_exactly_one_account_winner():
         "ed25519_verify": ed25519_verify,
         "_ts_ok": lambda value: value == DEVICE_TS,
         "_login_record_fail": noop,
-        "_login_locked_until": lambda *_args: asyncio.sleep(0, result=0),
+        "_login_attempt_keys": login_attempt_keys,
+        "_login_failure_response": login_failure_response,
         "_login_clear": noop,
         "_save_account": noop,
         "touch_registered_node": noop,
         "_account_public_payload": account_payload,
         "_account_session_token": lambda _env, name: "session:" + name,
-        "_admin_session_cookie": lambda _env, _name: "admin",
-        "_clear_admin_session_cookie": lambda: "clear",
+        "_account_session_cookie": lambda _token: "account",
         "json_response": _json_response,
         "Date": type("Date", (), {"now": staticmethod(lambda: int(DEVICE_TS))}),
         "urlparse": urlparse,
