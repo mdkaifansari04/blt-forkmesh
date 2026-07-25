@@ -1104,7 +1104,6 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentDiffView = new QTextBrowser;
     m_agentDiffView->setObjectName("diffView");
     m_agentDiffView->setOpenExternalLinks(false);
-    m_agentDiffView->setLineWrapMode(QTextEdit::NoWrap);
     registerDiffView(m_agentDiffView);
     // The DiffFileNavigator (sticky header + scroll<->select wiring) is created
     // lazily on first render, where its complete type is in scope.

@@ -1077,10 +1077,10 @@
     if (!rows.length) return '<div class="px-3 py-2 text-xs text-muted-foreground">No line changes.</div>';
     return rows.map((row) => {
       const full = row.type === "hunk" || row.type === "meta";
-      return `<div class="grid min-w-max grid-cols-[3rem_3rem_minmax(40rem,1fr)] ${diffRowClass(row.type)}">
+      return `<div class="grid grid-cols-[3rem_3rem_minmax(0,1fr)] ${diffRowClass(row.type)}">
         <span class="select-none border-r border-border/60 px-2 text-right font-mono text-muted-foreground">${full ? "" : (row.oldLine ?? "")}</span>
         <span class="select-none border-r border-border/60 px-2 text-right font-mono text-muted-foreground">${full ? "" : (row.newLine ?? "")}</span>
-        <span class="whitespace-pre px-3 font-mono">${escapeHtml(row.text || " ")}</span>
+        <span class="whitespace-pre-wrap break-words px-3 font-mono">${escapeHtml(row.text || " ")}</span>
       </div>`;
     }).join("");
   }

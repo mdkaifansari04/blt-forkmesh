@@ -3190,7 +3190,6 @@ void MainWindow::showReleaseDetail(const QString &tag)
     auto *diff = new QTextBrowser;
     diff->setObjectName("diffView");
     diff->setOpenLinks(false); // read-only diff; don't navigate on anchor clicks
-    diff->setLineWrapMode(QTextEdit::NoWrap);
     registerDiffView(diff);
     if (diffHtml.trimmed().isEmpty())
         setDiffHtml(diff,
