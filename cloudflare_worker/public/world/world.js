@@ -19,6 +19,14 @@ import {
 } from "./world-data.js";
 import { buildLiveMirrorNodes } from "./world-mirror-nodes.js";
 import {
+  MASTODON_LOOKUP_URL,
+  MASTODON_PROFILE_URL,
+  MASTODON_STATUS_LIMIT,
+  formatMastodonCount,
+  normalizeMastodonAccount,
+  normalizeMastodonStatus,
+} from "./world-mastodon.js";
+import {
   buildPullMergeRequest,
   buildPullFileTree,
   exactPullMergeContext,
@@ -3344,6 +3352,11 @@ class ForkMeshWorld extends HTMLElement {
     this.officeMeeting = null;
     this.officeController = null;
     this.officeTasks = null;
+    this.mastodonProfile = null;
+    this.mastodonStatuses = [];
+    this.mastodonState = "idle";
+    this.mastodonFetchedAt = 0;
+    this.mastodonLoad = null;
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
     const requestedLandmark = worldQuery.get("landmark") || "";
@@ -3730,6 +3743,7 @@ class ForkMeshWorld extends HTMLElement {
           void this.officeMeeting?.joinRoom?.("general");
         },
         onWorldBulletinSelect: () => this.openLandmark("events"),
+        onMastodonBoardSelect: () => this.openMastodonBoard(),
         onRendererStateChange: (state) => {
           this.handleRendererStateChange(state);
         },
@@ -5189,6 +5203,10 @@ class ForkMeshWorld extends HTMLElement {
         this.setTheme(themeButton.dataset.worldTheme);
         return;
       }
+      if (event.target.closest("[data-world-mastodon-retry]")) {
+        void this.loadMastodonBoard(true);
+        return;
+      }
       const outfitButton = event.target.closest("[data-world-outfit]");
       if (outfitButton) {
         this.setOutfitColor(outfitButton.dataset.worldOutfit);
@@ -6591,6 +6609,285 @@ class ForkMeshWorld extends HTMLElement {
         ${this.mirrorNodeTechnicalHTML(node)}
       </div>`;
     this.showDetailOverlay(detail, backdrop, { returnFocus });
+  }
+
+  async fetchMastodonJSON(url) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 10000);
+    try {
+      // Public read-only Mastodon API. No ForkMesh session material is ever
+      // attached to this cross-origin request.
+      const response = await fetch(url, {
+        credentials: "omit",
+        cache: "no-store",
+        headers: { accept: "application/json" },
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`mastodon returned ${response.status}`);
+      return await response.json();
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  loadMastodonBoard(force = false) {
+    if (this.mastodonLoad) return this.mastodonLoad;
+    const fresh =
+      this.mastodonProfile &&
+      Date.now() - this.mastodonFetchedAt < 5 * 60 * 1000;
+    if (fresh && !force) return Promise.resolve();
+    this.mastodonState = "loading";
+    this.renderMastodonBoard();
+    this.mastodonLoad = (async () => {
+      try {
+        const account = normalizeMastodonAccount(
+          await this.fetchMastodonJSON(MASTODON_LOOKUP_URL),
+        );
+        if (!account) throw new Error("mastodon_account_unavailable");
+        const statuses = await this.fetchMastodonJSON(
+          `https://mastodon.social/api/v1/accounts/${encodeURIComponent(
+            account.id,
+          )}/statuses?limit=${MASTODON_STATUS_LIMIT}&exclude_replies=true`,
+        );
+        this.mastodonProfile = account;
+        this.mastodonStatuses = (Array.isArray(statuses) ? statuses : [])
+          .map((status) => normalizeMastodonStatus(status))
+          .filter(Boolean)
+          .slice(0, MASTODON_STATUS_LIMIT);
+        this.mastodonFetchedAt = Date.now();
+        this.mastodonState = "ready";
+      } catch (_) {
+        // Keep any previously fetched snapshot on a refresh failure.
+        this.mastodonState = this.mastodonProfile ? "ready" : "error";
+      } finally {
+        this.mastodonLoad = null;
+        this.renderMastodonBoard();
+      }
+    })();
+    return this.mastodonLoad;
+  }
+
+  openMastodonBoard({ returnFocus = null } = {}) {
+    const detail = this.$("[data-world-detail]");
+    const backdrop = this.$("[data-world-detail-backdrop]");
+    if (!detail || !backdrop) return;
+    detail.dataset.openLandmark = "mastodon-board";
+    detail.style.setProperty("--detail-color", "#8b9bf4");
+    this.renderMastodonBoard();
+    this.showDetailOverlay(detail, backdrop, { returnFocus });
+    void this.loadMastodonBoard();
+  }
+
+  renderMastodonBoard() {
+    const detail = this.$("[data-world-detail]");
+    if (!detail || detail.dataset.openLandmark !== "mastodon-board") return;
+    detail.innerHTML = `
+      <header class="world-detail-header">
+        <div>
+          <p class="world-eyebrow">FEDIVERSE / MASTODON.SOCIAL</p>
+          <h2 id="world-detail-title">ForkMesh on Mastodon</h2>
+        </div>
+        <button class="world-detail-close" type="button" data-world-detail-close aria-label="Close Mastodon board">×</button>
+      </header>
+      <div class="world-mastodon-app">
+        ${this.mastodonProfileHTML()}
+        ${this.mastodonTootsHTML()}
+      </div>`;
+  }
+
+  mastodonProfileHTML() {
+    const account = this.mastodonProfile;
+    if (!account) {
+      const loading = this.mastodonState === "loading";
+      return `
+        <section class="world-mastodon-profile" aria-label="Mastodon profile">
+          <p class="world-mastodon-status" role="status">${
+            loading
+              ? "Loading the live public profile from mastodon.social…"
+              : "The public Mastodon profile could not be loaded right now."
+          }</p>
+          <div class="world-mastodon-links">
+            ${loading ? "" : '<button type="button" data-world-mastodon-retry>Try again</button>'}
+            <a href="${escapeHTML(
+              MASTODON_PROFILE_URL,
+            )}" target="_blank" rel="noopener noreferrer">Open @forkmesh on mastodon.social</a>
+          </div>
+        </section>`;
+    }
+    const joined = account.createdAt
+      ? new Date(account.createdAt).toLocaleDateString([], {
+          month: "short",
+          day: "2-digit",
+        })
+      : "—";
+    return `
+      <section class="world-mastodon-profile" aria-label="Mastodon profile">
+        ${
+          account.header
+            ? `<img class="world-mastodon-header" src="${escapeHTML(
+                account.header,
+              )}" alt="" loading="lazy" />`
+            : ""
+        }
+        <div class="world-mastodon-identity">
+          ${
+            account.avatar
+              ? `<img class="world-mastodon-avatar" src="${escapeHTML(
+                  account.avatar,
+                )}" alt="" loading="lazy" />`
+              : ""
+          }
+          <div>
+            <strong>${escapeHTML(account.displayName)}</strong>
+            <span>@${escapeHTML(account.acct)}@mastodon.social</span>
+          </div>
+        </div>
+        <dl class="world-mastodon-stats">
+          <div><dt>Followers</dt><dd>${escapeHTML(
+            formatMastodonCount(account.followersCount),
+          )}</dd></div>
+          <div><dt>Following</dt><dd>${escapeHTML(
+            formatMastodonCount(account.followingCount),
+          )}</dd></div>
+          <div><dt>Posts</dt><dd>${escapeHTML(
+            formatMastodonCount(account.statusesCount),
+          )}</dd></div>
+          <div><dt>Joined</dt><dd>${escapeHTML(joined)}</dd></div>
+        </dl>
+        ${
+          account.note
+            ? `<p class="world-mastodon-note">${escapeHTML(account.note)}</p>`
+            : ""
+        }
+        ${
+          account.fields.length
+            ? `<dl class="world-mastodon-fields">
+                ${account.fields
+                  .map(
+                    (field) => `<div${field.verified ? ' data-verified="true"' : ""}>
+                      <dt>${escapeHTML(field.name)}</dt>
+                      <dd>${
+                        field.url
+                          ? `<a href="${escapeHTML(
+                              field.url,
+                            )}" target="_blank" rel="noopener noreferrer">${escapeHTML(
+                              field.value,
+                            )}</a>`
+                          : escapeHTML(field.value)
+                      }${field.verified ? " ✓" : ""}</dd>
+                    </div>`,
+                  )
+                  .join("")}
+              </dl>`
+            : ""
+        }
+        <div class="world-mastodon-links">
+          <a href="${escapeHTML(
+            account.url,
+          )}" target="_blank" rel="noopener noreferrer">Open on mastodon.social</a>
+          <button type="button" data-world-mastodon-retry>Refresh</button>
+        </div>
+      </section>`;
+  }
+
+  mastodonTootsHTML() {
+    const statuses = this.mastodonStatuses;
+    const body = statuses.length
+      ? statuses
+          .map((status) => {
+            const date = status.createdAt
+              ? new Date(status.createdAt).toLocaleDateString([], {
+                  year: "numeric",
+                  month: "short",
+                  day: "numeric",
+                })
+              : "";
+            return `
+              <article class="world-mastodon-toot">
+                <header>
+                  ${
+                    status.authorAvatar
+                      ? `<img src="${escapeHTML(
+                          status.authorAvatar,
+                        )}" alt="" loading="lazy" />`
+                      : ""
+                  }
+                  <div>
+                    <strong>${escapeHTML(status.authorName)}</strong>
+                    <span>@${escapeHTML(status.authorAcct)}</span>
+                  </div>
+                  <time>${escapeHTML(date)}</time>
+                </header>
+                ${
+                  status.pinned
+                    ? '<p class="world-mastodon-marker">📌 Pinned</p>'
+                    : ""
+                }
+                ${
+                  status.boostedFrom
+                    ? `<p class="world-mastodon-marker">🔁 Boosted from @${escapeHTML(
+                        status.boostedFrom,
+                      )}</p>`
+                    : ""
+                }
+                ${
+                  status.spoiler
+                    ? `<p class="world-mastodon-marker">⚠ ${escapeHTML(
+                        status.spoiler,
+                      )}</p>`
+                    : ""
+                }
+                ${
+                  status.text
+                    ? `<p class="world-mastodon-text">${escapeHTML(
+                        status.text,
+                      )}</p>`
+                    : ""
+                }
+                ${
+                  status.images.length
+                    ? `<div class="world-mastodon-media">${status.images
+                        .map(
+                          (image) => `<img src="${escapeHTML(
+                            image.url,
+                          )}" alt="${escapeHTML(image.alt)}" loading="lazy" />`,
+                        )
+                        .join("")}</div>`
+                    : ""
+                }
+                <footer>
+                  <span>💬 ${escapeHTML(
+                    formatMastodonCount(status.repliesCount),
+                  )}</span>
+                  <span>🔁 ${escapeHTML(
+                    formatMastodonCount(status.reblogsCount),
+                  )}</span>
+                  <span>⭐ ${escapeHTML(
+                    formatMastodonCount(status.favouritesCount),
+                  )}</span>
+                  ${
+                    status.url
+                      ? `<a href="${escapeHTML(
+                          status.url,
+                        )}" target="_blank" rel="noopener noreferrer">Open toot</a>`
+                      : ""
+                  }
+                </footer>
+              </article>`;
+          })
+          .join("")
+      : `<p class="world-mastodon-status" role="status">${
+          this.mastodonState === "loading"
+            ? "Loading the latest public toots…"
+            : "No public toots are available right now."
+        }</p>`;
+    return `
+      <section class="world-mastodon-toots" aria-label="Latest public toots">
+        <h3>Latest toots</h3>
+        <div class="world-mastodon-toot-list" data-world-mastodon-toots tabindex="0">
+          ${body}
+        </div>
+      </section>`;
   }
 
   rewardPanelHTML() {
