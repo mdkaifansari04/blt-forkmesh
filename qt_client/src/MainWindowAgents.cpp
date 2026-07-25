@@ -669,7 +669,13 @@ QWidget *MainWindow::buildAgentsTab()
                                          Qt::LinksAccessibleByMouse);
     m_agentMeta->setWordWrap(true);
     connect(m_agentMeta, &QLabel::linkActivated, this, [this](const QString &href) {
-        if (href.startsWith(kBranchLinkScheme))
+        if (href.startsWith(kCopyBranchLinkScheme)) {
+            const QString branch = QUrl::fromPercentEncoding(
+                href.mid(kCopyBranchLinkScheme.size()).toUtf8());
+            QApplication::clipboard()->setText(branch);
+            flashMessage(QStringLiteral("Copied branch name \xE2\x80\x9C%1\xE2\x80\x9D")
+                             .arg(branch));
+        } else if (href.startsWith(kBranchLinkScheme))
             switchToBranch(QUrl::fromPercentEncoding(
                 href.mid(kBranchLinkScheme.size()).toUtf8()));
         else if (href.startsWith(kWorktreeLinkScheme))
@@ -3888,6 +3894,21 @@ static QString chipBranchLinkHtml(const QString &branch)
     return chipLinkHtml(href, branch.toHtmlEscaped());
 }
 
+// Small "copy" link rendered right after the branch chip (adhoc #259): clicking
+// it copies the branch name to the clipboard via m_agentMeta's linkActivated
+// handler instead of navigating to the Branches tab.
+static QString copyBranchLinkHtml(const QString &branch)
+{
+    if (branch.isEmpty())
+        return QString();
+    const QString href = kCopyBranchLinkScheme +
+                         QString::fromUtf8(QUrl::toPercentEncoding(branch));
+    return QStringLiteral(
+               " <a href=\"%1\" style=\"color:#8b949e;text-decoration:none\">"
+               "&nbsp;\xE2\xA7\x89&nbsp;</a>")
+        .arg(href);
+}
+
 // HTML for a worktree location shown next to the branch in the agent session
 // header. Clicking it opens the branch's row in the Worktrees tab (handled by
 // m_agentMeta's linkActivated -> switchToWorktree); the branch is carried in the
@@ -4068,7 +4089,8 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
         values << agentStatusText(session->status).toHtmlEscaped();
         if (!session->branchName.isEmpty()) {
             headers << QStringLiteral("Branch");
-            values << chipBranchLinkHtml(session->branchName);
+            values << chipBranchLinkHtml(session->branchName) +
+                           copyBranchLinkHtml(session->branchName);
             if (!worktreePath.isEmpty()) {
                 headers << QStringLiteral("Worktree");
                 values << worktreeLinkHtml(session->branchName, worktreePath);
@@ -4150,7 +4172,8 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
     headers << QStringLiteral("Branch");
     lines << (session->branchName.isEmpty()
                   ? QStringLiteral("(no branch)")
-                  : chipBranchLinkHtml(session->branchName));
+                  : chipBranchLinkHtml(session->branchName) +
+                        copyBranchLinkHtml(session->branchName));
     if (!worktreePath.isEmpty()) {
         headers << QStringLiteral("Worktree");
         lines << worktreeLinkHtml(session->branchName, worktreePath);
