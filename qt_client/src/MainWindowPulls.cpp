@@ -517,7 +517,6 @@ QWidget *MainWindow::buildPullsTab()
     m_pullDiff->setObjectName("diffView");
     m_pullDiff->setOpenExternalLinks(false);
     m_pullDiff->setOpenLinks(false); // we handle "cmt:" anchors ourselves
-    m_pullDiff->setLineWrapMode(QTextEdit::NoWrap);
     connect(m_pullDiff, &QTextBrowser::anchorClicked, this,
             &MainWindow::onPullDiffAnchorClicked);
     registerDiffView(m_pullDiff);
@@ -1795,6 +1794,11 @@ void MainWindow::registerDiffView(QTextEdit *view)
     m_diffViews.append(view);
     if (view->toolTip().isEmpty())
         view->setToolTip(QStringLiteral("Ctrl+scroll to change the text size"));
+    // Every diff view wraps at the widget edge: the rendered tables are
+    // width-constrained and their code cells pre-wrap, so the whole diff
+    // (including side-by-side) stays inside the visible window instead of
+    // running past the right edge behind a horizontal scrollbar.
+    view->setLineWrapMode(QTextEdit::WidgetWidth);
     view->viewport()->installEventFilter(this); // Ctrl+wheel, see eventFilter
     if (auto *browser = qobject_cast<QTextBrowser *>(view)) {
         browser->setOpenLinks(false);

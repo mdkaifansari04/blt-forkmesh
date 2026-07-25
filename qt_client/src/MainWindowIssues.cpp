@@ -1063,8 +1063,7 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueDiffView = new QTextBrowser;
     m_issueDiffView->setObjectName("diffView");
     m_issueDiffView->setOpenExternalLinks(false);
-    m_issueDiffView->setLineWrapMode(QTextEdit::NoWrap);
-    // Long diff lines scroll inside the browser; they must not become a
+    // Long diff lines wrap inside the browser; they must not become a
     // minimum-width request propagated through the hidden Files changed page.
     m_issueDiffView->setMinimumWidth(0);
     m_issueDiffView->setSizePolicy(QSizePolicy::Ignored,

@@ -30,10 +30,15 @@ def test_homepage_no_longer_client_redirects():
     assert 'location.replace("/dashboard")' not in INDEX_HTML
     assert "forkmesh.session" not in INDEX_HTML
     assert 'data-world-mode="public"' in WORLD_HTML
-    assert 'src="/world/"' in INDEX_HTML
-    assert 'title="Interactive ForkMesh World"' in INDEX_HTML
-    assert "Open World full screen" in INDEX_HTML
-    assert "repositories, source code, documentation" in INDEX_HTML
+    # The World embed moved from a mid-page index.html section to a
+    # site-footer.js band pinned to the bottom of every page (adhoc #280).
+    footer_js = _read("site-footer.js")
+    assert 'src="/world/"' not in INDEX_HTML
+    assert 'src="/world/"' in footer_js
+    assert 'title="Interactive ForkMesh World"' in footer_js
+    assert "Open World full screen" in footer_js
+    assert "repositories, source code, documentation" in footer_js
+    assert 'src="/site-footer.js"' in INDEX_HTML
 
 
 def test_worker_owns_root_without_cookie_routing():
