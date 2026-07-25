@@ -288,75 +288,6 @@ forkmesh-world {
   line-height: 1.6;
 }
 
-.world-loading-screen {
-  position: absolute;
-  z-index: 90;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  background: #07110f;
-  transition: opacity 240ms ease, visibility 240ms ease;
-}
-
-.world-loading-screen[aria-hidden="true"] {
-  opacity: 0;
-  visibility: hidden;
-}
-
-.world-loading-lockup {
-  display: grid;
-  justify-items: center;
-  gap: 16px;
-}
-
-.world-loading-mark {
-  position: relative;
-  width: 74px;
-  height: 74px;
-  border: 1px solid var(--world-line-strong);
-  transform: rotate(45deg);
-}
-
-.world-loading-mark::before,
-.world-loading-mark::after {
-  content: "";
-  position: absolute;
-  inset: 12px;
-  border: 1px solid var(--world-mint);
-  animation: world-loader 1.8s ease-in-out infinite;
-}
-
-.world-loading-mark::after {
-  inset: 24px;
-  background: var(--world-mint);
-  animation-delay: -0.55s;
-}
-
-.world-loading-lockup strong {
-  font-family: "ForkMesh Favorit", sans-serif;
-  font-size: 1.15rem;
-}
-
-.world-loading-lockup span {
-  color: var(--world-muted);
-  font-family: "ForkMesh Mono", monospace;
-  font-size: 0.68rem;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-}
-
-@keyframes world-loader {
-  0%,
-  100% {
-    opacity: 0.28;
-    transform: scale(0.72);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
 .world-hud {
   position: absolute;
   z-index: 5;
@@ -528,84 +459,10 @@ forkmesh-world {
   display: none;
 }
 
-.world-left-rail {
-  position: absolute;
-  top: calc(var(--safe-top) + 68px);
-  left: var(--safe-left);
-  display: grid;
-  gap: 10px;
-  width: min(292px, calc(100vw - 28px));
-}
-
-.world-arrival-card {
-  position: relative;
-  overflow: hidden;
-  border: 1px solid var(--world-line);
-  border-left: 2px solid var(--world-mint);
-  background: var(--world-panel);
-  padding: 16px;
-  backdrop-filter: blur(22px);
-}
-
-.world-arrival-card[hidden] {
-  display: none;
-}
-
-.world-arrival-dismiss {
-  position: absolute;
-  z-index: 2;
-  top: 7px;
-  right: 7px;
-  display: grid;
-  width: 30px;
-  height: 30px;
-  place-items: center;
-  border: 1px solid var(--world-line);
-  background: rgb(6 17 14 / 0.7);
-  color: var(--world-muted);
-  cursor: pointer;
-  font-size: 1rem;
-}
-
-.world-arrival-dismiss:hover,
-.world-arrival-dismiss:focus-visible {
-  border-color: var(--world-mint);
-  color: var(--world-mint);
-  outline: none;
-}
-
-.world-arrival-card::after {
-  content: "";
-  position: absolute;
-  top: -36px;
-  right: -20px;
-  width: 104px;
-  height: 104px;
-  border: 1px solid rgb(158 247 198 / 0.2);
-  transform: rotate(26deg);
-  pointer-events: none;
-}
-
 .world-eyebrow {
   margin: 0;
   color: var(--world-mint);
   font-size: 0.61rem;
-}
-
-.world-arrival-card h1 {
-  max-width: 240px;
-  margin: 8px 0 8px;
-  font-family: "ForkMesh Favorit", sans-serif;
-  font-size: 1.82rem;
-  line-height: 0.98;
-  letter-spacing: -0.045em;
-}
-
-.world-arrival-card > p:not(.world-eyebrow) {
-  margin: 0;
-  color: var(--world-muted);
-  font-size: 0.77rem;
-  line-height: 1.5;
 }
 
 .world-arrival-actions {
@@ -2038,12 +1895,6 @@ forkmesh-world {
 }
 
 forkmesh-world.world-office-active .world-quick-dock {
-  visibility: hidden;
-  opacity: 0;
-  pointer-events: none;
-}
-
-forkmesh-world.world-office-active .world-arrival-card {
   visibility: hidden;
   opacity: 0;
   pointer-events: none;
@@ -4934,23 +4785,6 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     min-height: 38px;
   }
 
-  .world-left-rail {
-    top: calc(var(--safe-top) + 92px);
-    width: min(260px, calc(100vw - 28px));
-  }
-
-  .world-arrival-card {
-    padding: 12px;
-  }
-
-  .world-arrival-card h1 {
-    font-size: 1.42rem;
-  }
-
-  .world-arrival-card > p:not(.world-eyebrow) {
-    display: none;
-  }
-
   .world-arrival-actions {
     margin-top: 10px;
   }
@@ -5085,14 +4919,6 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 }
 
 @media (max-height: 520px) and (orientation: landscape) {
-  .world-left-rail {
-    top: calc(var(--safe-top) + 68px);
-  }
-
-  .world-arrival-card {
-    display: none;
-  }
-
   .world-touch-controls {
     left: calc(var(--safe-left) + 8px);
     bottom: calc(
@@ -5130,14 +4956,6 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 
   .world-emoji-grid {
     grid-template-columns: repeat(5, minmax(34px, 1fr));
-  }
-
-  .world-arrival-card {
-    width: 208px;
-  }
-
-  .world-arrival-card h1 {
-    max-width: 180px;
   }
 
   .world-arrival-actions .world-secondary-action {

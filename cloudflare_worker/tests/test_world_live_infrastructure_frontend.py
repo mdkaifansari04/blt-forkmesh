@@ -12,7 +12,7 @@ def _between(start, end):
     return APP[APP.index(start):APP.index(end, APP.index(start))]
 
 
-def test_durable_object_models_use_existing_current_counts_and_server_limits():
+def test_system_capacity_uses_current_service_limits_and_admin_table_counts():
     assert "worldConnections = Number(context?.worldConnections)" in APP
     assert (
         "worldMessagesPerSecond = Number(context?.worldMessagesPerSecond)"
@@ -20,7 +20,7 @@ def test_durable_object_models_use_existing_current_counts_and_server_limits():
     )
     assert "chatConnections = Number(context?.chatConnections)" in APP
     metrics = _between(
-        "  updateDurableObjectMetrics() {",
+        "  updateSystemCapacityMetrics() {",
         "  async moderateWorldPeer(action) {",
     )
     assert "this.worldLimits" in metrics
@@ -29,7 +29,9 @@ def test_durable_object_models_use_existing_current_counts_and_server_limits():
     assert "1 + this.remotePlayers.size" in metrics
     assert "limits.worldConnections" in metrics
     assert "limits.chatConnections" in metrics
-    assert "this.world.updateDurableObjects({ objects })" in metrics
+    assert "this.systemCapacityTables" in metrics
+    assert "this.world.updateSystemCapacity({" in metrics
+    assert "tables: this.systemCapacityTables" in metrics
     assert "Math.random" not in metrics
     assert "fetch(" not in metrics
     assert "fetchJSON" not in metrics

@@ -2,6 +2,35 @@ export const OFFICE_ENTER_DISTANCE = 6.5;
 export const OFFICE_EXIT_DISTANCE = 7.5;
 const OFFICE_CHAT_PATH = "/chat?embed=office";
 const OFFICE_UNLOAD_DELAY_MS = 2000;
+const OFFICE_CODE_KEY = "forkmesh.office.entry-code.v1";
+
+function officeEntryCode() {
+  try {
+    let code = localStorage.getItem(OFFICE_CODE_KEY) || "";
+    if (!/^\d{10}$/.test(code)) {
+      code = Array.from({ length: 10 }, () => Math.floor(Math.random() * 10)).join("");
+      localStorage.setItem(OFFICE_CODE_KEY, code);
+    }
+    return code;
+  } catch (_) {
+    return "0000000000";
+  }
+}
+
+function playOfficeTone(digit) {
+  try {
+    const context = new AudioContext();
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.frequency.value = 620 + Number(digit || 0) * 38;
+    gain.gain.setValueAtTime(0.035, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + 0.09);
+    oscillator.connect(gain).connect(context.destination);
+    oscillator.start();
+    oscillator.stop(context.currentTime + 0.1);
+    oscillator.addEventListener("ended", () => context.close(), { once: true });
+  } catch (_) {}
+}
 
 export function nextOfficeZoneState(currentState, distance) {
   const threshold = currentState === "nearby"
@@ -99,6 +128,18 @@ export function createWorldOfficeController({
 
   function enterOffice() {
     if (proximity !== "nearby" || active) return false;
+    const code = officeEntryCode();
+    const entered = window.prompt(
+      `ForkMesh Office door code (10 digits). Share this code with other visitors:\n${code}`,
+      "",
+    );
+    for (const digit of String(entered || "").replace(/\D/g, "")) playOfficeTone(digit);
+    if (String(entered || "").trim() !== code) {
+      prompt?.querySelector("p")?.replaceChildren(
+        document.createTextNode("Door locked · enter the 10-digit office code"),
+      );
+      return false;
+    }
     if (!world.enterOffice()) return false;
     if (!returnFocus) returnFocus = enterButton;
     active = true;

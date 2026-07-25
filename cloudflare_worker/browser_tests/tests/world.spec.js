@@ -49,6 +49,7 @@ async function prepareWorldPage(
     chatChannels = [],
     chatChannelStatus = 200,
     ticketAuthenticated = true,
+    systemCapacityTables = [],
   } = {},
 ) {
   let mentionState = "review";
@@ -273,8 +274,16 @@ async function prepareWorldPage(
                     authenticated: true,
                     accountStatus: "Registered",
                     name: session.nodeName,
+                    isAdmin: systemCapacityTables.length > 0,
                     ticket: "playwright-world-ticket",
                     expiresAt: FIXED_NOW + 300_000,
+                    ...(systemCapacityTables.length
+                      ? {
+                          systemCapacity: {
+                            tables: systemCapacityTables,
+                          },
+                        }
+                      : {}),
                   }
                 : {
                     ok: true,
@@ -832,18 +841,12 @@ async function waitForWorld(page, url = "/world/") {
 async function waitForWorldReady(page) {
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
-    return Boolean(shell?.world?.renderer?.domElement);
+    return (
+      Boolean(shell?.world?.renderer?.domElement) &&
+      Number(shell.world.renderer.info?.render?.frame || 0) > 0
+    );
   });
   await page.evaluate(() => document.fonts?.ready);
-  await page.locator("[data-world-loading]").waitFor({
-    state: "attached",
-  });
-  await page.waitForFunction(
-    () =>
-      document
-        .querySelector("[data-world-loading]")
-        ?.getAttribute("aria-hidden") === "true",
-  );
 }
 
 async function openWorldPullReview(page, number = 44) {
@@ -1522,6 +1525,8 @@ test("enhanced Town Square starts in WebGL and keeps keyboard navigation", async
   await expect(page.locator("[data-world-canvas-wrap] canvas")).toHaveCount(1);
   await expect(page.locator(".world-webgl-fallback")).toHaveCount(0);
   await expect(page.locator("#world-information")).toHaveCount(1);
+  await expect(page.locator("[data-world-loading]")).toHaveCount(0);
+  await expect(page.locator(".world-arrival-card")).toHaveCount(0);
 
   await page.locator(".world-skip-link").focus();
   await page.keyboard.press("Enter");
@@ -2506,12 +2511,12 @@ test("construction markers distinguish verified live landmarks from unavailable 
     );
   await expect(mapMarker("information")).toBeHidden();
   await expect(mapMarker("routing")).toBeHidden();
+  await expect(mapMarker("workshops")).toBeHidden();
   await expect(mapMarker("repositories")).toBeHidden();
   await expect(mapMarker("fediverse")).toBeHidden();
   await expect(mapMarker("events")).toBeHidden();
   await expect(mapMarker("organizations")).toBeVisible();
   await expect(mapMarker("security")).toBeVisible();
-  await expect(mapMarker("workshops")).toBeVisible();
 
   await expect(mapMarker("organizations")).toHaveAttribute(
     "aria-label",
@@ -2545,44 +2550,30 @@ test("failed live checks fail closed to construction without blocking navigation
   });
   await waitForWorld(page);
 
-  for (const id of ["routing", "repositories", "fediverse", "events"]) {
+  for (const id of ["repositories", "fediverse", "events"]) {
     const marker = page.locator(
       `.world-map [data-world-construction-marker="${id}"]`,
     );
     await expect(marker).toBeVisible();
     await expect(marker).toHaveAttribute("aria-label", /^Under construction:/);
   }
+  await page.locator('.world-map [data-world-landmark="repositories"]').click();
   await expect(
-    page.locator(
-      '.world-map [data-world-construction-marker="support"]',
-    ),
-  ).toBeHidden();
-
-  await page.locator('.world-map [data-world-landmark="routing"]').click();
-  await expect(
-    page.getByRole("heading", { name: "Cloud routing station" }),
+    page.getByRole("heading", { name: "Repository portals" }),
   ).toBeVisible();
   await expect(
     page.locator(
-      '[data-world-detail] [data-world-construction-marker="routing"]',
+      '[data-world-detail] [data-world-construction-marker="repositories"]',
     ),
   ).toBeVisible();
 });
 
-test("approved instances, local setup, and project support stay truthful", async ({
+test("approved instances and local setup stay truthful", async ({
   page,
 }) => {
   await prepareWorldPage(page, "truthful-panels");
   await waitForWorld(page);
 
-  await page.locator("forkmesh-world").evaluate((shell) =>
-    shell.openLandmark("routing"),
-  );
-  await expect(page.getByText("North relay")).toBeVisible();
-  await expect(page.getByText("Garden relay")).toBeVisible();
-  await expect(page.getByText("fresh signed node health")).toBeVisible();
-  const routing = await page.locator("[data-world-detail]").textContent();
-  expect(routing).not.toContain("must-not-render");
   const instanceLayer = await page.locator("forkmesh-world").evaluate((shell) => {
     return (
       shell.world.scene.getObjectByName("approved-federated-instances")
@@ -2604,16 +2595,82 @@ test("approved instances, local setup, and project support stay truthful", async
     page.getByText("The hosted World never accepts, proxies, or stores"),
   ).toBeVisible();
   await expect(page.locator("[data-world-detail] input")).toHaveCount(0);
+});
 
-  await page.locator("forkmesh-world").evaluate((shell) =>
-    shell.openLandmark("support"),
+test("System Capacity fits one height-scaled bar per populated D1 table", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "system-capacity-bars", {
+    session: {
+      sessionToken: "playwright-admin-session",
+      nodeName: "root",
+    },
+    systemCapacityTables: [
+      { name: "users", rowCount: 2 },
+      { name: "repositories", rowCount: 27 },
+      { name: "world_events", rowCount: 4096 },
+    ],
+  });
+  await waitForWorld(page);
+
+  const capacity = await page.locator("forkmesh-world").evaluate((shell) => {
+    const platform = shell.world.scene.getObjectByName(
+      "system-capacity-infrastructure",
+    );
+    const tableLayer = shell.world.scene.getObjectByName(
+      "system-capacity-database-tables",
+    );
+    const bars = [];
+    tableLayer?.traverse((object) => {
+      if (String(object.name || "").startsWith("system-capacity-table:")) {
+        bars.push({
+          name: object.userData.tableName,
+          rowCount: object.userData.rowCount,
+          height: object.geometry.parameters.height,
+          x: object.position.x,
+          z: object.position.z,
+        });
+      }
+    });
+    return {
+      platformName: platform?.name || "",
+      visibleTableCount: platform?.userData.visibleTableCount,
+      legend: Boolean(
+        shell.world.scene.getObjectByName("system-capacity-table-legend"),
+      ),
+      bars,
+    };
+  });
+
+  expect(capacity.platformName).toBe("system-capacity-infrastructure");
+  expect(capacity.visibleTableCount).toBe(3);
+  expect(capacity.legend).toBe(true);
+  expect(capacity.bars.map((bar) => bar.name).sort()).toEqual([
+    "repositories",
+    "users",
+    "world_events",
+  ]);
+  const byRows = [...capacity.bars].sort(
+    (left, right) => left.rowCount - right.rowCount,
   );
-  await expect(page.getByText("Voluntary project support")).toBeVisible();
-  await expect(page.getByText("no financial return")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Open Patreon" })).toHaveAttribute(
-    "href",
-    "https://www.patreon.com/16434219/join",
-  );
+  expect(byRows[0].height).toBeLessThan(byRows[1].height);
+  expect(byRows[1].height).toBeLessThan(byRows[2].height);
+  for (const bar of capacity.bars) {
+    expect(Math.abs(bar.x)).toBeLessThanOrEqual(5.75);
+    expect(bar.z).toBeGreaterThanOrEqual(-3.45);
+    expect(bar.z).toBeLessThanOrEqual(3.35);
+  }
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setPaused(true);
+    shell.world.camera.position.set(8, 7.5, -14);
+    shell.world.camera.lookAt(8, 1.6, -27);
+    shell.world.renderer.render(shell.world.scene, shell.world.camera);
+  });
+  await expect(page).toHaveScreenshot("world-system-capacity.png", {
+    animations: "disabled",
+    maxDiffPixelRatio: 0.012,
+  });
 });
 
 test("a stale offline alias cannot erase the live mirrors' flagship pin", async ({
@@ -3546,13 +3603,15 @@ test("live mirror cabinets expose a readable truthful technical panel", async ({
     maxDiffPixelRatio: 0.015,
   });
 
-  await page.locator("forkmesh-world").evaluate((shell) =>
-    shell.openLandmark("routing"),
-  );
-  await page
-    .getByRole("button", { name: "Inspect live server" })
-    .first()
-    .click();
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    let mirror = null;
+    shell.world.scene.traverse((object) => {
+      if (object.userData?.nodeRecord?.name === "mirror2") {
+        mirror = object.userData.nodeRecord;
+      }
+    });
+    shell.openMirrorNodeDetail(mirror);
+  });
   const detail = page.locator("[data-world-mirror-node-detail]");
   await expect(detail).toBeVisible();
   await expect(detail).toContainText("mirror2");
@@ -3703,11 +3762,6 @@ test("Town Square placement is contextual, tracking-free, and collapses safely",
 
   await page.locator("forkmesh-world").evaluate((shell) =>
     shell.openLandmark("fountain"),
-  );
-  await expect(placement).toBeHidden();
-  await page.locator("[data-world-detail-close]").click();
-  await page.locator("forkmesh-world").evaluate((shell) =>
-    shell.openLandmark("support"),
   );
   await expect(placement).toBeHidden();
   await page.locator("[data-world-detail-close]").click();

@@ -47,7 +47,6 @@ const SETTINGS_KEY = "forkmesh.world.settings.v1";
 const GUEST_ID_KEY = "forkmesh.world.guestId.v1";
 const FIRST_VISIT_KEY = "forkmesh.world.firstVisitAt.v1";
 const VISIT_COUNT_KEY = "forkmesh.world.publicVisitCount.v1";
-const INTRO_DISMISSED_KEY = "forkmesh.world.introDismissed.v1";
 const FORKBOT_GREETED_KEY = "forkmesh.world.forkbotGreeted.v1";
 const POSITION_KEY_PREFIX = "forkmesh.world.position.v1.";
 const POSITION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -283,14 +282,6 @@ function sessionVisitCount(increment = false) {
     return next;
   } catch (_) {
     return increment ? 1 : 0;
-  }
-}
-
-function introDismissed() {
-  try {
-    return localStorage.getItem(INTRO_DISMISSED_KEY) === "1";
-  } catch (_) {
-    return false;
   }
 }
 
@@ -2476,14 +2467,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
       <div class="world-canvas-wrap" data-world-canvas-wrap></div>
       <div class="world-label-layer" data-world-label-layer></div>
 
-      <div class="world-loading-screen" data-world-loading aria-live="polite">
-        <div class="world-loading-lockup">
-          <div class="world-loading-mark" aria-hidden="true"></div>
-          <strong>Entering ForkMesh World</strong>
-          <span data-world-loading-copy>Mapping the Town Square</span>
-        </div>
-      </div>
-
       <div class="world-hud">
         <header class="world-topbar">
           <a class="world-brand brand" href="/" aria-label="ForkMesh World home">
@@ -2568,33 +2551,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             </button>
           </nav>
         </header>
-
-        <div class="world-left-rail">
-          <section
-            class="world-arrival-card"
-            aria-labelledby="world-arrival-title"
-            ${introDismissed() ? "hidden" : ""}
-          >
-            <button
-              class="world-arrival-dismiss"
-              type="button"
-              data-world-arrival-dismiss
-              aria-label="Permanently dismiss this introduction"
-              title="Do not show this introduction again"
-            >×</button>
-            <p class="world-eyebrow">YOU ARE HERE / TOWN SQUARE</p>
-            <h1 id="world-arrival-title">Code is a place now.</h1>
-            <p>
-              Walk the mesh, enter repositories, meet operators, and inspect the
-              infrastructure behind every metaphor.
-            </p>
-            <div class="world-arrival-actions">
-              <button class="world-primary-action" type="button" data-world-action="tour">Take the tour</button>
-              <button class="world-secondary-action" type="button" data-world-landmark="information">How it works</button>
-            </div>
-          </section>
-
-        </div>
 
         <aside class="world-right-rail" aria-label="World navigation and activity">
           <section class="world-map">
@@ -2829,7 +2785,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <div>
               <p class="world-eyebrow">LIVE COLLABORATION</p>
               <h2 id="world-chat-title">World chat</h2>
-              <span>Global #general — the same room as the website's /chat.</span>
+              <span>Chat with ForkBot in Global #general. Messages sent here go to General — the same room as the website's /chat.</span>
             </div>
             <button type="button" data-world-chat-close aria-label="Close World chat">×</button>
           </header>
@@ -3171,6 +3127,7 @@ class ForkMeshWorld extends HTMLElement {
     this.repositoryManualSelection = "";
     this.repositoryMapLoads = new Map();
     this.repositoryView = "map";
+    this.repositoryFile = null;
     this.pullReview = null;
     this.pullReviewSelection = 0;
     this.pullViewedFiles = new Map();
@@ -3335,7 +3292,6 @@ class ForkMeshWorld extends HTMLElement {
   handlePublicInputActivity = () => {
     if (this.destroyed || !this.identity) return;
     this.recordActivityArrival();
-    this.maybeGreetForkbot();
     if (!this.identity.inputActive) {
       this.identity.inputActive = true;
       this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
@@ -3442,15 +3398,12 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async bootstrap() {
-    const loadingCopy = this.$("[data-world-loading-copy]");
     try {
-      loadingCopy.textContent = "Contacting the World relay";
       const contextPromise = this.loadContext();
       // Validate the optional persisted account session before issuing any
       // private World reads. This prevents an expired local token from
       // fanning out into a page full of avoidable 401/403 requests.
       const dataPromise = contextPromise.then(() => this.loadWorldData());
-      loadingCopy.textContent = "Building repositories, offices, and portals";
       const THREE = await THREE_MODULE;
       if (this.destroyed) return;
       this.world = createWorldScene({
@@ -3492,6 +3445,9 @@ class ForkMeshWorld extends HTMLElement {
         },
         onOfficeEnter: () => {
           this.officeController?.enterOffice?.();
+        },
+        onForkbotChat: () => {
+          this.openWorldChat("/dashboard/chat", this.$("[data-world-chat-open]"));
         },
         onOfficeChairSelect: (chairId) => {
           this.officeMeeting?.requestSeat(chairId);
@@ -3571,7 +3527,6 @@ class ForkMeshWorld extends HTMLElement {
         this.spawnSelected = traveled === true;
       }
       this.connectPresence();
-      this.hideLoading();
       this.updateMetrics();
       this.updateDistances();
       this.startActivityTicker();
@@ -3592,7 +3547,6 @@ class ForkMeshWorld extends HTMLElement {
       this.renderWebGLFallback();
       await this.loadContext().catch(() => {});
       await this.loadWorldData().catch(() => {});
-      this.hideLoading();
       this.updateMetrics();
       this.startEventPolling();
       this.startNotificationPolling();
@@ -3637,20 +3591,6 @@ class ForkMeshWorld extends HTMLElement {
     this.captureWorldPosition(true);
     this.destroy();
   };
-
-  hideLoading() {
-    const loading = this.$("[data-world-loading]");
-    if (!loading) return;
-    // Reveal as soon as the renderer has actually painted a frame — two rAF
-    // ticks — instead of a fixed timeout, so we drop the loading curtain the
-    // instant the world is on screen without ever flashing a blank canvas.
-    const reveal = () => loading.setAttribute("aria-hidden", "true");
-    if (typeof window.requestAnimationFrame === "function") {
-      window.requestAnimationFrame(() => window.requestAnimationFrame(reveal));
-    } else {
-      reveal();
-    }
-  }
 
   renderWebGLFallback() {
     const wrap = this.$("[data-world-canvas-wrap]");
@@ -3820,7 +3760,7 @@ class ForkMeshWorld extends HTMLElement {
       : [];
     this.updateIdentityUI();
     this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
-    this.updateDurableObjectMetrics();
+    this.updateSystemCapacityMetrics();
   }
 
   async loadWorldData() {
@@ -4724,15 +4664,6 @@ class ForkMeshWorld extends HTMLElement {
         void this.logoutFromWorld();
         return;
       }
-      if (event.target.closest("[data-world-arrival-dismiss]")) {
-        try {
-          localStorage.setItem(INTRO_DISMISSED_KEY, "1");
-        } catch (_) {}
-        const card = this.$(".world-arrival-card");
-        if (card) card.hidden = true;
-        this.toast("Introduction dismissed on this device. Start remains available from the dock.");
-        return;
-      }
       if (event.target.closest("[data-world-sound-toggle]")) {
         this.toggleWorldSound();
         return;
@@ -4959,6 +4890,12 @@ class ForkMeshWorld extends HTMLElement {
         const repo = directory.dataset.worldRepoName;
         const path = directory.dataset.worldRepoDirectory;
         if (owner && repo) this.loadRepositoryDirectory(owner, repo, path || "");
+        return;
+      }
+      if (event.target.closest("[data-world-repo-file-back]")) {
+        this.repositoryView = "map";
+        this.repositoryFile = null;
+        this.renderRepositoryExplorer();
         return;
       }
       if (event.target.closest("[data-world-events-refresh]")) {
@@ -5506,14 +5443,14 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   updateMetrics() {
-    this.updateDurableObjectMetrics();
+    this.updateSystemCapacityMetrics();
   }
 
-  updateDurableObjectMetrics() {
-    if (!this.world?.updateDurableObjects) return;
+  updateSystemCapacityMetrics() {
+    if (!this.world?.updateSystemCapacity) return;
     const limits = this.worldLimits;
     if (!limits && !this.systemCapacityTables.length) {
-      this.world.updateDurableObjects([]);
+      this.world.updateSystemCapacity([]);
       return;
     }
     const worldSocketOnline =
@@ -5540,7 +5477,7 @@ class ForkMeshWorld extends HTMLElement {
         limits: { connections: limits.chatConnections },
       });
     }
-    this.world.updateDurableObjects({
+    this.world.updateSystemCapacity({
       objects,
       tables: this.systemCapacityTables,
     });
@@ -8737,14 +8674,34 @@ class ForkMeshWorld extends HTMLElement {
       return;
     }
     if (type !== "file") return;
-    const href = `/${encodeURIComponent(owner)}/${encodeURIComponent(
-      name,
-    )}/blob/${path.split("/").map(encodeURIComponent).join("/")}`;
-    const destination = new URL(href, location.origin);
-    if (/^[0-9a-f]{40,64}$/.test(this.activeRepository.commit || "")) {
-      destination.searchParams.set("ref", this.activeRepository.commit);
+    void this.loadRepositoryFile(owner, name, path);
+  }
+
+  async loadRepositoryFile(owner, repo, path) {
+    if (!this.activeRepository) return;
+    this.repositoryView = "file";
+    this.repositoryFile = { path, state: "loading" };
+    this.renderRepositoryExplorer();
+    const base = `/api/repo/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+    try {
+      const query = new URLSearchParams({ ref: this.activeRepository.commit });
+      query.append("path", path);
+      const payload = await this.fetchJSON(`${base}/blobs?${query}`, {
+        timeout: 12000,
+        cache: "no-store",
+      });
+      if (String(payload?.commit || "").toLowerCase() !== String(this.activeRepository.commit || "").toLowerCase()) throw new Error("commit mismatch");
+      const blob = payload?.blobs?.[path];
+      if (!blob || blob.ok === false) throw new Error("file unavailable");
+      const ext = path.split(".").pop()?.toLowerCase() || "";
+      const kind = ["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(ext)
+        ? "image"
+        : ["mp3", "wav", "ogg", "m4a"].includes(ext) ? "audio" : "text";
+      this.repositoryFile = { path, state: "ready", kind, blob, text: kind === "text" ? repositoryBlobText(blob) : "" };
+    } catch (error) {
+      this.repositoryFile = { path, state: "error", message: error?.message || "File unavailable" };
     }
-    location.assign(destination.href);
+    this.renderRepositoryExplorer();
   }
 
   async autoLoadFlagshipRepositoryMap() {
@@ -10212,6 +10169,15 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   repositoryExplorerHTML(active) {
+    if (this.repositoryView === "file" && this.repositoryFile) {
+      const file = this.repositoryFile;
+      if (file.state === "loading") return `<section class="world-repo-explorer"><p class="world-empty-state">Loading ${escapeHTML(file.path)}…</p></section>`;
+      if (file.state === "error") return `<section class="world-repo-explorer"><button type="button" data-world-repo-file-back>← Back to map</button><p class="world-empty-state">${escapeHTML(file.message)}</p></section>`;
+      const content = file.kind === "text"
+        ? `<pre class="world-repo-file-text">${escapeHTML(file.text.slice(0, 240000))}</pre>`
+        : `<p class="world-empty-state">${file.kind === "image" ? "Image preview is available from the pinned file endpoint." : "This file type is available from the pinned repository record."}</p>`;
+      return `<section class="world-repo-explorer" aria-label="File preview"><header><strong>${escapeHTML(file.path)}</strong><button type="button" data-world-repo-file-back>← Back to map</button></header>${content}</section>`;
+    }
     if (this.repositoryView === "list") {
       return this.repositoryPullListHTML(active);
     }
@@ -12426,7 +12392,6 @@ class ForkMeshWorld extends HTMLElement {
 
   handleMovement(movement) {
     this.recordActivityArrival();
-    this.maybeGreetForkbot();
     const space = WORLD_SPACE_IDS.has(String(movement?.space || ""))
       ? String(movement.space)
       : this.currentSpace;
@@ -13074,7 +13039,7 @@ class ForkMeshWorld extends HTMLElement {
     }
     this.world?.setRemotePlayers([...combined.values()]);
     this.syncMemberLounge();
-    this.updateDurableObjectMetrics();
+    this.updateSystemCapacityMetrics();
   }
 
   syncMemberLounge() {

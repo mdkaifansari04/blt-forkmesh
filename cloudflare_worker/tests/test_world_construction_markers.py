@@ -11,8 +11,10 @@ CSS = (PUBLIC / "world.css").read_text(encoding="utf-8")
 
 def test_unknown_remote_integrations_fail_closed_but_local_features_start_live():
     assert "const LOCAL_LIVE_LANDMARKS = new Set([" in APP
-    for landmark in ("information", "neighborhood", "broadcast", "support"):
+    for landmark in ("information", "neighborhood", "broadcast"):
         assert f'  "{landmark}",' in APP
+    for removed in ("support", "workshops"):
+        assert f'  "{removed}",' not in APP
     assert "live: LOCAL_LIVE_LANDMARKS.has(landmark.id)" in APP
     assert "This integration has not been verified in this session." in APP
 
@@ -27,7 +29,7 @@ def test_live_state_requires_loaded_schema_or_usable_capability_evidence():
     # state can be inferred from one remote response.
     assert "liveNodeRecords(this.network, this.mirrorCatalogs)" in APP
     assert "this.world?.updateNetworkNodes(" in APP
-    assert "this.repositories.some((repo) => repo.liveHost || repo.isPrivate)" in APP
+    assert "LANDMARK_CONSTRUCTION_REASONS.workshops" not in APP
     assert "/^[1-9A-HJ-NP-Za-km-z]{32,44}$/" in APP
     assert "statusTone" not in APP[
         APP.index("function initialLandmarkCapabilities"):

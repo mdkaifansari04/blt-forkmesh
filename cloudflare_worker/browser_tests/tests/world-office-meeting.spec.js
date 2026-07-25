@@ -148,11 +148,11 @@ async function prepareMeetingWorld(page) {
   await page.goto("/world/");
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
-    return Boolean(shell?.world?.renderer?.domElement);
+    return (
+      Boolean(shell?.world?.renderer?.domElement) &&
+      Number(shell.world.renderer.info?.render?.frame || 0) > 0
+    );
   });
-  await page.waitForFunction(() =>
-    document.querySelector("[data-world-loading]")
-      ?.getAttribute("aria-hidden") === "true");
   return {
     chatFrames,
     meetingFrames,

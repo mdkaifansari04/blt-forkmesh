@@ -54,6 +54,7 @@ WINDOWS_PACKAGER = (
     ROOT.parent / "tools" / "package" / "forkmesh.nsi"
 ).read_text(encoding="utf-8")
 PAYOUTS = (PUBLIC / "mirror-payouts.html").read_text(encoding="utf-8")
+PRIVACY = (PUBLIC / "privacy.html").read_text(encoding="utf-8")
 SECURITY_LATEST = json.loads(
     (PUBLIC / "security" / "latest.json").read_text(encoding="utf-8")
 )
@@ -112,14 +113,14 @@ def test_world_contains_the_initial_city_districts_without_a_clock():
         "repositories",
         "organizations",
         "fediverse",
-        "security",
         "events",
         "neighborhood",
-        "workshops",
         "broadcast",
         "office",
     ):
         assert f'id: "{landmark}"' in DATA
+    assert 'id: "security"' not in DATA
+    assert 'id: "workshops"' not in DATA
     assert 'id: "routing"' not in DATA
     assert 'id: "launchpad"' not in DATA
     assert "utcClock" not in DATA
@@ -154,10 +155,8 @@ def test_landmarks_are_spread_out_inside_the_repository_portal_perimeter():
         "repositories": (35, 38),
         "organizations": (29, -36),
         "fediverse": (-31, -34),
-        "security": (5, -47),
         "events": (-48, 5),
         "neighborhood": (-45, -17),
-        "workshops": (-17, -46),
         "broadcast": (10, 46),
         "office": (45, -27),
     }
@@ -184,7 +183,7 @@ def test_landmarks_are_spread_out_inside_the_repository_portal_perimeter():
     assert "const REPOSITORY_EDGE_RADIUS = 68" in SCENE
     assert "const SERVER_CABINET_YARD_ORIGIN = Object.freeze([18, 0, 0])" in SCENE
     assert "const REGISTERED_LOUNGE_POSITION = Object.freeze([-22, 0, 25])" in SCENE
-    assert "const DURABLE_OBJECT_DISTRICT_POSITION = Object.freeze([8, 0, -27])" in SCENE
+    assert "const SYSTEM_CAPACITY_PLATFORM_POSITION = Object.freeze([8, 0, -27])" in SCENE
 
 
 def test_static_world_fallback_links_to_chat():
@@ -203,7 +202,6 @@ def test_scene_builds_playable_landmarks_and_badged_avatars():
         "createSecurityWorkshop",
         "createCommunityStage",
         "createNeighborhood",
-        "createCodeWorkshops",
         "createBroadcastGarden",
         "createForkMeshOffice",
     ):
@@ -456,7 +454,7 @@ def test_world_client_coalesces_disposable_frames_and_reconnects_with_grace():
     assert "moving: false" in SCENE
 
 
-def test_avatar_faces_keyboard_travel_direction_and_intro_can_stay_dismissed():
+def test_avatar_faces_keyboard_travel_direction_without_an_entry_gate():
     assert "player.rotation.y = Math.atan2(-movement.x, -movement.z)" in SCENE
     # A single click still only selects — walk-to-click stays gone. Travel by
     # pointer is opt-in through the double-click dash (see the dash test below),
@@ -472,20 +470,20 @@ def test_avatar_faces_keyboard_travel_direction_and_intro_can_stay_dismissed():
     assert "isArrivalGridPosition(x, z) ? Math.PI : heading" in SCENE
     assert "player.rotation.y = arrivalFacingHeading(x, z, heading)" in SCENE
     assert "avatar.userData.targetHeading = arrivalFacingHeading(" in SCENE
-    assert "INTRO_DISMISSED_KEY" in APP
-    assert "data-world-arrival-dismiss" in APP
-    assert 'localStorage.setItem(INTRO_DISMISSED_KEY, "1")' in APP
-    assert 'introDismissed() ? "hidden" : ""' in APP
-    assert ".world-arrival-card[hidden]" in CSS
+    assert "INTRO_DISMISSED_KEY" not in APP
+    assert "data-world-arrival-dismiss" not in APP
+    assert "world-arrival-card" not in APP
+    assert "Entering ForkMesh World" not in APP
+    assert "data-world-loading" not in APP
+    assert ".world-loading-screen" not in CSS
 
 
-def test_world_has_consent_aware_activity_events_workshops_and_media():
-    for landmark in ("events", "neighborhood", "workshops", "broadcast"):
+def test_world_has_consent_aware_activity_events_and_media():
+    for landmark in ("events", "neighborhood", "broadcast"):
         assert f'id: "{landmark}"' in DATA
     for builder in (
         "createCommunityStage",
         "createNeighborhood",
-        "createCodeWorkshops",
         "createBroadcastGarden",
     ):
         assert f"function {builder}" in SCENE
@@ -519,6 +517,8 @@ def test_world_has_consent_aware_activity_events_workshops_and_media():
         "code-planet",
         "organization-region",
         "planet-atlas",
+        "createCodeWorkshops",
+        "CODE WORKSHOPS",
     ):
         assert retired not in SCENE
         assert retired not in APP
@@ -539,7 +539,8 @@ def test_world_has_consent_aware_activity_events_workshops_and_media():
     assert "60000" in APP
     assert "function updateNeighborhoodHomes" in SCENE
     assert "Empty houses reveal nothing about offline users" in APP
-    assert "data-world-run-workshop" in APP
+    assert 'id: "workshops"' not in DATA
+    assert 'workshops: () => this.workshopPanelHTML()' not in APP
     assert "data-world-radio-stop" in APP
     assert "Audio never starts automatically" in APP
     assert "ice5.somafm.com" not in DATA
@@ -848,7 +849,7 @@ def test_world_autoloads_the_live_catalog_attested_flagship_repository_map():
     assert 'owner: "forkmesh",\n  repo: "forkmesh"' in APP
     bootstrap = APP[
         APP.index("  async bootstrap() {"):
-        APP.index("\n  hideLoading()", APP.index("  async bootstrap() {"))
+        APP.index("\n  handleVisibility =", APP.index("  async bootstrap() {"))
     ]
     assert "await Promise.allSettled([contextPromise, dataPromise]);" in bootstrap
     assert "void this.autoLoadFlagshipRepositoryMap();" in bootstrap
@@ -1318,8 +1319,11 @@ def test_financial_and_security_metaphors_disclose_current_limitations():
     assert "Mainnet-beta · external signer" in DATA
     assert "Development instances may explicitly select a test network" in DATA
     assert "Visual coins are not guaranteed rewards or investments" in DATA
-    assert "A clean scan is never presented as a guarantee" in DATA
-    assert "platform administrators do not receive an automatic decryption path" in DATA
+    assert "a clean scan is not a guarantee" in APP
+    assert (
+        "platform administrators do not automatically receive those recipient "
+        "private keys"
+    ) in PRIVACY
     assert "Raw IP addresses are never shown in the world" in DATA
     assert "does not eliminate endpoint, authorization, or operational risk" in DATA
     assert "availability, not automatic trust" in DATA
@@ -1483,7 +1487,7 @@ def test_world_member_lounge_plaque_carries_count_and_account_button():
     assert "function makeMemberLoungePlaque" in SCENE
     lounge = SCENE[
         SCENE.index("function createRegisteredUserLounge"):
-        SCENE.index("function createDurableObjectDistrict")
+        SCENE.index("function createSystemCapacityPlatform")
     ]
     # No floating count sprite hovers over the lounge any more.
     assert "makeLabelSprite" not in lounge
@@ -1523,7 +1527,7 @@ def test_world_member_lounge_seats_directory_users_with_total_count():
     ]
     bots = SCENE[
         SCENE.index("  function updateBots"):
-        SCENE.index("  function updateDurableObjects")
+        SCENE.index("  function updateSystemCapacity")
     ]
     assert "createAvatar(" not in nodes
     assert "createAvatar(" not in bots
@@ -1533,18 +1537,25 @@ def test_world_member_lounge_seats_directory_users_with_total_count():
     assert "botAgents" in bots
 
 
-def test_durable_object_scene_requires_explicit_current_usage_and_limits():
-    assert "durable-object-infrastructure" in SCENE
-    assert "function durableObjectMetricPairs" in SCENE
+def test_system_capacity_scene_combines_service_limits_and_database_rows():
+    assert "system-capacity-infrastructure" in SCENE
+    assert '"SYSTEM CAPACITY"' in SCENE
+    assert "function systemCapacityMetricPairs" in SCENE
     assert "record?.usage" in SCENE
     assert "record?.limits" in SCENE
     assert "Object.prototype.hasOwnProperty.call(limits, key)" in SCENE
-    assert "function updateDurableObjects" in SCENE
+    assert "function updateSystemCapacity" in SCENE
     assert "currentUsage: metric.usage" in SCENE
     assert "configuredLimit: metric.limit" in SCENE
-    assert "durable-object-metrics-unavailable" in SCENE
+    assert "system-capacity-metrics-unavailable" in SCENE
+    assert "system-capacity-database-tables" in SCENE
+    assert "Math.log1p(table.rowCount)" in SCENE
+    assert "rowCount > 1" in SCENE
+    assert ".slice(0, 128)" in SCENE
+    assert "visibleTableCount" in SCENE
+    assert "system-capacity-table-legend" in SCENE
     assert "metricsAvailable" in SCENE
-    assert "updateDurableObjects," in SCENE
+    assert "updateSystemCapacity," in SCENE
 
 
 def test_world_lighting_is_static_daylight_with_a_local_persisted_control():
@@ -1648,7 +1659,7 @@ def test_approved_federated_instances_render_without_private_relay_material():
     assert "normalizeFederatedInstances" in APP
     assert "function updateFederatedInstances" in SCENE
     assert "approved-federated-instances" in SCENE
-    assert "const district = durableObjectDistrict" in SCENE
+    assert 'const district = landmarkObjects.get("fediverse")' in SCENE
     assert 'landmarkObjects.get("routing")' not in SCENE
     assert "instance?.approved === true" in SCENE
 
@@ -1764,14 +1775,14 @@ def test_linked_payout_page_has_a_truthful_non_custodial_notice():
     assert "never its private key" in PAYOUTS
 
 
-def test_forkbot_walks_the_world_and_greets_first_time_visitors():
-    # ForkBot is a wandering Town Square guide. Chat replies broadcast with
-    # the fixed sender "forkbot" float over its avatar, and it walks over to
-    # welcome a visitor the first time this browser moves or the mouse is
-    # active — once ever per browser, so returning visitors are not
-    # re-greeted every session.
+def test_forkbot_rolls_through_the_world_for_explicit_chat_interactions():
+    # ForkBot is a rolling Town Square guide. Chat replies broadcast with
+    # the fixed sender "forkbot" float over the droid. Entry remains immediate
+    # and quiet until a visitor chooses to interact.
     assert 'const FORKBOT_PEER_ID = "forkbot";' in SCENE
-    assert "const forkbot = createAvatar(THREE, {" in SCENE
+    assert "const forkbot = new THREE.Group();" in SCENE
+    assert 'forkbot.name = "forkbot-rolling-droid";' in SCENE
+    assert "forkbot.userData.rollingBall = rollingBall;" in SCENE
     assert "function updateForkbot(delta, time)" in SCENE
     assert "updateForkbot(delta, time);" in SCENE
     assert "function greetForkbot(text)" in SCENE
@@ -1784,9 +1795,9 @@ def test_forkbot_walks_the_world_and_greets_first_time_visitors():
         'const FORKBOT_GREETED_KEY = "forkmesh.world.forkbotGreeted.v1";'
         in APP
     )
-    assert "maybeGreetForkbot() {" in APP
-    # Triggered by both first movement and first mouse/keyboard activity.
-    assert APP.count("this.maybeGreetForkbot();") == 2
+    # Entering the World is immediate and does not force an unsolicited bot
+    # greeting; ForkBot remains available for explicit chat interactions.
+    assert APP.count("this.maybeGreetForkbot();") == 0
     assert 'this.world?.showChatBubble?.("forkbot", text);' in APP
     # The asking client mirrors ForkBot replies into the World embed, and
     # guests inside the public World room can talk to the bot (the endpoint
