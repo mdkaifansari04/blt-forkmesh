@@ -1963,14 +1963,14 @@ test("detail panels overlay the desktop without dimming or reframing the World",
     await page
       .locator("forkmesh-world")
       .evaluate((shell) => shell.detailReturnFocus?.dataset.worldLandmark),
-  ).toBe("information");
+  ).toBe("fountain");
 
   await page.locator("[data-world-detail-close]").click();
   await expect(trigger).toBeFocused();
 
   await page.setViewportSize({ width: 600, height: 800 });
   await page.locator("forkmesh-world").evaluate((shell) =>
-    shell.openLandmark("information"),
+    shell.openLandmark("fountain"),
   );
   await expect(detail).toBeVisible();
   const mobileBackdrop = page.locator("[data-world-detail-backdrop]");
@@ -3426,7 +3426,6 @@ test("construction markers distinguish verified live landmarks from unavailable 
     page.locator(
       `.world-map [data-world-construction-marker="${id}"]`,
     );
-  await expect(mapMarker("information")).toBeHidden();
   await expect(mapMarker("routing")).toBeHidden();
   await expect(mapMarker("workshops")).toBeHidden();
   await expect(mapMarker("repositories")).toBeHidden();
@@ -3485,7 +3484,7 @@ test("failed live checks fail closed to construction without blocking navigation
   ).toBeVisible();
 });
 
-test("approved instances and local setup stay truthful", async ({
+test("approved instances stay truthful", async ({
   page,
 }) => {
   await prepareWorldPage(page, "truthful-panels");
@@ -3499,19 +3498,6 @@ test("approved instances and local setup stay truthful", async ({
   });
   // Each approved relay contributes one tower and one label sprite.
   expect(instanceLayer).toBe(4);
-
-  await page.locator("forkmesh-world").evaluate((shell) =>
-    shell.openLandmark("information"),
-  );
-  const localLink = page.locator("[data-world-local-qt-link]");
-  await expect(localLink).toHaveAttribute(
-    "href",
-    "forkmesh://control/cloudflare",
-  );
-  await expect(
-    page.getByText("The hosted World never accepts, proxies, or stores"),
-  ).toBeVisible();
-  await expect(page.locator("[data-world-detail] input")).toHaveCount(0);
 });
 
 test("System Capacity fits one height-scaled bar per populated D1 table", async ({
