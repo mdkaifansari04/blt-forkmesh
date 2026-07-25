@@ -2662,7 +2662,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </div>
         </details>
 
-        <details class="world-diagnostics world-chat-terminal" data-world-chat-terminal>
+        <details class="world-diagnostics world-chat-terminal" data-world-chat-terminal open>
           <summary aria-label="Open World chat in a terminal panel">
             <span class="world-diagnostics-light" data-state="online" aria-hidden="true"></span>
             <strong>CHAT</strong>
@@ -9163,21 +9163,6 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-  repositoryFollowerStateFor(repository = {}) {
-    const key = this.repositoryStarKey(
-      repository.owner,
-      repository.repo || repository.name,
-    );
-    return (
-      this.repositoryFollowerStates.get(key) || {
-        status: repository.isPrivate ? "unavailable" : "idle",
-        count: null,
-        federates: false,
-        followers: [],
-      }
-    );
-  }
-
   applyRepositoryFollowerState(key, nextState) {
     if (!key) return null;
     if (
@@ -9414,7 +9399,7 @@ class ForkMeshWorld extends HTMLElement {
     // records with the state the relay actually answered with (repo_stars count
     // and ap_followers) merged back on, instead of whatever the last catalog
     // snapshot happened to contain.
-    return this.repositories.map((repository) => {
+    const records = this.repositories.map((repository) => {
       const key = this.repositoryStarKey(repository.owner, repository.name);
       if (!key) return repository;
       const star = this.repositoryStarStates.get(key);
@@ -9435,6 +9420,42 @@ class ForkMeshWorld extends HTMLElement {
           : [],
       };
     });
+    const active = this.activeRepository;
+    const isFlagship =
+      String(active?.owner || "").toLowerCase() ===
+        FLAGSHIP_REPOSITORY.owner &&
+      String(active?.repo || active?.name || "").toLowerCase() ===
+        FLAGSHIP_REPOSITORY.repo;
+    if (!isFlagship) return records;
+    const canonicalKey = "forkmesh/forkmesh";
+    const recordIndex = records.findIndex((record) => {
+      const key = this.repositoryStarKey(record.owner, record.name);
+      return (
+        key === canonicalKey ||
+        String(record.name || "").toLowerCase() === FLAGSHIP_REPOSITORY.repo
+      );
+    });
+    if (recordIndex < 0) return records;
+    const star = this.repositoryStarStates.get(canonicalKey);
+    const followers = this.repositoryFollowerStates.get(canonicalKey);
+    records[recordIndex] = {
+      ...records[recordIndex],
+      owner: FLAGSHIP_REPOSITORY.owner,
+      name: FLAGSHIP_REPOSITORY.repo,
+      starCount: Number.isSafeInteger(star?.count)
+        ? star.count
+        : records[recordIndex].starCount,
+      starred: star ? star.starred === true : records[recordIndex].starred,
+      fediverseFollowerCount: Number.isSafeInteger(followers?.count)
+        ? followers.count
+        : records[recordIndex].fediverseFollowerCount,
+      fediverseFollowerStatus:
+        followers?.status || records[recordIndex].fediverseFollowerStatus,
+      fediverseFollowers: Array.isArray(followers?.followers)
+        ? followers.followers
+        : records[recordIndex].fediverseFollowers,
+    };
+    return records;
   }
 
   revealRepositoryScene() {
@@ -12247,14 +12268,58 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async playForkmeshSong() {
-    // The entrance plaque always starts ForkMesh's designated opening song
-    // from the beginning, never layering it over another local loop.
+    // The entrance plaque plays the actual ForkMesh song, not a focus loop.
+    // Remember a currently playing loop so it can return once the song ends.
+    const resumeTrackId =
+      this.activeAudio?.kind === "focus-music" &&
+      this.focusMusicState === "playing"
+        ? this.activeAudio.trackId
+        : "";
     this.focusMusicAutoplayPending = false;
     this.stopRadio(false);
-    this.settings.focusMusicTrackId = DEFAULT_FOCUS_MUSIC_TRACK_ID;
-    this.focusMusicError = "";
-    this.saveSettings();
-    await this.playFocusMusic();
+    const song = RADIO_STATIONS.find((station) => station.id === "forkmesh-song");
+    const AudioElement = window.Audio;
+    if (!song || !AudioElement) {
+      this.toast("The ForkMesh song is unavailable in this browser.");
+      return;
+    }
+    const element = new AudioElement(song.trackUrl);
+    element.preload = "auto";
+    element.loop = false;
+    const playback = {
+      kind: "forkmesh-song",
+      element,
+      stop() {
+        try {
+          element.pause();
+          element.currentTime = 0;
+        } catch (_) {}
+      },
+    };
+    const resumeLoop = async () => {
+      if (!resumeTrackId) return;
+      this.settings.focusMusicTrackId = resumeTrackId;
+      this.focusMusicError = "";
+      this.saveSettings();
+      await this.playFocusMusic();
+    };
+    element.addEventListener(
+      "ended",
+      () => {
+        if (this.activeAudio === playback) this.activeAudio = null;
+        void resumeLoop();
+      },
+      { once: true },
+    );
+    this.activeAudio = playback;
+    try {
+      await element.play();
+      this.toast("ForkMesh Forever is playing locally. Your coding loop will resume after it ends.");
+    } catch (_) {
+      if (this.activeAudio === playback) this.activeAudio = null;
+      await resumeLoop();
+      this.toast("The ForkMesh song could not be played.");
+    }
   }
 
   toggleFocusMusicMute() {

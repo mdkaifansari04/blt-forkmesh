@@ -47,6 +47,7 @@ async function prepareWorldPage(
     worldSocketHandler = null,
     repositoryFixture = null,
     repositoryStarFixture = null,
+    repositoryFollowerFixture = null,
     accountFixture = null,
     unavailablePaths = [],
     chatChannels = [],
@@ -658,6 +659,29 @@ ${longContext}
         /^\/api\/repo\/forkmesh\/forkmesh\/pulls\/44\/merge$/,
       );
       if (
+        repositoryFollowerFixture &&
+        url.pathname === `${repoBase}/about`
+      ) {
+        if (!Array.isArray(repositoryFollowerFixture.requests)) {
+          repositoryFollowerFixture.requests = [];
+        }
+        repositoryFollowerFixture.requests.push({
+          path: url.pathname,
+          method: route.request().method(),
+        });
+        body = repositoryFollowerFixture.unavailable
+          ? { ok: false, error: "fixture_unavailable" }
+          : {
+              ok: true,
+              description: "Peer-to-peer code hosting mesh",
+              fediverse: {
+                enabled: true,
+                handle: "@forkmesh.forkmesh@forkmesh.com",
+                followers: Number(repositoryFollowerFixture.followers ?? 0),
+                followersList: repositoryFollowerFixture.followersList || [],
+              },
+            };
+      } else if (
         repositoryStarFixture &&
         url.pathname === `${repoBase}/star`
       ) {
@@ -3920,6 +3944,138 @@ test("signed-out repository star opens the in-world account panel without mutati
   ).toBeGreaterThanOrEqual(1);
   expect(page.url()).toBe(originalURL);
   expect(context.pages()).toHaveLength(originalPages);
+});
+
+test("the repository circle carries the stored star total and its fediverse followers", async ({
+  page,
+}) => {
+  const starFixture = { count: 1284, starred: false, requests: [] };
+  const followerFixture = {
+    followers: 9,
+    requests: [],
+    followersList: [
+      {
+        handle: "@kate@mastodon.social",
+        url: "https://mastodon.social/users/kate",
+        name: "Kate Mirrors",
+        avatarUrl: "https://files.mastodon.social/kate.png",
+        about: "Rust, embedded, and self-hosted git.",
+        instance: "mastodon.social",
+        profileUrl: "https://mastodon.social/@kate",
+        followedAt: 1_767_225_600_000,
+      },
+      {
+        handle: "@sam@fosstodon.org",
+        url: "https://fosstodon.org/users/sam",
+        // No cached actor document yet: name/avatar/bio are still empty.
+        instance: "fosstodon.org",
+        profileUrl: "https://fosstodon.org/users/sam",
+        followedAt: 1_767_139_200_000,
+      },
+      // Hostile rows: a non-https avatar and an internal host are dropped
+      // before anything reaches a texture loader.
+      {
+        handle: "@mallory@evil.test",
+        url: "https://evil.test/users/mallory",
+        avatarUrl: "javascript:alert(1)",
+        profileUrl: "https://evil.test/users/mallory",
+      },
+    ],
+  };
+  await prepareWorldPage(page, "world-repository-followers", {
+    repositoryFixture: {},
+    repositoryStarFixture: starFixture,
+    repositoryFollowerFixture: followerFixture,
+  });
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return (
+      shell?.repositoryFollowerStates?.get("forkmesh/forkmesh")?.status ===
+      "ready"
+    );
+  });
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return Boolean(
+      shell?.world?.scene?.getObjectByName(
+        "repository-star-button:forkmesh/forkmesh",
+      )?.userData?.repositoryStar?.starCount,
+    );
+  });
+
+  const portal = await page.locator("forkmesh-world").evaluate((shell) => {
+    const scene = shell.world.scene;
+    const starButton = scene.getObjectByName(
+      "repository-star-button:forkmesh/forkmesh",
+    );
+    const gallery = scene.getObjectByName(
+      "repository-fediverse-followers:forkmesh/forkmesh",
+    );
+    const figures = [];
+    gallery?.children.forEach((child) => {
+      if (String(child.name || "").startsWith("repository-follower:")) {
+        figures.push({
+          name: child.name,
+          // Seated on the ground, inside the ring, turned back at the circle.
+          y: Number(child.position.y.toFixed(2)),
+          z: Number(child.position.z.toFixed(2)),
+          facesCircle: Math.abs(child.rotation.y - Math.PI) < 0.001,
+          follower: child.userData.repositoryFollower,
+        });
+      }
+    });
+    return {
+      starCountFromDatabase: starButton?.userData?.repositoryStar?.starCount,
+      starCaptionPresent: Boolean(
+        scene.getObjectByName("repository-star-caption:forkmesh/forkmesh"),
+      ),
+      followerCount: shell.repositoryFollowerStates.get("forkmesh/forkmesh")
+        ?.count,
+      figures,
+      captionPresent: Boolean(
+        gallery?.getObjectByName?.(
+          "repository-fediverse-follower-caption:forkmesh/forkmesh",
+        ),
+      ),
+    };
+  });
+
+  // The star on top of the circle reports the relay's stored repo_stars total.
+  expect(portal.starCountFromDatabase).toBe(1284);
+  expect(portal.starCaptionPresent).toBe(true);
+  // The caption uses the authoritative total, not the capped list length.
+  expect(portal.followerCount).toBe(9);
+  expect(portal.captionPresent).toBe(true);
+  expect(portal.figures.map(({ name }) => name)).toEqual([
+    "repository-follower:@kate@mastodon.social",
+    "repository-follower:@sam@fosstodon.org",
+    "repository-follower:@mallory@evil.test",
+  ]);
+  portal.figures.forEach((figure) => {
+    expect(figure.facesCircle).toBe(true);
+    expect(figure.y).toBeCloseTo(-2.53, 2);
+    expect(figure.z).toBeGreaterThan(0);
+  });
+  expect(portal.figures[0].follower).toMatchObject({
+    handle: "@kate@mastodon.social",
+    name: "Kate Mirrors",
+    about: "Rust, embedded, and self-hosted git.",
+    instance: "mastodon.social",
+    avatar: "https://files.mastodon.social/kate.png",
+    profileUrl: "https://mastodon.social/@kate",
+  });
+  expect(portal.figures[1].follower).toMatchObject({
+    handle: "@sam@fosstodon.org",
+    name: "",
+    about: "",
+    avatar: "",
+  });
+  expect(portal.figures[2].follower.avatar).toBe("");
+  expect(
+    followerFixture.requests.filter((request) => request.method === "GET")
+      .length,
+  ).toBeGreaterThanOrEqual(1);
 });
 
 test("camera toggle enters first-person and restores the local player", async ({

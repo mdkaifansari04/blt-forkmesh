@@ -2429,7 +2429,7 @@ function repositoryStarPlaneTexture(THREE, count, starred = false) {
   // at close range. Its transparent texture preserves the actual star shape
   // while keeping the complete repo_stars value readable at its centre.
   return canvasTexture(THREE, 512, 512, (context) => {
-    context.clearRect(0, 0, 512, 256);
+    context.clearRect(0, 0, 512, 512);
     const outerRadius = 224;
     const innerRadius = 104;
     context.beginPath();
@@ -2459,6 +2459,21 @@ function repositoryStarPlaneTexture(THREE, count, starred = false) {
       size -= 8;
     } while (size > 40 && context.measureText(value).width > 230);
     context.fillText(value, 256, 265);
+  });
+}
+
+function repositoryStonePlaqueTexture(THREE, repositoryName) {
+  return canvasTexture(THREE, 1024, 220, (context) => {
+    context.fillStyle = "#89928b";
+    context.fillRect(0, 0, 1024, 220);
+    context.strokeStyle = "#c9d4c9";
+    context.lineWidth = 14;
+    context.strokeRect(8, 8, 1008, 204);
+    context.fillStyle = "#102019";
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = '800 76px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(String(repositoryName || "repository").slice(0, 42), 512, 112);
   });
 }
 
@@ -7713,6 +7728,28 @@ export function createWorldScene({
       base.position.set(0, -2.38, 0);
       base.scale.x = portalDensityScale;
       node.add(base);
+      if (isActive) {
+        // The selected repository's canonical name is engraved into a physical
+        // stone at the base of its face, so it remains identifiable even when
+        // the orbit labels are hidden by the surrounding geometry.
+        const plaqueStone = new THREE.Mesh(
+          new THREE.BoxGeometry(2.28, 0.48, 0.2),
+          makeMaterial(THREE, "#778078", { roughness: 0.9 }),
+        );
+        plaqueStone.position.set(0, -2.0, 0.18);
+        const plaqueFace = new THREE.Mesh(
+          new THREE.PlaneGeometry(2.08, 0.31),
+          new THREE.MeshBasicMaterial({
+            map: repositoryStonePlaqueTexture(
+              THREE,
+              `${record.owner}/${record.name}`,
+            ),
+            toneMapped: false,
+          }),
+        );
+        plaqueFace.position.set(0, -2.0, 0.295);
+        node.add(plaqueStone, plaqueFace);
+      }
       // Who follows this repository over ActivityPub, seated on the ground
       // inside the ring and looking back up at the circle. Only the selected
       // repository draws its gallery: these are real remote accounts read from
@@ -7743,13 +7780,21 @@ export function createWorldScene({
           const row = Math.floor(followerIndex / 2);
           const figure = makeRepositoryFollowerFigure(THREE, follower);
           figure.position.set(
-            (column - 0.5) * 2.72,
+            // Odd rows sit in the gaps of the row in front of them, so a
+            // head-on view never buries one card behind another.
+            (column - 0.5) * 2.72 + (row % 2 ? 1.36 : 0),
             // The portal plinth ends at -2.38; -2.53 puts them on the ground.
             -2.53,
             2.2 + row * 2.4,
           );
           // Turn around to look back up at the circle they follow.
           figure.rotation.y = Math.PI;
+          const card = figure.getObjectByName(
+            `repository-follower-card:${follower.handle || follower.profileUrl}`,
+          );
+          // Each row further back holds its card a little higher, so the whole
+          // gallery reads as tiers rather than one overlapping pile.
+          if (card) card.position.y += row * 0.62;
           gallery.add(figure);
         });
         const caption = repositorySizeLabelSprite(
