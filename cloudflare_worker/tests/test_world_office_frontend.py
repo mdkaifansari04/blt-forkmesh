@@ -174,3 +174,81 @@ def test_office_scene_uses_one_full_size_door_and_privacy_safe_state_metadata():
     assert "group.scale.setScalar(1.35)" not in office
     assert "new THREE.BoxGeometry(OFFICE_WIDTH, 0.4, OFFICE_DEPTH)" in source
     assert "new THREE.BoxGeometry(OFFICE_WIDTH, OFFICE_HEIGHT, 0.35)" in source
+
+
+def test_office_interior_is_same_scale_and_has_door_only_collision_exit():
+    source = SCENE_PATH.read_text(encoding="utf-8")
+    for contract in (
+        "const OFFICE_DOOR_WIDTH = 2.4;",
+        "const OFFICE_INTERIOR_EXIT_Z = 6.18;",
+        'officeInterior.name = "forkmesh-office-interior"',
+        "const officeFrontPanelWidth = (OFFICE_WIDTH - OFFICE_DOOR_WIDTH) / 2;",
+        'officeInteriorDoor.name = "forkmesh-office-interior-door"',
+        "function constrainTownOfficeWalls(previousPosition)",
+        "function constrainOfficeInteriorWalls(avatar)",
+        "Math.abs(avatar.position.x) > doorClearance",
+        "Math.abs(avatar.position.x) <= doorClearance",
+        "officeExitHandler();",
+        "function walkOfficeLobbyPlayer(delta, time)",
+    ):
+        assert contract in source
+
+    interior = source[
+        source.index('officeInterior.name = "forkmesh-office-interior"'):
+        source.index("const neighborhoodHomes = new Map()", source.index(
+            'officeInterior.name = "forkmesh-office-interior"'
+        ))
+    ]
+    assert "new THREE.BoxGeometry(OFFICE_WIDTH, 0.4, OFFICE_DEPTH)" in interior
+    assert "new THREE.BoxGeometry(OFFICE_WIDTH, OFFICE_HEIGHT, 0.35)" in interior
+
+
+def test_office_exit_is_completed_at_the_physical_door_not_by_the_ui_button():
+    source = office_source()
+    collapse = source[
+        source.index("function collapse()"):
+        source.index("async function onSceneKeypadKey")
+    ]
+    completion = source[
+        source.index("function completeOfficeExit()"):
+        source.index("function collapse()")
+    ]
+    assert "world.beginOfficeExit?.()" in collapse
+    assert "meeting.leaveOffice()" not in collapse
+    assert "meeting.leaveOffice()" in completion
+    assert "world.setOfficeExitHandler?.(completeOfficeExit)" in source
+    assert "world.setOfficeExitHandler?.(null)" in source
+
+
+def test_close_up_keypad_keeps_digits_local_and_supports_capability_gated_updates():
+    office = office_source()
+    scene = SCENE_PATH.read_text(encoding="utf-8")
+    for contract in (
+        "function officeKeypadDisplayTexture(",
+        'mode === "set" ? "SET CODE" : "ACCESS CODE"',
+        "function focusOfficeKeypad(mode = \"entry\", location = \"exterior\")",
+        'setCameraMode("first-person")',
+        "function setOfficeKeypadDigits(",
+        "button.userData.officeKeypadDigit = keypadKeys[index]",
+        'officeInteriorKeypad.name = "forkmesh-office-interior-keypad"',
+        'child.userData.officeKeypadLocation = "interior"',
+        "officeKeypadHandler?.(",
+    ):
+        assert contract in scene
+
+    for contract in (
+        'const OFFICE_CODE_PATH = "/api/world/office/general/code";',
+        "payload.canSetCode === true",
+        "payload.codeManagement?.canSetCode === true",
+        "!occupancy.canSetCode",
+        "root.postJSON(",
+        "[OFFICE_ENTRY_HEADER]: officeEntryTicket",
+        "world.setOfficeKeypadHandler?.((key, context)",
+    ):
+        assert contract in office
+
+    assert 'const OFFICE_ENTRY_HEADER = "X-ForkMesh-Office-Entry";' in office
+    assert "method: \"PUT\"" not in office
+    assert "localStorage" not in office
+    assert "sessionStorage" not in office
+    assert "window.prompt" not in office

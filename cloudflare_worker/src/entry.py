@@ -82,7 +82,7 @@ OFFICE_CHANNEL_WS_RE = re.compile(
     r"^/api/world/office/channels/([0-9a-f]{32})/ws/?$")
 OFFICE_INTERNAL_RE = re.compile(
     r"^/api/world/office/(world-general|[0-9a-f]{32})/"
-    r"v([1-9][0-9]*)/(ws|revoke|status|entry)$")
+    r"v([1-9][0-9]*)/(ws|revoke|status|entry|code)$")
 LOCAL_DEMO_EMAIL = "demo@forkmesh.local"
 LOCAL_DEMO_NAME = "demo-node"
 LOCAL_DEMO_PASSWORD = "forkmesh-demo"
@@ -494,6 +494,10 @@ import world_events_api  # noqa: E402
 # Persisted Code Workshop reports and participant events use the same narrow
 # authenticated/encrypted D1 adapter as the other World collaboration APIs.
 import world_workshops  # noqa: E402
+# Organization-scoped Office marketing tasks use a separate HTTP/D1 subsystem.
+# It never receives platform-admin authorization or an Office Durable Object,
+# and its human-readable task/check-in data is encrypted at rest.
+import world_office_tasks  # noqa: E402
 # Private administrator-created channel policy is kept in a pure module and
 # receives only this Worker's narrow session, crypto, D1, and audit adapter.
 import chat_channels_api  # noqa: E402
@@ -3462,6 +3466,62 @@ def _office_entry_ticket_claims(env, token):
     }
 
 
+def _office_entry_code_digest(env, code):
+    """Key four transient digits for comparison inside the Office room."""
+    code = str(code or "")
+    if not re.fullmatch(r"[0-9]{4}", code):
+        return ""
+    return hmac.new(
+        _require_data_secret(env).encode(),
+        ("forkmesh-office-entry-code-v1\n" + code).encode(),
+        "sha256",
+    ).hexdigest()
+
+
+def _office_socket_code_state(peers):
+    """Return (configured, canonical digest) from live socket attachments."""
+    digests = []
+    for peer in peers or []:
+        digest = str(_ws_attr(peer, "entry_code_digest", "") or "")
+        digests.append(
+            digest if re.fullmatch(r"[0-9a-f]{64}", digest) else "")
+    configured = any(digests)
+    if not configured:
+        return False, ""
+    first = next(value for value in digests if value)
+    if any(not hmac.compare_digest(first, value) for value in digests):
+        # A partial attachment update fails closed until an occupant sets the
+        # code again; no arbitrarily selected digest becomes authoritative.
+        return True, ""
+    return True, first
+
+
+def _office_entry_digest_approved(
+        configured, stored_digest, candidate_digest, fallback_approved):
+    """Apply session-code precedence without ever receiving plaintext."""
+    if configured:
+        return bool(
+            re.fullmatch(r"[0-9a-f]{64}", str(stored_digest or ""))
+            and re.fullmatch(r"[0-9a-f]{64}", str(candidate_digest or ""))
+            and hmac.compare_digest(
+                str(stored_digest), str(candidate_digest))
+        )
+    return fallback_approved is True
+
+
+def _office_live_account(peers, account_bi):
+    """Whether this registered account currently has a general-Office socket."""
+    account_bi = str(account_bi or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", account_bi):
+        return False
+    return any(
+        str(_ws_attr(peer, "scope", "") or "") == "world-general"
+        and hmac.compare_digest(
+            str(_ws_attr(peer, "account_bi", "") or ""), account_bi)
+        for peer in peers or []
+    )
+
+
 def _office_entry_rate_step(buckets, rate_key, now):
     """Advance one bounded, opaque-source Office-door rate window."""
     if (
@@ -3743,7 +3803,8 @@ async def _chat_channel_socket_handler(env, request, channel_id):
 
 
 async def _office_general_room_state(
-        env, rate_key="", code_approved=None):
+        env, rate_key="", code_approved=None, code_digest="",
+        occupant_bi=""):
     """Read occupancy or atomically ask the Office room to admit an entry."""
     entry_request = code_approved is not None
     action = "entry" if entry_request else "status"
@@ -3759,6 +3820,10 @@ async def _office_general_room_state(
         headers["x-forkmesh-office-rate-key"] = str(rate_key)
         headers["x-forkmesh-office-code-approved"] = (
             "1" if code_approved is True else "0")
+        if re.fullmatch(r"[0-9a-f]{64}", str(code_digest or "")):
+            headers["x-forkmesh-office-code-digest"] = str(code_digest)
+    if re.fullmatch(r"[0-9a-f]{64}", str(occupant_bi or "")):
+        headers["x-forkmesh-office-account-bi"] = str(occupant_bi)
     try:
         room_id = env.FORKMESH_OFFICE_ROOM.idFromName(
             "office:world-general:v1")
@@ -3780,6 +3845,8 @@ async def _office_general_room_state(
             status=503,
             cache_control="no-store, max-age=0, must-revalidate",
         )
+    if not isinstance(payload, dict):
+        payload = {}
     if status == 429:
         try:
             retry_ms = max(1000, int(payload.get("retryAfterMs") or 1000))
@@ -3794,21 +3861,26 @@ async def _office_general_room_state(
             },
         )
     if status == 403 and entry_request:
-        return None, json_response(
+        state = {
+            "occupied": payload.get("occupied") is True,
+            "codeConfigured": payload.get("codeConfigured") is True,
+            "canSetCode": False,
+        }
+        return state, json_response(
             {"error": "invalid_entry_code"},
             status=403,
             cache_control="no-store, max-age=0, must-revalidate",
         )
-    try:
-        participant_count = int(payload.get("participantCount"))
-    except (AttributeError, TypeError, ValueError):
-        participant_count = -1
+    occupied = payload.get("occupied")
+    code_configured = payload.get("codeConfigured")
+    can_set_code = payload.get("canSetCode")
     if (
         status < 200
         or status >= 300
         or payload.get("ok") is not True
-        or participant_count < 0
-        or participant_count > world_protocol.OFFICE_MAX_CONNECTIONS
+        or not isinstance(occupied, bool)
+        or not isinstance(code_configured, bool)
+        or not isinstance(can_set_code, bool)
     ):
         return None, json_response(
             {"error": "office_unavailable"},
@@ -3816,13 +3888,78 @@ async def _office_general_room_state(
             cache_control="no-store, max-age=0, must-revalidate",
         )
     return {
-        "participantCount": participant_count,
-        "occupied": participant_count > 0,
+        "occupied": occupied,
+        "codeConfigured": code_configured,
+        "canSetCode": can_set_code,
+    }, None
+
+
+async def _office_general_set_code(env, account_bi, code_digest):
+    """Forward only keyed material to the live general-Office room."""
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", str(account_bi or ""))
+        or not re.fullmatch(r"[0-9a-f]{64}", str(code_digest or ""))
+    ):
+        return None, json_response(
+            {"error": "office_unavailable"},
+            status=503,
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    headers = {
+        "x-forkmesh-office-account-bi": str(account_bi),
+        "x-forkmesh-office-code-digest": str(code_digest),
+    }
+    try:
+        room_id = env.FORKMESH_OFFICE_ROOM.idFromName(
+            "office:world-general:v1")
+        room_object = env.FORKMESH_OFFICE_ROOM.get(room_id)
+        internal_request = JsRequest.new(
+            "https://forkmesh.internal/api/world/office/"
+            "world-general/v1/code",
+            to_js({"method": "POST", "headers": headers}),
+        )
+        response = await room_object.fetch(internal_request)
+        status = int(getattr(response, "status", 503) or 503)
+        payload = await _response_json(response)
+    except Exception:
+        return None, json_response(
+            {"error": "office_unavailable"},
+            status=503,
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    if not isinstance(payload, dict):
+        payload = {}
+    if status == 403:
+        return None, json_response(
+            {"error": "office_occupant_required"},
+            status=403,
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    occupied = payload.get("occupied")
+    code_configured = payload.get("codeConfigured")
+    can_set_code = payload.get("canSetCode")
+    if (
+        status < 200
+        or status >= 300
+        or payload.get("ok") is not True
+        or occupied is not True
+        or code_configured is not True
+        or can_set_code is not True
+    ):
+        return None, json_response(
+            {"error": "office_unavailable"},
+            status=503,
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    return {
+        "occupied": True,
+        "codeConfigured": True,
+        "canSetCode": True,
     }, None
 
 
 async def office_general_status_handler(env, request):
-    """Return only the general Office's authoritative live occupancy."""
+    """Return only boolean door state; optionally prove a live occupant."""
     if method_name(request) != "GET":
         return json_response(
             {"error": "method_not_allowed"},
@@ -3830,15 +3967,35 @@ async def office_general_status_handler(env, request):
             cache_control="no-store, max-age=0, must-revalidate",
             extra_headers={"allow": "GET"},
         )
-    state, error = await _office_general_room_state(env)
+    occupant_bi = ""
+    try:
+        account_bi, account = await _account_session_record(env, request)
+        if (
+            re.fullmatch(r"[0-9a-f]{64}", str(account_bi or ""))
+            and account
+            and account.get("status") == "active"
+            and _account_kind(account) == "user"
+        ):
+            occupant_bi = str(account_bi)
+    except Exception:
+        occupant_bi = ""
+    state, error = await _office_general_room_state(
+        env, occupant_bi=occupant_bi)
     if error is not None:
         return error
+    fallback = getattr(env, "OFFICE_ENTRY_CODE", None)
+    fallback_configured = bool(
+        isinstance(fallback, str)
+        and re.fullmatch(r"[0-9]{4}", fallback)
+    )
     return json_response(
         {
             "ok": True,
-            "room": "general",
             "occupied": state["occupied"],
+            "codeConfigured": bool(
+                state["codeConfigured"] or fallback_configured),
             "requiresCode": state["occupied"],
+            "canSetCode": state["canSetCode"],
         },
         cache_control="no-store, max-age=0, must-revalidate",
         extra_headers={"x-content-type-options": "nosniff"},
@@ -3898,13 +4055,21 @@ async def office_general_entry_handler(env, request):
         and hmac.compare_digest(configured, comparison)
     )
     try:
+        code_digest = (
+            _office_entry_code_digest(env, submitted)
+            if submitted_valid else ""
+        )
         rate_key = await blind_index(
             env,
             "office-entry-source-v1:"
             + (_transient_client_address(request) or "unknown"),
         )
         state, error = await _office_general_room_state(
-            env, rate_key, code_approved=code_approved)
+            env,
+            rate_key,
+            code_approved=code_approved,
+            code_digest=code_digest,
+        )
     except Exception:
         return json_response(
             {"error": "office_unavailable"},
@@ -3915,6 +4080,7 @@ async def office_general_entry_handler(env, request):
         if (
             int(getattr(error, "status", 0) or 0) == 403
             and not configured_valid
+            and not bool((state or {}).get("codeConfigured"))
         ):
             return json_response(
                 {"error": "office_unavailable"},
@@ -3945,6 +4111,91 @@ async def office_general_entry_handler(env, request):
             "occupied": state["occupied"],
             "entryTicket": token,
             "expiresAt": expires,
+        },
+        cache_control="no-store, max-age=0, must-revalidate",
+        extra_headers={"x-content-type-options": "nosniff"},
+    )
+
+
+async def office_general_code_handler(env, request):
+    """Let a live registered occupant set the ephemeral four-digit door code."""
+    if method_name(request) != "POST":
+        return json_response(
+            {"error": "method_not_allowed"},
+            status=405,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"allow": "POST"},
+        )
+    if not _request_same_origin(request):
+        return json_response(
+            {"error": "origin_not_allowed"},
+            status=403,
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    try:
+        account_bi, account = await _account_session_record(env, request)
+    except Exception:
+        account_bi, account = "", None
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", str(account_bi or ""))
+        or not account
+        or account.get("status") != "active"
+        or _account_kind(account) != "user"
+    ):
+        return json_response(
+            {"error": "registered_user_required"},
+            status=401,
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    try:
+        data = await bounded_json_request(
+            request, max_bytes=OFFICE_ENTRY_REQUEST_MAX_BYTES)
+    except RequestBodyTooLarge:
+        return json_response(
+            {"error": "payload_too_large"},
+            status=413,
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    except Exception:
+        return json_response(
+            {"error": "invalid_json"},
+            status=400,
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    if not isinstance(data, dict) or set(data) != {"code"}:
+        return json_response(
+            {"error": "invalid_code"},
+            status=400,
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    transient_code = data.get("code")
+    if (
+        not isinstance(transient_code, str)
+        or not re.fullmatch(r"[0-9]{4}", transient_code)
+    ):
+        return json_response(
+            {"error": "invalid_code"},
+            status=400,
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    try:
+        code_digest = _office_entry_code_digest(env, transient_code)
+        state, error = await _office_general_set_code(
+            env, str(account_bi), code_digest)
+    except Exception:
+        return json_response(
+            {"error": "office_unavailable"},
+            status=503,
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    if error is not None:
+        return error
+    return json_response(
+        {
+            "ok": True,
+            "occupied": state["occupied"],
+            "codeConfigured": state["codeConfigured"],
+            "canSetCode": state["canSetCode"],
         },
         cache_control="no-store, max-age=0, must-revalidate",
         extra_headers={"x-content-type-options": "nosniff"},
@@ -4411,6 +4662,151 @@ class _WorldCommunityRuntime:
         return await _contribution_run_batch(self.env, statements)
 
 
+class _OfficeMarketingTasksRuntime:
+    """Least-privilege adapter for the configured organization's task board."""
+
+    def __init__(self, env, request):
+        self.env = env
+        self.request = request
+
+    def method(self):
+        return method_name(self.request)
+
+    def now(self):
+        return int(Date.now())
+
+    def new_id(self):
+        return _ap_uuid()
+
+    def same_origin(self):
+        return _request_same_origin(self.request)
+
+    def response(self, data, status=200, cache_control=None,
+                 extra_headers=None):
+        return json_response(
+            data,
+            status=status,
+            cache_control=cache_control,
+            extra_headers=extra_headers,
+        )
+
+    async def ensure_schema(self):
+        await ensure_schema(self.env)
+
+    async def json_body(self, limit):
+        try:
+            raw_length = self.request.headers.get("content-length") or ""
+            if raw_length and int(raw_length) > int(limit):
+                return None, "payload_too_large"
+        except (TypeError, ValueError):
+            return None, "invalid_content_length"
+        try:
+            raw = await self.request.text()
+        except Exception:
+            return None, "invalid_json"
+        if len(str(raw or "").encode("utf-8")) > int(limit):
+            return None, "payload_too_large"
+        if not str(raw or "").strip():
+            return {}, ""
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return None, "invalid_json"
+        return (data, "") if isinstance(data, dict) else (None, "invalid_json")
+
+    async def session(self, data=None):
+        return await _account_session_record(
+            self.env,
+            self.request,
+            data if isinstance(data, dict) else {},
+        )
+
+    async def organization(self):
+        configured = str(
+            getattr(self.env, "OFFICE_MARKETING_ORG", "") or "forkmesh"
+        ).strip().lower()
+        if not valid_node_name(configured):
+            return "", None
+        return await _org_row(self.env, configured)
+
+    async def membership(self, org_bi, account):
+        role = await _org_role(self.env, org_bi, account)
+        if not role:
+            return "", ""
+        return role, await _org_permission(self.env, org_bi, account)
+
+    async def active_user(self, name):
+        name = clean_string(name or "", MAX_NODE_NAME).strip().lower()
+        if not valid_node_name(name):
+            return None
+        account_bi, record = await _account_row(self.env, name)
+        if (
+            not record
+            or record.get("status") != "active"
+            or _account_kind(record) != "user"
+        ):
+            return None
+        return {
+            "bi": str(account_bi or ""),
+            "name": clean_string(
+                record.get("name") or name, MAX_NODE_NAME
+            ).strip().lower(),
+        }
+
+    async def eligible_users(self):
+        rows = await d1_all(
+            self.env,
+            "SELECT user_bi,data FROM users "
+            "ORDER BY username COLLATE NOCASE LIMIT 1000",
+        )
+        members = []
+        for row in rows or []:
+            try:
+                record = await decrypt_row(
+                    self.env, row.get("data"))
+            except Exception:
+                record = None
+            name = clean_string(
+                (record or {}).get("name") or "", MAX_NODE_NAME
+            ).strip().lower()
+            if (
+                record
+                and record.get("status") == "active"
+                and _account_kind(record) == "user"
+                and valid_node_name(name)
+                and name not in members
+            ):
+                members.append(name)
+        return members
+
+    async def seal(self, value):
+        return await encrypt_row(self.env, value)
+
+    async def open(self, value):
+        return await decrypt_row(self.env, value)
+
+    async def audit(self, actor, action, target_type="", target="",
+                    outcome="success", details=None):
+        await _audit_sensitive_action(
+            self.env,
+            actor,
+            action,
+            target_type,
+            target,
+            outcome=outcome,
+            details=details,
+        )
+
+    async def d1_all(self, sql, *args):
+        return await d1_all(self.env, sql, *args)
+
+    async def d1_first(self, sql, *args):
+        return await d1_first(self.env, sql, *args)
+
+    async def d1_run(self, sql, *args):
+        return await d1_run(self.env, sql, *args)
+
+
 class _ChatChannelsRuntime(_WorldCommunityRuntime):
     async def room_access(self, channel_id, key_version, account_bi, actor):
         room = (
@@ -4459,6 +4855,11 @@ async def world_events_handler(env, request, path):
 async def world_workshops_handler(env, request, path):
     return await world_workshops.handle(
         _WorldCommunityRuntime(env, request), path)
+
+
+async def world_office_marketing_tasks_handler(env, request, path):
+    return await world_office_tasks.handle(
+        _OfficeMarketingTasksRuntime(env, request), path)
 
 
 async def world_community_ads_handler(env, request, path):
@@ -30262,6 +30663,14 @@ class Default(WorkerEntrypoint):
                 "/api/world/moderation", "/api/world/moderation/"):
             return await world_moderation_handler(self.env, request)
 
+        if (
+            url.path == "/api/world/office/marketing-tasks"
+            or url.path == "/api/world/office/marketing-tasks/"
+            or url.path.startswith("/api/world/office/marketing-tasks/")
+        ):
+            return await world_office_marketing_tasks_handler(
+                self.env, request, url.path)
+
         if url.path in (
                 "/api/world/office/general/status",
                 "/api/world/office/general/status/"):
@@ -30271,6 +30680,11 @@ class Default(WorkerEntrypoint):
                 "/api/world/office/general/entry",
                 "/api/world/office/general/entry/"):
             return await office_general_entry_handler(self.env, request)
+
+        if url.path in (
+                "/api/world/office/general/code",
+                "/api/world/office/general/code/"):
+            return await office_general_code_handler(self.env, request)
 
         if url.path in (
                 "/api/world/office/general/access",
@@ -32000,6 +32414,53 @@ class ForkMeshOfficeRoom(DurableObject):
             self._close_all(1008, "room access revoked")
             return json_response({"ok": True})
         if (
+            action == "code"
+            and method_name(request) == "POST"
+            and scope == "world-general"
+            and int(version_raw) == 1
+        ):
+            account_bi = (
+                request.headers.get("x-forkmesh-office-account-bi") or "")
+            code_digest = (
+                request.headers.get("x-forkmesh-office-code-digest") or "")
+            if (
+                not re.fullmatch(r"[0-9a-f]{64}", account_bi)
+                or not re.fullmatch(r"[0-9a-f]{64}", code_digest)
+            ):
+                return json_response({"error": "not_found"}, status=404)
+            peers = self._live_sockets(cleanup=True)
+            can_set_code = _office_live_account(peers, account_bi)
+            if not peers or not can_set_code:
+                if not peers:
+                    self._clear_session_code_digest()
+                return json_response(
+                    {
+                        "ok": False,
+                        "occupied": bool(peers),
+                        "codeConfigured": bool(
+                            _office_socket_code_state(peers)[0]),
+                        "canSetCode": False,
+                        "error": "office_occupant_required",
+                    },
+                    status=403,
+                    cache_control="no-store, max-age=0, must-revalidate",
+                )
+            if not self._set_session_code_digest(peers, code_digest):
+                return json_response(
+                    {"error": "unavailable"},
+                    status=503,
+                    cache_control="no-store, max-age=0, must-revalidate",
+                )
+            return json_response(
+                {
+                    "ok": True,
+                    "occupied": True,
+                    "codeConfigured": True,
+                    "canSetCode": True,
+                },
+                cache_control="no-store, max-age=0, must-revalidate",
+            )
+        if (
             action in ("status", "entry")
             and (
                 (action == "status" and method_name(request) == "GET")
@@ -32030,22 +32491,43 @@ class ForkMeshOfficeRoom(DurableObject):
                         cache_control=(
                             "no-store, max-age=0, must-revalidate"),
                     )
-            participant_count = len(self._live_sockets(cleanup=True))
+            peers = self._live_sockets(cleanup=True)
+            occupied = bool(peers)
+            code_configured, stored_digest = (
+                _office_socket_code_state(peers))
+            if not occupied:
+                self._clear_session_code_digest()
+            account_bi = (
+                request.headers.get("x-forkmesh-office-account-bi") or "")
+            can_set_code = _office_live_account(peers, account_bi)
             if (
                 action == "entry"
-                and participant_count > 0
-                and approved_raw != "1"
+                and occupied
+                and not _office_entry_digest_approved(
+                    code_configured,
+                    stored_digest,
+                    request.headers.get(
+                        "x-forkmesh-office-code-digest") or "",
+                    approved_raw == "1",
+                )
             ):
                 return json_response(
-                    {"error": "entry_code_required"},
+                    {
+                        "ok": False,
+                        "occupied": True,
+                        "codeConfigured": code_configured,
+                        "canSetCode": False,
+                        "error": "entry_code_required",
+                    },
                     status=403,
                     cache_control="no-store, max-age=0, must-revalidate",
                 )
             return json_response(
                 {
                     "ok": True,
-                    "participantCount": participant_count,
-                    "occupied": participant_count > 0,
+                    "occupied": occupied,
+                    "codeConfigured": code_configured,
+                    "canSetCode": can_set_code,
                 },
                 cache_control="no-store, max-age=0, must-revalidate",
             )
@@ -32067,6 +32549,10 @@ class ForkMeshOfficeRoom(DurableObject):
         peers = self._live_sockets(cleanup=True)
         if len(peers) >= world_protocol.OFFICE_MAX_CONNECTIONS:
             return json_response({"error": "room_full"}, status=429)
+        code_configured, entry_code_digest = (
+            _office_socket_code_state(peers))
+        if code_configured and not entry_code_digest:
+            return json_response({"error": "unavailable"}, status=503)
 
         participant_id = new_world_peer_id()
         state = world_protocol.default_office_presence(participant_id, now)
@@ -32092,6 +32578,7 @@ class ForkMeshOfficeRoom(DurableObject):
             version=int(version_raw),
             trusted_name=claim.get("name", ""),
             trusted_status=claim.get("accountStatus", "Guest"),
+            entry_code_digest=entry_code_digest,
         )
         self._safe_send(server, {
             "type": "welcome",
@@ -32154,7 +32641,8 @@ class ForkMeshOfficeRoom(DurableObject):
 
     def _save_socket(self, ws, state, last, rate_start, rate_count,
                      departed=False, account_bi=None, scope=None, version=None,
-                     trusted_name=None, trusted_status=None):
+                     trusted_name=None, trusted_status=None,
+                     entry_code_digest=None):
         if account_bi is None:
             account_bi = _ws_attr(ws, "account_bi", "")
         if scope is None:
@@ -32165,6 +32653,12 @@ class ForkMeshOfficeRoom(DurableObject):
             trusted_name = _ws_attr(ws, "trusted_name", "")
         if trusted_status is None:
             trusted_status = _ws_attr(ws, "trusted_status", "Guest")
+        if entry_code_digest is None:
+            entry_code_digest = _ws_attr(
+                ws, "entry_code_digest", "")
+        entry_code_digest = str(entry_code_digest or "")
+        if not re.fullmatch(r"[0-9a-f]{64}", entry_code_digest):
+            entry_code_digest = ""
         record = {
             **world_protocol.public_office_presence(state),
             "account_bi": str(account_bi or ""),
@@ -32176,11 +32670,46 @@ class ForkMeshOfficeRoom(DurableObject):
             "rl_start": int(rate_start or 0),
             "rl_count": int(rate_count or 0),
             "departed": bool(departed),
+            # Keyed digest only; plaintext digits never cross this boundary.
+            "entry_code_digest": entry_code_digest,
         }
         try:
             ws.serializeAttachment(to_js(record))
+            return True
         except Exception:
-            pass
+            return False
+
+    def _set_session_code_digest(self, peers, code_digest):
+        if not re.fullmatch(r"[0-9a-f]{64}", str(code_digest or "")):
+            return False
+        saved = True
+        for peer in peers or []:
+            saved = self._save_socket(
+                peer,
+                self._socket_state(peer),
+                last=_ws_attr(peer, "last", 0),
+                rate_start=_ws_attr(peer, "rl_start", 0),
+                rate_count=_ws_attr(peer, "rl_count", 0),
+                departed=bool(_ws_attr(peer, "departed", False)),
+                entry_code_digest=code_digest,
+            ) and saved
+        return bool(peers) and saved
+
+    def _clear_session_code_digest(self):
+        try:
+            peers = self.ctx.getWebSockets("office")
+        except Exception:
+            peers = []
+        for peer in peers:
+            self._save_socket(
+                peer,
+                self._socket_state(peer),
+                last=_ws_attr(peer, "last", 0),
+                rate_start=_ws_attr(peer, "rl_start", 0),
+                rate_count=_ws_attr(peer, "rl_count", 0),
+                departed=bool(_ws_attr(peer, "departed", False)),
+                entry_code_digest="",
+            )
 
     def _mark_departed(self, ws):
         self._save_socket(
@@ -32219,6 +32748,8 @@ class ForkMeshOfficeRoom(DurableObject):
             for stale_id in stale_ids:
                 for peer in live:
                     self._safe_send(peer, {"type": "leave", "id": stale_id})
+            if not live:
+                self._clear_session_code_digest()
         return live
 
     def _rate_step(self, ws, state, now):
@@ -32408,6 +32939,8 @@ class ForkMeshOfficeRoom(DurableObject):
         departed = bool(_ws_attr(ws, "departed", False))
         self._mark_departed(ws)
         self._safe_close(ws, code, reason)
+        if not self._live_sockets(cleanup=False):
+            self._clear_session_code_digest()
         if participant_id and not departed:
             self._broadcast(
                 {"type": "leave", "id": participant_id},
@@ -32437,6 +32970,7 @@ class ForkMeshOfficeRoom(DurableObject):
         for peer in peers:
             self._mark_departed(peer)
             self._safe_close(peer, code, reason)
+        self._clear_session_code_digest()
 
     def _safe_close(self, ws, code, reason):
         try:

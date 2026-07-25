@@ -32,6 +32,7 @@ import {
 import { buildRepositoryGraphEntities } from "./world-repository-graph.js";
 import { createWorldOfficeController } from "./world-office.js";
 import { createWorldOfficeMeeting } from "./world-office-meeting.js";
+import { createWorldOfficeTasksController } from "./world-office-tasks.js";
 import { createWorldScene } from "./world-scene.js";
 
 const THREE_MODULE_URL =
@@ -98,7 +99,7 @@ const WORLD_MOVE_ACCEL_MIN = 25;
 // acceleration so the player reaches top speed the moment a key is pressed.
 const WORLD_MOVE_ACCEL_MAX = 1000;
 const WORLD_MOVE_ACCEL_DEFAULT = 100;
-const WORLD_DIAGNOSTICS_INTERVAL_MS = 1000;
+const WORLD_DIAGNOSTICS_INTERVAL_MS = 500;
 const WORLD_DIAGNOSTICS_COUNTER_MAX = 1_000_000_000;
 const WORLD_PULL_MERGE_MAX_REQUESTS = 6;
 const WORLD_PULL_MERGE_POLL_MS = 400;
@@ -1936,6 +1937,7 @@ function cleanRepositories(payload) {
       const commit = String(repo.commit || "").trim().toLowerCase();
       const stateHash = String(repo.stateHash || "").trim().toLowerCase();
       const pullCount = Number(repo.pullCount);
+      const starCount = Number(repo.starCount ?? repo.stars ?? repo.star_count);
       const reportedSizeBytes = Number(repo.sizeBytes);
       return {
         owner: sanitizePresenceText(repo.owner, "external", 40),
@@ -1961,6 +1963,11 @@ function cleanRepositories(payload) {
           pullCount <= 10_000_000
             ? pullCount
             : null,
+        starCount:
+          Number.isSafeInteger(starCount) && starCount >= 0
+            ? Math.min(starCount, 10_000_000)
+            : null,
+        starred: repo.starred === true,
         mirrorCount: Number(repo.mirrorCount || repo.mirrors || 0),
         sizeBytes:
           Number.isSafeInteger(reportedSizeBytes) && reportedSizeBytes >= 0
@@ -2587,11 +2594,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             </div>
             <div data-world-fediverse-items></div>
           </section>
-          <div class="world-activity" aria-live="polite">
-            <div class="world-activity-line" data-world-activity>
-              Public network activity will appear here in generalized form.
-            </div>
-          </div>
         </aside>
 
         <div class="world-touch-controls" aria-label="Virtual movement controls">
@@ -2617,6 +2619,9 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <dl>
               <div><dt>Renderer</dt><dd data-world-diagnostics-renderer>Starting…</dd></div>
               <div><dt>Frame health</dt><dd data-world-diagnostics-frame-health>Sampling…</dd></div>
+              <div><dt>Input / scene</dt><dd data-world-diagnostics-input>Sampling…</dd></div>
+              <div><dt>World state</dt><dd data-world-diagnostics-world-state>Sampling…</dd></div>
+              <div><dt>Music</dt><dd data-world-diagnostics-music>Nothing playing</dd></div>
               <div><dt>Connection</dt><dd data-world-diagnostics-connection>Connecting…</dd></div>
               <div><dt>Socket frames</dt><dd data-world-diagnostics-traffic>Inbound 0 · outbound 0</dd></div>
               <div><dt>Coalescing</dt><dd data-world-diagnostics-queues>Movement idle · profile idle</dd></div>
@@ -2741,6 +2746,81 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <button type="button" data-world-office-fallback>Open accessible chat fallback</button>
             <button type="button" data-world-office-exit>Return to Town Square</button>
           </footer>
+        </section>
+
+        <section
+          class="world-office-task-panel"
+          data-world-office-task-panel
+          data-open="false"
+          role="dialog"
+          aria-modal="false"
+          aria-labelledby="world-office-task-title"
+          aria-hidden="true"
+        >
+          <header class="world-office-panel-heading">
+            <div>
+              <p class="world-eyebrow">ORGANIZATION WORK</p>
+              <h2 id="world-office-task-title" tabindex="-1">Marketing task board</h2>
+            </div>
+            <button type="button" data-world-office-task-close aria-label="Close marketing task board">×</button>
+          </header>
+          <p class="world-office-panel-intro">
+            Timers use server timestamps. Task details and check-ins stay out of public avatar presence and Office sockets.
+          </p>
+          <section class="world-office-task-manager" data-world-office-task-manager hidden aria-labelledby="world-office-task-add-title">
+            <h3 id="world-office-task-add-title">Add and assign a task</h3>
+            <form data-world-office-task-form>
+              <label>
+                <span>Task</span>
+                <input
+                  data-world-office-task-name
+                  name="title"
+                  maxlength="160"
+                  autocomplete="off"
+                  placeholder="Draft the launch announcement"
+                  required
+                >
+              </label>
+              <label>
+                <span>Assign to</span>
+                <select
+                  data-world-office-task-assignee
+                  data-world-office-task-assignees
+                  name="assignee"
+                  required
+                >
+                  <option value="">Select an active ForkMesh user</option>
+                </select>
+              </label>
+              <button type="submit">Add task</button>
+            </form>
+          </section>
+          <ol class="world-office-task-list" data-world-office-task-list aria-label="Marketing tasks">
+            <li class="world-office-task-empty">Enter the Office to load organization tasks.</li>
+          </ol>
+          <p class="world-office-panel-status" data-world-office-task-status role="status" aria-live="polite">
+            Enter the Office to sync the task board.
+          </p>
+        </section>
+
+        <section
+          class="world-office-task-checkin"
+          data-world-office-task-checkin
+          data-open="false"
+          role="dialog"
+          aria-modal="false"
+          aria-labelledby="world-office-task-checkin-title"
+          aria-hidden="true"
+        >
+          <p class="world-eyebrow">PROGRESS CHECK-IN</p>
+          <h2 id="world-office-task-checkin-title">How is it going?</h2>
+          <p data-world-office-task-checkin-copy>How is your active task going?</p>
+          <div>
+            <button type="button" data-world-office-task-checkin-state="going_well">Going well</button>
+            <button type="button" data-world-office-task-checkin-state="blocked">Blocked</button>
+            <button type="button" data-world-office-task-checkin-state="needs_help">Need help</button>
+            <button type="button" data-world-office-task-checkin-later>Not now</button>
+          </div>
         </section>
 
         <section class="world-office-room" data-world-office-room aria-labelledby="world-office-room-title" aria-hidden="true">
@@ -3212,6 +3292,7 @@ class ForkMeshWorld extends HTMLElement {
     this.accountReturnFocus = null;
     this.officeMeeting = null;
     this.officeController = null;
+    this.officeTasks = null;
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
     const requestedLandmark = worldQuery.get("landmark") || "";
@@ -3273,6 +3354,7 @@ class ForkMeshWorld extends HTMLElement {
     this.toastTimer = 0;
     this.inactiveSyncTimer = 0;
     this.inputInactiveTimer = 0;
+    this.lastInputInactiveScheduleAt = 0;
     this.firstVisitAt = firstVisitTimestamp();
     this.publicVisitCount = sessionVisitCount(true);
     this.activityArrivalRecorded = false;
@@ -3370,14 +3452,21 @@ class ForkMeshWorld extends HTMLElement {
       this.sendPresence({ type: "presence" });
       this.broadcastLocalPresence();
     }
-    window.clearTimeout(this.inputInactiveTimer);
-    this.inputInactiveTimer = window.setTimeout(() => {
-      if (!this.identity || this.destroyed) return;
-      this.identity.inputActive = false;
-      this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
-      this.sendPresence({ type: "presence" });
-      this.broadcastLocalPresence();
-    }, 12000);
+    // Pointermove can fire hundreds of times per second while dragging. A
+    // short throttle avoids creating/clearing a timer for every input sample
+    // without changing the 12-second active-presence behavior in practice.
+    const inputNow = performance.now();
+    if (inputNow - this.lastInputInactiveScheduleAt >= 250) {
+      this.lastInputInactiveScheduleAt = inputNow;
+      window.clearTimeout(this.inputInactiveTimer);
+      this.inputInactiveTimer = window.setTimeout(() => {
+        if (!this.identity || this.destroyed) return;
+        this.identity.inputActive = false;
+        this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
+        this.sendPresence({ type: "presence" });
+        this.broadcastLocalPresence();
+      }, 12000);
+    }
   };
 
   recordActivityArrival() {
@@ -3469,6 +3558,45 @@ class ForkMeshWorld extends HTMLElement {
     this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
   }
 
+  openRepositoryCreateForm() {
+    if (!this.sessionAuthenticated || !validWorldSession()) {
+      this.toggleWorldAccount(true, "login");
+      this.toast("Sign in to create a repository.");
+      return;
+    }
+    document.querySelector("[data-world-create-repository]")?.remove();
+    const dialog = document.createElement("dialog");
+    dialog.dataset.worldCreateRepository = "true";
+    dialog.style.cssText = "width:min(420px,calc(100vw - 32px));border:1px solid #9ef7c6;border-radius:14px;background:#071611;color:#e9fff2;padding:0;box-shadow:0 24px 80px #000";
+    dialog.innerHTML = `<form method="dialog" style="padding:20px;display:grid;gap:12px"><header><strong style="font-size:18px">Create repository</strong><p style="margin:6px 0 0;color:#9eb6aa;font-size:13px">Import a public GitHub or GitLab repository into ForkMesh.</p></header><label style="display:grid;gap:5px;font-size:12px">Repository URL<input required name="sourceUrl" placeholder="https://github.com/owner/repo" style="padding:10px;border-radius:7px;border:1px solid #3a6655;background:#0d211b;color:inherit" /></label><label style="display:grid;gap:5px;font-size:12px">Optional provider token<input name="providerToken" type="password" placeholder="Only used for this request" style="padding:10px;border-radius:7px;border:1px solid #3a6655;background:#0d211b;color:inherit" /></label><output style="min-height:18px;color:#9ef7c6;font-size:12px"></output><footer style="display:flex;justify-content:flex-end;gap:8px"><button value="cancel">Cancel</button><button value="submit" style="background:#9ef7c6;color:#071611;border:0;border-radius:7px;padding:9px 12px">Create repository</button></footer></form>`;
+    document.body.append(dialog);
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog.querySelector("form")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const sourceUrl = String(new FormData(form).get("sourceUrl") || "").trim();
+      const providerToken = String(new FormData(form).get("providerToken") || "").trim();
+      const output = form.querySelector("output");
+      if (!sourceUrl) return;
+      output.textContent = "Creating repository…";
+      try {
+        await this.postJSON("/api/repository-imports", {
+          sourceUrl,
+          providerToken,
+          mode: "import",
+          sessionToken: validWorldSession()?.sessionToken || "",
+        });
+        output.textContent = "Repository created. Refreshing catalog…";
+        await this.loadWorldData();
+        this.syncRepositoryScene();
+        window.setTimeout(() => dialog.close(), 650);
+      } catch (error) {
+        output.textContent = `Could not create repository: ${error.message}`;
+      }
+    });
+    dialog.showModal();
+  }
+
   async bootstrap() {
     try {
       const contextPromise = this.loadContext();
@@ -3522,12 +3650,16 @@ class ForkMeshWorld extends HTMLElement {
         onOfficeEnter: (entry = {}) => {
           this.officeController?.enterOffice?.(entry);
         },
+        onOfficeTaskBoardSelect: () => {
+          this.officeTasks?.open();
+        },
         onForkbotChat: () => {
           this.openWorldChat("/dashboard/chat", this.$("[data-world-chat-open]"));
         },
         onPlayForkmeshSong: () => {
-          void this.playFocusMusic();
+          void this.playForkmeshSong();
         },
+        onCreateRepository: () => this.openRepositoryCreateForm(),
         onOfficeChairSelect: (chairId) => {
           this.officeMeeting?.requestSeat(chairId);
         },
@@ -3559,10 +3691,20 @@ class ForkMeshWorld extends HTMLElement {
           this.broadcastLocalPresence();
         },
       });
+      this.officeTasks = createWorldOfficeTasksController({
+        root: this,
+        world: this.world,
+        fetchJSON: (path, options) => this.fetchJSON(path, options),
+        postJSON: (path, body, options) =>
+          this.postJSON(path, body, options),
+        getSession: readSession,
+        toast: (message) => this.toast(message),
+      });
       this.officeController = createWorldOfficeController({
         root: this,
         world: this.world,
         meeting: this.officeMeeting,
+        tasks: this.officeTasks,
       });
       this.world.setTheme(this.settings.theme);
       this.world.setMemberLoungeLoading?.(true);
@@ -3583,18 +3725,9 @@ class ForkMeshWorld extends HTMLElement {
       this.syncMemberLounge();
       this.world.setMemberLoungeLoading?.(false);
       this.syncRepositoryScene();
-      // Catalog payloads do not always carry star totals. Hydrate each public
-      // portal from its canonical star endpoint so the 3D count is exact.
-      this.repositories
-        .filter((repository) => repository?.isPrivate !== true)
-        .slice(0, 48)
-        .forEach((repository) => {
-          void this.loadRepositoryStarState(
-            repository.owner,
-            repository.name,
-            false,
-          );
-        });
+      // Do not fan out a star request for every perimeter portal at startup.
+      // The active repository hydrates its exact count below; inactive portals
+      // retain any catalog-provided count until the visitor selects them.
       if (this.repositories.length) {
         // The scene and authenticated live catalog are both ready. Populate
         // the repository district from the canonical flagship route without
@@ -8815,12 +8948,15 @@ class ForkMeshWorld extends HTMLElement {
       return null;
     }
     const current = this.repositoryStarStates.get(key);
+    const catalogCount = this.repositories.find(
+      (repository) => this.repositoryStarKey(repository.owner, repository.name) === key,
+    )?.starCount;
     if (!force && ["loading", "ready"].includes(current?.status)) {
       return current;
     }
     this.applyRepositoryStarState(owner, name, {
       status: "loading",
-      count: current?.count,
+      count: current?.count ?? catalogCount,
       starred: current?.starred === true,
     });
     this.refreshRepositoryStarUI();
@@ -8844,7 +8980,7 @@ class ForkMeshWorld extends HTMLElement {
       }
       const state = this.applyRepositoryStarState(owner, name, {
         status: "ready",
-        count,
+        count: Math.max(count, Number.isSafeInteger(catalogCount) ? catalogCount : 0),
         starred: payload.starred,
       });
       this.refreshRepositoryStarUI();
@@ -9366,7 +9502,12 @@ class ForkMeshWorld extends HTMLElement {
       this.activeRepository.isPrivate === true,
     );
     if (options.revealScene === true) this.revealRepositoryScene();
-    void this.loadRepositorySecurity(safeOwner, safeRepo, false);
+    // The automatic flagship map should not probe four security endpoints
+    // during initial World entry. Hydrate this optional detail only after a
+    // visitor explicitly selects the repository or its Security board.
+    if (!automatic) {
+      void this.loadRepositorySecurity(safeOwner, safeRepo, false);
+    }
     return true;
   }
 
@@ -11690,7 +11831,8 @@ class ForkMeshWorld extends HTMLElement {
       return;
     }
 
-    // Stop another local station or focus track before creating this element.
+    // Exactly one local soundtrack may run at a time. This stops procedural
+    // radio, a hosted station, or a prior focus loop before creating this one.
     this.stopRadio(false);
     const element = new AudioElement(track.trackUrl);
     element.preload = "metadata";
@@ -11776,6 +11918,17 @@ class ForkMeshWorld extends HTMLElement {
     this.focusMusicState = "stopped";
     this.focusMusicError = "";
     if (render) this.renderFocusMusicPanel();
+  }
+
+  async playForkmeshSong() {
+    // The entrance plaque always starts ForkMesh's designated opening song
+    // from the beginning, never layering it over another local loop.
+    this.focusMusicAutoplayPending = false;
+    this.stopRadio(false);
+    this.settings.focusMusicTrackId = DEFAULT_FOCUS_MUSIC_TRACK_ID;
+    this.focusMusicError = "";
+    this.saveSettings();
+    await this.playFocusMusic();
   }
 
   toggleFocusMusicMute() {
@@ -12689,6 +12842,28 @@ class ForkMeshWorld extends HTMLElement {
               0,
               Math.min(1_000_000, Number(scene.longFrames) || 0),
             ),
+            pointerMoves: Math.max(
+              0,
+              Math.min(1_000_000, Number(scene.pointerMoves) || 0),
+            ),
+            pointerWorstGapMs: Math.max(
+              0,
+              Math.min(60_000, Number(scene.pointerWorstGapMs) || 0),
+            ),
+            dragging: scene.dragging === true,
+            interactiveObjects: Math.max(
+              0,
+              Math.min(1_000_000, Number(scene.interactiveObjects) || 0),
+            ),
+            animations: Math.max(
+              0,
+              Math.min(1_000_000, Number(scene.animations) || 0),
+            ),
+            pixelRatio: Math.max(0, Math.min(8, Number(scene.pixelRatio) || 0)),
+            cameraMode: String(scene.cameraMode || "unknown").slice(0, 32),
+            space: String(scene.space || "unknown").slice(0, 64),
+            moving: scene.moving === true,
+            zoom: Math.max(0, Math.min(100, Number(scene.zoom) || 0)),
             paused: scene.paused === true,
           }
         : null,
@@ -12752,6 +12927,19 @@ class ForkMeshWorld extends HTMLElement {
         ),
       },
       build: { ...this.buildDiagnostics },
+      music: (() => {
+        const playback = this.activeAudio;
+        if (playback?.kind !== "focus-music") {
+          return { state: "stopped", title: "Nothing playing", positionMs: 0 };
+        }
+        const track = FOCUS_MUSIC_TRACKS.find((item) => item.id === playback.trackId);
+        return {
+          state: this.focusMusicState,
+          title: track?.name || "ForkMesh song",
+          positionMs: Math.max(0, Math.round(Number(playback.element?.currentTime) * 1000 || 0)),
+          durationMs: Math.max(0, Math.round(Number(playback.element?.duration) * 1000 || 0)),
+        };
+      })(),
     };
     this.lastDiagnosticsSnapshot = snapshot;
     return snapshot;
@@ -12761,7 +12949,7 @@ class ForkMeshWorld extends HTMLElement {
     const root = this.$("[data-world-diagnostics]");
     if (!root) return;
     const snapshot = this.collectDiagnostics();
-    const { renderer, connection, traffic, queues, build } = snapshot;
+    const { renderer, connection, traffic, queues, build, music } = snapshot;
     const formatRate = (value) =>
       `${Math.max(0, Number(value) || 0).toFixed(1)}/s`;
     const rendererSummary = renderer
@@ -12799,6 +12987,25 @@ class ForkMeshWorld extends HTMLElement {
         ? `${Math.round(renderer.longFrames).toLocaleString()} long frames · ${renderer.longestFrameMs.toFixed(1)} ms worst in the last sample`
         : "WebGL renderer unavailable";
     }
+    const inputDetail = this.$("[data-world-diagnostics-input]");
+    if (inputDetail) {
+      inputDetail.textContent = renderer
+        ? `${renderer.dragging ? "Dragging" : "Idle"} · ${Math.round(renderer.pointerMoves).toLocaleString()} pointer moves/s · ${renderer.pointerWorstGapMs.toFixed(1)} ms worst input gap · ${Math.round(renderer.interactiveObjects).toLocaleString()} interactives · ${Math.round(renderer.animations).toLocaleString()} animations · DPR ${renderer.pixelRatio.toFixed(2)}`
+        : "WebGL renderer unavailable";
+    }
+    const worldState = this.$("[data-world-diagnostics-world-state]");
+    if (worldState) {
+      worldState.textContent = renderer
+        ? `${renderer.moving ? "Moving" : "Still"} · ${renderer.cameraMode} · ${renderer.space} · zoom ${renderer.zoom.toFixed(2)}`
+        : "World state unavailable";
+    }
+    const musicDetail = this.$("[data-world-diagnostics-music]");
+    if (musicDetail) {
+      musicDetail.textContent =
+        music.state === "playing" || music.state === "paused"
+          ? `${music.title} · ${formatMediaPosition(music.positionMs)}${music.durationMs ? ` / ${formatMediaPosition(music.durationMs)}` : ""} · ${music.state}`
+          : "Nothing playing";
+    }
     const connectionDetail = this.$(
       "[data-world-diagnostics-connection]",
     );
@@ -12832,7 +13039,6 @@ class ForkMeshWorld extends HTMLElement {
         repos.find((repo) => repo.liveHost)
           ? `${repos.find((repo) => repo.liveHost).owner}/${repos.find((repo) => repo.liveHost).name} has a healthy public route.`
           : "Repository portals distinguish live mirrors from stubs and unavailable hosts.",
-        "Visual reward particles are illustrative and do not represent a guaranteed transfer.",
         this.remotePlayers.size
           ? `${this.remotePlayers.size} other ${this.remotePlayers.size === 1 ? "visitor is" : "visitors are"} moving through the world.`
           : "Presence uses a tiny ephemeral channel with a static-world fallback.",
@@ -13297,6 +13503,7 @@ class ForkMeshWorld extends HTMLElement {
 
   receivePresence(message) {
     if (!message || typeof message !== "object") return;
+    let peersChanged = false;
     if (message.type === "welcome" && Array.isArray(message.peers)) {
       this.serverPeerId = String(message.id || "");
       const ownPresence = remotePlayer(message.self);
@@ -13363,6 +13570,7 @@ class ForkMeshWorld extends HTMLElement {
         moving: false,
       });
       this.lastMovementSentAt = performance.now();
+      peersChanged = true;
     } else if (["presence", "join"].includes(message.type) && message.peer?.id) {
       const player = remotePlayer(message.peer);
       if (player?.id && player.id !== this.serverPeerId) {
@@ -13371,6 +13579,7 @@ class ForkMeshWorld extends HTMLElement {
         const current = this.remotePlayers.get(player.id) || {};
         this.remotePlayers.set(player.id, { ...current, ...player });
         if (isNewJoin) this.playCountryJoinSound(player.countryCode);
+        peersChanged = true;
       }
     } else if (message.type === "move" && message.id) {
       const id = String(message.id);
@@ -13382,10 +13591,11 @@ class ForkMeshWorld extends HTMLElement {
           z: boundedPresenceNumber(message.z),
           heading: boundedYaw(message.yaw),
         });
+        peersChanged = true;
       }
     } else if (message.type === "leave") {
       const departed = String(message.id || "");
-      this.remotePlayers.delete(departed);
+      peersChanged = this.remotePlayers.delete(departed);
       this.pendingKnocks.delete(departed);
     } else if (
       message.type === "interaction" &&
@@ -13430,7 +13640,10 @@ class ForkMeshWorld extends HTMLElement {
     ) {
       this.world?.playEmote?.(String(message.from), message.emote);
     }
-    this.renderPeers();
+    // Pongs and targeted interactions do not change the public roster. Avoid
+    // re-walking every avatar and rebuilding unrelated scene metrics for those
+    // high-frequency frames.
+    if (peersChanged) this.renderPeers();
   }
 
   setupBroadcastChannel() {
@@ -13592,6 +13805,8 @@ class ForkMeshWorld extends HTMLElement {
     this.officeMeeting = null;
     this.officeController?.destroy();
     this.officeController = null;
+    this.officeTasks?.destroy();
+    this.officeTasks = null;
     this.world?.dispose();
     this.world = null;
     if (this.mode === "public") document.body.classList.remove("world-active");

@@ -25,10 +25,13 @@ const PLAYER_DASH_SPEED = 48;
 const PLAYER_DASH_ARRIVE_DISTANCE = 0.3;
 const CAMERA_OFFSET = [17, 16, 21];
 const CAMERA_DISTANCE = Math.hypot(...CAMERA_OFFSET);
-// Keep the full world available as a strategic overview while still allowing
-// close inspection of a repository surface and its subscriber details.
-const CAMERA_ZOOM_MIN = 0.035;
-const CAMERA_ZOOM_MAX = 8;
+// Keep a useful strategic overview without pulling the finite 88-unit ground
+// into a small island against the clear-color background. At 3.2x the camera is
+// about 101 units from its target and the opposite ground edge remains inside
+// the 240-unit far plane; the former 8x limit put the target itself beyond it.
+const CAMERA_ZOOM_MIN = 0.12;
+const CAMERA_ZOOM_MAX = 3.2;
+const CAMERA_FAR_PLANE = 240;
 const CAMERA_LOOK_SENSITIVITY = 0.0022;
 const CAMERA_PITCH_MIN = 0.08;
 const CAMERA_PITCH_MAX = 1.24;
@@ -41,6 +44,10 @@ const OFFICE_WIDTH = 17;
 const OFFICE_DEPTH = 12;
 const OFFICE_HEIGHT = 7;
 const OFFICE_FRONT_Z = 6;
+const OFFICE_DOOR_WIDTH = 2.4;
+const OFFICE_AVATAR_RADIUS = 0.46;
+const OFFICE_INTERIOR_WALL_LIMIT = 5.46;
+const OFFICE_INTERIOR_EXIT_Z = 6.18;
 const LIGHT_LEVEL_MIN = 40;
 const LIGHT_LEVEL_MAX = 140;
 const LIGHT_LEVEL_DEFAULT = 100;
@@ -550,6 +557,135 @@ function activeLeaderboardTexture(THREE, members = []) {
       context.font = '400 24px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText("NO REGISTERED ACTIVITY REPORTED", 38, 176);
     }
+  });
+}
+
+const OFFICE_MARKETING_TASK_LIMIT = 6;
+
+function boundedOfficeMarketingTaskText(value, maxLength, fallback = "") {
+  const normalized = String(value ?? "")
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength);
+  return normalized || fallback;
+}
+
+function normalizeOfficeMarketingTasks(payload = {}) {
+  const source =
+    payload && typeof payload === "object" && !Array.isArray(payload)
+      ? payload
+      : {};
+  const authorized = source.authorized === true;
+  const requestedState = boundedOfficeMarketingTaskText(
+    source.state,
+    16,
+    authorized ? "" : "locked",
+  ).toLowerCase();
+  const tasks = authorized
+    ? (Array.isArray(source.tasks) ? source.tasks : [])
+        .filter((task) => task && typeof task === "object" && !Array.isArray(task))
+        .slice(0, OFFICE_MARKETING_TASK_LIMIT)
+        .map((task) => ({
+          title: boundedOfficeMarketingTaskText(
+            task.title,
+            42,
+            "Untitled marketing task",
+          ),
+          assignee: boundedOfficeMarketingTaskText(
+            task.assignee,
+            24,
+            "Unassigned",
+          ),
+          status: boundedOfficeMarketingTaskText(
+            task.status,
+            16,
+            "Open",
+          ),
+          elapsed: boundedOfficeMarketingTaskText(
+            task.elapsed,
+            18,
+            "Not started",
+          ),
+        }))
+    : [];
+  const state =
+    !authorized || requestedState === "locked"
+      ? "locked"
+      : requestedState === "loading"
+        ? "loading"
+        : tasks.length
+          ? "ready"
+          : "empty";
+  return { authorized, state, tasks };
+}
+
+function officeMarketingTasksTexture(THREE, payload = {}) {
+  const snapshot = normalizeOfficeMarketingTasks(payload);
+  return canvasTexture(THREE, 1024, 768, (context) => {
+    context.clearRect(0, 0, 1024, 768);
+    roundedRect(context, 5, 5, 1014, 758, 18);
+    context.fillStyle = "rgba(5,17,14,0.97)";
+    context.fill();
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 10;
+    context.stroke();
+
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    context.fillStyle = "#f1fff6";
+    context.font = '700 54px "ForkMesh Favorit", system-ui, sans-serif';
+    context.fillText("MARKETING TASKS", 52, 64);
+    context.fillStyle = "#9ef7c6";
+    context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("AUTHORIZED OFFICE VIEW · SELECT BOARD FOR DETAILS", 52, 112);
+    context.strokeStyle = "rgba(158,247,198,0.28)";
+    context.lineWidth = 2;
+    context.beginPath();
+    context.moveTo(52, 142);
+    context.lineTo(972, 142);
+    context.stroke();
+
+    if (snapshot.state !== "ready") {
+      const stateCopy = {
+        locked: ["LOCKED", "Sign in with task access to view this board."],
+        loading: ["LOADING", "Retrieving authorized marketing tasks…"],
+        empty: ["NO OPEN TASKS", "The authorized marketing queue is empty."],
+      }[snapshot.state] || ["UNAVAILABLE", "Task summaries are unavailable."];
+      context.fillStyle =
+        snapshot.state === "locked" ? "#f7c96b" : "#9ef7c6";
+      context.font = '700 46px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(stateCopy[0], 52, 260);
+      context.fillStyle = "#b9cfc4";
+      context.font = '400 28px "ForkMesh Favorit", system-ui, sans-serif';
+      context.fillText(stateCopy[1], 52, 316, 900);
+      return;
+    }
+
+    snapshot.tasks.forEach((task, index) => {
+      const top = 180 + index * 91;
+      context.fillStyle = index % 2
+        ? "rgba(255,255,255,0.025)"
+        : "rgba(158,247,198,0.045)";
+      roundedRect(context, 42, top - 30, 940, 80, 10);
+      context.fill();
+      context.fillStyle = "#d9ffea";
+      context.font = '700 27px "ForkMesh Favorit", system-ui, sans-serif';
+      context.fillText(task.title, 62, top - 4, 600);
+      context.fillStyle = "#91a39a";
+      context.font = '400 19px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        `${task.assignee} · ${task.elapsed}`,
+        62,
+        top + 27,
+        600,
+      );
+      context.textAlign = "right";
+      context.fillStyle = "#9ef7c6";
+      context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(task.status.toUpperCase(), 954, top + 10, 260);
+      context.textAlign = "left";
+    });
   });
 }
 
@@ -2276,6 +2412,18 @@ function repositorySizeLabelSprite(THREE, title, subtitle, color) {
   return sprite;
 }
 
+function repositoryStarTextTexture(THREE, count) {
+  return canvasTexture(THREE, 640, 180, (context) => {
+    context.clearRect(0, 0, 640, 180);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillStyle = "#07120e";
+    context.font = '900 82px "ForkMesh Mono", ui-monospace, monospace';
+    const value = Number.isSafeInteger(count) ? count.toLocaleString("en-US") : "…";
+    context.fillText(`${value} STARS`, 320, 94);
+  });
+}
+
 function safeRepositoryPath(value) {
   const path = String(value || "");
   if (!path || path.length > 1000 || /[\u0000-\u001f\u007f]/u.test(path)) {
@@ -2971,10 +3119,49 @@ function createBroadcastGarden(THREE, position, interactive, animated) {
   return group;
 }
 
+function officeKeypadDisplayTexture(THREE, value = "", mode = "entry") {
+  const digits = String(value || "").replace(/\D/g, "").slice(0, 4);
+  const slots = Array.from(
+    { length: 4 },
+    (_unused, index) => digits[index] || "_",
+  ).join(" ");
+  return canvasTexture(THREE, 512, 168, (context) => {
+    context.fillStyle = "#04110d";
+    context.fillRect(0, 0, 512, 168);
+    context.strokeStyle = "#63e6a5";
+    context.lineWidth = 8;
+    context.strokeRect(4, 4, 504, 160);
+    context.fillStyle = "#8ca99b";
+    context.font = '700 24px "ForkMesh Mono", ui-monospace, monospace';
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    context.fillText(mode === "set" ? "SET CODE" : "ACCESS CODE", 24, 34);
+    context.fillStyle = "#d9ffea";
+    context.font = '800 64px "ForkMesh Mono", ui-monospace, monospace';
+    context.textAlign = "center";
+    context.fillText(slots, 256, 108);
+  });
+}
+
+function officeKeypadButtonTexture(THREE, label) {
+  return canvasTexture(THREE, 128, 128, (context) => {
+    context.fillStyle = "#d9eee3";
+    context.fillRect(0, 0, 128, 128);
+    context.strokeStyle = "#315b4c";
+    context.lineWidth = 8;
+    context.strokeRect(4, 4, 120, 120);
+    context.fillStyle = "#0b2119";
+    context.font = '800 64px "ForkMesh Mono", ui-monospace, monospace';
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText(String(label), 64, 68);
+  });
+}
+
 function createForkMeshOffice(THREE, position, interactive, animated) {
   const group = new THREE.Group();
   const wallThickness = 0.35;
-  const doorWidth = 2.4;
+  const doorWidth = OFFICE_DOOR_WIDTH;
   const doorHeight = 4.4;
   const concrete = makeMaterial(THREE, "#18231f", {
     metalness: 0.08,
@@ -3178,25 +3365,37 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
 
   const keypad = new THREE.Group();
   keypad.name = "forkmesh-office-keypad";
-  keypad.position.set(doorWidth / 2 + 0.72, 2.05, OFFICE_FRONT_Z + 0.13);
+  keypad.position.set(doorWidth / 2 + 0.78, 2.12, OFFICE_FRONT_Z + 0.13);
   const keypadBody = new THREE.Mesh(
-    new THREE.BoxGeometry(0.58, 1.02, 0.2),
+    new THREE.BoxGeometry(0.82, 1.72, 0.2),
     keypadMaterial,
   );
   keypad.add(keypadBody);
   const keypadLight = new THREE.Mesh(
-    new THREE.BoxGeometry(0.36, 0.12, 0.05),
+    new THREE.BoxGeometry(0.52, 0.12, 0.05),
     makeMaterial(THREE, "#63e6a5", {
       emissive: "#31b978",
       emissiveIntensity: 1.8,
       metalness: 0.08,
     }),
   );
-  keypadLight.position.set(0, 0.38, 0.13);
+  keypadLight.position.set(0, 0.72, 0.13);
   keypad.add(keypadLight);
-  for (let index = 0; index < 12; index += 1) {
+  const keypadDisplay = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.64, 0.21),
+    new THREE.MeshBasicMaterial({
+      map: officeKeypadDisplayTexture(THREE),
+      toneMapped: false,
+    }),
+  );
+  keypadDisplay.name = "forkmesh-office-keypad-display";
+  keypadDisplay.position.set(0, 0.48, 0.126);
+  keypad.add(keypadDisplay);
+  const keypadKeys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "enter"];
+  const keypadLabels = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "C", "0", "↵"];
+  for (let index = 0; index < keypadKeys.length; index += 1) {
     const button = new THREE.Mesh(
-      new THREE.BoxGeometry(0.1, 0.1, 0.04),
+      new THREE.BoxGeometry(0.17, 0.17, 0.04),
       makeMaterial(THREE, "#aec9bc", {
         emissive: "#355f4d",
         emissiveIntensity: 0.3,
@@ -3205,12 +3404,29 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
     );
     const row = Math.floor(index / 3);
     const column = index % 3;
-    button.position.set((column - 1) * 0.15, 0.18 - row * 0.16, 0.13);
+    button.position.set((column - 1) * 0.23, 0.25 - row * 0.23, 0.13);
+    button.userData.officeKeypadDigit = keypadKeys[index];
     keypad.add(button);
+    const label = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.145, 0.145),
+      new THREE.MeshBasicMaterial({
+        map: officeKeypadButtonTexture(THREE, keypadLabels[index]),
+        toneMapped: false,
+      }),
+    );
+    label.position.set(button.position.x, button.position.y, 0.156);
+    label.userData.officeKeypadDigit = keypadKeys[index];
+    keypad.add(label);
   }
   keypad.traverse((child) => {
-    if (child.isMesh) child.userData.officeAccessPanel = true;
+    if (!child.isMesh) return;
+    child.userData.officeAccessPanel = true;
+    child.userData.officeKeypadLocation = "exterior";
   });
+  keypad.userData.officeKeypadLocation = "exterior";
+  keypad.userData.officeKeypadDisplay = keypadDisplay;
+  keypad.userData.officeKeypadDigits = "";
+  keypad.userData.officeKeypadMode = "entry";
   group.add(keypad);
 
   group.position.set(...position);
@@ -3220,6 +3436,9 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
   group.userData.officeKeypad = keypad;
   group.userData.officeKeypadBody = keypadBody;
   group.userData.officeKeypadLight = keypadLight;
+  group.userData.officeKeypadDisplay = keypadDisplay;
+  group.userData.officeKeypadDigits = "";
+  group.userData.officeKeypadMode = "entry";
   group.userData.officeOccupied = false;
   group.userData.officeAvailable = true;
   doorPivot.rotation.y = Math.PI / 2;
@@ -3349,6 +3568,7 @@ export function createWorldScene({
   onLandmarkSelect = () => {},
   onOfficeProximity = () => {},
   onOfficeEnter = () => {},
+  onOfficeTaskBoardSelect = () => {},
   onOfficeChairSelect = () => {},
   onOfficeMovement = () => {},
   onLocationChange = () => {},
@@ -3358,12 +3578,18 @@ export function createWorldScene({
   onAccountAction = () => {},
   onForkbotChat = () => {},
   onPlayForkmeshSong = () => {},
+  onCreateRepository = () => {},
 }) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color("#174434");
   scene.fog = new THREE.FogExp2("#8ebaa8", 0.0085);
 
-  const camera = new THREE.PerspectiveCamera(44, 1, 0.1, 240);
+  const camera = new THREE.PerspectiveCamera(
+    44,
+    1,
+    0.1,
+    CAMERA_FAR_PLANE,
+  );
   camera.position.set(...CAMERA_OFFSET);
 
   const renderer = new THREE.WebGLRenderer({
@@ -3389,7 +3615,10 @@ export function createWorldScene({
   const sun = new THREE.DirectionalLight("#fff1c4", 3.4);
   sun.position.set(-24, 35, 18);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
+  // A 2k shadow map is disproportionately costly while the player is moving.
+  // 1k keeps the soft, low-poly look while leaving far more frame budget for
+  // input and world animation.
+  sun.shadow.mapSize.set(1024, 1024);
   sun.shadow.camera.left = -90;
   sun.shadow.camera.right = 90;
   sun.shadow.camera.top = 90;
@@ -3744,6 +3973,154 @@ export function createWorldScene({
     wall.position.set(x, OFFICE_HEIGHT / 2, 0);
     officeInterior.add(wall);
   }
+  const officeFrontPanelWidth = (OFFICE_WIDTH - OFFICE_DOOR_WIDTH) / 2;
+  for (const x of [
+    -(OFFICE_DOOR_WIDTH / 2 + officeFrontPanelWidth / 2),
+    OFFICE_DOOR_WIDTH / 2 + officeFrontPanelWidth / 2,
+  ]) {
+    const wall = new THREE.Mesh(
+      new THREE.BoxGeometry(officeFrontPanelWidth, OFFICE_HEIGHT, 0.35),
+      makeMaterial(THREE, "#163029", { roughness: 0.86 }),
+    );
+    wall.position.set(x, OFFICE_HEIGHT / 2, OFFICE_FRONT_Z - 0.2);
+    officeInterior.add(wall);
+  }
+  const officeDoorHeader = new THREE.Mesh(
+    new THREE.BoxGeometry(OFFICE_DOOR_WIDTH, 2.25, 0.35),
+    makeMaterial(THREE, "#163029", { roughness: 0.86 }),
+  );
+  officeDoorHeader.position.set(
+    0,
+    OFFICE_HEIGHT - 1.125,
+    OFFICE_FRONT_Z - 0.2,
+  );
+  officeInterior.add(officeDoorHeader);
+  const officeInteriorDoorPivot = new THREE.Group();
+  officeInteriorDoorPivot.name = "forkmesh-office-interior-door-pivot";
+  officeInteriorDoorPivot.position.set(
+    -OFFICE_DOOR_WIDTH / 2,
+    0,
+    OFFICE_FRONT_Z - 0.38,
+  );
+  const officeInteriorDoor = new THREE.Mesh(
+    new THREE.BoxGeometry(OFFICE_DOOR_WIDTH, 4.4, 0.18),
+    makeMaterial(THREE, "#245845", {
+      metalness: 0.34,
+      roughness: 0.5,
+    }),
+  );
+  officeInteriorDoor.name = "forkmesh-office-interior-door";
+  officeInteriorDoor.position.set(OFFICE_DOOR_WIDTH / 2, 2.54, 0);
+  officeInteriorDoorPivot.add(officeInteriorDoor);
+  officeInteriorDoorPivot.rotation.y = Math.PI / 2;
+  officeInterior.add(officeInteriorDoorPivot);
+  const officeInteriorKeypad = new THREE.Group();
+  officeInteriorKeypad.name = "forkmesh-office-interior-keypad";
+  officeInteriorKeypad.position.set(
+    OFFICE_DOOR_WIDTH / 2 + 0.78,
+    2.12,
+    OFFICE_FRONT_Z - 0.43,
+  );
+  // The exterior control faces Town Square; this control faces into the room.
+  officeInteriorKeypad.rotation.y = Math.PI;
+  const officeInteriorKeypadBody = new THREE.Mesh(
+    new THREE.BoxGeometry(0.82, 1.72, 0.2),
+    makeMaterial(THREE, "#123b2c", {
+      emissive: "#31b978",
+      emissiveIntensity: 0.28,
+      metalness: 0.58,
+      roughness: 0.36,
+    }),
+  );
+  officeInteriorKeypad.add(officeInteriorKeypadBody);
+  const officeInteriorKeypadLight = new THREE.Mesh(
+    new THREE.BoxGeometry(0.52, 0.12, 0.05),
+    makeMaterial(THREE, "#63e6a5", {
+      emissive: "#31b978",
+      emissiveIntensity: 1.8,
+      metalness: 0.08,
+    }),
+  );
+  officeInteriorKeypadLight.position.set(0, 0.72, 0.13);
+  officeInteriorKeypad.add(officeInteriorKeypadLight);
+  const officeInteriorKeypadDisplay = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.64, 0.21),
+    new THREE.MeshBasicMaterial({
+      map: officeKeypadDisplayTexture(THREE, "", "set"),
+      toneMapped: false,
+    }),
+  );
+  officeInteriorKeypadDisplay.name = "forkmesh-office-interior-keypad-display";
+  officeInteriorKeypadDisplay.position.set(0, 0.48, 0.126);
+  officeInteriorKeypad.add(officeInteriorKeypadDisplay);
+  const officeInteriorKeypadKeys = [
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "clear",
+    "0",
+    "enter",
+  ];
+  const officeInteriorKeypadLabels = [
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "C",
+    "0",
+    "↵",
+  ];
+  officeInteriorKeypadKeys.forEach((key, index) => {
+    const button = new THREE.Mesh(
+      new THREE.BoxGeometry(0.17, 0.17, 0.04),
+      makeMaterial(THREE, "#aec9bc", {
+        emissive: "#355f4d",
+        emissiveIntensity: 0.3,
+        roughness: 0.52,
+      }),
+    );
+    const row = Math.floor(index / 3);
+    const column = index % 3;
+    button.position.set((column - 1) * 0.23, 0.25 - row * 0.23, 0.13);
+    button.userData.officeKeypadDigit = key;
+    officeInteriorKeypad.add(button);
+    const label = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.145, 0.145),
+      new THREE.MeshBasicMaterial({
+        map: officeKeypadButtonTexture(
+          THREE,
+          officeInteriorKeypadLabels[index],
+        ),
+        toneMapped: false,
+      }),
+    );
+    label.position.set(button.position.x, button.position.y, 0.156);
+    label.userData.officeKeypadDigit = key;
+    officeInteriorKeypad.add(label);
+  });
+  officeInteriorKeypad.userData.officeKeypadLocation = "interior";
+  officeInteriorKeypad.userData.officeKeypadDisplay =
+    officeInteriorKeypadDisplay;
+  officeInteriorKeypad.userData.officeKeypadDigits = "";
+  officeInteriorKeypad.userData.officeKeypadMode = "set";
+  officeInteriorKeypad.traverse((child) => {
+    if (!child.isMesh) return;
+    child.userData.officeAccessPanel = true;
+    child.userData.officeKeypadLocation = "interior";
+    interactive.push(child);
+  });
+  officeInterior.add(officeInteriorKeypad);
   const windowMaterial = makeMaterial(THREE, "#8eeac5", {
     transparent: true,
     opacity: 0.3,
@@ -3811,6 +4188,47 @@ export function createWorldScene({
     officeChairs.set(chairId, chair);
     officeInterior.add(chair);
   });
+  const officeMarketingTaskBoard = new THREE.Group();
+  officeMarketingTaskBoard.name = "forkmesh-office-marketing-task-board";
+  officeMarketingTaskBoard.position.set(-8.02, 3.55, -0.55);
+  officeMarketingTaskBoard.rotation.y = Math.PI / 2;
+  const officeMarketingTaskBoardFrame = new THREE.Mesh(
+    new THREE.BoxGeometry(6.7, 4.85, 0.18),
+    makeMaterial(THREE, "#315b52", {
+      metalness: 0.34,
+      roughness: 0.48,
+      emissive: "#173f34",
+      emissiveIntensity: 0.24,
+    }),
+  );
+  officeMarketingTaskBoardFrame.name =
+    "forkmesh-office-marketing-task-board-frame";
+  officeMarketingTaskBoardFrame.userData.interactive =
+    "office-marketing-task-board";
+  officeMarketingTaskBoard.add(officeMarketingTaskBoardFrame);
+  const officeMarketingTaskBoardFace = new THREE.Mesh(
+    new THREE.PlaneGeometry(6.38, 4.52),
+    new THREE.MeshBasicMaterial({
+      map: officeMarketingTasksTexture(THREE, {
+        authorized: false,
+        state: "locked",
+      }),
+    }),
+  );
+  officeMarketingTaskBoardFace.name =
+    "forkmesh-office-marketing-task-board-face";
+  officeMarketingTaskBoardFace.position.z = 0.101;
+  officeMarketingTaskBoardFace.userData.interactive =
+    "office-marketing-task-board";
+  officeMarketingTaskBoard.add(officeMarketingTaskBoardFace);
+  officeMarketingTaskBoard.userData.face = officeMarketingTaskBoardFace;
+  officeMarketingTaskBoard.userData.taskState = "locked";
+  officeMarketingTaskBoard.userData.taskCount = 0;
+  interactive.push(
+    officeMarketingTaskBoardFrame,
+    officeMarketingTaskBoardFace,
+  );
+  officeInterior.add(officeMarketingTaskBoard);
   const officeRoomSign = makeLabelSprite(
     THREE,
     "FORKMESH OFFICE",
@@ -3822,6 +4240,19 @@ export function createWorldScene({
   const officeLight = new THREE.PointLight("#ffd8a3", 5.5, 28, 1.6);
   officeLight.position.set(0, 6.2, 0);
   officeInterior.add(officeLight);
+  const officeLobbyPlayer = createAvatar(
+    THREE,
+    {
+      ...identity,
+      id: `${String(identity?.id || "visitor").slice(0, 24)}-office`,
+    },
+    { scale: 0.9 },
+  );
+  officeLobbyPlayer.name = "forkmesh-office-lobby-player";
+  officeLobbyPlayer.position.set(0, 0.38, 4.62);
+  officeLobbyPlayer.rotation.y = Math.PI;
+  officeLobbyPlayer.visible = false;
+  officeInterior.add(officeLobbyPlayer);
   const neighborhoodHomes = new Map();
   const nodeInfrastructure = new Map();
   const botAgents = new Map();
@@ -3855,6 +4286,9 @@ export function createWorldScene({
   let diagnosticsRendererTriangles = 0;
   let diagnosticsLongestFrameMs = 0;
   let diagnosticsLongFrames = 0;
+  let diagnosticsPointerMoves = 0;
+  let diagnosticsPointerLastAt = 0;
+  let diagnosticsPointerWorstGapMs = 0;
   let lastMovementEmit = 0;
   let lastPosition = player.position.clone();
   let wasWalking = false;
@@ -3862,6 +4296,7 @@ export function createWorldScene({
   let officeZoneState = "distant";
   let focusedRepositoryKey = "";
   let cameraZoom = 1;
+  let firstPersonZoom = 1;
   let environmentFogDensity = 0.0085;
   let cameraYaw = Math.atan2(CAMERA_OFFSET[0], CAMERA_OFFSET[2]);
   let cameraPitch = Math.asin(CAMERA_OFFSET[1] / CAMERA_DISTANCE);
@@ -3891,6 +4326,11 @@ export function createWorldScene({
   let officeLocalParticipantId = "";
   let lastOfficeMovementEmit = 0;
   let officeWasMoving = false;
+  let officeExitPending = false;
+  let officeKeypadFocused = false;
+  let officeKeypadFocusedLocation = "exterior";
+  let officeExitHandler = null;
+  let officeKeypadHandler = null;
   const weather = createWeather(THREE, scene);
 
   function updateWorldEnvironment() {
@@ -3945,8 +4385,12 @@ export function createWorldScene({
   function zoomFogMultiplier() {
     // At the strategic overview distance, atmospheric fog would wash the
     // whole world into a pale blur. Preserve local depth, but make the far
-    // view readable all the way out to the world-as-a-dot scale.
-    const normalized = clamp((cameraZoom - 1) / 7, 0, 1);
+    // view readable across the bounded overview range.
+    const normalized = clamp(
+      (cameraZoom - 1) / Math.max(0.001, CAMERA_ZOOM_MAX - 1),
+      0,
+      1,
+    );
     if (normalized >= 0.45) return 0;
     return 1 - normalized / 0.45;
   }
@@ -3990,6 +4434,223 @@ export function createWorldScene({
 
   function cancelDash() {
     dashTarget = null;
+  }
+
+  function setOfficeExitHandler(handler) {
+    officeExitHandler = typeof handler === "function" ? handler : null;
+  }
+
+  function setOfficeKeypadHandler(handler) {
+    officeKeypadHandler = typeof handler === "function" ? handler : null;
+  }
+
+  function setOfficeKeypadDigits(
+    value = "",
+    mode = "entry",
+    location = officeKeypadFocusedLocation,
+  ) {
+    const office = landmarkObjects.get("office");
+    const safeLocation = location === "interior" ? "interior" : "exterior";
+    const keypad =
+      safeLocation === "interior"
+        ? officeInteriorKeypad
+        : office?.userData?.officeKeypad;
+    const display =
+      keypad?.userData?.officeKeypadDisplay ||
+      office?.userData?.officeKeypadDisplay;
+    const digits = String(value || "").replace(/\D/g, "").slice(0, 4);
+    const safeMode = mode === "set" ? "set" : "entry";
+    if (!keypad || !display?.material) return digits;
+    if (
+      keypad.userData.officeKeypadDigits === digits &&
+      keypad.userData.officeKeypadMode === safeMode
+    ) {
+      return digits;
+    }
+    display.material.map?.dispose?.();
+    display.material.map = officeKeypadDisplayTexture(
+      THREE,
+      digits,
+      safeMode,
+    );
+    display.material.needsUpdate = true;
+    keypad.userData.officeKeypadDigits = digits;
+    keypad.userData.officeKeypadMode = safeMode;
+    if (safeLocation === "exterior" && office) {
+      office.userData.officeKeypadDigits = digits;
+      office.userData.officeKeypadMode = safeMode;
+    }
+    return digits;
+  }
+
+  function focusOfficeKeypad(mode = "entry", location = "exterior") {
+    const safeLocation = location === "interior" ? "interior" : "exterior";
+    if (
+      (safeLocation === "exterior" && officeSceneMode !== "town") ||
+      (safeLocation === "interior" && officeSceneMode === "town")
+    ) {
+      return false;
+    }
+    const office = landmarkObjects.get("office");
+    const keypad =
+      safeLocation === "interior"
+        ? officeInteriorKeypad
+        : office?.userData?.officeKeypad;
+    if (!office || !keypad) return false;
+    officeKeypadFocused = true;
+    officeKeypadFocusedLocation = safeLocation;
+    setOfficeKeypadDigits("", mode, safeLocation);
+    if (safeLocation === "interior") {
+      cancelDash();
+      selectedLandmark = "office";
+      cameraFocus = keypad.position.clone();
+      cameraYaw = Math.PI;
+      cameraPitch = 0.24;
+      cameraZoom = Math.min(cameraZoom, 0.64);
+      return true;
+    }
+    office.updateMatrixWorld(true);
+    const position = new THREE.Vector3();
+    keypad.getWorldPosition(position);
+    cancelDash();
+    selectedLandmark = "office";
+    focusedRepositoryKey = "";
+    currentSpace = "town-square";
+    currentFloorY = 0.38;
+    player.position.set(position.x, currentFloorY, position.z + 1.34);
+    player.rotation.y = Math.PI;
+    cameraYaw = 0;
+    firstPersonPitch = 0.39;
+    setCameraMode("first-person");
+    lastPosition.copy(player.position);
+    onMovement({
+      x: Number(player.position.x.toFixed(2)),
+      y: Number(player.position.y.toFixed(2)),
+      z: Number(player.position.z.toFixed(2)),
+      heading: Number(player.rotation.y.toFixed(3)),
+      activity: "visiting the ForkMesh Office entrance",
+      space: currentSpace,
+      moving: false,
+    });
+    return true;
+  }
+
+  function blurOfficeKeypad() {
+    if (!officeKeypadFocused) {
+      setOfficeKeypadDigits("", "entry", officeKeypadFocusedLocation);
+      return false;
+    }
+    const previousLocation = officeKeypadFocusedLocation;
+    officeKeypadFocused = false;
+    setOfficeKeypadDigits(
+      "",
+      previousLocation === "interior" ? "set" : "entry",
+      previousLocation,
+    );
+    officeKeypadFocusedLocation = "exterior";
+    if (previousLocation === "interior") {
+      cameraFocus = new THREE.Vector3(0, 2.15, 0);
+      cameraYaw = 0;
+      cameraPitch = 0.48;
+      return true;
+    }
+    setCameraMode("third-person");
+    const office = landmarkById("office");
+    selectedLandmark = "office";
+    cameraFocus = new THREE.Vector3(
+      office.position[0],
+      2.5,
+      office.position[2],
+    );
+    return true;
+  }
+
+  function constrainTownOfficeWalls(previousPosition) {
+    if (officeSceneMode !== "town") return false;
+    const office = landmarkObjects.get("office");
+    if (!office) return false;
+    const localX = player.position.x - office.position.x;
+    const localZ = player.position.z - office.position.z;
+    const halfWidth = OFFICE_WIDTH / 2 + OFFICE_AVATAR_RADIUS;
+    const halfDepth = OFFICE_DEPTH / 2 + OFFICE_AVATAR_RADIUS;
+    if (Math.abs(localX) >= halfWidth || Math.abs(localZ) >= halfDepth) {
+      return false;
+    }
+
+    const previousX = previousPosition.x - office.position.x;
+    const previousZ = previousPosition.z - office.position.z;
+    const doorClearance = OFFICE_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS;
+    // Even an open door waits at its threshold for the server-approved entry
+    // ticket. The scene transition is the only path through the exterior shell.
+    if (
+      Math.abs(localX) <= doorClearance &&
+      previousZ >= OFFICE_FRONT_Z
+    ) {
+      player.position.z =
+        office.position.z + OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS;
+      cancelDash();
+      return true;
+    }
+
+    const candidates = [
+      {
+        distance: Math.abs(previousX + halfWidth),
+        x: office.position.x - halfWidth,
+        z: player.position.z,
+      },
+      {
+        distance: Math.abs(previousX - halfWidth),
+        x: office.position.x + halfWidth,
+        z: player.position.z,
+      },
+      {
+        distance: Math.abs(previousZ + halfDepth),
+        x: player.position.x,
+        z: office.position.z - halfDepth,
+      },
+      {
+        distance: Math.abs(previousZ - halfDepth),
+        x: player.position.x,
+        z: office.position.z + halfDepth,
+      },
+    ].sort((left, right) => left.distance - right.distance);
+    player.position.x = candidates[0].x;
+    player.position.z = candidates[0].z;
+    cancelDash();
+    return true;
+  }
+
+  function constrainOfficeInteriorWalls(avatar) {
+    if (!avatar) return false;
+    avatar.position.x = clamp(
+      avatar.position.x,
+      -OFFICE_WIDTH / 2 + OFFICE_AVATAR_RADIUS,
+      OFFICE_WIDTH / 2 - OFFICE_AVATAR_RADIUS,
+    );
+    avatar.position.z = Math.max(
+      -OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS,
+      avatar.position.z,
+    );
+    const doorClearance = OFFICE_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS;
+    if (
+      avatar.position.z > OFFICE_INTERIOR_WALL_LIMIT &&
+      Math.abs(avatar.position.x) > doorClearance
+    ) {
+      avatar.position.z = OFFICE_INTERIOR_WALL_LIMIT;
+    }
+    if (
+      avatar.position.z >= OFFICE_INTERIOR_EXIT_Z &&
+      Math.abs(avatar.position.x) <= doorClearance
+    ) {
+      avatar.position.z = OFFICE_INTERIOR_EXIT_Z;
+      if (!officeExitPending && officeExitHandler) {
+        officeExitPending = true;
+        officeExitHandler();
+      }
+      return true;
+    }
+    avatar.position.z = Math.min(avatar.position.z, OFFICE_INTERIOR_EXIT_Z);
+    return false;
   }
 
   function setOfficeOccupancy({ occupied = false, available = true } = {}) {
@@ -4182,18 +4843,21 @@ export function createWorldScene({
     if (officeZoneState !== "nearby") return false;
     const office = landmarkById("office");
     selectedLandmark = "office";
+    officeKeypadFocused = false;
+    officeExitPending = false;
     currentSpace = "town-square";
     currentFloorY = 0.38;
     cameraFocus = new THREE.Vector3(
       office.position[0],
       2.5,
-      office.position[2] - 0.4,
+      office.position[2] + OFFICE_FRONT_Z,
     );
     player.position.set(
       office.position[0],
       currentFloorY,
-      office.position[2] + 2.2,
+      office.position[2] + OFFICE_FRONT_Z + 0.72,
     );
+    player.rotation.y = Math.PI;
     if (reducedMotion) {
       const target = cameraFocus.clone();
       camera.position.copy(target.clone().add(
@@ -4208,14 +4872,34 @@ export function createWorldScene({
     // The Office uses its own shared orbital framing and participant model.
     // Never leave the town avatar's eye camera active behind that scene.
     setCameraMode("third-person");
+    const enteringFromTown = officeSceneMode === "town";
     officeSceneMode = "lobby";
     selectedLandmark = "office";
     currentSpace = "office";
     // No click-to-move target to clear -- main removed that control, and pull/46
     // already applied the same fix to enterOffice().
     cameraFocus = new THREE.Vector3(0, 2.15, 0);
+    cameraYaw = 0;
+    cameraPitch = 0.48;
+    cameraZoom = Math.min(1, Math.max(0.58, cameraZoom));
     world.visible = false;
     officeInterior.visible = true;
+    officeInteriorDoorPivot.rotation.y = Math.PI / 2;
+    if (enteringFromTown) {
+      officeLobbyPlayer.position.set(0, 0.38, 4.62);
+      officeLobbyPlayer.rotation.y = Math.PI;
+    } else {
+      const localParticipant = officeParticipants.get(
+        officeLocalParticipantId,
+      );
+      if (localParticipant) {
+        officeLobbyPlayer.position.copy(localParticipant.position);
+        officeLobbyPlayer.position.y = 0.38;
+        officeLobbyPlayer.rotation.y = localParticipant.rotation.y;
+      }
+    }
+    officeLobbyPlayer.visible = true;
+    officeExitPending = false;
     scene.background.set("#0d1e19");
     scene.fog.color.set("#0d1e19");
     return true;
@@ -4303,6 +4987,24 @@ export function createWorldScene({
       officeBubbles.get(id)?.remove();
       officeBubbles.delete(id);
     });
+    officeLobbyPlayer.visible =
+      officeSceneMode !== "town" &&
+      (!officeLocalParticipantId ||
+        !officeParticipants.has(officeLocalParticipantId));
+  }
+
+  function updateOfficeMarketingTasks(payload = {}) {
+    const snapshot = normalizeOfficeMarketingTasks(payload);
+    const key = JSON.stringify(snapshot);
+    if (officeMarketingTaskBoard.userData.taskKey === key) return snapshot;
+    const face = officeMarketingTaskBoard.userData.face;
+    face.material.map?.dispose?.();
+    face.material.map = officeMarketingTasksTexture(THREE, snapshot);
+    face.material.needsUpdate = true;
+    officeMarketingTaskBoard.userData.taskKey = key;
+    officeMarketingTaskBoard.userData.taskState = snapshot.state;
+    officeMarketingTaskBoard.userData.taskCount = snapshot.tasks.length;
+    return snapshot;
   }
 
   function enterOfficeMeeting({
@@ -4315,6 +5017,9 @@ export function createWorldScene({
     officeLocalParticipantId = String(participantId || officeLocalParticipantId);
     officeRoomSign.userData.roomName = String(roomName || "general");
     setOfficeParticipants(participants);
+    officeLobbyPlayer.visible =
+      !officeLocalParticipantId ||
+      !officeParticipants.has(officeLocalParticipantId);
     return true;
   }
 
@@ -4358,8 +5063,18 @@ export function createWorldScene({
     officeInterior.visible = false;
     world.visible = true;
     currentSpace = "town-square";
+    const office = landmarkById("office");
+    player.position.set(
+      office.position[0],
+      0.38,
+      office.position[2] + OFFICE_FRONT_Z + 0.82,
+    );
+    player.rotation.y = 0;
+    lastPosition.copy(player.position);
     officeLocalParticipantId = "";
     officeWasMoving = false;
+    officeExitPending = false;
+    officeLobbyPlayer.visible = false;
     cameraFocus = null;
     setOfficeParticipants([]);
     officeBubbles.forEach((element) => element.remove());
@@ -4367,6 +5082,32 @@ export function createWorldScene({
     // Re-apply the theme to restore the town background/fog the Office overrode.
     // PR #47 called applyTheme(); main's equivalent is setTheme().
     setTheme(currentTheme);
+    onMovement({
+      x: Number(player.position.x.toFixed(2)),
+      y: 0.38,
+      z: Number(player.position.z.toFixed(2)),
+      heading: Number(player.rotation.y.toFixed(3)),
+      activity: "exploring the Town Square",
+      space: "town-square",
+      moving: false,
+    });
+  }
+
+  function beginOfficeExit() {
+    if (officeSceneMode === "town") return false;
+    officeExitPending = false;
+    officeInteriorDoorPivot.rotation.y = Math.PI / 2;
+    cameraYaw = Math.PI;
+    cameraPitch = 0.42;
+    cameraFocus = new THREE.Vector3(0, 2.05, 2.8);
+    const avatar =
+      officeSceneMode === "meeting"
+        ? officeParticipants.get(officeLocalParticipantId)
+        : officeLobbyPlayer;
+    if (avatar && avatar.userData?.officePresence?.pose !== "seated") {
+      avatar.rotation.y = 0;
+    }
+    return true;
   }
 
   function setCameraMode(mode) {
@@ -4388,6 +5129,8 @@ export function createWorldScene({
       playerLabel.style.visibility = "hidden";
     } else {
       player.visible = true;
+      camera.fov = 44;
+      camera.updateProjectionMatrix();
     }
     renderer.domElement.dataset.cameraMode = cameraMode;
     return cameraMode;
@@ -4552,10 +5295,9 @@ export function createWorldScene({
         movement,
         PLAYER_SPEED * 0.72 * Math.max(0, input.inputStrength) * delta,
       );
-      avatar.position.x = clamp(avatar.position.x, -7.1, 7.1);
-      avatar.position.z = clamp(avatar.position.z, -4.8, 4.8);
       avatar.position.y = 0.38;
       avatar.rotation.y = Math.atan2(movement.x, movement.z);
+      if (constrainOfficeInteriorWalls(avatar)) return;
     }
     const gait = walking ? Math.sin(time * 0.012) * 0.48 : 0;
     avatar.userData.leftArm.rotation.x = gait;
@@ -4586,7 +5328,29 @@ export function createWorldScene({
     officeWasMoving = walking;
   }
 
+  function walkOfficeLobbyPlayer(delta, time) {
+    const input = movementInput();
+    const movement = input.movement;
+    const walking = movement.lengthSq() > 0;
+    if (walking) {
+      officeLobbyPlayer.position.addScaledVector(
+        movement,
+        PLAYER_SPEED * 0.72 * Math.max(0, input.inputStrength) * delta,
+      );
+      officeLobbyPlayer.position.y = 0.38;
+      officeLobbyPlayer.rotation.y = Math.atan2(movement.x, movement.z);
+      if (constrainOfficeInteriorWalls(officeLobbyPlayer)) return;
+    }
+    const gait = walking ? Math.sin(time * 0.012) * 0.48 : 0;
+    officeLobbyPlayer.userData.leftArm.rotation.x = gait;
+    officeLobbyPlayer.userData.rightArm.rotation.x = -gait;
+    officeLobbyPlayer.userData.leftLeg.rotation.x = -gait * 0.72;
+    officeLobbyPlayer.userData.rightLeg.rotation.x = gait * 0.72;
+    animateAvatarActivity(officeLobbyPlayer, time, delta, reducedMotion);
+  }
+
   function walkPlayer(delta, time) {
+    const previousHorizontalPosition = player.position.clone();
     const {
       keyboardActive,
       touchStrength,
@@ -4658,6 +5422,7 @@ export function createWorldScene({
       player.position.x *= WORLD_RADIUS / radius;
       player.position.z *= WORLD_RADIUS / radius;
     }
+    constrainTownOfficeWalls(previousHorizontalPosition);
     const gait = walking ? Math.sin(time * 0.012) * 0.52 : 0;
     player.userData.leftArm.rotation.x = gait;
     player.userData.rightArm.rotation.x = -gait;
@@ -4861,6 +5626,9 @@ export function createWorldScene({
     currentSpace = space;
     currentFloorY = WORLD_SPACE_FLOORS[space];
     player.position.set(x, currentFloorY, z);
+    if (space === "town-square") {
+      constrainTownOfficeWalls(player.position.clone());
+    }
     player.rotation.y = arrivalFacingHeading(x, z, heading);
     lastPosition.copy(player.position);
     wasWalking = false;
@@ -5452,13 +6220,6 @@ export function createWorldScene({
   }
 
   function updateSystemCapacity(metrics = {}) {
-    const existing = systemCapacityPlatform.userData.metricsLayer;
-    if (existing) {
-      systemCapacityPlatform.remove(existing);
-      disposeObject3D(existing);
-      systemCapacityPlatform.userData.metricsLayer = null;
-    }
-
     const records = Array.isArray(metrics)
       ? metrics
       : Array.isArray(metrics?.objects)
@@ -5500,6 +6261,23 @@ export function createWorldScene({
           left.name.localeCompare(right.name),
       )
       .slice(0, 128);
+    const signature = JSON.stringify({
+      objects: safeRecords,
+      tables: safeTables,
+    });
+    if (
+      systemCapacityPlatform.userData.metricsSignature === signature
+    ) {
+      return safeRecords.length + safeTables.length;
+    }
+    systemCapacityPlatform.userData.metricsSignature = signature;
+
+    const existing = systemCapacityPlatform.userData.metricsLayer;
+    if (existing) {
+      systemCapacityPlatform.remove(existing);
+      disposeObject3D(existing);
+      systemCapacityPlatform.userData.metricsLayer = null;
+    }
 
     const emptyMarker = systemCapacityPlatform.getObjectByName(
       "system-capacity-metrics-unavailable",
@@ -6023,6 +6801,12 @@ export function createWorldScene({
     Object.assign(identity, nextIdentity);
     updateAvatarBadge(THREE, player, identity, false);
     syncOperatorBelt(THREE, player, identity.nodes?.length || 0);
+    updateAvatarBadge(THREE, officeLobbyPlayer, identity, false);
+    syncOperatorBelt(
+      THREE,
+      officeLobbyPlayer,
+      identity.nodes?.length || 0,
+    );
     updatePlayerLabel(playerLabel, identity);
     syncLoungeAuthButton();
     if (identity.isAdmin !== true) {
@@ -6270,8 +7054,24 @@ export function createWorldScene({
           starCount: record.starCount,
           starred: record.starred,
         };
+        const starShape = new THREE.Shape();
+        for (let point = 0; point < 10; point += 1) {
+          const angle = -Math.PI / 2 + point * (Math.PI / 5);
+          const radius = point % 2 === 0 ? 0.34 : 0.15;
+          const x = Math.cos(angle) * radius;
+          const y = Math.sin(angle) * radius;
+          if (point === 0) starShape.moveTo(x, y);
+          else starShape.lineTo(x, y);
+        }
+        starShape.closePath();
         const starButton = new THREE.Mesh(
-          new THREE.OctahedronGeometry(0.3, 1),
+          new THREE.ExtrudeGeometry(starShape, {
+            depth: 0.14,
+            bevelEnabled: true,
+            bevelSize: 0.025,
+            bevelThickness: 0.025,
+            bevelSegments: 2,
+          }),
           makeMaterial(THREE, record.starred ? "#f7c96b" : "#9ef7c6", {
             emissive: record.starred ? "#d69721" : "#2ca76c",
             emissiveIntensity: 1.15,
@@ -6280,33 +7080,47 @@ export function createWorldScene({
           }),
         );
         starButton.name = `repository-star-button:${record.owner}/${record.name}`;
-        starButton.position.set(-0.38, 3.5, 0.42);
+        starButton.position.set(0, 3.5, 0.35);
         starButton.userData.landmark = "repositories";
         starButton.userData.repositoryStar = starData;
         node.add(starButton);
         interactive.push(starButton);
-        const countBubble = new THREE.Mesh(
-          new THREE.SphereGeometry(0.34, 18, 12),
-          makeMaterial(THREE, "#173a40", {
-            emissive: "#1b7180",
-            emissiveIntensity: 0.65,
-            metalness: 0.3,
+        // The total belongs directly on the control. This avoids a floating
+        // count bubble and makes the action read as a single star button.
+        const starText = new THREE.Mesh(
+          new THREE.PlaneGeometry(0.72, 0.2),
+          new THREE.MeshBasicMaterial({
+            map: repositoryStarTextTexture(THREE, record.starCount),
+            transparent: true,
+            depthWrite: false,
+            toneMapped: false,
           }),
         );
-        countBubble.position.set(0.38, 3.5, 0.42);
-        node.add(countBubble);
-        const starLabel = makeLabelSprite(
-          THREE,
-          Number.isSafeInteger(record.starCount)
-            ? record.starCount.toLocaleString("en-US")
-            : "…",
-          record.starred ? "STARRED · CLICK STAR" : "CLICK STAR",
-          "#f1fff6",
+        starText.name = `repository-star-count:${record.owner}/${record.name}`;
+        starText.position.set(0, 3.5, 0.5);
+        starText.userData.landmark = "repositories";
+        starText.userData.repositoryStar = starData;
+        node.add(starText);
+        interactive.push(starText);
+      }
+      if (isActive) {
+        const createButton = new THREE.Mesh(
+          new THREE.BoxGeometry(0.9, 0.34, 0.18),
+          makeMaterial(THREE, "#9ef7c6", {
+            emissive: "#2ca76c",
+            emissiveIntensity: 0.9,
+            metalness: 0.28,
+          }),
         );
-        starLabel.name = `repository-star-count:${record.owner}/${record.name}`;
-        starLabel.scale.set(0.72, 0.28, 1);
-        starLabel.position.set(0.38, 3.5, 0.76);
-        node.add(starLabel);
+        createButton.name = "repository-create-button";
+        createButton.position.set(1.45, 0, 0.24);
+        createButton.userData.createRepository = true;
+        node.add(createButton);
+        interactive.push(createButton);
+        const createLabel = makeLabelSprite(THREE, "+ REPO", "CREATE", "#9ef7c6");
+        createLabel.scale.set(0.9, 0.3, 1);
+        createLabel.position.set(1.45, 0, 0.38);
+        node.add(createLabel);
       }
 
       const base = new THREE.Mesh(baseGeometry, materials.base);
@@ -6481,6 +7295,7 @@ export function createWorldScene({
       }),
     );
     perimeter.name = "repository-size-map-perimeter";
+    perimeter.userData.loading = Boolean(world.userData.repositorySizeLoading);
     perimeter.position.z = 0.04;
     layer.add(perimeter);
 
@@ -6644,6 +7459,10 @@ export function createWorldScene({
     world.userData.repositorySizeLoading = Boolean(loading);
     const tail = world.userData.repositorySizeLoadingTail;
     if (tail) tail.visible = Boolean(loading);
+    const perimeter = world.userData.repositorySizeLayer?.getObjectByName(
+      "repository-size-map-perimeter",
+    );
+    if (perimeter) perimeter.userData.loading = Boolean(loading);
   }
 
   function updateRepositoryGraph(entries = [], entities = []) {
@@ -7100,9 +7919,12 @@ export function createWorldScene({
   function setCameraZoom(value) {
     const next = Number(value);
     if (!Number.isFinite(next)) return cameraZoom;
-    // First person has no orbit distance. Wheel and pinch remain consumed by
-    // their handlers but preserve the third-person zoom for a predictable exit.
-    if (cameraMode === "first-person") return cameraZoom;
+    if (cameraMode === "first-person") {
+      firstPersonZoom = clamp(next, 0.45, 3);
+      camera.fov = clamp(44 / firstPersonZoom, 18, 92);
+      camera.updateProjectionMatrix();
+      return firstPersonZoom;
+    }
     cameraZoom = clamp(next, CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX);
     scene.fog.density = environmentFogDensity * zoomFogMultiplier();
     return cameraZoom;
@@ -7122,7 +7944,8 @@ export function createWorldScene({
     const distance = touchDistance();
     if (distance <= 0) return;
     pinchStartDistance = distance;
-    pinchStartZoom = cameraZoom;
+    pinchStartZoom =
+      cameraMode === "first-person" ? firstPersonZoom : cameraZoom;
     pinchActive = true;
     pointerGestureMoved = true;
     renderer.domElement.dataset.dragging = "true";
@@ -7183,6 +8006,15 @@ export function createWorldScene({
   }
 
   function handlePointerMove(event) {
+    const pointerNow = performance.now();
+    if (diagnosticsPointerLastAt > 0) {
+      diagnosticsPointerWorstGapMs = Math.max(
+        diagnosticsPointerWorstGapMs,
+        pointerNow - diagnosticsPointerLastAt,
+      );
+    }
+    diagnosticsPointerLastAt = pointerNow;
+    diagnosticsPointerMoves = Math.min(1_000_000, diagnosticsPointerMoves + 1);
     let trackedTouch = false;
     if (event.pointerType === "touch" && touchPointers.has(event.pointerId)) {
       trackedTouch = true;
@@ -7320,6 +8152,16 @@ export function createWorldScene({
       .intersectObjects(interactive, false)
       .find(({ object }) => objectIsEffectivelyVisible(object));
     if (
+      officeSceneMode !== "town" &&
+      hit?.object?.userData?.interactive === "office-marketing-task-board"
+    ) {
+      onOfficeTaskBoardSelect({
+        state: officeMarketingTaskBoard.userData.taskState,
+        count: officeMarketingTaskBoard.userData.taskCount,
+      });
+      return;
+    }
+    if (
       officeSceneMode === "meeting" &&
       hit?.object?.userData?.interactive === "office-chair"
     ) {
@@ -7382,7 +8224,27 @@ export function createWorldScene({
       onPlayForkmeshSong();
       return;
     }
+    if (hit?.object?.userData?.createRepository) {
+      onCreateRepository();
+      return;
+    }
+    if (hit?.object?.userData?.officeKeypadDigit) {
+      officeKeypadHandler?.(
+        String(hit.object.userData.officeKeypadDigit),
+        {
+          location:
+            hit.object.userData.officeKeypadLocation === "interior"
+              ? "interior"
+              : "exterior",
+        },
+      );
+      return;
+    }
     if (hit?.object?.userData?.officeAccessPanel) {
+      if (hit.object.userData.officeKeypadLocation === "interior") {
+        officeKeypadHandler?.("focus", { location: "interior" });
+        return;
+      }
       const office = landmarkObjects.get("office");
       onOfficeEnter({
         source: "keypad",
@@ -7502,7 +8364,9 @@ export function createWorldScene({
           : 1);
     if (!Number.isFinite(deltaPixels) || deltaPixels === 0) return;
     event.preventDefault();
-    setCameraZoom(cameraZoom * Math.exp(deltaPixels * 0.0015));
+    const currentZoom =
+      cameraMode === "first-person" ? firstPersonZoom : cameraZoom;
+    setCameraZoom(currentZoom * Math.exp(deltaPixels * 0.0015));
   }
 
   function handleKeyDown(event) {
@@ -7570,7 +8434,10 @@ export function createWorldScene({
     const rect = container.getBoundingClientRect();
     const width = Math.max(1, Math.floor(rect.width));
     const height = Math.max(1, Math.floor(rect.height));
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, width < 700 ? 1.35 : 1.75));
+    // Keep the drawing buffer deliberately modest. The previous 1.75 cap made
+    // the GPU shade over three times as many pixels as a 1x canvas on dense
+    // displays, which showed up as movement hitching.
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, width < 700 ? 1.1 : 1.35));
     renderer.setSize(width, height, false);
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
@@ -7597,6 +8464,8 @@ export function createWorldScene({
       walkPlayer(delta, time);
       updateRemotePlayers(delta, time);
       updateForkbot(delta, time);
+    } else if (officeSceneMode === "lobby") {
+      walkOfficeLobbyPlayer(delta, time);
     } else if (officeSceneMode === "meeting") {
       walkOfficeParticipant(delta, time);
     }
@@ -7607,6 +8476,16 @@ export function createWorldScene({
       if (spark?.material?.emissive) {
         spark.material.emissiveIntensity = 1.45 + Math.sin(time * 0.02) * 0.75;
       }
+    }
+    const repositoryRing = world.userData.repositorySizeLayer?.getObjectByName(
+      "repository-size-map-perimeter",
+    );
+    if (repositoryRing?.userData.loading) {
+      repositoryRing.rotation.z = time * 0.004;
+      repositoryRing.scale.setScalar(1 + Math.sin(time * 0.012) * 0.055);
+    } else if (repositoryRing) {
+      repositoryRing.rotation.z = 0;
+      repositoryRing.scale.setScalar(1);
     }
     if (!reducedMotion) {
       nodeInfrastructure.forEach((pylon, id) => {
@@ -7793,8 +8672,12 @@ export function createWorldScene({
     diagnosticsFrameCount = 0;
     const longestFrameMs = diagnosticsLongestFrameMs;
     const longFrames = diagnosticsLongFrames;
+    const pointerMoves = diagnosticsPointerMoves;
+    const pointerWorstGapMs = diagnosticsPointerWorstGapMs;
     diagnosticsLongestFrameMs = 0;
     diagnosticsLongFrames = 0;
+    diagnosticsPointerMoves = 0;
+    diagnosticsPointerWorstGapMs = 0;
     return {
       fps,
       frameTimeMs,
@@ -7802,6 +8685,16 @@ export function createWorldScene({
       rendererTriangles: diagnosticsRendererTriangles,
       longestFrameMs,
       longFrames,
+      pointerMoves,
+      pointerWorstGapMs,
+      dragging: primaryPointerId !== null,
+      interactiveObjects: interactive.length,
+      animations: animated.length,
+      pixelRatio: renderer.getPixelRatio(),
+      cameraMode,
+      space: currentSpace,
+      moving: wasWalking,
+      zoom: cameraMode === "first-person" ? firstPersonZoom : cameraZoom,
       paused: !running,
     };
   }
@@ -7853,8 +8746,15 @@ export function createWorldScene({
     enterOffice,
     enterOfficeLobby,
     enterOfficeMeeting,
+    beginOfficeExit,
+    setOfficeExitHandler,
+    focusOfficeKeypad,
+    blurOfficeKeypad,
+    setOfficeKeypadDigits,
+    setOfficeKeypadHandler,
     setOfficeOccupancy,
     setOfficeParticipants,
+    updateOfficeMarketingTasks,
     setOfficeSeatState,
     showOfficeBubble,
     leaveOfficeInterior,
@@ -7897,9 +8797,9 @@ export function createWorldScene({
     getCameraState: () => ({
       mode: cameraMode,
       firstPerson: cameraMode === "first-person",
-      zoom: cameraZoom,
-      minZoom: CAMERA_ZOOM_MIN,
-      maxZoom: CAMERA_ZOOM_MAX,
+      zoom: cameraMode === "first-person" ? firstPersonZoom : cameraZoom,
+      minZoom: cameraMode === "first-person" ? 0.45 : CAMERA_ZOOM_MIN,
+      maxZoom: cameraMode === "first-person" ? 3 : CAMERA_ZOOM_MAX,
       yaw: cameraYaw,
       pitch:
         cameraMode === "first-person" ? firstPersonPitch : cameraPitch,

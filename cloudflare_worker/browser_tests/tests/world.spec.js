@@ -56,6 +56,7 @@ async function prepareWorldPage(
     officeOccupied = false,
     officeEntryCode = "2468",
     officeEntryRequests = [],
+    officeTaskFixture = null,
   } = {},
 ) {
   let mentionState = "review";
@@ -440,7 +441,111 @@ async function prepareWorldPage(
             : url.pathname === "/api/repositories"
               ? { repositories: [] }
               : {};
-    if (url.pathname === "/api/world/office/general/status") {
+    if (
+      officeTaskFixture &&
+      url.pathname.startsWith("/api/world/office/marketing-tasks")
+    ) {
+      const method = route.request().method();
+      const suffix = url.pathname
+        .slice("/api/world/office/marketing-tasks".length)
+        .split("/")
+        .filter(Boolean);
+      let requestBody = {};
+      try {
+        requestBody = route.request().postDataJSON() || {};
+      } catch (_) {}
+      officeTaskFixture.requests ||= [];
+      officeTaskFixture.tasks ||= [];
+      officeTaskFixture.requests.push({
+        method,
+        path: url.pathname,
+        body: requestBody,
+      });
+      if (!session?.sessionToken) {
+        status = 401;
+        body = { error: "invalid_session" };
+      } else if (method === "GET" && suffix.length === 0) {
+        body = {
+          ok: true,
+          actor: String(session.nodeName || "").toLowerCase(),
+          canManage: officeTaskFixture.canManage === true,
+          serverNow: FIXED_NOW,
+          tasks: officeTaskFixture.tasks,
+          ...(officeTaskFixture.canManage
+            ? { members: officeTaskFixture.members || [session.nodeName] }
+            : {}),
+        };
+      } else if (method === "POST" && suffix.length === 0) {
+        const task = {
+          id: String(officeTaskFixture.nextId || "e".repeat(32)),
+          title: requestBody.title,
+          assignee: String(requestBody.assignee || "").toLowerCase(),
+          status: "idle",
+          elapsedMs: 0,
+          startedAt: 0,
+          nextCheckinAt: 0,
+          createdAt: FIXED_NOW,
+          updatedAt: FIXED_NOW,
+          lastCheckin: null,
+        };
+        officeTaskFixture.tasks.unshift(task);
+        status = 201;
+        body = { ok: true, task };
+      } else if (
+        method === "POST" &&
+        suffix.length === 1 &&
+        suffix[0] === "stop-active"
+      ) {
+        const actor = String(session.nodeName || "").toLowerCase();
+        const task = officeTaskFixture.tasks.find(
+          (item) => item.assignee === actor && item.status === "active",
+        );
+        if (task) {
+          Object.assign(task, {
+            status: "idle",
+            elapsedMs: Number(task.elapsedMs || 0) + 1500,
+            startedAt: 0,
+            nextCheckinAt: 0,
+          });
+        }
+        body = { ok: true, stopped: Boolean(task) };
+      } else if (method === "POST" && suffix.length === 2) {
+        const [taskId, action] = suffix;
+        const task = officeTaskFixture.tasks.find((item) => item.id === taskId);
+        if (!task) {
+          status = 404;
+          body = { error: "task_not_found" };
+        } else if (action === "start") {
+          Object.assign(task, {
+            status: "active",
+            startedAt: FIXED_NOW,
+            nextCheckinAt: FIXED_NOW + 4 * 60 * 1000,
+          });
+          body = { ok: true, task };
+        } else if (action === "stop") {
+          Object.assign(task, {
+            status: "idle",
+            elapsedMs: Number(task.elapsedMs || 0) + 1500,
+            startedAt: 0,
+            nextCheckinAt: 0,
+          });
+          body = { ok: true, task };
+        } else if (action === "checkin") {
+          task.lastCheckin = {
+            state: requestBody.state,
+            at: FIXED_NOW,
+          };
+          task.nextCheckinAt = FIXED_NOW + 6 * 60 * 1000;
+          body = { ok: true, task };
+        } else {
+          status = 404;
+          body = { error: "not_found" };
+        }
+      } else {
+        status = 405;
+        body = { error: "method_not_allowed" };
+      }
+    } else if (url.pathname === "/api/world/office/general/status") {
       if (route.request().method() !== "GET") {
         status = 405;
         body = { ok: false, error: "method_not_allowed" };
@@ -1372,6 +1477,107 @@ test("an occupied Office requires four digits without leaking them", async ({
   );
   expect(browserState).not.toContain(officeCode);
   expect(JSON.stringify(worldFrames)).not.toContain(officeCode);
+});
+
+test("Office marketing tasks can be assigned, timed, and checked in privately", async ({
+  page,
+}) => {
+  const taskId = "a".repeat(32);
+  const officeTaskFixture = {
+    canManage: true,
+    members: ["alice", "bob"],
+    requests: [],
+    tasks: [
+      {
+        id: taskId,
+        title: "Prepare launch digest",
+        assignee: "alice",
+        status: "idle",
+        elapsedMs: 0,
+        startedAt: 0,
+        nextCheckinAt: 0,
+        createdAt: FIXED_NOW,
+        updatedAt: FIXED_NOW,
+        lastCheckin: null,
+      },
+    ],
+  };
+  const worldFrames = [];
+  await prepareWorldPage(page, "office-marketing-tasks", {
+    session: {
+      kind: "user",
+      nodeName: "alice",
+      email: "alice@example.test",
+      sessionToken: "alice-token",
+    },
+    officeTaskFixture,
+    worldSocketHandler: (socket, id) => {
+      socket.onMessage((raw) => worldFrames.push(String(raw)));
+      socket.send(JSON.stringify({ type: "welcome", id, peers: [] }));
+    },
+  });
+  await waitForWorld(page);
+  await page.evaluate(() => {
+    const shell = document.querySelector("forkmesh-world");
+    shell.officeTasks.setActive(true);
+    shell.officeTasks.open();
+  });
+
+  const panel = page.locator("[data-world-office-task-panel]");
+  await expect(panel).toBeVisible();
+  const originalTask = panel
+    .locator("[data-world-office-task-list] > li")
+    .filter({ hasText: "Prepare launch digest" });
+  await expect(originalTask).toContainText("@alice");
+  await originalTask.getByRole("button", { name: "Start" }).click();
+  await expect(originalTask.getByRole("button", { name: "Stop" })).toBeVisible();
+  await expect
+    .poll(async () =>
+      originalTask.locator("[data-world-office-task-elapsed]").textContent(),
+    )
+    .not.toBe("0:00");
+
+  await page.evaluate((id) => {
+    document.querySelector("forkmesh-world").officeTasks.showCheckin(id);
+  }, taskId);
+  const checkin = page.locator("[data-world-office-task-checkin]");
+  await expect(checkin).toBeVisible();
+  await checkin.getByRole("button", { name: "Blocked" }).click();
+  await expect(originalTask).toContainText("last check-in: Blocked");
+
+  await page.evaluate(async () => {
+    const tasks = document.querySelector("forkmesh-world").officeTasks;
+    tasks.stopActiveForDeparture();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await tasks.refresh({ quiet: true });
+  });
+  await expect(originalTask.getByRole("button", { name: "Start" })).toBeVisible();
+  expect(
+    officeTaskFixture.requests.some(
+      (request) =>
+        request.method === "POST" &&
+        request.path.endsWith("/stop-active"),
+    ),
+  ).toBe(true);
+
+  await panel.locator("[data-world-office-task-name]").fill(
+    "Schedule community demo",
+  );
+  await panel.locator("[data-world-office-task-assignee]").selectOption("bob");
+  await panel.getByRole("button", { name: "Add task" }).click();
+  await expect(panel).toContainText("Schedule community demo");
+  await expect(panel).toContainText("@bob");
+
+  expect(
+    officeTaskFixture.requests.some(
+      (request) =>
+        request.method === "POST" &&
+        request.path.endsWith(`/${taskId}/checkin`) &&
+        request.body.state === "blocked",
+    ),
+  ).toBe(true);
+  expect(JSON.stringify(worldFrames)).not.toContain("Prepare launch digest");
+  expect(JSON.stringify(worldFrames)).not.toContain("Schedule community demo");
 });
 
 test("ForkMesh Office preserves registered channel authorization", async ({

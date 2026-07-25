@@ -1549,7 +1549,8 @@ forkmesh-world {
 }
 
 .world-office-lobby,
-.world-office-room {
+.world-office-room,
+.world-office-task-panel {
   position: absolute;
   z-index: 60;
   top: max(84px, calc(var(--safe-top) + 66px));
@@ -1569,6 +1570,13 @@ forkmesh-world {
   pointer-events: none;
 }
 
+.world-office-task-panel {
+  right: max(20px, var(--safe-right));
+  left: auto;
+  width: min(560px, calc(100vw - var(--safe-left) - var(--safe-right) - 40px));
+  transform: translateY(14px);
+}
+
 .world-office-room {
   right: max(20px, var(--safe-right));
   left: auto;
@@ -1577,14 +1585,16 @@ forkmesh-world {
 }
 
 .world-office-lobby[data-open="true"],
-.world-office-room[data-open="true"] {
+.world-office-room[data-open="true"],
+.world-office-task-panel[data-open="true"] {
   opacity: 1;
   visibility: visible;
   transform: translate(-50%, 0);
   pointer-events: auto;
 }
 
-.world-office-room[data-open="true"] {
+.world-office-room[data-open="true"],
+.world-office-task-panel[data-open="true"] {
   transform: translateY(0);
 }
 
@@ -1985,6 +1995,218 @@ forkmesh-world {
   font-size: 0.64rem;
 }
 
+.world-office-panel-status[data-tone="error"] {
+  color: #ffb9a9;
+}
+
+.world-office-task-manager {
+  border-bottom: 1px solid var(--world-line);
+  padding: 16px 20px;
+}
+
+.world-office-task-manager[hidden] {
+  display: none;
+}
+
+.world-office-task-manager h3 {
+  margin: 0 0 10px;
+  color: var(--world-muted);
+  font-family: "ForkMesh Mono", monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.world-office-task-manager form {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(140px, 0.8fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.world-office-task-manager label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--world-muted);
+  font-size: 0.68rem;
+}
+
+.world-office-task-manager input,
+.world-office-task-manager select,
+.world-office-task-manager button,
+.world-office-task-controls button,
+.world-office-task-checkin button {
+  min-height: 40px;
+  border: 1px solid var(--world-line);
+  border-radius: 0;
+  background: rgb(255 255 255 / 0.035);
+  color: var(--world-copy);
+  padding: 0 10px;
+  font: inherit;
+}
+
+.world-office-task-manager button,
+.world-office-task-controls button,
+.world-office-task-checkin button {
+  cursor: pointer;
+}
+
+.world-office-task-manager button,
+.world-office-task-controls button {
+  border-color: var(--world-mint);
+  color: var(--world-mint);
+}
+
+.world-office-task-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 12px;
+  list-style: none;
+}
+
+.world-office-task {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  border: 1px solid var(--world-line);
+  background: rgb(255 255 255 / 0.025);
+  padding: 12px;
+}
+
+.world-office-task[data-status="active"] {
+  border-color: rgb(158 247 198 / 0.5);
+  background: rgb(158 247 198 / 0.055);
+}
+
+.world-office-task-copy {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.world-office-task-copy > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.world-office-task-copy strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-office-task-copy small {
+  color: var(--world-muted);
+  font-family: "ForkMesh Mono", monospace;
+  font-size: 0.6rem;
+}
+
+.world-office-task-state {
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
+  border: 1px solid var(--world-muted);
+  border-radius: 50%;
+}
+
+.world-office-task[data-status="active"] .world-office-task-state {
+  border-color: var(--world-mint);
+  background: var(--world-mint);
+  box-shadow: 0 0 12px rgb(158 247 198 / 0.72);
+}
+
+.world-office-task-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.world-office-task-controls time {
+  min-width: 68px;
+  color: var(--world-mint);
+  font-family: "ForkMesh Mono", monospace;
+  font-size: 0.76rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.world-office-task-controls button:disabled {
+  cursor: wait;
+  opacity: 0.45;
+}
+
+.world-office-task-empty {
+  border: 1px dashed var(--world-line);
+  color: var(--world-muted);
+  padding: 22px;
+  text-align: center;
+}
+
+.world-office-task-checkin {
+  position: absolute;
+  z-index: 64;
+  right: max(20px, var(--safe-right));
+  bottom: max(20px, var(--safe-bottom));
+  display: grid;
+  width: min(390px, calc(100vw - var(--safe-left) - var(--safe-right) - 32px));
+  gap: 8px;
+  border: 1px solid var(--world-mint);
+  background: rgb(7 20 16 / 0.98);
+  box-shadow: 0 24px 72px rgb(0 0 0 / 0.5);
+  padding: 18px;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(12px);
+  transition: opacity 160ms ease, transform 180ms ease, visibility 180ms ease;
+  pointer-events: none;
+}
+
+.world-office-task-checkin[data-open="true"] {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.world-office-task-checkin h2,
+.world-office-task-checkin p {
+  margin: 0;
+}
+
+.world-office-task-checkin h2 {
+  font-family: "ForkMesh Favorit", sans-serif;
+  font-size: 1.35rem;
+}
+
+.world-office-task-checkin > div {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 6px;
+}
+
+.world-office-task-checkin button:first-child {
+  border-color: var(--world-mint);
+  color: var(--world-mint);
+}
+
+.world-office-task-manager input:focus-visible,
+.world-office-task-manager select:focus-visible,
+.world-office-task-manager button:focus-visible,
+.world-office-task-controls button:focus-visible,
+.world-office-task-checkin button:focus-visible {
+  border-color: var(--world-mint);
+  outline: 2px solid var(--world-mint);
+  outline-offset: 2px;
+}
+
 .world-office-panel-actions {
   display: flex;
   justify-content: flex-end;
@@ -2027,6 +2249,7 @@ forkmesh-world {
 
 .fm-world:has(.world-office-lobby[data-open="true"]) .world-quick-dock,
 .fm-world:has(.world-office-room[data-open="true"]) .world-quick-dock,
+.fm-world:has(.world-office-task-panel[data-open="true"]) .world-quick-dock,
 .fm-world:has(.world-office-chat[data-open="true"]) .world-quick-dock {
   visibility: hidden;
   opacity: 0;
@@ -4823,7 +5046,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 
   .world-office-lobby,
-  .world-office-room {
+  .world-office-room,
+  .world-office-task-panel {
     top: auto;
     right: 0;
     bottom: 0;
@@ -4838,7 +5062,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 
   .world-office-lobby[data-open="true"],
-  .world-office-room[data-open="true"] {
+  .world-office-room[data-open="true"],
+  .world-office-task-panel[data-open="true"] {
     transform: translateY(0);
   }
 
@@ -4868,6 +5093,25 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 
   .world-office-panel-actions button {
     flex: 1 1 180px;
+  }
+
+  .world-office-task-manager form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .world-office-task {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .world-office-task-controls {
+    justify-content: space-between;
+  }
+
+  .world-office-task-checkin {
+    right: max(12px, var(--safe-right));
+    bottom: calc(var(--safe-bottom) + 12px);
+    left: max(12px, var(--safe-left));
+    width: auto;
   }
 
   .world-office-chat {
@@ -5067,6 +5311,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   .world-office-chat,
   .world-office-lobby,
   .world-office-room,
+  .world-office-task-panel,
+  .world-office-task-checkin,
   .world-office-prompt,
   .world-office-keypad {
     transition: none;

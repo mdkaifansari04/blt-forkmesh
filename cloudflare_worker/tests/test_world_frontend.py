@@ -366,6 +366,17 @@ def test_presence_client_uses_only_coarse_ephemeral_world_protocol():
     assert "session?.accountTier" not in APP
 
 
+def test_presence_pongs_do_not_trigger_full_avatar_or_capacity_rebuilds():
+    receiver = APP[
+        APP.index("  receivePresence(message) {"):
+        APP.index("\n  setupBroadcastChannel()", APP.index("  receivePresence(message) {"))
+    ]
+    assert "let peersChanged = false" in receiver
+    assert "if (peersChanged) this.renderPeers()" in receiver
+    assert 'message.type === "move"' in receiver
+    assert 'message.type === "ping"' not in receiver
+
+
 def test_world_hud_omits_the_redundant_repository_node_and_player_counts():
     assert "world-metrics" not in APP
     assert " data-world-repos>" not in APP
@@ -866,6 +877,26 @@ def test_repository_world_reuses_the_star_api_and_keeps_login_in_world():
     assert 'nextStarred ? "POST" : "DELETE"' in toggle
     assert 'this.toggleWorldAccount(\n        true,\n        "login",' in toggle
     assert "data-world-account-panel" in APP
+
+
+def test_world_boot_defers_optional_repository_star_and_security_fanout():
+    bootstrap = APP[
+        APP.index("  async bootstrap() {"):
+        APP.index("\n  handleVisibility =", APP.index("  async bootstrap() {"))
+    ]
+    assert ".slice(0, 48)" not in bootstrap
+    assert "Do not fan out a star request" in bootstrap
+    loader = APP[
+        APP.index("  async loadRepositoryMap("):
+        APP.index(
+            "\n  async loadRepositorySecurity(",
+            APP.index("  async loadRepositoryMap("),
+        )
+    ]
+    assert "if (!automatic)" in loader
+    assert loader.index("if (!automatic)") < loader.rindex(
+        "this.loadRepositorySecurity("
+    )
 
 
 def test_world_first_person_camera_has_accessible_toggle_and_scene_api():
@@ -1523,6 +1554,35 @@ def test_world_supports_bounded_pinch_wheel_and_drag_controls():
         assert cleanup in SCENE
 
 
+def test_world_overview_zoom_keeps_the_finite_ground_inside_camera_depth():
+    assert "const WORLD_GROUND_RADIUS = 88;" in SCENE
+    assert "const CAMERA_OFFSET = [17, 16, 21];" in SCENE
+    assert "const CAMERA_ZOOM_MIN = 0.12;" in SCENE
+    assert "const CAMERA_ZOOM_MAX = 3.2;" in SCENE
+    assert "const CAMERA_FAR_PLANE = 240;" in SCENE
+    assert (
+        "new THREE.PerspectiveCamera(\n"
+        "    44,\n"
+        "    1,\n"
+        "    0.1,\n"
+        "    CAMERA_FAR_PLANE,\n"
+        "  )"
+    ) in SCENE
+
+    # At maximum strategic zoom, a camera looking at the world center can still
+    # see through the opposite edge of the finite ground before its far plane.
+    camera_distance = math.hypot(17, 16, 21)
+    assert camera_distance * 3.2 + 88 < 240
+
+    zoom_fog_start = SCENE.index("  function zoomFogMultiplier() {")
+    zoom_fog = SCENE[
+        zoom_fog_start:
+        SCENE.index("\n  function setLightLevel(", zoom_fog_start)
+    ]
+    assert "CAMERA_ZOOM_MAX - 1" in zoom_fog
+    assert "(cameraZoom - 1) / 7" not in zoom_fog
+
+
 def test_world_uses_nonhuman_infrastructure_without_the_world_spanning_grid():
     assert "const WORLD_RADIUS = 72" in SCENE
     assert "const WORLD_GROUND_RADIUS = 88" in SCENE
@@ -1636,6 +1696,8 @@ def test_system_capacity_scene_combines_service_limits_and_database_rows():
     assert "system-capacity-row-count:" in SCENE
     assert "system-capacity-table-name:" in SCENE
     assert "metricsAvailable" in SCENE
+    assert "metricsSignature" in SCENE
+    assert "metricsSignature === signature" in SCENE
     assert "updateSystemCapacity," in SCENE
 
 

@@ -18,6 +18,9 @@ const GENERAL_ROOM = Object.freeze({
   kind: "general",
 });
 const OFFICE_PING_MS = 20000;
+const OFFICE_MOVEMENT_SEND_INTERVAL_MS = 1000;
+const OFFICE_MOVEMENT_RETRY_MS = 250;
+const OFFICE_SOCKET_BUFFER_HIGH_WATER_BYTES = 64 * 1024;
 const MEETING_PROOF_MAX_AGE_MS = 2 * 60 * 1000;
 const MAX_MEETING_TEXT = 16000;
 const PUBLIC_ROOM_KEY_ENDPOINT =
@@ -65,6 +68,104 @@ function boundedParticipant(participant) {
   };
 }
 
+export function createOfficeMovementQueue({
+  send = () => false,
+  isReady = () => false,
+  bufferedAmount = () => 0,
+  now = () => performance.now(),
+  setTimer = (callback, delay) => window.setTimeout(callback, delay),
+  clearTimer = (timer) => window.clearTimeout(timer),
+  intervalMs = OFFICE_MOVEMENT_SEND_INTERVAL_MS,
+  retryMs = OFFICE_MOVEMENT_RETRY_MS,
+  highWaterBytes = OFFICE_SOCKET_BUFFER_HIGH_WATER_BYTES,
+} = {}) {
+  const sendInterval = Math.max(250, Number(intervalMs) || 1000);
+  const retryInterval = Math.max(50, Number(retryMs) || 250);
+  const bufferLimit = Math.max(1024, Number(highWaterBytes) || 64 * 1024);
+  let pending = null;
+  let timer = null;
+  let lastSentAt = Number.NEGATIVE_INFINITY;
+  let disposed = false;
+
+  function cancelTimer() {
+    if (timer === null) return;
+    clearTimer(timer);
+    timer = null;
+  }
+
+  function schedule(delay) {
+    if (disposed || timer !== null || !pending) return;
+    timer = setTimer(() => {
+      timer = null;
+      flush();
+    }, Math.max(0, Math.ceil(Number(delay) || 0)));
+  }
+
+  function flush() {
+    cancelTimer();
+    if (disposed || !pending || !isReady()) return false;
+    if (Math.max(0, Number(bufferedAmount()) || 0) > bufferLimit) {
+      schedule(retryInterval);
+      return false;
+    }
+    const frame = pending;
+    let sent = false;
+    try {
+      sent = send(frame) === true;
+    } catch (_) {
+      sent = false;
+    }
+    if (!sent) {
+      if (isReady()) schedule(retryInterval);
+      return false;
+    }
+    if (pending === frame) pending = null;
+    lastSentAt = now();
+    return true;
+  }
+
+  function queue(frame = {}) {
+    if (disposed) return false;
+    pending = {
+      type: "move",
+      x: frame.x,
+      y: frame.y,
+      z: frame.z,
+      yaw: frame.yaw,
+      moving: frame.moving === true,
+    };
+    // The stopped frame closes the interpolation window and must not wait for
+    // the ordinary movement cadence. If the socket is backed up, flush() keeps
+    // this final (latest) frame queued and retries it once the buffer drains.
+    if (!pending.moving) {
+      cancelTimer();
+      return flush();
+    }
+    if (!isReady()) return false;
+    // A cadence or backpressure retry is already scheduled. Replacing
+    // `pending` is sufficient; restarting that timer for every scene frame
+    // would let continuous movement postpone the flush forever.
+    if (timer !== null) return true;
+    const elapsed = Math.max(0, now() - lastSentAt);
+    if (elapsed >= sendInterval) return flush();
+    schedule(sendInterval - elapsed);
+    return true;
+  }
+
+  function reset() {
+    cancelTimer();
+    pending = null;
+    lastSentAt = Number.NEGATIVE_INFINITY;
+  }
+
+  function destroy() {
+    reset();
+    disposed = true;
+  }
+
+  return { queue, flush, reset, destroy };
+}
+
 export function createWorldOfficeMeeting({
   root,
   scene,
@@ -102,6 +203,11 @@ export function createWorldOfficeMeeting({
   let leaving = false;
   let entryTicket = "";
   let entryTicketExpiresAt = 0;
+  const movementQueue = createOfficeMovementQueue({
+    send: (frame) => sendMeeting(frame),
+    isReady: () => Boolean(socket && socket.readyState === WebSocket.OPEN),
+    bufferedAmount: () => Number(socket?.bufferedAmount || 0),
+  });
 
   function setOpen(element, open) {
     if (!element) return;
@@ -648,6 +754,7 @@ export function createWorldOfficeMeeting({
     });
     meetingSocket.addEventListener("close", () => {
       if (socket !== meetingSocket) return;
+      movementQueue.reset();
       socket = null;
       chatTransport?.dispose();
       chatTransport = null;
@@ -705,7 +812,7 @@ export function createWorldOfficeMeeting({
     });
     if (!next) return false;
     participants.set(participantId, next);
-    return sendMeeting({
+    return movementQueue.queue({
       type: "move",
       x: next.x,
       y: next.y,
@@ -719,6 +826,7 @@ export function createWorldOfficeMeeting({
     leaving = true;
     window.clearInterval(pingTimer);
     pingTimer = null;
+    movementQueue.reset();
     const previous = socket;
     socket = null;
     chatTransport?.dispose();
@@ -803,6 +911,7 @@ export function createWorldOfficeMeeting({
   function destroy() {
     leaving = true;
     window.clearInterval(pingTimer);
+    movementQueue.destroy();
     root.removeEventListener("click", onClick);
     input?.removeEventListener("keydown", onInputKeyDown);
     input?.removeEventListener("paste", onPaste);
