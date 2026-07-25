@@ -3200,6 +3200,11 @@ private:
     void mirrorAdvertisedRepo(const QString &ownerName);
     void mirrorPreviewRepository(int index);
     void syncRepository(int index, bool quiet = false);
+    // Source-of-truth propagation to SSH-fed headless mirrors: push the served
+    // bare mirror's heads+tags to every ssh:// remote configured on the working
+    // copy (e.g. the ssh.<worker> gateway feeding mirror2/mirror3). Async and
+    // best-effort; without it those mirrors only advance on a manual push.
+    void pushToSshMirrorRemotes(int index);
     void syncPublicEncryptedRepository(int index, bool quiet = false);
     void syncPrivateRepository(int index, bool quiet = false);
     void syncPrivateRepositoryWithRecipients(
@@ -5566,6 +5571,9 @@ private:
     QHash<QString, QPair<int, int>> m_repoStats;
     QSet<int> m_syncingRepos;
     QSet<int> m_pushingRepos;
+    // "owner/name" repos with an SSH mirror push in flight (pushToSshMirrorRemotes),
+    // so overlapping sync completions can't stack pushes to the same gateway.
+    QSet<QString> m_sshMirrorPushing;
     // Last push state computed for m_pushStateIndex, so updateRepoPushButton can
     // paint the "Sync" button instantly from cache (e.g. flip to "Syncing
     // changes…" the moment Sync is clicked) while a worker recomputes off-thread.
