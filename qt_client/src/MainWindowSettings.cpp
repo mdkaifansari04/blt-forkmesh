@@ -68,6 +68,32 @@ QWidget *MainWindow::buildSettingsSection()
         m_settingsMachineNodeEdit->setText(machineNodeName());
     });
 
+    // Capability tags for Actions: a workflow with `runs-on: ios` only runs on a
+    // node carrying that label, so a mesh can dedicate one machine to iOS builds
+    // and another to Cloudflare deploys. The node name and platform are always
+    // labels; this field only adds to them.
+    m_settingsNodeLabelsEdit = new QLineEdit;
+    m_settingsNodeLabelsEdit->setMaxLength(200);
+    m_settingsNodeLabelsEdit->setPlaceholderText(
+        "Extra Actions labels, e.g. ios, xcode, deploy");
+    m_settingsNodeLabelsEdit->setToolTip(
+        "Extra labels this machine answers to when a workflow declares "
+        "\"runs-on:\". Its node name (%1) and platform already count as labels; "
+        "add capability tags here to dedicate this node to certain workflows.");
+    m_settingsNodeLabelsEdit->setToolTip(
+        m_settingsNodeLabelsEdit->toolTip().arg(machineNodeName()));
+    m_settingsNodeLabelsEdit->setText(
+        QSettings()
+            .value(QString::fromLatin1(kActionNodeLabelsSetting))
+            .toString());
+    connect(m_settingsNodeLabelsEdit, &QLineEdit::editingFinished, this, [this] {
+        saveActionNodeLabels(m_settingsNodeLabelsEdit->text());
+        m_settingsNodeLabelsEdit->setText(
+            QSettings()
+                .value(QString::fromLatin1(kActionNodeLabelsSetting))
+                .toString());
+    });
+
     m_settingsAvatarPreview = new QLabel("No\navatar");
     m_settingsAvatarPreview->setObjectName("avatarPreview");
     m_settingsAvatarPreview->setFixedSize(64, 64);
@@ -138,6 +164,7 @@ QWidget *MainWindow::buildSettingsSection()
     form->setSpacing(8);
     form->addRow("Username", m_settingsNameEdit);
     form->addRow("Node name", m_settingsMachineNodeEdit);
+    form->addRow("Node labels", m_settingsNodeLabelsEdit);
     form->addRow("Solana", m_settingsSolanaEdit);
     m_settingsEmailLabel = new QLabel("Email");
     m_settingsEmailVerifiedBadge = new QLabel;
@@ -2304,6 +2331,8 @@ void MainWindow::rebuildAndRelaunch()
         saveProfileName(m_settingsNameEdit->text());
     if (m_settingsMachineNodeEdit)
         saveMachineNodeName(m_settingsMachineNodeEdit->text());
+    if (m_settingsNodeLabelsEdit)
+        saveActionNodeLabels(m_settingsNodeLabelsEdit->text());
     m_buildButton = m_rebuildButton;
     m_buildStatusLabel = m_rebuildStatus;
     m_rebuildButton->setEnabled(false);
