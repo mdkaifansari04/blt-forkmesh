@@ -994,6 +994,9 @@ private:
     // Settings -> Security tab: private vulnerability reporting form.
     QWidget *buildVulnReportTab();
     void submitVulnerabilityReport();
+    // Settings -> Quick Setup tab: provision a fresh instance in one pass —
+    // identity, workflow credentials and world appearance applied together.
+    QWidget *buildQuickSetupTab();
     // Settings -> Data tab: where configuration data is stored, per-directory
     // file/folder breakdown, open/delete, and export/import as a .tar.gz backup.
     QWidget *buildDataSection();
