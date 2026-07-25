@@ -1,6 +1,7 @@
 import {
   ACTIVITY_OPTIONS,
   AVAILABILITY_OPTIONS,
+  FOCUS_MUSIC_TRACKS,
   LANDMARKS,
   RADIO_STATIONS,
   THEME_OPTIONS,
@@ -85,6 +86,8 @@ const WORLD_NOTIFICATION_POLL_MS = 30 * 1000;
 const MIRROR_STATUS_POLL_MS = 30 * 1000;
 const WORLD_MANUAL_BLOCK_DURATION_MS = 60 * 60 * 1000;
 const WORLD_SCORE_LOOP_MS = 4 * 60 * 60 * 1000;
+const DEFAULT_FOCUS_MUSIC_TRACK_ID = FOCUS_MUSIC_TRACKS[0].id;
+const DEFAULT_FOCUS_MUSIC_VOLUME = 35;
 const WORLD_LIGHT_LEVEL_MIN = 40;
 const WORLD_LIGHT_LEVEL_MAX = 140;
 const WORLD_LIGHT_LEVEL_DEFAULT = 100;
@@ -354,7 +357,11 @@ function storeWorldSession(body) {
     adminUrl: String(body?.adminUrl || "").slice(0, 300),
     solana: String(body?.solana || "").slice(0, 80),
     hasPayoutAddress: Boolean(body?.hasPayoutAddress),
-    sessionToken,
+    sessionToken: (
+      location.protocol === "https:" && sessionToken
+        ? "cookie"
+        : sessionToken
+    ),
     avatarPng: String(body?.avatarPng || "").slice(0, 600),
     avatarUpdatedAt: Number(body?.avatarUpdatedAt) || 0,
     profileBio: String(body?.profileBio || "").slice(0, 500),
@@ -447,6 +454,9 @@ function defaultSettings() {
     lightLevel: WORLD_LIGHT_LEVEL_DEFAULT,
     moveSpeed: WORLD_MOVE_SPEED_DEFAULT,
     moveAccel: WORLD_MOVE_ACCEL_DEFAULT,
+    focusMusicTrackId: DEFAULT_FOCUS_MUSIC_TRACK_ID,
+    focusMusicVolume: DEFAULT_FOCUS_MUSIC_VOLUME,
+    focusMusicMuted: false,
     availability: "online",
     activityCategory: "automatic",
     publicDoor: "knock",
@@ -477,6 +487,9 @@ function mergeSettings(stored) {
   const publicStatus = normalizeWorldStatus(
     stored?.statusEmoji,
     stored?.statusNote,
+  );
+  const requestedFocusMusicTrackId = String(
+    stored?.focusMusicTrackId || defaults.focusMusicTrackId,
   );
   return {
     ...defaults,
@@ -509,6 +522,21 @@ function mergeSettings(stored) {
           : WORLD_MOVE_ACCEL_DEFAULT,
       ),
     ),
+    focusMusicTrackId: FOCUS_MUSIC_TRACKS.some(
+      (track) => track.id === requestedFocusMusicTrackId,
+    )
+      ? requestedFocusMusicTrackId
+      : defaults.focusMusicTrackId,
+    focusMusicVolume: Math.min(
+      100,
+      Math.max(
+        0,
+        Number.isFinite(Number(stored?.focusMusicVolume))
+          ? Math.round(Number(stored.focusMusicVolume))
+          : defaults.focusMusicVolume,
+      ),
+    ),
+    focusMusicMuted: stored?.focusMusicMuted === true,
     statusEmoji: publicStatus.emoji,
     statusNote: publicStatus.note,
     privacy: {
@@ -1239,6 +1267,21 @@ function formatBytes(value) {
   return `${scaled >= 10 ? scaled.toFixed(0) : scaled.toFixed(1)} ${units[index]}`;
 }
 
+function safeRepositoryTreePath(value) {
+  const path = String(value || "");
+  if (!path || path.length > 1000 || /[\u0000-\u001f\u007f]/u.test(path)) {
+    return "";
+  }
+  const parts = path.split("/");
+  if (
+    parts.length > 64 ||
+    parts.some((part) => !part || part === "." || part === "..")
+  ) {
+    return "";
+  }
+  return path;
+}
+
 function fileLanguage(name) {
   const extension = String(name || "").toLowerCase().split(".").pop();
   return {
@@ -1894,6 +1937,7 @@ function cleanRepositories(payload) {
       const commit = String(repo.commit || "").trim().toLowerCase();
       const stateHash = String(repo.stateHash || "").trim().toLowerCase();
       const pullCount = Number(repo.pullCount);
+      const reportedSizeBytes = Number(repo.sizeBytes);
       return {
         owner: sanitizePresenceText(repo.owner, "external", 40),
         name: sanitizePresenceText(repo.name, "repository", 60),
@@ -1919,6 +1963,10 @@ function cleanRepositories(payload) {
             ? pullCount
             : null,
         mirrorCount: Number(repo.mirrorCount || repo.mirrors || 0),
+        sizeBytes:
+          Number.isSafeInteger(reportedSizeBytes) && reportedSizeBytes >= 0
+            ? Math.min(reportedSizeBytes, 2 ** 50)
+            : 0,
         cloneUrl: String(repo.cloneUrl || "").slice(0, 500),
         updatedAt: Number(repo.updatedAt || repo.lastSync || 0) || 0,
         status: String(repo.status || "").slice(0, 40),
@@ -2959,6 +3007,8 @@ class ForkMeshWorld extends HTMLElement {
     this.botDirectory = [];
     this.worldLimits = null;
     this.activeAudio = null;
+    this.focusMusicState = "stopped";
+    this.focusMusicError = "";
     this.soundEnabled = false;
     this.soundContext = null;
     this.joinSoundTimes = [];
@@ -2968,6 +3018,7 @@ class ForkMeshWorld extends HTMLElement {
     this.repositoryMapState = "idle";
     this.repositoryMapTarget = "";
     this.repositoryMapSelection = 0;
+    this.repositoryDirectorySelection = 0;
     this.repositoryManualSelection = "";
     this.repositoryMapLoads = new Map();
     this.repositoryView = "map";
@@ -3215,6 +3266,14 @@ class ForkMeshWorld extends HTMLElement {
             this.openMirrorNodeDetail(meta.nodeCabinet);
             return;
           }
+          if (id === "repositories" && meta.repository) {
+            this.selectRepositoryPortal(meta.repository);
+            return;
+          }
+          if (id === "repositories" && meta.repositorySizeNode) {
+            this.selectRepositorySizeNode(meta.repositorySizeNode);
+            return;
+          }
           if (id === "repositories" && meta.graphNode) {
             this.selectRepositoryGraphNode(meta.graphNode);
             return;
@@ -3249,6 +3308,7 @@ class ForkMeshWorld extends HTMLElement {
       this.world.updateFediverseDirectory(this.fediverseDirectory);
       this.world.updateMediaSpaces?.(this.mediaSpaces, this.mediaRoom);
       this.syncMemberLounge();
+      this.syncRepositoryScene();
       if (this.repositories.length) {
         // The scene and authenticated live catalog are both ready. Populate
         // the repository district from the canonical flagship route without
@@ -3257,7 +3317,7 @@ class ForkMeshWorld extends HTMLElement {
       } else {
         // The portal's construction geometry is decorative, but an empty or
         // failed live catalog must not leave file icons that look selectable.
-        this.world.updateRepositoryGraph?.([], []);
+        this.syncRepositoryScene();
       }
       if (this.restoredPosition) {
         this.world.setSpawn?.(this.restoredPosition);
@@ -4563,8 +4623,15 @@ class ForkMeshWorld extends HTMLElement {
       if (repoMap) {
         const [owner, name] = String(repoMap.dataset.worldRepoMap || "").split("/");
         if (owner && name) {
-          this.loadRepositoryMap(owner, name, { automatic: false });
+          this.loadRepositoryMap(owner, name, {
+            automatic: false,
+            revealScene: true,
+          });
         }
+        return;
+      }
+      if (event.target.closest("[data-world-repo-scene]")) {
+        this.revealRepositoryScene();
         return;
       }
       const securityScan = event.target.closest("[data-world-security-scan]");
@@ -4651,6 +4718,22 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-notifications-read]")) {
         this.markWorldNotificationsRead();
+        return;
+      }
+      if (event.target.closest("[data-world-focus-play]")) {
+        void this.playFocusMusic();
+        return;
+      }
+      if (event.target.closest("[data-world-focus-pause]")) {
+        void this.toggleFocusMusicPause();
+        return;
+      }
+      if (event.target.closest("[data-world-focus-stop]")) {
+        this.stopFocusMusic();
+        return;
+      }
+      if (event.target.closest("[data-world-focus-mute]")) {
+        this.toggleFocusMusicMute();
         return;
       }
       const radio = event.target.closest("[data-world-radio]");
@@ -4765,6 +4848,11 @@ class ForkMeshWorld extends HTMLElement {
     });
 
     this.addEventListener("change", (event) => {
+      const focusTrack = event.target.closest("[data-world-focus-track]");
+      if (focusTrack) {
+        this.selectFocusMusic(focusTrack.dataset.worldFocusTrack);
+        return;
+      }
       if (event.target.closest("[data-world-repo-filter]")) {
         this.applyRepositoryFilters();
         return;
@@ -4850,6 +4938,11 @@ class ForkMeshWorld extends HTMLElement {
     });
 
     this.addEventListener("input", (event) => {
+      const focusVolume = event.target.closest("[data-world-focus-volume]");
+      if (focusVolume) {
+        this.setFocusMusicVolume(focusVolume.value);
+        return;
+      }
       const lightLevel = event.target.closest("[data-world-light-level]");
       if (lightLevel) {
         this.setLightLevel(lightLevel.value);
@@ -6145,7 +6238,7 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   repositoryPanelHTML() {
-    const repos = this.repositories.slice(0, 8);
+    const repos = this.repositories;
     const catalogEmpty = this.repositoryCatalogState === "empty";
     const catalogUnavailable = this.repositoryCatalogState === "unavailable";
     return `
@@ -7461,6 +7554,97 @@ class ForkMeshWorld extends HTMLElement {
       </section>`;
   }
 
+  focusMusicPanelHTML() {
+    const selected =
+      FOCUS_MUSIC_TRACKS.find(
+        (track) => track.id === this.settings.focusMusicTrackId,
+      ) || FOCUS_MUSIC_TRACKS[0];
+    const isFocusMusic = this.activeAudio?.kind === "focus-music";
+    const state = isFocusMusic ? this.focusMusicState : "stopped";
+    const status = this.focusMusicError
+      ? this.focusMusicError
+      : state === "playing"
+        ? `${selected.name} is playing locally and will loop.`
+        : state === "paused"
+          ? `${selected.name} is paused on this device.`
+          : state === "loading"
+            ? `Loading ${selected.name}…`
+            : `${selected.name} is selected. Press Play to begin.`;
+    const volume = this.settings.focusMusicVolume;
+    const muted = this.settings.focusMusicMuted === true;
+    return `
+      <section class="world-focus-music" data-world-focus-music aria-labelledby="world-focus-music-title">
+        <header>
+          <div>
+            <span>LOCAL FOCUS MUSIC</span>
+            <h3 id="world-focus-music-title">Choose a coding loop</h3>
+          </div>
+          <strong>CC0 · on this device only</strong>
+        </header>
+        <p class="world-focus-music-intro">Three lightweight tracks ship with ForkMesh. Heavenly Loop is selected by default; music never starts until you press Play.</p>
+        <div class="world-focus-track-list" role="radiogroup" aria-label="Focus music selection">
+          ${FOCUS_MUSIC_TRACKS.map(
+            (track) => `
+              <label class="world-focus-track" data-selected="${
+                track.id === selected.id ? "true" : "false"
+              }">
+                <input
+                  type="radio"
+                  name="forkmesh-focus-music"
+                  value="${escapeHTML(track.id)}"
+                  data-world-focus-track="${escapeHTML(track.id)}"
+                  ${track.id === selected.id ? "checked" : ""}
+                />
+                <span>
+                  <strong>${escapeHTML(track.name)}</strong>
+                  <small>${escapeHTML(track.artist)} · ${escapeHTML(
+                    track.duration,
+                  )} · loops</small>
+                </span>
+                <span class="world-focus-track-links">
+                  <a href="${escapeHTML(track.sourceUrl)}" target="_blank" rel="noopener noreferrer">Source</a>
+                  <a href="${escapeHTML(track.licenseUrl)}" target="_blank" rel="noopener noreferrer">${escapeHTML(
+                    track.license,
+                  )}</a>
+                </span>
+              </label>`,
+          ).join("")}
+        </div>
+        <div class="world-focus-transport" aria-label="Focus music playback controls">
+          <button type="button" data-world-focus-play ${
+            isFocusMusic || state === "loading" ? "disabled" : ""
+          }>Play</button>
+          <button type="button" data-world-focus-pause ${
+            isFocusMusic && state !== "loading" ? "" : "disabled"
+          }>${state === "paused" ? "Resume" : "Pause"}</button>
+          <button type="button" data-world-focus-stop ${
+            isFocusMusic ? "" : "disabled"
+          }>Stop</button>
+          <button
+            type="button"
+            data-world-focus-mute
+            aria-pressed="${String(muted)}"
+          >${muted ? "Unmute" : "Mute"}</button>
+          <label>
+            <span>Volume</span>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              value="${escapeHTML(volume)}"
+              data-world-focus-volume
+              aria-label="Focus music volume"
+            />
+            <output data-world-focus-volume-output>${escapeHTML(volume)}%</output>
+          </label>
+        </div>
+        <p class="world-focus-status" data-world-focus-now role="status" aria-live="polite">${escapeHTML(
+          status,
+        )}</p>
+      </section>`;
+  }
+
   broadcastPanelHTML() {
     const sessionLabels = {
       "listening-room": "Shared listening room",
@@ -7498,6 +7682,7 @@ class ForkMeshWorld extends HTMLElement {
         : "";
     return `
       <section class="world-feature-card" aria-label="Opt-in media controls">
+        ${this.focusMusicPanelHTML()}
         <div class="world-media-list">
           ${RADIO_STATIONS.map(
             (station) => `
@@ -8388,6 +8573,90 @@ class ForkMeshWorld extends HTMLElement {
     return commits;
   }
 
+  syncRepositoryScene() {
+    if (!this.world) return;
+    const active =
+      this.repositoryMapState === "ready" && this.activeRepository
+        ? this.activeRepository
+        : null;
+    this.world.updateRepositoryCatalog?.(this.repositories, active || {});
+    if (!active) {
+      this.world.updateRepositoryGraph?.([], []);
+      this.world.updateRepositorySizeMap?.({}, {});
+      return;
+    }
+    this.world.updateRepositoryGraph?.(
+      active.entries,
+      buildRepositoryGraphEntities(active),
+    );
+    this.world.updateRepositorySizeMap?.(active.sizes, {
+      owner: active.owner,
+      repo: active.repo,
+      commit: active.commit,
+      path: active.path || "",
+    });
+  }
+
+  revealRepositoryScene() {
+    this.closeLandmark();
+    const active = this.activeRepository;
+    const focused =
+      active &&
+      this.world?.focusRepositoryPortal?.(active.owner, active.repo) === true;
+    if (!focused) this.world?.focusLandmark?.("repositories");
+  }
+
+  selectRepositoryPortal(portal) {
+    const owner = sanitizePresenceText(portal?.owner, "", 40);
+    const name = sanitizePresenceText(portal?.name, "", 60);
+    if (!owner || !name) return;
+    this.toast(`Opening ${owner}/${name} at its world-edge portal…`);
+    void this.loadRepositoryMap(owner, name, {
+      automatic: false,
+      revealScene: true,
+    });
+  }
+
+  selectRepositorySizeNode(node) {
+    if (!this.activeRepository) return;
+    const owner = sanitizePresenceText(node?.owner, "", 40);
+    const name = sanitizePresenceText(node?.name, "", 60);
+    if (
+      owner.toLocaleLowerCase() !==
+        this.activeRepository.owner.toLocaleLowerCase() ||
+      name.toLocaleLowerCase() !==
+        this.activeRepository.repo.toLocaleLowerCase()
+    ) {
+      return;
+    }
+    const type = String(node?.type || "");
+    if (type === "center") {
+      const targetPath = safeRepositoryTreePath(node?.targetPath);
+      if (targetPath === (this.activeRepository.path || "")) return;
+      void this.loadRepositoryDirectory(owner, name, targetPath, {
+        revealScene: true,
+      });
+      return;
+    }
+    const path = safeRepositoryTreePath(node?.path);
+    if (!path) return;
+    if (type === "directory") {
+      void this.loadRepositoryDirectory(owner, name, path, {
+        revealScene: true,
+      });
+      return;
+    }
+    if (type !== "file") return;
+    const href = `/${encodeURIComponent(owner)}/${encodeURIComponent(
+      name,
+    )}/blob/${path.split("/").map(encodeURIComponent).join("/")}`;
+    const destination = new URL(href, location.origin);
+    if (/^[0-9a-f]{40,64}$/.test(this.activeRepository.commit || "")) {
+      destination.searchParams.set("ref", this.activeRepository.commit);
+    }
+    location.assign(destination.href);
+  }
+
   async autoLoadFlagshipRepositoryMap() {
     if (
       this.destroyed ||
@@ -8585,6 +8854,7 @@ class ForkMeshWorld extends HTMLElement {
       return false;
     }
     if (!automatic) this.repositoryManualSelection = key;
+    this.repositoryDirectorySelection += 1;
     if (
       this.repositoryMapState === "ready" &&
       this.activeRepository?.owner.toLowerCase() === safeOwner.toLowerCase() &&
@@ -8595,6 +8865,8 @@ class ForkMeshWorld extends HTMLElement {
       this.pullReviewSelection += 1;
       this.clearPullReviewScrollTracking();
       this.renderRepositoryMapStatus();
+      this.syncRepositoryScene();
+      if (options.revealScene === true) this.revealRepositoryScene();
       return true;
     }
 
@@ -8634,6 +8906,7 @@ class ForkMeshWorld extends HTMLElement {
       }
       this.repositoryMapState = "unavailable";
       if (!this.activeRepository) this.world?.updateRepositoryGraph?.([], []);
+      if (!this.activeRepository) this.world?.updateRepositorySizeMap?.({}, {});
       this.renderRepositoryMapStatus();
       return false;
     }
@@ -8652,6 +8925,7 @@ class ForkMeshWorld extends HTMLElement {
     ) {
       this.repositoryMapState = "unavailable";
       if (!this.activeRepository) this.world?.updateRepositoryGraph?.([], []);
+      if (!this.activeRepository) this.world?.updateRepositorySizeMap?.({}, {});
       this.renderRepositoryMapStatus();
       return false;
     }
@@ -8659,10 +8933,8 @@ class ForkMeshWorld extends HTMLElement {
     this.activeRepository = result.snapshot;
     this.repositoryMapState = "ready";
     this.renderRepositoryMapStatus();
-    this.world?.updateRepositoryGraph?.(
-      this.activeRepository.entries,
-      buildRepositoryGraphEntities(this.activeRepository),
-    );
+    this.syncRepositoryScene();
+    if (options.revealScene === true) this.revealRepositoryScene();
     void this.loadRepositorySecurity(safeOwner, safeRepo, false);
     return true;
   }
@@ -8739,10 +9011,7 @@ class ForkMeshWorld extends HTMLElement {
         this.securityTriage,
       );
       this.renderRepositoryExplorer();
-      this.world?.updateRepositoryGraph?.(
-        this.activeRepository.entries,
-        buildRepositoryGraphEntities(this.activeRepository),
-      );
+      this.syncRepositoryScene();
     }
     if (openPanel) this.openLandmark("security");
   }
@@ -8774,32 +9043,52 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-  async loadRepositoryDirectory(owner, repo, path) {
+  async loadRepositoryDirectory(owner, repo, path, options = {}) {
     const explorer = this.$("[data-world-repo-explorer]");
-    if (!explorer) return;
-    const normalizedPath = String(path || "")
-      .split("/")
-      .filter(Boolean)
-      .slice(0, 24)
-      .map((part) => sanitizePresenceText(part, "", 100))
-      .filter(Boolean)
-      .join("/");
-    explorer.innerHTML = `<p class="world-empty-state">Opening ${escapeHTML(
-      normalizedPath || "repository root",
-    )}…</p>`;
+    const normalizedPath = safeRepositoryTreePath(path);
+    const expectedOwner = String(this.activeRepository?.owner || "");
+    const expectedRepo = String(this.activeRepository?.repo || "");
+    const expectedCommit = String(this.activeRepository?.commit || "");
+    if (
+      !expectedOwner ||
+      !expectedRepo ||
+      expectedOwner.toLocaleLowerCase() !==
+        String(owner || "").toLocaleLowerCase() ||
+      expectedRepo.toLocaleLowerCase() !==
+        String(repo || "").toLocaleLowerCase()
+    ) {
+      return;
+    }
+    const selection = ++this.repositoryDirectorySelection;
+    if (explorer) {
+      explorer.innerHTML = `<p class="world-empty-state">Opening ${escapeHTML(
+        normalizedPath || "repository root",
+      )}…</p>`;
+    }
     try {
       const payload = await this.fetchJSON(
         `/api/repo/${encodeURIComponent(owner)}/${encodeURIComponent(
           repo,
         )}/tree?path=${encodeURIComponent(normalizedPath)}&ref=${encodeURIComponent(
-          this.activeRepository?.commit || "",
+          expectedCommit,
         )}`,
       );
+      if (
+        selection !== this.repositoryDirectorySelection ||
+        this.destroyed ||
+        String(this.activeRepository?.owner || "").toLocaleLowerCase() !==
+          expectedOwner.toLocaleLowerCase() ||
+        String(this.activeRepository?.repo || "").toLocaleLowerCase() !==
+          expectedRepo.toLocaleLowerCase() ||
+        String(this.activeRepository?.commit || "") !== expectedCommit
+      ) {
+        return;
+      }
       if (payload?.ok === false) throw new Error("tree unavailable");
       const payloadCommit = String(
         payload.commit || payload.analysis?.commit || "",
       ).toLowerCase();
-      if (payloadCommit !== this.activeRepository?.commit) {
+      if (payloadCommit !== expectedCommit) {
         throw new Error("commit mismatch");
       }
       this.activeRepository = {
@@ -8815,16 +9104,26 @@ class ForkMeshWorld extends HTMLElement {
         ),
       };
       this.renderRepositoryExplorer();
-      this.world?.updateRepositoryGraph?.(
-        this.activeRepository.entries,
-        buildRepositoryGraphEntities(this.activeRepository),
-      );
+      this.syncRepositoryScene();
+      if (options.revealScene === true) {
+        this.revealRepositoryScene();
+      }
     } catch (_) {
-      explorer.innerHTML = `
-        <div class="world-notice world-notice-warning">
-          <strong>Directory unavailable</strong>
-          <span>The node could not return this authorized tree. No fallback attempts reveal private repository existence.</span>
-        </div>`;
+      if (
+        selection !== this.repositoryDirectorySelection ||
+        this.destroyed
+      ) {
+        return;
+      }
+      if (explorer) {
+        explorer.innerHTML = `
+          <div class="world-notice world-notice-warning">
+            <strong>Directory unavailable</strong>
+            <span>The node could not return this authorized tree. No fallback attempts reveal private repository existence.</span>
+          </div>`;
+      } else {
+        this.toast("That directory could not be opened from the pinned tree.");
+      }
     }
   }
 
@@ -9560,10 +9859,7 @@ class ForkMeshWorld extends HTMLElement {
     this.activeRepository = result.snapshot;
     this.repositoryMapState = "ready";
     this.renderRepositoryMapStatus();
-    this.world?.updateRepositoryGraph?.(
-      this.activeRepository.entries,
-      buildRepositoryGraphEntities(this.activeRepository),
-    );
+    this.syncRepositoryScene();
     void this.loadRepositorySecurity(active.owner, active.repo, false);
     return true;
   }
@@ -9898,23 +10194,26 @@ class ForkMeshWorld extends HTMLElement {
       <section class="world-repo-explorer" aria-label="Three-dimensional repository file graph">
         <header>
           <div>
-            <span>AUTHORIZED CODE MAP</span>
+            <span>AUTHORIZED 3D SIZE MAP</span>
             <strong>${escapeHTML(active.owner)}/${escapeHTML(active.repo)}${
               active.path ? ` / ${escapeHTML(active.path)}` : ""
             }</strong>
             <small>commit ${escapeHTML(String(active.commit || "").slice(0, 12))}</small>
           </div>
-          ${
-            active.path
-              ? `<button type="button" data-world-repo-directory="${escapeHTML(
-                  parent,
-                )}" data-world-repo-owner="${escapeHTML(
-                  active.owner,
-                )}" data-world-repo-name="${escapeHTML(active.repo)}">← ${
-                  parent ? "Parent" : "Root"
-                }</button>`
-              : ""
-          }
+          <div class="world-repo-map-actions">
+            <button type="button" data-world-repo-scene>Visit edge sunburst</button>
+            ${
+              active.path
+                ? `<button type="button" data-world-repo-directory="${escapeHTML(
+                    parent,
+                  )}" data-world-repo-owner="${escapeHTML(
+                    active.owner,
+                  )}" data-world-repo-name="${escapeHTML(active.repo)}">← ${
+                    parent ? "Parent" : "Root"
+                  }</button>`
+                : ""
+            }
+          </div>
         </header>
         <div class="world-repo-summary">
           <span><strong>${compactNumber(fileCount)}</strong> tracked files</span>
@@ -10052,7 +10351,7 @@ class ForkMeshWorld extends HTMLElement {
             })
             .join("")}
         </div>
-        <p class="world-panel-footnote">Node scale reflects blob size. Dependency edges and depth come from bounded imports resolved against commit ${escapeHTML(
+        <p class="world-panel-footnote">The World sunburst maps byte share to arc width and directory depth to concentric rings; shallow extrusion keeps adjacent sectors readable without double-encoding size. The accessible index above and below uses the same commit-pinned data. Dependency edges and depth come from bounded imports resolved against commit ${escapeHTML(
           String(active.commit || "").slice(0, 12),
         )}; coverage comes only from artifacts committed at that revision. File-level security state appears only when an owner-authorized scan names that exact commit. Public mirror health and signed state remain separate from trust.</p>
       </section>`;
@@ -10877,6 +11176,171 @@ class ForkMeshWorld extends HTMLElement {
       </section>`;
   }
 
+  selectedFocusMusicTrack() {
+    return (
+      FOCUS_MUSIC_TRACKS.find(
+        (track) => track.id === this.settings.focusMusicTrackId,
+      ) || FOCUS_MUSIC_TRACKS[0]
+    );
+  }
+
+  renderFocusMusicPanel() {
+    const panel = this.$("[data-world-focus-music]");
+    if (panel) panel.outerHTML = this.focusMusicPanelHTML();
+  }
+
+  selectFocusMusic(trackId) {
+    const track = FOCUS_MUSIC_TRACKS.find((item) => item.id === trackId);
+    if (!track || track.id === this.settings.focusMusicTrackId) return;
+    const continuePlaying =
+      this.activeAudio?.kind === "focus-music" &&
+      this.focusMusicState === "playing";
+    this.stopFocusMusic(false);
+    this.settings.focusMusicTrackId = track.id;
+    this.focusMusicError = "";
+    this.saveSettings();
+    this.renderFocusMusicPanel();
+    if (continuePlaying) {
+      void this.playFocusMusic();
+    } else {
+      this.toast(`${track.name} selected. Press Play when you are ready.`);
+    }
+  }
+
+  async playFocusMusic() {
+    const track = this.selectedFocusMusicTrack();
+    const AudioElement = window.Audio;
+    if (!AudioElement) {
+      this.focusMusicError = "Audio playback is unavailable in this browser.";
+      this.renderFocusMusicPanel();
+      return;
+    }
+    let trackURL;
+    try {
+      trackURL = new URL(track.trackUrl, location.origin);
+    } catch (_) {
+      this.focusMusicError = "This bundled music path is invalid.";
+      this.renderFocusMusicPanel();
+      return;
+    }
+    if (trackURL.origin !== location.origin) {
+      this.focusMusicError = "Focus music must be served by ForkMesh.";
+      this.renderFocusMusicPanel();
+      return;
+    }
+
+    // Stop another local station or focus track before creating this element.
+    // play() remains directly in the button's user-gesture call chain.
+    this.stopRadio(false);
+    const element = new AudioElement(track.trackUrl);
+    element.preload = "metadata";
+    element.loop = true;
+    element.volume = this.settings.focusMusicVolume / 100;
+    element.muted = this.settings.focusMusicMuted === true;
+    const playback = {
+      kind: "focus-music",
+      trackId: track.id,
+      element,
+      stop() {
+        try {
+          element.pause();
+          element.currentTime = 0;
+        } catch (_) {}
+      },
+    };
+    const fail = () => {
+      if (this.activeAudio !== playback) return;
+      playback.stop();
+      this.activeAudio = null;
+      this.focusMusicState = "stopped";
+      this.focusMusicError = `${track.name} could not be loaded.`;
+      this.renderFocusMusicPanel();
+    };
+    element.addEventListener?.("error", fail, { once: true });
+    this.activeAudio = playback;
+    this.focusMusicState = "loading";
+    this.focusMusicError = "";
+    this.renderFocusMusicPanel();
+    try {
+      await element.play();
+      if (this.activeAudio !== playback) return;
+      this.focusMusicState = "playing";
+      this.renderFocusMusicPanel();
+      this.toast(`${track.name} is looping on this device only.`);
+    } catch (_) {
+      fail();
+    }
+  }
+
+  async toggleFocusMusicPause() {
+    const playback = this.activeAudio;
+    if (playback?.kind !== "focus-music") return;
+    if (this.focusMusicState === "paused") {
+      try {
+        // Resume is also an explicit user gesture; a saved setting never calls
+        // this path on page load.
+        await playback.element.play();
+        if (this.activeAudio !== playback) return;
+        this.focusMusicState = "playing";
+        this.focusMusicError = "";
+      } catch (_) {
+        playback.stop();
+        this.activeAudio = null;
+        this.focusMusicState = "stopped";
+        this.focusMusicError = "The browser blocked music playback.";
+      }
+    } else if (this.focusMusicState === "playing") {
+      playback.element.pause();
+      this.focusMusicState = "paused";
+    }
+    this.renderFocusMusicPanel();
+  }
+
+  stopFocusMusic(render = true) {
+    if (this.activeAudio?.kind === "focus-music") {
+      try {
+        this.activeAudio.stop();
+      } catch (_) {}
+      this.activeAudio = null;
+    }
+    this.focusMusicState = "stopped";
+    this.focusMusicError = "";
+    if (render) this.renderFocusMusicPanel();
+  }
+
+  toggleFocusMusicMute() {
+    this.settings.focusMusicMuted = !this.settings.focusMusicMuted;
+    if (this.activeAudio?.kind === "focus-music") {
+      this.activeAudio.element.muted = this.settings.focusMusicMuted;
+    }
+    this.saveSettings();
+    this.renderFocusMusicPanel();
+    this.toast(
+      this.settings.focusMusicMuted
+        ? "Focus music muted on this device."
+        : "Focus music unmuted on this device.",
+    );
+  }
+
+  setFocusMusicVolume(value) {
+    const numeric = Number(value);
+    const volume = Math.min(
+      100,
+      Math.max(
+        0,
+        Number.isFinite(numeric) ? Math.round(numeric) : DEFAULT_FOCUS_MUSIC_VOLUME,
+      ),
+    );
+    this.settings.focusMusicVolume = volume;
+    if (this.activeAudio?.kind === "focus-music") {
+      this.activeAudio.element.volume = volume / 100;
+    }
+    this.saveSettings();
+    const output = this.$("[data-world-focus-volume-output]");
+    if (output) output.textContent = `${volume}%`;
+    return volume;
+  }
+
   async playRadio(stationId) {
     const station = RADIO_STATIONS.find((item) => item.id === stationId);
     const now = this.$("[data-world-media-now]");
@@ -10982,11 +11446,17 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   stopRadio(render = true) {
+    const stoppedFocusMusic = this.activeAudio?.kind === "focus-music";
     try {
       this.activeAudio?.stop?.();
       this.activeAudio?.context?.close?.();
     } catch (_) {}
     this.activeAudio = null;
+    if (stoppedFocusMusic) {
+      this.focusMusicState = "stopped";
+      this.focusMusicError = "";
+      this.renderFocusMusicPanel();
+    }
     if (!render) return;
     const now = this.$("[data-world-media-now]");
     if (now) {
