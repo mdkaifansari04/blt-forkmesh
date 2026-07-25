@@ -92,14 +92,32 @@ def test_path_defaults_to_root_when_missing_or_external():
     assert _fields({"source": "docs", "vote": "like"}) == (
         "docs",
         "like",
-        "/",
+        "/docs/",
         "",
     )
     assert _fields({
         "source": "docs",
         "vote": "like",
         "path": "https://example.com/docs",
-    }) == ("docs", "like", "/", "")
+    }) == ("docs", "like", "/docs/", "")
+
+
+def test_feedback_path_rejects_queries_private_routes_and_unsafe_fragments():
+    assert _fields({
+        "source": "docs",
+        "vote": "like",
+        "path": "/docs/?search=private-term#install",
+    }) == ("docs", "like", "/docs/", "")
+    assert _fields({
+        "source": "docs",
+        "vote": "like",
+        "path": "/alice/private-repo?token=secret",
+    }) == ("docs", "like", "/docs/", "")
+    assert _fields({
+        "source": "docs",
+        "vote": "like",
+        "path": "/docs/#install<script>",
+    }) == ("docs", "like", "/docs/", "")
 
 
 def test_message_and_path_are_capped_and_control_scrubbed():
@@ -157,9 +175,16 @@ def test_feedback_handler_hashes_ip_and_never_stores_raw_ip():
     entry_text = ENTRY.read_text(encoding="utf-8")
 
     assert "async def feedback_handler(env, request):" in entry_text
+    assert "ip = _transient_client_address(request)" in entry_text
     assert 'headers.get("cf-connecting-ip")' in entry_text
     assert 'headers.get("x-forwarded-for")' in entry_text
     assert "ip_hash = await blind_index(env, ip) if ip else \"\"" in entry_text
+    assert "user_agent = _generalized_client_category(request)" in entry_text
+    handler = entry_text.split(
+        "async def feedback_handler", 1)[1].split(
+        "def _validate_security_report", 1)[0]
+    assert "_sanitize_feedback_text(" not in handler.split(
+        "user_agent =", 1)[1].split("try:", 1)[0]
     assert (
         "INSERT INTO feedback "
         "(ts, source, vote, path, message, ip_hash, user_agent)"

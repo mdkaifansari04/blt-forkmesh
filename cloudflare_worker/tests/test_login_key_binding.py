@@ -7,6 +7,7 @@ import base64
 import json
 import sqlite3
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 
@@ -28,6 +29,8 @@ def _load_account_login(extra_globals):
         if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
         and node.name in {
             "_account_login",
+            "_ensure_local_demo_account",
+            "_is_local_demo_request",
             "_register_account_device",
             "_account_device_for_pubkey",
             "_account_devices_list",
@@ -42,6 +45,27 @@ def _load_account_login(extra_globals):
     namespace = {"json": json, **extra_globals}
     exec(compile(module, str(ENTRY), "exec"), namespace)
     return namespace["_account_login"]
+
+
+def _load_login_throttle(extra_globals):
+    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    selected = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name in {
+            "_login_record_fail",
+            "_login_failure_response",
+        }
+    ]
+    assert {node.name for node in selected} == {
+        "_login_record_fail",
+        "_login_failure_response",
+    }
+    module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
+    namespace = dict(extra_globals)
+    exec(compile(module, str(ENTRY), "exec"), namespace)
+    return namespace
 
 
 def _load_device_bind_canonical(extra_globals=None):
@@ -90,8 +114,9 @@ def _load_contribution_actor_resolver(extra_globals):
 
 
 class _Request:
-    def __init__(self, body):
+    def __init__(self, body, url="https://forkmesh.test/api/accounts/login"):
         self._body = body
+        self.url = url
 
     async def json(self):
         return self._body
@@ -119,6 +144,9 @@ def _login_harness(rec, *, device_proof_valid=True, initial_devices=None,
 
     async def blind_index(_env, value):
         return "bi:" + str(value)
+
+    async def bounded_json_request(request):
+        return await request.json()
 
     async def d1_first(_env, sql, *args):
         if "FROM users WHERE email_bi" in sql:
@@ -195,9 +223,15 @@ def _login_harness(rec, *, device_proof_valid=True, initial_devices=None,
 
     async def _login_record_fail(_env, id_bi):
         login_fails.append(id_bi)
-
-    async def _login_locked_until(_env, _id_bi):
         return 0
+
+    async def _login_attempt_keys(env, _request, identifier):
+        return [await blind_index(env, identifier)]
+
+    async def _login_failure_response(env, attempt_keys, error):
+        for attempt_key in attempt_keys:
+            await _login_record_fail(env, attempt_key)
+        return _json_response({"error": error}, status=401)
 
     async def _login_clear(_env, id_bi):
         login_clears.append(id_bi)
@@ -208,7 +242,8 @@ def _login_harness(rec, *, device_proof_valid=True, initial_devices=None,
     async def _is_admin(_env, _name):
         return False
 
-    async def _account_public_payload(_env, account):
+    async def _account_public_payload(
+            _env, account, _session_token=None, **_kwargs):
         solana = account.get("solana", "")
         return {
             "ok": True,
@@ -220,6 +255,7 @@ def _login_harness(rec, *, device_proof_valid=True, initial_devices=None,
             "isAdmin": False,
             "solana": solana,
             "hasPayoutAddress": bool(solana),
+            "sessionToken": "v2.test-session.test-secret",
         }
 
     def _account_session_token(_env, name):
@@ -233,6 +269,7 @@ def _login_harness(rec, *, device_proof_valid=True, initial_devices=None,
     handler = _load_account_login(
         {
             "blind_index": blind_index,
+            "bounded_json_request": bounded_json_request,
             "clean_string": _clean_string,
             "d1_first": d1_first,
             "d1_all": d1_all,
@@ -248,16 +285,21 @@ def _login_harness(rec, *, device_proof_valid=True, initial_devices=None,
                 isinstance(value, str) and len(value) == 43
             ),
             "_login_record_fail": _login_record_fail,
-            "_login_locked_until": _login_locked_until,
+            "_login_attempt_keys": _login_attempt_keys,
+            "_login_failure_response": _login_failure_response,
             "_login_clear": _login_clear,
             "_save_account": _save_account,
             "_is_admin": _is_admin,
             "_account_public_payload": _account_public_payload,
+            "_account_session_device_label": (
+                lambda _request, desktop=False:
+                "Desktop node" if desktop else "Web browser"
+            ),
             "_account_session_token": _account_session_token,
-            "_admin_session_cookie": lambda _env, _name: "admin-session",
-            "_clear_admin_session_cookie": lambda: "clear-admin-session",
+            "_account_session_cookie": lambda _token: "account-session",
             "json_response": _json_response,
             "Date": _Date,
+            "urlparse": urlparse,
             "DESKTOP_NODE_CAPABILITIES": "browse,comment,submit_issue,submit_pr,host_repo,mirror_repo,publish_repo,owner_sign",
             "CLIENT_CAPABILITIES": "browse,comment,submit_issue,submit_pr",
             "CONTRIBUTION_KEY_PROOF_CAPABILITY": "contribution_key_proof",
@@ -364,6 +406,152 @@ def test_login_without_desktop_pubkey_still_allows_plain_web_session():
     assert response["data"]["desktopCapable"] is False
     assert saved == []
     assert login_fails == []
+
+
+def test_login_failure_counter_is_atomic_and_progressive():
+    database = sqlite3.connect(":memory:")
+    database.execute(
+        "CREATE TABLE login_attempts ("
+        "id_bi TEXT PRIMARY KEY, fails INTEGER NOT NULL, "
+        "first_fail_ts INTEGER NOT NULL, locked_until INTEGER NOT NULL)"
+    )
+    now = 1_800_000_000_000
+
+    async def d1_first(_env, sql, *args):
+        row = database.execute(sql, args).fetchone()
+        database.commit()
+        return (
+            {"fails": row[0], "first_fail_ts": row[1], "locked_until": row[2]}
+            if row else None
+        )
+
+    def json_response(data, status=200, extra_headers=None, **_kwargs):
+        return {
+            "status": status,
+            "data": data,
+            "headers": dict(extra_headers or {}),
+        }
+
+    namespace = _load_login_throttle({
+        "Date": type("Date", (), {"now": staticmethod(lambda: now)}),
+        "d1_first": d1_first,
+        "json_response": json_response,
+        "LOGIN_FAIL_WINDOW_MS": 15 * 60 * 1000,
+        "LOGIN_MAX_FAILS": 10,
+        "LOGIN_LOCKOUT_MS": 15 * 60 * 1000,
+    })
+
+    first = asyncio.run(namespace["_login_failure_response"](
+        object(), ["source", "source+identifier"], "invalid_credentials"))
+    second = asyncio.run(namespace["_login_failure_response"](
+        object(), ["source", "source+identifier"], "invalid_credentials"))
+    third = asyncio.run(namespace["_login_failure_response"](
+        object(), ["source", "source+identifier"], "invalid_credentials"))
+
+    assert first["status"] == 401
+    assert second["status"] == 401
+    assert third["status"] == 429
+    assert third["data"]["retryAfterMs"] == 1000
+    assert third["headers"]["Retry-After"] == "1"
+    assert database.execute(
+        "SELECT fails FROM login_attempts WHERE id_bi='source'"
+    ).fetchone() == (3,)
+
+
+def test_valid_login_never_prechecks_an_attacker_created_lock():
+    source = ENTRY.read_text(encoding="utf-8")
+    login_source = source[
+        source.index("async def _account_login"):
+        source.index("async def _account_rotate")
+    ]
+    assert "_login_locked_until" not in login_source
+    assert login_source.index("verify_password(") < login_source.index(
+        "_login_clear(")
+
+
+def test_local_demo_credentials_bootstrap_a_real_admin_account():
+    saved = []
+    sql_null = object()
+
+    async def blind_index(_env, value):
+        return "bi:" + str(value).strip().lower()
+
+    async def d1_first(_env, _sql, *_args):
+        return None
+
+    async def hash_password(password):
+        assert password == "forkmesh-demo"
+        return "demo-salt", "demo-hash"
+
+    async def save_full(_env, name_bi, record, **kwargs):
+        saved.append((name_bi, dict(record), dict(kwargs)))
+
+    namespace = {
+        "LOCAL_DEMO_EMAIL": "demo@forkmesh.local",
+        "LOCAL_DEMO_NAME": "demo-node",
+        "LOCAL_DEMO_PASSWORD": "forkmesh-demo",
+        "Date": type(
+            "Date", (), {"now": staticmethod(lambda: 1_800_000_000_000)}),
+        "_account_row": lambda *_args: asyncio.sleep(0, result=("", None)),
+        "_save_account_full": save_full,
+        "blind_index": blind_index,
+        "clean_string": _clean_string,
+        "d1_first": d1_first,
+        "decrypt_row": lambda *_args: asyncio.sleep(0, result=None),
+        "hash_password": hash_password,
+        "to_js": lambda value: sql_null if value is None else value,
+        "urlparse": urlparse,
+        "verify_password": lambda *_args: asyncio.sleep(0, result=False),
+    }
+    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    selected = [
+        node for node in tree.body
+        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+        and node.name in {
+            "_ensure_local_demo_account",
+            "_is_local_demo_request",
+        }
+    ]
+    module = ast.fix_missing_locations(
+        ast.Module(body=selected, type_ignores=[]))
+    exec(compile(module, str(ENTRY), "exec"), namespace)
+
+    request = _Request(
+        {
+            "email": "demo@forkmesh.local",
+            "password": "forkmesh-demo",
+        },
+        url="http://127.0.0.1:8787/api/accounts/login",
+    )
+    asyncio.run(namespace["_ensure_local_demo_account"](
+        object(), request, "demo@forkmesh.local", "forkmesh-demo"))
+
+    assert saved == [(
+        "bi:demo-node",
+        {
+            "name": "demo-node",
+            "email": "demo@forkmesh.local",
+            "kind": "user",
+            "status": "active",
+            "pass_salt": "demo-salt",
+            "pass_hash": "demo-hash",
+            "email_verified": True,
+            "created_at": 1_800_000_000_000,
+        },
+        {
+            "email_bi": "bi:demo@forkmesh.local",
+            "ip_bi": sql_null,
+            "is_admin": 1,
+        },
+    )]
+
+    login_source = ENTRY.read_text(encoding="utf-8")
+    login_source = login_source[
+        login_source.index("async def _account_login"):
+        login_source.index("async def _account_rotate")
+    ]
+    assert login_source.index("_ensure_local_demo_account") < (
+        login_source.index("_login_attempt_keys"))
 
 
 def test_device_bind_canonical_is_exact_and_normalizes_account_name():
@@ -567,14 +755,29 @@ def test_concurrent_first_device_bind_allows_exactly_one_account_winner():
             + "\n" + DEVICE_TS
         ).encode()
 
-    async def account_payload(_env, rec):
-        return {"ok": True, "nodeName": rec["name"], "email": rec["email"]}
+    async def account_payload(_env, rec, _session_token=None, **_kwargs):
+        return {
+            "ok": True,
+            "nodeName": rec["name"],
+            "email": rec["email"],
+            "sessionToken": "v2.test-session.test-secret",
+        }
 
     async def noop(*_args, **_kwargs):
         return None
 
+    async def bounded_json_request(request):
+        return await request.json()
+
+    async def login_attempt_keys(env, _request, identifier):
+        return [await blind_index(env, identifier)]
+
+    async def login_failure_response(_env, _attempt_keys, error):
+        return _json_response({"error": error}, status=401)
+
     handler = _load_account_login({
         "blind_index": blind_index,
+        "bounded_json_request": bounded_json_request,
         "clean_string": _clean_string,
         "d1_first": d1_first,
         "d1_all": d1_all,
@@ -587,16 +790,21 @@ def test_concurrent_first_device_bind_allows_exactly_one_account_winner():
         "ed25519_verify": ed25519_verify,
         "_ts_ok": lambda value: value == DEVICE_TS,
         "_login_record_fail": noop,
-        "_login_locked_until": lambda *_args: asyncio.sleep(0, result=0),
+        "_login_attempt_keys": login_attempt_keys,
+        "_login_failure_response": login_failure_response,
         "_login_clear": noop,
         "_save_account": noop,
         "touch_registered_node": noop,
         "_account_public_payload": account_payload,
+        "_account_session_device_label": (
+            lambda _request, desktop=False:
+            "Desktop node" if desktop else "Web browser"
+        ),
         "_account_session_token": lambda _env, name: "session:" + name,
-        "_admin_session_cookie": lambda _env, _name: "admin",
-        "_clear_admin_session_cookie": lambda: "clear",
+        "_account_session_cookie": lambda _token: "account",
         "json_response": _json_response,
         "Date": type("Date", (), {"now": staticmethod(lambda: int(DEVICE_TS))}),
+        "urlparse": urlparse,
         "DESKTOP_NODE_CAPABILITIES": "browse,owner_sign",
         "CLIENT_CAPABILITIES": "browse",
         "CONTRIBUTION_KEY_PROOF_CAPABILITY": "contribution_key_proof",
@@ -715,21 +923,32 @@ def test_qt_login_explains_desktop_key_mismatch():
     assert "already bound to another" in qt
 
 
-def test_signed_publish_and_hosting_stay_account_key_bound():
+def test_signed_private_publish_and_direct_routing_stay_account_key_bound():
     entry = ENTRY.read_text(encoding="utf-8")
-    # Catalog publish + host-token signing moved into split MainWindow TUs.
+    # Catalog publication and direct-route registration live in split
+    # MainWindow TUs. The retired repository socket has no credential.
     qt = "\n".join(
         p.read_text(encoding="utf-8")
         for p in sorted(QT_MAIN.parent.glob("MainWindow*.cpp"))
     )
 
-    assert "owner_pub = await _owner_pubkey(env, owner)" in entry
+    assert 'primary_owner_pub = (publish_owner_rec.get("pubkey", "")' in entry
     assert 'return json_response({"error": "account_required"}, status=403)' in entry
-    assert 'record["maintainer"] != owner_pub' in entry
-    assert '"forkmesh-host-v1\\n" + owner + "\\n" + repo + "\\n" + str(ts)' in entry
+    assert "owner_pub = await _catalog_publication_key(" in entry
+    assert "allowed = await _owner_signing_pubkeys(env, owner)" in entry
+    assert "return maintainer if maintainer in allowed else" in entry
+    assert 'canonical = ("forkmesh-catalog-v2\\n" + record_hash).encode()' in entry
+    assert 'metadata.insert(QStringLiteral("catalogSigVersion"), 2);' in qt
+    assert "forkmesh::control::catalogV2SigningPayload(" in qt
+    assert 'url.setPath(QStringLiteral("/api/mirrors/private"));' in qt
+    assert "forkmesh::control::privateReplicaRouteSigningPayload(" in qt
+    assert 'HTTPS_MIRROR_ENDPOINT_PATH = "/api/mirrors/https"' in entry
+    assert "registration[\"publicKey\"] not in allowed_keys" in entry
+    assert "FROM mirror_https_endpoints e " in entry
+    assert '"direct_https_receive_pack_required"' in entry
     assert '{"maintainer", m_profileIdentity.publicKey()}' in qt
-    assert '"forkmesh-catalog-v1\\n" + owner + "\\n" + name + "\\n" + updatedAt' in qt
-    assert '"forkmesh-host-v1\\n" + tokenOwner + "\\n" + tokenRepo + "\\n" + ts' in qt
+    assert "per-repository persistent socket is retired" in qt
+    assert "forkmesh-host-v1" not in qt
 
 
 def test_contribution_actor_resolution_accepts_only_enabled_nonrevoked_devices():

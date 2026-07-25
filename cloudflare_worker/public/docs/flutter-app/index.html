@@ -118,10 +118,15 @@ flutter build ipa           # iOS (needs macOS + Xcode)</code></pre>
         <ul>
           <li>
             <strong>Crypto</strong> ports <code>RoomCrypto.cpp</code>:
-            AES-256-GCM (12-byte nonce, 16-byte tag), key =
-            PBKDF2-HMAC-SHA256(passphrase|app key, SHA256(&quot;ForkMesh
-            room:&quot;+room)[:16], 210000 rounds, 32 bytes); envelope
-            {kind:&quot;cipher&quot;,v:1,nonce,tag,body} (base64).
+            AES-256-GCM (12-byte nonce, 16-byte tag). Default rooms fetch the
+            relay-derived shared passphrase after authentication; clients use
+            PBKDF2-HMAC-SHA256(passphrase,
+            SHA256(&quot;ForkMesh room:&quot;+room)[:16], 210000 rounds,
+            32 bytes). The relay can derive and decrypt the default key.
+            An explicit out-of-band participant passphrase excludes it.
+            Envelope: {kind:&quot;cipher&quot;,v:1,nonce,tag,body}
+            (base64). The relay retains at most 500 persisted frames per room
+            for 7 days.
           </li>
           <li>
             <strong>Identity</strong>: Ed25519; the base64url (no padding)
@@ -201,8 +206,12 @@ flutter build ipa           # iOS (needs macOS + Xcode)</code></pre>
             helper on mobile).
           </li>
           <li>
-            <strong>Solana wallet</strong> — balance (SOL/USD/INR),
-            deposit-to-verify banner, payouts, bounty escrow QR.
+            <strong>Non-custodial reward settings</strong> — accept and validate
+            a public self-custodial payout address, show the configured public
+            mainnet-beta pool and finalized transfers, and keep user funds, pool
+            funds, pending rewards, and completed transfers visually distinct.
+            Explicit development deployments may select a test network. Mobile
+            must never accept or store a wallet private key or recovery phrase.
           </li>
           <li>
             <strong>Agents (OpenAI/Claude) and Actions (.forkmesh

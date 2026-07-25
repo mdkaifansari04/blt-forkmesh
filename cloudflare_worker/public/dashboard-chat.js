@@ -4,12 +4,73 @@
 
 (() => {
   const ROOM_NAME = "general";
-  // The room key is fetched from the relay (derived server-side from DATA_KEY)
-  // rather than baked in as a public constant; see chat.js for the rationale.
-  const ROOM_KEY_ENDPOINT = "/api/chat/room-key";
+  const PUBLIC_WORLD_GENERAL_ROOM = "world-general";
   let roomPassphrase = null;
-  const CHANNEL = "#general";
-  const CHAT_WS_PATH = "/api/repo/mainnode/forkmesh/rooms/general/ws";
+  const SPACE_CHANNELS = Object.freeze({
+    "sky-campus": "#world-sky-campus",
+    "space-station": "#world-space-station",
+    "code-planet": "#world-code-planet",
+    "organization-region": "#world-organization-region",
+    "planet-atlas": "#world-planet-atlas",
+    neighborhood: "#world-neighborhood",
+    broadcast: "#world-broadcast",
+    workshop: "#world-workshop",
+  });
+  const requestedParams = new URLSearchParams(location.search);
+  const requestedSpace = requestedParams.get("space") || "";
+  const requestedOrganization = String(requestedParams.get("org") || "");
+  const requestedWorkshopRepo = String(requestedParams.get("repo") || "");
+  const requestedWorkshopRun = String(requestedParams.get("run") || "");
+  const scopedWorkshop =
+    requestedSpace === "workshop" &&
+    /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?\/[A-Za-z0-9._-]{1,100}$/.test(
+      requestedWorkshopRepo,
+    ) &&
+    /^[A-Za-z0-9_-]{16,80}$/.test(requestedWorkshopRun);
+  const workshopRepoParts = scopedWorkshop
+    ? requestedWorkshopRepo.split("/")
+    : ["mainnode", "forkmesh"];
+  const ROOM_OWNER = workshopRepoParts[0];
+  const ROOM_REPO = workshopRepoParts[1];
+  // A workshop uses its repository's own relay-derived passphrase and Durable
+  // Object room. Never multiplex a private repo/run channel into the Town
+  // Square ciphertext: every registered account can obtain that public room's
+  // key. The scoped key endpoint applies the repository ACL before release,
+  // and the scoped WebSocket route fails closed before Durable Object access.
+  const ACTIVE_SPACE = Object.hasOwn(SPACE_CHANNELS, requestedSpace)
+    ? requestedSpace
+    : "";
+  const PUBLIC_WORLD_GENERAL =
+    !ACTIVE_SPACE && !scopedWorkshop && !requestedOrganization;
+  const ACTIVE_ROOM = PUBLIC_WORLD_GENERAL
+    ? PUBLIC_WORLD_GENERAL_ROOM
+    : ROOM_NAME;
+  const ROOM_KEY_ENDPOINT =
+    `/api/chat/room-key?owner=${encodeURIComponent(ROOM_OWNER)}` +
+    `&repo=${encodeURIComponent(ROOM_REPO)}` +
+    `&room=${encodeURIComponent(ACTIVE_ROOM)}`;
+  const workshopChannelSuffix = scopedWorkshop
+    ? `${requestedWorkshopRepo}/${requestedWorkshopRun}`
+        .toLowerCase()
+        .replace(/[^a-z0-9._/-]+/g, "-")
+        .slice(0, 180)
+    : "";
+  const CHANNEL = scopedWorkshop
+    ? `#world-workshop/${workshopChannelSuffix}`
+    : ACTIVE_SPACE
+      ? SPACE_CHANNELS[ACTIVE_SPACE]
+      : "#general";
+  const CHANNEL_LABEL = scopedWorkshop
+    ? `${requestedWorkshopRepo} · run ${requestedWorkshopRun.slice(0, 12)}`
+    : ACTIVE_SPACE
+    ? ACTIVE_SPACE
+        .split("-")
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ")
+    : "General";
+  const CHAT_WS_PATH =
+    `/api/repo/${encodeURIComponent(ROOM_OWNER)}` +
+    `/${encodeURIComponent(ROOM_REPO)}/rooms/${encodeURIComponent(ACTIVE_ROOM)}/ws`;
   const FORKBOT_ENDPOINT = "/api/forkbot/chat";
   const FORKBOT_SENDER_ID = "forkbot";
   const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
@@ -20,6 +81,9 @@
   const RELAY_HOST = window.FORKMESH_RELAY_HOST || location.host;
   const MAX_TEXT = 16000;
   const MAX_NAME = 32;
+  const MAX_ATTACHMENT_BYTES = 1024 * 1024;
+  const MAX_ATTACHMENT_NAME = 180;
+  const MAX_ATTACHMENT_MIME = 100;
   const MAX_SIDE_MESSAGES = 3;
   const CHAT_MENTION_RE = /(^|[^A-Za-z0-9_-])@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)\b/gi;
 
@@ -59,9 +123,12 @@
   const seen = new Set();
   const rows = new Map();
   const sideEntries = [];
+  const attachmentControls = [];
+  const attachmentUrls = new Set();
   // Rolling buffer of recent decrypted messages, forwarded to ForkBot so it can
-  // resolve references like "that bug" from the conversation. The room is E2E
-  // encrypted, so the relay only sees what we choose to send here.
+  // resolve references like "that bug" from the conversation. The relay can
+  // decrypt the default shared-key room; this controls only the narrower
+  // context explicitly sent to ForkBot.
   const recentContext = [];
   const RECENT_CONTEXT_MAX = 20;
   function rememberContext(sender, text) {
@@ -88,6 +155,70 @@
     for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
     return out;
   }
+
+  function safeAttachmentName(value) {
+    const parts = String(value || "").replace(/\\/g, "/").split("/");
+    const name = String(parts.pop() || "")
+      .replace(/\0/g, "")
+      .trim()
+      .slice(0, MAX_ATTACHMENT_NAME);
+    return name || "file";
+  }
+
+  function safeAttachmentMime(value) {
+    const mime = String(value || "").trim().toLowerCase();
+    return /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/.test(mime) &&
+      mime.length <= MAX_ATTACHMENT_MIME
+      ? mime
+      : "application/octet-stream";
+  }
+
+  function attachmentFromEntry(entry) {
+    if (!entry || !entry.fileName || typeof entry.file !== "string") return null;
+    if (!entry.file || entry.file.length > Math.ceil(MAX_ATTACHMENT_BYTES * 4 / 3) + 4) {
+      return null;
+    }
+    try {
+      const bytes = b64ToBytes(entry.file);
+      if (!bytes.length || bytes.byteLength > MAX_ATTACHMENT_BYTES) return null;
+      return {
+        fileName: safeAttachmentName(entry.fileName),
+        fileMime: safeAttachmentMime(entry.fileMime),
+        file: entry.file,
+        size: bytes.byteLength,
+        objectUrl: "",
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function attachmentObjectUrl(attachment) {
+    if (attachment.objectUrl) return attachment.objectUrl;
+    const bytes = b64ToBytes(attachment.file);
+    const url = URL.createObjectURL(new Blob([bytes], { type: attachment.fileMime }));
+    attachment.objectUrl = url;
+    attachmentUrls.add(url);
+    return url;
+  }
+
+  function releaseAttachment(attachment) {
+    if (!attachment?.objectUrl) return;
+    URL.revokeObjectURL(attachment.objectUrl);
+    attachmentUrls.delete(attachment.objectUrl);
+    attachment.objectUrl = "";
+  }
+
+  function formatAttachmentSize(size) {
+    const bytes = Math.max(0, Number(size) || 0);
+    if (bytes < 1024) return `${bytes} B`;
+    return `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KiB`;
+  }
+
+  window.addEventListener("beforeunload", () => {
+    for (const url of attachmentUrls) URL.revokeObjectURL(url);
+    attachmentUrls.clear();
+  });
 
   function b64urlToBytes(value) {
     let s = (value || "").replace(/-/g, "+").replace(/_/g, "/");
@@ -123,7 +254,11 @@
     if (token) headers.authorization = "Bearer " + token;
     const res = await fetch(ROOM_KEY_ENDPOINT, { headers, cache: "no-store" });
     if (!res.ok) {
-      const err = new Error("Sign in to join chat — room key unavailable.");
+      const err = new Error(
+        PUBLIC_WORLD_GENERAL
+          ? "Public World #general key unavailable."
+          : "Sign in to join this authenticated chat — room key unavailable."
+      );
       err.code = res.status === 401 || res.status === 403 ? "auth" : "server";
       throw err;
     }
@@ -136,7 +271,10 @@
   async function deriveRoomKey() {
     const passphrase = await fetchRoomPassphrase();
     const saltDigest = new Uint8Array(
-      await crypto.subtle.digest("SHA-256", enc.encode("ForkMesh room:" + ROOM_NAME))
+      await crypto.subtle.digest(
+        "SHA-256",
+        enc.encode("ForkMesh room:" + ACTIVE_ROOM)
+      )
     );
     const salt = saltDigest.slice(0, 16);
     const baseKey = await crypto.subtle.importKey(
@@ -205,7 +343,17 @@
 
   function writeSession(session) {
     try {
-      localStorage.setItem("forkmesh.session", JSON.stringify(session));
+      const stored = session && typeof session === "object"
+        ? {
+            ...session,
+            sessionToken: (
+              location.protocol === "https:" && session.sessionToken
+                ? "cookie"
+                : session.sessionToken || ""
+            ),
+          }
+        : session;
+      localStorage.setItem("forkmesh.session", JSON.stringify(stored));
     } catch (_) {}
   }
 
@@ -266,10 +414,58 @@
     return isUserLikeSession(session) ? session : null;
   }
 
+  function canJoinChat() {
+    return PUBLIC_WORLD_GENERAL || Boolean(userSession());
+  }
+
+  function chatAccountKind() {
+    return PUBLIC_WORLD_GENERAL && !userSession() ? "guest" : "user";
+  }
+
+  // Everyone in the public World room shows under the plain name they assert.
+  // The old "World visitor · jett" prefix read as a second, different person
+  // sitting next to the signed-in "jett", so it is stripped from anything that
+  // still carries it (session names, replayed history frames).
+  function publicWorldName(value) {
+    return String(value || "")
+      .replace(/^World visitor\s*·\s*/i, "")
+      .trim()
+      .slice(0, MAX_NAME) || "guest";
+  }
+
+  // The World floats each chat line above the speaker's avatar by matching the
+  // sender against that avatar's presence name (world.js
+  // handleWorldChatMessage). A signed-out visitor stands in the World as
+  // "Guest ####" — derived from the same per-tab guest id this same-origin
+  // iframe can read — so the embedded chat has to introduce itself under that
+  // name or a guest's bubble never finds its avatar. Keep this in step with
+  // guestId()/hashSuffix()/accountIdentity() in public/world/world.js.
+  const WORLD_GUEST_ID_KEY = "forkmesh.world.guestId.v1";
+  function worldGuestPresenceName() {
+    if (requestedParams.get("worldEmbed") !== "1") return "";
+    let guest = "";
+    try {
+      guest = String(sessionStorage.getItem(WORLD_GUEST_ID_KEY) || "");
+    } catch (_) {
+      guest = "";
+    }
+    if (!guest) return "";
+    let hash = 0;
+    for (const char of `guest:${guest}`) {
+      hash = (Math.imul(hash, 31) + char.charCodeAt(0)) >>> 0;
+    }
+    return `Guest ${String(hash % 10000).padStart(4, "0")}`;
+  }
+
   function displayName() {
     const session = userSession() || readSession();
-    const value = session?.nodeName || session?.email || "web-guest";
-    return String(value).trim().slice(0, MAX_NAME) || "web-guest";
+    const value =
+      session?.nodeName ||
+      session?.email ||
+      worldGuestPresenceName() ||
+      `World Guest ${String(selfId).replace(/[^A-Za-z0-9]/g, "").slice(0, 6)}`;
+    const name = String(value).trim().slice(0, MAX_NAME) || "World Guest";
+    return PUBLIC_WORLD_GENERAL ? publicWorldName(name) : name;
   }
 
   function escapeHtml(value) {
@@ -415,36 +611,40 @@
   }
 
   function fullEmptyHtml() {
-    return '<div class="mt-3 rounded-lg border border-border bg-background px-4 py-3 text-sm text-muted-foreground">Type below to join the encrypted #general room.</div>';
+    return `<div class="mt-3 rounded-lg border border-border bg-background px-4 py-3 text-sm text-muted-foreground">Type below to join the encrypted ${escapeHtml(CHANNEL)} collaboration channel.</div>`;
   }
 
   function sideEmptyHtml() {
-    return '<div class="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">Type to join #general.</div>';
+    return `<div class="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">Type to join ${escapeHtml(CHANNEL)}.</div>`;
   }
 
   function fullUserOnlyHtml() {
-    return '<div class="mt-3 rounded-lg border border-border bg-background px-4 py-3 text-sm text-muted-foreground">Log in as a user to join the encrypted #general room.</div>';
+    return `<div class="mt-3 rounded-lg border border-border bg-background px-4 py-3 text-sm text-muted-foreground">Log in as a user to join the authenticated ${escapeHtml(CHANNEL)} channel. Guests can use only public World #general.</div>`;
   }
 
   function sideUserOnlyHtml() {
-    return '<div class="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">User login required for chat.</div>';
+    return '<div class="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">User login required for this channel. Guests can use only public World #general.</div>';
   }
 
   function setInputsEnabled(enabled) {
     [fullInput, sideInput, fullSend, sideSend].forEach((el) => {
       if (el) el.disabled = !enabled;
     });
+    attachmentControls.forEach((control) => {
+      control.button.disabled = !enabled;
+      control.input.disabled = !enabled;
+    });
   }
 
   function showUserOnlyState() {
-    setStatus("User login required");
+    setStatus("User login required for this channel");
     setInputsEnabled(false);
     if (fullLog) fullLog.innerHTML = fullUserOnlyHtml();
     if (sideLog) sideLog.innerHTML = sideUserOnlyHtml();
   }
 
   function ensureEmptyState() {
-    if (!userSession()) {
+    if (!canJoinChat()) {
       showUserOnlyState();
       return;
     }
@@ -473,7 +673,51 @@
     return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
 
-  function appendFullMessage(kind, who, text, id, senderId, tsMs) {
+  function renderAttachment(attachment, compact = false) {
+    if (!attachment) return null;
+    const objectUrl = attachmentObjectUrl(attachment);
+    const wrapper = document.createElement("div");
+    wrapper.className = compact ? "mt-1 grid gap-1.5" : "mt-2 grid max-w-md gap-2";
+    if (attachment.fileMime.startsWith("image/")) {
+      const image = document.createElement("img");
+      image.className = "chat-attachment-image";
+      image.className += compact
+        ? " max-h-28 max-w-full rounded-md border border-border object-contain"
+        : " max-h-72 max-w-full rounded-lg border border-border bg-secondary object-contain";
+      image.src = objectUrl;
+      image.alt = attachment.fileName;
+      image.loading = "lazy";
+      image.style.minWidth = compact ? "72px" : "96px";
+      image.style.minHeight = compact ? "54px" : "72px";
+      wrapper.append(image);
+    }
+    const card = document.createElement("div");
+    card.className = "chat-attachment-card";
+    card.className += compact
+      ? " flex min-w-0 items-center gap-2 rounded-md border border-border bg-secondary/70 px-2 py-1.5"
+      : " flex min-w-0 items-center gap-3 rounded-lg border border-border bg-secondary px-3 py-2";
+    const info = document.createElement("div");
+    info.className = "min-w-0 flex-1";
+    const name = document.createElement("div");
+    name.className = "truncate text-xs font-semibold text-foreground";
+    name.textContent = attachment.fileName;
+    name.title = attachment.fileName;
+    const meta = document.createElement("div");
+    meta.className = "truncate text-[10px] text-muted-foreground";
+    meta.textContent = `${attachment.fileMime} - ${formatAttachmentSize(attachment.size)}`;
+    info.append(name, meta);
+    const link = document.createElement("a");
+    link.className = "shrink-0 text-[11px] font-semibold text-primary hover:underline";
+    link.href = objectUrl;
+    link.download = attachment.fileName;
+    link.textContent = "Download";
+    link.setAttribute("aria-label", `Download ${attachment.fileName}`);
+    card.append(info, link);
+    wrapper.append(card);
+    return wrapper;
+  }
+
+  function appendFullMessage(kind, who, text, id, senderId, tsMs, attachment = null) {
     if (!fullLog) return;
     clearEmptyState();
     const self = kind === "self";
@@ -489,10 +733,21 @@
         <p class="text-sm text-muted-foreground leading-relaxed break-words"></p>
       </div>`;
     const textEl = row.querySelector("p");
-    if (textEl) appendMentionText(textEl, text);
+    if (textEl) {
+      if (text) appendMentionText(textEl, text);
+      else textEl.remove();
+    }
+    const content = row.querySelector(".min-w-0.flex-1");
+    const renderedAttachment = renderAttachment(attachment);
+    if (content && renderedAttachment) content.append(renderedAttachment);
     fullLog.append(row);
     fullLog.scrollTop = fullLog.scrollHeight;
-    if (id) rows.set(id, { el: row, senderId: senderId || "", textEl });
+    if (id) rows.set(id, {
+      el: row,
+      senderId: senderId || "",
+      textEl,
+      attachment,
+    });
   }
 
   // The rail's mini chat mirrors the full view at a smaller scale: avatar +
@@ -520,7 +775,13 @@
           <p class="text-xs text-muted-foreground leading-relaxed break-words"></p>
         </div>`;
       const textEl = row.querySelector("p");
-      if (textEl) appendMentionText(textEl, message.text);
+      if (textEl) {
+        if (message.text) appendMentionText(textEl, message.text);
+        else textEl.remove();
+      }
+      const content = row.querySelector(".min-w-0.flex-1");
+      const renderedAttachment = renderAttachment(message.attachment, true);
+      if (content && renderedAttachment) content.append(renderedAttachment);
       sideLog.append(row);
     }
     const bottom = document.createElement("div");
@@ -529,20 +790,28 @@
     bottom.scrollIntoView({ behavior: "smooth" });
   }
 
-  function appendSideMessage(kind, who, text, id, senderId, tsMs) {
+  function appendSideMessage(kind, who, text, id, senderId, tsMs, attachment = null) {
     // Insert in timestamp order (append is the common case) so the newest
     // message is always the bottom row even when retained history replays
     // after live messages have already landed.
-    const entry = { kind, who, text, id, senderId, tsMs: Number(tsMs) || Date.now() };
+    const entry = {
+      kind,
+      who,
+      text,
+      id,
+      senderId,
+      tsMs: Number(tsMs) || Date.now(),
+      attachment,
+    };
     let index = sideEntries.length;
     while (index > 0 && Number(sideEntries[index - 1].tsMs) > entry.tsMs) index -= 1;
     sideEntries.splice(index, 0, entry);
     renderSideMessages();
   }
 
-  function appendMessage(kind, who, text, id, senderId, tsMs) {
-    appendFullMessage(kind, who, text, id, senderId, tsMs);
-    appendSideMessage(kind, who, text, id, senderId, tsMs);
+  function appendMessage(kind, who, text, id, senderId, tsMs, attachment = null) {
+    appendFullMessage(kind, who, text, id, senderId, tsMs, attachment);
+    appendSideMessage(kind, who, text, id, senderId, tsMs, attachment);
     rememberContext(who, text);
   }
 
@@ -560,8 +829,12 @@
   function removeMessage(id) {
     const rec = rows.get(id);
     if (rec?.el?.parentNode) rec.el.parentNode.removeChild(rec.el);
+    if (rec?.attachment) releaseAttachment(rec.attachment);
     rows.delete(id);
     const idx = sideEntries.findIndex((entry) => entry.id === id);
+    if (idx >= 0 && sideEntries[idx].attachment !== rec?.attachment) {
+      releaseAttachment(sideEntries[idx].attachment);
+    }
     if (idx >= 0) sideEntries.splice(idx, 1);
     renderSideMessages();
   }
@@ -575,7 +848,7 @@
           `${Math.random()}`.slice(2) + Date.now(),
         senderId: selfId,
         sender: displayName(),
-        accountKind: "user",
+        accountKind: chatAccountKind(),
         ts: Date.now(),
       },
       extra || {}
@@ -588,14 +861,75 @@
     return true;
   }
 
-  function renderChatEntry(entry, kind) {
-    if (!entry || entry.accountKind !== "user") return;
+  // Inside the World embed, mirror each live chat line to the parent page so
+  // it can float the message above the speaker's avatar and fade it out
+  // (world.js handleWorldChatMessage). Same-origin only. History replays are
+  // marked so the parent updates only its collapsed CHAT bar with the most
+  // recent line — reconnects never resurrect old bubbles.
+  const WORLD_EMBED_BUBBLES =
+    requestedParams.get("worldEmbed") === "1" && window.parent !== window;
+
+  function emitWorldChatBubble(sender, senderId, text, history = false) {
+    if (!WORLD_EMBED_BUBBLES) return;
+    const line = String(text || "").trim().slice(0, 200);
+    if (!line) return;
+    try {
+      window.parent.postMessage(
+        {
+          type: "forkmesh:world-chat",
+          sender: String(sender || "").slice(0, MAX_NAME),
+          self: senderId === selfId,
+          text: line,
+          history,
+        },
+        location.origin
+      );
+    } catch (_) {}
+  }
+
+  // Replayed entries can arrive out of order, so only forward a history line
+  // when it is the newest one seen — the parent's CHAT bar keeps the latest.
+  let newestHistoryTs = 0;
+  function emitWorldChatHistory(entry) {
+    if (!WORLD_EMBED_BUBBLES || !entry.text) return;
+    const ts = Number(entry.ts) || 0;
+    if (ts < newestHistoryTs) return;
+    newestHistoryTs = ts;
+    emitWorldChatBubble(entry.sender, entry.senderId, entry.text, true);
+  }
+
+  function allowedChatAccountKind(value) {
+    return value === "user" || (PUBLIC_WORLD_GENERAL && value === "guest");
+  }
+
+  function normalizedPublicWorldFrame(entry) {
+    if (!PUBLIC_WORLD_GENERAL || !entry || typeof entry !== "object") {
+      return entry;
+    }
+    return {
+      ...entry,
+      accountKind: entry.accountKind === "user" ? "user" : "guest",
+      sender: publicWorldName(entry.sender),
+    };
+  }
+
+  function renderChatEntry(entry, kind, live = false) {
+    if (!entry || !allowedChatAccountKind(entry.accountKind)) return;
+    entry = normalizedPublicWorldFrame(entry);
     if (!once(entry.id)) return;
     const who = String(entry.sender || "peer").slice(0, MAX_NAME);
-    const text = entry.fileName ? "📎 " + entry.fileName : entry.text || "";
-    if (!text) return;
+    const text = entry.text || "";
+    const attachment = attachmentFromEntry(entry);
+    if (!text && !attachment) return;
+    kind = entry.senderId === selfId ? "self" : kind;
     appendMessage(kind, who, text, entry.id, entry.senderId,
-                  Number(entry.ts) || Date.now());
+                  Number(entry.ts) || Date.now(), attachment);
+    if (live) {
+      newestHistoryTs = Math.max(newestHistoryTs, Number(entry.ts) || 0);
+      emitWorldChatBubble(who, entry.senderId, text);
+    } else {
+      emitWorldChatHistory({ sender: who, senderId: entry.senderId, text, ts: entry.ts });
+    }
   }
 
   async function verifyAdminDelete(plain) {
@@ -647,13 +981,20 @@
       } catch (_) {}
       return;
     }
-    if (type !== "history" && plain.accountKind !== "user") return;
+    if (type !== "history" && !allowedChatAccountKind(plain.accountKind)) return;
+    plain = normalizedPublicWorldFrame(plain);
     const sender = String(plain.sender || "peer").slice(0, MAX_NAME);
     if (type === "chat") {
-      renderChatEntry(plain, "peer");
+      if (plain.channel === CHANNEL) renderChatEntry(plain, "peer", true);
     } else if (type === "history") {
       for (const entry of plain.entries || []) {
-        if (entry && (entry.channel || entry.text || entry.fileName)) renderChatEntry(entry, "peer");
+        if (
+          entry &&
+          entry.channel === CHANNEL &&
+          (entry.channel || entry.text || entry.fileName)
+        ) {
+          renderChatEntry(entry, "peer");
+        }
       }
     } else if (type === "edit") {
       const rec = rows.get(plain.target);
@@ -675,7 +1016,8 @@
         removeMessage(plain.target);
       });
     } else if (type === "hello" && !plain.to) {
-      appendSystem(sender + " joined");
+      // Presence is shown in the World itself; do not add join noise to the
+      // message timeline or push the composer upward.
     } else if (type === "bye") {
       appendSystem(sender + " left");
     }
@@ -690,7 +1032,7 @@
       return;
     }
     const plain = await decryptObject(envelope);
-    if (!plain || plain.senderId === selfId) return;
+    if (!plain) return;
     handlePlain(plain);
   }
 
@@ -703,7 +1045,7 @@
   const DURABLE_TYPES = new Set(["chat", "edit", "delete", "reaction", "admin-delete"]);
 
   function send(plain) {
-    if (!userSession()) {
+    if (!canJoinChat()) {
       showUserOnlyState();
       return Promise.resolve();
     }
@@ -721,7 +1063,7 @@
   let reconnectTimer = null;
 
   function scheduleReconnect() {
-    if (reconnectTimer || !userSession()) return;
+    if (reconnectTimer || !canJoinChat()) return;
     setStatus("Disconnected · reconnecting…");
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
@@ -732,7 +1074,7 @@
 
   async function connect() {
     if (socket || connecting) return;
-    if (!userSession()) {
+    if (!canJoinChat()) {
       showUserOnlyState();
       return;
     }
@@ -761,7 +1103,11 @@
     socket.addEventListener("open", () => {
       connecting = false;
       reconnectDelayMs = 2000;
-      setStatus("Connected · end-to-end encrypted");
+      setStatus(
+        PUBLIC_WORLD_GENERAL
+          ? "Connected · public World #general"
+          : "Connected · authenticated shared key"
+      );
       send(makePlain("hello", { channels: [CHANNEL] }));
       const callbacks = openCallbacks;
       openCallbacks = [];
@@ -779,7 +1125,7 @@
   }
 
   setInterval(() => {
-    if (socket && socket.readyState === WebSocket.OPEN && userSession()) {
+    if (socket && socket.readyState === WebSocket.OPEN && canJoinChat()) {
       send(makePlain("presence"));
     }
   }, 60000);
@@ -808,9 +1154,17 @@
     send(plain);
     seen.add(plain.id);
     appendMessage("peer", plain.sender, plain.text, plain.id, plain.senderId, plain.ts);
+    // The asking client appends directly (not via renderChatEntry), so mirror
+    // the reply to the World embed here too — it floats over the ForkBot
+    // avatar walking the Town Square.
+    emitWorldChatBubble(plain.sender, plain.senderId, plain.text);
   }
 
   async function maybeAskForkbot(text) {
+    // Anyone who can join the room can talk to ForkBot: signed-in users on
+    // the dashboard, and guests inside the public World room (the endpoint
+    // itself is sessionless).
+    if (!canJoinChat()) return;
     if (!FORKBOT_MENTION_RE.test(text || "")) return;
     // Drop the triggering line (sent separately as `message`) and ForkBot's own
     // replies, and cap the rest so ForkBot sees the lead-up conversation.
@@ -822,7 +1176,12 @@
       const response = await fetch(FORKBOT_ENDPOINT, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message: text, sender: displayName(), room: ROOM_NAME, context }),
+        body: JSON.stringify({
+          message: text,
+          sender: displayName(),
+          room: ACTIVE_SPACE || ROOM_NAME,
+          context,
+        }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data || !data.botMessage) return;
@@ -832,8 +1191,105 @@
     }
   }
 
+  function showAttachmentFeedback(control, message) {
+    if (!control?.feedback) return;
+    control.feedback.textContent = String(message || "");
+    if (message) {
+      setTimeout(() => {
+        if (control.feedback.textContent === message) {
+          control.feedback.textContent = "";
+        }
+      }, 5000);
+    }
+  }
+
+  async function sendAttachment(file, control = null) {
+    if (!file || !canJoinChat()) {
+      if (!canJoinChat()) showUserOnlyState();
+      return;
+    }
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      showAttachmentFeedback(control, "Attachments must be 1 MiB or smaller.");
+      return;
+    }
+    if (!file.size) {
+      showAttachmentFeedback(control, "That file is empty.");
+      return;
+    }
+    let buffer;
+    try {
+      buffer = await file.arrayBuffer();
+    } catch (_) {
+      showAttachmentFeedback(control, "Could not read that attachment.");
+      return;
+    }
+    const fileName = safeAttachmentName(file.name);
+    const fileMime = safeAttachmentMime(file.type);
+    const encodedFile = bytesToB64(buffer);
+    runWhenConnected(() => {
+      const plain = makePlain("chat", {
+        channel: CHANNEL,
+        fileName,
+        fileMime,
+        file: encodedFile,
+      });
+      const attachment = attachmentFromEntry(plain);
+      if (!attachment) {
+        showAttachmentFeedback(control, "Could not prepare that attachment.");
+        return;
+      }
+      send(plain);
+      seen.add(plain.id);
+      appendMessage(
+        "self",
+        plain.sender,
+        "",
+        plain.id,
+        plain.senderId,
+        plain.ts,
+        attachment,
+      );
+      showAttachmentFeedback(control, `Shared ${fileName}`);
+    });
+  }
+
+  function mountAttachmentControl(inputEl) {
+    if (!inputEl?.parentElement) return null;
+    const bar = inputEl.parentElement;
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.hidden = true;
+    fileInput.id = `${inputEl.id}AttachmentInput`;
+    fileInput.setAttribute("aria-label", "Choose image or document");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "shrink-0 inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50";
+    button.setAttribute("aria-label", "Attach image or document");
+    button.title = "Attach image or document (up to 1 MiB)";
+    button.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>';
+    const feedback = document.createElement("span");
+    feedback.className = "sr-only";
+    feedback.setAttribute("role", "status");
+    feedback.setAttribute("aria-live", "polite");
+    const control = { button, input: fileInput, feedback };
+    const sendButton = inputEl === fullInput ? fullSend : sideSend;
+    bar.insertBefore(fileInput, sendButton || null);
+    bar.insertBefore(button, sendButton || null);
+    bar.append(feedback);
+    button.addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", () => {
+      const file = fileInput.files && fileInput.files[0];
+      fileInput.value = "";
+      if (file) sendAttachment(file, control);
+    });
+    control.button.disabled = !canJoinChat();
+    control.input.disabled = !canJoinChat();
+    attachmentControls.push(control);
+    return control;
+  }
+
   function sendFrom(inputEl) {
-    if (!userSession()) {
+    if (!canJoinChat()) {
       showUserOnlyState();
       return;
     }
@@ -846,13 +1302,24 @@
       send(plain);
       seen.add(plain.id);
       appendMessage("self", plain.sender, plain.text, plain.id, plain.senderId, plain.ts);
+      emitWorldChatBubble(plain.sender, plain.senderId, plain.text);
       maybeAskForkbot(clipped);
     });
   }
 
   function wireInput(inputEl, sendEl) {
     if (!inputEl || !sendEl) return;
+    const attachmentControl = mountAttachmentControl(inputEl);
     sendEl.addEventListener("click", () => sendFrom(inputEl));
+    inputEl.addEventListener("paste", (event) => {
+      const items = Array.from(event.clipboardData?.items || []);
+      const item = items.find((candidate) =>
+        candidate.kind === "file" && String(candidate.type || "").startsWith("image/"));
+      const file = item ? item.getAsFile() : null;
+      if (!file) return;
+      event.preventDefault();
+      sendAttachment(file, attachmentControl);
+    });
     inputEl.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
@@ -862,13 +1329,21 @@
   }
 
   async function initChat() {
+    if (ACTIVE_SPACE) {
+      document.title = `${CHANNEL_LABEL} collaboration · ForkMesh`;
+      document
+        .querySelectorAll("[data-dashboard-chat-status]")
+        .forEach((element) => {
+          element.title = `Dedicated ${CHANNEL} channel inside the encrypted ForkMesh room`;
+        });
+    }
     await hydrateUserSession();
     ensureEmptyState();
     wireInput(fullInput, fullSend);
     wireInput(sideInput, sideSend);
     // Connect right away so the room's message history (replayed by the relay
     // on WebSocket open) is visible without the visitor first focusing an input.
-    if (userSession()) {
+    if (canJoinChat()) {
       setStatus("Not connected");
       connect();
     }

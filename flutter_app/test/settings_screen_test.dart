@@ -147,18 +147,16 @@ void main() {
     expect(find.text('Payout address connected'), findsOneWidget);
     expect(find.text('alice-public-solana'), findsOneWidget);
     expect(
-      find.textContaining('never paste private keys or seed phrases'),
+      find.textContaining('never fund one or paste a private key'),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('ForkMesh saves only this public payout address'),
       findsOneWidget,
     );
     expect(
       find.textContaining(
-        'public profile metadata for donations and payout metadata',
-      ),
-      findsOneWidget,
-    );
-    expect(
-      find.textContaining(
-        'Worker-custodied and prepared per owner from repo funding panels',
+        'Legacy Worker bounty wallets are frozen for offline migration',
       ),
       findsOneWidget,
     );

@@ -32,6 +32,8 @@
 /blog/:slug/ /blog/:slug/index.html 200
 /network /network.html 200
 /network/ /network 308
+/world /world/index.html 200
+/world/ /world 308
 /chat /chat.html 200
 /desktop /desktop.html 200
 /about /about.html 200

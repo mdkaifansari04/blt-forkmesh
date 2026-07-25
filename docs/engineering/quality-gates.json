@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "definitionOfDone": "docs/engineering/definition-of-done.md",
+  "requiredPullRequestEvidence": [
+    {
+      "id": "threat-review",
+      "heading": "Threat review"
+    },
+    {
+      "id": "abuse-privacy-review",
+      "heading": "Abuse and privacy review"
+    },
+    {
+      "id": "benchmark-evidence",
+      "heading": "Benchmark and budget evidence"
+    },
+    {
+      "id": "regression-evidence",
+      "heading": "Regression-test evidence"
+    },
+    {
+      "id": "operational-evidence",
+      "heading": "Operational evidence"
+    }
+  ],
+  "performanceBudgets": [
+    {
+      "id": "worker-catalog-3000",
+      "metric": "wall-seconds",
+      "maximum": 0.5,
+      "enforcedBy": "cloudflare_worker/tests/test_perf_budgets.py::test_catalog_get_stays_within_budget_at_scale"
+    }
+  ],
+  "gates": [
+    {
+      "id": "python-syntax",
+      "category": "regression",
+      "command": [
+        "{python}",
+        "-m",
+        "compileall",
+        "-q",
+        "cloudflare_worker/src",
+        "tools"
+      ]
+    },
+    {
+      "id": "security-privacy-contracts",
+      "category": "security",
+      "command": [
+        "{python}",
+        "-m",
+        "pytest",
+        "-q",
+        "cloudflare_worker/tests/test_non_custodial_surfaces.py",
+        "cloudflare_worker/tests/test_public_security_claims.py",
+        "cloudflare_worker/tests/test_private_repository_control_access.py",
+        "cloudflare_worker/tests/test_sensitive_mutation_audit.py"
+      ]
+    },
+    {
+      "id": "performance-budgets",
+      "category": "performance",
+      "command": [
+        "{python}",
+        "-m",
+        "pytest",
+        "-q",
+        "cloudflare_worker/tests/test_perf_budgets.py"
+      ]
+    },
+    {
+      "id": "quality-gate-contract",
+      "category": "operations",
+      "command": [
+        "{python}",
+        "-m",
+        "pytest",
+        "-q",
+        "cloudflare_worker/tests/test_quality_gates.py"
+      ]
+    },
+    {
+      "id": "world-browser",
+      "category": "regression",
+      "command": [
+        "npm",
+        "--prefix",
+        "cloudflare_worker/browser_tests",
+        "test"
+      ]
+    }
+  ],
+  "profiles": {
+    "core": [
+      "python-syntax",
+      "security-privacy-contracts",
+      "performance-budgets",
+      "quality-gate-contract"
+    ],
+    "release": [
+      "python-syntax",
+      "security-privacy-contracts",
+      "performance-budgets",
+      "quality-gate-contract",
+      "world-browser"
+    ]
+  },
+  "budgetChangePolicy": {
+    "waiverDirectory": "docs/engineering/quality-gate-waivers",
+    "requiredFields": [
+      "budgetId",
+      "previousValue",
+      "requestedValue",
+      "reason",
+      "riskReview",
+      "expiresAt",
+      "approvedBy"
+    ],
+    "rule": "Removing a budget or making a maximum larger requires a matching, time-limited waiver."
+  }
+}

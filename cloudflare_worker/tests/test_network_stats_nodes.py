@@ -55,7 +55,11 @@ def _run(host_rows):
                     "repo_bi": repo_bi,
                     "owner_bi": owner_bi if owner is not None else None,
                     "is_private": is_private,
-                    "data": {"owner": owner, "name": "repo"} if owner is not None else None,
+                    "data": {
+                        "owner": owner,
+                        "name": "repo",
+                        "visibility": "private" if is_private else "public",
+                    } if owner is not None else None,
                 })
             return rows
         return []  # account_presence query -> none online via account presence
@@ -91,8 +95,6 @@ def _run(host_rows):
             "_is_blocked_catalog_identity": (lambda env, o, n: False),
             "clean_string": (lambda s, n: str(s or "").strip()[:n]),
             "_flagship_client_count": (lambda env: _const(0)),
-            "_min_join_lamports": (lambda env: _const(0)),
-            "_sol_usd_price": (lambda env: _const(0)),
             "_amount_sol": (lambda v: "0"),
             "edge_cache_match": (lambda key: _const(None)),
             "edge_cache_put": noop,

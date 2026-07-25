@@ -1,11 +1,11 @@
--- ForkMesh D1 migration 0012 — relay federation.
--- Lets other relays federate with this (main) relay: their node signups custody
--- their Solana here and flow through this relay's treasury, and their online
--- nodes join this relay's disbursement split. The worker also creates these via
--- ensure_schema in src/entry.py, so applying this by hand is optional.
+-- ForkMesh D1 migration 0012 — relay federation (historical schema).
+-- The signup-custody behavior that originally used federated_signup is disabled.
+-- Existing encrypted rows are frozen for the explicit offline custody migration;
+-- only public historical status remains readable. Relay identity and public
+-- presence federation remain active.
 --
 -- A relay is identified by its Ed25519 pubkey and must be approved before it can
--- custody signups or have its nodes counted:
+-- submit node attestations for independent reward verification:
 --   UPDATE relays SET status = 'approved' WHERE label = '<relay label>';
 -- Block a relay:
 --   UPDATE relays SET status = 'blocked'  WHERE pubkey = '<relay pubkey>';
@@ -20,7 +20,9 @@ CREATE TABLE IF NOT EXISTS relays (
     approved_at INTEGER
 );
 
--- Online node payout wallets reported by federated relays (ts = last report).
+-- Historical base columns only. Migration 0057 removes wallet-only rows and
+-- adds node/relay-signed health, integrity and ForkMesh-mirroring evidence
+-- before any federated row can participate in rewards.
 CREATE TABLE IF NOT EXISTS federated_presence (
     relay_bi TEXT NOT NULL,
     wallet TEXT NOT NULL,
@@ -30,8 +32,8 @@ CREATE TABLE IF NOT EXISTS federated_presence (
 );
 CREATE INDEX IF NOT EXISTS idx_federated_presence_ts ON federated_presence(ts);
 
--- Signups proxied here from a federated relay. `data` is an encrypted blob that
--- reuses the donation_* field names so the existing sweep logic works on it.
+-- Historical signup rows may contain donation_secret until explicitly migrated.
+-- The live Worker never creates, sweeps, or rewrites that wallet material.
 CREATE TABLE IF NOT EXISTS federated_signup (
     reference TEXT PRIMARY KEY,
     relay_bi TEXT NOT NULL,

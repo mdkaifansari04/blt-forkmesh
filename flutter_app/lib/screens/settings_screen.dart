@@ -98,7 +98,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 onSaved: _settings.setSolanaAddress,
               ),
               Text(
-                'This address is public profile metadata for donations and payout metadata. Bounty-wallet deposit addresses are Worker-custodied and prepared per owner from repo funding panels. Use a wallet address only; never paste private keys or seed phrases.',
+                'Non-custodial: ForkMesh saves only this public payout address. Wallet keys and recovery phrases remain on your device. User-owned funds, the public community pool, pending allocations, and finalized transfers are separate states. Legacy Worker bounty wallets are frozen for offline migration; never fund one or paste a private key or seed phrase.',
                 style: TextStyle(
                   color: FmTheme.textSecondary(context),
                   fontSize: 12,
@@ -116,9 +116,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           radius: FmRadius.lg,
           padding: EdgeInsets.zero,
           child: _OrganizationsRow(
-            onOpen: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(builder: (_) => const OrgsScreen()),
-            ),
+            onOpen: () => Navigator.of(
+              context,
+            ).push(MaterialPageRoute<void>(builder: (_) => const OrgsScreen())),
           ),
         ),
         const SizedBox(height: FmSpace.x5),
@@ -480,7 +480,7 @@ class _FundingPayoutStatus extends StatelessWidget {
               Text(
                 address.isNotEmpty
                     ? address
-                    : 'Add a public Solana address if you want profile donations or bounty payout metadata.',
+                    : 'Add a public Solana address only if you want optional mirror-reward or direct-donation metadata. Legacy bounty funding is frozen.',
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   color: FmTheme.textSecondary(context),

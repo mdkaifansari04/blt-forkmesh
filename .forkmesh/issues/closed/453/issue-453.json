@@ -1,0 +1,66 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784405500015,
+    "endDate": 1785038400000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nConfigure and diagnose direct, proxy, overlay, and LAN-only repository routes without silently exposing a direct network path.\n\n## Implementation\n\n- Define route adapters with address, remote-name-resolution, authentication reference, expected privacy mode, and priority.\n- Probe each route for reachability, latency, clone capability, last success, and a sanitized failure reason.\n- Support proxy-only and LAN-only modes that disable direct DNS resolution and direct sockets at the lowest shared transport layer.\n- Allow simultaneous route publication while making the selected route and any fallback policy explicit.\n- Expose route health through one contract consumed by desktop, browser, headless health, and #466.\n\n## Acceptance criteria\n\n- Proxy-only and LAN-only leak tests observe no direct DNS query or socket attempt.\n- No route silently falls back to a less private mode.\n- Authentication material and full private addresses never enter diagnostics.\n- Health changes update live without restarting the node.\n- A stock Git clone uses the selected healthy route or returns its exact bounded failure reason.\n\n## Dependencies\n\nNearby discovery and peer streams are added in #472; availability consumes this contract in #466.\n\n## Verification\n\nRun simultaneous healthy, slow, failed, misconfigured, credential-rejected, name-resolution, proxy-only, LAN-only, and explicit-fallback route fixtures with socket-level leak assertions.",
+            "id": "open-453",
+            "sig": "tG1MCaBk6buBjU0Chh4alCLRQShNc988YQGsfDukikmN5DWk2_dtVCmRWYi2CBq-KJvSyc8HjUbZ6vlBTWrMCQ",
+            "title": "Add multi-route reachability diagnostics and leak-safe modes",
+            "ts": 1784405500015,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1785038400000,
+            "id": "31c82c24-4bdc-4cf4-86bf-f48ec89d26a9",
+            "sig": "rZRWd3ArKHrso77pfI61VWcV24C6PRcm1mTYRBHU6y5EUJx0a_p1biHvtnjkBZN-tgANFcPE3DYE3i8WjI32DA",
+            "startDate": 1784347200000,
+            "ts": 1784405500016,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "3727c1b3-c250-41ae-9800-32c8a1886e72",
+            "sig": "aKRIbxROwbpD7AEk1uuokQXIKaunuAPtifiSv2hW0Y1wp_AxjbnKH5Fxj19AgOUvzY7HPKOX0wozV4Dw8dGdBA",
+            "ts": 1784729751153,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "4ca15847-8726-4a0d-8695-7f94d5ef8c08",
+            "sig": "se78cnUPXpzF5gK_Xk-RKKnKCRGRzSW_-zmoofXi6zFQn7-2MsI4gZzJ3fKrkbWiBznYhDYJpSPYSHsfvQ-OAg",
+            "status": "closed",
+            "ts": 1784729751154,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "security",
+        "enhancement"
+    ],
+    "milestone": "Open operations",
+    "number": 453,
+    "priority": 21,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784347200000,
+    "status": "closed",
+    "title": "Add multi-route reachability diagnostics and leak-safe modes",
+    "updatedAt": 1784729751154,
+    "votes": 0
+}

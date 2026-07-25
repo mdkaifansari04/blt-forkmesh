@@ -5,7 +5,7 @@
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Mirror rewards · ForkMesh Blog</title>
-    <meta name="description" content="Nodes that preserve code get recognized and rewarded for it, with a payouts page tracking what mirroring has earned.">
+    <meta name="description" content="ForkMesh's transparent mainnet-beta community pool may reward eligible, integrity-verified mirrors through an owner-controlled local signer. Rewards are not guaranteed.">
     <meta name="application-name" content="ForkMesh">
     <meta name="apple-mobile-web-app-title" content="ForkMesh">
     <meta name="theme-color" content="#090909">
@@ -23,7 +23,7 @@
     <meta property="og:url" content="https://forkmesh.com/blog/mirror-rewards/">
     <meta property="og:site_name" content="ForkMesh">
     <meta property="og:title" content="Mirror rewards">
-    <meta property="og:description" content="Nodes that preserve code get recognized and rewarded for it, with a payouts page tracking what mirroring has earned.">
+    <meta property="og:description" content="ForkMesh's transparent mainnet-beta community pool may reward eligible, integrity-verified mirrors through an owner-controlled local signer. Rewards are not guaranteed.">
     <meta property="og:image" content="https://forkmesh.com/assets/blog/features/mirror-rewards.webp">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:image" content="https://forkmesh.com/assets/blog/features/mirror-rewards.webp">
@@ -38,22 +38,23 @@
           <div>
             <p class="eyebrow">Accounts &amp; rewards</p>
             <h1>Mirror rewards</h1>
-            <p class="lede">Nodes that preserve code get recognized and rewarded for it, with a payouts page tracking what mirroring has earned.</p>
+            <p class="lede">A transparent mainnet-beta community pool may reward eligible, integrity-verified mirrors through an owner-controlled local signer. Test networks require explicit development configuration.</p>
             <div class="meta"><span class="pill">Feature 66 of 72</span><span>Feature</span><span>Accounts, money &amp; rewards</span><span>3 min read</span></div>
           </div>
           <img class="hero-img" src="/assets/blog/features/mirror-rewards.webp" alt="Abstract ForkMesh artwork for Mirror rewards">
         </section>
         <article class="body">
           <h2>Why it matters</h2>
-          <p>Mirror rewards gives ForkMesh a concrete mechanism for recognition and payouts for nodes preserving code. Nodes that preserve code get recognized and rewarded for it, with a payouts page tracking what mirroring has earned.</p>
+          <p>Independent mirrors spend disk, bandwidth, and operator time keeping code available. ForkMesh can recognize that work with small voluntary community incentives without promising income or taking custody of a node operator’s wallet.</p>
           <p>Preservation costs time, disk, bandwidth, and maintenance, so incentives need to point at the nodes and people doing the work. In ForkMesh, mirror rewards addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
-          <p>ForkMesh handles mirror rewards through the same split it uses across the product: ForkMesh links node identity, repository activity, public profiles, and Solana payment flows without changing Git ownership.</p>
-          <p>The behavior is intentionally narrow: Nodes that preserve code get recognized and rewarded for it, with a payouts page tracking what mirroring has earned. Support can move to maintainers, mirror operators, and contributors while repositories remain local-first.</p>
-          <div class="note">Title focus: Mirror rewards stays tied to recognition and payouts for nodes preserving code and the local-first repository model.</div>
+          <p>Each configurable round evaluates server-observed signed identity, fresh HTTPS health, a signed integrity proof for the ForkMesh repository, abuse status, minimum uptime or contribution, and a valid public payout address. Candidates are deduplicated across node, operator, wallet, and device before deterministic selection from public finalized-chain entropy.</p>
+          <p>Approved federated relays must forward the original node-signed registration and fresh, nonce-bound ForkMesh repository-health message. The main relay verifies both signatures and the current refs digest; a relay-reported wallet and name by themselves are never reward eligibility.</p>
+          <p>The Worker produces an unsigned exact transfer plan. The first instance owner’s Qt client keeps the community-pool key locally encrypted, requires explicit confirmation, signs locally, and returns only a public transaction signature. The Worker marks completion only after the exact transfer reaches finality.</p>
+          <div class="note"><strong>Non-custodial notice:</strong> Node operators control their own wallets, and ForkMesh never stores their private keys. The public pool is community-funded; pending jobs are not completed transfers; visual effects are not settlement. Rewards are incentives, not investments, wages, or guaranteed returns.</div>
           <h2>Where it fits</h2>
-          <p>Use mirror rewards when identity, support, and incentives should follow verifiable node and repository activity.</p>
-          <p>It pairs with the rest of Accounts, money &amp; rewards because Mirror rewards keeps recognition and payouts for nodes preserving code connected to the repository, its signatures, and the nodes that serve it.</p>
+          <p>The public status view exposes the pool address, network, finalized transaction history, eligibility snapshot hash, selection proof, rejection counts, and documented Sybil limitations.</p>
+          <p>Running a mirror does not guarantee selection or payment, and an online node is not automatically trustworthy.</p>
         </article>
         <nav class="next" aria-label="Feature posts">
           <a href="/blog/issue-bounties/">← Issue bounties</a>

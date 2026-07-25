@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
-"""Signup IP capture contract checks (stdlib only).
+"""Signup anti-abuse privacy contract checks (stdlib only).
 
-A signup records its source IP so anti-abuse can tell how many accounts share an
-address, but the IP must stay private. The design splits the value two ways:
+A signup uses its source address transiently so anti-abuse can count how many
+accounts share a network, but the raw value must never be retained:
 
-  * The IP (plus user-agent + country) goes into the AES-GCM-encrypted `data`
-    blob — readable only with DATA_KEY, never as a plaintext column.
-  * Only a blind index (keyed HMAC) of the IP is stored in a searchable column
-    (ip_bi), so duplicate signups are countable but the address is not reversible.
+  * Country and a generalized client category may enter the encrypted account.
+  * Only a blind index (keyed HMAC) of the transient address is searchable.
 
 These tests assert that contract as source substrings so a refactor can't quietly
 start storing the raw IP in the clear or drop the uniqueness index. They don't
 import the Workers-only JS runtime.
 """
 
+import ast
 from pathlib import Path
 
 
@@ -47,10 +46,21 @@ def test_signup_ip_comes_from_cloudflare_connecting_ip_header():
     assert 'headers.get("x-forwarded-for")' in ENTRY_TEXT
 
 
-def test_signup_ip_is_stored_inside_the_encrypted_record():
-    # The metadata (IP/UA/country) is added to `rec`, which _save_account encrypts
-    # via encrypt_row — so it never lands in a plaintext column.
-    assert 'rec.setdefault("signup", _signup_metadata(request))' in ENTRY_TEXT
+def test_raw_signup_ip_and_user_agent_are_not_retained_in_account_metadata():
+    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    metadata = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_signup_metadata"
+    )
+    constants = {
+        node.value for node in ast.walk(metadata)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert "country" in constants
+    assert "clientCategory" in constants
+    assert "ip" not in constants
+    assert "ua" not in constants
+    assert 'rec["signup"] = signup_meta' in ENTRY_TEXT
 
 
 def test_only_a_blind_index_of_the_ip_is_indexed_not_the_raw_ip():

@@ -5,7 +5,7 @@
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Live clone routing · ForkMesh Blog</title>
-    <meta name="description" content="git clone https://forkmesh.com/owner/repo just works. Smart-HTTP requests are routed over an outbound tunnel to the hosting desktop node, which serves the pack directly.">
+    <meta name="description" content="git clone https://forkmesh.com/owner/repo uses ordinary HTTPS while ForkMesh selects a signed, healthy, integrity-verified mirror behind the unchanged public URL.">
     <meta name="application-name" content="ForkMesh">
     <meta name="apple-mobile-web-app-title" content="ForkMesh">
     <meta name="theme-color" content="#090909">
@@ -23,7 +23,7 @@
     <meta property="og:url" content="https://forkmesh.com/blog/live-clone-routing/">
     <meta property="og:site_name" content="ForkMesh">
     <meta property="og:title" content="Live clone routing">
-    <meta property="og:description" content="git clone https://forkmesh.com/owner/repo just works. Smart-HTTP requests are routed over an outbound tunnel to the hosting desktop node, which serves the pack directly.">
+    <meta property="og:description" content="Git Smart HTTP keeps the public ForkMesh URL while the Worker selects a signed, healthy, integrity-verified mirror behind it.">
     <meta property="og:image" content="https://forkmesh.com/assets/blog/features/live-clone-routing.webp">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:image" content="https://forkmesh.com/assets/blog/features/live-clone-routing.webp">
@@ -38,25 +38,25 @@
           <div>
             <p class="eyebrow">Distributed hosting</p>
             <h1>Live clone routing</h1>
-            <p class="lede">git clone https://forkmesh.com/owner/repo just works. Smart-HTTP requests are routed over an outbound tunnel to the hosting desktop node, which serves the pack directly.</p>
+            <p class="lede">git clone https://forkmesh.com/owner/repo uses ordinary HTTPS while ForkMesh selects a signed, healthy, integrity-verified mirror behind the unchanged public URL.</p>
             <div class="meta"><span class="pill">Feature 03 of 72</span><span>Feature</span><span>Distributed hosting &amp; preservation</span><span>3 min read</span></div>
           </div>
           <img class="hero-img" src="/assets/blog/features/live-clone-routing.webp" alt="Abstract ForkMesh artwork for Live clone routing">
         </section>
         <article class="body">
           <h2>Why it matters</h2>
-          <p>Live clone routing gives ForkMesh a concrete mechanism for Git Smart HTTP requests routed to the node that actually serves the repository. git clone https://forkmesh.com/owner/repo just works. Smart-HTTP requests are routed over an outbound tunnel to the hosting desktop node, which serves the pack directly.</p>
+          <p>Live clone routing lets Git use its normal Smart HTTP protocol while repository storage stays on independent mirrors. The selected mirror hostname is never exposed to the Git client, so links and remotes keep the stable ForkMesh URL.</p>
           <p>Code disappears from a network when one hosted account, one VM, or one storage path becomes the only way to reach it. In ForkMesh, live clone routing addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
-          <p>ForkMesh handles live clone routing through the same split it uses across the product: desktop nodes keep real Git mirrors, while mainnodes coordinate discovery, relay tunnels, presence, account lookup, and clone routing.</p>
-          <p>The behavior is intentionally narrow: git clone https://forkmesh.com/owner/repo just works. Smart-HTTP requests are routed over an outbound tunnel to the hosting desktop node, which serves the pack directly. The Worker helps find and route a live host, but it is not canonical Git storage.</p>
-          <div class="note">Title focus: Live clone routing stays tied to Git Smart HTTP requests routed to the node that actually serves the repository and the local-first repository model.</div>
+          <p>Nodes register a Cloudflare-proxied HTTPS endpoint with an account-bound Ed25519 signature. Scheduled nonce challenges verify freshness, latency, identity, and a signed repository refs digest. For each request, the Worker chooses from the matching public repository group, creates a method/path/body-bound single-use capability, and streams the gateway response.</p>
+          <p>Clone stickiness keeps the related info/refs and upload-pack exchange on one origin. A failed origin is retried only within strict idempotent and response-safety bounds; the Worker never buffers repository content into permanent storage.</p>
+          <div class="note">Private and unknown repositories fail closed. Authorized private delivery transfers an opaque end-to-end encrypted replica over HTTPS rather than exposing a repository path or plaintext to the gateway.</div>
           <h2>Where it fits</h2>
           <p>Use live clone routing when availability, clone routing, and preservation need to be handled by the mesh instead of by a single origin.</p>
           <p>It pairs with the rest of Distributed hosting &amp; preservation because Live clone routing keeps Git Smart HTTP requests routed to the node that actually serves the repository connected to the repository, its signatures, and the nodes that serve it.</p>
         </article>
         <nav class="next" aria-label="Feature posts">
-          <a href="/blog/zero-custody-relay/">← Zero-custody relay</a>
+          <a href="/blog/zero-custody-relay/">← Packfile-free routing relay</a>
           <a href="/blog/streaming-transfers/">Streaming transfers →</a>
         </nav>
       </main>

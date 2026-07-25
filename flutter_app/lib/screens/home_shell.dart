@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:forkmesh/fm_icons.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../services/auth_service.dart';
 import '../services/identity.dart';
@@ -19,7 +22,9 @@ import 'settings_screen.dart';
 
 /// Top-level shell with a persistent status bar and primary app navigation.
 class HomeShell extends StatefulWidget {
-  const HomeShell({super.key});
+  const HomeShell({super.key, this.worldLauncher});
+
+  final Future<bool> Function(Uri uri)? worldLauncher;
 
   @override
   State<HomeShell> createState() => _HomeShellState();
@@ -34,6 +39,7 @@ class _HomeShellState extends State<HomeShell> {
     (icon: Icons.chat_bubble_outline_rounded, label: 'Chat'),
     (icon: Icons.bolt_outlined, label: 'Activity'),
     (icon: Icons.settings_outlined, label: 'Settings'),
+    (icon: Icons.public_rounded, label: 'World'),
     (icon: Icons.grid_view_rounded, label: 'Tools'),
   ];
 
@@ -143,11 +149,28 @@ class _HomeShellState extends State<HomeShell> {
       _showToolsSheet(context);
       return;
     }
+    if (_destinations[i].label == 'World') {
+      unawaited(_openWorld());
+      return;
+    }
     if (_destinations[i].label == 'Chat') {
       final relay = context.read<RelayService>();
       relay.markConversationRead(relay.currentConversation);
     }
     setState(() => _index = i);
+  }
+
+  Future<void> _openWorld() async {
+    final uri = context.read<SettingsService>().worldUri;
+    final launcher =
+        widget.worldLauncher ??
+        (target) => launchUrl(target, mode: LaunchMode.externalApplication);
+    final opened = await launcher(uri);
+    if (!opened && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not open ForkMesh World at $uri')),
+      );
+    }
   }
 
   void _showToolsSheet(BuildContext context) {

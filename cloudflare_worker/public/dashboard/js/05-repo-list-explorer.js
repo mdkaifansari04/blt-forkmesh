@@ -208,6 +208,89 @@
     `;
   }
 
+  const nativeRepositoryLogoCache = new Map();
+  let nativeRepositoryLogoSessionToken = "";
+  let nativeRepositoryLogoSessionEpoch = 0;
+
+  function nativeRepositoryLogoEndpoint(repo) {
+    const owner = String(repo?.owner || "").trim();
+    const name = String(repo?.name || "").trim();
+    if (!owner || !name) return "";
+    return `/api/repo/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/logo`;
+  }
+
+  function nativeRepositoryLogoMarkup(repo, sizeClass = "h-10 w-10") {
+    const endpoint = nativeRepositoryLogoEndpoint(repo);
+    if (!endpoint) return "";
+    return `
+      <span data-native-repo-logo-frame class="relative flex ${sizeClass} shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border bg-secondary text-muted-foreground">
+        <i data-native-repo-logo-fallback data-lucide="book-marked" class="h-4 w-4"></i>
+        <img data-native-repo-logo data-logo-endpoint="${escapeHtml(endpoint)}" alt="" loading="lazy" decoding="async" class="absolute inset-0 hidden h-full w-full object-cover" />
+      </span>
+    `;
+  }
+
+  function nativeRepositoryLogoDataUrl(value) {
+    const url = String(value || "");
+    return /^data:image\/(?:svg\+xml|png|jpeg|webp)(?:;|,)/i.test(url)
+      ? url
+      : "";
+  }
+
+  function nativeRepositoryLogoCacheKey(endpoint) {
+    const token = String(state.session?.sessionToken || "");
+    if (token !== nativeRepositoryLogoSessionToken) {
+      // A guest miss must not hide a private logo after login, and an
+      // owner-authorized logo must never survive logout/account switching.
+      nativeRepositoryLogoCache.clear();
+      nativeRepositoryLogoSessionToken = token;
+      nativeRepositoryLogoSessionEpoch += 1;
+    }
+    return `${nativeRepositoryLogoSessionEpoch}:${endpoint}`;
+  }
+
+  function loadNativeRepositoryLogo(endpoint) {
+    const cacheKey = nativeRepositoryLogoCacheKey(endpoint);
+    if (!nativeRepositoryLogoCache.has(cacheKey)) {
+      const token = String(state.session?.sessionToken || "");
+      const headers = { Accept: "application/json" };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const pending = fetch(endpoint, {
+        headers,
+        credentials: "same-origin",
+      }).then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const body = await response.json();
+        if (String(state.session?.sessionToken || "") !== token) return "";
+        return nativeRepositoryLogoDataUrl(body?.logo?.dataUrl);
+      }).catch(() => {
+        // Do not negatively cache authorization failures or transient errors.
+        // The same card can be retried after login or on a later render.
+        if (nativeRepositoryLogoCache.get(cacheKey) === pending) {
+          nativeRepositoryLogoCache.delete(cacheKey);
+        }
+        return "";
+      });
+      nativeRepositoryLogoCache.set(cacheKey, pending);
+    }
+    return nativeRepositoryLogoCache.get(cacheKey);
+  }
+
+  function hydrateNativeRepositoryLogos(root) {
+    if (!root) return;
+    root.querySelectorAll("[data-native-repo-logo]").forEach(async (image) => {
+      const endpoint = image.getAttribute("data-logo-endpoint") || "";
+      if (!endpoint || image.dataset.logoHydrated === "true") return;
+      image.dataset.logoHydrated = "true";
+      const dataUrl = await loadNativeRepositoryLogo(endpoint);
+      if (!dataUrl || !image.isConnected) return;
+      image.src = dataUrl;
+      image.classList.remove("hidden");
+      image.parentElement?.querySelector("[data-native-repo-logo-fallback]")
+        ?.classList.add("hidden");
+    });
+  }
+
   function repoActivitySparkline(values, options = {}) {
     const series = normalizeActivityWeeks(values);
     const max = Math.max(1, ...series);
@@ -261,7 +344,9 @@
     return `
       <div data-repo="${escapeHtml(key.toLowerCase())}" data-dashboard-open-repo="${escapeHtml(key)}" data-clone-url="${escapeHtml(cloneUrl(origin))}" role="link" tabindex="0" aria-label="Open ${escapeHtml(key)}" class="repo-card group cursor-pointer px-4 py-3 hover:bg-secondary/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
         <div class="repo-layout grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(10rem,12rem)] md:items-center">
-          <div class="min-w-0">
+          <div class="flex min-w-0 items-start gap-3">
+            ${nativeRepositoryLogoMarkup(origin)}
+            <div class="min-w-0 flex-1">
             <div class="flex min-w-0 items-center gap-2">
               <p class="min-w-0 truncate text-sm font-medium text-foreground">
                 <span class="text-muted-foreground">${escapeHtml(origin.owner || "owner")}/</span>${escapeHtml(origin.name || "repository")}
@@ -289,6 +374,7 @@
               <span class="text-xs text-muted-foreground font-mono">updated ${escapeHtml(formatDate(repo.updatedAt || repo.lastSync))}</span>
             </div>
             <div class="mt-3 grid grid-cols-2 gap-1.5 sm:grid-cols-4">${metrics}</div>
+            </div>
           </div>
           <div class="min-w-0">
             ${repoActivitySparkline(activityWeeks, { totalHint: commitTotal })}
@@ -307,7 +393,9 @@
     const commitTotal = groupRepoMetric(group, ["commitCount", "commits", "commitHistory"]);
     const activityWeeks = groupActivityWeeks(group);
     return `<article data-profile-repository-row class="grid gap-3 px-4 py-5 md:grid-cols-[minmax(0,1fr)_12rem]">
-      <a href="${escapeHtml(repoPathUrl(repo))}" class="block min-w-0 text-left">
+      <a href="${escapeHtml(repoPathUrl(repo))}" class="flex min-w-0 items-start gap-3 text-left">
+        ${nativeRepositoryLogoMarkup(repo, "h-12 w-12")}
+        <span class="block min-w-0 flex-1">
         <span class="flex min-w-0 flex-wrap items-center gap-2">
           <span class="min-w-0 truncate text-lg font-semibold text-accent hover:underline">${escapeHtml(repo.name || "repository")}</span>
           <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground">${escapeHtml(visibility)}</span>
@@ -318,6 +406,7 @@
           <span class="inline-flex items-center gap-1.5"><span data-repo-language-dot class="h-2 w-2 rounded-full bg-primary"></span>${escapeHtml(language)}</span>
           <span class="inline-flex items-center gap-1.5"><i data-lucide="scale" class="h-3.5 w-3.5"></i>${escapeHtml(license)}</span>
           <span>Updated ${escapeHtml(formatDate(repo.updatedAt || repo.lastSync))}</span>
+        </span>
         </span>
       </a>
       <div class="grid content-center gap-3">
@@ -400,6 +489,7 @@
 
     window.lucide?.createIcons();
     hydrateRepoStarButtons(list);
+    hydrateNativeRepositoryLogos(list);
   }
 
   function renderSidebarRepositories(session) {
@@ -478,9 +568,7 @@
     return `
       <article class="overflow-hidden rounded-lg border border-border bg-card">
         <div class="flex min-w-0 items-start gap-3 px-4 py-4">
-          <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-secondary ${live ? "text-primary" : "text-muted-foreground"}">
-            <i data-lucide="${viaMirror ? "radio" : "book-marked"}" class="h-5 w-5"></i>
-          </span>
+          ${nativeRepositoryLogoMarkup(repo)}
           <div class="min-w-0 flex-1">
             <p class="text-sm text-muted-foreground">
               <a href="${escapeHtml(repoPathUrl(repo))}" class="font-semibold text-accent hover:underline">${escapeHtml(key)}</a>
@@ -507,15 +595,16 @@
       ? cards.join("")
       : '<div class="rounded-lg border border-border bg-card px-4 py-6 text-sm text-muted-foreground">No dashboard activity yet. Publish a repository or receive a notification to start the feed.</div>';
     window.lucide?.createIcons();
+    hydrateNativeRepositoryLogos(container);
   }
 
   function renderHomeChangelog() {
     const container = $("[data-home-changelog-list]");
     if (!container) return;
     const items = [
+      { label: "The Living Code City", meta: "v0.7.0 · July 2026", href: "/changelog" },
       { label: "The Agent Mesh", meta: "v0.5.0 · June 2026", href: "/changelog" },
       { label: "Autonomous agents", meta: "v0.4.0 · June 2026", href: "/changelog" },
-      { label: "Signed patch pull requests", meta: "Blog", href: "/blog/signed-patch-pull-requests/" },
     ];
     container.innerHTML = items.map((item) => `
       <article class="relative">
@@ -611,6 +700,7 @@
       : '<div class="px-4 py-8 text-sm text-muted-foreground">No repositories match this filter.</div>';
     window.lucide?.createIcons();
     hydrateRepoStarButtons(container);
+    hydrateNativeRepositoryLogos(container);
   }
 
   function renderProfileRepositoryCount(count = profileRepositoryGroups().length) {
@@ -649,6 +739,107 @@
     renderGlobalSearchResults();
   }
 
+  function externalRepositoryCard(repository) {
+    const logo = String(repository?.logo?.dataUrl || "");
+    const status = String(repository?.statusLabel || "External repository");
+    const provider = String(repository?.attribution?.provider || repository?.provider || "Provider");
+    const original = String(repository?.originalUrl || "");
+    const canVolunteer = Boolean(state.session?.sessionToken) &&
+      !["actively_mirrored", "archived"].includes(String(repository?.status || ""));
+    const incomplete = Array.isArray(repository?.metadataIncomplete) && repository.metadataIncomplete.length
+      ? `<p class="mt-2 text-[11px] text-amber-300">Some metadata was unavailable or rate-limited during import.</p>`
+      : "";
+    return `
+      <article class="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-start sm:px-5" data-external-repo-id="${escapeHtml(repository?.id || "")}">
+        <img src="${escapeHtml(logo)}" alt="" class="h-12 w-12 shrink-0 rounded-xl border border-border bg-secondary object-cover" />
+        <div class="min-w-0 flex-1">
+          <div class="flex flex-wrap items-center gap-2">
+            <a href="${escapeHtml(original)}" target="_blank" rel="noopener noreferrer" class="truncate font-mono text-sm font-semibold text-foreground hover:text-primary hover:underline">${escapeHtml(repository?.fullName || repository?.name || "External repository")}</a>
+            <span class="rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">${escapeHtml(status)}</span>
+            ${repository?.isPrivate ? '<span class="rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">Private · owner only</span>' : ""}
+          </div>
+          <p class="mt-1 text-xs leading-5 text-muted-foreground">${escapeHtml(repository?.metadata?.description || "No provider description.")}</p>
+          <p class="mt-2 text-[11px] leading-4 text-muted-foreground">${escapeHtml(repository?.mirrorNotice || "This external entry is not mirrored by ForkMesh.")}</p>
+          ${incomplete}
+          <div class="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+            <a href="${escapeHtml(original)}" target="_blank" rel="noopener noreferrer" class="font-medium text-primary hover:underline">Open on ${escapeHtml(provider)}</a>
+            <span aria-hidden="true">·</span>
+            <span>ForkMesh does not own or control this repository</span>
+          </div>
+        </div>
+        ${canVolunteer ? `
+          <button type="button" data-external-mirror-volunteer="${escapeHtml(repository?.id || "")}" class="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border px-3 text-xs font-semibold text-foreground hover:bg-secondary">
+            <i data-lucide="copy-plus" class="h-3.5 w-3.5"></i>
+            Volunteer to mirror
+          </button>` : ""}
+      </article>`;
+  }
+
+  function renderExternalRepositories(repositories) {
+    state.externalRepositoriesLoading = false;
+    state.externalRepositories = Array.isArray(repositories) ? repositories : [];
+    const list = $("[data-external-repo-list]");
+    const count = $("[data-external-repo-count]");
+    if (count) count.textContent = `${formatCount(state.externalRepositories.length)} external`;
+    if (!list) return;
+    list.innerHTML = state.externalRepositories.length
+      ? state.externalRepositories.map(externalRepositoryCard).join("")
+      : '<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">No external repositories or stubs have been listed yet. Use “New repository” to import one.</div>';
+    window.lucide?.createIcons();
+  }
+
+  async function loadExternalRepositories({ fresh = false } = {}) {
+    const list = $("[data-external-repo-list]");
+    if (!list) return;
+    state.externalRepositoriesLoading = true;
+    try {
+      const data = await fetchJson("/api/repository-imports", { fresh });
+      renderExternalRepositories(data.repositories);
+    } catch (_) {
+      state.externalRepositoriesLoading = false;
+      const count = $("[data-external-repo-count]");
+      if (count) count.textContent = "Unavailable";
+      list.innerHTML = '<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">External repository metadata is temporarily unavailable.</div>';
+    }
+  }
+
+  function externalMirrorNodeName() {
+    const nodes = Array.isArray(state.session?.nodes) ? state.session.nodes : [];
+    const first = nodes.find((node) => String(node?.name || node || "").trim());
+    return String(first?.name || first || state.session?.nodeName || "").trim();
+  }
+
+  async function volunteerForExternalMirror(repositoryId, button) {
+    if (!state.session?.sessionToken) {
+      setNewRepoHint("Sign in before volunteering a mirror node.", "bad");
+      return;
+    }
+    const node = externalMirrorNodeName();
+    if (!node) return;
+    if (button) button.disabled = true;
+    try {
+      const response = await fetch(
+        `/api/repository-imports/${encodeURIComponent(repositoryId)}/mirror-volunteers`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", accept: "application/json" },
+          body: JSON.stringify({ node, sessionToken: state.session.sessionToken }),
+        },
+      );
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+      await loadExternalRepositories({ fresh: true });
+    } catch (error) {
+      if (button) {
+        button.textContent = String(error?.message || "") === "eligible_owned_mirror_node_required"
+          ? "Owned mirror node required"
+          : "Could not volunteer";
+      }
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   // New-repository flow (adhoc #30). Publishing a signed catalog record and
   // running the git mirror both require the account's Ed25519 key, which lives
   // on the desktop node — the browser only holds a separate web-issue identity.
@@ -665,6 +856,9 @@
       $("[data-new-repo-steps]")?.classList.add("hidden");
       window.setTimeout(() => $("[data-new-repo-name]")?.focus(), 0);
       window.lucide?.createIcons();
+    } else {
+      const token = $("[data-new-repo-provider-token]");
+      if (token) token.value = "";
     }
   }
 
@@ -682,9 +876,25 @@
     });
     const value = $("[data-new-repo-source-value]");
     const hint = $("[data-new-repo-source-hint]");
+    const provider = source === "provider";
+    $("[data-new-repo-provider-options]")?.classList.toggle("hidden", !provider);
+    $("[data-new-repo-name-wrap]")?.classList.toggle("hidden", provider);
+    $("[data-new-repo-visibility-wrap]")?.classList.toggle("hidden", provider);
+    $("[data-new-repo-description-wrap]")?.classList.toggle("hidden", provider);
+    const name = $("[data-new-repo-name]");
+    if (name) name.required = !provider;
+    const submitLabel = $("[data-new-repo-submit-label]");
+    if (submitLabel) submitLabel.textContent = provider ? "Import metadata" : "Create & mirror";
+    if (!provider) {
+      const token = $("[data-new-repo-provider-token]");
+      if (token) token.value = "";
+    }
     if (source === "local") {
       if (value) value.placeholder = "/home/you/code/my-project";
       if (hint) hint.textContent = "The desktop node reads this local repo directly — the path never leaves your machine.";
+    } else if (provider) {
+      if (value) value.placeholder = "https://github.com/owner/repo or https://gitlab.com/group/repo";
+      if (hint) hint.textContent = "ForkMesh reads bounded metadata from the provider. Importing does not claim ownership or create a mirror.";
     } else {
       if (value) value.placeholder = "https://github.com/owner/repo.git";
       if (hint) hint.textContent = "ForkMesh clones this URL into a bare mirror you then keep in sync.";
@@ -720,10 +930,61 @@
     window.lucide?.createIcons();
   }
 
-  function handleNewRepoSubmit() {
-    const name = String($("[data-new-repo-name]")?.value || "").trim();
+  async function handleNewRepoSubmit() {
     const source = newRepoSource();
     const sourceValue = String($("[data-new-repo-source-value]")?.value || "").trim();
+    if (source === "provider") {
+      if (!state.session?.sessionToken) {
+        setNewRepoHint("Sign in to import a GitHub or GitLab repository.", "bad");
+        return;
+      }
+      if (!sourceValue) {
+        setNewRepoHint("Enter a GitHub or GitLab repository URL.", "bad");
+        $("[data-new-repo-source-value]")?.focus();
+        return;
+      }
+      const tokenInput = $("[data-new-repo-provider-token]");
+      const providerToken = String(tokenInput?.value || "").trim();
+      const mode = $("[data-new-repo-import-mode]")?.value === "stub" ? "stub" : "import";
+      const submit = $("[data-new-repo-submit]");
+      if (submit) submit.disabled = true;
+      setNewRepoHint("Reading provider metadata…");
+      try {
+        const response = await fetch("/api/repository-imports", {
+          method: "POST",
+          headers: { "content-type": "application/json", accept: "application/json" },
+          body: JSON.stringify({
+            sourceUrl: sourceValue,
+            providerToken,
+            mode,
+            sessionToken: state.session.sessionToken,
+          }),
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+        setNewRepoHint(
+          `${body.repository?.statusLabel || "External repository"} created. It remains separate from live mirrors.`,
+          "good",
+        );
+        await loadExternalRepositories({ fresh: true });
+      } catch (error) {
+        const code = String(error?.message || "");
+        setNewRepoHint(
+          code === "provider_rate_limited" ? "The provider rate limit was reached. Try again after its reset time."
+            : code.includes("authorization") ? "The provider rejected access. Private repositories require a valid scoped token."
+            : code === "unsupported_provider" ? "Use a github.com or gitlab.com repository URL."
+            : "Could not import provider metadata.",
+          "bad",
+        );
+      } finally {
+        // The credential is request-only: remove it from the form immediately,
+        // regardless of success or provider failure.
+        if (tokenInput) tokenInput.value = "";
+        if (submit) submit.disabled = false;
+      }
+      return;
+    }
+    const name = String($("[data-new-repo-name]")?.value || "").trim();
     const visibility = $("[data-new-repo-visibility]")?.value === "private" ? "private" : "public";
     const description = String($("[data-new-repo-description]")?.value || "").trim();
     if (!name) {
@@ -792,7 +1053,7 @@
     navigateHistory(tab === "code"
       ? (state.repoCodeUrl || repoPathUrl(state.selectedRepo))
       : `${repoPathUrl(state.selectedRepo)}/${tab}`);
-    if (["commits", "issues", "projects", "pulls", "discussions", "releases", "insights", "agents"].includes(tab) && !state.loadedRepoTabs?.[tab]) {
+    if (["commits", "issues", "projects", "pulls", "discussions", "releases", "insights", "sizemap", "agents"].includes(tab) && !state.loadedRepoTabs?.[tab]) {
       if (!state.loadedRepoTabs) state.loadedRepoTabs = {};
       state.loadedRepoTabs[tab] = true;
       if (tab === "commits") loadRepoCommits(state.selectedRepo);
@@ -800,6 +1061,7 @@
       else if (tab === "projects") loadRepoProjects(state.selectedRepo);
       else if (tab === "releases") loadRepoReleases(state.selectedRepo);
       else if (tab === "insights") loadRepoInsights(state.selectedRepo);
+      else if (tab === "sizemap") loadRepoSizeMapTab(state.selectedRepo);
       else if (tab === "agents") loadRepoAgents(state.selectedRepo);
       else loadRepoCollection(state.selectedRepo, tab, `[data-repo-${tab}]`);
     } else if (tab === "issues") {
@@ -1257,11 +1519,10 @@
       const value = current.get(key);
       if (value) query.set(key, value);
     });
-    // pulls/ metadata lives on its own dedicated branch (issue #399): the
-    // host resolves a pulls/ path to refs/heads/forkmesh/pulls only when the
-    // request names NO explicit ref, so pull readers pass ref:"" to defer to
-    // the host instead of pinning the stale pulls/ copy left on the selected
-    // code branch. Every other caller keeps the selected-branch default.
+    // Callers reading the dedicated pull-metadata branch first resolve its
+    // immutable OID with resolveRepoPullMetadataCommit(), then pass that exact
+    // value here. Explicitly empty refs retain the generic no-ref URL contract
+    // for compatibility callers; pull readers never rely on that ambiguity.
     if (!("ref" in (params || {}))) query.set("ref", repoSelectedBranch(repo));
     else if (!String(params.ref || "")) query.delete("ref");
     const version = repoDataVersion(repo);

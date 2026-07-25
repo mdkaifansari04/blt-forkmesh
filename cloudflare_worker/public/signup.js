@@ -59,6 +59,11 @@
         isAdmin: Boolean(body.isAdmin),
         adminUrl: body.adminUrl || "",
         hasPayoutAddress: Boolean(body.hasPayoutAddress),
+        sessionToken: (
+          location.protocol === "https:" && body.sessionToken
+            ? "cookie"
+            : body.sessionToken || ""
+        ),
         kind: body.kind || "user",
         owner: body.owner || "",
         nodes: Array.isArray(body.nodes) ? body.nodes : [],

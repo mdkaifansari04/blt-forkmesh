@@ -1,0 +1,37 @@
+{
+    "assignees": [
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1784735684858,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "",
+            "id": "open-521",
+            "sig": "i2WGQLXgZUyiD9R7izO-O4khAepOeT0jxpIYUlqO62-d-nn4tdZ4G2hHczZzwr12_kUjHS380aff8e6lo4zeDg",
+            "title": "integrate with lemmy / threadiverse",
+            "ts": 1784735684858,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 521,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "integrate with lemmy / threadiverse",
+    "updatedAt": 1784735684858,
+    "votes": 0
+}

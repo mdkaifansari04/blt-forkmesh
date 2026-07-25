@@ -36,6 +36,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
+from worker_test_helpers import json_from_request_double
+
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
@@ -54,6 +56,7 @@ def _load(*names, extra_globals=None):
     module = ast.fix_missing_locations(
         ast.Module(body=selected, type_ignores=[]))
     namespace = dict(extra_globals or {})
+    namespace.setdefault("bounded_json_request", json_from_request_double)
     exec(compile(module, str(ENTRY), "exec"), namespace)
     return namespace
 
@@ -386,19 +389,24 @@ def test_hostmeta_route_is_registered():
 
 # --- public pages: edge-cached rel=me targets ---------------------------------
 
-def test_public_history_browse_is_edge_cached_keyed_on_state_hash():
+def test_public_history_browse_uses_the_direct_https_gateway():
     # The contribution graph's per-repo /history fetches carry
-    # fmv=<attested state hash>; the host route parks public history
-    # responses at the edge keyed on the full URL so an entry
-    # self-invalidates when the repo moves (git_advert_cache pattern).
+    # fmv=<attested state hash>. The ordinary query string is forwarded to a
+    # healthy signed direct-HTTPS endpoint; there is no repository socket or
+    # Durable Object response cache in this path.
     route_body = ENTRY_TEXT[
-        ENTRY_TEXT.index("public_browse = False"):
+        ENTRY_TEXT.index("host_match = REPO_HOST_RE.match"):
         ENTRY_TEXT.index("room = room_key_from_path(url.path)")
     ]
-    assert 'host_match.group(3) == "history"' in route_body
-    assert 'params.get("fmv", [""])[0]' in route_body
-    assert "edge_cache_match_media(" in route_body
-    assert "git_advert_cache_put(" in route_body
+    assert '"history", "commit"' in route_body
+    assert "return await _https_mirror_proxy(" in route_body
+    assert "host_object.fetch" not in route_body
+    proxy = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _https_mirror_proxy"):
+        ENTRY_TEXT.index("\n\nclass Default")
+    ]
+    assert "_https_mirror_request_query(" in proxy
+    assert "for endpoint in candidates:" in proxy
 
 
 def test_guest_account_lookup_is_edge_cached_and_purged_on_actor_update():
@@ -413,7 +421,7 @@ def test_guest_account_lookup_is_edge_cached_and_purged_on_actor_update():
     assert "ACCOUNT_LOOKUP_CACHE_PREFIX" in broadcast_body
 
 
-def test_profile_and_repo_pages_are_edge_cached_before_any_d1_work():
+def test_profile_and_repo_pages_use_edge_cache_without_bypassing_privacy():
     profile_body = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _serve_profile_page"):
         ENTRY_TEXT.index("async def _serve_repo_page")
@@ -425,13 +433,21 @@ def test_profile_and_repo_pages_are_edge_cached_before_any_d1_work():
     for body in (profile_body, repo_body):
         assert "edge_cache_match(cache_key)" in body
         assert "edge_cache_put(cache_key, page)" in body
-    # The profile page checks the cache before ensure_schema/_account_row.
-    assert (profile_body.index("edge_cache_match")
-            < profile_body.index("ensure_schema"))
-    # The repo page still checks the edge cache before any D1 work, even though
-    # a cache miss now looks up the repo's logo for the OpenGraph card.
-    assert (repo_body.index("edge_cache_match")
-            < repo_body.index("ensure_schema"))
+    # Revalidate profile visibility before returning a cached public page. This
+    # fails closed if a privacy change lands before cache invalidation.
+    assert (profile_body.index("ensure_schema")
+            < profile_body.index("edge_cache_match"))
+    assert (profile_body.index("_account_row")
+            < profile_body.index("edge_cache_match"))
+    # A repo-page cache key is derived from the exact signed state/commit pin.
+    # Re-read and validate the public catalog row before cache lookup so a
+    # prior state's shell cannot be reused after a privacy/state transition.
+    assert (repo_body.index("ensure_schema")
+            < repo_body.index("edge_cache_match"))
+    assert (repo_body.index("_catalog_record_matches_identity")
+            < repo_body.index("edge_cache_match"))
+    assert (repo_body.index("_repository_social_version")
+            < repo_body.index("edge_cache_match"))
 
 
 def test_repo_page_injects_opengraph_card_with_stats_image():

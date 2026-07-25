@@ -112,9 +112,19 @@
   }
 
   function writeSession(nextSession) {
-    state.session = nextSession;
+    const storedSession = nextSession && typeof nextSession === "object"
+      ? {
+          ...nextSession,
+          sessionToken: (
+            location.protocol === "https:" && nextSession.sessionToken
+              ? "cookie"
+              : nextSession.sessionToken || ""
+          ),
+        }
+      : nextSession;
+    state.session = storedSession;
     try {
-      localStorage.setItem("forkmesh.session", JSON.stringify(nextSession));
+      localStorage.setItem("forkmesh.session", JSON.stringify(storedSession));
       document.cookie = "forkmesh_session=1; Path=/; Max-Age=2592000; SameSite=Lax"
         + (location.protocol === "https:" ? "; Secure" : "");
     } catch (_) {}
@@ -513,7 +523,7 @@
 
   // Feature-tab route segments (mirrors 404.html's `featureTabs` list) - tells
   // a tab route (e.g. /owner/repo/issues) apart from a tree/blob code deep link.
-  const REPO_TAB_ROUTES = ["commits", "insights", "releases", "issues", "projects", "pulls", "discussions", "mirrors"];
+  const REPO_TAB_ROUTES = ["commits", "insights", "sizemap", "releases", "issues", "projects", "pulls", "discussions", "mirrors"];
 
   // The owner-only "Agents" tab (adhoc #182) is only ever a recognized route
   // for the account that can actually see it - sessionCanAssignAgent gates it

@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751244,
+    "endDate": 1801198800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nMaintainers can review and merge routine or complex changes in ForkMesh without falling back to another forge.\n\n## Scope\n\n- Support inline threads, suggestions, approvals, dismissal, ownership rules, patch history, re-review, and signed review state.\n- Add stacked changes, comparison between patchsets, merge queues, required checks, and conflict resolution.\n- Offer merge commit, squash, rebase, fast-forward, and policy-selected strategies with terminal/web/desktop parity.\n\n## Acceptance criteria\n\n- Review conversations remain attached to the right lines or expose an explicit outdated state across patchsets.\n- Suggested changes and every merge strategy preserve attribution and signed audit history.\n- Queue ordering, branch protection, checks, ownership, and conflict tests pass under concurrent updates.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 release gate**\n- Milestone: **Collaboration public beta**\n- Numeric priority: **16 of 44** (1 is highest)\n- Depends on: #481, #484, #485, #496\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**40% as of 2026-07-22.** Signed pull requests, diffs, mergeability checks, desktop/web views, and AI review exist; advanced human review and queue workflows remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Review completion time, merge success, escaped defects, conflict recovery, and reviewer satisfaction. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-483",
+            "sig": "TxcDfe-G06jYIl7SUwsHryqGp2nUyxwOoZcm_iJ8ASI-6hecSh-7vhvrVE1tTCOkuVMZk2Sho4Sjh7550zJ7CA",
+            "title": "Ship a complete pull-request review experience",
+            "ts": 1784729751244,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "37b927b5-408f-4002-867b-e574513d3d19",
+            "labels": [
+                "product",
+                "ux",
+                "feature"
+            ],
+            "sig": "sakIRJDHFAbyoYcPqewZHDF2RAkLKFQDto28HrkNZljoPrgBK7twA7bxN6JH3jeHpRsRtijdM7sHREmxKc_aAA",
+            "ts": 1784729751245,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "e3540188-abe7-4dd3-a827-a14415f15ce7",
+            "milestone": "Collaboration public beta",
+            "sig": "8pksY4F3mmcF7baDFrpdR0HeIWMN3NlGetxNdYa9FrzA7UF3afRnJWX81Yt1d5Sn4nIZ9xZCj67lepx4MJHjBw",
+            "ts": 1784729751246,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1801198800000,
+            "id": "9bc4626b-5f94-4e2a-8d52-5c36fb59f370",
+            "sig": "T5Sv1wnj9plBs22_nY07sIqO8QyjhwumZtnh4DkYbs-pYkEZveAjvSNibiFc9MaNSdVun1H0vZHNKcskZqDJAQ",
+            "startDate": 1786939200000,
+            "ts": 1784729751247,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "d0c06ba4-48d4-4ef9-9c93-14f26a2866a3",
+            "priority": 16,
+            "sig": "NcXLH2FG1jAgkzYLDRj5-pRE4hORxyUQOIZJVc4Xs6vFnPh96NkR-HgLamcfxuKof3ZU1iuy3R055e7iLiHCBQ",
+            "ts": 1784729751248,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "4cc36a7f-17b9-4491-9057-cd2ffaba8bdd",
+            "progress": 40,
+            "sig": "C62Az22ulWvTAPL4WsUd3bI-ou2UTvQV5NgqJoam9agi-XiWCVoHjdZFihDRbhf8HmEhdBzDqn7afsM1GdN-BQ",
+            "ts": 1784729751249,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "product",
+        "ux",
+        "feature"
+    ],
+    "milestone": "Collaboration public beta",
+    "number": 483,
+    "priority": 16,
+    "progress": 40,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1786939200000,
+    "status": "open",
+    "title": "Ship a complete pull-request review experience",
+    "updatedAt": 1784729751249,
+    "votes": 0
+}

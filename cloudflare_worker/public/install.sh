@@ -16,7 +16,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.12.15 (2026-07-12)"
+INSTALLER_VERSION="0.13.0 (2026-07-24)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -72,19 +72,38 @@ FORKMESH_LINK_CODE="${FORKMESH_LINK_CODE:-}"
 FORKMESH_LOCAL_BINARY="${FORKMESH_LOCAL_BINARY:-}"
 FORKMESH_LOCAL_OS="${FORKMESH_LOCAL_OS:-}"
 FORKMESH_LOCAL_ARCH="${FORKMESH_LOCAL_ARCH:-}"
+# Optional fail-closed release provenance pin. The desktop fleet installer
+# supplies both the version and build commit embedded in its controller binary.
+# A normal one-line install leaves these empty and keeps existing behavior.
+FORKMESH_EXPECTED_BUILD_COMMIT="${FORKMESH_EXPECTED_BUILD_COMMIT:-}"
+FORKMESH_EXPECTED_RELEASE_VERSION="${FORKMESH_EXPECTED_RELEASE_VERSION:-}"
+# A prebuilt artifact is accepted only when its exact release manifest is
+# authenticated independently of the mirror that supplied it. Controllers may
+# pin the exact manifest SHA-256. Standalone installs may instead point at a
+# locally provisioned Ed25519 publisher public key (PEM); the detached
+# release.json.sig is then verified with OpenSSL. A checksum copied from the
+# fetched manifest is never a trust anchor.
+FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256="${FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256:-}"
+FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE="${FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE:-}"
+[ -n "$FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE" ] ||
+  [ ! -f /etc/forkmesh/release-publisher.pem ] ||
+  FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE=/etc/forkmesh/release-publisher.pem
+# Direct uploads do not carry a release manifest, so the authenticated
+# controller must supply their exact digest.
+FORKMESH_LOCAL_BINARY_SHA256="${FORKMESH_LOCAL_BINARY_SHA256:-}"
 FORKMESH_NAME="${FORKMESH_NAME:-forkmesh}"
 FORKMESH_INSTALL_SOURCE_URL="${FORKMESH_INSTALL_SOURCE_URL:-${FORKMESH_HOST%/}/api/install-source}"
 FORKMESH_DIAG_URL="${FORKMESH_DIAG_URL:-${FORKMESH_HOST%/}/api/install-diag}"
 REPO="${FORKMESH_REPO:-}"
 # Space-separated list of online mirror nodes resolved from the mainnode, best
-# first, and the matching list of clone URLs to try in order. A mirror can report
-# itself online (a live host WebSocket) yet still time out the git clone proxy
-# with a 504, so the installer falls back to the next mirror instead of dead-
-# ending on the first one. Populated by resolve_install_node / the mirror block.
+# first, and the matching list of clone URLs to try in order. A direct-HTTPS
+# endpoint can become unavailable after its latest signed health check, so the
+# installer still falls back instead of dead-ending on the first one. Populated
+# by resolve_install_node / the mirror block.
 FORKMESH_NODES=""
 REPO_CANDIDATES=()
 # Set by clean_clone to the human-readable reason the last clone attempt failed
-# (e.g. "mirror host timed out (HTTP 504)"), so the final error and the anonymous
+# (e.g. "mirror endpoint timed out (HTTP 504)"), so the final error and the anonymous
 # diagnostics can say WHY every mirror was unreachable rather than just "failed".
 CLONE_FAIL_REASON=""
 # The build checkout lives in a dedicated, installer-only location. The only
@@ -93,6 +112,13 @@ CLONE_FAIL_REASON=""
 SRC="${FORKMESH_DIR:-$HOME/.local/share/forkmesh/src}"
 BIN_DIR="${FORKMESH_BIN_DIR:-$HOME/.local/bin}"
 BIN="$BIN_DIR/forkmesh"
+PID_FILE="${FORKMESH_PID_FILE:-${XDG_RUNTIME_DIR:-$HOME/.local/share/forkmesh}/forkmesh.pid}"
+SYSTEMD_UNIT="/etc/systemd/system/forkmesh-node.service"
+SYSTEMD_ENV="/etc/forkmesh/node.env"
+SYSTEMD_BIN="/usr/local/bin/forkmesh"
+SYSTEMD_INSTALL_MARKER="/etc/forkmesh/installer-managed"
+SYSTEMD_STATE_DIR="/var/lib/forkmesh"
+SYSTEMD_STATE_MARKER="/var/lib/forkmesh/.forkmesh-managed-service"
 # Set to 1 if a clone is rejected by the relay's integrity gate, so the final
 # error can explain that specific (owner-fixable) case instead of a generic one.
 PIN_FAILURE=0
@@ -103,6 +129,18 @@ INSTALLED_PREBUILT=0
 # desktop/launch tail can reference it even on the prebuilt fast path (where no
 # build ever runs) without tripping `set -u`.
 BUILD=""
+# A commit-pinned reinstall validates and stages its replacement before
+# honoring the destructive reinstall request. This keeps the old node running
+# when release metadata or candidate provenance is stale.
+DEFER_PINNED_REINSTALL=0
+# Source trees created by this installer carry an owner/path-bound marker. No
+# recursive operation is allowed merely because an environment variable points
+# at a directory.
+MANAGED_MARKER=".forkmesh-managed"
+INSTALLER_START_DIR="$(pwd -P 2>/dev/null || pwd)"
+INSTALLER_WORKSPACE_ROOT="$(
+  git -C "$INSTALLER_START_DIR" rev-parse --show-toplevel 2>/dev/null || true
+)"
 
 # Whether to fall back to a source build when no prebuilt binary is published
 # for this platform/arch. A headless Linux box (no DISPLAY/WAYLAND_DISPLAY) is
@@ -136,6 +174,165 @@ die()  { printf '\033[31mError:\033[0m %s\n' "$1" >&2; exit 1; }
 # mirror list, the raw source response, the exact URLs being cloned) without
 # cluttering the normal install log.
 dbg()  { [ "${FORKMESH_DEBUG:-0}" = "1" ] && printf '\033[2m[debug]\033[0m %s\n' "$1" >&2 || true; }
+
+_sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" 2>/dev/null | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+  else
+    echo ""
+  fi
+}
+
+_canonical_path() {
+  local value="$1" probe suffix="" base physical
+  case "$value" in
+    /*) probe="$value" ;;
+    *) probe="$INSTALLER_START_DIR/$value" ;;
+  esac
+  case "$probe" in *'
+'*) return 1 ;; esac
+  # Resolve the deepest existing ancestor physically, then append only simple
+  # non-symlink path components. This works on Linux and macOS without relying
+  # on GNU realpath -m.
+  while [ ! -e "$probe" ]; do
+    base="${probe##*/}"
+    [ -n "$base" ] && [ "$base" != "." ] && [ "$base" != ".." ] || return 1
+    suffix="/$base$suffix"
+    probe="${probe%/*}"
+    [ -n "$probe" ] || probe="/"
+  done
+  [ ! -L "$probe" ] || return 1
+  if [ -d "$probe" ]; then
+    physical="$(cd -P -- "$probe" 2>/dev/null && pwd -P)" || return 1
+  else
+    physical="$(cd -P -- "${probe%/*}" 2>/dev/null && pwd -P)" || return 1
+    physical="$physical/${probe##*/}"
+  fi
+  physical="${physical%/}$suffix"
+  [ -n "$physical" ] || physical="/"
+  printf '%s\n' "$physical"
+}
+
+_path_owner_uid() {
+  stat -c '%u' "$1" 2>/dev/null || stat -f '%u' "$1" 2>/dev/null || true
+}
+
+_marker_is_valid() {
+  local dir="$1" marker="$1/$MANAGED_MARKER" uid
+  [ -d "$dir" ] && [ ! -L "$dir" ] && [ -f "$marker" ] &&
+    [ ! -L "$marker" ] || return 1
+  uid="$(_path_owner_uid "$marker")"
+  [ "$uid" = "$(id -u)" ] || return 1
+  grep -Fqx 'forkmesh-managed-v1' "$marker" &&
+    grep -Fqx "uid=$(id -u)" "$marker" &&
+    grep -Fqx "path=$dir" "$marker"
+}
+
+_write_managed_marker() {
+  local dir="$1" marker="$1/$MANAGED_MARKER"
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+  umask 077
+  {
+    printf 'forkmesh-managed-v1\n'
+    printf 'uid=%s\n' "$(id -u)"
+    printf 'path=%s\n' "$dir"
+  } > "$marker"
+}
+
+_remove_managed_src() {
+  local dir="$1"
+  [ -e "$dir" ] || return 0
+  _marker_is_valid "$dir" ||
+    die "Refusing to recursively remove unmanaged or owner-mismatched source directory: $dir"
+  rm -rf -- "$dir"
+}
+
+SRC="$(_canonical_path "$SRC")" ||
+  die "FORKMESH_DIR is not a canonical, non-symlink path."
+CANONICAL_HOME="$(_canonical_path "$HOME")" ||
+  die "HOME could not be canonicalized safely."
+case "$SRC" in
+  /|/bin|/boot|/dev|/etc|/home|/lib|/lib64|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/var)
+    die "Refusing unsafe FORKMESH_DIR target: $SRC" ;;
+esac
+[ "$SRC" != "$CANONICAL_HOME" ] ||
+  die "FORKMESH_DIR may not be the home directory."
+if [ -n "$INSTALLER_WORKSPACE_ROOT" ]; then
+  INSTALLER_WORKSPACE_ROOT="$(_canonical_path "$INSTALLER_WORKSPACE_ROOT")" ||
+    die "Current workspace could not be canonicalized."
+  case "$INSTALLER_WORKSPACE_ROOT/" in
+    "$SRC/"*) die "FORKMESH_DIR may not be the current workspace or one of its parents." ;;
+  esac
+fi
+# A new custom target must use the intentionally narrow .../forkmesh/src shape.
+# Existing targets are accepted only when their owner/path-bound marker proves
+# this installer already owns them.
+if [ ! -e "$SRC" ]; then
+  case "$SRC" in */forkmesh/src) ;; *)
+    die "A new FORKMESH_DIR must end in /forkmesh/src." ;;
+  esac
+elif [ -L "$SRC" ]; then
+  die "FORKMESH_DIR may not be a symlink."
+elif ! _marker_is_valid "$SRC"; then
+  _legacy_default="$(_canonical_path "$HOME/.local/share/forkmesh/src" 2>/dev/null || true)"
+  _legacy_marker="$SRC/$MANAGED_MARKER"
+  if [ "$SRC" = "$_legacy_default" ] && [ -f "$_legacy_marker" ] &&
+     [ ! -L "$_legacy_marker" ] &&
+     [ "$(_path_owner_uid "$_legacy_marker")" = "$(id -u)" ]; then
+    _write_managed_marker "$SRC" ||
+      die "Could not upgrade the legacy ForkMesh install marker."
+  else
+    die "Existing FORKMESH_DIR is not marked as an owner-matched ForkMesh install: $SRC"
+  fi
+fi
+
+if [ -n "$FORKMESH_EXPECTED_BUILD_COMMIT" ]; then
+  FORKMESH_EXPECTED_BUILD_COMMIT="$(
+    printf '%s' "$FORKMESH_EXPECTED_BUILD_COMMIT" | tr 'A-F' 'a-f'
+  )"
+  if ! printf '%s' "$FORKMESH_EXPECTED_BUILD_COMMIT" |
+      grep -Eq '^([0-9a-f]{40}|[0-9a-f]{64})$'; then
+    die "FORKMESH_EXPECTED_BUILD_COMMIT must be an exact 40- or 64-hex Git commit."
+  fi
+  if ! printf '%s' "$FORKMESH_EXPECTED_RELEASE_VERSION" |
+      grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-.][A-Za-z0-9._+-]+)?$'; then
+    die "FORKMESH_EXPECTED_RELEASE_VERSION must be an exact release version."
+  fi
+fi
+for _fm_digest_name in \
+    FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256 \
+    FORKMESH_LOCAL_BINARY_SHA256; do
+  eval "_fm_digest_value=\${${_fm_digest_name}}"
+  if [ -n "$_fm_digest_value" ] &&
+     ! printf '%s' "$_fm_digest_value" | grep -Eq '^[0-9a-fA-F]{64}$'; then
+    die "$_fm_digest_name must be an exact 64-hex SHA-256 digest."
+  fi
+done
+FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256="$(
+  printf '%s' "$FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256" | tr 'A-F' 'a-f'
+)"
+FORKMESH_LOCAL_BINARY_SHA256="$(
+  printf '%s' "$FORKMESH_LOCAL_BINARY_SHA256" | tr 'A-F' 'a-f'
+)"
+if [ -n "$FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE" ]; then
+  [ -f "$FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE" ] &&
+    [ ! -L "$FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE" ] ||
+    die "FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE must name a non-symlink regular file."
+  _fm_key_uid="$(_path_owner_uid "$FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE")"
+  [ "$_fm_key_uid" = "0" ] || [ "$_fm_key_uid" = "$(id -u)" ] ||
+    die "Trusted release public key must be owned by root or the installing user."
+  _fm_key_mode="$(
+    stat -c '%a' "$FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE" 2>/dev/null ||
+      stat -f '%Lp' "$FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE" 2>/dev/null || true
+  )"
+  printf '%s' "$_fm_key_mode" | grep -Eq '^[0-7]{3,4}$' ||
+    die "Could not validate trusted release public-key permissions."
+  if (( (8#${_fm_key_mode} & 8#022) != 0 )); then
+    die "Trusted release public key may not be group/world writable."
+  fi
+fi
 
 # In debug mode, make git print the full HTTP exchange (request/response status
 # and headers) on stderr so a 5xx from the relay can be traced to its cause.
@@ -266,44 +463,66 @@ ensure_mirror_candidates() {
 # (called inline before a fresh install — skips the interactive confirmation,
 # since a reinstall is already gated by its own Qt-side dialog / explicit flag,
 # and returns instead of exiting so the caller can carry on installing).
-# Stop every running ForkMesh daemon on this host. Matches by exact process
-# name AND by the known binary/source paths, then SIGKILLs stragglers. If a
-# daemon survives (almost always because it is owned by another user, e.g. a
-# root/sudo install), retries once with `sudo -n` and, failing that, warns
-# loudly rather than leaving a phantom old node reporting to the network.
+# Stop only the daemon instance this installer started. A managed systemd unit
+# is named explicitly; a user daemon is addressed by its owner-only PID file
+# and its live executable path is checked before any signal is sent. Process
+# name scans (`pkill forkmesh`) are intentionally forbidden because they can
+# stop unrelated users, test instances, or other ForkMesh nodes on the host.
 # $1: a short context label for the log line (unused beyond readability).
 stop_forkmesh_daemons() {
-  local running=0
-  _fm_alive() { pgrep -x forkmesh >/dev/null 2>&1 \
-    || pgrep -f -- "$BIN" >/dev/null 2>&1 \
-    || pgrep -f -- "$SRC" >/dev/null 2>&1; }
-  if _fm_alive; then
-    running=1
-    pkill -x forkmesh   2>/dev/null || true
-    pkill -f -- "$BIN"  2>/dev/null || true
-    pkill -f -- "$SRC"  2>/dev/null || true
-    for _ in 1 2 3 4 5 6 7 8 9 10; do _fm_alive || break; sleep 0.5; done
-    if _fm_alive; then
-      pkill -9 -x forkmesh   2>/dev/null || true
-      pkill -9 -f -- "$BIN"  2>/dev/null || true
-      pkill -9 -f -- "$SRC"  2>/dev/null || true
+  local pid="" expected="$BIN" live="" owner=""
+  if [ "$(id -u)" -eq 0 ] && [ -f "$SYSTEMD_UNIT" ] &&
+     grep -Fqx '# Managed-By: ForkMesh installer' "$SYSTEMD_UNIT"; then
+    if ! grep -Fqx "ExecStart=$SYSTEMD_BIN" "$SYSTEMD_UNIT"; then
+      die "Refusing to stop a modified forkmesh-node.service."
     fi
+    systemctl stop forkmesh-node.service ||
+      die "Could not stop the managed forkmesh-node.service."
+    say "Stopped managed forkmesh-node.service"
+    return 0
   fi
-  # Still alive after SIGKILL => not ours to signal. Try a non-interactive sudo
-  # (never prompts, so `curl | bash` can't hang), then give up with a warning.
-  if _fm_alive; then
-    if [ "$(id -u 2>/dev/null)" != "0" ] && command -v sudo >/dev/null 2>&1; then
-      sudo -n pkill -9 -x forkmesh 2>/dev/null || true
-      sudo -n pkill -9 -f -- "$BIN" 2>/dev/null || true
-    fi
-    if _fm_alive; then
-      warn "A ForkMesh daemon is STILL running (it is likely owned by root — re-run this uninstall with sudo). Until it is stopped it will keep reporting an old version to the network."
-    else
-      say "Stopped the running ForkMesh daemon"
-    fi
-  elif [ "$running" = "1" ]; then
-    say "Stopped the running ForkMesh daemon"
+
+  [ -f "$PID_FILE" ] || {
+    warn "No managed ForkMesh PID file exists; no process was signalled."
+    return 0
+  }
+  [ ! -L "$PID_FILE" ] || die "Refusing symlink PID file: $PID_FILE"
+  IFS= read -r pid < "$PID_FILE" || true
+  printf '%s' "$pid" | grep -Eq '^[1-9][0-9]*$' ||
+    die "Managed ForkMesh PID file is invalid."
+  if ! kill -0 "$pid" 2>/dev/null; then
+    rm -f -- "$PID_FILE"
+    return 0
   fi
+  owner="$(ps -o uid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+  [ "$owner" = "$(id -u)" ] ||
+    die "Refusing to signal PID $pid because it is owned by uid ${owner:-unknown}."
+  if [ -e "/proc/$pid/exe" ]; then
+    live="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+    live="${live% (deleted)}"
+    expected="$(_canonical_path "$BIN" 2>/dev/null || printf '%s' "$BIN")"
+    [ "$live" = "$expected" ] ||
+      die "Refusing to signal PID $pid because its executable is $live, not $expected."
+  else
+    live="$(ps -o command= -p "$pid" 2>/dev/null | awk '{print $1}')"
+    case "$live" in "$BIN"|"$BIN.app/Contents/MacOS/ForkMesh") ;; *)
+      die "Refusing to signal PID $pid because its command does not match $BIN." ;;
+    esac
+  fi
+  kill "$pid"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.5
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid"
+    sleep 0.1
+  fi
+  if kill -0 "$pid" 2>/dev/null; then
+    die "Managed ForkMesh daemon PID $pid did not stop."
+  fi
+  rm -f -- "$PID_FILE"
+  say "Stopped managed ForkMesh daemon PID $pid"
 }
 
 uninstall_forkmesh() {
@@ -320,7 +539,6 @@ uninstall_forkmesh() {
     "$data_home/ForkMesh"            # identity key, mirrors, repos, chat, actions
     "$cache_home/ForkMesh"          # caches
     "$HOME/.forkmesh"               # IDE-extension handoff dir
-    "$data_home/forkmesh"           # installer source checkout (parent of $SRC)
   )
   # Loose files: binary, desktop launcher, autostart entry, installed icons.
   local files=(
@@ -369,10 +587,41 @@ uninstall_forkmesh() {
   #   • by $BIN and by the source build dir — the normal and in-place locations.
   stop_forkmesh_daemons "installer uninstall"
 
+  if [ "$(id -u)" -eq 0 ] && [ -f "$SYSTEMD_UNIT" ] &&
+     grep -Fqx '# Managed-By: ForkMesh installer' "$SYSTEMD_UNIT"; then
+    systemctl disable forkmesh-node.service >/dev/null 2>&1 || true
+    rm -f -- "$SYSTEMD_UNIT" "$SYSTEMD_ENV"
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    if [ -f "$SYSTEMD_INSTALL_MARKER" ] &&
+       grep -Fqx "binary=$SYSTEMD_BIN" "$SYSTEMD_INSTALL_MARKER"; then
+      _managed_hash="$(sed -n 's/^sha256=//p' "$SYSTEMD_INSTALL_MARKER" | head -n1)"
+      _current_hash="$(_sha256_file "$SYSTEMD_BIN")"
+      if [ -n "$_managed_hash" ] && [ "$_managed_hash" = "$_current_hash" ]; then
+        rm -f -- "$SYSTEMD_BIN"
+      else
+        warn "Managed service binary changed since install; preserving $SYSTEMD_BIN."
+      fi
+      rm -f -- "$SYSTEMD_INSTALL_MARKER"
+    fi
+    if [ -f "$SYSTEMD_STATE_MARKER" ] &&
+       [ ! -L "$SYSTEMD_STATE_MARKER" ] &&
+       [ "$(_path_owner_uid "$SYSTEMD_STATE_MARKER")" = "0" ] &&
+       grep -Fqx 'forkmesh-managed-service-v1' "$SYSTEMD_STATE_MARKER" &&
+       grep -Fqx "path=$SYSTEMD_STATE_DIR" "$SYSTEMD_STATE_MARKER"; then
+      rm -rf -- "$SYSTEMD_STATE_DIR"
+    else
+      warn "Managed service state marker is missing or invalid; preserving $SYSTEMD_STATE_DIR."
+    fi
+  fi
+
   local d f
+  _remove_managed_src "$SRC"
   for d in "${dirs[@]}"; do
     if [ -e "$d" ]; then rm -rf -- "$d" && say "Removed $d"; fi
   done
+  # Remove the installer's lowercase parent only when the managed checkout was
+  # its sole content. Unknown sibling data is never recursively erased.
+  rmdir -- "$(dirname "$SRC")" 2>/dev/null || true
   for f in "${files[@]}"; do
     if [ -e "$f" ]; then rm -f -- "$f" && say "Removed $f"; fi
   done
@@ -402,9 +651,14 @@ for arg in "$@"; do
   esac
 done
 if [ "$FORKMESH_REINSTALL" = "1" ]; then
-  CURRENT_STEP="reinstall"
-  say "Reinstall requested — clearing the existing install before reinstalling."
-  uninstall_forkmesh reinstall
+  if [ -n "$FORKMESH_EXPECTED_BUILD_COMMIT" ]; then
+    DEFER_PINNED_REINSTALL=1
+    say "Reinstall requested — validating the replacement before clearing the existing node."
+  else
+    CURRENT_STEP="reinstall"
+    say "Reinstall requested — clearing the existing install before reinstalling."
+    uninstall_forkmesh reinstall
+  fi
 fi
 
 # Plain ASCII box (not Unicode box-drawing): the box-drawing characters are
@@ -713,35 +967,152 @@ _manifest_repo() {
   sed -n 's/.*"repo"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -n 1
 }
 
-# Echo the sha256 of file $1 (Linux sha256sum / macOS shasum), or empty if no
-# checksum tool is available (download then installs unverified, with a warning).
-_sha256_file() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
-  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
-  else echo ""; fi
+# Echo the exact revision embedded in release binaries. This is intentionally
+# distinct from tag_commit, which remains the peeled target of the release tag.
+_manifest_build_commit() {
+  [ -f "$1" ] || return 0
+  sed -n 's/.*"build_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" |
+    head -n 1 | tr 'A-F' 'a-f'
 }
 
-# Install binary file $1 to $BIN (mode 0755), creating $BIN_DIR. Non-zero on fail.
+_manifest_tag() {
+  [ -f "$1" ] || return 0
+  sed -n 's/.*"tag"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" |
+    head -n 1
+}
+
+_manifest_checksums_sha256() {
+  [ -f "$1" ] || return 0
+  sed -n 's/.*"checksums_sha256"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' "$1" |
+    head -n 1 | tr 'A-F' 'a-f'
+}
+
+# Authenticate release.json independently, then bind it to the checksum list.
+# Either an authenticated controller pins the exact manifest digest or a local
+# Ed25519 publisher trust anchor verifies its detached signature.
+_verify_release_metadata() {
+  local manifest="$1" signature="$2" sums="$3"
+  local manifest_hash sums_hash expected_sums tag build_commit
+  manifest_hash="$(_sha256_file "$manifest")"
+  if ! printf '%s' "$manifest_hash" | grep -Eq '^[0-9a-f]{64}$'; then
+    warn "A working SHA-256 tool is required for every prebuilt install."
+    return 1
+  fi
+  if [ -n "$FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256" ]; then
+    if [ "$manifest_hash" != "$FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256" ]; then
+      warn "Release manifest does not match the controller-pinned SHA-256."
+      return 1
+    fi
+  elif [ -n "$FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE" ]; then
+    if ! command -v openssl >/dev/null 2>&1; then
+      warn "OpenSSL is required to verify the trusted release signature."
+      return 1
+    fi
+    if [ ! -f "$signature" ] || [ "$(wc -c < "$signature" | tr -d ' ')" != "64" ] ||
+       ! openssl pkeyutl -verify -pubin -rawin \
+           -inkey "$FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE" \
+           -in "$manifest" -sigfile "$signature" >/dev/null 2>&1; then
+      warn "Release manifest signature is missing or invalid."
+      return 1
+    fi
+  else
+    warn "No independent release trust anchor is configured; refusing prebuilt bytes."
+    return 1
+  fi
+
+  grep -Eq '"schema"[[:space:]]*:[[:space:]]*"forkmesh-release-v2"' "$manifest" ||
+    { warn "Authenticated release manifest uses an unsupported schema."; return 1; }
+  expected_sums="$(_manifest_checksums_sha256 "$manifest")"
+  sums_hash="$(_sha256_file "$sums")"
+  if ! printf '%s' "$expected_sums" | grep -Eq '^[0-9a-f]{64}$' ||
+     [ "$sums_hash" != "$expected_sums" ]; then
+    warn "SHASUMS256.txt is not bound to the authenticated release manifest."
+    return 1
+  fi
+  if [ -n "$FORKMESH_EXPECTED_BUILD_COMMIT" ]; then
+    build_commit="$(_manifest_build_commit "$manifest")"
+    if [ "$build_commit" != "$FORKMESH_EXPECTED_BUILD_COMMIT" ]; then
+      warn "Published release does not match required build commit $FORKMESH_EXPECTED_BUILD_COMMIT."
+      return 1
+    fi
+    tag="$(_manifest_tag "$manifest")"
+    if [ "$tag" != "v$FORKMESH_EXPECTED_RELEASE_VERSION" ] &&
+       [ "$tag" != "$FORKMESH_EXPECTED_RELEASE_VERSION" ]; then
+      warn "Published release does not match required version $FORKMESH_EXPECTED_RELEASE_VERSION."
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# Stage into the destination filesystem, validate those exact staged bytes, then
+# atomically rename over $BIN. The old inode/process remains intact on every
+# checksum or provenance failure.
 _install_binary() {
+  local candidate="$1" expected_hash="${2:-}" staged source_hash staged_hash
+  INSTALL_BINARY_FAILURE_KIND=""
   mkdir -p "$BIN_DIR" || return 1
-  install -m 0755 "$1" "$BIN" 2>/dev/null || { cp "$1" "$BIN" && chmod 0755 "$BIN"; }
+  if ! printf '%s' "$expected_hash" | grep -Eq '^[0-9a-f]{64}$'; then
+    warn "An authenticated SHA-256 is required before staging a prebuilt binary."
+    INSTALL_BINARY_FAILURE_KIND="checksum"
+    return 1
+  fi
+  source_hash="$(_sha256_file "$candidate")"
+  if [ "$source_hash" != "$expected_hash" ]; then
+    warn "ForkMesh binary failed its source SHA-256 check; leaving the existing node untouched."
+    INSTALL_BINARY_FAILURE_KIND="checksum"
+    return 1
+  fi
+  staged="$(mktemp "$BIN_DIR/.forkmesh-install.XXXXXX" 2>/dev/null)" ||
+    return 1
+  if ! install -m 0755 "$candidate" "$staged" 2>/dev/null; then
+    if ! cp "$candidate" "$staged" || ! chmod 0755 "$staged"; then
+      rm -f "$staged"
+      return 1
+    fi
+  fi
+  staged_hash="$(_sha256_file "$staged")"
+  if [ "$staged_hash" != "$expected_hash" ]; then
+    warn "Staged ForkMesh binary failed its SHA-256 check; leaving the existing node untouched."
+    INSTALL_BINARY_FAILURE_KIND="checksum"
+    rm -f "$staged"
+    return 1
+  fi
+  if ! chmod 0755 "$staged"; then
+    rm -f "$staged"
+    return 1
+  fi
+  if [ "$DEFER_PINNED_REINSTALL" = "1" ]; then
+    CURRENT_STEP="reinstall"
+    uninstall_forkmesh reinstall
+    DEFER_PINNED_REINSTALL=0
+    mkdir -p "$BIN_DIR" || { rm -f "$staged"; return 1; }
+  fi
+  if ! mv -f "$staged" "$BIN"; then
+    rm -f "$staged"
+    return 1
+  fi
+  return 0
 }
 
 # Install the prebuilt binary for this platform. New model (issue #304): release
 # binaries are NOT committed to git. The installer reads the tiny committed
 # release manifest (SHASUMS256.txt, fetched over the git proxy) to learn the
 # platform asset's content hash, downloads the bytes from the relay's
-# content-addressed release endpoint, and VERIFIES the sha256 before installing.
-# Falls back to a legacy release that still committed the binary into
-# .forkmesh/releases/<channel>/, and then (via the caller) to a source build. Returns
-# non-zero when git is unavailable or no mirror can serve a verified asset.
+# content-addressed release endpoint, and verifies the authenticated manifest,
+# checksum-list binding, and binary SHA-256 before installing. Unsigned legacy
+# releases are never executed. The caller may explicitly allow a source build
+# after this returns non-zero.
 install_prebuilt_release() {
   command -v git >/dev/null 2>&1 || return 1
   ensure_mirror_candidates
-  local tmp repo sums manifest canon hash url bin got attempt attempt_url
+  local tmp repo sums manifest signature canon hash url bin got attempt attempt_url
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/forkmesh-prebuilt.XXXXXX" 2>/dev/null)" || return 1
   sums=".forkmesh/releases/${RELEASE_CHANNEL}/SHASUMS256.txt"
   manifest=".forkmesh/releases/${RELEASE_CHANNEL}/release.json"
+  signature=".forkmesh/releases/${RELEASE_CHANNEL}/release.json.sig"
+  RELEASE_FRESHNESS_MATCH=0
+  RELEASE_CANDIDATE_FAILURE=0
   for repo in "${REPO_CANDIDATES[@]}"; do
     # The sparse-checkout clone below is silent (redirected to /dev/null so a
     # missing manifest isn't logged as an error) and can take a while over a
@@ -751,7 +1122,14 @@ install_prebuilt_release() {
     # New model: manifest checksum + content-addressed download (+ verify). Fetch
     # release.json in the same checkout so the blob can be requested from the repo
     # that staged it — not the mirror that happened to serve this clone.
-    if command -v curl >/dev/null 2>&1 && _sparse_fetch_file "$repo" "$tmp" "$sums" "$manifest"; then
+    if command -v curl >/dev/null 2>&1 &&
+       _sparse_fetch_file "$repo" "$tmp" "$sums" "$manifest" "$signature"; then
+      if [ ! -s "$tmp/$manifest" ] ||
+         ! _verify_release_metadata "$tmp/$manifest" "$tmp/$signature" "$tmp/$sums"; then
+        RELEASE_CANDIDATE_FAILURE=1
+        continue
+      fi
+      RELEASE_FRESHNESS_MATCH=1
       hash="$(awk -v n="$ASSET_NAME" '$2==n {print $1; exit}' "$tmp/$sums" 2>/dev/null)"
       if printf '%s' "$hash" | grep -Eq '^[0-9a-f]{64}$'; then
         # Prefer the canonical owner/repo the manifest records — only that node
@@ -776,25 +1154,26 @@ install_prebuilt_release() {
             continue
           fi
           got="$(_sha256_file "$bin")"
-          if [ -n "$got" ] && [ "$got" != "$hash" ]; then
+          if ! printf '%s' "$got" | grep -Eq '^[0-9a-f]{64}$'; then
+            warn "A working SHA-256 tool is required for every prebuilt install."
+            RELEASE_CANDIDATE_FAILURE=1
+            rm -f "$bin"
+            continue
+          elif [ -n "$got" ] && [ "$got" != "$hash" ]; then
             warn "Checksum mismatch for $ASSET_NAME (expected $hash, got $got); skipping."
             rm -f "$bin"
             continue
-          elif _install_binary "$bin"; then
-            [ -n "$got" ] || warn "No sha256 tool found; installed $ASSET_NAME unverified."
+          elif _install_binary "$bin" "$hash"; then
             REPO="$repo"; rm -rf "$tmp"
             say "Installed prebuilt ForkMesh ${ASSET_OS}/${ASSET_ARCH} binary to $BIN"
             return 0
+          elif [ -n "${INSTALL_BINARY_FAILURE_KIND:-}" ]; then
+            RELEASE_CANDIDATE_FAILURE=1
           fi
         done
       fi
     fi
-    # Legacy model: binary committed directly into .forkmesh/releases/<channel>/.
-    if _sparse_fetch_file "$repo" "$tmp" "$ASSET_REL_PATH" && _install_binary "$tmp/$ASSET_REL_PATH"; then
-      REPO="$repo"; rm -rf "$tmp"
-      say "Installed prebuilt ForkMesh ${ASSET_OS}/${ASSET_ARCH} binary to $BIN"
-      return 0
-    fi
+    # Manifest-free/unsigned legacy assets are intentionally never executed.
   done
   rm -rf "$tmp"
   return 1
@@ -820,7 +1199,11 @@ install_local_binary() {
     warn "Uploaded binary targets $FORKMESH_LOCAL_ARCH but this machine is $ASSET_ARCH; falling back to a relay download."
     return 1
   fi
-  _install_binary "$FORKMESH_LOCAL_BINARY" || return 1
+  if [ -z "$FORKMESH_LOCAL_BINARY_SHA256" ]; then
+    warn "Uploaded binary has no controller-pinned SHA-256; refusing it and falling back to a signed release."
+    return 1
+  fi
+  _install_binary "$FORKMESH_LOCAL_BINARY" "$FORKMESH_LOCAL_BINARY_SHA256" || return 1
   say "Installed the directly-uploaded ForkMesh binary to $BIN"
   return 0
 }
@@ -836,6 +1219,18 @@ if [ "${FORKMESH_FROM_SOURCE:-0}" != "1" ]; then
     INSTALLED_PREBUILT=1
     ensure_qt_runtime
     diag prebuilt 1 "$ASSET_NAME"
+  elif [ -n "$FORKMESH_EXPECTED_BUILD_COMMIT" ] &&
+       [ "${RELEASE_FRESHNESS_MATCH:-0}" != "1" ]; then
+    diag prebuilt 0 "release-commit-mismatch"
+    die "No published ForkMesh artifact matches required build commit $FORKMESH_EXPECTED_BUILD_COMMIT. Publish that commit's release before retrying the fleet binary install."
+  elif [ -n "$FORKMESH_EXPECTED_BUILD_COMMIT" ] &&
+       [ "${RELEASE_CANDIDATE_FAILURE:-0}" = "1" ]; then
+    diag prebuilt 0 "release-candidate-provenance"
+    die "The published ForkMesh release failed authenticated-manifest or SHA-256 verification. The existing binary and daemon were left untouched."
+  elif [ "${RELEASE_CANDIDATE_FAILURE:-0}" = "1" ] &&
+       [ "$FORKMESH_NO_SOURCE_FALLBACK" = "1" ]; then
+    diag prebuilt 0 "release-authentication"
+    die "No prebuilt ForkMesh release passed independent manifest authentication and SHA-256 verification. Configure a trusted publisher key or controller-pinned manifest digest."
   elif [ "$FORKMESH_NO_SOURCE_FALLBACK" = "1" ]; then
     diag prebuilt 0 "$ASSET_NAME"
     die "No prebuilt ForkMesh binary is published for ${ASSET_OS}/${ASSET_ARCH}, and falling back to a source build is disabled (FORKMESH_NO_SOURCE_FALLBACK=1, the default on headless Linux). Publish a prebuilt binary for this platform, or re-run with FORKMESH_NO_SOURCE_FALLBACK=0 to allow a source build."
@@ -904,12 +1299,9 @@ diag deps 1 "${DIAG_MISSING:-none}"
 # of aborting, so on ANY failure we can wipe the source tree and run the whole
 # pipeline once more from a clean clone.
 
-# Marker written into a checkout this installer created. It is only used to tell
-# an installer-made checkout (which we can fast-forward) apart from anything else
-# sitting on $SRC (which we just re-clone). $SRC is a dedicated, installer-owned
-# build path, so it is always safe to wipe — there is nothing precious to guard.
-MANAGED_MARKER=".forkmesh-managed"
-owns_src() { [ -f "$SRC/$MANAGED_MARKER" ]; }
+# The owner/path-bound marker declared above is the sole authority for updating
+# or recursively replacing an installer checkout.
+owns_src() { _marker_is_valid "$SRC"; }
 
 # Extract the node segment ("https://host/<node>/forkmesh" -> "<node>") so log
 # lines can name the offending mirror without echoing the whole clone URL.
@@ -926,7 +1318,7 @@ repo_node() {
 classify_clone_failure() {
   case "$1" in
     *"failed integrity check"*|*"repository failed integrity"*) echo "integrity pin rejected by the relay" ;;
-    *"Host timed out"*|*"error: 504"*|*" 504"*)                 echo "mirror host timed out (HTTP 504)" ;;
+    *"Host timed out"*|*"error: 504"*|*" 504"*)                 echo "mirror endpoint timed out (HTTP 504)" ;;
     *"error: 502"*|*" 502"*)                                    echo "relay gateway error (HTTP 502)" ;;
     *"error: 503"*|*" 503"*)                                    echo "mirror temporarily unavailable (HTTP 503)" ;;
     *"error: 404"*|*"not found"*|*"Repository not found"*)      echo "repository not found on this mirror (HTTP 404)" ;;
@@ -951,7 +1343,7 @@ clean_clone() {
   for repo in "${REPO_CANDIDATES[@]}"; do
     idx=$((idx + 1))
     node="$(repo_node "$repo")"
-    rm -rf "$tmp"
+    rm -rf -- "$tmp"
     if [ "$total" -gt 1 ]; then
       say "Cloning $repo  (mirror $idx of $total)"
     else
@@ -962,13 +1354,16 @@ clean_clone() {
     out="$(git clone --depth 1 "$repo" "$tmp" 2>&1)"; rc=$?
     printf '%s\n' "$out"
     if [ "$rc" -eq 0 ]; then
-      : > "$tmp/$MANAGED_MARKER"
-      rm -rf "$SRC"
+      if [ -e "$SRC" ]; then
+        _remove_managed_src "$SRC"
+      fi
       mv "$tmp" "$SRC"
+      _write_managed_marker "$SRC" ||
+        die "Could not write the managed-install marker in $SRC."
       REPO="$repo"   # remember the mirror that actually served the clone
       return 0
     fi
-    rm -rf "$tmp"
+    rm -rf -- "$tmp"
     reason="$(classify_clone_failure "$out")"
     CLONE_FAIL_REASON="$reason"
     # A failed integrity pin is the relay refusing every mirror of this repo, not
@@ -1081,7 +1476,7 @@ pin_failure_help() {
 if ! attempt_install; then
   [ "$PIN_FAILURE" = "1" ] && pin_failure_help
   warn "Install failed; retrying once from a clean clone."
-  rm -rf "$SRC"
+  _remove_managed_src "$SRC"
   if ! attempt_install; then
     [ "$PIN_FAILURE" = "1" ] && pin_failure_help
     # Name the last failure reason and every mirror that was tried so the cause
@@ -1179,6 +1574,103 @@ register_desktop_entry
 # "succeeded". LAUNCH_MODE records which path ran so the caller prints the right
 # message.
 LAUNCH_MODE=""
+
+launch_root_headless_service() {
+  local service_user="forkmesh-node" state_dir="$SYSTEMD_STATE_DIR"
+  local binary_hash account home shell
+  [ "$(id -u)" -eq 0 ] || return 1
+  command -v systemctl >/dev/null 2>&1 &&
+    [ -d /run/systemd/system ] ||
+    die "A root headless install requires systemd so ForkMesh can run as an unprivileged supervised service. Otherwise rerun the installer as a dedicated non-root user."
+  printf '%s' "$FORKMESH_NODE_NAME" | grep -Eq '^[A-Za-z0-9._-]*$' ||
+    die "Headless node names may contain only letters, numbers, dot, underscore, and hyphen."
+  printf '%s' "$FORKMESH_LINK_CODE" | grep -Eq '^[0-9]{6}$' ||
+    die "Headless link code is invalid."
+  [ ! -L "$SYSTEMD_UNIT" ] && [ ! -L "$SYSTEMD_ENV" ] &&
+    [ ! -L "$SYSTEMD_BIN" ] && [ ! -L "$SYSTEMD_INSTALL_MARKER" ] ||
+    die "Refusing a symlink in the managed system-service paths."
+  if [ -e "$SYSTEMD_BIN" ] || [ -e "$SYSTEMD_UNIT" ] ||
+     [ -e "$SYSTEMD_STATE_DIR" ]; then
+    [ -f "$SYSTEMD_INSTALL_MARKER" ] &&
+      grep -Fqx 'forkmesh-system-service-v1' "$SYSTEMD_INSTALL_MARKER" &&
+      grep -Fqx "binary=$SYSTEMD_BIN" "$SYSTEMD_INSTALL_MARKER" &&
+      [ -f "$SYSTEMD_UNIT" ] &&
+      grep -Fqx '# Managed-By: ForkMesh installer' "$SYSTEMD_UNIT" &&
+      [ -f "$SYSTEMD_STATE_MARKER" ] &&
+      [ ! -L "$SYSTEMD_STATE_MARKER" ] &&
+      [ "$(_path_owner_uid "$SYSTEMD_STATE_MARKER")" = "0" ] &&
+      grep -Fqx 'forkmesh-managed-service-v1' "$SYSTEMD_STATE_MARKER" &&
+      grep -Fqx "path=$SYSTEMD_STATE_DIR" "$SYSTEMD_STATE_MARKER" ||
+      die "Refusing to overwrite an unmanaged system binary, service, or state directory."
+  fi
+
+  if id "$service_user" >/dev/null 2>&1; then
+    command -v getent >/dev/null 2>&1 ||
+      die "getent is required to validate the existing service account."
+    account="$(getent passwd "$service_user")"
+    home="$(printf '%s' "$account" | awk -F: '{print $6}')"
+    shell="$(printf '%s' "$account" | awk -F: '{print $7}')"
+    [ "$(id -u "$service_user")" != "0" ] ||
+      die "Refusing to use a root-valued forkmesh-node account."
+    [ "$home" = "$state_dir" ] ||
+      die "Existing forkmesh-node account has an unexpected home directory."
+    case "$shell" in */nologin|*/false) ;; *)
+      die "Existing forkmesh-node account does not use a locked login shell." ;;
+    esac
+  else
+    command -v useradd >/dev/null 2>&1 ||
+      die "useradd is required to create the unprivileged forkmesh-node service account."
+    useradd --system --home-dir "$state_dir" --create-home \
+      --shell /usr/sbin/nologin "$service_user"
+  fi
+  mkdir -p "$state_dir/.local/share/forkmesh" /etc/forkmesh
+  chown -R "$service_user:$service_user" "$state_dir"
+  chmod 0750 "$state_dir"
+  {
+    printf 'forkmesh-managed-service-v1\n'
+    printf 'path=%s\n' "$state_dir"
+  } > "$SYSTEMD_STATE_MARKER"
+  chown root:root "$SYSTEMD_STATE_MARKER"
+  chmod 0600 "$SYSTEMD_STATE_MARKER"
+
+  install -m 0755 "$BIN" "$SYSTEMD_BIN"
+  binary_hash="$(_sha256_file "$SYSTEMD_BIN")"
+  printf '%s' "$binary_hash" | grep -Eq '^[0-9a-f]{64}$' ||
+    die "Could not hash the staged system service binary."
+  umask 077
+  {
+    printf 'FORKMESH_NODE_NAME=%s\n' "$FORKMESH_NODE_NAME"
+    printf 'FORKMESH_LINK_CODE=%s\n' "$FORKMESH_LINK_CODE"
+    printf 'HOME=%s\n' "$state_dir"
+    printf 'XDG_DATA_HOME=%s\n' "$state_dir/.local/share"
+  } > "$SYSTEMD_ENV"
+  {
+    printf '# Managed-By: ForkMesh installer\n'
+    printf '[Unit]\nDescription=ForkMesh headless node\nAfter=network-online.target\nWants=network-online.target\n\n'
+    printf '[Service]\nType=simple\nUser=%s\nGroup=%s\n' "$service_user" "$service_user"
+    printf 'EnvironmentFile=%s\nExecStart=%s\n' "$SYSTEMD_ENV" "$SYSTEMD_BIN"
+    printf 'Restart=on-failure\nRestartSec=5\nNoNewPrivileges=true\n'
+    printf 'PrivateTmp=true\nPrivateDevices=true\nProtectSystem=strict\nProtectHome=true\n'
+    printf 'ReadWritePaths=%s\nRestrictSUIDSGID=true\nLockPersonality=true\n' "$state_dir"
+    printf 'TasksMax=256\nLimitNOFILE=8192\nTimeoutStopSec=15\n\n'
+    printf '[Install]\nWantedBy=multi-user.target\n'
+  } > "$SYSTEMD_UNIT"
+  {
+    printf 'forkmesh-system-service-v1\n'
+    printf 'binary=%s\n' "$SYSTEMD_BIN"
+    printf 'sha256=%s\n' "$binary_hash"
+  } > "$SYSTEMD_INSTALL_MARKER"
+  chmod 0600 "$SYSTEMD_ENV" "$SYSTEMD_INSTALL_MARKER"
+  chmod 0644 "$SYSTEMD_UNIT"
+  systemctl daemon-reload
+  systemctl enable --now forkmesh-node.service
+  systemctl is-active --quiet forkmesh-node.service ||
+    die "forkmesh-node.service did not become active."
+  LAUNCH_MODE="service"
+  LOG_PATH="journalctl -u forkmesh-node.service"
+  return 0
+}
+
 launch_forkmesh() {
   case "$(uname -s)" in
     Darwin)
@@ -1201,11 +1693,12 @@ launch_forkmesh() {
       # Headless: bring the node up as a background daemon. Reading stdin from
       # /dev/null makes the headless console drop straight into daemon mode (it
       # keeps serving once stdin closes) rather than blocking at a prompt nothing
-      # is attached to. Running as root needs --allow-root to clear the built-in
-      # root refusal. FORKMESH_NODE_NAME hands the app the operator's chosen name
-      # so the fresh node adopts it and auto-connects.
+      # is attached to. A root-run installer creates a locked, unprivileged
+      # forkmesh-node account and a hardened systemd service; the application
+      # itself is never granted --allow-root. FORKMESH_NODE_NAME hands the app
+      # the operator's chosen name so it adopts it and auto-connects.
       LAUNCH_MODE="daemon"
-      local args="" log rand
+      local log rand daemon_pid pid_tmp
       # Mint the account link code (adhoc #53) unless the operator pre-set one.
       case "$FORKMESH_LINK_CODE" in
         [0-9][0-9][0-9][0-9][0-9][0-9]) ;;
@@ -1216,22 +1709,22 @@ launch_forkmesh() {
           ;;
       esac
       if [ "$(id -u)" -eq 0 ]; then
-        # Clear the built-in root refusal both for this launch (the arg) AND for
-        # any process the node later relaunches as itself — an in-app update does
-        # QProcess::startDetached(forkmesh) with NO args, which would otherwise hit
-        # the refusal and silently kill the root daemon. Exporting the env override
-        # makes that relaunched child inherit the allowance; the bare arg would not
-        # survive it.
-        args="--allow-root"
-        export FORKMESH_ALLOW_ROOT=1
+        launch_root_headless_service
+        return $?
       fi
       log="${XDG_DATA_HOME:-$HOME/.local/share}/forkmesh/node.log"
       mkdir -p "$(dirname "$log")" 2>/dev/null || true
       if command -v setsid >/dev/null 2>&1; then
-        FORKMESH_NODE_NAME="$FORKMESH_NODE_NAME" FORKMESH_LINK_CODE="$FORKMESH_LINK_CODE" setsid "$BIN" $args >"$log" 2>&1 < /dev/null &
+        FORKMESH_NODE_NAME="$FORKMESH_NODE_NAME" FORKMESH_LINK_CODE="$FORKMESH_LINK_CODE" setsid "$BIN" >"$log" 2>&1 < /dev/null &
       else
-        FORKMESH_NODE_NAME="$FORKMESH_NODE_NAME" FORKMESH_LINK_CODE="$FORKMESH_LINK_CODE" nohup "$BIN" $args >"$log" 2>&1 < /dev/null &
+        FORKMESH_NODE_NAME="$FORKMESH_NODE_NAME" FORKMESH_LINK_CODE="$FORKMESH_LINK_CODE" nohup "$BIN" >"$log" 2>&1 < /dev/null &
       fi
+      daemon_pid=$!
+      mkdir -p "$(dirname "$PID_FILE")"
+      pid_tmp="$PID_FILE.tmp.$$"
+      umask 077
+      printf '%s\n' "$daemon_pid" > "$pid_tmp"
+      mv -f "$pid_tmp" "$PID_FILE"
       return 0
       ;;
   esac
@@ -1254,10 +1747,16 @@ if [ "${FORKMESH_NO_LAUNCH:-0}" = "1" ]; then
   say "  On a server with no display, forkmesh opens an interactive CLI."
   diag launch 1 "skipped"
 elif launch_forkmesh; then
-  if [ "$LAUNCH_MODE" = "daemon" ]; then
+  if [ "$LAUNCH_MODE" = "daemon" ] || [ "$LAUNCH_MODE" = "service" ]; then
     say "Done — ForkMesh is running as a background daemon."
     say "  The node will join the network and appear in the Mirror nodes list shortly."
-    say "  Logs: $LOG_PATH    Stop: pkill -f '$BIN'"
+    if [ "$LAUNCH_MODE" = "service" ]; then
+      say "  Runs unprivileged as forkmesh-node under systemd."
+      say "  Logs: journalctl -u forkmesh-node.service"
+      say "  Stop: systemctl stop forkmesh-node.service"
+    else
+      say "  Logs: $LOG_PATH    Stop: kill \"\$(cat '$PID_FILE')\""
+    fi
     # The ForkMesh desktop app watches an SSH install's stream for this exact
     # line and pops up a link dialog prefilled with the code (adhoc #53).
     say ""
@@ -1274,7 +1773,7 @@ elif launch_forkmesh; then
     # a log file on the remote box and the operator's installer screen just
     # shows "running as a background daemon" then stops. Tailing it here lets
     # the desktop app's Live output box show the node actually coming alive.
-    if command -v tail >/dev/null 2>&1; then
+    if [ "$LAUNCH_MODE" = "daemon" ] && command -v tail >/dev/null 2>&1; then
       say ""
       say "--- Live node output (first few seconds) ---"
       # Wait briefly for the daemon to create/populate the log, then follow it.
@@ -1297,8 +1796,8 @@ elif launch_forkmesh; then
 else
   say "Done. Launch it with:  forkmesh"
   say "  No display detected — forkmesh opens an interactive CLI here."
-  say "  Type 'help' once it starts; on a dedicated VM you can run it as root"
-  say "  with:  forkmesh --allow-root"
+  say "  Type 'help' once it starts. Headless nodes should run under a dedicated"
+  say "  unprivileged account; this installer configures that automatically when run as root."
   diag launch 1 "manual"
 fi
 

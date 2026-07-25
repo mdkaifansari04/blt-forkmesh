@@ -1,0 +1,1358 @@
+"""Security and lifecycle tests for the headless mirror refresh orchestrator."""
+
+from __future__ import annotations
+
+import base64
+from dataclasses import replace
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import shlex
+import shutil
+import stat
+import subprocess
+import sys
+from types import SimpleNamespace
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
+import pytest
+
+
+ROOT = Path(__file__).resolve().parents[2]
+REFRESH_PATH = ROOT / "tools" / "headless_mirror_refresh.py"
+HELPER_PATH = ROOT / "tools" / "headless_mirror_identity.py"
+GATEWAY_PATH = ROOT / "tools" / "mirror_gateway.py"
+TUNNEL_PATH = ROOT / "tools" / "cloudflare_tunnel_bootstrap.py"
+
+
+def _load(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+refresh_tool = _load("headless_mirror_refresh_test", REFRESH_PATH)
+identity_helper = _load("headless_mirror_refresh_identity_test", HELPER_PATH)
+tunnel_helper = _load("headless_mirror_refresh_tunnel_test", TUNNEL_PATH)
+
+
+def _run(command: list[str], cwd: Path | None = None) -> str:
+    return subprocess.run(
+        command,
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": os.environ.get("PATH", ""),
+            "LANG": "C",
+            "LC_ALL": "C",
+        },
+    ).stdout.strip()
+
+
+def _b64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def _write_actions_lease(
+    installation,
+    *,
+    now_ms: int,
+    state: str,
+    node: str = "mirror-two",
+    updated_at: int | None = None,
+    expires_at: int | None = None,
+) -> Path:
+    path = installation["gateway_state"] / "actions-state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "type": "forkmesh.mirror-actions-state",
+                "node": node,
+                "state": state,
+                "updatedAt": now_ms if updated_at is None else updated_at,
+                "expiresAt": (
+                    now_ms + 10 * 60 * 1000
+                    if expires_at is None
+                    else expires_at
+                ),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+    return path
+
+
+def test_safe_environment_allows_only_owner_private_tmpdir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    private = tmp_path / "mirror-runtime"
+    private.mkdir(mode=0o700)
+    monkeypatch.setenv("TMPDIR", str(private))
+    assert refresh_tool._safe_environment()["TMPDIR"] == str(private)
+
+    private.chmod(0o755)
+    assert "TMPDIR" not in refresh_tool._safe_environment()
+
+    private.chmod(0o700)
+    link = tmp_path / "runtime-link"
+    link.symlink_to(private, target_is_directory=True)
+    monkeypatch.setenv("TMPDIR", str(link))
+    assert "TMPDIR" not in refresh_tool._safe_environment()
+
+    monkeypatch.setenv("TMPDIR", "relative-runtime")
+    assert "TMPDIR" not in refresh_tool._safe_environment()
+
+
+@pytest.fixture()
+def installation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    tmp_path.chmod(0o700)
+    programs = tmp_path / "programs"
+    programs.mkdir(mode=0o700)
+    recipient = "age1" + "q" * 58
+    age_secret = "AGE-SECRET-KEY-1" + "Q" * 58
+    keygen = programs / "age-keygen"
+    keygen.write_text(
+        f"""#!{sys.executable}
+import pathlib
+import sys
+if "-o" in sys.argv:
+    target = pathlib.Path(sys.argv[sys.argv.index("-o") + 1])
+    target.write_text("# test identity\\n{age_secret}\\n")
+    raise SystemExit(0)
+if "-y" in sys.argv:
+    print("{recipient}")
+    raise SystemExit(0)
+raise SystemExit(2)
+""",
+        encoding="utf-8",
+    )
+    keygen.chmod(0o755)
+    age = programs / "age"
+    age.write_text(
+        f"""#!{sys.executable}
+import pathlib
+import sys
+HEADER = b"age-encryption.org/v1\\n"
+if "--encrypt" in sys.argv:
+    target = pathlib.Path(sys.argv[sys.argv.index("--output") + 1])
+    target.write_bytes(HEADER + sys.stdin.buffer.read())
+    raise SystemExit(0)
+if "--decrypt" in sys.argv:
+    raw = pathlib.Path(sys.argv[-1]).read_bytes()
+    if not raw.startswith(HEADER):
+        raise SystemExit(2)
+    sys.stdout.buffer.write(raw[len(HEADER):])
+    raise SystemExit(0)
+raise SystemExit(2)
+""",
+        encoding="utf-8",
+    )
+    age.chmod(0o755)
+    installed_helper = programs / "headless_mirror_identity.py"
+    installed_gateway = programs / "mirror_gateway.py"
+    shutil.copyfile(HELPER_PATH, installed_helper)
+    shutil.copyfile(GATEWAY_PATH, installed_gateway)
+    installed_helper.chmod(0o644)
+    installed_gateway.chmod(0o644)
+    monkeypatch.setenv(
+        "PATH", str(programs) + os.pathsep + os.environ.get("PATH", "")
+    )
+
+    work = tmp_path / "work"
+    bare = tmp_path / "source.git"
+    work.mkdir(mode=0o700)
+    _run(["git", "init", "-b", "main"], work)
+    _run(["git", "config", "user.name", "ForkMesh test"], work)
+    _run(["git", "config", "user.email", "test@example.invalid"], work)
+    (work / "README.md").write_text("headless refresh\n", encoding="utf-8")
+    _run(["git", "add", "README.md"], work)
+    _run(["git", "commit", "-m", "initial"], work)
+    _run(["git", "init", "--bare", str(bare)])
+    _run(["git", "remote", "add", "mirror", str(bare)], work)
+    _run(["git", "push", "mirror", "main"], work)
+    _run(["git", "--git-dir", str(bare), "symbolic-ref", "HEAD", "refs/heads/main"])
+
+    state = tmp_path / "identity"
+    archive = tmp_path / "archives"
+    release_store = tmp_path / "releases"
+    gateway_state = tmp_path / "gateway-state"
+    archive.mkdir(mode=0o700)
+    release_store.mkdir(mode=0o700)
+    gateway_state.mkdir(mode=0o700)
+    router_key = Ed25519PrivateKey.generate()
+    from cryptography.hazmat.primitives import serialization
+
+    router_public = _b64url(
+        router_key.public_key().public_bytes(
+            serialization.Encoding.Raw,
+            serialization.PublicFormat.Raw,
+        )
+    )
+    public = identity_helper.initialize_identity(
+        state,
+        {
+            "schemaVersion": 1,
+            "type": "forkmesh.headless-mirror-identity-init",
+            "nodeName": "mirror-two",
+            "routerPublicKey": router_public,
+            "allowedOrigins": ["https://mirror-two.example.invalid"],
+        },
+        age_keygen_program=str(keygen),
+    )
+    unsigned = tunnel_helper.unsigned_tunnel_manifest(
+        hostname="mirror-two.example.invalid",
+        node_name="mirror-two",
+        public_key=public["nodePublicKey"],
+        tunnel_id="11111111-2222-3333-4444-555555555555",
+        generated_at="2026-07-23T20:00:00Z",
+    )
+    payload = identity_helper._canonical_json(unsigned)
+    signed = identity_helper.sign_mirror_manifest(
+        state,
+        {
+            "schemaVersion": 1,
+            "type": "forkmesh.mirror-endpoint-signing-request",
+            "algorithm": "Ed25519",
+            "encoding": "base64url-no-padding",
+            "canonicalization": "forkmesh-json-sort-v1",
+            "publicKey": public["nodePublicKey"],
+            "payloadBase64": _b64url(payload),
+            "payloadSha256": hashlib.sha256(payload).hexdigest(),
+        },
+    )
+    manifest = dict(unsigned)
+    manifest["signature"] = {
+        "algorithm": "Ed25519",
+        "encoding": "base64url-no-padding",
+        "canonicalization": "forkmesh-json-sort-v1",
+        "payloadSha256": hashlib.sha256(payload).hexdigest(),
+        "value": signed["signature"],
+    }
+    manifest_path = gateway_state / "forkmesh-mirror.json"
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    manifest_path.chmod(0o600)
+
+    python_program = programs / "python"
+    python_program.write_text(
+        "#!/bin/sh\nexec " + shlex.quote(sys.executable) + " \"$@\"\n",
+        encoding="utf-8",
+    )
+    python_program.chmod(0o755)
+    git_program = Path(shutil.which("git") or "/usr/bin/git").resolve()
+    config_value = {
+        "schemaVersion": 1,
+        "type": "forkmesh.headless-mirror-refresh",
+        "sourceRepository": str(bare),
+        "archiveDirectory": str(archive),
+        "releaseStore": str(release_store),
+        "gatewayConfigPath": str(gateway_state / "mirror-gateway.json"),
+        "identityStateDirectory": str(state),
+        "identityHelperPath": str(installed_helper),
+        "mirrorGatewayPath": str(installed_gateway),
+        "pythonProgram": str(python_program),
+        "gitProgram": str(git_program),
+        "manifestPath": str(manifest_path),
+        "nodeOwner": "mirror-two",
+        "repositoryName": "forkmesh",
+        "ownerAliases": ["mirror-two", "forkmesh"],
+        "workerOrigin": "https://worker.example.invalid",
+        "publicOrigin": "https://mirror-two.example.invalid",
+        "listen": {"host": "127.0.0.1", "port": 8790},
+        "operations": [
+            "git-info-refs",
+            "git-upload-pack",
+            "tree",
+            "blob",
+            "raw",
+            "branches",
+        ],
+        "catalog": {
+            "description": "A living code city",
+            "branch": "main",
+            "platform": "git",
+        },
+    }
+    config_path = tmp_path / "refresh.json"
+    config_path.write_text(
+        json.dumps(config_value, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    config_path.chmod(0o600)
+    return {
+        "config_path": config_path,
+        "config_value": config_value,
+        "config": refresh_tool.load_config(config_path),
+        "work": work,
+        "bare": bare,
+        "archive": archive,
+        "release_store": release_store,
+        "gateway_state": gateway_state,
+        "gateway_config": gateway_state / "mirror-gateway.json",
+        "public": public,
+        "age_secret": age_secret,
+    }
+
+
+def test_refresh_renders_one_archive_for_all_aliases_and_check_is_dry(
+    installation,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config = installation["config"]
+    result = refresh_tool.refresh(config)
+    assert result == {
+        "ok": True,
+        "event": "refresh_complete",
+        "aliasCount": 2,
+    }
+    gateway_path = installation["gateway_config"]
+    assert stat.S_IMODE(gateway_path.stat().st_mode) == 0o600
+    rendered = json.loads(gateway_path.read_text(encoding="utf-8"))
+    assert "actionsSummaryPath" not in rendered
+    repositories = rendered["repositories"]
+    assert [item["owner"] for item in repositories] == [
+        "mirror-two",
+        "forkmesh",
+    ]
+    assert {item["name"] for item in repositories} == {"forkmesh"}
+    assert {
+        item["releaseStore"] for item in repositories
+    } == {str(installation["release_store"])}
+    archives = {
+        json.dumps(item["encryptedArchive"], sort_keys=True)
+        for item in repositories
+    }
+    refs = {
+        item["integrity"]["expectedRefsSha256"] for item in repositories
+    }
+    assert len(archives) == 1
+    assert len(refs) == 1
+    archive_path = Path(repositories[0]["encryptedArchive"]["ciphertextPath"])
+    assert archive_path.parent == installation["archive"]
+    assert archive_path.name.startswith("archive-")
+    assert stat.S_IMODE(archive_path.stat().st_mode) == 0o600
+
+    before_config = gateway_path.read_bytes()
+    before_archives = {
+        item.name: hashlib.sha256(item.read_bytes()).hexdigest()
+        for item in installation["archive"].iterdir()
+    }
+    lock_open_modes = []
+    real_open = refresh_tool.os.open
+
+    def tracked_open(path, flags, *args, **kwargs):
+        if Path(path).name == ".refresh.lock":
+            lock_open_modes.append(flags & os.O_ACCMODE)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(refresh_tool.os, "open", tracked_open)
+    checked = refresh_tool.check(config)
+    assert checked == {
+        "ok": True,
+        "event": "check_complete",
+        "aliasCount": 2,
+        "networkRequests": 0,
+    }
+    assert gateway_path.read_bytes() == before_config
+    assert {
+        item.name: hashlib.sha256(item.read_bytes()).hexdigest()
+        for item in installation["archive"].iterdir()
+    } == before_archives
+    assert lock_open_modes
+    assert set(lock_open_modes) == {os.O_RDONLY}
+    combined = json.dumps(result) + json.dumps(checked)
+    assert "mirror-two" not in combined
+    assert "forkmesh" not in combined
+    assert str(installation["bare"]) not in combined
+    assert installation["age_secret"] not in gateway_path.read_text()
+
+
+def test_actions_status_operation_renders_only_fixed_adjacent_summary_path(
+    installation,
+):
+    configured = json.loads(json.dumps(installation["config_value"]))
+    configured["operations"].append("actions-status")
+    path = installation["config_path"].with_name(
+        "actions-status-refresh.json")
+    path.write_text(
+        json.dumps(configured, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+    config = refresh_tool.load_config(path)
+    rendered = refresh_tool._render_gateway_config(
+        config,
+        refresh_tool._load_public_identity(config),
+        refresh_tool.SealMetadata(
+            ciphertext_sha256="a" * 64,
+            ciphertext_bytes=100,
+            key_reference="forkmesh-headless-age:test",
+            expected_refs_sha256="b" * 64,
+        ),
+        installation["archive"] / ("archive-" + "a" * 64 + ".age"),
+    )
+    expected = (
+        installation["gateway_config"].parent / "actions-summary.json")
+    assert rendered["actionsSummaryPath"] == str(expected)
+    assert all(
+        "actions-status" in repository["operations"]
+        for repository in rendered["repositories"]
+    )
+    schema = json.loads(
+        (ROOT / "docs" / "headless-mirror-refresh.schema.json")
+        .read_text(encoding="utf-8"))
+    operations = schema["properties"]["operations"]
+    assert operations["maxItems"] == len(refresh_tool.PUBLIC_OPERATIONS)
+    assert "actions-status" in operations["items"]["enum"]
+
+
+def test_check_never_creates_a_missing_refresh_lock(installation):
+    lock = installation["config"].identity_state_directory / ".refresh.lock"
+    assert not lock.exists()
+    with pytest.raises(refresh_tool.RefreshError, match="lock"):
+        refresh_tool.check(installation["config"])
+    assert not lock.exists()
+
+
+def test_failed_staged_gateway_validation_preserves_last_good_pair(
+    installation,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config = installation["config"]
+    refresh_tool.refresh(config)
+    old_config = installation["gateway_config"].read_bytes()
+    old_rendered = json.loads(old_config)
+    old_archive = Path(
+        old_rendered["repositories"][0]["encryptedArchive"]["ciphertextPath"]
+    )
+    old_ciphertext = old_archive.read_bytes()
+
+    (installation["work"] / "README.md").write_text(
+        "headless refresh changed\n", encoding="utf-8"
+    )
+    _run(["git", "add", "README.md"], installation["work"])
+    _run(["git", "commit", "-m", "change"], installation["work"])
+    _run(["git", "push", "mirror", "main"], installation["work"])
+
+    def reject_staged(_config, _path):
+        raise refresh_tool.RefreshError("gateway validation rejected the active mirror")
+
+    monkeypatch.setattr(refresh_tool, "_invoke_gateway_check", reject_staged)
+    with pytest.raises(refresh_tool.RefreshError, match="gateway validation"):
+        refresh_tool.refresh(config)
+    assert installation["gateway_config"].read_bytes() == old_config
+    assert old_archive.read_bytes() == old_ciphertext
+
+
+def test_catalog_host_telemetry_config_is_explicit_and_boolean(installation):
+    config = installation["config"]
+    assert config.catalog.report_cpu is False
+    assert config.catalog.report_memory is False
+    assert config.catalog.report_disk is False
+
+    configured = json.loads(json.dumps(installation["config_value"]))
+    configured["catalog"].update({
+        "reportCpu": True,
+        "reportMemory": True,
+        "reportDisk": True,
+    })
+    configured_path = installation["config_path"].parent / "telemetry-refresh.json"
+    configured_path.write_text(
+        json.dumps(configured, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    configured_path.chmod(0o600)
+    loaded = refresh_tool.load_config(configured_path)
+    assert loaded.catalog.report_cpu is True
+    assert loaded.catalog.report_memory is True
+    assert loaded.catalog.report_disk is True
+
+    configured["catalog"]["reportCpu"] = "true"
+    configured_path.write_text(json.dumps(configured), encoding="utf-8")
+    with pytest.raises(refresh_tool.RefreshError, match="must be a boolean"):
+        refresh_tool.load_config(configured_path)
+
+
+def test_catalog_actions_capability_is_explicit_bounded_and_disabled_by_default(
+    installation,
+):
+    config = installation["config"]
+    assert config.catalog.actions_enabled is False
+
+    configured = json.loads(json.dumps(installation["config_value"]))
+    configured["catalog"]["actionsEnabled"] = True
+    configured_path = installation["config_path"].parent / "actions-refresh.json"
+    configured_path.write_text(
+        json.dumps(configured, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    configured_path.chmod(0o600)
+    loaded = refresh_tool.load_config(configured_path)
+    assert loaded.catalog.actions_enabled is True
+
+    invalid_values = ("true", 1, None, "running")
+    for index, invalid in enumerate(invalid_values):
+        candidate = json.loads(json.dumps(installation["config_value"]))
+        candidate["catalog"]["actionsEnabled"] = invalid
+        path = configured_path.with_name(f"actions-invalid-{index}.json")
+        path.write_text(json.dumps(candidate), encoding="utf-8")
+        path.chmod(0o600)
+        with pytest.raises(refresh_tool.RefreshError, match="must be a boolean"):
+            refresh_tool.load_config(path)
+
+    for prohibited in (
+        "actionsState",
+        "actionsVariables",
+        "actionsCommand",
+        "actionsWorkingDirectory",
+        "actionsLogs",
+    ):
+        candidate = json.loads(json.dumps(installation["config_value"]))
+        candidate["catalog"][prohibited] = "must-not-publish"
+        path = configured_path.with_name(f"{prohibited}.json")
+        path.write_text(json.dumps(candidate), encoding="utf-8")
+        path.chmod(0o600)
+        with pytest.raises(
+            refresh_tool.RefreshError,
+            match="unknown or missing field",
+        ):
+            refresh_tool.load_config(path)
+
+    metadata = refresh_tool.SealMetadata(
+        ciphertext_sha256="a" * 64,
+        ciphertext_bytes=123,
+        key_reference="age:test",
+        expected_refs_sha256="b" * 64,
+    )
+    assert refresh_tool._catalog_unsigned(
+        config, metadata, 1784840000000
+    )["actionsState"] == "disabled"
+    assert refresh_tool._catalog_unsigned(
+        loaded, metadata, 1784840000000
+    )["actionsState"] == "enabled"
+
+    now_ms = 1784840000000
+    lease = _write_actions_lease(
+        installation, now_ms=now_ms, state="running")
+    disabled_catalog = refresh_tool._catalog_unsigned(
+        config, metadata, now_ms)
+    assert (
+        disabled_catalog["actionsEnabled"],
+        disabled_catalog["actionsState"],
+    ) == (False, "disabled")
+    running_catalog = refresh_tool._catalog_unsigned(
+        loaded, metadata, now_ms)
+    assert (
+        running_catalog["actionsEnabled"],
+        running_catalog["actionsState"],
+    ) == (True, "running")
+
+    _write_actions_lease(installation, now_ms=now_ms, state="disabled")
+    live_disabled = refresh_tool._catalog_unsigned(
+        loaded, metadata, now_ms)
+    assert (
+        live_disabled["actionsEnabled"],
+        live_disabled["actionsState"],
+    ) == (False, "disabled")
+
+    _write_actions_lease(
+        installation,
+        now_ms=now_ms,
+        state="running",
+        updated_at=now_ms - refresh_tool.MAX_ACTIONS_STATE_LEASE_MS - 1,
+    )
+    stale_fallback = refresh_tool._catalog_unsigned(
+        loaded, metadata, now_ms)
+    assert (
+        stale_fallback["actionsEnabled"],
+        stale_fallback["actionsState"],
+    ) == (True, "enabled")
+
+    _write_actions_lease(
+        installation,
+        now_ms=now_ms,
+        state="running",
+        expires_at=now_ms + refresh_tool.MAX_ACTIONS_STATE_LEASE_MS + 1,
+    )
+    future_fallback = refresh_tool._catalog_unsigned(
+        loaded, metadata, now_ms)
+    assert (
+        future_fallback["actionsEnabled"],
+        future_fallback["actionsState"],
+    ) == (True, "enabled")
+
+    _write_actions_lease(
+        installation,
+        now_ms=now_ms,
+        state="running",
+        updated_at=now_ms + 1000,
+        expires_at=now_ms + 1000,
+    )
+    zero_interval_fallback = refresh_tool._catalog_unsigned(
+        loaded, metadata, now_ms)
+    assert (
+        zero_interval_fallback["actionsEnabled"],
+        zero_interval_fallback["actionsState"],
+    ) == (True, "enabled")
+
+    _write_actions_lease(
+        installation,
+        now_ms=now_ms,
+        state="running",
+        node="another-node",
+    )
+    assert refresh_tool._catalog_unsigned(
+        loaded, metadata, now_ms
+    )["actionsState"] == "enabled"
+    _write_actions_lease(installation, now_ms=now_ms, state="running")
+    installation["gateway_state"].chmod(0o750)
+    assert refresh_tool._catalog_unsigned(
+        loaded, metadata, now_ms
+    )["actionsState"] == "enabled"
+    installation["gateway_state"].chmod(0o700)
+    lease.chmod(0o640)
+    assert refresh_tool._catalog_unsigned(
+        loaded, metadata, now_ms
+    )["actionsState"] == "enabled"
+    lease.unlink()
+    lease_target = installation["gateway_state"] / "actions-state-target.json"
+    lease_target.write_text(
+        json.dumps({
+            "schemaVersion": 1,
+            "type": "forkmesh.mirror-actions-state",
+            "node": "mirror-two",
+            "state": "running",
+            "updatedAt": now_ms,
+            "expiresAt": now_ms + 10 * 60 * 1000,
+        }),
+        encoding="utf-8",
+    )
+    lease_target.chmod(0o600)
+    lease.symlink_to(lease_target)
+    assert refresh_tool._catalog_unsigned(
+        loaded, metadata, now_ms
+    )["actionsState"] == "enabled"
+    lease.unlink()
+    os.link(lease_target, lease)
+    assert refresh_tool._catalog_unsigned(
+        loaded, metadata, now_ms
+    )["actionsState"] == "enabled"
+
+
+def test_actions_state_handoff_accepts_only_exact_root_group_lease():
+    def metadata(
+        *,
+        owner=0,
+        group=992,
+        mode=0o640,
+        links=1,
+        size=100,
+        kind=stat.S_IFREG,
+    ):
+        return SimpleNamespace(
+            st_mode=kind | mode,
+            st_uid=owner,
+            st_gid=group,
+            st_nlink=links,
+            st_size=size,
+        )
+
+    fixed = refresh_tool.SYSTEM_ACTIONS_STATE_PATH
+    assert refresh_tool._actions_state_metadata_allowed(
+        fixed, metadata(), effective_uid=991, effective_gid=992)
+    assert refresh_tool._actions_state_metadata_allowed(
+        Path("/srv/custom/actions-state.json"),
+        metadata(owner=991, group=991, mode=0o600),
+        effective_uid=991,
+        effective_gid=992,
+    )
+    for path, info in (
+        (Path("/srv/custom/actions-state.json"), metadata()),
+        (fixed, metadata(owner=991)),
+        (fixed, metadata(group=993)),
+        (fixed, metadata(mode=0o600)),
+        (fixed, metadata(mode=0o660)),
+        (fixed, metadata(links=2)),
+        (fixed, metadata(size=0)),
+        (fixed, metadata(size=refresh_tool.MAX_ACTIONS_STATE_BYTES + 1)),
+        (fixed, metadata(kind=stat.S_IFLNK)),
+    ):
+        assert not refresh_tool._actions_state_metadata_allowed(
+            path, info, effective_uid=991, effective_gid=992)
+    assert not refresh_tool._actions_state_metadata_allowed(
+        fixed, metadata(), effective_uid=0, effective_gid=992)
+
+
+def test_configure_actions_atomically_preserves_config_and_renews_public_state(
+    installation,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config = installation["config"]
+    refresh_tool.refresh(config)
+    before = json.loads(
+        installation["config_path"].read_text(encoding="utf-8"))
+    installation["config_path"].chmod(0o400)
+    published = []
+
+    def capture_publish(updated, identity, metadata, *, post_json):
+        published.append((updated, identity, metadata, post_json))
+        return {"ok": True, "aliasCount": len(updated.owner_aliases)}
+
+    monkeypatch.setattr(
+        refresh_tool, "_publish_registration", capture_publish)
+    request = {
+        "schemaVersion": 1,
+        "type": "forkmesh.mirror-actions-catalog-configuration",
+        "actionsEnabled": True,
+    }
+    result = refresh_tool.configure_actions(config, request)
+
+    after = json.loads(
+        installation["config_path"].read_text(encoding="utf-8"))
+    expected = json.loads(json.dumps(before))
+    expected.setdefault("catalog", {})["actionsEnabled"] = True
+    assert after == expected
+    assert stat.S_IMODE(installation["config_path"].stat().st_mode) == 0o400
+    assert result == {
+        "ok": True,
+        "event": "actions_configuration_complete",
+        "actionsEnabled": True,
+    }
+    assert len(published) == 1
+    updated = published[0][0]
+    assert updated.catalog.actions_enabled is True
+    metadata = published[0][2]
+    catalog = refresh_tool._catalog_unsigned(
+        updated, metadata, 1784840000000)
+    assert (catalog["actionsEnabled"], catalog["actionsState"]) == (
+        True,
+        "enabled",
+    )
+
+    unchanged = installation["config_path"].read_bytes()
+    for invalid in (
+        {
+            **request,
+            "actionsEnabled": 1,
+        },
+        {
+            **request,
+            "secret": "must-not-be-accepted",
+        },
+        {
+            "schemaVersion": 1,
+            "type": "forkmesh.mirror-actions-catalog-configuration",
+        },
+    ):
+        with pytest.raises(refresh_tool.RefreshError):
+            refresh_tool.configure_actions(updated, invalid)
+        assert installation["config_path"].read_bytes() == unchanged
+    assert len(published) == 1
+
+
+def test_linux_host_metric_parsers_are_bounded_and_fail_closed(installation):
+    snapshots = iter([
+        b"cpu  100 0 100 800 0 0 0 0\n",
+        b"cpu  150 0 150 900 0 0 0 0\n",
+    ])
+    assert refresh_tool._sample_linux_cpu(
+        read_metric=lambda _path: next(snapshots),
+        sleeper=lambda _seconds: None,
+    ) == 50
+    assert refresh_tool._proc_cpu_snapshot(b"cpu malformed\n") is None
+
+    assert refresh_tool._parse_linux_memory(
+        b"MemTotal:       1000 kB\nMemAvailable:    250 kB\n"
+    ) == (750 * 1024, 1000 * 1024)
+    assert refresh_tool._parse_linux_memory(
+        b"MemTotal:       1000 kB\n"
+    ) is None
+
+    disk = refresh_tool._sample_linux_disk(
+        installation["bare"],
+        statvfs=lambda _path: SimpleNamespace(
+            f_frsize=4096,
+            f_bsize=4096,
+            f_blocks=1000,
+            f_bavail=250,
+        ),
+    )
+    assert disk == (750 * 4096, 1000 * 4096)
+
+
+def test_host_sampling_calls_only_opted_in_metrics_and_omits_unavailable(
+    installation,
+):
+    config = installation["config"]
+
+    def forbidden(*_args):
+        raise AssertionError("disabled sampler was called")
+
+    assert refresh_tool._sample_host_telemetry(
+        config,
+        cpu_sampler=forbidden,
+        memory_sampler=forbidden,
+        disk_sampler=forbidden,
+        platform="linux",
+    ) == {}
+
+    enabled = replace(
+        config,
+        catalog=replace(
+            config.catalog,
+            report_cpu=True,
+            report_memory=True,
+            report_disk=True,
+        ),
+    )
+    sampled = refresh_tool._sample_host_telemetry(
+        enabled,
+        cpu_sampler=lambda: 177,
+        memory_sampler=lambda: (900, 800),
+        disk_sampler=lambda _path: None,
+        platform="linux",
+    )
+    assert sampled == {
+        "cpuPercent": 100,
+        "memUsedBytes": 800,
+        "memTotalBytes": 800,
+    }
+    assert refresh_tool._sample_host_telemetry(
+        enabled,
+        cpu_sampler=lambda: None,
+        memory_sampler=lambda: (10, 0),
+        disk_sampler=lambda _path: (-1, 100),
+        platform="linux",
+    ) == {}
+
+
+def test_headless_catalog_samples_truthful_repository_statistics(installation):
+    work = installation["work"]
+
+    records = {
+        ".forkmesh/issues/open/1/issue-1.json": {
+            "status": "open",
+            "events": [{"type": "open", "author": "alice"}],
+        },
+        ".forkmesh/issues/open/2/issue-2.json": {
+            "status": "open",
+            "events": [
+                {"type": "open", "author": "bob"},
+                {
+                    "type": "delete",
+                    "target": "self",
+                    "author": "bob",
+                },
+            ],
+        },
+        ".forkmesh/issues/closed/3/issue-3.json": {
+            "status": "closed",
+            "events": [],
+        },
+        ".forkmesh/issues/4/issue-4.json": {
+            "status": "open",
+            "events": [],
+        },
+        ".forkmesh/discussions/5/discussion-5.json": {"title": "one"},
+        ".forkmesh/discussions/9/discussion-9.json": {"title": "two"},
+    }
+    for relative, value in records.items():
+        target = work / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(value), encoding="utf-8")
+    _run(["git", "add", ".forkmesh"], work)
+    _run(["git", "commit", "-m", "add collaboration metadata"], work)
+    _run(["git", "push", "mirror", "main"], work)
+
+    _run(["git", "switch", "-c", "forkmesh/pulls"], work)
+    for number in (7, 11):
+        target = work / "pulls" / str(number) / "pull.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"# Pull {number}\n", encoding="utf-8")
+    _run(["git", "add", "pulls"], work)
+    _run(["git", "commit", "-m", "add pull metadata"], work)
+    _run(["git", "push", "mirror", "forkmesh/pulls"], work)
+    _run(["git", "switch", "main"], work)
+    _run(["git", "branch", "feature/reliable-counts"], work)
+    _run(["git", "push", "mirror", "feature/reliable-counts"], work)
+
+    for digest in ("a" * 64, "b" * 64):
+        data = (
+            installation["release_store"]
+            / "sha256"
+            / digest[:2]
+            / digest
+            / "data"
+        )
+        data.parent.mkdir(parents=True, exist_ok=True)
+        data.write_bytes(digest.encode("ascii"))
+
+    stats = refresh_tool._sample_repository_statistics(
+        installation["config"]
+    )
+    assert stats == {
+        "commitCount": "2",
+        "branchCount": "3",
+        "issueCount": "2",
+        "issueMaxNumber": "4",
+        "pullCount": "2",
+        "discussionCount": "2",
+        "artifactCount": "2",
+    }
+    assert "worktreeCount" not in stats
+    assert "clonesServed" not in stats
+    assert "websiteServed" not in stats
+
+
+def test_headless_catalog_omits_unreadable_or_unavailable_statistics(
+    installation,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config = replace(installation["config"], release_store=None)
+    monkeypatch.setattr(
+        refresh_tool,
+        "_source_blob_batch",
+        lambda *_args, **_kwargs: None,
+    )
+    issue = installation["work"] / ".forkmesh/issues/open/1/issue-1.json"
+    issue.parent.mkdir(parents=True, exist_ok=True)
+    issue.write_text('{"status":"open","events":[]}', encoding="utf-8")
+    _run(["git", "add", ".forkmesh"], installation["work"])
+    _run(["git", "commit", "-m", "add one issue"], installation["work"])
+    _run(["git", "push", "mirror", "main"], installation["work"])
+
+    stats = refresh_tool._sample_repository_statistics(config)
+    assert "issueCount" not in stats
+    # The tree itself still reserves issue number 1 even when its record cannot
+    # be read, so a later automated issue must not reuse that occupied number.
+    assert stats["issueMaxNumber"] == "1"
+    assert "artifactCount" not in stats
+    assert stats["commitCount"] == "2"
+    assert stats["branchCount"] == "1"
+    assert stats["pullCount"] == "0"
+    assert stats["discussionCount"] == "0"
+
+
+def test_issue_statistics_reserve_all_numeric_directories_and_default_live(
+    installation,
+):
+    work = installation["work"]
+    records = {
+        ".forkmesh/issues/open/12/note.txt": "record missing\n",
+        ".forkmesh/issues/closed/19/note.txt": "record missing\n",
+        ".forkmesh/issues/21/issue-21.json": "{not valid json",
+    }
+    for relative, contents in records.items():
+        target = work / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(contents, encoding="utf-8")
+    _run(["git", "add", ".forkmesh"], work)
+    _run(["git", "commit", "-m", "add damaged issue metadata"], work)
+    _run(["git", "push", "mirror", "main"], work)
+
+    stats = refresh_tool._sample_repository_statistics(
+        installation["config"]
+    )
+    # Qt treats an unreadable open/legacy issue as live, while every numeric
+    # tree (including a closed one without its record) reserves its number.
+    assert stats["issueCount"] == "2"
+    assert stats["issueMaxNumber"] == "21"
+
+
+def test_repository_statistics_isolate_recursion_error(installation, monkeypatch):
+    def recursive_issue_failure(_config):
+        raise RecursionError("untrusted issue nesting")
+
+    monkeypatch.setattr(
+        refresh_tool,
+        "_source_issue_counts",
+        recursive_issue_failure,
+    )
+    stats = refresh_tool._sample_repository_statistics(
+        installation["config"]
+    )
+    assert "issueCount" not in stats
+    assert "issueMaxNumber" not in stats
+    assert stats["commitCount"] == "1"
+    assert stats["branchCount"] == "1"
+    assert stats["pullCount"] == "0"
+    assert stats["discussionCount"] == "0"
+    assert stats["artifactCount"] == "0"
+
+
+def test_register_posts_endpoint_then_node_owner_catalog(
+    installation,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config = replace(
+        installation["config"],
+        catalog=replace(
+            installation["config"].catalog,
+            report_cpu=True,
+            report_memory=True,
+            report_disk=True,
+        ),
+    )
+    monkeypatch.setattr(
+        refresh_tool,
+        "_sample_host_telemetry",
+        lambda _config: {
+            "cpuPercent": 37,
+            "memUsedBytes": 300,
+            "memTotalBytes": 1000,
+            "diskUsedBytes": 800,
+            "diskTotalBytes": 2000,
+        },
+    )
+    refresh_tool.refresh(config)
+    calls: list[tuple[str, dict]] = []
+
+    def post(url: str, payload):
+        calls.append((url, dict(payload)))
+        if url.endswith("/api/mirrors/https"):
+            return 201, {
+                "ok": True,
+                "node": payload["node"],
+                "baseUrl": payload["baseUrl"],
+                "health": "active",
+            }
+        signed_record = dict(payload)
+        catalog_signature = signed_record.pop("catalogSig")
+        assert signed_record.pop("catalogSigVersion") == 2
+        assert signed_record.pop("signature") == ""
+        record_hash = hashlib.sha256(
+            json.dumps(
+                signed_record,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        Ed25519PublicKey.from_public_bytes(
+            base64.urlsafe_b64decode(
+                installation["public"]["nodePublicKey"] + "="
+            )
+        ).verify(
+            base64.urlsafe_b64decode(catalog_signature + "=="),
+            ("forkmesh-catalog-v2\n" + record_hash).encode("ascii"),
+        )
+        return 201, {
+            "ok": True,
+            "repository": {
+                "owner": payload["owner"],
+                "name": payload["name"],
+                "stateHash": payload["stateHash"],
+            },
+        }
+
+    result = refresh_tool.register(config, post_json=post)
+    assert [url.rsplit("/", 1)[-1] for url, _ in calls] == [
+        "https",
+        "repositories",
+    ]
+    endpoint = calls[0][1]
+    assert endpoint["node"] == "mirror-two"
+    assert endpoint["baseUrl"] == "https://mirror-two.example.invalid"
+    assert endpoint["publicKey"] == installation["public"]["nodePublicKey"]
+    assert re_fullmatch_base64_signature(endpoint["signature"])
+
+    catalog = calls[1][1]
+    expected_commit = _run(
+        ["git", "--git-dir", str(installation["bare"]), "rev-parse", "main"]
+    )
+    assert catalog["owner"] == "mirror-two"
+    assert catalog["name"] == "forkmesh"
+    assert catalog["visibility"] == "public"
+    assert catalog["commit"] == expected_commit
+    assert catalog["commitCount"] == "1"
+    assert catalog["branchCount"] == "1"
+    assert catalog["issueCount"] == "0"
+    assert catalog["issueMaxNumber"] == "0"
+    assert catalog["pullCount"] == "0"
+    assert catalog["discussionCount"] == "0"
+    assert catalog["artifactCount"] == "0"
+    assert catalog["actionsEnabled"] is False
+    assert catalog["actionsState"] == "disabled"
+    assert not {
+        "actionsVariables",
+        "actionsCommand",
+        "actionsWorkingDirectory",
+        "actionsLogs",
+    }.intersection(catalog)
+    assert catalog["cpuPercent"] == 37
+    assert (catalog["memUsedBytes"], catalog["memTotalBytes"]) == (300, 1000)
+    assert (catalog["diskUsedBytes"], catalog["diskTotalBytes"]) == (800, 2000)
+    assert catalog["catalogSigVersion"] == 2
+    assert catalog["maintainer"] == installation["public"]["nodePublicKey"]
+    assert re_fullmatch_base64_signature(catalog["catalogSig"])
+    assert re_fullmatch_base64_signature(catalog["stateSig"])
+    assert result == {
+        "ok": True,
+        "event": "registration_complete",
+        "aliasCount": 2,
+    }
+
+
+def test_renew_republishes_valid_active_generation_without_full_preflight(
+    installation,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config = installation["config"]
+    refresh_tool.refresh(config)
+    calls: list[tuple[str, dict]] = []
+
+    def post(url: str, payload):
+        calls.append((url, dict(payload)))
+        if url.endswith("/api/mirrors/https"):
+            return 201, {
+                "ok": True,
+                "node": payload["node"],
+                "baseUrl": payload["baseUrl"],
+                "health": "active",
+            }
+        return 201, {
+            "ok": True,
+            "repository": {
+                "owner": payload["owner"],
+                "name": payload["name"],
+                "stateHash": payload["stateHash"],
+            },
+        }
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("renew must not run the full gateway preflight")
+
+    monkeypatch.setattr(refresh_tool, "_fsck_source", forbidden)
+    monkeypatch.setattr(refresh_tool, "_invoke_gateway_check", forbidden)
+
+    result = refresh_tool.renew(config, post_json=post)
+
+    assert [url.rsplit("/", 1)[-1] for url, _ in calls] == [
+        "https",
+        "repositories",
+    ]
+    expected_commit = _run(
+        ["git", "--git-dir", str(installation["bare"]), "rev-parse", "main"]
+    )
+    assert calls[1][1]["commit"] == expected_commit
+    assert result == {
+        "ok": True,
+        "event": "renewal_complete",
+        "aliasCount": 2,
+    }
+
+
+def test_register_rechecks_pending_health_after_catalog_pin_advances(
+    installation,
+):
+    config = installation["config"]
+    refresh_tool.refresh(config)
+    calls: list[tuple[str, dict]] = []
+    endpoint_calls = 0
+
+    def post(url: str, payload):
+        nonlocal endpoint_calls
+        calls.append((url, dict(payload)))
+        if url.endswith("/api/mirrors/https"):
+            endpoint_calls += 1
+            return 201, {
+                "ok": True,
+                "node": payload["node"],
+                "baseUrl": payload["baseUrl"],
+                "health": "pending" if endpoint_calls == 1 else "active",
+            }
+        return 201, {
+            "ok": True,
+            "repository": {
+                "owner": payload["owner"],
+                "name": payload["name"],
+                "stateHash": payload["stateHash"],
+            },
+        }
+
+    result = refresh_tool.register(config, post_json=post)
+    assert [url.rsplit("/", 1)[-1] for url, _ in calls] == [
+        "https",
+        "repositories",
+        "https",
+    ]
+    assert calls[0][1] == calls[2][1]
+    assert result["event"] == "registration_complete"
+
+
+def test_register_fails_when_signed_health_stays_pending(installation):
+    config = installation["config"]
+    refresh_tool.refresh(config)
+    calls: list[str] = []
+
+    def post(url: str, payload):
+        calls.append(url)
+        if url.endswith("/api/mirrors/https"):
+            return 201, {
+                "ok": True,
+                "node": payload["node"],
+                "baseUrl": payload["baseUrl"],
+                "health": "pending",
+            }
+        return 201, {
+            "ok": True,
+            "repository": {
+                "owner": payload["owner"],
+                "name": payload["name"],
+                "stateHash": payload["stateHash"],
+            },
+        }
+
+    with pytest.raises(
+        refresh_tool.RefreshError,
+        match="did not activate signed health",
+    ):
+        refresh_tool.register(config, post_json=post)
+    assert [url.rsplit("/", 1)[-1] for url in calls] == [
+        "https",
+        "repositories",
+        "https",
+    ]
+
+
+def test_renew_fails_closed_when_source_refs_changed(installation):
+    config = installation["config"]
+    refresh_tool.refresh(config)
+    (installation["work"] / "README.md").write_text(
+        "renewal must not advertise changed refs\n", encoding="utf-8"
+    )
+    _run(["git", "add", "README.md"], installation["work"])
+    _run(["git", "commit", "-m", "unsealed change"], installation["work"])
+    _run(["git", "push", "mirror", "main"], installation["work"])
+
+    with pytest.raises(
+        refresh_tool.RefreshError,
+        match="active archive does not match the exact source refs",
+    ):
+        refresh_tool.renew(config, post_json=lambda *_args: pytest.fail(
+            "renew must not publish changed refs"))
+
+
+def re_fullmatch_base64_signature(value: str) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 86
+        and len(base64.urlsafe_b64decode(value + "==")) == 64
+    )
+
+
+def test_register_stops_before_catalog_when_endpoint_is_rejected(installation):
+    config = installation["config"]
+    refresh_tool.refresh(config)
+    calls = []
+
+    def reject(url: str, payload):
+        calls.append((url, payload))
+        return 401, {"ok": False}
+
+    with pytest.raises(refresh_tool.RefreshError, match="endpoint registration"):
+        refresh_tool.register(config, post_json=reject)
+    assert len(calls) == 1
+    assert calls[0][0].endswith("/api/mirrors/https")
+
+
+def test_config_rejects_permissions_symlinks_and_secret_fields(
+    installation,
+    tmp_path: Path,
+):
+    config_path = installation["config_path"]
+    config_path.chmod(0o640)
+    with pytest.raises(refresh_tool.RefreshError, match="unsafe"):
+        refresh_tool.load_config(config_path)
+    config_path.chmod(0o600)
+
+    link = tmp_path / "refresh-link.json"
+    link.symlink_to(config_path)
+    with pytest.raises(refresh_tool.RefreshError, match="symbolic link"):
+        refresh_tool.load_config(link)
+
+    prohibited = dict(installation["config_value"])
+    prohibited["apiToken"] = "must-not-be-accepted"
+    prohibited_path = tmp_path / "prohibited.json"
+    prohibited_path.write_text(json.dumps(prohibited), encoding="utf-8")
+    prohibited_path.chmod(0o600)
+    with pytest.raises(refresh_tool.RefreshError, match="prohibited secret"):
+        refresh_tool.load_config(prohibited_path)
+
+    release_store = installation["release_store"]
+    release_store.chmod(0o755)
+    with pytest.raises(refresh_tool.RefreshError, match="release store"):
+        refresh_tool.load_config(config_path)
+    release_store.chmod(0o700)
+
+
+def test_release_store_is_optional_for_existing_refresh_configs(
+    installation,
+    tmp_path: Path,
+):
+    legacy = dict(installation["config_value"])
+    legacy.pop("releaseStore")
+    legacy_path = tmp_path / "legacy-refresh.json"
+    legacy_path.write_text(
+        json.dumps(legacy, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    legacy_path.chmod(0o600)
+
+    config = refresh_tool.load_config(legacy_path)
+    assert config.release_store is None
+    rendered = refresh_tool._render_gateway_config(
+        config,
+        refresh_tool._load_public_identity(config),
+        refresh_tool.SealMetadata(
+            ciphertext_sha256="a" * 64,
+            ciphertext_bytes=100,
+            key_reference="forkmesh-headless-age:test",
+            expected_refs_sha256="b" * 64,
+        ),
+        installation["archive"] / ("archive-" + "a" * 64 + ".age"),
+    )
+    assert all(
+        "releaseStore" not in repository
+        for repository in rendered["repositories"]
+    )
+
+
+def test_git_fsck_failure_does_not_create_active_state_or_leak_logs(
+    installation,
+    capsys: pytest.CaptureFixture[str],
+):
+    corrupt = installation["bare"] / "objects" / "aa" / ("a" * 38)
+    corrupt.parent.mkdir(exist_ok=True)
+    corrupt.write_bytes(b"not a git object")
+    result = refresh_tool.main(
+        ["--config", str(installation["config_path"]), "refresh"]
+    )
+    captured = capsys.readouterr()
+    assert result == 2
+    assert captured.out == ""
+    assert "required local operation failed" in captured.err
+    assert str(installation["bare"]) not in captured.err
+    assert "mirror-two" not in captured.err
+    assert "forkmesh.git" not in captured.err
+    assert installation["age_secret"] not in captured.err
+    assert not installation["gateway_config"].exists()
+    assert not list(installation["archive"].glob("archive-*.age"))

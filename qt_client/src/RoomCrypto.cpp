@@ -16,10 +16,10 @@ constexpr int kPbkdfRounds = 210000;
 // Room frame cap — MUST match the worker's MAX_TEXT_BYTES (4 MB) so both ends
 // agree on what they'll relay; we reject oversize frames before encrypting.
 constexpr qsizetype kMaxPlainBytes = 4ll * 1024 * 1024;
-// Baked-in app key for passphrase-free shared rooms. Every ForkMesh build derives
-// the same key for a given room name, so all nodes converge on the same rooms.
-// This is not a secret from other app users (the rooms are effectively public);
-// it only keeps the relay zero-knowledge (it sees ciphertext, never plaintext).
+// Legacy fallback for construction before the authenticated relay-derived
+// passphrase arrives. Every build can derive it, as can the relay, so it offers
+// no confidentiality from either. Normal startup re-keys through
+// ServerNode::setRoomPassphrase once the authenticated fetch completes.
 const char kAppRoomKey[] = "forkmesh-shared-room-key-v1";
 
 QByteArray saltForRoom(const QString &roomName)

@@ -1,0 +1,67 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784405500043,
+    "endDate": 1785211200000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nMake deferred large files upload, download, resume, encrypt, and fail over through standard Git clients without weakening object verification.\n\n## Implementation\n\n- Implement the standard batch, upload, download, verify, and lock-capability endpoints used by Git large-file clients.\n- Stream by object identifier and declared size with range resume, bounded concurrency, cancellation, and bandwidth policy.\n- Require repository write authorization for upload and visibility authorization for download.\n- Encrypt private large objects at rest through #448 and select only mirrors proving the requested object digest.\n- Advertise large-object coverage to #452, #461, and #466.\n\n## Acceptance criteria\n\n- An unmodified standard client clones, fetches, checks out, and pushes large-object fixtures.\n- Digest or size mismatch is rejected before an object becomes available.\n- Interrupted transfers resume without retransmitting verified ranges.\n- Unauthorized and cross-repository object requests fail without existence disclosure.\n- Mirror failover returns identical verified bytes and respects deferred-sync policy.\n\n## Dependencies\n\nUses Git compatibility in #435, encryption in #448, selective sync in #452, and route selection in #453.\n\n## Verification\n\nRun stock-client clone, checkout, fetch, upload, resume, invalid digest, wrong size, unauthorized, private, bandwidth-limited, deferred, and mirror-failover cases without an external network.",
+            "id": "open-467",
+            "sig": "WenfHMmg4Suvwz_PpIi0Ao3ZmsjNnIknRzJg9xdHU8l6t1S3Jc94oyerbFU5IOeKvMk0ql8KkJNqlgaZ7FLHAA",
+            "title": "Serve standard Git large objects through verified mirrors",
+            "ts": 1784405500043,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1785211200000,
+            "id": "4711e76f-0f26-4646-9870-2b1d7c28af9b",
+            "sig": "0UkeqhyuJDa__g2-KU1DR9McOzbXVCyubovc9PBY5A5K8BZxlkMN_HcvTpMyvHihAIfsy3Uuh5_8J0v9WKNQAA",
+            "startDate": 1784779200000,
+            "ts": 1784405500044,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "e86b4f38-0825-41ef-bf18-a401f82ab4b9",
+            "sig": "8kiCo1NoBV7OSc9x00cXcbMwKLtn6_E-YsZ9gdrzFBP1i1tErW5Y-4MiWlsIhaDjGwgmRmJ5Tz8YlpDGrTJkDg",
+            "ts": 1784729751181,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "fa652b5b-25c4-415d-bc3e-cfcc8a9de965",
+            "sig": "PvETKvaAXMGDdGmc_tKvwqFNGh1cU0Py4xAr79n1KXx0OcIMYh4bZLP8irA0C-I_ug6qiK8bKuNvf_1sD6F0CQ",
+            "status": "closed",
+            "ts": 1784729751182,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "feature",
+        "infra",
+        "security"
+    ],
+    "milestone": "Open operations",
+    "number": 467,
+    "priority": 35,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784779200000,
+    "status": "closed",
+    "title": "Serve standard Git large objects through verified mirrors",
+    "updatedAt": 1784729751182,
+    "votes": 0
+}

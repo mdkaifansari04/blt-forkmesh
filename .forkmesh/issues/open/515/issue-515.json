@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751436,
+    "endDate": 1816920000000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nPublic repositories, volunteer mirrors, accessibility, documentation, education, and ecosystem tooling can receive transparent support without restricting protocol participation.\n\n## Scope\n\n- Offer donations, recurring sponsorship, targeted grants, and matching programs with published eligibility and selection criteria.\n- Disclose funding sources, conflicts, administrative cost, awards, reporting, outcomes, and unsuccessful-round lessons.\n- Keep awards independent of repository access, identity rights, protocol votes, and required network behavior.\n\n## Acceptance criteria\n\n- A pilot round publishes applications, conflict handling, selections, disbursements, milestones, and outcome reports.\n- Recipients can use portable payment rails and are not forced onto hosted ForkMesh products.\n- Community review identifies and corrects concentration, accessibility, and conflict risks.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P2 ecosystem investment**\n- Milestone: **Open platform & ecosystem**\n- Numeric priority: **43 of 44** (1 is highest)\n- Depends on: #486, #513\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**20% as of 2026-07-22.** Issue bounties, profile/repository donations, and on-chain payment plumbing exist; a transparent grants and sponsorship program remains. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Funds raised/disbursed, recipients, milestone completion, operator retention, accessibility impact, and concentration. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-515",
+            "sig": "W-MrHk0ZkFazM62qZpqKh4aKjTcJxMtbvH8lqtPczuARbUM4AOlILjBlV8CEMu1MhxfumD_JhgngxmK61BBwBQ",
+            "title": "Fund public-interest work through grants, sponsorships, and donations",
+            "ts": 1784729751436,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "43129b00-8214-4d5f-8a64-322456d671b0",
+            "labels": [
+                "community",
+                "revenue",
+                "governance"
+            ],
+            "sig": "3eqsHswlrHNl0DhAiwZymtx_ExpI9_UKt7EE5UCzwIKVhzRvIbBY36uN7vOrHmXy-VUBSflpk6-P3dCvgYrdCw",
+            "ts": 1784729751437,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "e161822b-4369-48aa-840b-51d7607fce19",
+            "milestone": "Open platform & ecosystem",
+            "sig": "Bo1Rpt3ClkeUfnqxnJV8xWM8wuzhutigjryRU9atR8V0qxNOb1l2tTit_24i1xeAJ0YsThNX4i-xMontoNHwAA",
+            "ts": 1784729751438,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1816920000000,
+            "id": "05a6e517-2c40-4cf5-935c-6cb77ab44b12",
+            "sig": "44nxr5SDaCJALa6VR_CcKyQl1UQdYG1G-E_yw-4tDrSlE32wWHPws4gomCuPoSMubz_t_Kq7yMP3Osomghn9Ag",
+            "startDate": 1792382400000,
+            "ts": 1784729751439,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "4dbc0f66-e356-4621-be3c-6f37c40524b9",
+            "priority": 43,
+            "sig": "KsKGRNbtLeZbfps_BYGS-PKhHtsYRZEcobY7AgJ7O2xt0BB8Q4KyvXpQvx14xSnvsRwFsapi1uVZAlGbMrJnDg",
+            "ts": 1784729751440,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "15922e1b-a9f7-4003-ae21-3660960c90fb",
+            "progress": 20,
+            "sig": "v4Y34UBBUj_wsPd0Pkx7Lem2jCcTwcVXTju3dwSnFcv80C2W4u29HTn2iFqRVpI-xt-HjjHpprwvG42cJNj-BQ",
+            "ts": 1784729751441,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "community",
+        "revenue",
+        "governance"
+    ],
+    "milestone": "Open platform & ecosystem",
+    "number": 515,
+    "priority": 43,
+    "progress": 20,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1792382400000,
+    "status": "open",
+    "title": "Fund public-interest work through grants, sponsorships, and donations",
+    "updatedAt": 1784729751441,
+    "votes": 0
+}

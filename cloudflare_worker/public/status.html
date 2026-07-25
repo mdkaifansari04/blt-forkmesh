@@ -41,7 +41,10 @@
             monitoring gaps and excluded, so the numbers reflect observed
             health rather than fabricated downtime. Click a system to see
             exactly what its check tests. We are still tuning monitoring and
-            optimizing traffic usage for bots.
+            optimizing traffic usage for bots. On an upgraded instance, the
+            API and scheduled checks fail closed rather than report operational
+            while a historical Worker-held wallet key still requires the
+            documented offline export, zero-balance reconciliation, and scrub.
           </p>
         </div>
       </section>
@@ -355,7 +358,7 @@
               if (current.mainnodeOnline === false && (current.onlineNodes || 0) > 0) {
                 nodesDetail.textContent = "Traffic is being served by mirror node(s), not mainnode";
               } else if (current.mainnodeOnline === false) {
-                nodesDetail.textContent = "No node — including mainnode — has a live tunnel";
+                nodesDetail.textContent = "No node — including mainnode — reports fresh serving availability";
               } else {
                 nodesDetail.textContent = "";
               }

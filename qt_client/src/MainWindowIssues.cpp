@@ -9,7 +9,9 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "FederatedThreadView.h"
 #include "KebabHeaderView.h"
+#include "MirrorCrypto.h"
 
 #include <QDateEdit>
 #include <QLayoutItem>
@@ -202,34 +204,23 @@ QWidget *MainWindow::buildIssuesSection()
     headingRow->insertWidget(2, m_issuePrioritizeAgentCombo);
     headingRow->insertWidget(2, m_issueCompletenessButton);
 
-    // Bulk bounty: pledge the same amount on every open issue at once. Bounties
-    // are pledged only (funded on merge), so this never moves money.
+    // Historical bounty metadata remains visible for audit/migration, but new
+    // pledges are disabled because the retired payout flow depended on
+    // Worker-held escrow keys.
     auto *bountyAllAmount = new QLineEdit;
     bountyAllAmount->setObjectName("issueControlSm");
-    bountyAllAmount->setPlaceholderText("$ all");
+    bountyAllAmount->setPlaceholderText("retired");
     bountyAllAmount->setMaximumWidth(70);
-    bountyAllAmount->setToolTip("Bounty amount (USD) to pledge on every open issue");
-    auto *bountyAllButton = new QPushButton("Bounty all");
+    bountyAllAmount->setEnabled(false);
+    bountyAllAmount->setToolTip(
+        "New bounty escrow is disabled; historical entries are migration-only.");
+    auto *bountyAllButton = new QPushButton("Bounties retired");
     bountyAllButton->setObjectName("ghostButton");
     bountyAllButton->setProperty("buttonSize", "sm");
-    bountyAllButton->setCursor(Qt::PointingHandCursor);
+    bountyAllButton->setEnabled(false);
     bountyAllButton->setToolTip(
-        "Pledge this bounty on every open issue (funded when each PR is merged)");
+        "ForkMesh no longer creates or funds Worker-held bounty escrow.");
     setOcticon(bountyAllButton, "tag", 16);
-    auto applyBountyAll = [this, bountyAllAmount] {
-        bool ok = false;
-        const double amount = bountyAllAmount->text().trimmed().toDouble(&ok);
-        if (!ok || amount < 1.0) {
-            setIssueInlineNotice(
-                "Enter a bounty amount (USD \xE2\x89\xA5 1) to apply to all open "
-                "issues.",
-                true);
-            return;
-        }
-        bountyAllOpenIssues(amount);
-    };
-    connect(bountyAllButton, &QPushButton::clicked, this, applyBountyAll);
-    connect(bountyAllAmount, &QLineEdit::returnPressed, this, applyBountyAll);
 
     auto *actionRow = new QHBoxLayout;
     actionRow->setContentsMargins(0, 0, 0, 0);
@@ -343,10 +334,35 @@ QWidget *MainWindow::buildIssuesSection()
     auto *listLayout = new QVBoxLayout(listPane);
     listLayout->setContentsMargins(18, 18, 12, 18);
     listLayout->setSpacing(8);
-    listLayout->addLayout(headingRow);
+    // The view selectors and bulk actions have grown into full toolbars. Their
+    // natural text width must not become the minimum width of the issue table:
+    // on compact windows each toolbar scrolls independently while the table and
+    // selected-issue pane continue sharing the available 900px viewport.
+    auto makeOverflowToolbar = [this](QHBoxLayout *row,
+                                      const QString &objectName) {
+        auto *host = new QWidget;
+        host->setLayout(row);
+        host->adjustSize();
+        auto *scroll = new QScrollArea;
+        scroll->setObjectName(objectName);
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setWidget(host);
+        scroll->setWidgetResizable(false);
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        scroll->setMinimumWidth(0);
+        scroll->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        scroll->setFixedHeight(
+            host->sizeHint().height() +
+            style()->pixelMetric(QStyle::PM_ScrollBarExtent) + 2);
+        return scroll;
+    };
+    listLayout->addWidget(
+        makeOverflowToolbar(headingRow, QStringLiteral("issueHeadingToolbar")));
     listLayout->addWidget(m_issuesRepoCombo);
     listLayout->addLayout(filterRow);
-    listLayout->addLayout(actionRow);
+    listLayout->addWidget(
+        makeOverflowToolbar(actionRow, QStringLiteral("issueBulkToolbar")));
     listLayout->addWidget(m_issueListStack, 1);
 
     // Center: GitHub-style selected issue page: title header, status, timeline and
@@ -477,12 +493,33 @@ QWidget *MainWindow::buildIssuesSection()
     commentButtonRow->addWidget(m_issueCloseButton);
     commentButtonRow->addWidget(m_issueCloseCommentButton);
     commentButtonRow->addWidget(m_issueCommentButton);
+    // This action set is intentionally complete, but its combined text widths
+    // are wider than the issue pane on a 900px laptop once the issue list and
+    // metadata sidebar share the screen. Keep every action available in a
+    // horizontal overflow toolbar instead of letting the row advertise a
+    // 1000px+ hard minimum for the whole application window.
+    auto *commentActions = new QWidget;
+    commentActions->setLayout(commentButtonRow);
+    commentActions->adjustSize();
+    auto *commentActionsScroll = new QScrollArea;
+    commentActionsScroll->setObjectName("issueCommentActionsScroll");
+    commentActionsScroll->setFrameShape(QFrame::NoFrame);
+    commentActionsScroll->setWidget(commentActions);
+    commentActionsScroll->setWidgetResizable(false);
+    commentActionsScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    commentActionsScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    commentActionsScroll->setMinimumWidth(0);
+    commentActionsScroll->setSizePolicy(QSizePolicy::Ignored,
+                                        QSizePolicy::Fixed);
+    commentActionsScroll->setFixedHeight(
+        commentActions->sizeHint().height() +
+        style()->pixelMetric(QStyle::PM_ScrollBarExtent) + 2);
     auto *commentColumn = new QVBoxLayout;
     commentColumn->setContentsMargins(0, 0, 0, 0);
     commentColumn->setSpacing(8);
     commentColumn->addWidget(commentTitle);
     commentColumn->addWidget(m_issueComposer);
-    commentColumn->addLayout(commentButtonRow);
+    commentColumn->addWidget(commentActionsScroll);
     auto *composerRow = new QHBoxLayout;
     composerRow->setContentsMargins(0, 0, 0, 0);
     composerRow->setSpacing(14);
@@ -490,6 +527,12 @@ QWidget *MainWindow::buildIssuesSection()
     composerRow->addLayout(commentColumn, 1);
 
     auto *center = new QWidget;
+    // The issue thread is the flexible half of the nested detail splitter.
+    // Its toolbar rows provide their own horizontal overflow where needed, so
+    // their aggregate size hint must not become a hard minimum for the whole
+    // application window.
+    center->setMinimumWidth(0);
+    center->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
     auto *centerLayout = new QVBoxLayout(center);
     centerLayout->setContentsMargins(24, 22, 22, 22);
     centerLayout->setSpacing(12);
@@ -576,6 +619,12 @@ QWidget *MainWindow::buildIssuesSection()
         b->setCursor(Qt::PointingHandCursor);
         setOcticon(b, "gear", 15);
     }
+    m_issueBountyButton->setObjectName(
+        QStringLiteral("legacyIssueBountyDisabled"));
+    m_issueBountyButton->setEnabled(false);
+    m_issueBountyButton->setToolTip(
+        QStringLiteral("New Worker-held bounty escrow is disabled; existing "
+                       "records are retained for migration only."));
     m_issueDeleteButton->setObjectName("issueDangerLink");
     m_issueDeleteButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_issueDeleteButton, "trash", 15);
@@ -1014,7 +1063,11 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueDiffView = new QTextBrowser;
     m_issueDiffView->setObjectName("diffView");
     m_issueDiffView->setOpenExternalLinks(false);
-    m_issueDiffView->setLineWrapMode(QTextEdit::NoWrap);
+    // Long diff lines wrap inside the browser; they must not become a
+    // minimum-width request propagated through the hidden Files changed page.
+    m_issueDiffView->setMinimumWidth(0);
+    m_issueDiffView->setSizePolicy(QSizePolicy::Ignored,
+                                   QSizePolicy::Expanding);
     registerDiffView(m_issueDiffView);
     // DiffFileNavigator is created lazily on first render (complete type in scope).
 
@@ -1046,6 +1099,14 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueDetailStack = new QStackedWidget;
     m_issueDetailStack->addWidget(issueDetailView);
     m_issueDetail = m_issueDetailStack;
+    // QSplitter otherwise adds the complete nested detail-page size hint
+    // (thread plus metadata sidebar) to the 260px issue-list minimum. That
+    // propagated a 1100px minimum all the way to MainWindow even though the
+    // right pane is explicitly collapsible. Keep its preferred size for the
+    // normal split while allowing the outer splitter to negotiate laptop
+    // widths and let the inner toolbars scroll.
+    m_issueDetail->setMinimumWidth(0);
+    m_issueDetail->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
 
     // The table and the detail panel share a draggable divider; hiding the
     // detail lets the table use the full width.
@@ -1993,7 +2054,9 @@ void MainWindow::refreshIssueList()
         bountyItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
         if (!issue.bountyStatus.isEmpty())
             bountyItem->setToolTip(
-                QStringLiteral("Bounty status: %1").arg(issue.bountyStatus));
+                QStringLiteral("Legacy bounty (migration-only), historical "
+                               "status: %1")
+                    .arg(issue.bountyStatus));
         m_issueTable->setItem(row, 13, bountyItem);
 
         // Comment count: "comment" events minus any that were later deleted,
@@ -2549,7 +2612,8 @@ void MainWindow::renderIssueThread(const Issue &issue)
                                        ? QStringLiteral("open")
                                        : issue.bountyStatus;
             m_issueBountyValue->setText(
-                QStringLiteral("<b>$%1</b> <span style='color:#8b949e'>(%2)</span>")
+                QStringLiteral("<b>$%1</b> <span style='color:#8b949e'>"
+                               "(legacy, migration-only: %2)</span>")
                     .arg(QString::number(issue.bountyUsd, 'f', 2), status.toHtmlEscaped()));
         } else {
             m_issueBountyValue->setText(QStringLiteral("No bounty"));
@@ -3041,6 +3105,19 @@ void MainWindow::renderIssueThread(const Issue &issue)
             // Surface unknown/future action types rather than silently dropping
             // them, so the timeline shows every action stored in the issue JSON.
             addActivity(QStringLiteral("recorded a %1 action").arg(ev.type), ev.ts, who);
+    }
+    if (m_repoDetailIndex >= 0 &&
+        m_repoDetailIndex < m_repositories.size() && m_networkAccess) {
+        const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+        auto *remoteThread =
+            new FederatedThreadView(m_networkAccess, m_issueThreadContainer);
+        const QUrl server(canonicalServerUrl(
+            m_activeServer >= 0 && m_activeServer < m_servers.size()
+                ? m_servers.at(m_activeServer).url
+                : QString()));
+        remoteThread->load(server, repo.owner, repo.name,
+                           QStringLiteral("issue"), issue.number);
+        m_issueThreadLayout->addWidget(remoteThread);
     }
     m_issueThreadLayout->addStretch();
 }
@@ -4585,13 +4662,6 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
             }
         }
     }
-    // First expose of the top-level window: its first frame is now on screen, so
-    // it's safe to run the deferred git-backed startup without a black frame.
-    if (event->type() == QEvent::Expose && obj == windowHandle()) {
-        if (QWindow *handle = windowHandle(); handle && handle->isExposed())
-            QTimer::singleShot(0, this, &MainWindow::runDeferredStartup);
-        return QMainWindow::eventFilter(obj, event); // never consume expose
-    }
     // Ctrl + mouse wheel over any registered diff viewer zooms its text size,
     // mirroring the +/- buttons (issue #254). Consume so the view doesn't scroll.
     if (event->type() == QEvent::Wheel &&
@@ -4655,6 +4725,35 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         auto *ke = static_cast<QKeyEvent *>(event);
         if (ke->matches(QKeySequence::Paste) && trySendClipboardImage())
             return true;
+    }
+    // Tab accepts the highlighted @-mention suggestion into the input (adhoc
+    // #212). QCompleter's popup handles Up/Down/Enter itself but lets Tab fall
+    // through to focus-change, so bind it here: take the highlighted row, or the
+    // first entry when nothing's been arrowed to yet, and insert it just like
+    // activating with Enter would. The popup (not m_messageInput) is filtered
+    // because a Qt::Popup grabs the keyboard while it's up.
+    // NB: compare against the cached m_mentionCompleterPopup, never
+    // m_mentionCompleter->popup(). This runs for every application event, and
+    // popup() lazily builds its QListView on first call — whose construction
+    // pumps events back through here and would recurse into another popup()
+    // until the stack overflows (SIGSEGV, adhoc #220). The cache stays null
+    // until the view is fully built, so this branch simply doesn't fire yet.
+    if (m_mentionCompleterPopup && obj == m_mentionCompleterPopup &&
+        event->type() == QEvent::KeyPress) {
+        auto *ke = static_cast<QKeyEvent *>(event);
+        if (ke->key() == Qt::Key_Tab) {
+            const QModelIndex idx = m_mentionCompleterPopup->currentIndex();
+            QString name;
+            if (idx.isValid())
+                name = idx.data(Qt::DisplayRole).toString();
+            else if (m_mentionCompleter->setCurrentRow(0))
+                name = m_mentionCompleter->currentCompletion();
+            if (!name.isEmpty()) {
+                insertMention(name);
+                m_mentionCompleterPopup->hide();
+                return true;
+            }
+        }
     }
     // Ctrl+V into the footer quick-add bar: if the clipboard holds an image,
     // queue it as an attachment instead of pasting its (usually empty) text
@@ -6349,15 +6448,6 @@ QUrl MainWindow::issuesApiUrl(const RepositoryRecord &repo) const
     return url;
 }
 
-QUrl MainWindow::bountyApiUrl(const RepositoryRecord &repo) const
-{
-    QUrl url = catalogApiUrl();
-    url.setPath("/api/repo/" + repoSegment(repo.owner, QStringLiteral("owner")) +
-                "/" + repoSegment(repo.name, QStringLiteral("repository")) +
-                "/bounty");
-    return url;
-}
-
 QUrl MainWindow::sharesApiUrl(const RepositoryRecord &repo) const
 {
     // Private-repo collaborator ACL endpoint (issue #9).
@@ -6391,7 +6481,7 @@ void MainWindow::shareRepoRequest(const RepositoryRecord &repo,
     QNetworkReply *reply = m_networkAccess->post(
         request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, grantee, action] {
+            [this, reply, repo, grantee, action] {
                 const QByteArray body = reply->readAll();
                 const auto err = reply->error();
                 const QString errStr = reply->errorString();
@@ -6404,12 +6494,201 @@ void MainWindow::shareRepoRequest(const RepositoryRecord &repo,
                         true);
                     return;
                 }
-                logSystem(QStringLiteral("%1 collaborator %2.")
-                              .arg(action == QLatin1String("add") ? "Added"
-                                                                  : "Removed",
-                                   grantee));
-                refreshRepoCollaborators();
+                // The ACL mutation is not the encryption transition. Fetch the
+                // relay's exact public-only recipient set and rotate to it
+                // before reporting success. A missing/malformed grantee key
+                // fails closed: no new catalog epoch or route is published.
+                requestPrivateRecipientBundles(
+                    repo, /*updateCollaboratorList=*/true,
+                    [this, repo, grantee, action](
+                        bool recipientsReady,
+                        QList<QJsonObject> recipientBundles,
+                        QStringList, QString recipientError) {
+                        if (!recipientsReady) {
+                            flashMessage(
+                                QStringLiteral(
+                                    "The access list changed, but the encrypted "
+                                    "replica was not rotated: %1")
+                                    .arg(recipientError),
+                                true);
+                            return;
+                        }
+                        resealPrivateRepositoryRecipients(
+                            repo, recipientBundles,
+                            [this, grantee, action](bool rotated,
+                                                   QString rotateError) {
+                                if (!rotated) {
+                                    flashMessage(
+                                        QStringLiteral(
+                                            "The access list changed, but the "
+                                            "encrypted replica was not "
+                                            "republished: %1")
+                                            .arg(rotateError),
+                                        true);
+                                    return;
+                                }
+                                const QString verb =
+                                    action == QLatin1String("add")
+                                        ? QStringLiteral("Added")
+                                        : QStringLiteral("Removed");
+                                logSystem(
+                                    QStringLiteral("%1 collaborator %2 and "
+                                                   "rotated the encrypted "
+                                                   "replica.")
+                                        .arg(verb, grantee));
+                                flashMessage(
+                                    QStringLiteral(
+                                        "%1 collaborator %2; private mirror "
+                                        "keys rotated.")
+                                        .arg(verb, grantee));
+                            });
+                    });
             });
+}
+
+void MainWindow::requestPrivateRecipientBundles(
+    const RepositoryRecord &repo, bool updateCollaboratorList,
+    std::function<void(bool, QList<QJsonObject>, QStringList, QString)> onDone)
+{
+    auto finish =
+        [onDone = std::move(onDone)](
+            bool ok, QList<QJsonObject> bundles = {},
+            QStringList grantees = {}, const QString &error = QString()) mutable {
+            if (onDone)
+                onDone(ok, std::move(bundles), std::move(grantees), error);
+        };
+    if (!repo.isPrivate || !m_networkAccess ||
+        !m_profileIdentity.isValid() ||
+        !hasOwnerSigningCapability(repo.owner)) {
+        finish(false, {}, {},
+               QStringLiteral("the owner recipient list is unavailable"));
+        return;
+    }
+
+    const QString ts =
+        QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-shares-list-v1\n" + repo.owner + "\n" + repo.name +
+         "\n" + ts)
+            .toUtf8();
+    QUrl url = sharesApiUrl(repo);
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("ts"), ts);
+    query.addQueryItem(QStringLiteral("sig"),
+                       m_profileIdentity.signData(canonical));
+    url.setQuery(query);
+    QNetworkReply *reply =
+        m_networkAccess->get(QNetworkRequest(url));
+    connect(
+        reply, &QNetworkReply::finished, this,
+        [this, reply, repo, updateCollaboratorList,
+         finish = std::move(finish)]() mutable {
+            const QByteArray body = reply->readAll();
+            const int status =
+                reply->attribute(
+                         QNetworkRequest::HttpStatusCodeAttribute)
+                    .toInt();
+            const auto networkError = reply->error();
+            reply->deleteLater();
+            const QJsonObject object =
+                QJsonDocument::fromJson(body).object();
+            const QJsonArray granteeValues =
+                object.value(QStringLiteral("grantees")).toArray();
+            QStringList grantees;
+            QSet<QString> granteeSet;
+            bool granteesValid = true;
+            for (const QJsonValue &value : granteeValues) {
+                const QString grantee =
+                    value.toString().trimmed().toLower();
+                if (grantee.isEmpty() ||
+                    grantee.contains(QLatin1Char('/')) ||
+                    granteeSet.contains(grantee)) {
+                    granteesValid = false;
+                    break;
+                }
+                granteeSet.insert(grantee);
+                grantees.append(grantee);
+            }
+
+            const bool showingSameRepository =
+                m_repoDetailIndex >= 0 &&
+                m_repoDetailIndex < m_repositories.size() &&
+                m_repositories.at(m_repoDetailIndex).owner == repo.owner &&
+                m_repositories.at(m_repoDetailIndex).name == repo.name;
+            if (updateCollaboratorList && showingSameRepository &&
+                m_collabList) {
+                m_collabList->clear();
+                for (const QString &grantee : std::as_const(grantees))
+                    m_collabList->addItem(grantee);
+                if (m_collabEmptyHint)
+                    m_collabEmptyHint->setVisible(grantees.isEmpty());
+            }
+
+            const QJsonArray recipientValues =
+                object.value(QStringLiteral("recipients")).toArray();
+            QList<QJsonObject> bundles;
+            QSet<QString> recipientGrantees;
+            QSet<QString> keyIds;
+            bool recipientsValid =
+                recipientValues.size() == grantees.size();
+            for (const QJsonValue &value : recipientValues) {
+                const QJsonObject recipient = value.toObject();
+                const QString grantee =
+                    recipient.value(QStringLiteral("grantee"))
+                        .toString()
+                        .trimmed()
+                        .toLower();
+                const QString keyId =
+                    recipient.value(QStringLiteral("keyId"))
+                        .toString();
+                const QJsonObject publicBundle =
+                    recipient.value(QStringLiteral("publicBundle"))
+                        .toObject();
+                const QString computedKeyId =
+                    MirrorCrypto::publicKeyId(publicBundle);
+                if (grantee.isEmpty() ||
+                    !granteeSet.contains(grantee) ||
+                    recipientGrantees.contains(grantee) ||
+                    keyId.isEmpty() || keyIds.contains(keyId) ||
+                    computedKeyId != keyId) {
+                    recipientsValid = false;
+                    break;
+                }
+                recipientGrantees.insert(grantee);
+                keyIds.insert(keyId);
+                bundles.append(publicBundle);
+            }
+            const bool ready =
+                networkError == QNetworkReply::NoError &&
+                status >= 200 && status < 300 &&
+                object.value(QStringLiteral("ok")).toBool() &&
+                !object.value(QStringLiteral("privateKeysStored"))
+                     .toBool(true) &&
+                object.value(QStringLiteral("encryptionReady"))
+                    .toBool(false) &&
+                object.value(QStringLiteral("missingEncryptionKeys"))
+                    .toArray()
+                    .isEmpty() &&
+                granteesValid && recipientsValid &&
+                recipientGrantees == granteeSet;
+            if (!ready) {
+                finish(
+                    false, {}, grantees,
+                    object
+                            .value(QStringLiteral(
+                                "missingEncryptionKeys"))
+                            .toArray()
+                            .isEmpty()
+                        ? QStringLiteral(
+                              "the public-only recipient keys could not be "
+                              "verified")
+                        : QStringLiteral(
+                              "a collaborator must sign in with the desktop "
+                              "client once to register their encryption key"));
+                return;
+            }
+            finish(true, bundles, grantees, QString());
+        });
 }
 
 void MainWindow::addRepoCollaborator(const QString &nameRaw)
@@ -6462,58 +6741,127 @@ void MainWindow::refreshRepoCollaborators()
         m_collabList->clear();
     if (!show || !m_networkAccess || !m_profileIdentity.isValid())
         return;
-    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
-    const QByteArray canonical =
-        ("forkmesh-shares-list-v1\n" + repo.owner + "\n" + repo.name + "\n" + ts)
-            .toUtf8();
-    QUrl url = sharesApiUrl(repo);
-    QUrlQuery query;
-    query.addQueryItem(QStringLiteral("ts"), ts);
-    query.addQueryItem(QStringLiteral("sig"),
-                       m_profileIdentity.signData(canonical));
-    url.setQuery(query);
-    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
-    connect(reply, &QNetworkReply::finished, this, [this, reply] {
-        const QByteArray body = reply->readAll();
-        reply->deleteLater();
-        if (!m_collabList)
-            return;
-        const QJsonObject obj = QJsonDocument::fromJson(body).object();
-        m_collabList->clear();
-        const QJsonArray grantees = obj.value("grantees").toArray();
-        for (const QJsonValue &v : grantees)
-            m_collabList->addItem(v.toString());
-        if (m_collabEmptyHint)
+    requestPrivateRecipientBundles(
+        repo, /*updateCollaboratorList=*/true,
+        [this](bool ready, QList<QJsonObject>, QStringList grantees,
+               QString) {
+            if (!m_collabEmptyHint)
+                return;
             m_collabEmptyHint->setVisible(grantees.isEmpty());
-    });
+            if (!ready && !grantees.isEmpty())
+                m_collabEmptyHint->setText(
+                    QStringLiteral(
+                        "A collaborator encryption key is not ready; private "
+                        "mirror publication remains blocked."));
+            else
+                m_collabEmptyHint->setText(
+                    QStringLiteral("No collaborators yet."));
+        });
 }
 
 void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
                                     const QString &uri, const QString &address,
                                     double amountUsd, const QString &amountSol,
-                                    const QString &kind)
+                                    const QString &kind, const QString &payee)
 {
+    // Fail closed even if an old call site reaches this compatibility method.
+    // The Worker no longer creates or pays key-bearing escrow, so displaying a
+    // deposit QR would solicit funds at an address the live system cannot use.
+    QMessageBox::information(
+        this, QStringLiteral("Legacy bounty funding disabled"),
+        QStringLiteral(
+            "No funding request was created. ForkMesh has retired Worker-held "
+            "bounty escrow; historical bounty addresses are migration-only and "
+            "must not receive new funds. A future reward must use explicit "
+            "approval in an external self-custodial wallet or a separately "
+            "reviewed program/multisig flow."));
+    return;
+
+#if 0 // Historical Worker-held escrow QR/payout implementation; never compiled.
     // "pr" bounties (issue #347) aren't tracked in the issue store, so the paid
     // state is reported in the dialog only; issue bounties (kind "") also stamp
     // the issue record.
     const bool isPr = kind == QLatin1String("pr");
     QDialog dialog(this);
     dialog.setWindowTitle(QStringLiteral("Fund bounty"));
+    // A defined, card-based look: a subtle panel behind each block (amount,
+    // QR, the payout breakdown) so the dialog reads as a structured receipt
+    // rather than a wall of text. Colours track the app theme (light/dark) so
+    // the dialog matches the rest of the window instead of the native palette.
+    const bool dark = currentThemeIsDark();
+    const QString pageBg = dark ? "#0d1117" : "#ffffff";
+    const QString cardBg = dark ? "#161b22" : "#f6f8fa";
+    const QString border = dark ? "#30363d" : "#d0d7de";
+    const QString fg = dark ? "#e6edf3" : "#1f2328";
+    const QString muted = dark ? "#8b949e" : "#57606a";
+    const QString accent = dark ? "#58a6ff" : "#0969da";
+    dialog.setStyleSheet(
+        QStringLiteral(
+            "QDialog { background:%1; }"
+            "QFrame#bountyCard { background:%2; border:1px solid %3;"
+            "  border-radius:10px; }"
+            "QFrame#bountyQrCard { background:#ffffff; border:1px solid %3;"
+            "  border-radius:10px; }"
+            "QLabel#bountyHeading { color:%4; font-size:15px; font-weight:600; }"
+            "QLabel#bountyAmount { color:%4; font-size:26px; font-weight:700; }"
+            "QLabel#bountyUsd { color:%5; font-size:13px; }"
+            "QLabel#bountyEntityName { color:%4; font-weight:600; }"
+            "QLabel#bountyEntitySub { color:%5; font-size:11px; }"
+            "QLabel#bountyEntityPct { color:#3fb950; font-weight:600; }"
+            "QLabel#bountyAddr { color:%6; font-family:monospace; background:%1;"
+            "  border:1px solid %3; border-radius:6px; padding:6px 8px; }")
+            .arg(pageBg, cardBg, border, fg, muted, accent));
+    dialog.setMinimumWidth(380);
     auto *layout = new QVBoxLayout(&dialog);
-    auto *intro = new QLabel(
-        QString::fromUtf8("The pull request is merged. Send <b>%1 SOL</b> (\xE2\x89\x88 "
-                       "$%2) to this escrow address to fund the bounty. On "
-                       "confirmation, 90%% is paid to the pull request author and "
-                       "10%% to the ForkMesh treasury.")
-            .arg(amountSol.isEmpty() ? QStringLiteral("…") : amountSol,
-                 QString::number(amountUsd, 'f', 2)));
+    layout->setSpacing(12);
+    layout->setContentsMargins(18, 18, 18, 18);
+
+    auto *heading = new QLabel(
+        isPr ? QStringLiteral("Reward the merged pull request")
+             : QString::fromUtf8("Legacy bounty record #%1").arg(number));
+    heading->setObjectName("bountyHeading");
+    heading->setWordWrap(true);
+    layout->addWidget(heading);
+
+    auto *intro = new QLabel(QString::fromUtf8(
+        "Migration-only historical display. Do not send funds to this retired "
+        "escrow address. Any future reward requires explicit approval in an "
+        "external self-custodial wallet."));
+    intro->setObjectName("bountyUsd");
     intro->setWordWrap(true);
-    intro->setTextFormat(Qt::RichText);
     layout->addWidget(intro);
+
+    // Amount card: the exact SOL figure baked into the Solana Pay URI, plus its
+    // live USD equivalent, shown large so the funder sends the right amount.
+    auto *amountCard = new QFrame;
+    amountCard->setObjectName("bountyCard");
+    auto *amountBox = new QVBoxLayout(amountCard);
+    amountBox->setContentsMargins(14, 12, 14, 12);
+    amountBox->setSpacing(2);
+    auto *amountLabel = new QLabel(
+        QString::fromUtf8("%1 SOL")
+            .arg(amountSol.isEmpty() ? QStringLiteral("\xE2\x80\xA6") : amountSol));
+    amountLabel->setObjectName("bountyAmount");
+    amountBox->addWidget(amountLabel);
+    auto *usdLabel = new QLabel(
+        QString::fromUtf8("\xE2\x89\x88 $%1 USD").arg(
+            QString::number(amountUsd, 'f', 2)));
+    usdLabel->setObjectName("bountyUsd");
+    amountBox->addWidget(usdLabel);
+    layout->addWidget(amountCard);
+
     // The Solana Pay URI bakes in the amount, so it's long and yields a
     // high-version (many-module) QR. At a fixed scale that overflows the dialog
     // and gets clipped, so size each module to the largest integer that keeps
-    // the whole code within the dialog width (and crisp).
+    // the whole code within the dialog width (and crisp). The QR always renders
+    // inside a white card so it stays scannable in the dark theme and is never
+    // hidden behind other content.
+    auto *qrCard = new QFrame;
+    qrCard->setObjectName("bountyQrCard");
+    auto *qrBox = new QVBoxLayout(qrCard);
+    qrBox->setContentsMargins(12, 12, 12, 12);
+    auto *qrLabel = new QLabel;
+    qrLabel->setAlignment(Qt::AlignCenter);
     const auto modules = QrCode::encode(uri.toUtf8());
     if (!modules.empty()) {
         constexpr int kMargin = 3;
@@ -6521,20 +6869,75 @@ void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
         const int span = static_cast<int>(modules.size()) + 2 * kMargin;
         const int scale = qMax(2, kMaxQrPx / span);
         const QImage qr = QrCode::encodeToImage(uri, scale, kMargin);
-        auto *qrLabel = new QLabel;
         qrLabel->setPixmap(QPixmap::fromImage(qr));
-        qrLabel->setAlignment(Qt::AlignCenter);
-        layout->addWidget(qrLabel);
+    } else {
+        qrLabel->setText(QStringLiteral("Scan the escrow address below"));
+        qrLabel->setStyleSheet(QStringLiteral("color:#57606a;"));
     }
+    qrBox->addWidget(qrLabel);
+    layout->addWidget(qrCard, 0, Qt::AlignCenter);
+
     auto *addr = new QLabel(address);
-    addr->setObjectName("statusLine");
+    addr->setObjectName("bountyAddr");
     addr->setTextInteractionFlags(Qt::TextSelectableByMouse);
     addr->setAlignment(Qt::AlignCenter);
     addr->setWordWrap(true);
+    addr->setToolTip(QStringLiteral("Escrow deposit address"));
     layout->addWidget(addr);
+
+    // Payout breakdown: every entity that receives a slice of the escrow, with
+    // its share (90% author / 10% treasury) shown as both a percentage and a
+    // USD figure so nothing about the split is hidden.
+    const bool havePayee = !payee.trimmed().isEmpty();
+    const QString authorName = havePayee
+                                   ? QString::fromUtf8("@%1").arg(payee.trimmed())
+                                   : QStringLiteral("Pull request author");
+    struct Entity {
+        QString name;
+        QString sub;
+        int pct;
+    };
+    const QList<Entity> entities{
+        {authorName,
+         havePayee ? QStringLiteral("Pull request author")
+                   : QStringLiteral("Paid to the merged PR's author"),
+         90},
+        {QStringLiteral("ForkMesh treasury"),
+         QStringLiteral("Protocol fee"), 10},
+    };
+    auto *splitCard = new QFrame;
+    splitCard->setObjectName("bountyCard");
+    auto *splitGrid = new QGridLayout(splitCard);
+    splitGrid->setContentsMargins(14, 12, 14, 12);
+    splitGrid->setHorizontalSpacing(10);
+    splitGrid->setVerticalSpacing(10);
+    splitGrid->setColumnStretch(0, 1);
+    int gridRow = 0;
+    for (const Entity &e : entities) {
+        auto *nameCol = new QVBoxLayout;
+        nameCol->setSpacing(0);
+        auto *name = new QLabel(e.name);
+        name->setObjectName("bountyEntityName");
+        name->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        auto *sub = new QLabel(e.sub);
+        sub->setObjectName("bountyEntitySub");
+        nameCol->addWidget(name);
+        nameCol->addWidget(sub);
+        splitGrid->addLayout(nameCol, gridRow, 0);
+        auto *pct = new QLabel(
+            QString::fromUtf8("%1%  \xC2\xB7  \xE2\x89\x88 $%2")
+                .arg(e.pct)
+                .arg(QString::number(amountUsd * e.pct / 100.0, 'f', 2)));
+        pct->setObjectName("bountyEntityPct");
+        pct->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        splitGrid->addWidget(pct, gridRow, 1);
+        ++gridRow;
+    }
+    layout->addWidget(splitCard);
 
     auto *status = new QLabel(QStringLiteral("Waiting for the deposit…"));
     status->setObjectName("modeHint");
+    status->setStyleSheet(QStringLiteral("color:%1;").arg(muted));
     status->setWordWrap(true);
     status->setAlignment(Qt::AlignCenter);
     layout->addWidget(status);
@@ -6639,219 +7042,49 @@ void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
     // dismissed.
     if (!paid && !isPr)
         pollBountyPayout(repo, number, amountUsd, kind);
+#endif
 }
 
 void MainWindow::showBountyWalletDialog()
 {
-    // Issue #347: fetch (mint on first use) the owner's inbuilt bounty wallet and
-    // show its deposit address + QR + live balance so it can be pre-funded. Used
-    // to pay per-PR bounties in "wallet" mode without a per-merge QR.
-    const QString owner = accountOwner();
-    if (owner.isEmpty() || !m_profileIdentity.isValid() ||
-        !hasOwnerSigningCapability(owner)) {
-        QMessageBox::information(
-            this, QStringLiteral("Bounty wallet"),
-            QStringLiteral("Register and sign in to a ForkMesh account first — the "
-                           "inbuilt wallet is tied to your account."));
-        return;
-    }
-    // The wallet is owner-scoped but the endpoint is repo-scoped; route through any
-    // repository this account owns.
-    RepositoryRecord ownedRepo;
-    bool haveOwned = false;
-    for (const RepositoryRecord &r : std::as_const(m_repositories))
-        if (r.owner == owner) {
-            ownedRepo = r;
-            haveOwned = true;
-            break;
-        }
-    if (!haveOwned || !m_networkAccess) {
-        QMessageBox::information(
-            this, QStringLiteral("Bounty wallet"),
-            QStringLiteral("Create or import a repository you own first — the "
-                           "inbuilt wallet is set up through one of your repos."));
-        return;
-    }
-
-    QDialog dialog(this);
-    dialog.setWindowTitle(QStringLiteral("Inbuilt bounty wallet"));
-    auto *layout = new QVBoxLayout(&dialog);
-    auto *intro = new QLabel(QStringLiteral(
-        "Pre-fund this wallet with a little SOL. When \"Reward every merged pull "
-        "request\" is set to <b>use the inbuilt wallet</b>, each merged PR is paid "
-        "from here automatically — no per-merge QR."));
-    intro->setWordWrap(true);
-    intro->setTextFormat(Qt::RichText);
-    layout->addWidget(intro);
-
-    auto *qrLabel = new QLabel;
-    qrLabel->setAlignment(Qt::AlignCenter);
-    layout->addWidget(qrLabel);
-    auto *addr = new QLabel(QStringLiteral("Loading…"));
-    addr->setObjectName("statusLine");
-    addr->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    addr->setAlignment(Qt::AlignCenter);
-    addr->setWordWrap(true);
-    layout->addWidget(addr);
-    auto *balance = new QLabel(QStringLiteral("Balance: …"));
-    balance->setObjectName("modeHint");
-    balance->setAlignment(Qt::AlignCenter);
-    layout->addWidget(balance);
-
-    auto *copyBtn = new QPushButton(QStringLiteral("Copy address"));
-    copyBtn->setEnabled(false);
-    auto *refreshBtn = new QPushButton(QStringLiteral("Refresh"));
-    auto *closeBtn = new QPushButton(QStringLiteral("Close"));
-    connect(closeBtn, &QPushButton::clicked, &dialog, &QDialog::accept);
-    auto *row = new QHBoxLayout;
-    row->addWidget(copyBtn);
-    row->addWidget(refreshBtn);
-    row->addStretch();
-    row->addWidget(closeBtn);
-    layout->addLayout(row);
-
-    auto walletAddress = std::make_shared<QString>();
-    const auto fetch = [this, owner, ownedRepo, qrLabel, addr, balance, copyBtn,
-                        walletAddress] {
-        if (!hasOwnerSigningCapability(owner))
-            return;
-        const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
-        const QByteArray canonical =
-            ("forkmesh-bounty-wallet-v1\n" + owner + "\n" + ts).toUtf8();
-        const QJsonObject payload{{"action", "wallet"},
-                                  {"owner", ownedRepo.owner},
-                                  {"repo", ownedRepo.name},
-                                  {"ts", ts},
-                                  {"sig", m_profileIdentity.signData(canonical)}};
-        QNetworkRequest request(bountyApiUrl(ownedRepo));
-        request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-        QNetworkReply *reply = m_networkAccess->post(
-            request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
-        connect(reply, &QNetworkReply::finished, qrLabel,
-                [reply, qrLabel, addr, balance, copyBtn, walletAddress] {
-            const QByteArray body = reply->readAll();
-            const auto err = reply->error();
-            const QString errStr = reply->errorString();
-            reply->deleteLater();
-            const QJsonObject obj = QJsonDocument::fromJson(body).object();
-            const QString address = obj.value("address").toString();
-            if (err != QNetworkReply::NoError || address.isEmpty()) {
-                addr->setText(QStringLiteral("Could not load wallet: %1")
-                                  .arg(obj.value("error").toString(errStr)));
-                return;
-            }
-            *walletAddress = address;
-            addr->setText(address);
-            copyBtn->setEnabled(true);
-            balance->setText(QStringLiteral("Balance: %1 SOL")
-                                 .arg(obj.value("balanceSol").toString(
-                                     QStringLiteral("0"))));
-            const QString uri = obj.value("uri").toString(
-                QStringLiteral("solana:%1").arg(address));
-            const QImage qr = QrCode::encodeToImage(uri, 5, 3);
-            if (!qr.isNull())
-                qrLabel->setPixmap(QPixmap::fromImage(qr));
-        });
-    };
-    connect(copyBtn, &QPushButton::clicked, &dialog, [walletAddress] {
-        if (!walletAddress->isEmpty())
-            QGuiApplication::clipboard()->setText(*walletAddress);
-    });
-    connect(refreshBtn, &QPushButton::clicked, &dialog, fetch);
-    fetch();
-    dialog.exec();
+    // Migration-only compatibility slot. Older releases could ask a Worker to
+    // mint and sign with an account-scoped bounty wallet. Keeping that network
+    // action callable would violate the platform's non-custodial boundary.
+    QMessageBox::information(
+        this, QStringLiteral("Legacy bounty wallet disabled"),
+        QStringLiteral(
+            "ForkMesh no longer creates, funds, or spends from Worker-held "
+            "bounty wallets. Do not send new funds to a legacy address.\n\n"
+            "No replacement issue or pull-request escrow is active. A future "
+            "reward flow must use a direct external-wallet approval or reviewed "
+            "program/multisig contract. The separate community reward pool is "
+            "managed from Control node: its imported signer remains encrypted "
+            "on the first-instance owner's device and every transfer requires "
+            "explicit local review.\n\n"
+            "An operator must use the documented legacy-custody migration "
+            "procedure to inventory and recover any historical balance."));
 }
 
 void MainWindow::editIssueBounty()
 {
     if (m_currentIssueNumber < 0)
         return;
-    IssueStore store = issueStoreForCurrentRepo();
-    if (!store.canWrite()) {
-        setIssueInlineNotice("This repo is read-only here; can't add a bounty.", true);
-        return;
-    }
-    double existing = 0.0;
-    for (const Issue &issue : std::as_const(m_currentIssues))
-        if (issue.number == m_currentIssueNumber) {
-            existing = issue.bountyUsd;
-            break;
-        }
-    bool ok = false;
-    const double amount = QInputDialog::getDouble(
-        this, QStringLiteral("Add bounty"),
-        QStringLiteral("Bounty amount (USD):"), existing > 0 ? existing : 10.0,
-        1.0, 100000.0, 2, &ok);
-    if (!ok)
-        return;
-
-    // Pledge only — no money changes hands now. The escrow address is minted and
-    // its funding QR is shown when a pull request that closes the issue is
-    // merged (see fundBountiesForMergedPull), so no worker call is needed here.
-    QString error;
-    if (!store.setBounty(m_currentIssueNumber, amount, QString(),
-                         QStringLiteral("open"), &error)) {
-        setIssueInlineNotice(
-            error.isEmpty() ? "Could not record the bounty." : error, true);
-        return;
-    }
     setIssueInlineNotice(
-        QStringLiteral("Bounty of $%1 pledged. You'll fund it with a QR when the "
-                       "issue's pull request is merged.")
-            .arg(QString::number(amount, 'f', 2)));
-    reloadIssues();
+        QStringLiteral(
+            "New issue bounties are disabled. The former funding flow depended "
+            "on Worker-held escrow keys; historical entries are read-only and "
+            "must be handled through the operator migration procedure."),
+        true);
 }
 
 void MainWindow::bountyAllOpenIssues(double amountUsd)
 {
-    if (amountUsd < 1.0)
-        return;
-    IssueStore store = issueStoreForCurrentRepo();
-    if (!store.canWrite()) {
-        setIssueInlineNotice("This repo is read-only here; can't add bounties.", true);
-        return;
-    }
-    int openCount = 0;
-    for (const Issue &issue : std::as_const(m_currentIssues))
-        if (issue.status != QLatin1String("closed"))
-            ++openCount;
-    if (openCount == 0) {
-        setIssueInlineNotice("No open issues to add a bounty to.", true);
-        return;
-    }
-    if (QMessageBox::question(
-            this, QStringLiteral("Bounty all issues"),
-            QStringLiteral("Pledge a $%1 bounty on all %2 open issue(s)?\n\nBounties "
-                           "are funded when each issue's pull request is merged.")
-                .arg(QString::number(amountUsd, 'f', 2))
-                .arg(openCount)) != QMessageBox::Yes)
-        return;
-
-    // Pledge only on every open issue (same model as single-issue bounties —
-    // funded on merge, no money moves now).
-    int applied = 0;
-    int failed = 0;
-    for (const Issue &issue : std::as_const(m_currentIssues)) {
-        if (issue.status == QLatin1String("closed"))
-            continue;
-        QString error;
-        if (store.setBounty(issue.number, amountUsd, QString(),
-                            QStringLiteral("open"), &error))
-            ++applied;
-        else
-            ++failed;
-    }
+    Q_UNUSED(amountUsd);
     setIssueInlineNotice(
-        failed == 0
-            ? QStringLiteral("Pledged a $%1 bounty on %2 open issue(s).")
-                  .arg(QString::number(amountUsd, 'f', 2))
-                  .arg(applied)
-            : QStringLiteral("Pledged a $%1 bounty on %2 issue(s) (%3 failed).")
-                  .arg(QString::number(amountUsd, 'f', 2))
-                  .arg(applied)
-                  .arg(failed),
-        failed != 0);
-    reloadIssues();
+        QStringLiteral(
+            "Bulk bounties are disabled because the former payout path used "
+            "Worker-held escrow keys. No pledge or transfer was created."),
+        true);
 }
 
 namespace {
@@ -7246,6 +7479,15 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
         QString provider;
     };
     QList<CommentAgentRequest> commentAgentRequests;
+    // A fediverse mention stays "pending" publicly until this owner node has
+    // actually committed the issue and can report its real number. The relay
+    // includes a random mention id in only manually reviewed submissions.
+    struct FediverseMaterialization {
+        QString mentionId;
+        QString eventId;
+        QString inboxId;
+    };
+    QList<FediverseMaterialization> fediverseMaterializations;
     // Inbox row ids of the submissions we actually read here, so the ack below
     // deletes exactly these instead of the whole repo queue. That keeps an
     // issue filed from the web while we were mid-drain alive until the next
@@ -7254,12 +7496,38 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
     for (const QJsonValue &value : pending) {
         const QJsonObject item = value.toObject();
         const QJsonValue idVal = item.value("id");
-        if (idVal.isDouble())
-            drainedIds << QString::number(static_cast<qint64>(idVal.toDouble()));
+        const QString inboxId =
+            idVal.isDouble()
+                ? QString::number(static_cast<qint64>(idVal.toDouble()))
+                : QString();
         const int number = item.value("number").toInt();
         const QJsonObject eventObj = item.value("event").toObject();
         IssueEvent ev = IssueEvent::fromJson(eventObj);
         ev.body = eventObj.value("body").toString();
+        const QString mentionId =
+            item.value("fediverseMentionId").toString().toLower();
+        const bool validMentionId =
+            ev.type == QLatin1String("open") && !ev.id.isEmpty() &&
+            mentionId.size() == 32 &&
+            std::all_of(
+                mentionId.cbegin(), mentionId.cend(), [](QChar ch) {
+                    return ch.isDigit() ||
+                           (ch >= QLatin1Char('a') &&
+                            ch <= QLatin1Char('f'));
+                });
+        if (validMentionId) {
+            // Queue the lookup even when applyRemoteEvent reports a duplicate:
+            // the previous owner-node write may have committed successfully
+            // while its signed acknowledgement was lost. We only drain and
+            // confirm below if the matching open event is actually present.
+            fediverseMaterializations.append(
+                FediverseMaterialization{mentionId, ev.id, inboxId});
+        } else if (!inboxId.isEmpty()) {
+            // Preserve the established inbox-drain behavior for ordinary
+            // submissions. Manually reviewed fediverse rows use the stricter
+            // commit lookup above because their public lifecycle depends on it.
+            drainedIds << inboxId;
+        }
         const QString titleIfNew = item.value("titleIfNew").toString();
         const QJsonObject metaObj = item.value("meta").toObject();
         RemoteIssueMeta meta;
@@ -7306,6 +7574,31 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
             }
         }
     }
+    QStringList materialized;
+    if (!fediverseMaterializations.isEmpty()) {
+        const QList<Issue> mergedIssues = store.loadAll();
+        for (const FediverseMaterialization &wanted :
+             std::as_const(fediverseMaterializations)) {
+            for (const Issue &candidate : mergedIssues) {
+                const bool found = std::any_of(
+                    candidate.events.cbegin(),
+                    candidate.events.cend(),
+                    [&wanted](const IssueEvent &event) {
+                        return event.type == QLatin1String("open") &&
+                               event.id == wanted.eventId;
+                    });
+                if (!found)
+                    continue;
+                materialized.append(
+                    wanted.mentionId + QLatin1Char(':') +
+                    QString::number(candidate.number));
+                if (!wanted.inboxId.isEmpty() &&
+                    !drainedIds.contains(wanted.inboxId))
+                    drainedIds << wanted.inboxId;
+                break;
+            }
+        }
+    }
     // Acknowledge so the inbox clears the merged submissions: ack exactly the
     // rows we read (?ids=) so anything filed after we read the queue survives to
     // the next sync (adhoc #97). The relay only drains the named ids, so skip
@@ -7315,6 +7608,10 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
         QUrlQuery ackQuery =
             signedInboxQuery(repoSegment(repo.owner, QStringLiteral("owner")));
         ackQuery.addQueryItem("ids", drainedIds.join(QStringLiteral(",")));
+        if (!materialized.isEmpty())
+            ackQuery.addQueryItem(
+                QStringLiteral("materialized"),
+                materialized.join(QStringLiteral(",")));
         ackUrl.setQuery(ackQuery);
         m_networkAccess->deleteResource(QNetworkRequest(ackUrl));
     }
@@ -7529,12 +7826,14 @@ QWidget *MainWindow::buildChatSection()
     header->setObjectName("chatHeader");
     m_channelTitle = new QLabel("#general");
     m_channelTitle->setObjectName("channelTitle");
-    // Just a padlock — hovering explains it's fully end-to-end encrypted.
+    // The padlock denotes encrypted shared-key transport, with the relay trust
+    // boundary stated explicitly in the tooltip.
     m_encryptionLabel = new QLabel;
     m_encryptionLabel->setObjectName("encryptionLabel");
     m_encryptionLabel->setPixmap(
         tintedOcticonPixmap("lock", QColor("#8b949e"), 16));
-    m_encryptionLabel->setToolTip("Fully end-to-end encrypted");
+    m_encryptionLabel->setToolTip(
+        "Authenticated shared-key encryption; the relay can read default rooms");
     // Invite people into the current private room. Hidden for public channels
     // and DMs (there's no one to "invite" to those); toggled in switchConversation.
     m_inviteButton = new QPushButton(QStringLiteral("Invite"));
@@ -7668,6 +7967,18 @@ QWidget *MainWindow::buildChatSection()
     connect(m_mentionCompleter,
             QOverload<const QString &>::of(&QCompleter::activated), this,
             &MainWindow::insertMention);
+    // The completion popup is a Qt::Popup window that grabs the keyboard while
+    // it's visible, so key presses (Tab included) land on the popup rather than
+    // on m_messageInput. Filter the popup directly so Tab accepts the
+    // highlighted name, matching the web chat composer (adhoc #212).
+    // popup() lazily builds the QListView here on first call; cache the pointer
+    // so eventFilter can compare against it WITHOUT calling popup() (which would
+    // re-enter during this very construction and recurse — see the member decl,
+    // adhoc #220). Assign only after installEventFilter so the cache reflects the
+    // fully-built view.
+    QAbstractItemView *mentionPopup = m_mentionCompleter->popup();
+    mentionPopup->installEventFilter(this);
+    m_mentionCompleterPopup = mentionPopup;
     refreshMentionCandidates();
     // 🙂 opens a compact emoji grid that inserts into the composer at the caret.
     auto *emojiButton = new QPushButton(QString::fromUtf8("\xF0\x9F\x99\x82"));

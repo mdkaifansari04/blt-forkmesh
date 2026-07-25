@@ -10,6 +10,8 @@ import tomllib
 from pathlib import Path
 from urllib.parse import quote
 
+from worker_test_helpers import json_from_request_double
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
@@ -37,7 +39,7 @@ FUNCS = {
     "_forkbot_parse_show_command",
     "_forkbot_parse_help_command",
     "_forkbot_help_message",
-    "_forkbot_repo_host_json",
+    "_forkbot_repo_gateway_json",
     "_forkbot_missing_tree",
     "_forkbot_issue_json_path",
     "_forkbot_issue_json_candidates",
@@ -47,7 +49,7 @@ FUNCS = {
     "_forkbot_load_issue_records",
     "_forkbot_search_issues",
     "_forkbot_issue_lines",
-    "_forkbot_host_offline_reply",
+    "_forkbot_gateway_offline_reply",
     "_forkbot_action_count",
     "_forkbot_action_list",
     "_forkbot_action_search",
@@ -66,6 +68,7 @@ FUNCS = {
     "_forkbot_ai_issue_fields",
     "_forkbot_ai_interpret",
     "_forkbot_next_issue_number",
+    "_forkbot_attributed_body",
     "_forkbot_enqueue_issue",
     "forkbot_chat_handler",
 }
@@ -82,7 +85,7 @@ CONSTANTS = {
     "FORKBOT_LIST_DEFAULT",
     "FORKBOT_LIST_MAX",
     "FORKBOT_SEARCH_MAX",
-    "FORKBOT_HOST_TIMEOUT_MS",
+    "FORKBOT_GATEWAY_TIMEOUT_MS",
     "FORKBOT_ISSUE_FIELDS_SCHEMA",
     "FORKBOT_INTENT_SCHEMA",
     "MAX_ISSUE_BYTES",
@@ -104,7 +107,8 @@ def _load_forkbot(extra_globals=None):
             selected.append(node)
     module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
     ns = {"json": json, "re": re, "quote": quote, "asyncio": asyncio,
-          "base64": base64, "to_js": lambda value: value}
+          "base64": base64, "to_js": lambda value: value,
+          "bounded_json_request": json_from_request_double}
     if extra_globals:
         ns.update(extra_globals)
     exec(compile(module, str(ENTRY), "exec"), ns)
@@ -135,14 +139,14 @@ def _json_response(data, status=200, **_kwargs):
 class _HostResponse:
     def __init__(self, data):
         self._data = data
+        self.status = 200
 
     async def json(self):
         return self._data
 
 
-class _FakeHost:
-    """Stands in for env.FORKMESH_HOST: idFromName/get return self, fetch
-    answers the tree/blobs/search tunnel actions with canned payloads.
+class _FakeGateway:
+    """Direct-HTTPS gateway fixture for tree/blobs/search responses.
     `tree` answers every /tree read; `trees` (path -> payload) answers per
     path instead, for split open//closed/ layout fixtures."""
 
@@ -152,12 +156,6 @@ class _FakeHost:
         self._trees = trees
         self._blobs = blobs
         self._search = search
-
-    def idFromName(self, name):
-        return name
-
-    def get(self, _id):
-        return self
 
     async def fetch(self, url):
         self.urls.append(url)
@@ -200,9 +198,6 @@ def _env_and_calls(ai=None, catalog_issue_max=None, host=None, admins=()):
     class _Env:
         AI = ai
         FORKBOT_AI_MODEL = ""
-
-    if host is not None:
-        _Env.FORKMESH_HOST = host
 
     async def ensure_schema(_env):
         return None
@@ -273,7 +268,7 @@ def _env_and_calls(ai=None, catalog_issue_max=None, host=None, admins=()):
     async def write_error_log(*_args, **_kwargs):
         return None
 
-    ns = _load_forkbot({
+    runtime = {
         "_is_admin": is_admin,
         "Date": _Date,
         "json_response": _json_response,
@@ -290,7 +285,16 @@ def _env_and_calls(ai=None, catalog_issue_max=None, host=None, admins=()):
         "notify_mentions": notify_mentions,
         "capture_sentry_error": capture_sentry_error,
         "_write_error_log": write_error_log,
-    })
+        "_public_base_url": lambda _env: "https://forkmesh.test",
+        "safe_segment": lambda value: str(value or ""),
+    }
+    if host is not None:
+        runtime["js_fetch"] = host.fetch
+    else:
+        async def offline_fetch(_url):
+            raise RuntimeError("gateway offline")
+        runtime["js_fetch"] = offline_fetch
+    ns = _load_forkbot(runtime)
     return _Env(), calls, ns
 
 
@@ -387,7 +391,11 @@ def test_forkbot_chat_handler_queues_default_repo_issue():
     assert item["event"]["author"] == "forkbot"
     assert item["event"]["authorName"] == "forkbot"
     assert item["event"]["sig"] == ""
-    assert item["event"]["body"] == "make crash logs searchable"
+    # The stored body credits ForkBot and the requester so a reader of the
+    # merged issue can see where it came from.
+    assert item["event"]["body"] == (
+        "make crash logs searchable\n\n"
+        "---\n_Filed by ForkBot at @alice's request via chat._")
 
 
 def test_forkbot_uses_workers_ai_for_issue_title_and_body_when_available():
@@ -414,8 +422,10 @@ def test_forkbot_uses_workers_ai_for_issue_title_and_body_when_available():
     assert ai.model == "@cf/meta/llama-3.1-8b-instruct"
     assert ai.payload["messages"][0]["role"] == "system"
     assert calls["inserted"][0][1]["titleIfNew"] == "Make logs searchable"
+    # No sender in the request -> the footer still credits ForkBot/the source.
     assert calls["inserted"][0][1]["event"]["body"] == (
-        "Index the main log so crash reports can be found.")
+        "Index the main log so crash reports can be found.\n\n"
+        "---\n_Filed by ForkBot via chat._")
 
 
 def test_forkbot_unknown_command_returns_help_without_enqueueing():
@@ -453,7 +463,8 @@ def test_forkbot_ai_intent_creates_issue_from_natural_request():
     assert response["data"]["issueNumber"] == 4
     assert calls["inserted"][0][1]["titleIfNew"] == "Flaky login test"
     assert calls["inserted"][0][1]["event"]["body"] == (
-        "The login integration test fails intermittently.")
+        "The login integration test fails intermittently.\n\n"
+        "---\n_Filed by ForkBot at @alice's request via chat._")
 
 
 def test_forkbot_ai_intent_none_returns_help_without_enqueueing():
@@ -540,6 +551,23 @@ def test_forkbot_issue_numbers_increment_and_reanchor_to_catalog():
     # A stale/lower catalog max never drags the counter backward.
     env.catalog_max = 2
     assert asyncio.run(alloc(env, "bi:r", "o", "r")) == 11
+
+
+def test_forkbot_attributed_body_credits_source_and_requester():
+    ns = _load_forkbot()
+    attribute = ns["_forkbot_attributed_body"]
+    # Chat request with a known sender.
+    assert attribute("fix the thing", "forkbot", "alice") == (
+        "fix the thing\n\n---\n_Filed by ForkBot at @alice's request via chat._")
+    # Anonymous chat request falls back to a source-only credit.
+    assert attribute("fix the thing", "forkbot", "forkbot") == (
+        "fix the thing\n\n---\n_Filed by ForkBot via chat._")
+    # An empty body still carries the credit.
+    assert attribute("", "forkbot", "alice") == (
+        "_Filed by ForkBot at @alice's request via chat._")
+    # The fediverse path builds its own attribution, so it is left untouched.
+    assert attribute("mention body", "fediverse", "@bob@example.social") == (
+        "mention body")
 
 
 def test_forkbot_route_and_workers_ai_binding_are_configured():
@@ -702,7 +730,7 @@ def test_forkbot_parses_count_commands():
 
 
 def test_forkbot_counts_issues_from_live_mirror():
-    host = _FakeHost(tree=_issue_tree([1, 2, 3, 4, 5, 6, 7, 8]))
+    host = _FakeGateway(tree=_issue_tree([1, 2, 3, 4, 5, 6, 7, 8]))
     env, calls, ns = _env_and_calls(host=host)
     response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
         "message": "forkbot how many issues are there?", "sender": "jett",
@@ -719,7 +747,7 @@ def test_forkbot_counts_issues_from_live_mirror():
 
 
 def test_forkbot_count_reports_zero_issues_and_offline_host():
-    host = _FakeHost(tree=_issue_tree([]))
+    host = _FakeGateway(tree=_issue_tree([]))
     env, _calls, ns = _env_and_calls(host=host)
     response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
         "message": "forkbot how many issues are there?",
@@ -729,7 +757,7 @@ def test_forkbot_count_reports_zero_issues_and_offline_host():
     assert response["data"]["botMessage"] == (
         "No issues have been filed in forkmesh/forkmesh yet.")
 
-    env, _calls, ns = _env_and_calls()  # no FORKMESH_HOST binding at all
+    env, _calls, ns = _env_and_calls()  # gateway offline
     response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
         "message": "forkbot how many issues are there?",
     })))
@@ -783,7 +811,7 @@ def test_forkbot_parses_show_and_help_commands():
 
 
 def test_forkbot_lists_recent_issues_from_live_mirror():
-    host = _FakeHost(
+    host = _FakeGateway(
         tree=_issue_tree([1, 2, 3, 4, 5, 6, 7, 8]),
         blobs=_issue_blobs([
             {"number": n, "title": "Issue %d" % n, "status": "open",
@@ -818,7 +846,7 @@ def test_forkbot_lists_issues_from_split_open_closed_folders():
         return (path, {"ok": True, "encoding": "utf8",
                        "content": json.dumps(record)})
 
-    host = _FakeHost(
+    host = _FakeGateway(
         trees={
             ".forkmesh/issues": {"ok": True, "entries": [
                 {"type": "tree", "name": "open"},
@@ -853,7 +881,7 @@ def test_forkbot_lists_issues_from_split_open_closed_folders():
 
 
 def test_forkbot_list_honors_requested_count():
-    host = _FakeHost(
+    host = _FakeGateway(
         tree=_issue_tree([10, 11, 12]),
         blobs=_issue_blobs([
             {"number": n, "title": "T%d" % n, "status": "open"}
@@ -870,7 +898,7 @@ def test_forkbot_list_honors_requested_count():
 
 
 def test_forkbot_list_reports_offline_host_instead_of_empty_repo():
-    env, calls, ns = _env_and_calls()  # no FORKMESH_HOST binding at all
+    env, calls, ns = _env_and_calls()  # gateway offline
     response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
         "message": "forkbot list the last 5 issues",
     })))
@@ -880,7 +908,7 @@ def test_forkbot_list_reports_offline_host_instead_of_empty_repo():
 
 
 def test_forkbot_searches_issues_via_host_grep():
-    host = _FakeHost(search={"ok": True, "issues": [
+    host = _FakeGateway(search={"ok": True, "issues": [
         {"number": 42, "title": "Relay retries drop frames",
          "snippet": "the relay retries forever"},
         {"number": 7, "title": "Retry backoff", "snippet": ""},
@@ -900,7 +928,7 @@ def test_forkbot_searches_issues_via_host_grep():
 
 
 def test_forkbot_search_reports_no_matches():
-    host = _FakeHost(search={"ok": True, "issues": [], "pulls": [],
+    host = _FakeGateway(search={"ok": True, "issues": [], "pulls": [],
                              "code": []})
     env, _calls, ns = _env_and_calls(host=host)
     response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
@@ -912,7 +940,7 @@ def test_forkbot_search_reports_no_matches():
 
 
 def test_forkbot_shows_one_issue():
-    host = _FakeHost(
+    host = _FakeGateway(
         tree=_issue_tree([3, 9]),
         blobs=_issue_blobs([{
             "number": 9, "title": "Clone hangs", "status": "open",
@@ -933,7 +961,7 @@ def test_forkbot_shows_one_issue():
 
 
 def test_forkbot_starts_agent_on_most_recent_issue_for_owner():
-    host = _FakeHost(
+    host = _FakeGateway(
         tree=_issue_tree([4, 5, 6]),
         blobs=_issue_blobs([{"number": 6, "title": "Fix relay retries",
                              "status": "open"}]),
@@ -962,7 +990,7 @@ def test_forkbot_starts_agent_on_most_recent_issue_for_owner():
 
 
 def test_forkbot_starts_agent_on_named_issue_for_admin():
-    host = _FakeHost(
+    host = _FakeGateway(
         tree=_issue_tree([4, 5, 6]),
         blobs=_issue_blobs([{"number": 4, "title": "Old bug",
                              "status": "open"}]),
@@ -978,7 +1006,7 @@ def test_forkbot_starts_agent_on_named_issue_for_admin():
 
 
 def test_forkbot_denies_agent_start_for_non_owner():
-    host = _FakeHost(tree=_issue_tree([1, 2]))
+    host = _FakeGateway(tree=_issue_tree([1, 2]))
     env, calls, ns = _env_and_calls(host=host)
     response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
         "message": "forkbot start an agent on the latest issue",
@@ -996,7 +1024,7 @@ def test_forkbot_denies_agent_start_for_non_owner():
 
 
 def test_forkbot_rejects_agent_start_on_unknown_issue():
-    host = _FakeHost(tree=_issue_tree([1, 2, 3]))
+    host = _FakeGateway(tree=_issue_tree([1, 2, 3]))
     env, calls, ns = _env_and_calls(host=host)
     response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
         "message": "forkbot start an agent on issue #99",
@@ -1017,7 +1045,7 @@ def test_forkbot_ai_intent_routes_list_search_and_agent():
         async def run(self, model, payload):
             return {"response": json.dumps(self._intent)}
 
-    host = _FakeHost(
+    host = _FakeGateway(
         tree=_issue_tree([1, 2, 3]),
         blobs=_issue_blobs([
             {"number": n, "title": "T%d" % n, "status": "open"}

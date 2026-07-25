@@ -6,7 +6,7 @@ import 'package:provider/provider.dart';
 import '../services/auth_service.dart';
 import '../theme.dart';
 
-/// A compact "you are posting as <username>" header shown above every compose
+/// A compact "you are posting as `username`" header shown above every compose
 /// surface (chat, issues, PRs, discussions, reviews, comments). Renders the
 /// account's real avatar (base64 PNG) when present, otherwise an initials
 /// circle matching [AvatarWithDot].

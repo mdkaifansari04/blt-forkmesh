@@ -71,11 +71,13 @@
       <p class="doc-intro">
         ForkMesh is a peer-to-peer forge: desktop nodes hold the working copies,
         the git history, and the issue/PR/discussion records, and they talk to
-        each other through a thin <strong>mainnode</strong> relay. The relay
-        never holds a repository and never sees plaintext room traffic — it
-        coordinates presence, forwards the live clone/browse tunnel, verifies
-        signed submissions from people without write access, and keeps a
-        public catalog so the network is discoverable.
+        each other through a thin <strong>mainnode</strong> routing layer. The
+        Worker never becomes a repository store. Default rooms use a
+        relay-derived authenticated shared key, so the relay operator can
+        decrypt room traffic. It coordinates generalized presence, selects healthy
+        independently operated HTTPS mirror origins, proxies authorized public
+        reads in place, verifies signed submissions, and keeps a public catalog
+        so the network is discoverable.
       </p>
       <p class="doc-intro">
         Today one mainnode runs at <code>forkmesh.com</code>. This document
@@ -202,7 +204,7 @@
             <tr><td><strong>Account key rotation</strong></td><td><code>rotate</code> oldPubkey · newPubkey · ts</td></tr>
             <tr><td><strong>Host token</strong></td><td><code>host</code> owner · repo · ts</td></tr>
             <tr><td><strong>View token</strong> (private clone/browse)</td><td><code>view</code> owner · repo · ts</td></tr>
-            <tr><td><strong>Push token</strong> (<code>git push</code>)</td><td><code>push</code> owner · repo · ts</td></tr>
+            <tr><td><strong>Legacy push token</strong> (inactive)</td><td><code>push</code> owner · repo · ts; retained only for compatibility parsing while receive-pack is disabled</td></tr>
             <tr><td><strong>Share view token</strong> (collaborator)</td><td><code>share-view</code> viewer · owner · repo · ts</td></tr>
             <tr><td><strong>Node link (self)</strong></td><td><code>link-self</code> nodeName · identifier · ts</td></tr>
             <tr><td><strong>Node link (grant)</strong></td><td><code>link-grant</code> nodeName · ts</td></tr>
@@ -211,10 +213,11 @@
         <p>
           All prefixes are the literal <code>forkmesh-&lt;name&gt;-v1</code>.
           <code>ts</code> is milliseconds since the epoch; time-bound tokens
-          (<code>host</code>/<code>view</code>/<code>push</code>) are only
-          accepted inside a short freshness window (<code>_ts_ok</code>),
-          which is the sole replay defense — there is no server-side nonce
-          state.
+          Active <code>host</code> and <code>view</code> tokens are accepted
+          only inside a short freshness window (<code>_ts_ok</code>). Direct
+          mirror capabilities add a single-use request id and bind the method,
+          path, body digest, node, and issue time. A syntactically valid legacy
+          <code>push</code> token cannot activate receive-pack.
         </p>
         <p>
           The distinct prefixes are load-bearing: a <code>view</code> token
@@ -253,24 +256,69 @@
         </p>
         <pre><code>/api/repo/&lt;owner&gt;/&lt;repo&gt;/rooms/&lt;room&gt;/ws</code></pre>
         <p>
-          The relay is a <strong>blind</strong> relay: room traffic is
-          end-to-end encrypted and it only ever sees ciphertext.
+          Default rooms use <strong>relay-readable authenticated shared-key
+          transport</strong>, not end-to-end encryption. Frames are AES-GCM
+          ciphertext on the wire and in history, but the relay derives and
+          distributes the shared passphrase and can therefore decrypt them.
         </p>
 
         <h3 id="room-key">2.1 Room key</h3>
         <p>
-          The room key is derived client-side, identically in the desktop
-          client (<code>qt_client/src/RoomCrypto.cpp</code>), the website
-          (<code>cloudflare_worker/public/chat.js</code>), and the Flutter
-          app:
+          The repository-scoped passphrase and room key are derived in two stages:
         </p>
         <ul>
-          <li><strong>Salt:</strong> <code>SHA-256("ForkMesh room:" + &lt;roomName&gt;)</code>.</li>
-          <li><strong>KDF:</strong> PBKDF2 over a passphrase → a 256-bit <strong>AES-GCM</strong> key.</li>
-          <li>The passphrase-free shared rooms use a baked-in app key (<code>"forkmesh-shared-room-key-v1"</code>), which is what binds every client to the same AES key. It must stay byte-for-byte identical across all three implementations — a mismatch silently drops every message.</li>
+          <li><strong>Relay passphrase:</strong> the Town Square <code>mainnode/forkmesh</code> compatibility room uses lowercase hex of <code>SHA-256(DATA_KEY + ":room-chat-passphrase-v1")</code>. Other repositories use <code>SHA-256(DATA_KEY + ":room-chat-passphrase-v2:" + lower(owner + "/" + repo))</code>. <code>GET /api/chat/room-key?owner=&amp;repo=</code> releases the scoped value only to an authenticated account or signed node authorized for that repository; missing and unauthorized private repositories both return not found.</li>
+          <li><strong>Room salt:</strong> the first 16 bytes of <code>SHA-256("ForkMesh room:" + &lt;roomName&gt;)</code>.</li>
+          <li><strong>Client KDF:</strong> PBKDF2-HMAC-SHA256 over the UTF-8 passphrase, 210,000 rounds, producing a 256-bit <strong>AES-GCM</strong> key. The desktop, website, and Flutter clients use the same bytes.</li>
+          <li><strong>Participant-key option:</strong> clients that support an explicit passphrase can substitute one shared out of band. Only that mode keeps the key from the relay; the default relay-derived passphrase does not.</li>
         </ul>
+        <p>
+          A desktop node signs
+          <code>forkmesh-room-key-v2\n&lt;node&gt;\n&lt;lower-owner&gt;\n&lt;lower-repo&gt;\n&lt;timestamp-ms&gt;</code>.
+          The old v1 node proof is accepted only for the public
+          <code>mainnode/forkmesh</code> compatibility room. Browser clients use
+          their bearer session; the passphrase response is never cacheable.
+        </p>
 
-        <h3 id="message-envelope">2.2 Message envelope</h3>
+        <h3 id="private-chat-channels">2.2 Administrator-created channels</h3>
+        <p>
+          Platform administrators can create named public or private chat
+          channels. Public channels are available to every active registered
+          user, but not to guests or node-only sessions. Private channels are
+          available to administrators and explicitly selected active registered
+          users. Administrators can select those initial users in the creation
+          request, and D1 writes the channel and every membership in one atomic
+          batch. Channel names, visibility, and member names are encrypted at
+          rest, with blind indexes used for lookup and uniqueness.
+        </p>
+        <p>
+          The encrypted channel record contains a <code>visibility</code> value
+          of <code>public</code> or <code>private</code>. Records created before
+          this field existed default to private, so an upgrade never widens
+          channel access. A public creation request cannot include membership
+          rows. A private creation request can include up to 500 normalized
+          registered usernames, and any invalid user rejects the complete
+          operation without partial channel data.
+        </p>
+        <p>
+          A browser first lists its authorized channels through
+          <code>GET /api/chat/channels</code>, then requests a non-cacheable
+          passphrase and a 60-second signed WebSocket ticket through
+          <code>GET /api/chat/channels/&lt;channel-id&gt;/room-access</code>.
+          The WebSocket upgrade rechecks the active account, channel visibility,
+          administrator or membership status when required, and current key
+          version before reaching the Durable Object. Removing a private member
+          atomically increments the key version, which selects a new passphrase
+          and room namespace so the removed user cannot enter the rotated room.
+        </p>
+        <p>
+          These channels use the same relay-readable AES-GCM model as default
+          rooms. Access control keeps other accounts out, and ciphertext is
+          stored at rest, but the relay derives the passphrase and is not an
+          end-to-end encryption boundary against the relay operator.
+        </p>
+
+        <h3 id="message-envelope">2.3 Message envelope</h3>
         <p>Each frame on the wire is JSON:</p>
         <pre><code>{ "kind": "cipher", "v": 1, "nonce": "&lt;b64 12 bytes&gt;", "tag": "&lt;b64 16 bytes&gt;", "body": "&lt;b64 ciphertext&gt;" }</code></pre>
         <p>
@@ -279,8 +327,15 @@
           uses the 12-byte nonce; the 16-byte tag is stored separately from
           the ciphertext body (the desktop client splits them the same way).
         </p>
+        <p>
+          An encrypted attachment chat object uses <code>fileName</code>,
+          <code>fileMime</code>, and a base64 <code>file</code> value. Browser
+          clients accept clipboard images and selected image or document files
+          up to 1 MiB, then encrypt those fields inside the ordinary room frame;
+          there is no plaintext upload endpoint.
+        </p>
 
-        <h3 id="history-retention">2.3 History retention</h3>
+        <h3 id="history-retention">2.4 History retention</h3>
         <p>
           The relay keeps the last few days of <strong>encrypted</strong>
           frames so a late-joining node sees some backlog when no peer is
@@ -288,10 +343,13 @@
           envelope with <code>persist: true</code> is retained (the desktop
           client sets it for its durable message types). Limits:
           <code>CHAT_HISTORY_RETAIN_MS</code> = 7 days,
-          <code>CHAT_HISTORY_MAX_PER_ROOM</code> = 500 frames, and frames over
-          <code>CHAT_HISTORY_MAX_BODY</code> (48 KiB) are relayed but not
-          retained. The retained bytes are the opaque ciphertext — the relay
-          still can't read them.
+          <code>CHAT_HISTORY_MAX_PER_ROOM</code> = 500 frames,
+          <code>CHAT_HISTORY_MAX_BODY</code> = 1,900,000 encrypted-frame bytes,
+          and <code>CHAT_HISTORY_MAX_BYTES_PER_ROOM</code> = 16 MiB. Oldest
+          frames are pruned when a room exceeds a time, count, or aggregate
+          byte limit. History stores ciphertext envelopes, but the relay
+          operator can derive the default room key and every private-channel
+          room key, and can therefore decrypt them.
         </p>
 
         <h2 id="catalog-and-state-attestation">3. Catalog and state attestation</h2>
@@ -353,7 +411,7 @@
         <ul>
           <li>A <strong>source of truth</strong> is validated against its <em>own</em> attestations (current pin + recent history) — self-attestation is fine, the pin is a consistency check and the history absorbs the publish-to-serve lag.</li>
           <li>A <strong>mirror</strong> (<code>remote-clone</code>) must serve a state some source in its logical-repo group (matched by <code>rootCommit</code>, name fallback) actually attested — a mirror's self-signed pin proves nothing, since a tampered mirror can always republish a hash for its forged refs.</li>
-          <li>If <em>no</em> source in the group has ever attested (legacy), the mirror's own pin applies (fail-open), preserving old behavior.</li>
+          <li>If no source in the group has published an authenticated refs pin, direct HTTPS routing fails closed. A mirror's self-published digest is not enough to activate a public repository.</li>
         </ul>
         <p>
           A mirror running a local agent whose branches diverge from the
@@ -363,20 +421,19 @@
 
         <h3 id="presence">3.3 Presence</h3>
         <p>
-          <code>host_presence</code> is a one-row-per-repo table
-          (<code>repo_bi</code> = blind index of <code>owner/name</code>,
-          upserted on each heartbeat) marking a repo's tunnel as live.
-          <code>touch_host_presence</code> refreshes it when a host connects
-          and, throttled, while it serves traffic. Rows go stale after
-          <code>HOST_PRESENCE_STALE_MS</code> and are swept.
+          Signed node heartbeats provide generalized multiplayer and operator
+          presence. Repository routing uses the separate
+          <code>mirror_https_endpoints</code> registry: Cloudflare performs
+          fresh signed health challenges and records latency and integrity
+          without storing repository bytes.
         </p>
         <p>
-          Presence is a <em>lagging</em> signal (it can't detect an unclean
-          tunnel death until the row expires), so the clone/browse path
-          treats <strong>live tunnel liveness</strong> as ground truth (a
-          subrequest to the host DO's connected-host count), not the presence
-          row — see §5. The network page's online-node count is derived from
-          presence (distinct online nodes), not a raw row count.
+          Presence is intentionally a lagging, privacy-preserving status and is
+          never treated as proof that a repository is safe. Clone, browse, and
+          release routing require a fresh endpoint health result, a
+          node-signed repository proof, and the repository integrity gate. The
+          public network page reports generalized node availability rather
+          than precise behavior.
         </p>
 
         <h2 id="http-api">4. HTTP API</h2>
@@ -388,20 +445,27 @@
           against it.
         </p>
 
-        <h3 id="rooms-and-live-tunnel">4.1 Rooms and live tunnel</h3>
+        <h3 id="rooms-and-live-tunnel">4.1 Rooms and direct-HTTPS routing</h3>
         <table>
           <thead><tr><th>Method · path</th><th>Purpose</th></tr></thead>
           <tbody>
             <tr><td><code>GET /api/room/&lt;room&gt;/ws</code> | <code>/clients</code></td><td>bare room WebSocket / live client count</td></tr>
             <tr><td><code>GET /api/repo/&lt;owner&gt;/&lt;repo&gt;/rooms/&lt;room&gt;/ws</code> | <code>/clients</code></td><td>per-repo room WS / count (the mainnode <code>general</code> room lives here)</td></tr>
-            <tr><td><code>* /api/repo/&lt;owner&gt;/&lt;repo&gt;/host</code></td><td>desktop host connects the live tunnel (WebSocket)</td></tr>
-            <tr><td><code>GET /api/repo/&lt;owner&gt;/&lt;repo&gt;/{tree,blob,blobs,raw,history,commit,branches,search}</code></td><td>website browse — forwarded to the best-connected host</td></tr>
+            <tr><td><code>GET</code> | <code>POST /api/chat/channels</code></td><td>list authorized public and private channels or atomically create one with its private initial members</td></tr>
+            <tr><td><code>GET</code> | <code>POST</code> | <code>DELETE /api/chat/channels/&lt;id&gt;/members</code></td><td>administrator-only private membership list, invitation, and revocation</td></tr>
+            <tr><td><code>GET /api/chat/channels/&lt;id&gt;/room-access</code></td><td>issue the current channel passphrase and short-lived ticket after visibility-aware authorization</td></tr>
+            <tr><td><code>GET /api/chat/channels/&lt;id&gt;/ws?ticket=…</code></td><td>ticketed channel WebSocket with active-account, visibility, membership, and key-version admission checks</td></tr>
+            <tr><td><code>* /api/repo/&lt;owner&gt;/&lt;repo&gt;/host</code></td><td>legacy control channel; repository payload frames fail closed</td></tr>
+            <tr><td><code>GET /api/repo/&lt;owner&gt;/&lt;repo&gt;/{tree,blob,blobs,raw,history,commit,branches,search}</code></td><td>website browse — proxied over ordinary HTTPS to a healthy authenticated mirror origin</td></tr>
           </tbody>
         </table>
         <p>
-          The <code>/host</code> end is a desktop node offering to serve a
-          repo; the browse endpoints are pulled by the website and forwarded
-          over that tunnel (<code>_forward_to_node</code>), never redirected.
+          Room sockets carry only continuous interactions such as chat,
+          presence, emotes, and small invalidation notices. They never carry
+          repository clones, blobs, releases, or other large payloads. For
+          repository reads, the Worker selects a healthy mirror and streams its
+          HTTPS response in place under the original ForkMesh URL; the origin
+          hostname is not exposed to the client.
         </p>
 
         <h3 id="signed-inboxes">4.2 Signed inboxes (cross-user submissions)</h3>
@@ -415,10 +479,11 @@
           <tbody>
             <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/issues</code></td><td>signed issue open/comment/edit/status/…</td></tr>
             <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/pulls</code></td><td>signed pull request</td></tr>
+            <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/pulls/&lt;number&gt;/merge</code></td><td>account-session-authorized asynchronous merge, pinned to one write-enabled mirror and exact base/head/metadata object ids</td></tr>
             <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/commits</code></td><td>signed per-commit comment</td></tr>
             <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/discussions</code></td><td>signed discussion open/comment</td></tr>
             <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/subscribe</code></td><td>signed thread subscribe/unsubscribe</td></tr>
-            <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/bounty</code></td><td>issue-bounty escrow (Solana deposit / confirm / split)</td></tr>
+            <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/bounty</code></td><td>retired legacy bounty-custody path; returns a migration response and never creates a deposit wallet</td></tr>
             <tr><td><code>* /api/repo/&lt;owner&gt;/&lt;repo&gt;/shares</code></td><td>owner-signed private-repo collaborator ACL</td></tr>
           </tbody>
         </table>
@@ -426,7 +491,7 @@
           Submission itself is open to anyone: the <code>author</code> pubkey
           in an inbox record (§1.3) is whatever key the submitting node
           happens to hold — it does not need to be a <em>registered</em>
-          account pubkey the way <code>host</code>/<code>view</code>/<code>push</code>
+          account pubkey the way active <code>host</code>/<code>view</code>
           tokens do (§4.5). Verification here only proves the record wasn't
           tampered with after signing, not that the submitter is known or
           trusted. The owner reviewing the inbox is the actual gate: nothing
@@ -439,36 +504,55 @@
           <thead><tr><th>Path</th><th>Purpose</th></tr></thead>
           <tbody>
             <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/mirrors</code></td><td>publish a signed catalog record (§3.1); <code>GET</code> reports mirror health</td></tr>
-            <tr><td><code>* /api/repo/&lt;owner&gt;/&lt;repo&gt;/agents</code> · <code>/agents/list</code> · <code>/agents/&lt;id&gt;/prompt</code></td><td>signed agent-session push/drain, password-gated read, queued prompt</td></tr>
-            <tr><td><code>GET /api/repo/&lt;owner&gt;/&lt;repo&gt;/releases/blob/sha256/&lt;hash&gt;</code></td><td>content-addressed release-asset download over the host tunnel (immutable, edge-cached)</td></tr>
+            <tr><td><code>* /api/repo/&lt;owner&gt;/&lt;repo&gt;/agents</code> · <code>/agents/list</code> · <code>/agents/&lt;id&gt;/prompt</code></td><td>signed owner-sealed session push/drain, owner-authorized ciphertext retrieval, and owner-sealed prompt queue; decrypted prompt objects are versioned and bind their repository owner/name, and decryption stays on the owner device</td></tr>
+            <tr><td><code>GET /api/repo/&lt;owner&gt;/&lt;repo&gt;/releases/blob/sha256/&lt;hash&gt;</code></td><td>content-addressed release download through the direct-HTTPS mirror route (immutable and integrity checked)</td></tr>
             <tr><td><code>GET /api/repo/&lt;owner&gt;/&lt;repo&gt;/releases/downloads</code></td><td>per-artifact download counts</td></tr>
           </tbody>
         </table>
 
-        <h3 id="git-smart-http">4.4 Git smart-HTTP (clone / fetch / push)</h3>
+        <h3 id="git-smart-http">4.4 Git smart-HTTP (clone / fetch)</h3>
         <table>
           <thead><tr><th>Path</th><th>Purpose</th></tr></thead>
           <tbody>
             <tr><td><code>GET /&lt;owner&gt;/&lt;repo&gt;/info/refs</code></td><td>clone/fetch ref advertisement (request 1 of 2)</td></tr>
             <tr><td><code>POST /&lt;owner&gt;/&lt;repo&gt;/git-upload-pack</code></td><td>clone/fetch pack negotiation (request 2 of 2)</td></tr>
-            <tr><td><code>POST /&lt;owner&gt;/&lt;repo&gt;/git-receive-pack</code></td><td><code>git push</code> (issue #358), gated by a <code>push</code> token in HTTP Basic</td></tr>
+            <tr><td><code>POST /&lt;owner&gt;/&lt;repo&gt;/git-receive-pack</code></td><td>disabled until a direct-HTTPS write protocol is available; there is no WebSocket repository-data fallback</td></tr>
           </tbody>
         </table>
         <p>
           <code>git clone https://&lt;mainnode&gt;/&lt;owner&gt;/&lt;repo&gt;</code>
-          works with a stock git. The relay serves <code>git-upload-pack</code>
-          only for public repos openly; private repos challenge with
-          <code>401 Basic</code> and require a <code>view</code> token. Push
-          challenges likewise and requires a <code>push</code> token; a push
-          never falls back to a mirror (§5). See §5 for the two-request flow.
+          works with a stock git for an actively mirrored public repository.
+          Both upload-pack requests are capability-bound to an authenticated,
+          healthy HTTPS gateway and retain the original ForkMesh URL. Private
+          replica ciphertext is addressed only by an owner-authorized opaque
+          handle and decrypted locally; a private repository name never enters
+          the public routing index. Push currently fails closed with
+          <code>501 direct_https_receive_pack_required</code>. See §5 for the
+          two-request read flow.
         </p>
         <p>
-          Only the repo owner's registered key can push today —
-          <code>verify_push_token</code> resolves the <code>owner</code> in
-          the URL to that account's registered pubkey and accepts no other
-          signer. Delegated collaborator push is not implemented yet (see the
-          comment on <code>verify_push_token</code> in
-          <code>cloudflare_worker/src/entry.py</code>).
+          General receive-pack write support still requires a separate
+          direct-HTTPS protocol. Pull merging uses a narrower control path:
+          the Worker authorizes repository write permission, pins an
+          idempotent request to one mirror, and signs a bounded request
+          containing exact Git object ids. The node performs an atomic
+          compare-and-swap, reseals the repository, and republishes signed
+          integrity before the Worker reports completion. No repository
+          payload travels through D1 or the multiplayer socket. The legacy
+          push-token verifier does not make the retired socket transport safe
+          and is not an active receive-pack path.
+        </p>
+        <p>
+          Object-producing merge work happens in an owner-only quarantine.
+          Journal recovery anchors candidate objects behind hidden
+          <code>refs/forkmesh/</code> refs before repository fsck; conflicts
+          never import objects, and a lost compare-and-swap leaves reachable
+          staging refs instead of dangling objects. HTTP and SSH upload-pack
+          hide that entire namespace and reject arbitrary object-id wants.
+          Pull author signatures remain unchanged because only PullStore's
+          established owner-applied lifecycle fields are updated. Worker merge
+          jobs expire after seven days and have hard per-repository and global
+          row limits.
         </p>
 
         <h3 id="accounts-and-platform">4.5 Accounts and platform</h3>
@@ -498,11 +582,12 @@
         </p>
         <p>
           Once active, the account name can be bound to an Ed25519 key, and
-          <code>verify_host_token</code> / <code>verify_view_token</code> /
-          <code>verify_push_token</code> all resolve the owner name to the
-          registered pubkey before accepting a hosting/browse/push action.
-          There is no self-assertion: with no registered account, those gates
-          fail closed.
+          active host/view checks resolve the owner name to the registered
+          pubkey before accepting a control or authorized private-replica
+          action. There is no self-assertion: with no registered account, those
+          gates fail closed. The legacy push-token verifier remains in the
+          compatibility code, but receive-pack is disabled before any
+          repository body can reach a socket.
         </p>
         <p>
           <code>POST /api/accounts/rotate</code> accepts
@@ -522,7 +607,7 @@
           account.
         </p>
 
-        <h2 id="two-request-clone-flow">5. The two-request clone flow and sticky pinning</h2>
+        <h2 id="two-request-clone-flow">5. The two-request clone flow and sticky HTTPS selection</h2>
         <p>A <code>git clone</code> is <strong>two HTTP requests</strong> that must reach the <strong>same</strong> serving node:</p>
         <ol>
           <li><code>GET /&lt;owner&gt;/&lt;repo&gt;/info/refs</code> — the ref advertisement.</li>
@@ -531,32 +616,33 @@
         <p>
           If those two land on <em>different</em> nodes, the pack is
           negotiated against a different ref set and the clone breaks. The
-          relay guarantees they don't, while still failing a clone over to a
-          healthy mirror when the named source is down. The logic lives in
-          <code>Default._git_host</code> (<code>entry.py</code>); the key
-          idea is that the client's URL never changes — there is
-          <strong>no redirect</strong>. The relay rewrites the request path
-          into the serving node's namespace and forwards it
-          (<code>_forward_to_node</code>).
+          routing layer keeps the selected node sticky and limits every
+          candidate to the same owner-attested refs state. The key idea is
+          that the client's URL never changes: there is <strong>no redirect</strong>
+          and no mirror hostname in the response. The Worker streams the
+          selected HTTPS origin response in place without materializing it.
         </p>
         <p>Decision order for a <strong>public</strong> repo on <code>info/refs</code> / <code>upload-pack</code>:</p>
         <ol>
-          <li><strong>Auto-heal to the online source.</strong> If a source of truth for this logical repo is online (<code>_online_source_of_truth</code>), hand the request to it — even a request addressed to a mirror. A mirror whose refs are stale/diverged would otherwise reject the clone; the canonical source serves it and the mirror clears once it re-syncs. Skipped when the source is offline (so the tamper gate still fully protects clones then). Both clone requests take this branch while the source stays online, so they reach the same node.</li>
-          <li><strong>Fail over to a sticky mirror.</strong> If the named source has <em>no live host</em> (liveness is ground truth — the host DO's connected-host count, not the lagging presence row), pick a healthy mirror and <strong>pin</strong> it per repo in <code>clone_sticky</code> for <code>CLONE_STICKY_MS</code> (5 min). <code>refresh=True</code> on <code>info/refs</code> lets a new clone re-pick; the paired <code>upload-pack</code> POST reads the same pin (<code>_fresh_clone_pin</code>) so it follows the mirror the advertisement came from.</li>
-          <li><strong>Source live but info/refs stalled.</strong> If the source's tunnel is live but its <code>info/refs</code> times out (504/503), retry the advertisement <strong>once</strong> from a live mirror and pin it — only <code>info/refs</code> (a bodyless idempotent GET) is safe to replay; the POST relies on the pin.</li>
+          <li><strong>Filter first.</strong> Candidates must have a fresh Cloudflare health result, a verified Ed25519 node identity, an owner-attested refs digest, the required operation, and must pass the repository integrity gate.</li>
+          <li><strong>Select and pin.</strong> Region/latency preference and a rotating cursor choose among eligible endpoints. A successful <code>info/refs</code> response records a short-lived node pin in <code>clone_sticky</code>.</li>
+          <li><strong>Bind and stream.</strong> The paired <code>git-upload-pack</code> request prefers that node, revalidates its repository proof, and carries a short-lived signed capability. If it fails, only another endpoint serving the identical approved refs state may be tried.</li>
         </ol>
         <p>
           The mirror chosen at every step still passes the §3.2 integrity
-          gate: <code>_forward_to_node</code> reaches the mirror's host DO,
-          which serves only refs whose hash matches a source-attested pin. So
-          serving in place never weakens the tamper check.
+          gate. The Worker issues a short-lived capability binding method,
+          path, body digest, node, request id, and timestamp; the local gateway
+          verifies it before serving refs whose hash matches the configured
+          source-attested pin. Serving in place therefore does not weaken the
+          tamper check.
         </p>
         <p>
-          Private repos are excluded from all mirror fallback: they only ever
-          clone from the owner's own live host, gated by a <code>view</code>
-          token. Push (<code>git-receive-pack</code>) likewise never falls
-          back — a push must reach the working-copy holder that can run
-          receive-pack and re-attest the integrity pin.
+          Private repositories are excluded from named public routing and
+          mirror enumeration. The owner-authorized private-replica route uses
+          an opaque random identifier, returns only encrypted replica bytes,
+          and has no repository-name lookup. Decryption keys stay in the
+          owner/collaborator client. <code>git-receive-pack</code> never falls
+          back to a socket.
         </p>
 
         <h2 id="self-hosting-a-mainnode">6. Self-hosting a mainnode</h2>
@@ -567,7 +653,7 @@
 
         <h3 id="deploy-the-relay">6.1 Deploy the relay</h3>
         <ol>
-          <li>Provision the Worker's bindings — D1 (the encrypted at-rest store), the <code>FORKMESH_HOST</code> Durable Object namespace (the live tunnel), and the room DO. <code>wrangler.toml</code> and <code>migrations/</code> define the schema; <code>migrate.sh</code> applies it.</li>
+          <li>Provision the Worker bindings — D1 for encrypted metadata and routing state, the room Durable Object for multiplayer interactions, and the configured edge-routing bindings. Repository bytes remain on independent encrypted mirror storage. <code>wrangler.toml</code> and <code>migrations/</code> define the schema; <code>migrate.sh</code> applies it.</li>
           <li>Set the secrets the Worker needs (<code>DATA_KEY</code> / <code>HMAC</code> material for at-rest encryption, and any admin key). The catalog is encrypted at rest, so <code>DATA_KEY</code> must be stable across deploys.</li>
           <li>Deploy with <code>cloudflare_worker/deploy.sh</code>. It stamps a <code>BUILD_REV</code> var into the Worker and then <strong>verifies the live origin is actually serving it</strong> by polling <code>GET /api/version</code> until the reported <code>rev</code> matches (allowing for edge propagation). A deploy that never reports the new rev fails loudly instead of silently no-op'ing — this same <code>/api/version</code> check is your health probe for a self-hosted mainnode.</li>
         </ol>
@@ -602,9 +688,10 @@
         <p>
           A second party who has done the above has a working mainnode: a
           stock desktop client, given only the new host, registers an
-          account, publishes a catalog record, hosts a repo, and serves
-          clones through the two-request tunnel — all against the new relay,
-          with no forkmesh.com dependency.
+          account, publishes a catalog record, registers a signed HTTPS mirror
+          endpoint, and serves public clones through the two-request in-place
+          HTTPS proxy — all against the new relay, with no forkmesh.com
+          dependency.
         </p>
       </div>
 

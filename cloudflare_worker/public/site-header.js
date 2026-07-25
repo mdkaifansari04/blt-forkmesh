@@ -3,7 +3,7 @@
 // (except the home page, which keeps its own hero header), styled to match
 // the dashboard chrome: a hamburger menu holding every site link (grouped,
 // fully expanded), the brand mark with the live release version, the current
-// page title, a "Get paid to mirror" shortcut, the theme toggle, and a
+// page title, a mirror-reward settings shortcut, the theme toggle, and a
 // session-aware account area — a logged-in visitor sees their account chip
 // (Dashboard / Profile / Log out) instead of hardcoded "Sign Up / Log In".
 (() => {
@@ -86,6 +86,7 @@
       </div>
       <div class="fm-nav-group">
         <span class="fm-nav-group-title">Community</span>
+        <a href="/world">World</a>
         <a href="/chat">Chat</a>
         <a href="/network">Network</a>
       </div>
@@ -115,9 +116,15 @@
       </a>
       <span class="fm-header-context"></span>
       <div class="fm-header-right">
-        <a class="fm-header-payout" href="/mirror-payouts" title="Get paid to mirror code" aria-label="Get paid to mirror code">
+        <a class="fm-header-payout" href="/mirror-payouts" title="Mirror reward settings" aria-label="Mirror reward settings">
           <img src="/assets/sol.png" alt="" aria-hidden="true" />
-          <span>Get paid to mirror</span>
+          <span>Mirror rewards</span>
+        </a>
+        <a class="fm-header-chat" href="/chat" title="Community chat" aria-label="Community chat">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+          </svg>
+          <span class="fm-header-chat-badge" hidden></span>
         </a>
         <button type="button" class="fm-header-theme" aria-label="Switch color theme">☀</button>
         <div class="fm-header-account"></div>
@@ -203,7 +210,7 @@
       profile.textContent = "Public profile (@" + name + ")";
       const edit = document.createElement("a");
       edit.href = "/dashboard/settings";
-      edit.textContent = "Edit profile";
+      edit.textContent = "Settings";
       const out = document.createElement("button");
       out.type = "button";
       out.textContent = "Log out";
@@ -235,9 +242,11 @@
     const profile = document.createElement("a");
     profile.href = "/@" + encodeURIComponent(name.toLowerCase());
     profile.textContent = "Public profile";
+    // All account settings (profile, email, password, payout, nodes) live on
+    // the dashboard settings page — same entry the dashboard avatar menu has.
     const edit = document.createElement("a");
     edit.href = "/dashboard/settings";
-    edit.textContent = "Edit profile";
+    edit.textContent = "Settings";
     const out = document.createElement("button");
     out.type = "button";
     out.textContent = "Log out";
@@ -307,6 +316,83 @@
     } catch (_) {}
   }
 
+  // ---- Chat activity badge -------------------------------------------------
+  // A small unread pill on the header's chat icon: counts new room messages
+  // and new user signups since this browser last opened /chat, so a fresh
+  // face can be welcomed from any page. Source of truth is the cheap,
+  // edge-cached /api/chat/activity counters; the "seen" baseline lives in
+  // localStorage and is (re)written by the chat page itself (chat.js) and by
+  // this script whenever the visitor is on /chat. A short sessionStorage
+  // cache keeps page-to-page navigation from re-fetching every load.
+  const CHAT_ACTIVITY_ENDPOINT = "/api/chat/activity";
+  const CHAT_ACTIVITY_STORAGE = "forkmesh.chatActivity";
+  const CHAT_ACTIVITY_TTL_MS = 60 * 1000;
+  const CHAT_ACTIVITY_SEEN_KEY = "forkmesh.chat.activitySeen";
+
+  async function fetchChatActivity() {
+    try {
+      const cached = JSON.parse(sessionStorage.getItem(CHAT_ACTIVITY_STORAGE) || "null");
+      if (cached && Number(cached.expiresAt) > Date.now()) return cached;
+    } catch (_) {}
+    try {
+      const response = await fetch(CHAT_ACTIVITY_ENDPOINT, {
+        headers: { accept: "application/json" },
+      });
+      if (!response.ok) return null;
+      const data = await response.json();
+      if (!data || !data.ok) return null;
+      const activity = {
+        messageCount: Number(data.messageCount) || 0,
+        userCount: Number(data.userCount) || 0,
+        expiresAt: Date.now() + CHAT_ACTIVITY_TTL_MS,
+      };
+      try {
+        sessionStorage.setItem(CHAT_ACTIVITY_STORAGE, JSON.stringify(activity));
+      } catch (_) {}
+      return activity;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function writeChatSeen(activity) {
+    try {
+      localStorage.setItem(CHAT_ACTIVITY_SEEN_KEY, JSON.stringify({
+        messageCount: activity.messageCount,
+        userCount: activity.userCount,
+        at: Date.now(),
+      }));
+    } catch (_) {}
+  }
+
+  async function renderChatBadge(header) {
+    const badge = header.querySelector(".fm-header-chat-badge");
+    if (!badge || location.protocol === "file:") return;
+    const activity = await fetchChatActivity();
+    if (!activity) return;
+    const path = location.pathname.replace(/\.html$/, "").replace(/\/$/, "") || "/";
+    let seen = null;
+    try {
+      seen = JSON.parse(localStorage.getItem(CHAT_ACTIVITY_SEEN_KEY) || "null");
+    } catch (_) {}
+    // On the chat page everything is on screen; and a first-time visitor has
+    // no baseline, so seed one silently instead of badging all history.
+    if (path === "/chat" || !seen) {
+      writeChatSeen(activity);
+      badge.hidden = true;
+      return;
+    }
+    const unread =
+      Math.max(0, activity.messageCount - (Number(seen.messageCount) || 0)) +
+      Math.max(0, activity.userCount - (Number(seen.userCount) || 0));
+    if (unread > 0) {
+      badge.textContent = unread > 99 ? "99+" : String(unread);
+      badge.hidden = false;
+    } else {
+      badge.hidden = true;
+    }
+  }
+
   function mountHeader(mount) {
     const holder = document.createElement("div");
     holder.innerHTML = HEADER_HTML;
@@ -314,10 +400,22 @@
     const panel = header.querySelector(".fm-header-mobile");
     mount.replaceWith(header);
 
-    const session = readSession();
-    buildAccountArea(header.querySelector(".fm-header-account"), session);
-    buildAccountArea(panel.querySelector(".fm-header-mobile-account"), session,
-                     { stacked: true });
+    const renderAccountAreas = () => {
+      const session = readSession();
+      buildAccountArea(header.querySelector(".fm-header-account"), session);
+      buildAccountArea(panel.querySelector(".fm-header-mobile-account"), session,
+                       { stacked: true });
+    };
+    renderAccountAreas();
+    // Keep every open section in agreement about the login state: a login or
+    // logout in another tab (dashboard, chat, home, …) fires a storage event
+    // here, so this header flips between Sign Up / Log In and the account chip
+    // without a manual reload.
+    window.addEventListener("storage", (event) => {
+      if (event.key === "forkmesh.session" || event.key === null) {
+        renderAccountAreas();
+      }
+    });
 
     markCurrentPage(header);
 
@@ -364,6 +462,7 @@
     });
 
     renderAppVersion(header.querySelector(".fm-header-version"));
+    renderChatBadge(header);
   }
 
   document.querySelectorAll("[data-forkmesh-header]").forEach(mountHeader);

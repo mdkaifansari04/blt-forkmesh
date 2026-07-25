@@ -44,6 +44,7 @@ RESERVED_ROUTE_PREFIXES = frozenset({
     "outreach",
     "security-report",
     "network",
+    "world",
     "chat",
     "desktop",
     "about",
@@ -107,6 +108,7 @@ def dashboard_section_redirect(path, query):
 
 BLOCKED_STATIC_HTML_PATHS = frozenset({
     "/index.html",
+    "/world/index.html",
     "/dashboard.html",
     "/dashboard/index.html",
     "/dashboard/repos/index.html",

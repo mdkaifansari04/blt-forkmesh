@@ -5,7 +5,7 @@
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Presence done right · ForkMesh Blog</title>
-    <meta name="description" content="Heartbeats, presence expiry on disconnect, and live host probes mean the network&#x27;s view of who is online is accurate, failover kicks in the moment a host actually drops.">
+    <meta name="description" content="Bounded heartbeats, expiry, and live probes reduce stale presence while allowing the deliberately minimal real-time layer to lag.">
     <meta name="application-name" content="ForkMesh">
     <meta name="apple-mobile-web-app-title" content="ForkMesh">
     <meta name="theme-color" content="#090909">
@@ -23,7 +23,7 @@
     <meta property="og:url" content="https://forkmesh.com/blog/presence-done-right/">
     <meta property="og:site_name" content="ForkMesh">
     <meta property="og:title" content="Presence done right">
-    <meta property="og:description" content="Heartbeats, presence expiry on disconnect, and live host probes mean the network&#x27;s view of who is online is accurate, failover kicks in the moment a host actually drops.">
+    <meta property="og:description" content="Bounded heartbeats, expiry, and live probes reduce stale presence while allowing the deliberately minimal real-time layer to lag.">
     <meta property="og:image" content="https://forkmesh.com/assets/blog/features/presence-done-right.webp">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:image" content="https://forkmesh.com/assets/blog/features/presence-done-right.webp">
@@ -38,18 +38,18 @@
           <div>
             <p class="eyebrow">Distributed hosting</p>
             <h1>Presence done right</h1>
-            <p class="lede">Heartbeats, presence expiry on disconnect, and live host probes mean the network's view of who is online is accurate, failover kicks in the moment a host actually drops.</p>
+            <p class="lede">Bounded heartbeats, expiry, and live probes reduce stale presence while allowing the deliberately minimal real-time layer to lag.</p>
             <div class="meta"><span class="pill">Feature 10 of 72</span><span>Feature</span><span>Distributed hosting &amp; preservation</span><span>3 min read</span></div>
           </div>
           <img class="hero-img" src="/assets/blog/features/presence-done-right.webp" alt="Abstract ForkMesh artwork for Presence done right">
         </section>
         <article class="body">
           <h2>Why it matters</h2>
-          <p>Presence done right gives ForkMesh a concrete mechanism for using heartbeats, expiry, and probes so routing decisions reflect reality. Heartbeats, presence expiry on disconnect, and live host probes mean the network's view of who is online is accurate, failover kicks in the moment a host actually drops.</p>
+          <p>Presence done right uses heartbeats, expiry, and probes so routing decisions have recent evidence. Presence remains generalized and eventually consistent; it may lag a disconnect until its freshness window or probe completes.</p>
           <p>Code disappears from a network when one hosted account, one VM, or one storage path becomes the only way to reach it. In ForkMesh, presence done right addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
-          <p>ForkMesh handles presence done right through the same split it uses across the product: desktop nodes keep real Git mirrors, while mainnodes coordinate discovery, relay tunnels, presence, account lookup, and clone routing.</p>
-          <p>The behavior is intentionally narrow: Heartbeats, presence expiry on disconnect, and live host probes mean the network's view of who is online is accurate, failover kicks in the moment a host actually drops. The Worker helps find and route a live host, but it is not canonical Git storage.</p>
+          <p>ForkMesh handles presence through the same split it uses across the product: nodes keep real Git mirrors, the HTTPS router handles repository bytes, and minimal sockets carry generalized presence and small collaborative events.</p>
+          <p>The behavior is intentionally narrow: a routing request rechecks eligible health instead of treating a presence dot as proof. The Worker helps find and route a live host, but it is not canonical Git storage.</p>
           <div class="note">Title focus: Presence done right stays tied to using heartbeats, expiry, and probes so routing decisions reflect reality and the local-first repository model.</div>
           <h2>Where it fits</h2>
           <p>Use presence done right when availability, clone routing, and preservation need to be handled by the mesh instead of by a single origin.</p>

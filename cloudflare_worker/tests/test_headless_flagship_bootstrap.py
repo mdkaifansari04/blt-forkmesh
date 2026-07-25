@@ -8,6 +8,7 @@ mirror advert cache must notice owner/source changes so peers see the repaired
 metadata immediately.
 """
 
+import ast
 from pathlib import Path
 
 
@@ -108,13 +109,14 @@ def test_mirror_advert_cache_includes_namespace_and_publish_state():
     assert "repo.publishToNetwork ? 1 : 0" in body
 
 
-def test_mirror_publish_and_host_require_a_served_commit():
+def test_mirror_publish_requires_a_served_commit_and_sockets_are_retired():
     repos = REPOS.read_text(encoding="utf-8")
     assert "bool mirrorHasServedCommit(const QString &mirrorPath)" in repos
     start = repos.index("void MainWindow::startRepoHosts()")
     end = repos.index("void MainWindow::onRequestServed", start)
     start_hosts = repos[start:end]
-    assert "!mirrorHasServedCommit(repo.mirrorPath)" in start_hosts
+    assert "per-repository persistent socket is retired" in start_hosts
+    assert "new RepoHost" not in start_hosts
 
     publish_start = repos.index("void MainWindow::publishRepositoryNow")
     publish_end = repos.index("QNetworkRequest request(catalogApiUrl())", publish_start)
@@ -136,28 +138,32 @@ def test_mirror_metadata_resolves_remote_refs_like_repo_host():
     assert 'raw == QLatin1String("HEAD")' in body
 
 
-def test_public_browse_failover_walks_past_stale_empty_mirrors():
+def test_public_browse_failover_walks_healthy_direct_https_endpoints():
     entry = ENTRY.read_text(encoding="utf-8")
-    start = entry.index("if status in (502, 503, 504):")
-    end = entry.index("return response", start)
+    start = entry.index("async def _https_mirror_proxy")
+    end = entry.index("\n\nclass Default", start)
     body = entry[start:end]
 
-    assert "tried = [owner, failed_mirror]" in body
-    assert "while True:" in body
-    assert "tried.append(fallback)" in body
+    assert "for endpoint in candidates:" in body
+    assert "_https_mirror_repository_proof(" in body
+    assert "status in HTTPS_MIRROR_RETRY_STATUSES" in body
+    assert "_https_mirror_route_advance(" in body
 
 
 def test_room_stale_sockets_are_not_counted_or_forwarded():
     entry = ENTRY.read_text(encoding="utf-8")
     assert "ROOM_CLIENT_STALE_MS = 3 * 60 * 1000" in entry
-    start = entry.index("class ForkMeshRoom")
-    end = entry.index("class ForkMeshHost", start)
-    body = entry[start:end]
+    tree = ast.parse(entry)
+    room = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "ForkMeshRoom"
+    )
+    body = ast.unparse(room)
 
-    assert '"last": int(Date.now())' in body
+    assert "'last': int(Date.now())" in body
     assert "return len(self._live_chat_sockets(close_stale=True))" in body
     assert "def _live_chat_sockets(self, close_stale=False):" in body
-    assert 'self._safe_close(peer, 1001, "stale")' in body
+    assert "self._safe_close(peer, 1001, 'stale')" in body
     assert "for peer in self._live_chat_sockets(close_stale=True):" in body
 
 

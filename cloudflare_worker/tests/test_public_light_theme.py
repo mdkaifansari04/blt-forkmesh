@@ -32,7 +32,14 @@ FEATURE_POSTS = tuple(
 PUBLIC_THEME_PAGES = tuple(
     page
     for page in sorted(PUBLIC.rglob("*.html"))
-    if page != PUBLIC / "index.html" and "dashboard" not in page.parts
+    # The legacy landing page, dashboard, and immersive 3D world own their
+    # chrome. World lighting is controlled by its Day/Sunset/Night/weather
+    # palette without mounting a second site header over the game HUD.
+    if (
+        page != PUBLIC / "index.html"
+        and "dashboard" not in page.parts
+        and "world" not in page.parts
+    )
 )
 
 FAMILY_THEME_STYLESHEETS = (

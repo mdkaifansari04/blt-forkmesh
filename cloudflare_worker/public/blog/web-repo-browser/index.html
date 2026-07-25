@@ -5,7 +5,7 @@
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Web repo browser · ForkMesh Blog</title>
-    <meta name="description" content="Explore any published repository, files, commits, rich diffs, issues, and PRs, straight from forkmesh.com, streamed live from its host. No clone, no account required.">
+    <meta name="description" content="Explore public repositories, files, commits, diffs, issues, and PRs at forkmesh.com while a healthy integrity-verified mirror serves repository bytes over HTTPS.">
     <meta name="application-name" content="ForkMesh">
     <meta name="apple-mobile-web-app-title" content="ForkMesh">
     <meta name="theme-color" content="#090909">
@@ -23,7 +23,7 @@
     <meta property="og:url" content="https://forkmesh.com/blog/web-repo-browser/">
     <meta property="og:site_name" content="ForkMesh">
     <meta property="og:title" content="Web repo browser">
-    <meta property="og:description" content="Explore any published repository, files, commits, rich diffs, issues, and PRs, straight from forkmesh.com, streamed live from its host. No clone, no account required.">
+    <meta property="og:description" content="Explore public repositories at forkmesh.com while a healthy integrity-verified mirror serves repository bytes over HTTPS.">
     <meta property="og:image" content="https://forkmesh.com/assets/blog/features/web-repo-browser.webp">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:image" content="https://forkmesh.com/assets/blog/features/web-repo-browser.webp">
@@ -38,18 +38,18 @@
           <div>
             <p class="eyebrow">Mobile, web &amp; IDE</p>
             <h1>Web repo browser</h1>
-            <p class="lede">Explore any published repository, files, commits, rich diffs, issues, and PRs, straight from forkmesh.com, streamed live from its host. No clone, no account required.</p>
+            <p class="lede">Explore public repositories, files, commits, diffs, issues, and PRs at forkmesh.com while a healthy integrity-verified mirror serves repository bytes over HTTPS.</p>
             <div class="meta"><span class="pill">Feature 67 of 72</span><span>Feature</span><span>Mobile, web &amp; IDE</span><span>3 min read</span></div>
           </div>
           <img class="hero-img" src="/assets/blog/features/web-repo-browser.webp" alt="Abstract ForkMesh artwork for Web repo browser">
         </section>
         <article class="body">
           <h2>Why it matters</h2>
-          <p>Web repo browser gives ForkMesh a concrete mechanism for live file, commit, diff, issue, and PR browsing from forkmesh.com. Explore any published repository, files, commits, rich diffs, issues, and PRs, straight from forkmesh.com, streamed live from its host. No clone, no account required.</p>
+          <p>The web repository browser gives readers a stable entry point without turning the Worker into repository storage. Public files and Git data stream from a selected mirror; signed collaboration metadata is rendered alongside them.</p>
           <p>A distributed forge still needs clean entry points for readers, contributors, mobile users, and editor workflows. In ForkMesh, web repo browser addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
           <p>ForkMesh handles web repo browser through the same split it uses across the product: ForkMesh exposes web, mobile, editor, docs, status, and clean URL surfaces on top of the desktop-node and mainnode model.</p>
-          <p>The behavior is intentionally narrow: Explore any published repository, files, commits, rich diffs, issues, and PRs, straight from forkmesh.com, streamed live from its host. No clone, no account required. Those surfaces route to live or mirrored data; they are access layers, not the canonical Git store.</p>
+          <p>The behavior is intentionally narrow: public browse and file operations use the same signed direct-HTTPS routing boundary as clone. Repository stubs say when they are not mirrored. Private repositories require an authenticated owner or collaborator and otherwise remain indistinguishable from missing repositories.</p>
           <div class="note">Title focus: Web repo browser stays tied to live file, commit, diff, issue, and PR browsing from forkmesh.com and the local-first repository model.</div>
           <h2>Where it fits</h2>
           <p>Use web repo browser when people need to browse, contribute, learn, and receive updates outside the main desktop window.</p>

@@ -15,7 +15,8 @@
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
     <link rel="manifest" href="/favicon/site.webmanifest" />
-    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/tailwind.css" />
+    <script>window.tailwind = window.tailwind || {};</script>
     <script>
       tailwind.config = { darkMode: "class", theme: { extend: { colors: { background: "var(--background)", foreground: "var(--foreground)", border: "var(--border)", "muted-foreground": "var(--muted-foreground)" }, fontFamily: { domine: ["Domine", "Georgia", "serif"], "favorit-mono": ["ABCFavoritMono", "ui-monospace", "SFMono-Regular", "Menlo", "monospace"] } } } };
     </script>
@@ -111,18 +112,20 @@
         <article class="legal-card rounded-[2rem] px-6 py-8 sm:px-10 lg:px-14 lg:py-12">
           <p class="font-favorit-mono text-sm uppercase tracking-[0.34em] text-muted-foreground">Plain-language terms</p>
           <h1 class="font-domine mt-5 text-balance text-5xl leading-[1] tracking-tight text-foreground sm:text-7xl">ForkMesh Terms</h1>
-          <p class="mt-5 text-sm text-muted-foreground">Last updated June 20, 2026.</p>
+          <p class="mt-5 text-sm text-muted-foreground">Last updated July 23, 2026.</p>
           <div class="legal-content mt-8 text-base">
             <div class="legal-note">
               <strong class="text-foreground">Short version:</strong>
-              ForkMesh is experimental distributed code-hosting software. Use it for public repositories you have the right to mirror, keep your keys safe, and do not send SOL to an expired payment request.
+              ForkMesh is experimental distributed code-hosting software. Use it only for repositories you have the right to mirror, keep your keys on your own device, and independently verify every transaction before signing it.
             </div>
             <h2>Using ForkMesh</h2>
             <p>You are responsible for the repositories, messages, issues, pull requests, profile data, and payment addresses you publish through ForkMesh. Do not use ForkMesh to host or distribute content you do not have permission to share.</p>
             <h2>Joining the network</h2>
-            <p>The join flow may ask you to donate Solana (SOL) using a payment reference. That request expires after one hour if it receives no transactions. When it expires, ForkMesh hides it, warns you not to send funds, and removes the unpaid request from the system after five more minutes. Generate a fresh request instead.</p>
+            <p>Joining ForkMesh does not require a cryptocurrency payment. You may optionally publish a self-custodial payout address or voluntarily contribute from your own wallet to the community reward pool. ForkMesh never asks for a payout- or contribution-wallet private key, seed phrase, or mnemonic. Separately, the first instance operator may explicitly import the existing community-pool key into that operator’s encrypted local Qt signer.</p>
+            <h2>Wallet custody and fund states</h2>
+            <p>ForkMesh does not hold, custody, or control user funds. Wallet keys and transaction approval stay on the user’s device. The interface distinguishes user-owned wallet funds, the community-funded public pool, temporary pending allocations, and completed on-chain transfers. A pending allocation is not a ForkMesh balance or custodial wallet: if no external address is supplied before its displayed deadline, it expires and remains at the external source.</p>
             <h2>Rewards and availability</h2>
-            <p>Any payout, reward, uptime, or earnings display is experimental and may change. Running a node does not guarantee payment, availability, or data recovery. You are responsible for backing up your own repositories and keys.</p>
+            <p>Community rewards are voluntary incentives, not investments, wages, yield, or a promise of financial return. Any payout, reward, uptime, or earnings display is experimental and may change. Running a node does not guarantee selection, payment, availability, or data recovery. Visual coins and fountain effects are illustrations; only a finalized transaction on the configured public network represents a completed transfer. You are responsible for backing up your own repositories and keys.</p>
             <h2>Third parties</h2>
             <p>We try our best not to use third parties. The current public service still involves a few:</p>
             <ul>

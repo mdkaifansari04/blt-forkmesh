@@ -44,26 +44,31 @@ as clearly-marked fediverse comments. They are deliberately kept OUTSIDE the
 Ed25519-signed event log: a remote reply can never carry a forkmesh author
 signature, so it must never enter the signed spine that nodes replicate.
 
-**Repo mentions → issues.** A post whose Mention tag points at a repo actor
-("@owner.repo@forkmesh.com the save button crashes") runs through Workers AI
-(the ForkBot binding/model): when the model classifies it as a bug/task
-request it becomes an issue-inbox submission through the same relay-authored
-channel as a ForkBot chat request (proposed number from `issue_seq`, source
-`fediverse`, label `fediverse`, provenance footer linking the post), and the
-repo actor replies to the author — a public Note with `inReplyTo` + Mention
-tag, queued through `ap_outbox` — telling them the issue number and where it
-will appear. The post's image attachments (bounded: 4 × 1 MB) are fetched
-and ride along as `attachmentData`, the same shape a no-write-access node's
-screenshots use, so the owner's desktop materializes them into the issue
-folder on merge. The stored reply object carries the new issue's thread
-context, so fediverse replies to it land as federated comments on that
-issue. Gates mirror the reply path: published public repo, `federate` +
-`acceptComments` on, `ap_mentions` (blind-indexed note id) dedupes
-redeliveries, and an AI-unreachable degradation files only obviously
-issue-shaped posts (the same contract as ForkBot). Mention-tag parsing is
-pure string work, so the inbox lets these through to signature verification
-without any extra D1 reads; a confident model "none" is remembered so
-redeliveries never re-run the model.
+**Repo mentions → manual issue review.** A post whose Mention tag points at a
+repo actor ("@owner.repo@forkmesh.com the save button crashes") never creates
+an issue automatically. After ActivityPub HTTP-signature verification and the
+public-repository/federation gates, the Create or embedded Note must explicitly
+address the ActivityStreams Public collection before a sanitized projection
+enters the World's verified-public-feedback feed. A valid signature alone
+does not publish a direct/private Note. Remote content, repository routing,
+consent, and failure detail remain in an encrypted review record; its
+blind-indexed remote-note id deduplicates redelivery.
+
+An authenticated repository owner can open a preview, edit the proposed title
+and body, and explicitly authorize a pending issue-inbox submission. Follow-up
+consent is a separate, default-off checkbox. The feed says `pending` while the
+encrypted inbox row waits for the owner node. The Qt node reports the real
+issue number in its signed acknowledgement only after `IssueStore` has
+materialized and committed the open event; only then does the feed say
+`created`. If separately authorized, the repo actor queues one deduplicated
+public reply with the confirmed issue backlink. Failures keep a generalized
+retry/delayed status and never turn a proposal or proposed number into a
+creation claim.
+
+Legacy `ap_mentions` rows are still honored as dedupe tombstones, so a note
+auto-processed by an older deployment cannot reappear as a new review item.
+New notes use `world_fediverse_mentions`; no AI classification or attachment
+fetch occurs during inbox handling.
 
 ## Wire protocol
 

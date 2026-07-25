@@ -7,6 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "FederatedThreadView.h"
 #include "KebabHeaderView.h"
 
 using namespace forkmesh::ui;
@@ -425,6 +426,20 @@ void MainWindow::renderDiscussionThread(const Discussion &discussion)
         addConversationCard(m_discussionThreadLayout, who, header, ev.body,
                             isOpen ? QStringLiteral("#58a6ff") : QString(),
                             QString(), ev.author, onDelete);
+    }
+    if (m_repoDetailIndex >= 0 &&
+        m_repoDetailIndex < m_repositories.size() && m_networkAccess) {
+        const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+        auto *remoteThread = new FederatedThreadView(
+            m_networkAccess, m_discussionThreadContainer);
+        const QUrl server(canonicalServerUrl(
+            m_activeServer >= 0 && m_activeServer < m_servers.size()
+                ? m_servers.at(m_activeServer).url
+                : QString()));
+        remoteThread->load(server, repo.owner, repo.name,
+                           QStringLiteral("discussion"), discussion.number);
+        m_discussionThreadLayout->insertWidget(
+            qMax(0, m_discussionThreadLayout->count() - 1), remoteThread);
     }
     if (m_discussionThreadScroll) {
         QTimer::singleShot(0, this, [this] {

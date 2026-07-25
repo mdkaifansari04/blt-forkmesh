@@ -1,0 +1,66 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784405500009,
+    "endDate": 1784606400000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nLet each operator decide locally what the node fetches, stores, serves, indexes, rate-limits, quarantines, or removes without creating a network-global deletion mechanism.\n\n## Implementation\n\n- Define a versioned local policy for repository size, visibility, file classes, large objects, artifacts, maintainer scopes, peer and repository allowlists or blocklists, storage quotas, and request rates.\n- Evaluate policy before fetch, after object inspection, before advertisement, and before serving.\n- Import signed community policy lists only after local approval and retain their source, version, expiry, and scope.\n- Add an operator-local report and removal-request inbox with quarantine, unlist, block, purge-local-copy, and dismiss actions.\n- Provide dry-run decisions, stable reason codes, bounded audit records, and defaults matching current behavior.\n\n## Acceptance criteria\n\n- Policy denial never leaves advertised partial data.\n- Rate limits bound storage, CPU, and network work per untrusted peer.\n- Community lists never override local policy automatically.\n- Reports and removal requests cannot trigger action on another operator's node.\n- Policy changes are atomic and explain every affected repository with no secret content in logs.\n\n## Dependencies\n\nScanner outcomes from #451 feed this policy; no external policy service is required.\n\n## Verification\n\nRun pre-fetch, post-inspection, advertisement, serving, rate-limit, blocklist, community-list, report-inbox, quarantine, and local-purge scenarios against public and private fixtures.",
+            "id": "open-450",
+            "sig": "You6zUb5jx3k7d4Fc8u8n5_NgX7w7m71WNchTwtj-E0ZNOyPyY6ea5Blun7GF2NNPGxlYEjXBr_VjXd9Rsf2Dg",
+            "title": "Enforce node-local seeding and moderation policies",
+            "ts": 1784405500009,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1784606400000,
+            "id": "3457052f-21ae-4089-8bbd-3fc657f04f80",
+            "sig": "kDX36FQbYg_qQ-XPvWVNMcqXflh9yF0Nl5RIkcqnTYn8aDJrBTXsZGnU_0CWCoRyYM0OiGp2uRKL7LuX4PlNDQ",
+            "startDate": 1784347200000,
+            "ts": 1784405500010,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "810123ba-955f-4324-95f3-0804b3e8e00f",
+            "sig": "j2s9S1H8trgdtGvggW7fqKBbwgUcZjTStNGsEpxlS0nMAcfDxOv-8hxZ1kHJXI3wAAHoYxn4R_K_zXgwo80YDA",
+            "ts": 1784729751147,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "18f225b3-4f64-4c39-b579-03710abadce3",
+            "sig": "f2vwbQYZj2Wnm18-boMAXVPIqwJXeIydZcoU7sn-q_jM7FFMJdnrZh1UFk_iNXULy3WSJCjVksv5cC6uatRPCw",
+            "status": "closed",
+            "ts": 1784729751148,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "security",
+        "feature"
+    ],
+    "milestone": "Open operations",
+    "number": 450,
+    "priority": 18,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784347200000,
+    "status": "closed",
+    "title": "Enforce node-local seeding and moderation policies",
+    "updatedAt": 1784729751148,
+    "votes": 0
+}

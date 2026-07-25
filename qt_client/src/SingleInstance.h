@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QString>
+
 #include <functional>
 
 // Enforces at most one ForkMesh process per user. Every launch trigger we don't
@@ -18,12 +20,13 @@ namespace forkmesh {
 // continue normally. Returns false if another instance is already running —
 // it has been pinged to raise its window, and this process must exit at once
 // without constructing MainWindow.
-bool acquireSingleInstance();
+bool acquireSingleInstance(const QString &activationTarget = QString());
 
 // Registers the callback invoked (on the primary instance) when a later launch
 // attempt pings it, so it can raise/focus its window. Call after MainWindow is
 // constructed and before app.exec().
-void onSingleInstanceActivation(std::function<void()> handler);
+void onSingleInstanceActivation(
+    std::function<void(const QString &activationTarget)> handler);
 
 // Releases the instance lock so a process this instance is about to spawn (a
 // self-update rebuild, or a relaunch after wiping data) can immediately become

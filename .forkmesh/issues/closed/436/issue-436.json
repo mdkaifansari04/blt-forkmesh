@@ -1,0 +1,76 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784402987617,
+    "endDate": 1784952000000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nTurn the existing signed receive-pack path into a normal user workflow without persisting short-lived credentials in repository configuration.\n\n## Implementation\n\n- Add one shared helper that creates the correct owner or delegated-write canonical, timestamp, signature, and authenticated push URL.\n- Expose a desktop action that either performs the push or copies an exact one-shot command, with a separate headless command using the same helper.\n- Never write the signed password into `.git/config`, shell history instructions, logs, crash reports, or diagnostics.\n- Refresh an expired credential once after a clear authentication challenge; do not retry authorization failures indefinitely.\n- Distinguish offline source, invalid identity, insufficient role, expired signature, ref-policy denial, and receive-pack failure.\n- Remove stale user-facing copy and comments that still say relay push is unavailable.\n\n## Acceptance criteria\n\n- Owner and delegated writers can push from desktop and headless flows.\n- Read-only users receive a clear denial before any ref changes.\n- Secret-bearing URLs are redacted everywhere and are not persisted.\n- Expiry refresh is bounded and never changes the intended remote or refspec.\n- Successful pushes trigger the existing integrity re-attestation path.\n\n## Dependencies\n\nDepends on #435.\n\n## Verification\n\nAdd helper, UI, redaction, expiry, role, offline-source, and successful-push tests using the receive-pack scenarios from #435.",
+            "id": "open-436",
+            "sig": "qx_uLmudORIHARoeSJfKh0oLvWV3hzMK_3XIpVaX-faMG6mVxr-fLx7YNPriVN3esmfGmZJZdEiIm0vEtLD6CA",
+            "title": "Make authenticated relay pushes usable from desktop and headless flows",
+            "ts": 1784402987617,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1784952000000,
+            "id": "96726093-0993-4bdc-a2be-c2c10cf81da5",
+            "sig": "KxVabnOnxH72XwuKTlSPb_k7ZRqrdFE4yaGXXudPJQB-cns4G7sdKyD622DnPMJQVsQ7wK35RiQ8G3Gml9IeDw",
+            "startDate": 1784692800000,
+            "ts": 1784402987618,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1784952000000,
+            "id": "7f8760e4-deed-4c07-bf08-f4d0b4468b5a",
+            "sig": "pjppo7-tQuV1N4AkC4eEBv4gc_k9imLkMmHVj6Qc5gvPStTcTVkknaGzBKnSIRwkyOKsblsCq7knavnJu_LlAg",
+            "startDate": 1784779200000,
+            "ts": 1784405500066,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "ebd7cd0c-fae4-4fed-aa62-6010865c6da2",
+            "sig": "rj8P2A3CUpFAWB-lQG5LrfsjVNtgVL0XYylAGzaj6TgqsNVon-dZb5ohusJVZ80AMFVFjXrbXBOHr-cdOnBJBQ",
+            "ts": 1784729751119,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "497ca689-825e-4987-8311-61e0ee473712",
+            "sig": "UqwuEBt8C3mha1MeOWW4cDK_wf0cY213Dc4SYZ_wwZlwr5ZBssiRHweX_xAknYLbsiNKzUMIt4spayxLAWiWBA",
+            "status": "closed",
+            "ts": 1784729751120,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "feature",
+        "security"
+    ],
+    "milestone": "Daily Git workflow",
+    "number": 436,
+    "priority": 6,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784779200000,
+    "status": "closed",
+    "title": "Make authenticated relay pushes usable from desktop and headless flows",
+    "updatedAt": 1784729751120,
+    "votes": 0
+}

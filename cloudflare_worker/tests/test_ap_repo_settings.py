@@ -26,14 +26,30 @@ Run: python3 -m pytest cloudflare_worker/tests/test_ap_repo_settings.py
 
 import ast
 import asyncio
+import importlib.util
 import json
 import re
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlparse
 
+from worker_test_helpers import json_from_request_double
+
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
+
+
+def _sibling_module(name):
+    """The real (js-free) helper module the handler under test delegates to."""
+    spec = importlib.util.spec_from_file_location(
+        name, ROOT / "src" / (name + ".py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+activitypub = _sibling_module("activitypub")
+activitypub_threads = _sibling_module("activitypub_threads")
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 
 
@@ -50,6 +66,7 @@ def _load(*names, extra_globals=None):
     module = ast.fix_missing_locations(
         ast.Module(body=selected, type_ignores=[]))
     namespace = dict(extra_globals or {})
+    namespace.setdefault("bounded_json_request", json_from_request_double)
     exec(compile(module, str(ENTRY), "exec"), namespace)
     return namespace
 
@@ -186,12 +203,22 @@ def test_about_get_returns_followers_list_and_settings():
             return []
         if "FROM ap_followers" in sql:
             assert "ORDER BY created_at DESC LIMIT 50" in sql
+            # The cached remote actor document joins in each follower's public
+            # presentation; a follower whose actor was never fetched (or whose
+            # row predates migration 0078) joins as NULL.
+            assert "LEFT JOIN ap_remote_actors" in sql
             return [
                 {"follower_id": "https://mastodon.social/users/kate",
-                 "follower_handle": "@kate@mastodon.social"},
+                 "follower_handle": "@kate@mastodon.social",
+                 "created_at": 1700,
+                 "display_name": "Kate",
+                 "avatar_url": "https://files.mastodon.social/kate.png",
+                 "summary": "<p>Rust &amp; embedded</p>",
+                 "url": "https://mastodon.social/@kate"},
                 # Older row without the resolved handle: derived from the URL.
                 {"follower_id": "https://fosstodon.org/users/sam",
-                 "follower_handle": ""},
+                 "follower_handle": "",
+                 "created_at": 1600},
             ]
         raise AssertionError("unexpected d1_all: " + sql)
 
@@ -222,7 +249,11 @@ def test_about_get_returns_followers_list_and_settings():
                    "_ap_actor_url": lambda origin, kind, handle:
                        origin + "/ap/repos/alice/proj",
                    "ap": SimpleNamespace(
-                       repo_handle=lambda owner, repo: owner + "." + repo),
+                       repo_handle=lambda owner, repo: owner + "." + repo,
+                       public_media_url=activitypub.public_media_url),
+                   "ap_threads": SimpleNamespace(
+                       sanitize_remote_content=(
+                           activitypub_threads.sanitize_remote_content)),
                    "clean_string": lambda value, cap: str(value or "")[:cap],
                    "quote": lambda value: value,
                    "urlparse": urlparse,
@@ -238,9 +269,23 @@ def test_about_get_returns_followers_list_and_settings():
     assert fediverse["followers"] == 2
     assert fediverse["followersList"] == [
         {"handle": "@kate@mastodon.social",
-         "url": "https://mastodon.social/users/kate"},
+         "url": "https://mastodon.social/users/kate",
+         "name": "Kate",
+         "avatarUrl": "https://files.mastodon.social/kate.png",
+         "about": "Rust & embedded",
+         "instance": "mastodon.social",
+         "profileUrl": "https://mastodon.social/@kate",
+         "followedAt": 1700},
+        # No cached actor document yet: identity fields stay empty and the
+        # profile URL falls back to the actor id.
         {"handle": "@sam@fosstodon.org",
-         "url": "https://fosstodon.org/users/sam"},
+         "url": "https://fosstodon.org/users/sam",
+         "name": "",
+         "avatarUrl": "",
+         "about": "",
+         "instance": "fosstodon.org",
+         "profileUrl": "https://fosstodon.org/users/sam",
+         "followedAt": 1600},
     ]
     assert fediverse["settings"] == {"federate": True,
                                      "broadcastEvents": True,

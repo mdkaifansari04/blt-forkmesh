@@ -380,6 +380,64 @@ def test_actor_essentials():
     assert ap.actor_essentials("nope") is None
 
 
+def test_actor_essentials_carries_public_profile_presentation():
+    # The avatar/bio a follower already publishes: cached so "who follows this
+    # repository" renders without re-fetching every remote actor.
+    doc = {
+        "id": "https://mastodon.social/users/bob",
+        "inbox": "https://mastodon.social/users/bob/inbox",
+        "preferredUsername": "bob",
+        "summary": "<p>Kernel hacker</p>",
+        "icon": {"type": "Image", "url": "https://files.m.s/bob.png"},
+        "image": "https://files.m.s/header.png",
+    }
+    ess = ap.actor_essentials(doc)
+    assert ess["icon"] == "https://files.m.s/bob.png"
+    assert ess["image"] == "https://files.m.s/header.png"
+    assert ess["summary"] == "<p>Kernel hacker</p>"
+    # An actor with no avatar/bio yields empty strings, never None.
+    bare = ap.actor_essentials(
+        {"id": "https://m.s/users/x", "inbox": "https://m.s/users/x/inbox"})
+    assert (bare["icon"], bare["image"], bare["summary"]) == ("", "", "")
+
+
+def test_image_url_of_accepts_every_published_shape():
+    assert ap.image_url_of("https://files.m.s/a.png") == \
+        "https://files.m.s/a.png"
+    assert ap.image_url_of({"url": "https://files.m.s/b.png"}) == \
+        "https://files.m.s/b.png"
+    assert ap.image_url_of({"url": {"href": "https://files.m.s/c.png"}}) == \
+        "https://files.m.s/c.png"
+    assert ap.image_url_of([{}, {"url": "https://files.m.s/d.png"}]) == \
+        "https://files.m.s/d.png"
+    assert ap.image_url_of(None) == ""
+    assert ap.image_url_of(7) == ""
+
+
+def test_public_media_url_rejects_unroutable_and_hostile_urls():
+    assert ap.public_media_url("https://files.m.s/a.png?v=2") == \
+        "https://files.m.s/a.png?v=2"
+    # Fragments are dropped; the scheme/host are normalized.
+    assert ap.public_media_url("https://Files.M.S/a.png#x") == \
+        "https://files.m.s/a.png"
+    for hostile in (
+        "javascript:alert(1)",
+        "data:image/png;base64,AAAA",
+        "http://files.m.s/a.png",
+        "https://user:pass@files.m.s/a.png",
+        "https://localhost/a.png",
+        "https://192.168.1.10/a.png",
+        "https://[::1]/a.png",
+        "https://box.local/a.png",
+        "https://relay.onion/a.png",
+        "https://files.m.s:8443/a.png",
+        "https://files.m.s/" + "a" * 900,
+        "",
+        None,
+    ):
+        assert ap.public_media_url(hostile) == "", hostile
+
+
 def test_note_essentials():
     obj = {"id": "https://m.s/notes/1", "type": "Note",
            "inReplyTo": {"id": "https://f.c/ap/o/" + "cd" * 16},

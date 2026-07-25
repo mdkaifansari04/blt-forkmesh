@@ -64,4 +64,30 @@ public:
     static QByteArray openArchive(const QJsonObject &envelope,
                                   const Identity &me,
                                   QString *error = nullptr);
+
+    // Seal a small owner-only control-plane payload (agent session snapshot,
+    // prompt, etc.) to exactly one recipient.  This is the same proven hybrid
+    // construction as sealArchive(), but uses the relay contract's
+    // `forkmesh.owner-sealed` kind and unpadded base64url fields:
+    //
+    //   {kind,v,alg,nonce,tag,body,
+    //    recipients:[{kid,x25519,mlkem768,nonce,tag,key}]}
+    //
+    // The recipient entry contains the ephemeral X25519 public key, ML-KEM
+    // ciphertext, and authenticated wrapped content key.  The relay can
+    // validate/rout the envelope but has no private material with which to
+    // open it.
+    static QJsonObject sealOwnerPayload(const QByteArray &plaintext,
+                                        const QJsonObject &recipientBundle,
+                                        QString *error = nullptr);
+
+    // Open a single-recipient owner payload.  Malformed framing, a recipient
+    // mismatch, or any GCM/KEM authentication failure returns an empty byte
+    // array and sets *error when supplied.
+    static QByteArray openOwnerPayload(const QJsonObject &envelope,
+                                       const Identity &me,
+                                       QString *error = nullptr);
+
+    // Return the sole recipient key id from a well-framed owner envelope.
+    static QString ownerPayloadKeyId(const QJsonObject &envelope);
 };

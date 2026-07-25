@@ -1,0 +1,53 @@
+{
+    "assignees": [],
+    "author": "EBrZg9qJPmoEszJsVX6vB1TnsCW7dQa14LkzZmxUqqY",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1784430046,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [],
+            "author": "EBrZg9qJPmoEszJsVX6vB1TnsCW7dQa14LkzZmxUqqY",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1784430046",
+            "sig": "l91CtZILzpW377tA_sE4d5mf9tHwvxgdncmftpGid5zLPbS4qGUcp66pq3hSb3__jKSnCUu46WVKHbrLECM5Dw",
+            "title": "Issue test from web",
+            "ts": 1784430046,
+            "type": "open"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Test-only web issue retired during the roadmap backlog reset; signed history is retained.",
+            "id": "00347fee-ed9c-4ff7-9d44-9920355ca4dc",
+            "sig": "VSsdWNtfwmh1wBqadHhU9ydGTS4_brVOIdPcB7rBQMM3SstVtwXDVz5sidjrXTSkg3rDG5YaLwWXel_oy19dCw",
+            "ts": 1784729751197,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "9cea9536-0043-46d5-9249-d4125ae57e90",
+            "sig": "RO50XzKMoL-WDSDBBvxRe7A_ty_BKYXHpnezfVlgIowhGFsVV7zTBO5C9FQppG4YCfHddLeQjPhyldMJ-41NDA",
+            "status": "closed",
+            "ts": 1784729751198,
+            "type": "status"
+        }
+    ],
+    "labels": [],
+    "milestone": "",
+    "number": 475,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "closed",
+    "title": "Issue test from web",
+    "updatedAt": 1784729751198,
+    "votes": 0
+}

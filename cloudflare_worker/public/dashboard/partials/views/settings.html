@@ -50,6 +50,11 @@
                       <i data-lucide="settings" class="h-5 w-5"></i>
                       Account
                     </button>
+                    <button data-settings-section-link="ssh-keys" type="button" aria-current="false" class="relative flex h-10 items-center gap-3 rounded-md px-4 text-left text-muted-foreground hover:bg-secondary hover:text-foreground">
+                      <span data-settings-active-indicator class="absolute left-0 top-1/2 hidden h-6 w-1 -translate-y-1/2 rounded-full bg-[#2f81f7]"></span>
+                      <i data-lucide="key-round" class="h-5 w-5"></i>
+                      SSH keys
+                    </button>
                     <button data-settings-section-link="appearance" type="button" aria-current="false" class="relative flex h-10 items-center gap-3 rounded-md px-4 text-left text-muted-foreground hover:bg-secondary hover:text-foreground">
                       <span data-settings-active-indicator class="absolute left-0 top-1/2 hidden h-6 w-1 -translate-y-1/2 rounded-full bg-[#2f81f7]"></span>
                       <i data-lucide="paintbrush" class="h-5 w-5"></i>
@@ -232,7 +237,8 @@
                         <label class="grid gap-2 text-sm font-semibold text-foreground">
                           Solana payout address
                           <input data-profile-page-solana type="text" inputmode="latin" autocomplete="off" placeholder="Your public Solana address" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
-                          <span class="text-sm font-normal leading-5 text-muted-foreground">Used for mirror rewards and bounty payouts. Leave it empty until you need payouts.</span>
+                          <span class="text-sm font-normal leading-5 text-muted-foreground">Used for optional mirror rewards and direct community donations. Legacy bounty custody is disabled. Leave it empty until you choose to receive a transfer.</span>
+                          <span class="text-xs font-normal leading-5 text-amber-300">Non-custodial: ForkMesh stores only this public address. Wallet keys and recovery phrases remain on your device; never enter them here. User-owned funds, community-pool funds, pending rewards, and completed on-chain transfers are separate states.</span>
                         </label>
                         <label class="grid gap-2 text-sm font-semibold text-foreground">
                           Current password
@@ -299,11 +305,11 @@
                         </label>
                         <label class="flex items-start gap-3 border-b border-border p-4 text-sm text-muted-foreground">
                           <input data-notification-pref="bounty_funded" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-border" />
-                          <span><span class="block font-semibold text-foreground">Bounty funded</span><span class="mt-1 block leading-5">Email when a bounty is funded.</span></span>
+                          <span><span class="block font-semibold text-foreground">Legacy bounty funding record</span><span class="mt-1 block leading-5">Historical migration events only; new bounty custody is disabled.</span></span>
                         </label>
                         <label class="flex items-start gap-3 border-b border-border p-4 text-sm text-muted-foreground">
                           <input data-notification-pref="bounty_paid" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-border" />
-                          <span><span class="block font-semibold text-foreground">Bounty paid</span><span class="mt-1 block leading-5">Email when a bounty is paid.</span></span>
+                          <span><span class="block font-semibold text-foreground">Legacy bounty payout record</span><span class="mt-1 block leading-5">Historical migration events only; automatic bounty payouts are disabled.</span></span>
                         </label>
                         <label class="flex items-start gap-3 border-b border-border p-4 text-sm text-muted-foreground">
                           <input data-notification-pref="general_chat" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-border" />
@@ -332,6 +338,54 @@
                   <section id="settings-account" data-settings-section="account" class="hidden pb-8">
                     <h2 class="text-2xl font-semibold tracking-normal text-foreground">Account</h2>
                     <p class="mt-1 text-sm leading-6 text-muted-foreground">Your node name is your public account and repository namespace. Change your username from the <button data-settings-section-link="public-profile" type="button" class="font-semibold text-[#2f81f7] hover:underline">Public profile</button> settings — renaming it moves owned repository URLs to the new namespace.</p>
+                    <div class="mt-6 grid max-w-3xl gap-3">
+                      <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                        <div>
+                          <h3 class="text-base font-semibold text-foreground">Active sessions</h3>
+                          <p class="mt-1 text-sm leading-6 text-muted-foreground">Review signed-in browsers and desktop clients. ForkMesh shows only a broad device category and timestamps—not IP addresses or raw browser details.</p>
+                        </div>
+                        <button data-account-sessions-revoke-others type="button" class="inline-flex h-9 shrink-0 items-center justify-center rounded-md border border-border px-3 text-sm font-semibold text-foreground hover:bg-secondary">
+                          Sign out other devices
+                        </button>
+                      </div>
+                      <p data-account-session-status role="status" class="min-h-4 text-xs text-muted-foreground"></p>
+                      <div data-account-session-list class="grid overflow-hidden rounded-md border border-border bg-card">
+                        <p class="p-4 text-sm text-muted-foreground">Loading active sessions…</p>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section id="settings-ssh-keys" data-settings-section="ssh-keys" class="hidden pb-8">
+                    <h2 class="text-2xl font-semibold tracking-normal text-foreground">SSH keys</h2>
+                    <p class="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">Register a public key to clone or push through a configured ForkMesh SSH gateway. Repository owner and organization-team write permissions are checked again for every push.</p>
+                    <div class="mt-5 grid max-w-3xl gap-5">
+                      <div class="rounded-md border border-amber-400/40 bg-amber-400/5 p-4 text-sm leading-6 text-amber-200">
+                        ForkMesh stores encrypted public keys only. Your private key and passphrase stay on your device. Never paste a private key, recovery phrase, or password here. Adding a public key reserves it to this account; possession is proven later by OpenSSH when you connect, not by this form.
+                      </div>
+                      <form data-ssh-key-form class="grid gap-3 rounded-md border border-border bg-card p-4">
+                        <label class="grid gap-2 text-sm font-semibold text-foreground">
+                          Title
+                          <input data-ssh-key-label type="text" maxlength="80" autocomplete="off" placeholder="Work laptop" class="h-10 rounded-md border border-border bg-background px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
+                        </label>
+                        <label class="grid gap-2 text-sm font-semibold text-foreground">
+                          Public key
+                          <textarea data-ssh-public-key rows="4" maxlength="16384" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="ssh-ed25519 AAAA… you@example" class="min-h-28 resize-y rounded-md border border-border bg-background px-3 py-2 font-mono text-xs font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]"></textarea>
+                        </label>
+                        <p data-ssh-key-status class="min-h-4 text-xs text-muted-foreground"></p>
+                        <button data-ssh-key-add type="submit" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-[#238636] px-4 text-sm font-semibold text-white hover:bg-[#2ea043] transition-colors">
+                          Add SSH key
+                        </button>
+                      </form>
+                      <div>
+                        <div class="flex items-center justify-between gap-3">
+                          <h3 class="text-sm font-semibold text-foreground">Registered keys</h3>
+                          <span data-ssh-gateway-status class="text-xs text-muted-foreground">Checking gateway…</span>
+                        </div>
+                        <div data-ssh-key-list class="mt-3 grid overflow-hidden rounded-md border border-border bg-card">
+                          <p class="p-4 text-sm text-muted-foreground">Loading SSH keys…</p>
+                        </div>
+                      </div>
+                    </div>
                   </section>
 
                   <section id="settings-nodes" data-settings-section="nodes" class="hidden pb-8">

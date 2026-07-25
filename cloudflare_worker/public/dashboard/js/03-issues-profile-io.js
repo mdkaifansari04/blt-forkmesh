@@ -251,7 +251,7 @@
   // Mirrors IssueStore::contentForSigning + canonicalString and the desktop's
   // inbox POST (verify_issue_event in the worker). New issues are signed with
   // number 0; the maintainer assigns the durable number on drain.
-  async function submitWebIssue(repo, title, body, assignAgent = false, agentModel = "", agentProvider = "") {
+  async function submitWebIssue(repo, title, body, assignAgent = false, agentModel = "", agentProvider = "", extraMeta = {}) {
     const { privateKey, pub } = await getWebIssueKey();
     const ts = Math.floor(Date.now() / 1000);
     const cleanBody = String(body || "").replace(/[\r\n]+$/, "");
@@ -278,7 +278,16 @@
       number: 0,
       titleIfNew: title,
       event,
-      meta: { labels: [], milestone: "", priority: 0, assignees: [], wantsAgent: Boolean(assignAgent), model: assignAgent ? String(agentModel || "") : "", provider: assignAgent ? String(agentProvider || "") : "" },
+      meta: {
+        labels: Array.isArray(extraMeta.labels) ? extraMeta.labels.map((x) => String(x)) : [],
+        milestone: String(extraMeta.milestone || ""),
+        project: String(extraMeta.project || ""),
+        priority: Number.isFinite(extraMeta.priority) ? extraMeta.priority : 0,
+        assignees: Array.isArray(extraMeta.assignees) ? extraMeta.assignees.map((x) => String(x)) : [],
+        wantsAgent: Boolean(assignAgent),
+        model: assignAgent ? String(agentModel || "") : "",
+        provider: assignAgent ? String(agentProvider || "") : "",
+      },
     };
     // When assignAgent is true, include the account session so the server can
     // verify the caller really is the repo owner or an admin (adhoc #225). The
@@ -402,26 +411,45 @@
   }
 
   // Mirrors PullStore::canonicalString for a new pull (verify_pull_event in
-  // the worker): title/base/head/patch, with an empty patch for a
-  // branch-referencing submission from the web - the desktop reconstructs the
-  // diff on drain (see renderRepoPullPatch's "Branch-backed PRs are
-  // reconstructed by the desktop client" copy).
+  // the Worker). Branch names alone are mutable and may not exist on the
+  // owner's node, so resolve them through an attested mirror once and sign the
+  // resulting portable binary patch + commit series.
   async function submitWebPullOpen(repo, title, body, base, head) {
+    const comparison = await fetchRepoJson(repoLiveUrl(repo, "compare", {
+      base,
+      head,
+      ref: "",
+    }));
+    const patch = String(comparison.patch || "");
+    const commits = String(comparison.commits || "");
+    const baseOid = String(comparison.baseOid || "").toLowerCase();
+    const headOid = String(comparison.headOid || "").toLowerCase();
+    const validOid = (value) => /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(value);
+    if (!validOid(baseOid) || !validOid(headOid)) {
+      throw new Error("invalid_comparison");
+    }
+    if (!patch.trim()) {
+      throw new Error("no_changes");
+    }
+    if (ISSUE_TEXT_ENCODER.encode(patch).byteLength
+        + ISSUE_TEXT_ENCODER.encode(commits).byteLength > 4 * 1024 * 1024) {
+      throw new Error("pull_too_large");
+    }
     const { privateKey, pub } = await getWebIssueKey();
     const ts = Math.floor(Date.now() / 1000);
     const cleanBody = String(body || "").replace(/[\r\n]+$/, "");
     const NUL = String.fromCharCode(0);
-    const patch = "";
-    const content = [title, base, head, patch].join(NUL);
+    const content = [title, base, head, patch, commits].join(NUL);
     const contentHash = await sha256HexLower(content);
     const canonical = `forkmesh-pull-event-v1\n${pub}\n${ts}\n${contentHash}`;
     const sig = bytesToB64url(await crypto.subtle.sign({ name: "Ed25519" }, privateKey, ISSUE_TEXT_ENCODER.encode(canonical)));
     const pull = {
       title,
-      body: cleanBody,
+      description: cleanBody,
       base,
       head,
       patch,
+      commits,
       author: pub,
       authorName: state.session?.nodeName || "",
       ts,

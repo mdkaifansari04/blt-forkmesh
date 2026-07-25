@@ -20,7 +20,8 @@ inline const QString Cancelled = QStringLiteral("cancelled");
 inline const QString Skipped = QStringLiteral("skipped");
 } // namespace ActionStatus
 
-// One workflow run, persisted as <root>/runs/<owner>-<name>/<id>/meta.json with a
+// One workflow run, persisted as
+// <root>/runs/v2-<sha256(length-delimited owner/name)>/<id>/meta.json with a
 // sibling log.txt. Runs are local CI artifacts and are never committed to git.
 struct ActionRun {
     int id = 0;
@@ -31,12 +32,22 @@ struct ActionRun {
     QString workflowContent; // raw YAML at the pushed commit (for diff/approval)
     QString commit;          // pushed newrev SHA
     QString ref;             // pushed refname
+    // Approval is bound to the complete repository snapshot, not just the
+    // workflow YAML. repositoryTree is Git's tree object id; executionDigest is
+    // a SHA-256 over both the recursive tree manifest and the archived file
+    // bytes. Changing a helper script, Makefile, package hook, submodule pin, or
+    // any other tracked input therefore invalidates approval.
+    QString repositoryTree;
+    QString executionDigest;
     QString status = ActionStatus::Queued;
     qint64 createdAtMs = 0;
     qint64 startedAtMs = 0;
     qint64 finishedAtMs = 0;
 
-    QString repoKey() const; // sanitized "<owner>-<name>"
+    // Collision-resistant, filesystem/settings-safe repository storage key.
+    QString repoKey() const;
+    // Pre-v2 lossy key, exposed only so ActionStore can migrate old records.
+    QString legacyRepoKey() const;
     QJsonObject toJson() const;
     static ActionRun fromJson(const QJsonObject &obj);
 };
@@ -49,6 +60,7 @@ public:
     explicit ActionStore(QString rootDir); // rootDir = <AppData>/actions
 
     QString spoolDir() const; // <root>/spool (push events land here)
+    QString artifactsDir() const; // <root>/artifacts (validated run outputs)
 
     // Runs
     QList<ActionRun> loadAllRuns() const;    // newest first
@@ -63,16 +75,34 @@ public:
     static void setVariables(const QMap<QString, QString> &vars);
 
     // Approved-workflow store, keyed per repo by file path. Trust is by exact
-    // content: a changed file is unapproved until approve() records the new text.
+    // workflow content AND the complete repository state that can execute.
     static bool isApproved(const QString &repoKey, const QString &path,
-                           const QString &content);
+                           const QString &content,
+                           const QString &repositoryTree,
+                           const QString &executionDigest);
     static void approve(const QString &repoKey, const QString &path,
-                        const QString &content);
+                        const QString &content,
+                        const QString &repositoryTree,
+                        const QString &executionDigest);
     static QString lastApprovedContent(const QString &repoKey, const QString &path);
+
+    // Resolve and hash an immutable repository snapshot without checking it
+    // out. The digest includes the recursive Git tree record (including modes,
+    // paths, object ids, and submodule pins) and a deterministic tar stream of
+    // every archived file, then hashes that material with SHA-256. A bounded
+    // timeout prevents a damaged repository from hanging the approval UI.
+    static bool repositoryStateDigest(const QString &repository,
+                                      const QString &commit,
+                                      QString *repositoryTree,
+                                      QString *executionDigest,
+                                      QString *error = nullptr);
 
 private:
     QString runsDir() const; // <root>/runs
     QString runDir(const ActionRun &run) const;
+    QString legacyRunDir(const ActionRun &run) const;
+    QString existingRunDir(const ActionRun &run) const;
+    void migrateLegacyRecords();
     int nextId() const;
 
     QString m_root;

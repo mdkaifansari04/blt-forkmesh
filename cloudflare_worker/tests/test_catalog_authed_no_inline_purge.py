@@ -78,6 +78,7 @@ def _run(url, *, cached=False):
     handler = _load_catalog_handler({
         "Date": type("D", (), {"now": staticmethod(lambda: NOW)}),
         "HOST_PRESENCE_STALE_MS": 10 * 60 * 1000,
+        "HTTPS_MIRROR_STATUS_FRESH_MS": 10 * 60 * 1000,
         "MAX_CATALOG_REPOS": 200,
         "CATALOG_TTL": 10,
         "CATALOG_CACHE_KEY": "catalog",
@@ -93,6 +94,10 @@ def _run(url, *, cached=False):
         "decrypt_row": identity,
         "_is_blocked_catalog_identity": (lambda env, o, n: False),
         "_admin_query": (lambda admin: ""),
+        "_ssh_gateway_settings": (lambda env: {
+            "configured": False, "host": "", "port": 0,
+            "repositories": {},
+        }),
         "safe_segment": (lambda v: v),
         "clean_string": (lambda v, n: v),
         "served_mirror_groups": (lambda repos: set()),

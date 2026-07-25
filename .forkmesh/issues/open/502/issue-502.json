@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751358,
+    "endDate": 1816920000000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nAn unaffiliated operator can run the web UI, relay, public index, search, identity resolver, collaboration relay, automation broker, and organization service without proprietary dependencies.\n\n## Scope\n\n- Define service boundaries, stable contracts, minimum profiles, composition, discovery, version negotiation, and failure behavior.\n- Publish reproducible images/packages, configuration schemas, runbooks, migrations, backup paths, and observability for every role.\n- Demonstrate mixed-provider and fully independent deployments from clean infrastructure.\n\n## Acceptance criteria\n\n- Each service starts and passes its contract suite independently with documented substitutes for optional dependencies.\n- A clean-room deployment serves browse, clone, collaboration, identity, and automation without forkmesh.com.\n- Mixed-version and service-loss tests degrade explicitly and preserve canonical data.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 ecosystem gate**\n- Milestone: **Open platform & ecosystem**\n- Numeric priority: **37 of 44** (1 is highest)\n- Depends on: #501, #510, #511\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**20% as of 2026-07-22.** The relay/website can be deployed and desktop nodes operate locally, but several roles remain coupled or hosted-only and lack clean-room proof. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Independent deployments, service-role adoption, upgrade compatibility, default-service dependency, and operator success. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-502",
+            "sig": "nMVriEIjfHnULSSMy-Atys7KckcNZwXmPTAC7FJMJzbjVcXY08QHd9TffysBekuKFmWiM9QY_QWAXdqDX5g3CA",
+            "title": "Make every network service independently self-hostable",
+            "ts": 1784729751358,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "6e7b3009-6ad6-4ef4-9fef-58d37677432f",
+            "labels": [
+                "infra",
+                "protocol",
+                "community"
+            ],
+            "sig": "qyK7pMc-Ph_lvyU8wQtdjp-UbJYXbpf3cXDZ_sqDiNl5rOc8hCLTN6W4VBtr0iUqAgi-L6YlMqfzQUL3GGcbBw",
+            "ts": 1784729751359,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "7e5d77da-f207-4ce1-8f9f-aa49c1a768ec",
+            "milestone": "Open platform & ecosystem",
+            "sig": "VHWQmmCe49jCx2PkCnvX_VRQ3DgKim6U1yV7ujDiy2_ISQyDpYkIFaKvfDMgX0rMYFBl8MSSsrpmLoWB8f_7BA",
+            "ts": 1784729751360,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1816920000000,
+            "id": "7cce0b3c-cca6-4548-a680-756bba215228",
+            "sig": "NfVbohX0SDPHN4FfxIod0vtz_hyHlGmSpvRm_Fj0TUa6MTD15cT-4IhvHZB7eACb3H4wyemRAjuJfhIm_JJlAA",
+            "startDate": 1792382400000,
+            "ts": 1784729751361,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "7b848194-1585-4e12-8b46-48f54c470a5a",
+            "priority": 37,
+            "sig": "2AckR7K47BHmaxRe3iwdjTuQNiPE4rKha8R4uwu3AW1ijc0dxPO_cI2AxG9fgiHM03vRijzOMgM7RXow2bwvAQ",
+            "ts": 1784729751362,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "64233dfe-01c4-4c60-be2d-9197777bdc64",
+            "progress": 20,
+            "sig": "FKEOf1fFA-yne2-0Y7getWgk3Zz3Z4QIKUHauZ8zw7mQWleTXUR5Rj-lWdZ9q_4VtogVKygPtbjGGVqSW4mhDQ",
+            "ts": 1784729751363,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "infra",
+        "protocol",
+        "community"
+    ],
+    "milestone": "Open platform & ecosystem",
+    "number": 502,
+    "priority": 37,
+    "progress": 20,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1792382400000,
+    "status": "open",
+    "title": "Make every network service independently self-hostable",
+    "updatedAt": 1784729751363,
+    "votes": 0
+}

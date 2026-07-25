@@ -53,9 +53,7 @@ class _OrgsScreenState extends State<OrgsScreen> {
 
   void _openOrg(String name) {
     Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => OrgDetailScreen(orgName: name),
-      ),
+      MaterialPageRoute<void>(builder: (_) => OrgDetailScreen(orgName: name)),
     );
   }
 
@@ -74,7 +72,10 @@ class _OrgsScreenState extends State<OrgsScreen> {
                       key: const ValueKey('org-create-button'),
                       tooltip: 'New organization',
                       onPressed: _createOrg,
-                      icon: Icon(Icons.add, color: FmTheme.textPrimary(context)),
+                      icon: Icon(
+                        Icons.add,
+                        color: FmTheme.textPrimary(context),
+                      ),
                     )
                   : null,
             ),
@@ -179,7 +180,10 @@ class _OrgRow extends StatelessWidget {
               color: FmTheme.accentSubtle(context),
               borderRadius: BorderRadius.circular(FmRadius.md),
             ),
-            child: Icon(Icons.apartment_outlined, color: FmTheme.accent(context)),
+            child: Icon(
+              Icons.apartment_outlined,
+              color: FmTheme.accent(context),
+            ),
           ),
           const SizedBox(width: FmSpace.x3),
           Expanded(
@@ -308,7 +312,10 @@ class _CreateOrgSheetState extends State<_CreateOrgSheet> {
                 const SizedBox(height: FmSpace.x1),
                 Text(
                   _error,
-                  style: TextStyle(color: FmTheme.danger(context), fontSize: 13),
+                  style: TextStyle(
+                    color: FmTheme.danger(context),
+                    fontSize: 13,
+                  ),
                 ),
               ],
               const SizedBox(height: FmSpace.x3),

@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "id": "forkmesh-public-daily-v1",
+  "version": "1.0.0",
+  "description": "Public-safe daily repository scan. Evidence values and source excerpts are never emitted.",
+  "maximumFileBytes": 1048576,
+  "includeExtensions": [
+    ".c",
+    ".cc",
+    ".cpp",
+    ".dart",
+    ".h",
+    ".hpp",
+    ".html",
+    ".js",
+    ".json",
+    ".md",
+    ".py",
+    ".sh",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".yaml",
+    ".yml"
+  ],
+  "excludeGlobs": [
+    ".git/**",
+    ".venv/**",
+    "**/.pywrangler/**",
+    "**/.venv-workers/**",
+    "**/build*/**",
+    "**/node_modules/**",
+    "**/vendor/**",
+    "**/*.min.js",
+    "**/*.map",
+    "docs/security-scan-policy.json",
+    "cloudflare_worker/python_modules/**"
+  ],
+  "staticExcludeGlobs": [
+    "**/tests/**"
+  ],
+  "secretRules": [
+    {
+      "id": "private-key-material",
+      "severity": "critical",
+      "pattern": "-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----",
+      "summary": "Private key material may be present.",
+      "recommendation": "Revoke or rotate the key, remove it from history, and use a local secret store."
+    },
+    {
+      "id": "github-token",
+      "severity": "critical",
+      "pattern": "\\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,255}\\b",
+      "summary": "A GitHub token-shaped value may be present.",
+      "recommendation": "Revoke the token and replace it with an encrypted repository secret."
+    },
+    {
+      "id": "aws-access-key",
+      "severity": "high",
+      "pattern": "\\b(?:AKIA|ASIA)[A-Z0-9]{16}\\b",
+      "summary": "An AWS access-key-shaped value may be present.",
+      "recommendation": "Disable the credential, investigate its use, and move credentials to a secret store."
+    },
+    {
+      "id": "generic-secret-assignment",
+      "severity": "high",
+      "pattern": "(?i)\\b(?:api[_-]?key|private[_-]?key|client[_-]?secret|access[_-]?token|auth[_-]?token|password)\\b\\s*[:=]\\s*['\\\"]([A-Za-z0-9_./+\\-=]{20,})['\\\"]",
+      "summary": "A long credential-shaped assignment may be present.",
+      "recommendation": "Confirm this is not a live credential and use an encrypted secret store if it is."
+    }
+  ]
+}

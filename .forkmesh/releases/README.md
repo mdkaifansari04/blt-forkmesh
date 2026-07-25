@@ -5,7 +5,8 @@ committed to git (issue #304; see
 [`docs/design/release-binary-publishing.md`](../../docs/design/release-binary-publishing.md)).
 The actual binary bytes live in a per-node content-addressed store (the CAS),
 served on demand from a hosting node over the relay — the same way the repo
-itself is served — and verified by sha256 on download.
+itself is served. The checksum list is bound into an Ed25519-signed manifest,
+and the downloaded bytes are then verified by SHA-256.
 
 > Historical note: releases used to commit the prebuilt binary directly under
 > `.forkmesh/releases/<channel>/forkmesh-<os>-<arch>`. The installer still understands that
@@ -16,7 +17,8 @@ itself is served — and verified by sha256 on download.
 ```
 .forkmesh/releases/<channel>/
   SHASUMS256.txt   # "<sha256>  <asset-name>" per asset (sha256sum -c compatible)
-  release.json     # manifest: repo, tag, tag_commit, channel, assets[]
+  release.json     # signed manifest body (repo, revisions, checksum-list hash, assets)
+  release.json.sig # raw 64-byte Ed25519 signature over exact release.json bytes
 ```
 
 - `<channel>` — `latest` by default. The installer reads `FORKMESH_RELEASE` to
@@ -40,25 +42,87 @@ the publisher directly:
 ```sh
 tools/forkmesh-release-publish.sh \
   --channel latest --tag v1.2.3 --repo forkmesh/forkmesh \
+  --signing-key /secure/path/release-ed25519-private.pem \
   --cas-dir <mirror>/forkmesh-releases \
   forkmesh-linux-x86_64
 ```
 
 This hashes each binary, copies the bytes into the CAS (`--cas-dir`, which must
 be the directory the serving node reads from — set `FORKMESH_RELEASE_CAS` to it),
-and writes `.forkmesh/releases/<channel>/SHASUMS256.txt` + `release.json`. Commit **only
-that metadata** and publish it — the asset goes live immediately. Run it once on a
-node of each OS to publish all three platform builds.
+and writes the checksum list, signed manifest, and detached signature. The
+private key must be an Ed25519 PEM file supplied through `--signing-key` or
+`FORKMESH_RELEASE_SIGNING_KEY`; publication fails when it is missing. Commit
+**only that metadata** and publish it — never commit the private key. Run it
+once on a node of each OS to publish all three platform builds.
+
+### Refreshing a same-version binary
+
+Do not delete a checksum line or copy a local development executable into the
+CAS. When fixes must ship under the current app version, first commit the exact
+source to publish, then run the explicit refresh from a clean worktree:
+
+```sh
+FORKMESH_RELEASE_CAS=/absolute/path/to/the/served/forkmesh-releases \
+  cloudflare_worker/deploy.sh republish-release-binary
+```
+
+The command refuses a dirty tracked worktree or an unspecified served CAS. It
+rebuilds the current platform in Release mode, pins the version from
+`qt_client/CMakeLists.txt`, verifies the executable's `--version`, replaces the
+content-addressed bytes, and checks that `release.json`, `SHASUMS256.txt`, the
+CAS hash, and the source commit all agree. It then commits the small release
+metadata update. Push that commit and let mirror catalogs refresh before using
+the desktop client's fleet binary-install action.
 
 ## Installing
 
-The installer autodetects the platform, reads `SHASUMS256.txt` over the git
-proxy, downloads the matching binary from the relay's content-addressed release
-endpoint, and verifies its sha256 before installing:
+The installer autodetects the platform, authenticates `release.json` against a
+locally provisioned publisher public key (or an exact controller-supplied
+manifest digest), verifies its binding to `SHASUMS256.txt`, then downloads the
+matching content-addressed binary and verifies its SHA-256 before installing.
+It never executes downloaded bytes to decide whether they are trustworthy:
 
 ```sh
-curl -fsSL https://forkmesh.com/install.sh | bash
+FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE=/etc/forkmesh/release-publisher.pem \
+  bash install.sh
 ```
+
+Fleet controllers may instead set
+`FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256` to a digest obtained through their
+authenticated control channel. Without either trust anchor, prebuilt
+installation fails closed (an explicitly enabled source build can still
+proceed).
+
+The desktop client's **Install from binary (all hosts)** path adds a stricter
+provenance pin: it supplies the source commit embedded in the controller binary,
+requires an identical `release.json/build_commit`, then checks both `--version`
+and `--build-commit` on every installed host. Thus a checksum-valid artifact
+published under the same semver but built from an older commit fails closed.
+Ordinary one-line installs remain unpinned and keep following the selected
+release channel.
+
+Release builds configured from a Git checkout automatically embed the newest
+non-release-metadata source commit. Packagers building from a source archive
+must pass the manifest's exact commit with
+`-DFORKMESH_BUILD_COMMIT_OVERRIDE=<40-or-64-hex-commit>`; without a known
+revision the application still runs, but commit-pinned fleet deployment is
+intentionally unavailable.
+
+The `project(ForkMesh VERSION …)` bump must be committed before creating a
+release tag. Release automation verifies that the tag version and committed
+project version agree and never edits source after building the artifact; this
+ensures a clean controller checkout can request the exact published revision.
+
+Here “source commit” means the newest commit that changes anything outside
+`.forkmesh/releases/`. The small manifest/checksum commit necessarily lands
+after the artifact has been built, so excluding that metadata-only commit keeps
+the controller and artifact on one stable provenance revision without weakening
+the check for later source changes.
+
+`tag_commit` is not repurposed for this: it remains the peeled commit targeted
+by `tag`, preserving release signatures and UI semantics. `build_commit` is the
+separate, signed artifact-build provenance field and may advance during an
+explicit same-version rebuild without moving the release tag.
 
 Force a from-source build instead with `FORKMESH_FROM_SOURCE=1`.
 

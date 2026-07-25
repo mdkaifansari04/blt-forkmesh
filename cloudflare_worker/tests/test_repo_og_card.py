@@ -192,7 +192,12 @@ def test_repo_page_og_tags_point_at_card():
     assert 'og_image = origin + "/assets/logo.png"' not in ENTRY_SRC
     # ...replaced by the rendered card, with large-image hints so Mastodon
     # renders it full width instead of as a thumbnail.
-    assert '/card.png" % (' in ENTRY_SRC
+    assert 'og_image += "?v=" + quote(social_version, safe="")' in ENTRY_SRC
+    assert "social_version = _repository_social_version(repo_record)" in ENTRY_SRC
+    assert "_build_rev(self.env)" not in ENTRY_SRC[
+        ENTRY_SRC.index("async def _serve_repo_page"):
+        ENTRY_SRC.index("async def _serve_repo_profile_page")
+    ]
     assert 'summary_large_image' in ENTRY_SRC
     assert 'og:image:width' in ENTRY_SRC and 'og:image:height' in ENTRY_SRC
     assert 'og:description' in ENTRY_SRC
@@ -204,3 +209,16 @@ def test_card_handler_is_public_get_and_edge_cached():
     assert "_repo_is_private" in handler
     assert "edge_cache_match_media" in handler and "edge_cache_put" in handler
     assert "render_repo_card" in handler
+
+
+def test_binary_response_bodies_are_copied_into_js_owned_buffers():
+    # A bare _to_js(bytes) is a VIEW into Python's WASM memory. A binary
+    # Response body is streamed to the client (and read by edge-cache put)
+    # AFTER the handler returns and the GIL is released; reading that view off
+    # the GIL is a runtime crash ("Attempted to use PyProxy when Python GIL not
+    # held") that poisons the isolate for every later invocation, including the
+    # once-a-minute cron tick. Every binary body must round-trip through
+    # Uint8Array.new to land in a JS-owned buffer first (adhoc #203).
+    assert "JsResponse.new(_to_js(bytes(" not in ENTRY_SRC
+    for site in ("bytes(data)", "bytes(raw)", "bytes(png)"):
+        assert "Uint8Array.new(_to_js(%s))" % site in ENTRY_SRC

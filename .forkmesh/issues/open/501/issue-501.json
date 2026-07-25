@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751352,
+    "endDate": 1809057600000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nHosted and self-hosted node operators can deploy, update, monitor, back up, restore, and move keys without bespoke intervention.\n\n## Scope\n\n- Provide rootless one-command deployment for single host first, then documented cluster and appliance profiles.\n- Automate signed updates, rollback, health checks, backup/restore, key export/import, storage management, and alerts.\n- Include dry runs, version compatibility checks, capacity warnings, and observable recovery objectives.\n\n## Acceptance criteria\n\n- A clean host reaches healthy service from one documented command with no hidden personal credentials.\n- Quarterly restore drills recover repository data, identity material, configuration, and service state within targets.\n- Failed upgrades roll back without repository or key loss and emit an actionable alert.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P1 committed**\n- Milestone: **Hosted teams & revenue GA**\n- Numeric priority: **34 of 44** (1 is highest)\n- Depends on: #498, #500\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**40% as of 2026-07-22.** Deploy scripts, service packaging, status surfaces, installers, and health foundations exist; unified one-command operations and proven backup/rollback remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Deploy success, update success, restore time, alert actionability, operator hours, and hosting cost. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-501",
+            "sig": "gwYB1DxMNbfr9HLyqBBf7eC82WFdN6f6wikOg2-Y1CL7VehCztKVGy0K-QaPqRN0pgITk4X7KHIi1fofZ6yrCw",
+            "title": "Provide one-command node deployment and dependable operations",
+            "ts": 1784729751352,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "c5810770-9569-4c98-83a9-09120dd69827",
+            "labels": [
+                "infra",
+                "security",
+                "product"
+            ],
+            "sig": "61YdKpjwC4vVMpvOBKkJKdkj1CDSbcQ02PC6s7bnbYwz6p6XuHHAnsX2PT62w1NjqtOj9lfFLobuZG7JJvbaAg",
+            "ts": 1784729751353,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "37ebb1d2-c183-492c-b1b3-da6bd33f171f",
+            "milestone": "Hosted teams & revenue GA",
+            "sig": "Tncoj9AQ0hsFEzrAYiYx5sc9rczziBhETPkuwMweGwuBNP3_kYbBtbllJGDxwzYy8wfVtdp-ejdYIIZEBkroDw",
+            "ts": 1784729751354,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1809057600000,
+            "id": "02e898d1-d5a9-4c74-bc06-ee6d60ae674b",
+            "sig": "1iJdrCxJ8PaR6e4WfanxOx6tH_OJ4LBandfEyI7GnGrAjggktYzPNe5ZWqALtTEnV-o5xAzvsUAqSCW1z5QDCw",
+            "startDate": 1786939200000,
+            "ts": 1784729751355,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "c790a7ea-8e1b-4632-889a-fb95c119ba59",
+            "priority": 34,
+            "sig": "gPj-rzPmbzxgOvKr4vnZW78WMim84bmgSmnqnmUu4oyxVrshoKp-CVqJ_hKqdfUv7DEtUJtfzlWMY7ZjqZGFAA",
+            "ts": 1784729751356,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "ee3604db-ae08-45c9-a1d6-110bbdb06e03",
+            "progress": 40,
+            "sig": "9SjKs19_2vuNps4rD3uw7E0Yt_2t9Me2d6KJY7OLlpxGt7pVy4rYInnkmlvotZ_VPl_edGSke0wgf5VGm-JHAw",
+            "ts": 1784729751357,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "infra",
+        "security",
+        "product"
+    ],
+    "milestone": "Hosted teams & revenue GA",
+    "number": 501,
+    "priority": 34,
+    "progress": 40,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1786939200000,
+    "status": "open",
+    "title": "Provide one-command node deployment and dependable operations",
+    "updatedAt": 1784729751357,
+    "votes": 0
+}

@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751280,
+    "endDate": 1809057600000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nMaintainers can buy a precise preservation guarantee backed by observed mirror diversity, recovery support, and service-level reporting.\n\n## Scope\n\n- Define contracted mirror count, operator and geographic diversity, uptime, transport/ref/artifact coverage, and verification frequency.\n- Provide signed reports, incident response, recovery objectives, exclusions, remedies, and customer-visible capacity.\n- Separate independent community mirrors from paid controlled capacity and disclose correlated operator risk.\n\n## Acceptance criteria\n\n- Contracts use only capacity demonstrated by continuous probes and restore drills.\n- Reports reproduce from signed evidence and clearly show every SLO miss and remedy.\n- A simulated regional/operator failure retains the promised quorum and meets recovery objectives.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P1 commercial expansion**\n- Milestone: **Hosted teams & revenue GA**\n- Numeric priority: **27 of 44** (1 is highest)\n- Depends on: #492, #498, #501\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**10% as of 2026-07-22.** Mirror and availability primitives exist, but contractual capacity, diversity assurance, reports, billing, remedies, and recovery operations remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Contracted repositories, SLO attainment, recovery time, capacity utilization, renewal, and margin. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-489",
+            "sig": "8HKoOJ2lD-xZE5k7PfjGJkAQ_rifaQJThGenv5ElGACouRxHPhzevQu_gmp-eGc-DSOBzn1vs7J0MHACIG_6Dg",
+            "title": "Sell verifiable repository-availability contracts",
+            "ts": 1784729751280,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "3295b7e1-4424-4393-955d-8d6830dd646b",
+            "labels": [
+                "revenue",
+                "infra",
+                "security"
+            ],
+            "sig": "Wc4ilK2_8azNLxdrG8q5kEy1dcHXrdMPbnnzWXWL6BIFHU8ucDgUUaOftp5dR-X9y2z9Jft5u5yZ25C-dMe1BQ",
+            "ts": 1784729751281,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "9a8f0b91-b4ff-4846-b992-0097b5d9d606",
+            "milestone": "Hosted teams & revenue GA",
+            "sig": "WfBcC0CQTtQ394-jR1YxAKAefByRvn6ocxJwMdtFffQISSW8Is1wTixJbXLtKPVVk6vsrTYr1Ro-PZ4awpUfCQ",
+            "ts": 1784729751282,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1809057600000,
+            "id": "ab849ab1-5b3f-41fd-9f1b-ce7b1237a023",
+            "sig": "yxNEUu8M7fuuypqktahoaI0Jjk9R6ASw8BuOeT3lWFjI6kbOYgUTtCkocbST6yAmri1dM9Z0LBXaPiV1L_uLDQ",
+            "startDate": 1796101200000,
+            "ts": 1784729751283,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "06f99273-0e9e-4a1b-90ed-066f9ca00a5b",
+            "priority": 27,
+            "sig": "YT_sq8PgfUhJsdrxUD6JHfAHui4WT43s8w_PGGVu0lUHii0KFDsJwWQAnPf3SFGiYDKwJpSOAEBfsuMKqcrHAw",
+            "ts": 1784729751284,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "ffe79f6b-fbb5-40bb-9335-8b5717196395",
+            "progress": 10,
+            "sig": "kF1rSLRvq5ye-MmtgwCT7gso2smT1uIWq35FVG0z2g9qJWv8oFn3SxLAkv6McfKCJP7BEaDsa5fBQhXWdVEmDQ",
+            "ts": 1784729751285,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "revenue",
+        "infra",
+        "security"
+    ],
+    "milestone": "Hosted teams & revenue GA",
+    "number": 489,
+    "priority": 27,
+    "progress": 10,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1796101200000,
+    "status": "open",
+    "title": "Sell verifiable repository-availability contracts",
+    "updatedAt": 1784729751285,
+    "votes": 0
+}

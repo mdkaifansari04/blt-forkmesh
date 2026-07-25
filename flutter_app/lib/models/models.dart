@@ -118,6 +118,97 @@ class NotificationPage {
   }
 }
 
+/// A remote ActivityPub reply projected by the Worker.
+///
+/// This is intentionally not an IssueEvent, PullEvent, or DiscussionEvent:
+/// HTTP-signature provenance does not make it a ForkMesh-signed native event.
+class FederatedReply {
+  const FederatedReply({
+    required this.remoteId,
+    required this.author,
+    required this.body,
+    this.authorName = '',
+    this.authorUrl = '',
+    this.backlink = '',
+    this.parentRemoteId = '',
+    this.sourceInstance = '',
+    this.sourceSoftware = 'activitypub',
+    this.lifecycle = 'active',
+    this.depth = 0,
+    this.timestamp = 0,
+    this.nativeEvent = false,
+  });
+
+  final String remoteId;
+  final String parentRemoteId;
+  final String author;
+  final String authorName;
+  final String authorUrl;
+  final String body;
+  final String backlink;
+  final String sourceInstance;
+  final String sourceSoftware;
+  final String lifecycle;
+  final int depth;
+  final int timestamp;
+  final bool nativeEvent;
+
+  bool get edited => lifecycle == 'edited';
+  bool get tombstone => lifecycle == 'tombstoned';
+  bool get moderated =>
+      lifecycle == 'moderated' || lifecycle == 'awaiting-redelivery';
+  String get displayBody => tombstone
+      ? 'Deleted on the remote instance'
+      : moderated
+      ? 'Hidden by remote moderation'
+      : body;
+
+  factory FederatedReply.fromJson(Map<String, dynamic> json) {
+    int asInt(dynamic value) => value is int
+        ? value
+        : value is num
+        ? value.toInt()
+        : int.tryParse('$value') ?? 0;
+    final provenance = json['provenance'] is Map
+        ? Map<String, dynamic>.from(json['provenance'] as Map)
+        : const <String, dynamic>{};
+    return FederatedReply(
+      remoteId: (json['remoteId'] ?? json['id'] ?? '').toString(),
+      parentRemoteId: (json['parentRemoteId'] ?? '').toString(),
+      author: (json['author'] ?? '').toString(),
+      authorName: (json['authorName'] ?? '').toString(),
+      authorUrl: (json['authorUrl'] ?? '').toString(),
+      body: (json['body'] ?? '').toString(),
+      backlink:
+          (json['url'] ??
+                  json['backlink'] ??
+                  provenance['backlink'] ??
+                  json['remoteId'] ??
+                  '')
+              .toString(),
+      sourceInstance: (json['sourceInstance'] ?? provenance['instance'] ?? '')
+          .toString(),
+      sourceSoftware:
+          (json['sourceSoftware'] ?? provenance['software'] ?? 'activitypub')
+              .toString(),
+      lifecycle:
+          (json['lifecycle'] ??
+                  (json['tombstone'] == true
+                      ? 'tombstoned'
+                      : json['moderated'] == true
+                      ? 'moderated'
+                      : json['edited'] == true
+                      ? 'edited'
+                      : 'active'))
+              .toString(),
+      depth: asInt(json['depth']).clamp(0, 8),
+      timestamp: asInt(json['ts']),
+      // Fail closed if a server ever labels a remote projection as native.
+      nativeEvent: false,
+    );
+  }
+}
+
 class ForkNotification {
   ForkNotification({
     required this.id,

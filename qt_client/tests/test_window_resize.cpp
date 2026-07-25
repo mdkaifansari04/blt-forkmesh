@@ -1,26 +1,34 @@
 #include "../src/MainWindow.h"
 #include "../src/PlatformLogFilter.h"
+#include "ForkMeshVersion.h"
 
 #include <QAction>
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QComboBox>
+#include <QClipboard>
+#include <QCryptographicHash>
 #include <QFile>
 #include <QCheckBox>
 #include <QDebug>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QEventLoop>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QFileInfo>
 #include <QPointer>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QSemaphore>
 #include <QPushButton>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QTableWidget>
+#include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTextBrowser>
 #include <QWidget>
@@ -68,6 +76,22 @@ void check(bool condition, const QString &what)
         qCritical("FAIL: %s", qPrintable(what));
         ++failures;
     }
+}
+
+bool tryAcquireWithEvents(QSemaphore &semaphore, int timeoutMs)
+{
+    QElapsedTimer timer;
+    timer.start();
+    do {
+        if (semaphore.tryAcquire())
+            return true;
+        // Keep the real window responsive while waiting for the worker. A
+        // blocking one-second QSemaphore wait falsely trips the application's
+        // UI-stall watchdog and makes this functional test intermittently die
+        // in its diagnostic signal handler.
+        QApplication::processEvents(QEventLoop::AllEvents, 10);
+    } while (timer.elapsed() < timeoutMs);
+    return semaphore.tryAcquire();
 }
 
 QString widgetPath(QWidget *widget)
@@ -331,6 +355,8 @@ int main(int argc, char *argv[])
     const QString testApplicationName =
         QStringLiteral("WindowResize-") + QFileInfo(dataDir.path()).fileName();
     app.setApplicationName(testApplicationName);
+    const bool fleetBinaryInstallOnly =
+        app.arguments().contains(QStringLiteral("--fleet-binary-install-only"));
 
     const QString appDataPath =
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -380,7 +406,355 @@ int main(int argc, char *argv[])
                              "propagateSizeHints warning (#300)"));
     }
 
+    // Seed the removed custody preference to verify startup performs a one-way,
+    // fail-closed migration instead of silently re-enabling it.
+    QSettings().setValue(QStringLiteral("bounty/autoPrEnabled"), true);
+    QSettings().setValue(QStringLiteral("bounty/autoPrMode"),
+                         QStringLiteral("wallet"));
+
     MainWindow window;
+
+    // Fleet "Install from binary" must install the published release, not
+    // upload this test process (or any other locally-built executable). The
+    // target verifies the release checksum in install.sh, refuses source
+    // fallback, restarts in place, and checks both the reported version and
+    // exact source revision before the per-host pane can turn green.
+    {
+        const QString expectedBuildCommit =
+            QStringLiteral(FORKMESH_BUILD_COMMIT).trimmed().toLower();
+        const QRegularExpression exactCommit(
+            QStringLiteral("^(?:[0-9a-f]{40}|[0-9a-f]{64})$"));
+        const bool buildIsCommitted =
+            exactCommit.match(expectedBuildCommit).hasMatch();
+        if (!buildIsCommitted) {
+            qsizetype refusedBytes = -1;
+            QString refusedError;
+            const QString refusedCommand =
+                window.testFleetBinaryInstallRemoteCommand(
+                    false, &refusedBytes, &refusedError);
+            check(refusedCommand.isEmpty() && refusedBytes == 0 &&
+                      refusedError.contains(
+                          QStringLiteral("no exact source revision")),
+                  QStringLiteral("dirty or unknown-provenance builds refuse "
+                                 "fleet binary deployment"));
+        } else {
+            check(true,
+                  QStringLiteral("test binary embeds an exact Git source commit"));
+        }
+
+        // Exercise the successful command contract deterministically even when
+        // this suite is intentionally running from a dirty developer tree. This
+        // override exists only in the FORKMESH_WINDOW_TESTS target.
+        const QByteArray testCommit(
+            "0123456789abcdef0123456789abcdef01234567");
+        const QByteArray testManifestDigest(64, 'b');
+        qputenv("FORKMESH_TEST_BUILD_COMMIT", testCommit);
+        qputenv("FORKMESH_TEST_RELEASE_MANIFEST_SHA256",
+                QByteArray("not-a-digest"));
+        qsizetype untrustedUploadBytes = -1;
+        QString untrustedError;
+        const QString untrustedCommand =
+            window.testFleetBinaryInstallRemoteCommand(
+                false, &untrustedUploadBytes, &untrustedError);
+        check(untrustedCommand.isEmpty() && untrustedUploadBytes == 0 &&
+                  untrustedError.contains(QStringLiteral(
+                      "must be an exact 64-hex")),
+              QStringLiteral(
+                  "fleet binary deployment fails closed without a valid "
+                  "controller release-manifest trust anchor"));
+        qputenv("FORKMESH_TEST_RELEASE_MANIFEST_SHA256",
+                testManifestDigest);
+        const QString commandBuildCommit = QString::fromLatin1(testCommit);
+
+        qsizetype uploadBytes = -1;
+        QString commandError;
+        const QString command = window.testFleetBinaryInstallRemoteCommand(
+            false, &uploadBytes, &commandError);
+        check(!command.isEmpty() && commandError.isEmpty(),
+              QStringLiteral("fleet binary install command builds without an "
+                             "installer error"));
+        check(uploadBytes == 0 &&
+                  !command.contains(QStringLiteral("FORKMESH_LOCAL_BINARY")) &&
+                  !command.contains(QStringLiteral("__FORKMESH_UPLOAD__")),
+              QStringLiteral("fleet binary install never uploads the locally "
+                             "running source/test executable"));
+        check(command.contains(
+                  QStringLiteral("FORKMESH_RELEASE=latest")) &&
+                  command.contains(
+                      QStringLiteral("FORKMESH_NO_SOURCE_FALLBACK=1")) &&
+                  command.contains(
+                      QStringLiteral("FORKMESH_EXPECTED_BUILD_COMMIT=")) &&
+                  command.contains(
+                      QStringLiteral("FORKMESH_EXPECTED_RELEASE_VERSION=")) &&
+                  command.contains(QStringLiteral(
+                      "FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256=")) &&
+                  command.contains(
+                      QString::fromLatin1(testManifestDigest)) &&
+                  command.contains(commandBuildCommit) &&
+                  !command.contains(QStringLiteral("FORKMESH_FROM_SOURCE=1")),
+              QStringLiteral("fleet binary install is pinned to the published "
+                             "binary-only release at this source commit"));
+        check(command.contains(QStringLiteral("FORKMESH_RESTART=1")) &&
+                  !command.contains(QStringLiteral("FORKMESH_REINSTALL=1")),
+              QStringLiteral("normal fleet binary install restarts in place "
+                             "without deleting node keys or data"));
+        check(command.contains(QStringLiteral("Cache-Control: no-cache")) &&
+                  command.contains(QStringLiteral("command -v sha256sum")) &&
+                  command.contains(
+                      QStringLiteral("forkmesh-installer.XXXXXX")) &&
+                  command.contains(QStringLiteral("--version")) &&
+                  command.contains(QStringLiteral("--build-commit")) &&
+                  command.contains(
+                      QStringLiteral("source-revision check failed")) &&
+                  command.contains(QStringLiteral("probe_ticks")) &&
+                  command.contains(QStringLiteral("sleep 0.1")) &&
+                  command.contains(QStringLiteral("sleep 0.2")) &&
+                  command.contains(QStringLiteral("kill -KILL")) &&
+                  command.contains(QStringLiteral("head -c 128")) &&
+                  command.contains(
+                      QStringLiteral("wait \"$commit_pid\" || "
+                                     "commit_status=$?")) &&
+                  command.contains(
+                      QStringLiteral("ForkMesh " FORKMESH_VERSION)),
+              QStringLiteral("fleet binary install fetches a fresh installer "
+                             "and verifies the exact app version and source "
+                             "revision with a bounded legacy-binary probe"));
+        QProcess shellSyntax;
+        shellSyntax.start(QStringLiteral("/bin/sh"),
+                          {QStringLiteral("-n"), QStringLiteral("-c"), command});
+        const bool syntaxFinished = shellSyntax.waitForFinished(5000);
+        check(syntaxFinished && shellSyntax.exitStatus() == QProcess::NormalExit &&
+                  shellSyntax.exitCode() == 0,
+              QStringLiteral("fleet binary remote command is valid shell "
+                             "syntax"));
+
+        uploadBytes = -1;
+        commandError.clear();
+        const QString reinstallCommand =
+            window.testFleetBinaryInstallRemoteCommand(
+                true, &uploadBytes, &commandError);
+        check(!reinstallCommand.isEmpty() && commandError.isEmpty() &&
+                  uploadBytes == 0 &&
+                  reinstallCommand.contains(
+                      QStringLiteral("FORKMESH_REINSTALL=1")) &&
+                  reinstallCommand.contains(
+                      QStringLiteral("FORKMESH_NO_SOURCE_FALLBACK=1")) &&
+                  reinstallCommand.contains(
+                      QStringLiteral("FORKMESH_EXPECTED_BUILD_COMMIT=")) &&
+                  reinstallCommand.contains(
+                      QStringLiteral("--build-commit")),
+              QStringLiteral("explicit destructive fleet reinstall also uses "
+                             "the commit-matched published binary-only release"));
+        qunsetenv("FORKMESH_TEST_BUILD_COMMIT");
+        qunsetenv("FORKMESH_TEST_RELEASE_MANIFEST_SHA256");
+
+        QFile runningBinary(QCoreApplication::applicationFilePath());
+        QCryptographicHash runningBinaryHash(
+            QCryptographicHash::Sha256);
+        const bool hashOpened = runningBinary.open(QIODevice::ReadOnly);
+        const bool hashRead =
+            hashOpened && runningBinaryHash.addData(&runningBinary);
+        const QString expectedUploadDigest =
+            QString::fromLatin1(runningBinaryHash.result().toHex());
+        qsizetype directUploadBytes = -1;
+        QString directUploadError;
+        const QString directUploadCommand =
+            window.testDirectBinaryInstallRemoteCommand(
+                &directUploadBytes, &directUploadError);
+        check(hashRead && !directUploadCommand.isEmpty() &&
+                  directUploadError.isEmpty() && directUploadBytes > 0 &&
+                  expectedUploadDigest.size() == 64 &&
+                  directUploadCommand.contains(
+                      QStringLiteral("FORKMESH_LOCAL_BINARY_SHA256=")) &&
+                  directUploadCommand.contains(expectedUploadDigest) &&
+                  !directUploadCommand.contains(QStringLiteral(
+                      "FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256=")),
+              QStringLiteral(
+                  "direct controller uploads pin the exact local binary SHA-256"));
+    }
+    if (fleetBinaryInstallOnly)
+        return failures == 0 ? 0 : 1;
+
+    // Account credentials are never portable ForkMesh data.  The retired
+    // claude-auth export/import command names must fail closed without reading
+    // an input bundle, writing an output bundle, echoing a token, or touching
+    // the clipboard.
+    {
+        QTemporaryDir transferDir;
+        check(transferDir.isValid(),
+              QStringLiteral("credential-transfer regression temp dir is valid"));
+        const QString exportPath =
+            transferDir.filePath(QStringLiteral("claude-account.json"));
+        const QString importPath =
+            transferDir.filePath(QStringLiteral("incoming.json"));
+        const QString liveToken =
+            QStringLiteral("sk-ant-live-regression-secret-1234567890");  // forkmesh-secret-scan:ignore-line
+        {
+            QFile input(importPath);
+            check(input.open(QIODevice::WriteOnly | QIODevice::Truncate) &&
+                      input.write(liveToken.toUtf8()) == liveToken.toUtf8().size(),
+                  QStringLiteral("credential-transfer input fixture is written"));
+        }
+        QApplication::clipboard()->setText(QStringLiteral("clipboard-sentinel"));
+
+        const QString exportReply =
+            window.headlessClaudeAuth(
+                      {QStringLiteral("export"), exportPath})
+                .join(QLatin1Char('\n'));
+        check(exportReply.contains(QStringLiteral("Refused:")) &&
+                  !QFileInfo::exists(exportPath),
+              QStringLiteral("retired Claude export refuses without writing a file"));
+        check(!exportReply.contains(liveToken) &&
+                  QApplication::clipboard()->text() ==
+                      QStringLiteral("clipboard-sentinel"),
+              QStringLiteral("retired Claude export cannot reveal or copy a token"));
+
+        const QString importReply =
+            window.headlessClaudeAuth(
+                      {QStringLiteral("import"), importPath})
+                .join(QLatin1Char('\n'));
+        check(importReply.contains(QStringLiteral("Refused:")) &&
+                  !importReply.contains(liveToken),
+              QStringLiteral("retired Claude import refuses without reading or "
+                             "echoing a live token"));
+        check(QApplication::clipboard()->text() ==
+                  QStringLiteral("clipboard-sentinel"),
+              QStringLiteral("retired Claude import cannot modify the clipboard"));
+    }
+
+    // Plan §5.1: the desktop exposes a real local control-node surface and a
+    // main-navigation World portal. Navigate to the deferred page exactly as a
+    // user does, then verify that its controls exist before a session connects
+    // and that the Cloudflare credential input remains a password field.
+    check(window.testControlNodeSectionIndex() == 14,
+          QStringLiteral("local control node has a stable top-level section"));
+    window.testShowControlNode();
+    QApplication::processEvents();
+    check(window.findChild<QWidget *>(
+              QStringLiteral("controlNodeSection")) != nullptr,
+          QStringLiteral("local control-node page is constructed"));
+    check(window.findChild<QPushButton *>(
+              QStringLiteral("controlStartMirrorsButton")) != nullptr &&
+              window.findChild<QPushButton *>(
+                  QStringLiteral("controlStopMirrorsButton")) != nullptr &&
+              window.findChild<QPushButton *>(
+                  QStringLiteral("controlSyncMirrorsButton")) != nullptr &&
+              window.findChild<QPushButton *>(
+                  QStringLiteral("controlHealthButton")) != nullptr,
+          QStringLiteral("control node exposes mirror lifecycle, sync and health"));
+    QLineEdit *cloudflareToken = window.findChild<QLineEdit *>(
+        QStringLiteral("cloudflareApiToken"));
+    check(cloudflareToken &&
+              cloudflareToken->echoMode() == QLineEdit::Password,
+          QStringLiteral("Cloudflare token control masks the session-only secret"));
+    window.testShowLogSection();
+    QApplication::processEvents();
+    check(window.findChild<QPushButton *>(
+              QStringLiteral("cloudflareWorkerLogsButton")) != nullptr,
+          QStringLiteral("network log exposes the Cloudflare live-log viewer"));
+    check(window.findChild<QTableWidget *>(
+              QStringLiteral("controlPermissionsTable")) != nullptr &&
+              window.findChild<QPushButton *>(
+                  QStringLiteral("controlManageHostsButton")) != nullptr &&
+              window.findChild<QPushButton *>(
+                  QStringLiteral("controlOpenWorldButton")) != nullptr,
+          QStringLiteral("control node exposes permissions, hosts and World"));
+    QLineEdit *rewardRpc =
+        window.findChild<QLineEdit *>(QStringLiteral("rewardPoolRpc"));
+    QPushButton *rewardFetch = window.findChild<QPushButton *>(
+        QStringLiteral("rewardPoolFetchButton"));
+    check(window.findChild<QLabel *>(
+              QStringLiteral("rewardPoolPublicAddress")) != nullptr &&
+              window.findChild<QTableWidget *>(
+                  QStringLiteral("rewardPoolIntentsTable")) != nullptr &&
+              window.findChild<QPushButton *>(
+                  QStringLiteral("rewardPoolImportButton")) != nullptr &&
+              window.findChild<QPushButton *>(
+                  QStringLiteral("rewardPoolSignButton")) != nullptr &&
+              window.findChild<QPushButton *>(
+                  QStringLiteral("rewardPoolReconcileButton")) != nullptr,
+          QStringLiteral("control node exposes the local reward-pool signer workflow"));
+    check(rewardRpc && rewardRpc->text().isEmpty() && rewardFetch &&
+              !rewardFetch->isEnabled(),
+          QStringLiteral("reward signer fails closed until public RPC configuration exists"));
+    check(window.findChild<QLineEdit *>(
+              QStringLiteral("rewardPoolPrivateKeyInput")) == nullptr,
+          QStringLiteral("reward private-key input exists only inside the explicit import dialog"));
+
+    const QJsonArray actionsHostFixture{
+        QJsonObject{
+            {QStringLiteral("name"), QStringLiteral("mirror2")},
+            {QStringLiteral("ip"), QStringLiteral("mirror2.example.test")},
+            {QStringLiteral("user"), QStringLiteral("forkmesh")},
+            {QStringLiteral("pass"),
+             QStringLiteral("test-password-never-rendered")},
+            {QStringLiteral("status"), QStringLiteral("installed")},
+        },
+    };
+    QSettings().setValue(
+        QStringLiteral("hosts/list"),
+        QString::fromUtf8(
+            QJsonDocument(actionsHostFixture).toJson(
+                QJsonDocument::Compact)));
+    window.testShowHostsSection();
+    QApplication::processEvents();
+    check(window.findChild<QPushButton *>(
+              QStringLiteral("hostActionsButton")) != nullptr,
+          QStringLiteral(
+              "saved mirror hosts expose the stdin-only Actions controller"));
+    check(!QSettings()
+               .value(QStringLiteral("hosts/list"))
+               .toString()
+               .contains(QStringLiteral("test-password-never-rendered")) &&
+              !QSettings()
+                   .value(QStringLiteral("hosts/list"))
+                   .toString()
+                   .contains(QStringLiteral("\"pass\"")),
+          QStringLiteral(
+              "opening Hosts migrates legacy SSH passwords out of persistent settings"));
+    check(window.findChild<QWidget *>(
+              QStringLiteral("hostActionsVariablesTable")) == nullptr,
+          QStringLiteral(
+              "Actions secret-entry widgets exist only inside the explicit dialog"));
+    QSettings().remove(QStringLiteral("hosts/list"));
+
+    // Settings is deferred independently from the Control Node. Navigate there
+    // before checking its one-way legacy-custody migration and controls.
+    window.testShowSettingsSection();
+    QApplication::processEvents();
+    // The profile page (avatar + node power switch) is reachable as a Settings
+    // tab, not only from the avatar button (adhoc #274). The single panel is
+    // moved into the tab, so check it actually lands there.
+    QTabWidget *settingsTabs =
+        window.findChild<QTabWidget *>(QStringLiteral("settingsTabs"));
+    int profileTabIndex = -1;
+    for (int i = 0; settingsTabs && i < settingsTabs->count(); ++i) {
+        if (settingsTabs->tabText(i) == QLatin1String("Profile"))
+            profileTabIndex = i;
+    }
+    QWidget *nodeProfilePanel =
+        window.findChild<QWidget *>(QStringLiteral("nodeProfilePanel"));
+    check(settingsTabs && profileTabIndex >= 0 && nodeProfilePanel &&
+              nodeProfilePanel->parentWidget() ==
+                  settingsTabs->widget(profileTabIndex),
+          QStringLiteral(
+              "Settings has a Profile tab hosting the node profile panel"));
+    QCheckBox *legacyAutoBounty = window.findChild<QCheckBox *>(
+        QStringLiteral("legacyAutoPrBountyDisabled"));
+    QComboBox *bountyFundingMode = window.findChild<QComboBox *>(
+        QStringLiteral("prBountyFundingMode"));
+    check(legacyAutoBounty && !legacyAutoBounty->isEnabled() &&
+              !legacyAutoBounty->isChecked() &&
+              bountyFundingMode && !bountyFundingMode->isEnabled() &&
+              bountyFundingMode->count() == 1 &&
+              bountyFundingMode->currentData().toString() ==
+                  QLatin1String("perPr") &&
+              QSettings().value(QStringLiteral("bounty/autoPrEnabled")).toBool() ==
+                  false &&
+              QSettings().value(QStringLiteral("bounty/autoPrMode")).toString() ==
+                  QLatin1String("perPr"),
+          QStringLiteral("legacy Worker-held PR bounty preference migrates to a "
+                         "disabled non-custodial placeholder"));
     window.show();
     QApplication::processEvents();
     window.testRunDeferredStartupNow();
@@ -490,41 +864,14 @@ int main(int argc, char *argv[])
     check(window.testColumnsBecomeResizable(),
           QStringLiteral("data-table content columns become drag-resizable"));
 
-    // Issue #150: a conflicted PR's "Fix with agent" control is a single dropdown
-    // that rolls the Claude API, OpenAI API and Claude Code resolvers into one
-    // button instead of separate per-provider buttons. The Branches tab carries
-    // its own "Fix with agent" button too (issue #116), so identify the PR one by
-    // its distinctive three-resolver menu rather than by label alone.
-    bool prFixMenuFound = false;
-    for (QPushButton *fixButton : window.findChildren<QPushButton *>()) {
-        if (!fixButton->text().startsWith(QStringLiteral("Fix with agent")) ||
-            !fixButton->menu())
-            continue;
-        QStringList labels;
-        for (QAction *action : fixButton->menu()->actions())
-            labels << action->text();
-        if (labels == QStringList({QStringLiteral("Claude API"),
-                                   QStringLiteral("OpenAI API"),
-                                   QStringLiteral("Claude Code")})) {
-            prFixMenuFound = true;
-            break;
-        }
-    }
-    check(prFixMenuFound,
-          QStringLiteral("PR 'Fix with agent' dropdown offers Claude API, OpenAI API "
-                         "and Claude Code"));
-
     // Issue #263: dragging a column divider behaves like a spreadsheet — only the
     // dragged column resizes and the columns to its right shift over, instead of a
     // neighbour or far-off Stretch column silently donating the width.
     check(window.testSpreadsheetResize(),
           QStringLiteral("column drag resizes only that column (spreadsheet)"));
 
-    // Issue #33: the agents list lets the user drag column headers into a new
-    // order, and resizing afterwards still follows the spreadsheet rule so other
-    // columns keep their widths.
-    check(window.testAgentColumnsMovable(),
-          QStringLiteral("agents list column headers are draggable/reorderable"));
+    // Issue #33: resizing after a column move keeps spreadsheet semantics. The
+    // real Agents table is verified after repository navigation constructs it.
     check(window.testSpreadsheetResizeAfterMove(),
           QStringLiteral("column drag leaves others untouched after a move"));
 
@@ -534,7 +881,8 @@ int main(int argc, char *argv[])
     // flow never invokes the (opt-in) account/signup flow, and a fresh node drops
     // straight into the app shell without an account or a verified wallet.
     window.testSetSetupInputs(QStringLiteral("Alice-Node"),
-                              QStringLiteral("SavedSolana111"));
+                              QStringLiteral(
+                                  "So11111111111111111111111111111111111111112"));
     window.testSetAccountFlowResult(true); // would activate IF the flow ran
     window.testStartSession();
     check(window.testAccountFlowCalls() == 0,
@@ -545,39 +893,30 @@ int main(int argc, char *argv[])
           QStringLiteral("start uses the sanitized node name"));
     check(window.testAccountName() == QStringLiteral("alice-node"),
           QStringLiteral("start records the node owner name"));
-    check(window.testSavedSolanaAddress() == QStringLiteral("SavedSolana111"),
+    check(window.testSavedSolanaAddress() ==
+              QStringLiteral("So11111111111111111111111111111111111111112"),
           QStringLiteral("start preserves the saved Solana address"));
     check(!window.testAccountAuthenticated(),
           QStringLiteral("start does not require or fake an account"));
 
-    // A password-only login succeeds as an account session but cannot activate
-    // paid mirroring because the Worker still verifies hosting with the primary
-    // desktop key.
+    // Reward settings must never launch the former reserve/donation/finalize
+    // account funnel. A mock account flow is installed specifically to prove it
+    // remains untouched.
     window.testResetNetworkLog();
     window.testSetAccountFlowResult(true, false);
     window.testEnablePaidMirroring();
-    check(window.testAccountFlowCalls() == 1,
-          QStringLiteral("password-only paid mirroring runs the account flow once"));
+    check(window.testAccountFlowCalls() == 0,
+          QStringLiteral("reward settings never run the account join flow"));
     check(!window.testHasOwnerSigningCapability(),
-          QStringLiteral("password-only account flow keeps owner signing disabled"));
-    const QString passwordOnlyLog =
-        window.testNetworkLog().join(QLatin1Char('\n'));
-    check(passwordOnlyLog.contains(QStringLiteral("cannot host or publish")) &&
-              !passwordOnlyLog.contains(
-                  QStringLiteral("You're set up to get paid to mirror")),
-          QStringLiteral("password-only login never reports paid mirroring success"));
+          QStringLiteral("reward settings do not invent owner signing capability"));
 
-    // Crypto is strictly opt-in: the account/activate flow runs only when the user
-    // explicitly opts in via "Get paid to mirror" (here the mocked account flow).
-    // The payout address is already set, so no address prompt is triggered.
+    // Even a mock that would report a desktop-capable account is not called:
+    // account registration/sign-in stays an explicit, separate Account action.
     window.testSetAccountFlowResult(true, true);
     window.testEnablePaidMirroring();
-    check(window.testAccountFlowCalls() == 1,
-          QStringLiteral("opting in runs the account flow exactly once"));
-    check(window.testAccountAuthenticated(),
-          QStringLiteral("opting in marks the account authenticated"));
-    check(window.testAccountTier() == QStringLiteral("active"),
-          QStringLiteral("opting in sets the account tier active"));
+    check(window.testAccountFlowCalls() == 0 &&
+              !window.testAccountAuthenticated(),
+          QStringLiteral("reward settings cannot reserve or activate an account"));
 
     QCheckBox *nodeConnectAlertCheck =
         findCheckBox(window, QStringLiteral("Show a system alert when a node connects"));
@@ -624,16 +963,17 @@ int main(int argc, char *argv[])
             return true;
         });
     window.testDeleteIssueWithHistory(141);
-    check(historyDeleteStarted.tryAcquire(1, 1000),
+    check(tryAcquireWithEvents(historyDeleteStarted, 1000),
           QStringLiteral("history delete starts on a worker thread"));
     window.testDeleteIssueWithHistory(141);
-    const bool secondDeleteStarted = historyDeleteStarted.tryAcquire(1, 1000);
+    const bool secondDeleteStarted =
+        tryAcquireWithEvents(historyDeleteStarted, 250);
     check(!secondDeleteStarted && historyDeleteCalls.load() == 1,
           QStringLiteral("second history delete request is ignored while one is running"));
     finishHistoryDelete.release(secondDeleteStarted ? 2 : 1);
     const int expectedFinishes = secondDeleteStarted ? 2 : 1;
     for (int i = 0; i < expectedFinishes; ++i) {
-        check(historyDeleteFinished.tryAcquire(1, 1000),
+        check(tryAcquireWithEvents(historyDeleteFinished, 1000),
               QStringLiteral("history delete worker finishes"));
     }
     QElapsedTimer finishTimer;
@@ -678,6 +1018,38 @@ int main(int argc, char *argv[])
     const int repoIdx = window.testAddLocalRepository("me", "r", repoDir.path());
     window.testOpenRepository(repoIdx);
     QApplication::processEvents();
+
+    // Repository detail is intentionally built on first navigation. Verify the
+    // real PR and Agents controls only after taking that user-visible path,
+    // keeping the startup performance contract intact.
+    bool prFixMenuFound = false;
+    for (QPushButton *fixButton : window.findChildren<QPushButton *>()) {
+        if (!fixButton->text().startsWith(QStringLiteral("Fix with agent")) ||
+            !fixButton->menu())
+            continue;
+        QStringList labels;
+        for (QAction *action : fixButton->menu()->actions())
+            labels << action->text();
+        if (labels == QStringList({QStringLiteral("Claude API"),
+                                   QStringLiteral("OpenAI API"),
+                                   QStringLiteral("Claude Code")})) {
+            prFixMenuFound = true;
+            break;
+        }
+    }
+    check(prFixMenuFound,
+          QStringLiteral("PR 'Fix with agent' dropdown offers Claude API, OpenAI API "
+                         "and Claude Code after repository navigation"));
+    check(window.testAgentColumnsMovable(),
+          QStringLiteral("agents list column headers are draggable/reorderable "
+                         "after repository navigation"));
+    QPushButton *legacyIssueBounty = window.findChild<QPushButton *>(
+        QStringLiteral("legacyIssueBountyDisabled"));
+    check(window.findChild<QLabel *>(
+              QStringLiteral("legacyBountyWalletDisabled")) != nullptr &&
+              legacyIssueBounty && !legacyIssueBounty->isEnabled(),
+          QStringLiteral("legacy bounty funding controls are visibly disabled "
+                         "after their pages are visited"));
 
     // Issue #286: the "Prioritize from README" button must actually be on the
     // open issues view (not hidden, not pushed off the right edge of the panel).
@@ -1140,6 +1512,12 @@ int main(int argc, char *argv[])
         seeded.testStartSession();
         seeded.show();
         QApplication::processEvents();
+        const int seededRepo = seeded.testAddLocalRepository(
+            QStringLiteral("me"), QStringLiteral("provider-picker"),
+            repoDir.path());
+        check(seeded.testOpenRepository(seededRepo),
+              QStringLiteral("provider-picker test navigates to repository detail"));
+        QApplication::processEvents();
         check(seeded.testQuickAddAgentProvider() == QStringLiteral("claude-code") &&
                   seeded.testIssueAgentProvider() == QStringLiteral("claude-code"),
               QString("default agent seeds the pickers (quick-add %1, issue %2)")
@@ -1201,6 +1579,10 @@ int main(int argc, char *argv[])
         check(!seeded.testQuickAddModelVisible(),
               QStringLiteral("prompt-row model picker stays hidden for API-only providers"));
 
+        // The default-agent control belongs to the independently deferred
+        // Settings page. Visit it before driving the combo like a user.
+        seeded.testShowSettingsSection();
+        QApplication::processEvents();
         seeded.testSetDefaultAgentProvider(QStringLiteral("claude-api"));
         check(seeded.testQuickAddAgentProvider() == QStringLiteral("claude-api") &&
                   seeded.testIssueAgentProvider() == QStringLiteral("claude-api"),
@@ -1242,6 +1624,7 @@ int main(int argc, char *argv[])
         MainWindow verified;
         verified.testEnableSessionStartBypass(true);
         verified.show();
+        verified.testShowSettingsSection();
         QApplication::processEvents();
         QLabel *badge =
             verified.findChild<QLabel *>(QStringLiteral("emailVerifiedBadge"));
@@ -1566,6 +1949,8 @@ int main(int argc, char *argv[])
         window.testResetNetworkLog();
         for (int i = 0; i < 800; ++i)
             window.testLogSystem(QString("Segment test line %1").arg(i));
+        window.testShowLogSection();
+        QApplication::processEvents();
         // Force a from-scratch render (as a cold start / first tab visit would)
         // over the now-populated buffer, rather than the live per-line append
         // path the loop above already exercised.

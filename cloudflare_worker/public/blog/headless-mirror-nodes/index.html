@@ -48,7 +48,7 @@
           <p>Headless mirror nodes gives ForkMesh a concrete mechanism for turning servers and VMs into non-GUI preservation nodes. One command turns any Linux box or VM into a mirror node. The installer registers its account, syncs its repositories, and starts serving, no GUI required.</p>
           <p>Code disappears from a network when one hosted account, one VM, or one storage path becomes the only way to reach it. In ForkMesh, headless mirror nodes addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
-          <p>ForkMesh handles headless mirror nodes through the same split it uses across the product: desktop nodes keep real Git mirrors, while mainnodes coordinate discovery, relay tunnels, presence, account lookup, and clone routing.</p>
+          <p>ForkMesh handles headless mirror nodes through the same split it uses across the product: nodes keep real Git mirrors, while the Worker coordinates signed HTTPS discovery, health, presence, account lookup, and clone routing.</p>
           <p>The behavior is intentionally narrow: One command turns any Linux box or VM into a mirror node. The installer registers its account, syncs its repositories, and starts serving, no GUI required. The Worker helps find and route a live host, but it is not canonical Git storage.</p>
           <div class="note">Title focus: Headless mirror nodes stays tied to turning servers and VMs into non-GUI preservation nodes and the local-first repository model.</div>
           <h2>Where it fits</h2>

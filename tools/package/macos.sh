@@ -52,10 +52,35 @@ else
   <key>CFBundleIdentifier</key><string>com.forkmesh.desktop</string>
   <key>CFBundleShortVersionString</key><string>${version}</string>
   <key>CFBundleVersion</key><string>${version}</string>
+  <key>CFBundleURLTypes</key><array><dict>
+    <key>CFBundleURLName</key><string>ForkMesh local control links</string>
+    <key>CFBundleURLSchemes</key><array><string>forkmesh</string></array>
+  </dict></array>
   <key>SUFeedURL</key><string>${host%/}/${channel}/appcast.xml</string>
   <key>SUPublicEDKey</key><string>${FORKMESH_SPARKLE_ED_KEY:-}</string>
 </dict></plist>
 EOF
+fi
+
+# CMake-produced .app bundles already have an Info.plist, while the bare-binary
+# path above creates one. Register the same secret-free local-control scheme in
+# both cases before signing so browser info-booth links reach the Qt client.
+plist="$app/Contents/Info.plist"
+plistbuddy="/usr/libexec/PlistBuddy"
+"$plistbuddy" -c "Delete :CFBundleURLTypes" "$plist" >/dev/null 2>&1 || true
+"$plistbuddy" -c "Add :CFBundleURLTypes array" "$plist"
+"$plistbuddy" -c "Add :CFBundleURLTypes:0 dict" "$plist"
+"$plistbuddy" -c "Add :CFBundleURLTypes:0:CFBundleURLName string ForkMesh local control links" "$plist"
+"$plistbuddy" -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes array" "$plist"
+"$plistbuddy" -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string forkmesh" "$plist"
+
+resource_root="$app/Contents/Resources/forkmesh"
+if [ ! -f "$resource_root/tools/cloudflare_bootstrap.py" ] \
+   || [ ! -f "$resource_root/cloudflare_worker/src/entry.py" ] \
+   || [ ! -d "$resource_root/cloudflare_worker/public" ] \
+   || [ ! -d "$resource_root/cloudflare_worker/migrations" ]; then
+  log "CMake-installed ForkMesh deployment resources are incomplete"
+  exit 1
 fi
 
 # --- codesign + notarize ----------------------------------------------------

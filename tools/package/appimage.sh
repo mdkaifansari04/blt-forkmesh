@@ -34,14 +34,30 @@ mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications" \
 cp "$binary" "$appdir/usr/bin/forkmesh"
 chmod 0755 "$appdir/usr/bin/forkmesh"
 
+# The token-only deployment flow is part of the installed application, not a
+# source-checkout feature. Copy the exact CMake-installed resource tree into the
+# AppDir before linuxdeploy/appimagetool seal it.
+install_root="${FORKMESH_PKG_INSTALL_ROOT:-}"
+resource_root="${install_root%/}/share/forkmesh"
+if [ -z "$install_root" ] || [ ! -f "$resource_root/tools/cloudflare_bootstrap.py" ] \
+   || [ ! -f "$resource_root/cloudflare_worker/src/entry.py" ] \
+   || [ ! -d "$resource_root/cloudflare_worker/public" ] \
+   || [ ! -d "$resource_root/cloudflare_worker/migrations" ]; then
+  log "CMake-installed ForkMesh deployment resources are incomplete"
+  exit 1
+fi
+mkdir -p "$appdir/usr/share"
+cp -R "$resource_root" "$appdir/usr/share/forkmesh"
+
 cat > "$appdir/forkmesh.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=ForkMesh
-Exec=forkmesh
+Exec=forkmesh %u
 Icon=forkmesh
 Categories=Development;
 Terminal=false
+MimeType=x-scheme-handler/forkmesh;
 EOF
 cp "$appdir/forkmesh.desktop" "$appdir/usr/share/applications/forkmesh.desktop"
 

@@ -49,10 +49,10 @@
           <p>Project conversations often carry design, access, and coordination context that infrastructure should not read. In ForkMesh, coves addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
           <p>ForkMesh handles coves through the same split it uses across the product: ForkMesh attaches rooms, direct messages, discussions, and browser chat to repository identity while encrypting sensitive payloads before relay.</p>
-          <p>The behavior is intentionally narrow: Encrypted vaults for the things that don't belong in a repo: notes, credentials, plans. Documents live inside authenticated ciphertext, and every unlock is recorded in an access log the creator can audit. The mainnode can coordinate reachability and relay traffic without custody of plaintext message bodies.</p>
+          <p>The behavior is intentionally narrow: Encrypted vaults for the things that don't belong in a repo: notes, credentials, plans. Documents live inside authenticated ciphertext, and every unlock is recorded in an access log the creator can audit. This vault boundary does not make default room chat end-to-end encrypted.</p>
           <div class="note">Title focus: Coves stays tied to encrypted vaults for sensitive project material that does not belong in Git and the local-first repository model.</div>
           <h2>Where it fits</h2>
-          <p>Use coves when teams need repository-aware conversation without central plaintext custody.</p>
+          <p>Use coves for access-controlled project material that should not live in Git.</p>
           <p>It pairs with the rest of Chat &amp; private sharing because Coves keeps encrypted vaults for sensitive project material that does not belong in Git connected to the repository, its signatures, and the nodes that serve it.</p>
         </article>
         <nav class="next" aria-label="Feature posts">

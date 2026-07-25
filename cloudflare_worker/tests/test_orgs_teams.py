@@ -22,7 +22,8 @@ style as test_ap_repo_settings.py) and pin:
     token (forkmesh-org-push-v1, signed with the pusher's OWN key);
   * the org and account namespaces reject each other's names, so the alias
     rewrite can never shadow a real node's URL;
-  * linking a repo under an org requires the caller's OWN node namespace.
+  * linking a repo under an org requires the caller's own account namespace or
+    a node that account demonstrably owns.
 
 Run: python3 -m pytest cloudflare_worker/tests/test_orgs_teams.py
 """
@@ -32,6 +33,8 @@ import asyncio
 import importlib.util
 from pathlib import Path
 from urllib.parse import urlparse
+
+from worker_test_helpers import json_from_request_double
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
@@ -63,6 +66,7 @@ def _load(*names, extra_globals=None):
     module = ast.fix_missing_locations(
         ast.Module(body=selected, type_ignores=[]))
     namespace = dict(extra_globals or {})
+    namespace.setdefault("bounded_json_request", json_from_request_double)
     exec(compile(module, str(ENTRY), "exec"), namespace)
     return namespace
 
@@ -82,6 +86,7 @@ def _run(coro):
 
 TEAM_PERMISSIONS = _constant("TEAM_PERMISSIONS")
 ORG_ROLES = _constant("ORG_ROLES")
+ORG_WORLD_ACCESS_VALUES = _constant("ORG_WORLD_ACCESS_VALUES")
 
 
 # --- Route table + schema ----------------------------------------------------
@@ -241,6 +246,8 @@ def test_alias_rewrite_rewrites_api_and_git_paths():
     rewrite = _alias_ns("jett")
     for path, expected in (
         ("/api/repo/acme/widget/tree", "/api/repo/jett/widget/tree"),
+        ("/api/repo/acme/widget/branches",
+         "/api/repo/jett/widget/branches"),
         ("/api/repo/acme/widget/issues", "/api/repo/jett/widget/issues"),
         ("/acme/widget/info/refs", "/jett/widget/info/refs"),
         ("/acme/widget/git-upload-pack", "/jett/widget/git-upload-pack"),
@@ -252,7 +259,16 @@ def test_alias_rewrite_rewrites_api_and_git_paths():
         request, new_url = result
         assert new_url.path == expected
         assert new_url.query == "service=git-upload-pack"  # query survives
-        assert request.url.startswith("https://forkmesh.com" + expected)
+        assert request == "req"  # original body/headers/cf metadata survive
+
+
+def test_alias_rewrite_does_not_reconstruct_the_worker_request():
+    source = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def org_alias_rewrite"):
+        ENTRY_TEXT.index("\n\n\nclass _OrganizationSuccessionRuntime")
+    ]
+    assert "return request, urlparse(new_url)" in source
+    assert "JsRequest.new" not in source
 
 
 def test_alias_rewrite_leaves_other_paths_and_plain_nodes_alone():
@@ -307,7 +323,10 @@ def test_ap_data_reads_route_through_the_org_alias_resolver():
     mention = ENTRY_TEXT[ENTRY_TEXT.index("async def _ap_handle_repo_mention"):]
     mention = mention[:mention.index("\n\n\nasync def")]
     assert "data_owner = await _ap_org_alias_owner(env, owner, repo)" in mention
-    assert "_forkbot_enqueue_issue(\n        env, data_owner, repo," in mention
+    assert "fediverse_mentions_api.record_verified(" in mention
+    assert "data_owner=data_owner" in mention
+    assert "signature_verified=True" in mention
+    assert "_forkbot_enqueue_issue(" not in mention
 
 
 # --- Push gate ---------------------------------------------------------------
@@ -335,11 +354,136 @@ def test_org_and_account_namespaces_reject_each_other():
     assert "if org_holder:" in ENTRY_TEXT
 
 
-def test_linking_a_repo_requires_the_callers_own_node():
+def test_linking_a_repo_requires_the_callers_own_account_or_fleet_node():
     assert '"error": "not_your_node"' in ENTRY_TEXT
-    assert "if node != account:" in ENTRY_TEXT
+    assert "if not await _account_owns_node(env, account, node):" in ENTRY_TEXT
     # ...and the repo must actually be published by that node.
     assert '"error": "unknown_repo"' in ENTRY_TEXT
+
+
+def _org_repo_link_harness(owns_node):
+    writes = []
+    audits = []
+    ownership_checks = []
+
+    class Request:
+        method = "POST"
+
+        async def json(self):
+            return {
+                "sessionToken": "valid",
+                "repo": "forkmesh",
+                "node": "mirror2",
+            }
+
+    class Clock:
+        @staticmethod
+        def now():
+            return 123456
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def org_row(env, org):
+        assert org == "forkmesh"
+        return "org-bi", {"name": "forkmesh"}
+
+    async def session_record(env, request, data):
+        return "jett-bi", {"name": "jett"}
+
+    async def org_role(env, org_bi, account):
+        assert (org_bi, account) == ("org-bi", "jett")
+        return "owner"
+
+    async def account_owns_node(env, account, node):
+        ownership_checks.append((account, node))
+        return owns_node
+
+    async def blind_index(env, value):
+        return "bi:" + value
+
+    async def d1_first(env, sql, *params):
+        if "FROM repositories" in sql:
+            return {"one": 1}
+        if "FROM org_repos" in sql:
+            return {"one": 1}
+        raise AssertionError("unexpected d1_first: " + sql)
+
+    async def d1_run(env, sql, *params):
+        writes.append((sql, params))
+
+    async def audit(env, actor, action, target_type, target, outcome,
+                    details=None):
+        audits.append({
+            "actor": actor,
+            "action": action,
+            "target": target,
+            "outcome": outcome,
+            "details": details or {},
+        })
+
+    def response(data, status=200, **kwargs):
+        return {"status": status, "data": data}
+
+    namespace = _load(
+        "org_repos_handler",
+        extra_globals={
+            "MAX_NODE_NAME": 63,
+            "MAX_REPO_SEGMENT": 80,
+            "MAX_ORG_REPOS": 200,
+            "Date": Clock,
+            "_ORG_ALIAS_MEMO": {},
+            "ensure_schema": noop,
+            "method_name": lambda request: request.method,
+            "_org_row": org_row,
+            "_account_session_record": session_record,
+            "_org_role": org_role,
+            "_account_owns_node": account_owns_node,
+            "_audit_sensitive_action": audit,
+            "clean_string": catalog.clean_string,
+            "safe_segment": catalog.safe_segment,
+            "blind_index": blind_index,
+            "d1_first": d1_first,
+            "d1_run": d1_run,
+            "json_response": response,
+        },
+    )
+    return namespace["org_repos_handler"], Request(), writes, audits, ownership_checks
+
+
+def test_org_owner_can_link_a_published_node_in_their_fleet():
+    handler, request, writes, audits, checks = _org_repo_link_harness(True)
+    response = _run(handler(None, request, "forkmesh"))
+    assert response["status"] == 200
+    assert response["data"] == {
+        "ok": True,
+        "repo": "forkmesh",
+        "node": "mirror2",
+        "linked": True,
+    }
+    assert checks == [("jett", "mirror2")]
+    assert len(writes) == 1
+    assert "INSERT INTO org_repos" in writes[0][0]
+    assert writes[0][1][2] == "mirror2"
+    assert audits[-1]["outcome"] == "success"
+
+
+def test_org_owner_cannot_link_an_unowned_node_namespace():
+    handler, request, writes, audits, checks = _org_repo_link_harness(False)
+    response = _run(handler(None, request, "forkmesh"))
+    assert response == {
+        "status": 403,
+        "data": {"error": "not_your_node"},
+    }
+    assert checks == [("jett", "mirror2")]
+    assert writes == []
+    assert audits == [{
+        "actor": "jett",
+        "action": "organization.repo_link",
+        "target": "forkmesh/forkmesh",
+        "outcome": "denied",
+        "details": {"reason": "not_your_node"},
+    }]
 
 
 def test_org_admin_guards_and_caps_are_present():
@@ -350,3 +494,92 @@ def test_org_admin_guards_and_caps_are_present():
         assert cap in ENTRY_TEXT, cap
     # team membership can only raise an existing member's permission
     assert '"error": "not_a_member"' in ENTRY_TEXT
+
+
+def test_world_logo_and_floor_office_access_are_server_enforced():
+    ns = _load(
+        "_org_logo_url",
+        "_org_world_access",
+        "_org_world_access_allowed",
+        extra_globals={
+            "clean_string": lambda value, size: str(value or "")[:size],
+            "urlparse": urlparse,
+            "ORG_WORLD_ACCESS_VALUES": ORG_WORLD_ACCESS_VALUES,
+            "ORG_ROLES": ORG_ROLES,
+        },
+    )
+    logo = ns["_org_logo_url"]
+    assert logo("https://cdn.example/acme.svg") == \
+        "https://cdn.example/acme.svg"
+    assert logo("http://cdn.example/acme.svg") == ""
+    assert logo("https://user:secret@cdn.example/acme.svg") == ""
+    assert logo("javascript:alert(1)") == ""
+
+    access = ns["_org_world_access"]({
+        "lobby": "public",
+        "floors": "restricted",
+        "offices": "private",
+    })
+    assert access == {
+        "lobby": "public",
+        "floors": "restricted",
+        "offices": "private",
+    }
+    allowed = ns["_org_world_access_allowed"]
+    assert allowed("public", "") is True
+    assert allowed("restricted", "member") is True
+    assert allowed("restricted", "") is False
+    assert allowed("private", "admin") is True
+    assert allowed("private", "member") is False
+
+    handler = next(
+        node for node in ast.parse(ENTRY_TEXT).body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "org_handler"
+    )
+    source = ast.unparse(handler)
+    assert "PATCH" in source
+    assert "organization_world_settings_update" in source
+    assert "worldCapabilities" in source
+    assert "floors_visible" in source
+
+
+def test_dashboard_exposes_world_building_identity_and_access_controls():
+    source = (
+        ROOT / "public" / "dashboard" / "js" / "04-account.js"
+    ).read_text(encoding="utf-8")
+    assert "data-org-world-settings" in source
+    assert "data-org-world-logo" in source
+    assert "data-org-world-lobby" in source
+    assert "data-org-world-floors" in source
+    assert "data-org-world-offices" in source
+    assert 'orgApiRequest("PATCH", "/api/orgs/"' in source
+
+
+def test_world_organization_directory_only_returns_enterable_lobbies():
+    handler = next(
+        node for node in ast.parse(ENTRY_TEXT).body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "world_organizations_handler"
+    )
+    source = ast.unparse(handler)
+    assert "GET" in source
+    assert "ORDER BY created_at DESC LIMIT 64" in source
+    assert "_org_world_access_allowed(access['lobby'], viewer_role)" in source
+    assert "continue" in source
+    assert "enterable-lobbies-only" in source
+    assert "organizations" in source
+    assert "org_repos" not in source
+
+
+def test_public_office_access_never_publishes_member_names_for_guests():
+    handler = next(
+        node for node in ast.parse(ENTRY_TEXT).body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "org_members_handler"
+    )
+    source = ast.unparse(handler)
+    assert "if not viewer_role" in source
+    assert "public-redacted" in source
+    assert "'members': []" in source
+    assert "memberCount" in source

@@ -20,6 +20,7 @@ import re
 RELEASE_TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
 # Lowercase hex sha256 — the content address of a blob and the integrity anchor.
 SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+GIT_COMMIT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 # Recognise vMAJOR.MINOR.PATCH[-prerelease] for `latest` ordering.
 RELEASE_SEMVER_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-.](.+))?$")
 
@@ -43,6 +44,10 @@ def valid_asset_name(value):
 
 def valid_sha256_hex(value):
     return bool(SHA256_HEX_RE.match((value or "").strip().lower()))
+
+
+def valid_git_commit(value):
+    return bool(GIT_COMMIT_RE.match((value or "").strip().lower()))
 
 
 def cas_blob_relpath(sha256_hex):
@@ -74,15 +79,24 @@ def release_asset_line(asset):
 def release_manifest_content(manifest):
     # The canonical, signable body of a release. Binds the repo, the tag, the
     # commit the tag pointed to at finalize (so a later force-push can't silently
-    # redefine the release), and the full asset set sorted by line for order
-    # independence. name/body/prerelease are NOT included: they are the editable
-    # metadata of an otherwise immutable release.
+    # redefine the release), the independently-recorded commit embedded in the
+    # artifact, and the full asset set sorted by line for order independence.
+    # name/body/prerelease are NOT included: they are the editable metadata of
+    # an otherwise immutable release.
     repo = manifest.get("repo", "") or ""
     tag = manifest.get("tag", "") or ""
     tag_commit = manifest.get("tag_commit", "") or ""
+    build_commit = manifest.get("build_commit", "") or ""
     assets = manifest.get("assets") or []
     asset_lines = sorted(release_asset_line(a) for a in assets)
-    header = "\x00".join([repo, tag, tag_commit, str(len(asset_lines))])
+    # Preserve the exact v1 canonical bytes for legacy manifests that predate
+    # build_commit. New manifests sign it as a distinct field; tag_commit keeps
+    # its longstanding peeled-tag-target meaning.
+    header_fields = [repo, tag, tag_commit]
+    if build_commit:
+        header_fields.append(build_commit)
+    header_fields.append(str(len(asset_lines)))
+    header = "\x00".join(header_fields)
     return "\n".join([header] + asset_lines)
 
 

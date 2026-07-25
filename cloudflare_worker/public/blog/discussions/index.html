@@ -49,10 +49,10 @@
           <p>Project conversations often carry design, access, and coordination context that infrastructure should not read. In ForkMesh, discussions addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
           <p>ForkMesh handles discussions through the same split it uses across the product: ForkMesh attaches rooms, direct messages, discussions, and browser chat to repository identity while encrypting sensitive payloads before relay.</p>
-          <p>The behavior is intentionally narrow: Longer-form threaded conversations per repository, signed, synced, and browsable like issues. The mainnode can coordinate reachability and relay traffic without custody of plaintext message bodies.</p>
+          <p>The behavior is intentionally narrow: longer-form threaded conversations per repository are signed, synced, and browsable like issues. This page makes no end-to-end or relay-blind claim for those records.</p>
           <div class="note">Title focus: Discussions stays tied to long-form signed conversations that sync like other collaboration records and the local-first repository model.</div>
           <h2>Where it fits</h2>
-          <p>Use discussions when teams need repository-aware conversation without central plaintext custody.</p>
+          <p>Use discussions when teams need signed, repository-aware threaded conversation.</p>
           <p>It pairs with the rest of Chat &amp; private sharing because Discussions keeps long-form signed conversations that sync like other collaboration records connected to the repository, its signatures, and the nodes that serve it.</p>
         </article>
         <nav class="next" aria-label="Feature posts">

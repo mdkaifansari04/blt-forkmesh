@@ -1,6 +1,8 @@
 (() => {
   const state = {
     repositories: [],
+    externalRepositories: [],
+    externalRepositoriesLoading: false,
     filteredRepositories: [],
     filteredGroups: [],
     repositoriesLoading: true,
@@ -12,6 +14,8 @@
     selectedBranches: {},
     repoBranches: {},
     repoBranchQueries: {},
+    repoPullMetadataCommits: {},
+    repoPullMetadataInflight: {},
     repoCollectionPages: {},
     session: null,
     // Public-profile mode (/@name): the FOREIGN account whose profile the

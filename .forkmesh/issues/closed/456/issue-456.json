@@ -1,0 +1,65 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784405500021,
+    "endDate": 1784952000000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nPackage the headless node as a reproducible rootless OCI image with one-command seed startup and explicit durable state.\n\n## Implementation\n\n- Build the image from the same headless binary and directory contract as #442.\n- Run as a numeric unprivileged user with read-only application layers and explicit identity, mirror, configuration, and log volumes.\n- Provide a declarative single-node configuration with health checks, resource limits, restart behavior, and graceful shutdown.\n- Pin build inputs and emit an image digest, software bill of materials, and provenance attestation.\n- Add upgrade and rollback checks that preserve durable data and reject incompatible schema downgrades.\n\n## Acceptance criteria\n\n- The image never requires root or a display server.\n- Deleting and recreating the runtime preserves only documented volumes.\n- A clean command starts a seed, passes health, serves a fixture clone, and stops cleanly.\n- The same source commit produces reproducible application contents.\n- Upgrade failure leaves the prior verified runtime and data usable.\n\n## Dependencies\n\nConsumes the service and storage contract from #442; platform variants continue in #473.\n\n## Verification\n\nBuild from a clean dependency cache, start the declarative fixture, clone through it, restart, upgrade, inject an incompatible schema, roll back, and verify volume ownership and cleanup.",
+            "id": "open-456",
+            "sig": "KuaWr55D1BrRIRwfGh5nNpM8MwF4JCwjaIh1YzaxmmimsCaWxahKajdfxqqnidmBxmbzQ8miMMXc-Oi_cIbrDQ",
+            "title": "Ship a rootless OCI headless image and seed configuration",
+            "ts": 1784405500021,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1784952000000,
+            "id": "2b7524db-3d1f-49f3-a851-20636f066113",
+            "sig": "ReL9KFEWO-497vVJeBkW0Ef_mOUO7kk4IvH6x71QMAHd2lUhQj8IjoBl7qzBjjiXc3vlWY19CHqI5OrgU0-fDg",
+            "startDate": 1784692800000,
+            "ts": 1784405500022,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "bcf0657f-063f-4121-b088-2ad1aef44b1c",
+            "sig": "lRQxP1SGrmpU6duDIK6HQiHN4kL7NzUljE8jufwwy_7zVYyEPVpkyPz9olpR_6_AcMpPSsTL2YoD8vP-8oVoDw",
+            "ts": 1784729751159,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "48f49d35-7e31-4334-949d-19f2de1c083a",
+            "sig": "N7F2fdFPkvMj5n15BozvGyKbAoJ4WkXJLqwFKa86JMYDStyepCtO6zRLL5uUaBpDO0T-8ohGx0O36hTIv0ttAg",
+            "status": "closed",
+            "ts": 1784729751160,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "infra"
+    ],
+    "milestone": "Open operations",
+    "number": 456,
+    "priority": 24,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784692800000,
+    "status": "closed",
+    "title": "Ship a rootless OCI headless image and seed configuration",
+    "updatedAt": 1784729751160,
+    "votes": 0
+}

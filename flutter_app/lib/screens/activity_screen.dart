@@ -148,7 +148,7 @@ class _PayoutReadinessSection extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Text(
-                'Public readiness and accounting visibility only. Mobile does not execute payouts.',
+                'Public readiness only. Non-custodial: these addresses and balances are public-chain observations; ForkMesh does not hold node funds, store wallet keys, or execute payouts from mobile. Eligibility never guarantees selection or payment.',
                 style: TextStyle(
                   color: FmTheme.textSecondary(context),
                   fontSize: 12,
@@ -304,7 +304,7 @@ class _FundsReceivedSection extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text(
-              'Accumulated public accounting boards, not a promise of current wallet balance.',
+              'Historical finalized public accounting only, not a ForkMesh or current wallet balance. User-owned funds, community-pool funds, pending allocations, and completed on-chain transfers are distinct states.',
               style: TextStyle(
                 color: FmTheme.textSecondary(context),
                 fontSize: 12,

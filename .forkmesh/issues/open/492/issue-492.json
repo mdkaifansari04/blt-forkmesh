@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751298,
+    "endDate": 1793332800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nMaintainers and users can see whether a repository is actually preserved, how independently, and what is still at risk.\n\n## Scope\n\n- Show active mirror count, operator/geographic diversity, clone probes, transports, branch/ref coverage, artifact coverage, and trusted quorum.\n- Derive a documented risk score from timestamped evidence and distinguish declared, observed, verified, stale, and failing copies.\n- Provide drill-down evidence, remediation actions, and privacy-preserving operator disclosure.\n\n## Acceptance criteria\n\n- Dashboard values reproduce from signed probe receipts and update within the freshness objective.\n- Source-host and mirror failures change status and risk predictably without false quorum.\n- Users can understand each risk code and reach a concrete remediation action.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 release gate**\n- Milestone: **Preservation public alpha**\n- Numeric priority: **15 of 44** (1 is highest)\n- Depends on: #494, #498\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**35% as of 2026-07-22.** The product exposes mirrors and some health/sync information; active clone proofs, diversity, full coverage, quorum, and a documented risk model remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Repositories meeting target quorum, probe success, stale evidence, remediation conversion, and risk incidents. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-492",
+            "sig": "v91PqZEp6K37ry2xPiSz_3LsUxgJ8ewe7FPH3BpaNIGrh3N_5UjFMX5j_k8yYfyhhMN97rUrJjHYXteyMRtZDA",
+            "title": "Build the availability-proof and repository-risk dashboard",
+            "ts": 1784729751298,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "18c91714-42c0-4987-b2cd-c63bbbae802d",
+            "labels": [
+                "product",
+                "infra",
+                "security"
+            ],
+            "sig": "j78QjRieHxc5aXQl4HADWCTwDuuxosiysoLXTGddRPnvH7Co-wGENFRMHmN8Aa_utUeGoEVCnDtYcA_5UKhzBg",
+            "ts": 1784729751299,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "e4d9d168-fcd4-4b3d-b0b6-3aabcabf8859",
+            "milestone": "Preservation public alpha",
+            "sig": "2aEG-kAm6gt_d8_c4o049l3xQ6l-s_B84QOFX5nhbNim2c_pEvsch6EmNAiyQFUJNkSkZd0Ar25PGoRLxtN3BQ",
+            "ts": 1784729751300,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1793332800000,
+            "id": "f125c577-25b8-4b0a-be59-ccc4f5ddb0a7",
+            "sig": "rvlQkwbAfjlINFfKcpnUQd0imJLcCEIAUzvgm5JgX-tFTQp_yD7Q2Tfh3r7ydGvmjZC_gYn1p6NBXo8yK3T0Dg",
+            "startDate": 1784692800000,
+            "ts": 1784729751301,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "faf1f140-88bb-4d4a-b24d-e965079f8050",
+            "priority": 15,
+            "sig": "7EQbEOLEU8GvyJO-hP38MQnFLDGT547qZrP11sOpUqfBWQXv_w-_6TZ9S6Oz_AIzbWqzrahJxZkmBgsn7zwwCw",
+            "ts": 1784729751302,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "bcf2babb-e970-4272-87f3-4a7833711bbc",
+            "progress": 35,
+            "sig": "Qr4LtnGmOKn4_m52UsM7t8FMqLpDh8TQDqrMpnI-o2vUXzP5w5ATm5EmgvuDftWwmy5JsyC6QrcwyB9B_UX-BQ",
+            "ts": 1784729751303,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "product",
+        "infra",
+        "security"
+    ],
+    "milestone": "Preservation public alpha",
+    "number": 492,
+    "priority": 15,
+    "progress": 35,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784692800000,
+    "status": "open",
+    "title": "Build the availability-proof and repository-risk dashboard",
+    "updatedAt": 1784729751303,
+    "votes": 0
+}

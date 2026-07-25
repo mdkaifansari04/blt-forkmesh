@@ -4,10 +4,10 @@
     <meta charset="utf-8" />
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Get paid to mirror - ForkMesh</title>
+    <title>Community mirror rewards - ForkMesh</title>
     <meta
       name="description"
-      content="See how ForkMesh nodes get paid to mirror code: live earnings estimates and how each join donation is split across the network."
+      content="See ForkMesh’s transparent, non-custodial mainnet reward pool, mirror eligibility policy, pending allocations, and finalized transfers."
     />
     <meta name="application-name" content="ForkMesh" />
     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
@@ -90,6 +90,23 @@
         font-size: 12px;
       }
       .flow strong { color: #ffffff; display: block; margin-bottom: 4px; }
+      .custody-notice {
+        border: 1px solid rgba(158, 247, 198, 0.38);
+        border-left: 3px solid #9ef7c6;
+        border-radius: 12px;
+        background: rgba(158, 247, 198, 0.07);
+        padding: 12px 14px;
+        margin-bottom: 16px;
+        color: rgba(255, 255, 255, 0.72);
+        font-size: 12px;
+        line-height: 1.55;
+      }
+      .custody-notice strong {
+        display: block;
+        margin-bottom: 4px;
+        color: #ffffff;
+        font-size: 13px;
+      }
       .row-links { text-align: center; margin-top: 14px; color: rgba(255, 255, 255, 0.58); font-size: 13px; }
       .row-links a { color: #ffffff; }
 
@@ -111,17 +128,28 @@
       <a class="brand" href="/" aria-label="ForkMesh home">
         <img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true" />
       </a>
-      <span class="join-eyebrow">⬡ Get paid to mirror code</span>
-      <h1 id="mp-title" class="join-title">Get paid to mirror</h1>
+      <span class="join-eyebrow">⬡ Community mirror incentives</span>
+      <h1 id="mp-title" class="join-title">Transparent mirror rewards</h1>
       <p class="join-sub">
-        Your node mirrors source code, serves live clone data, and keeps projects
-        discoverable. As the network grows, a share of every join donation flows
-        back to the nodes keeping it alive.
+        Healthy, integrity-verified nodes that actively mirror ForkMesh may be
+        selected for configurable community incentives. Selection is auditable;
+        a reward is never promised.
       </p>
       <p class="join-sub" id="mp-node"><span class="fm-spinner" aria-hidden="true"></span>Loading your node…</p>
 
+      <div class="custody-notice" role="note" aria-label="Non-custodial wallet notice">
+        <strong>Non-custodial payout wallet</strong>
+        Your payout address belongs to you. Wallet keys and recovery phrases stay
+        on your device; ForkMesh never asks you to upload them. User-owned funds,
+        community-pool funds, pending rewards, and completed on-chain transfers
+        are separate states. The public community pool is signed only by the
+        first instance owner’s local Qt client; the Worker stores unsigned plans
+        and finalized public signatures, never the pool private key. Rewards are
+        community incentives, not investments or guaranteed returns.
+      </div>
+
       <div class="calc">
-        <h3>Live earnings calculator</h3>
+        <h3>Current randomized policy</h3>
         <div class="calc-row">
           <div class="calc-cell">
             <div class="cap">Nodes online</div>
@@ -129,61 +157,69 @@
           </div>
           <div class="op">×</div>
           <div class="calc-cell">
-            <div class="cap">Payout per join</div>
-            <div class="big">0.0001 SOL</div>
-            <div class="small">illustrative</div>
+            <div class="cap">Configured reward</div>
+            <div class="big" id="calc-reward">...</div>
+            <div class="small">per selected round</div>
           </div>
           <div class="op">=</div>
           <div class="calc-cell">
-            <div class="cap">Est. earnings</div>
-            <div class="big" id="calc-earn">...</div>
-            <div class="small">estimate only</div>
+            <div class="cap">Recipients</div>
+            <div class="big">1 eligible node</div>
+            <div class="small">public entropy + snapshot</div>
           </div>
         </div>
         <p class="calc-note">
-          Estimates are illustrative while the reward engine is in progress.
-          Roughly half of each join donation funds ForkMesh; the rest is shared
-          across nodes by data mirrored and uptime.
+          Eligibility requires fresh signed presence, a healthy HTTPS endpoint,
+          a verified forkmesh/forkmesh refs proof, no abuse flag, minimum
+          server-observed uptime, and a valid public payout address. An approved
+          federated relay must forward the original node-signed registration and
+          fresh repository-health message; a wallet-only relay claim is never
+          eligible.
         </p>
       </div>
 
       <div class="calc" id="split-card">
-        <h3>Where each donation goes</h3>
+        <h3>Public pool state</h3>
         <div class="calc-row">
           <div class="calc-cell">
-            <div class="cap">ForkMesh servers</div>
-            <div class="big" id="split-servers-pct">50%</div>
-            <div class="small" id="split-servers-usd">infrastructure &amp; relay</div>
+            <div class="cap">Network</div>
+            <div class="big" id="pool-network">mainnet-beta</div>
+            <div class="small">production; test networks require explicit development configuration</div>
           </div>
           <div class="op">+</div>
           <div class="calc-cell">
-            <div class="cap">Mirror nodes (<span id="split-node-count">...</span> online)</div>
-            <div class="big" id="split-nodes-pct">50%</div>
-            <div class="small" id="split-nodes-usd">shared by uptime &amp; data</div>
+            <div class="cap">Public balance</div>
+            <div class="big" id="pool-balance">...</div>
+            <div class="small">on-chain, not an estimate</div>
           </div>
           <div class="op">=</div>
           <div class="calc-cell">
-            <div class="cap">Per online node</div>
-            <div class="big" id="split-per-node">...</div>
-            <div class="small">≈ each, evenly</div>
+            <div class="cap">Recent transfers</div>
+            <div class="big" id="pool-transfers">...</div>
+            <div class="small">finalized signatures only</div>
           </div>
         </div>
         <p class="calc-note">
-          Half of every join donation keeps ForkMesh's servers running; the other
-          half is split evenly across the <span id="split-node-count-2">...</span> nodes
-          online right now, weighted over time by data mirrored and uptime.
+          Contributors transfer directly from their own wallet to the public
+          pool and choose either the randomized trickle pool or an externally
+          signed all-eligible-node intent. Visual coins never prove a transfer.
         </p>
       </div>
 
       <div class="flow">
         <div><strong>You mirror code</strong>Your node stores and serves Git repositories, keeping the network decentralized.</div>
-        <div><strong>You get paid</strong>Earn SOL as the network grows and people use the data you host.</div>
+        <div><strong>You may receive rewards</strong>Eligible, healthy nodes may receive configurable community incentives after the local signer and on-chain finality checks. No reward is promised.</div>
       </div>
 
       <p class="row-links">
-        Need a Solana wallet to receive payouts? We suggest
-        <a href="https://www.exodus.com/" target="_blank" rel="noopener noreferrer">Exodus</a>
-        - it holds SOL on desktop and mobile.
+        Use a compatible external self-custodial Solana wallet you independently
+        trust. ForkMesh only needs its public payout address—never its private key
+        or recovery phrase.
+      </p>
+      <p class="row-links">
+        <a href="/world?landmark=fountain">Join or fund the community reward program →</a>
+        Contributions are voluntary direct wallet transfers and do not purchase
+        ownership, governance control, guaranteed rewards, or returns.
       </p>
       <p class="row-links"><a href="/dashboard">← Back to dashboard</a></p>
       </section>

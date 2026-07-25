@@ -5,7 +5,7 @@
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Direct messages · ForkMesh Blog</title>
-    <meta name="description" content="Message any node operator directly, with the same encrypt-before-send guarantee as rooms.">
+    <meta name="description" content="Direct messages use the same relay-readable authenticated shared-key transport as ForkMesh rooms.">
     <meta name="application-name" content="ForkMesh">
     <meta name="apple-mobile-web-app-title" content="ForkMesh">
     <meta name="theme-color" content="#090909">
@@ -23,7 +23,7 @@
     <meta property="og:url" content="https://forkmesh.com/blog/direct-messages/">
     <meta property="og:site_name" content="ForkMesh">
     <meta property="og:title" content="Direct messages">
-    <meta property="og:description" content="Message any node operator directly, with the same encrypt-before-send guarantee as rooms.">
+    <meta property="og:description" content="Direct messages use the same relay-readable authenticated shared-key transport as ForkMesh rooms.">
     <meta property="og:image" content="https://forkmesh.com/assets/blog/features/direct-messages.webp">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:image" content="https://forkmesh.com/assets/blog/features/direct-messages.webp">
@@ -38,22 +38,22 @@
           <div>
             <p class="eyebrow">Chat &amp; private sharing</p>
             <h1>Direct messages</h1>
-            <p class="lede">Message any node operator directly, with the same encrypt-before-send guarantee as rooms.</p>
+            <p class="lede">Direct messages use the same relay-readable authenticated shared-key transport as rooms.</p>
             <div class="meta"><span class="pill">Feature 48 of 72</span><span>Feature</span><span>Chat &amp; private sharing</span><span>3 min read</span></div>
           </div>
           <img class="hero-img" src="/assets/blog/features/direct-messages.webp" alt="Abstract ForkMesh artwork for Direct messages">
         </section>
         <article class="body">
           <h2>Why it matters</h2>
-          <p>Direct messages gives ForkMesh a concrete mechanism for private node-to-node coordination with encrypt-before-send semantics. Message any node operator directly, with the same encrypt-before-send guarantee as rooms.</p>
-          <p>Project conversations often carry design, access, and coordination context that infrastructure should not read. In ForkMesh, direct messages addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
+          <p>Direct messages gives ForkMesh a concrete mechanism for node-to-node coordination inside a repository room. Messages encrypt before sending, but the default passphrase is relay-derived, so the relay operator can decrypt them.</p>
+          <p>Project conversations often carry design, access, and coordination context, so the relay's place in the trust boundary must be explicit.</p>
           <h2>How ForkMesh handles it</h2>
-          <p>ForkMesh handles direct messages through the same split it uses across the product: ForkMesh attaches rooms, direct messages, discussions, and browser chat to repository identity while encrypting sensitive payloads before relay.</p>
-          <p>The behavior is intentionally narrow: Message any node operator directly, with the same encrypt-before-send guarantee as rooms. The mainnode can coordinate reachability and relay traffic without custody of plaintext message bodies.</p>
-          <div class="note">Title focus: Direct messages stays tied to private node-to-node coordination with encrypt-before-send semantics and the local-first repository model.</div>
+          <p>Direct-message frames use the room's AES-256-GCM key. In default rooms, authenticated clients receive a relay-derived shared passphrase; the relay can derive the same key. Up to 500 persisted frames per room remain for 7 days.</p>
+          <p>An out-of-band participant passphrase in clients that support it is required when the relay must not know the key.</p>
+          <div class="note">Default direct messages are authenticated shared-key traffic, not end-to-end encrypted private messages.</div>
           <h2>Where it fits</h2>
-          <p>Use direct messages when teams need repository-aware conversation without central plaintext custody.</p>
-          <p>It pairs with the rest of Chat &amp; private sharing because Direct messages keeps private node-to-node coordination with encrypt-before-send semantics connected to the repository, its signatures, and the nodes that serve it.</p>
+          <p>Use direct messages for repository-aware coordination when participants accept the relay operator in the trust boundary.</p>
+          <p>Use a participant-controlled passphrase for confidentiality from the relay.</p>
         </article>
         <nav class="next" aria-label="Feature posts">
           <a href="/blog/encrypted-repo-rooms/">← Encrypted repo rooms</a>

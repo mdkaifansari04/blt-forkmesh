@@ -26,6 +26,7 @@
 
 #include "MarkdownEditor.h"
 #include "MessageRow.h"
+#include "MainnodeRoom.h"
 #include "PullReviewModel.h"
 #include "RepoHost.h"
 #include "RepoSecurity.h"
@@ -85,6 +86,7 @@
 #include <QWidgetAction>
 #include <QEnterEvent>
 #include <QMessageBox>
+#include <QContextMenuEvent>
 #include <QMimeDatabase>
 #include <QMouseEvent>
 #include <QWheelEvent>
@@ -420,6 +422,10 @@ constexpr int kProgressBarRole = Qt::UserRole + 11;
 // Last-sync timestamp (qint64 ms) for a behind-but-online mirror node, read by
 // MirrorSyncDelegate to draw a pac-man countdown to its next heartbeat/re-sync.
 constexpr int kPacmanAnchorRole = Qt::UserRole + 12;
+// Status light on a Mirror-nodes row's Node cell (adhoc #230): 0 = steady lamp
+// (all green, or grey offline), 1 = caution (spinning orange), 2 = error
+// (spinning red). MainWindow::animateMirrorNodeLights re-renders non-zero rows.
+constexpr int kNodeLightRole = Qt::UserRole + 13;
 // Cadence on which a node re-fetches its mirrors from source (mirrors
 // m_mirrorSyncTimer, which adds ±15% jitter — the pie is an approximation);
 // a behind node is expected to catch up at the next tick. Only a safety net
@@ -469,6 +475,11 @@ const QLatin1String kWorktreeLinkScheme("forkmesh-worktree:");
 // percent-encoded branch name follows. Clicking it opens that branch's row in
 // the Branches tab (adhoc #123). Shared by the link builder and its handler.
 const QLatin1String kBranchLinkScheme("forkmesh-branch:");
+
+// "forkmesh-copy-branch:<branch>" link next to the branch chip in the agent-detail
+// header (adhoc #259): clicking it copies the branch name to the clipboard
+// instead of navigating anywhere.
+const QLatin1String kCopyBranchLinkScheme("forkmesh-copy-branch:");
 
 // "forkmesh-pull:<number>" link in the agent-detail meta line: when a session
 // has a pull request, its "PR #N" reference links to that PR's tab. Shared by
@@ -922,7 +933,7 @@ private:
 };
 
 // A super-tiny two-row usage meter for the top bar, sized to tuck in next to the
-// node's earnings/avatar (issue #266). The top row is the rolling 5-hour window,
+// node's public-wallet balance/avatar (issue #266). The top row is the rolling 5-hour window,
 // the bottom row the weekly window; each draws a horizontal track that fills
 // 0..100% of that window's utilisation and is tinted green/amber/red as it nears
 // the cap. Values are fed from Claude Code rate-limit events (see usageChanged);
@@ -2553,7 +2564,13 @@ const QString kRepoUrl = QStringLiteral("https://github.com/forkmesh/forkmesh.gi
 const QString kDisplayNameSetting = QStringLiteral("profile/displayName");
 const QString kHandleSetting = QStringLiteral("profile/handle");
 const QString kAccountNameSetting = QStringLiteral("account/nodeName");
-// Persisted Hosts list (adhoc #263): JSON array of {name, ip, user, pass}.
+// This machine's own node name on the mesh, distinct from the username: a user
+// account owns many nodes, and the machine you're sitting at is just one of
+// them. Unset means "derive a default" (hostname for user-account installs,
+// the account name for bare node accounts) — see MainWindow::machineNodeName().
+const QString kMachineNodeNameSetting = QStringLiteral("node/machineName");
+// Persisted Hosts list (adhoc #263): non-sensitive JSON metadata only
+// ({name, ip, user, status}). Legacy password fields are removed on load.
 const QString kHostsSetting = QStringLiteral("hosts/list");
 const QString kSolanaSetting = QStringLiteral("profile/solana");
 const QString kAvatarSetting = QStringLiteral("profile/avatarPng");
@@ -2564,14 +2581,15 @@ const QString kServerUrlSetting = QStringLiteral("server/url");
     // field; self-hosting one is a first-class target — see /docs#self-hosting), but
 // this path shape is a network-wide protocol constant, so it lives in one place
 // instead of being spelled out at each call site.
-const QString kMainnodeDefaultHost = QStringLiteral("forkmesh.com");
-const QString kMainnodeRoomPath =
-    QStringLiteral("/api/repo/mainnode/forkmesh/rooms/general/ws");
-const QString kLocalServerUrl =
-    QStringLiteral("ws://127.0.0.1:8787") + kMainnodeRoomPath;
-const QString kDefaultServerUrl =
-    QStringLiteral("wss://") + kMainnodeDefaultHost + kMainnodeRoomPath;
+const QString kMainnodeDefaultHost = forkmesh::mainnode::kDefaultHost;
+const QString kMainnodeRoomPath = forkmesh::mainnode::kRoomPath;
+const QString kLocalServerUrl = forkmesh::mainnode::kLocalServerUrl;
+const QString kDefaultServerUrl = forkmesh::mainnode::kDefaultServerUrl;
 const QString kRoomNameSetting = QStringLiteral("server/room");
+// Local World dev server (cloudflare_worker/tools/world_dev_server.py). The
+// World button probes this before falling back to the relay portal; set it to
+// "off" to skip the probe entirely.
+const QString kWorldDevUrlSetting = QStringLiteral("world/localDevUrl");
 // Last account this node key authenticated as; lets the app start offline once a
 // registered account has been confirmed at least once on this machine.
 const QString kAuthedAccountSetting = QStringLiteral("account/authedName");
@@ -2583,7 +2601,7 @@ const QString kEmailVerifiedSettingPrefix =
     QStringLiteral("account/emailVerified/");
 const QString kServersArray = QStringLiteral("servers/items");
 const QString kActiveServerSetting = QStringLiteral("servers/active");
-const QString kDefaultRoomName = QStringLiteral("general");
+const QString kDefaultRoomName = forkmesh::mainnode::kDefaultRoomName;
 const QString kRepositoriesArray = QStringLiteral("repositories/items");
 const QString kMirrorRootSetting = QStringLiteral("repositories/mirrorRoot");
 const QString kLastRepositorySetting = QStringLiteral("repositories/lastOpen");
@@ -2683,11 +2701,10 @@ inline bool notifyEnabled(const QString &key)
 {
     return QSettings().value(key, false).toBool();
 }
-// Per-PR bounty (issue #347): when enabled, every merged pull request rewards
-// its author with a fixed bounty. The amount is USD-priced (reusing the same
-// SOL pricing pipeline as issue bounties). Mode selects how it's funded:
-// "perPr" shows a funding QR at each merge; "wallet" auto-pays by debiting the
-// owner's pre-funded inbuilt bounty wallet (worker action "wallet").
+// Historical per-PR bounty settings (issue #347). The Worker-held wallet and
+// escrow path is frozen; startup forces enabled=false and mode="perPr" so an
+// older preferences file cannot reactivate custody. Keys remain only to support
+// that one-way local migration.
 const QString kAutoPrBountyEnabledSetting =
     QStringLiteral("bounty/autoPrEnabled");
 const QString kAutoPrBountyAmountSetting =
@@ -2803,6 +2820,10 @@ const QString kIdeIntegrationSetting = QStringLiteral("ide/integrationEnabled");
 // was fetched (tiny.en/base.en/small.en).
 const QString kWhisperDirSetting = QStringLiteral("voice/whisperDir");
 const QString kWhisperModelSetting = QStringLiteral("voice/whisperModel");
+// Public World origin allowed to control local speech-to-text. This is not a
+// capability; one-use/session secrets are memory-only inside WorldSpeechBridge.
+const QString kWorldSpeechOriginSetting =
+    QStringLiteral("voice/worldExactOrigin");
 // Which speech-to-text engine the mic uses: "whisper" (whisper.cpp, the default)
 // or "parakeet" (NVIDIA Parakeet via a local Python env). The Parakeet model name
 // picks which checkpoint the runner pulls (parakeet-mlx on Apple Silicon, NeMo
@@ -2968,10 +2989,10 @@ const QString kClaudeFallbackModelSetting =
 // Agents tab and select the new session so the user can watch it run.
 // Default on; can be disabled in Settings.
 const QString kAutoSwitchToAgentSetting = QStringLiteral("agents/autoSwitchToAgent");
-// When on, agent sessions started here in the desktop are published to the web
-// catalog so a repo's website page shows them (and the owner can steer them).
-// Off by default so a locally-started agent stays private to this machine
-// unless the user opts in.
+// When on, agent sessions started here are owner-encrypted before their opaque
+// snapshots reach the relay. The browser deliberately has no recipient private
+// key; inspection and steering remain on the owner desktop. Off by default so
+// no agent metadata leaves this machine unless the user opts in.
 const QString kPublishAgentsToWebSetting =
     QStringLiteral("agents/publishToWeb");
 // When an idle agent session's branch would conflict with base (the same
@@ -2991,6 +3012,24 @@ const QString kAutoFixFailuresSetting =
 // opts in, since they surface another process's transcripts unprompted.
 const QString kExcludeExternalClaudeSetting =
     QStringLiteral("agents/excludeExternalClaude");
+// Jail agents at launch (adhoc #236): run each agent in its own scratch
+// environment (private per-session TMPDIR/cache, see AgentJail) with a memory
+// cap applied before the CLI starts. Off by default.
+const QString kAgentJailSetting = QStringLiteral("agents/jailEnabled");
+// Memory cap (MB) applied to jailed agents; clamped to a sane floor so a typo
+// can't make every agent die instantly at launch.
+const QString kAgentJailMemoryMbSetting = QStringLiteral("agents/jailMemoryMb");
+constexpr int kDefaultAgentJailMemoryMb = 4096;
+constexpr int kMinAgentJailMemoryMb = 256;
+
+// The configured jail memory cap, clamped to the floor above.
+inline int agentJailMemoryMb()
+{
+    return qMax(kMinAgentJailMemoryMb,
+                QSettings()
+                    .value(kAgentJailMemoryMbSetting, kDefaultAgentJailMemoryMb)
+                    .toInt());
+}
 // Footer quick-add "Auto-send" toggle (adhoc #45): true => submit the prompt as
 // soon as a voice dictation finishes transcribing, without pressing Enter/Send.
 const QString kVoiceAutoSubmitSetting = QStringLiteral("agents/voiceAutoSubmit");
@@ -4283,11 +4322,11 @@ private:
     QList<IssueBurnupPoint> m_series;
 };
 
-// One directory in the Size map tab's tree: total bytes of everything beneath
-// it, with subdirectories as children (largest first). The gap between a
-// node's size and the sum of its children is the bytes sitting in files
-// directly inside it — the sunburst renders that share as unfilled span, the
-// HDGraph convention the tab mirrors (adhoc #189).
+// One entry in the Size map tab's tree: total bytes of everything beneath
+// it, with subdirectories and direct files as children (largest first,
+// adhoc #189/#262). A file is a leaf — no children — so the chart offers
+// zoom only on directories, and zooming into a files-only directory shows
+// one slice per file, matching the website's size map.
 struct SunburstNode {
     QString name;
     qint64 size = 0;
@@ -4296,7 +4335,8 @@ struct SunburstNode {
 };
 
 // The Size map tab's multi-level pie (adhoc #189): ring 1 is the working
-// tree's top-level directories, each deeper ring subdivides its parent.
+// tree's top-level directories and files, each deeper ring subdivides its
+// parent down to individual files.
 // Hover shows the exact path/size/share, clicking a directory re-centres the
 // chart on it and clicking the hub goes back up one level. Top-level
 // directories take fixed categorical hues in size order (never cycled —
@@ -4322,7 +4362,15 @@ public:
         update();
     }
 
-    void clear() { setRoot(SunburstNode()); }
+    void clear()
+    {
+        m_basePath.clear();
+        setRoot(SunburstNode());
+    }
+
+    // Absolute path of the working tree the chart is showing, so a right-click
+    // can reveal the hovered directory in the desktop file manager (adhoc #200).
+    void setBasePath(const QString &path) { m_basePath = path; }
 
     QSize sizeHint() const override { return QSize(640, 640); }
 
@@ -4470,6 +4518,51 @@ protected:
         QWidget::leaveEvent(event);
     }
 
+    // Right-click a ring segment (or the hub) to open that directory in the
+    // desktop file manager (adhoc #200). Paths come straight from the segment
+    // trail, so they line up with whatever the working-tree scan produced.
+    void contextMenuEvent(QContextMenuEvent *event) override
+    {
+        if (m_basePath.isEmpty()) {
+            QWidget::contextMenuEvent(event);
+            return;
+        }
+        const int hit = segmentAt(event->pos());
+        QString rel;
+        QString label;
+        if (hit >= 0) {
+            rel = m_segments.at(hit).path;
+            label = m_segments.at(hit).name;
+        } else if (inHub(event->pos())) {
+            rel = focusRelativePath();
+            const SunburstNode *focus = focusNode();
+            label = focus && !focus->name.isEmpty() ? focus->name
+                                                    : QStringLiteral("repository");
+        } else {
+            QWidget::contextMenuEvent(event);
+            return;
+        }
+        const QString target =
+            rel.isEmpty() ? m_basePath : QDir(m_basePath).filePath(rel);
+        // File slices reveal their containing directory (a file itself can't
+        // be opened as a folder).
+        const QFileInfo targetInfo(target);
+        const QString dir = targetInfo.isDir()
+                                ? target
+                                : (targetInfo.isFile() ? targetInfo.absolutePath()
+                                                       : QString());
+        if (dir.isEmpty() || !QDir(dir).exists()) {
+            QWidget::contextMenuEvent(event);
+            return;
+        }
+        QMenu menu(this);
+        QAction *open = menu.addAction(
+            QStringLiteral("Open \"%1\" in file explorer").arg(label));
+        connect(open, &QAction::triggered, this,
+                [dir] { QDesktopServices::openUrl(QUrl::fromLocalFile(dir)); });
+        menu.exec(event->globalPos());
+    }
+
 private:
     static constexpr int kRings = 4;
 
@@ -4510,6 +4603,21 @@ private:
             node = &node->children.at(index);
         }
         return node;
+    }
+
+    // Repo-relative path of the currently focused directory (empty at the root),
+    // matching the naming Segment::path uses.
+    QString focusRelativePath() const
+    {
+        QStringList names;
+        const SunburstNode *node = &m_root;
+        for (int index : m_trail) {
+            if (index < 0 || index >= node->children.size())
+                return QString();
+            node = &node->children.at(index);
+            names.append(node->name);
+        }
+        return names.join(QLatin1Char('/'));
     }
 
     // Fixed categorical slots for ring 1 (stepped for dark/light surfaces);
@@ -4622,6 +4730,7 @@ private:
     }
 
     SunburstNode m_root;
+    QString m_basePath; // absolute working-tree path, for "open in file explorer"
     QList<int> m_trail; // child-index chain from the root to the focus
     int m_hover = -1;
     mutable QVector<Segment> m_segments; // rebuilt each paint (geometry-dependent)
@@ -6313,6 +6422,48 @@ inline QPixmap rotatedTintedOcticonPixmap(const QString &name, const QColor &col
     return out;
 }
 
+// The status light drawn on top of each Mirror-nodes row (adhoc #230): a small
+// lit lamp in the node's health colour. Steady when everything is green (and
+// for the grey offline lamp); caution (out of sync) and error (failing the
+// integrity pin) lamps spin a bright beacon beam instead, driven frame by frame
+// by MainWindow::animateMirrorNodeLights. Not cached — the angle changes every
+// frame, and only the handful of caution/error rows redraw.
+inline QPixmap nodeStatusLightPixmap(const QColor &color, int size, qreal angleDeg,
+                                     bool spinning)
+{
+    QPixmap out(size, size);
+    out.fill(Qt::transparent);
+    QPainter p(&out);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const QPointF c(size / 2.0, size / 2.0);
+    const qreal r = size / 2.0 - 1.5;
+    p.setPen(Qt::NoPen);
+    // The lamp body, dimmed while spinning so the rotating beam reads against it.
+    p.setBrush(spinning ? color.darker(160) : color);
+    p.drawEllipse(c, r, r);
+    if (spinning) {
+        // Rotating beacon beam: a bright wedge fading behind its leading edge,
+        // the same construction as RelayRadarWidget's sweep.
+        QConicalGradient sweep(c, -angleDeg);
+        QColor lead = color.lighter(130);
+        QColor tail = color;
+        tail.setAlpha(0);
+        sweep.setColorAt(0.0, lead);
+        sweep.setColorAt(0.45, tail);
+        sweep.setColorAt(1.0, tail);
+        p.setBrush(sweep);
+        p.drawEllipse(c, r, r);
+    } else {
+        // A soft specular glint so the steady lamp reads as lit, not a flat dot.
+        QColor glint = color.lighter(170);
+        glint.setAlpha(200);
+        p.setBrush(glint);
+        p.drawEllipse(QPointF(c.x() - r * 0.30, c.y() - r * 0.30), r * 0.32,
+                      r * 0.32);
+    }
+    return out;
+}
+
 inline void applyStoredOcticon(QPushButton *button)
 {
     if (!button)
@@ -7636,12 +7787,13 @@ inline int mirrorNumberedDirMax(const QString &mirrorPath, const QString &branch
 // several distinct mirror nodes into a single row: mirror2/mirror3 vanished from
 // the Nodes list even though the per-repo Mirror nodes view (which keys on the
 // advert / nodeName via displayNodeName) listed them correctly. Prefer the
-// registered nodeName so each physical node keeps its own row; our own node
-// keeps its chat name so the "(you)" row still reads naturally.
+// registered nodeName so each physical node keeps its own row — self included:
+// our own frame now advertises machineNodeName() (never the username), so the
+// self row reads as the machine it is rather than as the user.
 inline QString nodeListIdentityKey(const MemberInfo &m)
 {
     const QString nodeName = m.nodeName.trimmed();
-    if (!m.self && !nodeName.isEmpty())
+    if (!nodeName.isEmpty())
         return nodeName;
     return m.name.trimmed();
 }

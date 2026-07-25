@@ -118,6 +118,10 @@ def _payout_globals(repos, accounts, presence, balances=None):
     """
     calls = {"deleted": False}
     balances = balances or {}
+    repos = [
+        dict(record, visibility=record.get("visibility", "public"))
+        for record in repos
+    ]
 
     async def d1_run(_env, sql, *_args):
         if "DELETE FROM account_presence" in sql:
@@ -148,7 +152,6 @@ def _payout_globals(repos, accounts, presence, balances=None):
         "ACCOUNT_PRESENCE_STALE_MS": 600_000,
         "MAX_NODE_NAME": 63,
         "SOLANA_RE": re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$"),
-        "MIN_ACTIVE_LAMPORTS": 1_000_000,
         "decrypt_row": decrypt_row,
         "d1_run": d1_run,
         "d1_all": d1_all,
@@ -228,7 +231,7 @@ def test_inactive_or_walletless_nodes_still_excluded_even_if_mirroring():
     assert addresses == []
 
 
-def test_unverified_wallet_nodes_still_mirror_but_do_not_receive_payouts():
+def test_payout_address_does_not_need_a_deposit_to_be_eligible():
     repos = [
         {"owner": "alice", "name": "forkmesh", "rootCommit": "R1"},
         {"owner": "bob", "name": "forkmesh", "rootCommit": "R1"},
@@ -243,16 +246,15 @@ def test_unverified_wallet_nodes_still_mirror_but_do_not_receive_payouts():
         ["bi_alice", "bi_bob"],
         balances={_W["alice"]: 999_999, _W["bob"]: 1_000_000},
     )
-    assert addresses == [_W["bob"]]
+    assert addresses == [_W["alice"], _W["bob"]]
 
 
-# --- Source contract: the sweep / display both go through the filter ---------
+# --- Source contract: display filtering remains; legacy sweep is gone --------
 
-def test_sweep_splits_over_mirroring_payees():
-    # The disbursement gets its payee list from _online_payout_addresses, which is
-    # the mirror-filtered set, and divides the node pool evenly across it.
-    assert "payees = [p for p in await _online_payout_addresses(env)" in ENTRY_TEXT
-    assert "per_node = node_pool // len(payees)" in ENTRY_TEXT
+def test_worker_has_no_legacy_wallet_sweep():
+    assert "def _sweep_confirmed_donation" not in ENTRY_TEXT
+    assert "def _solana_send_transfers" not in ENTRY_TEXT
+    assert "per_node = node_pool // len(payees)" not in ENTRY_TEXT
 
 
 def test_payout_addresses_consults_mirroring_owners():
@@ -263,6 +265,7 @@ def test_payout_addresses_consults_mirroring_owners():
 def test_network_payout_display_marks_no_mirrors():
     # /network/ eligibility must agree with the real split.
     assert 'reason = "no_mirrors"' in ENTRY_TEXT
-    assert 'reason = "wallet_unverified"' in ENTRY_TEXT
-    assert "balance >= MIN_ACTIVE_LAMPORTS" in ENTRY_TEXT
+    assert 'reason = "wallet_unverified"' not in ENTRY_TEXT
+    assert "MIN_ACTIVE_LAMPORTS" not in ENTRY_TEXT
+    assert "Funding a payout address is" in ENTRY_TEXT
     assert "mirrors_repo = mirroring is None" in ENTRY_TEXT

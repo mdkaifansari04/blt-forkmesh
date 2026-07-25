@@ -8,16 +8,32 @@
 #include "ForkMeshVersion.h"
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "ActionStore.h"
+#include "ControlNode.h"
 #include "CurrentPageStack.h"
 #include "KebabHeaderView.h"
+#include "PrivateMirrorStore.h"
+#include "PublicMirrorRuntime.h"
 #include "RepoSecurity.h"
+#include "RewardPoolSigner.h"
 #include "ScreenCaptureOverlay.h"
 #include "ScreenDrawOverlay.h"
 #include "ScreenshotMarkupWindow.h"
+#include "WorldSpeechBridge.h"
 
 #include <QBrush>
+#include <QCryptographicHash>
+#include <QDialog>
+#include <QInputDialog>
 #include <QNetworkInformation>
+#include <QPlainTextEdit>
+#include <QPointer>
+#include <QProcess>
+#include <QProcessEnvironment>
+#include <QSharedPointer>
+#include <QStandardPaths>
 #include <QTabWidget>
+#include <QUuid>
 
 #include <algorithm>
 
@@ -27,7 +43,15 @@ using namespace forkmesh::ui;
 
 void MainWindow::loadServers()
 {
+    // One-way migration from legacy host records: passwords used to be stored
+    // inside hosts/list. Keep them only for this process lifetime, and rewrite
+    // QSettings before any controller UI or fleet operation can read them.
+    QSettings hostSettings;
+    forkmesh::control::loadSavedHosts(
+        hostSettings, kHostsSetting, &m_hostSessionPasswords);
+
     m_servers.clear();
+    bool migratedDefaultRoom = false;
     const QString json = QSettings().value(kServersArray).toString();
     const QJsonArray array = QJsonDocument::fromJson(json.toUtf8()).array();
     for (const QJsonValue &value : array) {
@@ -38,6 +62,9 @@ void MainWindow::loadServers()
         ServerConfig server;
         server.url = canonicalServerUrl(url);
         server.room = obj.value("room").toString(kDefaultRoomName);
+        migratedDefaultRoom |=
+            forkmesh::mainnode::migrateSavedDefaultRoom(
+                &server.url, &server.room);
         m_servers.append(server);
     }
 
@@ -54,12 +81,30 @@ void MainWindow::loadServers()
                          : savedUrl;
         server.room =
             QSettings().value(kRoomNameSetting, kDefaultRoomName).toString();
+        migratedDefaultRoom |=
+            forkmesh::mainnode::migrateSavedDefaultRoom(
+                &server.url, &server.room);
         m_servers.append(server);
     }
 
     m_activeServer = QSettings().value(kActiveServerSetting, 0).toInt();
     if (m_activeServer < 0 || m_activeServer >= m_servers.size())
         m_activeServer = 0;
+    // An older install can have a current servers/items array beside stale
+    // legacy single-server keys. Detect that split state too; saveServers()
+    // below reconciles the compatibility keys to the selected current entry.
+    QString legacySingleUrl =
+        QSettings().value(kServerUrlSetting).toString().trimmed();
+    QString legacySingleRoom =
+        QSettings().value(kRoomNameSetting, kDefaultRoomName).toString();
+    migratedDefaultRoom |=
+        forkmesh::mainnode::migrateSavedDefaultRoom(
+            &legacySingleUrl, &legacySingleRoom);
+    // Write the one-way migration immediately. Other startup paths still read
+    // the legacy single-server keys, and a crash before the user opens Settings
+    // must not put the next launch back onto the retired room.
+    if (migratedDefaultRoom)
+        saveServers();
 }
 
 void MainWindow::saveServers()
@@ -288,43 +333,24 @@ QWidget *MainWindow::buildChatPage()
     // section any more.
     m_sectionStack->addWidget(buildHomeSection());       // 0 Home (nodes + repos + detail)
     logStartup(QStringLiteral("  buildChatPage: home section built"));
-    auto *settingsScroll = new QScrollArea;
-    settingsScroll->setObjectName("settingsScroll");
-    settingsScroll->setFrameShape(QFrame::NoFrame);
-    settingsScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    settingsScroll->setWidgetResizable(true);
-    // Settings content can be tall; keep it out of the section stack minimum.
-    settingsScroll->setMinimumHeight(0);
-    settingsScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
-    settingsScroll->setWidget(buildSettingsSection());
-    logStartup(QStringLiteral("  buildChatPage: settings section built"));
-    m_sectionStack->addWidget(settingsScroll);           // 1 Settings
-    // Chat is its own top-level place now (no longer a page buried in the repo
-    // detail stack), so it survives switching between repos and stays reachable
-    // from the always-visible nav.
-    m_sectionStack->addWidget(buildChatSection());       // 2 Chat
-    logStartup(QStringLiteral("  buildChatPage: chat section built"));
-    m_sectionStack->addWidget(buildNotificationsSection()); // 3 Notifications
-    logStartup(QStringLiteral("  buildChatPage: notifications section built"));
-    m_sectionStack->addWidget(buildLogSection());        // 4 Log
-    logStartup(QStringLiteral("  buildChatPage: log section built"));
-    m_sectionStack->addWidget(buildLeaderboardsSection()); // 5 Leaderboards
-    logStartup(QStringLiteral("  buildChatPage: leaderboards section built"));
-    m_sectionStack->addWidget(buildSearchResultsSection()); // 6 Search results
-    logStartup(QStringLiteral("  buildChatPage: search section built"));
-    m_sectionStack->addWidget(buildHostsSection());      // 7 Hosts (adhoc #263)
-    logStartup(QStringLiteral("  buildChatPage: hosts section built"));
-    m_sectionStack->addWidget(buildRelaysSection());     // 8 Relays
-    logStartup(QStringLiteral("  buildChatPage: relays section built"));
+    auto addDeferredSection = [this] {
+        auto *placeholder = new QWidget;
+        placeholder->setProperty("forkmeshDeferredSection", true);
+        m_sectionStack->addWidget(placeholder);
+    };
+    // Only Home participates in the first frame. The other substantial pages
+    // are built on their first navigation; their fixed stack indexes remain
+    // unchanged, and showSection() performs the replacement before display.
+    addDeferredSection();                              // 1 Settings
+    // Session startup resets the chat widgets immediately after first paint,
+    // so keep this comparatively small page ready.
+    m_sectionStack->addWidget(buildChatSection());      // 2 Chat
+    for (int index = 3; index <= 8; ++index)
+        addDeferredSection();
     m_sectionStack->addWidget(new QWidget);              // 9 retired Firewall redirect
-    logStartup(QStringLiteral("  buildChatPage: firewall redirect section built"));
-    m_sectionStack->addWidget(buildNodeProfileSection()); // 10 Node profile (full page)
-    logStartup(QStringLiteral("  buildChatPage: node profile section built"));
-    m_sectionStack->addWidget(buildNetworkReposSection()); // 11 Repos (network catalog)
-    logStartup(QStringLiteral("  buildChatPage: network repos section built"));
-    m_sectionStack->addWidget(buildNetworkDiagnosticsSection()); // 12 Network diagnostics
-    m_sectionStack->addWidget(buildNodesSection());      // 13 Nodes (adhoc #9)
-    logStartup(QStringLiteral("  buildChatPage: network diagnostics section built"));
+    for (int index = 10; index <= 14; ++index)
+        addDeferredSection();
+    logStartup(QStringLiteral("  buildChatPage: secondary sections deferred"));
 
     // No left rails any more: relays and nodes are top-bar dropdowns, so the
     // section fills the whole width.
@@ -334,8 +360,8 @@ QWidget *MainWindow::buildChatPage()
     contentLayout->setSpacing(0);
     contentLayout->addWidget(m_sectionStack, 1);
 
-    // Global donation nudge: shown across the whole app until this node sets a
-    // Solana address, so the network stays open to donations.
+    // Optional public payout-address notice. It is hidden outside explicit
+    // reward settings and never gates entry or core repository features.
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
@@ -1532,6 +1558,180 @@ void MainWindow::mentionProjectFileInQuickAdd()
     m_issueQuickAdd->setFocus();
 }
 
+// ---------------------------------------------------------------- World voice
+
+void MainWindow::initializeWorldSpeechBridge()
+{
+    if (m_worldSpeechBridge)
+        return;
+    m_worldSpeechBridge = new WorldSpeechBridge(this);
+    m_worldSpeechDraftEdit = new QPlainTextEdit(this);
+    m_worldSpeechDraftEdit->setVisible(false);
+    m_worldSpeechDraftEdit->setObjectName(
+        QStringLiteral("worldSpeechTranscriptDraft"));
+    m_worldSpeechHiddenMicButton = new QPushButton(this);
+    m_worldSpeechHiddenMicButton->setVisible(false);
+
+    connect(m_worldSpeechBridge, &WorldSpeechBridge::auditEvent, this,
+            [this](const QString &event) {
+                // Events are generalized by the bridge: no capability,
+                // transcript, microphone, or browsing data reaches this log.
+                logSystem(QStringLiteral("World voice: ") + event);
+            });
+    connect(m_worldSpeechBridge, &WorldSpeechBridge::captureRequested, this,
+            [this](const QString &captureId, const QString &destination) {
+                if (!m_worldSpeechBridge || captureId.isEmpty())
+                    return;
+                if ((m_voiceRecordProc &&
+                     m_voiceRecordProc->state() != QProcess::NotRunning) ||
+                    (m_voiceTranscribeProc &&
+                     m_voiceTranscribeProc->state() != QProcess::NotRunning) ||
+                    m_voiceRecording) {
+                    m_worldSpeechBridge->publishError(
+                        captureId,
+                        QStringLiteral("Desktop microphone is already in use."));
+                    return;
+                }
+                if (!voiceInputReady()) {
+                    m_worldSpeechBridge->publishError(
+                        captureId,
+                        QStringLiteral("Set up a local speech-to-text engine in "
+                                       "Qt Settings > Voice."));
+                    return;
+                }
+                const AudioRecorderCommand recorder =
+                    audioRecorderFor(QStringLiteral("probe.wav"));
+                if (recorder.program.isEmpty()) {
+                    m_worldSpeechBridge->publishError(
+                        captureId,
+                        QStringLiteral("No supported local microphone recorder "
+                                       "is installed."));
+                    return;
+                }
+                m_worldSpeechCancelPending = false;
+                m_worldSpeechCaptureId = captureId;
+                m_worldSpeechDraftEdit->clear();
+                m_worldSpeechDraftEdit->setPlaceholderText(
+                    QStringLiteral("World %1 transcript").arg(destination));
+                startVoiceCaptureFor(m_worldSpeechDraftEdit,
+                                     m_worldSpeechHiddenMicButton);
+                if (!m_voiceRecording) {
+                    m_worldSpeechBridge->publishError(
+                        captureId,
+                        QStringLiteral("The local microphone could not start."));
+                    m_worldSpeechCaptureId.clear();
+                } else if (m_worldSpeechStatusLabel) {
+                    m_worldSpeechStatusLabel->setText(
+                        QStringLiteral("World is recording locally for the %1 "
+                                       "composer. Use Stop or Cancel in the "
+                                       "browser.")
+                            .arg(destination));
+                }
+            });
+    connect(m_worldSpeechBridge, &WorldSpeechBridge::stopRequested, this,
+            [this](const QString &captureId) {
+                if (captureId != m_worldSpeechCaptureId)
+                    return;
+                stopVoiceCapture();
+                if (m_worldSpeechStatusLabel)
+                    m_worldSpeechStatusLabel->setText(
+                        QStringLiteral("World capture stopped; transcribing "
+                                       "locally."));
+            });
+    connect(m_worldSpeechBridge, &WorldSpeechBridge::cancelRequested, this,
+            [this](const QString &captureId) {
+                if (captureId == m_worldSpeechCaptureId)
+                    cancelWorldVoiceCapture();
+            });
+}
+
+void MainWindow::createWorldSpeechPairing()
+{
+    if (!m_worldSpeechBridge)
+        initializeWorldSpeechBridge();
+    if (!m_worldSpeechBridge || !m_worldSpeechOriginEdit)
+        return;
+    const QString origin = m_worldSpeechOriginEdit->text().trimmed();
+    const QJsonObject capability =
+        m_worldSpeechBridge->issuePairing(origin, 120);
+    if (capability.isEmpty()) {
+        if (m_worldSpeechStatusLabel)
+            m_worldSpeechStatusLabel->setText(
+                QStringLiteral("Pairing refused. Enter one exact http(s) origin "
+                               "without a path, wildcard, query, or fragment."));
+        return;
+    }
+    QSettings().setValue(kWorldSpeechOriginSetting, origin);
+    const QString secret =
+        capability.value(QStringLiteral("secret")).toString();
+    if (m_worldSpeechPairCodeEdit) {
+        m_worldSpeechPairCodeEdit->setText(secret);
+        m_worldSpeechPairCodeEdit->selectAll();
+        m_worldSpeechPairCodeEdit->setFocus();
+    }
+    if (m_worldSpeechPairButton)
+        m_worldSpeechPairButton->setEnabled(false);
+    if (m_worldSpeechRevokeButton)
+        m_worldSpeechRevokeButton->setEnabled(true);
+    if (m_worldSpeechStatusLabel)
+        m_worldSpeechStatusLabel->setText(
+            QStringLiteral("Listening on 127.0.0.1:%1. This one-time code "
+                           "expires at %2 and is valid only for %3.")
+                .arg(capability.value(QStringLiteral("port")).toInt())
+                .arg(capability.value(QStringLiteral("expiresAt")).toString(),
+                     capability.value(QStringLiteral("origin")).toString()));
+
+    // Open only the public World URL. The port and capability are intentionally
+    // absent from the URL, query, fragment, argv, and process environment.
+    QUrl world(capability.value(QStringLiteral("origin")).toString());
+    world.setPath(QStringLiteral("/world/"));
+    QDesktopServices::openUrl(world);
+}
+
+void MainWindow::revokeWorldSpeechPairing()
+{
+    if (m_worldSpeechBridge)
+        m_worldSpeechBridge->revokeAll();
+    if (m_worldSpeechPairCodeEdit)
+        m_worldSpeechPairCodeEdit->clear();
+    if (m_worldSpeechPairButton)
+        m_worldSpeechPairButton->setEnabled(true);
+    if (m_worldSpeechRevokeButton)
+        m_worldSpeechRevokeButton->setEnabled(false);
+    if (m_worldSpeechStatusLabel)
+        m_worldSpeechStatusLabel->setText(
+            QStringLiteral("Bridge capabilities revoked. No browser can "
+                           "control the microphone."));
+}
+
+void MainWindow::cancelWorldVoiceCapture()
+{
+    m_worldSpeechCancelPending = true;
+    if (m_voiceLiveTimer)
+        m_voiceLiveTimer->stop();
+    stopVoiceLevelMeter();
+    if (m_voiceRecordProc &&
+        m_voiceRecordProc->state() != QProcess::NotRunning)
+        m_voiceRecordProc->kill();
+    if (m_voiceTranscribeProc &&
+        m_voiceTranscribeProc->state() != QProcess::NotRunning)
+        m_voiceTranscribeProc->kill();
+    m_voiceRecording = false;
+    hideVoiceTranscribeSpinner();
+    QFile::remove(m_voiceWavPath);
+    QFile::remove(m_voiceWavPath + QStringLiteral(".out.txt"));
+    m_voiceInsertPos = -1;
+    m_voiceInsertLen = 0;
+    m_voiceLastPreview.clear();
+    if (m_worldSpeechDraftEdit)
+        m_worldSpeechDraftEdit->clear();
+    m_worldSpeechCaptureId.clear();
+    updateVoiceInputButton();
+    if (m_worldSpeechStatusLabel)
+        m_worldSpeechStatusLabel->setText(
+            QStringLiteral("World microphone capture cancelled locally."));
+}
+
 // Show the mic only once a voice engine is installed; reset its idle look. Called
 // when the bar is built and again after a successful install from Settings. Also
 // syncs the comment-composer mics (m_voiceButtons), which share the same engine.
@@ -1700,6 +1900,13 @@ void MainWindow::startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *butto
                     QString::fromUtf8(proc->readAllStandardError()).trimmed();
                 proc->deleteLater();
                 updateVoiceInputButton();
+                if (m_worldSpeechCancelPending &&
+                    m_voiceTargetEdit == m_worldSpeechDraftEdit) {
+                    QFile::remove(m_voiceWavPath);
+                    QFile::remove(m_voiceWavPath +
+                                  QStringLiteral(".out.txt"));
+                    return;
+                }
                 // The recorder may have failed to open the device at all (no
                 // WAV, or just a header) — don't bother transcribing then.
                 if (!QFileInfo::exists(m_voiceWavPath) ||
@@ -1711,6 +1918,19 @@ void MainWindow::startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *butto
                     m_voiceInsertPos = -1;
                     m_voiceInsertLen = 0;
                     QFile::remove(m_voiceWavPath);
+                    if (m_worldSpeechBridge &&
+                        m_voiceTargetEdit == m_worldSpeechDraftEdit &&
+                        !m_worldSpeechCaptureId.isEmpty()) {
+                        if (err.isEmpty())
+                            m_worldSpeechBridge->publishFinal(
+                                m_worldSpeechCaptureId, QString());
+                        else
+                            m_worldSpeechBridge->publishError(
+                                m_worldSpeechCaptureId,
+                                QStringLiteral("Local microphone capture "
+                                               "failed."));
+                        m_worldSpeechCaptureId.clear();
+                    }
                     return;
                 }
                 startVoiceTranscription(/*finalPass=*/true);
@@ -1731,6 +1951,15 @@ void MainWindow::startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *butto
                 logSystem("Could not start the microphone recorder.");
                 if (m_voiceTargetEdit)
                     m_voiceTargetEdit->setPlaceholderText(m_voiceIdlePlaceholder);
+                if (m_worldSpeechBridge &&
+                    m_voiceTargetEdit == m_worldSpeechDraftEdit &&
+                    !m_worldSpeechCaptureId.isEmpty()) {
+                    m_worldSpeechBridge->publishError(
+                        m_worldSpeechCaptureId,
+                        QStringLiteral("The local microphone recorder could "
+                                       "not start."));
+                    m_worldSpeechCaptureId.clear();
+                }
             });
 
     proc->start(rec.program, rec.args);
@@ -1747,6 +1976,14 @@ void MainWindow::startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *butto
             logSystem("Couldn't start the microphone recorder \xE2\x80\x94 the "
                       "audio device may be busy. Try again.");
             target->setPlaceholderText(m_voiceIdlePlaceholder);
+            if (m_worldSpeechBridge &&
+                target == m_worldSpeechDraftEdit &&
+                !m_worldSpeechCaptureId.isEmpty()) {
+                m_worldSpeechBridge->publishError(
+                    m_worldSpeechCaptureId,
+                    QStringLiteral("The local microphone is busy."));
+                m_worldSpeechCaptureId.clear();
+            }
         }
         return;
     }
@@ -1838,6 +2075,13 @@ void MainWindow::startVoiceTranscription(bool finalPass)
         m_voiceInsertPos = -1;
         m_voiceInsertLen = 0;
         QFile::remove(m_voiceWavPath);
+        if (m_worldSpeechBridge &&
+            m_voiceTargetEdit == m_worldSpeechDraftEdit &&
+            !m_worldSpeechCaptureId.isEmpty()) {
+            m_worldSpeechBridge->publishFinal(m_worldSpeechCaptureId,
+                                               QString());
+            m_worldSpeechCaptureId.clear();
+        }
     };
 
     const bool parakeet = voiceEngine() == QStringLiteral("parakeet");
@@ -1887,6 +2131,13 @@ void MainWindow::startVoiceTranscription(bool finalPass)
                 proc->deleteLater();
                 if (m_voiceTranscribeProc == proc)
                     m_voiceTranscribeProc = nullptr;
+                if (m_worldSpeechCancelPending &&
+                    m_voiceTargetEdit == m_worldSpeechDraftEdit) {
+                    QFile::remove(base + QStringLiteral(".txt"));
+                    QFile::remove(wav);
+                    hideVoiceTranscribeSpinner();
+                    return;
+                }
 
                 QString text;
                 QFile txt(base + QStringLiteral(".txt"));
@@ -1922,6 +2173,15 @@ void MainWindow::startVoiceTranscription(bool finalPass)
                 if (m_voiceTargetEdit)
                     m_voiceTargetEdit->setPlaceholderText(m_voiceIdlePlaceholder);
                 QFile::remove(wav);
+                if (text.isEmpty() && exitCode != 0 &&
+                    m_worldSpeechBridge &&
+                    m_voiceTargetEdit == m_worldSpeechDraftEdit &&
+                    !m_worldSpeechCaptureId.isEmpty()) {
+                    m_worldSpeechBridge->publishError(
+                        m_worldSpeechCaptureId,
+                        QStringLiteral("Local speech-to-text failed."));
+                    m_worldSpeechCaptureId.clear();
+                }
                 applyVoiceTranscript(text, /*finalPass=*/true);
                 if (text.isEmpty() && exitCode != 0)
                     logSystem("Transcription failed" +
@@ -1966,6 +2226,12 @@ void MainWindow::startVoiceTranscription(bool finalPass)
 void MainWindow::applyVoiceTranscript(const QString &text, bool finalPass)
 {
     if (!m_voiceTargetEdit || m_voiceInsertPos < 0) {
+        if (finalPass && m_worldSpeechBridge &&
+            m_voiceTargetEdit == m_worldSpeechDraftEdit &&
+            !m_worldSpeechCaptureId.isEmpty()) {
+            m_worldSpeechBridge->publishFinal(m_worldSpeechCaptureId, text);
+            m_worldSpeechCaptureId.clear();
+        }
         if (finalPass) {
             m_voiceInsertPos = -1;
             m_voiceInsertLen = 0;
@@ -1987,11 +2253,28 @@ void MainWindow::applyVoiceTranscript(const QString &text, bool finalPass)
     cur.insertText(ins);
     m_voiceInsertLen = ins.size();
 
+    if (m_worldSpeechBridge &&
+        m_voiceTargetEdit == m_worldSpeechDraftEdit &&
+        !m_worldSpeechCaptureId.isEmpty()) {
+        if (finalPass) {
+            m_worldSpeechBridge->publishFinal(m_worldSpeechCaptureId, text);
+            m_worldSpeechCaptureId.clear();
+            if (m_worldSpeechStatusLabel)
+                m_worldSpeechStatusLabel->setText(
+                    QStringLiteral("World transcript completed locally. "
+                                   "Review it in the selected browser "
+                                   "composer."));
+        } else {
+            m_worldSpeechBridge->publishPartial(m_worldSpeechCaptureId, text);
+        }
+    }
+
     if (finalPass) {
         m_voiceInsertPos = -1;
         m_voiceInsertLen = 0;
         m_voiceTargetEdit->setTextCursor(cur);
-        m_voiceTargetEdit->setFocus();
+        if (m_voiceTargetEdit != m_worldSpeechDraftEdit)
+            m_voiceTargetEdit->setFocus();
     }
 }
 
@@ -2299,6 +2582,12 @@ void MainWindow::onUiStall(qint64 peakMs, const QString &blockingCall,
 // can't spawn an unbounded pile of tasks (adhoc #205).
 void MainWindow::maybeAutoFileStallAgent(qint64 peakMs, const QString &backtrace)
 {
+#ifdef FORKMESH_WINDOW_TESTS
+    // Window tests deliberately hold the GUI thread while checking worker and
+    // responsive-layout states. Keep the watchdog coverage/logging active, but
+    // never turn those synthetic stalls into real CLI agent processes.
+    return;
+#endif
     if (!QSettings().value(kAutoAgentOnStallSetting, true).toBool())
         return;
     // The watchdog now *records* everything past 500 ms (sub-second jank matters
@@ -2608,37 +2897,83 @@ void MainWindow::showDiagnosticsDialog()
 
 void MainWindow::showTreasuryDonateDialog()
 {
-    // Pull the central-fund address from the relay (a wallet the relay custodies
-    // and sweeps out to online nodes hourly, issue #308) and render a Solana QR
-    // so anyone can donate without us embedding the address.
-    int status = 0;
-    const QJsonObject resp = getAccountSync("central-fund", &status);
-    const QString address = resp.value("address").toString().trimmed();
-    if (address.isEmpty()) {
+    // Read only the Worker's public pool state. The Worker never creates,
+    // receives, decrypts, or signs with the pool key; that key is imported into
+    // the first-instance owner's encrypted local Qt vault.
+    const QUrl endpoint =
+        rewardPoolWorkerEndpoint(QStringLiteral("/api/rewards/pool"));
+    if (endpoint.isEmpty() || !m_networkAccess) {
         QMessageBox::information(
-            this, "Donate to ForkMesh",
-            "The central fund isn't accepting donations right now. Please try "
-            "again later.");
+            this, QStringLiteral("Community reward pool"),
+            QStringLiteral("A secure HTTPS reward-pool endpoint is not "
+                           "available for the active ForkMesh server."));
         return;
     }
-    // The endpoint returns a proper Solana Pay URI (label + message); fall back
-    // to a bare address URI if an older relay omits it.
+
+    QNetworkRequest request(endpoint);
+    request.setRawHeader("Accept", "application/json");
+    request.setRawHeader("Cache-Control", "no-store");
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QNetworkRequest::SameOriginRedirectPolicy);
+    request.setTransferTimeout(15000);
+    QNetworkReply *reply = m_networkAccess->get(request);
+    QEventLoop loop;
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    constexpr qsizetype kMaximumPoolResponse = 1024 * 1024;
+    const int httpStatus =
+        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QNetworkReply::NetworkError networkError = reply->error();
+    QByteArray body = reply->read(kMaximumPoolResponse + 1);
+    reply->deleteLater();
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(body, &parseError);
+    const QJsonObject resp =
+        parseError.error == QJsonParseError::NoError && document.isObject()
+            ? document.object()
+            : QJsonObject();
+    const QString address = resp.value("address").toString().trimmed();
+    const bool validAddress =
+        forkmesh::rewards::decodeBase58(address, 32).size() == 32;
+    const bool externalSigner =
+        resp.value("custody").toString() ==
+            QLatin1String("external-local-signer") &&
+        resp.value("privateKeyStoredByWorker").isBool() &&
+        !resp.value("privateKeyStoredByWorker").toBool(true);
+    if (networkError != QNetworkReply::NoError || httpStatus != 200 ||
+        body.size() > kMaximumPoolResponse || !validAddress ||
+        !externalSigner) {
+        QMessageBox::information(
+            this, QStringLiteral("Community reward pool"),
+            QStringLiteral(
+                "ForkMesh could not verify a non-custodial community-pool "
+                "address from this server. No transfer has been requested."));
+        return;
+    }
+
+    // Only accept a Solana URI that visibly targets the verified public pool.
+    // A bare URI is safer than following an unverified server-supplied target.
     QString uri = resp.value("uri").toString().trimmed();
-    if (uri.isEmpty())
+    if (!uri.startsWith(QStringLiteral("solana:%1").arg(address)))
         uri = QStringLiteral("solana:%1").arg(address);
 
     QDialog dialog(this);
-    dialog.setWindowTitle("Donate to the ForkMesh central fund");
+    dialog.setWindowTitle(QStringLiteral("Community reward pool"));
     auto *l = new QVBoxLayout(&dialog);
     l->setContentsMargins(20, 20, 20, 20);
     l->setSpacing(12);
 
     auto *intro = new QLabel(
-        "Scan this Solana QR or copy the address below to donate to the ForkMesh "
-        "central fund. The relay distributes the fund to every online node once "
-        "an hour, so your donation goes straight to the people keeping the "
-        "network alive.");
+        QStringLiteral(
+            "<b>Non-custodial:</b> this is a voluntary transfer from your "
+            "self-custodial wallet to the transparent public community reward "
+            "pool. ForkMesh never receives your private key. The pool signer "
+            "key remains in the first-instance owner's encrypted local desktop "
+            "vault; the Worker stores public plans only. Rewards are community "
+            "incentives, not investments, and no return is guaranteed."));
     intro->setWordWrap(true);
+    intro->setTextFormat(Qt::RichText);
     l->addWidget(intro);
 
     auto *qrLabel = new QLabel;
@@ -2654,6 +2989,22 @@ void MainWindow::showTreasuryDonateDialog()
     addrLabel->setWordWrap(true);
     addrLabel->setAlignment(Qt::AlignCenter);
     l->addWidget(addrLabel);
+
+    const QString network =
+        resp.value("network").toString(QStringLiteral("unknown"));
+    const QString balance =
+        resp.value("balanceSol").toString(QStringLiteral("0"));
+    auto *poolState = new QLabel(
+        QStringLiteral(
+            "Network: %1 · Public on-chain pool balance: %2 SOL\n"
+            "Pending rewards are ledger allocations only; funds remain in the "
+            "source wallet until the local owner reviews, signs, broadcasts, "
+            "and finalizes the exact transfer. Completed rewards have a "
+            "finalized on-chain signature.")
+            .arg(network.toHtmlEscaped(), balance.toHtmlEscaped()));
+    poolState->setObjectName(QStringLiteral("modeHint"));
+    poolState->setWordWrap(true);
+    l->addWidget(poolState);
 
     auto *row = new QHBoxLayout;
     auto *copyBtn = new QPushButton("Copy address");
@@ -2685,6 +3036,15 @@ QWidget *MainWindow::buildLogSection()
     clearButton->setCursor(Qt::PointingHandCursor);
     clearButton->setToolTip("Clear the network log");
     setOcticon(clearButton, "trash", 14);
+    auto *cloudflareButton = new QPushButton("Cloudflare logs");
+    cloudflareButton->setObjectName(
+        QStringLiteral("cloudflareWorkerLogsButton"));
+    cloudflareButton->setCursor(Qt::PointingHandCursor);
+    cloudflareButton->setToolTip(
+        QStringLiteral("View the deployed Cloudflare Worker's live logs"));
+    setOcticon(cloudflareButton, "cloud", 14);
+    connect(cloudflareButton, &QPushButton::clicked, this,
+            &MainWindow::showCloudflareWorkerLogs);
 
     m_settingsLog = new QTextBrowser;
     m_settingsLog->setReadOnly(true);
@@ -2741,6 +3101,7 @@ QWidget *MainWindow::buildLogSection()
     headerRow->setContentsMargins(0, 0, 0, 0);
     headerRow->addWidget(label);
     headerRow->addStretch();
+    headerRow->addWidget(cloudflareButton);
     headerRow->addWidget(clearButton);
 
     auto *layout = new QVBoxLayout(page);
@@ -2750,6 +3111,199 @@ QWidget *MainWindow::buildLogSection()
     layout->addWidget(filterScroll);
     layout->addWidget(m_settingsLog, 1);
     return page;
+}
+
+void MainWindow::showCloudflareWorkerLogs()
+{
+    QString token =
+        m_cloudflareTokenEdit
+            ? m_cloudflareTokenEdit->text().trimmed()
+            : QString();
+    // Fall back to the credential this node already stores for the deploy
+    // workflow (Settings > Secrets & Coves) so the viewer does not ask for a
+    // second token that authenticates against the same account.
+    const QMap<QString, QString> storedVariables = ActionStore::variables();
+    bool storedToken = false;
+    if (token.isEmpty()) {
+        token = forkmesh::control::cloudflareApiTokenFromVariables(
+            storedVariables);
+        storedToken = !token.isEmpty();
+    }
+    if (token.isEmpty()) {
+        bool accepted = false;
+        token = QInputDialog::getText(
+                    this, QStringLiteral("Cloudflare Worker logs"),
+                    QStringLiteral(
+                        "Scoped Cloudflare API token (used for this live "
+                        "viewer only):"),
+                    QLineEdit::Password, QString(), &accepted)
+                    .trimmed();
+        if (!accepted || token.isEmpty()) {
+            token.fill(QChar(u'\0'));
+            token.clear();
+            return;
+        }
+    }
+
+    const QString workerDirectory =
+        forkmesh::control::findCloudflareWorkerDirectory(
+            QStringLiteral(FORKMESH_SOURCE_DIR),
+            QCoreApplication::applicationDirPath());
+    const QString npx =
+        QStandardPaths::findExecutable(QStringLiteral("npx"));
+    QString account =
+        m_cloudflareAccountEdit
+            ? m_cloudflareAccountEdit->text().trimmed()
+            : QString();
+    if (account.isEmpty()) {
+        account =
+            QSettings()
+                .value(QStringLiteral("control/cloudflareAccount"))
+                .toString()
+                .trimmed();
+    }
+    if (account.isEmpty()) {
+        account = forkmesh::control::cloudflareAccountIdFromVariables(
+            storedVariables);
+    }
+    const auto command =
+        forkmesh::control::buildCloudflareTailCommand(
+            token, account, npx);
+    if (workerDirectory.isEmpty() || command.program.isEmpty()) {
+        flashMessage(
+            workerDirectory.isEmpty()
+                ? QStringLiteral(
+                      "The installed Cloudflare Worker bundle is incomplete.")
+                : QStringLiteral(
+                      "Cloudflare live logs require Node.js/npx and a valid "
+                      "account ID."),
+            true);
+        token.fill(QChar(u'\0'));
+        token.clear();
+        return;
+    }
+    if (command.arguments.join(QChar(u'\0')).contains(token)) {
+        flashMessage(
+            QStringLiteral(
+                "Refusing an unsafe Worker log command containing a "
+                "credential."),
+            true);
+        token.fill(QChar(u'\0'));
+        token.clear();
+        return;
+    }
+    if (m_cloudflareTokenEdit &&
+        !m_cloudflareTokenEdit->text().isEmpty()) {
+        m_cloudflareTokenEdit->clear();
+        m_cloudflareTokenEdit->setPlaceholderText(
+            QStringLiteral("token is in the live log viewer only"));
+    }
+
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("cloudflareWorkerLogsDialog"));
+    dialog.setWindowTitle(QStringLiteral("Cloudflare Worker live logs"));
+    dialog.resize(900, 560);
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(16, 16, 16, 16);
+    layout->setSpacing(8);
+
+    auto *notice = new QLabel(
+        storedToken
+            ? QStringLiteral(
+                  "Read-only live tail for the configured ForkMesh Worker, "
+                  "authenticated with the stored CLOUDFLARE_API_TOKEN secret. "
+                  "The token stays in this process's memory only and is erased "
+                  "when this viewer closes.")
+            : QStringLiteral(
+                  "Read-only live tail for the configured ForkMesh Worker. The "
+                  "API token stays in this process's memory only and is erased "
+                  "when this viewer closes."));
+    notice->setObjectName(QStringLiteral("modeHint"));
+    notice->setWordWrap(true);
+    layout->addWidget(notice);
+
+    auto *status = new QLabel(QStringLiteral("Connecting…"));
+    status->setObjectName(QStringLiteral("cloudflareWorkerLogsStatus"));
+    layout->addWidget(status);
+
+    auto *output = new QPlainTextEdit;
+    output->setObjectName(QStringLiteral("cloudflareWorkerLiveLogs"));
+    output->setReadOnly(true);
+    output->setLineWrapMode(QPlainTextEdit::NoWrap);
+    output->document()->setMaximumBlockCount(2500);
+    layout->addWidget(output, 1);
+
+    auto *closeButton = new QPushButton(QStringLiteral("Close"));
+    closeButton->setObjectName(QStringLiteral("primaryButton"));
+    closeButton->setCursor(Qt::PointingHandCursor);
+    connect(closeButton, &QPushButton::clicked, &dialog,
+            &QDialog::accept);
+    auto *buttons = new QHBoxLayout;
+    buttons->addStretch(1);
+    buttons->addWidget(closeButton);
+    layout->addLayout(buttons);
+
+    QProcess process(&dialog);
+    process.setWorkingDirectory(workerDirectory);
+    process.setProcessEnvironment(command.environment);
+    process.setProcessChannelMode(QProcess::MergedChannels);
+    process.setStandardInputFile(QProcess::nullDevice());
+    const auto appendOutput = [&process, output, &token] {
+        const QString chunk =
+            QString::fromUtf8(process.readAllStandardOutput());
+        if (chunk.isEmpty())
+            return;
+        output->moveCursor(QTextCursor::End);
+        output->insertPlainText(
+            forkmesh::control::redactProcessOutput(chunk, {token}));
+        output->moveCursor(QTextCursor::End);
+        output->ensureCursorVisible();
+    };
+    connect(&process, &QProcess::readyReadStandardOutput, &dialog,
+            appendOutput);
+    connect(&process, &QProcess::started, &dialog, [status] {
+        status->setText(
+            QStringLiteral("Connected · waiting for Worker events"));
+    });
+    connect(
+        &process, &QProcess::errorOccurred, &dialog,
+        [status](QProcess::ProcessError error) {
+            if (error == QProcess::FailedToStart) {
+                status->setText(
+                    QStringLiteral(
+                        "Could not start npx. Install Node.js to use live "
+                        "Worker logs."));
+            }
+        });
+    connect(
+        &process, &QProcess::finished, &dialog,
+        [status, appendOutput](int exitCode,
+                               QProcess::ExitStatus exitStatus) {
+            appendOutput();
+            status->setText(
+                exitStatus == QProcess::NormalExit && exitCode == 0
+                    ? QStringLiteral("Log stream ended")
+                    : QStringLiteral("Log stream stopped (exit %1)")
+                          .arg(exitCode));
+        });
+    process.start(command.program, command.arguments);
+    dialog.exec();
+
+    if (process.state() != QProcess::NotRunning) {
+        process.terminate();
+        if (!process.waitForFinished(1500)) {
+            process.kill();
+            process.waitForFinished(1000);
+        }
+    }
+    process.setProcessEnvironment(QProcessEnvironment());
+    token.fill(QChar(u'\0'));
+    token.clear();
+    if (m_cloudflareTokenEdit &&
+        m_cloudflareTokenEdit->text().isEmpty()) {
+        m_cloudflareTokenEdit->setPlaceholderText(
+            QStringLiteral("session-only Cloudflare API token"));
+    }
 }
 
 QWidget *MainWindow::buildBreadcrumb()
@@ -2776,7 +3330,9 @@ QWidget *MainWindow::buildBreadcrumb()
     m_relayOpenButton->setCursor(Qt::PointingHandCursor);
     m_relayOpenButton->setFixedSize(30, 30);
     setOcticon(m_relayOpenButton, "link", 16);
-    m_relayOpenButton->setToolTip("Open this relay in your browser");
+    // The relay root is the ForkMesh World, so this always-visible main-nav
+    // control is the desktop node's direct portal into the browser experience.
+    m_relayOpenButton->setToolTip("Open ForkMesh World in your browser");
     connect(m_relayOpenButton, &QPushButton::clicked, this,
             [this] { openServerWebsite(m_activeServer); });
 
@@ -2800,18 +3356,20 @@ QWidget *MainWindow::buildBreadcrumb()
     m_navSolanaBalance->setFixedWidth(148);
     m_navSolanaBalance->setCursor(Qt::PointingHandCursor);
     m_navSolanaBalance->setToolTip(
-        "This node's Solana wallet balance \xE2\x80\x94 click to switch "
-        "currency (SOL / USD / INR)");
+        "Your Solana wallet balance \xE2\x80\x94 click to switch "
+        "currency (SOL / USD / INR).\n"
+        "Non-custodial payout address: this client only shares its public "
+        "address; its private key stays in the wallet you control.");
     // Clicking the balance itself cycles its display currency, so the control
     // sits right on the value instead of needing a separate swap icon.
     m_navSolanaBalance->installEventFilter(this);
 
     // The reward-availability toggle (online/offline switch, status line, uptime)
     // used to live here beside the balance; it's now built in
-    // buildNodeProfilePanel(), right under "Get paid to mirror", as a clear
+    // buildNodeProfilePanel(), right under Mirror reward settings, as a clear
     // on/off switch for the whole node rather than a small top-bar pill.
 
-    // Tiny Claude Code usage chart that rides beside the earnings/avatar (issue
+    // Tiny Claude Code usage chart that rides beside the wallet balance/avatar (issue
     // #266): a 5-hour and a weekly horizontal gauge. Seed it from the last cached
     // utilisation so it renders immediately; from there it only updates when the
     // user hovers the chart to check it (adhoc #20) — no background poll and no
@@ -3041,24 +3599,19 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageOverlay->hide();
 
     // User avatar, pinned to the top-right-most of the bar. Clicking it opens
-    // your own profile page (Settings stays reachable from the nav rail).
+    // Settings for the current user.
     m_userAvatarNavButton = new QPushButton;
     m_userAvatarNavButton->setObjectName("serverFooterButton");
     m_userAvatarNavButton->setCursor(Qt::PointingHandCursor);
     m_userAvatarNavButton->setFixedSize(40, 40);
     m_userAvatarNavButton->setIconSize(QSize(34, 34));
-    m_userAvatarNavButton->setToolTip("Your profile");
+    m_userAvatarNavButton->setToolTip("Settings");
     connect(m_userAvatarNavButton, &QPushButton::clicked, this, [this] {
-        // Prefer the live roster's self entry (it carries the node id + display
-        // name the profile page resolves by); fall back to our own identity key
-        // so the page still recognises "you" while offline.
-        for (const MemberInfo &m : std::as_const(m_homeRoster)) {
-            if (m.self) {
-                showNodeProfile(m.id, m.name);
-                return;
-            }
-        }
-        showNodeProfile(m_profileIdentity.publicKey(), chatDisplayName());
+        showSection(1);
+        // Land on Settings > Profile, so clicking the avatar still shows your
+        // own profile the way it did before it became a tab (adhoc #274).
+        if (m_settingsTabs && m_profileSettingsTabIndex >= 0)
+            m_settingsTabs->setCurrentIndex(m_profileSettingsTabIndex);
     });
     updateUserSwitcher();
     updateAvatarButton();
@@ -3141,6 +3694,30 @@ QWidget *MainWindow::buildBreadcrumb()
     m_navGroup->addButton(m_leaderboardNavButton, 5); // section 5: Leaderboards
     connect(m_leaderboardNavButton, &QPushButton::clicked, this,
             [this] { showSection(5); });
+
+    // Control node: this desktop's operational surface for local mirrors,
+    // permissions, keys, wallet public address, Cloudflare, and connected hosts.
+    m_controlNodeNavButton = new QPushButton(QStringLiteral("Control"));
+    m_controlNodeNavButton->setObjectName("topNavButton");
+    m_controlNodeNavButton->setCheckable(true);
+    m_controlNodeNavButton->setCursor(Qt::PointingHandCursor);
+    m_controlNodeNavButton->setToolTip(
+        QStringLiteral("Control node - mirrors, health, keys, Cloudflare and hosts"));
+    setOcticon(m_controlNodeNavButton, "server", 16);
+    m_navGroup->addButton(m_controlNodeNavButton, kControlNodeSectionIndex);
+    connect(m_controlNodeNavButton, &QPushButton::clicked, this,
+            [this] { showSection(kControlNodeSectionIndex); });
+
+    // The browser World is a destination rather than a local stacked section, so
+    // it stays out of the exclusive button group and opens the active relay.
+    m_worldNavButton = new QPushButton(QStringLiteral("World"));
+    m_worldNavButton->setObjectName("topNavButton");
+    m_worldNavButton->setCursor(Qt::PointingHandCursor);
+    m_worldNavButton->setToolTip(
+        QStringLiteral("Open ForkMesh World in your browser"));
+    setOcticon(m_worldNavButton, "home", 16);
+    connect(m_worldNavButton, &QPushButton::clicked, this,
+            &MainWindow::openForkMeshWorld);
 
     // Hosts (adhoc #263): provision a remote machine by SSHing in and running the
     // ForkMesh installer over ansible. Sits right next to Leaderboards, section 7.
@@ -3250,15 +3827,15 @@ QWidget *MainWindow::buildBreadcrumb()
     });
 
     // Donate + social cluster, moved up out of the footer (adhoc #117). A standout
-    // donate button (opens the central-fund QR) sits beside a compact row of two
+    // donate button (opens the public reward-pool QR) sits beside a compact row of two
     // icon-only social buttons — the ForkMesh Reddit and Twitter/X links —
     // matched to the donate button height so the whole cluster reads as one line.
     auto *donateButton = new QPushButton(QString::fromUtf8("\xE2\x99\xA5 Donate"));
     donateButton->setObjectName("donateButton");
     donateButton->setCursor(Qt::PointingHandCursor);
     donateButton->setToolTip(
-        "Donate SOL to the ForkMesh central fund (distributed to online nodes "
-        "hourly)");
+        "Voluntarily send SOL from your own wallet to the transparent community "
+        "reward pool. ForkMesh never receives your wallet key.");
     connect(donateButton, &QPushButton::clicked, this,
             &MainWindow::showTreasuryDonateDialog);
     constexpr int kSocialButtonSize = 34;
@@ -3425,9 +4002,9 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addSpacing(4);
     mainRow->addLayout(socialRow);
     mainRow->addSpacing(10);
-    // Stack the node name above the wallet balance — "this is your money". The
+    // Stack the node name above the user-owned public wallet balance. The
     // online/reward toggle that used to sit here now lives in the node profile
-    // panel, under "Get paid to mirror".
+    // panel, under Mirror reward settings.
     auto *balanceColumn = new QVBoxLayout;
     balanceColumn->setContentsMargins(0, 0, 0, 0);
     balanceColumn->setSpacing(0);
@@ -3483,6 +4060,8 @@ QWidget *MainWindow::buildBreadcrumb()
     // sits in the right-hand utility cluster next to the rebuild button. Log is
     // now a floating button on the live-log strip.
     navRow->addWidget(m_leaderboardNavButton);
+    navRow->addWidget(m_controlNodeNavButton);
+    navRow->addWidget(m_worldNavButton);
     navRow->addWidget(m_hostsNavButton);
     navRow->addWidget(m_nodesNavButton);
     navRow->addWidget(m_relaysNavButton);
@@ -3509,14 +4088,17 @@ QWidget *MainWindow::buildBreadcrumb()
     // Keep the screen tools anchored at the right edge while the growing set of
     // section links scrolls independently. Otherwise adding one section can push
     // every utility button beyond the viewport even on a laptop-width window.
+    // Settings/rebuild come first so the three directly manipulated screen tools
+    // remain the right-edge cluster even when the optional rebuild button is
+    // hidden; putting Settings after them left a misleading 70px dead tail.
     auto *navUtilityRow = new QHBoxLayout;
     navUtilityRow->setContentsMargins(8, 0, 16, 0);
     navUtilityRow->setSpacing(8);
+    navUtilityRow->addWidget(m_settingsNavButton);
+    navUtilityRow->addWidget(m_navRebuildButton);
     navUtilityRow->addWidget(m_navDrawButton);
     navUtilityRow->addWidget(m_navScreenshotButton);
     navUtilityRow->addWidget(m_navResizeButton);
-    navUtilityRow->addWidget(m_settingsNavButton); // gear, next to rebuild (adhoc #137)
-    navUtilityRow->addWidget(m_navRebuildButton);
     auto *navUtilityHost = new QWidget;
     navUtilityHost->setLayout(navUtilityRow);
     navUtilityHost->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
@@ -3681,12 +4263,12 @@ void MainWindow::updateConnectionStatus()
         QStringLiteral("background:%1; border-radius:6px;").arg(color));
 }
 
-// Flip this node online/offline from the top-bar toggle. "Offline" keeps the user
-// in the app but stops the two things that earn rewards — the once-a-minute reward
-// heartbeat and live repo serving — and folds the open session into the saved
-// uptime total. "Online" resumes both and restarts the uptime clock. The choice is
-// persisted so a node the user deliberately parked offline doesn't silently start
-// collecting rewards again on the next launch.
+// Flip this node online/offline from the profile toggle. "Offline" keeps the user
+// in the app but stops two reward-eligibility signals — the heartbeat and live
+// repo serving — and folds the open session into the saved uptime total.
+// "Online" resumes both and restarts the uptime clock. Eligibility never
+// guarantees selection or payment. The choice is persisted so a node the user
+// deliberately parked offline does not silently resume serving after restart.
 void MainWindow::setNodeOffline(bool offline)
 {
     if (offline == m_nodeOffline) {
@@ -3708,7 +4290,7 @@ void MainWindow::setNodeOffline(bool offline)
             m_heartbeatTimer->stop();
         stopRepoHosts();
         logSystem("Node taken offline \xE2\x80\x94 no longer serving repos or "
-                  "collecting rewards.");
+                  "publishing reward-eligibility signals.");
     } else {
         // Restart the uptime clock only if we are actually attached to a relay.
         if (m_backend && m_connectedAtMs <= 0)
@@ -3724,8 +4306,8 @@ void MainWindow::setNodeOffline(bool offline)
             m_heartbeatTimer->start();
             sendNodeHeartbeat();
         }
-        logSystem("Node back online \xE2\x80\x94 serving repos and collecting "
-                  "rewards.");
+        logSystem("Node back online \xE2\x80\x94 serving repos and publishing "
+                  "reward-eligibility signals; selection is not guaranteed.");
     }
     updateNodeOnlineControls();
     updateConnectionStatus();
@@ -3741,10 +4323,13 @@ void MainWindow::updateNodeOnlineControls()
     if (m_nodeOnlineToggle->isChecked() != online)
         m_nodeOnlineToggle->setChecked(online);
     m_nodeOnlineToggle->setToolTip(
-        online ? QStringLiteral("This node is online and collecting rewards. "
-                                "Click to take it offline.")
-               : QStringLiteral("This node is offline and not collecting "
-                                "rewards. Click to bring it back online."));
+        online ? QStringLiteral(
+                     "This machine is online and may be considered by community "
+                     "reward policies; selection is not guaranteed. Click to "
+                     "take it offline.")
+               : QStringLiteral(
+                     "This machine is offline and is not publishing reward-"
+                     "eligibility signals. Click to bring it back online."));
 
     if (m_nodeOnlineStatusLabel) {
         m_nodeOnlineStatusLabel->setText(online ? QStringLiteral("Online")
@@ -3756,9 +4341,12 @@ void MainWindow::updateNodeOnlineControls()
 
     if (m_nodeRewardStatus) {
         m_nodeRewardStatus->setText(online
-                                        ? QStringLiteral("available for rewards")
-                                        : QStringLiteral("offline \xC2\xB7 not "
-                                                         "collecting rewards"));
+                                        ? QStringLiteral(
+                                              "may be eligible \xC2\xB7 selection "
+                                              "not guaranteed")
+                                        : QStringLiteral(
+                                              "offline \xC2\xB7 not publishing "
+                                              "eligibility"));
         m_nodeRewardStatus->setStyleSheet(
             online ? QStringLiteral("color:#3fb950; font-size:10px; font-weight:700;")
                    : QStringLiteral("color:#d29922; font-size:10px; font-weight:700;"));
@@ -3945,21 +4533,24 @@ void MainWindow::initRelayReachabilityWatch()
     connect(QNetworkInformation::instance(),
             &QNetworkInformation::reachabilityChanged, this,
             [this](QNetworkInformation::Reachability reachability) {
-                if (!m_relayRadar)
-                    return;
                 if (reachability ==
                     QNetworkInformation::Reachability::Disconnected) {
                     // Definitive: no network interface is up. No point probing;
                     // mark the outage as established so a later probe failure
                     // doesn't get the one-blip grace period.
                     m_relayProbeFailures = 2;
-                    static_cast<RelayRadarWidget *>(m_relayRadar)
-                        ->setUnreachable();
+                    if (m_relayRadar)
+                        static_cast<RelayRadarWidget *>(m_relayRadar)
+                            ->setUnreachable();
+                    if (m_backend)
+                        m_backend->setNetworkAvailable(false);
                 } else {
                     // Link is (possibly) back: confirm with a real probe right
                     // away. The radar stays red until the probe succeeds, so a
                     // half-up link never shows a false green.
                     probeRelayLatency();
+                    if (m_backend)
+                        m_backend->setNetworkAvailable(true);
                 }
             });
 }
@@ -4088,6 +4679,14 @@ QString lastSolanaBalanceSetting(const QString &address)
 {
     return kSolanaLastBalanceSettingPrefix + address.trimmed();
 }
+
+QString externalWalletBalanceTooltip(const QString &detail)
+{
+    return detail +
+           QStringLiteral(
+               "\nNon-custodial: this is a public external-wallet balance. "
+               "ForkMesh never receives or stores its private key.");
+}
 }  // namespace
 
 void MainWindow::updateNodeSwitcher()
@@ -4159,10 +4758,11 @@ void MainWindow::cycleNavSolanaCurrency()
 void MainWindow::updateNavSolanaBalance()
 {
     if (m_navNodeName) {
-        // "user/node" (e.g. "jett/forkmesh") when this node has a distinct
-        // owning user account; just the node name for a solo/unclaimed node,
-        // where topBarUserName() already falls back to the node name itself.
-        const QString nodeName = accountNameFromInput(m_userName, QString());
+        // "user/node" (e.g. "jett/forkmesh") — the user account paired with THIS
+        // machine's node name when they differ; just the one name for a
+        // solo/unclaimed node, where topBarUserName() falls back to the node
+        // name itself. The node half is machineNodeName(), never the username.
+        const QString nodeName = machineNodeName();
         const QString user = topBarUserName().trimmed();
         const QString name =
             (!user.isEmpty() && !nodeName.isEmpty() &&
@@ -4185,18 +4785,22 @@ void MainWindow::updateNavSolanaBalance()
     if (addr.isEmpty()) {
         m_navSolanaLamports = -1;
         m_navSolanaBalance->setText(QStringLiteral("SOL --"));
-        m_navSolanaBalance->setToolTip("Add a Solana address to show this node's balance");
+        m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
+            QStringLiteral(
+                "Add a public self-custodial Solana address to show its balance.")));
         return;
     }
     if (!isLikelySolanaAddress(addr)) {
         m_navSolanaLamports = -1;
         m_navSolanaBalance->setText(QStringLiteral("SOL invalid"));
-        m_navSolanaBalance->setToolTip("Saved Solana address is invalid");
+        m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
+            QStringLiteral("Saved public Solana address is invalid.")));
         return;
     }
 
     m_navSolanaBalance->setText(QStringLiteral("SOL ..."));
-    m_navSolanaBalance->setToolTip(QStringLiteral("Checking this node's Solana balance"));
+    m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
+        QStringLiteral("Checking your public Solana balance.")));
     queryNavSolanaBalance(addr, 0);
 }
 
@@ -4216,7 +4820,9 @@ void MainWindow::renderNavSolanaBalance()
     if (cur == QLatin1String("sol")) {
         m_navSolanaBalance->setText(solBalance);
         m_navSolanaBalance->setToolTip(
-            QStringLiteral("This node's Solana balance: %1").arg(solBalance));
+            externalWalletBalanceTooltip(
+                QStringLiteral("Your public Solana balance: %1")
+                    .arg(solBalance)));
         return;
     }
     const auto it = m_navFiatRates.constFind(cur);
@@ -4228,14 +4834,17 @@ void MainWindow::renderNavSolanaBalance()
             formatFiatBalance(m_navSolanaLamports, it->first, cur);
         m_navSolanaBalance->setText(fiatBalance);
         m_navSolanaBalance->setToolTip(
-            QStringLiteral("This node's balance: %1 (%2)")
-                .arg(fiatBalance, solBalance));
+            externalWalletBalanceTooltip(
+                QStringLiteral("Your public wallet balance: %1 (%2)")
+                    .arg(fiatBalance, solBalance)));
         return;
     }
     // No fresh rate cached: show the SOL figure with a hint and fetch one rate.
     m_navSolanaBalance->setText(QStringLiteral("%1 ...").arg(fiatCurrencySymbol(cur)));
     m_navSolanaBalance->setToolTip(
-        QStringLiteral("Checking SOL/%1 price for %2").arg(cur.toUpper(), solBalance));
+        externalWalletBalanceTooltip(
+            QStringLiteral("Checking SOL/%1 price for %2")
+                .arg(cur.toUpper(), solBalance)));
     queryNavSolanaUsdPrice(m_navSolanaBalanceAddress, m_navSolanaLamports);
 }
 
@@ -4245,7 +4854,8 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
     if (endpointIndex >= count) {
         if (m_navSolanaBalance && m_navSolanaBalanceAddress == addr) {
             m_navSolanaBalance->setText(QStringLiteral("SOL unavailable"));
-            m_navSolanaBalance->setToolTip("Solana balance is temporarily unavailable");
+            m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
+                QStringLiteral("Public Solana balance is temporarily unavailable.")));
         }
         return;
     }
@@ -4285,9 +4895,10 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
             QSettings().value(kDisbursementAlertSetting, false).toBool()) {
             const QString amount = formatSolanaBalance(lamports - previousLamports);
             QApplication::alert(this, 0);
-            postNotification(QStringLiteral("New disbursement received"),
-                             QStringLiteral("%1 added to this node's wallet. "
-                                            "New balance: %2")
+            postNotification(QStringLiteral("Public wallet balance increased"),
+                             QStringLiteral(
+                                 "%1 received by your external self-custodial "
+                                 "wallet. New public balance: %2")
                                  .arg(amount, balance),
                              false, QStringLiteral("emblem-default"));
         }
@@ -4297,14 +4908,17 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
             m_navSolanaBalance->setText(
                 QStringLiteral("%1 ...").arg(fiatCurrencySymbol(cur)));
             m_navSolanaBalance->setToolTip(
-                QStringLiteral("Checking SOL/%1 price for %2")
-                    .arg(cur.toUpper(), balance));
+                externalWalletBalanceTooltip(
+                    QStringLiteral("Checking SOL/%1 price for %2")
+                        .arg(cur.toUpper(), balance)));
             queryNavSolanaUsdPrice(addr, lamports);
             return;
         }
         m_navSolanaBalance->setText(balance);
         m_navSolanaBalance->setToolTip(
-            QStringLiteral("This node's Solana balance: %1").arg(balance));
+            externalWalletBalanceTooltip(
+                QStringLiteral("Your public Solana balance: %1")
+                    .arg(balance)));
     });
 }
 
@@ -4334,8 +4948,9 @@ void MainWindow::queryNavSolanaUsdPrice(const QString &addr, qint64 lamports)
         if (netError != QNetworkReply::NoError || rate <= 0.0) {
             m_navSolanaBalance->setText(solBalance);
             m_navSolanaBalance->setToolTip(
-                QStringLiteral("SOL/%1 price unavailable. Balance: %2")
-                    .arg(cur.toUpper(), solBalance));
+                externalWalletBalanceTooltip(
+                    QStringLiteral("SOL/%1 price unavailable. Public balance: %2")
+                        .arg(cur.toUpper(), solBalance)));
             return;
         }
 
@@ -4343,9 +4958,11 @@ void MainWindow::queryNavSolanaUsdPrice(const QString &addr, qint64 lamports)
         const QString fiatBalance = formatFiatBalance(lamports, rate, cur);
         m_navSolanaBalance->setText(fiatBalance);
         m_navSolanaBalance->setToolTip(
-            QStringLiteral("This node's balance: %1 (%2 at %3%4/SOL)")
-                .arg(fiatBalance, solBalance, fiatCurrencySymbol(cur),
-                     QString::number(rate, 'f', 2)));
+            externalWalletBalanceTooltip(
+                QStringLiteral("Your public wallet balance: %1 "
+                               "(%2 at %3%4/SOL)")
+                    .arg(fiatBalance, solBalance, fiatCurrencySymbol(cur),
+                         QString::number(rate, 'f', 2))));
     });
 }
 
@@ -4379,7 +4996,7 @@ void MainWindow::showNodeMenu()
     for (const NodeMenuEntry &e : std::as_const(m_nodeMenuEntries)) {
         QString text = e.name;
         if (e.self)
-            text += " (you)";
+            text += " (this machine)";
         text += QStringLiteral("   %1 repo%2")
                     .arg(e.repoCount)
                     .arg(e.repoCount == 1 ? "" : "s");
@@ -4512,7 +5129,8 @@ void MainWindow::showNodesWindow()
                                "<b>%2</b>%3")
                     .arg(isOnline ? "#3fb950" : "#8b949e",
                          node.name.toHtmlEscaped(),
-                         node.self ? " <span style='color:#8b949e'>(you)</span>"
+                         node.self ? " <span style='color:#8b949e'>(this "
+                                     "machine)</span>"
                                    : QString()));
             title->setTextFormat(Qt::RichText);
             info->addWidget(title);
@@ -4524,7 +5142,7 @@ void MainWindow::showNodesWindow()
                 lines << QStringLiteral("Platform: %1").arg(node.platform.toHtmlEscaped());
             if (!node.version.isEmpty())
                 lines << QStringLiteral("Version: %1").arg(node.version.toHtmlEscaped());
-            lines << QStringLiteral("Earnings: %1")
+            lines << QStringLiteral("Public wallet balance: %1")
                          .arg(node.solanaBalance.trimmed().isEmpty()
                                   ? QString::fromUtf8("\xE2\x80\x94")
                                   : node.solanaBalance.trimmed().toHtmlEscaped() +
@@ -5097,19 +5715,7 @@ void MainWindow::updateRepoPushButton()
 // (the worker rejects every clone whose live refs don't hash to the pin).
 static QString hashForEachRefOutput(const QByteArray &out)
 {
-    QStringList lines;
-    const QStringList rows = QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts);
-    for (const QString &raw : rows) {
-        const QString line = raw.trimmed();
-        if (line.isEmpty() || line.endsWith(QStringLiteral("^{}")))
-            continue;
-        lines.append(line);
-    }
-    lines.sort();
-    return QString::fromUtf8(
-        QCryptographicHash::hash(lines.join('\n').toUtf8(),
-                                 QCryptographicHash::Sha256)
-            .toHex());
+    return PublicMirrorRuntime::refsSha256FromForEachRef(out);
 }
 
 // sha256 over the canonical heads+tags advertisement of a bare mirror (see
@@ -5228,7 +5834,7 @@ void MainWindow::refreshRepoPinBanner()
                                 logSystem(
                                     "Integrity pin: clones of " + owner + "/" + name +
                                     " are being rejected — the relay's pinned hash no "
-                                    "longer matches the refs this node serves.");
+                                    "longer matches the refs this machine serves.");
                                 loadMirrorNodesPanel(); // paint the caution triangle now
                             }
                         });
@@ -5770,8 +6376,8 @@ QWidget *MainWindow::buildSolanaNotice()
     m_solanaBanner = new QWidget;
     m_solanaBanner->setObjectName("solanaBanner");
     m_solanaBannerLabel = new QLabel(
-        "Add a Solana address so others can sponsor this node — it keeps "
-        "the network open to donations and more sustainable.");
+        "Add a public self-custodial Solana payout address if you want this "
+        "mirror to be considered by community reward policies.");
     m_solanaBannerLabel->setObjectName("solanaBannerLabel");
     m_solanaBannerLabel->setWordWrap(true);
 
@@ -5803,8 +6409,8 @@ void MainWindow::updateSolanaNotice()
     if (!m_solanaBanner)
         return;
     // Crypto is strictly opt-in, so we no longer nag every account-less node to
-    // add a payout address. The only prompt to set one is the explicit "Get paid
-    // to mirror" button on the node profile; the banner stays hidden here.
+    // add a payout address. The only prompt to set one is the explicit mirror
+    // reward-settings button on the node profile; the banner stays hidden here.
     m_solanaBanner->setVisible(false);
     updateWalletVerifyNotice();
     updateNavSolanaBalance();
@@ -5819,13 +6425,15 @@ QWidget *MainWindow::buildWalletVerifyNotice()
     icon->setObjectName("walletVerifyIcon");
     icon->setPixmap(themedOcticon("alert", QColor("#d29922"), 22).pixmap(22, 22));
 
-    auto *title = new QLabel("Verify your payout wallet to receive payouts");
+    auto *title = new QLabel("Check payout-address eligibility");
     title->setObjectName("walletVerifyTitle");
     auto *body = new QLabel(
-        "This node's payout wallet isn't verified yet, so it can't receive "
-        "payouts. Make a small deposit (\xE2\x89\xA5 0.001 SOL) to your wallet "
-        "to prove you control it \xE2\x80\x94 then this node starts earning its "
-        "share of the network rewards.");
+        "Some community reward policies require an active public address. "
+        "ForkMesh can validate its format and publish the existing signed node "
+        "heartbeat, but neither proves wallet control nor guarantees selection "
+        "or payment.<br><b>Non-custodial:</b> ForkMesh accepts only the public "
+        "address here. Never enter a private key or recovery phrase; seeds and "
+        "mnemonics are also prohibited.");
     body->setObjectName("walletVerifyBody");
     body->setWordWrap(true);
     body->setTextFormat(Qt::RichText);
@@ -5836,7 +6444,7 @@ QWidget *MainWindow::buildWalletVerifyNotice()
     textCol->addWidget(title);
     textCol->addWidget(body);
 
-    auto *verifyButton = new QPushButton("Verify wallet");
+    auto *verifyButton = new QPushButton("Check settings");
     verifyButton->setObjectName("primaryButton");
     verifyButton->setCursor(Qt::PointingHandCursor);
     setOcticon(verifyButton, "shield-check", 16);
@@ -5877,19 +6485,30 @@ void MainWindow::promptSetSolanaAddress()
     bool ok = false;
     const QString current = savedSolanaAddress();
     const QString address = QInputDialog::getText(
-        this, "Solana address",
-        "Enter a Solana address to receive donations:", QLineEdit::Normal,
+        this, "Self-custodial payout address",
+        "Enter your public Solana payout address only. Never enter a private "
+        "key, seed, mnemonic, or recovery phrase:",
+        QLineEdit::Normal,
         current, &ok);
     if (!ok)
         return;
     const QString trimmed = address.trimmed();
+    if (!trimmed.isEmpty() &&
+        !forkmesh::control::isValidSolanaPublicAddress(trimmed)) {
+        flashMessage(
+            QStringLiteral(
+                "That is not a valid Solana public address. No private key or "
+                "recovery phrase was accepted."),
+            /*error=*/true);
+        return;
+    }
     saveSolanaAddress(trimmed);
     if (m_solanaEdit)
         m_solanaEdit->setText(trimmed);
     if (m_settingsSolanaEdit)
         m_settingsSolanaEdit->setText(trimmed);
-    // The address is shared with peers on the next connect; the sponsor button
-    // and donation notice pick it up immediately.
+    // The public address is shared with peers on the next connect; the reward
+    // settings and wallet-balance displays pick it up immediately.
     updateSolanaNotice();
     updateHomeStats();
 }
@@ -5897,10 +6516,9 @@ void MainWindow::promptSetSolanaAddress()
 void MainWindow::enablePaidMirroring()
 {
     // Crypto is strictly opt-in: the core flow (clone, mirror, issues, PRs, chat)
-    // never routes here. This is the one place a user chooses to host their
-    // mirrors on the network and earn donations, which needs two things the core
-    // flow does not: (1) a Solana payout address and (2) an active account the
-    // relay can verify before it accepts hosting/publishing.
+    // never routes here. This page only configures a public payout address for
+    // an already registered, locally signable mirror identity. It must never
+    // launch the historical reserve/donation/finalize funnel.
     QString address = savedSolanaAddress().trimmed();
     if (address.isEmpty()) {
         promptSetSolanaAddress();
@@ -5908,26 +6526,27 @@ void MainWindow::enablePaidMirroring()
         if (address.isEmpty())
             return; // user cancelled the address prompt — stay opted out
     }
-
-    if (!hasOwnerSigningCapability(accountOwner())) {
-        // Reuse the established join/activate path (reserve -> donate -> set
-        // login, or log in to an existing account). On cancel/failure it surfaces
-        // the reason itself; we simply stay opted out.
-        if (!ensureNodeAccount(accountOwner(), address))
-            return;
-        if (!hasOwnerSigningCapability(accountOwner())) {
-            flashMessage(
-                QStringLiteral(
-                    "This account is signed in, but this desktop cannot host or "
-                    "publish for it. Use the primary desktop identity or import "
-                    "that identity before enabling paid mirroring."),
-                /*error=*/true);
-            return;
-        }
+    if (!forkmesh::control::isValidSolanaPublicAddress(address)) {
+        flashMessage(
+            QStringLiteral(
+                "That saved value is not a valid Solana public address. No "
+                "private key, seed, mnemonic, or recovery phrase can be used."),
+            /*error=*/true);
+        return;
     }
 
-    // Active now: bring the live hosts up and (re)publish existing mirrors so the
-    // network can clone from this node and route donations to its wallet.
+    if (!hasOwnerSigningCapability(accountOwner())) {
+        flashMessage(
+            QStringLiteral(
+                "Register or sign in to this node from Account settings first. "
+                "Mirror reward settings never create a deposit wallet, reserve "
+                "a paid account, or run a donation flow."),
+            /*error=*/true);
+        return;
+    }
+
+    // Bring the update channels up and (re)publish existing mirrors. A configured
+    // address is only one eligibility input; it does not promise a reward.
     startRepoHosts();
     for (int i = 0; i < m_repositories.size(); ++i) {
         if (m_repositories.at(i).publishToNetwork)
@@ -5936,17 +6555,64 @@ void MainWindow::enablePaidMirroring()
 
     updateSolanaNotice();
     updateHomeStats();
-    // Refresh the open profile so the button flips to its "earning" state and the
-    // Solana address/QR/balance section appears next to the username.
+    // Refresh the open profile so the button shows its configured state and the
+    // public address/QR/balance section appears next to the username.
     if (m_nodeProfilePanel && m_nodeProfilePanel->isVisible())
-        showNodeProfile(m_profileNodeId, m_profileNodeName);
-    flashMessage(QStringLiteral("You're set up to get paid to mirror."));
+        showNodeProfile(m_profileNodeId, m_profileNodeName,
+                        /*navigate=*/!profilePanelInSettings());
+    flashMessage(QStringLiteral(
+        "Reward eligibility configured. Selection and payment are not guaranteed."));
+}
+
+void MainWindow::ensureSectionBuilt(int index)
+{
+    if (!m_sectionStack || index < 0 || index >= m_sectionStack->count())
+        return;
+    QWidget *placeholder = m_sectionStack->widget(index);
+    if (!placeholder ||
+        !placeholder->property("forkmeshDeferredSection").toBool())
+        return;
+
+    QWidget *section = nullptr;
+    switch (index) {
+    case 1: {
+        auto *scroll = new QScrollArea;
+        scroll->setObjectName("settingsScroll");
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        scroll->setWidgetResizable(true);
+        scroll->setMinimumHeight(0);
+        scroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
+        scroll->setWidget(buildSettingsSection());
+        section = scroll;
+        break;
+    }
+    case 2: section = buildChatSection(); break;
+    case 3: section = buildNotificationsSection(); break;
+    case 4: section = buildLogSection(); break;
+    case 5: section = buildLeaderboardsSection(); break;
+    case 6: section = buildSearchResultsSection(); break;
+    case 7: section = buildHostsSection(); break;
+    case 8: section = buildRelaysSection(); break;
+    case 10: section = buildNodeProfileSection(); break;
+    case 11: section = buildNetworkReposSection(); break;
+    case 12: section = buildNetworkDiagnosticsSection(); break;
+    case 13: section = buildNodesSection(); break;
+    case 14: section = buildControlNodeSection(); break;
+    default: break;
+    }
+    if (!section)
+        return;
+    m_sectionStack->insertWidget(index, section);
+    m_sectionStack->removeWidget(placeholder);
+    placeholder->deleteLater();
 }
 
 void MainWindow::showSection(int index)
 {
     if (index == 9)
         index = kNetworkDiagnosticsSectionIndex;
+    ensureSectionBuilt(index);
     // Leaving Settings (index 1) while the mic test is recording would otherwise
     // leave the recorder holding the microphone open in the background; stop it.
     if (index != 1 && m_voiceTestRecording)
@@ -5962,7 +6628,11 @@ void MainWindow::showSection(int index)
     updateBreadcrumb();
     if (index == 0)
         updateHomeStats();
-    else if (index == 2) {
+    else if (index == 1) {
+        // The profile panel may be parked in the full-page section; pull it back
+        // into the Profile tab (and refresh it) when that tab is the open one.
+        syncSettingsProfileTab();
+    } else if (index == 2) {
         // Entering Chat clears the unread marker for the open conversation.
         clearActiveConversationUnread();
     } else if (index == 3) {
@@ -5987,6 +6657,10 @@ void MainWindow::showSection(int index)
     } else if (index == 8) {
         // Re-list and re-probe the relays each time the Relays section opens.
         refreshRelaysTable();
+    } else if (index == 10) {
+        // Back/Forward can land here directly while the panel is on loan to the
+        // Settings > Profile tab; bring it home so the page isn't blank.
+        hostNodeProfilePanel(false);
     } else if (index == kNodesSectionIndex) {
         // Re-list the known nodes each time the Nodes section opens.
         refreshNodesTable();
@@ -5995,6 +6669,8 @@ void MainWindow::showSection(int index)
     } else if (index == kNetworkDiagnosticsSectionIndex) {
         refreshFirewallTables();
         refreshNetworkDiagnostics();
+    } else if (index == kControlNodeSectionIndex) {
+        refreshControlNode();
     }
 }
 
@@ -6171,6 +6847,9 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
 
     QList<QJsonObject> rows;
     QSet<QString> seen;
+    m_privateCatalogAccessIds.clear();
+    static const QRegularExpression opaqueAccessIdPattern(
+        QStringLiteral("^[0-9a-f]{64}$"));
     for (const QJsonValue &value : repos) {
         QJsonObject repo = value.toObject();
         const QString owner =
@@ -6183,9 +6862,31 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         if (seen.contains(key))
             continue;
         seen.insert(key);
+        const bool isPrivate =
+            repo.value("private").toBool(false) ||
+            repo.value("isPrivate").toBool(false);
         const QString source = repo.value("source").toString().trimmed();
-        if (!source.isEmpty() && source != QLatin1String("local-node"))
+        if (!source.isEmpty() && source != QLatin1String("local-node") &&
+            !(isPrivate &&
+              source == QLatin1String("owner-sealed-opaque")))
             continue;
+        if (isPrivate) {
+            const QString accessId =
+                repo.value(QStringLiteral("privateAccessId"))
+                    .toString()
+                    .trimmed()
+                    .toLower();
+            const QString accessPath =
+                repo.value(QStringLiteral("privateAccessPath"))
+                    .toString()
+                    .trimmed();
+            const QString expectedPath =
+                QStringLiteral("/api/private-replicas/") + accessId;
+            if (opaqueAccessIdPattern.match(accessId).hasMatch() &&
+                (accessPath.isEmpty() || accessPath == expectedPath)) {
+                m_privateCatalogAccessIds.insert(key, accessId);
+            }
+        }
         QString cloneUrl = repo.value("cloneUrl").toString().trimmed();
         if (cloneUrl.isEmpty())
             cloneUrl = repo.value("clone_url").toString().trimmed();
@@ -6316,8 +7017,8 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         mirrorButton->setObjectName("ghostButton");
         mirrorButton->setCursor(Qt::PointingHandCursor);
         mirrorButton->setToolTip(mirroredIndex >= 0
-                                     ? QStringLiteral("This node already mirrors it")
-                                     : QStringLiteral("Mirror this repository on this node"));
+                                     ? QStringLiteral("This machine already mirrors it")
+                                     : QStringLiteral("Mirror this repository on this machine"));
         setOcticon(mirrorButton, "sync", 13);
         if (mirroredIndex >= 0) {
             mirrorButton->setEnabled(false);
@@ -6450,6 +7151,12 @@ void MainWindow::openNetworkRepo(const QString &owner, const QString &name,
 
     int index = findNetworkRepoIndex(owner, name, true);
     if (index >= 0) {
+        if (m_repositories.at(index).isPrivate &&
+            PrivateMirrorStore::isOpaqueId(
+                m_privateCatalogAccessIds.value(owner + "/" + name))) {
+            m_repositories[index].privateReplicaId =
+                m_privateCatalogAccessIds.value(owner + "/" + name);
+        }
         openRepoDetail(index);
         const RepositoryRecord &repo = m_repositories.at(index);
         if (repo.previewOnly && !m_syncingRepos.contains(index) &&
@@ -6463,6 +7170,12 @@ void MainWindow::openNetworkRepo(const QString &owner, const QString &name,
     repo.name = name;
     repo.cloneUrl = cloneUrl.isEmpty() ? hostedCloneUrl(owner, name) : cloneUrl;
     repo.isPrivate = isPrivate;
+    if (isPrivate) {
+        const QString accessId =
+            m_privateCatalogAccessIds.value(owner + "/" + name);
+        if (PrivateMirrorStore::isOpaqueId(accessId))
+            repo.privateReplicaId = accessId;
+    }
     repo.previewOnly = true;
     repo.actionsEnabled = false;
     repo.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
@@ -6502,7 +7215,7 @@ void MainWindow::mirrorNetworkRepo(const QString &owner, const QString &name,
                                    const QString &cloneUrl, bool isPrivate)
 {
     if (findNetworkRepoIndex(owner, name, false) >= 0) {
-        flashMessage(QStringLiteral("This node already mirrors %1/%2.")
+        flashMessage(QStringLiteral("This machine already mirrors %1/%2.")
                          .arg(owner, name));
         refreshNetworkReposPage();
         return;
@@ -6796,11 +7509,19 @@ QWidget *MainWindow::buildHostsSection()
     title->setFont(titleFont);
     titleRow->addWidget(title);
     titleRow->addStretch(1);
-    // Bulk one-click install: upload this app's own release binary to every
-    // saved host in turn, instead of clicking Install (binary) on each row.
+    // Bulk one-click install: make every saved host install the current
+    // published, checksum-verified release in parallel. This deliberately does
+    // not upload QCoreApplication::applicationFilePath(): a developer may be
+    // running an un-packaged source build even though it reports the release
+    // version.
     m_hostInstallAllButton = new QPushButton(QStringLiteral("Install from binary (all hosts)"));
     m_hostInstallAllButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_hostInstallAllButton, "upload", 14);
+    m_hostInstallAllButton->setToolTip(QStringLiteral(
+        "Install the published ForkMesh v" FORKMESH_VERSION
+        " binary on every saved host. Each host verifies the release checksum, "
+        "version and exact source commit, keeps its identity, keys and mirrored "
+        "data, and restarts its node."));
+    setOcticon(m_hostInstallAllButton, "download", 14);
     connect(m_hostInstallAllButton, &QPushButton::clicked, this,
             &MainWindow::runHostInstallAllFromBinary);
     titleRow->addWidget(m_hostInstallAllButton);
@@ -6812,8 +7533,8 @@ QWidget *MainWindow::buildHostsSection()
     m_hostReinstallAllButton->setCursor(Qt::PointingHandCursor);
     m_hostReinstallAllButton->setToolTip(QStringLiteral(
         "For every saved host: remove ForkMesh and ALL of its data, then "
-        "install a fresh copy from this app's binary and re-link it to your "
-        "account."));
+        "install the published ForkMesh v" FORKMESH_VERSION
+        " binary and re-link it to your account."));
     setOcticon(m_hostReinstallAllButton, "sync", 14);
     connect(m_hostReinstallAllButton, &QPushButton::clicked, this,
             &MainWindow::runHostReinstallAllFromBinary);
@@ -6838,11 +7559,16 @@ QWidget *MainWindow::buildHostsSection()
         "Provision a remote machine onto the network. Enter its address and SSH "
         "login and give it a node name, then click Add host to save it. With the "
         "host saved, click Install ForkMesh and it will SSH in and run the hosted "
-        "installer in a plain shell. When it finishes the new node joins the "
-        "network and shows up in each repository's Mirror nodes list. Install "
-        "(binary) on a saved host, or Install from binary (all hosts) above, "
-        "uploads this app's own release binary to the host instead of having it "
-        "download the release itself."));
+        "installer in a plain shell. ForkMesh remembers the first host key in "
+        "its private trust store and rejects later mismatches. Your SSH agent, "
+        "default keys and ~/.ssh/config are used when the optional password is "
+        "blank; entered passwords remain in memory only. When installation "
+        "finishes the new node joins the network and shows up in each "
+        "repository's Mirror nodes list. Install "
+        "(binary) on one saved host uploads this app's own binary. Install from "
+        "binary (all hosts) instead makes every host download and checksum-verify "
+        "the current published release, then confirms the installed version and "
+        "exact source commit."));
     subtitle->setObjectName("mutedLabel");
     subtitle->setWordWrap(true);
     outer->addWidget(subtitle);
@@ -6878,8 +7604,13 @@ QWidget *MainWindow::buildHostsSection()
 
     m_hostPassEdit = new QLineEdit;
     m_hostPassEdit->setEchoMode(QLineEdit::Password);
-    m_hostPassEdit->setPlaceholderText(QStringLiteral("SSH password"));
-    form->addRow(QStringLiteral("SSH password"), m_hostPassEdit);
+    m_hostPassEdit->setPlaceholderText(
+        QStringLiteral("Optional — SSH agent/default key is preferred"));
+    m_hostPassEdit->setToolTip(QStringLiteral(
+        "Leave blank to use your SSH agent, default key, or ~/.ssh/config. "
+        "A password entered here is kept only until ForkMesh exits and is "
+        "never written to settings."));
+    form->addRow(QStringLiteral("SSH password (optional)"), m_hostPassEdit);
 
     m_hostNameEdit = new QLineEdit;
     m_hostNameEdit->setPlaceholderText(QStringLiteral("my-mirror-1"));
@@ -6976,7 +7707,10 @@ QWidget *MainWindow::buildHostsSection()
         "Click Update on a saved host to re-run the installer and bring it up to "
         "the latest ForkMesh release. Click Uninstall to completely remove "
         "ForkMesh \xE2\x80\x94 binary, launcher and ALL data \xE2\x80\x94 from "
-        "that host. Click Logs to open a live SSH tail for that host. "
+        "that host. Click Actions to enable its executor and optionally replace "
+        "its device-local variables through a one-shot SSH stdin request; secret "
+        "values are never saved by this controller. Click Logs to open a live "
+        "SSH tail for that host. "
         "Double-click a host instead to reload it into the form "
         "above for editing."));
     hostsHint->setObjectName("mutedLabel");
@@ -7000,8 +7734,8 @@ QWidget *MainWindow::buildHostsSection()
     m_hostsTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     makeColumnsResizable(m_hostsTable); // spreadsheet-style draggable columns (#263)
     // Double-clicking a saved host reloads its server info into the install
-    // form so the installer can be re-run. The password is never stored on
-    // disk, so it is left blank for the user to re-enter.
+    // form so the installer can be re-run. A password is available only if it
+    // was entered or migrated during this process; otherwise key auth is used.
     connect(m_hostsTable, &QTableWidget::cellDoubleClicked, this,
             &MainWindow::loadHostIntoForm);
     bodyCol->addWidget(m_hostsTable);
@@ -7017,9 +7751,9 @@ void MainWindow::refreshHostsTable()
 {
     if (!m_hostsTable)
         return;
-    const QJsonArray hosts =
-        QJsonDocument::fromJson(QSettings().value(kHostsSetting).toString().toUtf8())
-            .array();
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
     m_hostsTable->setRowCount(hosts.size());
     for (int i = 0; i < hosts.size(); ++i) {
         const QJsonObject h = hosts.at(i).toObject();
@@ -7103,6 +7837,19 @@ void MainWindow::refreshHostsTable()
             });
         });
         cellRow->addWidget(viewLogsBtn);
+        auto *actionsBtn = new QPushButton(QStringLiteral("Actions"));
+        actionsBtn->setObjectName(QStringLiteral("hostActionsButton"));
+        actionsBtn->setCursor(Qt::PointingHandCursor);
+        actionsBtn->setToolTip(QStringLiteral(
+            "Configure this mirror's Actions state and device-local variables "
+            "over authenticated SSH. Values travel only on stdin."));
+        setOcticon(actionsBtn, "workflow", 12);
+        connect(actionsBtn, &QPushButton::clicked, this, [this, i] {
+            QTimer::singleShot(0, this, [this, i] {
+                configureHostActionsForSelection(i);
+            });
+        });
+        cellRow->addWidget(actionsBtn);
         m_hostsTable->setCellWidget(i, 4, cell);
     }
 
@@ -7110,6 +7857,396 @@ void MainWindow::refreshHostsTable()
         m_hostsNavButton->setText(hosts.isEmpty()
             ? QStringLiteral("Hosts")
             : QStringLiteral("Hosts (%1)").arg(hosts.size()));
+}
+
+void MainWindow::configureHostActionsForSelection(int row)
+{
+    if (m_hostActionsProcess &&
+        m_hostActionsProcess->state() != QProcess::NotRunning) {
+        if (m_hostInstallStatus) {
+            m_hostInstallStatus->setText(
+                QStringLiteral("A mirror Actions configuration is already running."));
+        }
+        return;
+    }
+    if (!m_hostsTable || row < 0 || row >= m_hostsTable->rowCount())
+        return;
+
+    const auto cellText = [this, row](int column) {
+        const QTableWidgetItem *item = m_hostsTable->item(row, column);
+        return item ? item->text().trimmed() : QString();
+    };
+    const QString node = cellText(0);
+    const QString host = cellText(1);
+    const QString user = cellText(2);
+    QString password = m_hostSessionPasswords.value(
+        forkmesh::control::savedHostCredentialKey(node, host, user));
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Mirror Actions — %1").arg(node));
+    dialog.setMinimumSize(640, 470);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *notice = new QLabel(QStringLiteral(
+        "SSH access to <b>%1@%2</b> authorizes this one change. ForkMesh sends "
+        "a bounded configuration document to the node helper on stdin. Variable "
+        "values never enter command arguments, logs, the public mirror catalog, "
+        "or this desktop's saved settings.")
+                                  .arg(user.toHtmlEscaped(),
+                                       host.toHtmlEscaped()));
+    notice->setWordWrap(true);
+    layout->addWidget(notice);
+
+    auto *enabled =
+        new QCheckBox(QStringLiteral("Enable Actions on this mirror node"));
+    enabled->setObjectName(QStringLiteral("hostActionsEnabledCheck"));
+    enabled->setChecked(false);
+    layout->addWidget(enabled);
+    auto *replace = new QCheckBox(
+        QStringLiteral("Replace the node's Actions variables with this list"));
+    replace->setObjectName(QStringLiteral("hostActionsReplaceVariablesCheck"));
+    replace->setChecked(false);
+    layout->addWidget(replace);
+
+    auto *variables = new QTableWidget(0, 2);
+    variables->setObjectName(QStringLiteral("hostActionsVariablesTable"));
+    variables->setHorizontalHeaderLabels(
+        {QStringLiteral("Name"), QStringLiteral("Value")});
+    variables->horizontalHeader()->setSectionResizeMode(
+        0, QHeaderView::ResizeToContents);
+    variables->horizontalHeader()->setSectionResizeMode(1,
+                                                         QHeaderView::Stretch);
+    variables->verticalHeader()->setVisible(false);
+    variables->setSelectionBehavior(QAbstractItemView::SelectRows);
+    variables->setSelectionMode(QAbstractItemView::SingleSelection);
+    variables->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    variables->setEnabled(false);
+    layout->addWidget(variables, 1);
+
+    auto *variableButtons = new QHBoxLayout;
+    auto *addVariable = new QPushButton(QStringLiteral("Add variable"));
+    addVariable->setObjectName(QStringLiteral("hostActionsAddVariableButton"));
+    auto *removeVariable =
+        new QPushButton(QStringLiteral("Remove selected"));
+    removeVariable->setObjectName(
+        QStringLiteral("hostActionsRemoveVariableButton"));
+    addVariable->setEnabled(false);
+    removeVariable->setEnabled(false);
+    variableButtons->addWidget(addVariable);
+    variableButtons->addWidget(removeVariable);
+    variableButtons->addStretch();
+    layout->addLayout(variableButtons);
+    connect(replace, &QCheckBox::toggled, variables,
+            &QWidget::setEnabled);
+    connect(replace, &QCheckBox::toggled, addVariable,
+            &QWidget::setEnabled);
+    connect(replace, &QCheckBox::toggled, removeVariable,
+            &QWidget::setEnabled);
+
+    connect(addVariable, &QPushButton::clicked, &dialog,
+            [this, variables] {
+                bool ok = false;
+                const QString name = QInputDialog::getText(
+                    this, QStringLiteral("Actions variable"),
+                    QStringLiteral("Variable name:"), QLineEdit::Normal,
+                    QString(), &ok).trimmed();
+                if (!ok || name.isEmpty())
+                    return;
+                const QString value = QInputDialog::getText(
+                    this, QStringLiteral("Actions variable"),
+                    QStringLiteral("Secret value:"), QLineEdit::Password,
+                    QString(), &ok);
+                if (!ok)
+                    return;
+                int rowForName = -1;
+                for (int row = 0; row < variables->rowCount(); ++row) {
+                    const QTableWidgetItem *item = variables->item(row, 0);
+                    if (item && item->text() == name) {
+                        rowForName = row;
+                        break;
+                    }
+                }
+                if (rowForName < 0) {
+                    rowForName = variables->rowCount();
+                    variables->insertRow(rowForName);
+                    variables->setItem(rowForName, 0,
+                                       new QTableWidgetItem(name));
+                    variables->setItem(rowForName, 1,
+                                       new QTableWidgetItem);
+                }
+                QTableWidgetItem *valueItem =
+                    variables->item(rowForName, 1);
+                valueItem->setText(QStringLiteral("••••••••"));
+                valueItem->setData(Qt::UserRole, value);
+                valueItem->setToolTip(
+                    QStringLiteral("Value is hidden and will be discarded after sending."));
+            });
+    connect(removeVariable, &QPushButton::clicked, &dialog,
+            [variables] {
+                const int row = variables->currentRow();
+                if (row < 0)
+                    return;
+                if (QTableWidgetItem *item = variables->item(row, 1)) {
+                    QString secret = item->data(Qt::UserRole).toString();
+                    secret.fill(QChar::Null);
+                    item->setData(Qt::UserRole, QString());
+                }
+                variables->removeRow(row);
+            });
+
+    auto *buttons =
+        new QDialogButtonBox(QDialogButtonBox::Cancel);
+    QPushButton *apply = buttons->addButton(
+        QStringLiteral("Send to mirror"), QDialogButtonBox::AcceptRole);
+    apply->setObjectName(QStringLiteral("hostActionsApplyButton"));
+    apply->setDefault(true);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog,
+            &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog,
+            &QDialog::reject);
+    layout->addWidget(buttons);
+
+    if (dialog.exec() != QDialog::Accepted) {
+        for (int variableRow = 0; variableRow < variables->rowCount();
+             ++variableRow) {
+            if (QTableWidgetItem *item =
+                    variables->item(variableRow, 1)) {
+                QString secret = item->data(Qt::UserRole).toString();
+                secret.fill(QChar::Null);
+                item->setData(Qt::UserRole, QString());
+            }
+        }
+        return;
+    }
+
+    forkmesh::control::MirrorActionsConfigurationRequest request;
+    request.requestId =
+        QUuid::createUuid().toString(QUuid::Id128).toLower();
+    request.host = host;
+    request.sshUser = user;
+    request.nodeName = node;
+    request.actionsEnabled = enabled->isChecked();
+    request.replaceVariables = replace->isChecked();
+    if (request.replaceVariables) {
+        for (int variableRow = 0; variableRow < variables->rowCount();
+             ++variableRow) {
+            const QTableWidgetItem *nameItem =
+                variables->item(variableRow, 0);
+            QTableWidgetItem *valueItem =
+                variables->item(variableRow, 1);
+            if (!nameItem || !valueItem)
+                continue;
+            request.variables.insert(
+                nameItem->text(),
+                valueItem->data(Qt::UserRole).toString());
+            QString secret = valueItem->data(Qt::UserRole).toString();
+            secret.fill(QChar::Null);
+            valueItem->setData(Qt::UserRole, QString());
+            valueItem->setText(QStringLiteral("discarded"));
+        }
+    }
+    runHostActionsConfiguration(std::move(request), password);
+    password.fill(QChar::Null);
+}
+
+void MainWindow::runHostActionsConfiguration(
+    forkmesh::control::MirrorActionsConfigurationRequest request,
+    const QString &sshPassword)
+{
+    QString error;
+    forkmesh::control::MirrorActionsSshCommand command =
+        forkmesh::control::buildMirrorActionsSshCommand(
+            request, sshPassword, &error);
+    if (command.program.isEmpty()) {
+        for (QString &value : request.variables)
+            value.fill(QChar::Null);
+        command.standardInput.fill('\0');
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(error);
+        return;
+    }
+
+    const QString requestId = request.requestId;
+    const QString node = request.nodeName.trimmed();
+    const QString host = request.host.trimmed();
+    const bool enabled = request.actionsEnabled;
+    const bool replaceVariables = request.replaceVariables;
+    const int variableCount = request.variables.size();
+    for (QString &value : request.variables) {
+        value.fill(QChar::Null);
+    }
+    request.variables.clear();
+
+    auto rawOutput = QSharedPointer<QByteArray>::create();
+    auto outputOverflow = QSharedPointer<bool>::create(false);
+    auto completed = QSharedPointer<bool>::create(false);
+    auto *process = new QProcess(this);
+    m_hostActionsProcess = process;
+    process->setProcessChannelMode(QProcess::MergedChannels);
+    process->setProcessEnvironment(command.environment);
+    if (m_hostInstallStatus) {
+        m_hostInstallStatus->setText(
+            QStringLiteral(
+                "Sending Actions state to %1 over authenticated SSH…")
+                .arg(node));
+    }
+    appendHostInstallLog(
+        QStringLiteral(
+            "\n[Actions] Sending %1 state and %2 variable name(s) to %3@%4; "
+            "values are stdin-only and redacted.\n")
+            .arg(enabled ? QStringLiteral("enabled")
+                         : QStringLiteral("disabled"))
+            .arg(replaceVariables ? variableCount : 0)
+            .arg(request.sshUser.trimmed(), host));
+
+    connect(process, &QProcess::readyReadStandardOutput, this,
+            [process, rawOutput, outputOverflow] {
+                QByteArray chunk = process->readAllStandardOutput();
+                constexpr qsizetype kMaximumOutput = 64 * 1024;
+                if (rawOutput->size() + chunk.size() <= kMaximumOutput) {
+                    rawOutput->append(chunk);
+                } else {
+                    *outputOverflow = true;
+                    const qsizetype remaining =
+                        qMax<qsizetype>(0, kMaximumOutput - rawOutput->size());
+                    rawOutput->append(chunk.first(remaining));
+                }
+                // Never render remote output from this secret-bearing request.
+                // A hostile/broken helper could echo stdin verbatim or encode
+                // it, which cannot be made safe by ordinary string redaction.
+                chunk.fill('\0');
+            });
+    connect(process, &QProcess::errorOccurred, this,
+            [this, process, rawOutput, completed](
+                QProcess::ProcessError processError) {
+                if (processError == QProcess::FailedToStart) {
+                    if (*completed)
+                        return;
+                    *completed = true;
+                    appendHostInstallLog(
+                        QStringLiteral(
+                            "[Actions] Could not start SSH. Install OpenSSH"
+                            " (and sshpass for password login).\n"));
+                    if (m_hostInstallStatus) {
+                        m_hostInstallStatus->setText(
+                            QStringLiteral(
+                                "Mirror Actions configuration failed: "
+                                "could not start SSH."));
+                    }
+                    rawOutput->fill('\0');
+                    rawOutput->clear();
+                    QProcessEnvironment scrubbed =
+                        QProcessEnvironment::systemEnvironment();
+                    scrubbed.remove(QStringLiteral("SSHPASS"));
+                    process->setProcessEnvironment(scrubbed);
+                    if (m_hostActionsProcess == process)
+                        m_hostActionsProcess = nullptr;
+                    process->deleteLater();
+                }
+            });
+    connect(process, &QProcess::finished, this,
+            [this, process, rawOutput, outputOverflow, completed,
+             requestId, node, enabled, replaceVariables, variableCount](
+                int exitCode, QProcess::ExitStatus exitStatus) {
+                if (*completed)
+                    return;
+                *completed = true;
+                QByteArray finalChunk =
+                    process->readAllStandardOutput();
+                constexpr qsizetype kMaximumOutput = 64 * 1024;
+                if (rawOutput->size() + finalChunk.size() <=
+                    kMaximumOutput) {
+                    rawOutput->append(finalChunk);
+                } else {
+                    *outputOverflow = true;
+                    const qsizetype remaining =
+                        qMax<qsizetype>(
+                            0, kMaximumOutput - rawOutput->size());
+                    rawOutput->append(finalChunk.first(remaining));
+                }
+                finalChunk.fill('\0');
+                QString resultError;
+                const QJsonObject result =
+                    *outputOverflow
+                        ? QJsonObject()
+                        : forkmesh::control::
+                              parseMirrorActionsConfigurationResult(
+                                  *rawOutput, requestId, node, &resultError);
+                const bool confirmed =
+                    exitStatus == QProcess::NormalExit && exitCode == 0 &&
+                    !result.isEmpty() &&
+                    result.value(QStringLiteral("ok")).toBool() &&
+                    result.value(QStringLiteral("actionsEnabled")).toBool() ==
+                        enabled &&
+                    result.value(QStringLiteral("variablesReplaced")).toBool() ==
+                        replaceVariables &&
+                    result.value(QStringLiteral("variableCount")).toInt() ==
+                        (replaceVariables ? variableCount : 0);
+                if (confirmed) {
+                    const QString summary =
+                        QStringLiteral(
+                            "Mirror %1 confirmed Actions %2%3.")
+                            .arg(
+                                node,
+                                enabled ? QStringLiteral("enabled")
+                                        : QStringLiteral("disabled"),
+                                replaceVariables
+                                    ? QStringLiteral(
+                                          " and replaced %1 variable(s)")
+                                          .arg(variableCount)
+                                    : QString());
+                    appendHostInstallLog(
+                        QStringLiteral("[Actions] %1\n").arg(summary));
+                    if (m_hostInstallStatus)
+                        m_hostInstallStatus->setText(summary);
+                } else {
+                    if (*outputOverflow) {
+                        resultError = QStringLiteral(
+                            "The remote helper returned more than 64 KiB.");
+                    } else if (resultError.isEmpty()) {
+                        resultError = QStringLiteral(
+                            "The host did not confirm the requested state.");
+                    }
+                    appendHostInstallLog(
+                        QStringLiteral(
+                            "[Actions] Configuration was not confirmed "
+                            "(exit %1): %2\n")
+                            .arg(exitCode)
+                            .arg(resultError));
+                    if (m_hostInstallStatus) {
+                        m_hostInstallStatus->setText(
+                            QStringLiteral(
+                                "Mirror Actions configuration failed: %1")
+                                .arg(resultError));
+                    }
+                }
+                rawOutput->fill('\0');
+                rawOutput->clear();
+                QProcessEnvironment scrubbed =
+                    QProcessEnvironment::systemEnvironment();
+                scrubbed.remove(QStringLiteral("SSHPASS"));
+                process->setProcessEnvironment(scrubbed);
+                if (m_hostActionsProcess == process)
+                    m_hostActionsProcess = nullptr;
+                process->deleteLater();
+            });
+
+    process->start(command.program, command.arguments);
+    process->write(command.standardInput);
+    process->closeWriteChannel();
+    const QPointer<QProcess> guardedProcess(process);
+    QTimer::singleShot(45 * 1000, this, [this, guardedProcess, completed] {
+        if (!guardedProcess || *completed ||
+            guardedProcess->state() == QProcess::NotRunning) {
+            return;
+        }
+        appendHostInstallLog(
+            QStringLiteral(
+                "[Actions] SSH configuration timed out after 45 seconds.\n"));
+        guardedProcess->kill();
+    });
+    command.standardInput.fill('\0');
+    command.standardInput.clear();
+    command.environment = QProcessEnvironment();
 }
 
 // --- Nodes ------------------------------------------------------------------
@@ -7121,8 +8258,8 @@ void MainWindow::refreshHostsTable()
 // Selecting a row opens a detail panel with the node's full details, the repos
 // it hosts and the repos it mirrors.
 //
-// Online state trusts the relay's /api/network/stats "onlineNodes" list (a live
-// host tunnel or a fresh signed heartbeat) as the network-canonical live set —
+// Online state trusts the relay's /api/network/stats "onlineNodes" list (a
+// repository update channel or a fresh signed heartbeat) as the canonical set —
 // the same signal the Mirror nodes list and the Network page use. This lets
 // headless mirror nodes that serve via the relay without joining this client's
 // chat room show online (adhoc #27), and, once the relay set is fetched, stops a
@@ -7165,7 +8302,7 @@ QWidget *MainWindow::buildNodesSection()
         "Every node this client knows about \xE2\x80\x94 the same nodes in the "
         "top-bar node dropdown. Click a column header to sort. Select a node to "
         "see its details and the repositories it hosts and mirrors. \"Online "
-        "(serving)\" means the relay reports the node live (host tunnel or "
+        "(serving)\" means the relay reports the node live (update channel or "
         "signed heartbeat) even though it isn't in this client's chat room."));
     subtitle->setObjectName("mutedLabel");
     subtitle->setWordWrap(true);
@@ -7371,7 +8508,7 @@ void MainWindow::refreshNodesTable()
         const NodeMenuEntry &e = visible.at(i);
         const MemberInfo &mi = visibleRoster.at(i);
         // The relay's /api/network/stats "onlineNodes" is the network-canonical
-        // live set (a live host tunnel or a fresh signed heartbeat) — the same
+        // live set (an update channel or a fresh signed heartbeat) — the same
         // signal the Mirror nodes list and the Network page trust. Once we have
         // fetched it, it is authoritative even over a roster entry that still
         // says "online": a node whose chat socket lingers after the machine
@@ -7394,7 +8531,7 @@ void MainWindow::refreshNodesTable()
 
         QString label = e.name.isEmpty() ? QStringLiteral("(unnamed)") : e.name;
         if (e.self)
-            label += QStringLiteral("  (you)");
+            label += QStringLiteral("  (this machine)");
         auto *nameItem =
             new QTableWidgetItem(osBadgeIcon(e.platform, isOnline, 16), label);
         // Stash the real node name so a row stays identifiable after re-sorting.
@@ -7407,7 +8544,7 @@ void MainWindow::refreshNodesTable()
                                  : QStringLiteral("Online")));
         if (serving)
             statusItem->setToolTip(QStringLiteral(
-                "The relay reports this node live (host tunnel / signed "
+                "The relay reports this node live (update channel / signed "
                 "heartbeat) even though it isn't in this client's chat room."));
         m_nodesTable->setItem(i, kNodeColStatus, statusItem);
 
@@ -7581,7 +8718,7 @@ void MainWindow::showNodeDetailForRow(int row)
                             "chat room")
                       : QStringLiteral("Online")));
     if (entry.self)
-        addRow(QStringLiteral("This node"), QStringLiteral("Yes (you)"));
+        addRow(QStringLiteral("This machine"), QStringLiteral("Yes"));
     QString platform = entry.platform.trimmed();
     if (platform.isEmpty())
         platform = mi.platform.trimmed();
@@ -9135,15 +10272,23 @@ void MainWindow::loadHostIntoForm(int row, int /*column*/)
         m_hostIpEdit->setText(cellText(1));
     if (m_hostUserEdit)
         m_hostUserEdit->setText(cellText(2));
-    // Load the saved SSH password from the settings.
-    const QJsonArray hosts =
-        QJsonDocument::fromJson(QSettings().value(kHostsSetting).toString().toUtf8())
-            .array();
+    // Restore only a password entered or migrated during this process. Host
+    // credentials are deliberately never reloaded from persistent settings.
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
+    if (m_hostPassEdit)
+        m_hostPassEdit->clear();
     for (int i = 0; i < hosts.size(); ++i) {
         const QJsonObject h = hosts.at(i).toObject();
         if (h.value("name").toString() == name) {
-            if (m_hostPassEdit)
-                m_hostPassEdit->setText(h.value("pass").toString());
+            if (m_hostPassEdit) {
+                m_hostPassEdit->setText(m_hostSessionPasswords.value(
+                    forkmesh::control::savedHostCredentialKey(
+                        h.value(QStringLiteral("name")).toString(),
+                        h.value(QStringLiteral("ip")).toString(),
+                        h.value(QStringLiteral("user")).toString())));
+            }
             break;
         }
     }
@@ -9173,19 +10318,8 @@ void MainWindow::viewHostLogsForSelection(int row)
                 QStringLiteral("Load a host row first, then click Logs."));
         return;
     }
-    QString pass = m_hostPassEdit ? m_hostPassEdit->text() : QString();
-    if (pass.isEmpty()) {
-        bool ok = false;
-        const QString entered = QInputDialog::getText(
-            this, QStringLiteral("Host SSH password"),
-            QString::fromUtf8("Enter the SSH password for %1@%2.").arg(user, ip),
-            QLineEdit::Password, QString(), &ok);
-        if (!ok || entered.isEmpty())
-            return;
-        pass = entered;
-        if (m_hostPassEdit)
-            m_hostPassEdit->setText(pass);
-    }
+    const QString pass =
+        m_hostPassEdit ? m_hostPassEdit->text() : QString();
     runHostLogSession(ip, user, pass, node);
 }
 
@@ -9199,10 +10333,10 @@ void MainWindow::runHostLogSession(const QString &ip, const QString &user,
                 QStringLiteral("A host log stream is already running."));
         return;
     }
-    if (ip.isEmpty() || user.isEmpty() || pass.isEmpty()) {
+    if (ip.isEmpty() || user.isEmpty() || node.isEmpty()) {
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(
-                QStringLiteral("Enter host IP, SSH username, password and node name."));
+                QStringLiteral("Enter host IP, SSH username and node name."));
         return;
     }
 
@@ -9270,11 +10404,6 @@ void MainWindow::runHostLogSession(const QString &ip, const QString &user,
         stopLogStream();
     });
 
-    proc->setProcessChannelMode(QProcess::MergedChannels);
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    env.insert(QStringLiteral("SSHPASS"), pass);
-    proc->setProcessEnvironment(env);
-
     const auto shq = [](const QString &s) {
         QString out = s;
         out.replace(QStringLiteral("'"), QStringLiteral("'\\''"));
@@ -9292,15 +10421,20 @@ void MainWindow::runHostLogSession(const QString &ip, const QString &user,
             "  exit 1; "
             "fi");
     const QString remoteCmd = QStringLiteral("sh -lc ") + shq(remoteLogCmd);
-    const QStringList sshArgs = {
-        QStringLiteral("-e"), QStringLiteral("ssh"),
-        QStringLiteral("-o"), QStringLiteral("IdentitiesOnly=yes"),
-        QStringLiteral("-o"), QStringLiteral("StrictHostKeyChecking=no"),
-        QStringLiteral("-o"), QStringLiteral("UserKnownHostsFile=/dev/null"),
-        QStringLiteral("-o"), QStringLiteral("PreferredAuthentications=password"),
-        QStringLiteral("-o"), QStringLiteral("PubkeyAuthentication=no"),
-        QStringLiteral("-o"), QStringLiteral("ConnectTimeout=30"),
-        user + QStringLiteral("@") + ip, remoteCmd};
+    QString sshError;
+    const forkmesh::control::HostSshCommand ssh =
+        forkmesh::control::buildHostSshCommand(
+            ip, user, pass, remoteCmd, &sshError);
+    if (ssh.program.isEmpty()) {
+        appendLog(QStringLiteral("[error] %1\n").arg(sshError));
+        status->setText(sshError);
+        proc->deleteLater();
+        m_hostLogProcess = nullptr;
+        dialog->deleteLater();
+        return;
+    }
+    proc->setProcessChannelMode(QProcess::MergedChannels);
+    proc->setProcessEnvironment(ssh.environment);
 
     appendLog(QStringLiteral("Attempting SSH log stream to %1@%2\n")
                   .arg(user, ip));
@@ -9316,8 +10450,8 @@ void MainWindow::runHostLogSession(const QString &ip, const QString &user,
             [this, proc, appendLog, status](QProcess::ProcessError e) {
         if (e == QProcess::FailedToStart) {
             appendLog(QString::fromUtf8(
-                "\n[error] Could not start sshpass/ssh. Install openssh-client "
-                "and sshpass on this machine and try again.\n"));
+                "\n[error] Could not start SSH. Install OpenSSH (and sshpass "
+                "only when using password login) and try again.\n"));
             status->setText(
                 QString::fromUtf8("Could not start SSH session to host."));
         }
@@ -9340,7 +10474,7 @@ void MainWindow::runHostLogSession(const QString &ip, const QString &user,
                 proc->deleteLater();
             });
 
-    proc->start(QStringLiteral("sshpass"), sshArgs);
+    proc->start(ssh.program, ssh.arguments);
     dialog->exec();
 }
 
@@ -9368,19 +10502,30 @@ void MainWindow::rememberHost(const QString &name, const QString &ip,
                               const QString &user, const QString &pass, const QString &status)
 {
     QSettings settings;
-    QJsonArray hosts =
-        QJsonDocument::fromJson(settings.value(kHostsSetting).toString().toUtf8())
-            .array();
+    QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
     // Replace any existing row for the same node name, else append.
     QJsonObject entry;
     entry.insert(QStringLiteral("name"), name);
     entry.insert(QStringLiteral("ip"), ip);
     entry.insert(QStringLiteral("user"), user);
-    entry.insert(QStringLiteral("pass"), pass);
     entry.insert(QStringLiteral("status"), status);
     bool replaced = false;
     for (int i = 0; i < hosts.size(); ++i) {
         if (hosts.at(i).toObject().value("name").toString() == name) {
+            const QJsonObject old = hosts.at(i).toObject();
+            const QString oldCredentialKey =
+                forkmesh::control::savedHostCredentialKey(
+                    old.value(QStringLiteral("name")).toString(),
+                    old.value(QStringLiteral("ip")).toString(),
+                    old.value(QStringLiteral("user")).toString());
+            const QString newCredentialKey =
+                forkmesh::control::savedHostCredentialKey(name, ip, user);
+            if (oldCredentialKey != newCredentialKey) {
+                QString oldPassword =
+                    m_hostSessionPasswords.take(oldCredentialKey);
+                oldPassword.fill(QChar::Null);
+            }
             hosts.replace(i, entry);
             replaced = true;
             break;
@@ -9388,8 +10533,17 @@ void MainWindow::rememberHost(const QString &name, const QString &ip,
     }
     if (!replaced)
         hosts.append(entry);
-    settings.setValue(kHostsSetting,
-                      QString::fromUtf8(QJsonDocument(hosts).toJson(QJsonDocument::Compact)));
+    const QString credentialKey =
+        forkmesh::control::savedHostCredentialKey(name, ip, user);
+    if (pass.isEmpty()) {
+        QString oldPassword = m_hostSessionPasswords.take(credentialKey);
+        oldPassword.fill(QChar::Null);
+    } else {
+        QString oldPassword = m_hostSessionPasswords.take(credentialKey);
+        oldPassword.fill(QChar::Null);
+        m_hostSessionPasswords.insert(credentialKey, pass);
+    }
+    forkmesh::control::saveSavedHosts(settings, kHostsSetting, hosts);
     refreshHostsTable();
 }
 
@@ -9596,13 +10750,92 @@ namespace {
 // (adhoc #67). The remote side discards lines until it sees this marker, so
 // the upload stays intact whether or not sudo actually read the password.
 const QString kHostUploadMarker = QStringLiteral("__FORKMESH_UPLOAD__");
+
+QString controllerReleaseManifestDigest(const QString &expectedBuildCommit,
+                                        QString *errorOut)
+{
+    QString configured =
+        qEnvironmentVariable("FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256")
+            .trimmed()
+            .toLower();
+#ifdef FORKMESH_WINDOW_TESTS
+    const QString testDigest =
+        qEnvironmentVariable("FORKMESH_TEST_RELEASE_MANIFEST_SHA256")
+            .trimmed()
+            .toLower();
+    if (!testDigest.isEmpty())
+        configured = testDigest;
+#endif
+    static const QRegularExpression exactDigest(
+        QStringLiteral("^[0-9a-f]{64}$"));
+    if (!configured.isEmpty()) {
+        if (exactDigest.match(configured).hasMatch())
+            return configured;
+        if (errorOut) {
+            *errorOut = QStringLiteral(
+                "FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256 must be an exact "
+                "64-hex SHA-256 digest.");
+        }
+        return {};
+    }
+
+    // A source checkout can authenticate the separately committed release
+    // metadata directly. Packaged controllers, where that checkout is absent,
+    // must receive the digest over their authenticated control channel through
+    // the environment above; they never trust a hash copied from the remote
+    // install response.
+    const QString manifestPath =
+        QDir(QStringLiteral(FORKMESH_SOURCE_DIR))
+            .filePath(QStringLiteral(
+                ".forkmesh/releases/latest/release.json"));
+    QFile manifestFile(manifestPath);
+    if (manifestFile.open(QIODevice::ReadOnly) &&
+        manifestFile.size() > 0 && manifestFile.size() <= 1024 * 1024) {
+        const QByteArray manifestBytes = manifestFile.readAll();
+        QJsonParseError parseError;
+        const QJsonObject manifest =
+            QJsonDocument::fromJson(manifestBytes, &parseError).object();
+        const QString expectedVersion =
+            QStringLiteral(FORKMESH_VERSION);
+        const QString tag =
+            manifest.value(QStringLiteral("tag")).toString();
+        const QString checksumsDigest =
+            manifest.value(QStringLiteral("checksums_sha256"))
+                .toString()
+                .trimmed()
+                .toLower();
+        if (parseError.error == QJsonParseError::NoError &&
+            manifest.value(QStringLiteral("schema")).toString() ==
+                QStringLiteral("forkmesh-release-v2") &&
+            manifest.value(QStringLiteral("build_commit"))
+                    .toString()
+                    .trimmed()
+                    .toLower() == expectedBuildCommit &&
+            (tag == expectedVersion ||
+             tag == QStringLiteral("v") + expectedVersion) &&
+            exactDigest.match(checksumsDigest).hasMatch()) {
+            return QString::fromLatin1(
+                QCryptographicHash::hash(
+                    manifestBytes, QCryptographicHash::Sha256)
+                    .toHex());
+        }
+    }
+    if (errorOut) {
+        *errorOut = QStringLiteral(
+            "No controller-trusted release manifest matches this build. "
+            "Refresh the checked-in signed release metadata or set "
+            "FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256 from an authenticated "
+            "control channel before deploying a fleet binary.");
+    }
+    return {};
+}
 } // namespace
 
 bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
                                          const QString &node, bool uploadBinary,
                                          bool reinstall, bool fromSource,
-                                         QStringList *sshArgs, QString *remoteCmd,
-                                         QByteArray *uploadBytes,
+                                         bool requirePublishedBinary,
+                                         QString *remoteCmd, QByteArray *uploadBytes,
                                          QString *errorOut)
 {
     const QString installUrl = installScriptUrl();
@@ -9618,7 +10851,12 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
     // missing binary fails here, before anything touches the remote machine.
     // A source build compiles on the host itself, so there is no binary to
     // upload — fromSource forces the direct-upload path off.
-    const bool doUpload = uploadBinary && !fromSource;
+    // A published-binary fleet deploy and a local-executable upload are
+    // mutually exclusive contracts. The former is deliberately resolved on
+    // each target from the release manifest so a development build can never be
+    // mistaken for the release merely because both report the same version.
+    const bool doUpload =
+        uploadBinary && !fromSource && !requirePublishedBinary;
     QByteArray bytes;
     if (doUpload) {
         QFile self(QCoreApplication::applicationFilePath());
@@ -9643,6 +10881,37 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
         out.replace(QStringLiteral("'"), QStringLiteral("'\\''"));
         return QStringLiteral("'") + out + QStringLiteral("'");
     };
+    QString expectedBuildCommit;
+    QString expectedReleaseManifestDigest;
+    if (requirePublishedBinary) {
+        expectedBuildCommit =
+            QStringLiteral(FORKMESH_BUILD_COMMIT).trimmed().toLower();
+#ifdef FORKMESH_WINDOW_TESTS
+        const QString testBuildCommit =
+            qEnvironmentVariable("FORKMESH_TEST_BUILD_COMMIT")
+                .trimmed()
+                .toLower();
+        if (!testBuildCommit.isEmpty())
+            expectedBuildCommit = testBuildCommit;
+#endif
+        static const QRegularExpression exactCommit(
+            QStringLiteral("^(?:[0-9a-f]{40}|[0-9a-f]{64})$"));
+        if (!exactCommit.match(expectedBuildCommit).hasMatch()) {
+            if (errorOut) {
+                *errorOut = QString::fromUtf8(
+                    "This ForkMesh build has no exact source revision, so it "
+                    "cannot prove that a published same-version binary is "
+                    "current. Rebuild from a Git checkout (or configure a "
+                    "release archive with FORKMESH_BUILD_COMMIT_OVERRIDE), "
+                    "then retry.");
+            }
+            return false;
+        }
+        expectedReleaseManifestDigest =
+            controllerReleaseManifestDigest(expectedBuildCommit, errorOut);
+        if (expectedReleaseManifestDigest.isEmpty())
+            return false;
+    }
     // Pass the chosen name as FORKMESH_NODE_NAME (not FORKMESH_NODE): the
     // installer uses it to name the freshly-deployed node and leaves the
     // clone-source mirror to auto-resolve to a real online one. The headless
@@ -9664,8 +10933,88 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
     // is left untouched, unlike a reinstall).
     if (fromSource)
         envPrefix += QStringLiteral(" FORKMESH_FROM_SOURCE=1 FORKMESH_RESTART=1");
-    QString pipeline =
-        QStringLiteral("curl -fsSL %1 | %2 bash").arg(shq(installUrl), envPrefix);
+    // Fleet binary installs must never silently turn into a source build. Pin
+    // the current release channel, preserve all node data, stop the old daemon
+    // only after the new artifact is installed, and have the target verify the
+    // exact version before its pane can report success.
+    if (requirePublishedBinary) {
+        envPrefix += QStringLiteral(
+            " FORKMESH_RELEASE=latest FORKMESH_NO_SOURCE_FALLBACK=1 "
+            "FORKMESH_EXPECTED_BUILD_COMMIT=%1 "
+            "FORKMESH_EXPECTED_RELEASE_VERSION=%2 "
+            "FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256=%3")
+                         .arg(shq(expectedBuildCommit),
+                              shq(QStringLiteral(FORKMESH_VERSION)),
+                              shq(expectedReleaseManifestDigest));
+        if (!reinstall)
+            envPrefix += QStringLiteral(" FORKMESH_RESTART=1");
+    }
+
+    QString pipeline;
+    if (requirePublishedBinary) {
+        const QString expected =
+            QStringLiteral("ForkMesh " FORKMESH_VERSION);
+        // Download the installer into a temporary file rather than piping it
+        // directly to bash. Without pipefail, `curl | bash` can return success
+        // when curl failed and bash merely received an empty script.
+        pipeline =
+            QStringLiteral(
+                "installer=\"$(mktemp \"${TMPDIR:-/tmp}/"
+                "forkmesh-installer.XXXXXX\")\" || exit 70; "
+                "if ! command -v sha256sum >/dev/null 2>&1 && "
+                "! command -v shasum >/dev/null 2>&1; then "
+                "printf 'A SHA-256 tool is required for a verified ForkMesh "
+                "binary install.\\n' >&2; rm -f \"$installer\"; exit 67; fi; "
+                "if ! curl -fsSL -H 'Cache-Control: no-cache' %1 "
+                "-o \"$installer\"; then "
+                "printf 'ForkMesh installer download failed.\\n' >&2; "
+                "rm -f \"$installer\"; exit 70; fi; "
+                "%2 bash \"$installer\"; st=$?; rm -f \"$installer\"; "
+                "if [ \"$st\" -ne 0 ]; then exit \"$st\"; fi; "
+                "bin=\"$HOME/.local/bin/forkmesh\"; "
+                "if [ ! -x \"$bin\" ]; then "
+                "printf 'ForkMesh binary missing after install: %s\\n' "
+                "\"$bin\" >&2; exit 66; fi; "
+                "actual=\"$(\"$bin\" --version 2>&1)\"; expected=%3; "
+                "if [ \"$actual\" != \"$expected\" ]; then "
+                "printf 'ForkMesh version check failed: expected %s, "
+                "got %s\\n' \"$expected\" \"$actual\" >&2; exit 65; fi; "
+                "commit_output=\"$(mktemp \"${TMPDIR:-/tmp}/"
+                "forkmesh-build-commit.XXXXXX\")\" || exit 63; "
+                "\"$bin\" --build-commit >\"$commit_output\" 2>&1 & "
+                "commit_pid=$!; "
+                "probe_ticks=0; "
+                "while kill -0 \"$commit_pid\" 2>/dev/null && "
+                "[ \"$probe_ticks\" -lt 50 ]; do sleep 0.1; "
+                "probe_ticks=$((probe_ticks + 1)); done; "
+                "commit_timed_out=0; "
+                "if kill -0 \"$commit_pid\" 2>/dev/null; then "
+                "commit_timed_out=1; "
+                "kill \"$commit_pid\" 2>/dev/null || true; "
+                "sleep 0.2; "
+                "kill -KILL \"$commit_pid\" 2>/dev/null || true; fi; "
+                "commit_status=0; "
+                "wait \"$commit_pid\" || commit_status=$?; "
+                "actual_commit=\"$(head -c 128 \"$commit_output\" | "
+                "tr -d '\\r\\n')\"; rm -f \"$commit_output\"; "
+                "expected_commit=%4; "
+                "if [ \"$commit_timed_out\" -ne 0 ] || "
+                "[ \"$commit_status\" -ne 0 ] || "
+                "[ \"$actual_commit\" != \"$expected_commit\" ]; then "
+                "printf 'ForkMesh source-revision check failed: the installed "
+                "artifact did not report expected commit %s.\\n' "
+                "\"$expected_commit\" >&2; "
+                "exit 64; fi; "
+                "printf 'Verified %s from source commit %s using the "
+                "published checksum-verified release.\\n' \"$actual\" "
+                "\"$actual_commit\"")
+                .arg(shq(installUrl), envPrefix, shq(expected),
+                     shq(expectedBuildCommit));
+    } else {
+        pipeline =
+            QStringLiteral("curl -fsSL %1 | %2 bash")
+                .arg(shq(installUrl), envPrefix);
+    }
     const bool needSudo = user != QStringLiteral("root");
     if (doUpload) {
         // The binary follows on the SSH session's stdin. Everything before the
@@ -9682,31 +11031,29 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
             os = QStringLiteral("macos");
         else if (os == QStringLiteral("winnt"))
             os = QStringLiteral("windows");
+        const QString localBinarySha256 =
+            QString::fromLatin1(
+                QCryptographicHash::hash(
+                    bytes, QCryptographicHash::Sha256)
+                    .toHex());
         pipeline =
             QStringLiteral(
                 "up=\"$(mktemp \"${TMPDIR:-/tmp}/forkmesh-upload.XXXXXX\")\" && "
                 "while IFS= read -r l; do [ \"$l\" = %1 ] && break; done && "
                 "cat > \"$up\" && curl -fsSL %2 | %3 "
                 "FORKMESH_LOCAL_BINARY=\"$up\" FORKMESH_LOCAL_OS=%4 "
-                "FORKMESH_LOCAL_ARCH=%5 bash; st=$?; rm -f \"$up\"; exit $st")
+                "FORKMESH_LOCAL_ARCH=%5 "
+                "FORKMESH_LOCAL_BINARY_SHA256=%6 bash; "
+                "st=$?; rm -f \"$up\"; exit $st")
                 .arg(shq(kHostUploadMarker), shq(installUrl), envPrefix,
-                     shq(os), shq(QSysInfo::currentCpuArchitecture()));
+                     shq(os), shq(QSysInfo::currentCpuArchitecture()),
+                     shq(localBinarySha256));
     }
     const QString cmd =
         needSudo
             ? QStringLiteral("sudo -S -p '' -- bash -c %1").arg(shq(pipeline))
             : pipeline;
 
-    if (sshArgs)
-        *sshArgs = {
-            QStringLiteral("-e"), QStringLiteral("ssh"),
-            QStringLiteral("-o"), QStringLiteral("IdentitiesOnly=yes"),
-            QStringLiteral("-o"), QStringLiteral("StrictHostKeyChecking=no"),
-            QStringLiteral("-o"), QStringLiteral("UserKnownHostsFile=/dev/null"),
-            QStringLiteral("-o"), QStringLiteral("PreferredAuthentications=password"),
-            QStringLiteral("-o"), QStringLiteral("PubkeyAuthentication=no"),
-            QStringLiteral("-o"), QStringLiteral("ConnectTimeout=30"),
-            user + QStringLiteral("@") + ip, cmd};
     if (remoteCmd)
         *remoteCmd = cmd;
     if (uploadBytes)
@@ -9733,11 +11080,11 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     const QString user = m_hostUserEdit ? m_hostUserEdit->text().trimmed() : QString();
     const QString pass = m_hostPassEdit ? m_hostPassEdit->text() : QString();
     const QString node = m_hostNameEdit ? m_hostNameEdit->text().trimmed() : QString();
-    if (ip.isEmpty() || user.isEmpty() || pass.isEmpty() || node.isEmpty()) {
+    if (ip.isEmpty() || user.isEmpty() || node.isEmpty()) {
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(QString::fromUtf8(
-                "Enter the host IP, SSH username, password and a node name "
-                "first."));
+                "Enter the host IP, SSH username and a node name first. "
+                "Leave the password blank to use your SSH agent/default key."));
         if (onFinished)
             onFinished(false);
         return;
@@ -9762,15 +11109,25 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
         (forceUploadBinary ||
          (m_hostUploadBinaryCheck && m_hostUploadBinaryCheck->isChecked()));
     const bool needSudo = user != QStringLiteral("root");
-    QStringList sshArgs;
     QString remoteCmd;
     QByteArray uploadBytes;
     QString buildErr;
     if (!buildHostInstallCommand(ip, user, node, uploadBinary, reinstall,
-                                 fromSource, &sshArgs, &remoteCmd, &uploadBytes,
-                                 &buildErr)) {
+                                 fromSource, false, &remoteCmd,
+                                 &uploadBytes, &buildErr)) {
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(buildErr);
+        if (onFinished)
+            onFinished(false);
+        return;
+    }
+    QString sshError;
+    const forkmesh::control::HostSshCommand ssh =
+        forkmesh::control::buildHostSshCommand(
+            ip, user, pass, remoteCmd, &sshError);
+    if (ssh.program.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(sshError);
         if (onFinished)
             onFinished(false);
         return;
@@ -9812,11 +11169,7 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     auto *proc = new QProcess(this);
     m_hostInstallProcess = proc;
     proc->setProcessChannelMode(QProcess::MergedChannels);
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    // Hand the SSH password to sshpass via the environment so it never lands in
-    // argv or on disk.
-    env.insert(QStringLiteral("SSHPASS"), pass);
-    proc->setProcessEnvironment(env);
+    proc->setProcessEnvironment(ssh.environment);
 
     connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc] {
         const QString chunk = QString::fromUtf8(proc->readAllStandardOutput());
@@ -9859,8 +11212,8 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     connect(proc, &QProcess::errorOccurred, this, [this](QProcess::ProcessError e) {
         if (e == QProcess::FailedToStart)
             appendHostInstallLog(QString::fromUtf8(
-                "\n[error] Could not start sshpass/ssh. Install openssh-client "
-                "and sshpass on this machine and try again.\n"));
+                "\n[error] Could not start SSH. Install OpenSSH (and sshpass "
+                "only when using password login) and try again.\n"));
     });
     connect(proc, &QProcess::finished, this,
             [this, ip, user, node, pass, onFinished, reinstall](int code, QProcess::ExitStatus status) {
@@ -9898,7 +11251,7 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
                     onFinished(ok);
             });
 
-    proc->start(QStringLiteral("sshpass"), sshArgs);
+    proc->start(ssh.program, ssh.arguments);
     // Feed sudo's password on stdin (consumed by `sudo -S`); ssh forwards it to
     // the remote shell. Closing the channel hands the installer a clean EOF.
     if (needSudo)
@@ -9920,6 +11273,70 @@ void MainWindow::runHostInstallAllFromBinary()
     runHostDeployAllParallel(FleetDeployMode::InstallBinary);
 }
 
+MainWindow::FleetDeployOptions
+MainWindow::fleetDeployOptions(FleetDeployMode mode)
+{
+    switch (mode) {
+    case FleetDeployMode::InstallBinary:
+        // Download the published artifact on each target. Never upload the
+        // current process: it may be a developer build rather than the packaged
+        // release even when its version string is identical.
+        return {/*uploadBinary=*/false, /*reinstall=*/false,
+                /*fromSource=*/false, /*requirePublishedBinary=*/true};
+    case FleetDeployMode::Reinstall:
+        return {/*uploadBinary=*/false, /*reinstall=*/true,
+                /*fromSource=*/false, /*requirePublishedBinary=*/true};
+    case FleetDeployMode::UpdateSource:
+        return {/*uploadBinary=*/false, /*reinstall=*/false,
+                /*fromSource=*/true, /*requirePublishedBinary=*/false};
+    }
+    return {};
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+QString MainWindow::testFleetBinaryInstallRemoteCommand(
+    bool reinstall, qsizetype *uploadByteCount, QString *errorOut)
+{
+    const FleetDeployOptions options = fleetDeployOptions(
+        reinstall ? FleetDeployMode::Reinstall
+                  : FleetDeployMode::InstallBinary);
+    QString remoteCommand;
+    QByteArray uploadBytes;
+    QString error;
+    const bool ok = buildHostInstallCommand(
+        QStringLiteral("host.example"), QStringLiteral("root"),
+        QStringLiteral("test-node"), options.uploadBinary, options.reinstall,
+        options.fromSource, options.requirePublishedBinary, &remoteCommand,
+        &uploadBytes, &error);
+    if (uploadByteCount)
+        *uploadByteCount = uploadBytes.size();
+    if (errorOut)
+        *errorOut = error;
+    return ok ? remoteCommand : QString();
+}
+
+QString MainWindow::testDirectBinaryInstallRemoteCommand(
+    qsizetype *uploadByteCount, QString *errorOut)
+{
+    QString remoteCommand;
+    QByteArray uploadBytes;
+    QString error;
+    const bool ok = buildHostInstallCommand(
+        QStringLiteral("host.example"), QStringLiteral("root"),
+        QStringLiteral("test-node"), /*uploadBinary=*/true,
+        /*reinstall=*/false, /*fromSource=*/false,
+        /*requirePublishedBinary=*/false, &remoteCommand, &uploadBytes,
+        &error);
+    if (uploadByteCount)
+        *uploadByteCount = uploadBytes.size();
+    if (errorOut)
+        *errorOut = error;
+    uploadBytes.fill('\0');
+    uploadBytes.clear();
+    return ok ? remoteCommand : QString();
+}
+#endif
+
 void MainWindow::runHostReinstallAllFromBinary()
 {
     if (!m_hostsTable || m_hostsTable->rowCount() == 0) {
@@ -9936,8 +11353,9 @@ void MainWindow::runHostReinstallAllFromBinary()
         QString::fromUtf8(
             "This will REMOVE ForkMesh and ALL of its data (identity key, "
             "mirrors, chat) from every one of your %1 saved host(s), then "
-            "install a fresh copy from this app's binary and re-link each one "
-            "to your account.\n\nThis cannot be undone. Continue?")
+            "install the published ForkMesh v" FORKMESH_VERSION
+            " binary and re-link each one to your account.\n\nThis cannot be "
+            "undone. Continue?")
             .arg(rowCount),
         QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
     if (choice != QMessageBox::Yes)
@@ -9990,11 +11408,11 @@ void MainWindow::runHostDeployAllParallel(FleetDeployMode mode)
     if (!m_hostDeployPanel || !m_hostDeployGrid)
         return;
 
-    // Load every saved host with its stored SSH password. Hosts saved without a
-    // password can't run unattended in parallel, so they are skipped with a note.
-    const QJsonArray hosts =
-        QJsonDocument::fromJson(QSettings().value(kHostsSetting).toString().toUtf8())
-            .array();
+    // Load non-sensitive host metadata. A password may exist only in this
+    // process's cache; otherwise the session uses an SSH agent/default key.
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
     struct Target { QString node, ip, user, pass; };
     QList<Target> targets;
     int skipped = 0;
@@ -10003,9 +11421,11 @@ void MainWindow::runHostDeployAllParallel(FleetDeployMode mode)
         Target t{h.value("name").toString().trimmed(),
                  h.value("ip").toString().trimmed(),
                  h.value("user").toString().trimmed(),
-                 h.value("pass").toString()};
-        if (t.node.isEmpty() || t.ip.isEmpty() || t.user.isEmpty() ||
-            t.pass.isEmpty()) {
+                 QString()};
+        t.pass = m_hostSessionPasswords.value(
+            forkmesh::control::savedHostCredentialKey(
+                t.node, t.ip, t.user));
+        if (t.node.isEmpty() || t.ip.isEmpty() || t.user.isEmpty()) {
             ++skipped;
             continue;
         }
@@ -10014,9 +11434,8 @@ void MainWindow::runHostDeployAllParallel(FleetDeployMode mode)
     if (targets.isEmpty()) {
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(QString::fromUtf8(
-                "No saved host has a stored SSH password to deploy to in "
-                "parallel. Double-click a host, re-enter its password and Add "
-                "host again, then retry."));
+                "No saved host has complete node, address, and SSH username "
+                "metadata."));
         return;
     }
 
@@ -10029,9 +11448,7 @@ void MainWindow::runHostDeployAllParallel(FleetDeployMode mode)
         delete item;
     }
 
-    const bool uploadBinary = mode != FleetDeployMode::UpdateSource;
-    const bool reinstall = mode == FleetDeployMode::Reinstall;
-    const bool fromSource = mode == FleetDeployMode::UpdateSource;
+    const FleetDeployOptions options = fleetDeployOptions(mode);
 
     QFont mono(QStringLiteral("monospace"));
     mono.setStyleHint(QFont::Monospace);
@@ -10099,8 +11516,8 @@ void MainWindow::runHostDeployAllParallel(FleetDeployMode mode)
         m_hostInstallStatus->setText(
             QString::fromUtf8("Deploying to %1 host(s) in parallel\xE2\x80\xA6%2")
                 .arg(m_hostDeployRemaining)
-                .arg(skipped ? QString::fromUtf8(" (%1 skipped \xE2\x80\x94 no "
-                                                 "stored password)").arg(skipped)
+                .arg(skipped ? QString::fromUtf8(" (%1 skipped \xE2\x80\x94 "
+                                                 "incomplete metadata)").arg(skipped)
                              : QString()));
 
     // Snapshot the list first: startHostDeploySession may fail synchronously and
@@ -10108,25 +11525,35 @@ void MainWindow::runHostDeployAllParallel(FleetDeployMode mode)
     // finished callback can fire re-entrantly), so iterate a stable copy.
     const QList<HostDeploySession *> toStart = m_hostDeploySessions;
     for (HostDeploySession *s : toStart)
-        startHostDeploySession(s, uploadBinary, reinstall, fromSource);
+        startHostDeploySession(s, options);
 }
 
 void MainWindow::startHostDeploySession(HostDeploySession *session,
-                                        bool uploadBinary, bool reinstall,
-                                        bool fromSource)
+                                        const FleetDeployOptions &options)
 {
     if (!session)
         return;
 
-    QStringList sshArgs;
     QString remoteCmd;
     QByteArray uploadBytes;
     QString buildErr;
     if (!buildHostInstallCommand(session->ip, session->user, session->node,
-                                 uploadBinary, reinstall, fromSource, &sshArgs,
-                                 &remoteCmd, &uploadBytes, &buildErr)) {
+                                 options.uploadBinary, options.reinstall,
+                                 options.fromSource,
+                                 options.requirePublishedBinary, &remoteCmd,
+                                 &uploadBytes, &buildErr)) {
         appendHostDeployLog(session,
                             QString::fromUtf8("\n\xE2\x9C\x98 %1\n").arg(buildErr));
+        onHostDeploySessionFinished(session, false);
+        return;
+    }
+    QString sshError;
+    const forkmesh::control::HostSshCommand ssh =
+        forkmesh::control::buildHostSshCommand(
+            session->ip, session->user, session->pass, remoteCmd, &sshError);
+    if (ssh.program.isEmpty()) {
+        appendHostDeployLog(
+            session, QString::fromUtf8("\n\xE2\x9C\x98 %1\n").arg(sshError));
         onHostDeploySessionFinished(session, false);
         return;
     }
@@ -10136,7 +11563,14 @@ void MainWindow::startHostDeploySession(HostDeploySession *session,
         session, QString::fromUtf8("$ ssh %1@%2 \xE2\x80\xA6\nConnecting and "
                                    "running the installer\xE2\x80\xA6\n\n")
                      .arg(session->user, session->ip));
-    if (uploadBinary && !fromSource)
+    if (options.requirePublishedBinary)
+        appendHostDeployLog(
+            session,
+            QStringLiteral("Installing the published ForkMesh v"
+                           FORKMESH_VERSION
+                           " binary; the host will verify its release checksum, "
+                           "reported version and exact source commit.\n"));
+    else if (options.uploadBinary && !options.fromSource)
         appendHostDeployLog(
             session, QString::fromUtf8("Uploading this app's release binary "
                                        "(%1 MB) over the SSH session\xE2\x80\xA6\n")
@@ -10147,9 +11581,7 @@ void MainWindow::startHostDeploySession(HostDeploySession *session,
     auto *proc = new QProcess(this);
     session->proc = proc;
     proc->setProcessChannelMode(QProcess::MergedChannels);
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    env.insert(QStringLiteral("SSHPASS"), session->pass);
-    proc->setProcessEnvironment(env);
+    proc->setProcessEnvironment(ssh.environment);
 
     connect(proc, &QProcess::readyReadStandardOutput, this, [this, session, proc] {
         const QString chunk = QString::fromUtf8(proc->readAllStandardOutput());
@@ -10189,8 +11621,8 @@ void MainWindow::startHostDeploySession(HostDeploySession *session,
                 appendHostDeployLog(
                     session,
                     QString::fromUtf8(
-                        "\n[error] Could not start sshpass/ssh. Install "
-                        "openssh-client and sshpass on this machine.\n"));
+                        "\n[error] Could not start SSH. Install OpenSSH (and "
+                        "sshpass only when using password login).\n"));
                 if (session->proc) {
                     session->proc->deleteLater();
                     session->proc = nullptr;
@@ -10216,10 +11648,10 @@ void MainWindow::startHostDeploySession(HostDeploySession *session,
                 onHostDeploySessionFinished(session, ok);
             });
 
-    proc->start(QStringLiteral("sshpass"), sshArgs);
+    proc->start(ssh.program, ssh.arguments);
     if (needSudo)
         proc->write((session->pass + QStringLiteral("\n")).toUtf8());
-    if (uploadBinary && !fromSource) {
+    if (options.uploadBinary && !options.fromSource) {
         proc->write((kHostUploadMarker + QStringLiteral("\n")).toUtf8());
         proc->write(uploadBytes);
     }
@@ -10291,11 +11723,11 @@ void MainWindow::runHostUninstall()
     const QString user = m_hostUserEdit ? m_hostUserEdit->text().trimmed() : QString();
     const QString pass = m_hostPassEdit ? m_hostPassEdit->text() : QString();
     const QString node = m_hostNameEdit ? m_hostNameEdit->text().trimmed() : QString();
-    if (ip.isEmpty() || user.isEmpty() || pass.isEmpty() || node.isEmpty()) {
+    if (ip.isEmpty() || user.isEmpty() || node.isEmpty()) {
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(QString::fromUtf8(
-                "Enter the host IP, SSH username, password and a node name "
-                "first."));
+                "Enter the host IP, SSH username and a node name first. "
+                "Leave the password blank to use your SSH agent/default key."));
         return;
     }
     const QString uninstallUrl = uninstallScriptUrl();
@@ -10323,15 +11755,15 @@ void MainWindow::runHostUninstall()
             ? QStringLiteral("sudo -S -p '' -- bash -c %1").arg(shq(pipeline))
             : pipeline;
 
-    const QStringList sshArgs = {
-        QStringLiteral("-e"), QStringLiteral("ssh"),
-        QStringLiteral("-o"), QStringLiteral("IdentitiesOnly=yes"),
-        QStringLiteral("-o"), QStringLiteral("StrictHostKeyChecking=no"),
-        QStringLiteral("-o"), QStringLiteral("UserKnownHostsFile=/dev/null"),
-        QStringLiteral("-o"), QStringLiteral("PreferredAuthentications=password"),
-        QStringLiteral("-o"), QStringLiteral("PubkeyAuthentication=no"),
-        QStringLiteral("-o"), QStringLiteral("ConnectTimeout=30"),
-        user + QStringLiteral("@") + ip, remoteCmd};
+    QString sshError;
+    const forkmesh::control::HostSshCommand ssh =
+        forkmesh::control::buildHostSshCommand(
+            ip, user, pass, remoteCmd, &sshError);
+    if (ssh.program.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(sshError);
+        return;
+    }
 
     rememberHost(node, ip, user, pass, QStringLiteral("uninstalling"));
 
@@ -10353,11 +11785,7 @@ void MainWindow::runHostUninstall()
     auto *proc = new QProcess(this);
     m_hostInstallProcess = proc;
     proc->setProcessChannelMode(QProcess::MergedChannels);
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    // Hand the SSH password to sshpass via the environment so it never lands in
-    // argv or on disk.
-    env.insert(QStringLiteral("SSHPASS"), pass);
-    proc->setProcessEnvironment(env);
+    proc->setProcessEnvironment(ssh.environment);
 
     connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc] {
         appendHostInstallLog(QString::fromUtf8(proc->readAllStandardOutput()));
@@ -10365,8 +11793,8 @@ void MainWindow::runHostUninstall()
     connect(proc, &QProcess::errorOccurred, this, [this](QProcess::ProcessError e) {
         if (e == QProcess::FailedToStart)
             appendHostInstallLog(QString::fromUtf8(
-                "\n[error] Could not start sshpass/ssh. Install openssh-client "
-                "and sshpass on this machine and try again.\n"));
+                "\n[error] Could not start SSH. Install OpenSSH (and sshpass "
+                "only when using password login) and try again.\n"));
     });
     connect(proc, &QProcess::finished, this,
             [this, ip, user, node, pass](int code, QProcess::ExitStatus status) {
@@ -10396,7 +11824,7 @@ void MainWindow::runHostUninstall()
                 }
             });
 
-    proc->start(QStringLiteral("sshpass"), sshArgs);
+    proc->start(ssh.program, ssh.arguments);
     // Feed sudo's password on stdin (consumed by `sudo -S`); ssh forwards it to
     // the remote shell. Closing the channel hands the uninstaller a clean EOF.
     if (needSudo)
@@ -10495,9 +11923,16 @@ void MainWindow::submitHostLinkCode(const QString &code)
 QWidget *MainWindow::buildHomeSection()
 {
     auto *page = new QWidget;
-    // Node profile is now its own section (index 10), so home just holds the repo
-    // detail panel filling the full width.
-    m_repoDetailSection = buildRepoDetailSection();
+    // Building every repository tab creates several large tables, editors and
+    // delegates. On a cold launch that work used to consume more than a second
+    // before the first frame even when no repository was selected. Keep Home
+    // lightweight and build the full detail tree on the first real repo open.
+    auto *empty = new QLabel(
+        QStringLiteral("Select a repository to explore its code and activity."));
+    empty->setObjectName(QStringLiteral("emptyState"));
+    empty->setAlignment(Qt::AlignCenter);
+    empty->setWordWrap(true);
+    m_repoDetailSection = empty;
     auto *layout = new QHBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
@@ -10557,6 +11992,7 @@ QWidget *MainWindow::buildNodeProfileSection()
     outer->addStretch(1);
     outer->addWidget(buildNodeProfilePanel(), 0);
     outer->addStretch(1);
+    m_nodeProfileSectionHost = page;
     return page;
 }
 
@@ -10574,11 +12010,12 @@ QWidget *MainWindow::buildNodeProfilePanel()
     // centered on wide windows when flanked by the stretchers in
     // buildNodeProfileSection. The content's size hint comes out narrow (the
     // word-wrap labels report tiny minimums), so without a healthy minimum the
-    // panel rendered ~450px wide and clipped the "THIS NODE" action row
+    // panel rendered ~450px wide and clipped the "THIS MACHINE" action row
     // (Logout), the Node ID key, the balance button and the verify-wallet
-    // button on the right. Give both columns real room so everything shows.
-    scroll->setMinimumWidth(760);
-    scroll->setMaximumWidth(1180);
+    // button on the right. Give both columns real room so everything shows —
+    // wide enough that the nodes list can carry full per-node detail rows.
+    scroll->setMinimumWidth(920);
+    scroll->setMaximumWidth(1440);
     m_nodeProfilePanel = scroll;
 
     auto *content = new QWidget;
@@ -10590,6 +12027,9 @@ QWidget *MainWindow::buildNodeProfilePanel()
     closeButton->setToolTip("Close");
     setOcticon(closeButton, "x", 16);
     connect(closeButton, &QPushButton::clicked, this, &MainWindow::hideNodeProfile);
+    // Meaningless while the panel is a Settings tab (there's nothing to close
+    // back out of), so hostNodeProfilePanel() hides it there.
+    m_profileCloseButton = closeButton;
     auto *titleLabel = new QLabel("User profile");
     titleLabel->setObjectName("sectionLabel");
     auto *topRow = new QHBoxLayout;
@@ -10641,28 +12081,28 @@ QWidget *MainWindow::buildNodeProfilePanel()
     connect(m_profileTakeOwnershipButton, &QPushButton::clicked, this,
             &MainWindow::requestNodeOwnership);
 
-    // --- "Get paid to mirror": the one opt-in entry into the crypto side, sitting
-    // directly under the username on your own profile. The core flow never shows
-    // it; clicking sets a Solana payout address (if unset) and activates this node
-    // so it can host its mirrors and earn donations (see enablePaidMirroring).
-    m_profileGetPaidButton = new QPushButton(QString::fromUtf8("Get paid to mirror"));
+    // --- Mirror reward settings: opt-in public payout configuration under the
+    // username on your own profile. It does not create a wallet or promise that
+    // an eligible node will be selected.
+    m_profileGetPaidButton = new QPushButton(
+        QString::fromUtf8("Mirror reward settings"));
     m_profileGetPaidButton->setObjectName("primaryButton");
     m_profileGetPaidButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_profileGetPaidButton, "credit-card", 16);
     m_profileGetPaidButton->setToolTip(
-        "Opt in to hosting your mirrors on the network and earning donations. "
-        "Sets a Solana payout address and activates this node. Entirely optional "
-        "\xE2\x80\x94 cloning, mirroring, issues and PRs work without it.");
+        "Configure a public self-custodial payout address. A healthy mirror may "
+        "be eligible for voluntary community rewards; selection and payment are "
+        "not guaranteed. Cloning, mirroring, issues and PRs work without it.");
     connect(m_profileGetPaidButton, &QPushButton::clicked, this,
             &MainWindow::enablePaidMirroring);
 
-    // --- Node power switch: a plain on/off toggle sitting right under "Get paid
-    // to mirror", since that's exactly what it controls — whether this whole
-    // node is online and serving/collecting rewards, or parked offline. Used to
+    // --- Node power switch: a plain on/off toggle sitting under the reward
+    // settings, since that's exactly what it controls — whether this whole
+    // node is online and publishing eligibility signals, or parked offline. Used to
     // be a small pill in the top-right nav cluster; moved here so it reads as
     // the node's power switch rather than a stray status badge.
     m_profileOnlineSection = new QWidget;
-    auto *onlineSectionLabel = makeProfileSection("THIS NODE'S POWER SWITCH");
+    auto *onlineSectionLabel = makeProfileSection("THIS MACHINE'S POWER SWITCH");
     auto *nodeOnlineSwitch = new ToggleSwitch;
     m_nodeOnlineToggle = nodeOnlineSwitch;
     connect(nodeOnlineSwitch, &QAbstractButton::clicked, this,
@@ -10676,7 +12116,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     m_nodeUptimeLabel->setStyleSheet(
         QStringLiteral("color:#8b949e; font-size:10px; font-weight:600;"));
     m_nodeUptimeLabel->setToolTip(
-        QStringLiteral("How long this node has been online this session"));
+        QStringLiteral("How long this machine has been online this session"));
     auto *onlineStatusColumn = new QVBoxLayout;
     onlineStatusColumn->setContentsMargins(0, 0, 0, 0);
     onlineStatusColumn->setSpacing(0);
@@ -10698,7 +12138,10 @@ QWidget *MainWindow::buildNodeProfilePanel()
     // (rebuild, update, settings, logout) that used to be a stacked text menu,
     // then icon-only; labels came back so each action is clear at a glance.
     m_profileSelfActions = new QWidget;
-    auto *selfLabel = makeProfileSection("THIS NODE");
+    // "THIS MACHINE", not "THIS NODE": on your own profile you're a user, and
+    // users are not nodes — these actions just happen to act on the machine
+    // the app is running on.
+    auto *selfLabel = makeProfileSection("THIS MACHINE");
     m_profileRebuildButton = makeProfileActionButton(
         "sync", "Rebuild",
         "Rebuild from the local source checkout and relaunch (fast; no update)");
@@ -10719,7 +12162,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     connect(selfSettingsButton, &QPushButton::clicked, this,
             [this] { showSection(1); });
     auto *selfLogoutButton = makeProfileActionButton("sign-out", "Logout",
-                                                      "Log out of this node");
+                                                      "Log out on this machine");
     connect(selfLogoutButton, &QPushButton::clicked, this,
             [this] { leaveSession(); });
     auto *actionRow = new QHBoxLayout;
@@ -10781,31 +12224,48 @@ QWidget *MainWindow::buildNodeProfilePanel()
     // profile only.
     m_profileAccountSection = new QWidget;
     m_profileAccountSection->setObjectName("profileUserCard");
-    auto *accountLabel = makeProfileSection("USER PROFILE");
+    // Header flips between "NODES (n)" (linked: just the fleet, no chrome) and
+    // "USER ACCOUNT" (unlinked: link-state text + login button). The old
+    // always-on "USER PROFILE" label + status boxes ate half the card before
+    // the first node row; renderProfileAccountStatus now hides both once the
+    // account is linked so the card is just the nodes.
+    m_profileAccountLabel = makeProfileSection("NODES");
     m_profileAccountStatus = new QLabel;
     m_profileAccountStatus->setObjectName("statusLine");
     m_profileAccountStatus->setWordWrap(true);
     m_profileAccountStatus->setTextFormat(Qt::RichText);
     m_profileUserNodesList = new QListWidget;
     m_profileUserNodesList->setObjectName("profileNodeList");
-    m_profileUserNodesList->setIconSize(QSize(28, 28));
+    m_profileUserNodesList->setIconSize(QSize(32, 32));
     m_profileUserNodesList->setSelectionMode(QAbstractItemView::NoSelection);
     m_profileUserNodesList->setFocusPolicy(Qt::NoFocus);
     m_profileUserNodesList->setFrameShape(QFrame::NoFrame);
     m_profileUserNodesList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_profileUserNodesList->setCursor(Qt::PointingHandCursor);
+    m_profileUserNodesList->setToolTip(
+        QStringLiteral("Nodes owned by this user account. Click one to open "
+                       "its node profile."));
+    // Rows carry the real node name in UserRole (the display text may have a
+    // "(this machine)" marker); clicking opens that node's own profile.
+    connect(m_profileUserNodesList, &QListWidget::itemClicked, this,
+            [this](QListWidgetItem *item) {
+                const QString node = item->data(Qt::UserRole).toString();
+                if (!node.isEmpty())
+                    showNodeProfile(QString(), node);
+            });
     m_profileLinkUserButton = new QPushButton("Log in as a user");
     m_profileLinkUserButton->setObjectName("ghostButton");
     m_profileLinkUserButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_profileLinkUserButton, "person", 14);
     m_profileLinkUserButton->setToolTip(
-        "Link this node to your user account by signing in. One user can own "
-        "many nodes.");
+        "Link this machine's node to your user account by signing in. One user "
+        "can own many nodes.");
     connect(m_profileLinkUserButton, &QPushButton::clicked, this,
             &MainWindow::promptLinkNodeToUser);
     auto *accountLayout = new QVBoxLayout(m_profileAccountSection);
     accountLayout->setContentsMargins(10, 10, 10, 10);
     accountLayout->setSpacing(6);
-    accountLayout->addWidget(accountLabel);
+    accountLayout->addWidget(m_profileAccountLabel);
     accountLayout->addWidget(m_profileAccountStatus);
     accountLayout->addWidget(m_profileUserNodesList);
     accountLayout->addWidget(m_profileLinkUserButton, 0, Qt::AlignLeft);
@@ -10838,19 +12298,26 @@ QWidget *MainWindow::buildNodeProfilePanel()
     // default browser so the user logged in on forkmesh.com takes ownership of
     // this node without typing anything.
     m_profileLinkBrowserButton =
-        new QPushButton("Link this node to your account");
+        new QPushButton("Link this machine to your account");
     m_profileLinkBrowserButton->setObjectName("ghostButton");
     m_profileLinkBrowserButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_profileLinkBrowserButton, "link", 14);
     m_profileLinkBrowserButton->setToolTip(
-        "Open forkmesh.com in your browser and attach this node to the user "
-        "account you're logged in as there. One user can own many nodes.");
+        "Open forkmesh.com in your browser and attach this machine's node to "
+        "the user account you're logged in as there. One user can own many "
+        "nodes.");
     connect(m_profileLinkBrowserButton, &QPushButton::clicked, this,
             &MainWindow::openLinkNodeInBrowser);
 
     // --- Solana section: address, QR, on-demand balance.
     m_profileSolanaSection = new QWidget;
     auto *solanaLabel = makeProfileSection("SOLANA");
+    auto *custodyNotice = new QLabel(
+        "Non-custodial payout address \xE2\x80\x94 ForkMesh reads the public "
+        "address and on-chain balance only. Private keys stay in the external "
+        "wallet you control.");
+    custodyNotice->setObjectName("statusLine");
+    custodyNotice->setWordWrap(true);
     m_profileSolanaAddr = new QLabel;
     m_profileSolanaAddr->setObjectName("profileMono");
     m_profileSolanaAddr->setWordWrap(true);
@@ -10890,6 +12357,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     solanaLayout->setContentsMargins(0, 8, 0, 0);
     solanaLayout->setSpacing(6);
     solanaLayout->addWidget(solanaLabel);
+    solanaLayout->addWidget(custodyNotice);
     solanaLayout->addWidget(m_profileSolanaAddr);
     solanaLayout->addWidget(copyAddr, 0, Qt::AlignLeft);
     solanaLayout->addWidget(m_profileQr, 0, Qt::AlignCenter);
@@ -10897,13 +12365,16 @@ QWidget *MainWindow::buildNodeProfilePanel()
     solanaLayout->addWidget(balLabel);
     solanaLayout->addLayout(balanceRow);
 
-    // Revenue-sharing eligibility (self only): verify >=0.001 SOL has reached
-    // this wallet so the network knows the address is active.
+    // Public reward configuration (self only). A balance or deposit is neither
+    // requested nor treated as proof of wallet custody.
     m_profileEligibility = new QLabel;
     m_profileEligibility->setObjectName("statusLine");
     m_profileEligibility->setWordWrap(true);
     m_profileEligibility->setTextFormat(Qt::RichText);
-    m_profileVerifyButton = new QPushButton("Verify wallet (deposit >= 0.001 SOL)");
+    m_profileVerifyButton = new QPushButton("Check reward settings");
+    m_profileVerifyButton->setToolTip(
+        "Validate the public payout address and publish the existing signed "
+        "heartbeat. This never requests a deposit or guarantees a reward.");
     m_profileVerifyButton->setObjectName("ghostButton");
     m_profileVerifyButton->setCursor(Qt::PointingHandCursor);
     connect(m_profileVerifyButton, &QPushButton::clicked, this,
@@ -10972,6 +12443,49 @@ QWidget *MainWindow::buildNodeProfilePanel()
     return scroll;
 }
 
+void MainWindow::hostNodeProfilePanel(bool inSettings)
+{
+    // One panel, two homes: the centered full page (section 10, used for any
+    // node's profile) and the Settings > Profile tab (your own node). Move it
+    // rather than building a second copy — the panel owns all the m_profile*
+    // widgets, so a second build would orphan the first one's state.
+    if (!m_nodeProfilePanel)
+        return;
+    QWidget *host = inSettings ? m_settingsProfileHost : m_nodeProfileSectionHost;
+    if (!host || m_nodeProfilePanel->parentWidget() == host)
+        return;
+    auto *layout = qobject_cast<QBoxLayout *>(host->layout());
+    if (!layout)
+        return;
+    if (QWidget *old = m_nodeProfilePanel->parentWidget()) {
+        if (old->layout())
+            old->layout()->removeWidget(m_nodeProfilePanel);
+    }
+    if (inSettings) {
+        // Fill the tab: the tab body is already narrower than the section page,
+        // and the panel's own size hint collapses to ~450px without a stretch.
+        m_nodeProfilePanel->setMinimumWidth(0);
+        layout->addWidget(m_nodeProfilePanel, 1);
+    } else {
+        m_nodeProfilePanel->setMinimumWidth(920);
+        layout->insertWidget(1, m_nodeProfilePanel, 0); // between the stretchers
+    }
+    if (m_profileCloseButton)
+        m_profileCloseButton->setVisible(!inSettings);
+    m_nodeProfilePanel->show();
+}
+
+void MainWindow::syncSettingsProfileTab()
+{
+    if (!m_settingsTabs || m_profileSettingsTabIndex < 0 ||
+        m_settingsTabs->currentIndex() != m_profileSettingsTabIndex)
+        return;
+    ensureSectionBuilt(10); // the panel is built with the profile section
+    hostNodeProfilePanel(true);
+    showNodeProfile(m_profileIdentity.publicKey(), topBarUserName(),
+                    /*navigate=*/false);
+}
+
 void MainWindow::hideNodeProfile()
 {
     m_profileNodeId.clear();
@@ -10991,7 +12505,8 @@ void MainWindow::rescaleProfileAvatar()
     m_profileAvatar->setPixmap(roundedRectPixmap(src, side, 20));
 }
 
-void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
+void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName,
+                                 bool navigate)
 {
     if (!m_nodeProfilePanel)
         return;
@@ -11192,16 +12707,18 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     if (m_profileOnlineSection)
         m_profileOnlineSection->setVisible(info.self);
 
-    // "Get paid to mirror" is a self-only opt-in CTA. Once this node is activated
-    // (active account + a payout address set) it flips to an "earning" label so
-    // the button doubles as a status line; it stays clickable to re-arm hosting.
+    // Reward settings are self-only. Once an active, locally signable account
+    // and public payout address are configured, the label reports configuration
+    // only—not selection, a transfer, or guaranteed earnings.
     if (m_profileGetPaidButton) {
         const bool earning = hasOwnerSigningCapability(accountOwner()) &&
                              !solana.isEmpty();
         m_profileGetPaidButton->setVisible(info.self);
         m_profileGetPaidButton->setText(
-            earning ? QString::fromUtf8("\xE2\x9C\x93 Getting paid to mirror")
-                    : QString::fromUtf8("Get paid to mirror"));
+            earning
+                ? QString::fromUtf8(
+                      "\xE2\x9C\x93 Reward eligibility configured")
+                : QString::fromUtf8("Mirror reward settings"));
     }
 
     // Wallet verification + eligibility badge are shown only on your own profile.
@@ -11212,11 +12729,13 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
         if (info.self)
             m_profileEligibility->setText(
                 m_accountSolanaVerified
-                    ? QString::fromUtf8("<span style='color:#3fb950'>Active "
-                                     "\xC2\xB7 revenue-sharing eligible</span>")
-                    : QString::fromUtf8("<span style='color:#d29922'>Not yet eligible "
-                                     "\xE2\x80\x94 deposit >= 0.001 SOL and "
-                                     "verify.</span>"));
+                    ? QString::fromUtf8(
+                          "<span style='color:#3fb950'>Reward eligibility "
+                          "configured \xC2\xB7 may be eligible</span>")
+                    : QString::fromUtf8(
+                          "<span style='color:#d29922'>Not yet eligible "
+                          "\xE2\x80\x94 configure and verify a public "
+                          "self-custodial address.</span>"));
     }
 
     // Solana address + QR + reset balance.
@@ -11237,7 +12756,11 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     }
 
     // Show the profile as its own full page (section 10 in m_sectionStack).
-    showSection(10);
+    // navigate=false leaves it where it is — the Settings > Profile tab.
+    if (navigate) {
+        hostNodeProfilePanel(false);
+        showSection(10);
+    }
 }
 
 void MainWindow::refreshProfileHostingStats()
@@ -11287,18 +12810,19 @@ static QStringList profileNodesFromJson(const QJsonValue &value)
 }
 
 // Render a "<b>a</b>, <b>b</b>" list of the nodes linked to this user account,
-// marking the one we're viewing from ("(this node)") so the fleet is legible.
+// marking the machine we're viewing from ("(this machine)") so the fleet is
+// legible. Matched by machineNodeName() — the username is never a node.
 QString MainWindow::linkedNodesHtml() const
 {
     if (m_profileLinkedNodes.isEmpty())
         return QString();
-    const QString self = accountOwner();
+    const QString machine = machineNodeName();
     QStringList parts;
     for (const QString &n : m_profileLinkedNodes) {
         QString label = QStringLiteral("<b>%1</b>").arg(n.toHtmlEscaped());
-        if (n == self)
+        if (n.compare(machine, Qt::CaseInsensitive) == 0)
             label += QString::fromUtf8(" <span style='color:#8b949e'>(this "
-                                       "node)</span>");
+                                       "machine)</span>");
         parts << label;
     }
     return parts.join(QStringLiteral(", "));
@@ -11325,67 +12849,164 @@ void MainWindow::renderProfileAccountStatus()
     if (userName.isEmpty() && (m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty()))
         userName = accountOwner().trimmed().toLower();
     const bool hasUserProfile = !userName.isEmpty();
+    int nodeCount = 0;
     if (m_profileUserNodesList) {
         QStringList nodes = m_profileLinkedNodes;
-        const QString self = accountOwner();
-        if (hasUserProfile && !self.isEmpty() &&
-            !nodes.contains(self, Qt::CaseInsensitive))
-            nodes.prepend(self);
+        // THIS machine is one of the user's nodes too — listed under its own
+        // machine node name, never under the username (users are not nodes;
+        // the old code prepended accountOwner() here, which is how "jett" got
+        // labelled "(this node)").
+        const QString machine = machineNodeName();
+        if (hasUserProfile && !machine.isEmpty() &&
+            !nodes.contains(machine, Qt::CaseInsensitive))
+            nodes.prepend(machine);
+        nodeCount = nodes.size();
+
+        // Rich per-node rows: join each name against the same sources the Nodes
+        // directory table uses — the chat roster (platform / version / mirrors,
+        // via nodeListIdentityKey) and the relay's canonical online set — plus
+        // the node dropdown's repo counts.
+        auto rosterInfo = [this](const QString &name) -> MemberInfo {
+            MemberInfo best;
+            bool found = false;
+            for (const MemberInfo &m : std::as_const(m_homeRoster)) {
+                if (nodeListIdentityKey(m) != name)
+                    continue;
+                if (!found || (m.online && !best.online)) {
+                    best = m;
+                    found = true;
+                    continue;
+                }
+                if (best.version.trimmed().isEmpty())
+                    best.version = m.version;
+                if (best.platform.trimmed().isEmpty())
+                    best.platform = m.platform;
+                if (best.mirrors.isEmpty())
+                    best.mirrors = m.mirrors;
+            }
+            return best;
+        };
+        const QString dot = QString::fromUtf8(" \xC2\xB7 ");
         m_profileUserNodesList->clear();
         for (const QString &nodeName : std::as_const(nodes)) {
+            const MemberInfo mi = rosterInfo(nodeName);
+            const NodeMenuEntry *menu = nullptr;
+            for (const NodeMenuEntry &e : std::as_const(m_nodeMenuEntries)) {
+                if (e.name.compare(nodeName, Qt::CaseInsensitive) == 0) {
+                    menu = &e;
+                    break;
+                }
+            }
+            const bool isThisMachine =
+                nodeName.compare(machine, Qt::CaseInsensitive) == 0;
+            // Same online precedence as refreshNodesTable: this machine trusts
+            // the local backend; otherwise the relay set once fetched; before
+            // that, either signal.
+            const bool rosterLive = mi.online || (menu && menu->online);
+            const bool relayLive =
+                m_relayOnlineNodes.contains(nodeName.trimmed().toLower());
+            const bool online = isThisMachine
+                                    ? (m_backend != nullptr)
+                                    : (m_relayOnlineNodesFetched
+                                           ? relayLive
+                                           : (rosterLive || relayLive));
+
+            QStringList meta;
+            meta << (online ? QStringLiteral("Online") : QStringLiteral("Offline"));
+            const QString platform =
+                mi.platform.trimmed().isEmpty() && menu ? menu->platform
+                                                        : mi.platform.trimmed();
+            if (!platform.isEmpty())
+                meta << platform;
+            if (!mi.version.trimmed().isEmpty())
+                meta << QStringLiteral("v%1").arg(mi.version.trimmed());
+            if (menu && menu->repoCount > 0)
+                meta << QStringLiteral("%1 repo%2")
+                            .arg(menu->repoCount)
+                            .arg(menu->repoCount == 1 ? QString()
+                                                      : QStringLiteral("s"));
+            if (!mi.mirrors.isEmpty())
+                meta << QStringLiteral("%1 mirror%2")
+                            .arg(mi.mirrors.size())
+                            .arg(mi.mirrors.size() == 1 ? QString()
+                                                        : QStringLiteral("s"));
+
             auto *item = new QListWidgetItem;
-            const QPixmap icon =
-                roundedRectPixmap(nodeMachineFavicon(nodeName, 28), 28, 8);
-            item->setIcon(QIcon(icon));
-            item->setText(nodeName == self ? nodeName + QStringLiteral(" (this node)")
-                                           : nodeName);
+            item->setIcon(QIcon(
+                roundedRectPixmap(nodeMachineFavicon(nodeName, 32), 32, 8)));
+            item->setText(
+                nodeName +
+                (isThisMachine ? QStringLiteral("  (this machine)") : QString()) +
+                QLatin1Char('\n') + meta.join(dot));
+            item->setData(Qt::UserRole, nodeName);
+            item->setToolTip(QStringLiteral("%1%2\nOwned by %3 \xE2\x80\x94 "
+                                            "click to open this node's profile")
+                                 .arg(nodeName,
+                                      isThisMachine
+                                          ? QStringLiteral(" (this machine)")
+                                          : QString(),
+                                      userName.isEmpty()
+                                          ? QStringLiteral("this account")
+                                          : userName));
             m_profileUserNodesList->addItem(item);
         }
         const bool showNodes = !nodes.isEmpty();
         m_profileUserNodesList->setVisible(showNodes);
         if (showNodes)
             m_profileUserNodesList->setFixedHeight(
-                qMin(156, qMax(42, nodes.size() * 36 + 8)));
+                qMin(324, qMax(60, nodes.size() * 52 + 8)));
     }
     if (!m_nodeOwnerUser.trimmed().isEmpty()) {
-        // A child node attached to a separate user account.
+        // A child node attached to a separate user account: slim one-liner, the
+        // list itself carries the fleet.
+        if (m_profileAccountLabel)
+            m_profileAccountLabel->setText(
+                QStringLiteral("NODES (%1)").arg(nodeCount));
         m_profileAccountStatus->setText(
             QString::fromUtf8(
                 "<span style='color:#3fb950'>\xE2\x9C\x94 Linked to user "
                 "<b>%1</b></span>")
                 .arg(m_nodeOwnerUser.toHtmlEscaped()));
+        m_profileAccountStatus->setVisible(true);
         m_profileLinkUserButton->setText("Linked to a user");
         m_profileLinkUserButton->setVisible(false);
     } else if (m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty()) {
-        // This account is itself a user (it has login credentials); it can't
-        // be "linked to a user" — instead it OWNS nodes. Show them and hide
-        // the login button (linking is driven from each child node's app).
-        const QString body =
-            m_profileLinkedNodes.isEmpty()
-                ? QString::fromUtf8(
-                      "No other nodes are linked yet \xE2\x80\x94 open "
-                      "another node's app and use \"Log in as a user\" or "
-                      "\"Link this node to your account\" there to attach it "
-                      "to this account.")
-                : QStringLiteral("Nodes linked to this account are listed below.");
-        m_profileAccountStatus->setText(
-            QString::fromUtf8(
-                "<span style='color:#3fb950'>\xE2\x9C\x94 This is your user "
-                "account</span><br>%1").arg(body));
+        // This account is itself a user: the card is just the node fleet under a
+        // "NODES (n)" header. The old "✔ This is your user account" status box
+        // (and the USER PROFILE header above it) used to push the actual nodes
+        // half a card down; the fleet list needs no preamble.
+        if (m_profileAccountLabel)
+            m_profileAccountLabel->setText(
+                QStringLiteral("NODES (%1)").arg(nodeCount));
+        if (m_profileLinkedNodes.isEmpty()) {
+            m_profileAccountStatus->setText(QString::fromUtf8(
+                "No other nodes are linked yet \xE2\x80\x94 open "
+                "another node's app and use \"Log in as a user\" or "
+                "\"Link this node to your account\" there to attach it "
+                "to this account."));
+            m_profileAccountStatus->setVisible(true);
+        } else {
+            m_profileAccountStatus->clear();
+            m_profileAccountStatus->setVisible(false);
+        }
         m_profileLinkUserButton->setVisible(false);
     } else {
         // While a browser link grant is being watched (adhoc #120), say so
         // instead of "isn't linked yet" — the repaint on every poll would
         // otherwise clobber the context of what the user just started.
+        if (m_profileAccountLabel)
+            m_profileAccountLabel->setText(QStringLiteral("USER ACCOUNT"));
         m_profileAccountStatus->setText(
             m_linkGrantPollsLeft > 0
                 ? QString::fromUtf8(
-                      "Finishing in your browser \xE2\x80\xA6 this node will "
-                      "be attached to the user logged in on the website.")
+                      "Finishing in your browser \xE2\x80\xA6 this machine's "
+                      "node will be attached to the user logged in on the "
+                      "website.")
                 : QString::fromUtf8(
-                      "This node isn't linked to a user account yet. One user "
-                      "can own many nodes \xE2\x80\x94 log in to attach this "
-                      "node."));
+                      "This machine's node isn't linked to a user account yet. "
+                      "One user can own many nodes \xE2\x80\x94 log in to "
+                      "attach it."));
+        m_profileAccountStatus->setVisible(true);
         m_profileLinkUserButton->setText("Log in as a user");
         m_profileLinkUserButton->setEnabled(true);
         m_profileLinkUserButton->setVisible(true);
@@ -11407,9 +13028,16 @@ void MainWindow::refreshProfileAccountStatus()
         m_profileLinkedNodes.clear();
         m_profileIsUserAccount = false;
         updateUserSwitcher();
+        if (m_profileAccountLabel)
+            m_profileAccountLabel->setText(QStringLiteral("USER ACCOUNT"));
+        if (m_profileUserNodesList) {
+            m_profileUserNodesList->clear();
+            m_profileUserNodesList->setVisible(false);
+        }
         m_profileAccountStatus->setText(QString::fromUtf8(
-            "Register this node first (see \"Get paid to mirror\") to link it to "
-            "a user account."));
+            "Register this machine's node first (see Account settings) to "
+            "link it to a user account."));
+        m_profileAccountStatus->setVisible(true);
         m_profileLinkUserButton->setText("Log in as a user");
         m_profileLinkUserButton->setEnabled(false);
         m_profileLinkUserButton->setVisible(true);
@@ -11608,7 +13236,7 @@ void MainWindow::openLinkNodeInBrowser()
     const QString node = accountOwner();
     if (node.isEmpty() || !hasOwnerSigningCapability(node) ||
         (!m_profileIdentity.isValid() && !m_profileIdentity.load())) {
-        logSystem("Register this node first (see \"Get paid to mirror\") to "
+        logSystem("Register this node first (see Account settings) to "
                   "link it to a user account.");
         return;
     }

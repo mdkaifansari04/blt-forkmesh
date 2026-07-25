@@ -6,6 +6,8 @@ import ast
 import asyncio
 from pathlib import Path
 
+from worker_test_helpers import json_from_request_double
+
 
 ROOT = Path(__file__).resolve().parents[2]
 ENTRY = ROOT / "cloudflare_worker" / "src" / "entry.py"
@@ -22,6 +24,7 @@ def _load_rotate(extra_globals):
     assert selected, "missing _account_rotate"
     module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
     namespace = dict(extra_globals)
+    namespace.setdefault("bounded_json_request", json_from_request_double)
     exec(compile(module, str(ENTRY), "exec"), namespace)
     return namespace["_account_rotate"]
 
@@ -41,6 +44,7 @@ def _json_response(data, status=200, **_kwargs):
 def _harness(rec, pubkey_lookup=None, expected_canonical=None):
     saved = []
     verified = []
+    revoked = []
 
     async def _account_row(_env, name):
         if rec is None:
@@ -54,6 +58,9 @@ def _harness(rec, pubkey_lookup=None, expected_canonical=None):
 
     async def _save_account(_env, name_bi, updated_rec, **_kwargs):
         saved.append((name_bi, dict(updated_rec)))
+
+    async def _account_revoke_sessions(_env, name_bi):
+        revoked.append(name_bi)
 
     async def ed25519_verify(pubkey, sig, canonical):
         # Only the currently-bound old key with the sentinel signature verifies.
@@ -79,11 +86,13 @@ def _harness(rec, pubkey_lookup=None, expected_canonical=None):
             "_account_row": _account_row,
             "_account_row_by_pubkey": _account_row_by_pubkey,
             "_save_account": _save_account,
+            "_account_revoke_sessions": _account_revoke_sessions,
             "ed25519_verify": ed25519_verify,
             "json_response": _json_response,
             "Date": _Date,
         }
     )
+    handler.revoked_sessions = revoked
     return handler, saved, verified
 
 
@@ -113,6 +122,7 @@ def test_rotate_rebinds_to_successor_when_old_key_signs():
     assert rec["pubkey"] == "new-pubkey"
     assert rec["prev_pubkeys"] == ["old-pubkey"]
     assert rec["rotated_at"] == 1783000000000
+    assert handler.revoked_sessions == ["bi:alice-node"]
 
 
 def test_rotate_accepts_desktop_rotation_record_signature_field():
@@ -131,6 +141,7 @@ def test_rotate_accepts_desktop_rotation_record_signature_field():
     assert len(saved) == 1
     _, rec = saved[0]
     assert rec["pubkey"] == "new-pubkey"
+    assert handler.revoked_sessions == ["bi:alice-node"]
 
 
 def test_rotate_accepts_desktop_rotation_record_without_node_name():
@@ -161,6 +172,7 @@ def test_rotate_accepts_desktop_rotation_record_without_node_name():
             },
         )
     ]
+    assert handler.revoked_sessions == ["bi:alice-node"]
 
 
 def test_rotate_retries_desktop_record_after_nameless_rotation():
@@ -182,6 +194,7 @@ def test_rotate_retries_desktop_record_after_nameless_rotation():
     assert resp["data"] == {"ok": True, "nodeName": "alice-node", "pubkey": "new-pubkey"}
     assert saved == []
     assert verified == [("old-pubkey", "goodsig", canonical)]
+    assert handler.revoked_sessions == []
 
 
 def test_rotate_rejects_successor_key_bound_to_another_account():

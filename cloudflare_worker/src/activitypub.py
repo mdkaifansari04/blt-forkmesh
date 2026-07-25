@@ -21,8 +21,10 @@ Like ``releases.py``/``urls.py`` this module is stdlib-only — no ``js`` /
 import base64
 import hashlib
 import html
+import ipaddress
 import re
 import time
+from urllib.parse import urlparse
 
 # --- Constants ----------------------------------------------------------------
 
@@ -541,6 +543,64 @@ def activity_object_id(value):
     return ""
 
 
+def image_url_of(value):
+    """The URL of an ActivityStreams image property (icon/image).
+
+    Servers publish these as a bare string, an Image object, a nested
+    {"url": {"href": ...}} link, or a list of any of those (Mastodon sends an
+    Image object; Lemmy and some relays send a plain string)."""
+    if isinstance(value, list):
+        for item in value[:4]:
+            found = image_url_of(item)
+            if found:
+                return found
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        return image_url_of(value.get("url") or value.get("href"))
+    return ""
+
+
+_NONPUBLIC_MEDIA_SUFFIXES = (
+    ".internal", ".invalid", ".local", ".localhost", ".test", ".example",
+    ".onion",
+)
+
+
+def public_media_url(value, limit=800):
+    """A remote media URL safe to hand a browser: bounded https, public host.
+
+    A remote actor's icon is attacker-controlled text. Only an https URL on a
+    routable, non-reserved host is kept — never data:/javascript:, credentials,
+    a raw IP, or an internal name a viewer's browser would resolve on its own
+    network."""
+    raw = str(value or "").strip()
+    if not raw or len(raw) > limit or "\\" in raw:
+        return ""
+    try:
+        parsed = urlparse(raw)
+        host = str(parsed.hostname or "").lower().rstrip(".")
+        port = parsed.port
+    except (TypeError, ValueError):
+        return ""
+    if (parsed.scheme.lower() != "https"
+            or not host
+            or parsed.username is not None
+            or parsed.password is not None
+            or port not in (None, 443)
+            or "." not in host
+            or any(host.endswith(suffix)
+                   for suffix in _NONPUBLIC_MEDIA_SUFFIXES)):
+        return ""
+    try:
+        ipaddress.ip_address(host)
+        return ""
+    except ValueError:
+        pass
+    return parsed._replace(scheme="https", netloc=host, fragment="").geturl()
+
+
 def actor_essentials(doc):
     """Pull the fields we persist from a remote actor document."""
     if not isinstance(doc, dict) or not doc.get("id") or not doc.get("inbox"):
@@ -570,6 +630,12 @@ def actor_essentials(doc):
         "name": str(doc.get("name", "") or ""),
         "url": activity_object_id(doc.get("url")) or str(doc["id"]),
         "type": str(doc.get("type", "") or ""),
+        # Public profile presentation: the avatar and the bio the remote server
+        # already publishes to anyone who fetches this actor. Callers sanitize
+        # (the summary is untrusted remote HTML) before storing or serving.
+        "icon": image_url_of(doc.get("icon")),
+        "image": image_url_of(doc.get("image")),
+        "summary": str(doc.get("summary", "") or ""),
     }
 
 

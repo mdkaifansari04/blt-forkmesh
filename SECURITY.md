@@ -43,12 +43,14 @@ Security-relevant areas of ForkMesh include:
 
 - **Identity and signing** — local Ed25519 keys used to sign profile,
   repository, issue, and pull-request metadata.
-- **Relay chat** — payloads are encrypted client-side with AES-256-GCM; the
-  Cloudflare relay only sees ciphertext envelopes and does not persist message
-  bodies. Default per-repository rooms derive their key from a shared, app-wide
-  constant, so they are not confidential *between* users — a room passphrase
-  (shared out of band) is required for participant-only confidentiality. Coves
-  and encrypted mirrors use per-object secret keys and are confidential.
+- **Relay chat** — payloads are encrypted client-side with AES-256-GCM.
+  Default rooms use a relay-derived authenticated shared key: clients apply
+  PBKDF2-HMAC-SHA256 with 210,000 rounds, while the relay can derive the same
+  key and therefore can read message content. The relay retains at most 500
+  persisted frames per room for 7 days. A participant-supplied passphrase,
+  shared out of band in a client that supports it, is required for
+  confidentiality from the relay. Coves and encrypted mirrors use separate
+  per-object encryption boundaries.
 - **Mirroring** — bare Git mirrors fetched from remotes and served on demand.
 - **Donations** — Solana donation addresses published on profiles and
   repositories.

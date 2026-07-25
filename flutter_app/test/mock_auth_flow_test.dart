@@ -684,11 +684,11 @@ void main() {
       expect(find.text('alice'), findsOneWidget);
       expect(find.text('forkmesh/mobile'), findsOneWidget);
       expect(
-        find.textContaining('Mobile does not execute payouts.'),
+        find.textContaining('Historical finalized public accounting only'),
         findsOneWidget,
       );
       expect(
-        find.textContaining('not a promise of current wallet balance'),
+        find.textContaining('not a ForkMesh or current wallet balance'),
         findsOneWidget,
       );
       expect(tester.takeException(), isNull);

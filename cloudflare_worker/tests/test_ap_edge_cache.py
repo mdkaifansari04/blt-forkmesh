@@ -7,8 +7,9 @@ GETs in bursts, and every hit used to reach D1 — the pressure behind the
 adhoc #9). These tests load the real handlers out of src/entry.py and pin
 the collapse behaviour:
 
-  * a cold hit computes the document, stores it under its canonical public
-    URL, and a warm hit is served from the edge cache without touching D1;
+  * a cold hit computes the document and stores it under its canonical public
+    URL; positive warm hits revalidate the privacy/federation gate before using
+    cache so an opt-out or private-repo transition revokes immediately;
   * not-found responses (a non-federating actor) are parked briefly under the
     same key, so probe storms for dead handles collapse too; transient
     errors (503) are never stored;
@@ -216,7 +217,7 @@ def test_collection_repo_followers_always_enumerate():
     assert resp.data["items"] == []  # repo watchers are already public
 
 
-def test_collection_warm_hit_is_served_without_touching_d1():
+def test_collection_warm_hit_revalidates_visibility_before_using_cache():
     edge, d1_log = FakeEdgeCache(), []
     ns = _collection_env(edge, d1_log)
     request = _fake_request("https://forkmesh.com/ap/users/alice/outbox")
@@ -225,8 +226,8 @@ def test_collection_warm_hit_is_served_without_touching_d1():
     d1_log.clear()
     second = _run(ns["ap_collection_handler"](
         None, request, "user", "alice", "outbox"))
-    assert second is first  # the stored response, straight from the cache
-    assert d1_log == []  # no schema check, no COUNT(*)
+    assert second is first
+    assert d1_log == ["ensure_schema"]  # gate only; no COUNT(*)
 
 
 def test_collection_not_found_is_negative_cached():
@@ -271,7 +272,7 @@ def _actor_env(edge, d1_log, resolves=True):
                  extra_globals=globs)
 
 
-def test_actor_doc_cold_hit_stores_under_actor_url_and_warm_hit_skips_d1():
+def test_actor_doc_warm_hit_revalidates_visibility_before_using_cache():
     edge, d1_log = FakeEdgeCache(), []
     ns = _actor_env(edge, d1_log)
     request = _fake_request("https://forkmesh.com/ap/users/alice")
@@ -281,7 +282,7 @@ def test_actor_doc_cold_hit_stores_under_actor_url_and_warm_hit_skips_d1():
     d1_log.clear()
     second = _run(ns["_ap_actor_doc_response"](None, request, "user", "alice"))
     assert second is first
-    assert d1_log == []
+    assert d1_log == ["ensure_schema"]
 
 
 def test_actor_doc_404_is_negative_cached():
@@ -347,7 +348,7 @@ def test_webfinger_spelling_variants_share_one_edge_entry():
     second = _run(ns["ap_webfinger_handler"](
         None, _fake_request(base + "Alice%40ForkMesh.com")))
     assert second is first
-    assert d1_log == []
+    assert d1_log == ["ensure_schema", "user_federates"]
     assert list(edge.store) == [
         "https://forkmesh.com/.well-known/webfinger"
         "?resource=acct:alice@forkmesh.com"]
@@ -426,6 +427,10 @@ def _media_globals(edge, d1_log):
         "edge_cache_match_media": edge_cache_match_media,
         "decrypt_row": decrypt_row,
         "JsResponse": FakeJsResponse,
+        # Uint8Array.new(_to_js(bytes)) copies the WASM view into a JS-owned
+        # buffer so the body survives being read off the GIL; the stub just
+        # returns the bytes back (bytes() copies) to mirror that.
+        "Uint8Array": SimpleNamespace(new=lambda v: bytes(v)),
         "to_js": lambda v: v,
         "_to_js": lambda v: v,
         "base64": __import__("base64"),
@@ -447,7 +452,7 @@ def _object_media_env(edge, d1_log):
     return _load("ap_object_media_handler", extra_globals=globs)
 
 
-def test_object_media_cold_hit_stores_and_warm_hit_skips_d1():
+def test_object_media_warm_hit_revalidates_context_before_using_cache():
     edge, d1_log = FakeEdgeCache(), []
     ns = _object_media_env(edge, d1_log)
     uuid = "a" * 32
@@ -460,7 +465,8 @@ def test_object_media_cold_hit_stores_and_warm_hit_skips_d1():
     d1_log.clear()
     second = _run(ns["ap_object_media_handler"](None, request, uuid, "0"))
     assert second is first
-    assert d1_log == []
+    assert d1_log[0] == "ensure_schema"
+    assert any("FROM ap_objects" in query for query in d1_log[1:])
 
 
 def test_object_media_missing_index_is_not_cached():
@@ -510,7 +516,9 @@ def test_repo_media_cold_hit_stores_under_versioned_url():
     second = _run(ns["repo_media_handler"](
         None, _fake_request(url), "forkmesh", "forkmesh", "logo"))
     assert second is first
-    assert d1_log == []
+    # The signed repository visibility is always checked before a cached
+    # branding asset can be returned.
+    assert d1_log == ["ensure_schema"]
 
 
 def test_repo_media_not_found_is_not_cached():
@@ -567,6 +575,7 @@ def _actor_doc_globals():
         "_ap_org_alias_owner": _ap_org_alias_owner,
         "_ap_user_federates": _ap_user_federates,
         "_ap_domain_of": lambda origin: "forkmesh.com",
+        "quote": quote,
         "repo_web_href": lambda owner, repo: "/%s/%s" % (owner, repo),
         "_ap_actor_url": lambda origin, kind, handle: (
             origin + "/ap/repos/%s/%s" % tuple(handle.split(".", 1))
@@ -588,3 +597,6 @@ def test_repo_actor_url_is_fediverse_profile_page_not_git_page():
                     if a.get("name") == "Repository")
     assert "https://forkmesh.com/owner/repo" in repo_row["value"]
     assert "/@owner.repo" not in repo_row["value"]
+    assert doc["icon"]["url"] == (
+        "https://forkmesh.com/api/repo/owner/repo/logo?image=1"
+    )

@@ -591,6 +591,14 @@ QWidget *MainWindow::buildRepoOverviewPage()
         showOverviewWorktrees();
         loadWorktreesPanel();
     });
+    m_remotesButton = new QPushButton("Remotes");
+    m_remotesButton->setObjectName("ghostButton");
+    m_remotesButton->setCursor(Qt::PointingHandCursor);
+    m_remotesButton->setToolTip(
+        "List this repository's git remotes; pick one to copy its URL");
+    setOcticon(m_remotesButton, "server", 16);
+    // The menu itself is rebuilt with the remote list in loadBranchesAndTags,
+    // alongside the branch menu and the branches/worktrees counts.
     m_toolbarCommitsButton = new QPushButton("Commits");
     m_toolbarCommitsButton->setObjectName("ghostButton");
     m_toolbarCommitsButton->setCursor(Qt::PointingHandCursor);
@@ -637,6 +645,7 @@ QWidget *MainWindow::buildRepoOverviewPage()
     toolbar->addWidget(m_branchButton);
     toolbar->addWidget(m_branchesButton);
     toolbar->addWidget(m_worktreesButton);
+    toolbar->addWidget(m_remotesButton);
     toolbar->addWidget(m_toolbarCommitsButton);
     toolbar->addWidget(m_tagsButton);
     // Releases (adhoc #180): moved out of the top tab bar to sit beside Tags on
@@ -665,6 +674,12 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_overviewBodyStack->addWidget(buildRepoCommitsTab()); // 1 commit history
     m_overviewBodyStack->addWidget(buildBranchesTab());    // 2 branches panel
     m_overviewBodyStack->addWidget(buildWorktreesTab());   // 3 worktrees panel
+    // Every body page already owns its inner scrolling and this stack fills an
+    // expanding layout slot. Ignore child size-hint changes so switching from
+    // files to commits does not relayout the entire top-level window.
+    m_overviewBodyStack->setMinimumHeight(0);
+    m_overviewBodyStack->setSizePolicy(
+        QSizePolicy::Expanding, QSizePolicy::Ignored);
 
     // Left column: toolbar, latest commit, then the swappable body.
     auto *leftColumn = new QWidget;
@@ -1310,6 +1325,7 @@ void MainWindow::openRepoDetail(int repoIndex)
 {
     if (repoIndex < 0 || repoIndex >= m_repositories.size())
         return;
+    ensureRepoDetailSectionBuilt();
     // Guard against re-entrancy: a node switch yields the event loop between load
     // steps (see nodeSwitchStep), so a queued call must not start a second load
     // on top of this one.
@@ -7742,6 +7758,89 @@ void MainWindow::loadBranchesAndTags()
                                         : QStringLiteral("worktrees")));
     }
 
+    // Git remotes on the "N remotes" toolbar dropdown: one entry per remote,
+    // "name — url", picking one copies its URL. `git remote -v` is a config
+    // read, so it's cheap enough for this ref-change path.
+    if (m_remotesButton) {
+        struct RemoteEntry {
+            QString name;
+            QString fetchUrl;
+            QString pushUrl;
+        };
+        QList<RemoteEntry> remotes;
+        QByteArray remoteOut;
+        if (!dir.isEmpty() &&
+            runGitCapture(dir, {"remote", "-v"}, &remoteOut, nullptr)) {
+            for (const QString &raw :
+                 QString::fromUtf8(remoteOut).split('\n', Qt::SkipEmptyParts)) {
+                const int tab = raw.indexOf('\t');
+                if (tab <= 0)
+                    continue;
+                const QString name = raw.left(tab).trimmed();
+                QString rest = raw.mid(tab + 1).trimmed();
+                const bool isPush = rest.endsWith(QLatin1String("(push)"));
+                rest.remove(QLatin1String("(fetch)"));
+                rest.remove(QLatin1String("(push)"));
+                rest = rest.trimmed();
+                auto it = std::find_if(remotes.begin(), remotes.end(),
+                                       [&name](const RemoteEntry &e) {
+                                           return e.name == name;
+                                       });
+                if (it == remotes.end()) {
+                    remotes.append({name, QString(), QString()});
+                    it = remotes.end() - 1;
+                }
+                if (isPush)
+                    it->pushUrl = rest;
+                else
+                    it->fetchUrl = rest;
+            }
+        }
+        m_remotesButton->setText(
+            QStringLiteral("%1 %2")
+                .arg(formatCount(remotes.size()))
+                .arg(remotes.size() == 1 ? QStringLiteral("remote")
+                                         : QStringLiteral("remotes")));
+        auto *menu = new QMenu(m_remotesButton);
+        menu->setToolTipsVisible(true); // fetch/push URLs hover per row
+        for (const RemoteEntry &remote : remotes) {
+            const QString url =
+                remote.fetchUrl.isEmpty() ? remote.pushUrl : remote.fetchUrl;
+            QAction *action = menu->addAction(
+                url.isEmpty() ? remote.name
+                              : QStringLiteral("%1 \xE2\x80\x94 %2")
+                                    .arg(remote.name, url),
+                this, [this, name = remote.name, url] {
+                    if (url.isEmpty())
+                        return;
+                    QApplication::clipboard()->setText(url);
+                    setRepoDetailNotice(
+                        QStringLiteral("Copied %1 URL: %2").arg(name, url));
+                });
+            if (remote.pushUrl.isEmpty() || remote.pushUrl == remote.fetchUrl)
+                action->setToolTip(url);
+            else
+                action->setToolTip(QStringLiteral("fetch %1\npush %2")
+                                       .arg(remote.fetchUrl, remote.pushUrl));
+        }
+        if (remotes.isEmpty())
+            menu->addAction("No remotes")->setEnabled(false);
+        menu->addSeparator();
+        menu->addAction("Manage remotes\xE2\x80\xA6", this, [this] {
+            // The add/edit/delete controls live in the repo Settings tab.
+            if (m_settingsTabIndex >= 0 && m_repoDetailTabs &&
+                m_repoDetailTabs->button(m_settingsTabIndex)) {
+                m_repoDetailTabs->button(m_settingsTabIndex)->setChecked(true);
+                m_repoDetailStack->setCurrentIndex(m_settingsTabIndex);
+                refreshRepoSettings();
+            }
+        });
+        QMenu *old = m_remotesButton->menu();
+        m_remotesButton->setMenu(menu);
+        if (old)
+            old->deleteLater();
+    }
+
     // Branch menu.
     if (m_branchButton) {
         auto *menu = new QMenu(m_branchButton);
@@ -7821,6 +7920,24 @@ bool MainWindow::repoHasWorkingTree() const
 // ---- Repo-detail & commits UI builders (moved from MainWindowIssues) ----
 
 // ---- Repo detail (files + issues tabs) -------------------------------------
+
+void MainWindow::ensureRepoDetailSectionBuilt()
+{
+    if (m_repoDetailStack)
+        return;
+
+    QWidget *placeholder = m_repoDetailSection;
+    QWidget *home = placeholder ? placeholder->parentWidget() : nullptr;
+    QLayout *homeLayout = home ? home->layout() : nullptr;
+    QWidget *detail = buildRepoDetailSection();
+    if (homeLayout && placeholder)
+        homeLayout->replaceWidget(placeholder, detail);
+    else if (homeLayout)
+        homeLayout->addWidget(detail);
+    m_repoDetailSection = detail;
+    if (placeholder)
+        placeholder->deleteLater();
+}
 
 QWidget *MainWindow::buildRepoDetailSection()
 {
@@ -8195,6 +8312,13 @@ QWidget *MainWindow::buildRepoDetailSection()
             // body was left on the commits panel, swap it back (and dim the
             // commit strip's toggle). The explorer/overview mode is untouched.
             showOverviewFiles();
+        } else if (m_historyButton) {
+            // The commit toggle belongs to the Code overview. Do not leave it
+            // visually armed after navigating to another repository tab: a
+            // subsequent return to history must take the real checked-click
+            // path and rebuild/open the commit content instead of mistaking a
+            // hidden, stale panel for the active view.
+            m_historyButton->setChecked(false);
         }
         if (id == 2) {
             // Opening Issues: clear any filter the user left set on a prior visit
@@ -8611,18 +8735,30 @@ QWidget *MainWindow::buildRepoCommitsTab()
     auto *navCol = new QVBoxLayout;
     navCol->setContentsMargins(0, 0, 0, 0);
     navCol->setSpacing(4);
-    auto *prevNextRow = new QHBoxLayout;
-    prevNextRow->setContentsMargins(0, 0, 0, 0);
-    prevNextRow->setSpacing(4);
-    prevNextRow->addWidget(m_commitDeleteButton);
-    prevNextRow->addWidget(m_commitRevertButton);
-    prevNextRow->addWidget(m_commitSplitButton);
-    prevNextRow->addWidget(commitCopyLinkButton);
-    prevNextRow->addWidget(m_commitDownloadButton);
-    prevNextRow->addWidget(m_commitPrevButton);
-    prevNextRow->addWidget(m_commitNextButton);
-    prevNextRow->addStretch();
-    navCol->addLayout(prevNextRow);
+
+    // Keep the paired history actions together on their own row. Combining all
+    // seven controls in one fixed-width row raised the commit workspace's
+    // minimum width above a laptop viewport; depending on the window manager,
+    // Restore could then be clipped even though it existed. The second row
+    // contains navigation and presentation actions and can fit independently.
+    auto *historyActionRow = new QHBoxLayout;
+    historyActionRow->setContentsMargins(0, 0, 0, 0);
+    historyActionRow->setSpacing(4);
+    historyActionRow->addWidget(m_commitDeleteButton);
+    historyActionRow->addWidget(m_commitRevertButton);
+    historyActionRow->addStretch();
+    navCol->addLayout(historyActionRow);
+
+    auto *commitToolRow = new QHBoxLayout;
+    commitToolRow->setContentsMargins(0, 0, 0, 0);
+    commitToolRow->setSpacing(4);
+    commitToolRow->addWidget(m_commitSplitButton);
+    commitToolRow->addWidget(commitCopyLinkButton);
+    commitToolRow->addWidget(m_commitDownloadButton);
+    commitToolRow->addWidget(m_commitPrevButton);
+    commitToolRow->addWidget(m_commitNextButton);
+    commitToolRow->addStretch();
+    navCol->addLayout(commitToolRow);
 
     auto *headerRow = new QVBoxLayout;
     headerRow->setContentsMargins(0, 0, 0, 0);
@@ -8764,7 +8900,6 @@ QWidget *MainWindow::buildRepoCommitsTab()
     changesLayout->setSpacing(8);
     m_scmDiff = new QTextBrowser;
     m_scmDiff->setObjectName("diffView");
-    m_scmDiff->setLineWrapMode(QTextEdit::NoWrap);
     registerDiffView(m_scmDiff);
     m_scmDiff->setHtml(QStringLiteral(
         "<p style='color:#8b949e'>Select a change or open all changes to view "
