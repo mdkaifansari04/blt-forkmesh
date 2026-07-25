@@ -280,7 +280,9 @@ def test_login_persists_returned_session_details():
     assert "isAdmin: Boolean(body.isAdmin)" in login_js
     assert 'solana: body.solana || ""' in login_js
     assert "hasPayoutAddress: Boolean(body.hasPayoutAddress)" in login_js
-    assert 'sessionToken: body.sessionToken || ""' in login_js
+    assert 'location.protocol === "https:" && body.sessionToken' in login_js
+    assert '? "cookie"' in login_js
+    assert ': body.sessionToken || ""' in login_js
     assert 'profileBio: body.profileBio || ""' in login_js
     assert 'profileAbout: body.profileAbout || body.profileReadme || ""' in login_js
     assert 'profileLocation: body.profileLocation || ""' in login_js

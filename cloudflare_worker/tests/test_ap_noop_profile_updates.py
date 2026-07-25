@@ -36,6 +36,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
+from worker_test_helpers import json_from_request_double
+
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
@@ -54,6 +56,7 @@ def _load(*names, extra_globals=None):
     module = ast.fix_missing_locations(
         ast.Module(body=selected, type_ignores=[]))
     namespace = dict(extra_globals or {})
+    namespace.setdefault("bounded_json_request", json_from_request_double)
     exec(compile(module, str(ENTRY), "exec"), namespace)
     return namespace
 

@@ -14,6 +14,8 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
+from worker_test_helpers import json_from_request_double
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
@@ -308,6 +310,7 @@ def test_false_positive_review_overlay_is_aggregated_without_mutating_scan():
 
 
 def _load_entry_handlers(namespace):
+    namespace.setdefault("bounded_json_request", json_from_request_double)
     tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
     wanted = {
         "_security_scan_owner_authorization",

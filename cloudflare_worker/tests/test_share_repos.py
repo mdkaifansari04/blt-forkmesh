@@ -23,6 +23,8 @@ import sys
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
+from worker_test_helpers import json_from_request_double
+
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 sys.path.insert(0, str(ENTRY.parent))
@@ -133,6 +135,7 @@ def test_client_declares_collaborator_api():
 # --- Executable owner-only collaborator/bundle contract --------------------
 
 def _load_share_functions(namespace):
+    namespace.setdefault("bounded_json_request", json_from_request_double)
     wanted = {"_active_public_recipient_bundles", "shares_handler"}
     tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
     nodes = [

@@ -61,6 +61,83 @@ def _lookup_namespace(row, token, now=2_000_000):
     return namespace["_account_session_lookup"], updates
 
 
+def _record_namespace(row_overrides=None, user_overrides=None, now=2_000_000):
+    """Load the real session record/lookup stack around an in-memory D1."""
+    token = "v2." + "a" * 32 + "." + "b" * 43
+    env = SimpleNamespace(ADMIN_PASS="admin-secret", DATA_KEY="data-secret")
+    session_row = {}
+    user_row = {
+        "name": "alice",
+        "status": "active",
+        "kind": "user",
+        "pass_hash": "hash",
+    }
+    user_row.update(user_overrides or {})
+    queries = []
+    updates = []
+
+    async def first(_env, sql, *args):
+        queries.append((sql, args))
+        if "FROM account_sessions" in sql:
+            return dict(session_row) if session_row else None
+        if "FROM users" in sql:
+            return {"data": dict(user_row)}
+        raise AssertionError(sql)
+
+    async def run(_env, sql, *args):
+        updates.append((sql, args))
+
+    async def decrypt(_env, value):
+        return dict(value) if isinstance(value, dict) else None
+
+    namespace = {
+        "ACCOUNT_SESSION_COOKIE": "forkmesh_account",
+        "ACCOUNT_SESSION_TOKEN_RE": re.compile(
+            r"^v2\.([A-Za-z0-9_-]{24,64})\.([A-Za-z0-9_-]{32,96})$"),
+        "ACCOUNT_SESSION_TOUCH_MS": 300_000,
+        "ADMIN_SESSION_TTL_MS": 12 * 60 * 60 * 1000,
+        "MAX_NODE_NAME": 63,
+        "Date": SimpleNamespace(now=lambda: now),
+        "clean_string": lambda value, maximum: str(value or "")[:maximum],
+        "d1_first": first,
+        "d1_run": run,
+        "decrypt_row": decrypt,
+        "hmac": hmac,
+        "re": re,
+        "urlparse": urlparse,
+    }
+    for name in (
+        "method_name",
+        "_account_kind",
+        "_account_session_secret",
+        "_account_session_token_digest",
+        "_cookie_value",
+        "_request_account_session_token",
+        "_request_same_origin",
+        "_account_session_lookup",
+        "_account_session_record",
+    ):
+        exec(_source(name), namespace)
+
+    session_row.update({
+        "account_bi": "account-bi",
+        "token_digest": namespace["_account_session_token_digest"](env, token),
+        "last_seen_at": 0,
+        "expires_at": now + 1_000_000,
+        "revoked_at": 0,
+    })
+    session_row.update(row_overrides or {})
+    return namespace["_account_session_record"], token, env, queries, updates
+
+
+def _session_request(method="GET", headers=None):
+    return SimpleNamespace(
+        method=method,
+        url="https://forkmesh.com/api/profile",
+        headers=dict(headers or {}),
+    )
+
+
 def test_session_lookup_rejects_revoked_expired_and_wrong_digest():
     token = "v2." + "a" * 32 + "." + "b" * 43
     digest = hmac.new(
@@ -89,6 +166,75 @@ def test_session_lookup_rejects_revoked_expired_and_wrong_digest():
     ):
         lookup, _ = _lookup_namespace({**base, **override}, token)
         assert asyncio.run(lookup(object(), token)) == ("", None, "")
+
+
+def test_account_session_record_uses_v2_digest_lookup_for_bearer_tokens():
+    record, token, env, queries, updates = _record_namespace()
+    request = _session_request(
+        headers={"authorization": "Bearer " + token})
+    account_bi, account = asyncio.run(record(env, request))
+    assert account_bi == "account-bi"
+    assert account["name"] == "alice"
+    assert queries[0][1] == ("a" * 32,)
+    assert any("FROM users" in sql for sql, _args in queries)
+    assert updates and "last_seen_at" in updates[0][0]
+
+    # The public session id is not sufficient: changing the secret keeps the
+    # lookup key the same but fails the keyed digest comparison.
+    forged = "v2." + "a" * 32 + "." + "c" * 43
+    assert asyncio.run(record(
+        env,
+        _session_request(headers={"authorization": "Bearer " + forged}),
+    )) == ("", None)
+
+
+def test_account_session_record_rejects_expired_revoked_and_non_user_accounts():
+    cases = (
+        ({"expires_at": 2_000_000}, {}, "expired"),
+        ({"revoked_at": 1}, {}, "revoked"),
+        ({}, {"status": "disabled"}, "inactive"),
+        ({}, {"kind": "node", "pass_hash": ""}, "node-kind"),
+    )
+    for row_overrides, user_overrides, label in cases:
+        record, token, env, _queries, _updates = _record_namespace(
+            row_overrides=row_overrides,
+            user_overrides=user_overrides,
+        )
+        actual = asyncio.run(record(
+            env,
+            _session_request(headers={"authorization": "Bearer " + token}),
+        ))
+        assert actual == ("", None), label
+
+
+def test_account_session_record_cookie_selection_enforces_mutation_origin():
+    record, token, env, _queries, _updates = _record_namespace()
+    cookie = "forkmesh_account=" + token
+
+    same_origin = _session_request(
+        method="POST",
+        headers={
+            "cookie": cookie,
+            "origin": "https://forkmesh.com",
+        },
+    )
+    account_bi, account = asyncio.run(
+        record(env, same_origin, {"sessionToken": "cookie"}))
+    assert account_bi == "account-bi"
+    assert account["name"] == "alice"
+
+    for origin in ("", "https://mirror.forkmesh.com"):
+        denied = _session_request(
+            method="POST",
+            headers={"cookie": cookie, "origin": origin},
+        )
+        assert asyncio.run(record(
+            env, denied, {"sessionToken": "cookie"})) == ("", None)
+
+    # Safe reads may use the HttpOnly cookie without an Origin header.
+    read = _session_request(headers={"cookie": cookie})
+    assert asyncio.run(record(
+        env, read, {"sessionToken": "cookie"}))[0] == "account-bi"
 
 
 def test_cookie_marker_uses_cookie_and_mutations_require_exact_origin():

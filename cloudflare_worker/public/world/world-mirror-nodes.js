@@ -39,7 +39,46 @@ function commitHash(value) {
 
 function timestamp(value) {
   const number = Number(value);
-  return Number.isSafeInteger(number) && number > 0 ? number : null;
+  if (Number.isSafeInteger(number) && number > 0) return number;
+  const parsed = Date.parse(String(value || ""));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function commitMetadata(source) {
+  const commit = source?.lastCommit || source?.commitDetails || {};
+  const message = text(
+    source?.lastCommitMessage ||
+      source?.commitMessage ||
+      source?.commitSubject ||
+      commit?.message ||
+      commit?.subject,
+    "",
+    220,
+  );
+  const authorName = text(
+    source?.lastCommitAuthorName ||
+      source?.commitAuthorName ||
+      source?.authorName ||
+      commit?.authorName ||
+      commit?.author?.name ||
+      source?.commitAuthor,
+    "",
+    100,
+  );
+  const committedAt = timestamp(
+    source?.lastCommitAt ||
+      source?.commitDate ||
+      source?.committedAt ||
+      source?.commitTimestamp ||
+      commit?.committedAt ||
+      commit?.date ||
+      commit?.author?.date,
+  );
+  return omitUnknownValues({
+    lastCommitMessage: message || null,
+    lastCommitAuthorName: authorName || null,
+    lastCommitAt: committedAt,
+  });
 }
 
 function publicRepositoryRecord(mirror, payload) {
@@ -73,6 +112,7 @@ function publicRepositoryRecord(mirror, payload) {
     platform: text(mirror?.platform, "", 24).toLowerCase(),
     version: text(mirror?.version, "", 32),
     id: text(mirror?.id, "", 120),
+    ...commitMetadata(mirror),
   });
 }
 
@@ -94,6 +134,7 @@ function nodeAggregateRecord(node) {
     platform: text(node?.platform, "", 24).toLowerCase(),
     version: text(node?.version, "", 32),
     nodeId: text(node?.nodeId || node?.id, "", 120),
+    ...commitMetadata(node),
   });
 }
 
@@ -217,6 +258,15 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
         nodeId: text(primary.id || detail?.nodeId, "", 120),
         commit: hasPrimary ? primary.commit : aggregate.commit,
         branch: hasPrimary ? primary.branch : aggregate.branch,
+        lastCommitMessage: hasPrimary
+          ? primary.lastCommitMessage
+          : aggregate.lastCommitMessage,
+        lastCommitAuthorName: hasPrimary
+          ? primary.lastCommitAuthorName
+          : aggregate.lastCommitAuthorName,
+        lastCommitAt: hasPrimary
+          ? primary.lastCommitAt
+          : aggregate.lastCommitAt,
         lastSeen: primary.lastSeen || null,
         lastSync: hasPrimary ? primary.lastSync : aggregate.lastSync,
         syncAgeMs: primary.syncAgeMs ?? null,

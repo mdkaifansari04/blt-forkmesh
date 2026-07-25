@@ -15,6 +15,8 @@ from urllib.parse import parse_qs, quote, urlparse
 
 import pytest
 
+from worker_test_helpers import json_from_request_double
+
 # Allow ``import src.*`` regardless of the working directory pytest is run from
 # (the collector may load this module from the repo root, where the worker
 # package dir is not otherwise on sys.path).
@@ -685,6 +687,7 @@ def _load_entry_contribution_functions(extra_globals):
     ]
     module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
     namespace = dict(extra_globals)
+    namespace.setdefault("bounded_json_request", json_from_request_double)
     exec(compile(module, str(ENTRY), "exec"), namespace)
     return namespace
 
@@ -1223,6 +1226,7 @@ def test_ingest_catalog_handler_keeps_repository_write_on_optional_failure():
         "stateSig": "",
     }
     namespace = {
+        "bounded_json_request": json_from_request_double,
         "ensure_schema": noop,
         "method_name": lambda request: request.method,
         "safe_catalog_record": lambda _data: dict(record),

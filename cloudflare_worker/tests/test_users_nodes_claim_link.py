@@ -15,6 +15,7 @@ from pathlib import Path
 
 from _dashboard_shell import assembled_dashboard
 from _dashboard_bundle import assembled_dashboard_js
+from worker_test_helpers import json_from_request_double
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -49,6 +50,7 @@ def _load_functions(extra_globals):
     # in entry.py); fresh per load for test isolation.
     namespace.setdefault("_MIRRORED_ACCOUNT_BIS", set())
     namespace.setdefault("_HEARTBEAT_BALANCE_PROBES", {})
+    namespace.setdefault("bounded_json_request", json_from_request_double)
     exec(compile(module, str(ENTRY), "exec"), namespace)
     return namespace
 

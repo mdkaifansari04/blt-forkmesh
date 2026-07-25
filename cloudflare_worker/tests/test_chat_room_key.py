@@ -30,10 +30,7 @@ ENTRY_TEXT = (
 FUNCS = {
     "chat_room_key_handler", "_room_key_authorized", "_room_chat_passphrase",
     "_room_key_requester",
-    "_require_data_secret", "_authed_account_name", "_account_session_record",
-    "_account_session_token", "_account_session_token_name",
-    "_account_session_signature", "_account_session_secret", "_account_kind",
-    "valid_node_name", "clean_string", "_owner_pubkey",
+    "_require_data_secret", "valid_node_name", "clean_string", "_owner_pubkey",
 }
 
 
@@ -131,6 +128,18 @@ def _harness(accounts, data_key="a-real-secret-data-key"):
     def _ts_ok(_ts):
         return True
 
+    def _account_session_token(_env, name):
+        return "test-session:" + str(name or "").strip().lower()
+
+    async def _authed_account_name(_env, request, data=None):
+        del data
+        auth = request.headers.get("authorization") or ""
+        token = auth[7:] if auth.lower().startswith("bearer ") else ""
+        prefix = "test-session:"
+        name = token[len(prefix):] if token.startswith(prefix) else ""
+        rec = accounts.get(name)
+        return name if rec and rec.get("status") == "active" else ""
+
     class _Env:
         DATA_KEY = data_key
 
@@ -139,6 +148,8 @@ def _harness(accounts, data_key="a-real-secret-data-key"):
         "json_response": json_response,
         "ensure_schema": ensure_schema,
         "_account_row": _account_row,
+        "_account_session_token": _account_session_token,
+        "_authed_account_name": _authed_account_name,
         "ed25519_verify": ed25519_verify,
         "_repository_access_context": _repository_access_context,
         "_private_replica_not_found": lambda: {

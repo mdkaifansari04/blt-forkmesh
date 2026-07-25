@@ -401,7 +401,14 @@ def test_forkmesh_actions_run_full_worker_pytest_suite():
 
 
 def test_action_runner_does_not_override_installer_source_in_ci_jobs():
-    assert "if (isReleaseRun() && !m_run.owner.isEmpty() && !m_run.name.isEmpty())" in ACTION_RUNNER_CPP_TEXT
+    # Repository identity is only injected for release jobs. Keep the owner/name
+    # guard nested in that release-only block so ordinary CI runs retain the
+    # installer source chosen by their workflow environment.
+    assert "if (isReleaseRun()) {" in ACTION_RUNNER_CPP_TEXT
+    assert (
+        "if (!m_run.owner.isEmpty() && !m_run.name.isEmpty())\n"
+        "                env.insert(QStringLiteral(\"FORKMESH_REPO\"),"
+    ) in ACTION_RUNNER_CPP_TEXT
     assert "env.insert(QStringLiteral(\"FORKMESH_REPO\")," in ACTION_RUNNER_CPP_TEXT
     assert "if (!m_run.owner.isEmpty() && !m_run.name.isEmpty())\n        env.insert(QStringLiteral(\"FORKMESH_REPO\")," not in ACTION_RUNNER_CPP_TEXT
 
@@ -418,7 +425,9 @@ def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
     assert "emitSuppressedProcessOutputTail()" in ACTION_RUNNER_CPP_TEXT
     assert "rememberCrashProcessOutput(const QByteArray &bytes)" in ACTION_RUNNER_CPP_TEXT
     assert "updateCrashContext()" in ACTION_RUNNER_CPP_TEXT
-    assert "logFailureDiagnostic(finalMessage)" in ACTION_RUNNER_CPP_TEXT
+    # Artifact validation can replace the caller's original finalMessage, so
+    # diagnostics must capture the effective result shown to the user.
+    assert "logFailureDiagnostic(resultMessage)" in ACTION_RUNNER_CPP_TEXT
     assert "m_processOutputBytes = 0;" in ACTION_RUNNER_CPP_TEXT
     assert "m_processOutputSuppressedBytes = 0;" in ACTION_RUNNER_CPP_TEXT
     assert "m_processOutputTail.clear();" in ACTION_RUNNER_CPP_TEXT

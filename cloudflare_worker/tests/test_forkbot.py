@@ -10,6 +10,8 @@ import tomllib
 from pathlib import Path
 from urllib.parse import quote
 
+from worker_test_helpers import json_from_request_double
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
@@ -105,7 +107,8 @@ def _load_forkbot(extra_globals=None):
             selected.append(node)
     module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
     ns = {"json": json, "re": re, "quote": quote, "asyncio": asyncio,
-          "base64": base64, "to_js": lambda value: value}
+          "base64": base64, "to_js": lambda value: value,
+          "bounded_json_request": json_from_request_double}
     if extra_globals:
         ns.update(extra_globals)
     exec(compile(module, str(ENTRY), "exec"), ns)

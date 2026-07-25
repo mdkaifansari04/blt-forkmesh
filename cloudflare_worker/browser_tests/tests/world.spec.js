@@ -612,6 +612,13 @@ ${longContext}
               branch: "main",
               pullCount: stale ? 1 : 2,
               version: "0.7.0",
+              ...(node === "mirror2"
+                ? {
+                    lastCommitMessage: "Ship the world-edge portals",
+                    lastCommitAuthorName: "Ada Lovelace",
+                    syncAgeMs: 2 * 60 * 60 * 1000,
+                  }
+                : {}),
             };
           }),
         };
@@ -1069,16 +1076,20 @@ test("ForkMesh Office opens encrypted chat only after explicit entry", async ({
 
   const worldURL = page.url();
   const pageCount = context.pages().length;
-  expect(chatSocketURLs).toHaveLength(0);
+  // The World's always-present embedded global chat connects independently of
+  // the Office. Capture that baseline so this journey proves that focusing or
+  // approaching the Office does not open an additional Office chat transport.
+  const globalChatSocketCount = chatSocketURLs.length;
+  expect(globalChatSocketCount).toBeGreaterThanOrEqual(1);
   await page.locator("[data-world-office-focus]").first().click();
-  expect(chatSocketURLs).toHaveLength(0);
+  expect(chatSocketURLs).toHaveLength(globalChatSocketCount);
 
   await page.locator("forkmesh-world").evaluate((shell) => {
     shell.world.player.position.set(11, 0.38, -17.7);
   });
   const entry = page.locator("[data-world-office-enter]");
   await expect(entry).toBeVisible();
-  expect(chatSocketURLs).toHaveLength(0);
+  expect(chatSocketURLs).toHaveLength(globalChatSocketCount);
   await page.evaluate(() => document.activeElement?.blur());
   await page.keyboard.press("e");
   await page.locator("[data-world-office-fallback]").click();
@@ -1100,7 +1111,7 @@ test("ForkMesh Office opens encrypted chat only after explicit entry", async ({
   await expect(officeFrame).not.toHaveAttribute("src", /.+/, {
     timeout: 3500,
   });
-  expect(chatSocketURLs).toHaveLength(1);
+  expect(chatSocketURLs).toHaveLength(globalChatSocketCount + 1);
   expect(page.url()).toBe(worldURL);
   expect(context.pages()).toHaveLength(pageCount);
 });
@@ -1481,6 +1492,8 @@ test("desktop camera uses visible-cursor drag look, capped movement acceleration
   );
   expect(afterLook.yaw).not.toBeCloseTo(beforeLook.yaw, 4);
   expect(afterLook.pitch).not.toBeCloseTo(beforeLook.pitch, 4);
+  expect(afterLook.yaw).toBeLessThan(beforeLook.yaw);
+  expect(afterLook.pitch).toBeGreaterThan(beforeLook.pitch);
   expect(afterLook.dragging).toBe(false);
   expect(afterLook.pointerLocked).toBe(false);
   expect(await page.evaluate(() => document.pointerLockElement)).toBeNull();

@@ -85,6 +85,25 @@ def test_world_boots_blank_with_a_ten_second_load_error_watchdog():
     assert 'href="/world/world.css"' in INDEX
 
 
+def test_world_entry_modules_have_valid_ecmascript_module_syntax():
+    """Catch merge artifacts that leave a top-level export inside a function."""
+    for module in WORLD.glob("*.js"):
+        completed = subprocess.run(
+            [
+                "node",
+                "--experimental-default-type=module",
+                "--check",
+                str(module),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert completed.returncode == 0, (
+            f"{module.name} is not valid ECMAScript module syntax:\n"
+            f"{completed.stderr}"
+        )
+
+
 def test_world_contains_the_initial_city_districts_without_a_clock():
     for landmark in (
         "information",
@@ -1319,6 +1338,8 @@ def test_world_supports_bounded_pinch_wheel_and_drag_controls():
     for contract in (
         'dataset.cameraControl = "drag"',
         "function rotateCamera",
+        "cameraYaw -= deltaX * CAMERA_LOOK_SENSITIVITY",
+        "cameraPitch + deltaY * CAMERA_LOOK_SENSITIVITY",
         "pointerLast.copy(pointerStart)",
         "setPointerCapture(event.pointerId)",
         "CAMERA_LOOK_SENSITIVITY",

@@ -30,6 +30,8 @@ import re
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from worker_test_helpers import json_from_request_double
+
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 # clean_string was extracted from entry.py into catalog.py; parse both sources
@@ -52,10 +54,8 @@ FUNCS = {
     "_authorize_owner_account", "_owner_pubkey", "_login_locked_until",
     "_login_record_fail", "_login_clear", "method_name", "clean_string",
     # Session-based owner authorization (agents tab): the caller proves identity
-    # with a signed session token, not a self-asserted ownerAccount string.
-    "_account_session_record", "_account_session_token",
-    "_account_session_token_name", "_account_session_signature",
-    "_account_session_secret", "_account_kind", "valid_node_name",
+    # with a revocable session, not a self-asserted ownerAccount string.
+    "valid_node_name",
     "_account_owns_node", "_owned_nodes",
 }
 
@@ -71,6 +71,7 @@ def _load_functions(extra_globals):
     assert found == FUNCS, "missing functions: %s" % sorted(FUNCS - found)
     module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
     namespace = dict(extra_globals)
+    namespace.setdefault("bounded_json_request", json_from_request_double)
     exec(compile(module, str(ENTRY), "exec"), namespace)
     return namespace
 
@@ -142,6 +143,24 @@ def _harness(accounts, enforce_e2ee=False):
 
     async def _is_admin(_env, name):
         return bool(accounts.get(str(name or "").strip().lower(), {}).get("is_admin"))
+
+    def _account_session_token(_env, name):
+        return "test-session:" + str(name or "").strip().lower()
+
+    async def _account_session_record(_env, request, data=None):
+        payload = data if isinstance(data, dict) else {}
+        token = str(payload.get("sessionToken") or "")
+        if not token:
+            auth = request.headers.get("authorization") or ""
+            token = auth[7:] if auth.lower().startswith("bearer ") else ""
+        prefix = "test-session:"
+        name = token[len(prefix):] if token.startswith(prefix) else ""
+        rec = accounts.get(name)
+        if not rec or rec.get("status") != "active":
+            return "", None
+        record = dict(rec)
+        record.setdefault("name", name)
+        return "bi:" + name, record
 
     async def ed25519_verify(_pubkey, sig, _canonical):
         # A stand-in signature scheme: only the literal "good-sig" verifies.
@@ -249,6 +268,8 @@ def _harness(accounts, enforce_e2ee=False):
         "blind_index": blind_index,
         "notify_repo_host": noop_notify_repo_host,
         "_account_row": _account_row,
+        "_account_session_token": _account_session_token,
+        "_account_session_record": _account_session_record,
         "_account_devices_list": _account_devices_list,
         "verify_password": verify_password,
         "_is_admin": _is_admin,

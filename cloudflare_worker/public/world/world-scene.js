@@ -1371,6 +1371,9 @@ function nodeDataKey(node) {
     cloneAvailable: node?.cloneAvailable,
     commit: node?.commit,
     branch: node?.branch,
+    lastCommitMessage: node?.lastCommitMessage,
+    lastCommitAuthorName: node?.lastCommitAuthorName,
+    lastCommitAt: node?.lastCommitAt,
     version: node?.version,
     platform: node?.platform,
     lastSync: node?.lastSync,
@@ -1393,6 +1396,94 @@ function nodeDataKey(node) {
   });
 }
 
+function mirrorCommitAgeLabel(ageMs) {
+  const age = Number(ageMs);
+  if (!Number.isFinite(age) || age < 0) return "AGE NOT REPORTED";
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  const week = 7 * day;
+  const month = 30 * day;
+  const year = 365 * day;
+  if (age < minute) return "just now";
+  if (age < hour) return `${Math.floor(age / minute)}m ago`;
+  if (age < day) return `${Math.floor(age / hour)}h ago`;
+  if (age < week) return `${Math.floor(age / day)}d ago`;
+  if (age < month) return `${Math.floor(age / week)}w ago`;
+  if (age < year) return `${Math.floor(age / month)}mo ago`;
+  return `${Math.floor(age / year)}y ago`;
+}
+
+function mirrorCommitSnapshot(node, repo) {
+  const nested = node?.lastCommit || node?.commitDetails || repo?.lastCommit || {};
+  const message = String(
+    node?.lastCommitMessage ||
+      node?.commitMessage ||
+      node?.commitSubject ||
+      repo?.lastCommitMessage ||
+      repo?.commitMessage ||
+      nested?.message ||
+      nested?.subject ||
+      "COMMIT SUBJECT NOT REPORTED",
+  )
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
+  const author = String(
+    node?.lastCommitAuthorName ||
+      node?.commitAuthorName ||
+      repo?.lastCommitAuthorName ||
+      repo?.commitAuthorName ||
+      nested?.authorName ||
+      nested?.author?.name ||
+      node?.commitAuthor ||
+      "AUTHOR NOT REPORTED",
+  )
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 42);
+  const rawTimestamp = Number(
+    node?.lastCommitAt ||
+      node?.commitDate ||
+      repo?.lastCommitAt ||
+      repo?.commitDate ||
+      nested?.committedAt ||
+      nested?.date ||
+      nested?.author?.date,
+  );
+  const commitAt = Number.isFinite(rawTimestamp)
+    ? rawTimestamp < 100_000_000_000
+      ? rawTimestamp * 1000
+      : rawTimestamp
+    : 0;
+  const syncAge = mirrorMetric(node?.syncAgeMs ?? repo?.syncAgeMs, 2 ** 50);
+  const ageMs = commitAt > 0
+    ? Math.max(0, Date.now() - commitAt)
+    : syncAge;
+  const initials = author
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2) || "?";
+  let colorHash = 0;
+  for (const character of author) {
+    colorHash = (colorHash * 31 + character.charCodeAt(0)) >>> 0;
+  }
+  const hue = colorHash % 360;
+  return {
+    message,
+    author,
+    initials,
+    age: mirrorCommitAgeLabel(ageMs),
+    avatarColor: `hsl(${hue} 42% 34%)`,
+  };
+}
+
 function serverPanelTexture(THREE, node) {
   const online = mirrorNodeIsOnline(node);
   const integrity = String(node?.integrity || "unknown").toLowerCase();
@@ -1401,6 +1492,7 @@ function serverPanelTexture(THREE, node) {
     repo?.owner && repo?.name
       ? `${String(repo.owner).slice(0, 32)}/${String(repo.name).slice(0, 44)}`
       : "REPOSITORY NOT REPORTED";
+  const commitSnapshot = mirrorCommitSnapshot(node, repo);
   const commit = String(node?.commit || repo?.commit || "").toLowerCase();
   const shortCommit = /^[0-9a-f]{40,64}$/.test(commit)
     ? commit.slice(0, 12)
@@ -1533,6 +1625,35 @@ function serverPanelTexture(THREE, node) {
       62,
       522,
     );
+
+    context.strokeStyle = "#294339";
+    context.lineWidth = 3;
+    context.beginPath();
+    context.moveTo(520, 404);
+    context.lineTo(520, 540);
+    context.stroke();
+    context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#8ca99a";
+    context.fillText("LAST COMMIT", 548, 414);
+    context.font = '700 23px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#f1fff6";
+    context.fillText(commitSnapshot.message.slice(0, 31), 548, 454);
+    context.fillText(commitSnapshot.message.slice(31, 62), 548, 486);
+    context.beginPath();
+    context.arc(568, 521, 18, 0, Math.PI * 2);
+    context.fillStyle = commitSnapshot.avatarColor;
+    context.fill();
+    context.font = '800 17px "ForkMesh Mono", ui-monospace, monospace';
+    context.textAlign = "center";
+    context.fillStyle = "#f1fff6";
+    context.fillText(commitSnapshot.initials, 568, 522);
+    context.textAlign = "left";
+    context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#9ef7c6";
+    context.fillText(commitSnapshot.author.slice(0, 19), 598, 516);
+    context.font = '600 18px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#b4cabd";
+    context.fillText(commitSnapshot.age, 598, 540);
 
     const rows = [
       ["COMMITS", node?.commitCount],
@@ -3233,7 +3354,6 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
   return group;
 }
 
-function createSkyOffice(THREE, animated) {
 // The barn that replaced the sky. Every destination that used to hover over the
 // Town Square is parked here on the ground, one per bay, under a roof frame
 // that is itself unfinished, behind doorways wide enough to roll them back out
@@ -6967,9 +7087,11 @@ export function createWorldScene({
 
   function rotateCamera(deltaX, deltaY) {
     if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) return;
-    cameraYaw += deltaX * CAMERA_LOOK_SENSITIVITY;
+    // The canvas behaves like a grabbed world: pull the scene with the
+    // pointer, so the camera turns opposite to the hand's travel direction.
+    cameraYaw -= deltaX * CAMERA_LOOK_SENSITIVITY;
     cameraPitch = clamp(
-      cameraPitch - deltaY * CAMERA_LOOK_SENSITIVITY,
+      cameraPitch + deltaY * CAMERA_LOOK_SENSITIVITY,
       CAMERA_PITCH_MIN,
       CAMERA_PITCH_MAX,
     );

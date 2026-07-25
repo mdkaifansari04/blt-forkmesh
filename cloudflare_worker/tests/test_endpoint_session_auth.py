@@ -19,6 +19,8 @@ import re
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from worker_test_helpers import json_from_request_double
+
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 CATALOG = ENTRY.parent / "catalog.py"
@@ -29,9 +31,7 @@ ENTRY_TEXT = (
 
 FUNCS = {
     "notifications_handler", "poll_handler", "repo_about_handler",
-    "_authed_account_name", "_account_session_record", "_account_session_token",
-    "_account_session_token_name", "_account_session_signature",
-    "_account_session_secret", "_account_kind", "valid_node_name", "clean_string",
+    "valid_node_name", "clean_string",
     "_owner_pubkey", "_catalog_record_matches_identity",
     "_repo_identity_from_clone_url", "safe_segment", "method_name",
     "_account_owns_node", "_owned_nodes",
@@ -49,6 +49,7 @@ def _load_functions(extra_globals):
     assert found == FUNCS, "missing functions: %s" % sorted(FUNCS - found)
     module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
     namespace = dict(extra_globals)
+    namespace.setdefault("bounded_json_request", json_from_request_double)
     exec(compile(module, str(ENTRY), "exec"), namespace)
     return namespace
 
@@ -127,6 +128,28 @@ def _harness(accounts, notifications=None, repositories=None):
     async def _is_admin(_env, name):
         return bool(accounts.get(str(name or "").strip().lower(), {}).get("is_admin"))
 
+    def _account_session_token(_env, name):
+        return "test-session:" + str(name or "").strip().lower()
+
+    async def _account_session_record(_env, request, data=None):
+        payload = data if isinstance(data, dict) else {}
+        token = str(payload.get("sessionToken") or "")
+        if not token:
+            auth = request.headers.get("authorization") or ""
+            token = auth[7:] if auth.lower().startswith("bearer ") else ""
+        prefix = "test-session:"
+        name = token[len(prefix):] if token.startswith(prefix) else ""
+        rec = accounts.get(name)
+        if not rec or rec.get("status") != "active":
+            return "", None
+        record = dict(rec)
+        record.setdefault("name", name)
+        return "bi:" + name, record
+
+    async def _authed_account_name(_env, request, data=None):
+        _, rec = await _account_session_record(_env, request, data)
+        return str((rec or {}).get("name") or "").strip().lower()
+
     async def decrypt_row(_env, stored, key=None):
         return dict(stored) if isinstance(stored, dict) else None
 
@@ -196,6 +219,9 @@ def _harness(accounts, notifications=None, repositories=None):
         "ensure_schema": ensure_schema,
         "blind_index": blind_index,
         "_account_row": _account_row,
+        "_account_session_token": _account_session_token,
+        "_account_session_record": _account_session_record,
+        "_authed_account_name": _authed_account_name,
         "_is_admin": _is_admin,
         "decrypt_row": decrypt_row,
         "encrypt_row": encrypt_row,

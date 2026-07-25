@@ -14,6 +14,8 @@ import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
+from worker_test_helpers import json_from_request_double
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
@@ -37,6 +39,7 @@ def _load(*names, extra_globals=None):
     ]
     assert {node.name for node in selected} == set(names)
     namespace = dict(extra_globals or {})
+    namespace.setdefault("bounded_json_request", json_from_request_double)
     exec(compile(ast.fix_missing_locations(
         ast.Module(body=selected, type_ignores=[])), str(ENTRY), "exec"),
          namespace)

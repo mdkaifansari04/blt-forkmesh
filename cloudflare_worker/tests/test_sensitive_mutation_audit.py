@@ -17,6 +17,8 @@ from urllib.parse import urlparse
 
 import pytest
 
+from worker_test_helpers import json_from_request_double
+
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
@@ -33,6 +35,7 @@ def _load(*names, extra_globals=None):
     assert found == set(names), "missing functions: %s" % (
         sorted(set(names) - found))
     namespace = dict(extra_globals or {})
+    namespace.setdefault("bounded_json_request", json_from_request_double)
     exec(compile(ast.fix_missing_locations(
         ast.Module(body=selected, type_ignores=[])), str(ENTRY), "exec"),
          namespace)

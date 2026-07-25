@@ -1382,6 +1382,99 @@ forkmesh-world {
   padding: 24px 24px max(32px, var(--safe-bottom));
 }
 
+.world-chat-backdrop {
+  position: absolute;
+  z-index: 31;
+  inset: 0;
+  border: 0;
+  background: rgb(0 0 0 / 0.62);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 180ms ease, visibility 180ms ease;
+  pointer-events: none;
+}
+
+.world-chat-backdrop[data-open="true"] {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.world-chat {
+  position: absolute;
+  z-index: 32;
+  top: max(18px, var(--safe-top));
+  bottom: max(18px, var(--safe-bottom));
+  left: 50%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(960px, calc(100vw - 36px));
+  overflow: hidden;
+  border: 1px solid var(--world-line-strong);
+  background: #081511;
+  box-shadow: 0 30px 100px rgb(0 0 0 / 0.55);
+  transform: translate(-50%, 18px);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 180ms ease, transform 180ms ease, visibility 180ms ease;
+  pointer-events: none;
+}
+
+.world-chat[data-open="true"] {
+  transform: translate(-50%, 0);
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.world-chat-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 18px;
+  border-bottom: 1px solid var(--world-line);
+  padding: 14px 18px;
+}
+
+.world-chat-heading h2 {
+  margin: 3px 0 0;
+  font-family: "ForkMesh Favorit", sans-serif;
+  font-size: 1.65rem;
+  letter-spacing: -0.04em;
+}
+
+.world-chat-heading span {
+  display: block;
+  margin-top: 3px;
+  color: var(--world-muted);
+  font-size: 0.64rem;
+}
+
+.world-chat-heading button {
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--world-line);
+  background: transparent;
+  color: var(--world-copy);
+  cursor: pointer;
+  font-size: 1.1rem;
+}
+
+.world-chat-heading button:hover,
+.world-chat-heading button:focus-visible {
+  border-color: var(--world-mint);
+  color: var(--world-mint);
+  outline: none;
+}
+
+.world-chat-frame {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  background: #081511;
+}
+
 .world-office-prompt {
   position: absolute;
   z-index: 28;

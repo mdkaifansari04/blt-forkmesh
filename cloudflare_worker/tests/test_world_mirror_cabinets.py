@@ -137,6 +137,11 @@ def test_world_fetches_the_flagship_mirror_snapshot_once_and_uses_cabinets():
     assert '"MEM"' in SCENE
     assert '"DISK"' in SCENE
     assert '"NOT SHARED"' in SCENE
+    assert '"LAST COMMIT"' in SCENE
+    assert "mirrorCommitSnapshot" in SCENE
+    assert "COMMIT SUBJECT NOT REPORTED" in SCENE
+    assert "AUTHOR NOT REPORTED" in SCENE
+    assert "mirrorCommitAgeLabel" in SCENE
     assert "nodeDataKey" in SCENE
     assert ".slice(0, 64)" in SCENE
     assert "mirror-server-front-panel" in SCENE
