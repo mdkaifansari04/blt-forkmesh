@@ -3682,6 +3682,13 @@ class ForkMeshWorld extends HTMLElement {
   async bootstrap() {
     try {
       const contextPromise = this.loadContext();
+      // The shared object layout is a tiny, edge-cached public document.
+      // Request it immediately so administrator-locked placements are already
+      // available by the time the scene finishes constructing.
+      const layoutPromise = this.fetchJSON("/api/world/layout", {
+        auth: false,
+        timeout: 5000,
+      }).catch(() => null);
       // Validate the optional persisted account session before issuing any
       // private World reads. This prevents an expired local token from
       // fanning out into a page full of avoidable 401/403 requests.
@@ -3764,6 +3771,9 @@ class ForkMeshWorld extends HTMLElement {
         onRegionChange: (region) => this.updateRegion(region),
         onMovement: (movement) => this.handleMovement(movement),
         onModeration: (action) => this.moderateWorldPeer(action),
+        onLayoutObjectMoved: (move) => {
+          void this.lockWorldObjectPlacement(move);
+        },
         onAccountAction: (action) => {
           if (action === "logout") {
             void this.logoutFromWorld();
@@ -3804,8 +3814,13 @@ class ForkMeshWorld extends HTMLElement {
       this.world.setMemberLoungeLoading?.(true);
       this.world.setLightLevel(this.settings.lightLevel);
       this.world.setMovementTuning?.(this.movementTuning());
+      void layoutPromise.then((layout) => {
+        if (this.destroyed) return;
+        this.world?.applyWorldLayout?.(layout?.objects);
+      });
       await Promise.allSettled([contextPromise, dataPromise]);
       this.world.updateIdentity(publicIdentity(this.identity, this.settings));
+      this.world.setLayoutEditor?.(this.identity.isAdmin === true);
       this.world.updateNetworkNodes(
         liveNodeRecords(this.network, this.mirrorCatalogs),
       );
@@ -4167,6 +4182,7 @@ class ForkMeshWorld extends HTMLElement {
       : [];
     this.updateIdentityUI();
     this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
+    this.world?.setLayoutEditor?.(this.identity.isAdmin === true);
     this.updateSystemCapacityMetrics();
   }
 
@@ -5974,6 +5990,30 @@ class ForkMeshWorld extends HTMLElement {
       );
     } catch (error) {
       this.toast(`Temporary block was not applied: ${error.message}`);
+    }
+  }
+
+  async lockWorldObjectPlacement(move) {
+    if (!this.identity?.isAdmin) return;
+    const id = String(move?.id || "");
+    const x = Number(move?.x);
+    const z = Number(move?.z);
+    if (!id || !Number.isFinite(x) || !Number.isFinite(z)) return;
+    try {
+      const result = await this.postJSON("/api/world/layout", { id, x, z });
+      this.world?.applyWorldLayout?.(result?.objects);
+      this.toast("Object position locked in for every visitor.");
+    } catch (error) {
+      this.toast(`The new object position was not saved: ${error.message}`);
+      // Re-apply the persisted layout so this scene matches what everyone
+      // else still sees.
+      try {
+        const layout = await this.fetchJSON("/api/world/layout", {
+          auth: false,
+          timeout: 5000,
+        });
+        this.world?.applyWorldLayout?.(layout?.objects);
+      } catch (_) {}
     }
   }
 

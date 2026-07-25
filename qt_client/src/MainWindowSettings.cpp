@@ -1639,6 +1639,20 @@ QWidget *MainWindow::buildSettingsSection()
         tabs->addTab(scroll, name);
     };
 
+    // Profile (adhoc #274): the avatar / power-switch page that used to only be
+    // reachable by clicking the avatar button. The panel itself is built once
+    // with the full-page profile section and moved in here by
+    // syncSettingsProfileTab() whenever this tab is showing, so it is not
+    // wrapped in addTab()'s scroll area (it scrolls itself).
+    m_settingsProfileHost = new QWidget;
+    auto *profileHostLayout = new QHBoxLayout(m_settingsProfileHost);
+    profileHostLayout->setContentsMargins(0, 0, 0, 0);
+    profileHostLayout->setSpacing(0);
+    m_profileSettingsTabIndex = tabs->count();
+    tabs->addTab(m_settingsProfileHost, "Profile");
+    connect(tabs, &QTabWidget::currentChanged, this,
+            [this](int) { syncSettingsProfileTab(); });
+
     // General: identity, appearance and launch behaviour.
     auto *generalTab = new QWidget;
     auto *generalCol = new QVBoxLayout(generalTab);

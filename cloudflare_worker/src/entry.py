@@ -3455,6 +3455,14 @@ WORLD_VISIT_BUCKET_MS = 10 * 60 * 1000
 WORLD_VISIT_RETAIN_MS = 50 * 60 * 60 * 1000
 WORLD_VISITORS_CACHE_KEY = "https://forkmesh.internal/api/world/visitors"
 WORLD_VISITORS_TTL = 60
+# Administrator-locked Town Square object placement. The public GET is edge
+# cached so every world load reads one tiny cached JSON document; the cache is
+# purged the moment an administrator locks an object into a new place.
+WORLD_LAYOUT_CACHE_KEY = "https://forkmesh.internal/api/world/layout"
+WORLD_LAYOUT_TTL = 60
+WORLD_LAYOUT_MAX_OBJECTS = 200
+WORLD_LAYOUT_MAX_COORDINATE = 500
+WORLD_LAYOUT_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,79}")
 
 
 async def _world_unique_visitor_tokens(env, request, now):
@@ -10131,6 +10139,118 @@ async def world_moderation_handler(env, request):
                 "ForkMesh automatic abuse detection and quarantine remain off."
             ),
         },
+        cache_control="no-store, max-age=0, must-revalidate",
+        extra_headers={"x-content-type-options": "nosniff"},
+    )
+
+
+async def _world_layout_objects(env):
+    """Project the bounded shared-object placement table for the browser."""
+    rows = await d1_all(
+        env,
+        "SELECT object_id,x,z,updated_at FROM world_object_layout "
+        "ORDER BY object_id LIMIT ?",
+        WORLD_LAYOUT_MAX_OBJECTS,
+    )
+    objects = []
+    for row in rows or []:
+        objects.append({
+            "id": str(row.get("object_id") or ""),
+            "x": float(row.get("x") or 0),
+            "z": float(row.get("z") or 0),
+            "updatedAt": int(row.get("updated_at") or 0),
+        })
+    return objects
+
+
+def _world_layout_coordinate(value):
+    """Return a bounded, rounded ground coordinate or None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    # NaN fails both comparisons, so this also rejects non-finite input.
+    if not (-WORLD_LAYOUT_MAX_COORDINATE <= value <= WORLD_LAYOUT_MAX_COORDINATE):
+        return None
+    return round(float(value), 2)
+
+
+async def world_layout_handler(env, request):
+    """Serve and admin-update the shared placement of Town Square objects."""
+    if method_name(request) == "GET":
+        cached = await edge_cache_match(WORLD_LAYOUT_CACHE_KEY)
+        if cached is not None:
+            return cached
+        await ensure_schema(env)
+        payload = {"ok": True, "objects": await _world_layout_objects(env)}
+        resp = json_response(payload, cache_seconds=WORLD_LAYOUT_TTL)
+        await edge_cache_put(WORLD_LAYOUT_CACHE_KEY, resp)
+        return resp
+    if method_name(request) != "POST":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"allow": "GET, POST"})
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        data = None
+    if not isinstance(data, dict):
+        return json_response(
+            {"error": "invalid_json"}, status=400,
+            cache_control="no-store, max-age=0, must-revalidate")
+    account_bi, rec = await _account_session_record(env, request, data)
+    actor = clean_string(
+        rec.get("name", "") if rec else "", MAX_NODE_NAME).strip().lower()
+    if not actor:
+        return json_response(
+            {"error": "invalid_session"}, status=401,
+            cache_control="no-store, max-age=0, must-revalidate")
+    if not await _has_role(env, actor, "platform_administrator"):
+        await _audit_sensitive_action(
+            env, actor, "world.layout.move", "world_object", "", "denied",
+            {"reason": "platform_administrator_required"})
+        return json_response(
+            {"error": "forbidden"}, status=403,
+            cache_control="no-store, max-age=0, must-revalidate")
+
+    object_id = str(data.get("id") or "").strip().lower()
+    if not WORLD_LAYOUT_ID_RE.fullmatch(object_id):
+        return json_response(
+            {"error": "invalid_object_id"}, status=400,
+            cache_control="no-store, max-age=0, must-revalidate")
+    x = _world_layout_coordinate(data.get("x"))
+    z = _world_layout_coordinate(data.get("z"))
+    if x is None or z is None:
+        return json_response(
+            {"error": "invalid_position"}, status=400,
+            cache_control="no-store, max-age=0, must-revalidate")
+
+    now = int(Date.now())
+    await ensure_schema(env)
+    existing = await d1_first(
+        env,
+        "SELECT object_id FROM world_object_layout WHERE object_id=?",
+        object_id)
+    if not existing:
+        count = await d1_first(
+            env, "SELECT COUNT(*) AS n FROM world_object_layout")
+        if int((count or {}).get("n") or 0) >= WORLD_LAYOUT_MAX_OBJECTS:
+            return json_response(
+                {"error": "layout_limit"}, status=409,
+                cache_control="no-store, max-age=0, must-revalidate")
+    await d1_run(
+        env,
+        "INSERT INTO world_object_layout "
+        "(object_id,x,z,updated_by_bi,updated_at) VALUES (?,?,?,?,?) "
+        "ON CONFLICT(object_id) DO UPDATE SET x=excluded.x,z=excluded.z,"
+        "updated_by_bi=excluded.updated_by_bi,updated_at=excluded.updated_at",
+        object_id, x, z, account_bi, now,
+    )
+    await edge_cache_delete(WORLD_LAYOUT_CACHE_KEY)
+    await _audit_sensitive_action(
+        env, actor, "world.layout.move", "world_object", object_id,
+        "success", {"x": x, "z": z})
+    return json_response(
+        {"ok": True, "objects": await _world_layout_objects(env)},
         cache_control="no-store, max-age=0, must-revalidate",
         extra_headers={"x-content-type-options": "nosniff"},
     )
@@ -31517,6 +31637,9 @@ class Default(WorkerEntrypoint):
 
         if url.path in ("/api/world/visitors", "/api/world/visitors/"):
             return await world_visitors_handler(self.env, request)
+
+        if url.path in ("/api/world/layout", "/api/world/layout/"):
+            return await world_layout_handler(self.env, request)
 
         if url.path in (
                 "/api/world/organizations",
