@@ -3835,7 +3835,7 @@ class ForkMeshWorld extends HTMLElement {
       });
       await Promise.allSettled([contextPromise, dataPromise]);
       this.world.updateIdentity(publicIdentity(this.identity, this.settings));
-      this.world.setLayoutEditor?.(this.identity.isAdmin === true);
+      this.applyWorldLayoutEditor();
       this.world.updateNetworkNodes(
         liveNodeRecords(this.network, this.mirrorCatalogs),
       );
@@ -4174,7 +4174,7 @@ class ForkMeshWorld extends HTMLElement {
       : [];
     this.updateIdentityUI();
     this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
-    this.world?.setLayoutEditor?.(this.identity.isAdmin === true);
+    this.applyWorldLayoutEditor();
     this.updateSystemCapacityMetrics();
   }
 
@@ -6110,18 +6110,37 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  applyWorldLayoutEditor() {
+    const enabled = this.identity?.isAdmin === true;
+    this.world?.setLayoutEditor?.(enabled);
+    if (!enabled || this.layoutEditorAnnounced) return;
+    // The move handles are deliberately tiny, and nothing else on screen says
+    // the R key turns things, so say it once per session.
+    this.layoutEditorAnnounced = true;
+    this.toast(
+      "Layout editing on: drag an object's handle to move it, press R " +
+        "(Shift+R to reverse) to rotate it.",
+    );
+  }
+
   async lockWorldObjectPlacement(move) {
     if (!this.identity?.isAdmin) return;
     const id = String(move?.id || "");
     const x = Number(move?.x);
     const z = Number(move?.z);
     if (!id || !Number.isFinite(x) || !Number.isFinite(z)) return;
+    const rotation = Number(move?.rotation);
     try {
-      const result = await this.postJSON("/api/world/layout", { id, x, z });
+      const result = await this.postJSON("/api/world/layout", {
+        id,
+        x,
+        z,
+        rotation: Number.isFinite(rotation) ? rotation : 0,
+      });
       this.world?.applyWorldLayout?.(result?.objects);
-      this.toast("Object position locked in for every visitor.");
+      this.toast("Object placement locked in for every visitor.");
     } catch (error) {
-      this.toast(`The new object position was not saved: ${error.message}`);
+      this.toast(`The new object placement was not saved: ${error.message}`);
       // Re-apply the persisted layout so this scene matches what everyone
       // else still sees.
       try {
