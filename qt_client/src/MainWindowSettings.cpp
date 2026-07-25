@@ -1005,16 +1005,17 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAutoFixAgentConflictsSetting, enabled);
     });
 
-    // When a repo's tests or build fail, automatically start an agent to fix
-    // the failure instead of waiting for a manual dispatch. On by default.
+    // When a repo's tests or build fail, automatically send the failure back
+    // to the agent that last worked on that branch instead of waiting for a
+    // manual dispatch. On by default.
     auto *autoFixFailuresCheck =
         new QCheckBox("Auto-fix test and build failures");
     autoFixFailuresCheck->setChecked(
         QSettings().value(kAutoFixFailuresSetting, true).toBool());
     autoFixFailuresCheck->setToolTip(
-        "When a repo's tests or build fail, automatically start an agent to "
-        "fix the failure instead of waiting for a manual dispatch. "
-        "On by default.");
+        "When a repo's tests or build fail, automatically send the failure "
+        "back to the agent session that last worked on that branch to fix, "
+        "instead of waiting for a manual dispatch. On by default.");
     connect(autoFixFailuresCheck, &QCheckBox::toggled, this, [](bool enabled) {
         QSettings().setValue(kAutoFixFailuresSetting, enabled);
     });
