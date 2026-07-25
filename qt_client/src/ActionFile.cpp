@@ -224,7 +224,63 @@ void collectSteps(const Node *stepsNode, QList<ActionStep> &steps)
     }
 }
 
+// The reserved label every node answers to, so `runs-on: any` stays explicit
+// rather than meaning "no node matches".
+const QString kAnyNodeLabel = QStringLiteral("any");
+
 } // namespace
+
+bool ActionWorkflow::runsOnNode(const QStringList &nodeLabels) const
+{
+    if (runsOn.isEmpty())
+        return true; // undedicated: runs wherever the push is seen
+    for (const QString &wanted : runsOn) {
+        if (wanted == kAnyNodeLabel)
+            return true;
+        for (const QString &have : nodeLabels)
+            if (QString::compare(wanted, have.trimmed(), Qt::CaseInsensitive) == 0)
+                return true;
+    }
+    return false;
+}
+
+QStringList ActionFile::parseLabelList(const QString &configured)
+{
+    QStringList out;
+    static const QRegularExpression separators(QStringLiteral("[,;\\s]+"));
+    const QStringList parts =
+        configured.split(separators, Qt::SkipEmptyParts);
+    for (const QString &part : parts) {
+        const QString label = part.trimmed().toLower();
+        if (!label.isEmpty() && !out.contains(label))
+            out.append(label);
+    }
+    return out;
+}
+
+QStringList ActionFile::nodeLabels(const QString &machineNode,
+                                   const QString &mirrorNode,
+                                   const QString &configured)
+{
+    QStringList out;
+    const auto add = [&out](const QString &raw) {
+        const QString label = raw.trimmed().toLower();
+        if (!label.isEmpty() && !out.contains(label))
+            out.append(label);
+    };
+    add(machineNode);
+    add(mirrorNode);
+#if defined(Q_OS_MACOS)
+    add(QStringLiteral("macos"));
+#elif defined(Q_OS_WIN)
+    add(QStringLiteral("windows"));
+#elif defined(Q_OS_LINUX)
+    add(QStringLiteral("linux"));
+#endif
+    for (const QString &label : parseLabelList(configured))
+        add(label);
+    return out;
+}
 
 ActionWorkflow ActionFile::parse(const QString &relPath, const QString &content)
 {
@@ -252,6 +308,18 @@ ActionWorkflow ActionFile::parse(const QString &relPath, const QString &content)
 
     wf.on = scalarOrList(root.child(QStringLiteral("on")));
 
+    // `runs-on:` may sit at the top level or on any job; a workflow's steps are
+    // flattened into one run, so the union of both is the set of nodes allowed
+    // to execute it.
+    const auto addRunsOn = [&wf](const Node *node) {
+        for (const QString &label : scalarOrList(node)) {
+            const QString normalized = label.trimmed().toLower();
+            if (!normalized.isEmpty() && !wf.runsOn.contains(normalized))
+                wf.runsOn.append(normalized);
+        }
+    };
+    addRunsOn(root.child(QStringLiteral("runs-on")));
+
     if (const Node *env = root.child(QStringLiteral("env")))
         if (env->type == Node::Map)
             for (auto it = env->map.constBegin(); it != env->map.constEnd(); ++it)
@@ -261,8 +329,10 @@ ActionWorkflow ActionFile::parse(const QString &relPath, const QString &content)
     collectSteps(root.child(QStringLiteral("steps")), wf.steps);
     if (const Node *jobs = root.child(QStringLiteral("jobs")))
         if (jobs->type == Node::Map)
-            for (auto it = jobs->map.constBegin(); it != jobs->map.constEnd(); ++it)
+            for (auto it = jobs->map.constBegin(); it != jobs->map.constEnd(); ++it) {
+                addRunsOn(it.value().child(QStringLiteral("runs-on")));
                 collectSteps(it.value().child(QStringLiteral("steps")), wf.steps);
+            }
 
     if (wf.steps.isEmpty()) {
         wf.error = QStringLiteral("workflow has no runnable steps");

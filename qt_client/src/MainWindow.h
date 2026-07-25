@@ -804,6 +804,9 @@ private:
     QString chatDisplayName() const; // user identity used for chat sender names
     QString machineNodeName() const; // THIS machine's node name (never the username)
     void saveMachineNodeName(const QString &name); // persist + re-advertise
+    // Persist the extra Actions `runs-on:` labels this machine answers to,
+    // normalized to distinct lower-cased tags.
+    void saveActionNodeLabels(const QString &labels);
     void updateChatIdentity();     // push user name/avatar into the chat backend
     void updateUserSwitcher();     // refresh top-bar user label/avatar
     void updateNodeSwitcher();     // refresh top-bar node label / count
@@ -1898,6 +1901,14 @@ private:
     void writeMirrorActionsSummary();
     void enqueuePushEvent(const QString &owner, const QString &name,
                           const QString &commit, const QString &ref);
+    // The labels this node answers to when a workflow declares `runs-on:` — its
+    // machine node name, its mirror-executor node name, the platform, and any
+    // extra labels the operator typed in Settings. A workflow dedicated to
+    // another node is never queued here, so a mesh can pin tests to one machine,
+    // Cloudflare deploys to a mirror and iOS builds to a Mac.
+    QStringList actionNodeLabels() const;
+    // Human-readable "this workflow belongs to <node>" text for logs and the UI.
+    QString workflowDedicationLabel(const ActionWorkflow &workflow) const;
     void processActionQueue();
     // The runner currently executing `runId`, or nullptr if no runner is. Used
     // to target stop()/abort at the exact run rather than a single global runner.
@@ -3697,6 +3708,7 @@ private:
     // Settings section widgets
     QLineEdit *m_settingsNameEdit = nullptr;        // Username (the account)
     QLineEdit *m_settingsMachineNodeEdit = nullptr; // this machine's node name
+    QLineEdit *m_settingsNodeLabelsEdit = nullptr;  // extra Actions `runs-on:` labels
     QLineEdit *m_settingsSolanaEdit = nullptr; // #66: node Solana address in Settings
     QLabel *m_settingsEmailLabel = nullptr;
     QLabel *m_settingsEmailVerifiedBadge = nullptr;
