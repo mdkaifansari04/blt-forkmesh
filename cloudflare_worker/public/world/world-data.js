@@ -495,6 +495,18 @@ export const WORLD_REGIONS = [
 
 export const RADIO_STATIONS = [
   {
+    id: "forkmesh-song",
+    name: "ForkMesh Forever (Indie Pop)",
+    provider: "ForkMesh",
+    description:
+      "The project’s own song, hosted by ForkMesh. It plays on this device only after you press the button; nothing autoplays and no stream is relayed.",
+    playMode: "hosted",
+    actionLabel: "Listen to the ForkMesh song",
+    trackUrl: "/assets/songs/ForkMeshForever(IndiePop).mp3",
+    homepageUrl:
+      "https://github.com/forkmesh/forkmesh/blob/main/docs/world-soundtrack-license.md",
+  },
+  {
     id: "forkmesh-focus",
     name: "ForkMesh Focus Tones",
     provider: "ForkMesh",
