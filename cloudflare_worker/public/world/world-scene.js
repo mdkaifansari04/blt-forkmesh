@@ -108,6 +108,9 @@ const TREE_LANDMARK_CLEARANCE = Object.freeze({
   broadcast: 9,
   office: 10,
 });
+// Shared by the seated pose and the presence frame so other visitors can render
+// a bench sitter sitting rather than standing on the plank.
+const CAMPFIRE_SEATED_ACTIVITY = "sitting beside the campfire";
 const REGISTERED_LOUNGE_STATUSES = new Set([
   "Registered",
   "Supporting member",
@@ -4459,9 +4462,9 @@ export function createWorldScene({
     innerFlame.scale.set(size * 0.82, size * 0.9, size * 0.82);
     fireLight.intensity = 3.2 * fireLevel + Math.sin(time * 0.013) * 0.7;
   });
-  // Benches sit back far enough from the pit to leave a walkable ring between
-  // the seats and the stones (and to clear the log pile at ~2.6).
-  const CAMPFIRE_BENCH_RADIUS = 4;
+  // Benches sit back far enough from the pit to leave a wide walkable ring
+  // between the seats and the stones (and to clear the log pile at ~2.6).
+  const CAMPFIRE_BENCH_RADIUS = 6.2;
   for (let index = 0; index < 6; index += 1) {
     const angle = (index / 6) * Math.PI * 2;
     const bench = new THREE.Group();
@@ -4485,13 +4488,9 @@ export function createWorldScene({
       Math.sin(angle) * CAMPFIRE_BENCH_RADIUS,
     );
     bench.rotation.y = -angle + Math.PI / 2;
-    const seatWorld = new THREE.Vector3(
-      campfire.position.x + bench.position.x,
-      0.38,
-      campfire.position.z + bench.position.z,
-    );
-    bench.userData.campfireBench = seatWorld;
-    seat.userData.campfireBench = seatWorld;
+    // Seat coordinates are read from the live world matrix at click time, so a
+    // relocated campfire needs no bookkeeping and the seats can never drift.
+    seat.userData.campfireBench = true;
     interactive.push(seat);
     setShadows(bench);
     campfire.add(bench);
@@ -4992,6 +4991,9 @@ export function createWorldScene({
   let moveAccelScale = 1;
   let keyboardMovementSpeed = PLAYER_SPEED;
   let dashTarget = null;
+  // Set while the player is sitting on a campfire bench: the seat pose is held
+  // every frame until the visitor walks, dashes or jumps away from it.
+  let benchSeat = null;
   let primaryPointerId = null;
   let draggedCampfireLog = null;
   let pointerGestureMoved = false;
@@ -6094,6 +6096,55 @@ export function createWorldScene({
     animateAvatarActivity(officeLobbyPlayer, time, delta, reducedMotion);
   }
 
+  // Sitting is a local pose, not a teleport: the avatar lands on the plank it
+  // was clicked on, faces the flames and keeps that pose until it moves again.
+  function sitOnCampfireBench(seat) {
+    const seatPoint = seat.getWorldPosition(new THREE.Vector3());
+    benchSeat = {
+      // Just above the plank so the avatar rests on the seat rather than in it.
+      position: new THREE.Vector3(seatPoint.x, seatPoint.y + 0.1, seatPoint.z),
+      // Face the flames: headings elsewhere use atan2(-dx, -dz), so pointing at
+      // the pit means negating the seat -> campfire vector.
+      heading: Math.atan2(
+        seatPoint.x - campfire.position.x,
+        seatPoint.z - campfire.position.z,
+      ),
+    };
+    cancelDash();
+    cameraFocus = null;
+    jumpVelocity = 0;
+    jumpQueued = false;
+    applyBenchSeatPose();
+    lastPosition.copy(player.position);
+    onMovement({
+      x: Number(player.position.x.toFixed(2)),
+      y: Number(player.position.y.toFixed(2)),
+      z: Number(player.position.z.toFixed(2)),
+      heading: Number(player.rotation.y.toFixed(3)),
+      space: currentSpace,
+      moving: false,
+      activity: CAMPFIRE_SEATED_ACTIVITY,
+    });
+  }
+
+  function applyBenchSeatPose() {
+    if (!benchSeat) return;
+    player.position.copy(benchSeat.position);
+    player.rotation.y = benchSeat.heading;
+    player.userData.leftArm.rotation.x = 0;
+    player.userData.rightArm.rotation.x = 0;
+    player.userData.leftLeg.rotation.x = -1.3;
+    player.userData.rightLeg.rotation.x = -1.3;
+  }
+
+  function standUpFromBench() {
+    if (!benchSeat) return;
+    benchSeat = null;
+    player.position.y = currentFloorY;
+    player.userData.leftLeg.rotation.x = 0;
+    player.userData.rightLeg.rotation.x = 0;
+  }
+
   function walkPlayer(delta, time) {
     const previousHorizontalPosition = player.position.clone();
     const {
@@ -6102,6 +6153,19 @@ export function createWorldScene({
       inputStrength,
       movement,
     } = movementInput();
+    if (benchSeat) {
+      // Anything that relocates the avatar (a space change, a teleport) also
+      // ends the sit; otherwise the held pose would drag it back to the bench.
+      const displaced =
+        player.position.distanceToSquared(benchSeat.position) > 9;
+      if (!displaced && !movement.lengthSq() && !dashTarget && !jumpQueued) {
+        applyBenchSeatPose();
+        animateAvatarActivity(player, time, delta, reducedMotion);
+        wasWalking = false;
+        return;
+      }
+      standUpFromBench();
+    }
     if (jumpQueued && player.position.y <= currentFloorY + 0.02) {
       jumpVelocity = 5.4;
       jumpQueued = false;
@@ -6226,10 +6290,11 @@ export function createWorldScene({
         : recentlyActiveInLounge
           ? Math.sin(time * 0.012 + avatar.userData.phase) * 0.18
           : 0;
+      const seatedAtCampfire = avatar.userData.campfireSeated === true && !walking;
       avatar.userData.leftArm.rotation.x = gait;
       avatar.userData.rightArm.rotation.x = -gait;
-      avatar.userData.leftLeg.rotation.x = -gait * 0.7;
-      avatar.userData.rightLeg.rotation.x = gait * 0.7;
+      avatar.userData.leftLeg.rotation.x = seatedAtCampfire ? -1.3 : -gait * 0.7;
+      avatar.userData.rightLeg.rotation.x = seatedAtCampfire ? -1.3 : gait * 0.7;
       if (recentlyActiveInLounge && !walking && !reducedMotion) {
         avatar.position.y =
           avatar.userData.targetPosition.y +
@@ -6506,6 +6571,8 @@ export function createWorldScene({
           ? "recent"
           : "idle"
         : "";
+      avatar.userData.campfireSeated =
+        String(remote.activity || "") === CAMPFIRE_SEATED_ACTIVITY;
       if (useRegisteredLounge) {
         const seats = registeredUserLounge.userData.seatOffsets || [];
         const seat = seats[hashNumber(remote.id) % Math.max(1, seats.length)];
@@ -9291,24 +9358,7 @@ export function createWorldScene({
       return;
     }
     if (hit?.object?.userData?.campfireBench) {
-      const seat = hit.object.userData.campfireBench;
-      player.position.copy(seat);
-      // Face the flames: headings elsewhere use atan2(-dx, -dz), so pointing at
-      // the pit means negating the seat -> campfire vector.
-      player.rotation.y = Math.atan2(
-        seat.x - campfire.position.x,
-        seat.z - campfire.position.z,
-      );
-      jumpVelocity = 0;
-      onMovement({
-        x: Number(player.position.x.toFixed(2)),
-        y: 0.38,
-        z: Number(player.position.z.toFixed(2)),
-        heading: Number(player.rotation.y.toFixed(3)),
-        space: currentSpace,
-        moving: false,
-        activity: "sitting beside the campfire",
-      });
+      sitOnCampfireBench(hit.object);
       return;
     }
     if (hit?.object?.userData?.forkbotChat) {
@@ -9460,15 +9510,6 @@ export function createWorldScene({
     if (!deltaX && !deltaZ) return;
     object.position.x = x;
     object.position.z = z;
-    // Campfire bench seats capture absolute seat coordinates at build time;
-    // keep them attached to the benches when the campfire is repositioned.
-    object.traverse((child) => {
-      const seat = child.userData?.campfireBench;
-      if (seat?.isVector3) {
-        seat.x += deltaX;
-        seat.z += deltaZ;
-      }
-    });
     // Landmark proximity and focus math read LANDMARKS positions, not the
     // group transform, so a relocated landmark must update its record too.
     const layoutId = String(object.userData.layoutId || "");
@@ -9542,6 +9583,21 @@ export function createWorldScene({
   function handleDoubleClick(event) {
     if (event.button !== undefined && event.button !== 0) return;
     if (lastGestureDragged) return;
+    // A quick double tap on a bench is still a request to sit on it, not to
+    // dash to the patch of ground the bench happens to stand on.
+    pointerCoordinates(event);
+    raycaster.setFromCamera(pointer, camera);
+    const benchHit = raycaster
+      .intersectObjects(interactive, false)
+      .find(
+        ({ object }) =>
+          object.userData?.campfireBench && objectIsEffectivelyVisible(object),
+      );
+    if (benchHit) {
+      event.preventDefault();
+      sitOnCampfireBench(benchHit.object);
+      return;
+    }
     const point = groundPointAt(event.clientX, event.clientY);
     if (!point) return;
     event.preventDefault();
