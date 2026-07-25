@@ -6,6 +6,9 @@ import {
   normalizeWorldStatus,
 } from "./world-data.js";
 import { nextOfficeZoneState } from "./world-office.js";
+// Side-effect import: ForkMesh's own QR generator publishes globalThis.ForkMeshQR,
+// used for the reward-pool treasury address board.
+import "../qr.js";
 
 const OUTFIT_COLOR_HEX = Object.fromEntries(
   OUTFIT_COLOR_OPTIONS.map((option) => [option.id, option.color]),
@@ -2238,9 +2241,177 @@ function createTree(THREE, x, z, scale = 1, color = "#2f8c5f") {
   return group;
 }
 
+// The reward pool names itself: instead of a pale stone foundation plus a
+// ground plaque, the title wraps around the green rim of the basin.
+function rewardPoolRimTexture(THREE) {
+  const width = 4096;
+  const height = 256;
+  const repeats = 5;
+  return canvasTexture(THREE, width, height, (context) => {
+    context.fillStyle = "#1d5240";
+    context.fillRect(0, 0, width, height);
+    context.fillStyle = "#164236";
+    context.fillRect(0, 0, width, 18);
+    context.fillRect(0, height - 18, width, 18);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    const slot = width / repeats;
+    for (let index = 0; index < repeats; index += 1) {
+      const centre = slot * (index + 0.5);
+      context.fillStyle = "#f7c96b";
+      context.font = '800 108px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("GLOBAL REWARD POOL", centre, height / 2 + 4);
+      context.fillStyle = "#9ef7c6";
+      context.font = '700 96px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("◎", centre + slot / 2, height / 2 + 4);
+    }
+  });
+}
+
+// Paints a QR matrix (from /qr.js) into `size` square pixels at (x, y).
+function drawQrModules(context, text, x, y, size) {
+  const encoder = globalThis.ForkMeshQR;
+  if (!encoder?.generate || !text) return false;
+  let matrix = null;
+  try {
+    matrix = encoder.generate(text);
+  } catch {
+    return false;
+  }
+  if (!matrix?.size) return false;
+  const quiet = 4;
+  const total = matrix.size + quiet * 2;
+  const scale = size / total;
+  context.fillStyle = "#ffffff";
+  context.fillRect(x, y, size, size);
+  context.fillStyle = "#07120e";
+  for (let row = 0; row < matrix.size; row += 1) {
+    for (let column = 0; column < matrix.size; column += 1) {
+      if (!matrix.modules[row][column]) continue;
+      context.fillRect(
+        x + (column + quiet) * scale,
+        y + (row + quiet) * scale,
+        Math.ceil(scale),
+        Math.ceil(scale),
+      );
+    }
+  }
+  return true;
+}
+
+function rewardTreasuryState(state = {}) {
+  const address = String(state?.address || "").trim();
+  const valid = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address);
+  const rawBalance = Number(
+    state?.balanceSol ?? state?.balance ?? state?.sol ?? Number.NaN,
+  );
+  return {
+    address: valid ? address : "",
+    network: String(state?.network || "").slice(0, 24),
+    balance:
+      valid && Number.isFinite(rawBalance)
+        ? `${rawBalance.toLocaleString("en-US", {
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 6,
+          })} SOL`
+        : "",
+  };
+}
+
+function rewardTreasuryTexture(THREE, treasury) {
+  return canvasTexture(THREE, 512, 640, (context) => {
+    context.clearRect(0, 0, 512, 640);
+    roundedRect(context, 8, 8, 496, 624, 26);
+    context.fillStyle = "rgba(7, 20, 16, 0.95)";
+    context.fill();
+    context.strokeStyle = "#f7c96b";
+    context.lineWidth = 6;
+    context.stroke();
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillStyle = "#9ef7c6";
+    context.font = '700 30px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      `TREASURY · ${(treasury.network || "mainnet-beta").toUpperCase()}`,
+      256,
+      56,
+    );
+    const drawn = drawQrModules(context, treasury.address, 106, 92, 300);
+    if (!drawn) {
+      context.fillStyle = "rgba(158, 247, 198, 0.14)";
+      context.fillRect(106, 92, 300, 300);
+      context.fillStyle = "#d9ffea";
+      context.font = '700 26px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("NO VERIFIED", 256, 226);
+      context.fillText("POOL ADDRESS", 256, 262);
+    }
+    context.fillStyle = "#f7c96b";
+    context.font = '800 54px "ForkMesh Favorit", system-ui, sans-serif';
+    context.fillText(treasury.balance || "BALANCE UNAVAILABLE", 256, 448);
+    context.fillStyle = "#d9ffea";
+    context.font = '400 22px "ForkMesh Mono", ui-monospace, monospace';
+    const address = treasury.address || "—";
+    context.fillText(address.slice(0, 22), 256, 512);
+    context.fillText(address.slice(22) || " ", 256, 542);
+    context.fillStyle = "#9ef7c6";
+    context.font = '400 18px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("PUBLIC ON-CHAIN BALANCE · EXTERNAL SIGNER", 256, 592);
+  });
+}
+
+// A double-sided board at the basin edge showing the treasury address as a
+// scannable QR code with the live public balance beneath it.
+function createRewardTreasurySign(THREE) {
+  const sign = new THREE.Group();
+  sign.name = "reward-treasury-sign";
+  const post = new THREE.Mesh(
+    new THREE.BoxGeometry(0.28, 1.5, 0.28),
+    makeMaterial(THREE, "#123a2c", { roughness: 0.82 }),
+  );
+  post.position.y = 0.75;
+  sign.add(post);
+  const board = new THREE.Mesh(
+    new THREE.BoxGeometry(2.1, 2.6, 0.16),
+    makeMaterial(THREE, "#0c1f19", { roughness: 0.56, metalness: 0.12 }),
+  );
+  board.position.y = 2.55;
+  sign.add(board);
+  const faces = [];
+  for (const facing of [1, -1]) {
+    const face = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.94, 2.42),
+      new THREE.MeshBasicMaterial({
+        map: rewardTreasuryTexture(THREE, rewardTreasuryState()),
+        transparent: true,
+        toneMapped: false,
+      }),
+    );
+    face.position.z = facing * 0.085;
+    face.rotation.y = facing > 0 ? 0 : Math.PI;
+    board.add(face);
+    faces.push(face);
+  }
+  sign.userData.treasuryFaces = faces;
+  sign.userData.treasurySignature = "";
+  return sign;
+}
+
+function applyRewardTreasury(THREE, sign, state) {
+  const faces = sign?.userData?.treasuryFaces;
+  if (!Array.isArray(faces) || !faces.length) return;
+  const treasury = rewardTreasuryState(state);
+  const signature = `${treasury.address}|${treasury.balance}|${treasury.network}`;
+  if (sign.userData.treasurySignature === signature) return;
+  sign.userData.treasurySignature = signature;
+  faces.forEach((face) => {
+    face.material.map?.dispose?.();
+    face.material.map = rewardTreasuryTexture(THREE, treasury);
+    face.material.needsUpdate = true;
+  });
+}
+
 function createFountain(THREE, position, interactive, animated) {
   const group = new THREE.Group();
-  const stone = makeMaterial(THREE, "#c5d8cf", { roughness: 0.62 });
   const darkStone = makeMaterial(THREE, "#1d3b31", { roughness: 0.74 });
   const water = makeMaterial(THREE, "#48d9b1", {
     roughness: 0.2,
@@ -2256,8 +2427,17 @@ function createFountain(THREE, position, interactive, animated) {
     emissiveIntensity: 1.6,
   });
 
-  const foundation = new THREE.Mesh(new THREE.CylinderGeometry(4.9, 5.25, 0.5, 48), stone);
-  foundation.position.y = 0.25;
+  const rimSide = new THREE.MeshStandardMaterial({
+    map: rewardPoolRimTexture(THREE),
+    roughness: 0.66,
+    metalness: 0.06,
+  });
+  const rimCap = makeMaterial(THREE, "#1d5240", { roughness: 0.7 });
+  const foundation = new THREE.Mesh(
+    new THREE.CylinderGeometry(4.9, 5.25, 0.62, 64),
+    [rimSide, rimCap, rimCap],
+  );
+  foundation.position.y = 0.31;
   group.add(foundation);
   const pool = new THREE.Mesh(new THREE.CylinderGeometry(4.4, 4.4, 0.16, 48), water);
   pool.position.y = 0.56;
@@ -2316,15 +2496,9 @@ function createFountain(THREE, position, interactive, animated) {
   light.position.y = 5.3;
   group.add(light);
 
-  addSectionPlaque(
-    THREE,
-    group,
-    position,
-    "GLOBAL REWARD POOL",
-    "public on-chain balance · external signer",
-    "#f7c96b",
-    6.4,
-  );
+  const treasurySign = createRewardTreasurySign(THREE);
+  placeSectionPlaque(group, treasurySign, position, 6.4);
+  group.userData.treasurySign = treasurySign;
 
   group.position.set(...position);
   group.userData.landmark = "fountain";
@@ -9320,6 +9494,14 @@ export function createWorldScene({
     return true;
   }
 
+  // Repaints the fountain's treasury board with the public pool address QR
+  // code and the balance reported by /api/accounts/central-fund.
+  function updateRewardPool(state = {}) {
+    const sign = landmarkObjects.get("fountain")?.userData?.treasurySign;
+    if (!sign) return;
+    applyRewardTreasury(THREE, sign, state);
+  }
+
   function playRewardEvent(targetHint = "") {
     let targetPylon = null;
     nodeInfrastructure.forEach((pylon) => {
@@ -10689,6 +10871,7 @@ export function createWorldScene({
     playEmote,
     showChatBubble,
     greetForkbot,
+    updateRewardPool,
     playRewardEvent,
     setPaused,
     dispose,
