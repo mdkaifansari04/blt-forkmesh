@@ -5942,3 +5942,217 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     forced-color-adjust: none;
   }
 }
+
+/* Screenshot capture and annotation */
+.world-shot-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  cursor: crosshair;
+  background: rgb(4 10 8 / 0.28);
+  touch-action: none;
+}
+
+.world-shot-hint {
+  position: absolute;
+  top: calc(var(--safe-top) + 52px);
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  border: 1px solid var(--world-line-strong);
+  background: var(--world-panel);
+  color: var(--world-copy);
+  padding: 8px 14px;
+  font-size: 0.78rem;
+  pointer-events: none;
+}
+
+.world-shot-marquee {
+  position: fixed;
+  border: 2px solid var(--world-mint);
+  background: rgb(158 247 198 / 0.12);
+  pointer-events: none;
+}
+
+.world-shot-annotator {
+  position: fixed;
+  inset: 0;
+  z-index: 61;
+  display: grid;
+  place-items: center;
+  padding: max(14px, var(--safe-top)) var(--safe-right) var(--safe-bottom)
+    var(--safe-left);
+  background: rgb(4 10 8 / 0.62);
+}
+
+.world-shot-dialog {
+  display: grid;
+  gap: 12px;
+  width: min(860px, 100%);
+  max-height: 100%;
+  overflow: auto;
+  border: 1px solid var(--world-line-strong);
+  background: var(--world-panel-solid);
+  padding: 16px;
+}
+
+.world-shot-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.world-shot-header strong {
+  font-family: "ForkMesh Favorit", sans-serif;
+  font-size: 1.05rem;
+  letter-spacing: -0.02em;
+}
+
+.world-shot-close {
+  border: 0;
+  background: transparent;
+  color: var(--world-muted);
+  cursor: pointer;
+  font-size: 1.2rem;
+}
+
+.world-shot-close:hover,
+.world-shot-close:focus-visible {
+  color: var(--world-mint);
+  outline: none;
+}
+
+.world-shot-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.world-shot-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.world-shot-tools button,
+.world-shot-undo {
+  border: 1px solid var(--world-line);
+  background: rgb(255 255 255 / 0.035);
+  color: var(--world-copy);
+  padding: 6px 11px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.world-shot-tools button:hover,
+.world-shot-tools button:focus-visible,
+.world-shot-undo:hover,
+.world-shot-undo:focus-visible {
+  border-color: var(--world-mint);
+  color: var(--world-mint);
+  outline: none;
+}
+
+.world-shot-tools button[aria-pressed="true"] {
+  border-color: var(--world-mint);
+  background: rgb(158 247 198 / 0.16);
+  color: var(--world-mint);
+}
+
+.world-shot-colors {
+  display: flex;
+  gap: 6px;
+}
+
+.world-shot-colors button {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--world-line);
+  border-radius: 50%;
+  background: var(--shot-swatch);
+  cursor: pointer;
+  padding: 0;
+}
+
+.world-shot-colors button[aria-pressed="true"] {
+  border-color: var(--world-mint);
+  box-shadow: 0 0 0 2px rgb(158 247 198 / 0.35);
+}
+
+.world-shot-undo {
+  margin-left: auto;
+}
+
+.world-shot-stage {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 120px;
+  border: 1px solid var(--world-line);
+  background: var(--world-ink);
+  overflow: hidden;
+}
+
+.world-shot-canvas {
+  display: block;
+  max-width: 100%;
+  max-height: min(58vh, 560px);
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.world-shot-text-input {
+  position: absolute;
+  min-width: 160px;
+  border: 1px dashed var(--world-mint);
+  background: rgb(7 17 15 / 0.86);
+  padding: 4px 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.world-shot-text-input:focus {
+  outline: none;
+}
+
+.world-shot-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.world-shot-ghost {
+  border: 1px solid var(--world-line);
+  background: transparent;
+  color: var(--world-muted);
+  padding: 9px 14px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.world-shot-ghost:hover,
+.world-shot-ghost:focus-visible {
+  border-color: var(--world-mint);
+  color: var(--world-mint);
+  outline: none;
+}
+
+.world-shot-primary {
+  border: 0;
+  background: var(--world-mint);
+  color: #071611;
+  padding: 9px 16px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.world-shot-primary:hover,
+.world-shot-primary:focus-visible {
+  background: var(--world-mint-deep);
+  outline: none;
+}
