@@ -17,6 +17,7 @@ const THREE_MODULE_PATH = path.resolve(
   "build",
   "three.module.min.js",
 );
+const CHAT_HTML_PATH = path.resolve(__dirname, "..", "..", "public", "chat.html");
 
 const PRIVATE_SETTINGS = {
   theme: "world",
@@ -51,6 +52,8 @@ async function prepareWorldPage(
     repositoryFixture = null,
     accountFixture = null,
     unavailablePaths = [],
+    chatChannels = [],
+    chatChannelStatus = 200,
   } = {},
 ) {
   let mentionState = "review";
@@ -86,6 +89,12 @@ async function prepareWorldPage(
     route.fulfill({
       path: THREE_MODULE_PATH,
       contentType: "text/javascript; charset=utf-8",
+    }),
+  );
+  await page.route("**/chat?embed=office", (route) =>
+    route.fulfill({
+      path: CHAT_HTML_PATH,
+      contentType: "text/html; charset=utf-8",
     }),
   );
   await page.route("**/api/**", async (route) => {
@@ -242,6 +251,10 @@ async function prepareWorldPage(
                 passphrase: chatPassphrase,
               }
             : ((status = 401), { error: "unauthorized" })
+        : url.pathname === "/api/chat/channels"
+          ? chatChannelStatus === 200
+            ? { ok: true, channels: chatChannels }
+            : ((status = chatChannelStatus), { error: "invalid_session" })
         : url.pathname === "/api/world/events"
           ? { events }
           : url.pathname === "/api/notifications"
@@ -1030,7 +1043,7 @@ test("account signup and login complete inside the World without leaking into UR
   expect(new URL(page.url()).pathname).toBe("/world/");
 });
 
-test("World chat stays embedded without navigating or opening a tab", async ({
+test("ForkMesh Office opens encrypted chat only after explicit entry", async ({
   page,
   context,
 }) => {
@@ -1056,6 +1069,13 @@ test("World chat stays embedded without navigating or opening a tab", async ({
       socket.onMessage((message) => {
         chatFrames.push(JSON.parse(String(message)));
       });
+      if (chatSocketURLs.length > 1) {
+        setTimeout(() => {
+          chatFrames
+            .filter((frame) => frame.persist === true)
+            .forEach((frame) => socket.send(JSON.stringify(frame)));
+        }, 50);
+      }
     },
   );
   await prepareWorldPage(page, "world-chat", {
@@ -1065,16 +1085,29 @@ test("World chat stays embedded without navigating or opening a tab", async ({
 
   const worldURL = page.url();
   const pageCount = context.pages().length;
-  await page.locator("[data-world-chat-open]").first().click();
+  expect(chatSocketURLs).toHaveLength(0);
+  await page.locator("[data-world-office-focus]").first().click();
+  expect(chatSocketURLs).toHaveLength(0);
 
-  const chat = page.locator("[data-world-chat]");
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.player.position.set(11, 0.38, -17.7);
+  });
+  const entry = page.locator("[data-world-office-enter]");
+  await expect(entry).toBeVisible();
+  expect(chatSocketURLs).toHaveLength(0);
+  await page.evaluate(() => document.activeElement?.blur());
+  await page.keyboard.press("e");
+
+  const chat = page.locator("[data-world-office-chat]");
   await expect(chat).toBeVisible();
-  const chatFrame = page.frameLocator("[data-world-chat-frame]");
-  const chatInput = chatFrame.locator("#fullChatInput");
+  const officeFrame = page.locator("[data-world-office-frame]");
+  await expect(officeFrame).toHaveAttribute("src", "/chat?embed=office");
+  const chatFrame = page.frameLocator("[data-world-office-frame]");
+  const chatInput = chatFrame.locator("#chat-input");
   await expect(chatInput).toBeVisible();
-  await expect(
-    chatFrame.locator("[data-dashboard-chat-status]").first(),
-  ).toHaveText("Connected · public World #general");
+  await expect(chatFrame.locator("#chat-status")).toHaveText(
+    "Connected · public World #general",
+  );
   publicChatSocket.send(JSON.stringify(encryptChatEnvelope(
     {
       type: "chat",
@@ -1089,14 +1122,17 @@ test("World chat stays embedded without navigating or opening a tab", async ({
     passphrase,
     "world-general",
   )));
-  await expect(chatFrame.locator("#fullChatMessages")).toContainText(
+  await expect(chatFrame.locator("#chat-log")).toContainText(
     "World visitor · Verified Admin",
   );
-  await expect(chatFrame.locator("#fullChatMessages")).toContainText(
+  await expect(chatFrame.locator("#chat-log")).toContainText(
     "This identity claim is not verified.",
   );
   await chatInput.fill("Hello from the public World");
-  await chatFrame.locator("#fullChatSend").click();
+  await chatInput.press("Enter");
+  await expect(chatFrame.locator("#chat-log")).toContainText(
+    "Hello from the public World",
+  );
   await expect.poll(
     () => chatFrames.filter((frame) => frame.persist === true).length,
   ).toBe(1);
@@ -1114,6 +1150,38 @@ test("World chat stays embedded without navigating or opening a tab", async ({
     accountKind: "guest",
   });
   expect(message.sender).toMatch(/^World visitor · /);
+
+  await chatInput.evaluate((input) => {
+    const png = Uint8Array.from(atob(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    ), (char) => char.charCodeAt(0));
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([png], "office-clipboard.png", {
+      type: "image/png",
+    }));
+    input.dispatchEvent(new ClipboardEvent("paste", {
+      bubbles: true,
+      cancelable: true,
+      clipboardData: transfer,
+    }));
+  });
+  await expect(chatFrame.locator(".chat-attachment-image")).toHaveAttribute(
+    "alt",
+    "office-clipboard.png",
+  );
+  await chatFrame.locator("#chat-attachment-input").setInputFiles({
+    name: "office-notes.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("retained Office document"),
+  });
+  await expect(chatFrame.locator(".chat-attachment-card", {
+    hasText: "office-notes.txt",
+  })).toBeVisible();
+  await expect.poll(
+    () => chatFrames.filter((frame) => frame.persist === true).length,
+  ).toBe(3);
+  expect(chatFrames.map((frame) => JSON.stringify(frame)).join("\n"))
+    .not.toContain("office-notes.txt");
   expect(roomKeyRequests).toContainEqual({
     room: "world-general",
     authorization: "",
@@ -1125,19 +1193,126 @@ test("World chat stays embedded without navigating or opening a tab", async ({
   expect(page.url()).toBe(worldURL);
   expect(context.pages()).toHaveLength(pageCount);
 
-  await page.locator("forkmesh-world").evaluate((shell) => {
-    shell.openWorldChat("/dashboard/chat?space=sky-campus");
-  });
-  const restrictedFrame = page.frameLocator("[data-world-chat-frame]");
-  await expect(restrictedFrame.locator("#fullChatInput")).toBeDisabled();
-  await expect(
-    restrictedFrame.locator("[data-dashboard-chat-status]").first(),
-  ).toHaveText("User login required for this channel");
-  expect(chatSocketURLs).toHaveLength(1);
-
-  await chat.getByRole("button", { name: "Close World chat" }).click();
+  await chat.getByRole("button", {
+    name: "Collapse ForkMesh Office chat",
+  }).click();
   await expect(chat).toBeHidden();
+  await expect(officeFrame).not.toHaveAttribute("src", /.+/, {
+    timeout: 3500,
+  });
+  await page.waitForTimeout(250);
+  expect(chatSocketURLs).toHaveLength(1);
   expect(page.url()).toBe(worldURL);
+
+  await page.evaluate(() => document.activeElement?.blur());
+  await page.keyboard.press("e");
+  await expect(chat).toBeVisible();
+  await expect.poll(() => chatSocketURLs.length).toBe(2);
+  const reopenedFrame = page.frameLocator("[data-world-office-frame]");
+  await expect(reopenedFrame.locator("#chat-log")).toContainText(
+    "Hello from the public World",
+  );
+  await expect(reopenedFrame.locator(".chat-attachment-image")).toHaveAttribute(
+    "alt",
+    "office-clipboard.png",
+  );
+  await expect(reopenedFrame.locator(".chat-attachment-card", {
+    hasText: "office-notes.txt",
+  })).toBeVisible();
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.player.position.set(0, 0.38, 0);
+  });
+  await expect(chat).toBeHidden();
+  await expect(officeFrame).not.toHaveAttribute("src", /.+/, {
+    timeout: 3500,
+  });
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.player.position.set(11, 0.38, -17.7);
+  });
+  await expect(entry).toBeVisible();
+  await expect(chat).toBeHidden();
+});
+
+test("ForkMesh Office preserves registered channel authorization", async ({
+  page,
+}) => {
+  await page.routeWebSocket(
+    "**/api/repo/mainnode/forkmesh/rooms/world-general/ws",
+    () => {},
+  );
+  await prepareWorldPage(page, "office-admin", {
+    session: {
+      kind: "user",
+      nodeName: "admin",
+      email: "admin@example.test",
+      sessionToken: "admin-token",
+      isAdmin: true,
+    },
+    chatPassphrase: "playwright-office-admin-passphrase",
+    chatChannels: [
+      {
+        id: "a".repeat(32),
+        name: "announcements",
+        visibility: "public",
+        canManage: true,
+        keyVersion: 1,
+        updatedAt: FIXED_NOW,
+      },
+      {
+        id: "b".repeat(32),
+        name: "leadership",
+        visibility: "private",
+        canManage: true,
+        keyVersion: 1,
+        updatedAt: FIXED_NOW,
+      },
+    ],
+  });
+  await waitForWorld(page);
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.player.position.set(11, 0.38, -17.7);
+  });
+  await page.locator("[data-world-office-enter]").click();
+
+  const office = page.frameLocator("[data-world-office-frame]");
+  await expect(office.locator("#chat-rooms")).toContainText("#general");
+  await expect(office.locator("#chat-rooms")).toContainText("#announcements");
+  await expect(office.locator("#chat-rooms")).toContainText("#leadership");
+  await expect(office.locator("#chat-office-manage")).toBeVisible();
+  await expect(office.locator("#chat-channel-create")).toBeHidden();
+  await expect(office.locator("#chat-channel-manage")).toBeHidden();
+});
+
+test("ForkMesh Office explains an expired authorized session", async ({
+  page,
+}) => {
+  await page.routeWebSocket(
+    "**/api/repo/mainnode/forkmesh/rooms/world-general/ws",
+    () => {},
+  );
+  await prepareWorldPage(page, "office-expired", {
+    session: {
+      kind: "user",
+      nodeName: "alice",
+      email: "alice@example.test",
+      sessionToken: "expired-token",
+    },
+    chatPassphrase: "playwright-office-expired-passphrase",
+    chatChannelStatus: 401,
+  });
+  await waitForWorld(page);
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.player.position.set(11, 0.38, -17.7);
+  });
+  await page.locator("[data-world-office-enter]").click();
+
+  const office = page.frameLocator("[data-world-office-frame]");
+  await expect(office.locator("#chat-office-alert")).toContainText(
+    "Your session expired. Log in again to use authorized channels.",
+  );
+  await expect(office.locator("#chat-office-login")).toBeVisible();
+  await expect(office.locator("#chat-rooms")).toContainText("#general");
 });
 
 test("reward-program links deep-link to the self-custodial fountain controls", async ({

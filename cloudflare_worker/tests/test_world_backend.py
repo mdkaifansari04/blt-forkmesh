@@ -554,6 +554,16 @@ def test_connects_land_in_open_grid_cells_never_on_a_standing_visitor():
     assert (newcomer["self"]["x"], newcomer["self"]["z"]) == (-2.7, 30.0)
 
 
+def test_world_presence_allows_the_consent_aware_office_activity():
+    current = world.default_presence("peer", 1000)
+    _, result = world.sanitize_message({
+        "type": "presence",
+        "activityCategory": "visiting-office",
+    }, current, 2000)
+
+    assert result["activityCategory"] == "visiting-office"
+
+
 def test_public_door_state_is_explicit_and_allowlisted():
     current = world.default_presence("peer", 1000)
     assert current["publicDoor"] == "closed"

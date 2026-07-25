@@ -57,7 +57,8 @@ WORLD_STATUS_VALUES = frozenset({
 })
 WORLD_ACTIVITY_VALUES = frozenset({
     "browsing-code-visualization", "exploring-town-square", "hidden",
-    "reading-documentation", "viewing-repository", "visiting-organization",
+    "reading-documentation", "viewing-repository", "visiting-office",
+    "visiting-organization",
 })
 WORLD_FIRST_VISIT_AGE_VALUES = frozenset({
     "this-session", "today", "this-week", "this-month", "this-year",
