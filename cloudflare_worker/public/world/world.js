@@ -15784,7 +15784,14 @@ class ForkMeshWorld extends HTMLElement {
       if (!clean) return;
       present.add(clean.toLowerCase());
       const status = String(accountStatus || "Guest");
-      if (ACCOUNT_STATUS_VALUES.has(status) && status !== "Guest") {
+      // A member who hides their name broadcasts the "Private visitor"
+      // sentinel, and the public directory omits private profiles entirely —
+      // neither owns a named bench.
+      if (
+        ACCOUNT_STATUS_VALUES.has(status) &&
+        status !== "Guest" &&
+        clean !== "Private visitor"
+      ) {
         registered.push(clean.slice(0, 32));
       } else {
         guests += 1;
