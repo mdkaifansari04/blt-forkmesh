@@ -1943,11 +1943,11 @@ function createMirrorServerCabinet(THREE, node, id) {
   const integrity = String(node?.integrity || "unknown").toLowerCase();
   const statusColor =
     integrity === "rejected" || integrity === "degraded"
-      ? "#ff7e88"
+      ? "#ff0000"
       : integrity === "healing" || (online && node?.cloneAvailable !== true)
-        ? "#f7c96b"
+        ? "#ffcc00"
         : online
-          ? "#73f0ad"
+          ? "#00cc44"
           : "#71837a";
   const statusLight = new THREE.Mesh(
     new THREE.SphereGeometry(0.12, 14, 10),
