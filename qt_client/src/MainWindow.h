@@ -961,7 +961,21 @@ private:
     // Node profile: full-page centered section (index 10 in m_sectionStack).
     QWidget *buildNodeProfileSection();
     QWidget *buildNodeProfilePanel(); // builds inner scroll area; called by buildNodeProfileSection
-    void showNodeProfile(const QString &nodeId, const QString &nodeName);
+    // navigate=false populates the panel in place (Settings > Profile tab)
+    // instead of re-homing it and switching to the full-page section.
+    void showNodeProfile(const QString &nodeId, const QString &nodeName,
+                         bool navigate = true);
+    // There is only ever one profile panel, so it is moved between its own
+    // full-page section and the Settings > Profile tab on demand.
+    void hostNodeProfilePanel(bool inSettings);
+    bool profilePanelInSettings() const
+    {
+        return m_nodeProfilePanel && m_settingsProfileHost &&
+               m_nodeProfilePanel->parentWidget() == m_settingsProfileHost;
+    }
+    // Pull the panel into the Settings > Profile tab (and refresh it with your
+    // own node) whenever that tab is the visible one.
+    void syncSettingsProfileTab();
     void refreshProfileHostingStats(); // rebuild the per-repo hosting lines
     void refreshProfileAccountStatus(); // "USER ACCOUNT" section: link state + CTA
     void renderProfileAccountStatus();  // paint the section from cached state only
@@ -3896,6 +3910,10 @@ private:
     // can land the mic-not-set-up click directly on that tab (adhoc #132).
     QTabWidget *m_settingsTabs = nullptr;
     int m_voiceSettingsTabIndex = -1;
+    // Settings > Profile tab (adhoc #274): hosts the node profile panel — the
+    // avatar/power-switch page that used to only open from the avatar button.
+    QWidget *m_settingsProfileHost = nullptr;
+    int m_profileSettingsTabIndex = -1;
     // Settings "Test mic" (adhoc #14): a self-contained mic check. m_voiceTestProc
     // records the chosen device to m_voiceTestWavPath; m_voiceTestTimer samples its
     // growing tail (from byte offset m_voiceTestPos) to drive m_voiceTestMeter.
@@ -5406,6 +5424,8 @@ private:
 
     // Node profile panel widgets + the node it currently shows.
     QWidget *m_nodeProfilePanel = nullptr;
+    QWidget *m_nodeProfileSectionHost = nullptr; // full-page home (section 10)
+    QPushButton *m_profileCloseButton = nullptr; // hidden while shown as a tab
     QWidget *m_repoDetailSection = nullptr; // hidden while node profile is full-page
     QLabel *m_profileAvatar = nullptr;
     QPixmap m_profileAvatarSource; // raw avatar, re-scaled to a banner on resize

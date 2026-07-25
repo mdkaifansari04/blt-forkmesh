@@ -28,6 +28,7 @@
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTableWidget>
+#include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTextBrowser>
 #include <QWidget>
@@ -721,6 +722,23 @@ int main(int argc, char *argv[])
     // before checking its one-way legacy-custody migration and controls.
     window.testShowSettingsSection();
     QApplication::processEvents();
+    // The profile page (avatar + node power switch) is reachable as a Settings
+    // tab, not only from the avatar button (adhoc #274). The single panel is
+    // moved into the tab, so check it actually lands there.
+    QTabWidget *settingsTabs =
+        window.findChild<QTabWidget *>(QStringLiteral("settingsTabs"));
+    int profileTabIndex = -1;
+    for (int i = 0; settingsTabs && i < settingsTabs->count(); ++i) {
+        if (settingsTabs->tabText(i) == QLatin1String("Profile"))
+            profileTabIndex = i;
+    }
+    QWidget *nodeProfilePanel =
+        window.findChild<QWidget *>(QStringLiteral("nodeProfilePanel"));
+    check(settingsTabs && profileTabIndex >= 0 && nodeProfilePanel &&
+              nodeProfilePanel->parentWidget() ==
+                  settingsTabs->widget(profileTabIndex),
+          QStringLiteral(
+              "Settings has a Profile tab hosting the node profile panel"));
     QCheckBox *legacyAutoBounty = window.findChild<QCheckBox *>(
         QStringLiteral("legacyAutoPrBountyDisabled"));
     QComboBox *bountyFundingMode = window.findChild<QComboBox *>(

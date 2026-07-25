@@ -4046,6 +4046,7 @@ export function createWorldScene({
   onMovement = () => {},
   onModeration = () => {},
   onAccountAction = () => {},
+  onLayoutObjectMoved = () => {},
   onForkbotChat = () => {},
   onPlayForkmeshSong = () => {},
   onCreateRepository = () => {},
@@ -4131,6 +4132,21 @@ export function createWorldScene({
   const animated = [];
   const landmarkObjects = new Map();
 
+  // Fixed Town Square objects a platform administrator may reposition. The
+  // shared placement is persisted server-side and re-applied for every
+  // visitor when the world loads.
+  const movableWorldObjects = new Map();
+  const layoutHandles = new Map();
+  const layoutDragOffset = new THREE.Vector3();
+  let layoutEditingEnabled = false;
+  let draggedLayoutObject = null;
+
+  function registerMovableObject(id, object) {
+    if (!object || movableWorldObjects.has(id)) return;
+    object.userData.layoutId = id;
+    movableWorldObjects.set(id, object);
+  }
+
   const worldBulletin = new THREE.Group();
   worldBulletin.name = "forkmesh-world-bulletin";
   // Keep this well outside the arrival / join grid: it is a destination, not
@@ -4188,6 +4204,7 @@ export function createWorldScene({
   worldBulletin.add(bulletinFrame, bulletinFace, bulletinScrollUp, bulletinScrollDown);
   interactive.push(bulletinFrame, bulletinFace, bulletinScrollUp, bulletinScrollDown);
   world.add(worldBulletin);
+  registerMovableObject("world-bulletin", worldBulletin);
 
   const ground = new THREE.Mesh(
     new THREE.CircleGeometry(WORLD_GROUND_RADIUS, 128),
@@ -4261,6 +4278,7 @@ export function createWorldScene({
   });
   arrivalBox.add(songPlaque);
   world.add(arrivalBox);
+  registerMovableObject("arrival-box", arrivalBox);
 
   const landmarkFactories = {
     fountain: createFountain,
@@ -4276,8 +4294,11 @@ export function createWorldScene({
     );
     landmarkObjects.set(landmark.id, object);
     world.add(object);
+    registerMovableObject("landmark-" + landmark.id, object);
   });
-  world.add(createMastodonKiosk(THREE, interactive));
+  const mastodonKiosk = createMastodonKiosk(THREE, interactive);
+  world.add(mastodonKiosk);
+  registerMovableObject("mastodon-kiosk", mastodonKiosk);
 
   const campfire = new THREE.Group();
   campfire.position.set(8, 0, 8);
@@ -4392,6 +4413,7 @@ export function createWorldScene({
   }
   setShadows(campfire);
   world.add(campfire);
+  registerMovableObject("campfire", campfire);
 
   const registeredUserLounge = createRegisteredUserLounge(
     THREE,
@@ -4399,6 +4421,7 @@ export function createWorldScene({
     interactive,
   );
   world.add(registeredUserLounge);
+  registerMovableObject("registered-user-lounge", registeredUserLounge);
   const activeLeaderboardSign = makeActiveLeaderboardSign(THREE);
   activeLeaderboardSign.position.set(...ACTIVE_LEADERBOARD_POSITION);
   activeLeaderboardSign.rotation.y = Math.atan2(
@@ -4406,8 +4429,10 @@ export function createWorldScene({
     -ACTIVE_LEADERBOARD_POSITION[2],
   );
   world.add(activeLeaderboardSign);
+  registerMovableObject("active-leaderboard-sign", activeLeaderboardSign);
   const systemCapacityPlatform = createSystemCapacityPlatform(THREE);
   world.add(systemCapacityPlatform);
+  registerMovableObject("system-capacity-platform", systemCapacityPlatform);
 
   const player = createAvatar(THREE, identity);
   player.position.set(-8.1, 0.38, 30);
@@ -8672,9 +8697,34 @@ export function createWorldScene({
     if (primaryPointerId !== null) return;
     pointerCoordinates(event);
     raycaster.setFromCamera(pointer, camera);
-    const logHit = raycaster
-      .intersectObjects(interactive, false)
-      .find(({ object }) => object.visible && object.userData?.campfireLog);
+    const pressHits = raycaster.intersectObjects(interactive, false);
+    if (layoutEditingEnabled) {
+      const handleHit = pressHits.find(
+        ({ object }) => object.visible && object.userData?.layoutHandle,
+      );
+      draggedLayoutObject = handleHit
+        ? movableWorldObjects.get(handleHit.object.userData.layoutHandle) ||
+          null
+        : null;
+      if (draggedLayoutObject) {
+        // Drag by delta from the press point so grabbing the tiny handle
+        // never snaps the object's origin to the pointer.
+        const point = groundPointAt(event.clientX, event.clientY);
+        if (point) {
+          layoutDragOffset.set(
+            draggedLayoutObject.position.x - point.x,
+            0,
+            draggedLayoutObject.position.z - point.z,
+          );
+        } else {
+          draggedLayoutObject = null;
+        }
+      }
+    }
+    const logHit = draggedLayoutObject
+      ? null
+      : pressHits
+          .find(({ object }) => object.visible && object.userData?.campfireLog);
     if (logHit) {
       draggedCampfireLog = logHit.object;
       draggedCampfireLog.userData.campfireCarried = true;
@@ -8728,6 +8778,18 @@ export function createWorldScene({
       }
     }
     if (event.pointerId !== primaryPointerId) return;
+    if (draggedLayoutObject) {
+      const point = groundPointAt(event.clientX, event.clientY);
+      if (point) {
+        moveWorldObject(
+          draggedLayoutObject,
+          point.x + layoutDragOffset.x,
+          point.z + layoutDragOffset.z,
+        );
+      }
+      pointerGestureMoved = true;
+      return;
+    }
     if (draggedCampfireLog) {
       const point = groundPointAt(event.clientX, event.clientY);
       if (point) {
@@ -8804,6 +8866,18 @@ export function createWorldScene({
     primaryPointerId = null;
     renderer.domElement.dataset.dragging =
       touchPointers.size ? "true" : "false";
+    if (draggedLayoutObject) {
+      const movedObject = draggedLayoutObject;
+      draggedLayoutObject = null;
+      onLayoutObjectMoved({
+        id: String(movedObject.userData.layoutId || ""),
+        x: Number(movedObject.position.x.toFixed(2)),
+        z: Number(movedObject.position.z.toFixed(2)),
+      });
+      lastGestureDragged = true;
+      pointerGestureMoved = false;
+      return;
+    }
     if (draggedCampfireLog) {
       const droppedLog = draggedCampfireLog;
       draggedCampfireLog = null;
@@ -9052,6 +9126,95 @@ export function createWorldScene({
     return point;
   }
 
+  function moveWorldObject(object, targetX, targetZ) {
+    const radius = Math.hypot(targetX, targetZ);
+    const scale = radius > WORLD_RADIUS ? WORLD_RADIUS / radius : 1;
+    const x = targetX * scale;
+    const z = targetZ * scale;
+    const deltaX = x - object.position.x;
+    const deltaZ = z - object.position.z;
+    if (!deltaX && !deltaZ) return;
+    object.position.x = x;
+    object.position.z = z;
+    // Campfire bench seats capture absolute seat coordinates at build time;
+    // keep them attached to the benches when the campfire is repositioned.
+    object.traverse((child) => {
+      const seat = child.userData?.campfireBench;
+      if (seat?.isVector3) {
+        seat.x += deltaX;
+        seat.z += deltaZ;
+      }
+    });
+    // Landmark proximity and focus math read LANDMARKS positions, not the
+    // group transform, so a relocated landmark must update its record too.
+    const layoutId = String(object.userData.layoutId || "");
+    if (layoutId.startsWith("landmark-")) {
+      const landmark = LANDMARKS.find(
+        (entry) => "landmark-" + entry.id === layoutId,
+      );
+      if (Array.isArray(landmark?.position)) {
+        landmark.position[0] = x;
+        landmark.position[2] = z;
+      }
+    }
+  }
+
+  function applyWorldLayout(objects) {
+    (Array.isArray(objects) ? objects : []).forEach((entry) => {
+      const object = movableWorldObjects.get(String(entry?.id || ""));
+      const x = Number(entry?.x);
+      const z = Number(entry?.z);
+      if (!object || !Number.isFinite(x) || !Number.isFinite(z)) return;
+      moveWorldObject(object, x, z);
+    });
+  }
+
+  function ensureLayoutHandles() {
+    movableWorldObjects.forEach((object, id) => {
+      if (layoutHandles.has(id)) return;
+      // Deliberately minuscule: the handle only becomes a comfortable click
+      // target once an administrator zooms right up to the object it moves.
+      const handle = new THREE.Mesh(
+        new THREE.OctahedronGeometry(0.09, 0),
+        new THREE.MeshBasicMaterial({
+          color: "#ff5df1",
+          toneMapped: false,
+          depthTest: false,
+          transparent: true,
+          opacity: 0.92,
+        }),
+      );
+      handle.name = "world-layout-handle-" + id;
+      // Anchor the handle to the object's visible mass, not the group
+      // origin: the arrival grid keeps its geometry ~24 units away from its
+      // origin, where a fixed-origin handle would float in the town center.
+      const center = new THREE.Box3()
+        .setFromObject(object)
+        .getCenter(new THREE.Vector3());
+      object.worldToLocal(center);
+      handle.position.set(
+        Number.isFinite(center.x) ? center.x : 0,
+        0.34,
+        Number.isFinite(center.z) ? center.z : 0,
+      );
+      handle.renderOrder = 30;
+      handle.userData.layoutHandle = id;
+      handle.visible = false;
+      object.add(handle);
+      interactive.push(handle);
+      layoutHandles.set(id, handle);
+    });
+  }
+
+  function setLayoutEditor(enabled) {
+    layoutEditingEnabled = enabled === true;
+    if (layoutEditingEnabled) ensureLayoutHandles();
+    layoutHandles.forEach((handle) => {
+      handle.visible = layoutEditingEnabled;
+    });
+    if (!layoutEditingEnabled) draggedLayoutObject = null;
+  }
+
   function handleDoubleClick(event) {
     if (event.button !== undefined && event.button !== 0) return;
     if (lastGestureDragged) return;
@@ -9137,6 +9300,7 @@ export function createWorldScene({
     pointerGestureMoved = false;
     pinchActive = false;
     pinchStartDistance = 0;
+    draggedLayoutObject = null;
     renderer.domElement.dataset.dragging = "false";
   }
 
@@ -9590,6 +9754,8 @@ export function createWorldScene({
     updateRepositoryGraph,
     updateRepositorySizeMap,
     setRepositorySizeLoading,
+    applyWorldLayout,
+    setLayoutEditor,
     playEmote,
     showChatBubble,
     greetForkbot,
