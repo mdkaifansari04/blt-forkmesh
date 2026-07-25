@@ -59,6 +59,9 @@ const SETTINGS_KEY = "forkmesh.world.settings.v1";
 const GUEST_ID_KEY = "forkmesh.world.guestId.v1";
 const FIRST_VISIT_KEY = "forkmesh.world.firstVisitAt.v1";
 const VISIT_COUNT_KEY = "forkmesh.world.publicVisitCount.v1";
+// Mirrors WORLD_FIRST_SEEN_MAX_MINUTES / WORLD_JOINED_AT_MIN_MS in world.py.
+const FIRST_SEEN_MAX_MINUTES = 10 * 365 * 24 * 60;
+const JOINED_AT_MIN_MS = 1577836800000;
 const FORKBOT_GREETED_KEY = "forkmesh.world.forkbotGreeted.v1";
 const POSITION_KEY_PREFIX = "forkmesh.world.position.v1.";
 const DETAIL_WIDTH_KEY = "forkmesh.world.detailWidth.v1";
@@ -295,6 +298,22 @@ function firstVisitAge(timestamp, now = Date.now()) {
   return "over-a-year";
 }
 
+// The coarse bucket above still drives the privacy-safe fallback label; this
+// is the exact "first seen 12 minutes ago" reading the chest badge prefers.
+function firstSeenMinutes(timestamp, now = Date.now()) {
+  const age = Math.max(0, now - Number(timestamp || now));
+  return Math.max(0, Math.min(FIRST_SEEN_MAX_MINUTES, Math.floor(age / 60000)));
+}
+
+function boundedJoinedAt(value, now = Date.now()) {
+  const timestamp = Number(value);
+  return Number.isSafeInteger(timestamp) &&
+    timestamp >= JOINED_AT_MIN_MS &&
+    timestamp <= now
+    ? timestamp
+    : 0;
+}
+
 function sessionVisitCount(increment = false) {
   try {
     const current = Math.max(
@@ -449,6 +468,9 @@ function accountIdentity(session) {
     inputActive: false,
     visitCount: 0,
     firstVisitAge: "this-session",
+    firstSeenMinutes: 0,
+    // Filled in from the server-signed world ticket; guests never have one.
+    joinedAt: 0,
     activityCategory: "exploring-town-square",
   };
 }
@@ -617,6 +639,10 @@ function publicIdentity(identity, settings) {
     firstVisitAge: settings.privacy.activity
       ? String(identity.firstVisitAge || "this-session")
       : "hidden",
+    firstSeenMinutes: settings.privacy.activity
+      ? Math.max(0, Number(identity.firstSeenMinutes) || 0)
+      : 0,
+    joinedAt: boundedJoinedAt(identity.joinedAt),
     statusEmoji: publicStatus.emoji,
     statusNote: publicStatus.note,
     outfitColor:
@@ -778,11 +804,43 @@ function remotePlayer(peer) {
     ].includes(String(peer.firstVisitAge || ""))
       ? String(peer.firstVisitAge)
       : "hidden",
+    firstSeenMinutes: Math.max(
+      0,
+      Math.min(FIRST_SEEN_MAX_MINUTES, Number(peer.firstSeenMinutes) || 0),
+    ),
+    joinedAt: boundedJoinedAt(peer.joinedAt),
     statusEmoji: publicStatus.emoji,
     statusNote: publicStatus.note,
     moderationHandles,
     updatedAt: Math.max(0, Number(peer.updatedAt) || 0),
   };
+}
+
+// The public contribution feed doubles as the account's ForkMesh fediverse
+// timeline: these are exactly the events the relay federates as Notes.
+function worldFediverseFeedLines(recentActivity) {
+  const kinds = {
+    commits: "COMMITS",
+    issues: "ISSUES",
+    pulls: "PULL REQUESTS",
+    discussions: "DISCUSSIONS",
+    releases: "RELEASES",
+    reviews: "REVIEWS",
+  };
+  return (Array.isArray(recentActivity) ? recentActivity : [])
+    .slice(0, 6)
+    .map((entry) => {
+      const count = Math.max(0, Math.min(999, Number(entry?.count) || 0));
+      const kind = kinds[String(entry?.kind || "")] || "ACTIVITY";
+      const owner = sanitizePresenceText(entry?.repository?.owner, "", 20);
+      const name = sanitizePresenceText(entry?.repository?.name, "", 20);
+      const date = /^\d{4}-\d{2}-\d{2}$/.test(String(entry?.date || ""))
+        ? String(entry.date).slice(5)
+        : "";
+      const repository = owner && name ? `${owner}/${name}` : "";
+      return [date, `${count} ${kind}`, repository].filter(Boolean).join(" · ");
+    })
+    .filter(Boolean);
 }
 
 function compactNumber(value) {
@@ -3492,6 +3550,7 @@ class ForkMeshWorld extends HTMLElement {
     if (this.mode === "public") document.body.classList.add("world-active");
     this.identity = accountIdentity(readSession());
     this.identity.firstVisitAge = firstVisitAge(this.firstVisitAt);
+    this.identity.firstSeenMinutes = firstSeenMinutes(this.firstVisitAt);
     this.identity.visitCount = this.publicVisitCount;
     this.identity.activityCategory = this.currentActivityCategory;
     this.settings = mergeSettings(readJSON(localStorage, SETTINGS_KEY, null));
@@ -3830,6 +3889,10 @@ class ForkMeshWorld extends HTMLElement {
         onRegionChange: (region) => this.updateRegion(region),
         onMovement: (movement) => this.handleMovement(movement),
         onModeration: (action) => this.moderateWorldPeer(action),
+        onFediverseProfile: (target) =>
+          void this.loadWorldFediverseProfile(target),
+        onFediverseFollow: (target) =>
+          void this.toggleWorldFediverseFollow(target),
         onLayoutObjectMoved: (move) => {
           void this.lockWorldObjectPlacement(move);
         },
@@ -6134,6 +6197,102 @@ class ForkMeshWorld extends HTMLElement {
     } catch (error) {
       this.toast(`Temporary block was not applied: ${error.message}`);
     }
+  }
+
+  // The chest's second tab. Everything shown is public profile data the
+  // account already publishes at /@name and to the fediverse; it is fetched
+  // only when a visitor actually opens the tab, never polled.
+  async loadWorldFediverseProfile(target = {}) {
+    const peerId = String(target.peerId || "");
+    const account = String(target.name || "").trim().toLowerCase();
+    if (
+      !WORLD_ACCOUNT_NAME_RE.test(account) ||
+      String(target.accountStatus || "Guest") === "Guest"
+    ) {
+      this.world?.setAvatarFediverseProfile?.(peerId, {
+        state: "unavailable",
+        handle: account ? `@${account}` : "",
+      });
+      return;
+    }
+    const viewer = validWorldSession()?.nodeName || "";
+    const query = viewer ? `?viewer=${encodeURIComponent(viewer)}` : "";
+    try {
+      const profile = await this.fetchJSON(
+        `/api/accounts/${encodeURIComponent(account)}${query}`,
+      );
+      if (this.destroyed) return;
+      if (profile?.exists !== true || profile?.profilePrivate === true) {
+        this.world?.setAvatarFediverseProfile?.(peerId, {
+          state: "unavailable",
+          handle: `@${account}`,
+        });
+        return;
+      }
+      const card = {
+        state: "ready",
+        account,
+        handle: `@${account}`,
+        // ForkMesh federates repository actors, not accounts, so the fediverse
+        // address is whichever handle the account published on its profile.
+        fediverse: sanitizePresenceText(profile.mastodon || "", "", 30),
+        bio: sanitizePresenceText(profile.profileBio || "", "", 60),
+        followers: Math.max(0, Number(profile.followers) || 0),
+        following: Math.max(0, Number(profile.following) || 0),
+        isFollowing: profile.isFollowing === true,
+        self: Boolean(viewer) && viewer === account,
+        canFollow: Boolean(viewer) && viewer !== account,
+        posts: [],
+      };
+      this.world?.setAvatarFediverseProfile?.(peerId, card);
+      const feed = await this.fetchJSON(
+        `/api/accounts/${encodeURIComponent(account)}/contributions`,
+      ).catch(() => null);
+      if (this.destroyed || !feed) return;
+      this.world?.setAvatarFediverseProfile?.(peerId, {
+        ...card,
+        posts: worldFediverseFeedLines(feed.recentActivity),
+      });
+    } catch (_) {
+      if (this.destroyed) return;
+      this.world?.setAvatarFediverseProfile?.(peerId, {
+        state: "unavailable",
+        handle: `@${account}`,
+      });
+    }
+  }
+
+  async toggleWorldFediverseFollow(target = {}) {
+    const peerId = String(target.peerId || "");
+    const account = String(target.name || "").trim().toLowerCase();
+    const following = target.following === true;
+    if (!WORLD_ACCOUNT_NAME_RE.test(account)) return;
+    if (!validWorldSession()) {
+      this.toast("Sign in to follow accounts from the World.");
+      await this.loadWorldFediverseProfile({
+        ...target,
+        accountStatus: "Registered",
+      });
+      return;
+    }
+    try {
+      await this.postJSON(
+        `/api/accounts/${encodeURIComponent(account)}/follow`,
+        {},
+        { method: following ? "DELETE" : "POST" },
+      );
+      this.toast(
+        following ? `Unfollowed @${account}.` : `Following @${account}.`,
+      );
+    } catch (error) {
+      this.toast(`Follow was not applied: ${error.message}`);
+    }
+    if (this.destroyed) return;
+    await this.loadWorldFediverseProfile({
+      peerId,
+      name: account,
+      accountStatus: "Registered",
+    });
   }
 
   applyWorldLayoutEditor() {
@@ -15019,6 +15178,7 @@ class ForkMeshWorld extends HTMLElement {
     );
     this.identity.accountStatus = String(ticket.accountStatus);
     this.identity.isAdmin = ticket.isAdmin === true;
+    this.identity.joinedAt = boundedJoinedAt(ticket.joinedAt);
     this.identity.nodes = Array.from(
       {
         length: Math.max(
@@ -15038,6 +15198,7 @@ class ForkMeshWorld extends HTMLElement {
     if (this.identity) {
       this.identity.accountStatus = "Guest";
       this.identity.isAdmin = false;
+      this.identity.joinedAt = 0;
       this.identity.nodes = [];
     }
     this.worldTicket = "";
@@ -15416,6 +15577,7 @@ class ForkMeshWorld extends HTMLElement {
     let safe;
     if (message.type === "presence") {
       this.identity.firstVisitAge = firstVisitAge(this.firstVisitAt);
+      this.identity.firstSeenMinutes = firstSeenMinutes(this.firstVisitAt);
       this.identity.visitCount = this.publicVisitCount;
       this.identity.activityCategory = presenceActivity(
         this.settings,
@@ -15448,6 +15610,10 @@ class ForkMeshWorld extends HTMLElement {
         firstVisitAge: this.settings.privacy.activity
           ? this.identity.firstVisitAge
           : "hidden",
+        firstSeenMinutes: this.settings.privacy.activity
+          ? firstSeenMinutes(this.firstVisitAt)
+          : 0,
+        joinedAt: boundedJoinedAt(this.identity.joinedAt),
         publicDoor: ["closed", "knock", "open"].includes(
           this.settings.publicDoor,
         )
