@@ -3596,6 +3596,88 @@ function worldBulletinTexture(THREE, events = [], offset = 0) {
   });
 }
 
+function mastodonKioskTexture(THREE) {
+  return canvasTexture(THREE, 1024, 1280, (context) => {
+    context.fillStyle = "#191a2e";
+    context.fillRect(0, 0, 1024, 1280);
+    context.strokeStyle = "#6364ff";
+    context.lineWidth = 16;
+    context.strokeRect(12, 12, 1000, 1256);
+    context.fillStyle = "#6364ff";
+    context.fillRect(12, 12, 1000, 178);
+    context.fillStyle = "#f2f3ff";
+    context.font = '800 108px "ForkMesh Favorit", sans-serif';
+    context.fillText("MASTODON", 66, 138);
+    context.fillStyle = "#c8c9ff";
+    context.font = '700 52px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("@forkmesh", 66, 320);
+    context.font = '600 40px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("@mastodon.social", 66, 386);
+    context.strokeStyle = "rgba(99,100,255,0.5)";
+    context.lineWidth = 4;
+    context.beginPath();
+    context.moveTo(66, 452);
+    context.lineTo(958, 452);
+    context.stroke();
+    context.fillStyle = "#e8e9ff";
+    context.font = '700 46px "ForkMesh Mono", ui-monospace, monospace';
+    [
+      "LIVE PUBLIC PROFILE",
+      "FOLLOWERS · FOLLOWING · POSTS",
+      "BIO · VERIFIED LINKS",
+      "LATEST TOOTS, SCROLLABLE",
+    ].forEach((line, index) => {
+      context.fillText(line, 66, 560 + index * 96);
+    });
+    context.fillStyle = "#8b9bf4";
+    context.font = '800 52px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("TAP / CLICK TO OPEN", 66, 1080);
+    context.fillStyle = "#7a7ca8";
+    context.font = '600 34px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("READ-ONLY · FETCHED FROM MASTODON.SOCIAL", 66, 1180);
+  });
+}
+
+function createMastodonKiosk(THREE, interactive) {
+  const group = new THREE.Group();
+  group.name = "forkmesh-mastodon-kiosk";
+  // A newsstand beside the Office approach: close enough to read on the walk
+  // to the door, far enough not to block it or the exterior keypad.
+  group.position.set(33.5, 0, -18.5);
+  group.rotation.y = Math.atan2(-group.position.x, -group.position.z);
+  const base = new THREE.Mesh(
+    new THREE.BoxGeometry(4.6, 0.4, 2.0),
+    makeMaterial(THREE, "#20213a", { metalness: 0.2, roughness: 0.7 }),
+  );
+  base.position.y = 0.2;
+  const post = new THREE.Mesh(
+    new THREE.BoxGeometry(0.5, 2.2, 0.5),
+    makeMaterial(THREE, "#2c2d4d", { metalness: 0.4, roughness: 0.5 }),
+  );
+  post.position.y = 1.3;
+  const frame = new THREE.Mesh(
+    new THREE.BoxGeometry(4.2, 5.1, 0.36),
+    makeMaterial(THREE, "#43389c", { metalness: 0.35, roughness: 0.45 }),
+  );
+  frame.position.y = 4.4;
+  const face = new THREE.Mesh(
+    new THREE.PlaneGeometry(3.8, 4.75),
+    new THREE.MeshBasicMaterial({
+      map: mastodonKioskTexture(THREE),
+      toneMapped: false,
+    }),
+  );
+  face.position.set(0, 4.4, 0.2);
+  group.add(base, post, frame, face);
+  group.traverse((child) => {
+    if (!child.isMesh) return;
+    child.userData.interactive = "mastodon-board";
+    interactive.push(child);
+  });
+  setShadows(group);
+  return group;
+}
+
 function createForkMeshOffice(THREE, position, interactive, animated) {
   const group = new THREE.Group();
   const wallThickness = 0.35;
@@ -4009,6 +4091,7 @@ export function createWorldScene({
   onOfficeTaskBoardSelect = () => {},
   onOfficeMeetingBoardSelect = () => {},
   onWorldBulletinSelect = () => {},
+  onMastodonBoardSelect = () => {},
   onRendererStateChange = () => {},
   onOfficeChairSelect = () => {},
   onOfficeMovement = () => {},
@@ -4249,6 +4332,7 @@ export function createWorldScene({
     landmarkObjects.set(landmark.id, object);
     world.add(object);
   });
+  world.add(createMastodonKiosk(THREE, interactive));
 
   const campfire = new THREE.Group();
   campfire.position.set(8, 0, 8);
@@ -8828,6 +8912,10 @@ export function createWorldScene({
     }
     if (hit?.object?.userData?.interactive === "world-bulletin") {
       onWorldBulletinSelect();
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "mastodon-board") {
+      onMastodonBoardSelect();
       return;
     }
     if (

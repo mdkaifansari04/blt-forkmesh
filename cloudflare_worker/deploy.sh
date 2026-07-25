@@ -386,6 +386,7 @@ verify_public_assets() {
         "/world/world-data.js|public/world/world-data.js"
         "/world/world-scene.js|public/world/world-scene.js"
         "/world/world-mirror-nodes.js|public/world/world-mirror-nodes.js"
+        "/world/world-mastodon.js|public/world/world-mastodon.js"
         "/world/world-pull-review.js|public/world/world-pull-review.js"
         "/world/world-repository-graph.js|public/world/world-repository-graph.js"
         "/world/world.css|public/world/world.css"

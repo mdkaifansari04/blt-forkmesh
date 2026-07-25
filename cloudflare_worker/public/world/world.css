@@ -1302,6 +1302,256 @@ forkmesh-world {
   padding: 24px 24px max(32px, var(--safe-bottom));
 }
 
+/* Mastodon mini app: fixed profile summary with independently scrollable
+   toots underneath, matching the kiosk beside the ForkMesh Office. */
+.world-mastodon-app {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.world-mastodon-profile {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  max-height: 52%;
+  border-bottom: 1px solid var(--world-line);
+  padding: 0 24px 18px;
+}
+
+.world-mastodon-header {
+  display: block;
+  width: calc(100% + 48px);
+  margin: 0 -24px;
+  max-height: 110px;
+  object-fit: cover;
+}
+
+.world-mastodon-identity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.world-mastodon-identity img {
+  width: 52px;
+  height: 52px;
+  border: 1px solid var(--world-line-strong);
+  object-fit: cover;
+}
+
+.world-mastodon-identity strong {
+  display: block;
+  font-size: 1.15rem;
+}
+
+.world-mastodon-identity span {
+  color: var(--world-muted);
+  font-size: 0.82rem;
+  word-break: break-all;
+}
+
+.world-mastodon-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 16px 0 0;
+}
+
+.world-mastodon-stats div {
+  border: 1px solid var(--world-line);
+  padding: 8px 10px;
+}
+
+.world-mastodon-stats dt {
+  color: var(--world-muted);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.world-mastodon-stats dd {
+  margin: 4px 0 0;
+  font-family: "ForkMesh Mono", ui-monospace, monospace;
+  font-size: 1.05rem;
+}
+
+.world-mastodon-note {
+  margin: 14px 0 0;
+  color: var(--world-copy);
+  font-size: 0.88rem;
+  line-height: 1.5;
+  white-space: pre-line;
+}
+
+.world-mastodon-fields {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0 0;
+}
+
+.world-mastodon-fields div {
+  display: grid;
+  grid-template-columns: minmax(72px, auto) 1fr;
+  gap: 10px;
+  border: 1px solid var(--world-line);
+  padding: 8px 10px;
+  font-size: 0.82rem;
+}
+
+.world-mastodon-fields div[data-verified="true"] {
+  border-color: rgb(122 214 160 / 0.6);
+}
+
+.world-mastodon-fields dt {
+  color: var(--world-muted);
+}
+
+.world-mastodon-fields dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+.world-mastodon-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-top: 16px;
+}
+
+.world-mastodon-links a {
+  color: var(--detail-color);
+}
+
+.world-mastodon-links button {
+  border: 1px solid var(--world-line);
+  background: transparent;
+  color: var(--world-copy);
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.world-mastodon-links button:hover,
+.world-mastodon-links button:focus-visible {
+  border-color: var(--detail-color);
+  color: var(--detail-color);
+  outline: none;
+}
+
+.world-mastodon-toots {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+}
+
+.world-mastodon-toots h3 {
+  margin: 0;
+  padding: 14px 24px 10px;
+  font-size: 0.78rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--world-muted);
+}
+
+.world-mastodon-toot-list {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 24px max(28px, var(--safe-bottom));
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+.world-mastodon-toot {
+  border: 1px solid var(--world-line);
+  padding: 12px 14px;
+}
+
+.world-mastodon-toot header {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.world-mastodon-toot header img {
+  width: 34px;
+  height: 34px;
+  object-fit: cover;
+  border: 1px solid var(--world-line);
+}
+
+.world-mastodon-toot header strong {
+  display: block;
+  font-size: 0.88rem;
+}
+
+.world-mastodon-toot header span {
+  color: var(--world-muted);
+  font-size: 0.74rem;
+  word-break: break-all;
+}
+
+.world-mastodon-toot time {
+  color: var(--world-muted);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.world-mastodon-marker {
+  margin: 10px 0 0;
+  color: var(--world-muted);
+  font-size: 0.76rem;
+}
+
+.world-mastodon-text {
+  margin: 10px 0 0;
+  font-size: 0.86rem;
+  line-height: 1.5;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.world-mastodon-media {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.world-mastodon-media img {
+  width: 100%;
+  max-height: 180px;
+  object-fit: cover;
+  border: 1px solid var(--world-line);
+}
+
+.world-mastodon-toot footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 12px;
+  color: var(--world-muted);
+  font-size: 0.76rem;
+}
+
+.world-mastodon-toot footer a {
+  margin-left: auto;
+  color: var(--detail-color);
+}
+
+.world-mastodon-status {
+  margin: 16px 0 0;
+  color: var(--world-muted);
+  font-size: 0.86rem;
+}
+
+.world-mastodon-profile .world-mastodon-status {
+  margin-top: 18px;
+}
+
 .world-chat-backdrop {
   position: absolute;
   z-index: 31;
