@@ -2595,14 +2595,13 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             class="world-fediverse-activity"
             data-world-fediverse-activity
             aria-labelledby="world-fediverse-activity-title"
+            hidden
           >
             <div class="world-panel-heading">
               <h2 id="world-fediverse-activity-title">Verified public feedback</h2>
               <span>MANUAL</span>
             </div>
-            <div data-world-fediverse-items>
-              <p class="world-rail-empty">No verified public repository feedback is currently listed.</p>
-            </div>
+            <div data-world-fediverse-items></div>
           </section>
           <div class="world-activity" aria-live="polite">
             <div class="world-activity-line" data-world-activity>
@@ -3967,14 +3966,13 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   renderFediverseActivity() {
+    const section = this.$("[data-world-fediverse-activity]");
     const container = this.$("[data-world-fediverse-items]");
     if (!container) return;
     const items = this.fediverseMentions.slice(0, 3);
+    if (section) section.hidden = !items.length;
     if (!items.length) {
-      container.innerHTML = `
-        <p class="world-rail-empty">
-          No verified public repository feedback is currently listed.
-        </p>`;
+      container.replaceChildren();
       return;
     }
     const hasSession = Boolean(readSession()?.sessionToken);

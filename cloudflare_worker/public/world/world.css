@@ -852,6 +852,10 @@ forkmesh-world {
   backdrop-filter: blur(18px);
 }
 
+.world-fediverse-activity[hidden] {
+  display: none;
+}
+
 .world-fediverse-activity > [data-world-fediverse-items] {
   display: grid;
   max-height: 185px;
