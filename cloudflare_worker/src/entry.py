@@ -3318,6 +3318,14 @@ async def _world_account_claim(env, request, data=None):
         name, account_status, node_count)
     claim["isAdmin"] = bool(
         await _has_role(env, name, "platform_administrator"))
+    # The account creation timestamp is already public on /api/accounts/{name};
+    # carrying it on the ticket lets the world badge render "joined … ago"
+    # without every avatar firing its own profile lookup.
+    try:
+        joined_at = int(rec.get("created_at") or 0)
+    except (TypeError, ValueError):
+        joined_at = 0
+    claim["joinedAt"] = max(0, joined_at)
     return claim
 
 
