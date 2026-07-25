@@ -111,11 +111,6 @@ def test_world_contains_the_initial_city_districts_without_a_clock():
         "information",
         "fountain",
         "repositories",
-        "organizations",
-        "fediverse",
-        "events",
-        "neighborhood",
-        "broadcast",
         "office",
     ):
         assert f'id: "{landmark}"' in DATA
@@ -153,11 +148,6 @@ def test_landmarks_are_spread_out_inside_the_repository_portal_perimeter():
         "information": (-40, 30),
         "fountain": (0, 0),
         "repositories": (35, 38),
-        "organizations": (29, -36),
-        "fediverse": (-31, -34),
-        "events": (-48, 5),
-        "neighborhood": (-45, -17),
-        "broadcast": (10, 46),
         "office": (45, -27),
     }
     for landmark, (x, z) in positions.items():
@@ -479,14 +469,9 @@ def test_avatar_faces_keyboard_travel_direction_without_an_entry_gate():
 
 
 def test_world_has_consent_aware_activity_events_and_media():
-    for landmark in ("events", "neighborhood", "broadcast"):
-        assert f'id: "{landmark}"' in DATA
-    for builder in (
-        "createCommunityStage",
-        "createNeighborhood",
-        "createBroadcastGarden",
-    ):
-        assert f"function {builder}" in SCENE
+    for retired_landmark in ("events", "neighborhood", "broadcast"):
+        assert f'id: "{retired_landmark}"' not in DATA
+    assert "broadcast: createBroadcastGarden" not in SCENE
     assert "AVAILABILITY_OPTIONS" in DATA
     assert "ACTIVITY_OPTIONS" in DATA
     for category in (
@@ -634,7 +619,7 @@ def test_focus_music_catalog_manifest_and_bundles_are_complete_and_lightweight()
     assert max(record["durationSeconds"] for record in manifest_tracks) >= 9 * 60
 
 
-def test_focus_music_is_explicit_local_looped_playback_without_polling():
+def test_focus_music_is_local_looped_playback_without_polling():
     for selector in (
         "data-world-focus-track",
         "data-world-focus-play",
@@ -645,8 +630,8 @@ def test_focus_music_is_explicit_local_looped_playback_without_polling():
         "data-world-focus-now",
     ):
         assert selector in APP
-    assert "Heavenly Loop is selected by default" in APP
-    assert "music never starts until you press Play" in APP
+    assert "Three lightweight tracks ship with ForkMesh." in APP
+    assert "The selected loop starts automatically" in APP
     assert "focusMusicTrackId: DEFAULT_FOCUS_MUSIC_TRACK_ID" in APP
     assert "focusMusicVolume: DEFAULT_FOCUS_MUSIC_VOLUME" in APP
     assert "focusMusicMuted: false" in APP
@@ -675,7 +660,7 @@ def test_focus_music_is_explicit_local_looped_playback_without_polling():
             "\n  handleVisibility", APP.index("  async bootstrap()")
         )
     ]
-    assert "playFocusMusic(" not in bootstrap
+    assert "void this.playFocusMusic({ autoplay: true })" in bootstrap
 
 
 def test_join_cues_are_country_specific_local_opt_in_and_rate_limited():
@@ -1570,8 +1555,6 @@ def test_world_has_no_pale_plaza_and_places_trees_deterministically_clear_of_use
     assert "pointInsideBounds(x, z, cabinetBounds)" in SCENE
     assert "pointInsideBounds(x, z, durableBounds)" in SCENE
     assert "TREE_MIN_SPACING" in SCENE
-    assert 'treeField.name = "world-tree-field"' in SCENE
-    assert "treeField.userData.treeCount = treeLayout.length" in SCENE
     assert "const radius = 20 + (index % 7) * 2.25" not in SCENE
 
 
@@ -1650,7 +1633,8 @@ def test_system_capacity_scene_combines_service_limits_and_database_rows():
     assert "rowCount > 1" in SCENE
     assert ".slice(0, 128)" in SCENE
     assert "visibleTableCount" in SCENE
-    assert "system-capacity-table-legend" in SCENE
+    assert "system-capacity-row-count:" in SCENE
+    assert "system-capacity-table-name:" in SCENE
     assert "metricsAvailable" in SCENE
     assert "updateSystemCapacity," in SCENE
 

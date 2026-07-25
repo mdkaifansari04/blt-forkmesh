@@ -37,6 +37,10 @@ const FIRST_PERSON_PITCH_MIN = -1.1;
 const FIRST_PERSON_PITCH_MAX = 1.1;
 const REPOSITORY_FIRST_PERSON_DISTANCE = 5.5;
 const REPOSITORY_FIRST_PERSON_PITCH = -0.08;
+const OFFICE_WIDTH = 17;
+const OFFICE_DEPTH = 12;
+const OFFICE_HEIGHT = 7;
+const OFFICE_FRONT_Z = 6;
 const LIGHT_LEVEL_MIN = 40;
 const LIGHT_LEVEL_MAX = 140;
 const LIGHT_LEVEL_DEFAULT = 100;
@@ -136,7 +140,9 @@ const LOCAL_ENVIRONMENT_OVERLAYS = Object.freeze({
   },
 });
 const DAYLIGHT_ENVIRONMENT = Object.freeze({
-  background: "#9ed2bd",
+  // Keep the far overview visually continuous with the ground. The former
+  // pale sky read as a hazy cover when the whole world was zoomed out.
+  background: "#174434",
   fog: "#9bc6b5",
   hemiSky: "#d8fff1",
   hemiGround: "#25493a",
@@ -1782,32 +1788,26 @@ function createMirrorServerCabinet(THREE, node, id) {
   group.add(rearPanel);
 
   const integrity = String(node?.integrity || "unknown").toLowerCase();
-  const statusColors = [
-    online ? "#73f0ad" : "#71837a",
-    node?.cloneAvailable === true ? "#77d9ff" : online ? "#f7c96b" : "#71837a",
-    integrity === "ok"
-      ? "#73f0ad"
-      : integrity === "rejected" || integrity === "degraded"
-        ? "#ff7e88"
-        : integrity === "healing"
-          ? "#f7c96b"
-          : "#71837a",
-  ];
-  const statusLights = new THREE.Group();
-  statusColors.forEach((color, index) => {
-    const light = new THREE.Mesh(
-      new THREE.SphereGeometry(0.075, 12, 10),
-      makeMaterial(THREE, color, {
-        emissive: color,
-        emissiveIntensity: online ? 1.25 : 0.25,
-        metalness: 0.22,
-        roughness: 0.26,
-      }),
-    );
-    light.position.set(-0.24 + index * 0.24, 3.08, 0.76);
-    statusLights.add(light);
-  });
-  group.add(statusLights);
+  const statusColor =
+    integrity === "rejected" || integrity === "degraded"
+      ? "#ff7e88"
+      : integrity === "healing" || (online && node?.cloneAvailable !== true)
+        ? "#f7c96b"
+        : online
+          ? "#73f0ad"
+          : "#71837a";
+  const statusLight = new THREE.Mesh(
+    new THREE.SphereGeometry(0.12, 14, 10),
+    makeMaterial(THREE, statusColor, {
+      emissive: statusColor,
+      emissiveIntensity: online ? 1.4 : 0.25,
+      metalness: 0.22,
+      roughness: 0.26,
+    }),
+  );
+  // A single status lamp sits on the cabinet roof; its color is the status.
+  statusLight.position.set(0, 3.43, 0);
+  group.add(statusLight);
 
   const vent = new THREE.Mesh(
     new THREE.BoxGeometry(1.42, 0.26, 0.05),
@@ -1818,7 +1818,7 @@ function createMirrorServerCabinet(THREE, node, id) {
   );
   vent.position.set(0, 0.22, 0.75);
   group.add(vent);
-  group.userData.signalRing = statusLights.children[0];
+  group.userData.signalRing = statusLight;
   group.userData.online = online;
   group.userData.dataKey = nodeDataKey(node);
   group.userData.nodeRecord = { ...node };
@@ -2517,16 +2517,6 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
   portal.userData.legacyPortalHidden = true;
   group.add(portal);
 
-  addSectionPlaque(
-    THREE,
-    group,
-    position,
-    "REPOSITORIES",
-    "perimeter portals · 3D size sunbursts",
-    "#77d9ff",
-    5.2,
-  );
-
   group.position.set(...position);
   group.userData.landmark = "repositories";
   group.userData.fileMeshes = files;
@@ -2983,6 +2973,9 @@ function createBroadcastGarden(THREE, position, interactive, animated) {
 
 function createForkMeshOffice(THREE, position, interactive, animated) {
   const group = new THREE.Group();
+  const wallThickness = 0.35;
+  const doorWidth = 2.4;
+  const doorHeight = 4.4;
   const concrete = makeMaterial(THREE, "#18231f", {
     metalness: 0.08,
     roughness: 0.88,
@@ -3005,50 +2998,90 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
     emissiveIntensity: 0.85,
     roughness: 0.4,
   });
+  const doorMaterial = makeMaterial(THREE, "#245845", {
+    metalness: 0.34,
+    roughness: 0.5,
+  });
+  const keypadMaterial = makeMaterial(THREE, "#123b2c", {
+    emissive: "#31b978",
+    emissiveIntensity: 0.28,
+    metalness: 0.58,
+    roughness: 0.36,
+  });
 
   const slab = new THREE.Mesh(
-    new THREE.BoxGeometry(8.4, 0.46, 7.4),
+    new THREE.BoxGeometry(OFFICE_WIDTH, 0.46, OFFICE_DEPTH),
     concrete,
   );
   slab.position.y = 0.23;
   group.add(slab);
 
   const rearWall = new THREE.Mesh(
-    new THREE.BoxGeometry(8.4, 5.7, 0.36),
+    new THREE.BoxGeometry(OFFICE_WIDTH, OFFICE_HEIGHT, wallThickness),
     concrete,
   );
-  rearWall.position.set(0, 3.05, -3.45);
+  rearWall.position.set(
+    0,
+    OFFICE_HEIGHT / 2,
+    -OFFICE_FRONT_Z + wallThickness / 2,
+  );
   group.add(rearWall);
 
-  for (const x of [-4.02, 4.02]) {
+  for (const x of [
+    -OFFICE_WIDTH / 2 + wallThickness / 2,
+    OFFICE_WIDTH / 2 - wallThickness / 2,
+  ]) {
     const sideWall = new THREE.Mesh(
-      new THREE.BoxGeometry(0.36, 5.7, 7.1),
+      new THREE.BoxGeometry(wallThickness, OFFICE_HEIGHT, OFFICE_DEPTH),
       concrete,
     );
-    sideWall.position.set(x, 3.05, 0);
+    sideWall.position.set(x, OFFICE_HEIGHT / 2, 0);
     group.add(sideWall);
-    const frontColumn = new THREE.Mesh(
-      new THREE.BoxGeometry(0.42, 6.3, 0.42),
-      structure,
-    );
-    frontColumn.position.set(x, 3.25, 3.3);
-    group.add(frontColumn);
   }
 
   const roof = new THREE.Mesh(
-    new THREE.BoxGeometry(8.7, 0.38, 7.5),
+    new THREE.BoxGeometry(OFFICE_WIDTH, 0.38, OFFICE_DEPTH),
     structure,
   );
-  roof.position.y = 6.05;
+  roof.position.y = OFFICE_HEIGHT - 0.19;
   group.add(roof);
 
-  for (const x of [-2.9, 2.9]) {
-    const window = new THREE.Mesh(
-      new THREE.BoxGeometry(1.9, 3.7, 0.12),
+  const frontZ = OFFICE_FRONT_Z - wallThickness / 2;
+  const frontBottom = new THREE.Mesh(
+    new THREE.BoxGeometry(OFFICE_WIDTH, 0.62, wallThickness),
+    concrete,
+  );
+  frontBottom.position.set(0, 0.31, frontZ);
+  group.add(frontBottom);
+  const frontTop = new THREE.Mesh(
+    new THREE.BoxGeometry(OFFICE_WIDTH, 1.18, wallThickness),
+    concrete,
+  );
+  frontTop.position.set(0, OFFICE_HEIGHT - 0.59, frontZ);
+  group.add(frontTop);
+
+  const windowWidth = (OFFICE_WIDTH - doorWidth - 2.7) / 2;
+  const windowX = doorWidth / 2 + 0.55 + windowWidth / 2;
+  for (const x of [-windowX, windowX]) {
+    const windowPane = new THREE.Mesh(
+      new THREE.BoxGeometry(windowWidth, 4.8, 0.12),
       glass,
     );
-    window.position.set(x, 3.15, 3.34);
-    group.add(window);
+    windowPane.position.set(x, 3.35, OFFICE_FRONT_Z - 0.03);
+    group.add(windowPane);
+  }
+  for (const x of [
+    -OFFICE_WIDTH / 2 + wallThickness / 2,
+    -doorWidth / 2 - 0.28,
+    doorWidth / 2 + 0.28,
+    OFFICE_WIDTH / 2 - wallThickness / 2,
+  ]) {
+    const mullion = new THREE.Mesh(
+      new THREE.BoxGeometry(0.34, OFFICE_HEIGHT - 0.62, 0.42),
+      structure,
+    );
+    mullion.position.set(x, OFFICE_HEIGHT / 2, frontZ);
+    group.add(mullion);
   }
 
   const reception = new THREE.Mesh(
@@ -3088,7 +3121,7 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
     new THREE.BoxGeometry(3.5, 1.65, 0.14),
     glass,
   );
-  wallDisplay.position.set(1.6, 3.55, -3.22);
+  wallDisplay.position.set(1.6, 3.55, -OFFICE_FRONT_Z + 0.28);
   group.add(wallDisplay);
 
   for (const x of [-2.55, 0, 2.55]) {
@@ -3096,7 +3129,7 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
       new THREE.BoxGeometry(1.2, 0.08, 0.22),
       warm,
     );
-    light.position.set(x, 5.72, 0.25);
+    light.position.set(x, OFFICE_HEIGHT - 0.3, 0.25);
     group.add(light);
   }
 
@@ -3113,40 +3146,83 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
     context.fillText("FORKMESH OFFICE", 512, 96);
   });
   const sign = new THREE.Mesh(
-    new THREE.PlaneGeometry(6.4, 1.2),
+    new THREE.PlaneGeometry(8.2, 1.35),
     new THREE.MeshBasicMaterial({
       map: signTexture,
       transparent: false,
       toneMapped: false,
     }),
   );
-  sign.position.set(0, 6.85, 3.73);
+  sign.position.set(0, OFFICE_HEIGHT + 0.9, OFFICE_FRONT_Z + 0.2);
   group.add(sign);
 
-  const enterTexture = canvasTexture(THREE, 768, 160, (context) => {
-    context.fillStyle = "#071712";
-    context.fillRect(0, 0, 768, 160);
-    context.strokeStyle = "#9ef7c6";
-    context.lineWidth = 8;
-    context.strokeRect(6, 6, 756, 148);
-    context.textAlign = "center";
-    context.textBaseline = "middle";
-    context.font = '800 42px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillStyle = "#d9ffea";
-    context.fillText("ENTER FORKMESH OFFICE · E", 384, 80);
-  });
-  const enterPlaque = new THREE.Mesh(
-    new THREE.PlaneGeometry(4.8, 1.0),
-    new THREE.MeshBasicMaterial({ map: enterTexture, toneMapped: false }),
+  const doorPivot = new THREE.Group();
+  doorPivot.name = "forkmesh-office-door-pivot";
+  doorPivot.position.set(-doorWidth / 2, 0, OFFICE_FRONT_Z + 0.03);
+  const door = new THREE.Mesh(
+    new THREE.BoxGeometry(doorWidth, doorHeight, 0.18),
+    doorMaterial,
   );
-  enterPlaque.name = "forkmesh-office-enter-plaque";
-  enterPlaque.position.set(0, 1.05, 3.78);
-  enterPlaque.userData.officeEnter = true;
-  group.add(enterPlaque);
+  door.name = "forkmesh-office-door";
+  door.position.set(doorWidth / 2, doorHeight / 2 + 0.34, 0);
+  door.userData.officeEnter = true;
+  doorPivot.add(door);
+  const handle = new THREE.Mesh(
+    new THREE.SphereGeometry(0.1, 12, 8),
+    warm,
+  );
+  handle.position.set(doorWidth - 0.28, doorHeight / 2 + 0.28, 0.12);
+  handle.userData.officeEnter = true;
+  doorPivot.add(handle);
+  group.add(doorPivot);
+
+  const keypad = new THREE.Group();
+  keypad.name = "forkmesh-office-keypad";
+  keypad.position.set(doorWidth / 2 + 0.72, 2.05, OFFICE_FRONT_Z + 0.13);
+  const keypadBody = new THREE.Mesh(
+    new THREE.BoxGeometry(0.58, 1.02, 0.2),
+    keypadMaterial,
+  );
+  keypad.add(keypadBody);
+  const keypadLight = new THREE.Mesh(
+    new THREE.BoxGeometry(0.36, 0.12, 0.05),
+    makeMaterial(THREE, "#63e6a5", {
+      emissive: "#31b978",
+      emissiveIntensity: 1.8,
+      metalness: 0.08,
+    }),
+  );
+  keypadLight.position.set(0, 0.38, 0.13);
+  keypad.add(keypadLight);
+  for (let index = 0; index < 12; index += 1) {
+    const button = new THREE.Mesh(
+      new THREE.BoxGeometry(0.1, 0.1, 0.04),
+      makeMaterial(THREE, "#aec9bc", {
+        emissive: "#355f4d",
+        emissiveIntensity: 0.3,
+        roughness: 0.52,
+      }),
+    );
+    const row = Math.floor(index / 3);
+    const column = index % 3;
+    button.position.set((column - 1) * 0.15, 0.18 - row * 0.16, 0.13);
+    keypad.add(button);
+  }
+  keypad.traverse((child) => {
+    if (child.isMesh) child.userData.officeAccessPanel = true;
+  });
+  group.add(keypad);
 
   group.position.set(...position);
-  group.scale.setScalar(1.35);
   group.userData.landmark = "office";
+  group.userData.officeDoorPivot = doorPivot;
+  group.userData.officeDoor = door;
+  group.userData.officeKeypad = keypad;
+  group.userData.officeKeypadBody = keypadBody;
+  group.userData.officeKeypadLight = keypadLight;
+  group.userData.officeOccupied = false;
+  group.userData.officeAvailable = true;
+  doorPivot.rotation.y = Math.PI / 2;
   group.traverse((child) => {
     if (!child.isMesh) return;
     child.userData.landmark = "office";
@@ -3156,6 +3232,7 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
   sign.castShadow = false;
   animated.push((time) => {
     terminal.material.emissiveIntensity = 0.72 + Math.sin(time * 0.002) * 0.13;
+    keypadLight.material.emissiveIntensity = 1.65 + Math.sin(time * 0.004) * 0.22;
   });
   return group;
 }
@@ -3280,9 +3357,10 @@ export function createWorldScene({
   onModeration = () => {},
   onAccountAction = () => {},
   onForkbotChat = () => {},
+  onPlayForkmeshSong = () => {},
 }) {
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color("#93c9b3");
+  scene.background = new THREE.Color("#174434");
   scene.fog = new THREE.FogExp2("#8ebaa8", 0.0085);
 
   const camera = new THREE.PerspectiveCamera(44, 1, 0.1, 240);
@@ -3383,13 +3461,27 @@ export function createWorldScene({
   arrivalPlaque.rotation.y = Math.PI;
   setShadows(arrivalPlaque);
   arrivalBox.add(arrivalPlaque);
+  const songPlaque = makeGroundPlaque(
+    THREE,
+    "PLAY FORKMESH SONG",
+    "CLICK TO PLAY · LOCAL LOOP",
+    "#9ef7c6",
+  );
+  songPlaque.name = "forkmesh-song-plaque";
+  songPlaque.position.set(4.8, 0, 15.4);
+  songPlaque.rotation.y = Math.PI;
+  songPlaque.traverse((child) => {
+    if (!child.isMesh) return;
+    child.userData.playForkmeshSong = true;
+    interactive.push(child);
+  });
+  arrivalBox.add(songPlaque);
   world.add(arrivalBox);
 
   const landmarkFactories = {
     information: createInformationBooth,
     fountain: createFountain,
     repositories: createRepositoryDistrict,
-    broadcast: createBroadcastGarden,
     office: createForkMeshOffice,
   };
   LANDMARKS.forEach((landmark) => {
@@ -3402,25 +3494,6 @@ export function createWorldScene({
     landmarkObjects.set(landmark.id, object);
     world.add(object);
   });
-
-  const treeColors = ["#2f8c5f", "#397655", "#4b9e68", "#27634a"];
-  const treeField = new THREE.Group();
-  treeField.name = "world-tree-field";
-  const treeLayout = deterministicTreeLayout();
-  treeLayout.forEach((placement, index) => {
-    const tree = createTree(
-      THREE,
-      placement.x,
-      placement.z,
-      placement.scale,
-      treeColors[placement.colorIndex],
-    );
-    tree.name = `world-tree:${index}`;
-    tree.userData.worldTree = true;
-    treeField.add(tree);
-  });
-  treeField.userData.treeCount = treeLayout.length;
-  world.add(treeField);
 
   const campfire = new THREE.Group();
   campfire.position.set(8, 0, 8);
@@ -3609,10 +3682,6 @@ export function createWorldScene({
   );
   robotChest.position.set(0, 1.02, 0.53);
   forkbot.add(robotChest);
-  const chestLabel = makeLabelSprite(THREE, "FORKBOT", "CLICK TO CHAT", "#9ef7c6");
-  chestLabel.scale.set(0.76, 0.22, 1);
-  chestLabel.position.set(0, 1.02, 0.6);
-  forkbot.add(chestLabel);
   const antenna = new THREE.Mesh(
     new THREE.CylinderGeometry(0.035, 0.035, 0.42, 8),
     makeMaterial(THREE, "#77d9ff", { emissive: "#2b9eb8", emissiveIntensity: 1.2 }),
@@ -3652,24 +3721,27 @@ export function createWorldScene({
   scene.add(officeInterior);
 
   const officeFloor = new THREE.Mesh(
-    new THREE.BoxGeometry(17, 0.4, 12),
+    new THREE.BoxGeometry(OFFICE_WIDTH, 0.4, OFFICE_DEPTH),
     makeMaterial(THREE, "#15231f", { roughness: 0.9 }),
   );
   officeFloor.position.y = 0.2;
   officeFloor.receiveShadow = true;
   officeInterior.add(officeFloor);
   const officeBackWall = new THREE.Mesh(
-    new THREE.BoxGeometry(17, 7, 0.35),
+    new THREE.BoxGeometry(OFFICE_WIDTH, OFFICE_HEIGHT, 0.35),
     makeMaterial(THREE, "#18322a", { roughness: 0.84 }),
   );
-  officeBackWall.position.set(0, 3.5, -5.8);
+  officeBackWall.position.set(0, OFFICE_HEIGHT / 2, -OFFICE_FRONT_Z + 0.2);
   officeInterior.add(officeBackWall);
-  for (const x of [-8.3, 8.3]) {
+  for (const x of [
+    -OFFICE_WIDTH / 2 + 0.2,
+    OFFICE_WIDTH / 2 - 0.2,
+  ]) {
     const wall = new THREE.Mesh(
-      new THREE.BoxGeometry(0.35, 7, 12),
+      new THREE.BoxGeometry(0.35, OFFICE_HEIGHT, OFFICE_DEPTH),
       makeMaterial(THREE, "#163029", { roughness: 0.86 }),
     );
-    wall.position.set(x, 3.5, 0);
+    wall.position.set(x, OFFICE_HEIGHT / 2, 0);
     officeInterior.add(wall);
   }
   const windowMaterial = makeMaterial(THREE, "#8eeac5", {
@@ -3683,7 +3755,7 @@ export function createWorldScene({
       new THREE.BoxGeometry(2.7, 3.4, 0.08),
       windowMaterial,
     );
-    windowPane.position.set(x, 3.6, -5.58);
+    windowPane.position.set(x, 3.6, -OFFICE_FRONT_Z + 0.42);
     officeInterior.add(windowPane);
   }
   const officeTable = new THREE.Mesh(
@@ -3781,6 +3853,8 @@ export function createWorldScene({
   let diagnosticsFrameCount = 0;
   let diagnosticsRendererCalls = 0;
   let diagnosticsRendererTriangles = 0;
+  let diagnosticsLongestFrameMs = 0;
+  let diagnosticsLongFrames = 0;
   let lastMovementEmit = 0;
   let lastPosition = player.position.clone();
   let wasWalking = false;
@@ -3803,6 +3877,7 @@ export function createWorldScene({
   let keyboardMovementSpeed = PLAYER_SPEED;
   let dashTarget = null;
   let primaryPointerId = null;
+  let draggedCampfireLog = null;
   let pointerGestureMoved = false;
   let lastGestureDragged = false;
   let pinchStartDistance = 0;
@@ -3917,6 +3992,50 @@ export function createWorldScene({
     dashTarget = null;
   }
 
+  function setOfficeOccupancy({ occupied = false, available = true } = {}) {
+    const office = landmarkObjects.get("office");
+    if (!office) return { occupied: false, available: false };
+    const nextState = {
+      occupied: Boolean(occupied),
+      available: available !== false,
+    };
+    office.userData.officeOccupied = nextState.occupied;
+    office.userData.officeAvailable = nextState.available;
+
+    const doorPivot = office.userData.officeDoorPivot;
+    const doorOpen = nextState.available && !nextState.occupied;
+    if (doorPivot) doorPivot.rotation.y = doorOpen ? Math.PI / 2 : 0;
+
+    const statusColor = !nextState.available
+      ? "#f7c96b"
+      : nextState.occupied
+        ? "#ff6f7f"
+        : "#63e6a5";
+    const statusEmissive = !nextState.available
+      ? "#c67c24"
+      : nextState.occupied
+        ? "#d73b50"
+        : "#31b978";
+    const keypadLight = office.userData.officeKeypadLight;
+    if (keypadLight?.material) {
+      keypadLight.material.color.set(statusColor);
+      keypadLight.material.emissive.set(statusEmissive);
+    }
+    const keypadBody = office.userData.officeKeypadBody;
+    if (keypadBody?.material) {
+      keypadBody.material.color.set(
+        !nextState.available
+          ? "#443514"
+          : nextState.occupied
+            ? "#4b151c"
+            : "#123b2c",
+      );
+      keypadBody.material.emissive.set(statusEmissive);
+      keypadBody.material.emissiveIntensity = 0.28;
+    }
+    return { ...nextState };
+  }
+
   function nearestLandmark() {
     if (
       !["town-square", "east", "central", "west"].includes(currentSpace)
@@ -3942,7 +4061,7 @@ export function createWorldScene({
     const office = landmarkById("office");
     const officeEntranceDistance = Math.hypot(
       player.position.x - office.position[0],
-      player.position.z - (office.position[2] + 3.3),
+      player.position.z - (office.position[2] + OFFICE_FRONT_Z),
     );
     const nextOfficeState = nextOfficeZoneState(
       officeZoneState,
@@ -6145,34 +6264,49 @@ export function createWorldScene({
       node.add(label);
 
       if (isActive && !record.isPrivate) {
-        const starLabel = makeLabelSprite(
-          THREE,
-          `★ ${
-            Number.isSafeInteger(record.starCount)
-              ? record.starCount.toLocaleString("en-US")
-              : "—"
-          }`,
-          record.starred
-            ? "STARRED · CLICK TO REMOVE"
-            : Number.isSafeInteger(record.starCount)
-              ? "CLICK TO STAR"
-              : "STAR COUNT LOADING",
-          record.starred ? "#f7c96b" : "#9ef7c6",
-        );
-        starLabel.name =
-          `repository-star:${record.owner}/${record.name}`;
-        starLabel.scale.set(1.5, 0.48, 1);
-        starLabel.position.set(0, 3.5, 0.42);
-        starLabel.userData.landmark = "repositories";
-        starLabel.userData.repositoryStar = {
+        const starData = {
           owner: record.owner,
           name: record.name,
           starCount: record.starCount,
           starred: record.starred,
         };
-        starLabel.renderOrder = 8;
+        const starButton = new THREE.Mesh(
+          new THREE.OctahedronGeometry(0.3, 1),
+          makeMaterial(THREE, record.starred ? "#f7c96b" : "#9ef7c6", {
+            emissive: record.starred ? "#d69721" : "#2ca76c",
+            emissiveIntensity: 1.15,
+            metalness: 0.58,
+            roughness: 0.22,
+          }),
+        );
+        starButton.name = `repository-star-button:${record.owner}/${record.name}`;
+        starButton.position.set(-0.38, 3.5, 0.42);
+        starButton.userData.landmark = "repositories";
+        starButton.userData.repositoryStar = starData;
+        node.add(starButton);
+        interactive.push(starButton);
+        const countBubble = new THREE.Mesh(
+          new THREE.SphereGeometry(0.34, 18, 12),
+          makeMaterial(THREE, "#173a40", {
+            emissive: "#1b7180",
+            emissiveIntensity: 0.65,
+            metalness: 0.3,
+          }),
+        );
+        countBubble.position.set(0.38, 3.5, 0.42);
+        node.add(countBubble);
+        const starLabel = makeLabelSprite(
+          THREE,
+          Number.isSafeInteger(record.starCount)
+            ? record.starCount.toLocaleString("en-US")
+            : "…",
+          record.starred ? "STARRED · CLICK STAR" : "CLICK STAR",
+          "#f1fff6",
+        );
+        starLabel.name = `repository-star-count:${record.owner}/${record.name}`;
+        starLabel.scale.set(0.72, 0.28, 1);
+        starLabel.position.set(0.38, 3.5, 0.76);
         node.add(starLabel);
-        interactive.push(starLabel);
       }
 
       const base = new THREE.Mesh(baseGeometry, materials.base);
@@ -6247,6 +6381,7 @@ export function createWorldScene({
     removeGeneratedLayer(previousMount, previousLayer, interactive);
     world.userData.repositorySizeLayer = null;
     world.userData.repositorySizeMount = null;
+    world.userData.repositorySizeLoadingTail = null;
     repositoryPortals.forEach((record) => {
       if (record.group.userData.repositoryFace) {
         record.group.userData.repositoryFace.visible = true;
@@ -6300,6 +6435,41 @@ export function createWorldScene({
     const focusSize = Math.max(1, Number(map.node?.size) || totalSize);
     const sizeMeshes = [];
     let labelCount = 0;
+
+    // A small comet-like tail lives in the gap between the hub (the current
+    // folder) and the first directory ring. It is only visible while a folder
+    // or file request is in flight, so the map itself stays readable.
+    const loadingTail = new THREE.Group();
+    loadingTail.name = "repository-size-map-loading-tail";
+    [
+      { offset: 0, arc: 0.22, opacity: 1 },
+      { offset: -0.27, arc: 0.16, opacity: 0.7 },
+      { offset: -0.49, arc: 0.1, opacity: 0.42 },
+    ].forEach(({ offset, arc, opacity }) => {
+      const trail = new THREE.Mesh(
+        new THREE.TorusGeometry(innerRadius + 0.12, 0.035, 7, 16, arc),
+        new THREE.MeshBasicMaterial({
+          color: "#fff1ad",
+          transparent: true,
+          opacity,
+          toneMapped: false,
+        }),
+      );
+      trail.rotation.z = offset;
+      trail.position.z = 0.3;
+      loadingTail.add(trail);
+    });
+    const spark = new THREE.Mesh(
+      new THREE.SphereGeometry(0.075, 12, 8),
+      makeMaterial(THREE, "#ffffff", {
+        emissive: "#92f4ff",
+        emissiveIntensity: 2.2,
+      }),
+    );
+    spark.position.set(innerRadius + 0.12, 0, 0.31);
+    loadingTail.add(spark);
+    loadingTail.visible = Boolean(world.userData.repositorySizeLoading);
+    layer.add(loadingTail);
 
     const perimeter = new THREE.Mesh(
       new THREE.TorusGeometry(outerRadius + 0.1, 0.055, 8, 72),
@@ -6449,6 +6619,7 @@ export function createWorldScene({
     mount.add(layer);
     world.userData.repositorySizeLayer = layer;
     world.userData.repositorySizeMount = mount;
+    world.userData.repositorySizeLoadingTail = loadingTail;
     mount.userData.repositorySizeLayer = layer;
     mount.userData.repositorySizeMeshes = sizeMeshes;
     mount.userData.repositorySizeFocus = map.path;
@@ -6467,6 +6638,12 @@ export function createWorldScene({
     if (districtPortal.userData.relationshipLines) {
       districtPortal.userData.relationshipLines.visible = false;
     }
+  }
+
+  function setRepositorySizeLoading(loading = false) {
+    world.userData.repositorySizeLoading = Boolean(loading);
+    const tail = world.userData.repositorySizeLoadingTail;
+    if (tail) tail.visible = Boolean(loading);
   }
 
   function updateRepositoryGraph(entries = [], entities = []) {
@@ -6984,6 +7161,17 @@ export function createWorldScene({
       if (touchPointers.size === 2) beginPinchIfReady();
     }
     if (primaryPointerId !== null) return;
+    pointerCoordinates(event);
+    raycaster.setFromCamera(pointer, camera);
+    const logHit = raycaster
+      .intersectObjects(interactive, false)
+      .find(({ object }) => object.visible && object.userData?.campfireLog);
+    if (logHit) {
+      draggedCampfireLog = logHit.object;
+      draggedCampfireLog.userData.campfireCarried = true;
+      draggedCampfireLog.material.emissive?.set?.("#d88a43");
+      draggedCampfireLog.material.emissiveIntensity = 0.5;
+    }
     primaryPointerId = event.pointerId;
     pointerStart.set(event.clientX, event.clientY);
     pointerLast.copy(pointerStart);
@@ -7022,6 +7210,18 @@ export function createWorldScene({
       }
     }
     if (event.pointerId !== primaryPointerId) return;
+    if (draggedCampfireLog) {
+      const point = groundPointAt(event.clientX, event.clientY);
+      if (point) {
+        draggedCampfireLog.position.set(
+          point.x - campfire.position.x,
+          0.34,
+          point.z - campfire.position.z,
+        );
+      }
+      pointerGestureMoved = true;
+      return;
+    }
     const currentPointer = new THREE.Vector2(event.clientX, event.clientY);
     const movedDistance = pointerStart.distanceTo(currentPointer);
     const canRotate =
@@ -7086,6 +7286,19 @@ export function createWorldScene({
     primaryPointerId = null;
     renderer.domElement.dataset.dragging =
       touchPointers.size ? "true" : "false";
+    if (draggedCampfireLog) {
+      const droppedLog = draggedCampfireLog;
+      draggedCampfireLog = null;
+      const point = groundPointAt(event.clientX, event.clientY);
+      if (point && Math.hypot(point.x - campfire.position.x, point.z - campfire.position.z) < 1.05) {
+        droppedLog.visible = false;
+        droppedLog.userData.campfireCarried = false;
+        fireLevel = Math.min(2.4, fireLevel + 0.28);
+      }
+      lastGestureDragged = true;
+      pointerGestureMoved = false;
+      return;
+    }
     const suppressTap =
       cancelled ||
       wasPinching ||
@@ -7165,8 +7378,26 @@ export function createWorldScene({
       onForkbotChat();
       return;
     }
+    if (hit?.object?.userData?.playForkmeshSong) {
+      onPlayForkmeshSong();
+      return;
+    }
+    if (hit?.object?.userData?.officeAccessPanel) {
+      const office = landmarkObjects.get("office");
+      onOfficeEnter({
+        source: "keypad",
+        occupied: Boolean(office?.userData?.officeOccupied),
+        available: office?.userData?.officeAvailable !== false,
+      });
+      return;
+    }
     if (hit?.object?.userData?.officeEnter) {
-      onOfficeEnter();
+      const office = landmarkObjects.get("office");
+      onOfficeEnter({
+        source: "door",
+        occupied: Boolean(office?.userData?.officeOccupied),
+        available: office?.userData?.officeAvailable !== false,
+      });
       return;
     }
     if (hit?.object?.userData?.nodeCabinet) {
@@ -7355,8 +7586,11 @@ export function createWorldScene({
 
   function animate(time) {
     if (!running || disposed) return;
-    const delta = clamp((time - lastFrame) / 1000, 0, 0.05);
+    const rawFrameMs = Math.max(0, time - lastFrame);
+    const delta = clamp(rawFrameMs / 1000, 0, 0.05);
     lastFrame = time;
+    diagnosticsLongestFrameMs = Math.max(diagnosticsLongestFrameMs, rawFrameMs);
+    if (rawFrameMs > 34) diagnosticsLongFrames += 1;
     // Only the town scene walks the shared avatar and its neighbours; inside an
     // Office meeting the seated participant is driven instead (PR #47).
     if (officeSceneMode === "town") {
@@ -7365,6 +7599,14 @@ export function createWorldScene({
       updateForkbot(delta, time);
     } else if (officeSceneMode === "meeting") {
       walkOfficeParticipant(delta, time);
+    }
+    const repositoryLoadingTail = world.userData.repositorySizeLoadingTail;
+    if (repositoryLoadingTail?.visible) {
+      repositoryLoadingTail.rotation.z = time * 0.008;
+      const spark = repositoryLoadingTail.children.at(-1);
+      if (spark?.material?.emissive) {
+        spark.material.emissiveIntensity = 1.45 + Math.sin(time * 0.02) * 0.75;
+      }
     }
     if (!reducedMotion) {
       nodeInfrastructure.forEach((pylon, id) => {
@@ -7549,11 +7791,17 @@ export function createWorldScene({
         : 0;
     diagnosticsSampleAt = sampleNow;
     diagnosticsFrameCount = 0;
+    const longestFrameMs = diagnosticsLongestFrameMs;
+    const longFrames = diagnosticsLongFrames;
+    diagnosticsLongestFrameMs = 0;
+    diagnosticsLongFrames = 0;
     return {
       fps,
       frameTimeMs,
       rendererCalls: diagnosticsRendererCalls,
       rendererTriangles: diagnosticsRendererTriangles,
+      longestFrameMs,
+      longFrames,
       paused: !running,
     };
   }
@@ -7605,6 +7853,7 @@ export function createWorldScene({
     enterOffice,
     enterOfficeLobby,
     enterOfficeMeeting,
+    setOfficeOccupancy,
     setOfficeParticipants,
     setOfficeSeatState,
     showOfficeBubble,
@@ -7637,6 +7886,7 @@ export function createWorldScene({
     updateRepositoryCatalog,
     updateRepositoryGraph,
     updateRepositorySizeMap,
+    setRepositorySizeLoading,
     playEmote,
     showChatBubble,
     greetForkbot,

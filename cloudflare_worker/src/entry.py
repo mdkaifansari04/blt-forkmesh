@@ -73,11 +73,16 @@ CHAT_CHANNEL_TICKET_TTL_MS = 60 * 1000
 CHAT_CHANNEL_DO_RE = re.compile(
     r"^/api/chat/channels/([0-9a-f]{32})/v([1-9][0-9]*)/(ws|revoke)$")
 OFFICE_MEETING_TICKET_TTL_MS = 60 * 1000
+OFFICE_ENTRY_TICKET_TTL_MS = 5 * 60 * 1000
+OFFICE_ENTRY_REQUEST_MAX_BYTES = 128
+OFFICE_ENTRY_RATE_WINDOW_MS = 60 * 1000
+OFFICE_ENTRY_RATE_MAX_PER_WINDOW = 8
+OFFICE_ENTRY_RATE_BUCKETS_MAX = 2048
 OFFICE_CHANNEL_WS_RE = re.compile(
     r"^/api/world/office/channels/([0-9a-f]{32})/ws/?$")
 OFFICE_INTERNAL_RE = re.compile(
     r"^/api/world/office/(world-general|[0-9a-f]{32})/"
-    r"v([1-9][0-9]*)/(ws|revoke)$")
+    r"v([1-9][0-9]*)/(ws|revoke|status|entry)$")
 LOCAL_DEMO_EMAIL = "demo@forkmesh.local"
 LOCAL_DEMO_NAME = "demo-node"
 LOCAL_DEMO_PASSWORD = "forkmesh-demo"
@@ -3399,6 +3404,108 @@ async def _chat_channel_passphrase(env, channel_id, key_version):
     return bytes(Uint8Array.new(digest).to_py()).hex()
 
 
+def _office_entry_ticket(env):
+    """Issue a short-lived proof that the Office door policy was satisfied."""
+    expires = int(Date.now()) + OFFICE_ENTRY_TICKET_TTL_MS
+    nonce = new_world_peer_id()
+    canonical = ".".join((
+        "v1",
+        "world-general",
+        str(expires),
+        nonce,
+    ))
+    signature = hmac.new(
+        (_require_data_secret(env) + ":office-entry-ticket-v1").encode(),
+        canonical.encode(),
+        "sha256",
+    ).hexdigest()
+    return canonical + "." + signature
+
+
+def _office_entry_ticket_claims(env, token):
+    """Verify an Office entry proof without accepting it from a URL."""
+    raw = str(token or "")
+    if len(raw) > 256:
+        return None
+    parts = raw.split(".")
+    if len(parts) != 5:
+        return None
+    version_tag, scope, expires_raw, nonce, signature = parts
+    if version_tag != "v1" or scope != "world-general":
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,32}", nonce):
+        return None
+    if not re.fullmatch(r"[0-9a-f]{64}", signature):
+        return None
+    try:
+        expires = int(expires_raw)
+    except (TypeError, ValueError):
+        return None
+    now = int(Date.now())
+    if (
+        expires <= now
+        or expires - now > OFFICE_ENTRY_TICKET_TTL_MS
+    ):
+        return None
+    canonical = ".".join(parts[:4])
+    expected = hmac.new(
+        (_require_data_secret(env) + ":office-entry-ticket-v1").encode(),
+        canonical.encode(),
+        "sha256",
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return None
+    return {
+        "scope": scope,
+        "expires": expires,
+        "nonce": nonce,
+    }
+
+
+def _office_entry_rate_step(buckets, rate_key, now):
+    """Advance one bounded, opaque-source Office-door rate window."""
+    if (
+        not isinstance(buckets, dict)
+        or not re.fullmatch(r"[0-9a-f]{64}", str(rate_key or ""))
+    ):
+        return False, OFFICE_ENTRY_RATE_WINDOW_MS
+    now = int(now)
+    expired = []
+    for key, value in buckets.items():
+        try:
+            started = int(value[0])
+        except (TypeError, ValueError, IndexError):
+            expired.append(key)
+            continue
+        if now < started or now - started >= OFFICE_ENTRY_RATE_WINDOW_MS:
+            expired.append(key)
+    for key in expired:
+        buckets.pop(key, None)
+
+    current = buckets.get(rate_key)
+    if current is None:
+        if len(buckets) >= OFFICE_ENTRY_RATE_BUCKETS_MAX:
+            return False, OFFICE_ENTRY_RATE_WINDOW_MS
+        started = now
+        count = 1
+    else:
+        try:
+            started = int(current[0])
+            count = min(
+                OFFICE_ENTRY_RATE_MAX_PER_WINDOW + 1,
+                int(current[1]) + 1,
+            )
+        except (TypeError, ValueError, IndexError):
+            started = now
+            count = 1
+    buckets[rate_key] = (started, count)
+    if count > OFFICE_ENTRY_RATE_MAX_PER_WINDOW:
+        retry_ms = max(
+            1000, OFFICE_ENTRY_RATE_WINDOW_MS - (now - started))
+        return False, retry_ms
+    return True, 0
+
+
 def _office_meeting_ticket(env, scope, key_version, account_bi="", name=""):
     """Issue a short-lived claim for one authorized spatial meeting."""
     scope = str(scope or "").strip()
@@ -3635,14 +3742,242 @@ async def _chat_channel_socket_handler(env, request, channel_id):
     return json_response({"error": "unavailable"}, status=503)
 
 
-async def office_general_access_handler(env, request):
-    """Issue a short-lived anonymous or account-bound general meeting claim."""
+async def _office_general_room_state(
+        env, rate_key="", code_approved=None):
+    """Read occupancy or atomically ask the Office room to admit an entry."""
+    entry_request = code_approved is not None
+    action = "entry" if entry_request else "status"
+    method = "POST" if entry_request else "GET"
+    headers = {}
+    if entry_request:
+        if not re.fullmatch(r"[0-9a-f]{64}", str(rate_key)):
+            return None, json_response(
+                {"error": "office_unavailable"},
+                status=503,
+                cache_control="no-store, max-age=0, must-revalidate",
+            )
+        headers["x-forkmesh-office-rate-key"] = str(rate_key)
+        headers["x-forkmesh-office-code-approved"] = (
+            "1" if code_approved is True else "0")
+    try:
+        room_id = env.FORKMESH_OFFICE_ROOM.idFromName(
+            "office:world-general:v1")
+        room_object = env.FORKMESH_OFFICE_ROOM.get(room_id)
+        target_url = (
+            "https://forkmesh.internal/api/world/office/"
+            "world-general/v1/" + action
+        )
+        internal_request = JsRequest.new(
+            target_url,
+            to_js({"method": method, "headers": headers}),
+        )
+        response = await room_object.fetch(internal_request)
+        status = int(getattr(response, "status", 503) or 503)
+        payload = await _response_json(response)
+    except Exception:
+        return None, json_response(
+            {"error": "office_unavailable"},
+            status=503,
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    if status == 429:
+        try:
+            retry_ms = max(1000, int(payload.get("retryAfterMs") or 1000))
+        except (TypeError, ValueError):
+            retry_ms = 1000
+        return None, json_response(
+            {"error": "rate_limited", "retryAfterMs": retry_ms},
+            status=429,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={
+                "Retry-After": str(max(1, (retry_ms + 999) // 1000)),
+            },
+        )
+    if status == 403 and entry_request:
+        return None, json_response(
+            {"error": "invalid_entry_code"},
+            status=403,
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    try:
+        participant_count = int(payload.get("participantCount"))
+    except (AttributeError, TypeError, ValueError):
+        participant_count = -1
+    if (
+        status < 200
+        or status >= 300
+        or payload.get("ok") is not True
+        or participant_count < 0
+        or participant_count > world_protocol.OFFICE_MAX_CONNECTIONS
+    ):
+        return None, json_response(
+            {"error": "office_unavailable"},
+            status=503,
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    return {
+        "participantCount": participant_count,
+        "occupied": participant_count > 0,
+    }, None
+
+
+async def office_general_status_handler(env, request):
+    """Return only the general Office's authoritative live occupancy."""
     if method_name(request) != "GET":
         return json_response(
             {"error": "method_not_allowed"},
             status=405,
             cache_control="no-store, max-age=0, must-revalidate",
             extra_headers={"allow": "GET"},
+        )
+    state, error = await _office_general_room_state(env)
+    if error is not None:
+        return error
+    return json_response(
+        {
+            "ok": True,
+            "room": "general",
+            "occupied": state["occupied"],
+            "requiresCode": state["occupied"],
+        },
+        cache_control="no-store, max-age=0, must-revalidate",
+        extra_headers={"x-content-type-options": "nosniff"},
+    )
+
+
+async def office_general_entry_handler(env, request):
+    """Apply the Office door policy and mint a code-free entry proof."""
+    if method_name(request) != "POST":
+        return json_response(
+            {"error": "method_not_allowed"},
+            status=405,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"allow": "POST"},
+        )
+    if not _request_same_origin(request):
+        return json_response(
+            {"error": "origin_not_allowed"},
+            status=403,
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    try:
+        data = await bounded_json_request(
+            request, max_bytes=OFFICE_ENTRY_REQUEST_MAX_BYTES)
+    except RequestBodyTooLarge:
+        return json_response(
+            {"error": "payload_too_large"},
+            status=413,
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    except Exception:
+        return json_response(
+            {"error": "invalid_json"},
+            status=400,
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    if not isinstance(data, dict):
+        return json_response(
+            {"error": "invalid_json"},
+            status=400,
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    configured = getattr(env, "OFFICE_ENTRY_CODE", None)
+    configured_valid = (
+        isinstance(configured, str)
+        and re.fullmatch(r"[0-9]{4}", configured) is not None
+    )
+    submitted = data.get("code")
+    submitted_valid = (
+        isinstance(submitted, str)
+        and re.fullmatch(r"[0-9]{4}", submitted) is not None
+    )
+    comparison = submitted if submitted_valid else "----"
+    code_approved = bool(
+        configured_valid
+        and submitted_valid
+        and hmac.compare_digest(configured, comparison)
+    )
+    try:
+        rate_key = await blind_index(
+            env,
+            "office-entry-source-v1:"
+            + (_transient_client_address(request) or "unknown"),
+        )
+        state, error = await _office_general_room_state(
+            env, rate_key, code_approved=code_approved)
+    except Exception:
+        return json_response(
+            {"error": "office_unavailable"},
+            status=503,
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    if error is not None:
+        if (
+            int(getattr(error, "status", 0) or 0) == 403
+            and not configured_valid
+        ):
+            return json_response(
+                {"error": "office_unavailable"},
+                status=503,
+                cache_control="no-store, max-age=0, must-revalidate",
+            )
+        return error
+    try:
+        token = _office_entry_ticket(env)
+        claims = _office_entry_ticket_claims(env, token) or {}
+        expires = int(claims.get("expires") or 0)
+    except Exception:
+        return json_response(
+            {"error": "office_unavailable"},
+            status=503,
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    if not expires:
+        return json_response(
+            {"error": "office_unavailable"},
+            status=503,
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    return json_response(
+        {
+            "ok": True,
+            "room": "general",
+            "occupied": state["occupied"],
+            "entryTicket": token,
+            "expiresAt": expires,
+        },
+        cache_control="no-store, max-age=0, must-revalidate",
+        extra_headers={"x-content-type-options": "nosniff"},
+    )
+
+
+async def office_general_access_handler(env, request):
+    """Issue an account-bound meeting claim after validating door entry."""
+    if method_name(request) != "GET":
+        return json_response(
+            {"error": "method_not_allowed"},
+            status=405,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"allow": "GET"},
+        )
+    try:
+        entry_claims = _office_entry_ticket_claims(
+            env, request.headers.get("x-forkmesh-office-entry") or "")
+    except Exception:
+        return json_response(
+            {"error": "office_unavailable"},
+            status=503,
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    if (
+        not entry_claims
+        or entry_claims.get("scope") != "world-general"
+    ):
+        return json_response(
+            {"error": "office_entry_required"},
+            status=401,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"x-content-type-options": "nosniff"},
         )
     account_bi = ""
     name = ""
@@ -29928,6 +30263,16 @@ class Default(WorkerEntrypoint):
             return await world_moderation_handler(self.env, request)
 
         if url.path in (
+                "/api/world/office/general/status",
+                "/api/world/office/general/status/"):
+            return await office_general_status_handler(self.env, request)
+
+        if url.path in (
+                "/api/world/office/general/entry",
+                "/api/world/office/general/entry/"):
+            return await office_general_entry_handler(self.env, request)
+
+        if url.path in (
                 "/api/world/office/general/access",
                 "/api/world/office/general/access/"):
             return await office_general_access_handler(self.env, request)
@@ -31654,6 +31999,56 @@ class ForkMeshOfficeRoom(DurableObject):
         if action == "revoke" and method_name(request) == "POST":
             self._close_all(1008, "room access revoked")
             return json_response({"ok": True})
+        if (
+            action in ("status", "entry")
+            and (
+                (action == "status" and method_name(request) == "GET")
+                or (action == "entry" and method_name(request) == "POST")
+            )
+        ):
+            if action == "entry":
+                rate_key = (
+                    request.headers.get("x-forkmesh-office-rate-key") or "")
+                approved_raw = (
+                    request.headers.get(
+                        "x-forkmesh-office-code-approved") or "")
+                if approved_raw not in ("0", "1"):
+                    return json_response({"error": "not_found"}, status=404)
+                buckets = getattr(self, "_entry_rate_buckets", None)
+                if not isinstance(buckets, dict):
+                    buckets = {}
+                    self._entry_rate_buckets = buckets
+                admitted, retry_ms = _office_entry_rate_step(
+                    buckets, rate_key, int(Date.now()))
+                if not admitted:
+                    return json_response(
+                        {
+                            "error": "rate_limited",
+                            "retryAfterMs": retry_ms,
+                        },
+                        status=429,
+                        cache_control=(
+                            "no-store, max-age=0, must-revalidate"),
+                    )
+            participant_count = len(self._live_sockets(cleanup=True))
+            if (
+                action == "entry"
+                and participant_count > 0
+                and approved_raw != "1"
+            ):
+                return json_response(
+                    {"error": "entry_code_required"},
+                    status=403,
+                    cache_control="no-store, max-age=0, must-revalidate",
+                )
+            return json_response(
+                {
+                    "ok": True,
+                    "participantCount": participant_count,
+                    "occupied": participant_count > 0,
+                },
+                cache_control="no-store, max-age=0, must-revalidate",
+            )
         if (
             action != "ws"
             or method_name(request) != "GET"

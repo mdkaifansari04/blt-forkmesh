@@ -12,6 +12,8 @@ const THREE_MODULE_PATH = path.resolve(
   "three.module.min.js",
 );
 const CHAT_HTML_PATH = path.resolve(__dirname, "..", "..", "public", "chat.html");
+const OFFICE_ENTRANCE_POSITION = [45, 0.38, -20.8];
+const OFFICE_ENTRY_TICKET = "playwright-office-entry-ticket";
 
 const PRIVATE_SETTINGS = {
   theme: "world",
@@ -51,6 +53,9 @@ async function prepareWorldPage(
     chatChannelStatus = 200,
     ticketAuthenticated = true,
     systemCapacityTables = [],
+    officeOccupied = false,
+    officeEntryCode = "2468",
+    officeEntryRequests = [],
   } = {},
 ) {
   let mentionState = "review";
@@ -435,7 +440,44 @@ async function prepareWorldPage(
             : url.pathname === "/api/repositories"
               ? { repositories: [] }
               : {};
-    if (accountFixture && url.pathname === "/api/accounts/signup") {
+    if (url.pathname === "/api/world/office/general/status") {
+      if (route.request().method() !== "GET") {
+        status = 405;
+        body = { ok: false, error: "method_not_allowed" };
+      } else {
+        body = { ok: true, occupied: Boolean(officeOccupied) };
+      }
+    } else if (url.pathname === "/api/world/office/general/entry") {
+      let requestBody = {};
+      try {
+        requestBody = route.request().postDataJSON();
+      } catch (_) {}
+      officeEntryRequests.push({
+        method: route.request().method(),
+        url: route.request().url(),
+        headers: route.request().headers(),
+        body: requestBody,
+      });
+      const allowed =
+        route.request().method() === "POST" &&
+        (!officeOccupied || requestBody.code === officeEntryCode);
+      if (!allowed) {
+        status = route.request().method() === "POST" ? 403 : 405;
+        body = {
+          ok: false,
+          occupied: Boolean(officeOccupied),
+          error:
+            status === 403 ? "invalid_office_code" : "method_not_allowed",
+        };
+      } else {
+        body = {
+          ok: true,
+          occupied: Boolean(officeOccupied),
+          entryTicket: OFFICE_ENTRY_TICKET,
+          expiresAt: FIXED_NOW + 60_000,
+        };
+      }
+    } else if (accountFixture && url.pathname === "/api/accounts/signup") {
       body = {
         ok: true,
         nodeName: "world-user",
@@ -910,6 +952,33 @@ async function waitForWorldReady(page) {
   await page.evaluate(() => document.fonts?.ready);
 }
 
+async function moveToOfficeEntrance(page, { unpause = false } = {}) {
+  await page.locator("forkmesh-world").evaluate(
+    (shell, { position, shouldUnpause }) => {
+      if (shouldUnpause) shell.world.setPaused(false);
+      shell.world.player.position.set(...position);
+    },
+    {
+      position: OFFICE_ENTRANCE_POSITION,
+      shouldUnpause: unpause,
+    },
+  );
+}
+
+async function officeFacadeState(page) {
+  return page.locator("forkmesh-world").evaluate((shell) => {
+    const door = shell.world.scene.getObjectByName(
+      "forkmesh-office-door-pivot",
+    );
+    const keypad = shell.world.scene.getObjectByName("forkmesh-office-keypad");
+    const statusLight = keypad?.children?.[1] || null;
+    return {
+      doorRotation: Number((door?.rotation?.y || 0).toFixed(3)),
+      keypadColor: statusLight?.material?.color?.getHexString?.() || "",
+    };
+  });
+}
+
 async function openWorldPullReview(page, number = 44) {
   await waitForWorld(page);
   await page.waitForFunction(() => {
@@ -1170,9 +1239,7 @@ test("ForkMesh Office opens encrypted chat only after explicit entry", async ({
   await page.locator("[data-world-office-focus]").first().click();
   expect(chatSocketURLs).toHaveLength(globalChatSocketCount);
 
-  await page.locator("forkmesh-world").evaluate((shell) => {
-    shell.world.player.position.set(11, 0.38, -17.7);
-  });
+  await moveToOfficeEntrance(page);
   const entry = page.locator("[data-world-office-enter]");
   await expect(entry).toBeVisible();
   expect(chatSocketURLs).toHaveLength(globalChatSocketCount);
@@ -1200,6 +1267,111 @@ test("ForkMesh Office opens encrypted chat only after explicit entry", async ({
   expect(chatSocketURLs).toHaveLength(globalChatSocketCount + 1);
   expect(page.url()).toBe(worldURL);
   expect(context.pages()).toHaveLength(pageCount);
+});
+
+test("an empty Office shows a green open door and admits without a code", async ({
+  page,
+}) => {
+  const officeEntryRequests = [];
+  await prepareWorldPage(page, "office-empty-entry", {
+    officeOccupied: false,
+    officeEntryRequests,
+  });
+  await waitForWorld(page);
+  await moveToOfficeEntrance(page);
+
+  const prompt = page.locator("[data-world-office-prompt]");
+  await expect(prompt).toBeVisible();
+  await expect(prompt).toHaveAttribute("data-available", "true");
+  await expect(prompt).toHaveAttribute("data-occupied", "false");
+  await expect(prompt).toContainText("Office empty · door open");
+  await expect.poll(() => officeFacadeState(page)).toEqual({
+    doorRotation: 1.571,
+    keypadColor: "63e6a5",
+  });
+
+  await prompt.getByRole("button", { name: /Enter ForkMesh Office/ }).click();
+  await expect(page.locator("[data-world-office-lobby]")).toBeVisible();
+  await expect(page.locator("[data-world-office-keypad]")).toBeHidden();
+  expect(officeEntryRequests).toHaveLength(1);
+  expect(officeEntryRequests[0]).toMatchObject({
+    method: "POST",
+    body: {},
+  });
+});
+
+test("an occupied Office requires four digits without leaking them", async ({
+  page,
+}) => {
+  const officeEntryRequests = [];
+  const worldFrames = [];
+  const officeCode = "2468";
+  await prepareWorldPage(page, "office-occupied-entry", {
+    officeOccupied: true,
+    officeEntryCode: officeCode,
+    officeEntryRequests,
+    worldSocketHandler: (socket, id) => {
+      socket.onMessage((raw) => worldFrames.push(String(raw)));
+      socket.send(JSON.stringify({ type: "welcome", id, peers: [] }));
+    },
+  });
+  await waitForWorld(page);
+  await moveToOfficeEntrance(page);
+
+  const prompt = page.locator("[data-world-office-prompt]");
+  await expect(prompt).toBeVisible();
+  await expect(prompt).toHaveAttribute("data-available", "true");
+  await expect(prompt).toHaveAttribute("data-occupied", "true");
+  await expect(prompt).toContainText(
+    "Office occupied · four-digit code required",
+  );
+  await expect.poll(() => officeFacadeState(page)).toEqual({
+    doorRotation: 0,
+    keypadColor: "ff6f7f",
+  });
+
+  await prompt.getByRole("button", { name: /Use Office keypad/ }).click();
+  const keypad = page.locator("[data-world-office-keypad]");
+  const input = keypad.locator("[data-world-office-keypad-input]");
+  await expect(keypad).toBeVisible();
+  expect(officeEntryRequests).toHaveLength(0);
+
+  await input.fill("1111");
+  await input.press("Enter");
+  await expect(keypad.locator("[data-world-office-keypad-status]")).toContainText(
+    "not accepted",
+  );
+  await expect(page.locator("[data-world-office-lobby]")).toBeHidden();
+  await expect(input).toHaveValue("");
+  expect(officeEntryRequests).toHaveLength(1);
+  expect(officeEntryRequests[0].body).toEqual({ code: "1111" });
+
+  await input.fill(officeCode);
+  await input.press("Enter");
+  await expect(page.locator("[data-world-office-lobby]")).toBeVisible();
+  await expect(keypad).toBeHidden();
+  expect(officeEntryRequests).toHaveLength(2);
+  expect(officeEntryRequests[1]).toMatchObject({
+    method: "POST",
+    body: { code: officeCode },
+  });
+  for (const request of officeEntryRequests) {
+    expect(request.url).not.toContain(String(request.body.code || ""));
+    expect(JSON.stringify(request.headers)).not.toContain(
+      String(request.body.code || ""),
+    );
+  }
+
+  const browserState = await page.evaluate(() =>
+    JSON.stringify({
+      url: window.location.href,
+      localStorage: { ...localStorage },
+      sessionStorage: { ...sessionStorage },
+      html: document.documentElement.outerHTML,
+    }),
+  );
+  expect(browserState).not.toContain(officeCode);
+  expect(JSON.stringify(worldFrames)).not.toContain(officeCode);
 });
 
 test("ForkMesh Office preserves registered channel authorization", async ({
@@ -1238,9 +1410,7 @@ test("ForkMesh Office preserves registered channel authorization", async ({
     ],
   });
   await waitForWorld(page);
-  await page.locator("forkmesh-world").evaluate((shell) => {
-    shell.world.player.position.set(11, 0.38, -17.7);
-  });
+  await moveToOfficeEntrance(page);
   await page.locator("[data-world-office-enter]").click();
   const nativeRooms = page.locator("[data-world-office-room-board]");
   await expect(nativeRooms).toContainText("#general");
@@ -1275,9 +1445,7 @@ test("ForkMesh Office explains an expired authorized session", async ({
     chatChannelStatus: 401,
   });
   await waitForWorld(page);
-  await page.locator("forkmesh-world").evaluate((shell) => {
-    shell.world.player.position.set(11, 0.38, -17.7);
-  });
+  await moveToOfficeEntrance(page);
   await page.locator("[data-world-office-enter]").click();
   await expect(page.locator("[data-world-office-room-board]")).toContainText(
     "#general",
@@ -1438,10 +1606,7 @@ async function freezeWorld(page) {
 }
 
 async function openOfficeForVisual(page) {
-  await page.locator("forkmesh-world").evaluate((shell) => {
-    shell.world.setPaused(false);
-    shell.world.player.position.set(11, 0.38, -17.7);
-  });
+  await moveToOfficeEntrance(page, { unpause: true });
   await page.locator("[data-world-office-enter]").click();
   await expect(page.locator("[data-world-office-lobby]")).toBeVisible();
   await page.locator("forkmesh-world").evaluate((shell) => {

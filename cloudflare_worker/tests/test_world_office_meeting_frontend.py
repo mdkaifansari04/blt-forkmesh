@@ -119,3 +119,34 @@ def test_native_meeting_handles_clipboard_images_and_document_input():
     assert 'attachmentInput.addEventListener("change"' in meeting
     assert "URL.createObjectURL" in meeting
     assert "URL.revokeObjectURL" in meeting
+
+
+def test_general_meeting_access_uses_only_the_short_lived_memory_ticket_header():
+    meeting = source(MEETING)
+    for contract in (
+        'const OFFICE_ENTRY_HEADER = "X-ForkMesh-Office-Entry"',
+        "let entryTicket = \"\"",
+        "let entryTicketExpiresAt = 0",
+        "entryTicketExpiresAt > Date.now()",
+        "headers.set(OFFICE_ENTRY_HEADER, entryTicket)",
+        "setEntryTicket(ticket, expiresAt)",
+    ):
+        assert contract in meeting
+    assert "localStorage" not in meeting
+    assert "sessionStorage" not in meeting
+
+
+def test_native_office_entry_ticket_is_wired_before_the_lobby_opens():
+    office = source(OFFICE)
+    world = source(WORLD)
+    assert "meeting.setEntryTicket?.(entryTicket, expiresAt)" in office
+    assert office.index(
+        "meeting.setEntryTicket?.(entryTicket, expiresAt)"
+    ) < office.index("meeting.openLobby()")
+    for contract in (
+        "data-world-office-keypad",
+        "data-world-office-keypad-status",
+        "data-world-office-keypad-submit",
+        'aria-label="Four-digit Office code"',
+    ):
+        assert contract in world

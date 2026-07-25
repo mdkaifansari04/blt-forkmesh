@@ -10,6 +10,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 OFFICE_PATH = ROOT / "public" / "world" / "world-office.js"
 SCENE_PATH = ROOT / "public" / "world" / "world-scene.js"
+WORLD_PATH = ROOT / "public" / "world" / "world.js"
 
 
 def office_source():
@@ -106,3 +107,70 @@ def test_world_scene_builds_and_reports_the_interactive_office():
     assert "onOfficeProximity" in source
     assert "enterOffice()" in source
     assert 'fillText("FORKMESH OFFICE"' in source
+
+
+def test_office_entry_uses_shared_status_and_post_only_four_digit_access():
+    source = office_source()
+    assert '"/api/world/office/general/status"' in source
+    assert '"/api/world/office/general/entry"' in source
+    assert 'method: "GET"' in source
+    assert 'method: "POST"' in source
+    assert "body: JSON.stringify(code ? { code } : {})" in source
+    assert r"/^\d{4}$/" in source
+    assert "window.prompt" not in source
+    assert "localStorage" not in source
+    assert "sessionStorage" not in source
+    assert "OFFICE_CODE_KEY" not in source
+
+    submit = source[
+        source.index("function onKeypadSubmit"):
+        source.index("function onMessage")
+    ]
+    assert submit.index('keypadInput.value = "";') < submit.index(
+        "requestOfficeEntry(code)")
+
+
+def test_office_keypad_is_semantic_numeric_and_never_displays_the_secret():
+    world = WORLD_PATH.read_text(encoding="utf-8")
+    for contract in (
+        "data-world-office-keypad",
+        "data-world-office-keypad-form",
+        "data-world-office-keypad-input",
+        'type="password"',
+        'inputmode="numeric"',
+        'pattern="[0-9]{4}"',
+        'minlength="4"',
+        'maxlength="4"',
+        'autocomplete="off"',
+        'role="status"',
+        'aria-live="polite"',
+    ):
+        assert contract in world
+    assert "Share this code" not in world
+
+
+def test_office_scene_uses_one_full_size_door_and_privacy_safe_state_metadata():
+    source = SCENE_PATH.read_text(encoding="utf-8")
+    office = source[
+        source.index("function createForkMeshOffice("):
+        source.index("function createWeather(")
+    ]
+    for contract in (
+        "const OFFICE_WIDTH = 17;",
+        "const OFFICE_DEPTH = 12;",
+        "const OFFICE_HEIGHT = 7;",
+        "const OFFICE_FRONT_Z = 6;",
+        'door.name = "forkmesh-office-door"',
+        "door.userData.officeEnter = true",
+        "child.userData.officeAccessPanel = true",
+        "function setOfficeOccupancy(",
+        'source: "door"',
+        'source: "keypad"',
+        'occupied: Boolean(office?.userData?.officeOccupied)',
+        "available: office?.userData?.officeAvailable !== false",
+    ):
+        assert contract in source
+    assert office.count('door.name = "forkmesh-office-door"') == 1
+    assert "group.scale.setScalar(1.35)" not in office
+    assert "new THREE.BoxGeometry(OFFICE_WIDTH, 0.4, OFFICE_DEPTH)" in source
+    assert "new THREE.BoxGeometry(OFFICE_WIDTH, OFFICE_HEIGHT, 0.35)" in source

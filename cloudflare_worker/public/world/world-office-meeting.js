@@ -24,6 +24,7 @@ const PUBLIC_ROOM_KEY_ENDPOINT =
   "/api/chat/room-key?owner=mainnode&repo=forkmesh&room=world-general";
 const PUBLIC_CHAT_WEBSOCKET =
   "/api/repo/mainnode/forkmesh/rooms/world-general/ws";
+const OFFICE_ENTRY_HEADER = "X-ForkMesh-Office-Entry";
 
 function sessionHeaders(getSession) {
   const headers = new Headers({ accept: "application/json" });
@@ -99,6 +100,8 @@ export function createWorldOfficeMeeting({
   let chatReady = false;
   let pingTimer = null;
   let leaving = false;
+  let entryTicket = "";
+  let entryTicketExpiresAt = 0;
 
   function setOpen(element, open) {
     if (!element) return;
@@ -214,8 +217,17 @@ export function createWorldOfficeMeeting({
     const path = room.kind === "general"
       ? "/api/world/office/general/access"
       : `/api/chat/channels/${encodeURIComponent(room.id)}/room-access`;
+    const headers = sessionHeaders(getSession);
+    if (
+      room.kind === "general" &&
+      entryTicket &&
+      entryTicketExpiresAt > Date.now() &&
+      entryTicket.length <= 2048
+    ) {
+      headers.set(OFFICE_ENTRY_HEADER, entryTicket);
+    }
     const response = await fetch(path, {
-      headers: sessionHeaders(getSession),
+      headers,
       credentials: "same-origin",
       cache: "no-store",
     });
@@ -735,6 +747,8 @@ export function createWorldOfficeMeeting({
     setOpen(roomPanel, false);
     setOpen(lobby, false);
     scene.leaveOfficeInterior();
+    entryTicket = "";
+    entryTicketExpiresAt = 0;
     root.classList.remove("world-office-active");
     onActivity("exploring-town-square");
     onLeaveOffice();
@@ -800,6 +814,8 @@ export function createWorldOfficeMeeting({
     chatTransport?.dispose();
     chatTransport = null;
     socket = null;
+    entryTicket = "";
+    entryTicketExpiresAt = 0;
     clearTranscript();
     participants.clear();
     scene.leaveOfficeInterior();
@@ -815,6 +831,16 @@ export function createWorldOfficeMeeting({
   syncComposer();
 
   return {
+    setEntryTicket(ticket, expiresAt) {
+      const normalized = String(ticket || "").trim();
+      const expiry = Number(expiresAt);
+      entryTicket =
+        normalized && normalized.length <= 2048 && Number.isFinite(expiry)
+          ? normalized
+          : "";
+      entryTicketExpiresAt = entryTicket ? expiry : 0;
+      return Boolean(entryTicket);
+    },
     openLobby,
     joinRoom,
     requestSeat,

@@ -2616,6 +2616,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <p>Local one-second samples only. No diagnostics are transmitted, and no URLs, locations, form contents, or activity history are collected.</p>
             <dl>
               <div><dt>Renderer</dt><dd data-world-diagnostics-renderer>Starting…</dd></div>
+              <div><dt>Frame health</dt><dd data-world-diagnostics-frame-health>Sampling…</dd></div>
               <div><dt>Connection</dt><dd data-world-diagnostics-connection>Connecting…</dd></div>
               <div><dt>Socket frames</dt><dd data-world-diagnostics-traffic>Inbound 0 · outbound 0</dd></div>
               <div><dt>Coalescing</dt><dd data-world-diagnostics-queues>Movement idle · profile idle</dd></div>
@@ -2666,10 +2667,64 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           aria-label="ForkMesh Office entrance"
           hidden
         >
-          <p><span aria-hidden="true">●</span> ForkMesh Office is open</p>
+          <p>
+            <span data-world-office-prompt-light aria-hidden="true">●</span>
+            <span data-world-office-prompt-status>Checking the Office door…</span>
+          </p>
           <button type="button" data-world-office-enter>
             Enter ForkMesh Office <kbd>E</kbd>
           </button>
+        </section>
+        <section
+          class="world-office-keypad"
+          data-world-office-keypad
+          data-open="false"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="world-office-keypad-title"
+          aria-hidden="true"
+        >
+          <form data-world-office-keypad-form>
+            <header>
+              <div>
+                <p class="world-eyebrow">OFFICE ACCESS</p>
+                <h2 id="world-office-keypad-title">Enter the four-digit code</h2>
+              </div>
+              <button type="button" data-world-office-keypad-cancel aria-label="Close Office keypad">×</button>
+            </header>
+            <p class="world-office-keypad-status" data-world-office-keypad-status role="status" aria-live="polite">
+              The Office is occupied. Enter the shared coordination code.
+            </p>
+            <label class="world-office-keypad-display">
+              <span>Four-digit code</span>
+              <input
+                type="password"
+                data-world-office-keypad-input
+                inputmode="numeric"
+                autocomplete="off"
+                pattern="[0-9]{4}"
+                minlength="4"
+                maxlength="4"
+                enterkeyhint="go"
+                aria-label="Four-digit Office code"
+                required
+              >
+            </label>
+            <div class="world-office-keypad-grid" aria-label="Office keypad">
+              ${["1", "2", "3", "4", "5", "6", "7", "8", "9"]
+                .map(
+                  (digit) =>
+                    `<button type="button" data-world-office-keypad-digit="${digit}">${digit}</button>`,
+                )
+                .join("")}
+              <button type="button" data-world-office-keypad-clear>Clear</button>
+              <button type="button" data-world-office-keypad-digit="0">0</button>
+              <button type="submit" data-world-office-keypad-submit>Enter</button>
+            </div>
+            <small>
+              This four-digit code is an Office-door coordination check, not account authentication. Room membership and encrypted-channel permissions are still enforced separately.
+            </small>
+          </form>
         </section>
         <section class="world-office-lobby" data-world-office-lobby aria-labelledby="world-office-lobby-title" aria-hidden="true">
           <header class="world-office-panel-heading">
@@ -3303,6 +3358,12 @@ class ForkMeshWorld extends HTMLElement {
   handlePublicInputActivity = () => {
     if (this.destroyed || !this.identity) return;
     this.recordActivityArrival();
+    if (this.focusMusicAutoplayPending) {
+      this.focusMusicAutoplayPending = false;
+      // A browser that rejected the initial unmuted request can accept this
+      // retry because it is directly caused by the visitor's first input.
+      void this.playFocusMusic();
+    }
     if (!this.identity.inputActive) {
       this.identity.inputActive = true;
       this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
@@ -3458,11 +3519,14 @@ class ForkMeshWorld extends HTMLElement {
         onOfficeProximity: (state) => {
           this.officeController?.setProximity(state);
         },
-        onOfficeEnter: () => {
-          this.officeController?.enterOffice?.();
+        onOfficeEnter: (entry = {}) => {
+          this.officeController?.enterOffice?.(entry);
         },
         onForkbotChat: () => {
           this.openWorldChat("/dashboard/chat", this.$("[data-world-chat-open]"));
+        },
+        onPlayForkmeshSong: () => {
+          void this.playFocusMusic();
         },
         onOfficeChairSelect: (chairId) => {
           this.officeMeeting?.requestSeat(chairId);
@@ -3519,6 +3583,18 @@ class ForkMeshWorld extends HTMLElement {
       this.syncMemberLounge();
       this.world.setMemberLoungeLoading?.(false);
       this.syncRepositoryScene();
+      // Catalog payloads do not always carry star totals. Hydrate each public
+      // portal from its canonical star endpoint so the 3D count is exact.
+      this.repositories
+        .filter((repository) => repository?.isPrivate !== true)
+        .slice(0, 48)
+        .forEach((repository) => {
+          void this.loadRepositoryStarState(
+            repository.owner,
+            repository.name,
+            false,
+          );
+        });
       if (this.repositories.length) {
         // The scene and authenticated live catalog are both ready. Populate
         // the repository district from the canonical flagship route without
@@ -3553,6 +3629,9 @@ class ForkMeshWorld extends HTMLElement {
       this.startEventPolling();
       this.startNotificationPolling();
       this.startMediaPlaybackPolling();
+      // Start the selected bundled loop as the World opens. Browsers that
+      // require a gesture are retried from the first pointer/key activity.
+      void this.playFocusMusic({ autoplay: true });
       this.announceWorldNotifications();
       this.distanceTimer = window.setInterval(() => this.updateDistances(), 1000);
       document.addEventListener("visibilitychange", this.handleVisibility);
@@ -4022,7 +4101,15 @@ class ForkMeshWorld extends HTMLElement {
     }
     this.botDirectory =
       botResult.status === "fulfilled" && Array.isArray(botResult.value?.bots)
-        ? botResult.value.bots.slice(0, 24)
+        ? botResult.value.bots
+            .filter(
+              (bot) =>
+                ![
+                  "forkmesh-security-scanner",
+                  "forkmesh-mirror-health",
+                ].includes(String(bot?.id || "").toLowerCase()),
+            )
+            .slice(0, 24)
         : [];
     this.inactivePlayers =
       inactiveResult.status === "fulfilled" &&
@@ -5352,6 +5439,7 @@ class ForkMeshWorld extends HTMLElement {
 
   syncInactivePresence() {
     window.clearTimeout(this.inactiveSyncTimer);
+    window.clearTimeout(this.repositoryStarSceneSyncTimer);
     this.inactiveSyncTimer = window.setTimeout(async () => {
       const session = readSession();
       if (!session?.sessionToken) return;
@@ -7682,7 +7770,7 @@ class ForkMeshWorld extends HTMLElement {
           ? `${selected.name} is paused on this device.`
           : state === "loading"
             ? `Loading ${selected.name}…`
-            : `${selected.name} is selected. Press Play to begin.`;
+            : `${selected.name} is selected and will start automatically.`;
     const volume = this.settings.focusMusicVolume;
     const muted = this.settings.focusMusicMuted === true;
     return `
@@ -7694,7 +7782,7 @@ class ForkMeshWorld extends HTMLElement {
           </div>
           <strong>CC0 · on this device only</strong>
         </header>
-        <p class="world-focus-music-intro">Three lightweight tracks ship with ForkMesh. Heavenly Loop is selected by default; music never starts until you press Play.</p>
+        <p class="world-focus-music-intro">Three lightweight tracks ship with ForkMesh. The selected loop starts automatically and stays local to this device.</p>
         <div class="world-focus-track-list" role="radiogroup" aria-label="Focus music selection">
           ${FOCUS_MUSIC_TRACKS.map(
             (track) => `
@@ -8706,7 +8794,13 @@ class ForkMeshWorld extends HTMLElement {
     if (this.repositoryMapState === "ready" && this.activeRepository) {
       this.renderRepositoryExplorer();
     }
-    this.syncRepositoryScene();
+    // Star totals often resolve in a burst. Rebuilding the 3D portal layer for
+    // every individual response stalls a drag, so coalesce them into one draw.
+    if (this.repositoryStarSceneSyncTimer) return;
+    this.repositoryStarSceneSyncTimer = window.setTimeout(() => {
+      this.repositoryStarSceneSyncTimer = 0;
+      this.syncRepositoryScene();
+    }, 120);
   }
 
   async loadRepositoryStarState(owner, name, isPrivate = false, force = false) {
@@ -8955,6 +9049,7 @@ class ForkMeshWorld extends HTMLElement {
     if (!this.activeRepository) return;
     this.repositoryView = "file";
     this.repositoryFile = { path, state: "loading" };
+    this.world?.setRepositorySizeLoading?.(true);
     this.renderRepositoryExplorer();
     const base = `/api/repo/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
     try {
@@ -8975,6 +9070,7 @@ class ForkMeshWorld extends HTMLElement {
     } catch (error) {
       this.repositoryFile = { path, state: "error", message: error?.message || "File unavailable" };
     }
+    this.world?.setRepositorySizeLoading?.(false);
     this.renderRepositoryExplorer();
   }
 
@@ -9203,6 +9299,7 @@ class ForkMeshWorld extends HTMLElement {
     const selection = ++this.repositoryMapSelection;
     this.repositoryMapState = "loading";
     this.repositoryMapTarget = `${safeOwner}/${safeRepo}`;
+    this.world?.setRepositorySizeLoading?.(true);
     this.renderRepositoryMapStatus();
 
     let request = this.repositoryMapLoads.get(key);
@@ -9233,6 +9330,7 @@ class ForkMeshWorld extends HTMLElement {
       this.repositoryMapState = "unavailable";
       if (!this.activeRepository) this.world?.updateRepositoryGraph?.([], []);
       if (!this.activeRepository) this.world?.updateRepositorySizeMap?.({}, {});
+      this.world?.setRepositorySizeLoading?.(false);
       this.renderRepositoryMapStatus();
       return false;
     }
@@ -9252,6 +9350,7 @@ class ForkMeshWorld extends HTMLElement {
       this.repositoryMapState = "unavailable";
       if (!this.activeRepository) this.world?.updateRepositoryGraph?.([], []);
       if (!this.activeRepository) this.world?.updateRepositorySizeMap?.({}, {});
+      this.world?.setRepositorySizeLoading?.(false);
       this.renderRepositoryMapStatus();
       return false;
     }
@@ -9260,6 +9359,7 @@ class ForkMeshWorld extends HTMLElement {
     this.repositoryMapState = "ready";
     this.renderRepositoryMapStatus();
     this.syncRepositoryScene();
+    this.world?.setRepositorySizeLoading?.(false);
     void this.loadRepositoryStarState(
       safeOwner,
       safeRepo,
@@ -9391,6 +9491,7 @@ class ForkMeshWorld extends HTMLElement {
       return;
     }
     const selection = ++this.repositoryDirectorySelection;
+    this.world?.setRepositorySizeLoading?.(true);
     if (explorer) {
       explorer.innerHTML = `<p class="world-empty-state">Opening ${escapeHTML(
         normalizedPath || "repository root",
@@ -9436,6 +9537,7 @@ class ForkMeshWorld extends HTMLElement {
       };
       this.renderRepositoryExplorer();
       this.syncRepositoryScene();
+      this.world?.setRepositorySizeLoading?.(false);
       if (options.revealScene === true) {
         this.revealRepositoryScene();
       }
@@ -9455,6 +9557,7 @@ class ForkMeshWorld extends HTMLElement {
       } else {
         this.toast("That directory could not be opened from the pinned tree.");
       }
+      this.world?.setRepositorySizeLoading?.(false);
     }
   }
 
@@ -11565,7 +11668,7 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-  async playFocusMusic() {
+  async playFocusMusic({ autoplay = false } = {}) {
     const track = this.selectedFocusMusicTrack();
     const AudioElement = window.Audio;
     if (!AudioElement) {
@@ -11588,10 +11691,10 @@ class ForkMeshWorld extends HTMLElement {
     }
 
     // Stop another local station or focus track before creating this element.
-    // play() remains directly in the button's user-gesture call chain.
     this.stopRadio(false);
     const element = new AudioElement(track.trackUrl);
     element.preload = "metadata";
+    element.autoplay = true;
     element.loop = true;
     element.volume = this.settings.focusMusicVolume / 100;
     element.muted = this.settings.focusMusicMuted === true;
@@ -11625,7 +11728,16 @@ class ForkMeshWorld extends HTMLElement {
       this.focusMusicState = "playing";
       this.renderFocusMusicPanel();
       this.toast(`${track.name} is looping on this device only.`);
-    } catch (_) {
+    } catch (error) {
+      if (autoplay && error?.name === "NotAllowedError") {
+        playback.stop();
+        if (this.activeAudio === playback) this.activeAudio = null;
+        this.focusMusicState = "stopped";
+        this.focusMusicAutoplayPending = true;
+        this.focusMusicError = "Music will start with your first interaction.";
+        this.renderFocusMusicPanel();
+        return;
+      }
       fail();
     }
   }
@@ -12569,6 +12681,14 @@ class ForkMeshWorld extends HTMLElement {
               0,
               Math.min(1_000_000_000, Number(scene.rendererTriangles) || 0),
             ),
+            longestFrameMs: Math.max(
+              0,
+              Math.min(60_000, Number(scene.longestFrameMs) || 0),
+            ),
+            longFrames: Math.max(
+              0,
+              Math.min(1_000_000, Number(scene.longFrames) || 0),
+            ),
             paused: scene.paused === true,
           }
         : null,
@@ -12673,6 +12793,12 @@ class ForkMeshWorld extends HTMLElement {
         ? `${renderer.paused ? "Paused" : `${renderer.fps.toFixed(1)} FPS · ${renderer.frameTimeMs.toFixed(1)} ms/frame`} · ${Math.round(renderer.calls).toLocaleString()} calls · ${Math.round(renderer.triangles).toLocaleString()} triangles`
         : "WebGL renderer unavailable";
     }
+    const frameHealth = this.$("[data-world-diagnostics-frame-health]");
+    if (frameHealth) {
+      frameHealth.textContent = renderer
+        ? `${Math.round(renderer.longFrames).toLocaleString()} long frames · ${renderer.longestFrameMs.toFixed(1)} ms worst in the last sample`
+        : "WebGL renderer unavailable";
+    }
     const connectionDetail = this.$(
       "[data-world-diagnostics-connection]",
     );
@@ -12706,7 +12832,6 @@ class ForkMeshWorld extends HTMLElement {
         repos.find((repo) => repo.liveHost)
           ? `${repos.find((repo) => repo.liveHost).owner}/${repos.find((repo) => repo.liveHost).name} has a healthy public route.`
           : "Repository portals distinguish live mirrors from stubs and unavailable hosts.",
-        "Activity is generalized; private URLs, searches, forms, and history stay out of the world.",
         "Visual reward particles are illustrative and do not represent a guaranteed transfer.",
         this.remotePlayers.size
           ? `${this.remotePlayers.size} other ${this.remotePlayers.size === 1 ? "visitor is" : "visitors are"} moving through the world.`
