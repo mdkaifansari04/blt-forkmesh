@@ -5948,9 +5948,9 @@ export function createWorldScene({
 
   function rotateCamera(deltaX, deltaY) {
     if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) return;
-    cameraYaw -= deltaX * CAMERA_LOOK_SENSITIVITY;
+    cameraYaw += deltaX * CAMERA_LOOK_SENSITIVITY;
     cameraPitch = clamp(
-      cameraPitch + deltaY * CAMERA_LOOK_SENSITIVITY,
+      cameraPitch - deltaY * CAMERA_LOOK_SENSITIVITY,
       CAMERA_PITCH_MIN,
       CAMERA_PITCH_MAX,
     );
