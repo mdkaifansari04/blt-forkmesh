@@ -1391,6 +1391,32 @@ test("enhanced Town Square starts in WebGL and keeps keyboard navigation", async
   );
 });
 
+test("double-clicking the ground dashes the avatar to that spot", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "desktop-dblclick-dash");
+  await waitForWorld(page);
+
+  const canvas = page.locator("[data-world-canvas-wrap] canvas");
+  const box = await canvas.boundingBox();
+  expect(box).not.toBeNull();
+
+  const before = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.getPosition(),
+  );
+  // Well away from the avatar, still on the plaza floor.
+  await page.mouse.dblclick(
+    Math.round(box.x + box.width * 0.3),
+    Math.round(box.y + box.height * 0.4),
+  );
+  await page.waitForTimeout(400);
+  const after = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.getPosition(),
+  );
+  // A dash covers far more ground in 400ms than the walking cap would.
+  expect(Math.hypot(after.x - before.x, after.z - before.z)).toBeGreaterThan(3);
+});
+
 test("desktop camera uses visible-cursor drag look, capped movement acceleration, and wheel zoom", async ({
   page,
 }) => {
@@ -3122,6 +3148,99 @@ test("live mirror cabinets expose a readable truthful technical panel", async ({
   await expect(detail).toContainText(
     "operator-reported, bounded values signed into the public catalog",
   );
+});
+
+test("the member lounge plaque carries the count and one account button", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "lounge-plaque");
+  await waitForWorld(page);
+  const logoutRequests = [];
+  await page.route("**/api/accounts/logout", async (route) => {
+    logoutRequests.push(route.request().method());
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true }),
+    });
+  });
+
+  // No floating count card hovers over the lounge any more: the total and the
+  // account button live on the one ground plaque.
+  const lounge = await page.locator("forkmesh-world").evaluate((shell) => {
+    const group = shell.world.scene.getObjectByName("registered-user-lounge");
+    shell.world.updateMemberLounge([{ name: "ada", nodes: [] }], 9);
+    return {
+      sprites: group.children.filter((child) => child.isSprite).length,
+      plaque: Boolean(
+        group.getObjectByName("forkmesh-member-lounge-plaque"),
+      ),
+      countOnPlaque:
+        group.userData.memberCountSign ===
+        group.getObjectByName("forkmesh-member-lounge-plaque").userData.face,
+      action: group.userData.authButton.userData.worldAuthAction,
+    };
+  });
+  expect(lounge).toEqual({
+    sprites: 0,
+    plaque: true,
+    countOnPlaque: true,
+    action: "login",
+  });
+
+  // Park the camera on the plaque and pause so the button projects to a stable
+  // point, then tap it exactly like a visitor walking up to the lounge.
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.closeLandmark();
+    shell.world.player.position.set(-36.5, 0.38, 23.5);
+    shell.world.setCameraZoom(0.42);
+  });
+  await page.waitForTimeout(1800);
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.setPaused(true),
+  );
+  const buttonPoint = async () =>
+    page.locator("forkmesh-world").evaluate((shell) => {
+      const button = shell.world.scene
+        .getObjectByName("registered-user-lounge")
+        .userData.authButton;
+      const target = button.getWorldPosition(button.position.clone());
+      target.project(shell.world.camera);
+      const rect = shell.world.renderer.domElement.getBoundingClientRect();
+      return {
+        x: rect.left + (target.x * 0.5 + 0.5) * rect.width,
+        y: rect.top + (-target.y * 0.5 + 0.5) * rect.height,
+      };
+    });
+  const guestPoint = await buttonPoint();
+  await page.mouse.click(guestPoint.x, guestPoint.y);
+  await expect(page.locator("[data-world-account]")).toHaveAttribute(
+    "data-open",
+    "true",
+  );
+  expect(logoutRequests).toEqual([]);
+
+  // Signed in, the same tiny button becomes the log-out control.
+  await page
+    .locator("[data-world-account] [data-world-account-close]")
+    .click();
+  const signedIn = await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.updateIdentity({ accountStatus: "Registered", name: "ada" });
+    return shell.world.scene.getObjectByName("registered-user-lounge").userData
+      .authButton.userData.worldAuthAction;
+  });
+  expect(signedIn).toBe("logout");
+  // The dismissed backdrop stays hit-testable until its visibility transition
+  // finishes, so wait for it to stop covering the plaque.
+  await page.waitForFunction(() => {
+    const backdrop = document
+      .querySelector("forkmesh-world")
+      .querySelector(".world-account-backdrop");
+    return getComputedStyle(backdrop).visibility === "hidden";
+  });
+  const memberPoint = await buttonPoint();
+  await page.mouse.click(memberPoint.x, memberPoint.y);
+  await expect.poll(() => logoutRequests).toEqual(["POST"]);
 });
 
 test("Town Square placement is contextual, tracking-free, and collapses safely", async ({

@@ -380,7 +380,15 @@ def test_world_client_coalesces_disposable_frames_and_reconnects_with_grace():
 
 def test_avatar_faces_keyboard_travel_direction_and_intro_can_stay_dismissed():
     assert "player.rotation.y = Math.atan2(-movement.x, -movement.z)" in SCENE
-    assert "toTarget" not in SCENE
+    # A single click still only selects — walk-to-click stays gone. Travel by
+    # pointer is opt-in through the double-click dash (see the dash test below),
+    # so no target may be set from the single-tap path.
+    assert "moveTarget" not in SCENE
+    single_tap = SCENE[
+        SCENE.index("  function finishPointer"):
+        SCENE.index("  function handlePointerUp")
+    ]
+    assert "dashTarget" not in single_tap
     assert "player.rotation.y = 0" in SCENE
     assert "INTRO_DISMISSED_KEY" in APP
     assert "data-world-arrival-dismiss" in APP
@@ -1256,7 +1264,6 @@ def test_world_has_responsive_and_reduced_motion_fallbacks():
     assert "@media (max-height: 520px) and (orientation: landscape)" in CSS
     assert "@media (prefers-reduced-motion: reduce)" in CSS
     assert "world-touch-controls" in CSS
-    assert "world-quick-dock" in CSS
     assert "var(--world-viewport-height, 100dvh)" in CSS
     assert "window.visualViewport?.height" in APP
     assert 'window.addEventListener("orientationchange", this.syncViewportHeight)' in APP
@@ -1350,10 +1357,38 @@ def test_world_uses_nonhuman_infrastructure_a_member_lounge_and_city_grid():
     assert 'avatar.userData.loungeActivity === "recent"' in SCENE
 
 
+def test_world_member_lounge_plaque_carries_count_and_account_button():
+    # adhoc #248: the floating member-count card is folded into the ground
+    # plaque, which also carries one tiny account button — log in / sign up for
+    # guests, log out for signed-in members.
+    assert "function memberLoungePlaqueTexture" in SCENE
+    assert "function memberLoungeAuthTexture" in SCENE
+    assert "function makeMemberLoungePlaque" in SCENE
+    lounge = SCENE[
+        SCENE.index("function createRegisteredUserLounge"):
+        SCENE.index("function createDurableObjectDistrict")
+    ]
+    # No floating count sprite hovers over the lounge any more.
+    assert "makeLabelSprite" not in lounge
+    assert "makeMemberLoungePlaque(THREE" in lounge
+    assert '"LOG OUT" : "LOG IN / SIGN UP"' in SCENE
+    assert 'authButton.userData.worldAuthAction = "login"' in SCENE
+    assert "function syncLoungeAuthButton" in SCENE
+    assert 'signedIn ? "logout" : "login"' in SCENE
+    # The button is raycast-selectable and reports through onAccountAction.
+    assert "interactive.push(plaque.userData.authButton)" in SCENE
+    assert "onAccountAction = () => {}" in SCENE
+    assert 'authAction === "login" || authAction === "logout"' in SCENE
+    # world.js opens the existing account panel or logs the device out.
+    assert "onAccountAction: (action) =>" in APP
+    assert "void this.logoutFromWorld();" in APP
+    assert 'this.toggleWorldAccount(true, "login");' in APP
+
+
 def test_world_member_lounge_seats_directory_users_with_total_count():
     # The lounge is populated from the public users directory (adhoc #228):
-    # registered accounts appear seated even when offline, and a sign at the
-    # lounge front shows the total registered-user count.
+    # registered accounts appear seated even when offline, and the lounge
+    # plaque shows the total registered-user count.
     assert "function updateMemberLounge" in SCENE
     assert "memberCountSign" in SCENE
     assert "total registered users" in SCENE
@@ -1444,6 +1479,45 @@ def test_world_movement_speed_and_acceleration_are_locally_adjustable():
     assert "? Infinity" in APP
     assert "moveSpeed: WORLD_MOVE_SPEED_DEFAULT" in APP
     assert "moveAccel: WORLD_MOVE_ACCEL_DEFAULT" in APP
+
+
+def test_double_clicking_the_ground_dashes_the_avatar_to_that_point():
+    # Double-click travel raycasts the current space's floor plane (so it works
+    # on elevated spaces too), clamps inside the world radius, and runs there at
+    # a dash speed well above the walking cap instead of teleporting.
+    for contract in (
+        "const PLAYER_DASH_SPEED = 48",
+        "const PLAYER_DASH_ARRIVE_DISTANCE = 0.3",
+        "function groundPointAt",
+        "groundPlane.constant = -currentFloorY",
+        "raycaster.ray.intersectPlane(",
+        "function handleDoubleClick",
+        'addEventListener("dblclick", handleDoubleClick)',
+        'removeEventListener("dblclick", handleDoubleClick)',
+        "dashTarget = point",
+        "PLAYER_DASH_SPEED * moveSpeedScale * delta",
+        "} else if (dashTarget) {",
+        "function cancelDash",
+    ):
+        assert contract in SCENE
+    assert "const PLAYER_MAX_SPEED = 13" in SCENE
+    # A drag or pinch that happens to end in a double-click must not dash, and
+    # manual input, teleports, focus clears and blur all cancel a running dash.
+    assert "lastGestureDragged = suppressTap" in SCENE
+    assert "if (lastGestureDragged) return" in SCENE
+    dash_cancels = SCENE.count("cancelDash()")
+    assert dash_cancels >= 8, dash_cancels
+    walk = SCENE[
+        SCENE.index("  function walkPlayer"):
+        SCENE.index("  function updateRemotePlayers")
+    ]
+    assert "cancelDash();" in walk
+    blur = SCENE[
+        SCENE.index("  function handleWindowBlur"):
+        SCENE.index('  renderer.domElement.addEventListener("pointerdown"')
+    ]
+    assert "cancelDash();" in blur
+    assert "double-click the ground to dash there" in APP
 
 
 def test_qt_main_navigation_opens_the_world_root():
@@ -1571,6 +1645,40 @@ def test_linked_payout_page_has_a_truthful_non_custodial_notice():
     assert "community incentives, not investments" in PAYOUTS
     assert "guaranteed returns." in PAYOUTS
     assert "never its private key" in PAYOUTS
+
+
+def test_forkbot_walks_the_world_and_greets_first_time_visitors():
+    # ForkBot is a wandering Town Square guide. Chat replies broadcast with
+    # the fixed sender "forkbot" float over its avatar, and it walks over to
+    # welcome a visitor the first time this browser moves or the mouse is
+    # active — once ever per browser, so returning visitors are not
+    # re-greeted every session.
+    assert 'const FORKBOT_PEER_ID = "forkbot";' in SCENE
+    assert "const forkbot = createAvatar(THREE, {" in SCENE
+    assert "function updateForkbot(delta, time)" in SCENE
+    assert "updateForkbot(delta, time);" in SCENE
+    assert "function greetForkbot(text)" in SCENE
+    assert "greetForkbot," in SCENE
+    # Bubbles addressed to the bot peer id resolve to the bot avatar.
+    assert "peerId === FORKBOT_PEER_ID" in SCENE
+    # Out-of-reach visitors still get greeted from wherever the bot got to.
+    assert "const FORKBOT_GREETING_TIMEOUT_MS = 12000;" in SCENE
+    assert (
+        'const FORKBOT_GREETED_KEY = "forkmesh.world.forkbotGreeted.v1";'
+        in APP
+    )
+    assert "maybeGreetForkbot() {" in APP
+    # Triggered by both first movement and first mouse/keyboard activity.
+    assert APP.count("this.maybeGreetForkbot();") == 2
+    assert 'this.world?.showChatBubble?.("forkbot", text);' in APP
+    # The asking client mirrors ForkBot replies into the World embed, and
+    # guests inside the public World room can talk to the bot (the endpoint
+    # itself is sessionless).
+    assert (
+        "emitWorldChatBubble(plain.sender, plain.senderId, plain.text);"
+        in DASHBOARD_CHAT
+    )
+    assert "if (!canJoinChat()) return;" in DASHBOARD_CHAT
 
 
 def test_world_updates_arrive_via_a_gentle_in_place_reload():
