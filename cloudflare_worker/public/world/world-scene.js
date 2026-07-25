@@ -288,6 +288,70 @@ function wordTexture(THREE, title, subtitle, color = "#9ef7c6") {
   });
 }
 
+// The Member Lounge plaque carries the section name, the live registered-user
+// total, and room for the tiny account button — one surface instead of a
+// floating count card hovering over the lounge.
+function memberLoungePlaqueTexture(THREE, totalCount, color = "#9ef7c6") {
+  // Until the directory loads the plaque says it is counting rather than
+  // claiming a total of zero.
+  const known = totalCount !== null && Number.isFinite(Number(totalCount));
+  const total = Math.max(0, Math.min(999999, Number(totalCount) || 0));
+  return canvasTexture(THREE, 768, 352, (context) => {
+    context.clearRect(0, 0, 768, 352);
+    roundedRect(context, 4, 4, 760, 344, 14);
+    context.fillStyle = "rgba(6,17,14,0.92)";
+    context.fill();
+    context.strokeStyle = color;
+    context.lineWidth = 4;
+    context.stroke();
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    context.fillStyle = "#f1fff6";
+    context.font = '700 52px "ForkMesh Favorit", system-ui, sans-serif';
+    context.fillText("MEMBER LOUNGE", 42, 72);
+    context.fillStyle = color;
+    context.font = '700 44px "ForkMesh Favorit", system-ui, sans-serif';
+    context.fillText(
+      known ? `${total} MEMBER${total === 1 ? "" : "S"}` : "MEMBERS",
+      42,
+      142,
+    );
+    context.font = '400 23px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      (known ? "total registered users" : "counting registered users")
+        .toUpperCase(),
+      42,
+      192,
+    );
+    context.fillStyle = "rgba(217,255,234,0.66)";
+    context.font = '400 20px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      "registered contributors · recent activity glows".toUpperCase(),
+      42,
+      232,
+    );
+  });
+}
+
+// Tiny plaque button: log in / sign up while signed out, log out once signed
+// in. Filled while signed out so the call to action reads from a distance.
+function memberLoungeAuthTexture(THREE, signedIn, color = "#9ef7c6") {
+  return canvasTexture(THREE, 384, 88, (context) => {
+    context.clearRect(0, 0, 384, 88);
+    roundedRect(context, 4, 4, 376, 80, 40);
+    context.fillStyle = signedIn ? "rgba(6,17,14,0.94)" : color;
+    context.fill();
+    context.strokeStyle = color;
+    context.lineWidth = 4;
+    context.stroke();
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillStyle = signedIn ? color : "#06110e";
+    context.font = '700 34px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(signedIn ? "LOG OUT" : "LOG IN / SIGN UP", 192, 47);
+  });
+}
+
 function chatBubbleTexture(THREE, name, text) {
   return canvasTexture(THREE, 768, 256, (context) => {
     context.clearRect(0, 0, 768, 256);
@@ -506,21 +570,71 @@ function makeGroundPlaque(THREE, title, subtitle, color) {
   return plaque;
 }
 
-// Places a section's name plaque on the ground in front of the section — on
-// the side facing the Town Square center, where visitors walk up. `position`
-// is the section's world position; sections at the center face the arrival
-// grid instead.
-function addSectionPlaque(THREE, group, position, title, subtitle, color, distance) {
+// A taller Member Lounge plaque: the same ground slab, with the member total
+// on its face and a tiny account button mounted at the bottom of the face.
+function makeMemberLoungePlaque(THREE, color = "#9ef7c6") {
+  const plaque = new THREE.Group();
+  plaque.name = "forkmesh-member-lounge-plaque";
+  const base = new THREE.Mesh(
+    new THREE.BoxGeometry(3.9, 0.22, 1.5),
+    makeMaterial(THREE, "#233b33", { roughness: 0.82 }),
+  );
+  base.position.y = 0.11;
+  plaque.add(base);
+  const slab = new THREE.Mesh(
+    new THREE.BoxGeometry(3.6, 1.72, 0.14),
+    makeMaterial(THREE, "#101d18", { roughness: 0.55, metalness: 0.12 }),
+  );
+  slab.position.set(0, 0.95, 0.12);
+  slab.rotation.x = -0.42;
+  plaque.add(slab);
+  const face = new THREE.Mesh(
+    new THREE.PlaneGeometry(3.44, 1.577),
+    new THREE.MeshBasicMaterial({
+      map: memberLoungePlaqueTexture(THREE, null, color),
+      transparent: true,
+    }),
+  );
+  face.position.z = 0.08;
+  slab.add(face);
+  const authButton = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.42, 0.33),
+    new THREE.MeshBasicMaterial({
+      map: memberLoungeAuthTexture(THREE, false, color),
+      transparent: true,
+    }),
+  );
+  authButton.name = "forkmesh-member-lounge-auth-button";
+  authButton.position.set(-0.84, -0.55, 0.012);
+  authButton.userData.worldAuthAction = "login";
+  face.add(authButton);
+  plaque.userData.face = face;
+  plaque.userData.authButton = authButton;
+  return plaque;
+}
+
+// Places a plaque on the ground in front of the section — on the side facing
+// the Town Square center, where visitors walk up. `position` is the section's
+// world position; sections at the center face the arrival grid instead.
+function placeSectionPlaque(group, plaque, position, distance) {
   const x = Array.isArray(position) ? position[0] : 0;
   const z = Array.isArray(position) ? position[2] : 0;
   const length = Math.hypot(x, z);
   const ux = length > 0.001 ? -x / length : 0;
   const uz = length > 0.001 ? -z / length : 1;
-  const plaque = makeGroundPlaque(THREE, title, subtitle, color);
   plaque.position.set(ux * distance, 0, uz * distance);
   plaque.rotation.y = Math.atan2(ux, uz);
   group.add(plaque);
   return plaque;
+}
+
+function addSectionPlaque(THREE, group, position, title, subtitle, color, distance) {
+  return placeSectionPlaque(
+    group,
+    makeGroundPlaque(THREE, title, subtitle, color),
+    position,
+    distance,
+  );
 }
 
 function avatarStatusTexture(THREE, emoji, note) {
@@ -1378,7 +1492,7 @@ function createAgentRobot(THREE, bot, id) {
   return group;
 }
 
-function createRegisteredUserLounge(THREE, animated) {
+function createRegisteredUserLounge(THREE, animated, interactive) {
   const lounge = new THREE.Group();
   lounge.name = "registered-user-lounge";
   lounge.userData.spaceKind = "registered-user-lounge";
@@ -1430,27 +1544,18 @@ function createRegisteredUserLounge(THREE, animated) {
     }
   }
   lounge.userData.seatOffsets = seatOffsets;
-  addSectionPlaque(
-    THREE,
+  // The lounge plaque carries the member total and the account button, so no
+  // separate floating count card hovers over the lounge.
+  const plaque = placeSectionPlaque(
     lounge,
+    makeMemberLoungePlaque(THREE, "#9ef7c6"),
     REGISTERED_LOUNGE_POSITION,
-    "MEMBER LOUNGE",
-    "registered contributors · recent activity glows",
-    "#9ef7c6",
     9.2,
   );
-  const memberCountSign = makeLabelSprite(
-    THREE,
-    "MEMBERS",
-    "counting registered users",
-    "#9ef7c6",
-  );
-  memberCountSign.scale.set(5.6, 1.9, 1);
-  // At the base edge facing the Town Square center, so the total reads
-  // before a visitor walks into the lounge itself.
-  memberCountSign.position.set(6.9, 1.8, -4.6);
-  lounge.add(memberCountSign);
-  lounge.userData.memberCountSign = memberCountSign;
+  lounge.userData.memberCountSign = plaque.userData.face;
+  lounge.userData.authButton = plaque.userData.authButton;
+  lounge.userData.authSignedIn = false;
+  interactive.push(plaque.userData.authButton);
   const activityBeacon = new THREE.PointLight("#9ef7c6", 1.4, 18, 2);
   activityBeacon.position.set(0, 4.2, 0);
   lounge.add(activityBeacon);
@@ -2770,6 +2875,7 @@ export function createWorldScene({
   onRegionChange = () => {},
   onMovement = () => {},
   onModeration = () => {},
+  onAccountAction = () => {},
 }) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color("#93c9b3");
@@ -2973,7 +3079,11 @@ export function createWorldScene({
 
   world.add(createSkyOffice(THREE, animated));
   world.add(createOtherWorlds(THREE, animated));
-  const registeredUserLounge = createRegisteredUserLounge(THREE, animated);
+  const registeredUserLounge = createRegisteredUserLounge(
+    THREE,
+    animated,
+    interactive,
+  );
   world.add(registeredUserLounge);
   const durableObjectDistrict = createDurableObjectDistrict(THREE);
   world.add(durableObjectDistrict);
@@ -3655,10 +3765,9 @@ export function createWorldScene({
     const countSign = registeredUserLounge.userData.memberCountSign;
     if (countSign && registeredUserLounge.userData.memberCountShown !== total) {
       countSign.material.map?.dispose?.();
-      countSign.material.map = wordTexture(
+      countSign.material.map = memberLoungePlaqueTexture(
         THREE,
-        `${total} MEMBER${total === 1 ? "" : "S"}`,
-        "total registered users",
+        total,
         "#9ef7c6",
       );
       countSign.material.needsUpdate = true;
@@ -4329,11 +4438,28 @@ export function createWorldScene({
     garden.userData.sharedMediaSpaces = layer;
   }
 
+  // Signed-out visitors get "log in / sign up" on the lounge plaque; signed-in
+  // members get "log out". Only the account status drives it, never the name.
+  function syncLoungeAuthButton() {
+    const button = registeredUserLounge.userData.authButton;
+    if (!button) return;
+    const signedIn = String(identity?.accountStatus || "Guest") !== "Guest";
+    if (registeredUserLounge.userData.authSignedIn === signedIn) return;
+    registeredUserLounge.userData.authSignedIn = signedIn;
+    button.material.map?.dispose?.();
+    button.material.map = memberLoungeAuthTexture(THREE, signedIn, "#9ef7c6");
+    button.material.needsUpdate = true;
+    button.userData.worldAuthAction = signedIn ? "logout" : "login";
+  }
+
+  syncLoungeAuthButton();
+
   function updateIdentity(nextIdentity) {
     Object.assign(identity, nextIdentity);
     updateAvatarBadge(THREE, player, identity, false);
     syncOperatorBelt(THREE, player, identity.nodes?.length || 0);
     updatePlayerLabel(playerLabel, identity);
+    syncLoungeAuthButton();
     if (identity.isAdmin !== true) {
       remotePlayers.forEach((avatar, peerId) => {
         removeRemoteModerationControls(avatar, peerId);
@@ -4937,6 +5063,11 @@ export function createWorldScene({
         peerId: moderationAction.peerId,
         name: moderationAction.name,
       });
+      return;
+    }
+    const authAction = String(hit?.object?.userData?.worldAuthAction || "");
+    if (authAction === "login" || authAction === "logout") {
+      onAccountAction(authAction);
       return;
     }
     if (hit?.object?.userData?.nodeCabinet) {

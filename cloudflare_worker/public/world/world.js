@@ -3229,6 +3229,13 @@ class ForkMeshWorld extends HTMLElement {
         onRegionChange: (region) => this.updateRegion(region),
         onMovement: (movement) => this.handleMovement(movement),
         onModeration: (action) => this.moderateWorldPeer(action),
+        onAccountAction: (action) => {
+          if (action === "logout") {
+            void this.logoutFromWorld();
+            return;
+          }
+          this.toggleWorldAccount(true, "login");
+        },
       });
       this.syncConstructionMarkers();
       this.setLandmarkCapability(
