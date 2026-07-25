@@ -2274,7 +2274,6 @@ function liveNodeRecords(network, mirrorCatalogs = []) {
 }
 
 const LOCAL_LIVE_LANDMARKS = new Set([
-  "information",
   "neighborhood",
   "broadcast",
 ]);
