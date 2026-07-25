@@ -20,6 +20,7 @@
 #include "moc_MarkdownEditor.cpp"
 #include "moc_MarkupCanvas.cpp"
 #include "moc_MessageRow.cpp"
+#include "moc_NodeEventSocket.cpp"
 #include "moc_RepoHost.cpp"
 #include "moc_ScreenCaptureOverlay.cpp"
 #include "moc_ScreenDrawOverlay.cpp"

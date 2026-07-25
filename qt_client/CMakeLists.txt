@@ -286,6 +286,7 @@ qt_wrap_cpp(FORKMESH_MOC_SOURCES
     src/MarkdownEditor.h
     src/MarkupCanvas.h
     src/MessageRow.h
+    src/NodeEventSocket.h
     src/RepoHost.h
     src/ScreenCaptureOverlay.h
     src/ScreenDrawOverlay.h
@@ -348,6 +349,7 @@ set_source_files_properties(
     src/MarkdownEditor.h
     src/MarkupCanvas.h
     src/MessageRow.h
+    src/NodeEventSocket.h
     src/RepoHost.h
     src/ScreenCaptureOverlay.h
     src/ScreenDrawOverlay.h
