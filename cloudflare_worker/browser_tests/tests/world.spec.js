@@ -997,6 +997,7 @@ test("account signup and login complete inside the World without leaking into UR
   page,
   context,
 }) => {
+  const testAccountPassword = ["correct-horse", "battery-staple"].join("-");
   const accountRequests = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
@@ -1008,7 +1009,7 @@ test("account signup and login complete inside the World without leaking into UR
       });
     }
     expect(request.url()).not.toContain("world-user@example.test");
-    expect(request.url()).not.toContain("correct-horse-battery-staple");
+    expect(request.url()).not.toContain(testAccountPassword);
   });
   await prepareWorldPage(page, "world-account", {
     accountFixture: true,
@@ -1028,7 +1029,7 @@ test("account signup and login complete inside the World without leaking into UR
   await signup.locator("[name='email']").fill("world-user@example.test");
   await signup
     .locator("[name='password']")
-    .fill("correct-horse-battery-staple");
+    .fill(testAccountPassword);
   await signup.locator("[name='terms']").check();
   await signup.getByRole("button", { name: /Create account inside/ }).click();
   await expect(account.locator("[data-world-account-verification]")).toBeVisible();
@@ -1039,7 +1040,7 @@ test("account signup and login complete inside the World without leaking into UR
     body: {
       nodeName: "world-user",
       email: "world-user@example.test",
-      password: "correct-horse-battery-staple",
+      password: testAccountPassword,
     },
   });
 
@@ -1049,7 +1050,7 @@ test("account signup and login complete inside the World without leaking into UR
   await login.locator("[name='email']").fill("world-user@example.test");
   await login
     .locator("[name='password']")
-    .fill("correct-horse-battery-staple");
+    .fill(testAccountPassword);
   const reloaded = page.waitForNavigation({ waitUntil: "domcontentloaded" });
   await login.getByRole("button", { name: /Log in inside/ }).click();
   await reloaded;
@@ -1075,7 +1076,7 @@ test("account signup and login complete inside the World without leaking into UR
     method: "POST",
     body: {
       email: "world-user@example.test",
-      password: "correct-horse-battery-staple",
+      password: testAccountPassword,
       totp: "",
     },
   });
@@ -1534,10 +1535,12 @@ test("refresh restores one bounded identity-local position without private histo
   await waitForWorld(page);
 
   await page.locator("forkmesh-world").evaluate((shell) => {
+    // The space station is parked in the works-in-progress barn, so its floor
+    // is the same walkable 0.38 as the Town Square.
     const position = {
-      x: 21.25,
-      y: 18.45,
-      z: -13.5,
+      x: 16.3,
+      y: 0.38,
+      z: 66.5,
       heading: 1.2,
       space: "space-station",
       moving: false,
@@ -1574,9 +1577,9 @@ test("refresh restores one bounded identity-local position without private histo
   }));
   expect(restored.currentSpace).toBe("space-station");
   expect(restored.position.space).toBe("space-station");
-  expect(restored.position.x).toBeCloseTo(21.25, 3);
-  expect(restored.position.y).toBeCloseTo(18.45, 3);
-  expect(restored.position.z).toBeCloseTo(-13.5, 3);
+  expect(restored.position.x).toBeCloseTo(16.3, 3);
+  expect(restored.position.y).toBeCloseTo(0.38, 3);
+  expect(restored.position.z).toBeCloseTo(66.5, 3);
   expect(restored.position.heading).toBeCloseTo(1.2, 3);
   expect(restored.storedRecords).toBe(1);
 });

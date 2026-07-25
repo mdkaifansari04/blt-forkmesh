@@ -22,16 +22,73 @@ const CAMERA_PITCH_MAX = 1.24;
 const LIGHT_LEVEL_MIN = 40;
 const LIGHT_LEVEL_MAX = 140;
 const LIGHT_LEVEL_DEFAULT = 100;
+// Nothing hovers over the Town Square any more. The five unfinished
+// destinations are parked on the ground inside the works-in-progress barn, so
+// every space shares the same walkable floor as the square itself.
 const WORLD_SPACE_FLOORS = Object.freeze({
   "town-square": 0.38,
   east: 0.38,
   central: 0.38,
   west: 0.38,
-  "sky-campus": 15.45,
-  "space-station": 18.45,
-  "code-planet": 15.45,
-  "organization-region": 14.45,
-  "planet-atlas": 22.45,
+  "sky-campus": 0.38,
+  "space-station": 0.38,
+  "code-planet": 0.38,
+  "organization-region": 0.38,
+  "planet-atlas": 0.38,
+});
+// The barn sits south of the square, past the last ring of trees and benches
+// and behind the default chase camera, and is wide enough that every parked
+// destination fits in its own bay.
+const WORKSHOP_BARN_CENTER_Z = 62;
+const WORKSHOP_BARN_HALF_WIDTH = 22;
+const WORKSHOP_BARN_HALF_DEPTH = 8;
+const WORKSHOP_BARN_WALL_HEIGHT = 10;
+const WORKSHOP_BARN_DOOR_HEIGHT = 5.6;
+// The chase camera always sits south of the player and looks north, so the bays
+// go at the north end of the barn and visitors arrive in the aisle south of
+// them, with the plaques in between.
+const WORKSHOP_BARN_BAY_Z = WORKSHOP_BARN_CENTER_Z - 3;
+const WORKSHOP_BARN_PLAQUE_Z = WORKSHOP_BARN_CENTER_Z + 1.6;
+const WORKSHOP_BARN_AISLE_Z = WORKSHOP_BARN_CENTER_Z + 4.5;
+// Bay centres in world coordinates. `y` lifts each exhibit onto its cradle so
+// it rests in the barn instead of floating; `plaque` is the work-in-progress
+// note standing in front of it.
+const WORKSHOP_BARN_BAYS = Object.freeze({
+  "sky-campus": Object.freeze({
+    x: -16.5,
+    y: 0.5,
+    radius: 3,
+    color: "#d5b6ff",
+    plaque: "sky office · unfinished",
+  }),
+  "organization-region": Object.freeze({
+    x: -9,
+    y: 0.75,
+    radius: 3.7,
+    color: "#d5b6ff",
+    plaque: "garden campus · unfinished",
+  }),
+  "code-planet": Object.freeze({
+    x: -1,
+    y: 3.4,
+    radius: 3.4,
+    color: "#77d9ff",
+    plaque: "code planet · unfinished",
+  }),
+  "planet-atlas": Object.freeze({
+    x: 8,
+    y: 1.4,
+    radius: 4.1,
+    color: "#f7c96b",
+    plaque: "community planets · unfinished",
+  }),
+  "space-station": Object.freeze({
+    x: 16.3,
+    y: 2.2,
+    radius: 2.9,
+    color: "#b6d8ff",
+    plaque: "space station · unfinished",
+  }),
 });
 const MOVEMENT_KEYS = new Set([
   "KeyW",
@@ -2770,8 +2827,215 @@ function createSupportCenter(THREE, position, interactive, animated) {
   return group;
 }
 
-function createSkyOffice(THREE, animated) {
+// The barn that replaced the sky. Every destination that used to hover over the
+// Town Square is parked here on the ground, one per bay, under a roof frame
+// that is itself unfinished, behind doorways wide enough to roll them back out
+// once the work is done.
+function createWorkshopBarn(THREE) {
+  const barn = new THREE.Group();
+  barn.name = "works-in-progress-barn";
+  const plank = makeMaterial(THREE, "#8c3f2e", { roughness: 0.86 });
+  const trim = makeMaterial(THREE, "#e7d8bd", { roughness: 0.72 });
+  const roofing = makeMaterial(THREE, "#5a4335", { roughness: 0.82 });
+  const halfWidth = WORKSHOP_BARN_HALF_WIDTH;
+  const halfDepth = WORKSHOP_BARN_HALF_DEPTH;
+  const wallHeight = WORKSHOP_BARN_WALL_HEIGHT;
+
+  const floor = new THREE.Mesh(
+    new THREE.BoxGeometry(halfWidth * 2, 0.3, halfDepth * 2),
+    makeMaterial(THREE, "#4b453d", { roughness: 0.94 }),
+  );
+  floor.position.y = 0.15;
+  barn.add(floor);
+
+  // Both ends are full-width doorways and the long sides are stall-height plank
+  // walls under open timber framing. Nothing above knee height stands between
+  // the chase camera and the parked work, whichever way a visitor faces.
+  const stallHeight = 3.2;
+  for (const side of [-1, 1]) {
+    const stall = new THREE.Mesh(
+      new THREE.BoxGeometry(0.6, stallHeight, halfDepth * 2),
+      plank,
+    );
+    stall.position.set(side * (halfWidth - 0.3), stallHeight / 2, 0);
+    barn.add(stall);
+    const plate = new THREE.Mesh(
+      new THREE.BoxGeometry(0.6, 0.5, halfDepth * 2),
+      trim,
+    );
+    plate.position.set(side * (halfWidth - 0.3), wallHeight - 0.25, 0);
+    barn.add(plate);
+  }
+
+  // Posts and header beams frame both doorways. The mid posts land in the gaps
+  // between bays, so each end reads as a row of garage doors rather than one
+  // undivided hole.
+  const headerHeight = wallHeight - WORKSHOP_BARN_DOOR_HEIGHT;
+  for (const end of [-1, 1]) {
+    const endZ = end * (halfDepth - 0.3);
+    for (const x of [-(halfWidth - 0.3), -13.1, 12.75, halfWidth - 0.3]) {
+      const post = new THREE.Mesh(
+        new THREE.BoxGeometry(0.7, wallHeight, 0.7),
+        plank,
+      );
+      post.position.set(x, wallHeight / 2, endZ);
+      barn.add(post);
+    }
+    // Only the town-facing side carries a header. Leaving the aisle side open
+    // to the trusses keeps the beam out of the arriving camera's sightline.
+    if (end > 0) continue;
+    const header = new THREE.Mesh(
+      new THREE.BoxGeometry(halfWidth * 2, headerHeight, 0.6),
+      plank,
+    );
+    header.position.set(
+      0,
+      WORKSHOP_BARN_DOOR_HEIGHT + headerHeight / 2,
+      endZ,
+    );
+    barn.add(header);
+  }
+  for (const side of [-1, 1]) {
+    for (const half of [-1, 1]) {
+      const brace = new THREE.Mesh(
+        new THREE.BoxGeometry(0.18, 0.34, 8.4),
+        trim,
+      );
+      brace.position.set(
+        side * (halfWidth - 0.3),
+        stallHeight + 1.9,
+        (half * halfDepth) / 2,
+      );
+      brace.rotation.x = half * 0.55;
+      barn.add(brace);
+    }
+  }
+
+  // The gambrel roof is still only its frame: six trusses carrying five
+  // purlins, and no decking. That keeps the barn itself honestly unfinished and
+  // leaves the bays lit and readable from the raised camera.
+  const trussSegments = [
+    { z: 6.7, y: 11.2, length: 4.84, tilt: 0.519 },
+    { z: 2.3, y: 13.3, length: 4.94, tilt: 0.373 },
+  ];
+  for (const x of [-halfWidth + 0.3, -13.1, -4.4, 4.4, 12.75, halfWidth - 0.3]) {
+    trussSegments.forEach((segment) => {
+      for (const side of [-1, 1]) {
+        const beam = new THREE.Mesh(
+          new THREE.BoxGeometry(0.34, 0.34, segment.length),
+          roofing,
+        );
+        beam.position.set(x, segment.y, side * segment.z);
+        beam.rotation.x = side * segment.tilt;
+        barn.add(beam);
+      }
+    });
+  }
+  const purlins = [
+    { y: wallHeight, z: halfDepth + 0.8 },
+    { y: wallHeight, z: -halfDepth - 0.8 },
+    { y: 12.4, z: 4.6 },
+    { y: 12.4, z: -4.6 },
+    { y: 14.2, z: 0 },
+  ];
+  purlins.forEach((purlin) => {
+    const beam = new THREE.Mesh(
+      new THREE.BoxGeometry(halfWidth * 2 + 1.2, 0.26, 0.26),
+      roofing,
+    );
+    beam.position.set(0, purlin.y, purlin.z);
+    barn.add(beam);
+  });
+
+  // The barn name goes on both faces of the north header: the outer face reads
+  // on the walk down from the Town Square, the inner one from the aisle.
+  const signTexture = wordTexture(
+    THREE,
+    "WORKS IN PROGRESS BARN",
+    "parked destinations · unfinished",
+    "#f7c96b",
+  );
+  for (const facing of [-1, 1]) {
+    const sign = new THREE.Mesh(
+      new THREE.PlaneGeometry(13.2, 4.4),
+      new THREE.MeshBasicMaterial({ map: signTexture, transparent: true }),
+    );
+    sign.position.set(
+      0,
+      WORKSHOP_BARN_DOOR_HEIGHT + headerHeight / 2,
+      -halfDepth + 0.3 + facing * 0.35,
+    );
+    if (facing < 0) sign.rotation.y = Math.PI;
+    barn.add(sign);
+  }
+
+  // Bay furniture: a plinth per destination, a mount post under the ones that
+  // are held clear of the floor, and a plaque saying the work is unfinished.
+  const bayZ = WORKSHOP_BARN_BAY_Z - WORKSHOP_BARN_CENTER_Z;
+  Object.values(WORKSHOP_BARN_BAYS).forEach((bay) => {
+    const plinth = new THREE.Mesh(
+      new THREE.CylinderGeometry(bay.radius, bay.radius + 0.3, 0.5, 14),
+      makeMaterial(THREE, "#2c2a25", { roughness: 0.88 }),
+    );
+    plinth.position.set(bay.x, 0.4, bayZ);
+    barn.add(plinth);
+    if (bay.y > 1.1) {
+      const post = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.32, 0.5, bay.y - 0.65, 10),
+        makeMaterial(THREE, "#6b665c", { metalness: 0.3, roughness: 0.6 }),
+      );
+      post.position.set(bay.x, 0.65 + (bay.y - 0.65) / 2, bayZ);
+      barn.add(post);
+      const cradle = new THREE.Mesh(
+        new THREE.TorusGeometry(0.75, 0.12, 8, 20),
+        makeMaterial(THREE, "#f7c96b", {
+          emissive: "#7a5a17",
+          emissiveIntensity: 0.4,
+        }),
+      );
+      cradle.rotation.x = Math.PI / 2;
+      cradle.position.set(bay.x, bay.y - 0.6, bayZ);
+      barn.add(cradle);
+    }
+    const plaque = makeGroundPlaque(
+      THREE,
+      "WORK IN PROGRESS",
+      bay.plaque,
+      bay.color,
+    );
+    plaque.position.set(
+      bay.x,
+      0.3,
+      WORKSHOP_BARN_PLAQUE_Z - WORKSHOP_BARN_CENTER_Z,
+    );
+    // makeGroundPlaque faces +z, which is already the aisle side.
+    barn.add(plaque);
+  });
+
+  for (const x of [-15, -5, 5, 15]) {
+    const lamp = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.55, 0.42, 0.22, 12),
+      makeMaterial(THREE, "#ffe9b0", {
+        emissive: "#ffd27a",
+        emissiveIntensity: 0.7,
+      }),
+    );
+    lamp.position.set(x, wallHeight - 0.7, 0);
+    barn.add(lamp);
+  }
+
+  // The barn never casts: a 44-unit roof would drop the whole interior into
+  // shadow and hide the work parked underneath it.
+  setShadows(barn, false, true);
+  barn.position.set(0, 0, WORKSHOP_BARN_CENTER_Z);
+  return barn;
+}
+
+// The sky office kept its name and its cloud raft, but the raft is now a
+// deflated prop sitting on the barn floor under the office it used to carry.
+function createSkyOffice(THREE) {
   const group = new THREE.Group();
+  const bay = WORKSHOP_BARN_BAYS["sky-campus"];
   const cloudMaterial = makeMaterial(THREE, "#d8edf2", {
     transparent: true,
     opacity: 0.72,
@@ -2782,8 +3046,8 @@ function createSkyOffice(THREE, animated) {
       new THREE.SphereGeometry(1.2 + (index % 3) * 0.28, 16, 12),
       cloudMaterial,
     );
-    cloud.scale.y = 0.5;
-    cloud.position.set((index % 3) * 1.7 - 1.7, Math.floor(index / 3) * 0.35, (index % 2) * 1.35);
+    cloud.scale.y = 0.22;
+    cloud.position.set((index % 3) * 1.7 - 1.7, 0.16, (index % 2) * 1.35 - 0.68);
     group.add(cloud);
   }
   const office = new THREE.Mesh(
@@ -2795,28 +3059,39 @@ function createSkyOffice(THREE, animated) {
       roughness: 0.34,
     }),
   );
-  office.position.y = 1.75;
+  office.position.y = 1.55;
   group.add(office);
   const roof = new THREE.Mesh(
     new THREE.ConeGeometry(3.2, 1.15, 4),
     makeMaterial(THREE, "#4b3b6b"),
   );
-  roof.position.y = 3.45;
+  roof.position.y = 3.25;
   roof.rotation.y = Math.PI / 4;
   group.add(roof);
-  group.position.set(-17, 15, 18);
+  const label = makeLabelSprite(
+    THREE,
+    "SKY OFFICE",
+    "work in progress · parked indoors",
+    "#d5b6ff",
+  );
+  label.position.y = 4.6;
+  group.add(label);
+  group.position.set(bay.x, bay.y, WORKSHOP_BARN_BAY_Z);
   group.scale.setScalar(0.86);
   setShadows(group);
-  animated.push((time) => {
-    group.position.y = 15 + Math.sin(time * 0.00038) * 0.7;
-    group.rotation.y = Math.sin(time * 0.00011) * 0.15;
-  });
   return group;
 }
 
+// The other worlds are unfinished, so none of them orbits overhead any more:
+// each one stands in its own barn bay, on the plinth and mount post that
+// createWorkshopBarn puts under it.
 function createOtherWorlds(THREE, animated) {
   const destinations = new THREE.Group();
   destinations.name = "functional-world-destinations";
+  const bayPosition = (spaceId) => {
+    const bay = WORKSHOP_BARN_BAYS[spaceId];
+    return [bay.x, bay.y, WORKSHOP_BARN_BAY_Z];
+  };
 
   const station = new THREE.Group();
   const stationCore = new THREE.Mesh(
@@ -2842,12 +3117,12 @@ function createOtherWorlds(THREE, animated) {
   const stationLabel = makeLabelSprite(
     THREE,
     "SPACE STATION",
-    "chat · watch rooms · broadcasts",
+    "work in progress · chat rooms",
     "#b6d8ff",
   );
   stationLabel.position.y = 3.7;
   station.add(stationLabel);
-  station.position.set(24, 18, 24);
+  station.position.set(...bayPosition("space-station"));
   destinations.add(station);
 
   const codePlanet = new THREE.Group();
@@ -2875,12 +3150,12 @@ function createOtherWorlds(THREE, animated) {
   const codeLabel = makeLabelSprite(
     THREE,
     "CODE PLANET",
-    "repository world + workshops",
+    "work in progress · repository world",
     "#77d9ff",
   );
   codeLabel.position.y = 4.1;
   codePlanet.add(codeLabel);
-  codePlanet.position.set(28, 15, -22);
+  codePlanet.position.set(...bayPosition("code-planet"));
   destinations.add(codePlanet);
 
   const orgRegion = new THREE.Group();
@@ -2904,12 +3179,12 @@ function createOtherWorlds(THREE, animated) {
   const orgLabel = makeLabelSprite(
     THREE,
     "GARDEN CAMPUS",
-    "organization-owned region",
+    "work in progress · org region",
     "#d5b6ff",
   );
   orgLabel.position.y = 3.8;
   orgRegion.add(orgLabel);
-  orgRegion.position.set(-29, 14, -23);
+  orgRegion.position.set(...bayPosition("organization-region"));
   destinations.add(orgRegion);
 
   const planetAtlas = new THREE.Group();
@@ -2927,19 +3202,20 @@ function createOtherWorlds(THREE, animated) {
   const atlasLabel = makeLabelSprite(
     THREE,
     "COMMUNITY PLANETS",
-    "events · achievements · regions",
+    "work in progress · events · regions",
     "#f7c96b",
   );
   atlasLabel.position.y = 3.8;
   planetAtlas.add(atlasLabel);
-  planetAtlas.position.set(-2, 22, -31);
+  planetAtlas.position.set(...bayPosition("planet-atlas"));
   destinations.add(planetAtlas);
 
+  // Parked exhibits still turn on their mounts; nothing drifts up and down any
+  // more, because everything is resting on the barn floor.
   animated.push((time) => {
     station.rotation.y = time * 0.00016;
     stationRing.rotation.z = time * 0.0004;
     codePlanet.rotation.y = -time * 0.00011;
-    orgRegion.position.y = 14 + Math.sin(time * 0.00035) * 0.55;
     planetAtlas.children.forEach((child, index) => {
       if (child.isMesh) child.rotation.y += 0.0008 * (index + 1);
     });
@@ -3262,7 +3538,8 @@ export function createWorldScene({
     world.add(bench);
   }
 
-  world.add(createSkyOffice(THREE, animated));
+  world.add(createWorkshopBarn(THREE));
+  world.add(createSkyOffice(THREE));
   world.add(createOtherWorlds(THREE, animated));
   const registeredUserLounge = createRegisteredUserLounge(THREE, animated);
   world.add(registeredUserLounge);
@@ -3521,14 +3798,12 @@ export function createWorldScene({
   }
 
   function travelToSpace(spaceId) {
-    const destinations = {
-      "sky-campus": new THREE.Vector3(-17, 15.45, 18),
-      "space-station": new THREE.Vector3(24, 18.45, 24),
-      "code-planet": new THREE.Vector3(28, 15.45, -22),
-      "organization-region": new THREE.Vector3(-29, 14.45, -23),
-      "planet-atlas": new THREE.Vector3(-2, 22.45, -31),
-    };
-    const destination = destinations[spaceId];
+    // Every space is a barn bay now, so arrivals land in the aisle in front of
+    // the parked destination rather than on a platform in the sky.
+    const bay = WORKSHOP_BARN_BAYS[spaceId];
+    const destination = bay
+      ? new THREE.Vector3(bay.x, WORLD_SPACE_FLOORS[spaceId], WORKSHOP_BARN_AISLE_Z)
+      : null;
     if (!destination) return false;
     currentSpace = spaceId;
     currentFloorY = destination.y;
@@ -5585,7 +5860,7 @@ export function createWorldScene({
       chat: true,
       startedAt: performance.now(),
       // Longer messages linger longer before fading out.
-      duration: Math.min(7500, 3200 + message.length * 30),
+      duration: Math.min(14000, 10000 + message.length * 30),
       baseHeight: 5.2,
       rise: 0.5,
       fadeStart: 0.75,

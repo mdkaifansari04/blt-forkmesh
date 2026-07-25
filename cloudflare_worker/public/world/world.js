@@ -55,16 +55,19 @@ const POSITION_FLOOR_TOLERANCE = 0.5;
 // Mirrors the server's WORLD_ARRIVAL_CLEARANCE: a restored spot this close to
 // another visitor is treated as occupied and the fresh server slot wins.
 const ARRIVAL_CLEARANCE = 0.9;
+// Mirrors WORLD_SPACE_FLOORS in world-scene.js. The unfinished destinations are
+// parked on the ground in the works-in-progress barn, so every space shares the
+// Town Square floor.
 const POSITION_FLOORS = Object.freeze({
   "town-square": 0.38,
   east: 0.38,
   central: 0.38,
   west: 0.38,
-  "sky-campus": 15.45,
-  "space-station": 18.45,
-  "code-planet": 15.45,
-  "organization-region": 14.45,
-  "planet-atlas": 22.45,
+  "sky-campus": 0.38,
+  "space-station": 0.38,
+  "code-planet": 0.38,
+  "organization-region": 0.38,
+  "planet-atlas": 0.38,
 });
 const SOCKET_RETRY_MAX_MS = 20000;
 const SOCKET_STABLE_MS = 5000;
@@ -7004,13 +7007,13 @@ class ForkMeshWorld extends HTMLElement {
                 )}">Teleport to campus</button>
               </article>`,
           ).join("")}
-          <article><span>Achievement space</span><strong>Sky campus</strong><p>Collaboration room with standard permission checks.</p><button type="button" data-world-travel="sky-campus">Take the launch elevator</button></article>
-          <article><span>Repository world</span><strong>Code planet</strong><p>Opens the selected repository map and workshop tools.</p><button type="button" data-world-travel="code-planet">Enter repository portal</button></article>
-          <article><span>Organization region</span><strong>Garden campus</strong><p>Organization-owned lobbies, offices, and project beds.</p><button type="button" data-world-travel="organization-region">Enter organization portal</button></article>
-          <article><span>Community planets</span><strong>Planet atlas</strong><p>Achievement, event, and community-owned destinations with UTC schedules.</p><button type="button" data-world-travel="planet-atlas">Open planet atlas</button></article>
-          <article><span>Community space</span><strong>Space station</strong><p>Scheduled presentation, chat, and moderated media room.</p><button type="button" data-world-travel="space-station">Board shuttle</button></article>
+          <article><span>Work in progress</span><strong>Sky campus</strong><p>Collaboration room with standard permission checks. Unfinished, parked in the works-in-progress barn.</p><button type="button" data-world-travel="sky-campus">Walk to the barn bay</button></article>
+          <article><span>Work in progress</span><strong>Code planet</strong><p>Opens the selected repository map and workshop tools. Unfinished, parked in the works-in-progress barn.</p><button type="button" data-world-travel="code-planet">Walk to the barn bay</button></article>
+          <article><span>Work in progress</span><strong>Garden campus</strong><p>Organization-owned lobbies, offices, and project beds. Unfinished, parked in the works-in-progress barn.</p><button type="button" data-world-travel="organization-region">Walk to the barn bay</button></article>
+          <article><span>Work in progress</span><strong>Planet atlas</strong><p>Achievement, event, and community-owned destinations with UTC schedules. Unfinished, parked in the works-in-progress barn.</p><button type="button" data-world-travel="planet-atlas">Walk to the barn bay</button></article>
+          <article><span>Work in progress</span><strong>Space station</strong><p>Scheduled presentation, chat, and moderated media room. Unfinished, parked in the works-in-progress barn.</p><button type="button" data-world-travel="space-station">Walk to the barn bay</button></article>
         </div>
-        <p class="world-panel-footnote">Each portal moves your live avatar into the shared 3D destination. Signed-in collaborators can use its dedicated authenticated shared-key channel. The relay derives the default key and can read messages: <a href="/dashboard/chat?space=sky-campus">Sky campus</a> · <a href="/dashboard/chat?space=space-station">Space station</a> · <a href="/dashboard/chat?space=code-planet">Code planet</a> · <a href="/dashboard/chat?space=organization-region">Garden campus</a> · <a href="/dashboard/chat?space=planet-atlas">Planet atlas</a>.</p>
+        <p class="world-panel-footnote">None of these five destinations is finished, so none of them floats over the Town Square any more: each one stands on the ground in its own bay of the works-in-progress barn south of the square, behind a work-in-progress plaque. Each button walks your live avatar into that bay. Signed-in collaborators can use its dedicated authenticated shared-key channel. The relay derives the default key and can read messages: <a href="/dashboard/chat?space=sky-campus">Sky campus</a> · <a href="/dashboard/chat?space=space-station">Space station</a> · <a href="/dashboard/chat?space=code-planet">Code planet</a> · <a href="/dashboard/chat?space=organization-region">Garden campus</a> · <a href="/dashboard/chat?space=planet-atlas">Planet atlas</a>.</p>
       </section>`;
   }
 
