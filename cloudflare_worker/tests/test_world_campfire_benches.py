@@ -30,8 +30,10 @@ def test_sitting_holds_a_seated_pose_facing_the_fire():
     )[0]
     assert "campfire.position.x" in sit and "campfire.position.z" in sit
     assert "activity: CAMPFIRE_SEATED_ACTIVITY" in sit
-    assert "leftLeg.rotation.x = -1.3" in sit
-    assert "rightLeg.rotation.x = -1.3" in sit
+    # adhoc #303: the pitch is positive so the legs swing forward over the
+    # front edge of the bench instead of out behind the sitter.
+    assert "applySeatedLegPose(player);" in sit
+    assert "const SEATED_LEG_PITCH = 1.3;" in SCENE
     # The pose is held every frame instead of applied once as a teleport.
     assert "applyBenchSeatPose();" in SCENE
     assert "function standUpFromBench()" in SCENE
@@ -61,7 +63,11 @@ def test_circle_always_keeps_an_open_bench_for_the_next_guest():
     # One bench beyond the registered membership stays blank; when a guest
     # joins and takes it, the roster grows and the rebuilt ring brings a
     # fresh open bench with it.
-    assert "rebuildCampfireCircle(Math.max(total, roster.length) + 1)" in SCENE
+    # adhoc #303 adds one more open bench per guest already in the world.
+    assert (
+        "rebuildCampfireCircle(\n      Math.max(total, roster.length) "
+        "+ guestSeats + 1,\n    )" in SCENE
+    )
 
 
 def test_sitters_face_the_flames_not_away_from_them():
@@ -92,4 +98,4 @@ def test_remote_bench_sitters_render_seated():
         'const CAMPFIRE_SEATED_ACTIVITY = "sitting beside the campfire";' in SCENE
     )
     assert "avatar.userData.campfireSeated" in SCENE
-    assert "seatedAtCampfire ? -1.3" in SCENE
+    assert "seatedAtCampfire\n        ? SEATED_LEG_PITCH" in SCENE
