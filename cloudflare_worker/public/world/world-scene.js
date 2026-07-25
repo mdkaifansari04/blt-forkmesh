@@ -300,6 +300,37 @@ function roundedRect(context, x, y, width, height, radius) {
   context.closePath();
 }
 
+// Directory figures carry the account's public joined timestamp and coarse
+// total active time; live presence identities do not, so the badge falls
+// back to the first-seen and activity·visits lines for them.
+function joinedAgoLabel(joinedAt, now = Date.now()) {
+  const timestamp = Number(joinedAt);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return "";
+  const elapsed = Math.max(0, now - timestamp);
+  const units = [
+    [365 * 24 * 60 * 60 * 1000, "YEAR"],
+    [30 * 24 * 60 * 60 * 1000, "MONTH"],
+    [7 * 24 * 60 * 60 * 1000, "WEEK"],
+    [24 * 60 * 60 * 1000, "DAY"],
+    [60 * 60 * 1000, "HOUR"],
+    [60 * 1000, "MINUTE"],
+  ];
+  for (const [size, unit] of units) {
+    const count = Math.floor(elapsed / size);
+    if (count) return `JOINED ${count} ${unit}${count === 1 ? "" : "S"} AGO`;
+  }
+  return "JOINED JUST NOW";
+}
+
+function badgeActiveDurationLabel(value) {
+  const minutes = Math.floor(Math.max(0, Number(value) || 0) / 60000);
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  if (days) return `${days}D ${hours}H`;
+  if (hours) return `${hours}H ${minutes % 60}M`;
+  return `${minutes % 60}M`;
+}
+
 function badgeTexture(THREE, identity, accent = "#9ef7c6") {
   const activityLabels = {
     "browsing-code-visualization": "CODE MAP",
@@ -336,22 +367,35 @@ function badgeTexture(THREE, identity, accent = "#9ef7c6") {
 
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.font = '170px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
+    context.font = '128px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
     context.fillStyle = "#ffffff";
-    context.fillText(identity.flag || "◌", 256, 150);
+    context.fillText(identity.flag || "◌", 256, 104);
+
+    context.font = '700 44px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#ffffff";
+    context.fillText(String(identity.name || "guest").slice(0, 15), 256, 216);
 
     context.font = '700 21px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#9ef7c6";
     context.fillText(
-      firstSeenLabels[identity.firstVisitAge] || firstSeenLabels.hidden,
+      joinedAgoLabel(identity.joinedAt) ||
+        firstSeenLabels[identity.firstVisitAge] ||
+        firstSeenLabels.hidden,
       256,
-      280,
+      292,
     );
     const activity =
       activityLabels[identity.activityCategory] || activityLabels.hidden;
     const visits = Math.max(0, Math.min(999, Number(identity.visitCount) || 0));
     context.fillStyle = "#77d9ff";
-    context.fillText(`${activity} · ${visits} PUBLIC URL VISITS`, 256, 322);
+    context.fillText(
+      identity.totalActiveMs != null &&
+        Number.isFinite(Number(identity.totalActiveMs))
+        ? `ACTIVE ${badgeActiveDurationLabel(identity.totalActiveMs)} IN WORLD`
+        : `${activity} · ${visits} PUBLIC URL VISITS`,
+      256,
+      334,
+    );
 
     context.beginPath();
     context.arc(60, 452, 12, 0, Math.PI * 2);
@@ -1174,15 +1218,18 @@ function addSectionPlaque(THREE, group, position, title, subtitle, color, distan
 
 // Worn on the head when a visitor has never stored a world-status emoji.
 const AVATAR_DEFAULT_FACE_EMOJI = "🙂";
+// Flat yellow of the standard emoji faces. The whole head uses it so the
+// wrapped emoji decal and the sphere behind it read as one continuous head.
+const AVATAR_EMOJI_SKIN_COLOR = "#ffcc4d";
 
 function avatarFaceTexture(THREE, emoji) {
   return canvasTexture(THREE, 128, 128, (context) => {
     context.clearRect(0, 0, 128, 128);
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.font = '92px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
+    context.font = '118px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
     context.fillStyle = "#1d130c";
-    context.fillText(emoji, 64, 70);
+    context.fillText(emoji, 64, 68);
   });
 }
 
@@ -1307,8 +1354,7 @@ function createAvatar(THREE, identity, options = {}) {
   const scale = options.scale || 1;
   const remote = Boolean(options.remote);
 
-  const skinColors = ["#d59a70", "#9a6043", "#f0bd91", "#704832", "#c98255"];
-  const skin = makeMaterial(THREE, skinColors[seed % skinColors.length], { roughness: 0.92 });
+  const skin = makeMaterial(THREE, AVATAR_EMOJI_SKIN_COLOR, { roughness: 0.92 });
   const shirt = makeMaterial(THREE, "#ffffff", {
     roughness: 0.8,
   });
@@ -1330,17 +1376,30 @@ function createAvatar(THREE, identity, options = {}) {
     new THREE.SphereGeometry(0.47, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.52),
     dark,
   );
-  hair.position.y = 3.48;
+  hair.position.set(0, 3.46, 0.07);
+  // Tilted back so the cap clears the forehead and the wrapped emoji face
+  // has the whole front of the head to itself.
+  hair.rotation.x = 0.42;
   group.add(hair);
 
   // The face wears the last world-status emoji the visitor set (default
-  // smile). Avatar fronts face -Z; the card floats just clear of the head
-  // sphere and syncAvatarFace keeps its texture current.
+  // smile). Avatar fronts face -Z; the emoji is mapped onto a thin curved
+  // shell hugging the head sphere so it wraps the whole face, and
+  // syncAvatarFace keeps its texture current.
   const faceMesh = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.56, 0.56),
+    new THREE.SphereGeometry(
+      0.462,
+      18,
+      14,
+      Math.PI * 0.08,
+      Math.PI * 0.84,
+      Math.PI * 0.16,
+      Math.PI * 0.68,
+    ),
     new THREE.MeshBasicMaterial({ transparent: true }),
   );
-  faceMesh.position.set(0, 3.38, -0.47);
+  faceMesh.scale.y = 1.05;
+  faceMesh.position.y = 3.36;
   faceMesh.rotation.y = Math.PI;
   group.add(faceMesh);
 
@@ -7061,6 +7120,14 @@ export function createWorldScene({
               inputActive: false,
               visitCount: 0,
               firstVisitAge: "hidden",
+              // The public directory shares the joined timestamp and coarse
+              // active-time aggregate, so the nameplate can show "JOINED …
+              // AGO" and "ACTIVE … IN WORLD" instead of the hidden labels.
+              joinedAt: Number(member.createdAt) || 0,
+              totalActiveMs: Math.max(
+                0,
+                Number(member.totalActiveMs ?? member.activeMs) || 0,
+              ),
               nodes: Array.isArray(member.nodes)
                 ? member.nodes.slice(0, 6)
                 : [],
