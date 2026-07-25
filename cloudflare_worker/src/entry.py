@@ -3462,6 +3462,10 @@ WORLD_LAYOUT_CACHE_KEY = "https://forkmesh.internal/api/world/layout"
 WORLD_LAYOUT_TTL = 60
 WORLD_LAYOUT_MAX_OBJECTS = 200
 WORLD_LAYOUT_MAX_COORDINATE = 500
+# One full turn in radians. Locked headings are stored wrapped into [0, TURN);
+# anything further from zero than a handful of turns is a broken client.
+WORLD_LAYOUT_TURN = 6.283185307179586
+WORLD_LAYOUT_MAX_ROTATION = 1000
 WORLD_LAYOUT_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,79}")
 
 
@@ -5657,6 +5661,9 @@ SCHEMA_ALTER_STATEMENTS = [
     # trusting a mutable forkmesh_active boolean.
     """ALTER TABLE mirror_https_endpoints
        ADD COLUMN forkmesh_operations_json TEXT NOT NULL DEFAULT '[]'""",
+    # Heading offset in radians for an administrator-locked scene object
+    # (migration 0081). 0 keeps the object's authored rotation.
+    "ALTER TABLE world_object_layout ADD COLUMN rotation REAL NOT NULL DEFAULT 0",
 ]
 
 # Fingerprint of the DDL this build would apply. Stored in schema_meta after a
@@ -10148,7 +10155,7 @@ async def _world_layout_objects(env):
     """Project the bounded shared-object placement table for the browser."""
     rows = await d1_all(
         env,
-        "SELECT object_id,x,z,updated_at FROM world_object_layout "
+        "SELECT object_id,x,z,rotation,updated_at FROM world_object_layout "
         "ORDER BY object_id LIMIT ?",
         WORLD_LAYOUT_MAX_OBJECTS,
     )
@@ -10158,6 +10165,7 @@ async def _world_layout_objects(env):
             "id": str(row.get("object_id") or ""),
             "x": float(row.get("x") or 0),
             "z": float(row.get("z") or 0),
+            "rotation": float(row.get("rotation") or 0),
             "updatedAt": int(row.get("updated_at") or 0),
         })
     return objects
@@ -10171,6 +10179,20 @@ def _world_layout_coordinate(value):
     if not (-WORLD_LAYOUT_MAX_COORDINATE <= value <= WORLD_LAYOUT_MAX_COORDINATE):
         return None
     return round(float(value), 2)
+
+
+def _world_layout_rotation(value):
+    """Return a heading offset in radians wrapped to [0, 2π), or None.
+
+    The offset is relative to the object's authored rotation, so an absent or
+    zero value leaves the scene facing the way it was built.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    # Reject non-finite input before the modulo, which propagates NaN.
+    if not (-WORLD_LAYOUT_MAX_ROTATION <= value <= WORLD_LAYOUT_MAX_ROTATION):
+        return None
+    return round(float(value) % WORLD_LAYOUT_TURN, 4)
 
 
 async def world_layout_handler(env, request):
@@ -10228,8 +10250,18 @@ async def world_layout_handler(env, request):
     await ensure_schema(env)
     existing = await d1_first(
         env,
-        "SELECT object_id FROM world_object_layout WHERE object_id=?",
+        "SELECT object_id,rotation FROM world_object_layout WHERE object_id=?",
         object_id)
+    # A client that only drags (and never rotates) omits the heading; keep the
+    # locked one instead of silently snapping the object back to square.
+    if data.get("rotation") is None:
+        rotation = float((existing or {}).get("rotation") or 0.0)
+    else:
+        rotation = _world_layout_rotation(data.get("rotation"))
+        if rotation is None:
+            return json_response(
+                {"error": "invalid_rotation"}, status=400,
+                cache_control="no-store, max-age=0, must-revalidate")
     if not existing:
         count = await d1_first(
             env, "SELECT COUNT(*) AS n FROM world_object_layout")
@@ -10240,15 +10272,17 @@ async def world_layout_handler(env, request):
     await d1_run(
         env,
         "INSERT INTO world_object_layout "
-        "(object_id,x,z,updated_by_bi,updated_at) VALUES (?,?,?,?,?) "
+        "(object_id,x,z,rotation,updated_by_bi,updated_at) "
+        "VALUES (?,?,?,?,?,?) "
         "ON CONFLICT(object_id) DO UPDATE SET x=excluded.x,z=excluded.z,"
+        "rotation=excluded.rotation,"
         "updated_by_bi=excluded.updated_by_bi,updated_at=excluded.updated_at",
-        object_id, x, z, account_bi, now,
+        object_id, x, z, rotation, account_bi, now,
     )
     await edge_cache_delete(WORLD_LAYOUT_CACHE_KEY)
     await _audit_sensitive_action(
         env, actor, "world.layout.move", "world_object", object_id,
-        "success", {"x": x, "z": z})
+        "success", {"x": x, "z": z, "rotation": rotation})
     return json_response(
         {"ok": True, "objects": await _world_layout_objects(env)},
         cache_control="no-store, max-age=0, must-revalidate",

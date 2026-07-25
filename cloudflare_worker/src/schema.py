@@ -1929,11 +1929,13 @@ SCHEMA_STATEMENTS = [
     "WHERE revoked_at=0",
     # Shared, administrator-curated placement overrides for the fixed Town
     # Square scene objects. One row per scene object id holding only ground
-    # coordinates; no visitor, account, or session data is stored here.
+    # coordinates and a heading offset in radians (migration 0081); no
+    # visitor, account, or session data is stored here.
     """CREATE TABLE IF NOT EXISTS world_object_layout (
         object_id TEXT PRIMARY KEY,
         x REAL NOT NULL,
         z REAL NOT NULL,
+        rotation REAL NOT NULL DEFAULT 0,
         updated_by_bi TEXT NOT NULL,
         updated_at INTEGER NOT NULL)""",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
