@@ -363,7 +363,11 @@ def test_presence_client_uses_only_coarse_ephemeral_world_protocol():
     assert '`${protocol}//${location.host}/api/world/ws`' in APP
     assert "WORLD_TICKET_REFRESH_MS = 5 * 60 * 1000" in APP
     assert "startWorldTicketRefresh" in APP
-    assert "if (!document.hidden && readSession()?.sessionToken)" in APP
+    assert (
+        "        !document.hidden &&\n"
+        "        (readSession()?.sessionToken || this.sessionAuthenticated)"
+        in APP
+    )
     assert "window.clearInterval(this.worldTicketTimer)" in APP
     assert "session?.organizationAdmin" not in APP
     assert "session?.accountTier" not in APP
@@ -2019,6 +2023,68 @@ def test_forkbot_rolls_through_the_world_for_explicit_chat_interactions():
         in DASHBOARD_CHAT
     )
     assert "if (!canJoinChat()) return;" in DASHBOARD_CHAT
+
+
+def test_signed_in_visitors_keep_their_account_name_for_every_peer():
+    # adhoc #276: a world ticket is the only account proof peers receive, so
+    # applying one must never be gated on the optional activity accounting that
+    # ships in the same response — a browser that keeps no ticket rejoins as an
+    # anonymous "Guest ####", which also silences its chat bubbles (they are
+    # matched to an avatar by display name).
+    identity = APP[
+        APP.index("  applyWorldTicketIdentity(ticket) {"):
+        APP.index("\n  applyWorldActivityTicket(ticket)")
+    ]
+    assert 'ticket?.authenticated !== true' in identity
+    assert 'ticket.accountStatus === "Guest"' in identity
+    assert "this.worldTicket = String(ticket.ticket || \"\");" in identity
+    assert "applyWorldActivityTicket" not in identity
+
+    refresh = APP[
+        APP.index("  async refreshWorldTicket() {"):
+        APP.index("\n  startWorldTicketRefresh()")
+    ]
+    assert "if (this.applyWorldTicketIdentity(ticket)) {" in refresh
+    assert "this.applyWorldActivityTicket(ticket);" in refresh
+    # A ticket that failed during bootstrap left the visitor stranded under the
+    # placeholder guest name for the rest of the session; a later ticket now
+    # repairs the identity and republishes it.
+    assert "this.identity.name !== previousName" in refresh
+    assert 'this.sendPresence({ type: "presence" });' in refresh
+    # Cookie-authenticated browsers hold no bearer token in localStorage.
+    assert (
+        "if (!readSession()?.sessionToken && !this.sessionAuthenticated) {"
+        in refresh
+    )
+    assert APP.count("this.clearWorldTicketIdentity();") >= 3
+
+    connect = APP[
+        APP.index("  async connectPresence() {"):
+        APP.index("socket = new WebSocket(socketURL.href)")
+    ]
+    assert (
+        "(readSession()?.sessionToken || this.sessionAuthenticated) &&" in connect
+    )
+    # Never present an expired ticket: the relay drops the claim silently.
+    assert "if (this.worldTicket && this.worldTicketExpires <= Date.now())" in connect
+
+
+def test_world_guests_chat_under_the_name_their_avatar_wears():
+    # The embedded chat is matched to an avatar by display name, so a signed-out
+    # visitor has to speak as the same "Guest ####" the World shows above them.
+    assert 'const GUEST_ID_KEY = "forkmesh.world.guestId.v1";' in APP
+    assert 'const WORLD_GUEST_ID_KEY = "forkmesh.world.guestId.v1";' in DASHBOARD_CHAT
+    assert "worldGuestPresenceName() ||" in DASHBOARD_CHAT
+    guest_name = DASHBOARD_CHAT[
+        DASHBOARD_CHAT.index("  function worldGuestPresenceName() {"):
+        DASHBOARD_CHAT.index("\n  function displayName()")
+    ]
+    assert 'requestedParams.get("worldEmbed") !== "1"' in guest_name
+    # Same derivation as world.js hashSuffix()/accountIdentity().
+    assert "hash = (Math.imul(hash, 31) + char.charCodeAt(0)) >>> 0;" in guest_name
+    assert "String(hash % 10000).padStart(4, \"0\")" in guest_name
+    assert "`guest:${guest}`" in guest_name
+    assert "`guest:${guestId()}`" in APP
 
 
 def test_world_updates_arrive_via_a_gentle_in_place_reload():
