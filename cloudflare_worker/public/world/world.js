@@ -2591,8 +2591,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               )}">${escapeHTML(
                 ACCOUNT_STATUS_ICONS[identity.accountStatus] || "○",
               )}</span>
-              <span class="world-shirt-tech" data-world-shirt-tech>${escapeHTML(identity.browser)} · ${escapeHTML(identity.os)}</span>
-              <span class="world-shirt-name" data-world-shirt-name>${escapeHTML(identity.name)}</span>
             </button>
           </nav>
         </header>
@@ -3773,6 +3771,7 @@ class ForkMeshWorld extends HTMLElement {
         },
         onWorldBulletinSelect: () => this.openLandmark("events"),
         onMastodonBoardSelect: () => this.openMastodonBoard(),
+        onReferralBoardSelect: () => void this.copyReferralLink(),
         onSystemCapacityTableSelect: (table) =>
           this.openSystemCapacityTables(table),
         onRendererStateChange: (state) => {
@@ -3855,6 +3854,7 @@ class ForkMeshWorld extends HTMLElement {
       void this.loadMastodonBoard();
       this.syncMastodonKiosk();
       this.syncMemberLounge();
+      void this.loadReferralLeaderboard();
       this.syncRepositoryScene();
       // Do not fan out a star request for every perimeter portal at startup.
       // The active repository hydrates its exact count below; inactive portals
@@ -6004,8 +6004,6 @@ class ForkMeshWorld extends HTMLElement {
     const visible = publicIdentity(this.identity, this.settings);
     const flag = this.$("[data-world-shirt-flag]");
     const account = this.$("[data-world-shirt-account]");
-    const tech = this.$("[data-world-shirt-tech]");
-    const shirtName = this.$("[data-world-shirt-name]");
     const badge = this.$("[data-world-shirt-badge]");
     if (flag) flag.textContent = visible.flag;
     if (account) {
@@ -6013,8 +6011,6 @@ class ForkMeshWorld extends HTMLElement {
         ACCOUNT_STATUS_ICONS[visible.accountStatus] || "○";
       account.title = visible.accountStatus || "Guest";
     }
-    if (tech) tech.textContent = `${visible.browser} · ${visible.os}`;
-    if (shirtName) shirtName.textContent = visible.name;
     if (badge) {
       // The badge is the settings entry point; keep the name/status copy that
       // used to sit beside it reachable as its tooltip and accessible name.
@@ -15619,6 +15615,50 @@ class ForkMeshWorld extends HTMLElement {
     this.world?.setRemotePlayers([...combined.values()]);
     this.syncMemberLounge();
     this.updateSystemCapacityMetrics();
+  }
+
+  // The viewer's shareable referral link — only real user accounts (never
+  // node sessions) own one, matching the website's session acceptance rule.
+  referralLink() {
+    const session = readSession();
+    if (!session?.nodeName || session.kind === "node") return "";
+    if (session.kind !== "user" && !session.email) return "";
+    return `${location.origin}/r/${encodeURIComponent(
+      String(session.nodeName).toLowerCase(),
+    )}`;
+  }
+
+  // One fetch at boot (and after each board tap) keeps the sign fresh without
+  // adding another polling loop; the endpoint is edge-cached server-side.
+  async loadReferralLeaderboard() {
+    if (!this.world?.updateReferralLeaderboard) return;
+    try {
+      const data = await this.fetchJSON("/api/referrals/leaderboard", {
+        auth: false,
+        timeout: 5000,
+      });
+      this.referralBoard = Array.isArray(data?.board) ? data.board : [];
+    } catch (_) {
+      this.referralBoard = Array.isArray(this.referralBoard)
+        ? this.referralBoard
+        : [];
+    }
+    this.world.updateReferralLeaderboard(this.referralBoard, this.referralLink());
+  }
+
+  async copyReferralLink() {
+    const link = this.referralLink();
+    if (!link) {
+      this.toast("Sign in to get your referral link.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(link);
+      this.toast("Referral link copied — share it to climb the board.");
+    } catch (_) {
+      this.toast(`Your referral link: ${link}`);
+    }
+    void this.loadReferralLeaderboard();
   }
 
   syncMemberLounge() {

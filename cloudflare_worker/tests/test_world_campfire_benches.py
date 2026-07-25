@@ -45,6 +45,48 @@ def test_double_click_on_a_bench_sits_instead_of_dashing():
     assert dbl.index("sitOnCampfireBench") < dbl.index("dashTarget = point")
 
 
+def test_seats_are_benches_with_planks_and_legs():
+    # adhoc #291: the ring is made of wooden benches (plank + end legs,
+    # long axis tangent to the circle), not cylinder stools.
+    ring = SCENE.split("function rebuildCampfireCircle", 1)[1].split(
+        "setShadows(campfire);", 1
+    )[0]
+    assert "CylinderGeometry" not in ring
+    assert "new THREE.BoxGeometry(1.6, 0.14, 0.6)" in ring
+    assert "bench.rotation.y = -angle + Math.PI / 2;" in ring
+    assert ring.count("leg") >= 2
+
+
+def test_circle_always_keeps_an_open_bench_for_the_next_guest():
+    # One bench beyond the registered membership stays blank; when a guest
+    # joins and takes it, the roster grows and the rebuilt ring brings a
+    # fresh open bench with it.
+    assert "rebuildCampfireCircle(Math.max(total, roster.length) + 1)" in SCENE
+
+
+def test_sitters_face_the_flames_not_away_from_them():
+    # Avatar fronts face local -Z, so the inward (fire-facing) heading is
+    # atan2(x, z); the negated form turned sitters backwards (adhoc #291).
+    assert "Math.atan2(seat.x, seat.z)" in SCENE
+    assert "Math.atan2(offset.x, offset.z)" in SCENE
+    assert "Math.atan2(-seat.x, -seat.z)" not in SCENE
+    assert "Math.atan2(-offset.x, -offset.z)" not in SCENE
+
+
+def test_faces_wear_the_last_used_emoji_with_a_smile_default():
+    # adhoc #291: the head wears the last world-status emoji the visitor set;
+    # with no stored emoji the face defaults to a smile.
+    assert 'const AVATAR_DEFAULT_FACE_EMOJI = "🙂";' in SCENE
+    assert "function avatarFaceTexture" in SCENE
+    assert "function syncAvatarFace" in SCENE
+    assert (
+        "avatar.userData.statusEmoji || AVATAR_DEFAULT_FACE_EMOJI" in SCENE
+    )
+    # Status changes re-render the face card.
+    assert "syncAvatarFace(THREE, avatar);" in SCENE
+    assert "faceMesh.rotation.y = Math.PI;" in SCENE
+
+
 def test_remote_bench_sitters_render_seated():
     assert (
         'const CAMPFIRE_SEATED_ACTIVITY = "sitting beside the campfire";' in SCENE

@@ -86,6 +86,8 @@ const MOVEMENT_KEYS = new Set([
   "ArrowRight",
 ]);
 const ACTIVE_LEADERBOARD_POSITION = Object.freeze([-11.5, 0, 25]);
+// Beside the active leaderboard, just west of the arrival grid.
+const REFERRAL_LEADERBOARD_POSITION = Object.freeze([-13.5, 0, 30]);
 const SYSTEM_CAPACITY_PLATFORM_POSITION = Object.freeze([8, 0, -27]);
 const SERVER_CABINET_YARD_ORIGIN = Object.freeze([18, 0, 0]);
 const ARRIVAL_GRID_BOUNDS = Object.freeze({
@@ -316,6 +318,15 @@ function badgeTexture(THREE, identity, accent = "#9ef7c6") {
     "over-a-year": "FIRST SEEN 1Y+ AGO",
     hidden: "FIRST SEEN HIDDEN",
   };
+  const statusColors = {
+    online: "#9ef7c6",
+    available: "#9ef7c6",
+    away: "#f7c96b",
+    inactive: "#91a39a",
+    recent: "#91a39a",
+    returning: "#77d9ff",
+    hidden: "#65776f",
+  };
   return canvasTexture(THREE, 512, 512, (context) => {
     context.fillStyle = "#0c2019";
     context.fillRect(0, 0, 512, 512);
@@ -325,48 +336,23 @@ function badgeTexture(THREE, identity, accent = "#9ef7c6") {
 
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.font = '128px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
+    context.font = '170px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
     context.fillStyle = "#ffffff";
-    context.fillText(identity.flag || "◌", 256, 86);
-
-    roundedRect(context, 42, 158, 428, 62, 10);
-    context.fillStyle = "rgba(255,255,255,0.11)";
-    context.fill();
-    context.font = '700 27px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillStyle = "#d9ffea";
-    context.fillText(
-      `${String(identity.browser || "BROWSER").toUpperCase()} · ${String(identity.os || "DEVICE").toUpperCase()}`,
-      256,
-      189,
-    );
-
-    context.font = '700 43px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillStyle = "#ffffff";
-    const name = String(identity.name || "guest").slice(0, 15);
-    context.fillText(name, 256, 265);
+    context.fillText(identity.flag || "◌", 256, 150);
 
     context.font = '700 21px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#9ef7c6";
     context.fillText(
       firstSeenLabels[identity.firstVisitAge] || firstSeenLabels.hidden,
       256,
-      324,
+      280,
     );
     const activity =
       activityLabels[identity.activityCategory] || activityLabels.hidden;
     const visits = Math.max(0, Math.min(999, Number(identity.visitCount) || 0));
     context.fillStyle = "#77d9ff";
-    context.fillText(`${activity} · ${visits} PUBLIC URL VISITS`, 256, 366);
+    context.fillText(`${activity} · ${visits} PUBLIC URL VISITS`, 256, 322);
 
-    const statusColors = {
-      online: "#9ef7c6",
-      available: "#9ef7c6",
-      away: "#f7c96b",
-      inactive: "#91a39a",
-      recent: "#91a39a",
-      returning: "#77d9ff",
-      hidden: "#65776f",
-    };
     context.beginPath();
     context.arc(60, 452, 12, 0, Math.PI * 2);
     context.fillStyle = statusColors[identity.status] || "#9ef7c6";
@@ -518,6 +504,121 @@ function activeLeaderboardTexture(THREE, members = []) {
       context.fillText("NO REGISTERED ACTIVITY REPORTED", 38, 176);
     }
   });
+}
+
+function rankedReferralRows(rows = []) {
+  return (Array.isArray(rows) ? rows : [])
+    .filter(
+      (row) =>
+        String(row?.name || "").trim() &&
+        (Number(row?.clicks) > 0 || Number(row?.signups) > 0),
+    )
+    .sort((left, right) => {
+      const signupDifference =
+        (Number(right?.signups) || 0) - (Number(left?.signups) || 0);
+      if (signupDifference) return signupDifference;
+      const clickDifference =
+        (Number(right?.clicks) || 0) - (Number(left?.clicks) || 0);
+      if (clickDifference) return clickDifference;
+      return String(left?.name || "").localeCompare(
+        String(right?.name || ""),
+        undefined,
+        { sensitivity: "base" },
+      );
+    })
+    .slice(0, 5);
+}
+
+function referralLeaderboardTexture(THREE, rows = [], viewerLink = "") {
+  const ranked = rankedReferralRows(rows);
+  return canvasTexture(THREE, 768, 512, (context) => {
+    context.clearRect(0, 0, 768, 512);
+    roundedRect(context, 4, 4, 760, 504, 16);
+    context.fillStyle = "rgba(6,17,14,0.95)";
+    context.fill();
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 5;
+    context.stroke();
+    context.textBaseline = "middle";
+    context.fillStyle = "#f1fff6";
+    context.font = '700 48px "ForkMesh Favorit", system-ui, sans-serif';
+    context.fillText("REFERRAL LEADERBOARD", 38, 58);
+    context.fillStyle = "#9ef7c6";
+    context.font = '400 20px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("SHARE YOUR /r/ LINK · CLICKS AND SIGNUPS", 38, 102);
+    ranked.forEach((row, index) => {
+      const top = 148 + index * 52;
+      const name = String(row.name).trim().slice(0, 22);
+      context.fillStyle = "#d9ffea";
+      context.font = '700 25px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(`${index + 1}. ${name}`, 38, top);
+      context.fillStyle = "#77d9ff";
+      context.font = '400 20px "ForkMesh Mono", ui-monospace, monospace';
+      const clicks = Number(row.clicks) || 0;
+      const signups = Number(row.signups) || 0;
+      const value = `${signups} SIGNUPS · ${clicks} CLICKS`;
+      context.fillText(value, 768 - 38 - context.measureText(value).width, top);
+    });
+    if (!ranked.length) {
+      context.fillStyle = "#91a39a";
+      context.font = '400 24px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("NO REFERRALS COUNTED YET", 38, 200);
+    }
+    context.strokeStyle = "rgba(158,247,198,0.4)";
+    context.lineWidth = 2;
+    context.beginPath();
+    context.moveTo(38, 418);
+    context.lineTo(730, 418);
+    context.stroke();
+    if (viewerLink) {
+      context.fillStyle = "#9ef7c6";
+      context.font = '400 19px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("YOUR LINK · TAP THE BOARD TO COPY", 38, 446);
+      context.fillStyle = "#d9ffea";
+      context.font = '700 23px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(String(viewerLink).slice(0, 52), 38, 480);
+    } else {
+      context.fillStyle = "#91a39a";
+      context.font = '400 21px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("SIGN IN TO GET YOUR OWN REFERRAL LINK", 38, 462);
+    }
+  });
+}
+
+function makeReferralLeaderboardSign(THREE) {
+  const sign = new THREE.Group();
+  sign.name = "world-referral-leaderboard";
+  const base = new THREE.Mesh(
+    new THREE.BoxGeometry(4.8, 0.25, 1.35),
+    makeMaterial(THREE, "#1a3032", { roughness: 0.8 }),
+  );
+  base.position.y = 0.13;
+  sign.add(base);
+  for (const x of [-1.72, 1.72]) {
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(0.16, 3.7, 0.16),
+      makeMaterial(THREE, "#234d4a", { metalness: 0.22, roughness: 0.52 }),
+    );
+    post.position.set(x, 1.85, 0);
+    sign.add(post);
+  }
+  const board = new THREE.Mesh(
+    new THREE.BoxGeometry(3.72, 2.72, 0.12),
+    makeMaterial(THREE, "#071712", { roughness: 0.55 }),
+  );
+  board.position.set(0, 2.08, 0.08);
+  sign.add(board);
+  const face = new THREE.Mesh(
+    new THREE.PlaneGeometry(3.52, 2.55),
+    new THREE.MeshBasicMaterial({
+      map: referralLeaderboardTexture(THREE),
+      transparent: true,
+    }),
+  );
+  face.position.set(0, 2.08, 0.151);
+  sign.add(face);
+  sign.userData.face = face;
+  return sign;
 }
 
 const OFFICE_MARKETING_TASK_LIMIT = 6;
@@ -1088,6 +1189,31 @@ function addSectionPlaque(THREE, group, position, title, subtitle, color, distan
   );
 }
 
+// Worn on the head when a visitor has never stored a world-status emoji.
+const AVATAR_DEFAULT_FACE_EMOJI = "🙂";
+
+function avatarFaceTexture(THREE, emoji) {
+  return canvasTexture(THREE, 128, 128, (context) => {
+    context.clearRect(0, 0, 128, 128);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = '92px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
+    context.fillStyle = "#1d130c";
+    context.fillText(emoji, 64, 70);
+  });
+}
+
+function syncAvatarFace(THREE, avatar) {
+  const face = avatar.userData.faceMesh;
+  if (!face?.material) return;
+  const worn = avatar.userData.statusEmoji || AVATAR_DEFAULT_FACE_EMOJI;
+  if (avatar.userData.faceEmojiShown === worn) return;
+  face.material.map?.dispose?.();
+  face.material.map = avatarFaceTexture(THREE, worn);
+  face.material.needsUpdate = true;
+  avatar.userData.faceEmojiShown = worn;
+}
+
 function syncAvatarStatus(THREE, avatar, identity) {
   if (!avatar?.userData) return;
   const status = normalizeWorldStatus(
@@ -1108,7 +1234,8 @@ function syncAvatarStatus(THREE, avatar, identity) {
   avatar.userData.emojiStatusSprite = null;
   // Status remains available to the accessible player label and presence
   // payload, but the large duplicate overhead banner is intentionally not
-  // rendered in-world.
+  // rendered in-world. The last-used emoji is worn on the face instead.
+  syncAvatarFace(THREE, avatar);
 }
 
 function makeConsentedProfileFace(THREE, follower) {
@@ -1223,6 +1350,17 @@ function createAvatar(THREE, identity, options = {}) {
   hair.position.y = 3.48;
   group.add(hair);
 
+  // The face wears the last world-status emoji the visitor set (default
+  // smile). Avatar fronts face -Z; the card floats just clear of the head
+  // sphere and syncAvatarFace keeps its texture current.
+  const faceMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.56, 0.56),
+    new THREE.MeshBasicMaterial({ transparent: true }),
+  );
+  faceMesh.position.set(0, 3.38, -0.47);
+  faceMesh.rotation.y = Math.PI;
+  group.add(faceMesh);
+
   const limbGeometry = new THREE.BoxGeometry(0.29, 1.25, 0.32);
   const leftArm = new THREE.Mesh(limbGeometry, shirt);
   leftArm.position.set(-0.73, 2.08, 0);
@@ -1299,6 +1437,8 @@ function createAvatar(THREE, identity, options = {}) {
     statusNote: "",
     emojiStatusKey: "",
     emojiStatusSprite: null,
+    faceMesh,
+    faceEmojiShown: "",
   };
   syncOperatorBelt(THREE, group, identity.nodes?.length || 0);
   syncAvatarStatus(THREE, group, identity);
@@ -4119,6 +4259,7 @@ export function createWorldScene({
   onOfficeMeetingBoardSelect = () => {},
   onWorldBulletinSelect = () => {},
   onMastodonBoardSelect = () => {},
+  onReferralBoardSelect = () => {},
   onSystemCapacityTableSelect = () => {},
   onRendererStateChange = () => {},
   onOfficeChairSelect = () => {},
@@ -4489,12 +4630,13 @@ export function createWorldScene({
     innerFlame.scale.set(size * 0.82, size * 0.9, size * 0.82);
     fireLight.intensity = 3.2 * fireLevel + Math.sin(time * 0.013) * 0.7;
   });
-  // Stools sit back far enough from the pit to leave a wide walkable ring
+  // Benches sit back far enough from the pit to leave a wide walkable ring
   // between the seats and the stones (and to clear the log pile at ~2.6). The
-  // circle carries one log stool per registered member — occupied by a seated
-  // directory figure while the member is away, left empty (and sittable) while
-  // they walk the world as a live avatar — and widens whenever a new account
-  // joins so everyone still fits around the fire.
+  // circle carries one wooden bench per registered member — occupied by a
+  // seated directory figure while the member is away, left empty (and
+  // sittable) while they walk the world as a live avatar — plus one bench
+  // that always stays open so an arriving guest has a spot by the fire, and
+  // widens whenever a new account joins so everyone still fits.
   const CAMPFIRE_BENCH_RADIUS = 6.2;
   const CAMPFIRE_CIRCLE_MIN_SEATS = 6;
   const CAMPFIRE_CIRCLE_MAX_SEATS = 96;
@@ -4528,24 +4670,33 @@ export function createWorldScene({
     const seatOffsets = [];
     for (let index = 0; index < count; index += 1) {
       const angle = (index / count) * Math.PI * 2;
+      const bench = new THREE.Group();
+      bench.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
+      // Long axis tangent to the ring so every bench fronts the flames.
+      bench.rotation.y = -angle + Math.PI / 2;
       const seat = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.42, 0.5, 0.5, 10),
-        makeMaterial(THREE, "#70472a", { roughness: 0.86 }),
+        new THREE.BoxGeometry(1.6, 0.14, 0.6),
+        makeMaterial(THREE, "#8a5a33", { roughness: 0.86 }),
       );
-      seat.position.set(
-        Math.cos(angle) * radius,
-        0.25,
-        Math.sin(angle) * radius,
-      );
+      seat.position.y = 0.48;
       // Seat coordinates are read from the live world matrix at click time, so a
       // relocated campfire needs no bookkeeping and the seats can never drift.
       seat.userData.campfireBench = true;
       interactive.push(seat);
-      ring.add(seat);
-      // Offsets land sitters just above the stool top, matching the local
+      bench.add(seat);
+      [-0.62, 0.62].forEach((end) => {
+        const leg = new THREE.Mesh(
+          new THREE.BoxGeometry(0.16, 0.41, 0.5),
+          makeMaterial(THREE, "#4f3018", { roughness: 0.9 }),
+        );
+        leg.position.set(end, 0.205, 0);
+        bench.add(leg);
+      });
+      ring.add(bench);
+      // Offsets land sitters just above the plank, matching the local
       // player's bench-seat pose height.
       seatOffsets.push(
-        new THREE.Vector3(seat.position.x, seat.position.y + 0.1, seat.position.z),
+        new THREE.Vector3(bench.position.x, seat.position.y + 0.1, bench.position.z),
       );
     }
     setShadows(ring);
@@ -4568,6 +4719,38 @@ export function createWorldScene({
   );
   world.add(activeLeaderboardSign);
   registerMovableObject("active-leaderboard-sign", activeLeaderboardSign);
+  const referralLeaderboardSign = makeReferralLeaderboardSign(THREE);
+  referralLeaderboardSign.position.set(...REFERRAL_LEADERBOARD_POSITION);
+  referralLeaderboardSign.rotation.y = Math.atan2(
+    -REFERRAL_LEADERBOARD_POSITION[0],
+    -REFERRAL_LEADERBOARD_POSITION[2],
+  );
+  world.add(referralLeaderboardSign);
+  registerMovableObject("referral-leaderboard-sign", referralLeaderboardSign);
+  // Tapping the board copies the viewer's referral link (world.js supplies
+  // the handler); the whole face is the hit target.
+  referralLeaderboardSign.userData.face.userData.interactive =
+    "referral-leaderboard";
+  interactive.push(referralLeaderboardSign.userData.face);
+
+  // Repaints the referral sign only when the ranked rows or the viewer's own
+  // share link actually changed, mirroring the active-leaderboard swap.
+  function updateReferralLeaderboard(rows = [], viewerLink = "") {
+    const face = referralLeaderboardSign.userData.face;
+    const key = JSON.stringify([
+      String(viewerLink || ""),
+      rankedReferralRows(rows).map((row) => [
+        String(row?.name || ""),
+        Number(row?.clicks) || 0,
+        Number(row?.signups) || 0,
+      ]),
+    ]);
+    if (!face || referralLeaderboardSign.userData.key === key) return;
+    face.material.map?.dispose?.();
+    face.material.map = referralLeaderboardTexture(THREE, rows, viewerLink);
+    face.material.needsUpdate = true;
+    referralLeaderboardSign.userData.key = key;
+  }
   const systemCapacityPlatform = createSystemCapacityPlatform(THREE);
   world.add(systemCapacityPlatform);
   registerMovableObject("system-capacity-platform", systemCapacityPlatform);
@@ -6726,9 +6909,10 @@ export function createWorldScene({
         const offset = seat || new THREE.Vector3();
         avatar.userData.targetPosition.copy(campfire.position);
         avatar.userData.targetPosition.add(offset);
-        // Face the flames at the circle's centre (remote headings use
-        // atan2(dx, dz) toward the walk direction).
-        avatar.userData.targetHeading = Math.atan2(-offset.x, -offset.z);
+        // Face the flames at the circle's centre: avatar fronts face local
+        // -Z, so the inward heading is atan2(x, z) — the same heading
+        // sitOnCampfireBench gives the local player.
+        avatar.userData.targetHeading = Math.atan2(offset.x, offset.z);
       } else if (sharedInactive) {
         const restArea = landmarkById("neighborhood").position;
         const seat = hashNumber(remote.id) % 8;
@@ -6888,13 +7072,15 @@ export function createWorldScene({
       activeLeaderboardSign.userData.key = leaderboardKey;
     }
     // Registered members sit in a circle around the campfire facing the
-    // flames. The circle holds one stool per registered account, so members
+    // flames. The circle holds one bench per registered account, so members
     // currently walking the world as live avatars leave visibly empty seats,
-    // and it expands whenever a new account joins so everyone still fits.
+    // plus one extra bench that always stays open for the next guest: when a
+    // new account joins and takes it, the roster grows and the rebuilt ring
+    // brings a fresh open bench with it.
     const roster = (Array.isArray(members) ? members : []).filter((member) =>
       String(member?.name || "").trim(),
     );
-    const seats = rebuildCampfireCircle(Math.max(total, roster.length));
+    const seats = rebuildCampfireCircle(Math.max(total, roster.length) + 1);
     const seen = new Set();
     roster
       .slice(0, Math.max(1, seats.length))
@@ -6936,8 +7122,10 @@ export function createWorldScene({
         figure.position.copy(campfire.position);
         if (seat) figure.position.add(seat);
         // Face the fire at the circle's centre and hold a seated pose on the
-        // stool, matching the local player's bench-seat legs.
-        figure.rotation.y = seat ? Math.atan2(-seat.x, -seat.z) : 0;
+        // bench, matching the local player's bench-seat legs. Avatar fronts
+        // face local -Z, so the inward heading is atan2(x, z), matching
+        // sitOnCampfireBench.
+        figure.rotation.y = seat ? Math.atan2(seat.x, seat.z) : 0;
         figure.userData.leftLeg.rotation.x = -1.3;
         figure.userData.rightLeg.rotation.x = -1.3;
       });
@@ -9460,6 +9648,10 @@ export function createWorldScene({
       onMastodonBoardSelect();
       return;
     }
+    if (hit?.object?.userData?.interactive === "referral-leaderboard") {
+      onReferralBoardSelect();
+      return;
+    }
     if (hit?.object?.userData?.interactive === "system-capacity-table") {
       onSystemCapacityTableSelect({
         name: String(hit.object.userData.tableName || ""),
@@ -10431,6 +10623,7 @@ export function createWorldScene({
     setRemotePlayers,
     updateArrivalStats,
     updateMemberLounge,
+    updateReferralLeaderboard,
     updateNetworkNodes,
     focusNetworkNode,
     updateFederatedInstances,

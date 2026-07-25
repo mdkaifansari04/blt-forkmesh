@@ -916,7 +916,6 @@ forkmesh-world {
 .world-shirt-badge {
   position: relative;
   display: grid;
-  grid-template-rows: 1fr auto auto;
   place-items: center;
   width: 50px;
   height: 50px;
@@ -946,23 +945,8 @@ forkmesh-world {
 }
 
 .world-shirt-flag {
-  font-size: 1.15rem;
+  font-size: 1.6rem;
   line-height: 1;
-}
-
-.world-shirt-tech {
-  font-family: "ForkMesh Mono", monospace;
-  font-size: 0.38rem;
-  letter-spacing: -0.02em;
-}
-
-.world-shirt-name {
-  max-width: 42px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: "ForkMesh Mono", monospace;
-  font-size: 0.42rem;
 }
 
 .world-diagnostics {
