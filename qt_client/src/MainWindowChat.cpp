@@ -5619,10 +5619,19 @@ QString MainWindow::mirrorStateHash(const QString &mirrorPath) const
 // warning only surfaces there — as a caution triangle on the self row/dot in the
 // Mirror nodes panel (m_repoPinMismatch, see loadMirrorNodesPanel), not a
 // top-bar toast; the "Reset integrity pin" action lives in that panel's header.
+//
+// And because the gates below only let the check run on the node that CAN fix
+// the pin (owner key + working copy — the source of truth), a detected mismatch
+// also re-attests immediately instead of leaving clones rejected until the
+// 15-minute reattestStalePins tick or a manual "Reset integrity pin" click: the
+// source of truth defines the correct state, so it should never sit failing its
+// own pin. Rate-limited per repo so a re-publish the relay keeps refusing can't
+// loop into a write storm.
 void MainWindow::refreshRepoPinBanner()
 {
     if (!m_topMessage)
         return;
+    const bool wasFlagged = m_repoPinMismatch;
     m_repoPinMismatch = false;
     m_repoPinCheckIndex = -1;
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
@@ -5666,7 +5675,8 @@ void MainWindow::refreshRepoPinBanner()
                     m_repoPinCheckIndex = -1;
             });
     connect(git, &QProcess::finished, this,
-            [this, git, index, owner, name](int code, QProcess::ExitStatus status) {
+            [this, git, index, owner, name,
+             wasFlagged](int code, QProcess::ExitStatus status) {
                 git->deleteLater();
                 // The user may have switched repos while git was running.
                 if (!m_topMessage || m_repoPinCheckIndex != index ||
@@ -5682,7 +5692,7 @@ void MainWindow::refreshRepoPinBanner()
                 QNetworkReply *reply =
                     m_networkAccess->get(QNetworkRequest(catalogListUrl()));
                 connect(reply, &QNetworkReply::finished, this,
-                        [this, reply, index, owner, name, localHash] {
+                        [this, reply, index, owner, name, localHash, wasFlagged] {
                             reply->deleteLater();
                             // The user may have switched repos in flight.
                             if (!m_topMessage || m_repoPinCheckIndex != index ||
@@ -5714,6 +5724,44 @@ void MainWindow::refreshRepoPinBanner()
                                     " are being rejected — the relay's pinned hash no "
                                     "longer matches the refs this machine serves.");
                                 loadMirrorNodesPanel(); // paint the caution triangle now
+                                // This node holds the working copy and the owner
+                                // key (the gates at the top of this function), so
+                                // it is the source of truth — re-sign the refs it
+                                // actually serves right now rather than waiting
+                                // for reattestStalePins or a manual reset.
+                                const QString healKey = owner + "/" + name;
+                                const qint64 nowMs =
+                                    QDateTime::currentMSecsSinceEpoch();
+                                if (index >= 0 && index < m_repositories.size() &&
+                                    nowMs - m_repoPinAutoHealAtMs.value(healKey) >=
+                                        30000) {
+                                    m_repoPinAutoHealAtMs.insert(healKey, nowMs);
+                                    logSystem(
+                                        "Integrity pin: this node is the source of "
+                                        "truth for " + owner + "/" + name +
+                                        " — re-attesting its current refs "
+                                        "automatically.");
+                                    // The RELAY's record is what drifted, so the
+                                    // local publish fingerprint may still read
+                                    // "unchanged" — drop it so the unchanged-skip
+                                    // gate can't swallow this corrective write
+                                    // (same as reattestStalePins).
+                                    m_catalogPublishedFingerprint.remove(
+                                        catalogPublishKey(
+                                            m_repositories.at(index)));
+                                    publishRepository(index, false);
+                                    // Re-check once the signed write has had a
+                                    // moment to land; a match clears the triangle.
+                                    QTimer::singleShot(1500, this, [this, index] {
+                                        if (m_repoDetailIndex == index)
+                                            refreshRepoPinBanner();
+                                    });
+                                }
+                            } else if (wasFlagged) {
+                                // The pin healed (re-attest landed, or the relay
+                                // caught up); repaint so the caution triangle
+                                // doesn't linger until the next panel rebuild.
+                                loadMirrorNodesPanel();
                             }
                         });
             });
