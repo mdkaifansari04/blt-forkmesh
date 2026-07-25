@@ -7050,7 +7050,7 @@ export function createWorldScene({
       if (!displaced && !movement.lengthSq() && !dashTarget && !jumpQueued) {
         applyBenchSeatPose();
         player.userData.inputEnergy = decayedPointerEnergy(performance.now());
-    animateAvatarActivity(player, time, delta, reducedMotion);
+        animateAvatarActivity(player, time, delta, reducedMotion);
         wasWalking = false;
         return;
       }
