@@ -8283,6 +8283,27 @@ async def repo_mirrors_handler(env, request, owner, repo):
     )
     if payload is None:
         return json_response({"error": "not_found"}, status=404)
+    # Owner column: a headless mirror's catalog record carries no ownerUser of
+    # its own, but the node account may be claim-linked to a user (adhoc #53:
+    # the node record's `owner` field names the linked user). Resolve that link
+    # here so every surface — web repo page and the desktop Mirror nodes panel —
+    # shows the human owner without each publisher having to know it.
+    for mirror in payload.get("mirrors", []):
+        if mirror.get("ownerUser"):
+            continue
+        node_name = str(mirror.get("node") or "").strip().lower()
+        if not node_name:
+            continue
+        try:
+            _, node_rec = await _account_row(env, node_name)
+        except Exception:
+            continue
+        if not node_rec:
+            continue
+        if _account_kind(node_rec) == "user":
+            mirror["ownerUser"] = node_name
+        else:
+            mirror["ownerUser"] = str(node_rec.get("owner") or "").strip()
     response = json_response(payload, cache_seconds=10)
     await edge_cache_put(cache_key, response)
     return response
