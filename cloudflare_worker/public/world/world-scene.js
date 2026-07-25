@@ -3815,7 +3815,13 @@ function worldBulletinTexture(THREE, events = [], offset = 0) {
   });
 }
 
-const MASTODON_KIOSK_VISIBLE_TOOTS = 3;
+// Two posts at a time, but each card is tall enough for the full text plus the
+// post's image attachments. The board is repainted from the same snapshot the
+// mini-app renders.
+const MASTODON_KIOSK_VISIBLE_TOOTS = 2;
+const MASTODON_KIOSK_WIDTH = 1536;
+const MASTODON_KIOSK_HEIGHT = 2048;
+const MASTODON_KIOSK_REFRESH_MS = 10 * 60 * 1000;
 
 function wrapCanvasText(context, text, x, y, maxWidth, lineHeight, maxLines = Infinity) {
   const words = String(text || "").split(/\s+/).filter(Boolean);
@@ -3840,47 +3846,49 @@ function wrapCanvasText(context, text, x, y, maxWidth, lineHeight, maxLines = In
 }
 
 function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage = null) {
-  return canvasTexture(THREE, 1280, 1600, (context) => {
+  const WIDTH = MASTODON_KIOSK_WIDTH;
+  const HEIGHT = MASTODON_KIOSK_HEIGHT;
+  return canvasTexture(THREE, WIDTH, HEIGHT, (context) => {
     context.fillStyle = "#191a2e";
-    context.fillRect(0, 0, 1280, 1600);
+    context.fillRect(0, 0, WIDTH, HEIGHT);
     if (!snapshot) {
       // No live profile yet (still fetching, or mastodon.social unreachable):
       // fall back to the static kiosk sign describing the board.
       context.fillStyle = "#6364ff";
-      context.fillRect(12, 12, 1256, 222);
+      context.fillRect(12, 12, 1512, 260);
       context.fillStyle = "#f2f3ff";
-      context.font = '800 132px "ForkMesh Favorit", sans-serif';
-      context.fillText("MASTODON", 82, 172);
+      context.font = '800 150px "ForkMesh Favorit", sans-serif';
+      context.fillText("MASTODON", 96, 200);
       context.fillStyle = "#c8c9ff";
-      context.font = '700 64px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("@forkmesh", 82, 400);
-      context.font = '600 50px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("@mastodon.social", 82, 482);
+      context.font = '700 72px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("@forkmesh", 96, 470);
+      context.font = '600 56px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("@mastodon.social", 96, 562);
       context.strokeStyle = "rgba(99,100,255,0.5)";
       context.lineWidth = 4;
       context.beginPath();
-      context.moveTo(82, 564);
-      context.lineTo(1198, 564);
+      context.moveTo(96, 656);
+      context.lineTo(1440, 656);
       context.stroke();
       context.fillStyle = "#e8e9ff";
-      context.font = '700 56px "ForkMesh Mono", ui-monospace, monospace';
+      context.font = '700 60px "ForkMesh Mono", ui-monospace, monospace';
       [
         "LIVE PUBLIC PROFILE",
         "FOLLOWERS · FOLLOWING · POSTS",
-        "BIO · VERIFIED LINKS",
-        "LATEST TOOTS, SCROLLABLE",
+        "FULL POSTS WITH IMAGES",
+        "REFRESHED EVERY 10 MINUTES",
       ].forEach((line, index) => {
-        context.fillText(line, 82, 700 + index * 120);
+        context.fillText(line, 96, 810 + index * 136);
       });
       context.fillStyle = "#8b9bf4";
-      context.font = '800 64px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("TAP / CLICK TO OPEN", 82, 1350);
+      context.font = '800 68px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("TAP / CLICK TO OPEN", 96, 1740);
       context.fillStyle = "#7a7ca8";
-      context.font = '600 42px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("READ-ONLY · FETCHED FROM MASTODON.SOCIAL", 82, 1475);
+      context.font = '600 44px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("READ-ONLY · FETCHED FROM MASTODON.SOCIAL", 96, 1892);
       context.strokeStyle = "#6364ff";
       context.lineWidth = 16;
-      context.strokeRect(12, 12, 1256, 1576);
+      context.strokeRect(12, 12, 1512, 2024);
       return;
     }
     const image = (url) =>
@@ -3890,85 +3898,85 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
     const header = image(snapshot.headerURL);
     context.save();
     context.beginPath();
-    context.rect(16, 16, 1248, 300);
+    context.rect(16, 16, 1504, 360);
     context.clip();
     if (header?.naturalWidth > 0 && header?.naturalHeight > 0) {
       const scale = Math.max(
-        1248 / header.naturalWidth,
-        300 / header.naturalHeight,
+        1504 / header.naturalWidth,
+        360 / header.naturalHeight,
       );
       const width = header.naturalWidth * scale;
       const height = header.naturalHeight * scale;
       context.drawImage(
         header,
-        16 + (1248 - width) / 2,
-        16 + (300 - height) / 2,
+        16 + (1504 - width) / 2,
+        16 + (360 - height) / 2,
         width,
         height,
       );
     } else {
       context.fillStyle = "#43389c";
-      context.fillRect(16, 16, 1248, 300);
+      context.fillRect(16, 16, 1504, 360);
     }
-    const shade = context.createLinearGradient(0, 96, 0, 316);
+    const shade = context.createLinearGradient(0, 120, 0, 376);
     shade.addColorStop(0, "rgba(15,16,36,0)");
     shade.addColorStop(1, "rgba(15,16,36,0.9)");
     context.fillStyle = shade;
-    context.fillRect(16, 16, 1248, 300);
+    context.fillRect(16, 16, 1504, 360);
     context.fillStyle = "rgba(15,16,36,0.62)";
-    roundedRect(context, 36, 36, 386, 64, 18);
+    roundedRect(context, 40, 40, 420, 70, 20);
     context.fill();
     context.fillStyle = "#f2f3ff";
-    context.font = '800 40px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("MASTODON · LIVE", 58, 82);
+    context.font = '800 44px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("MASTODON · LIVE", 64, 92);
     context.restore();
     // Avatar overlapping the banner edge, then identity beside it.
     const avatar = image(snapshot.avatarURL);
     context.fillStyle = "#191a2e";
-    roundedRect(context, 38, 226, 188, 188, 40);
+    roundedRect(context, 40, 276, 208, 208, 44);
     context.fill();
     context.save();
-    roundedRect(context, 48, 236, 168, 168, 32);
+    roundedRect(context, 52, 288, 184, 184, 36);
     context.clip();
     if (avatar?.naturalWidth > 0) {
-      context.drawImage(avatar, 48, 236, 168, 168);
+      context.drawImage(avatar, 52, 288, 184, 184);
     } else {
       context.fillStyle = "#43389c";
-      context.fillRect(48, 236, 168, 168);
+      context.fillRect(52, 288, 184, 184);
       context.fillStyle = "#c8c9ff";
-      context.font = '800 104px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("@", 92, 358);
+      context.font = '800 112px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("@", 100, 418);
     }
     context.restore();
     context.fillStyle = "#f2f3ff";
-    context.font = '800 58px "ForkMesh Favorit", sans-serif';
-    context.fillText(String(snapshot.displayName || "ForkMesh"), 248, 392);
+    context.font = '800 64px "ForkMesh Favorit", sans-serif';
+    context.fillText(String(snapshot.displayName || "ForkMesh"), 280, 452);
     context.fillStyle = "#c8c9ff";
-    context.font = '600 34px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(String(snapshot.acct || "@forkmesh@mastodon.social"), 248, 442);
+    context.font = '600 38px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(String(snapshot.acct || "@forkmesh@mastodon.social"), 280, 510);
     [
       ["FOLLOWERS", snapshot.followers],
       ["FOLLOWING", snapshot.following],
       ["POSTS", snapshot.posts],
       ["JOINED", snapshot.joined],
     ].forEach(([label, value], index) => {
-      const x = 48 + index * 308;
+      const x = 56 + index * 366;
       context.fillStyle = "#8b8db8";
-      context.font = '700 26px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(label, x, 510);
+      context.font = '700 28px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(label, x, 584);
       context.fillStyle = "#f2f3ff";
-      context.font = '800 54px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(String(value ?? "—"), x, 572);
+      context.font = '800 58px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(String(value ?? "—"), x, 652);
     });
     context.strokeStyle = "rgba(99,100,255,0.5)";
     context.lineWidth = 4;
     context.beginPath();
-    context.moveTo(48, 616);
-    context.lineTo(1232, 616);
+    context.moveTo(56, 700);
+    context.lineTo(1480, 700);
     context.stroke();
     context.fillStyle = "#8b9bf4";
-    context.font = '800 36px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("LATEST TOOTS", 48, 674);
+    context.font = '800 38px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("LATEST TOOTS", 56, 760);
     const toots = Array.isArray(snapshot.toots) ? snapshot.toots : [];
     const start = clamp(
       Number(offset) || 0,
@@ -3978,51 +3986,164 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
     if (toots.length > MASTODON_KIOSK_VISIBLE_TOOTS) {
       context.textAlign = "right";
       context.fillStyle = "#7a7ca8";
-      context.font = '700 28px "ForkMesh Mono", ui-monospace, monospace';
+      context.font = '700 30px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(
         `${start + 1}–${Math.min(
           start + MASTODON_KIOSK_VISIBLE_TOOTS,
           toots.length,
         )} / ${toots.length} · SCROLL ▲▼`,
-        1232,
-        672,
+        1480,
+        758,
       );
       context.textAlign = "left";
     }
     const entries = toots.slice(start, start + MASTODON_KIOSK_VISIBLE_TOOTS);
     if (!entries.length) {
       context.fillStyle = "#c8c9ff";
-      context.font = '600 36px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("NO PUBLIC TOOTS YET", 48, 770);
+      context.font = '600 40px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("NO PUBLIC TOOTS YET", 56, 860);
     }
     entries.forEach((toot, index) => {
-      const y = 712 + index * 262;
+      const top = 800 + index * 556;
+      const images = (Array.isArray(toot.images) ? toot.images : [])
+        .map((url) => String(url || ""))
+        .filter(Boolean)
+        .slice(0, 4);
       context.fillStyle = "#c8c9ff";
-      context.font = '700 30px "ForkMesh Mono", ui-monospace, monospace';
+      context.font = '700 32px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(
         [toot.author, toot.date].filter(Boolean).join(" · "),
-        48,
-        y + 30,
+        56,
+        top + 36,
       );
       context.fillStyle = "#e8e9ff";
-      context.font = '600 32px "ForkMesh Mono", ui-monospace, monospace';
-      wrapCanvasText(context, toot.text, 48, y + 86, 1184, 44, 4);
+      context.font = '600 34px "ForkMesh Mono", ui-monospace, monospace';
+      // The full post text runs until it hits the card's image strip; posts
+      // longer than the card still end at a whole line rather than mid-word.
+      const lines = wrapCanvasText(
+        context,
+        toot.text,
+        56,
+        top + 100,
+        1424,
+        46,
+        images.length ? 4 : 7,
+      );
+      if (images.length) {
+        // Attachments below the text, cover-cropped into equal tiles. Tiles
+        // that have not loaded CORS-clean stay as empty plates.
+        const gap = 18;
+        const height = 180;
+        const width = Math.min(
+          360,
+          (1424 - gap * (images.length - 1)) / images.length,
+        );
+        const y = top + 116 + Math.max(lines, 1) * 46;
+        images.forEach((url, position) => {
+          const x = 56 + position * (width + gap);
+          context.save();
+          roundedRect(context, x, y, width, height, 18);
+          context.clip();
+          const media = image(url);
+          if (media?.naturalWidth > 0 && media?.naturalHeight > 0) {
+            const scale = Math.max(
+              width / media.naturalWidth,
+              height / media.naturalHeight,
+            );
+            context.drawImage(
+              media,
+              x + (width - media.naturalWidth * scale) / 2,
+              y + (height - media.naturalHeight * scale) / 2,
+              media.naturalWidth * scale,
+              media.naturalHeight * scale,
+            );
+          } else {
+            context.fillStyle = "#232445";
+            context.fillRect(x, y, width, height);
+            context.fillStyle = "#7a7ca8";
+            context.font = '700 26px "ForkMesh Mono", ui-monospace, monospace';
+            context.fillText("IMAGE", x + 24, y + height / 2 + 10);
+          }
+          context.restore();
+        });
+      }
       context.strokeStyle = "rgba(99,100,255,0.28)";
       context.lineWidth = 3;
       context.beginPath();
-      context.moveTo(48, y + 240);
-      context.lineTo(1232, y + 240);
+      context.moveTo(56, top + 526);
+      context.lineTo(1480, top + 526);
       context.stroke();
     });
     context.fillStyle = "#8b9bf4";
-    context.font = '800 34px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("TAP / CLICK TO OPEN THE FULL PROFILE", 48, 1534);
+    context.font = '800 38px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("TAP / CLICK TO OPEN THE FULL PROFILE", 56, 1958);
     context.fillStyle = "#7a7ca8";
-    context.font = '600 26px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("LIVE · READ-ONLY · FETCHED FROM MASTODON.SOCIAL", 48, 1576);
+    context.font = '600 28px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      "LIVE · READ-ONLY · REFRESHED EVERY 10 MINUTES FROM MASTODON.SOCIAL",
+      56,
+      2006,
+    );
     context.strokeStyle = "#6364ff";
     context.lineWidth = 16;
-    context.strokeRect(12, 12, 1256, 1576);
+    context.strokeRect(12, 12, 1512, 2024);
+  });
+}
+
+// The pac-man dial that rides on the kiosk frame: the disc is whole right
+// after a fetch and is eaten away as the ten-minute refresh window elapses.
+// It repaints once a second on its own small texture so the big board texture
+// is only rebuilt when the snapshot itself changes.
+function mastodonCountdownTexture(
+  THREE,
+  remainingMs = MASTODON_KIOSK_REFRESH_MS,
+  totalMs = MASTODON_KIOSK_REFRESH_MS,
+  loading = false,
+) {
+  const total = Math.max(1000, Number(totalMs) || MASTODON_KIOSK_REFRESH_MS);
+  const remaining = clamp(Number(remainingMs) || 0, 0, total);
+  const seconds = Math.ceil(remaining / 1000);
+  return canvasTexture(THREE, 256, 256, (context) => {
+    context.fillStyle = "rgba(15,16,36,0.88)";
+    roundedRect(context, 6, 6, 244, 244, 36);
+    context.fill();
+    context.strokeStyle = "#6364ff";
+    context.lineWidth = 6;
+    roundedRect(context, 6, 6, 244, 244, 36);
+    context.stroke();
+    const centerX = 128;
+    const centerY = 108;
+    const radius = 66;
+    // A closed mouth would read as a plain disc, so keep a chomp that flips
+    // every second even when the window has only just reset.
+    const chomp = seconds % 2 === 0 ? 0.42 : 0.14;
+    const mouth = loading
+      ? 0.42
+      : clamp(Math.max(chomp, (1 - remaining / total) * Math.PI), 0, Math.PI);
+    context.fillStyle = loading ? "#8b9bf4" : "#ffd257";
+    context.beginPath();
+    context.moveTo(centerX, centerY);
+    context.arc(centerX, centerY, radius, mouth, Math.PI * 2 - mouth);
+    context.closePath();
+    context.fill();
+    context.fillStyle = "#191a2e";
+    context.beginPath();
+    context.arc(centerX + 8, centerY - 32, 9, 0, Math.PI * 2);
+    context.fill();
+    context.textAlign = "center";
+    context.fillStyle = "#e8e9ff";
+    context.font = '800 46px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      loading
+        ? "SYNC"
+        : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`,
+      centerX,
+      206,
+    );
+    context.fillStyle = "#8b8db8";
+    context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(loading ? "FETCHING" : "NEXT SYNC", centerX, 236);
+    context.textAlign = "left";
   });
 }
 
@@ -4034,7 +4155,7 @@ function createMastodonKiosk(THREE, interactive) {
   group.position.set(33.5, 0, -18.5);
   group.rotation.y = Math.atan2(-group.position.x, -group.position.z);
   const base = new THREE.Mesh(
-    new THREE.BoxGeometry(5.8, 0.4, 2.2),
+    new THREE.BoxGeometry(7.6, 0.4, 2.2),
     makeMaterial(THREE, "#20213a", { metalness: 0.2, roughness: 0.7 }),
   );
   base.position.y = 0.2;
@@ -4043,22 +4164,32 @@ function createMastodonKiosk(THREE, interactive) {
     makeMaterial(THREE, "#2c2d4d", { metalness: 0.4, roughness: 0.5 }),
   );
   post.position.y = 1.3;
-  // A larger billboard so the live profile header, stats, and latest toots
-  // are readable from the Office approach.
+  // A larger billboard so the live profile header, stats, and the full text
+  // and images of the latest toots are readable from the Office approach.
   const frame = new THREE.Mesh(
-    new THREE.BoxGeometry(5.5, 7.2, 0.36),
+    new THREE.BoxGeometry(7.9, 10.4, 0.36),
     makeMaterial(THREE, "#43389c", { metalness: 0.35, roughness: 0.45 }),
   );
-  frame.position.y = 5.35;
+  frame.position.y = 6.95;
   const face = new THREE.Mesh(
-    new THREE.PlaneGeometry(5.0, 6.25),
+    new THREE.PlaneGeometry(7.2, 9.6),
     new THREE.MeshBasicMaterial({
       map: mastodonKioskTexture(THREE),
       toneMapped: false,
     }),
   );
   face.name = "forkmesh-mastodon-kiosk-face";
-  face.position.set(0, 5.35, 0.2);
+  face.position.set(0, 6.95, 0.2);
+  const countdown = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.1, 1.1),
+    new THREE.MeshBasicMaterial({
+      map: mastodonCountdownTexture(THREE),
+      transparent: true,
+      toneMapped: false,
+    }),
+  );
+  countdown.name = "forkmesh-mastodon-kiosk-countdown";
+  countdown.position.set(2.0, 10.75, 0.3);
   const makeKioskControl = (label, direction, y) => {
     const control = new THREE.Mesh(
       new THREE.PlaneGeometry(0.7, 0.7),
@@ -4078,13 +4209,13 @@ function createMastodonKiosk(THREE, interactive) {
         toneMapped: false,
       }),
     );
-    control.position.set(2.15, y, 0.3);
+    control.position.set(3.1, y, 0.3);
     control.userData.interactive = `mastodon-kiosk-scroll-${direction}`;
     return control;
   };
-  const scrollUp = makeKioskControl("▲", "up", 8.4);
-  const scrollDown = makeKioskControl("▼", "down", 2.3);
-  group.add(base, post, frame, face, scrollUp, scrollDown);
+  const scrollUp = makeKioskControl("▲", "up", 11.35);
+  const scrollDown = makeKioskControl("▼", "down", 2.55);
+  group.add(base, post, frame, face, countdown, scrollUp, scrollDown);
   group.traverse((child) => {
     if (!child.isMesh) return;
     if (!child.userData.interactive) {
@@ -4759,6 +4890,12 @@ export function createWorldScene({
   registerMovableObject("mastodon-kiosk", mastodonKiosk);
   let mastodonKioskSnapshot = null;
   let mastodonKioskOffset = 0;
+  let mastodonKioskCountdown = {
+    remainingMs: MASTODON_KIOSK_REFRESH_MS,
+    totalMs: MASTODON_KIOSK_REFRESH_MS,
+    loading: false,
+  };
+  let mastodonKioskCountdownKey = "";
   const mastodonKioskImages = new Map();
   const mastodonKioskWheelTargets = [];
   mastodonKiosk.traverse((child) => {
@@ -6274,6 +6411,42 @@ export function createWorldScene({
       mastodonKioskMaxOffset(),
     );
     return repaintMastodonKiosk();
+  }
+
+  // The dial is its own small texture: a one-second countdown tick must not
+  // rebuild the 1536×2048 board texture.
+  function repaintMastodonCountdown() {
+    const dial = mastodonKiosk.getObjectByName(
+      "forkmesh-mastodon-kiosk-countdown",
+    );
+    if (!dial?.material) return false;
+    dial.material.map?.dispose?.();
+    dial.material.map = mastodonCountdownTexture(
+      THREE,
+      mastodonKioskCountdown.remainingMs,
+      mastodonKioskCountdown.totalMs,
+      mastodonKioskCountdown.loading,
+    );
+    dial.material.needsUpdate = true;
+    return true;
+  }
+
+  function updateMastodonCountdown({
+    remainingMs = MASTODON_KIOSK_REFRESH_MS,
+    totalMs = MASTODON_KIOSK_REFRESH_MS,
+    loading = false,
+  } = {}) {
+    const total = Math.max(1000, Number(totalMs) || MASTODON_KIOSK_REFRESH_MS);
+    const remaining = clamp(Number(remainingMs) || 0, 0, total);
+    const key = `${loading ? 1 : 0}:${Math.ceil(remaining / 1000)}:${total}`;
+    if (key === mastodonKioskCountdownKey) return false;
+    mastodonKioskCountdownKey = key;
+    mastodonKioskCountdown = {
+      remainingMs: remaining,
+      totalMs: total,
+      loading: Boolean(loading),
+    };
+    return repaintMastodonCountdown();
   }
 
   function scrollMastodonKiosk(direction) {
@@ -10832,6 +11005,7 @@ export function createWorldScene({
     updateOfficeMarketingTasks,
     updateWorldBulletin,
     updateMastodonKiosk,
+    updateMastodonCountdown,
     setOfficeSeatState,
     showOfficeBubble,
     leaveOfficeInterior,
