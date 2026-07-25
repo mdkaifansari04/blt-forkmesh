@@ -2653,7 +2653,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </div>
           <div class="world-controls-copy">
             <strong>Move and look around</strong>
-            <span>WASD or arrows · drag to rotate · wheel to zoom</span>
+            <span>WASD or arrows · double-click the ground to dash there · drag to rotate · wheel to zoom</span>
           </div>
           <span class="world-location" data-world-location>Town Square</span>
           <span class="world-location world-region-location" data-world-active-region>Central Campus</span>

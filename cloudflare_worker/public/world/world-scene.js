@@ -17,6 +17,11 @@ const WORLD_GROUND_RADIUS = 88;
 const PLAYER_SPEED = 6.4;
 const PLAYER_MAX_SPEED = 13;
 const PLAYER_ACCELERATION = 5.4;
+// Double-clicking the ground sends the avatar to that spot at a dash speed far
+// above the walking cap, so crossing the whole square takes a couple of seconds
+// without teleporting the avatar out from under the camera.
+const PLAYER_DASH_SPEED = 48;
+const PLAYER_DASH_ARRIVE_DISTANCE = 0.3;
 const CAMERA_OFFSET = [17, 16, 21];
 const CAMERA_DISTANCE = Math.hypot(...CAMERA_OFFSET);
 const CAMERA_ZOOM_MIN = 0.12;
@@ -3743,6 +3748,7 @@ export function createWorldScene({
   const touchKeys = new Set();
   const touchPointers = new Map();
   const raycaster = new THREE.Raycaster();
+  const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   const pointer = new THREE.Vector2();
   const pointerStart = new THREE.Vector2();
   const pointerLast = new THREE.Vector2();
@@ -3772,8 +3778,10 @@ export function createWorldScene({
   let moveSpeedScale = 1;
   let moveAccelScale = 1;
   let keyboardMovementSpeed = PLAYER_SPEED;
+  let dashTarget = null;
   let primaryPointerId = null;
   let pointerGestureMoved = false;
+  let lastGestureDragged = false;
   let pinchStartDistance = 0;
   let pinchStartZoom = cameraZoom;
   let pinchActive = false;
@@ -3863,6 +3871,10 @@ export function createWorldScene({
       PLAYER_MAX_SPEED * moveSpeedScale,
     );
     return { speed: moveSpeedScale, acceleration: moveAccelScale };
+  }
+
+  function cancelDash() {
+    dashTarget = null;
   }
 
   function nearestLandmark() {
@@ -3959,6 +3971,7 @@ export function createWorldScene({
     currentFloorY = 0.38;
     player.position.copy(destination);
     cameraFocus = null;
+    cancelDash();
     focusedRepositoryKey = "";
     nearestLandmark();
     onMovement({
@@ -3985,6 +3998,7 @@ export function createWorldScene({
     currentFloorY = destination.y;
     player.position.copy(destination);
     cameraFocus = null;
+    cancelDash();
     focusedRepositoryKey = "";
     currentLocation = spaceId
       .split("-")
@@ -4010,6 +4024,7 @@ export function createWorldScene({
     currentSpace = "town-square";
     currentFloorY = 0.38;
     player.position.y = currentFloorY;
+    cancelDash();
     focusedRepositoryKey = "";
     cameraFocus = new THREE.Vector3(
       landmark.position[0],
@@ -4027,6 +4042,7 @@ export function createWorldScene({
     currentSpace = "town-square";
     currentFloorY = 0.38;
     player.position.y = currentFloorY;
+    cancelDash();
     cameraFocus = record.group.position.clone();
     cameraFocus.y += 0.1;
     focusedRepositoryKey = key;
@@ -4041,6 +4057,7 @@ export function createWorldScene({
 
   function clearFocus() {
     cameraFocus = null;
+    cancelDash();
     focusedRepositoryKey = "";
   }
 
@@ -4099,6 +4116,8 @@ export function createWorldScene({
     let walking = false;
     if (movement.lengthSq()) {
       cameraFocus = null;
+      // Any manual input takes the wheel back from a double-click dash.
+      cancelDash();
       focusedRepositoryKey = "";
       const topSpeed = PLAYER_MAX_SPEED * moveSpeedScale;
       // Infinite acceleration collapses the ramp: keyboardMovementSpeed jumps to
@@ -4114,6 +4133,28 @@ export function createWorldScene({
         keyboardMovementSpeed * delta,
       );
       player.rotation.y = Math.atan2(-movement.x, -movement.z);
+      walking = true;
+    } else if (dashTarget) {
+      // Double-click travel: run straight at the clicked ground point, then
+      // land exactly on it instead of jittering around the destination.
+      const toTarget = new THREE.Vector3(
+        dashTarget.x - player.position.x,
+        0,
+        dashTarget.z - player.position.z,
+      );
+      const remaining = toTarget.length();
+      const step = PLAYER_DASH_SPEED * moveSpeedScale * delta;
+      if (remaining <= Math.max(step, PLAYER_DASH_ARRIVE_DISTANCE)) {
+        player.position.x = dashTarget.x;
+        player.position.z = dashTarget.z;
+        cancelDash();
+      } else {
+        toTarget.divideScalar(remaining);
+        player.position.x += toTarget.x * step;
+        player.position.z += toTarget.z * step;
+        player.rotation.y = Math.atan2(-toTarget.x, -toTarget.z);
+      }
+      keyboardMovementSpeed = baseMoveSpeed();
       walking = true;
     } else {
       keyboardMovementSpeed = baseMoveSpeed();
@@ -4227,6 +4268,7 @@ export function createWorldScene({
     lastPosition.copy(player.position);
     wasWalking = false;
     cameraFocus = null;
+    cancelDash();
     focusedRepositoryKey = "";
     if (space === "town-square") {
       nearestLandmark();
@@ -4542,6 +4584,7 @@ export function createWorldScene({
     currentFloorY = 0.38;
     player.position.copy(destination);
     cameraFocus = null;
+    cancelDash();
     focusedRepositoryKey = "";
     currentLocation = `${home.name}'s front yard`;
     onLocationChange(currentLocation, "neighborhood");
@@ -6237,6 +6280,9 @@ export function createWorldScene({
       cancelled ||
       wasPinching ||
       pointerGestureMoved;
+    // Remembered past the reset below so a double-click that ended in a camera
+    // drag or pinch does not also fire off a dash.
+    lastGestureDragged = suppressTap;
     pointerGestureMoved = false;
     if (suppressTap) return;
 
@@ -6314,6 +6360,41 @@ export function createWorldScene({
     finishPointer(event, false);
   }
 
+  // The visible floor of the current space, as a math plane: raycasting against
+  // it keeps double-click travel working on the sky campus and other elevated
+  // spaces, where the ground disc is far below the walkable floor.
+  function groundPointAt(clientX, clientY) {
+    pointerCoordinates({ clientX, clientY });
+    raycaster.setFromCamera(pointer, camera);
+    groundPlane.constant = -currentFloorY;
+    const point = raycaster.ray.intersectPlane(
+      groundPlane,
+      new THREE.Vector3(),
+    );
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.z)) {
+      return null;
+    }
+    const radius = Math.hypot(point.x, point.z);
+    if (radius > WORLD_RADIUS) {
+      point.x *= WORLD_RADIUS / radius;
+      point.z *= WORLD_RADIUS / radius;
+    }
+    point.y = currentFloorY;
+    return point;
+  }
+
+  function handleDoubleClick(event) {
+    if (event.button !== undefined && event.button !== 0) return;
+    if (lastGestureDragged) return;
+    const point = groundPointAt(event.clientX, event.clientY);
+    if (!point) return;
+    event.preventDefault();
+    // Following the avatar again keeps the dash visible; a landmark focus left
+    // over from the two selection clicks would pin the camera in place.
+    cameraFocus = null;
+    dashTarget = point;
+  }
+
   function handlePointerCancel(event) {
     finishPointer(event, true);
   }
@@ -6363,6 +6444,7 @@ export function createWorldScene({
     touchKeys.clear();
     touchPointers.clear();
     keyboardMovementSpeed = baseMoveSpeed();
+    cancelDash();
     primaryPointerId = null;
     pointerGestureMoved = false;
     pinchActive = false;
@@ -6371,6 +6453,7 @@ export function createWorldScene({
   }
 
   renderer.domElement.addEventListener("pointerdown", handlePointerDown);
+  renderer.domElement.addEventListener("dblclick", handleDoubleClick);
   renderer.domElement.addEventListener("pointermove", handlePointerMove, {
     passive: false,
   });
@@ -6547,6 +6630,7 @@ export function createWorldScene({
     renderer.setAnimationLoop(null);
     resizeObserver.disconnect();
     renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
+    renderer.domElement.removeEventListener("dblclick", handleDoubleClick);
     renderer.domElement.removeEventListener("pointermove", handlePointerMove);
     renderer.domElement.removeEventListener("wheel", handleWheel);
     window.removeEventListener("pointerup", handlePointerUp);
