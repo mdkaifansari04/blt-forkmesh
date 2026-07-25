@@ -1239,6 +1239,32 @@ test("enhanced Town Square starts in WebGL and keeps keyboard navigation", async
   );
 });
 
+test("double-clicking the ground dashes the avatar to that spot", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "desktop-dblclick-dash");
+  await waitForWorld(page);
+
+  const canvas = page.locator("[data-world-canvas-wrap] canvas");
+  const box = await canvas.boundingBox();
+  expect(box).not.toBeNull();
+
+  const before = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.getPosition(),
+  );
+  // Well away from the avatar, still on the plaza floor.
+  await page.mouse.dblclick(
+    Math.round(box.x + box.width * 0.3),
+    Math.round(box.y + box.height * 0.4),
+  );
+  await page.waitForTimeout(400);
+  const after = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.getPosition(),
+  );
+  // A dash covers far more ground in 400ms than the walking cap would.
+  expect(Math.hypot(after.x - before.x, after.z - before.z)).toBeGreaterThan(3);
+});
+
 test("desktop camera uses visible-cursor drag look, capped movement acceleration, and wheel zoom", async ({
   page,
 }) => {
