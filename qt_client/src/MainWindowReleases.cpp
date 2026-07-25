@@ -1335,10 +1335,53 @@ void MainWindow::loadMirrorNodesPanel()
             name = node.name.trimmed();
         return name;
     };
-    auto displayOwnerName = [&](const MemberInfo &node) {
+    // What the Node column SHOWS: the machine's node name, never the username.
+    // displayNodeName above is the account half of the clone identity — it still
+    // keys the catalog lookups (serve counts / integrity) and the dedup below —
+    // but a user account owns many nodes, so the visible label prefers the
+    // registered node name the peer advertises (machineNodeName() for our own
+    // row) and only falls back to the account for peers that don't send one.
+    auto displayNodeLabel = [&](const MemberInfo &node,
+                                const MirrorAdvert *advert) {
+        QString label = node.nodeName.trimmed();
+        if (label.isEmpty() && node.self)
+            label = machineNodeName().trimmed();
+        if (label.isEmpty())
+            label = displayNodeName(node, advert);
+        return label;
+    };
+    // Owner (user account) per node. The roster hello carries ownerUser when
+    // the node knows its link; older nodes don't advertise it, but the catalog
+    // mirror record they published does — index it by node name as a fallback.
+    QHash<QString, QString> catalogOwnerUserByNode;
+    if (m_catalogMirrorsSource == source) {
+        for (const QJsonValue &value : std::as_const(m_catalogMirrorsCache)) {
+            const QJsonObject m = value.toObject();
+            const QString n = m.value("node").toString().trimmed().toLower();
+            const QString ownerUser =
+                m.value(QStringLiteral("ownerUser")).toString().trimmed();
+            if (!n.isEmpty() && !ownerUser.isEmpty())
+                catalogOwnerUserByNode.insert(n, ownerUser);
+        }
+    }
+    auto displayOwnerName = [&](const MemberInfo &node,
+                                const MirrorAdvert *advert) {
         QString owner = node.ownerUser.trimmed();
-        if (owner.isEmpty() && node.self)
-            owner = nodeOwnerDisplayName();
+        if (owner.isEmpty())
+            owner = catalogOwnerUserByNode.value(
+                displayNodeName(node, advert).trimmed().toLower());
+        if (owner.isEmpty())
+            owner = catalogOwnerUserByNode.value(node.nodeName.trimmed().toLower());
+        // Our own row is owned by the signed-in user (what the top-bar chip
+        // shows), and a node the user's profile lists as linked is part of that
+        // same fleet — so both resolve to us even when neither the wire nor the
+        // catalog carries the link yet.
+        if (owner.isEmpty() &&
+            (node.self ||
+             (!node.nodeName.trimmed().isEmpty() &&
+              m_profileLinkedNodes.contains(node.nodeName.trimmed(),
+                                            Qt::CaseInsensitive))))
+            owner = topBarUserName().trimmed();
         return owner;
     };
     auto makeOwnerCell = [](const QString &owner) {
@@ -1412,7 +1455,8 @@ void MainWindow::loadMirrorNodesPanel()
         if (!advert || advert->commit.isEmpty())
             continue;
         if (advert->ownerName == source ||
-            displayNodeName(node, advert).compare(sourceOwner, Qt::CaseInsensitive) == 0) {
+            displayNodeName(node, advert).compare(sourceOwner, Qt::CaseInsensitive) == 0 ||
+            (node.self && repoHasWorkingTree())) {
             sourceCommit = advert->commit;
             sourceAdvert = advert;
         }
@@ -1582,16 +1626,23 @@ void MainWindow::loadMirrorNodesPanel()
                             advert->commit != referenceCommit;
 
         const QString nodeDisplay = displayNodeName(node, advert);
-        const QString ownerDisplay = displayOwnerName(node);
+        const QString nodeLabel = displayNodeLabel(node, advert);
+        const QString ownerDisplay = displayOwnerName(node, advert);
         shownNames.insert(nodeDisplay.trimmed().toLower());
+        shownNames.insert(nodeLabel.trimmed().toLower());
         if (!node.id.isEmpty())
             shownIds.insert(node.id);
 
         // The source of truth: the node whose clone identity equals the shared
         // source (the owner advertises ownerName == source); also match by name.
+        // Our own row is the source whenever we hold the working copy this repo
+        // is served from — the account/name matches miss that when the repo is
+        // published under an owner segment (e.g. an org) that isn't the
+        // signed-in account, leaving the owner's own row untagged.
         const bool isSource =
             (advert && advert->ownerName == source) ||
-            nodeDisplay.compare(sourceOwner, Qt::CaseInsensitive) == 0;
+            nodeDisplay.compare(sourceOwner, Qt::CaseInsensitive) == 0 ||
+            (node.self && repoHasWorkingTree());
 
         const int row = m_mirrorNodesTable->rowCount();
         m_mirrorNodesTable->insertRow(row);
@@ -1601,9 +1652,9 @@ void MainWindow::loadMirrorNodesPanel()
         // from the strip (adhoc #196).
         if (online || integrityFailing)
             activityDots.append(
-                {node.id, nodeDisplay, online, node.self, behind, integrityFailing});
+                {node.id, nodeLabel, online, node.self, behind, integrityFailing});
         auto *nameItem = new SortTableWidgetItem(
-            nodeDisplay + (node.self ? QStringLiteral("  (you)") : QString()) +
+            nodeLabel + (node.self ? QStringLiteral("  (you)") : QString()) +
             (isSource ? QString::fromUtf8("  \xE2\x98\x85 source of truth")
                       : QString()));
         // Status light on top of the node (adhoc #230): steady green when
@@ -1623,7 +1674,7 @@ void MainWindow::loadMirrorNodesPanel()
         // Source-of-truth rows sort to the top (★ < letters), then by name.
         nameItem->setData(kTableSortRole,
                           (isSource ? QStringLiteral("0") : QStringLiteral("1")) +
-                              nodeDisplay.toLower());
+                              nodeLabel.toLower());
         nameItem->setToolTip(
             isSource ? QString::fromUtf8("Source of truth \xC2\xB7 %1")
                            .arg(online ? "online" : "offline")
@@ -1632,7 +1683,7 @@ void MainWindow::loadMirrorNodesPanel()
                                          : QStringLiteral("Online now"))
                                : QStringLiteral("Offline")));
         if (!node.name.trimmed().isEmpty() &&
-            node.name.compare(nodeDisplay, Qt::CaseInsensitive) != 0)
+            node.name.compare(nodeLabel, Qt::CaseInsensitive) != 0)
             nameItem->setToolTip(nameItem->toolTip() + QStringLiteral("\nChat: ") +
                                  node.name.trimmed());
         if (integrityFailing)
@@ -1886,9 +1937,15 @@ void MainWindow::loadMirrorNodesPanel()
                                         online, false, behind, integrityFailing});
             const int row = m_mirrorNodesTable->rowCount();
             m_mirrorNodesTable->insertRow(row);
-            const QString ownerUser = m.value(QStringLiteral("ownerUser"))
-                                          .toString()
-                                          .trimmed();
+            QString ownerUser = m.value(QStringLiteral("ownerUser"))
+                                    .toString()
+                                    .trimmed();
+            // Same fleet fallback as the live-roster rows: a node the signed-in
+            // user's profile lists as linked is owned by us even if its catalog
+            // record predates the link.
+            if (ownerUser.isEmpty() &&
+                m_profileLinkedNodes.contains(nodeName, Qt::CaseInsensitive))
+                ownerUser = topBarUserName().trimmed();
             auto *nameItem = new SortTableWidgetItem(
                 nodeName + (isSource
                                 ? QString::fromUtf8("  \xE2\x98\x85 source of truth")
