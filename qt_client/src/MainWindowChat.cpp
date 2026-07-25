@@ -3599,24 +3599,15 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageOverlay->hide();
 
     // User avatar, pinned to the top-right-most of the bar. Clicking it opens
-    // your own profile page (Settings stays reachable from the nav rail).
+    // Settings for the current user.
     m_userAvatarNavButton = new QPushButton;
     m_userAvatarNavButton->setObjectName("serverFooterButton");
     m_userAvatarNavButton->setCursor(Qt::PointingHandCursor);
     m_userAvatarNavButton->setFixedSize(40, 40);
     m_userAvatarNavButton->setIconSize(QSize(34, 34));
-    m_userAvatarNavButton->setToolTip("Your profile");
+    m_userAvatarNavButton->setToolTip("Settings");
     connect(m_userAvatarNavButton, &QPushButton::clicked, this, [this] {
-        // Prefer the live roster's self entry (it carries the node id + display
-        // name the profile page resolves by); fall back to our own identity key
-        // so the page still recognises "you" while offline.
-        for (const MemberInfo &m : std::as_const(m_homeRoster)) {
-            if (m.self) {
-                showNodeProfile(m.id, m.name);
-                return;
-            }
-        }
-        showNodeProfile(m_profileIdentity.publicKey(), chatDisplayName());
+        showSection(1);
     });
     updateUserSwitcher();
     updateAvatarButton();
