@@ -4023,13 +4023,23 @@ function officeGuideBoardTexture(THREE) {
   });
 }
 
+// The board is a normal standing banner now, not a tower: five entries per
+// page keep it dense while every line stays readable at banner scale.
+const WORLD_BULLETIN_VISIBLE_EVENTS = 5;
+const WORLD_BULLETIN_WIDTH = 1536;
+const WORLD_BULLETIN_HEIGHT = 1024;
+
 function worldBulletinTexture(THREE, events = [], offset = 0) {
   const allEntries = (Array.isArray(events) ? events : [])
     .filter((event) => event && String(event.title || "").trim())
     // Newest alerts always take priority at the top of the board.
     .sort((left, right) => Date.parse(right.startsAt || 0) - Date.parse(left.startsAt || 0));
-  const start = clamp(Number(offset) || 0, 0, Math.max(0, allEntries.length - 10));
-  const entries = allEntries.slice(start, start + 10);
+  const start = clamp(
+    Number(offset) || 0,
+    0,
+    Math.max(0, allEntries.length - WORLD_BULLETIN_VISIBLE_EVENTS),
+  );
+  const entries = allEntries.slice(start, start + WORLD_BULLETIN_VISIBLE_EVENTS);
   const wrapText = (context, text, x, y, maxWidth, lineHeight, maxLines = Infinity) => {
     const words = String(text || "").split(/\s+/).filter(Boolean);
     let line = "";
@@ -4057,65 +4067,75 @@ function worldBulletinTexture(THREE, events = [], offset = 0) {
       ? new Date(timestamp).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })
       : "Time to be announced";
   };
-  // Stay within common mobile GPU texture limits (4096px) even though this is
-  // a deliberately oversized physical board.
-  return canvasTexture(THREE, 1536, 4096, (context) => {
-    context.scale(0.75, 2 / 3);
+  // The right-hand column is left clear for the ▲ / ▼ scroll controls, so no
+  // line is allowed to run under them.
+  const textWidth = 1276;
+  return canvasTexture(THREE, WORLD_BULLETIN_WIDTH, WORLD_BULLETIN_HEIGHT, (context) => {
     context.fillStyle = "#0b1820";
-    context.fillRect(0, 0, 2048, 6144);
+    context.fillRect(0, 0, WORLD_BULLETIN_WIDTH, WORLD_BULLETIN_HEIGHT);
     context.strokeStyle = "#7ed9ff";
-    context.lineWidth = 20;
-    context.strokeRect(16, 16, 2016, 6112);
+    context.lineWidth = 10;
+    context.strokeRect(8, 8, WORLD_BULLETIN_WIDTH - 16, WORLD_BULLETIN_HEIGHT - 16);
     context.fillStyle = "#e5f8ff";
-    context.font = '800 108px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("WORLD BULLETIN", 84, 142);
+    context.font = '800 54px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("WORLD BULLETIN", 42, 72);
     context.fillStyle = "#8eddf7";
-    context.font = '700 42px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("PUBLIC ALERTS · LIVE COMMUNITY EVENTS · NEWEST FIRST", 86, 210);
+    context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("PUBLIC ALERTS · LIVE COMMUNITY EVENTS · NEWEST FIRST", 44, 108);
     context.strokeStyle = "rgba(126,217,255,0.42)";
-    context.lineWidth = 3;
+    context.lineWidth = 2;
     context.beginPath();
-    context.moveTo(86, 250);
-    context.lineTo(1960, 250);
+    context.moveTo(44, 128);
+    context.lineTo(1492, 128);
     context.stroke();
     if (!entries.length) {
       context.fillStyle = "#c3dbe3";
-      context.font = '700 58px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("NO ACTIVE PUBLIC ALERTS", 86, 430);
-      context.font = '600 38px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("THE COMMUNITY SCHEDULE WILL APPEAR HERE.", 86, 520);
+      context.font = '700 34px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("NO ACTIVE PUBLIC ALERTS", 44, 210);
+      context.font = '600 24px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("THE COMMUNITY SCHEDULE WILL APPEAR HERE.", 44, 256);
       return;
     }
     entries.forEach((event, index) => {
-      const y = 350 + index * 565;
+      const y = 168 + index * 168;
       context.fillStyle = "#f7d58a";
-      context.font = '800 54px "ForkMesh Mono", ui-monospace, monospace';
-      wrapText(context, `${start + index + 1}. ${event.title}`, 86, y, 1840, 64, 2);
+      context.font = '800 28px "ForkMesh Mono", ui-monospace, monospace';
+      wrapText(context, `${start + index + 1}. ${event.title}`, 44, y, textWidth, 32, 1);
       context.fillStyle = "#bad0d8";
-      context.font = '700 35px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(`${event.type || "Community"} · ${event.destination || "Town Square"}`, 110, y + 150);
+      context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        `${event.type || "Community"} · ${event.destination || "Town Square"}`,
+        60,
+        y + 30,
+      );
       context.fillStyle = "#8eddf7";
-      context.font = '600 32px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(`START  ${formatTime(event.startsAt)}`, 110, y + 202);
-      context.fillText(`END    ${formatTime(event.endsAt)}`, 110, y + 248);
+      context.font = '600 19px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        `START ${formatTime(event.startsAt)} · END ${formatTime(event.endsAt)}`,
+        60,
+        y + 55,
+      );
       context.fillStyle = "#d5e6e9";
-      // Event descriptions are sanitized to 500 characters upstream. This
-      // compact body size fits that entire description in each of the ten
-      // slots rather than silently truncating the useful details.
-      context.font = '600 24px "ForkMesh Mono", ui-monospace, monospace';
-      wrapText(context, event.description || "Community event", 110, y + 308, 1780, 32);
-      context.strokeStyle = "rgba(126,217,255,0.28)";
-      context.beginPath();
-      context.moveTo(86, y + 520);
-      context.lineTo(1960, y + 520);
-      context.stroke();
+      // Event descriptions are sanitized to 500 characters upstream; three
+      // wrapped lines carry the opening of each one without pushing the five
+      // slots off the board.
+      context.font = '600 17px "ForkMesh Mono", ui-monospace, monospace';
+      wrapText(context, event.description || "Community event", 60, y + 80, textWidth - 16, 21, 3);
+      if (index < entries.length - 1) {
+        context.strokeStyle = "rgba(126,217,255,0.28)";
+        context.lineWidth = 2;
+        context.beginPath();
+        context.moveTo(44, y + 140);
+        context.lineTo(1492, y + 140);
+        context.stroke();
+      }
     });
     context.fillStyle = "#8eddf7";
-    context.font = '700 32px "ForkMesh Mono", ui-monospace, monospace';
+    context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(
-      `SHOWING ${start + 1}-${Math.min(start + 10, allEntries.length)} OF ${allEntries.length} · USE THE ▲ / ▼ CONTROLS OR SCROLL OVER THIS BOARD`,
-      86,
-      6090,
+      `SHOWING ${start + 1}-${Math.min(start + WORLD_BULLETIN_VISIBLE_EVENTS, allEntries.length)} OF ${allEntries.length} · ▲ / ▼ OR SCROLL OVER THIS BOARD`,
+      44,
+      998,
     );
   });
 }
@@ -5117,9 +5137,10 @@ export function createWorldScene({
 
   const worldBulletin = new THREE.Group();
   worldBulletin.name = "forkmesh-world-bulletin";
-  // Keep this well outside the arrival / join grid: it is a destination, not
-  // another object visitors need to navigate around when they first arrive.
-  worldBulletin.position.set(-68, 0, 30);
+  // Banner-sized boards have to be walked up to, so it now stands just past
+  // the leaderboards instead of stranded near the rim of the terrain — still
+  // clear of the arrival / join grid visitors spawn onto.
+  worldBulletin.position.set(-24, 0, 33);
   // Plane textures face local +Z. Rotate the board so its readable face looks
   // back into the World from the outer edge of the circular terrain.
   worldBulletin.rotation.y = Math.atan2(
@@ -5128,25 +5149,43 @@ export function createWorldScene({
   );
   let worldBulletinEvents = [];
   let worldBulletinOffset = 0;
+  // Sized like the other standing banners in the square rather than the tower
+  // it used to be: the page holds five entries, and the ▲ / ▼ controls page
+  // through the rest.
+  const BULLETIN_FACE_CENTER_Y = 3.9;
+  const bulletinBase = new THREE.Mesh(
+    new THREE.BoxGeometry(7.9, 0.26, 1.5),
+    makeMaterial(THREE, "#123241", { roughness: 0.8 }),
+  );
+  bulletinBase.position.y = 0.13;
+  worldBulletin.add(bulletinBase);
+  for (const x of [-3.35, 3.35]) {
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(0.18, 6.5, 0.18),
+      makeMaterial(THREE, "#1d5570", { metalness: 0.26, roughness: 0.5 }),
+    );
+    post.position.set(x, 3.25, 0);
+    worldBulletin.add(post);
+  }
   const bulletinFrame = new THREE.Mesh(
-    new THREE.BoxGeometry(14.2, 36.9, 0.42),
+    new THREE.BoxGeometry(7.55, 5.1, 0.24),
     makeMaterial(THREE, "#163849", { metalness: 0.35, roughness: 0.44 }),
   );
-  bulletinFrame.position.y = 18.7;
+  bulletinFrame.position.y = BULLETIN_FACE_CENTER_Y;
   bulletinFrame.userData.interactive = "world-bulletin";
   const bulletinFace = new THREE.Mesh(
-    new THREE.PlaneGeometry(13.55, 36.13),
+    new THREE.PlaneGeometry(7.2, 4.8),
     new THREE.MeshBasicMaterial({
       map: worldBulletinTexture(THREE),
       toneMapped: false,
     }),
   );
   bulletinFace.name = "forkmesh-world-bulletin-face";
-  bulletinFace.position.set(0, 18.7, 0.24);
+  bulletinFace.position.set(0, BULLETIN_FACE_CENTER_Y, 0.14);
   bulletinFace.userData.interactive = "world-bulletin";
   const makeBulletinControl = (label, direction, y) => {
     const control = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.35, 1.35),
+      new THREE.PlaneGeometry(0.52, 0.52),
       new THREE.MeshBasicMaterial({
         map: canvasTexture(THREE, 256, 256, (context) => {
           context.fillStyle = "#12384b";
@@ -5163,12 +5202,14 @@ export function createWorldScene({
         toneMapped: false,
       }),
     );
-    control.position.set(5.9, y, 0.3);
+    control.position.set(2.99, y, 0.2);
     control.userData.interactive = `world-bulletin-scroll-${direction}`;
     return control;
   };
-  const bulletinScrollUp = makeBulletinControl("▲", "up", 34.7);
-  const bulletinScrollDown = makeBulletinControl("▼", "down", 2.65);
+  // Parked in the clear right-hand margin, level with the header and the
+  // footer so neither control covers an entry.
+  const bulletinScrollUp = makeBulletinControl("▲", "up", BULLETIN_FACE_CENTER_Y + 2.05);
+  const bulletinScrollDown = makeBulletinControl("▼", "down", BULLETIN_FACE_CENTER_Y - 2.05);
   worldBulletin.add(bulletinFrame, bulletinFace, bulletinScrollUp, bulletinScrollDown);
   interactive.push(bulletinFrame, bulletinFace, bulletinScrollUp, bulletinScrollDown);
   world.add(worldBulletin);
@@ -6736,7 +6777,7 @@ export function createWorldScene({
     worldBulletinOffset = clamp(
       worldBulletinOffset,
       0,
-      Math.max(0, worldBulletinEvents.length - 10),
+      Math.max(0, worldBulletinEvents.length - WORLD_BULLETIN_VISIBLE_EVENTS),
     );
     face.material.map?.dispose?.();
     face.material.map = worldBulletinTexture(
@@ -6752,7 +6793,7 @@ export function createWorldScene({
     const nextOffset = clamp(
       worldBulletinOffset + direction,
       0,
-      Math.max(0, worldBulletinEvents.length - 10),
+      Math.max(0, worldBulletinEvents.length - WORLD_BULLETIN_VISIBLE_EVENTS),
     );
     if (nextOffset === worldBulletinOffset) return false;
     worldBulletinOffset = nextOffset;
