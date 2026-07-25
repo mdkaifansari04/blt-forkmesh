@@ -58,6 +58,36 @@ def test_world_opens_the_mini_app_and_fetches_without_credentials():
     assert re.search(r"escapeHTML\(\s*status\.text,?\s*\)", world)
 
 
+def test_kiosk_refreshes_every_ten_minutes_behind_a_pacman_dial():
+    world = _source(WORLD_PATH)
+    scene = _source(SCENE_PATH)
+    assert "const MASTODON_REFRESH_MS = 10 * 60 * 1000;" in world
+    assert "Date.now() - this.mastodonFetchedAt < MASTODON_REFRESH_MS" in world
+    assert "startMastodonRefresh()" in world
+    assert "this.startMastodonRefresh();" in world
+    assert "window.clearInterval(this.mastodonRefreshTimer);" in world
+    assert "updateMastodonCountdown" in world
+    # The countdown runs from the attempt so a failed fetch cannot hot-loop.
+    assert "this.mastodonRequestedAt = Date.now();" in world
+    assert "MASTODON_KIOSK_REFRESH_MS = 10 * 60 * 1000" in scene
+    assert "function mastodonCountdownTexture(" in scene
+    assert '"forkmesh-mastodon-kiosk-countdown"' in scene
+    assert "function updateMastodonCountdown(" in scene
+    assert "updateMastodonCountdown," in scene
+
+
+def test_kiosk_board_is_larger_and_carries_post_images():
+    world = _source(WORLD_PATH)
+    scene = _source(SCENE_PATH)
+    assert "images: status.images.map((media) => media.url)" in world
+    assert "const MASTODON_KIOSK_WIDTH = 1536;" in scene
+    assert "const MASTODON_KIOSK_HEIGHT = 2048;" in scene
+    # Board plane and canvas keep the same 0.75 aspect ratio.
+    assert "new THREE.PlaneGeometry(7.2, 9.6)" in scene
+    assert "new THREE.BoxGeometry(7.9, 10.4, 0.36)" in scene
+    assert "Array.isArray(toot.images) ? toot.images : []" in scene
+
+
 def test_css_keeps_toots_scrollable_under_the_profile():
     css = _source(CSS_PATH)
     assert ".world-mastodon-app" in css
