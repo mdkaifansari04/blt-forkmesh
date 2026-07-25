@@ -2014,8 +2014,6 @@ void MainWindow::loadMirrorNodesPanel()
             // Issues / commit / branch / pull / discussion counts / platform /
             // version / node id: also mirrored into the catalog record by the
             // publishing node, so they show for an offline node too (adhoc #56).
-            // Only the live CPU/RAM/disk telemetry (cols 10-12) stays unknown for
-            // catalog rows — it's broadcast per heartbeat, never stored.
             const int catIssues = m.value("issueCount").toInt(-1);
             auto *catIssuesItem = new SortTableWidgetItem(
                 catIssues >= 0 ? QString::number(catIssues)
@@ -2055,9 +2053,27 @@ void MainWindow::loadMirrorNodesPanel()
                          QString::number(refDiscussions));
             m_mirrorNodesTable->setItem(row, MirrorNodeColDiscussions,
                                         catDiscussionsItem);
-            for (int col : {MirrorNodeColCpu, MirrorNodeColRam, MirrorNodeColDisk})
-                m_mirrorNodesTable->setItem(row, col,
-                                            makeResourceBarCell(-1, QString()));
+            // CPU / RAM / disk: a node that opted into public host telemetry
+            // signs it into its catalog record (headless mirrors renew it every
+            // registration lease), and /mirrors passes it through — so render
+            // it exactly like the live-roster rows instead of a hard-coded
+            // em-dash. Absent fields still show as unknown.
+            m_mirrorNodesTable->setItem(
+                row, MirrorNodeColCpu,
+                makeCpuUsageCell(m.value(QStringLiteral("cpuPercent"))
+                                     .toDouble(-1.0)));
+            m_mirrorNodesTable->setItem(
+                row, MirrorNodeColRam,
+                makeByteUsageCell(
+                    QStringLiteral("RAM"),
+                    qint64(m.value(QStringLiteral("memUsedBytes")).toDouble()),
+                    qint64(m.value(QStringLiteral("memTotalBytes")).toDouble())));
+            m_mirrorNodesTable->setItem(
+                row, MirrorNodeColDisk,
+                makeByteUsageCell(
+                    QStringLiteral("Disk"),
+                    qint64(m.value(QStringLiteral("diskUsedBytes")).toDouble()),
+                    qint64(m.value(QStringLiteral("diskTotalBytes")).toDouble())));
             const QString catPlatform = m.value("platform").toString();
             m_mirrorNodesTable->setItem(
                 row, MirrorNodeColPlatform,
