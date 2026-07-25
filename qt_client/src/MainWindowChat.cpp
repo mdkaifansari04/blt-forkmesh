@@ -22,6 +22,7 @@
 #include "WorldSpeechBridge.h"
 
 #include <QBrush>
+#include <QCryptographicHash>
 #include <QDialog>
 #include <QInputDialog>
 #include <QNetworkInformation>
@@ -42,6 +43,13 @@ using namespace forkmesh::ui;
 
 void MainWindow::loadServers()
 {
+    // One-way migration from legacy host records: passwords used to be stored
+    // inside hosts/list. Keep them only for this process lifetime, and rewrite
+    // QSettings before any controller UI or fleet operation can read them.
+    QSettings hostSettings;
+    forkmesh::control::loadSavedHosts(
+        hostSettings, kHostsSetting, &m_hostSessionPasswords);
+
     m_servers.clear();
     const QString json = QSettings().value(kServersArray).toString();
     const QJsonArray array = QJsonDocument::fromJson(json.toUtf8()).array();
@@ -7522,8 +7530,12 @@ QWidget *MainWindow::buildHostsSection()
         "Provision a remote machine onto the network. Enter its address and SSH "
         "login and give it a node name, then click Add host to save it. With the "
         "host saved, click Install ForkMesh and it will SSH in and run the hosted "
-        "installer in a plain shell. When it finishes the new node joins the "
-        "network and shows up in each repository's Mirror nodes list. Install "
+        "installer in a plain shell. ForkMesh remembers the first host key in "
+        "its private trust store and rejects later mismatches. Your SSH agent, "
+        "default keys and ~/.ssh/config are used when the optional password is "
+        "blank; entered passwords remain in memory only. When installation "
+        "finishes the new node joins the network and shows up in each "
+        "repository's Mirror nodes list. Install "
         "(binary) on one saved host uploads this app's own binary. Install from "
         "binary (all hosts) instead makes every host download and checksum-verify "
         "the current published release, then confirms the installed version and "
@@ -7563,8 +7575,13 @@ QWidget *MainWindow::buildHostsSection()
 
     m_hostPassEdit = new QLineEdit;
     m_hostPassEdit->setEchoMode(QLineEdit::Password);
-    m_hostPassEdit->setPlaceholderText(QStringLiteral("SSH password"));
-    form->addRow(QStringLiteral("SSH password"), m_hostPassEdit);
+    m_hostPassEdit->setPlaceholderText(
+        QStringLiteral("Optional — SSH agent/default key is preferred"));
+    m_hostPassEdit->setToolTip(QStringLiteral(
+        "Leave blank to use your SSH agent, default key, or ~/.ssh/config. "
+        "A password entered here is kept only until ForkMesh exits and is "
+        "never written to settings."));
+    form->addRow(QStringLiteral("SSH password (optional)"), m_hostPassEdit);
 
     m_hostNameEdit = new QLineEdit;
     m_hostNameEdit->setPlaceholderText(QStringLiteral("my-mirror-1"));
@@ -7688,8 +7705,8 @@ QWidget *MainWindow::buildHostsSection()
     m_hostsTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     makeColumnsResizable(m_hostsTable); // spreadsheet-style draggable columns (#263)
     // Double-clicking a saved host reloads its server info into the install
-    // form so the installer can be re-run. The password is never stored on
-    // disk, so it is left blank for the user to re-enter.
+    // form so the installer can be re-run. A password is available only if it
+    // was entered or migrated during this process; otherwise key auth is used.
     connect(m_hostsTable, &QTableWidget::cellDoubleClicked, this,
             &MainWindow::loadHostIntoForm);
     bodyCol->addWidget(m_hostsTable);
@@ -7705,9 +7722,9 @@ void MainWindow::refreshHostsTable()
 {
     if (!m_hostsTable)
         return;
-    const QJsonArray hosts =
-        QJsonDocument::fromJson(QSettings().value(kHostsSetting).toString().toUtf8())
-            .array();
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
     m_hostsTable->setRowCount(hosts.size());
     for (int i = 0; i < hosts.size(); ++i) {
         const QJsonObject h = hosts.at(i).toObject();
@@ -7833,18 +7850,8 @@ void MainWindow::configureHostActionsForSelection(int row)
     const QString node = cellText(0);
     const QString host = cellText(1);
     const QString user = cellText(2);
-    QString password;
-    const QJsonArray savedHosts =
-        QJsonDocument::fromJson(
-            QSettings().value(kHostsSetting).toString().toUtf8())
-            .array();
-    for (const QJsonValue &value : savedHosts) {
-        const QJsonObject saved = value.toObject();
-        if (saved.value(QStringLiteral("name")).toString() == node) {
-            password = saved.value(QStringLiteral("pass")).toString();
-            break;
-        }
-    }
+    QString password = m_hostSessionPasswords.value(
+        forkmesh::control::savedHostCredentialKey(node, host, user));
 
     QDialog dialog(this);
     dialog.setWindowTitle(QStringLiteral("Mirror Actions — %1").arg(node));
@@ -10236,15 +10243,23 @@ void MainWindow::loadHostIntoForm(int row, int /*column*/)
         m_hostIpEdit->setText(cellText(1));
     if (m_hostUserEdit)
         m_hostUserEdit->setText(cellText(2));
-    // Load the saved SSH password from the settings.
-    const QJsonArray hosts =
-        QJsonDocument::fromJson(QSettings().value(kHostsSetting).toString().toUtf8())
-            .array();
+    // Restore only a password entered or migrated during this process. Host
+    // credentials are deliberately never reloaded from persistent settings.
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
+    if (m_hostPassEdit)
+        m_hostPassEdit->clear();
     for (int i = 0; i < hosts.size(); ++i) {
         const QJsonObject h = hosts.at(i).toObject();
         if (h.value("name").toString() == name) {
-            if (m_hostPassEdit)
-                m_hostPassEdit->setText(h.value("pass").toString());
+            if (m_hostPassEdit) {
+                m_hostPassEdit->setText(m_hostSessionPasswords.value(
+                    forkmesh::control::savedHostCredentialKey(
+                        h.value(QStringLiteral("name")).toString(),
+                        h.value(QStringLiteral("ip")).toString(),
+                        h.value(QStringLiteral("user")).toString())));
+            }
             break;
         }
     }
@@ -10274,19 +10289,8 @@ void MainWindow::viewHostLogsForSelection(int row)
                 QStringLiteral("Load a host row first, then click Logs."));
         return;
     }
-    QString pass = m_hostPassEdit ? m_hostPassEdit->text() : QString();
-    if (pass.isEmpty()) {
-        bool ok = false;
-        const QString entered = QInputDialog::getText(
-            this, QStringLiteral("Host SSH password"),
-            QString::fromUtf8("Enter the SSH password for %1@%2.").arg(user, ip),
-            QLineEdit::Password, QString(), &ok);
-        if (!ok || entered.isEmpty())
-            return;
-        pass = entered;
-        if (m_hostPassEdit)
-            m_hostPassEdit->setText(pass);
-    }
+    const QString pass =
+        m_hostPassEdit ? m_hostPassEdit->text() : QString();
     runHostLogSession(ip, user, pass, node);
 }
 
@@ -10300,10 +10304,10 @@ void MainWindow::runHostLogSession(const QString &ip, const QString &user,
                 QStringLiteral("A host log stream is already running."));
         return;
     }
-    if (ip.isEmpty() || user.isEmpty() || pass.isEmpty()) {
+    if (ip.isEmpty() || user.isEmpty() || node.isEmpty()) {
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(
-                QStringLiteral("Enter host IP, SSH username, password and node name."));
+                QStringLiteral("Enter host IP, SSH username and node name."));
         return;
     }
 
@@ -10371,11 +10375,6 @@ void MainWindow::runHostLogSession(const QString &ip, const QString &user,
         stopLogStream();
     });
 
-    proc->setProcessChannelMode(QProcess::MergedChannels);
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    env.insert(QStringLiteral("SSHPASS"), pass);
-    proc->setProcessEnvironment(env);
-
     const auto shq = [](const QString &s) {
         QString out = s;
         out.replace(QStringLiteral("'"), QStringLiteral("'\\''"));
@@ -10393,15 +10392,20 @@ void MainWindow::runHostLogSession(const QString &ip, const QString &user,
             "  exit 1; "
             "fi");
     const QString remoteCmd = QStringLiteral("sh -lc ") + shq(remoteLogCmd);
-    const QStringList sshArgs = {
-        QStringLiteral("-e"), QStringLiteral("ssh"),
-        QStringLiteral("-o"), QStringLiteral("IdentitiesOnly=yes"),
-        QStringLiteral("-o"), QStringLiteral("StrictHostKeyChecking=no"),
-        QStringLiteral("-o"), QStringLiteral("UserKnownHostsFile=/dev/null"),
-        QStringLiteral("-o"), QStringLiteral("PreferredAuthentications=password"),
-        QStringLiteral("-o"), QStringLiteral("PubkeyAuthentication=no"),
-        QStringLiteral("-o"), QStringLiteral("ConnectTimeout=30"),
-        user + QStringLiteral("@") + ip, remoteCmd};
+    QString sshError;
+    const forkmesh::control::HostSshCommand ssh =
+        forkmesh::control::buildHostSshCommand(
+            ip, user, pass, remoteCmd, &sshError);
+    if (ssh.program.isEmpty()) {
+        appendLog(QStringLiteral("[error] %1\n").arg(sshError));
+        status->setText(sshError);
+        proc->deleteLater();
+        m_hostLogProcess = nullptr;
+        dialog->deleteLater();
+        return;
+    }
+    proc->setProcessChannelMode(QProcess::MergedChannels);
+    proc->setProcessEnvironment(ssh.environment);
 
     appendLog(QStringLiteral("Attempting SSH log stream to %1@%2\n")
                   .arg(user, ip));
@@ -10417,8 +10421,8 @@ void MainWindow::runHostLogSession(const QString &ip, const QString &user,
             [this, proc, appendLog, status](QProcess::ProcessError e) {
         if (e == QProcess::FailedToStart) {
             appendLog(QString::fromUtf8(
-                "\n[error] Could not start sshpass/ssh. Install openssh-client "
-                "and sshpass on this machine and try again.\n"));
+                "\n[error] Could not start SSH. Install OpenSSH (and sshpass "
+                "only when using password login) and try again.\n"));
             status->setText(
                 QString::fromUtf8("Could not start SSH session to host."));
         }
@@ -10441,7 +10445,7 @@ void MainWindow::runHostLogSession(const QString &ip, const QString &user,
                 proc->deleteLater();
             });
 
-    proc->start(QStringLiteral("sshpass"), sshArgs);
+    proc->start(ssh.program, ssh.arguments);
     dialog->exec();
 }
 
@@ -10469,19 +10473,30 @@ void MainWindow::rememberHost(const QString &name, const QString &ip,
                               const QString &user, const QString &pass, const QString &status)
 {
     QSettings settings;
-    QJsonArray hosts =
-        QJsonDocument::fromJson(settings.value(kHostsSetting).toString().toUtf8())
-            .array();
+    QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
     // Replace any existing row for the same node name, else append.
     QJsonObject entry;
     entry.insert(QStringLiteral("name"), name);
     entry.insert(QStringLiteral("ip"), ip);
     entry.insert(QStringLiteral("user"), user);
-    entry.insert(QStringLiteral("pass"), pass);
     entry.insert(QStringLiteral("status"), status);
     bool replaced = false;
     for (int i = 0; i < hosts.size(); ++i) {
         if (hosts.at(i).toObject().value("name").toString() == name) {
+            const QJsonObject old = hosts.at(i).toObject();
+            const QString oldCredentialKey =
+                forkmesh::control::savedHostCredentialKey(
+                    old.value(QStringLiteral("name")).toString(),
+                    old.value(QStringLiteral("ip")).toString(),
+                    old.value(QStringLiteral("user")).toString());
+            const QString newCredentialKey =
+                forkmesh::control::savedHostCredentialKey(name, ip, user);
+            if (oldCredentialKey != newCredentialKey) {
+                QString oldPassword =
+                    m_hostSessionPasswords.take(oldCredentialKey);
+                oldPassword.fill(QChar::Null);
+            }
             hosts.replace(i, entry);
             replaced = true;
             break;
@@ -10489,8 +10504,17 @@ void MainWindow::rememberHost(const QString &name, const QString &ip,
     }
     if (!replaced)
         hosts.append(entry);
-    settings.setValue(kHostsSetting,
-                      QString::fromUtf8(QJsonDocument(hosts).toJson(QJsonDocument::Compact)));
+    const QString credentialKey =
+        forkmesh::control::savedHostCredentialKey(name, ip, user);
+    if (pass.isEmpty()) {
+        QString oldPassword = m_hostSessionPasswords.take(credentialKey);
+        oldPassword.fill(QChar::Null);
+    } else {
+        QString oldPassword = m_hostSessionPasswords.take(credentialKey);
+        oldPassword.fill(QChar::Null);
+        m_hostSessionPasswords.insert(credentialKey, pass);
+    }
+    forkmesh::control::saveSavedHosts(settings, kHostsSetting, hosts);
     refreshHostsTable();
 }
 
@@ -10697,14 +10721,92 @@ namespace {
 // (adhoc #67). The remote side discards lines until it sees this marker, so
 // the upload stays intact whether or not sudo actually read the password.
 const QString kHostUploadMarker = QStringLiteral("__FORKMESH_UPLOAD__");
+
+QString controllerReleaseManifestDigest(const QString &expectedBuildCommit,
+                                        QString *errorOut)
+{
+    QString configured =
+        qEnvironmentVariable("FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256")
+            .trimmed()
+            .toLower();
+#ifdef FORKMESH_WINDOW_TESTS
+    const QString testDigest =
+        qEnvironmentVariable("FORKMESH_TEST_RELEASE_MANIFEST_SHA256")
+            .trimmed()
+            .toLower();
+    if (!testDigest.isEmpty())
+        configured = testDigest;
+#endif
+    static const QRegularExpression exactDigest(
+        QStringLiteral("^[0-9a-f]{64}$"));
+    if (!configured.isEmpty()) {
+        if (exactDigest.match(configured).hasMatch())
+            return configured;
+        if (errorOut) {
+            *errorOut = QStringLiteral(
+                "FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256 must be an exact "
+                "64-hex SHA-256 digest.");
+        }
+        return {};
+    }
+
+    // A source checkout can authenticate the separately committed release
+    // metadata directly. Packaged controllers, where that checkout is absent,
+    // must receive the digest over their authenticated control channel through
+    // the environment above; they never trust a hash copied from the remote
+    // install response.
+    const QString manifestPath =
+        QDir(QStringLiteral(FORKMESH_SOURCE_DIR))
+            .filePath(QStringLiteral(
+                ".forkmesh/releases/latest/release.json"));
+    QFile manifestFile(manifestPath);
+    if (manifestFile.open(QIODevice::ReadOnly) &&
+        manifestFile.size() > 0 && manifestFile.size() <= 1024 * 1024) {
+        const QByteArray manifestBytes = manifestFile.readAll();
+        QJsonParseError parseError;
+        const QJsonObject manifest =
+            QJsonDocument::fromJson(manifestBytes, &parseError).object();
+        const QString expectedVersion =
+            QStringLiteral(FORKMESH_VERSION);
+        const QString tag =
+            manifest.value(QStringLiteral("tag")).toString();
+        const QString checksumsDigest =
+            manifest.value(QStringLiteral("checksums_sha256"))
+                .toString()
+                .trimmed()
+                .toLower();
+        if (parseError.error == QJsonParseError::NoError &&
+            manifest.value(QStringLiteral("schema")).toString() ==
+                QStringLiteral("forkmesh-release-v2") &&
+            manifest.value(QStringLiteral("build_commit"))
+                    .toString()
+                    .trimmed()
+                    .toLower() == expectedBuildCommit &&
+            (tag == expectedVersion ||
+             tag == QStringLiteral("v") + expectedVersion) &&
+            exactDigest.match(checksumsDigest).hasMatch()) {
+            return QString::fromLatin1(
+                QCryptographicHash::hash(
+                    manifestBytes, QCryptographicHash::Sha256)
+                    .toHex());
+        }
+    }
+    if (errorOut) {
+        *errorOut = QStringLiteral(
+            "No controller-trusted release manifest matches this build. "
+            "Refresh the checked-in signed release metadata or set "
+            "FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256 from an authenticated "
+            "control channel before deploying a fleet binary.");
+    }
+    return {};
+}
 } // namespace
 
 bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
                                          const QString &node, bool uploadBinary,
                                          bool reinstall, bool fromSource,
                                          bool requirePublishedBinary,
-                                         QStringList *sshArgs, QString *remoteCmd,
-                                         QByteArray *uploadBytes,
+                                         QString *remoteCmd, QByteArray *uploadBytes,
                                          QString *errorOut)
 {
     const QString installUrl = installScriptUrl();
@@ -10751,6 +10853,7 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
         return QStringLiteral("'") + out + QStringLiteral("'");
     };
     QString expectedBuildCommit;
+    QString expectedReleaseManifestDigest;
     if (requirePublishedBinary) {
         expectedBuildCommit =
             QStringLiteral(FORKMESH_BUILD_COMMIT).trimmed().toLower();
@@ -10775,6 +10878,10 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
             }
             return false;
         }
+        expectedReleaseManifestDigest =
+            controllerReleaseManifestDigest(expectedBuildCommit, errorOut);
+        if (expectedReleaseManifestDigest.isEmpty())
+            return false;
     }
     // Pass the chosen name as FORKMESH_NODE_NAME (not FORKMESH_NODE): the
     // installer uses it to name the freshly-deployed node and leaves the
@@ -10805,9 +10912,11 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
         envPrefix += QStringLiteral(
             " FORKMESH_RELEASE=latest FORKMESH_NO_SOURCE_FALLBACK=1 "
             "FORKMESH_EXPECTED_BUILD_COMMIT=%1 "
-            "FORKMESH_EXPECTED_RELEASE_VERSION=%2")
+            "FORKMESH_EXPECTED_RELEASE_VERSION=%2 "
+            "FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256=%3")
                          .arg(shq(expectedBuildCommit),
-                              shq(QStringLiteral(FORKMESH_VERSION)));
+                              shq(QStringLiteral(FORKMESH_VERSION)),
+                              shq(expectedReleaseManifestDigest));
         if (!reinstall)
             envPrefix += QStringLiteral(" FORKMESH_RESTART=1");
     }
@@ -10893,31 +11002,29 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
             os = QStringLiteral("macos");
         else if (os == QStringLiteral("winnt"))
             os = QStringLiteral("windows");
+        const QString localBinarySha256 =
+            QString::fromLatin1(
+                QCryptographicHash::hash(
+                    bytes, QCryptographicHash::Sha256)
+                    .toHex());
         pipeline =
             QStringLiteral(
                 "up=\"$(mktemp \"${TMPDIR:-/tmp}/forkmesh-upload.XXXXXX\")\" && "
                 "while IFS= read -r l; do [ \"$l\" = %1 ] && break; done && "
                 "cat > \"$up\" && curl -fsSL %2 | %3 "
                 "FORKMESH_LOCAL_BINARY=\"$up\" FORKMESH_LOCAL_OS=%4 "
-                "FORKMESH_LOCAL_ARCH=%5 bash; st=$?; rm -f \"$up\"; exit $st")
+                "FORKMESH_LOCAL_ARCH=%5 "
+                "FORKMESH_LOCAL_BINARY_SHA256=%6 bash; "
+                "st=$?; rm -f \"$up\"; exit $st")
                 .arg(shq(kHostUploadMarker), shq(installUrl), envPrefix,
-                     shq(os), shq(QSysInfo::currentCpuArchitecture()));
+                     shq(os), shq(QSysInfo::currentCpuArchitecture()),
+                     shq(localBinarySha256));
     }
     const QString cmd =
         needSudo
             ? QStringLiteral("sudo -S -p '' -- bash -c %1").arg(shq(pipeline))
             : pipeline;
 
-    if (sshArgs)
-        *sshArgs = {
-            QStringLiteral("-e"), QStringLiteral("ssh"),
-            QStringLiteral("-o"), QStringLiteral("IdentitiesOnly=yes"),
-            QStringLiteral("-o"), QStringLiteral("StrictHostKeyChecking=no"),
-            QStringLiteral("-o"), QStringLiteral("UserKnownHostsFile=/dev/null"),
-            QStringLiteral("-o"), QStringLiteral("PreferredAuthentications=password"),
-            QStringLiteral("-o"), QStringLiteral("PubkeyAuthentication=no"),
-            QStringLiteral("-o"), QStringLiteral("ConnectTimeout=30"),
-            user + QStringLiteral("@") + ip, cmd};
     if (remoteCmd)
         *remoteCmd = cmd;
     if (uploadBytes)
@@ -10944,11 +11051,11 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     const QString user = m_hostUserEdit ? m_hostUserEdit->text().trimmed() : QString();
     const QString pass = m_hostPassEdit ? m_hostPassEdit->text() : QString();
     const QString node = m_hostNameEdit ? m_hostNameEdit->text().trimmed() : QString();
-    if (ip.isEmpty() || user.isEmpty() || pass.isEmpty() || node.isEmpty()) {
+    if (ip.isEmpty() || user.isEmpty() || node.isEmpty()) {
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(QString::fromUtf8(
-                "Enter the host IP, SSH username, password and a node name "
-                "first."));
+                "Enter the host IP, SSH username and a node name first. "
+                "Leave the password blank to use your SSH agent/default key."));
         if (onFinished)
             onFinished(false);
         return;
@@ -10973,15 +11080,25 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
         (forceUploadBinary ||
          (m_hostUploadBinaryCheck && m_hostUploadBinaryCheck->isChecked()));
     const bool needSudo = user != QStringLiteral("root");
-    QStringList sshArgs;
     QString remoteCmd;
     QByteArray uploadBytes;
     QString buildErr;
     if (!buildHostInstallCommand(ip, user, node, uploadBinary, reinstall,
-                                 fromSource, false, &sshArgs, &remoteCmd,
+                                 fromSource, false, &remoteCmd,
                                  &uploadBytes, &buildErr)) {
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(buildErr);
+        if (onFinished)
+            onFinished(false);
+        return;
+    }
+    QString sshError;
+    const forkmesh::control::HostSshCommand ssh =
+        forkmesh::control::buildHostSshCommand(
+            ip, user, pass, remoteCmd, &sshError);
+    if (ssh.program.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(sshError);
         if (onFinished)
             onFinished(false);
         return;
@@ -11023,11 +11140,7 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     auto *proc = new QProcess(this);
     m_hostInstallProcess = proc;
     proc->setProcessChannelMode(QProcess::MergedChannels);
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    // Hand the SSH password to sshpass via the environment so it never lands in
-    // argv or on disk.
-    env.insert(QStringLiteral("SSHPASS"), pass);
-    proc->setProcessEnvironment(env);
+    proc->setProcessEnvironment(ssh.environment);
 
     connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc] {
         const QString chunk = QString::fromUtf8(proc->readAllStandardOutput());
@@ -11070,8 +11183,8 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     connect(proc, &QProcess::errorOccurred, this, [this](QProcess::ProcessError e) {
         if (e == QProcess::FailedToStart)
             appendHostInstallLog(QString::fromUtf8(
-                "\n[error] Could not start sshpass/ssh. Install openssh-client "
-                "and sshpass on this machine and try again.\n"));
+                "\n[error] Could not start SSH. Install OpenSSH (and sshpass "
+                "only when using password login) and try again.\n"));
     });
     connect(proc, &QProcess::finished, this,
             [this, ip, user, node, pass, onFinished, reinstall](int code, QProcess::ExitStatus status) {
@@ -11109,7 +11222,7 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
                     onFinished(ok);
             });
 
-    proc->start(QStringLiteral("sshpass"), sshArgs);
+    proc->start(ssh.program, ssh.arguments);
     // Feed sudo's password on stdin (consumed by `sudo -S`); ssh forwards it to
     // the remote shell. Closing the channel hands the installer a clean EOF.
     if (needSudo)
@@ -11158,19 +11271,39 @@ QString MainWindow::testFleetBinaryInstallRemoteCommand(
     const FleetDeployOptions options = fleetDeployOptions(
         reinstall ? FleetDeployMode::Reinstall
                   : FleetDeployMode::InstallBinary);
-    QStringList sshArgs;
     QString remoteCommand;
     QByteArray uploadBytes;
     QString error;
     const bool ok = buildHostInstallCommand(
         QStringLiteral("host.example"), QStringLiteral("root"),
         QStringLiteral("test-node"), options.uploadBinary, options.reinstall,
-        options.fromSource, options.requirePublishedBinary, &sshArgs,
-        &remoteCommand, &uploadBytes, &error);
+        options.fromSource, options.requirePublishedBinary, &remoteCommand,
+        &uploadBytes, &error);
     if (uploadByteCount)
         *uploadByteCount = uploadBytes.size();
     if (errorOut)
         *errorOut = error;
+    return ok ? remoteCommand : QString();
+}
+
+QString MainWindow::testDirectBinaryInstallRemoteCommand(
+    qsizetype *uploadByteCount, QString *errorOut)
+{
+    QString remoteCommand;
+    QByteArray uploadBytes;
+    QString error;
+    const bool ok = buildHostInstallCommand(
+        QStringLiteral("host.example"), QStringLiteral("root"),
+        QStringLiteral("test-node"), /*uploadBinary=*/true,
+        /*reinstall=*/false, /*fromSource=*/false,
+        /*requirePublishedBinary=*/false, &remoteCommand, &uploadBytes,
+        &error);
+    if (uploadByteCount)
+        *uploadByteCount = uploadBytes.size();
+    if (errorOut)
+        *errorOut = error;
+    uploadBytes.fill('\0');
+    uploadBytes.clear();
     return ok ? remoteCommand : QString();
 }
 #endif
@@ -11246,11 +11379,11 @@ void MainWindow::runHostDeployAllParallel(FleetDeployMode mode)
     if (!m_hostDeployPanel || !m_hostDeployGrid)
         return;
 
-    // Load every saved host with its stored SSH password. Hosts saved without a
-    // password can't run unattended in parallel, so they are skipped with a note.
-    const QJsonArray hosts =
-        QJsonDocument::fromJson(QSettings().value(kHostsSetting).toString().toUtf8())
-            .array();
+    // Load non-sensitive host metadata. A password may exist only in this
+    // process's cache; otherwise the session uses an SSH agent/default key.
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
     struct Target { QString node, ip, user, pass; };
     QList<Target> targets;
     int skipped = 0;
@@ -11259,9 +11392,11 @@ void MainWindow::runHostDeployAllParallel(FleetDeployMode mode)
         Target t{h.value("name").toString().trimmed(),
                  h.value("ip").toString().trimmed(),
                  h.value("user").toString().trimmed(),
-                 h.value("pass").toString()};
-        if (t.node.isEmpty() || t.ip.isEmpty() || t.user.isEmpty() ||
-            t.pass.isEmpty()) {
+                 QString()};
+        t.pass = m_hostSessionPasswords.value(
+            forkmesh::control::savedHostCredentialKey(
+                t.node, t.ip, t.user));
+        if (t.node.isEmpty() || t.ip.isEmpty() || t.user.isEmpty()) {
             ++skipped;
             continue;
         }
@@ -11270,9 +11405,8 @@ void MainWindow::runHostDeployAllParallel(FleetDeployMode mode)
     if (targets.isEmpty()) {
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(QString::fromUtf8(
-                "No saved host has a stored SSH password to deploy to in "
-                "parallel. Double-click a host, re-enter its password and Add "
-                "host again, then retry."));
+                "No saved host has complete node, address, and SSH username "
+                "metadata."));
         return;
     }
 
@@ -11353,8 +11487,8 @@ void MainWindow::runHostDeployAllParallel(FleetDeployMode mode)
         m_hostInstallStatus->setText(
             QString::fromUtf8("Deploying to %1 host(s) in parallel\xE2\x80\xA6%2")
                 .arg(m_hostDeployRemaining)
-                .arg(skipped ? QString::fromUtf8(" (%1 skipped \xE2\x80\x94 no "
-                                                 "stored password)").arg(skipped)
+                .arg(skipped ? QString::fromUtf8(" (%1 skipped \xE2\x80\x94 "
+                                                 "incomplete metadata)").arg(skipped)
                              : QString()));
 
     // Snapshot the list first: startHostDeploySession may fail synchronously and
@@ -11371,17 +11505,26 @@ void MainWindow::startHostDeploySession(HostDeploySession *session,
     if (!session)
         return;
 
-    QStringList sshArgs;
     QString remoteCmd;
     QByteArray uploadBytes;
     QString buildErr;
     if (!buildHostInstallCommand(session->ip, session->user, session->node,
                                  options.uploadBinary, options.reinstall,
                                  options.fromSource,
-                                 options.requirePublishedBinary, &sshArgs,
-                                 &remoteCmd, &uploadBytes, &buildErr)) {
+                                 options.requirePublishedBinary, &remoteCmd,
+                                 &uploadBytes, &buildErr)) {
         appendHostDeployLog(session,
                             QString::fromUtf8("\n\xE2\x9C\x98 %1\n").arg(buildErr));
+        onHostDeploySessionFinished(session, false);
+        return;
+    }
+    QString sshError;
+    const forkmesh::control::HostSshCommand ssh =
+        forkmesh::control::buildHostSshCommand(
+            session->ip, session->user, session->pass, remoteCmd, &sshError);
+    if (ssh.program.isEmpty()) {
+        appendHostDeployLog(
+            session, QString::fromUtf8("\n\xE2\x9C\x98 %1\n").arg(sshError));
         onHostDeploySessionFinished(session, false);
         return;
     }
@@ -11409,9 +11552,7 @@ void MainWindow::startHostDeploySession(HostDeploySession *session,
     auto *proc = new QProcess(this);
     session->proc = proc;
     proc->setProcessChannelMode(QProcess::MergedChannels);
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    env.insert(QStringLiteral("SSHPASS"), session->pass);
-    proc->setProcessEnvironment(env);
+    proc->setProcessEnvironment(ssh.environment);
 
     connect(proc, &QProcess::readyReadStandardOutput, this, [this, session, proc] {
         const QString chunk = QString::fromUtf8(proc->readAllStandardOutput());
@@ -11451,8 +11592,8 @@ void MainWindow::startHostDeploySession(HostDeploySession *session,
                 appendHostDeployLog(
                     session,
                     QString::fromUtf8(
-                        "\n[error] Could not start sshpass/ssh. Install "
-                        "openssh-client and sshpass on this machine.\n"));
+                        "\n[error] Could not start SSH. Install OpenSSH (and "
+                        "sshpass only when using password login).\n"));
                 if (session->proc) {
                     session->proc->deleteLater();
                     session->proc = nullptr;
@@ -11478,7 +11619,7 @@ void MainWindow::startHostDeploySession(HostDeploySession *session,
                 onHostDeploySessionFinished(session, ok);
             });
 
-    proc->start(QStringLiteral("sshpass"), sshArgs);
+    proc->start(ssh.program, ssh.arguments);
     if (needSudo)
         proc->write((session->pass + QStringLiteral("\n")).toUtf8());
     if (options.uploadBinary && !options.fromSource) {
@@ -11553,11 +11694,11 @@ void MainWindow::runHostUninstall()
     const QString user = m_hostUserEdit ? m_hostUserEdit->text().trimmed() : QString();
     const QString pass = m_hostPassEdit ? m_hostPassEdit->text() : QString();
     const QString node = m_hostNameEdit ? m_hostNameEdit->text().trimmed() : QString();
-    if (ip.isEmpty() || user.isEmpty() || pass.isEmpty() || node.isEmpty()) {
+    if (ip.isEmpty() || user.isEmpty() || node.isEmpty()) {
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(QString::fromUtf8(
-                "Enter the host IP, SSH username, password and a node name "
-                "first."));
+                "Enter the host IP, SSH username and a node name first. "
+                "Leave the password blank to use your SSH agent/default key."));
         return;
     }
     const QString uninstallUrl = uninstallScriptUrl();
@@ -11585,15 +11726,15 @@ void MainWindow::runHostUninstall()
             ? QStringLiteral("sudo -S -p '' -- bash -c %1").arg(shq(pipeline))
             : pipeline;
 
-    const QStringList sshArgs = {
-        QStringLiteral("-e"), QStringLiteral("ssh"),
-        QStringLiteral("-o"), QStringLiteral("IdentitiesOnly=yes"),
-        QStringLiteral("-o"), QStringLiteral("StrictHostKeyChecking=no"),
-        QStringLiteral("-o"), QStringLiteral("UserKnownHostsFile=/dev/null"),
-        QStringLiteral("-o"), QStringLiteral("PreferredAuthentications=password"),
-        QStringLiteral("-o"), QStringLiteral("PubkeyAuthentication=no"),
-        QStringLiteral("-o"), QStringLiteral("ConnectTimeout=30"),
-        user + QStringLiteral("@") + ip, remoteCmd};
+    QString sshError;
+    const forkmesh::control::HostSshCommand ssh =
+        forkmesh::control::buildHostSshCommand(
+            ip, user, pass, remoteCmd, &sshError);
+    if (ssh.program.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(sshError);
+        return;
+    }
 
     rememberHost(node, ip, user, pass, QStringLiteral("uninstalling"));
 
@@ -11615,11 +11756,7 @@ void MainWindow::runHostUninstall()
     auto *proc = new QProcess(this);
     m_hostInstallProcess = proc;
     proc->setProcessChannelMode(QProcess::MergedChannels);
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    // Hand the SSH password to sshpass via the environment so it never lands in
-    // argv or on disk.
-    env.insert(QStringLiteral("SSHPASS"), pass);
-    proc->setProcessEnvironment(env);
+    proc->setProcessEnvironment(ssh.environment);
 
     connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc] {
         appendHostInstallLog(QString::fromUtf8(proc->readAllStandardOutput()));
@@ -11627,8 +11764,8 @@ void MainWindow::runHostUninstall()
     connect(proc, &QProcess::errorOccurred, this, [this](QProcess::ProcessError e) {
         if (e == QProcess::FailedToStart)
             appendHostInstallLog(QString::fromUtf8(
-                "\n[error] Could not start sshpass/ssh. Install openssh-client "
-                "and sshpass on this machine and try again.\n"));
+                "\n[error] Could not start SSH. Install OpenSSH (and sshpass "
+                "only when using password login) and try again.\n"));
     });
     connect(proc, &QProcess::finished, this,
             [this, ip, user, node, pass](int code, QProcess::ExitStatus status) {
@@ -11658,7 +11795,7 @@ void MainWindow::runHostUninstall()
                 }
             });
 
-    proc->start(QStringLiteral("sshpass"), sshArgs);
+    proc->start(ssh.program, ssh.arguments);
     // Feed sudo's password on stdin (consumed by `sudo -S`); ssh forwards it to
     // the remote shell. Closing the channel hands the uninstaller a clean EOF.
     if (needSudo)

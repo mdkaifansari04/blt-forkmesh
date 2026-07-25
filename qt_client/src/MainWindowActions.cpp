@@ -97,6 +97,35 @@ bool fetchExternalActionRef(const RepositoryRecord &repo)
            process.exitCode() == 0;
 }
 
+bool bindActionRepositoryState(ActionRun *run, const QString &mirror,
+                               QString *error = nullptr)
+{
+    if (!run)
+        return false;
+    return ActionStore::repositoryStateDigest(
+        mirror, run->commit, &run->repositoryTree, &run->executionDigest,
+        error);
+}
+
+QString workflowContentAt(const QString &mirror, const QString &commit,
+                          const QString &path)
+{
+    QProcess process;
+    process.setProcessChannelMode(QProcess::SeparateChannels);
+    process.start(QStringLiteral("git"),
+                  {QStringLiteral("-C"), mirror, QStringLiteral("show"),
+                   commit + QLatin1Char(':') + path});
+    if (!process.waitForStarted(3000) ||
+        !process.waitForFinished(30000) ||
+        process.exitStatus() != QProcess::NormalExit ||
+        process.exitCode() != 0) {
+        process.kill();
+        process.waitForFinished(1000);
+        return {};
+    }
+    return QString::fromUtf8(process.readAllStandardOutput());
+}
+
 } // namespace
 
 void MainWindow::initActions()
@@ -826,18 +855,22 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
         run.workflowContent = content;
         run.commit = commit;
         run.ref = ref;
-        // A release the owner explicitly drafted from the "Draft a release →
-        // Publish release" dialog is a deliberate, already-authorized action on
-        // their own repo, so its build/publish workflow runs without a separate
-        // approval step. Otherwise the tag is created but the artifact never
-        // gets built: the run sits silently in AwaitingApproval whenever
-        // release.yml's content differs from the last-approved copy (e.g. after
-        // the workflow itself is edited), so the published binary keeps lagging
-        // the latest tag. Only promptNewRelease passes the Release trigger —
-        // pushed/PR workflows still go through approval.
-        const bool approved =
-            trigger == WorkflowTrigger::Release ||
-            ActionStore::isApproved(run.repoKey(), path, content);
+        QString snapshotError;
+        if (!bindActionRepositoryState(&run, repo.mirrorPath,
+                                       &snapshotError)) {
+            logSystem(QStringLiteral(
+                          "Actions: could not bind \"%1\" to repository state "
+                          "for %2/%3 @ %4: %5")
+                          .arg(wf.name, owner, name, commit.left(8),
+                               snapshotError));
+            continue;
+        }
+        // Even a release drafted by the owner requires review of the exact
+        // repository snapshot. An unchanged YAML cannot silently run a changed
+        // helper script, Makefile, package hook, or dependency.
+        const bool approved = ActionStore::isApproved(
+            run.repoKey(), path, content, run.repositoryTree,
+            run.executionDigest);
         run.status =
             approved ? ActionStatus::Queued : ActionStatus::AwaitingApproval;
 
@@ -983,6 +1016,36 @@ void MainWindow::processActionQueue()
         }
         const QString mirror = m_repositories.at(repoIndex).mirrorPath;
         const QString workTree = m_repositories.at(repoIndex).localPath;
+        ActionRun verified = *run;
+        QString snapshotError;
+        const QString repositoryWorkflow =
+            workflowContentAt(mirror, verified.commit,
+                              verified.workflowPath);
+        if (repositoryWorkflow.isNull() ||
+            repositoryWorkflow != verified.workflowContent ||
+            !bindActionRepositoryState(&verified, mirror, &snapshotError) ||
+            verified.repositoryTree != run->repositoryTree ||
+            verified.executionDigest != run->executionDigest ||
+            !ActionStore::isApproved(
+                verified.repoKey(), verified.workflowPath,
+                verified.workflowContent, verified.repositoryTree,
+                verified.executionDigest)) {
+            // Approval is checked immediately before execution, not just when
+            // the push was queued. Missing legacy fields, mirror tampering, or
+            // any changed repository input fails closed into human review.
+            run->status = ActionStatus::AwaitingApproval;
+            m_actionStore->saveRun(*run);
+            scheduleMirrorActionsSummary(0);
+            logSystem(QStringLiteral(
+                          "Actions: blocked \"%1\" for %2/%3 @ %4 because its "
+                          "approved repository state could not be reverified%5.")
+                          .arg(run->workflowName, run->owner, run->name,
+                               run->commit.left(8),
+                               snapshotError.isEmpty()
+                                   ? QString()
+                                   : QStringLiteral(": ") + snapshotError));
+            continue;
+        }
         const ActionWorkflow wf =
             ActionFile::parse(run->workflowPath, run->workflowContent);
         if (!wf.valid) {
@@ -2470,7 +2533,16 @@ void MainWindow::runSelectedWorkflowManually()
     run.workflowContent = content;
     run.commit = commit;
     run.ref = QStringLiteral("refs/heads/") + branch;
-    const bool approved = ActionStore::isApproved(run.repoKey(), path, content);
+    QString snapshotError;
+    if (!bindActionRepositoryState(&run, repo.mirrorPath, &snapshotError)) {
+        flashMessage(QStringLiteral(
+                         "Could not bind this run to the repository state: %1")
+                         .arg(snapshotError));
+        return;
+    }
+    const bool approved = ActionStore::isApproved(
+        run.repoKey(), path, content, run.repositoryTree,
+        run.executionDigest);
     run.status = approved ? ActionStatus::Queued : ActionStatus::AwaitingApproval;
 
     const ActionRun created = m_actionStore->createRun(run);
@@ -2591,6 +2663,31 @@ void MainWindow::showRun(int runId)
     }
 
     const bool pending = run->status == ActionStatus::AwaitingApproval;
+    if (pending && m_actionApprovalBanner) {
+        const ActionWorkflow workflow =
+            ActionFile::parse(run->workflowPath, run->workflowContent);
+        QStringList graph;
+        for (int index = 0; index < workflow.steps.size(); ++index) {
+            const QString name = workflow.steps.at(index).name.trimmed();
+            graph.append(QStringLiteral("%1. %2")
+                             .arg(index + 1)
+                             .arg(name.isEmpty()
+                                      ? QStringLiteral("shell step")
+                                      : name));
+        }
+        m_actionApprovalBanner->setText(
+            QStringLiteral(
+                "Review the complete execution graph before approving. "
+                "Approval covers this exact repository state and is invalidated "
+                "by any tracked-file change.\n\n"
+                "Commit: %1\nTree: %2\nState SHA-256: %3\nWorkflow: %4\n"
+                "Steps:\n%5\n\n"
+                "The workflow diff below contains the exact shell commands. "
+                "Secrets are exposed only after this bound approval.")
+                .arg(run->commit, run->repositoryTree,
+                     run->executionDigest, run->workflowPath,
+                     graph.join(QLatin1Char('\n'))));
+    }
     if (m_actionApprovalBanner)
         m_actionApprovalBanner->setVisible(pending);
     if (m_actionApprovalBar)
@@ -2633,7 +2730,31 @@ void MainWindow::approveSelectedRun()
     ActionRun *run = findRun(m_selectedRunId);
     if (!run || run->status != ActionStatus::AwaitingApproval)
         return;
-    ActionStore::approve(run->repoKey(), run->workflowPath, run->workflowContent);
+    const int repoIndex = repoIndexFor(run->owner, run->name);
+    if (repoIndex < 0)
+        return;
+    const QString mirror = m_repositories.at(repoIndex).mirrorPath;
+    ActionRun verified = *run;
+    QString snapshotError;
+    if (workflowContentAt(mirror, run->commit, run->workflowPath) !=
+            run->workflowContent ||
+        !bindActionRepositoryState(&verified, mirror, &snapshotError) ||
+        verified.repositoryTree != run->repositoryTree ||
+        verified.executionDigest != run->executionDigest) {
+        flashMessage(QStringLiteral(
+            "The repository state changed or could not be verified. Queue a "
+            "fresh run before approving it."));
+        return;
+    }
+    ActionStore::approve(run->repoKey(), run->workflowPath,
+                         run->workflowContent, run->repositoryTree,
+                         run->executionDigest);
+    if (!ActionStore::isApproved(
+            run->repoKey(), run->workflowPath, run->workflowContent,
+            run->repositoryTree, run->executionDigest)) {
+        flashMessage(QStringLiteral("The bound approval could not be saved."));
+        return;
+    }
     run->status = ActionStatus::Queued;
     m_actionStore->saveRun(*run);
     scheduleMirrorActionsSummary(0);
@@ -2681,8 +2802,24 @@ void MainWindow::rerunSelectedRun()
     run.workflowContent = prev->workflowContent;
     run.commit = prev->commit;
     run.ref = prev->ref;
-    const bool approved =
-        ActionStore::isApproved(run.repoKey(), run.workflowPath, run.workflowContent);
+    const int repoIndex = repoIndexFor(run.owner, run.name);
+    if (repoIndex < 0)
+        return;
+    QString snapshotError;
+    if (workflowContentAt(m_repositories.at(repoIndex).mirrorPath,
+                          run.commit, run.workflowPath) !=
+            run.workflowContent ||
+        !bindActionRepositoryState(
+            &run, m_repositories.at(repoIndex).mirrorPath,
+            &snapshotError)) {
+        flashMessage(QStringLiteral(
+                         "Could not verify the repository state for this rerun: %1")
+                         .arg(snapshotError));
+        return;
+    }
+    const bool approved = ActionStore::isApproved(
+        run.repoKey(), run.workflowPath, run.workflowContent,
+        run.repositoryTree, run.executionDigest);
     run.status = approved ? ActionStatus::Queued : ActionStatus::AwaitingApproval;
 
     const ActionRun created = m_actionStore->createRun(run);
@@ -2981,6 +3118,8 @@ QWidget *MainWindow::buildRepoActionsTab()
     m_actionApprovalBanner = new QLabel(
         "This workflow is new or changed. Review the difference "
         "below, then Approve to run it (secrets are only exposed after approval).");
+    m_actionApprovalBanner->setTextFormat(Qt::PlainText);
+    m_actionApprovalBanner->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_actionApprovalBanner->setWordWrap(true);
     m_actionApprovalBanner->setStyleSheet(
         "color:#d29922; background:#1c1908; border:1px solid #3a3416; "

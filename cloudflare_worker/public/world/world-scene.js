@@ -111,6 +111,21 @@ const ACCOUNT_STATUS_ICONS = Object.freeze({
   "Verified bot": "⌘",
 });
 const WORLD_MODERATION_HANDLE_PATTERN = /^[a-f0-9]{64}$/;
+const REPOSITORY_SIZE_MAP_COLORS = Object.freeze([
+  "#3987e5",
+  "#199e70",
+  "#c98500",
+  "#008300",
+  "#9085e9",
+  "#e66767",
+  "#d55181",
+  "#d95926",
+]);
+const REPOSITORY_SIZE_MAP_GRAY = "#8a8a8a";
+const REPOSITORY_SIZE_MAP_MAX_RINGS = 4;
+const REPOSITORY_SIZE_MAP_MAX_SEGMENTS = 420;
+const REPOSITORY_CATALOG_MAX = 200;
+const REPOSITORY_EDGE_RADIUS = 62;
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -463,6 +478,33 @@ function disposeObject3D(object) {
   textures.forEach((texture) => texture.dispose?.());
   materials.forEach((material) => material.dispose?.());
   geometries.forEach((geometry) => geometry.dispose?.());
+}
+
+function removeInteractiveObject(interactive, object) {
+  if (!object) return;
+  object.traverse?.((child) => {
+    let index = interactive.indexOf(child);
+    while (index >= 0) {
+      interactive.splice(index, 1);
+      index = interactive.indexOf(child);
+    }
+  });
+}
+
+function removeGeneratedLayer(parent, layer, interactive) {
+  if (!parent || !layer) return;
+  removeInteractiveObject(interactive, layer);
+  parent.remove(layer);
+  disposeObject3D(layer);
+}
+
+function objectIsEffectivelyVisible(object) {
+  let current = object;
+  while (current) {
+    if (current.visible === false) return false;
+    current = current.parent;
+  }
+  return true;
 }
 
 function makeLabelSprite(THREE, title, subtitle, color) {
@@ -1723,6 +1765,212 @@ function createFountain(THREE, position, interactive, animated) {
   return group;
 }
 
+function compactSceneBytes(value) {
+  const bytes = Math.max(0, Number(value) || 0);
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let scaled = bytes / 1024;
+  let index = 0;
+  while (scaled >= 1024 && index < units.length - 1) {
+    scaled /= 1024;
+    index += 1;
+  }
+  return `${scaled >= 10 ? scaled.toFixed(0) : scaled.toFixed(1)} ${units[index]}`;
+}
+
+function repositorySizeLabelSprite(THREE, title, subtitle, color) {
+  const texture = canvasTexture(THREE, 512, 160, (context) => {
+    context.clearRect(0, 0, 512, 160);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.shadowColor = "rgba(0, 0, 0, 0.86)";
+    context.shadowBlur = 9;
+    context.shadowOffsetY = 2;
+    context.font = '700 34px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#ffffff";
+    context.fillText(String(title || "").slice(0, 20), 256, 61);
+    context.font = '700 23px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = color || "#d9ffea";
+    context.fillText(String(subtitle || "").slice(0, 24), 256, 111);
+  });
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      depthTest: true,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  sprite.renderOrder = 12;
+  return sprite;
+}
+
+function safeRepositoryPath(value) {
+  const path = String(value || "");
+  if (!path || path.length > 1000 || /[\u0000-\u001f\u007f]/u.test(path)) {
+    return "";
+  }
+  const parts = path.split("/");
+  if (
+    parts.length > 64 ||
+    parts.some((part) => !part || part === "." || part === "..")
+  ) {
+    return "";
+  }
+  return path;
+}
+
+function repositorySizeMapShade(hex, depth, index) {
+  const factor = Math.min(
+    0.5,
+    Math.max(0, (depth - 1) * 0.13 + (depth > 1 ? (index % 2) * 0.055 : 0)),
+  );
+  const channel = (offset) => {
+    const value = Number.parseInt(hex.slice(1 + offset * 2, 3 + offset * 2), 16);
+    return Math.round(value + (235 - value) * factor);
+  };
+  return `rgb(${channel(0)}, ${channel(1)}, ${channel(2)})`;
+}
+
+function repositorySizeMapColors(root) {
+  const colors = new Map();
+  const walk = (node, depth, base, index) => {
+    const hue =
+      depth === 1
+        ? node?.name !== "…" && index < REPOSITORY_SIZE_MAP_COLORS.length
+          ? REPOSITORY_SIZE_MAP_COLORS[index]
+          : REPOSITORY_SIZE_MAP_GRAY
+        : base;
+    colors.set(node, repositorySizeMapShade(hue, depth, index));
+    const children = Array.isArray(node?.children) ? node.children : [];
+    children.forEach((child, childIndex) =>
+      walk(child, depth + 1, hue, childIndex),
+    );
+  };
+  (Array.isArray(root?.children) ? root.children : []).forEach((child, index) =>
+    walk(child, 1, REPOSITORY_SIZE_MAP_GRAY, index),
+  );
+  return colors;
+}
+
+function repositorySizeMapFocus(root, requestedPath) {
+  const parts = safeRepositoryPath(requestedPath).split("/").filter(Boolean);
+  let node = root;
+  const trail = [];
+  for (const part of parts) {
+    const next = (Array.isArray(node?.children) ? node.children : []).find(
+      (child) =>
+        child?.type === "directory" && String(child.name || "") === part,
+    );
+    if (!next) return { node: root, path: "", trail: [] };
+    node = next;
+    trail.push(part);
+  }
+  return { node, path: trail.join("/"), trail };
+}
+
+function repositorySizeMapSegments(root, requestedPath) {
+  const focus = repositorySizeMapFocus(root, requestedPath);
+  const colors = repositorySizeMapColors(root);
+  const segments = [];
+  const minSpan = (Math.PI * 2) / 900;
+  let deepest = 1;
+  const walk = (node, depth, from, span, parentPath) => {
+    if (
+      depth > REPOSITORY_SIZE_MAP_MAX_RINGS ||
+      segments.length >= REPOSITORY_SIZE_MAP_MAX_SEGMENTS
+    ) {
+      return;
+    }
+    const size = Math.max(0, Number(node?.size) || 0);
+    if (!(size > 0)) return;
+    let at = from;
+    const children = Array.isArray(node?.children) ? node.children : [];
+    children.forEach((child) => {
+      const childSize = Math.max(0, Number(child?.size) || 0);
+      const childSpan = span * Math.min(1, childSize / size);
+      const reportedPath = safeRepositoryPath(child?.path);
+      const childName = String(child?.name || "item").slice(0, 100);
+      const childPath =
+        reportedPath ||
+        safeRepositoryPath([parentPath, childName].filter(Boolean).join("/"));
+      if (
+        childSpan >= minSpan &&
+        segments.length < REPOSITORY_SIZE_MAP_MAX_SEGMENTS
+      ) {
+        const segment = {
+          node: child,
+          name: childName,
+          path: childPath,
+          depth,
+          from: at,
+          to: at + childSpan,
+          size: childSize,
+          color: colors.get(child) || REPOSITORY_SIZE_MAP_GRAY,
+          type:
+            child?.type === "directory"
+              ? "directory"
+              : child?.type === "file"
+                ? "file"
+                : "summary",
+        };
+        segments.push(segment);
+        deepest = Math.max(deepest, depth);
+        if (segment.type === "directory") {
+          walk(child, depth + 1, at, childSpan, childPath);
+        }
+      }
+      at += childSpan;
+    });
+  };
+  walk(focus.node, 1, -Math.PI / 2, Math.PI * 2, focus.path);
+  return {
+    ...focus,
+    segments,
+    ringCount: Math.max(1, Math.min(REPOSITORY_SIZE_MAP_MAX_RINGS, deepest)),
+  };
+}
+
+function repositoryWedgeGeometry(
+  THREE,
+  innerRadius,
+  outerRadius,
+  from,
+  to,
+  extrusion,
+) {
+  const span = Math.min(to - from, Math.PI * 2 - 0.0004);
+  const gap = Math.min(0.018, span * 0.14);
+  const start = from + gap * 0.5;
+  const end = from + span - gap * 0.5;
+  if (end <= start) return null;
+  const shape = new THREE.Shape();
+  shape.moveTo(
+    Math.cos(start) * innerRadius,
+    Math.sin(start) * innerRadius,
+  );
+  shape.lineTo(
+    Math.cos(start) * outerRadius,
+    Math.sin(start) * outerRadius,
+  );
+  shape.absarc(0, 0, outerRadius, start, end, false);
+  shape.lineTo(Math.cos(end) * innerRadius, Math.sin(end) * innerRadius);
+  shape.absarc(0, 0, innerRadius, end, start, true);
+  shape.closePath();
+  const geometry = new THREE.ExtrudeGeometry(shape, {
+    depth: extrusion,
+    steps: 1,
+    curveSegments: 10,
+    bevelEnabled: true,
+    bevelSegments: 1,
+    bevelSize: 0.012,
+    bevelThickness: 0.018,
+  });
+  geometry.translate(0, 0, -extrusion * 0.5);
+  return geometry;
+}
+
 function createRepositoryDistrict(THREE, position, interactive, animated) {
   const group = new THREE.Group();
   const ringMaterial = makeMaterial(THREE, "#77d9ff", {
@@ -1734,22 +1982,44 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
   const frameMaterial = makeMaterial(THREE, "#102a32", { roughness: 0.7 });
 
   const portal = new THREE.Group();
-  for (let index = 0; index < 3; index += 1) {
-    const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(2.4 - index * 0.48, 0.11, 12, 64),
+  const repositoryCore = new THREE.Group();
+  repositoryCore.position.y = 3.35;
+  const globe = new THREE.Mesh(
+    new THREE.IcosahedronGeometry(0.72, 3),
+    makeMaterial(THREE, "#184a59", {
+      metalness: 0.22,
+      roughness: 0.35,
+      emissive: "#1b7896",
+      emissiveIntensity: 0.72,
+      transparent: true,
+      opacity: 0.92,
+    }),
+  );
+  globe.name = "repository-world-core";
+  repositoryCore.add(globe);
+  [0.91, 1.08].forEach((radius, index) => {
+    const orbit = new THREE.Mesh(
+      new THREE.TorusGeometry(radius, 0.025, 6, 72),
       ringMaterial,
     );
-    ring.position.y = 3.1;
-    ring.rotation.y = index * 0.15;
-    portal.add(ring);
-  }
-  const frameLeft = new THREE.Mesh(new THREE.BoxGeometry(0.42, 5.8, 0.58), frameMaterial);
-  frameLeft.position.set(-2.75, 2.9, 0);
+    orbit.rotation.x = index ? Math.PI / 2.7 : Math.PI / 5.4;
+    orbit.rotation.y = index ? Math.PI / 4 : -Math.PI / 5;
+    repositoryCore.add(orbit);
+  });
+  portal.add(repositoryCore);
+
+  const frameLeft = new THREE.Mesh(
+    new THREE.BoxGeometry(0.38, 6.6, 0.54),
+    frameMaterial,
+  );
+  frameLeft.position.set(-4.25, 3.3, 0);
   portal.add(frameLeft);
   const frameRight = frameLeft.clone();
-  frameRight.position.x = 2.75;
+  frameRight.position.x = 4.25;
   portal.add(frameRight);
 
+  const legacyFiles = new THREE.Group();
+  legacyFiles.name = "repository-legacy-file-graph";
   const files = [];
   const fileColors = ["#77d9ff", "#9ef7c6", "#d5b6ff", "#f7c96b", "#ff9eb7"];
   for (let index = 0; index < 17; index += 1) {
@@ -1767,22 +2037,36 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
     file.position.set(Math.cos(angle) * radius, 3.1 + Math.sin(angle * 2) * 0.4, Math.sin(angle) * 0.3);
     file.userData = { angle, radius, layer };
     files.push(file);
-    portal.add(file);
+    legacyFiles.add(file);
   }
+  portal.add(legacyFiles);
   group.add(portal);
 
   const plinth = new THREE.Mesh(
-    new THREE.BoxGeometry(7.5, 0.45, 4.2),
+    new THREE.BoxGeometry(9.4, 0.45, 5.2),
     makeMaterial(THREE, "#18313a"),
   );
   plinth.position.y = 0.23;
   group.add(plinth);
-  addSectionPlaque(THREE, group, position, "REPOSITORIES", "walk through the code", "#77d9ff", 4.4);
+  addSectionPlaque(
+    THREE,
+    group,
+    position,
+    "REPOSITORIES",
+    "world-edge portals · 3D size sunbursts",
+    "#77d9ff",
+    5.2,
+  );
 
   group.position.set(...position);
   group.userData.landmark = "repositories";
   group.userData.fileMeshes = files;
+  group.userData.legacyFiles = legacyFiles;
   group.userData.portal = portal;
+  portal.userData.repositoryCore = repositoryCore;
+  portal.userData.repositoryOrbitLayer = null;
+  portal.userData.repositorySizeLayer = null;
+  portal.userData.repositorySizeMeshes = [];
   group.traverse((child) => {
     if (child.isMesh) {
       child.userData.landmark = "repositories";
@@ -1791,7 +2075,14 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
   });
   setShadows(group);
   animated.push((time) => {
-    portal.rotation.y = Math.sin(time * 0.00018) * 0.09;
+    portal.rotation.y = portal.userData.repositorySizeLayer
+      ? -0.12
+      : Math.sin(time * 0.00018) * 0.09;
+    globe.rotation.y = time * 0.00012;
+    globe.rotation.x = Math.sin(time * 0.00009) * 0.12;
+    if (portal.userData.repositoryOrbitLayer) {
+      portal.userData.repositoryOrbitLayer.rotation.z = time * 0.000012;
+    }
     files.forEach((file, index) => {
       if (file.userData.layoutPosition) {
         const base = file.userData.layoutPosition;
@@ -3262,6 +3553,7 @@ export function createWorldScene({
   const nodeInfrastructure = new Map();
   const botAgents = new Map();
   const loungeMembers = new Map();
+  const repositoryPortals = new Map();
   const emoteSprites = [];
   const rewardFlights = [];
   const keys = new Set();
@@ -3288,6 +3580,7 @@ export function createWorldScene({
   let wasWalking = false;
   let cameraFocus = null;
   let officeZoneState = "distant";
+  let focusedRepositoryKey = "";
   let cameraZoom = 1;
   let cameraYaw = Math.atan2(CAMERA_OFFSET[0], CAMERA_OFFSET[2]);
   let cameraPitch = Math.asin(CAMERA_OFFSET[1] / CAMERA_DISTANCE);
@@ -3432,10 +3725,33 @@ export function createWorldScene({
       officeZoneState = nextOfficeState;
       onOfficeProximity(officeZoneState);
     }
-    const nextLocation = distance < 7.5 ? nearest.label : "Town Square";
+    let nearestRepository = null;
+    let repositoryDistance = Infinity;
+    repositoryPortals.forEach((record) => {
+      const next = Math.hypot(
+        player.position.x - record.group.position.x,
+        player.position.z - record.group.position.z,
+      );
+      if (next < repositoryDistance) {
+        nearestRepository = record;
+        repositoryDistance = next;
+      }
+    });
+    const nextLocation =
+      repositoryDistance < 4.8
+        ? `${nearestRepository.owner}/${nearestRepository.name}`
+        : distance < 7.5
+          ? nearest.label
+          : "Town Square";
+    const nextLocationId =
+      repositoryDistance < 4.8
+        ? "repositories"
+        : distance < 7.5
+          ? nearest?.id || ""
+          : "";
     if (nextLocation !== currentLocation) {
       currentLocation = nextLocation;
-      onLocationChange(nextLocation, nearest?.id || "");
+      onLocationChange(nextLocation, nextLocationId);
     }
     const nextRegion =
       player.position.x > 12
@@ -3450,6 +3766,29 @@ export function createWorldScene({
     }
   }
 
+  function updateRepositoryPortalLabels() {
+    let nearestKey = "";
+    let nearestDistance = Infinity;
+    repositoryPortals.forEach((record, key) => {
+      const distance = Math.hypot(
+        player.position.x - record.group.position.x,
+        player.position.z - record.group.position.z,
+      );
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestKey = key;
+      }
+    });
+    repositoryPortals.forEach((record, key) => {
+      const label = record.group.userData.repositoryLabel;
+      if (!label) return;
+      label.visible =
+        key === focusedRepositoryKey ||
+        record.group === world.userData.repositorySizeMount ||
+        (key === nearestKey && nearestDistance < 9.5);
+    });
+  }
+
   function travelToRegion(regionId) {
     const destinations = {
       east: new THREE.Vector3(27, 0.38, 2),
@@ -3462,6 +3801,7 @@ export function createWorldScene({
     currentFloorY = 0.38;
     player.position.copy(destination);
     cameraFocus = null;
+    focusedRepositoryKey = "";
     nearestLandmark();
     onMovement({
       x: destination.x,
@@ -3489,6 +3829,7 @@ export function createWorldScene({
     currentFloorY = destination.y;
     player.position.copy(destination);
     cameraFocus = null;
+    focusedRepositoryKey = "";
     currentLocation = spaceId
       .split("-")
       .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
@@ -3513,6 +3854,7 @@ export function createWorldScene({
     currentSpace = "town-square";
     currentFloorY = 0.38;
     player.position.y = currentFloorY;
+    focusedRepositoryKey = "";
     cameraFocus = new THREE.Vector3(
       landmark.position[0],
       1.5,
@@ -3708,8 +4050,30 @@ export function createWorldScene({
     setTheme(currentTheme);
   }
 
+  function focusRepositoryPortal(owner, name) {
+    const key = `${String(owner || "").toLocaleLowerCase()}/${String(
+      name || "",
+    ).toLocaleLowerCase()}`;
+    const record = repositoryPortals.get(key);
+    if (!record?.group) return false;
+    currentSpace = "town-square";
+    currentFloorY = 0.38;
+    player.position.y = currentFloorY;
+    cameraFocus = record.group.position.clone();
+    cameraFocus.y += 0.1;
+    focusedRepositoryKey = key;
+    // Every portal faces toward the world center. Put the camera on that same
+    // inward normal so the selected sunburst is presented straight-on, and
+    // leave forward movement pointing from the campus toward the portal.
+    cameraYaw = -record.angle - Math.PI / 2;
+    cameraPitch = 0.16;
+    cameraZoom = Math.min(cameraZoom, 0.55);
+    return true;
+  }
+
   function clearFocus() {
     cameraFocus = null;
+    focusedRepositoryKey = "";
   }
 
   function setControl(control, pressed) {
@@ -3811,6 +4175,7 @@ export function createWorldScene({
     let walking = false;
     if (movement.lengthSq()) {
       cameraFocus = null;
+      focusedRepositoryKey = "";
       const topSpeed = PLAYER_MAX_SPEED * moveSpeedScale;
       // Infinite acceleration collapses the ramp: keyboardMovementSpeed jumps to
       // topSpeed on the first press instead of easing up over several frames.
@@ -3952,6 +4317,7 @@ export function createWorldScene({
     lastPosition.copy(player.position);
     wasWalking = false;
     cameraFocus = null;
+    focusedRepositoryKey = "";
     if (space === "town-square") {
       nearestLandmark();
     } else {
@@ -4267,6 +4633,7 @@ export function createWorldScene({
     currentFloorY = 0.38;
     player.position.copy(destination);
     cameraFocus = null;
+    focusedRepositoryKey = "";
     currentLocation = `${home.name}'s front yard`;
     onLocationChange(currentLocation, "neighborhood");
     onMovement({
@@ -4882,6 +5249,493 @@ export function createWorldScene({
     }
   }
 
+  function updateRepositoryCatalog(repositories = [], activeRepository = {}) {
+    const district = landmarkObjects.get("repositories");
+    const districtPortal = district?.userData?.portal;
+    if (!districtPortal) return;
+    const records = (Array.isArray(repositories) ? repositories : [])
+      .filter((record) => record && (record.owner || record.name))
+      .slice(0, REPOSITORY_CATALOG_MAX)
+      .map((record) => {
+        const owner = String(record.owner || "external").slice(0, 40);
+        const name = String(record.name || "repository").slice(0, 60);
+        const rawBytes = Number(record.sizeBytes);
+        const sizeBytes =
+          Number.isSafeInteger(rawBytes) && rawBytes >= 0
+            ? Math.min(rawBytes, 2 ** 50)
+            : 0;
+        return {
+          owner,
+          name,
+          key: `${owner.toLocaleLowerCase()}/${name.toLocaleLowerCase()}`,
+          sizeBytes,
+          liveHost: record.liveHost === true,
+          isPrivate: record.isPrivate === true,
+          source: String(record.source || "").slice(0, 40),
+        };
+      })
+      .sort((left, right) => left.key.localeCompare(right.key));
+    const activeKey = `${
+      String(activeRepository?.owner || "").toLocaleLowerCase()
+    }/${
+      String(
+        activeRepository?.repo || activeRepository?.name || "",
+      ).toLocaleLowerCase()
+    }`;
+    const catalogSignature = JSON.stringify([
+      activeKey,
+      records.map((record) => [
+        record.key,
+        record.sizeBytes,
+        record.liveHost,
+        record.isPrivate,
+        record.source,
+      ]),
+    ]);
+    const previousCatalog = world.userData.repositoryCatalogLayer;
+    if (
+      catalogSignature === world.userData.repositoryCatalogSignature &&
+      (records.length
+        ? previousCatalog?.parent === world
+        : !previousCatalog)
+    ) {
+      return;
+    }
+    removeGeneratedLayer(world, previousCatalog, interactive);
+    world.userData.repositoryCatalogLayer = null;
+    world.userData.repositorySizeLayer = null;
+    world.userData.repositorySizeMount = null;
+    world.userData.repositoryPortalMeshes = [];
+    world.userData.repositoryCatalogSignature = catalogSignature;
+    repositoryPortals.clear();
+    if (district.userData.legacyFiles) {
+      district.userData.legacyFiles.visible = !records.length;
+    }
+    if (!records.length) return;
+
+    const layer = new THREE.Group();
+    layer.name = "world-edge-repository-portals";
+    const guide = new THREE.Mesh(
+      new THREE.TorusGeometry(REPOSITORY_EDGE_RADIUS, 0.045, 6, 256),
+      makeMaterial(THREE, "#77d9ff", {
+        emissive: "#1e637c",
+        emissiveIntensity: 0.45,
+        transparent: true,
+        opacity: 0.38,
+        roughness: 0.5,
+      }),
+    );
+    guide.name = "world-edge-repository-guide";
+    guide.rotation.x = Math.PI / 2;
+    guide.position.y = 0.12;
+    layer.add(guide);
+
+    const maxBytes = Math.max(0, ...records.map((record) => record.sizeBytes));
+    const portalSpacing =
+      (Math.PI * 2 * REPOSITORY_EDGE_RADIUS) /
+      Math.max(1, records.length);
+    const portalDensityScale = clamp(
+      (portalSpacing - 0.06) / 2.85,
+      0.58,
+      1,
+    );
+    const diskGeometry = new THREE.CircleGeometry(1, 36);
+    const outlineGeometry = new THREE.TorusGeometry(1.08, 0.065, 8, 40);
+    const baseGeometry = new THREE.BoxGeometry(2.35, 0.22, 1.15);
+    const materials = {
+      live: makeMaterial(THREE, "#77d9ff", {
+        emissive: "#207f9e",
+        emissiveIntensity: 0.74,
+        metalness: 0.25,
+        roughness: 0.34,
+      }),
+      selected: makeMaterial(THREE, "#9ef7c6", {
+        emissive: "#2ca76c",
+        emissiveIntensity: 1.1,
+        metalness: 0.25,
+        roughness: 0.26,
+      }),
+      private: makeMaterial(THREE, "#d5b6ff", {
+        emissive: "#7650a7",
+        emissiveIntensity: 0.76,
+        metalness: 0.24,
+        roughness: 0.36,
+      }),
+      stub: makeMaterial(THREE, "#748a82", {
+        emissive: "#294139",
+        emissiveIntensity: 0.25,
+        metalness: 0.08,
+        roughness: 0.72,
+      }),
+      outline: makeMaterial(THREE, "#b9edff", {
+        emissive: "#3aa1c7",
+        emissiveIntensity: 0.78,
+        metalness: 0.2,
+        roughness: 0.35,
+      }),
+      base: makeMaterial(THREE, "#102a32", {
+        emissive: "#163f49",
+        emissiveIntensity: 0.24,
+        roughness: 0.72,
+      }),
+    };
+    const usedMaterials = new Set();
+    const portalMeshes = [];
+    records.forEach((record, index) => {
+      const angle =
+        Math.PI / 2 +
+        (index / Math.max(1, records.length)) * Math.PI * 2;
+      const isActive = record.key === activeKey;
+      const material = isActive
+        ? materials.selected
+        : record.isPrivate
+          ? materials.private
+          : record.liveHost
+            ? materials.live
+            : materials.stub;
+      const outlineMaterial = isActive
+        ? materials.selected
+        : materials.outline;
+      usedMaterials.add(material);
+      usedMaterials.add(outlineMaterial);
+      usedMaterials.add(materials.base);
+      const sizeRatio =
+        maxBytes > 0 && record.sizeBytes > 0
+          ? Math.log1p(record.sizeBytes) / Math.log1p(maxBytes)
+          : 0.36;
+      const nodeRadius =
+        0.72 + sizeRatio * 0.2 + (isActive ? 0.08 : 0);
+      const node = new THREE.Group();
+      node.name = `repository-portal:${record.owner}/${record.name}`;
+      node.position.set(
+        Math.cos(angle) * REPOSITORY_EDGE_RADIUS,
+        2.55,
+        Math.sin(angle) * REPOSITORY_EDGE_RADIUS,
+      );
+      node.rotation.y = -angle - Math.PI / 2;
+      const face = new THREE.Group();
+      face.name = `repository-portal-face:${record.owner}/${record.name}`;
+      face.scale.setScalar(portalDensityScale);
+      const disk = new THREE.Mesh(diskGeometry, material);
+      disk.position.z = 0.016;
+      disk.scale.setScalar(nodeRadius);
+      const outline = new THREE.Mesh(
+        outlineGeometry,
+        outlineMaterial,
+      );
+      outline.scale.setScalar(nodeRadius);
+      const repositoryPortal = {
+        owner: record.owner,
+        name: record.name,
+        sizeBytes: record.sizeBytes,
+        liveHost: record.liveHost,
+        isPrivate: record.isPrivate,
+        source: record.source,
+        angle,
+      };
+      for (const mesh of [disk, outline]) {
+        mesh.userData.landmark = "repositories";
+        mesh.userData.repositoryPortal = repositoryPortal;
+        interactive.push(mesh);
+        portalMeshes.push(mesh);
+      }
+      face.add(disk, outline);
+      if (isActive) {
+        const selectedHalo = new THREE.Mesh(
+          new THREE.TorusGeometry(1.38, 0.055, 8, 40),
+          materials.selected,
+        );
+        selectedHalo.name = "repository-selected-halo";
+        selectedHalo.scale.setScalar(nodeRadius);
+        face.add(selectedHalo);
+        usedMaterials.add(materials.selected);
+      }
+      node.add(face);
+
+      const label = repositorySizeLabelSprite(
+        THREE,
+        `${record.owner}/${record.name}`,
+        record.isPrivate
+          ? "AUTHORIZED PRIVATE"
+          : record.liveHost
+            ? record.sizeBytes
+              ? `${compactSceneBytes(record.sizeBytes)} HOSTED`
+              : "LIVE MIRROR"
+            : "STUB · MIRROR NEEDED",
+        isActive ? "#9ef7c6" : record.isPrivate ? "#d5b6ff" : "#77d9ff",
+      );
+      label.name = `repository-portal-label:${record.owner}/${record.name}`;
+      label.scale.set(2.8, 0.76, 1);
+      label.position.set(0, -1.42, 0.12);
+      label.visible = isActive;
+      node.add(label);
+
+      const base = new THREE.Mesh(baseGeometry, materials.base);
+      base.name = `repository-portal-base:${record.owner}/${record.name}`;
+      base.position.set(0, -2.38, 0);
+      base.scale.x = portalDensityScale;
+      node.add(base);
+      node.userData.repositoryPortal = repositoryPortal;
+      node.userData.repositoryFace = face;
+      node.userData.repositoryLabel = label;
+      layer.add(node);
+      repositoryPortals.set(record.key, {
+        group: node,
+        owner: record.owner,
+        name: record.name,
+        angle,
+      });
+    });
+
+    world.add(layer);
+    Object.values(materials).forEach((material) => {
+      if (!usedMaterials.has(material)) material.dispose();
+    });
+    world.userData.repositoryCatalogLayer = layer;
+    world.userData.repositoryPortalMeshes = portalMeshes;
+  }
+
+  function updateRepositorySizeMap(sizeTree = {}, selection = {}) {
+    const district = landmarkObjects.get("repositories");
+    const districtPortal = district?.userData?.portal;
+    if (!districtPortal) return;
+    const previousLayer = world.userData.repositorySizeLayer;
+    const previousMount =
+      world.userData.repositorySizeMount || previousLayer?.parent;
+    removeGeneratedLayer(previousMount, previousLayer, interactive);
+    world.userData.repositorySizeLayer = null;
+    world.userData.repositorySizeMount = null;
+    repositoryPortals.forEach((record) => {
+      if (record.group.userData.repositoryFace) {
+        record.group.userData.repositoryFace.visible = true;
+      }
+      if (record.group.userData.repositoryLabel) {
+        record.group.userData.repositoryLabel.position.y = -1.42;
+      }
+      record.group.userData.repositorySizeLayer = null;
+      record.group.userData.repositorySizeMeshes = [];
+      record.group.userData.repositorySizeFocus = "";
+    });
+    if (district.userData.legacyFiles) {
+      district.userData.legacyFiles.visible = repositoryPortals.size === 0;
+    }
+    if (districtPortal.userData.repositoryCore) {
+      districtPortal.userData.repositoryCore.visible = true;
+    }
+    if (districtPortal.userData.repositoryEntityLayer) {
+      districtPortal.userData.repositoryEntityLayer.visible =
+        repositoryPortals.size === 0;
+    }
+    if (districtPortal.userData.relationshipLines) {
+      districtPortal.userData.relationshipLines.visible =
+        repositoryPortals.size === 0;
+    }
+
+    const owner = String(selection?.owner || "").slice(0, 40);
+    const name = String(selection?.repo || selection?.name || "").slice(0, 60);
+    const repositoryKey =
+      `${owner.toLocaleLowerCase()}/${name.toLocaleLowerCase()}`;
+    const mount = repositoryPortals.get(repositoryKey)?.group;
+    const totalSize = Math.max(0, Number(sizeTree?.size) || 0);
+    const children = Array.isArray(sizeTree?.children)
+      ? sizeTree.children
+      : [];
+    if (!mount || !(totalSize > 0) || !children.length) return;
+
+    const map = repositorySizeMapSegments(sizeTree, selection?.path || "");
+    if (!map.segments.length) return;
+    const layer = new THREE.Group();
+    layer.name = "repository-3d-size-map";
+    layer.position.z = 0.18;
+    layer.userData.repositorySizeFocus = map.path;
+    layer.userData.repositoryKey = repositoryKey;
+    const innerRadius = 0.72;
+    const outerRadius = 2.5;
+    const ringWidth = (outerRadius - innerRadius) / map.ringCount;
+    const focusSize = Math.max(1, Number(map.node?.size) || totalSize);
+    const sizeMeshes = [];
+    let labelCount = 0;
+
+    const backing = new THREE.Mesh(
+      new THREE.CircleGeometry(outerRadius + 0.09, 72),
+      makeMaterial(THREE, "#081b22", {
+        emissive: "#0e3541",
+        emissiveIntensity: 0.32,
+        metalness: 0.18,
+        roughness: 0.5,
+      }),
+    );
+    backing.name = "repository-size-map-backing";
+    backing.position.z = -0.11;
+    layer.add(backing);
+    const perimeter = new THREE.Mesh(
+      new THREE.TorusGeometry(outerRadius + 0.1, 0.055, 8, 72),
+      makeMaterial(THREE, "#9ef7c6", {
+        emissive: "#2ca76c",
+        emissiveIntensity: 0.86,
+        metalness: 0.25,
+        roughness: 0.28,
+      }),
+    );
+    perimeter.name = "repository-size-map-perimeter";
+    perimeter.position.z = 0.04;
+    layer.add(perimeter);
+
+    map.segments.forEach((segment, index) => {
+      const radialGap = 0.025;
+      const inner =
+        innerRadius + (segment.depth - 1) * ringWidth + radialGap;
+      const outer =
+        innerRadius + segment.depth * ringWidth - radialGap;
+      const extrusion =
+        0.075 +
+        Math.min(
+          0.12,
+          (Math.log1p(segment.size) / Math.log1p(focusSize)) * 0.1,
+        );
+      const geometry = repositoryWedgeGeometry(
+        THREE,
+        inner,
+        outer,
+        segment.from,
+        segment.to,
+        extrusion,
+      );
+      if (!geometry) return;
+      const capMaterial = new THREE.MeshBasicMaterial({
+        color: segment.color,
+        transparent: segment.type === "summary",
+        opacity: segment.type === "summary" ? 0.58 : 0.98,
+        side: THREE.DoubleSide,
+        toneMapped: false,
+      });
+      const sideColor = new THREE.Color(segment.color).multiplyScalar(0.55);
+      const sideMaterial = makeMaterial(THREE, sideColor, {
+        emissive: sideColor,
+        emissiveIntensity: 0.14,
+        metalness: 0.12,
+        roughness: 0.44,
+        transparent: segment.type === "summary",
+        opacity: segment.type === "summary" ? 0.5 : 1,
+        side: THREE.DoubleSide,
+      });
+      const mesh = new THREE.Mesh(geometry, [capMaterial, sideMaterial]);
+      mesh.name = `repository-size-segment-${index}`;
+      mesh.position.z = segment.depth * 0.018;
+      mesh.userData.landmark = "repositories";
+      mesh.userData.path = segment.path;
+      mesh.userData.kind = segment.type;
+      mesh.userData.repositorySizeNode = {
+        owner: String(selection?.owner || "").slice(0, 40),
+        name: String(selection?.repo || selection?.name || "").slice(0, 60),
+        commit: String(selection?.commit || "").slice(0, 64),
+        path: segment.path,
+        label: segment.name,
+        type: segment.type,
+        size: segment.size,
+        percent: Math.max(
+          0,
+          Math.min(100, (segment.size / focusSize) * 100),
+        ),
+      };
+      layer.add(mesh);
+      sizeMeshes.push(mesh);
+      if (segment.type !== "summary") interactive.push(mesh);
+
+      const span = segment.to - segment.from;
+      if (
+        labelCount < 18 &&
+        segment.depth <= 3 &&
+        span >= 0.34 &&
+        segment.type !== "summary"
+      ) {
+        const middle = (segment.from + segment.to) * 0.5;
+        const labelRadius = (inner + outer) * 0.5;
+        const label = repositorySizeLabelSprite(
+          THREE,
+          segment.name.slice(0, 18),
+          compactSceneBytes(segment.size),
+          segment.color,
+        );
+        label.name = `repository-size-label-${index}`;
+        label.scale.set(Math.min(1.55, 0.92 + span * 0.32), 0.42, 1);
+        label.position.set(
+          Math.cos(middle) * labelRadius,
+          Math.sin(middle) * labelRadius,
+          0.24 + segment.depth * 0.018,
+        );
+        layer.add(label);
+        labelCount += 1;
+      }
+    });
+
+    const hub = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.64, 0.64, 0.18, 48),
+      makeMaterial(THREE, "#0b2630", {
+        emissive: "#1b6e87",
+        emissiveIntensity: 0.58,
+        metalness: 0.2,
+        roughness: 0.36,
+      }),
+    );
+    hub.name = "repository-size-map-hub";
+    hub.rotation.x = Math.PI / 2;
+    hub.position.z = 0.055;
+    hub.userData.landmark = "repositories";
+    const parentPath = map.path.split("/").slice(0, -1).join("/");
+    hub.userData.repositorySizeNode = {
+      owner: String(selection?.owner || "").slice(0, 40),
+      name: String(selection?.repo || selection?.name || "").slice(0, 60),
+      commit: String(selection?.commit || "").slice(0, 64),
+      path: map.path,
+      targetPath: parentPath,
+      label: map.path.split("/").pop() || selection?.repo || "repository",
+      type: "center",
+      size: focusSize,
+      percent: 100,
+    };
+    interactive.push(hub);
+    layer.add(hub);
+
+    const title = repositorySizeLabelSprite(
+      THREE,
+      String(
+        map.path.split("/").pop() ||
+          selection?.repo ||
+          selection?.name ||
+          "repository",
+      ).slice(0, 18),
+      compactSceneBytes(focusSize),
+      "#9ef7c6",
+    );
+    title.name = "repository-size-map-title";
+    title.scale.set(1.34, 0.45, 1);
+    title.position.z = 0.26;
+    layer.add(title);
+
+    mount.add(layer);
+    world.userData.repositorySizeLayer = layer;
+    world.userData.repositorySizeMount = mount;
+    mount.userData.repositorySizeLayer = layer;
+    mount.userData.repositorySizeMeshes = sizeMeshes;
+    mount.userData.repositorySizeFocus = map.path;
+    if (mount.userData.repositoryFace) {
+      mount.userData.repositoryFace.visible = false;
+    }
+    if (mount.userData.repositoryLabel) {
+      mount.userData.repositoryLabel.position.y = -3.05;
+    }
+    if (district.userData.legacyFiles) {
+      district.userData.legacyFiles.visible = false;
+    }
+    if (districtPortal.userData.repositoryEntityLayer) {
+      districtPortal.userData.repositoryEntityLayer.visible = false;
+    }
+    if (districtPortal.userData.relationshipLines) {
+      districtPortal.userData.relationshipLines.visible = false;
+    }
+  }
+
   function updateRepositoryGraph(entries = [], entities = []) {
     const district = landmarkObjects.get("repositories");
     const meshes = district?.userData?.fileMeshes || [];
@@ -5467,7 +6321,9 @@ export function createWorldScene({
       clientY: pointerStart.y,
     });
     raycaster.setFromCamera(pointer, camera);
-    const hit = raycaster.intersectObjects(interactive, false)[0];
+    const hit = raycaster
+      .intersectObjects(interactive, false)
+      .find(({ object }) => objectIsEffectivelyVisible(object));
     if (
       officeSceneMode === "meeting" &&
       hit?.object?.userData?.interactive === "office-chair"
@@ -5497,12 +6353,30 @@ export function createWorldScene({
     }
     if (hit?.object?.userData?.landmark) {
       const id = hit.object.userData.landmark;
-      focusLandmark(id);
+      const repository =
+        id === "repositories" && hit.object.userData.repositoryPortal
+          ? { ...hit.object.userData.repositoryPortal }
+          : null;
+      const repositorySizeNode =
+        id === "repositories" && hit.object.userData.repositorySizeNode
+          ? { ...hit.object.userData.repositorySizeNode }
+          : null;
+      if (
+        !repository &&
+        !repositorySizeNode
+      ) {
+        focusLandmark(id);
+      } else {
+        const target = repository || repositorySizeNode;
+        focusRepositoryPortal(target.owner, target.name);
+      }
       onLandmarkSelect(id, {
         source: "world",
         mediaSpaceId: String(
           hit.object.userData.mediaSpaceId || "",
         ).slice(0, 40),
+        repository,
+        repositorySizeNode,
         graphNode:
           id === "repositories" && hit.object.userData.graphNode
             ? { ...hit.object.userData.graphNode }
@@ -5673,10 +6547,13 @@ export function createWorldScene({
       }
     }
     updateCamera(delta);
-    // Landmark proximity is a town-scene concern only (PR #47). PR #47 also
-    // called updateWorldSun() here; main removed wall-clock sun entirely in
-    // favour of fixed full daylight, so that call is deliberately not restored.
-    if (officeSceneMode === "town") nearestLandmark();
+    // Landmark/portal proximity is a town-scene concern only (PR #47). PR #47
+    // also called updateWorldSun() here; main removed wall-clock sun entirely
+    // in favour of fixed full daylight, so that call is not restored.
+    if (officeSceneMode === "town") {
+      nearestLandmark();
+      updateRepositoryPortalLabels();
+    }
     if (!reducedMotion) {
       animated.forEach((callback) => callback(time, delta));
       animateWeather(weather.rain, time, delta, "rain");
@@ -5848,6 +6725,7 @@ export function createWorldScene({
     setOfficeSeatState,
     showOfficeBubble,
     leaveOfficeInterior,
+    focusRepositoryPortal,
     clearFocus,
     setTheme,
     setLightLevel,
@@ -5868,7 +6746,9 @@ export function createWorldScene({
     updateFediverseDirectory,
     updateMediaSpaces,
     updateIdentity,
+    updateRepositoryCatalog,
     updateRepositoryGraph,
+    updateRepositorySizeMap,
     playEmote,
     showChatBubble,
     playRewardEvent,

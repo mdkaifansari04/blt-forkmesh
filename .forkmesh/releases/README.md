@@ -5,7 +5,8 @@ committed to git (issue #304; see
 [`docs/design/release-binary-publishing.md`](../../docs/design/release-binary-publishing.md)).
 The actual binary bytes live in a per-node content-addressed store (the CAS),
 served on demand from a hosting node over the relay — the same way the repo
-itself is served — and verified by sha256 on download.
+itself is served. The checksum list is bound into an Ed25519-signed manifest,
+and the downloaded bytes are then verified by SHA-256.
 
 > Historical note: releases used to commit the prebuilt binary directly under
 > `.forkmesh/releases/<channel>/forkmesh-<os>-<arch>`. The installer still understands that
@@ -16,7 +17,8 @@ itself is served — and verified by sha256 on download.
 ```
 .forkmesh/releases/<channel>/
   SHASUMS256.txt   # "<sha256>  <asset-name>" per asset (sha256sum -c compatible)
-  release.json     # manifest: repo, tag, tag_commit, build_commit, channel, assets[]
+  release.json     # signed manifest body (repo, revisions, checksum-list hash, assets)
+  release.json.sig # raw 64-byte Ed25519 signature over exact release.json bytes
 ```
 
 - `<channel>` — `latest` by default. The installer reads `FORKMESH_RELEASE` to
@@ -40,15 +42,18 @@ the publisher directly:
 ```sh
 tools/forkmesh-release-publish.sh \
   --channel latest --tag v1.2.3 --repo forkmesh/forkmesh \
+  --signing-key /secure/path/release-ed25519-private.pem \
   --cas-dir <mirror>/forkmesh-releases \
   forkmesh-linux-x86_64
 ```
 
 This hashes each binary, copies the bytes into the CAS (`--cas-dir`, which must
 be the directory the serving node reads from — set `FORKMESH_RELEASE_CAS` to it),
-and writes `.forkmesh/releases/<channel>/SHASUMS256.txt` + `release.json`. Commit **only
-that metadata** and publish it — the asset goes live immediately. Run it once on a
-node of each OS to publish all three platform builds.
+and writes the checksum list, signed manifest, and detached signature. The
+private key must be an Ed25519 PEM file supplied through `--signing-key` or
+`FORKMESH_RELEASE_SIGNING_KEY`; publication fails when it is missing. Commit
+**only that metadata** and publish it — never commit the private key. Run it
+once on a node of each OS to publish all three platform builds.
 
 ### Refreshing a same-version binary
 
@@ -71,13 +76,22 @@ the desktop client's fleet binary-install action.
 
 ## Installing
 
-The installer autodetects the platform, reads `SHASUMS256.txt` over the git
-proxy, downloads the matching binary from the relay's content-addressed release
-endpoint, and verifies its sha256 before installing:
+The installer autodetects the platform, authenticates `release.json` against a
+locally provisioned publisher public key (or an exact controller-supplied
+manifest digest), verifies its binding to `SHASUMS256.txt`, then downloads the
+matching content-addressed binary and verifies its SHA-256 before installing.
+It never executes downloaded bytes to decide whether they are trustworthy:
 
 ```sh
-curl -fsSL https://forkmesh.com/install.sh | bash
+FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE=/etc/forkmesh/release-publisher.pem \
+  bash install.sh
 ```
+
+Fleet controllers may instead set
+`FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256` to a digest obtained through their
+authenticated control channel. Without either trust anchor, prebuilt
+installation fails closed (an explicitly enabled source build can still
+proceed).
 
 The desktop client's **Install from binary (all hosts)** path adds a stricter
 provenance pin: it supplies the source commit embedded in the controller binary,

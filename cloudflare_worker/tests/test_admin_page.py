@@ -39,7 +39,7 @@ def test_admin_page_preserves_admin_query_local():
     )
 
 
-def test_admin_page_requires_signed_login_cookie():
+def test_admin_page_requires_revocable_account_cookie():
     module = ast.parse(ENTRY_TEXT)
     auth = next(
         node for node in ast.walk(module)
@@ -52,11 +52,12 @@ def test_admin_page_requires_signed_login_cookie():
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
     assert "_is_admin" in calls
-    assert "_admin_session_valid" in calls
+    assert "_account_session_lookup" in calls
+    assert "_cookie_value" in calls
 
     assert "Set-Cookie" in ENTRY_TEXT
-    assert "_admin_session_cookie(env, payload[\"nodeName\"])" in ENTRY_TEXT
-    assert "_clear_admin_session_cookie()" in ENTRY_TEXT
+    assert "_account_session_cookie(payload[\"sessionToken\"])" in ENTRY_TEXT
+    assert "_clear_account_session_cookie()" in ENTRY_TEXT
     assert 'url.path == "/api/accounts/logout"' in ENTRY_TEXT
     assert '\"location\": \"/login?next=\" + quote(next_path)' in ENTRY_TEXT
 
@@ -80,7 +81,7 @@ def test_admin_session_reissued_from_session_token():
     assert "async def _account_admin_session" in ENTRY_TEXT
     assert 'url.path == "/api/accounts/admin-session"' in ENTRY_TEXT
     assert "_account_session_token_name(env, token)" in ENTRY_TEXT
-    assert "_admin_session_cookie(env, name)" in ENTRY_TEXT
+    assert "_account_session_cookie(token)" in ENTRY_TEXT
 
     # The grant is gated on is_admin, never on a self-asserted name, and it
     # never mints a session token — it only trades an existing one for the cookie.
@@ -96,7 +97,7 @@ def test_admin_session_reissued_from_session_token():
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
     assert "_is_admin" in calls
-    assert "_admin_session_cookie" in calls
+    assert "_account_session_cookie" in calls
     assert "_account_session_token" not in calls
 
 
@@ -116,7 +117,8 @@ def test_admin_page_auth_derives_admin_from_cookie():
         for node in ast.walk(auth)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
-    assert "_admin_cookie_name" in calls
+    assert "_account_session_lookup" in calls
+    assert "_cookie_value" in calls
     assert "parse_qs" not in calls
 
     # The login page never auto-resumes into a redirect loop: a resume attempt
