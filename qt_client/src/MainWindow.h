@@ -472,6 +472,8 @@ public:
     QString testFleetBinaryInstallRemoteCommand(bool reinstall,
                                                 qsizetype *uploadByteCount,
                                                 QString *errorOut);
+    QString testDirectBinaryInstallRemoteCommand(qsizetype *uploadByteCount,
+                                                 QString *errorOut);
     // Rebuild the Branches panel, then read back the Worktree column (column 3)
     // for `branch`, so a test can prove the branches list surfaces the worktree a
     // branch is checked out in (issue #172).
@@ -1061,9 +1063,11 @@ private:
     QUrl rewardPoolWorkerEndpoint(const QString &path) const;
 
     // Hosts (adhoc #263): SSH into a remote machine and run the ForkMesh
-    // installer over a plain shell (sshpass + ssh), streaming the live session
-    // output. Once the install finishes the new node joins the network and shows
-    // up in the per-repo Mirror nodes list on its own.
+    // installer over a verified TOFU connection, streaming the live session
+    // output. OpenSSH agent/default-key auth is preferred; an optional password
+    // is retained only in this MainWindow's memory. Once the install finishes
+    // the new node joins the network and shows up in the per-repo Mirror nodes
+    // list on its own.
     QWidget *buildHostsSection();
     // forceUploadBinary bypasses the "Upload the release from this app"
     // checkbox (used by the per-row / install-all-from-binary buttons, which
@@ -1152,17 +1156,17 @@ private:
                                  const QString &node, bool uploadBinary,
                                  bool reinstall, bool fromSource,
                                  bool requirePublishedBinary,
-                                 QStringList *sshArgs, QString *remoteCmd,
-                                 QByteArray *uploadBytes, QString *errorOut);
-    // Save the host's server info (name/IP/user/password) from the form without running
-    // the installer, so the details are remembered up front and the installer
-    // can be run against the saved host later.
+                                 QString *remoteCmd, QByteArray *uploadBytes,
+                                 QString *errorOut);
+    // Save non-sensitive host metadata from the form without running the
+    // installer. pass is cached only for the current process; it is never
+    // written to QSettings.
     void addHostFromForm();
     void rememberHost(const QString &name, const QString &ip, const QString &user,
                       const QString &pass, const QString &status = QStringLiteral("installed"));
     void refreshHostsTable();
-    // Reload a saved host's server info (name/IP/user/password) from the table back into
-    // the install form so the installer can be re-run against it.
+    // Reload a saved host's server info from the table. A password is restored
+    // only when it remains in this process's session cache.
     void loadHostIntoForm(int row, int column);
     // URL of the hosted installer script the remote host curls and runs.
     QString installScriptUrl() const;
@@ -3537,6 +3541,9 @@ private:
     QLineEdit *m_hostUserEdit = nullptr;
     QLineEdit *m_hostPassEdit = nullptr;
     QLineEdit *m_hostNameEdit = nullptr;
+    // Optional SSH/sudo passwords are session-only. Legacy QSettings values are
+    // migrated here once and immediately removed from persistent settings.
+    QHash<QString, QString> m_hostSessionPasswords;
     // Direct-upload install (adhoc #67): stream this app's own release binary
     // to the host over the SSH session instead of the host downloading the
     // release from the relay.

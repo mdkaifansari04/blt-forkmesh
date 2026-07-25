@@ -2563,7 +2563,8 @@ const QString kAccountNameSetting = QStringLiteral("account/nodeName");
 // them. Unset means "derive a default" (hostname for user-account installs,
 // the account name for bare node accounts) — see MainWindow::machineNodeName().
 const QString kMachineNodeNameSetting = QStringLiteral("node/machineName");
-// Persisted Hosts list (adhoc #263): JSON array of {name, ip, user, pass}.
+// Persisted Hosts list (adhoc #263): non-sensitive JSON metadata only
+// ({name, ip, user, status}). Legacy password fields are removed on load.
 const QString kHostsSetting = QStringLiteral("hosts/list");
 const QString kSolanaSetting = QStringLiteral("profile/solana");
 const QString kAvatarSetting = QStringLiteral("profile/avatarPng");
