@@ -85,7 +85,6 @@ const MOVEMENT_KEYS = new Set([
   "ArrowLeft",
   "ArrowRight",
 ]);
-const REGISTERED_LOUNGE_POSITION = Object.freeze([-22, 0, 25]);
 const ACTIVE_LEADERBOARD_POSITION = Object.freeze([-11.5, 0, 25]);
 const SYSTEM_CAPACITY_PLATFORM_POSITION = Object.freeze([8, 0, -27]);
 const SERVER_CABINET_YARD_ORIGIN = Object.freeze([18, 0, 0]);
@@ -256,14 +255,6 @@ function deterministicTreeLayout() {
         continue;
     }
       if (Math.hypot(x - 8, z - 8) < 5.5) continue;
-    if (
-      Math.hypot(
-        x - REGISTERED_LOUNGE_POSITION[0],
-        z - REGISTERED_LOUNGE_POSITION[2],
-      ) < 11.5
-    ) {
-        continue;
-    }
     if (
       positions.some(
         (tree) => Math.hypot(x - tree.x, z - tree.z) < TREE_MIN_SPACING,
@@ -447,9 +438,6 @@ function wordTexture(THREE, title, subtitle, color = "#9ef7c6") {
   });
 }
 
-// The Member Lounge plaque carries the section name, the live registered-user
-// total, and room for the tiny account button — one surface instead of a
-// floating count card hovering over the lounge.
 function activeDurationLabel(value) {
   const milliseconds = Number(value);
   if (!Number.isFinite(milliseconds) || milliseconds < 0) {
@@ -463,48 +451,6 @@ function activeDurationLabel(value) {
   const minutes = Math.floor(seconds / 60);
   seconds %= 60;
   return `${days}d ${hours}h ${minutes}m ${seconds}s`;
-}
-
-function memberLoungePlaqueTexture(
-  THREE,
-  totalCount,
-  color = "#9ef7c6",
-) {
-  // Until the directory loads the plaque says it is counting rather than
-  // claiming a total of zero.
-  const known = totalCount !== null && Number.isFinite(Number(totalCount));
-  const total = Math.max(0, Math.min(999999, Number(totalCount) || 0));
-  return canvasTexture(THREE, 768, 352, (context) => {
-    context.clearRect(0, 0, 768, 352);
-    roundedRect(context, 4, 4, 760, 344, 14);
-    context.fillStyle = "rgba(6,17,14,0.92)";
-    context.fill();
-    context.strokeStyle = color;
-    context.lineWidth = 4;
-    context.stroke();
-    context.textAlign = "left";
-    context.textBaseline = "middle";
-    context.fillStyle = "#f1fff6";
-    context.font = '700 52px "ForkMesh Favorit", system-ui, sans-serif';
-    context.fillText("MEMBER LOUNGE", 42, 72);
-    context.fillStyle = color;
-    context.font = '700 44px "ForkMesh Favorit", system-ui, sans-serif';
-    context.fillText(
-      known ? `${total} MEMBER${total === 1 ? "" : "S"}` : "MEMBERS",
-      42,
-      142,
-    );
-    context.font = '400 23px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(
-      (known ? "total registered users" : "counting registered users")
-        .toUpperCase(),
-      42,
-      192,
-    );
-    context.fillStyle = "rgba(217,255,234,0.66)";
-    context.font = '400 20px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("REGISTERED CONTRIBUTORS · RECENT ACTIVITY GLOWS", 42, 232);
-  });
 }
 
 function rankedActiveLeaderboardMembers(members = []) {
@@ -700,25 +646,6 @@ function officeMarketingTasksTexture(THREE, payload = {}) {
       context.fillText(task.status.toUpperCase(), 954, top + 10, 260);
       context.textAlign = "left";
     });
-  });
-}
-
-// Tiny plaque button: log in / sign up while signed out, log out once signed
-// in. Filled while signed out so the call to action reads from a distance.
-function memberLoungeAuthTexture(THREE, signedIn, color = "#9ef7c6") {
-  return canvasTexture(THREE, 384, 88, (context) => {
-    context.clearRect(0, 0, 384, 88);
-    roundedRect(context, 4, 4, 376, 80, 40);
-    context.fillStyle = signedIn ? "rgba(6,17,14,0.94)" : color;
-    context.fill();
-    context.strokeStyle = color;
-    context.lineWidth = 4;
-    context.stroke();
-    context.textAlign = "center";
-    context.textBaseline = "middle";
-    context.fillStyle = signedIn ? color : "#06110e";
-    context.font = '700 34px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(signedIn ? "LOG OUT" : "LOG IN / SIGN UP", 192, 47);
   });
 }
 
@@ -1081,50 +1008,6 @@ function makeArrivalPlaque(THREE) {
   face.position.z = 0.09;
   slab.add(face);
   plaque.userData.statsFace = face;
-  return plaque;
-}
-
-// A taller Member Lounge plaque: the same ground slab, with the member total
-// on its face and a tiny account button mounted at the bottom of the face.
-function makeMemberLoungePlaque(THREE, color = "#9ef7c6") {
-  const plaque = new THREE.Group();
-  plaque.name = "forkmesh-member-lounge-plaque";
-  const base = new THREE.Mesh(
-    new THREE.BoxGeometry(3.9, 0.22, 1.5),
-    makeMaterial(THREE, "#233b33", { roughness: 0.82 }),
-  );
-  base.position.y = 0.11;
-  plaque.add(base);
-  const slab = new THREE.Mesh(
-    new THREE.BoxGeometry(3.6, 1.72, 0.14),
-    makeMaterial(THREE, "#101d18", { roughness: 0.55, metalness: 0.12 }),
-  );
-  slab.position.set(0, 0.95, 0.12);
-  slab.rotation.x = -0.42;
-  plaque.add(slab);
-  const face = new THREE.Mesh(
-    new THREE.PlaneGeometry(3.44, 1.577),
-    new THREE.MeshBasicMaterial({
-      map: memberLoungePlaqueTexture(THREE, null, color),
-      transparent: true,
-    }),
-  );
-  face.position.z = 0.08;
-  slab.add(face);
-  const authButton = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.42, 0.33),
-    new THREE.MeshBasicMaterial({
-      map: memberLoungeAuthTexture(THREE, false, color),
-      transparent: true,
-    }),
-  );
-  authButton.name = "forkmesh-member-lounge-auth-button";
-  authButton.position.set(-0.84, -0.55, 0.12);
-  authButton.scale.set(1.12, 1.12, 1);
-  authButton.userData.worldAuthAction = "login";
-  face.add(authButton);
-  plaque.userData.face = face;
-  plaque.userData.authButton = authButton;
   return plaque;
 }
 
@@ -2030,87 +1913,6 @@ function createAgentRobot(THREE, bot, id) {
   group.userData.core = core;
   setShadows(group);
   return group;
-}
-
-function createRegisteredUserLounge(THREE, animated, interactive) {
-  const lounge = new THREE.Group();
-  lounge.name = "registered-user-lounge";
-  lounge.userData.spaceKind = "registered-user-lounge";
-  lounge.position.set(...REGISTERED_LOUNGE_POSITION);
-  const base = new THREE.Mesh(
-    new THREE.CylinderGeometry(7.4, 7.8, 0.42, 12),
-    makeMaterial(THREE, "#1a3f34", {
-      emissive: "#154f3b",
-      emissiveIntensity: 0.28,
-      roughness: 0.62,
-    }),
-  );
-  base.position.y = 0.21;
-  lounge.add(base);
-  const canopy = new THREE.Mesh(
-    new THREE.TorusGeometry(5.8, 0.16, 10, 64),
-    makeMaterial(THREE, "#9ef7c6", {
-      emissive: "#39c783",
-      emissiveIntensity: 0.8,
-      metalness: 0.3,
-    }),
-  );
-  canopy.rotation.x = Math.PI / 2;
-  canopy.position.y = 4.2;
-  lounge.add(canopy);
-  const loadingArc = new THREE.Mesh(
-    new THREE.TorusGeometry(5.8, 0.22, 10, 24, Math.PI * 0.26),
-    makeMaterial(THREE, "#d9ffea", {
-      emissive: "#62e6a4",
-      emissiveIntensity: 1.25,
-      metalness: 0.32,
-    }),
-  );
-  loadingArc.rotation.x = Math.PI / 2;
-  loadingArc.position.y = 4.2;
-  loadingArc.visible = false;
-  lounge.add(loadingArc);
-  for (const angle of [0, Math.PI / 2, Math.PI, Math.PI * 1.5]) {
-    const column = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.12, 0.17, 3.9, 8),
-      makeMaterial(THREE, "#507d68", { metalness: 0.22 }),
-    );
-    column.position.set(Math.cos(angle) * 5.8, 2.1, Math.sin(angle) * 5.8);
-    lounge.add(column);
-  }
-  // Members no longer sit here — the directory figures gather around the
-  // campfire circle instead — so the lounge keeps only the plaque, which
-  // carries the member total and the account button (no floating count card).
-  const plaque = placeSectionPlaque(
-    lounge,
-    makeMemberLoungePlaque(THREE, "#9ef7c6"),
-    REGISTERED_LOUNGE_POSITION,
-    9.2,
-  );
-  lounge.userData.memberCountSign = plaque.userData.face;
-  lounge.userData.authButton = plaque.userData.authButton;
-  lounge.userData.authSignedIn = false;
-  interactive.push(plaque.userData.authButton);
-  const activityBeacon = new THREE.PointLight("#9ef7c6", 1.4, 18, 2);
-  activityBeacon.position.set(0, 4.2, 0);
-  lounge.add(activityBeacon);
-  lounge.userData.activityBeacon = activityBeacon;
-  lounge.userData.loadingArc = loadingArc;
-  lounge.userData.loading = false;
-  setShadows(lounge);
-  animated.push((time) => {
-    const pulse = (Math.sin(time * 0.0018) + 1) * 0.5;
-    canopy.material.emissiveIntensity = 0.55 + pulse * 0.55;
-    activityBeacon.intensity = 0.9 + pulse * 1.1;
-    if (lounge.userData.loading) {
-      loadingArc.visible = true;
-      loadingArc.rotation.z = time * 0.006;
-    } else {
-      loadingArc.visible = false;
-      loadingArc.rotation.z = 0;
-    }
-  });
-  return lounge;
 }
 
 function createSystemCapacityPlatform(THREE) {
@@ -4109,7 +3911,6 @@ export function createWorldScene({
   onRegionChange = () => {},
   onMovement = () => {},
   onModeration = () => {},
-  onAccountAction = () => {},
   onLayoutObjectMoved = () => {},
   onForkbotChat = () => {},
   onPlayForkmeshSong = () => {},
@@ -4516,13 +4317,6 @@ export function createWorldScene({
   world.add(campfire);
   registerMovableObject("campfire", campfire);
 
-  const registeredUserLounge = createRegisteredUserLounge(
-    THREE,
-    animated,
-    interactive,
-  );
-  world.add(registeredUserLounge);
-  registerMovableObject("registered-user-lounge", registeredUserLounge);
   const activeLeaderboardSign = makeActiveLeaderboardSign(THREE);
   activeLeaderboardSign.position.set(...ACTIVE_LEADERBOARD_POSITION);
   activeLeaderboardSign.rotation.y = Math.atan2(
@@ -6751,17 +6545,6 @@ export function createWorldScene({
     leaderboardMembers = members,
   ) {
     const total = Math.max(0, Math.min(999999, Number(totalCount) || 0));
-    const countSign = registeredUserLounge.userData.memberCountSign;
-    if (countSign && registeredUserLounge.userData.memberCountShown !== total) {
-      countSign.material.map?.dispose?.();
-      countSign.material.map = memberLoungePlaqueTexture(
-        THREE,
-        total,
-        "#9ef7c6",
-      );
-      countSign.material.needsUpdate = true;
-      registeredUserLounge.userData.memberCountShown = total;
-    }
     const leaderboardFace = activeLeaderboardSign.userData.face;
     const leaderboardKey = JSON.stringify(
       rankedActiveLeaderboardMembers(leaderboardMembers)
@@ -6841,10 +6624,6 @@ export function createWorldScene({
       disposeObject3D(figure);
       loungeMembers.delete(id);
     });
-  }
-
-  function setMemberLoungeLoading(loading = false) {
-    registeredUserLounge.userData.loading = Boolean(loading);
   }
 
   function visitNeighborhoodHome(ownerId) {
@@ -7603,22 +7382,6 @@ export function createWorldScene({
     garden.userData.sharedMediaSpaces = layer;
   }
 
-  // Signed-out visitors get "log in / sign up" on the lounge plaque; signed-in
-  // members get "log out". Only the account status drives it, never the name.
-  function syncLoungeAuthButton() {
-    const button = registeredUserLounge.userData.authButton;
-    if (!button) return;
-    const signedIn = String(identity?.accountStatus || "Guest") !== "Guest";
-    if (registeredUserLounge.userData.authSignedIn === signedIn) return;
-    registeredUserLounge.userData.authSignedIn = signedIn;
-    button.material.map?.dispose?.();
-    button.material.map = memberLoungeAuthTexture(THREE, signedIn, "#9ef7c6");
-    button.material.needsUpdate = true;
-    button.userData.worldAuthAction = signedIn ? "logout" : "login";
-  }
-
-  syncLoungeAuthButton();
-
   function updateIdentity(nextIdentity) {
     Object.assign(identity, nextIdentity);
     updateAvatarBadge(THREE, player, identity, false);
@@ -7630,7 +7393,6 @@ export function createWorldScene({
       identity.nodes?.length || 0,
     );
     updatePlayerLabel(playerLabel, identity);
-    syncLoungeAuthButton();
     if (identity.isAdmin !== true) {
       remotePlayers.forEach((avatar, peerId) => {
         removeRemoteModerationControls(avatar, peerId);
@@ -9379,11 +9141,6 @@ export function createWorldScene({
       });
       return;
     }
-    const authAction = String(hit?.object?.userData?.worldAuthAction || "");
-    if (authAction === "login" || authAction === "logout") {
-      onAccountAction(authAction);
-      return;
-    }
     if (hit?.object?.userData?.campfireLog) {
       hit.object.userData.campfireCarried = true;
       hit.object.material.emissive?.set?.("#d88a43");
@@ -10162,7 +9919,6 @@ export function createWorldScene({
     setRemotePlayers,
     updateArrivalStats,
     updateMemberLounge,
-    setMemberLoungeLoading,
     updateNetworkNodes,
     focusNetworkNode,
     updateFederatedInstances,
