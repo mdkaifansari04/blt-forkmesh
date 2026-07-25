@@ -6120,8 +6120,32 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 
 .world-shot-footer {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
   gap: 10px;
+}
+
+.world-shot-share {
+  display: flex;
+  gap: 6px;
+}
+
+.world-shot-share button {
+  border: 1px solid var(--world-line);
+  background: transparent;
+  color: var(--world-muted);
+  padding: 9px 12px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.world-shot-share button:hover,
+.world-shot-share button:focus-visible {
+  border-color: var(--world-mint);
+  color: var(--world-mint);
+  outline: none;
 }
 
 .world-shot-ghost {
