@@ -3608,6 +3608,10 @@ QWidget *MainWindow::buildBreadcrumb()
     m_userAvatarNavButton->setToolTip("Settings");
     connect(m_userAvatarNavButton, &QPushButton::clicked, this, [this] {
         showSection(1);
+        // Land on Settings > Profile, so clicking the avatar still shows your
+        // own profile the way it did before it became a tab (adhoc #274).
+        if (m_settingsTabs && m_profileSettingsTabIndex >= 0)
+            m_settingsTabs->setCurrentIndex(m_profileSettingsTabIndex);
     });
     updateUserSwitcher();
     updateAvatarButton();
@@ -6554,7 +6558,8 @@ void MainWindow::enablePaidMirroring()
     // Refresh the open profile so the button shows its configured state and the
     // public address/QR/balance section appears next to the username.
     if (m_nodeProfilePanel && m_nodeProfilePanel->isVisible())
-        showNodeProfile(m_profileNodeId, m_profileNodeName);
+        showNodeProfile(m_profileNodeId, m_profileNodeName,
+                        /*navigate=*/!profilePanelInSettings());
     flashMessage(QStringLiteral(
         "Reward eligibility configured. Selection and payment are not guaranteed."));
 }
@@ -6623,7 +6628,11 @@ void MainWindow::showSection(int index)
     updateBreadcrumb();
     if (index == 0)
         updateHomeStats();
-    else if (index == 2) {
+    else if (index == 1) {
+        // The profile panel may be parked in the full-page section; pull it back
+        // into the Profile tab (and refresh it) when that tab is the open one.
+        syncSettingsProfileTab();
+    } else if (index == 2) {
         // Entering Chat clears the unread marker for the open conversation.
         clearActiveConversationUnread();
     } else if (index == 3) {
@@ -6648,6 +6657,10 @@ void MainWindow::showSection(int index)
     } else if (index == 8) {
         // Re-list and re-probe the relays each time the Relays section opens.
         refreshRelaysTable();
+    } else if (index == 10) {
+        // Back/Forward can land here directly while the panel is on loan to the
+        // Settings > Profile tab; bring it home so the page isn't blank.
+        hostNodeProfilePanel(false);
     } else if (index == kNodesSectionIndex) {
         // Re-list the known nodes each time the Nodes section opens.
         refreshNodesTable();
@@ -11979,6 +11992,7 @@ QWidget *MainWindow::buildNodeProfileSection()
     outer->addStretch(1);
     outer->addWidget(buildNodeProfilePanel(), 0);
     outer->addStretch(1);
+    m_nodeProfileSectionHost = page;
     return page;
 }
 
@@ -12013,6 +12027,9 @@ QWidget *MainWindow::buildNodeProfilePanel()
     closeButton->setToolTip("Close");
     setOcticon(closeButton, "x", 16);
     connect(closeButton, &QPushButton::clicked, this, &MainWindow::hideNodeProfile);
+    // Meaningless while the panel is a Settings tab (there's nothing to close
+    // back out of), so hostNodeProfilePanel() hides it there.
+    m_profileCloseButton = closeButton;
     auto *titleLabel = new QLabel("User profile");
     titleLabel->setObjectName("sectionLabel");
     auto *topRow = new QHBoxLayout;
@@ -12426,6 +12443,49 @@ QWidget *MainWindow::buildNodeProfilePanel()
     return scroll;
 }
 
+void MainWindow::hostNodeProfilePanel(bool inSettings)
+{
+    // One panel, two homes: the centered full page (section 10, used for any
+    // node's profile) and the Settings > Profile tab (your own node). Move it
+    // rather than building a second copy — the panel owns all the m_profile*
+    // widgets, so a second build would orphan the first one's state.
+    if (!m_nodeProfilePanel)
+        return;
+    QWidget *host = inSettings ? m_settingsProfileHost : m_nodeProfileSectionHost;
+    if (!host || m_nodeProfilePanel->parentWidget() == host)
+        return;
+    auto *layout = qobject_cast<QBoxLayout *>(host->layout());
+    if (!layout)
+        return;
+    if (QWidget *old = m_nodeProfilePanel->parentWidget()) {
+        if (old->layout())
+            old->layout()->removeWidget(m_nodeProfilePanel);
+    }
+    if (inSettings) {
+        // Fill the tab: the tab body is already narrower than the section page,
+        // and the panel's own size hint collapses to ~450px without a stretch.
+        m_nodeProfilePanel->setMinimumWidth(0);
+        layout->addWidget(m_nodeProfilePanel, 1);
+    } else {
+        m_nodeProfilePanel->setMinimumWidth(920);
+        layout->insertWidget(1, m_nodeProfilePanel, 0); // between the stretchers
+    }
+    if (m_profileCloseButton)
+        m_profileCloseButton->setVisible(!inSettings);
+    m_nodeProfilePanel->show();
+}
+
+void MainWindow::syncSettingsProfileTab()
+{
+    if (!m_settingsTabs || m_profileSettingsTabIndex < 0 ||
+        m_settingsTabs->currentIndex() != m_profileSettingsTabIndex)
+        return;
+    ensureSectionBuilt(10); // the panel is built with the profile section
+    hostNodeProfilePanel(true);
+    showNodeProfile(m_profileIdentity.publicKey(), topBarUserName(),
+                    /*navigate=*/false);
+}
+
 void MainWindow::hideNodeProfile()
 {
     m_profileNodeId.clear();
@@ -12445,7 +12505,8 @@ void MainWindow::rescaleProfileAvatar()
     m_profileAvatar->setPixmap(roundedRectPixmap(src, side, 20));
 }
 
-void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
+void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName,
+                                 bool navigate)
 {
     if (!m_nodeProfilePanel)
         return;
@@ -12695,7 +12756,11 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     }
 
     // Show the profile as its own full page (section 10 in m_sectionStack).
-    showSection(10);
+    // navigate=false leaves it where it is — the Settings > Profile tab.
+    if (navigate) {
+        hostNodeProfilePanel(false);
+        showSection(10);
+    }
 }
 
 void MainWindow::refreshProfileHostingStats()
