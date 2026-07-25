@@ -1710,19 +1710,24 @@ def test_world_member_directory_seats_registered_users_from_roster():
 
 
 def test_world_members_sit_in_an_expanding_circle_around_the_campfire():
-    # adhoc #287: one stool per registered account rings the campfire. Away
+    # adhoc #287: one bench per registered account rings the campfire. Away
     # members appear as seated figures facing the fire, members walking the
-    # world as live avatars leave their stool empty, and the ring rebuilds
-    # wider whenever a new account joins so everyone still fits.
+    # world as live avatars leave their bench empty, and the ring rebuilds
+    # wider whenever a new account joins so everyone still fits. adhoc #291
+    # adds one extra bench that always stays open for the next guest.
     assert "function rebuildCampfireCircle" in SCENE
     assert '"campfire-member-circle"' in SCENE
-    assert "rebuildCampfireCircle(Math.max(total, roster.length))" in SCENE
+    assert "rebuildCampfireCircle(Math.max(total, roster.length) + 1)" in SCENE
     assert "(count * CAMPFIRE_SEAT_SPACING) / (2 * Math.PI)" in SCENE
     assert '"sitting around the campfire"' in SCENE
     # Figures and idle live avatars both face the pit at the circle's centre.
-    assert SCENE.count("Math.atan2(-offset.x, -offset.z)") >= 1
-    assert SCENE.count("Math.atan2(-seat.x, -seat.z)") >= 1
-    # Idle/returning live members take the empty tail stools.
+    # Avatar fronts face local -Z, so the inward heading is atan2(x, z) — the
+    # negated form pointed everyone away from the flames (adhoc #291).
+    assert SCENE.count("Math.atan2(offset.x, offset.z)") >= 1
+    assert SCENE.count("Math.atan2(seat.x, seat.z)") >= 1
+    assert "Math.atan2(-offset.x, -offset.z)" not in SCENE
+    assert "Math.atan2(-seat.x, -seat.z)" not in SCENE
+    # Idle/returning live members take the empty tail benches.
     assert "campfire.userData.memberFigureCount" in SCENE
 
     nodes = SCENE[
