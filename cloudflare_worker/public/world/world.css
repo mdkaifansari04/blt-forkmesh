@@ -1182,7 +1182,15 @@ forkmesh-world {
   position: absolute;
   z-index: 32;
   top: max(18px, var(--safe-top));
-  bottom: max(18px, var(--safe-bottom));
+  /*
+   * Keep the modal above the always-visible CHAT / DEBUG terminal strip.
+   * This is especially important on short mobile visual viewports: otherwise
+   * the iframe composer remains in the layout but is covered by the higher
+   * z-index terminal summaries at the bottom of the World.
+   */
+  bottom: calc(
+    var(--safe-bottom) + var(--world-diagnostics-height) + 8px
+  );
   left: 50%;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);

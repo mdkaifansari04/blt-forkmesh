@@ -52,6 +52,8 @@ async function prepareWorldPage(
     chatChannels = [],
     chatChannelStatus = 200,
     ticketAuthenticated = true,
+    ticketActivity = null,
+    directoryUsers = [],
     systemCapacityTables = [],
     officeOccupied = false,
     officeEntryCode = "2468",
@@ -284,6 +286,12 @@ async function prepareWorldPage(
                     isAdmin: systemCapacityTables.length > 0,
                     ticket: "playwright-world-ticket",
                     expiresAt: FIXED_NOW + 300_000,
+                    totalActiveMs: Math.max(
+                      0,
+                      Number(ticketActivity?.totalActiveMs) || 0,
+                    ),
+                    activityObservedAt:
+                      Number(ticketActivity?.activityObservedAt) || FIXED_NOW,
                     ...(systemCapacityTables.length
                       ? {
                           systemCapacity: {
@@ -299,6 +307,8 @@ async function prepareWorldPage(
                     nodeCount: 0,
                     ticket: "",
                   }
+          : url.pathname === "/api/accounts/users"
+            ? { ok: true, users: directoryUsers }
           : url.pathname === "/api/world/community-ads/placements"
             ? {
                 ok: true,
@@ -1317,6 +1327,79 @@ test("account signup and login complete inside the World without leaking into UR
   expect(new URL(page.url()).pathname).toBe("/world/");
 });
 
+test("mobile World chat keeps its composer above the terminal bars", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 667 });
+  await prepareWorldPage(page, "mobile-world-chat", {
+    chatPassphrase: "playwright-public-world-general-passphrase",
+  });
+  await waitForWorld(page);
+
+  // Reproduce the worst case: both bottom drawers were expanded before the
+  // visitor opened the full chat panel.
+  await page.locator("[data-world-diagnostics]").evaluate((element) => {
+    element.open = true;
+  });
+  await page.locator("[data-world-chat-terminal]").evaluate((element) => {
+    element.open = true;
+  });
+  await page.locator("[data-world-chat-open]").click();
+  await expect(page.locator("[data-world-chat]")).toBeVisible();
+  await expect(page.locator("[data-world-diagnostics]")).not.toHaveAttribute(
+    "open",
+    "",
+  );
+  await expect(
+    page.locator("[data-world-chat-terminal]"),
+  ).not.toHaveAttribute("open", "");
+
+  const chatFrame = page.frameLocator("[data-world-chat-frame]");
+  const input = chatFrame.locator("#fullChatInput");
+  await expect(input).toBeVisible();
+  await input.focus();
+
+  // Approximate the visual viewport after a mobile keyboard opens. Both the
+  // World shell and same-origin chat iframe listen for this resize.
+  await page.setViewportSize({ width: 390, height: 430 });
+  await page.waitForTimeout(100);
+
+  const panelBox = await page.locator("[data-world-chat]").boundingBox();
+  const debugBarBox = await page
+    .locator("[data-world-diagnostics] > summary")
+    .boundingBox();
+  const inputBox = await input.boundingBox();
+  const frameMetrics = await input.evaluate((element) => {
+    const composer = element.closest("[data-dashboard-chat-composer]");
+    const frame = window.frameElement;
+    const inputRect = element.getBoundingClientRect();
+    const composerRect = composer?.getBoundingClientRect();
+    const frameRect = frame?.getBoundingClientRect();
+    return {
+      innerHeight: window.innerHeight,
+      visualHeight: window.visualViewport?.height || 0,
+      configuredHeight: getComputedStyle(
+        document.documentElement,
+      ).getPropertyValue("--forkmesh-chat-viewport-height"),
+      documentHeight: document.documentElement.getBoundingClientRect().height,
+      frameHeight: frameRect?.height || 0,
+      inputBottom: inputRect.bottom,
+      composerBottom: composerRect?.bottom || 0,
+      fits:
+        Boolean(frameRect && composerRect) &&
+        composerRect.bottom <= frameRect.height + 1,
+    };
+  });
+  expect(panelBox).not.toBeNull();
+  expect(debugBarBox).not.toBeNull();
+  expect(inputBox).not.toBeNull();
+  expect(panelBox.y + panelBox.height).toBeLessThanOrEqual(debugBarBox.y - 4);
+  expect(frameMetrics).toMatchObject({ fits: true });
+  expect(inputBox.y + inputBox.height).toBeLessThanOrEqual(
+    panelBox.y + panelBox.height,
+  );
+});
+
 test("ForkMesh Office opens encrypted chat only after explicit entry", async ({
   page,
   context,
@@ -1416,9 +1499,17 @@ test("the exterior keypad does not admit an empty Office", async ({ page }) => {
   const result = await page.locator("forkmesh-world").evaluate(async (shell) =>
     shell.officeController.enterOffice({ source: "keypad" })
   );
-  expect(result).toBe(false);
+  expect(result).toBe(true);
   await expect(page.locator("[data-world-office-lobby]")).toBeHidden();
-  await expect(page.locator("[data-world-office-keypad]")).toBeHidden();
+  const keypad = page.locator("[data-world-office-keypad]");
+  await expect(keypad).toBeVisible();
+  await expect(keypad.locator("#world-office-keypad-title")).toContainText(
+    "from inside",
+  );
+  await expect(keypad.locator("[data-world-office-keypad-input]")).toBeDisabled();
+  await expect(keypad.locator("[data-world-office-keypad-status]")).toContainText(
+    "No code is sent",
+  );
   expect(officeEntryRequests).toHaveLength(0);
 });
 
@@ -4391,7 +4482,22 @@ test("the member lounge plaque carries the count and one account button", async 
   // point, then tap it exactly like a visitor walking up to the lounge.
   await page.locator("forkmesh-world").evaluate((shell) => {
     shell.closeLandmark();
-    shell.world.player.position.set(-36.5, 0.38, 23.5);
+    const plaque = shell.world.scene.getObjectByName(
+      "forkmesh-member-lounge-plaque",
+    );
+    const plaquePosition = plaque.getWorldPosition(plaque.position.clone());
+    const inward = plaquePosition
+      .clone()
+      .setY(0)
+      .multiplyScalar(-1)
+      .normalize();
+    shell.world.setSpawn({
+      x: plaquePosition.x + inward.x * 5.2,
+      y: 0.38,
+      z: plaquePosition.z + inward.z * 5.2,
+      heading: 0,
+      space: "town-square",
+    });
     shell.world.setCameraZoom(0.42);
   });
   await page.waitForTimeout(1800);
@@ -4440,6 +4546,70 @@ test("the member lounge plaque carries the count and one account button", async 
   const memberPoint = await buttonPoint();
   await page.mouse.click(memberPoint.x, memberPoint.y);
   await expect.poll(() => logoutRequests).toEqual(["POST"]);
+});
+
+test("the authenticated member appears immediately and active time advances locally", async ({
+  page,
+}) => {
+  const session = {
+    nodeName: "jett",
+    sessionToken: "world-activity-session",
+  };
+  await prepareWorldPage(page, "active-leaderboard", {
+    session,
+    ticketActivity: {
+      totalActiveMs: 0,
+      activityObservedAt: FIXED_NOW,
+    },
+    directoryUsers: [
+      { name: "jett", nodes: [], totalActiveMs: 0 },
+      { name: "alice", nodes: [], totalActiveMs: 120_000 },
+    ],
+  });
+  await waitForWorld(page);
+
+  const first = await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.syncMemberLounge();
+    const own = shell
+      .leaderboardMembers()
+      .find((member) => member.name === "jett");
+    const key = JSON.parse(
+      shell.world.scene.getObjectByName("world-active-leaderboard").userData.key,
+    );
+    return {
+      activeNow: own.activeNow,
+      totalActiveMs: own.totalActiveMs,
+      rankedNames: key.map((row) => row[0]),
+    };
+  });
+  expect(first.activeNow).toBe(true);
+  expect(first.totalActiveMs).toBeGreaterThanOrEqual(0);
+  expect(first.rankedNames).toEqual(["alice", "jett"]);
+
+  await page.waitForTimeout(1_150);
+  const advanced = await page.locator("forkmesh-world").evaluate((shell) => {
+    const own = shell
+      .leaderboardMembers()
+      .find((member) => member.name === "jett");
+    return own.totalActiveMs;
+  });
+  expect(advanced).toBeGreaterThan(first.totalActiveMs + 900);
+
+  const paused = await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.pauseWorldActivity();
+    return {
+      totalActiveMs: shell.currentWorldActivityMs(),
+      running: Boolean(shell.worldActivityBaseAt),
+      continuation: shell.worldActivityContinuation,
+    };
+  });
+  await page.waitForTimeout(1_100);
+  const stillPaused = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.currentWorldActivityMs(),
+  );
+  expect(paused.running).toBe(false);
+  expect(paused.continuation).toBe("");
+  expect(stillPaused).toBeCloseTo(paused.totalActiveMs, 3);
 });
 
 test("Town Square placement is contextual, tracking-free, and collapses safely", async ({

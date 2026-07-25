@@ -254,8 +254,8 @@ def test_exterior_keypad_never_admits_an_empty_office_or_sets_occupant_code():
     ]
     assert 'if (entry?.source === "keypad")' in entry
     keypad_guard = entry[entry.index('if (entry?.source === "keypad")'):]
-    assert 'world.focusOfficeKeypad?.("entry", "exterior")' in keypad_guard
-    assert keypad_guard.index("return false;") < keypad_guard.index(
+    assert 'return openKeypad("guide", "exterior")' in keypad_guard
+    assert keypad_guard.index('openKeypad("guide", "exterior")') < keypad_guard.index(
         'requestOfficeEntry("")'
     )
 
@@ -273,7 +273,8 @@ def test_close_up_keypad_keeps_digits_local_and_supports_capability_gated_update
     scene = SCENE_PATH.read_text(encoding="utf-8")
     for contract in (
         "function officeKeypadDisplayTexture(",
-        'mode === "set" ? "SET CODE" : "ACCESS CODE"',
+        '? "SET CODE"',
+        '? "SET INSIDE"',
         "function focusOfficeKeypad(mode = \"entry\", location = \"exterior\")",
         'setCameraMode("first-person")',
         "function setOfficeKeypadDigits(",

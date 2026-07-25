@@ -1243,71 +1243,142 @@ def test_world_ticket_capacity_is_queried_and_returned_only_for_admins():
     assert admin_calls == [True]
 
 
-def test_arrival_odometer_counts_aggregate_buckets_outside_the_world_object():
-    # The counter is incremented in the outer Worker's route handler, never in
-    # the storage-free ForkMeshWorld object (see the transient/hibernating
-    # test above). The write stores one time bucket and a count — no visitor
-    # identifier of any kind rides along.
+def test_arrival_counter_keeps_only_fixed_size_unique_sketches():
+    # Arrival identity is derived in the outer Worker, never persisted in the
+    # storage-free ForkMeshWorld object. D1 receives only fixed-size HLL
+    # register/rank updates for an all-time and a short-lived temporal sketch.
     route_source = ast.unparse(_top_level_node("Default"))
-    assert "record_world_visit" in route_source
+    assert "world_visitors_handler" in route_source
     assert "/api/world/visitors" in route_source
 
     counter = _function_without_docstring("record_world_visit")
-    assert "world_visit_stats" in counter
+    assert "world_visit_unique_hll" in counter
     assert "WORLD_VISIT_BUCKET_MS" in counter
-    assert "visits=visits+1" in counter
+    assert "hll_register" in counter
+    assert "MAX(world_visit_unique_hll.rank,excluded.rank)" in counter
     lowered = counter.lower()
     for forbidden in (
-        "country", "account", "cookie", "header", "request", "peer",
-        "cf-connecting", "x-forwarded", "user-agent",
+        "country", "account", "cookie", "peer", "user-agent",
     ):
         assert forbidden not in lowered
+
+    identity = ast.unparse(_top_level_node("_world_unique_visitor_tokens"))
+    assert "headers.get('cf-connecting-ip')" in identity
+    assert "headers.get('user-agent')" in identity
+    assert "canonical_edge_address" in identity
+    assert "generalized_user_agent" in identity
+    assert "blind_index" in identity
+    assert "x-forwarded-for" not in identity.lower()
+    assert "bounded_json_request" not in identity
 
     handler = ast.unparse(_top_level_node("world_visitors_handler"))
     assert "edge_cache_match" in handler
     assert "edge_cache_put" in handler
-    assert "WORLD_VISIT_RETAIN_MS" in handler
-    assert "WORLD_VISIT_ARCHIVE_BUCKET" in handler
-    assert "world_visit_summary" in handler
+    assert "approximate_unique_visitors" in handler
+    assert "unique_visit_summary" in handler
 
     schema = SCHEMA.read_text(encoding="utf-8")
-    migration = (ROOT / "migrations" / "0074_world_visit_stats.sql").read_text(
+    migration = (
+        ROOT / "migrations" / "0077_world_unique_visitors.sql"
+    ).read_text(
         encoding="utf-8")
     for source in (schema, migration):
-        assert "world_visit_stats" in source
+        assert "world_visit_unique_hll" in source
         assert "bucket_start" in source
-        # Two integer columns only: a bucket and a count.
-        assert "TEXT" not in source.split("world_visit_stats", 1)[1].split(")")[0]
+        table = source.split("world_visit_unique_hll", 1)[1].split(")")[0]
+        assert "TEXT" not in table
+        for forbidden in ("ip_address", "user_agent", "visitor_token"):
+            assert forbidden not in table.lower()
 
 
-def test_arrival_visit_summary_windows_match_the_plaque_comparisons():
-    namespace = {"WORLD_VISIT_ARCHIVE_BUCKET": -1}
-    exec(_function_without_docstring("world_visit_summary"), namespace)
-    summarize = namespace["world_visit_summary"]
-    day = 24 * 60 * 60 * 1000
-    hour = 60 * 60 * 1000
-    minute = 60 * 1000
-    now = 3 * day + 5 * hour + 30 * minute  # 05:30 UTC, day three
-    rows = [
-        {"bucket_start": -1, "visits": 1000},  # archived pre-window total
-        {"bucket_start": now - 10 * minute, "visits": 3},  # today + past hour
-        {"bucket_start": now - 2 * hour, "visits": 4},  # today only
-        # Yesterday, inside both the same-time-yesterday and the
-        # same-hour-yesterday comparison windows.
-        {"bucket_start": now - day - 30 * minute, "visits": 5},
-        # Yesterday morning, before the past-hour-yesterday window.
-        {"bucket_start": now - day - 3 * hour, "visits": 6},
-        # Yesterday, but after 05:30 — full-day count only, not "same time".
-        {"bucket_start": now - day + hour, "visits": 7},
-        {"bucket_start": now + hour, "visits": 0},  # empty buckets are ignored
-    ]
-    summary = summarize(rows, now)
-    assert summary == {
-        "total": 1025,
-        "today": 7,
-        "yesterday": 18,
-        "yesterdaySameTime": 11,
-        "pastHour": 3,
-        "pastHourYesterday": 5,
+def test_arrival_identity_reads_only_edge_headers_and_skips_missing_ip():
+    node = _top_level_node("_world_unique_visitor_tokens")
+    module = ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[]))
+    calls = []
+
+    async def blind_index(_env, value):
+        calls.append(value)
+        return "a" * 64
+
+    metrics = SimpleNamespace(
+        canonical_edge_address=lambda value: (
+            "203.0.113.9" if value == "203.0.113.9" else ""),
+        generalized_user_agent=lambda _value: "chromium:linux:desktop",
+    )
+    namespace = {
+        "world_visitor_metrics": metrics,
+        "blind_index": blind_index,
     }
-    assert summarize(None, now)["total"] == 0
+    exec(compile(module, str(ENTRY), "exec"), namespace)
+    derive = namespace["_world_unique_visitor_tokens"]
+    headers = _Headers(
+        {
+            "cf-connecting-ip": "203.0.113.9",
+            "user-agent": "Mozilla/5.0 private build 123",
+        },
+        allowed={"cf-connecting-ip", "user-agent"},
+    )
+    tokens = asyncio.run(derive(
+        None, SimpleNamespace(headers=headers), 3 * 24 * 60 * 60 * 1000))
+    assert tokens == {"allTime": "a" * 64, "daily": "a" * 64}
+    assert headers.read == ["cf-connecting-ip", "user-agent"]
+    assert calls == [
+        (
+            "world-unique-visitor-all-time-v1\n"
+            "203.0.113.9\nchromium:linux:desktop"
+        ),
+        (
+            "world-unique-visitor-day-v1:3\n"
+            "203.0.113.9\nchromium:linux:desktop"
+        ),
+    ]
+    assert all("private build" not in value for value in calls)
+
+    calls.clear()
+    missing = _Headers(
+        {"user-agent": "Mozilla/5.0"},
+        allowed={"cf-connecting-ip", "user-agent"},
+    )
+    assert asyncio.run(
+        derive(None, SimpleNamespace(headers=missing), 0)) == ""
+    assert calls == []
+
+
+def test_arrival_record_upserts_all_time_and_utc_bucket_idempotently():
+    node = _top_level_node("record_world_visit")
+    module = ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[]))
+    writes = []
+
+    async def unique_tokens(_env, _request, _now):
+        return {"allTime": "a" * 64, "daily": "b" * 64}
+
+    async def ensure_schema(_env):
+        return None
+
+    async def d1_run(_env, sql, *args):
+        writes.append((sql, args))
+
+    metrics = SimpleNamespace(
+        HLL_ALL_TIME_BUCKET=-1,
+        hll_register=lambda token: (
+            (17, 4) if token == "a" * 64 else (29, 2)),
+    )
+    namespace = {
+        "_world_unique_visitor_tokens": unique_tokens,
+        "world_visitor_metrics": metrics,
+        "ensure_schema": ensure_schema,
+        "d1_run": d1_run,
+        "WORLD_VISIT_BUCKET_MS": 10 * 60 * 1000,
+    }
+    exec(compile(module, str(ENTRY), "exec"), namespace)
+    counted = asyncio.run(namespace["record_world_visit"](
+        None, SimpleNamespace(), now=1_234_567))
+    assert counted is True
+    assert [args for _sql, args in writes] == [
+        (-1, 17, 4),
+        (1_200_000, 29, 2),
+    ]
+    assert all(
+        "ON CONFLICT(bucket_start,register_id) DO UPDATE" in sql
+        for sql, _args in writes
+    )

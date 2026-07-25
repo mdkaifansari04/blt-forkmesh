@@ -21,8 +21,11 @@ def test_production_world_has_no_sample_repository_fallback_or_runnable_fake():
     assert "repositoryCatalogState" in APP
     assert "Repository catalog unavailable" in APP
     assert "No authorized repositories listed" in APP
-    assert "will not run a workshop against sample or guessed" in APP
-    assert 'runnable ? "" : "disabled"' in APP
+    assert (
+        "ForkMesh did not substitute sample files, guessed entries, or stale analysis."
+        in APP
+    )
+    assert "No repository can be opened or analyzed from this panel." in APP
     assert 'this.repositoryCatalogState !== "ready"' in APP
     assert "if (!catalogCommits.size)" in APP
     assert "this.world.updateRepositoryGraph?.([], [])" in APP

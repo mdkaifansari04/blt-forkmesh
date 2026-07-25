@@ -322,7 +322,9 @@ def test_worker_exposes_public_user_directory_for_chat_without_private_fields():
         ENTRY_TEXT.index("def _donation_expiry_fields")
     ]
 
-    assert '"SELECT data FROM users ORDER BY username COLLATE NOCASE LIMIT ?"' in body
+    assert '"LEFT JOIN world_user_activity a ON a.account_bi=u.user_bi "' in body
+    assert '"ORDER BY u.username COLLATE NOCASE LIMIT ?"' in body
+    assert "last_touch_at" not in body
     assert "FROM accounts" not in body
     assert '_account_kind(rec) != "user"' in body
     assert 'rec.get("status") != "active"' in body

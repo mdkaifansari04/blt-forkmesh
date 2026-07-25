@@ -73,6 +73,7 @@ const PRESENCE_PROFILE_DEBOUNCE_MS = 300;
 const MOVEMENT_SEND_INTERVAL_MS = 1000;
 const PRESENCE_STALE_MS = 22000;
 const WORLD_TICKET_REFRESH_MS = 5 * 60 * 1000;
+const WORLD_ACTIVITY_CONTINUATION_HEADER = "x-forkmesh-world-activity";
 // Gentle self-update: the relay stamps a new BUILD_REV on every deploy and
 // echoes it from /api/version. A slow watcher notices the flip, saves the
 // player's position, and reloads once — the restored position makes the new
@@ -99,7 +100,7 @@ const WORLD_MOVE_ACCEL_MIN = 25;
 // acceleration so the player reaches top speed the moment a key is pressed.
 const WORLD_MOVE_ACCEL_MAX = 1000;
 const WORLD_MOVE_ACCEL_DEFAULT = 100;
-const WORLD_DIAGNOSTICS_INTERVAL_MS = 500;
+const WORLD_DIAGNOSTICS_INTERVAL_MS = 1000;
 const WORLD_DIAGNOSTICS_COUNTER_MAX = 1_000_000_000;
 const WORLD_PULL_MERGE_MAX_REQUESTS = 6;
 const WORLD_PULL_MERGE_POLL_MS = 400;
@@ -3289,6 +3290,11 @@ class ForkMeshWorld extends HTMLElement {
     this.worldTicket = "";
     this.worldTicketExpires = 0;
     this.worldTicketTimer = 0;
+    this.worldActivityBaseMs = 0;
+    this.worldActivityBaseAt = 0;
+    this.worldActivityObservedAt = 0;
+    this.worldActivityContinuation = "";
+    this.worldActivityRenderedSecond = -1;
     this.accountReturnFocus = null;
     this.officeMeeting = null;
     this.officeController = null;
@@ -3766,7 +3772,10 @@ class ForkMeshWorld extends HTMLElement {
       // require a gesture are retried from the first pointer/key activity.
       void this.playFocusMusic({ autoplay: true });
       this.announceWorldNotifications();
-      this.distanceTimer = window.setInterval(() => this.updateDistances(), 1000);
+      this.distanceTimer = window.setInterval(() => {
+        this.updateDistances();
+        this.syncCurrentWorldActivity();
+      }, 1000);
       document.addEventListener("visibilitychange", this.handleVisibility);
       window.addEventListener("pagehide", this.handlePageHide, { once: true });
       if (this.requestedLandmark) {
@@ -3790,6 +3799,7 @@ class ForkMeshWorld extends HTMLElement {
   handleVisibility = () => {
     this.world?.setPaused(document.hidden);
     if (document.hidden) {
+      this.pauseWorldActivity();
       try {
         this.socket?.close(1000, "page hidden");
       } catch (_) {}
@@ -3818,6 +3828,7 @@ class ForkMeshWorld extends HTMLElement {
   };
 
   handlePageHide = () => {
+    this.pauseWorldActivity();
     this.captureWorldPosition(true);
     this.destroy();
   };
@@ -3942,6 +3953,7 @@ class ForkMeshWorld extends HTMLElement {
       );
       this.worldTicket = String(ticket.ticket || "");
       this.worldTicketExpires = Number(ticket.expiresAt || 0);
+      this.applyWorldActivityTicket(ticket);
     } else {
       this.sessionAuthenticated = false;
       this.identity.accountStatus = "Guest";
@@ -3949,6 +3961,7 @@ class ForkMeshWorld extends HTMLElement {
       this.identity.nodes = [];
       this.worldTicket = "";
       this.worldTicketExpires = 0;
+      this.resetWorldActivity();
     }
     const country = String(context?.country || context?.countryCode || "")
       .trim()
@@ -12401,6 +12414,11 @@ class ForkMeshWorld extends HTMLElement {
     this.closeLandmark();
     this.toggleSettings(false);
     if (this.tourIndex >= 0) this.stopTour();
+    // The terminal summaries intentionally sit above most World overlays.
+    // Collapse their expanded bodies before opening the full chat so a mobile
+    // composer can never end up underneath an open CHAT or DEBUG drawer.
+    this.$("[data-world-chat-terminal]")?.removeAttribute("open");
+    this.$("[data-world-diagnostics]")?.removeAttribute("open");
     panel.dataset.open = "true";
     panel.setAttribute("aria-hidden", "false");
     backdrop.dataset.open = "true";
@@ -13191,16 +13209,156 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  currentWorldActivityMs() {
+    const base = Math.max(0, Number(this.worldActivityBaseMs) || 0);
+    if (
+      !this.sessionAuthenticated ||
+      !this.worldActivityBaseAt ||
+      document.hidden
+    ) {
+      return base;
+    }
+    return base + Math.max(0, performance.now() - this.worldActivityBaseAt);
+  }
+
+  resetWorldActivity() {
+    this.worldActivityBaseMs = 0;
+    this.worldActivityBaseAt = 0;
+    this.worldActivityObservedAt = 0;
+    this.worldActivityContinuation = "";
+    this.worldActivityRenderedSecond = -1;
+    this.syncMemberLounge();
+  }
+
+  applyWorldActivityTicket(ticket) {
+    const total = Number(ticket?.totalActiveMs);
+    const observedAt = Number(ticket?.activityObservedAt);
+    const ticketName = String(ticket?.name || "").trim().toLowerCase();
+    const sessionName = String(
+      validWorldSession()?.nodeName || "",
+    ).trim().toLowerCase();
+    if (
+      !Number.isSafeInteger(total) ||
+      total < 0 ||
+      !Number.isSafeInteger(observedAt) ||
+      observedAt <= 0 ||
+      !ticketName ||
+      ticketName !== sessionName ||
+      observedAt < this.worldActivityObservedAt
+    ) {
+      return false;
+    }
+    // Reset to the new server aggregate. The prior in-page interval is already
+    // represented by this ticket touch, so carrying it over would double count.
+    this.worldActivityBaseMs = total;
+    this.worldActivityBaseAt = document.hidden ? 0 : performance.now();
+    this.worldActivityObservedAt = observedAt;
+    this.worldActivityContinuation = document.hidden
+      ? ""
+      : String(ticket.ticket || "");
+    this.worldActivityRenderedSecond = -1;
+    this.syncCurrentWorldActivity();
+    return true;
+  }
+
+  leaderboardMembers() {
+    const ownName = String(
+      validWorldSession()?.nodeName || "",
+    ).trim().toLowerCase();
+    const activeNow =
+      this.sessionAuthenticated &&
+      Boolean(this.worldActivityBaseAt) &&
+      !document.hidden;
+    const currentTotal = this.currentWorldActivityMs();
+    return this.memberDirectory.map((member) => {
+      if (
+        !ownName ||
+        String(member?.name || "").trim().toLowerCase() !== ownName
+      ) {
+        return member;
+      }
+      const directoryTotal = Number(member?.totalActiveMs);
+      return {
+        ...member,
+        totalActiveMs: Math.max(
+          Number.isFinite(directoryTotal) ? directoryTotal : 0,
+          currentTotal,
+        ),
+        activeNow,
+      };
+    });
+  }
+
+  syncCurrentWorldActivity() {
+    if (
+      !this.sessionAuthenticated ||
+      !this.worldActivityBaseAt ||
+      document.hidden
+    ) {
+      return;
+    }
+    const renderedSecond = Math.floor(this.currentWorldActivityMs() / 1000);
+    if (renderedSecond === this.worldActivityRenderedSecond) return;
+    this.worldActivityRenderedSecond = renderedSecond;
+    this.syncMemberLounge();
+  }
+
+  pauseWorldActivity() {
+    const continuation = this.worldActivityContinuation;
+    const base = Math.max(0, Number(this.worldActivityBaseMs) || 0);
+    this.worldActivityBaseMs =
+      base +
+      (this.sessionAuthenticated && this.worldActivityBaseAt
+        ? Math.max(0, performance.now() - this.worldActivityBaseAt)
+        : 0);
+    this.worldActivityBaseAt = 0;
+    this.worldActivityContinuation = "";
+    this.worldActivityRenderedSecond = -1;
+    this.syncMemberLounge();
+
+    const session = validWorldSession();
+    if (!continuation || !session?.sessionToken) return;
+    let headers;
+    try {
+      headers = new Headers({
+        accept: "application/json",
+        authorization: `Bearer ${session.sessionToken}`,
+      });
+      headers.set(WORLD_ACTIVITY_CONTINUATION_HEADER, continuation);
+    } catch (_) {
+      return;
+    }
+    // The response is intentionally discarded. This authenticated,
+    // server-timestamped touch closes the visible interval; the browser never
+    // reports an elapsed value. The next visible ticket starts a fresh proof.
+    void fetch("/api/world/ticket", {
+      method: "GET",
+      headers,
+      credentials: "same-origin",
+      cache: "no-store",
+      keepalive: true,
+    }).catch(() => {});
+  }
+
   async refreshWorldTicket() {
     if (this.destroyed || document.hidden) return;
     if (!readSession()?.sessionToken) {
       this.sessionAuthenticated = false;
       this.worldTicket = "";
       this.worldTicketExpires = 0;
+      this.resetWorldActivity();
       return;
     }
     try {
+      const headers = new Headers();
+      if (this.worldActivityContinuation) {
+        headers.set(
+          WORLD_ACTIVITY_CONTINUATION_HEADER,
+          this.worldActivityContinuation,
+        );
+      }
       const ticket = await this.fetchJSON("/api/world/ticket", {
+        headers,
         timeout: 5000,
         cache: "no-store",
       });
@@ -13210,14 +13368,17 @@ class ForkMeshWorld extends HTMLElement {
         ticket.accountStatus !== "Guest"
       ) {
         this.sessionAuthenticated = true;
-        this.worldTicket = String(ticket.ticket || "");
-        this.worldTicketExpires = Number(ticket.expiresAt || 0);
+        if (this.applyWorldActivityTicket(ticket)) {
+          this.worldTicket = String(ticket.ticket || "");
+          this.worldTicketExpires = Number(ticket.expiresAt || 0);
+        }
         this.identity.isAdmin = ticket.isAdmin === true;
         return;
       }
       this.worldTicket = "";
       this.worldTicketExpires = 0;
       this.sessionAuthenticated = false;
+      this.resetWorldActivity();
       if (this.identity) this.identity.isAdmin = false;
     } catch (_) {
       // Keep a still-valid ticket for reconnect; clear only an expired one.
@@ -13225,6 +13386,7 @@ class ForkMeshWorld extends HTMLElement {
         this.sessionAuthenticated = false;
         this.worldTicket = "";
         this.worldTicketExpires = 0;
+        this.resetWorldActivity();
       }
     }
   }
@@ -13743,7 +13905,7 @@ class ForkMeshWorld extends HTMLElement {
         (member) => !present.has(member.name.toLowerCase()),
       ),
       this.memberDirectory.length,
-      this.memberDirectory,
+      this.leaderboardMembers(),
     );
   }
 

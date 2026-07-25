@@ -995,19 +995,30 @@
                 html[data-world-embed="1"] [data-dashboard-chat-view] {
                   display: flex;
                   flex-direction: column;
+                  position: relative;
                 }
 
                 html[data-world-embed="1"] #fullChatMessages {
                   min-height: 0;
+                  padding-bottom: calc(
+                    5rem + env(safe-area-inset-bottom, 0px)
+                  );
                   overflow-y: auto;
                   overscroll-behavior-y: contain;
                   -webkit-overflow-scrolling: touch;
                 }
 
                 html[data-world-embed="1"] [data-dashboard-chat-composer] {
+                  position: absolute;
+                  z-index: 1;
+                  right: 0;
+                  bottom: 0;
+                  left: 0;
+                  box-sizing: border-box;
                   padding-right: max(1rem, env(safe-area-inset-right, 0px));
                   padding-bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
                   padding-left: max(1rem, env(safe-area-inset-left, 0px));
+                  background: hsl(var(--background));
                 }
 
                 @media (max-width: 767px), (pointer: coarse) {
@@ -1025,8 +1036,27 @@
               document.head.append(styles);
 
               const syncWorldEmbedViewport = () => {
-                const height =
-                  window.visualViewport?.height || window.innerHeight;
+                /*
+                 * In an iframe, some mobile engines expose the top-level
+                 * visualViewport height even when this frame is shorter. Never
+                 * let that value make the chat root taller than its own layout
+                 * viewport; a smaller visual viewport (the software keyboard)
+                 * is still honored.
+                 */
+                const layoutHeight = window.innerHeight;
+                const visualHeight = window.visualViewport?.height;
+                const frameHeight =
+                  window.frameElement?.getBoundingClientRect?.().height;
+                const candidates = [
+                  layoutHeight,
+                  visualHeight,
+                  frameHeight,
+                ].filter(
+                  (value) => Number.isFinite(value) && value > 0,
+                );
+                const height = candidates.length
+                  ? Math.min(...candidates)
+                  : 0;
                 if (!Number.isFinite(height) || height <= 0) return;
                 document.documentElement.style.setProperty(
                   "--forkmesh-chat-viewport-height",

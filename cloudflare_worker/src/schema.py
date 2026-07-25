@@ -876,6 +876,38 @@ SCHEMA_STATEMENTS = [
         expires_at INTEGER NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_world_inactive_presence_expiry "
     "ON world_inactive_presence(expires_at)",
+    # Server-authoritative aggregate time spent in the ForkMesh World
+    # (migration 0076). The account key is a blind index; no display name, IP,
+    # route, movement history, or client-reported duration is stored. The
+    # generation makes a signed ticket continuation single-use even when
+    # refreshes race across tabs.
+    """CREATE TABLE IF NOT EXISTS world_user_activity (
+        account_bi TEXT PRIMARY KEY,
+        total_active_ms INTEGER NOT NULL DEFAULT 0
+            CHECK (total_active_ms >= 0),
+        last_touch_at INTEGER NOT NULL DEFAULT 0
+            CHECK (last_touch_at >= 0),
+        generation INTEGER NOT NULL DEFAULT 1
+            CHECK (generation > 0),
+        last_credit_ms INTEGER NOT NULL DEFAULT 0
+            CHECK (last_credit_ms >= 0),
+        updated_at INTEGER NOT NULL DEFAULT 0
+            CHECK (updated_at >= 0))""",
+    # Privacy-preserving approximate unique counts for the Arrival Grid
+    # (migration 0077). The edge transiently HMACs its observed source address
+    # plus a coarse browser/OS/device category, then stores only HyperLogLog
+    # register/rank projections. Temporal HMAC context rotates at UTC midnight
+    # and is domain-separated from the all-time context. No raw address, raw
+    # User-Agent, account, digest, or movement history enters D1. A
+    # 1,024-register all-time sketch plus at most 50 hours of 10-minute
+    # sketches fixes the maximum footprint.
+    """CREATE TABLE IF NOT EXISTS world_visit_unique_hll (
+        bucket_start INTEGER NOT NULL,
+        register_id INTEGER NOT NULL
+            CHECK (register_id >= 0 AND register_id < 1024),
+        rank INTEGER NOT NULL CHECK (rank >= 1 AND rank <= 247),
+        PRIMARY KEY (bucket_start, register_id)
+    ) WITHOUT ROWID""",
     # Aggregate-only Town Square arrival odometer for the Arrival Grid plaque
     # (migration 0074). Each accepted world join adds one to a coarse
     # 10-minute UTC bucket; rows never carry a visitor id, country, IP, or

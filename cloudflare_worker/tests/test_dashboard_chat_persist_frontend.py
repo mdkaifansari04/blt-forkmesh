@@ -299,8 +299,22 @@ def test_world_embedded_dashboard_chat_removes_redundant_dashboard_chrome():
 
 
 def test_world_embedded_dashboard_chat_tracks_mobile_keyboard_viewport():
-    assert "window.visualViewport?.height || window.innerHeight" in CHAT_VIEW
-    assert '"--forkmesh-chat-viewport-height"' in CHAT_VIEW
+    viewport_sync = CHAT_VIEW[
+        CHAT_VIEW.index("const syncWorldEmbedViewport = () => {"):
+        CHAT_VIEW.index("syncWorldEmbedViewport();")
+    ]
+    assert "const layoutHeight = window.innerHeight;" in viewport_sync
+    assert "const visualHeight = window.visualViewport?.height;" in viewport_sync
+    assert (
+        "window.frameElement?.getBoundingClientRect?.().height"
+        in viewport_sync
+    )
+    assert "const candidates = [" in viewport_sync
+    assert "layoutHeight," in viewport_sync
+    assert "visualHeight," in viewport_sync
+    assert "frameHeight," in viewport_sync
+    assert "Math.min(...candidates)" in viewport_sync
+    assert '"--forkmesh-chat-viewport-height"' in viewport_sync
     viewport_listeners = CHAT_VIEW[
         CHAT_VIEW.index("syncWorldEmbedViewport();"):
         CHAT_VIEW.index('window.addEventListener("resize"')

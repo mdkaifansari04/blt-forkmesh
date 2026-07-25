@@ -483,6 +483,9 @@ import security_scan_ingest  # noqa: E402
 # allowlist for every public world-presence field; the Durable Object below
 # never relays arbitrary client JSON.
 import world as world_protocol  # noqa: E402
+# Fixed-footprint HyperLogLog helpers for the public Arrival Grid's approximate
+# unique counts. Raw edge request attributes never cross into this pure module.
+import world_visitors as world_visitor_metrics  # noqa: E402
 # Public-only Fediverse directory and authenticated media-space orchestration
 # live behind a small adapter so they reuse this Worker's established sessions,
 # blind indexes, D1 helpers, and metadata-only audit trail.
@@ -2900,6 +2903,15 @@ async def office_durable_object_request(request, claims, target_url=None):
 
 
 WORLD_TICKET_TTL_MS = 60 * 1000
+# A browser refreshes its authenticated World ticket every five minutes. The
+# previous server-signed ticket may prove one uninterrupted visible interval
+# for up to seven minutes, leaving room for timer jitter without treating a
+# later return as continuous activity.
+WORLD_USER_ACTIVITY_CONTINUATION_MAX_MS = 7 * 60 * 1000
+WORLD_USER_ACTIVITY_MAX_TOTAL_MS = 9_000_000_000_000_000
+WORLD_USER_ACTIVITY_MAX_GENERATION = 9_000_000_000_000_000
+WORLD_USER_ACTIVITY_HEADER = "x-forkmesh-world-activity"
+WORLD_USER_ACTIVITY_PUBLIC_BUCKET_MS = 60 * 1000
 WORLD_INACTIVE_RETAIN_MS = 30 * 24 * 60 * 60 * 1000
 WORLD_MANUAL_BLOCK_MIN_MS = 60 * 1000
 WORLD_MANUAL_BLOCK_MAX_MS = 24 * 60 * 60 * 1000
@@ -2970,6 +2982,115 @@ def _world_ticket_decode(env, ticket):
     # never accepted from a browser presence frame.
     public["isAdmin"] = claim.get("isAdmin") is True
     return public
+
+
+def _world_activity_continuation_claim(
+        env, request, expected_name, now):
+    """Validate a single-use activity continuation carried by the browser.
+
+    The continuation is the previous server-signed World ticket. The browser
+    supplies no elapsed value: both endpoints of the interval and its
+    generation were signed or observed by the Worker.
+    """
+    try:
+        value = request.headers.get(WORLD_USER_ACTIVITY_HEADER) or ""
+    except Exception:
+        return None
+    value = clean_string(value, 2048).strip()
+    if "." not in value:
+        return None
+    payload, signature = value.rsplit(".", 1)
+    if not payload or not re.fullmatch(r"[A-Za-z0-9_-]+", payload):
+        return None
+    if not hmac.compare_digest(
+            signature, _world_ticket_signature(env, payload)):
+        return None
+    try:
+        padded = payload + "=" * ((4 - len(payload) % 4) % 4)
+        claim = json.loads(base64.urlsafe_b64decode(padded).decode())
+        issued = int(claim.get("issuedAt", 0) or 0)
+        generation = int(claim.get("activityGeneration", 0) or 0)
+    except (AttributeError, TypeError, ValueError, UnicodeError):
+        return None
+    if not isinstance(claim, dict):
+        return None
+    expected = clean_string(expected_name, MAX_NODE_NAME).strip().lower()
+    ticket_name = clean_string(
+        claim.get("name", ""), MAX_NODE_NAME).strip().lower()
+    if not expected or ticket_name != expected:
+        return None
+    if (
+        issued <= 0
+        or issued > now
+        or now - issued > WORLD_USER_ACTIVITY_CONTINUATION_MAX_MS
+        or generation <= 0
+        or generation > WORLD_USER_ACTIVITY_MAX_GENERATION
+    ):
+        return None
+    return {"issuedAt": issued, "generation": generation}
+
+
+async def _world_user_activity_touch(
+        env, account_bi, now, continuation=None):
+    """Advance one aggregate with a race-safe, signed continuity proof."""
+    try:
+        continued_from = int(
+            (continuation or {}).get("issuedAt", 0) or 0)
+        generation = int(
+            (continuation or {}).get("generation", 0) or 0)
+    except (AttributeError, TypeError, ValueError):
+        continued_from = 0
+        generation = 0
+    candidate_credit = now - continued_from
+    if (
+        continued_from <= 0
+        or generation <= 0
+        or candidate_credit <= 0
+        or candidate_credit > WORLD_USER_ACTIVITY_CONTINUATION_MAX_MS
+    ):
+        continued_from = 0
+        generation = 0
+        candidate_credit = 0
+    row = await d1_first(
+        env,
+        "INSERT INTO world_user_activity "
+        "(account_bi,total_active_ms,last_touch_at,generation,"
+        "last_credit_ms,updated_at) VALUES (?,0,?,1,0,?) "
+        "ON CONFLICT(account_bi) DO UPDATE SET "
+        "total_active_ms=MIN(?,world_user_activity.total_active_ms+"
+        "CASE WHEN ?>0 AND ?=world_user_activity.generation "
+        "AND ?=world_user_activity.last_touch_at THEN ? ELSE 0 END),"
+        "last_credit_ms=CASE WHEN ?>0 "
+        "AND ?=world_user_activity.generation "
+        "AND ?=world_user_activity.last_touch_at THEN ? ELSE 0 END,"
+        "last_touch_at=excluded.last_touch_at,"
+        "generation=CASE WHEN world_user_activity.generation>=? "
+        "THEN 1 ELSE world_user_activity.generation+1 END,"
+        "updated_at=excluded.updated_at "
+        "RETURNING total_active_ms,last_touch_at,generation,last_credit_ms",
+        account_bi, now, now,
+        WORLD_USER_ACTIVITY_MAX_TOTAL_MS,
+        candidate_credit, generation, continued_from, candidate_credit,
+        candidate_credit, generation, continued_from, candidate_credit,
+        WORLD_USER_ACTIVITY_MAX_GENERATION,
+    )
+    try:
+        total_active_ms = int((row or {}).get("total_active_ms", 0) or 0)
+        next_generation = int((row or {}).get("generation", 0) or 0)
+        credited_ms = int((row or {}).get("last_credit_ms", 0) or 0)
+    except (AttributeError, TypeError, ValueError):
+        total_active_ms = 0
+        next_generation = 0
+        credited_ms = 0
+    return {
+        "totalActiveMs": max(
+            0, min(WORLD_USER_ACTIVITY_MAX_TOTAL_MS, total_active_ms)),
+        "generation": max(
+            0, min(WORLD_USER_ACTIVITY_MAX_GENERATION, next_generation)),
+        "creditedMs": max(
+            0, min(WORLD_USER_ACTIVITY_CONTINUATION_MAX_MS, credited_ms)),
+        "observedAt": now,
+    }
 
 
 async def _world_account_claim(env, request, data=None):
@@ -3099,13 +3220,22 @@ async def world_ticket_handler(env, request):
             cache_control="no-store, max-age=0, must-revalidate",
         )
     now = int(Date.now())
+    account_bi = ""
+    try:
+        await ensure_schema(env)
+        account_bi = await blind_index(env, claim["name"])
+    except Exception:
+        # Tickets remain available during a rolling D1 migration. Activity is
+        # conservatively uncounted until its aggregate table is ready.
+        account_bi = ""
+
     # If this account previously opted into the inactive seating area, a fresh
     # authenticated world visit makes that card ineligible immediately. Keep
     # the consent/configuration record so it can reappear after the account has
     # actually been away; do not require the user to opt in on every visit.
     try:
-        await ensure_schema(env)
-        account_bi = await blind_index(env, claim["name"])
+        if not account_bi:
+            raise RuntimeError("world_activity_schema_unavailable")
         await d1_run(
             env,
             "UPDATE world_inactive_presence SET updated_at=?, expires_at=? "
@@ -3116,10 +3246,30 @@ async def world_ticket_handler(env, request):
         # Presence tickets must still work if a rolling deployment has not yet
         # installed the optional inactivity table.
         pass
+    activity = {
+        "totalActiveMs": 0,
+        "generation": 0,
+        "creditedMs": 0,
+        "observedAt": now,
+    }
+    try:
+        if not account_bi:
+            raise RuntimeError("world_activity_schema_unavailable")
+        continuation = _world_activity_continuation_claim(
+            env, request, claim["name"], now)
+        activity = await _world_user_activity_touch(
+            env, account_bi, now, continuation)
+        if activity["creditedMs"] > 0:
+            await edge_cache_delete(USERS_DIRECTORY_CACHE_KEY)
+    except Exception:
+        # Aggregate activity is optional telemetry. Authentication and
+        # multiplayer entry must continue while D1 is unavailable or migrating.
+        pass
     ticket_claim = {
         **claim,
         "issuedAt": now,
         "expiresAt": now + WORLD_TICKET_TTL_MS,
+        "activityGeneration": activity["generation"],
     }
     response_data = {
         "ok": True,
@@ -3127,6 +3277,8 @@ async def world_ticket_handler(env, request):
         **claim,
         "expiresAt": ticket_claim["expiresAt"],
         "ticket": _world_ticket_encode(env, ticket_claim),
+        "totalActiveMs": activity["totalActiveMs"],
+        "activityObservedAt": activity["observedAt"],
     }
     # Platform-administrator status is derived server-side from the verified
     # account session. Omit the field entirely for every other caller so the
@@ -3279,117 +3431,191 @@ async def world_inactive_handler(env, request):
     )
 
 
-# --- Town Square arrival odometer -------------------------------------------
-# Aggregate-only visit counters for the Arrival Grid plaque. Each accepted
-# world join adds one to a coarse 10-minute UTC bucket; the table never holds
-# a visitor id, country, IP, or session field, so the plaque can show totals
-# without weakening the world object's no-history privacy contract. Live
-# buckets cover a touch over two days (today plus all the yesterday windows
-# the plaque compares against); older buckets fold into one archive row so
-# the table stays bounded.
+# --- Town Square approximate unique visitor counter -------------------------
+# The public plaque uses fixed-footprint HyperLogLog sketches, not a visitor
+# ledger. Cloudflare's edge-observed address and a deliberately coarse
+# browser/OS/device category exist only long enough to derive domain-separated
+# keyed digests. Temporal context rotates at UTC midnight while all-time uses a
+# separate stable context. D1 receives only register numbers and ranks: no raw
+# address, raw User-Agent, account, cookie, digest, country, route, or movement
+# history.
+#
+# A 1,024-register all-time sketch remains fixed forever. Ten-minute temporal
+# sketches are retained for 50 hours, enough for today's, yesterday's and
+# same-hour-yesterday comparisons. This is deliberately approximate: shared
+# networks and matching coarse clients collapse together, network/client
+# changes can count one person again, and DATA_KEY rotation can make returning
+# visitors appear new to the all-time sketch. A rolling hour that crosses UTC
+# midnight can count a returning visitor on each side of the privacy rotation.
 WORLD_VISIT_BUCKET_MS = 10 * 60 * 1000
 WORLD_VISIT_RETAIN_MS = 50 * 60 * 60 * 1000
-WORLD_VISIT_ARCHIVE_BUCKET = -1
 WORLD_VISITORS_CACHE_KEY = "https://forkmesh.internal/api/world/visitors"
 WORLD_VISITORS_TTL = 60
 
 
-async def record_world_visit(env, now=None):
-    """Count one anonymous Town Square arrival in the current time bucket."""
-    await ensure_schema(env)
+async def _world_unique_visitor_tokens(env, request, now):
+    """Derive stable/all-time and UTC-day digests without retaining inputs."""
+    try:
+        headers = request.headers
+        # CF-Connecting-IP is authored by Cloudflare for an inbound Worker
+        # request. Never fall back to X-Forwarded-For, query data, cookies, or a
+        # caller-provided JSON field: those can contain a forged address.
+        address = world_visitor_metrics.canonical_edge_address(
+            headers.get("cf-connecting-ip") or "")
+        raw_agent = str(headers.get("user-agent") or "")[:2048]
+    except Exception:
+        return ""
+    if not address:
+        # A non-edge/local request cannot be deduplicated safely. Silently skip
+        # it rather than collapsing every address-less request into one record.
+        return ""
+    category = world_visitor_metrics.generalized_user_agent(raw_agent)
+    day = int(now) // (24 * 60 * 60 * 1000)
+    all_time_token = await blind_index(
+        env,
+        "world-unique-visitor-all-time-v1\n%s\n%s" % (address, category),
+    )
+    daily_token = await blind_index(
+        env,
+        "world-unique-visitor-day-v1:%d\n%s\n%s"
+        % (day, address, category),
+    )
+    # `address`, `raw_agent`, and both digests die with this request. Only the
+    # HLL register/rank projections below may cross the D1 boundary.
+    return {
+        "allTime": all_time_token,
+        "daily": daily_token,
+    }
+
+
+async def record_world_visit(env, request, now=None):
+    """Project one edge-observed visitor into fixed-size unique sketches."""
     if now is None:
         now = int(Date.now())
+    now = int(now)
+    tokens = await _world_unique_visitor_tokens(env, request, now)
+    if not tokens:
+        return False
+    try:
+        all_time_register = world_visitor_metrics.hll_register(
+            tokens.get("allTime", ""))
+        daily_register = world_visitor_metrics.hll_register(
+            tokens.get("daily", ""))
+    except (AttributeError, ValueError):
+        return False
+    await ensure_schema(env)
     bucket = now - (now % WORLD_VISIT_BUCKET_MS)
+    for bucket_start, (register_id, rank) in (
+        (
+            world_visitor_metrics.HLL_ALL_TIME_BUCKET,
+            all_time_register,
+        ),
+        (bucket, daily_register),
+    ):
+        await d1_run(
+            env,
+            "INSERT INTO world_visit_unique_hll "
+            "(bucket_start,register_id,rank) VALUES (?,?,?) "
+            "ON CONFLICT(bucket_start,register_id) DO UPDATE SET "
+            "rank=MAX(world_visit_unique_hll.rank,excluded.rank)",
+            bucket_start, register_id, rank,
+        )
+    return True
+
+
+async def _world_unique_register_sets(env, now):
+    """Read six merged aggregate sketches in one bounded D1 query."""
+    windows = world_visitor_metrics.unique_visit_window_bounds(now)
+    today_start, _ = windows["today"]
+    yesterday_start, yesterday_end = windows["yesterday"]
+    same_start, same_end = windows["yesterdaySameTime"]
+    hour_start, _ = windows["pastHour"]
+    previous_hour_start, previous_hour_end = windows["pastHourYesterday"]
+    cutoff = int(now) - WORLD_VISIT_RETAIN_MS
+
+    # Old temporal rows have no identity field and can be deleted outright.
+    # The all-time sketch at bucket -1 is fixed at 1,024 possible rows.
     await d1_run(
         env,
-        "INSERT INTO world_visit_stats (bucket_start, visits) VALUES (?,1) "
-        "ON CONFLICT(bucket_start) DO UPDATE SET visits=visits+1",
-        bucket)
-
-
-def world_visit_summary(rows, now):
-    """Fold visit buckets into the Arrival Grid plaque's counters.
-
-    Day boundaries are UTC (the shared world clock), and the two "yesterday"
-    comparisons are windows of the same length as their live counterpart:
-    yesterdaySameTime covers yesterday's midnight up to this time yesterday,
-    and pastHourYesterday covers the same 60 minutes one day earlier.
-    """
-    day_ms = 24 * 60 * 60 * 1000
-    hour_ms = 60 * 60 * 1000
-    midnight = now - (now % day_ms)
-    summary = {
-        "total": 0,
-        "today": 0,
-        "yesterday": 0,
-        "yesterdaySameTime": 0,
-        "pastHour": 0,
-        "pastHourYesterday": 0,
+        "DELETE FROM world_visit_unique_hll "
+        "WHERE bucket_start>=0 AND bucket_start<?",
+        cutoff,
+    )
+    rows = await d1_all(
+        env,
+        "SELECT register_id,"
+        "MAX(CASE WHEN bucket_start=? THEN rank END) AS total_rank,"
+        "MAX(CASE WHEN bucket_start>=? THEN rank END) AS today_rank,"
+        "MAX(CASE WHEN bucket_start>=? AND bucket_start<? "
+        "THEN rank END) AS yesterday_rank,"
+        "MAX(CASE WHEN bucket_start>=? AND bucket_start<? "
+        "THEN rank END) AS yesterday_same_time_rank,"
+        "MAX(CASE WHEN bucket_start>=? THEN rank END) AS past_hour_rank,"
+        "MAX(CASE WHEN bucket_start>=? AND bucket_start<? "
+        "THEN rank END) AS past_hour_yesterday_rank "
+        "FROM world_visit_unique_hll "
+        "WHERE bucket_start=? OR bucket_start>=? "
+        "GROUP BY register_id",
+        world_visitor_metrics.HLL_ALL_TIME_BUCKET,
+        today_start,
+        yesterday_start, yesterday_end,
+        same_start, same_end,
+        hour_start,
+        previous_hour_start, previous_hour_end,
+        world_visitor_metrics.HLL_ALL_TIME_BUCKET, cutoff,
+    )
+    columns = {
+        "total": "total_rank",
+        "today": "today_rank",
+        "yesterday": "yesterday_rank",
+        "yesterdaySameTime": "yesterday_same_time_rank",
+        "pastHour": "past_hour_rank",
+        "pastHourYesterday": "past_hour_yesterday_rank",
     }
+    register_sets = {key: [] for key in columns}
     for row in rows or []:
         try:
-            bucket = int(row.get("bucket_start"))
-            visits = int(row.get("visits"))
+            register_id = int(row.get("register_id"))
         except (AttributeError, TypeError, ValueError):
             continue
-        if visits <= 0:
-            continue
-        summary["total"] += visits
-        if bucket == WORLD_VISIT_ARCHIVE_BUCKET:
-            continue
-        if bucket >= midnight:
-            summary["today"] += visits
-        elif bucket >= midnight - day_ms:
-            summary["yesterday"] += visits
-            if bucket < now - day_ms:
-                summary["yesterdaySameTime"] += visits
-        if bucket >= now - hour_ms:
-            summary["pastHour"] += visits
-        if now - day_ms - hour_ms <= bucket < now - day_ms:
-            summary["pastHourYesterday"] += visits
-    return summary
+        for key, column in columns.items():
+            try:
+                rank = int(row.get(column))
+            except (TypeError, ValueError):
+                continue
+            if rank > 0:
+                register_sets[key].append({
+                    "register_id": register_id,
+                    "rank": rank,
+                })
+    return register_sets
 
 
 async def world_visitors_handler(env, request):
-    """Public aggregate arrival counts for the Arrival Grid plaque."""
+    """Public approximate unique counts for the Arrival Grid plaque."""
     if method_name(request) == "POST":
-        await record_world_visit(env)
+        counted = await record_world_visit(env, request)
+        if counted:
+            await edge_cache_delete(WORLD_VISITORS_CACHE_KEY)
         return json_response({"ok": True}, cache_control="no-store")
     if method_name(request) != "GET":
         return json_response(
             {"error": "method_not_allowed"}, status=405,
-            extra_headers={"allow": "GET"})
+            extra_headers={"allow": "GET, POST"})
     cached = await edge_cache_match(WORLD_VISITORS_CACHE_KEY)
     if cached is not None:
         return cached
     await ensure_schema(env)
     now = int(Date.now())
-    # Fold expired buckets into the archive row so the all-time total keeps
-    # counting while the live table stays a bounded two-day window. Safe to
-    # run alongside joins: increments only ever touch the current bucket.
-    cutoff = now - WORLD_VISIT_RETAIN_MS
-    expired = await d1_first(
-        env,
-        "SELECT COALESCE(SUM(visits),0) AS visits FROM world_visit_stats "
-        "WHERE bucket_start>=0 AND bucket_start<?",
-        cutoff)
-    expired_visits = int((expired or {}).get("visits") or 0)
-    if expired_visits > 0:
-        await d1_run(
-            env,
-            "INSERT INTO world_visit_stats (bucket_start, visits) "
-            "VALUES (?,?) ON CONFLICT(bucket_start) DO UPDATE SET "
-            "visits=visits+excluded.visits",
-            WORLD_VISIT_ARCHIVE_BUCKET, expired_visits)
-        await d1_run(
-            env,
-            "DELETE FROM world_visit_stats "
-            "WHERE bucket_start>=0 AND bucket_start<?",
-            cutoff)
-    rows = await d1_all(
-        env, "SELECT bucket_start, visits FROM world_visit_stats")
-    payload = {"ok": True, "now": now}
-    payload.update(world_visit_summary(rows, now))
+    register_sets = await _world_unique_register_sets(env, now)
+    payload = {
+        "ok": True,
+        "now": now,
+        "metric": "approximate_unique_visitors",
+        "approximate": True,
+        "timeZone": "UTC",
+    }
+    payload.update(world_visitor_metrics.unique_visit_summary(register_sets))
     resp = json_response(payload, cache_seconds=WORLD_VISITORS_TTL)
     await edge_cache_put(WORLD_VISITORS_CACHE_KEY, resp)
     return resp
@@ -9145,7 +9371,19 @@ async def _account_public_payload(env, rec, session_token=None):
     return payload
 
 
-def _account_chat_user_payload(rec):
+def _world_public_total_active_ms(value):
+    """Return a coarse, bounded public duration without activity timestamps."""
+    try:
+        total = int(value or 0)
+    except (TypeError, ValueError):
+        total = 0
+    total = max(0, min(WORLD_USER_ACTIVITY_MAX_TOTAL_MS, total))
+    return (
+        total // WORLD_USER_ACTIVITY_PUBLIC_BUCKET_MS
+    ) * WORLD_USER_ACTIVITY_PUBLIC_BUCKET_MS
+
+
+def _account_chat_user_payload(rec, total_active_ms=0):
     name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
     return {
         "name": name,
@@ -9155,6 +9393,10 @@ def _account_chat_user_payload(rec):
         "createdAt": rec.get("created_at", 0),
         "kind": "user",
         "nodes": _owned_nodes(rec),
+        # Aggregate-only and rounded down to whole minutes. The public
+        # directory deliberately exposes neither a last-seen timestamp nor the
+        # current activity interval used by an authenticated World tab.
+        "totalActiveMs": _world_public_total_active_ms(total_active_ms),
     }
 
 
@@ -9178,7 +9420,9 @@ async def _account_users_directory(env, request):
     seen = set()
     rows = await d1_all(
         env,
-        "SELECT data FROM users ORDER BY username COLLATE NOCASE LIMIT ?",
+        "SELECT u.data,a.total_active_ms FROM users u "
+        "LEFT JOIN world_user_activity a ON a.account_bi=u.user_bi "
+        "ORDER BY u.username COLLATE NOCASE LIMIT ?",
         1000,
     )
     for row in rows or []:
@@ -9191,7 +9435,8 @@ async def _account_users_directory(env, request):
         if not name or name in seen:
             continue
         seen.add(name)
-        out.append(_account_chat_user_payload(rec))
+        out.append(_account_chat_user_payload(
+            rec, row.get("total_active_ms", 0)))
 
     resp = json_response({"ok": True, "users": out},
                          cache_seconds=USERS_DIRECTORY_TTL)

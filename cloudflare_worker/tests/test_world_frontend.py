@@ -18,6 +18,9 @@ SCENE = (WORLD / "world-scene.js").read_text(encoding="utf-8")
 CSS = (WORLD / "world.css").read_text(encoding="utf-8")
 DASHBOARD_CHAT = (PUBLIC / "dashboard-chat.js").read_text(encoding="utf-8")
 DASHBOARD = (PUBLIC / "dashboard.js").read_text(encoding="utf-8")
+DASHBOARD_CHAT_VIEW = (
+    PUBLIC / "dashboard" / "partials" / "views" / "chat.html"
+).read_text(encoding="utf-8")
 QT_CHAT = (
     ROOT.parent / "qt_client" / "src" / "MainWindowChat.cpp"
 ).read_text(encoding="utf-8")
@@ -728,6 +731,44 @@ def test_chat_opens_through_the_spatial_forkmesh_office_and_terminal():
         assert media_feature in APP
     assert "normalizeMediaRoom" in APP
     assert "data-world-media-remove" in APP
+
+
+def test_mobile_world_chat_composer_stays_above_safe_area_and_terminal_bars():
+    assert (
+        "var(--safe-bottom) + var(--world-diagnostics-height) + 8px"
+        in CSS
+    )
+    open_chat = APP[
+        APP.index("  openWorldChat("):
+        APP.index("\n  loadChatTerminalFrame()", APP.index("  openWorldChat("))
+    ]
+    assert (
+        'this.$("[data-world-chat-terminal]")?.removeAttribute("open")'
+        in open_chat
+    )
+    assert (
+        'this.$("[data-world-diagnostics]")?.removeAttribute("open")'
+        in open_chat
+    )
+    assert "var(--forkmesh-chat-viewport-height, 100dvh)" in DASHBOARD_CHAT_VIEW
+    assert "const layoutHeight = window.innerHeight" in DASHBOARD_CHAT_VIEW
+    assert "window.frameElement?.getBoundingClientRect?.().height" in (
+        DASHBOARD_CHAT_VIEW
+    )
+    assert "Math.min(...candidates)" in DASHBOARD_CHAT_VIEW
+    composer = DASHBOARD_CHAT_VIEW[
+        DASHBOARD_CHAT_VIEW.index(
+            'html[data-world-embed="1"] [data-dashboard-chat-composer]'
+        ):
+        DASHBOARD_CHAT_VIEW.index(
+            "@media (max-width: 767px)", DASHBOARD_CHAT_VIEW.index(
+                'html[data-world-embed="1"] [data-dashboard-chat-composer]'
+            )
+        )
+    ]
+    assert "position: absolute" in composer
+    assert "bottom: 0" in composer
+    assert "env(safe-area-inset-bottom, 0px)" in composer
     assert "Playback remains individual and opt-in" in APP
     assert 'this.fetchJSON("/api/world/media/spaces"' in APP
     assert "termsConfirmed: true" in APP
@@ -2002,7 +2043,8 @@ def test_arrival_grid_sign_is_a_front_plaque_with_visit_counters():
     assert "arrivalPlaque.position.set(0, 0, 15.2)" in SCENE
     assert "arrivalPlaque.rotation.y = Math.PI" in SCENE
     assert "arrivalLabel" not in SCENE
-    assert '"TOTAL VISITORS"' in SCENE
+    assert '"UNIQUE VISITORS"' in SCENE
+    assert '"ALL TIME · APPROXIMATE · NO RAW IP STORED"' in SCENE
     assert '"TODAY"' in SCENE
     assert '"PAST HOUR"' in SCENE
     assert "function updateArrivalStats" in SCENE

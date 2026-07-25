@@ -239,7 +239,10 @@ export function createWorldOfficeController({
     );
     world.focusOfficeKeypad?.(safeMode, safeLocation);
     world.setOfficeKeypadDigits?.("", safeMode, safeLocation);
-    window.requestAnimationFrame(() => keypadInput?.focus());
+    window.requestAnimationFrame(() => {
+      if (safeMode === "guide") keypadSubmit?.focus();
+      else keypadInput?.focus();
+    });
     return true;
   }
 

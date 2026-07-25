@@ -519,14 +519,30 @@ function memberLoungePlaqueTexture(
   });
 }
 
-function activeLeaderboardTexture(THREE, members = []) {
-  const rows = (Array.isArray(members) ? members : [])
+function rankedActiveLeaderboardMembers(members = []) {
+  return (Array.isArray(members) ? members : [])
     .filter(
       (member) =>
         String(member?.name || "").trim() &&
-        Number(member?.totalActiveMs ?? member?.activeMs ?? 0) > 0,
+        (member?.activeNow === true ||
+          Number(member?.totalActiveMs ?? member?.activeMs ?? 0) > 0),
     )
+    .sort((left, right) => {
+      const durationDifference =
+        Number(right?.totalActiveMs ?? right?.activeMs ?? 0) -
+        Number(left?.totalActiveMs ?? left?.activeMs ?? 0);
+      if (durationDifference) return durationDifference;
+      return String(left?.name || "").localeCompare(
+        String(right?.name || ""),
+        undefined,
+        { sensitivity: "base" },
+      );
+    })
     .slice(0, 6);
+}
+
+function activeLeaderboardTexture(THREE, members = []) {
+  const rows = rankedActiveLeaderboardMembers(members);
   return canvasTexture(THREE, 768, 512, (context) => {
     context.clearRect(0, 0, 768, 512);
     roundedRect(context, 4, 4, 760, 504, 16);
@@ -545,13 +561,22 @@ function activeLeaderboardTexture(THREE, members = []) {
     rows.forEach((member, index) => {
       const top = 148 + index * 56;
       const name = String(member.name).trim().slice(0, 24);
-      const duration = activeDurationLabel(member.totalActiveMs ?? member.activeMs);
+      const duration = activeDurationLabel(
+        member.totalActiveMs ?? member.activeMs,
+      );
       context.fillStyle = "#d9ffea";
       context.font = '700 25px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(`${index + 1}. ${name}`, 38, top);
       context.fillStyle = "#9ef7c6";
       context.font = '400 19px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(duration.slice(0, 34), 38, top + 25);
+      context.fillText(
+        `${member.activeNow === true ? "ACTIVE NOW · " : ""}${duration}`.slice(
+          0,
+          34,
+        ),
+        38,
+        top + 25,
+      );
     });
     if (!rows.length) {
       context.fillStyle = "#91a39a";
@@ -979,9 +1004,11 @@ function arrivalPlaqueTexture(THREE, stats) {
   const ready = Boolean(stats);
   const lines = [
     {
-      label: "TOTAL VISITORS",
+      label: "UNIQUE VISITORS",
       value: ready ? formatArrivalCount(stats.total) : "—",
-      note: ready ? "ALL TIME · EVERY ARRIVAL COUNTS ONCE" : "COUNTING…",
+      note: ready
+        ? "ALL TIME · APPROXIMATE · NO RAW IP STORED"
+        : "COUNTING…",
     },
     {
       label: "TODAY",
@@ -5967,16 +5994,11 @@ export function createWorldScene({
     }
     const leaderboardFace = activeLeaderboardSign.userData.face;
     const leaderboardKey = JSON.stringify(
-      (Array.isArray(leaderboardMembers) ? leaderboardMembers : [])
-        .filter(
-          (member) =>
-            String(member?.name || "").trim() &&
-            Number(member?.totalActiveMs ?? member?.activeMs ?? 0) > 0,
-        )
-        .slice(0, 6)
+      rankedActiveLeaderboardMembers(leaderboardMembers)
         .map((member) => [
           String(member?.name || ""),
           member?.totalActiveMs ?? member?.activeMs ?? null,
+          member?.activeNow === true,
         ]),
     );
     if (leaderboardFace && activeLeaderboardSign.userData.key !== leaderboardKey) {

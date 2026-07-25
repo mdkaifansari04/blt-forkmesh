@@ -68,5 +68,5 @@ def test_world_browser_e2e_exercises_runtime_webgl_touch_and_privacy():
     assert '"three": "0.184.0"' in package
     assert "routeWebSocket" in tests
     assert "two live clients synchronize movement" in tests
-    assert "landscape touch controls remain visible" in tests
+    assert "landscape thumbstick remains visible and moves the avatar" in tests
     assert "must-not-cross" in tests
