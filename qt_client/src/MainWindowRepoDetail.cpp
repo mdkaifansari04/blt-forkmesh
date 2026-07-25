@@ -8884,7 +8884,6 @@ QWidget *MainWindow::buildRepoCommitsTab()
     changesLayout->setSpacing(8);
     m_scmDiff = new QTextBrowser;
     m_scmDiff->setObjectName("diffView");
-    m_scmDiff->setLineWrapMode(QTextEdit::NoWrap);
     registerDiffView(m_scmDiff);
     m_scmDiff->setHtml(QStringLiteral(
         "<p style='color:#8b949e'>Select a change or open all changes to view "

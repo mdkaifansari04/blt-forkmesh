@@ -112,6 +112,36 @@
               </a>`;
   }
 
+  // ForkMesh World band pinned to the very bottom of every page: a short intro
+  // strip, then the live Town Square embedded edge-to-edge with no border
+  // below it. The "full screen" link navigates the same window to /world/.
+  function renderWorldBand() {
+    return `
+      <section class="site-footer-world" aria-labelledby="site-footer-world-title">
+        <div class="site-footer-world-intro">
+          <div class="site-footer-world-heading">
+            <p class="site-footer-world-kicker">ForkMesh World</p>
+            <h2 id="site-footer-world-title" class="site-footer-world-title">Step into the developer city</h2>
+            <p class="site-footer-world-copy">
+              The multiplayer Town Square is one part of ForkMesh, not a
+              replacement for the website. Explore it here, then keep browsing
+              repositories, source code, documentation, pricing, and the
+              operations dashboard through normal web pages.
+            </p>
+          </div>
+          <a href="/world/" class="site-footer-world-open">Open World full screen</a>
+        </div>
+        <iframe
+          src="/world/"
+          title="Interactive ForkMesh World"
+          loading="lazy"
+          referrerpolicy="same-origin"
+          allow="fullscreen"
+          class="site-footer-world-frame"
+        ></iframe>
+      </section>`;
+  }
+
   function renderFooter(variant) {
     const isLanding = variant === "landing";
     const footerId = isLanding ? ' id="signup"' : "";
@@ -151,6 +181,7 @@
           &copy; 2026 ForkMesh. Built for local-first Git collaboration.
         </div>
       </div>
+      ${renderWorldBand()}
     </footer>`;
   }
 

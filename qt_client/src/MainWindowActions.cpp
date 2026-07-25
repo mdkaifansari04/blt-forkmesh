@@ -3129,7 +3129,6 @@ QWidget *MainWindow::buildRepoActionsTab()
     m_actionDiff = new QTextBrowser;
     m_actionDiff->setReadOnly(true);
     m_actionDiff->setOpenExternalLinks(false);
-    m_actionDiff->setLineWrapMode(QTextEdit::NoWrap);
     m_actionDiff->setFontFamily(QStringLiteral("monospace"));
     m_actionDiff->hide();
     registerDiffView(m_actionDiff);

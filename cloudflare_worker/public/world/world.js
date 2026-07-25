@@ -3308,6 +3308,8 @@ class ForkMeshWorld extends HTMLElement {
     this.botDirectory = [];
     this.worldLimits = null;
     this.systemCapacityTables = [];
+    this.systemCapacityFocus = "";
+    this.systemCapacitySort = { key: "rowCount", direction: "desc" };
     this.detailReturnFocus = null;
     this.activeAudio = null;
     this.focusMusicState = "stopped";
@@ -3332,6 +3334,7 @@ class ForkMeshWorld extends HTMLElement {
     this.pullReviewSelection = 0;
     this.pullViewedFiles = new Map();
     this.pullReviewScrollCleanup = null;
+    this.expandedRepositoryIssuePage = 0;
     this.securityTriage = null;
     this.remotePlayers = new Map();
     this.localPeers = new Map();
@@ -3727,6 +3730,14 @@ class ForkMeshWorld extends HTMLElement {
             this.selectRepositorySizeNode(meta.repositorySizeNode);
             return;
           }
+          if (id === "repositories" && meta.repositoryIssuePage) {
+            this.toggleRepositoryIssuePage(meta.repositoryIssuePage);
+            return;
+          }
+          if (id === "repositories" && meta.repositoryPullPage) {
+            this.loadRepositoryPullReview(meta.repositoryPullPage.number);
+            return;
+          }
           if (id === "repositories" && meta.graphNode) {
             this.selectRepositoryGraphNode(meta.graphNode);
             return;
@@ -3751,6 +3762,8 @@ class ForkMeshWorld extends HTMLElement {
         },
         onWorldBulletinSelect: () => this.openLandmark("events"),
         onMastodonBoardSelect: () => this.openMastodonBoard(),
+        onSystemCapacityTableSelect: (table) =>
+          this.openSystemCapacityTables(table),
         onRendererStateChange: (state) => {
           this.handleRendererStateChange(state);
         },
@@ -4108,39 +4121,10 @@ class ForkMeshWorld extends HTMLElement {
       contextResult.status === "fulfilled" ? contextResult.value : null;
     const ticket =
       ticketResult.status === "fulfilled" ? ticketResult.value : null;
-    if (
-      ticket?.authenticated === true &&
-      ACCOUNT_STATUS_VALUES.has(String(ticket.accountStatus || "")) &&
-      ticket.accountStatus !== "Guest"
-    ) {
-      this.sessionAuthenticated = true;
-      this.identity.name = sanitizePresenceText(
-        ticket.name,
-        this.identity.name,
-        24,
-      );
-      this.identity.accountStatus = String(ticket.accountStatus);
-      this.identity.isAdmin = ticket.isAdmin === true;
-      this.identity.nodes = Array.from(
-        {
-          length: Math.max(
-            0,
-            Math.min(6, Number(ticket.nodeCount) || 0),
-          ),
-        },
-        () => "node",
-      );
-      this.worldTicket = String(ticket.ticket || "");
-      this.worldTicketExpires = Number(ticket.expiresAt || 0);
+    if (this.applyWorldTicketIdentity(ticket)) {
       this.applyWorldActivityTicket(ticket);
     } else {
-      this.sessionAuthenticated = false;
-      this.identity.accountStatus = "Guest";
-      this.identity.isAdmin = false;
-      this.identity.nodes = [];
-      this.worldTicket = "";
-      this.worldTicketExpires = 0;
-      this.resetWorldActivity();
+      this.clearWorldTicketIdentity();
     }
     const country = String(context?.country || context?.countryCode || "")
       .trim()
@@ -5219,6 +5203,13 @@ class ForkMeshWorld extends HTMLElement {
         this.setTheme(themeButton.dataset.worldTheme);
         return;
       }
+      const capacitySort = event.target.closest("[data-world-capacity-sort]");
+      if (capacitySort) {
+        this.sortSystemCapacityTables(
+          capacitySort.dataset.worldCapacitySort,
+        );
+        return;
+      }
       if (event.target.closest("[data-world-mastodon-retry]")) {
         void this.loadMastodonBoard(true);
         return;
@@ -5915,6 +5906,9 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   updateSystemCapacityMetrics() {
+    // Keeps an open table browser in step with each refreshed ticket; it is a
+    // no-op while the panel is closed.
+    this.renderSystemCapacityTables();
     if (!this.world?.updateSystemCapacity) return;
     const limits = this.worldLimits;
     if (!limits && !this.systemCapacityTables.length) {
@@ -6705,6 +6699,112 @@ class ForkMeshWorld extends HTMLElement {
       }
     })();
     return this.mastodonLoad;
+  }
+
+  openSystemCapacityTables(table = null, { returnFocus = null } = {}) {
+    const detail = this.$("[data-world-detail]");
+    const backdrop = this.$("[data-world-detail-backdrop]");
+    if (!detail || !backdrop) return;
+    const name = String(table?.name || "").trim();
+    this.systemCapacityFocus = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(name)
+      ? name
+      : "";
+    detail.dataset.openLandmark = "system-capacity-tables";
+    detail.style.setProperty("--detail-color", "#9ef7c6");
+    this.renderSystemCapacityTables();
+    this.showDetailOverlay(detail, backdrop, { returnFocus });
+  }
+
+  sortSystemCapacityTables(key) {
+    const next = key === "name" ? "name" : "rowCount";
+    const current = this.systemCapacitySort;
+    this.systemCapacitySort =
+      current.key === next
+        ? { key: next, direction: current.direction === "asc" ? "desc" : "asc" }
+        : { key: next, direction: next === "name" ? "asc" : "desc" };
+    this.renderSystemCapacityTables();
+  }
+
+  renderSystemCapacityTables() {
+    const detail = this.$("[data-world-detail]");
+    if (
+      !detail ||
+      detail.dataset.openLandmark !== "system-capacity-tables"
+    ) {
+      return;
+    }
+    const { key, direction } = this.systemCapacitySort;
+    const factor = direction === "asc" ? 1 : -1;
+    const tables = [...this.systemCapacityTables].sort((left, right) =>
+      key === "name"
+        ? factor * left.name.localeCompare(right.name)
+        : factor * (left.rowCount - right.rowCount) ||
+          left.name.localeCompare(right.name),
+    );
+    const totalRows = tables.reduce((sum, entry) => sum + entry.rowCount, 0);
+    const focus = this.systemCapacityFocus;
+    const sortState = (column) =>
+      key === column
+        ? direction === "asc"
+          ? "ascending"
+          : "descending"
+        : "none";
+    const sortArrow = (column) =>
+      key === column ? (direction === "asc" ? "▲" : "▼") : "";
+    detail.innerHTML = `
+      <header class="world-detail-header">
+        <div>
+          <p class="world-eyebrow">SYSTEM CAPACITY / DATABASE TABLES</p>
+          <h2 id="world-detail-title">${
+            focus ? escapeHTML(focus) : "Database tables"
+          }</h2>
+        </div>
+        <button class="world-detail-close" type="button" data-world-detail-close aria-label="Close database tables">×</button>
+      </header>
+      <div class="world-capacity-tables">
+        <p class="world-capacity-summary">${
+          tables.length
+            ? `${tables.length.toLocaleString("en-US")} tables · ${totalRows.toLocaleString(
+                "en-US",
+              )} rows counted live from D1.`
+            : "No table counts are available in this session."
+        }</p>
+        <div class="world-capacity-scroll">
+          <table class="world-capacity-table">
+            <thead>
+              <tr>
+                <th scope="col" aria-sort="${sortState("name")}">
+                  <button type="button" data-world-capacity-sort="name">Table <span aria-hidden="true">${sortArrow("name")}</span></button>
+                </th>
+                <th scope="col" class="is-numeric" aria-sort="${sortState("rowCount")}">
+                  <button type="button" data-world-capacity-sort="rowCount">Rows <span aria-hidden="true">${sortArrow("rowCount")}</span></button>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              ${tables
+                .map(
+                  (entry) => `<tr${
+                    entry.name === focus ? ' data-current="true"' : ""
+                  }>
+                    <th scope="row">${escapeHTML(entry.name)}</th>
+                    <td class="is-numeric">${escapeHTML(
+                      entry.rowCount.toLocaleString("en-US"),
+                    )}</td>
+                  </tr>`,
+                )
+                .join("")}
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+    if (focus) {
+      window.requestAnimationFrame(() => {
+        detail
+          .querySelector("[data-current='true']")
+          ?.scrollIntoView({ block: "center" });
+      });
+    }
   }
 
   openMastodonBoard({ returnFocus = null } = {}) {
@@ -9695,6 +9795,7 @@ class ForkMeshWorld extends HTMLElement {
     if (!active) {
       this.world.updateRepositoryGraph?.([], []);
       this.world.updateRepositorySizeMap?.({}, {});
+      this.world.updateRepositoryRecordDesk?.({}, {});
       return;
     }
     this.world.updateRepositoryGraph?.(
@@ -9707,6 +9808,19 @@ class ForkMeshWorld extends HTMLElement {
       commit: active.commit,
       path: active.path || "",
     });
+    // The open issue box and pull-request review desk beside the portal reuse
+    // the same commit-matched records as the explorer panel; nothing here is
+    // fetched separately or invented for the scene.
+    this.world.updateRepositoryRecordDesk?.(
+      { owner: active.owner, repo: active.repo },
+      {
+        issues: Array.isArray(active.entityRecords?.issues)
+          ? active.entityRecords.issues
+          : [],
+        pulls: this.repositoryPullRecords(active),
+        expandedIssue: this.expandedRepositoryIssuePage,
+      },
+    );
   }
 
   repositoriesWithLiveSocialState() {
@@ -9810,6 +9924,36 @@ class ForkMeshWorld extends HTMLElement {
     // so do not mistake a safely opened tab for a popup-blocker failure.
     window.open(path, "_blank", "noopener,noreferrer");
     this.toast(`Opening ${owner}/${name} in a new tab…`);
+  }
+
+  toggleRepositoryIssuePage(page) {
+    const active = this.activeRepository;
+    const owner = sanitizePresenceText(page?.owner, "", 40);
+    const name = sanitizePresenceText(page?.name, "", 60);
+    const number = safePullNumber(page?.number);
+    if (
+      !active ||
+      !number ||
+      owner.toLocaleLowerCase() !== active.owner.toLocaleLowerCase() ||
+      name.toLocaleLowerCase() !== active.repo.toLocaleLowerCase()
+    ) {
+      return;
+    }
+    if (this.expandedRepositoryIssuePage === number) {
+      // A second click on the already-expanded page follows the signed issue
+      // thread on the repository website, mirroring the portal base link.
+      const path = `/${encodeURIComponent(owner)}/${encodeURIComponent(
+        name,
+      )}/issues/${number}`;
+      window.open(path, "_blank", "noopener,noreferrer");
+      this.toast(`Opening issue #${number} in a new tab…`);
+      return;
+    }
+    this.expandedRepositoryIssuePage = number;
+    this.world?.setRepositoryIssuePageExpanded?.(number);
+    this.toast(
+      `Issue #${number}${page?.state ? ` (${page.state})` : ""}: click the expanded page to open the full thread.`,
+    );
   }
 
   selectRepositorySizeNode(node) {
@@ -10080,6 +10224,7 @@ class ForkMeshWorld extends HTMLElement {
       this.repositoryView = "map";
       this.pullReview = null;
       this.pullReviewSelection += 1;
+      this.expandedRepositoryIssuePage = 0;
       this.clearPullReviewScrollTracking();
       this.renderRepositoryMapStatus();
       this.syncRepositoryScene();
@@ -10100,6 +10245,7 @@ class ForkMeshWorld extends HTMLElement {
     this.repositoryView = "map";
     this.pullReview = null;
     this.pullReviewSelection += 1;
+    this.expandedRepositoryIssuePage = 0;
     this.clearPullReviewScrollTracking();
     const selection = ++this.repositoryMapSelection;
     this.repositoryMapState = "loading";
@@ -14515,6 +14661,56 @@ class ForkMeshWorld extends HTMLElement {
     this.syncMemberLounge();
   }
 
+  // A world ticket is the only account proof peers ever receive: the relay
+  // stamps the signed name and account status onto this connection, and a
+  // browser without a live ticket joins as an anonymous "Guest ####" even
+  // while it is signed in — which also breaks chat bubbles, because they are
+  // matched to an avatar by display name. Applying the identity therefore has
+  // to stand alone; it must never be gated on the optional activity-accounting
+  // fields (applyWorldActivityTicket) that ride along in the same response.
+  applyWorldTicketIdentity(ticket) {
+    if (
+      !this.identity ||
+      ticket?.authenticated !== true ||
+      !ACCOUNT_STATUS_VALUES.has(String(ticket.accountStatus || "")) ||
+      ticket.accountStatus === "Guest"
+    ) {
+      return false;
+    }
+    this.sessionAuthenticated = true;
+    this.identity.name = sanitizePresenceText(
+      ticket.name,
+      this.identity.name,
+      24,
+    );
+    this.identity.accountStatus = String(ticket.accountStatus);
+    this.identity.isAdmin = ticket.isAdmin === true;
+    this.identity.nodes = Array.from(
+      {
+        length: Math.max(
+          0,
+          Math.min(6, Number(ticket.nodeCount) || 0),
+        ),
+      },
+      () => "node",
+    );
+    this.worldTicket = String(ticket.ticket || "");
+    this.worldTicketExpires = Number(ticket.expiresAt || 0);
+    return true;
+  }
+
+  clearWorldTicketIdentity() {
+    this.sessionAuthenticated = false;
+    if (this.identity) {
+      this.identity.accountStatus = "Guest";
+      this.identity.isAdmin = false;
+      this.identity.nodes = [];
+    }
+    this.worldTicket = "";
+    this.worldTicketExpires = 0;
+    this.resetWorldActivity();
+  }
+
   applyWorldActivityTicket(ticket) {
     const total = Number(ticket?.totalActiveMs);
     const observedAt = Number(ticket?.activityObservedAt);
@@ -14627,11 +14823,11 @@ class ForkMeshWorld extends HTMLElement {
 
   async refreshWorldTicket() {
     if (this.destroyed || document.hidden) return;
-    if (!readSession()?.sessionToken) {
-      this.sessionAuthenticated = false;
-      this.worldTicket = "";
-      this.worldTicketExpires = 0;
-      this.resetWorldActivity();
+    // A browser authenticated by the session cookie alone keeps no bearer
+    // token in localStorage, so an already-authenticated page must still be
+    // allowed to renew — otherwise its next reconnect drops to guest.
+    if (!readSession()?.sessionToken && !this.sessionAuthenticated) {
+      this.clearWorldTicketIdentity();
       return;
     }
     try {
@@ -14647,31 +14843,32 @@ class ForkMeshWorld extends HTMLElement {
         timeout: 5000,
         cache: "no-store",
       });
-      if (
-        ticket?.authenticated === true &&
-        ACCOUNT_STATUS_VALUES.has(String(ticket.accountStatus || "")) &&
-        ticket.accountStatus !== "Guest"
-      ) {
-        this.sessionAuthenticated = true;
-        if (this.applyWorldActivityTicket(ticket)) {
-          this.worldTicket = String(ticket.ticket || "");
-          this.worldTicketExpires = Number(ticket.expiresAt || 0);
+      const previousName = this.identity?.name;
+      const previousStatus = this.identity?.accountStatus;
+      if (this.applyWorldTicketIdentity(ticket)) {
+        this.applyWorldActivityTicket(ticket);
+        // A ticket that failed (or timed out) during bootstrap leaves a
+        // signed-in visitor stranded under the placeholder guest name. Repair
+        // the presence the moment a later ticket arrives, and republish it so
+        // peers relabel the avatar instead of waiting for a reconnect.
+        if (
+          this.identity.name !== previousName ||
+          this.identity.accountStatus !== previousStatus
+        ) {
+          this.updateIdentityUI();
+          this.world?.updateIdentity(
+            publicIdentity(this.identity, this.settings),
+          );
+          this.sendPresence({ type: "presence" });
+          this.broadcastLocalPresence();
         }
-        this.identity.isAdmin = ticket.isAdmin === true;
         return;
       }
-      this.worldTicket = "";
-      this.worldTicketExpires = 0;
-      this.sessionAuthenticated = false;
-      this.resetWorldActivity();
-      if (this.identity) this.identity.isAdmin = false;
+      this.clearWorldTicketIdentity();
     } catch (_) {
       // Keep a still-valid ticket for reconnect; clear only an expired one.
       if (this.worldTicketExpires <= Date.now()) {
-        this.sessionAuthenticated = false;
-        this.worldTicket = "";
-        this.worldTicketExpires = 0;
-        this.resetWorldActivity();
+        this.clearWorldTicketIdentity();
       }
     }
   }
@@ -14679,7 +14876,10 @@ class ForkMeshWorld extends HTMLElement {
   startWorldTicketRefresh() {
     window.clearInterval(this.worldTicketTimer);
     this.worldTicketTimer = window.setInterval(() => {
-      if (!document.hidden && readSession()?.sessionToken) {
+      if (
+        !document.hidden &&
+        (readSession()?.sessionToken || this.sessionAuthenticated)
+      ) {
         this.refreshWorldTicket();
       }
     }, WORLD_TICKET_REFRESH_MS);
@@ -14732,10 +14932,17 @@ class ForkMeshWorld extends HTMLElement {
     this.setupBroadcastChannel();
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     if (
-      readSession()?.sessionToken &&
+      (readSession()?.sessionToken || this.sessionAuthenticated) &&
       (!this.worldTicket || this.worldTicketExpires <= Date.now() + 5000)
     ) {
       await this.refreshWorldTicket();
+    }
+    // An expired ticket proves nothing: the relay drops the claim and this
+    // connection would join as a guest under a stale name. Reconnect without
+    // it rather than pinning the guest label onto a signed-in visitor.
+    if (this.worldTicket && this.worldTicketExpires <= Date.now()) {
+      this.worldTicket = "";
+      this.worldTicketExpires = 0;
     }
     if (this.destroyed || document.hidden) {
       this.presenceConnecting = false;
