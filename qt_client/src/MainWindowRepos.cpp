@@ -5883,8 +5883,133 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
             }
             startRepoHosts();
             replicateReleaseArtifacts(index);
+            // Propagate the freshly sealed state to the SSH-fed headless
+            // mirrors too — they don't hear the relay's mirror-update frames.
+            pushToSshMirrorRemotes(index);
         });
     worker->start();
+}
+
+// Push the served bare mirror's stable refs (heads + tags) to every ssh://
+// push remote configured on the working copy — e.g. the ssh.<worker> Git
+// gateway feeding the headless mirror fleet, whose post-receive hook re-seals
+// and republishes each mirror. The relay's "mirror-update" websocket frame
+// only reaches desktop peers in the live room; without this push the SSH-fed
+// mirrors sat frozen at whatever the owner last pushed by hand (adhoc #272).
+// Best-effort and fully async; runs after every successful mirror sync, so the
+// 15-minute auto-sync doubles as the self-heal for a push a gateway missed.
+void MainWindow::pushToSshMirrorRemotes(int index)
+{
+    if (index < 0 || index >= m_repositories.size())
+        return;
+    // By value: runGitCapture below pumps the event loop, and a reference into
+    // m_repositories can dangle across it (git-pump UAF family, adhoc #106).
+    const RepositoryRecord repo = m_repositories.at(index);
+    // Only the source of truth propagates (a node holding the working copy);
+    // mirrors and previews just pull, and private repos travel as sealed
+    // replicas, never over a public mirror gateway.
+    if (repo.previewOnly || repo.isPrivate ||
+        repo.localPath.trimmed().isEmpty() ||
+        repo.mirrorPath.trimmed().isEmpty() || !QDir(repo.mirrorPath).exists())
+        return;
+    const QString repoKey = repo.owner + "/" + repo.name;
+    if (m_sshMirrorPushing.contains(repoKey))
+        return;
+
+    QByteArray remotesOut;
+    if (!runGitCapture(repo.localPath,
+                       {QStringLiteral("remote"), QStringLiteral("-v")},
+                       &remotesOut, nullptr))
+        return;
+    QStringList urls;
+    for (const QString &line :
+         QString::fromUtf8(remotesOut).split(QLatin1Char('\n'))) {
+        const QString simplified = line.simplified();
+        if (!simplified.endsWith(QLatin1String("(push)")))
+            continue;
+        const QStringList parts = simplified.split(QLatin1Char(' '));
+        if (parts.size() < 2)
+            continue;
+        const QString url = parts.at(1);
+        if (url.startsWith(QLatin1String("ssh://")) && !urls.contains(url))
+            urls.append(url);
+    }
+    if (urls.isEmpty())
+        return;
+
+    m_sshMirrorPushing.insert(repoKey);
+    auto remaining = std::make_shared<int>(urls.size());
+    for (const QString &url : urls) {
+        auto *process = new QProcess(this);
+        // Never let an unreachable/unauthorized gateway hang the push on an
+        // interactive credential or host-key prompt: this runs unattended.
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert(QStringLiteral("GIT_TERMINAL_PROMPT"), QStringLiteral("0"));
+        if (!env.contains(QStringLiteral("GIT_SSH_COMMAND")))
+            env.insert(QStringLiteral("GIT_SSH_COMMAND"),
+                       QStringLiteral("ssh -oBatchMode=yes"));
+        process->setProcessEnvironment(env);
+        const QString gatewayHost = QUrl(url).host();
+        connect(process, &QProcess::finished, this,
+                [this, process, repoKey, remaining, gatewayHost](
+                    int exitCode, QProcess::ExitStatus) {
+                    const QString output =
+                        QString::fromUtf8(process->readAllStandardOutput());
+                    const QString errors =
+                        QString::fromUtf8(process->readAllStandardError())
+                            .trimmed();
+                    process->deleteLater();
+                    if (--*remaining <= 0)
+                        m_sshMirrorPushing.remove(repoKey);
+                    if (exitCode != 0) {
+                        logSystem(QStringLiteral(
+                                      "Mirror: SSH mirror push of %1 to %2 "
+                                      "failed: %3")
+                                      .arg(repoKey, gatewayHost,
+                                           errors.right(300)));
+                        return;
+                    }
+                    // --porcelain: one status line per ref; '=' means already
+                    // up to date. Only speak up when something actually moved,
+                    // so the quiet auto-sync cadence doesn't spam the log.
+                    bool updated = false;
+                    for (const QString &line :
+                         output.split(QLatin1Char('\n'))) {
+                        if (!line.isEmpty() && !line.startsWith('=') &&
+                            !line.startsWith(QLatin1String("To ")) &&
+                            !line.startsWith(QLatin1String("Done")))
+                            updated = true;
+                    }
+                    if (updated)
+                        logSystem(QStringLiteral(
+                                      "Mirror: pushed %1 to SSH mirror %2.")
+                                      .arg(repoKey, gatewayHost));
+                });
+        connect(process, &QProcess::errorOccurred, this,
+                [this, process, repoKey, remaining,
+                 gatewayHost](QProcess::ProcessError error) {
+                    // finished still fires for a crash after start; only a
+                    // failed start ends the attempt here (avoids double
+                    // decrement).
+                    if (error != QProcess::FailedToStart)
+                        return;
+                    process->deleteLater();
+                    if (--*remaining <= 0)
+                        m_sshMirrorPushing.remove(repoKey);
+                    logSystem(QStringLiteral("Mirror: could not run git to "
+                                             "push %1 to SSH mirror %2.")
+                                  .arg(repoKey, gatewayHost));
+                });
+        // Push from the served bare mirror so the gateway receives exactly the
+        // refs this node serves; forced, because the source of truth wins over
+        // whatever state a mirror gateway holds. Heads + tags only — the same
+        // stable namespaces every mirror serves (issues/PRs live on heads).
+        process->start(QStringLiteral("git"),
+                       {QStringLiteral("-C"), repo.mirrorPath,
+                        QStringLiteral("push"), QStringLiteral("--porcelain"),
+                        url, QStringLiteral("+refs/heads/*:refs/heads/*"),
+                        QStringLiteral("+refs/tags/*:refs/tags/*")});
+    }
 }
 
 void MainWindow::syncRepository(int index, bool quiet)
