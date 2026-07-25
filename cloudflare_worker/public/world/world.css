@@ -1049,21 +1049,6 @@ forkmesh-world {
   font-family: "ForkMesh Mono", monospace;
 }
 
-.world-identity {
-  position: absolute;
-  left: var(--safe-left);
-  bottom: calc(var(--safe-bottom) + var(--world-diagnostics-height));
-  display: grid;
-  grid-template-columns: 50px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  width: min(292px, calc(100vw - 28px));
-  border: 1px solid var(--world-line);
-  background: var(--world-panel);
-  padding: 9px;
-  backdrop-filter: blur(22px);
-}
-
 .world-shirt-badge {
   position: relative;
   display: grid;
@@ -1073,9 +1058,17 @@ forkmesh-world {
   height: 50px;
   overflow: hidden;
   border: 1px solid rgb(255 255 255 / 0.22);
+  border-radius: 0;
   background: #143528;
   padding: 3px;
   color: white;
+  cursor: pointer;
+}
+
+.world-shirt-badge:hover,
+.world-shirt-badge:focus-visible {
+  border-color: var(--world-mint);
+  outline: none;
 }
 
 .world-shirt-account {
@@ -1106,51 +1099,6 @@ forkmesh-world {
   white-space: nowrap;
   font-family: "ForkMesh Mono", monospace;
   font-size: 0.42rem;
-}
-
-.world-identity-copy {
-  min-width: 0;
-}
-
-.world-identity-copy strong,
-.world-identity-copy span {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.world-identity-copy strong {
-  font-size: 0.8rem;
-}
-
-.world-identity-copy span {
-  margin-top: 3px;
-  color: var(--world-muted);
-  font-size: 0.64rem;
-}
-
-.world-identity-copy .world-identity-emoji-status {
-  color: var(--world-mint);
-  font-family: "ForkMesh Mono", monospace;
-  text-transform: none;
-}
-
-.world-identity-edit {
-  min-width: 34px;
-  min-height: 34px;
-  border: 1px solid var(--world-line);
-  border-radius: 0;
-  background: transparent;
-  color: var(--world-muted);
-  cursor: pointer;
-}
-
-.world-identity-edit:hover,
-.world-identity-edit:focus-visible {
-  border-color: var(--world-mint);
-  color: var(--world-mint);
-  outline: none;
 }
 
 .world-controls {
@@ -4199,11 +4147,6 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     display: none;
   }
 
-  .world-identity {
-    width: min(218px, calc(100vw - 180px));
-    grid-template-columns: 42px minmax(0, 1fr) auto;
-  }
-
   .world-shirt-badge {
     width: 42px;
     height: 42px;
@@ -4342,12 +4285,6 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     grid-template-rows: repeat(2, 40px);
   }
 
-  .world-identity {
-    bottom: calc(
-      var(--safe-bottom) + var(--world-diagnostics-height) + 8px
-    );
-  }
-
   .world-detail {
     height: calc(
       var(--world-viewport-height, 100dvh) - var(--safe-top)
@@ -4406,14 +4343,6 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 
   .world-arrival-actions .world-secondary-action {
-    display: none;
-  }
-
-  .world-identity {
-    width: 160px;
-  }
-
-  .world-identity-copy span {
     display: none;
   }
 
