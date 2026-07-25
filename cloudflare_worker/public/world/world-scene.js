@@ -85,7 +85,6 @@ const MOVEMENT_KEYS = new Set([
   "ArrowLeft",
   "ArrowRight",
 ]);
-const REGISTERED_LOUNGE_POSITION = Object.freeze([-22, 0, 25]);
 const ACTIVE_LEADERBOARD_POSITION = Object.freeze([-11.5, 0, 25]);
 const SYSTEM_CAPACITY_PLATFORM_POSITION = Object.freeze([8, 0, -27]);
 const SERVER_CABINET_YARD_ORIGIN = Object.freeze([18, 0, 0]);
@@ -257,14 +256,6 @@ function deterministicTreeLayout() {
     }
       if (Math.hypot(x - 8, z - 8) < 5.5) continue;
     if (
-      Math.hypot(
-        x - REGISTERED_LOUNGE_POSITION[0],
-        z - REGISTERED_LOUNGE_POSITION[2],
-      ) < 11.5
-    ) {
-        continue;
-    }
-    if (
       positions.some(
         (tree) => Math.hypot(x - tree.x, z - tree.z) < TREE_MIN_SPACING,
       )
@@ -431,9 +422,6 @@ function wordTexture(THREE, title, subtitle, color = "#9ef7c6") {
   });
 }
 
-// The Member Lounge plaque carries the section name, the live registered-user
-// total, and room for the tiny account button — one surface instead of a
-// floating count card hovering over the lounge.
 function activeDurationLabel(value) {
   const milliseconds = Number(value);
   if (!Number.isFinite(milliseconds) || milliseconds < 0) {
@@ -447,48 +435,6 @@ function activeDurationLabel(value) {
   const minutes = Math.floor(seconds / 60);
   seconds %= 60;
   return `${days}d ${hours}h ${minutes}m ${seconds}s`;
-}
-
-function memberLoungePlaqueTexture(
-  THREE,
-  totalCount,
-  color = "#9ef7c6",
-) {
-  // Until the directory loads the plaque says it is counting rather than
-  // claiming a total of zero.
-  const known = totalCount !== null && Number.isFinite(Number(totalCount));
-  const total = Math.max(0, Math.min(999999, Number(totalCount) || 0));
-  return canvasTexture(THREE, 768, 352, (context) => {
-    context.clearRect(0, 0, 768, 352);
-    roundedRect(context, 4, 4, 760, 344, 14);
-    context.fillStyle = "rgba(6,17,14,0.92)";
-    context.fill();
-    context.strokeStyle = color;
-    context.lineWidth = 4;
-    context.stroke();
-    context.textAlign = "left";
-    context.textBaseline = "middle";
-    context.fillStyle = "#f1fff6";
-    context.font = '700 52px "ForkMesh Favorit", system-ui, sans-serif';
-    context.fillText("MEMBER LOUNGE", 42, 72);
-    context.fillStyle = color;
-    context.font = '700 44px "ForkMesh Favorit", system-ui, sans-serif';
-    context.fillText(
-      known ? `${total} MEMBER${total === 1 ? "" : "S"}` : "MEMBERS",
-      42,
-      142,
-    );
-    context.font = '400 23px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(
-      (known ? "total registered users" : "counting registered users")
-        .toUpperCase(),
-      42,
-      192,
-    );
-    context.fillStyle = "rgba(217,255,234,0.66)";
-    context.font = '400 20px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("REGISTERED CONTRIBUTORS · RECENT ACTIVITY GLOWS", 42, 232);
-  });
 }
 
 function rankedActiveLeaderboardMembers(members = []) {
@@ -684,25 +630,6 @@ function officeMarketingTasksTexture(THREE, payload = {}) {
       context.fillText(task.status.toUpperCase(), 954, top + 10, 260);
       context.textAlign = "left";
     });
-  });
-}
-
-// Tiny plaque button: log in / sign up while signed out, log out once signed
-// in. Filled while signed out so the call to action reads from a distance.
-function memberLoungeAuthTexture(THREE, signedIn, color = "#9ef7c6") {
-  return canvasTexture(THREE, 384, 88, (context) => {
-    context.clearRect(0, 0, 384, 88);
-    roundedRect(context, 4, 4, 376, 80, 40);
-    context.fillStyle = signedIn ? "rgba(6,17,14,0.94)" : color;
-    context.fill();
-    context.strokeStyle = color;
-    context.lineWidth = 4;
-    context.stroke();
-    context.textAlign = "center";
-    context.textBaseline = "middle";
-    context.fillStyle = signedIn ? color : "#06110e";
-    context.font = '700 34px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(signedIn ? "LOG OUT" : "LOG IN / SIGN UP", 192, 47);
   });
 }
 
@@ -1068,50 +995,6 @@ function makeArrivalPlaque(THREE) {
   return plaque;
 }
 
-// A taller Member Lounge plaque: the same ground slab, with the member total
-// on its face and a tiny account button mounted at the bottom of the face.
-function makeMemberLoungePlaque(THREE, color = "#9ef7c6") {
-  const plaque = new THREE.Group();
-  plaque.name = "forkmesh-member-lounge-plaque";
-  const base = new THREE.Mesh(
-    new THREE.BoxGeometry(3.9, 0.22, 1.5),
-    makeMaterial(THREE, "#233b33", { roughness: 0.82 }),
-  );
-  base.position.y = 0.11;
-  plaque.add(base);
-  const slab = new THREE.Mesh(
-    new THREE.BoxGeometry(3.6, 1.72, 0.14),
-    makeMaterial(THREE, "#101d18", { roughness: 0.55, metalness: 0.12 }),
-  );
-  slab.position.set(0, 0.95, 0.12);
-  slab.rotation.x = -0.42;
-  plaque.add(slab);
-  const face = new THREE.Mesh(
-    new THREE.PlaneGeometry(3.44, 1.577),
-    new THREE.MeshBasicMaterial({
-      map: memberLoungePlaqueTexture(THREE, null, color),
-      transparent: true,
-    }),
-  );
-  face.position.z = 0.08;
-  slab.add(face);
-  const authButton = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.42, 0.33),
-    new THREE.MeshBasicMaterial({
-      map: memberLoungeAuthTexture(THREE, false, color),
-      transparent: true,
-    }),
-  );
-  authButton.name = "forkmesh-member-lounge-auth-button";
-  authButton.position.set(-0.84, -0.55, 0.12);
-  authButton.scale.set(1.12, 1.12, 1);
-  authButton.userData.worldAuthAction = "login";
-  face.add(authButton);
-  plaque.userData.face = face;
-  plaque.userData.authButton = authButton;
-  return plaque;
-}
-
 function makeActiveLeaderboardSign(THREE) {
   const sign = new THREE.Group();
   sign.name = "world-active-leaderboard";
@@ -1172,6 +1055,31 @@ function addSectionPlaque(THREE, group, position, title, subtitle, color, distan
   );
 }
 
+// Worn on the head when a visitor has never stored a world-status emoji.
+const AVATAR_DEFAULT_FACE_EMOJI = "🙂";
+
+function avatarFaceTexture(THREE, emoji) {
+  return canvasTexture(THREE, 128, 128, (context) => {
+    context.clearRect(0, 0, 128, 128);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = '92px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
+    context.fillStyle = "#1d130c";
+    context.fillText(emoji, 64, 70);
+  });
+}
+
+function syncAvatarFace(THREE, avatar) {
+  const face = avatar.userData.faceMesh;
+  if (!face?.material) return;
+  const worn = avatar.userData.statusEmoji || AVATAR_DEFAULT_FACE_EMOJI;
+  if (avatar.userData.faceEmojiShown === worn) return;
+  face.material.map?.dispose?.();
+  face.material.map = avatarFaceTexture(THREE, worn);
+  face.material.needsUpdate = true;
+  avatar.userData.faceEmojiShown = worn;
+}
+
 function syncAvatarStatus(THREE, avatar, identity) {
   if (!avatar?.userData) return;
   const status = normalizeWorldStatus(
@@ -1192,7 +1100,8 @@ function syncAvatarStatus(THREE, avatar, identity) {
   avatar.userData.emojiStatusSprite = null;
   // Status remains available to the accessible player label and presence
   // payload, but the large duplicate overhead banner is intentionally not
-  // rendered in-world.
+  // rendered in-world. The last-used emoji is worn on the face instead.
+  syncAvatarFace(THREE, avatar);
 }
 
 function makeConsentedProfileFace(THREE, follower) {
@@ -1307,6 +1216,17 @@ function createAvatar(THREE, identity, options = {}) {
   hair.position.y = 3.48;
   group.add(hair);
 
+  // The face wears the last world-status emoji the visitor set (default
+  // smile). Avatar fronts face -Z; the card floats just clear of the head
+  // sphere and syncAvatarFace keeps its texture current.
+  const faceMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.56, 0.56),
+    new THREE.MeshBasicMaterial({ transparent: true }),
+  );
+  faceMesh.position.set(0, 3.38, -0.47);
+  faceMesh.rotation.y = Math.PI;
+  group.add(faceMesh);
+
   const limbGeometry = new THREE.BoxGeometry(0.29, 1.25, 0.32);
   const leftArm = new THREE.Mesh(limbGeometry, shirt);
   leftArm.position.set(-0.73, 2.08, 0);
@@ -1383,6 +1303,8 @@ function createAvatar(THREE, identity, options = {}) {
     statusNote: "",
     emojiStatusKey: "",
     emojiStatusSprite: null,
+    faceMesh,
+    faceEmojiShown: "",
   };
   syncOperatorBelt(THREE, group, identity.nodes?.length || 0);
   syncAvatarStatus(THREE, group, identity);
@@ -2014,87 +1936,6 @@ function createAgentRobot(THREE, bot, id) {
   group.userData.core = core;
   setShadows(group);
   return group;
-}
-
-function createRegisteredUserLounge(THREE, animated, interactive) {
-  const lounge = new THREE.Group();
-  lounge.name = "registered-user-lounge";
-  lounge.userData.spaceKind = "registered-user-lounge";
-  lounge.position.set(...REGISTERED_LOUNGE_POSITION);
-  const base = new THREE.Mesh(
-    new THREE.CylinderGeometry(7.4, 7.8, 0.42, 12),
-    makeMaterial(THREE, "#1a3f34", {
-      emissive: "#154f3b",
-      emissiveIntensity: 0.28,
-      roughness: 0.62,
-    }),
-  );
-  base.position.y = 0.21;
-  lounge.add(base);
-  const canopy = new THREE.Mesh(
-    new THREE.TorusGeometry(5.8, 0.16, 10, 64),
-    makeMaterial(THREE, "#9ef7c6", {
-      emissive: "#39c783",
-      emissiveIntensity: 0.8,
-      metalness: 0.3,
-    }),
-  );
-  canopy.rotation.x = Math.PI / 2;
-  canopy.position.y = 4.2;
-  lounge.add(canopy);
-  const loadingArc = new THREE.Mesh(
-    new THREE.TorusGeometry(5.8, 0.22, 10, 24, Math.PI * 0.26),
-    makeMaterial(THREE, "#d9ffea", {
-      emissive: "#62e6a4",
-      emissiveIntensity: 1.25,
-      metalness: 0.32,
-    }),
-  );
-  loadingArc.rotation.x = Math.PI / 2;
-  loadingArc.position.y = 4.2;
-  loadingArc.visible = false;
-  lounge.add(loadingArc);
-  for (const angle of [0, Math.PI / 2, Math.PI, Math.PI * 1.5]) {
-    const column = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.12, 0.17, 3.9, 8),
-      makeMaterial(THREE, "#507d68", { metalness: 0.22 }),
-    );
-    column.position.set(Math.cos(angle) * 5.8, 2.1, Math.sin(angle) * 5.8);
-    lounge.add(column);
-  }
-  // Members no longer sit here — the directory figures gather around the
-  // campfire circle instead — so the lounge keeps only the plaque, which
-  // carries the member total and the account button (no floating count card).
-  const plaque = placeSectionPlaque(
-    lounge,
-    makeMemberLoungePlaque(THREE, "#9ef7c6"),
-    REGISTERED_LOUNGE_POSITION,
-    9.2,
-  );
-  lounge.userData.memberCountSign = plaque.userData.face;
-  lounge.userData.authButton = plaque.userData.authButton;
-  lounge.userData.authSignedIn = false;
-  interactive.push(plaque.userData.authButton);
-  const activityBeacon = new THREE.PointLight("#9ef7c6", 1.4, 18, 2);
-  activityBeacon.position.set(0, 4.2, 0);
-  lounge.add(activityBeacon);
-  lounge.userData.activityBeacon = activityBeacon;
-  lounge.userData.loadingArc = loadingArc;
-  lounge.userData.loading = false;
-  setShadows(lounge);
-  animated.push((time) => {
-    const pulse = (Math.sin(time * 0.0018) + 1) * 0.5;
-    canopy.material.emissiveIntensity = 0.55 + pulse * 0.55;
-    activityBeacon.intensity = 0.9 + pulse * 1.1;
-    if (lounge.userData.loading) {
-      loadingArc.visible = true;
-      loadingArc.rotation.z = time * 0.006;
-    } else {
-      loadingArc.visible = false;
-      loadingArc.rotation.z = 0;
-    }
-  });
-  return lounge;
 }
 
 function createSystemCapacityPlatform(THREE) {
@@ -3589,45 +3430,214 @@ function worldBulletinTexture(THREE, events = [], offset = 0) {
   });
 }
 
-function mastodonKioskTexture(THREE) {
-  return canvasTexture(THREE, 1024, 1280, (context) => {
+const MASTODON_KIOSK_VISIBLE_TOOTS = 3;
+
+function wrapCanvasText(context, text, x, y, maxWidth, lineHeight, maxLines = Infinity) {
+  const words = String(text || "").split(/\s+/).filter(Boolean);
+  let line = "";
+  let lines = 0;
+  for (const word of words) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (line && context.measureText(candidate).width > maxWidth) {
+      context.fillText(line, x, y + lines * lineHeight);
+      lines += 1;
+      if (lines >= maxLines) return lines;
+      line = word;
+    } else {
+      line = candidate;
+    }
+  }
+  if (line && lines < maxLines) {
+    context.fillText(line, x, y + lines * lineHeight);
+    lines += 1;
+  }
+  return lines;
+}
+
+function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage = null) {
+  return canvasTexture(THREE, 1280, 1600, (context) => {
     context.fillStyle = "#191a2e";
-    context.fillRect(0, 0, 1024, 1280);
-    context.strokeStyle = "#6364ff";
-    context.lineWidth = 16;
-    context.strokeRect(12, 12, 1000, 1256);
-    context.fillStyle = "#6364ff";
-    context.fillRect(12, 12, 1000, 178);
+    context.fillRect(0, 0, 1280, 1600);
+    if (!snapshot) {
+      // No live profile yet (still fetching, or mastodon.social unreachable):
+      // fall back to the static kiosk sign describing the board.
+      context.fillStyle = "#6364ff";
+      context.fillRect(12, 12, 1256, 222);
+      context.fillStyle = "#f2f3ff";
+      context.font = '800 132px "ForkMesh Favorit", sans-serif';
+      context.fillText("MASTODON", 82, 172);
+      context.fillStyle = "#c8c9ff";
+      context.font = '700 64px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("@forkmesh", 82, 400);
+      context.font = '600 50px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("@mastodon.social", 82, 482);
+      context.strokeStyle = "rgba(99,100,255,0.5)";
+      context.lineWidth = 4;
+      context.beginPath();
+      context.moveTo(82, 564);
+      context.lineTo(1198, 564);
+      context.stroke();
+      context.fillStyle = "#e8e9ff";
+      context.font = '700 56px "ForkMesh Mono", ui-monospace, monospace';
+      [
+        "LIVE PUBLIC PROFILE",
+        "FOLLOWERS · FOLLOWING · POSTS",
+        "BIO · VERIFIED LINKS",
+        "LATEST TOOTS, SCROLLABLE",
+      ].forEach((line, index) => {
+        context.fillText(line, 82, 700 + index * 120);
+      });
+      context.fillStyle = "#8b9bf4";
+      context.font = '800 64px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("TAP / CLICK TO OPEN", 82, 1350);
+      context.fillStyle = "#7a7ca8";
+      context.font = '600 42px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("READ-ONLY · FETCHED FROM MASTODON.SOCIAL", 82, 1475);
+      context.strokeStyle = "#6364ff";
+      context.lineWidth = 16;
+      context.strokeRect(12, 12, 1256, 1576);
+      return;
+    }
+    const image = (url) =>
+      typeof resolveImage === "function" ? resolveImage(url) : null;
+    // Header banner, cover-cropped like the profile page. Text over the band
+    // sits on a darkening gradient so it stays readable on any artwork.
+    const header = image(snapshot.headerURL);
+    context.save();
+    context.beginPath();
+    context.rect(16, 16, 1248, 300);
+    context.clip();
+    if (header?.naturalWidth > 0 && header?.naturalHeight > 0) {
+      const scale = Math.max(
+        1248 / header.naturalWidth,
+        300 / header.naturalHeight,
+      );
+      const width = header.naturalWidth * scale;
+      const height = header.naturalHeight * scale;
+      context.drawImage(
+        header,
+        16 + (1248 - width) / 2,
+        16 + (300 - height) / 2,
+        width,
+        height,
+      );
+    } else {
+      context.fillStyle = "#43389c";
+      context.fillRect(16, 16, 1248, 300);
+    }
+    const shade = context.createLinearGradient(0, 96, 0, 316);
+    shade.addColorStop(0, "rgba(15,16,36,0)");
+    shade.addColorStop(1, "rgba(15,16,36,0.9)");
+    context.fillStyle = shade;
+    context.fillRect(16, 16, 1248, 300);
+    context.fillStyle = "rgba(15,16,36,0.62)";
+    roundedRect(context, 36, 36, 386, 64, 18);
+    context.fill();
     context.fillStyle = "#f2f3ff";
-    context.font = '800 108px "ForkMesh Favorit", sans-serif';
-    context.fillText("MASTODON", 66, 138);
+    context.font = '800 40px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("MASTODON · LIVE", 58, 82);
+    context.restore();
+    // Avatar overlapping the banner edge, then identity beside it.
+    const avatar = image(snapshot.avatarURL);
+    context.fillStyle = "#191a2e";
+    roundedRect(context, 38, 226, 188, 188, 40);
+    context.fill();
+    context.save();
+    roundedRect(context, 48, 236, 168, 168, 32);
+    context.clip();
+    if (avatar?.naturalWidth > 0) {
+      context.drawImage(avatar, 48, 236, 168, 168);
+    } else {
+      context.fillStyle = "#43389c";
+      context.fillRect(48, 236, 168, 168);
+      context.fillStyle = "#c8c9ff";
+      context.font = '800 104px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("@", 92, 358);
+    }
+    context.restore();
+    context.fillStyle = "#f2f3ff";
+    context.font = '800 58px "ForkMesh Favorit", sans-serif';
+    context.fillText(String(snapshot.displayName || "ForkMesh"), 248, 392);
     context.fillStyle = "#c8c9ff";
-    context.font = '700 52px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("@forkmesh", 66, 320);
-    context.font = '600 40px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("@mastodon.social", 66, 386);
+    context.font = '600 34px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(String(snapshot.acct || "@forkmesh@mastodon.social"), 248, 442);
+    [
+      ["FOLLOWERS", snapshot.followers],
+      ["FOLLOWING", snapshot.following],
+      ["POSTS", snapshot.posts],
+      ["JOINED", snapshot.joined],
+    ].forEach(([label, value], index) => {
+      const x = 48 + index * 308;
+      context.fillStyle = "#8b8db8";
+      context.font = '700 26px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(label, x, 510);
+      context.fillStyle = "#f2f3ff";
+      context.font = '800 54px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(String(value ?? "—"), x, 572);
+    });
     context.strokeStyle = "rgba(99,100,255,0.5)";
     context.lineWidth = 4;
     context.beginPath();
-    context.moveTo(66, 452);
-    context.lineTo(958, 452);
+    context.moveTo(48, 616);
+    context.lineTo(1232, 616);
     context.stroke();
-    context.fillStyle = "#e8e9ff";
-    context.font = '700 46px "ForkMesh Mono", ui-monospace, monospace';
-    [
-      "LIVE PUBLIC PROFILE",
-      "FOLLOWERS · FOLLOWING · POSTS",
-      "BIO · VERIFIED LINKS",
-      "LATEST TOOTS, SCROLLABLE",
-    ].forEach((line, index) => {
-      context.fillText(line, 66, 560 + index * 96);
+    context.fillStyle = "#8b9bf4";
+    context.font = '800 36px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("LATEST TOOTS", 48, 674);
+    const toots = Array.isArray(snapshot.toots) ? snapshot.toots : [];
+    const start = clamp(
+      Number(offset) || 0,
+      0,
+      Math.max(0, toots.length - MASTODON_KIOSK_VISIBLE_TOOTS),
+    );
+    if (toots.length > MASTODON_KIOSK_VISIBLE_TOOTS) {
+      context.textAlign = "right";
+      context.fillStyle = "#7a7ca8";
+      context.font = '700 28px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        `${start + 1}–${Math.min(
+          start + MASTODON_KIOSK_VISIBLE_TOOTS,
+          toots.length,
+        )} / ${toots.length} · SCROLL ▲▼`,
+        1232,
+        672,
+      );
+      context.textAlign = "left";
+    }
+    const entries = toots.slice(start, start + MASTODON_KIOSK_VISIBLE_TOOTS);
+    if (!entries.length) {
+      context.fillStyle = "#c8c9ff";
+      context.font = '600 36px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("NO PUBLIC TOOTS YET", 48, 770);
+    }
+    entries.forEach((toot, index) => {
+      const y = 712 + index * 262;
+      context.fillStyle = "#c8c9ff";
+      context.font = '700 30px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        [toot.author, toot.date].filter(Boolean).join(" · "),
+        48,
+        y + 30,
+      );
+      context.fillStyle = "#e8e9ff";
+      context.font = '600 32px "ForkMesh Mono", ui-monospace, monospace';
+      wrapCanvasText(context, toot.text, 48, y + 86, 1184, 44, 4);
+      context.strokeStyle = "rgba(99,100,255,0.28)";
+      context.lineWidth = 3;
+      context.beginPath();
+      context.moveTo(48, y + 240);
+      context.lineTo(1232, y + 240);
+      context.stroke();
     });
     context.fillStyle = "#8b9bf4";
-    context.font = '800 52px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("TAP / CLICK TO OPEN", 66, 1080);
+    context.font = '800 34px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("TAP / CLICK TO OPEN THE FULL PROFILE", 48, 1534);
     context.fillStyle = "#7a7ca8";
-    context.font = '600 34px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("READ-ONLY · FETCHED FROM MASTODON.SOCIAL", 66, 1180);
+    context.font = '600 26px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("LIVE · READ-ONLY · FETCHED FROM MASTODON.SOCIAL", 48, 1576);
+    context.strokeStyle = "#6364ff";
+    context.lineWidth = 16;
+    context.strokeRect(12, 12, 1256, 1576);
   });
 }
 
@@ -3639,7 +3649,7 @@ function createMastodonKiosk(THREE, interactive) {
   group.position.set(33.5, 0, -18.5);
   group.rotation.y = Math.atan2(-group.position.x, -group.position.z);
   const base = new THREE.Mesh(
-    new THREE.BoxGeometry(4.6, 0.4, 2.0),
+    new THREE.BoxGeometry(5.8, 0.4, 2.2),
     makeMaterial(THREE, "#20213a", { metalness: 0.2, roughness: 0.7 }),
   );
   base.position.y = 0.2;
@@ -3648,23 +3658,53 @@ function createMastodonKiosk(THREE, interactive) {
     makeMaterial(THREE, "#2c2d4d", { metalness: 0.4, roughness: 0.5 }),
   );
   post.position.y = 1.3;
+  // A larger billboard so the live profile header, stats, and latest toots
+  // are readable from the Office approach.
   const frame = new THREE.Mesh(
-    new THREE.BoxGeometry(4.2, 5.1, 0.36),
+    new THREE.BoxGeometry(5.5, 7.2, 0.36),
     makeMaterial(THREE, "#43389c", { metalness: 0.35, roughness: 0.45 }),
   );
-  frame.position.y = 4.4;
+  frame.position.y = 5.35;
   const face = new THREE.Mesh(
-    new THREE.PlaneGeometry(3.8, 4.75),
+    new THREE.PlaneGeometry(5.0, 6.25),
     new THREE.MeshBasicMaterial({
       map: mastodonKioskTexture(THREE),
       toneMapped: false,
     }),
   );
-  face.position.set(0, 4.4, 0.2);
-  group.add(base, post, frame, face);
+  face.name = "forkmesh-mastodon-kiosk-face";
+  face.position.set(0, 5.35, 0.2);
+  const makeKioskControl = (label, direction, y) => {
+    const control = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.7, 0.7),
+      new THREE.MeshBasicMaterial({
+        map: canvasTexture(THREE, 256, 256, (context) => {
+          context.fillStyle = "#20213a";
+          context.fillRect(0, 0, 256, 256);
+          context.strokeStyle = "#8b9bf4";
+          context.lineWidth = 14;
+          context.strokeRect(8, 8, 240, 240);
+          context.fillStyle = "#e8e9ff";
+          context.font = '800 160px "ForkMesh Mono", ui-monospace, monospace';
+          context.textAlign = "center";
+          context.textBaseline = "middle";
+          context.fillText(label, 128, 136);
+        }),
+        toneMapped: false,
+      }),
+    );
+    control.position.set(2.15, y, 0.3);
+    control.userData.interactive = `mastodon-kiosk-scroll-${direction}`;
+    return control;
+  };
+  const scrollUp = makeKioskControl("▲", "up", 8.4);
+  const scrollDown = makeKioskControl("▼", "down", 2.3);
+  group.add(base, post, frame, face, scrollUp, scrollDown);
   group.traverse((child) => {
     if (!child.isMesh) return;
-    child.userData.interactive = "mastodon-board";
+    if (!child.userData.interactive) {
+      child.userData.interactive = "mastodon-board";
+    }
     interactive.push(child);
   });
   setShadows(group);
@@ -4093,7 +4133,6 @@ export function createWorldScene({
   onRegionChange = () => {},
   onMovement = () => {},
   onModeration = () => {},
-  onAccountAction = () => {},
   onLayoutObjectMoved = () => {},
   onForkbotChat = () => {},
   onPlayForkmeshSong = () => {},
@@ -4347,6 +4386,13 @@ export function createWorldScene({
   const mastodonKiosk = createMastodonKiosk(THREE, interactive);
   world.add(mastodonKiosk);
   registerMovableObject("mastodon-kiosk", mastodonKiosk);
+  let mastodonKioskSnapshot = null;
+  let mastodonKioskOffset = 0;
+  const mastodonKioskImages = new Map();
+  const mastodonKioskWheelTargets = [];
+  mastodonKiosk.traverse((child) => {
+    if (child.isMesh) mastodonKioskWheelTargets.push(child);
+  });
 
   const campfire = new THREE.Group();
   campfire.position.set(8, 0, 8);
@@ -4429,12 +4475,13 @@ export function createWorldScene({
     innerFlame.scale.set(size * 0.82, size * 0.9, size * 0.82);
     fireLight.intensity = 3.2 * fireLevel + Math.sin(time * 0.013) * 0.7;
   });
-  // Stools sit back far enough from the pit to leave a wide walkable ring
+  // Benches sit back far enough from the pit to leave a wide walkable ring
   // between the seats and the stones (and to clear the log pile at ~2.6). The
-  // circle carries one log stool per registered member — occupied by a seated
-  // directory figure while the member is away, left empty (and sittable) while
-  // they walk the world as a live avatar — and widens whenever a new account
-  // joins so everyone still fits around the fire.
+  // circle carries one wooden bench per registered member — occupied by a
+  // seated directory figure while the member is away, left empty (and
+  // sittable) while they walk the world as a live avatar — plus one bench
+  // that always stays open so an arriving guest has a spot by the fire, and
+  // widens whenever a new account joins so everyone still fits.
   const CAMPFIRE_BENCH_RADIUS = 6.2;
   const CAMPFIRE_CIRCLE_MIN_SEATS = 6;
   const CAMPFIRE_CIRCLE_MAX_SEATS = 96;
@@ -4468,24 +4515,33 @@ export function createWorldScene({
     const seatOffsets = [];
     for (let index = 0; index < count; index += 1) {
       const angle = (index / count) * Math.PI * 2;
+      const bench = new THREE.Group();
+      bench.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
+      // Long axis tangent to the ring so every bench fronts the flames.
+      bench.rotation.y = -angle + Math.PI / 2;
       const seat = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.42, 0.5, 0.5, 10),
-        makeMaterial(THREE, "#70472a", { roughness: 0.86 }),
+        new THREE.BoxGeometry(1.6, 0.14, 0.6),
+        makeMaterial(THREE, "#8a5a33", { roughness: 0.86 }),
       );
-      seat.position.set(
-        Math.cos(angle) * radius,
-        0.25,
-        Math.sin(angle) * radius,
-      );
+      seat.position.y = 0.48;
       // Seat coordinates are read from the live world matrix at click time, so a
       // relocated campfire needs no bookkeeping and the seats can never drift.
       seat.userData.campfireBench = true;
       interactive.push(seat);
-      ring.add(seat);
-      // Offsets land sitters just above the stool top, matching the local
+      bench.add(seat);
+      [-0.62, 0.62].forEach((end) => {
+        const leg = new THREE.Mesh(
+          new THREE.BoxGeometry(0.16, 0.41, 0.5),
+          makeMaterial(THREE, "#4f3018", { roughness: 0.9 }),
+        );
+        leg.position.set(end, 0.205, 0);
+        bench.add(leg);
+      });
+      ring.add(bench);
+      // Offsets land sitters just above the plank, matching the local
       // player's bench-seat pose height.
       seatOffsets.push(
-        new THREE.Vector3(seat.position.x, seat.position.y + 0.1, seat.position.z),
+        new THREE.Vector3(bench.position.x, seat.position.y + 0.1, bench.position.z),
       );
     }
     setShadows(ring);
@@ -4500,13 +4556,6 @@ export function createWorldScene({
   world.add(campfire);
   registerMovableObject("campfire", campfire);
 
-  const registeredUserLounge = createRegisteredUserLounge(
-    THREE,
-    animated,
-    interactive,
-  );
-  world.add(registeredUserLounge);
-  registerMovableObject("registered-user-lounge", registeredUserLounge);
   const activeLeaderboardSign = makeActiveLeaderboardSign(THREE);
   activeLeaderboardSign.position.set(...ACTIVE_LEADERBOARD_POSITION);
   activeLeaderboardSign.rotation.y = Math.atan2(
@@ -5754,6 +5803,78 @@ export function createWorldScene({
     return updateWorldBulletin(worldBulletinEvents);
   }
 
+  // Header art and avatars come from mastodon.social's media host. They only
+  // reach the board texture when they load CORS-clean; otherwise the board
+  // keeps its text-only rendering (a tainted canvas cannot feed WebGL).
+  function mastodonKioskImage(url) {
+    const key = String(url || "");
+    if (!key) return null;
+    const cached = mastodonKioskImages.get(key);
+    if (cached) return cached.image;
+    const record = { image: null };
+    mastodonKioskImages.set(key, record);
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.onload = () => {
+      if (disposed) return;
+      record.image = image;
+      repaintMastodonKiosk();
+    };
+    image.src = key;
+    return null;
+  }
+
+  function repaintMastodonKiosk() {
+    const face = mastodonKiosk.getObjectByName("forkmesh-mastodon-kiosk-face");
+    if (!face?.material) return false;
+    face.material.map?.dispose?.();
+    face.material.map = mastodonKioskTexture(
+      THREE,
+      mastodonKioskSnapshot,
+      mastodonKioskOffset,
+      mastodonKioskImage,
+    );
+    face.material.needsUpdate = true;
+    return true;
+  }
+
+  function mastodonKioskMaxOffset() {
+    return Math.max(
+      0,
+      (mastodonKioskSnapshot?.toots?.length || 0) -
+        MASTODON_KIOSK_VISIBLE_TOOTS,
+    );
+  }
+
+  function updateMastodonKiosk(snapshot = null) {
+    mastodonKioskSnapshot =
+      snapshot && typeof snapshot === "object"
+        ? {
+            ...snapshot,
+            toots: Array.isArray(snapshot.toots)
+              ? snapshot.toots.filter(Boolean)
+              : [],
+          }
+        : null;
+    mastodonKioskOffset = clamp(
+      mastodonKioskOffset,
+      0,
+      mastodonKioskMaxOffset(),
+    );
+    return repaintMastodonKiosk();
+  }
+
+  function scrollMastodonKiosk(direction) {
+    const nextOffset = clamp(
+      mastodonKioskOffset + direction,
+      0,
+      mastodonKioskMaxOffset(),
+    );
+    if (nextOffset === mastodonKioskOffset) return false;
+    mastodonKioskOffset = nextOffset;
+    return repaintMastodonKiosk();
+  }
+
   function enterOfficeMeeting({
     roomName = "general",
     participants = [],
@@ -6592,9 +6713,10 @@ export function createWorldScene({
         const offset = seat || new THREE.Vector3();
         avatar.userData.targetPosition.copy(campfire.position);
         avatar.userData.targetPosition.add(offset);
-        // Face the flames at the circle's centre (remote headings use
-        // atan2(dx, dz) toward the walk direction).
-        avatar.userData.targetHeading = Math.atan2(-offset.x, -offset.z);
+        // Face the flames at the circle's centre: avatar fronts face local
+        // -Z, so the inward heading is atan2(x, z) — the same heading
+        // sitOnCampfireBench gives the local player.
+        avatar.userData.targetHeading = Math.atan2(offset.x, offset.z);
       } else if (sharedInactive) {
         const restArea = landmarkById("neighborhood").position;
         const seat = hashNumber(remote.id) % 8;
@@ -6735,17 +6857,6 @@ export function createWorldScene({
     leaderboardMembers = members,
   ) {
     const total = Math.max(0, Math.min(999999, Number(totalCount) || 0));
-    const countSign = registeredUserLounge.userData.memberCountSign;
-    if (countSign && registeredUserLounge.userData.memberCountShown !== total) {
-      countSign.material.map?.dispose?.();
-      countSign.material.map = memberLoungePlaqueTexture(
-        THREE,
-        total,
-        "#9ef7c6",
-      );
-      countSign.material.needsUpdate = true;
-      registeredUserLounge.userData.memberCountShown = total;
-    }
     const leaderboardFace = activeLeaderboardSign.userData.face;
     const leaderboardKey = JSON.stringify(
       rankedActiveLeaderboardMembers(leaderboardMembers)
@@ -6765,13 +6876,15 @@ export function createWorldScene({
       activeLeaderboardSign.userData.key = leaderboardKey;
     }
     // Registered members sit in a circle around the campfire facing the
-    // flames. The circle holds one stool per registered account, so members
+    // flames. The circle holds one bench per registered account, so members
     // currently walking the world as live avatars leave visibly empty seats,
-    // and it expands whenever a new account joins so everyone still fits.
+    // plus one extra bench that always stays open for the next guest: when a
+    // new account joins and takes it, the roster grows and the rebuilt ring
+    // brings a fresh open bench with it.
     const roster = (Array.isArray(members) ? members : []).filter((member) =>
       String(member?.name || "").trim(),
     );
-    const seats = rebuildCampfireCircle(Math.max(total, roster.length));
+    const seats = rebuildCampfireCircle(Math.max(total, roster.length) + 1);
     const seen = new Set();
     roster
       .slice(0, Math.max(1, seats.length))
@@ -6813,8 +6926,10 @@ export function createWorldScene({
         figure.position.copy(campfire.position);
         if (seat) figure.position.add(seat);
         // Face the fire at the circle's centre and hold a seated pose on the
-        // stool, matching the local player's bench-seat legs.
-        figure.rotation.y = seat ? Math.atan2(-seat.x, -seat.z) : 0;
+        // bench, matching the local player's bench-seat legs. Avatar fronts
+        // face local -Z, so the inward heading is atan2(x, z), matching
+        // sitOnCampfireBench.
+        figure.rotation.y = seat ? Math.atan2(seat.x, seat.z) : 0;
         figure.userData.leftLeg.rotation.x = -1.3;
         figure.userData.rightLeg.rotation.x = -1.3;
       });
@@ -6825,10 +6940,6 @@ export function createWorldScene({
       disposeObject3D(figure);
       loungeMembers.delete(id);
     });
-  }
-
-  function setMemberLoungeLoading(loading = false) {
-    registeredUserLounge.userData.loading = Boolean(loading);
   }
 
   function visitNeighborhoodHome(ownerId) {
@@ -7587,22 +7698,6 @@ export function createWorldScene({
     garden.userData.sharedMediaSpaces = layer;
   }
 
-  // Signed-out visitors get "log in / sign up" on the lounge plaque; signed-in
-  // members get "log out". Only the account status drives it, never the name.
-  function syncLoungeAuthButton() {
-    const button = registeredUserLounge.userData.authButton;
-    if (!button) return;
-    const signedIn = String(identity?.accountStatus || "Guest") !== "Guest";
-    if (registeredUserLounge.userData.authSignedIn === signedIn) return;
-    registeredUserLounge.userData.authSignedIn = signedIn;
-    button.material.map?.dispose?.();
-    button.material.map = memberLoungeAuthTexture(THREE, signedIn, "#9ef7c6");
-    button.material.needsUpdate = true;
-    button.userData.worldAuthAction = signedIn ? "logout" : "login";
-  }
-
-  syncLoungeAuthButton();
-
   function updateIdentity(nextIdentity) {
     Object.assign(identity, nextIdentity);
     updateAvatarBadge(THREE, player, identity, false);
@@ -7614,7 +7709,6 @@ export function createWorldScene({
       identity.nodes?.length || 0,
     );
     updatePlayerLabel(playerLabel, identity);
-    syncLoungeAuthButton();
     if (identity.isAdmin !== true) {
       remotePlayers.forEach((avatar, peerId) => {
         removeRemoteModerationControls(avatar, peerId);
@@ -9326,6 +9420,14 @@ export function createWorldScene({
       onWorldBulletinSelect();
       return;
     }
+    if (hit?.object?.userData?.interactive === "mastodon-kiosk-scroll-up") {
+      scrollMastodonKiosk(-1);
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "mastodon-kiosk-scroll-down") {
+      scrollMastodonKiosk(1);
+      return;
+    }
     if (hit?.object?.userData?.interactive === "mastodon-board") {
       onMastodonBoardSelect();
       return;
@@ -9361,11 +9463,6 @@ export function createWorldScene({
         peerId: moderationAction.peerId,
         name: moderationAction.name,
       });
-      return;
-    }
-    const authAction = String(hit?.object?.userData?.worldAuthAction || "");
-    if (authAction === "login" || authAction === "logout") {
-      onAccountAction(authAction);
       return;
     }
     if (hit?.object?.userData?.campfireLog) {
@@ -9656,6 +9753,15 @@ export function createWorldScene({
     if (bulletinHit) {
       scrollWorldBulletin(Math.sign(deltaPixels));
       return;
+    }
+    if (mastodonKioskMaxOffset() > 0) {
+      const kioskHit = raycaster
+        .intersectObjects(mastodonKioskWheelTargets, false)
+        .find(({ object }) => objectIsEffectivelyVisible(object));
+      if (kioskHit) {
+        scrollMastodonKiosk(Math.sign(deltaPixels));
+        return;
+      }
     }
     const currentZoom =
       cameraMode === "first-person" ? firstPersonZoom : cameraZoom;
@@ -10128,6 +10234,7 @@ export function createWorldScene({
     setOfficeParticipants,
     updateOfficeMarketingTasks,
     updateWorldBulletin,
+    updateMastodonKiosk,
     setOfficeSeatState,
     showOfficeBubble,
     leaveOfficeInterior,
@@ -10146,7 +10253,6 @@ export function createWorldScene({
     setRemotePlayers,
     updateArrivalStats,
     updateMemberLounge,
-    setMemberLoungeLoading,
     updateNetworkNodes,
     focusNetworkNode,
     updateFederatedInstances,

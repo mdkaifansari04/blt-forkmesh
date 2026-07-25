@@ -31,7 +31,6 @@ QString networkRequestEventFor(const QUrl &url)
         {"/mirrors", "mirror sync"},
         {"/api/repo/", "repo fetch"},
         {"/api/version", "version check"},
-        {"/api/telemetry", "telemetry"},
         {"/api/network", "network stats"},
         {"/api/security", "security report"},
         {"/api/forkbot", "forkbot chat"},
@@ -590,11 +589,6 @@ void MainWindow::runDeferredStartup()
             runHeadlessBootstrap();
         }
     }
-
-    // Opt-in only (off by default): send the previous session's crash + stall
-    // records to the mainnode's triage queue. No-op unless the user enabled it in
-    // Settings; fire-and-forget so it never delays the first interactive frame.
-    maybeUploadDiagnostics();
 
     // adhoc #73: adhoc #20 dropped every launch-time trigger for the top-bar
     // usage charts in favour of hover-only refreshes, so a restart kept showing

@@ -175,7 +175,6 @@ def test_landmarks_are_spread_out_inside_the_repository_portal_perimeter():
     ) >= 18
     assert "const REPOSITORY_EDGE_RADIUS = 68" in SCENE
     assert "const SERVER_CABINET_YARD_ORIGIN = Object.freeze([18, 0, 0])" in SCENE
-    assert "const REGISTERED_LOUNGE_POSITION = Object.freeze([-22, 0, 25])" in SCENE
     assert "const SYSTEM_CAPACITY_PLATFORM_POSITION = Object.freeze([8, 0, -27])" in SCENE
 
 
@@ -336,7 +335,7 @@ def test_presence_client_uses_only_coarse_ephemeral_world_protocol():
     assert 'this.fetchJSON("/api/world/inactive"' in APP
     assert 'this.fetchJSON("/api/network/overview"' in APP
     assert 'this.fetchJSON("/api/repositories", { auth: hasSession })' in APP
-    # The Member Lounge (adhoc #228) reads the same public roster the chat
+    # The campfire circle (adhoc #228) reads the same public roster the chat
     # page uses — profile names only, fetched without credentials. Anything
     # beyond that anonymous directory stays off-limits to the world client.
     assert (
@@ -1648,7 +1647,6 @@ def test_world_uses_nonhuman_infrastructure_without_the_world_spanning_grid():
     assert "electricMeshConduit" not in SCENE
     assert "electricMeshJunction" not in SCENE
     assert "createElectricMeshCityGrid" not in SCENE
-    assert "registered-user-lounge" in SCENE
     assert '"ACTIVE LEADERBOARD"' in SCENE
     for status in (
         "Registered",
@@ -1661,7 +1659,7 @@ def test_world_uses_nonhuman_infrastructure_without_the_world_spanning_grid():
     assert 'avatar.userData.loungeActivity === "recent"' in SCENE
 
 
-def test_active_leaderboard_is_right_of_the_member_lounge_and_faces_center():
+def test_active_leaderboard_position_and_orientation():
     assert (
         "const ACTIVE_LEADERBOARD_POSITION = Object.freeze([-11.5, 0, 25]);"
         in SCENE
@@ -1689,44 +1687,19 @@ def test_world_has_no_pale_plaza_and_places_trees_deterministically_clear_of_use
     assert "const radius = 20 + (index % 7) * 2.25" not in SCENE
 
 
-def test_world_member_lounge_plaque_carries_count_and_account_button():
-    # adhoc #248: the floating member-count card is folded into the ground
-    # plaque, which also carries one tiny account button — log in / sign up for
-    # guests, log out for signed-in members.
-    assert "function memberLoungePlaqueTexture" in SCENE
-    assert "function memberLoungeAuthTexture" in SCENE
-    assert "function makeMemberLoungePlaque" in SCENE
-    lounge = SCENE[
-        SCENE.index("function createRegisteredUserLounge"):
-        SCENE.index("function createSystemCapacityPlatform")
-    ]
-    # No floating count sprite hovers over the lounge any more.
-    assert "makeLabelSprite" not in lounge
-    assert "makeMemberLoungePlaque(THREE" in lounge
-    assert '"LOG OUT" : "LOG IN / SIGN UP"' in SCENE
-    assert 'authButton.userData.worldAuthAction = "login"' in SCENE
-    assert "function syncLoungeAuthButton" in SCENE
-    assert 'signedIn ? "logout" : "login"' in SCENE
-    # The button is raycast-selectable and reports through onAccountAction.
-    assert "interactive.push(plaque.userData.authButton)" in SCENE
-    assert "onAccountAction = () => {}" in SCENE
-    assert 'authAction === "login" || authAction === "logout"' in SCENE
-    # world.js opens the existing account panel or logs the device out.
-    assert "onAccountAction: (action) =>" in APP
-    assert "void this.logoutFromWorld();" in APP
-    assert 'this.toggleWorldAccount(true, "login");' in APP
-
-
-def test_world_member_lounge_seats_directory_users_with_total_count():
+def test_world_member_directory_seats_registered_users_from_roster():
     # The directory figures come from the public users directory (adhoc #228)
     # and, since adhoc #287, sit in a circle around the campfire facing the
-    # flames instead of inside the Member Lounge; the lounge plaque still
-    # shows the total registered-user count.
+    # flames. The Member Lounge structure that used to hold them (and its
+    # count plaque / account button) was removed entirely.
     assert "function updateMemberLounge" in SCENE
-    assert "memberCountSign" in SCENE
-    assert "total registered users" in SCENE
-    assert "MEMBER${total === 1" in SCENE
     assert "const loungeMembers = new Map();" in SCENE
+    assert "registered-user-lounge" not in SCENE
+    assert "function createRegisteredUserLounge" not in SCENE
+    assert "function memberLoungePlaqueTexture" not in SCENE
+    assert "function memberLoungeAuthTexture" not in SCENE
+    assert "function makeMemberLoungePlaque" not in SCENE
+    assert "function syncLoungeAuthButton" not in SCENE
     # world.js feeds it the public roster (no email/device material) and
     # dedupes accounts already rendered as live or opted-in idle avatars.
     assert '"/api/accounts/users"' in APP
@@ -1735,26 +1708,25 @@ def test_world_member_lounge_seats_directory_users_with_total_count():
 
 
 def test_world_members_sit_in_an_expanding_circle_around_the_campfire():
-    # adhoc #287: one stool per registered account rings the campfire. Away
+    # adhoc #287: one bench per registered account rings the campfire. Away
     # members appear as seated figures facing the fire, members walking the
-    # world as live avatars leave their stool empty, and the ring rebuilds
-    # wider whenever a new account joins so everyone still fits.
+    # world as live avatars leave their bench empty, and the ring rebuilds
+    # wider whenever a new account joins so everyone still fits. adhoc #291
+    # adds one extra bench that always stays open for the next guest.
     assert "function rebuildCampfireCircle" in SCENE
     assert '"campfire-member-circle"' in SCENE
-    assert "rebuildCampfireCircle(Math.max(total, roster.length))" in SCENE
+    assert "rebuildCampfireCircle(Math.max(total, roster.length) + 1)" in SCENE
     assert "(count * CAMPFIRE_SEAT_SPACING) / (2 * Math.PI)" in SCENE
     assert '"sitting around the campfire"' in SCENE
     # Figures and idle live avatars both face the pit at the circle's centre.
-    assert SCENE.count("Math.atan2(-offset.x, -offset.z)") >= 1
-    assert SCENE.count("Math.atan2(-seat.x, -seat.z)") >= 1
-    # Idle/returning live members take the empty tail stools.
+    # Avatar fronts face local -Z, so the inward heading is atan2(x, z) — the
+    # negated form pointed everyone away from the flames (adhoc #291).
+    assert SCENE.count("Math.atan2(offset.x, offset.z)") >= 1
+    assert SCENE.count("Math.atan2(seat.x, seat.z)") >= 1
+    assert "Math.atan2(-offset.x, -offset.z)" not in SCENE
+    assert "Math.atan2(-seat.x, -seat.z)" not in SCENE
+    # Idle/returning live members take the empty tail benches.
     assert "campfire.userData.memberFigureCount" in SCENE
-    # The old lounge seat grid is gone: nobody sits inside the lounge slab.
-    lounge = SCENE[
-        SCENE.index("function createRegisteredUserLounge"):
-        SCENE.index("function createSystemCapacityPlatform")
-    ]
-    assert "seatOffsets" not in lounge
 
     nodes = SCENE[
         SCENE.index("  function updateNetworkNodes"):
