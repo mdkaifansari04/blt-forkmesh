@@ -5655,6 +5655,79 @@ int main(int argc, char *argv[])
         check(!push.triggersOnRelease(), "on: push does not trigger on release");
     }
 
+    {
+        // Dedicated nodes: `runs-on:` pins a workflow to named machines, so the
+        // mesh can send tests to one node, Cloudflare deploys to a mirror, and
+        // the iOS build to a Mac. Every other node must skip it entirely.
+        const ActionWorkflow anywhere = ActionFile::parse(
+            QStringLiteral(".forkmesh/ci.yml"),
+            QStringLiteral("name: CI\non: [push]\n"
+                           "jobs:\n  test:\n    steps:\n      - run: echo hi\n"));
+        check(anywhere.runsOn.isEmpty(), "no runs-on leaves the workflow undedicated");
+        check(anywhere.runsOnNode({QStringLiteral("mirror2")}),
+              "an undedicated workflow runs on any node");
+
+        const ActionWorkflow tests = ActionFile::parse(
+            QStringLiteral(".forkmesh/tests.yml"),
+            QStringLiteral("name: Tests\non: [push]\nruns-on: forkmesh\n"
+                           "jobs:\n  test:\n    steps:\n      - run: ctest\n"));
+        check(tests.runsOn == QStringList{QStringLiteral("forkmesh")},
+              "top-level runs-on parses into one label");
+        check(tests.runsOnNode({QStringLiteral("forkmesh"), QStringLiteral("linux")}),
+              "the named node runs its dedicated workflow");
+        check(!tests.runsOnNode({QStringLiteral("mirror2"), QStringLiteral("linux")}),
+              "another node skips a workflow dedicated elsewhere");
+        check(tests.runsOnNode({QStringLiteral("ForkMesh")}),
+              "runs-on matching is case-insensitive");
+
+        const ActionWorkflow deploy = ActionFile::parse(
+            QStringLiteral(".forkmesh/deploy.yml"),
+            QStringLiteral("name: Deploy\non: [push]\n"
+                           "runs-on: [mirror2, mirror3]\n"
+                           "jobs:\n  deploy:\n    steps:\n      - run: wrangler deploy\n"));
+        check(deploy.runsOn.size() == 2 && deploy.runsOnNode({QStringLiteral("mirror3")}),
+              "a runs-on list lets any listed node take the workflow");
+        check(!deploy.runsOnNode({QStringLiteral("mac1")}),
+              "a node outside the runs-on list stays out");
+
+        const ActionWorkflow ios = ActionFile::parse(
+            QStringLiteral(".forkmesh/ios.yml"),
+            QStringLiteral("name: iOS\non: [workflow_dispatch]\n"
+                           "jobs:\n  build:\n    runs-on:\n      - mac1\n"
+                           "    steps:\n      - run: flutter build ios\n"));
+        check(ios.runsOn == QStringList{QStringLiteral("mac1")},
+              "job-level runs-on block lists parse too");
+        check(!ios.runsOnNode({QStringLiteral("forkmesh")}),
+              "a Linux node never picks up the Mac's iOS build");
+
+        const ActionWorkflow any = ActionFile::parse(
+            QStringLiteral(".forkmesh/any.yml"),
+            QStringLiteral("name: Any\non: [push]\nruns-on: any\n"
+                           "jobs:\n  j:\n    steps:\n      - run: echo hi\n"));
+        check(any.runsOnNode({QStringLiteral("mirror2")}),
+              "the reserved \"any\" label matches every node");
+
+        // This node's own labels: node name, mirror-executor name, platform, and
+        // whatever capability tags the operator typed in Settings.
+        const QStringList labels = ActionFile::nodeLabels(
+            QStringLiteral("Mac1"), QString(),
+            QStringLiteral("ios, xcode  flutter,ios"));
+        check(labels.contains(QStringLiteral("mac1")),
+              "the machine node name is always a label, lower-cased");
+        check(labels.contains(QStringLiteral("ios")) &&
+                  labels.contains(QStringLiteral("xcode")) &&
+                  labels.contains(QStringLiteral("flutter")),
+              "configured labels split on commas and whitespace");
+        check(labels.count(QStringLiteral("ios")) == 1,
+              "duplicate labels are collapsed");
+        check(ActionFile::nodeLabels(QString(), QStringLiteral("mirror2"),
+                                     QString())
+                  .contains(QStringLiteral("mirror2")),
+              "a headless node answers to its mirror-executor node name");
+        check(ActionFile::parseLabelList(QStringLiteral("  ")).isEmpty(),
+              "an empty label list normalizes to nothing");
+    }
+
     // --- Secret scanning -------------------------------------------------------
     {
         // Helper: init a fresh git repo, commit fileContent, then call
