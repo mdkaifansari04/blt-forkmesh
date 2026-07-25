@@ -3492,6 +3492,7 @@ private:
     bool m_topMessageElided = false;      // current toast was truncated (Expand reveals it inline)
     bool m_topMessageExpanded = false;    // user expanded the truncated toast to its full text
     bool m_repoPinMismatch = false;       // true when the open repo's served refs no longer match the relay's pinned hash (adhoc #65)
+    QHash<QString, qint64> m_repoPinAutoHealAtMs; // owner/name -> last automatic pin re-attest (rate-limits the source-of-truth auto-heal in refreshRepoPinBanner)
 
     // Setup widgets
     QLineEdit *m_nameEdit;

@@ -84,6 +84,13 @@ WORLD_INACTIVITY_VALUES = frozenset({
 })
 WORLD_NODE_BADGE_MAX = 6
 WORLD_STATUS_NOTE_MAX = 20
+# "First seen 12 minutes ago" on the chest badge. The client derives this from
+# its own local first-visit marker; only whole minutes travel, bounded to ten
+# years so a spoofed value cannot become an unbounded number on a peer canvas.
+WORLD_FIRST_SEEN_MAX_MINUTES = 10 * 365 * 24 * 60
+# "Joined 3 months ago" — the account creation timestamp, which is already
+# public on /api/accounts/{name}. Guests never carry one.
+WORLD_JOINED_AT_MIN_MS = 1577836800000  # 2020-01-01T00:00:00Z
 
 # Office meetings use a separate authorized socket from the global World.
 # This protocol carries only ephemeral room-local avatar and chair state. Chat
@@ -110,6 +117,7 @@ OFFICE_PUBLIC_FIELDS = (
 WORLD_PUBLIC_FIELDS = (
     "id", "name", "countryCode", "browser", "os", "status", "localTime",
     "activityCategory", "inputActive", "visitCount", "firstVisitAge",
+    "firstSeenMinutes", "joinedAt",
     "accountStatus", "nodeCount", "space",
     "publicDoor", "statusEmoji", "statusNote", "outfitColor",
     "x", "y", "z", "yaw", "moving", "updatedAt",
@@ -293,6 +301,22 @@ def _bounded_visit_count(value, fallback):
     return max(0, min(999, value))
 
 
+def _bounded_first_seen_minutes(value, fallback):
+    """Return whole minutes since the visitor's own first visit."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return fallback
+    return max(0, min(WORLD_FIRST_SEEN_MAX_MINUTES, value))
+
+
+def _bounded_joined_at(value, now, fallback):
+    """Return a public account-creation timestamp, or 0 when implausible."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return fallback
+    if value < WORLD_JOINED_AT_MIN_MS or value > int(now):
+        return 0
+    return value
+
+
 def arrival_position(slot):
     """Return one deterministic, non-overlapping Town Square arrival slot.
 
@@ -383,6 +407,10 @@ def default_presence(peer_id, now):
         "inputActive": False,
         "visitCount": 0,
         "firstVisitAge": "hidden",
+        "firstSeenMinutes": 0,
+        # Public account age, shown as "joined … ago" on the chest badge. It
+        # stays 0 until a validated world ticket has made this a named account.
+        "joinedAt": 0,
         # Account status and operator-belt count are supplied by the routing
         # Worker after it validates a short-lived world ticket. They are never
         # accepted from arbitrary socket JSON.
@@ -616,13 +644,24 @@ def sanitize_message(payload, current, now, country_source="",
                 payload.get("firstVisitAge"),
                 WORLD_FIRST_VISIT_AGE_VALUES,
                 "hidden")
-        # Activity privacy is the parent control for all three derived
+        if "firstSeenMinutes" in payload:
+            state["firstSeenMinutes"] = _bounded_first_seen_minutes(
+                payload.get("firstSeenMinutes"), 0)
+        if "joinedAt" in payload:
+            state["joinedAt"] = _bounded_joined_at(
+                payload.get("joinedAt"), now, 0)
+        # Activity privacy is the parent control for all four derived
         # indicators. Explicitly clear prior values so turning sharing off
         # cannot leave stale metadata visible in a live socket attachment.
         if state.get("activityCategory") == "hidden":
             state["inputActive"] = False
             state["visitCount"] = 0
             state["firstVisitAge"] = "hidden"
+            state["firstSeenMinutes"] = 0
+        # A joined date belongs to an account. A connection the routing Worker
+        # never authenticated cannot publish one.
+        if state.get("accountStatus") == "Guest":
+            state["joinedAt"] = 0
         if "publicDoor" in payload:
             state["publicDoor"] = _choice(
                 payload.get("publicDoor"), WORLD_DOOR_VALUES, "closed")

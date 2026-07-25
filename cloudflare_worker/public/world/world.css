@@ -1429,7 +1429,7 @@ forkmesh-world {
    toots underneath, matching the kiosk beside the ForkMesh Office. */
 .world-mastodon-app {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   min-height: 0;
   overflow: hidden;
 }
@@ -1663,6 +1663,74 @@ forkmesh-world {
 .world-mastodon-toot footer a {
   margin-left: auto;
   color: var(--detail-color);
+}
+
+.world-mastodon-replies {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  border-top: 1px solid var(--world-line);
+}
+
+.world-mastodon-replies h3 {
+  margin: 0;
+  padding: 14px 24px 10px;
+  font-size: 0.78rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--world-muted);
+}
+
+.world-mastodon-reply-list {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  max-height: 34vh;
+  padding: 0 24px max(28px, var(--safe-bottom));
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.world-mastodon-reply {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  border: 1px solid var(--world-line);
+  padding: 10px 12px;
+}
+
+.world-mastodon-reply img,
+.world-mastodon-reply-icon {
+  width: 34px;
+  height: 34px;
+  object-fit: cover;
+  border: 1px solid var(--world-line);
+  display: grid;
+  place-items: center;
+  color: var(--world-muted);
+}
+
+.world-mastodon-reply header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.world-mastodon-reply header strong {
+  font-size: 0.86rem;
+}
+
+.world-mastodon-reply header span,
+.world-mastodon-reply time {
+  color: var(--world-muted);
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+.world-mastodon-reply a {
+  color: var(--detail-color);
+  font-size: 0.76rem;
 }
 
 .world-mastodon-status {
