@@ -89,6 +89,7 @@
         <a href="/world">World</a>
         <a href="/chat">Chat</a>
         <a href="/network">Network</a>
+        <a href="/referrals">Referrals</a>
       </div>
       <div class="fm-nav-group">
         <span class="fm-nav-group-title">Company</span>

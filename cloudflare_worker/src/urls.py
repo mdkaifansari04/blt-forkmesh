@@ -146,6 +146,8 @@ ACCOUNT_CONTRIBUTIONS_RE = re.compile(
 )
 # Follow/unfollow a public profile: /api/accounts/{name}/follow
 ACCOUNT_FOLLOW_RE = re.compile(r"^/api/accounts/([^/]+)/follow$")
+# Referral short link: /r/{name} counts a click and bounces to /signup.
+REFERRAL_LINK_RE = re.compile(r"^/r/([^/]+)$")
 # --- ActivityPub federation ---------------------------------------------------
 # User actor document + its inbox/outbox/followers/following collections.
 AP_USER_RE = re.compile(r"^/ap/users/([^/]+)$")

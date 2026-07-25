@@ -87,6 +87,7 @@ const MOVEMENT_KEYS = new Set([
 ]);
 const REGISTERED_LOUNGE_POSITION = Object.freeze([-22, 0, 25]);
 const ACTIVE_LEADERBOARD_POSITION = Object.freeze([-11.5, 0, 25]);
+const REFERRAL_LEADERBOARD_POSITION = Object.freeze([-16.5, 0, 29]);
 const SYSTEM_CAPACITY_PLATFORM_POSITION = Object.freeze([8, 0, -27]);
 const SERVER_CABINET_YARD_ORIGIN = Object.freeze([18, 0, 0]);
 const ARRIVAL_GRID_BOUNDS = Object.freeze({
@@ -572,6 +573,121 @@ function activeLeaderboardTexture(THREE, members = []) {
       context.fillText("NO REGISTERED ACTIVITY REPORTED", 38, 176);
     }
   });
+}
+
+function rankedReferralRows(rows = []) {
+  return (Array.isArray(rows) ? rows : [])
+    .filter(
+      (row) =>
+        String(row?.name || "").trim() &&
+        (Number(row?.clicks) > 0 || Number(row?.signups) > 0),
+    )
+    .sort((left, right) => {
+      const signupDifference =
+        (Number(right?.signups) || 0) - (Number(left?.signups) || 0);
+      if (signupDifference) return signupDifference;
+      const clickDifference =
+        (Number(right?.clicks) || 0) - (Number(left?.clicks) || 0);
+      if (clickDifference) return clickDifference;
+      return String(left?.name || "").localeCompare(
+        String(right?.name || ""),
+        undefined,
+        { sensitivity: "base" },
+      );
+    })
+    .slice(0, 5);
+}
+
+function referralLeaderboardTexture(THREE, rows = [], viewerLink = "") {
+  const ranked = rankedReferralRows(rows);
+  return canvasTexture(THREE, 768, 512, (context) => {
+    context.clearRect(0, 0, 768, 512);
+    roundedRect(context, 4, 4, 760, 504, 16);
+    context.fillStyle = "rgba(6,17,14,0.95)";
+    context.fill();
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 5;
+    context.stroke();
+    context.textBaseline = "middle";
+    context.fillStyle = "#f1fff6";
+    context.font = '700 48px "ForkMesh Favorit", system-ui, sans-serif';
+    context.fillText("REFERRAL LEADERBOARD", 38, 58);
+    context.fillStyle = "#9ef7c6";
+    context.font = '400 20px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("SHARE YOUR /r/ LINK · CLICKS AND SIGNUPS", 38, 102);
+    ranked.forEach((row, index) => {
+      const top = 148 + index * 52;
+      const name = String(row.name).trim().slice(0, 22);
+      context.fillStyle = "#d9ffea";
+      context.font = '700 25px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(`${index + 1}. ${name}`, 38, top);
+      context.fillStyle = "#77d9ff";
+      context.font = '400 20px "ForkMesh Mono", ui-monospace, monospace';
+      const clicks = Number(row.clicks) || 0;
+      const signups = Number(row.signups) || 0;
+      const value = `${signups} SIGNUPS · ${clicks} CLICKS`;
+      context.fillText(value, 768 - 38 - context.measureText(value).width, top);
+    });
+    if (!ranked.length) {
+      context.fillStyle = "#91a39a";
+      context.font = '400 24px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("NO REFERRALS COUNTED YET", 38, 200);
+    }
+    context.strokeStyle = "rgba(158,247,198,0.4)";
+    context.lineWidth = 2;
+    context.beginPath();
+    context.moveTo(38, 418);
+    context.lineTo(730, 418);
+    context.stroke();
+    if (viewerLink) {
+      context.fillStyle = "#9ef7c6";
+      context.font = '400 19px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("YOUR LINK · TAP THE BOARD TO COPY", 38, 446);
+      context.fillStyle = "#d9ffea";
+      context.font = '700 23px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(String(viewerLink).slice(0, 52), 38, 480);
+    } else {
+      context.fillStyle = "#91a39a";
+      context.font = '400 21px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("SIGN IN TO GET YOUR OWN REFERRAL LINK", 38, 462);
+    }
+  });
+}
+
+function makeReferralLeaderboardSign(THREE) {
+  const sign = new THREE.Group();
+  sign.name = "world-referral-leaderboard";
+  const base = new THREE.Mesh(
+    new THREE.BoxGeometry(4.8, 0.25, 1.35),
+    makeMaterial(THREE, "#1a3032", { roughness: 0.8 }),
+  );
+  base.position.y = 0.13;
+  sign.add(base);
+  for (const x of [-1.72, 1.72]) {
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(0.16, 3.7, 0.16),
+      makeMaterial(THREE, "#234d4a", { metalness: 0.22, roughness: 0.52 }),
+    );
+    post.position.set(x, 1.85, 0);
+    sign.add(post);
+  }
+  const board = new THREE.Mesh(
+    new THREE.BoxGeometry(3.72, 2.72, 0.12),
+    makeMaterial(THREE, "#071712", { roughness: 0.55 }),
+  );
+  board.position.set(0, 2.08, 0.08);
+  sign.add(board);
+  const face = new THREE.Mesh(
+    new THREE.PlaneGeometry(3.52, 2.55),
+    new THREE.MeshBasicMaterial({
+      map: referralLeaderboardTexture(THREE),
+      transparent: true,
+    }),
+  );
+  face.position.set(0, 2.08, 0.151);
+  sign.add(face);
+  sign.userData.face = face;
+  return sign;
 }
 
 const OFFICE_MARKETING_TASK_LIMIT = 6;
@@ -4118,6 +4234,7 @@ export function createWorldScene({
   onOfficeMeetingBoardSelect = () => {},
   onWorldBulletinSelect = () => {},
   onMastodonBoardSelect = () => {},
+  onReferralBoardSelect = () => {},
   onSystemCapacityTableSelect = () => {},
   onRendererStateChange = () => {},
   onOfficeChairSelect = () => {},
@@ -4514,6 +4631,38 @@ export function createWorldScene({
   );
   world.add(activeLeaderboardSign);
   registerMovableObject("active-leaderboard-sign", activeLeaderboardSign);
+  const referralLeaderboardSign = makeReferralLeaderboardSign(THREE);
+  referralLeaderboardSign.position.set(...REFERRAL_LEADERBOARD_POSITION);
+  referralLeaderboardSign.rotation.y = Math.atan2(
+    -REFERRAL_LEADERBOARD_POSITION[0],
+    -REFERRAL_LEADERBOARD_POSITION[2],
+  );
+  world.add(referralLeaderboardSign);
+  registerMovableObject("referral-leaderboard-sign", referralLeaderboardSign);
+  // Tapping the board copies the viewer's referral link (world.js supplies
+  // the handler); the whole face is the hit target.
+  referralLeaderboardSign.userData.face.userData.interactive =
+    "referral-leaderboard";
+  interactive.push(referralLeaderboardSign.userData.face);
+
+  // Repaints the referral sign only when the ranked rows or the viewer's own
+  // share link actually changed, mirroring the active-leaderboard swap.
+  function updateReferralLeaderboard(rows = [], viewerLink = "") {
+    const face = referralLeaderboardSign.userData.face;
+    const key = JSON.stringify([
+      String(viewerLink || ""),
+      rankedReferralRows(rows).map((row) => [
+        String(row?.name || ""),
+        Number(row?.clicks) || 0,
+        Number(row?.signups) || 0,
+      ]),
+    ]);
+    if (!face || referralLeaderboardSign.userData.key === key) return;
+    face.material.map?.dispose?.();
+    face.material.map = referralLeaderboardTexture(THREE, rows, viewerLink);
+    face.material.needsUpdate = true;
+    referralLeaderboardSign.userData.key = key;
+  }
   const systemCapacityPlatform = createSystemCapacityPlatform(THREE);
   world.add(systemCapacityPlatform);
   registerMovableObject("system-capacity-platform", systemCapacityPlatform);
@@ -9304,6 +9453,10 @@ export function createWorldScene({
       onMastodonBoardSelect();
       return;
     }
+    if (hit?.object?.userData?.interactive === "referral-leaderboard") {
+      onReferralBoardSelect();
+      return;
+    }
     if (hit?.object?.userData?.interactive === "system-capacity-table") {
       onSystemCapacityTableSelect({
         name: String(hit.object.userData.tableName || ""),
@@ -10120,6 +10273,7 @@ export function createWorldScene({
     setRemotePlayers,
     updateArrivalStats,
     updateMemberLounge,
+    updateReferralLeaderboard,
     setMemberLoungeLoading,
     updateNetworkNodes,
     focusNetworkNode,

@@ -5,6 +5,21 @@
 
   const $ = (sel) => document.querySelector(sel);
   const isLive = location.protocol !== "file:";
+
+  // Referral attribution: /r/<name> bounces here with ?ref=<name>. Remember it
+  // so the credit survives a detour (pricing, docs) before the form is sent.
+  function referralCode() {
+    let ref = "";
+    try {
+      ref = (new URLSearchParams(location.search).get("ref") || "").toLowerCase();
+      if (ref && NAME_RE.test(ref)) {
+        localStorage.setItem("forkmesh.referral", ref);
+      } else {
+        ref = localStorage.getItem("forkmesh.referral") || "";
+      }
+    } catch (_) {}
+    return NAME_RE.test(ref) ? ref : "";
+  }
   let nameOk = false;
   let availTimer = null;
 
@@ -145,7 +160,7 @@
     try {
       result = await api("/api/accounts/signup", {
         method: "POST",
-        body: JSON.stringify({ nodeName, email, password }),
+        body: JSON.stringify({ nodeName, email, password, ref: referralCode() }),
       });
       created = Boolean(result.ok);
     } catch (_) {
