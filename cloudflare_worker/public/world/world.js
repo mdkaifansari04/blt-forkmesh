@@ -66,6 +66,9 @@ const RENDERER_RECOVERY_KEY = "forkmesh.world.renderer-recovery.v1";
 const RENDERER_RECOVERY_DELAY_MS = 1500;
 const RENDERER_RECOVERY_WINDOW_MS = 30 * 1000;
 const POSITION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+// The Mastodon kiosk refetches the public profile on this cadence; the pac-man
+// dial on the billboard counts the same window down.
+const MASTODON_REFRESH_MS = 10 * 60 * 1000;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const CHAT_BUBBLE_JOIN_GRACE_MS = 20 * 1000;
 const POSITION_RADIUS = 72;
@@ -1215,6 +1218,29 @@ function normalizeMediaSpaces(value) {
     .map((space) => normalizeMediaRoom(space))
     .filter((space) => space.id)
     .slice(0, 50);
+}
+
+// Public chat roster directory (user profiles only) doubles as the
+// campfire-circle population: every public registered account gets a bench
+// around the fire, and the roster length sizes the circle.
+function normalizeMemberDirectory(value) {
+  return (Array.isArray(value?.users) ? value.users : [])
+    .map((user) => ({
+      name: sanitizePresenceText(user?.name, "", 32),
+      createdAt: Number.isFinite(Number(user?.createdAt))
+        ? Math.max(0, Number(user.createdAt))
+        : 0,
+      nodes: Array.isArray(user?.nodes) ? user.nodes.slice(0, 6) : [],
+      totalActiveMs: Number.isFinite(Number(user?.totalActiveMs))
+        ? Math.max(0, Number(user.totalActiveMs))
+        : Number.isFinite(Number(user?.activeMs))
+          ? Math.max(0, Number(user.activeMs))
+          : null,
+      avatar: sanitizePresenceText(user?.avatar, "", 240),
+      countryCode: sanitizePresenceText(user?.countryCode, "", 2),
+      status: sanitizePresenceText(user?.status, "", 80),
+    }))
+    .filter((user) => user.name);
 }
 
 function normalizeFederatedInstances(value) {
@@ -3349,6 +3375,7 @@ class ForkMeshWorld extends HTMLElement {
     this.localPeers = new Map();
     this.inactivePlayers = [];
     this.memberDirectory = [];
+    this.memberDirectoryFetchedAt = 0;
     this.pendingKnocks = new Map();
     this.serverPeerId = "";
     this.sessionAuthenticated = false;
@@ -3368,7 +3395,9 @@ class ForkMeshWorld extends HTMLElement {
     this.mastodonStatuses = [];
     this.mastodonState = "idle";
     this.mastodonFetchedAt = 0;
+    this.mastodonRequestedAt = 0;
     this.mastodonLoad = null;
+    this.mastodonRefreshTimer = 0;
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
     const requestedLandmark = worldQuery.get("landmark") || "";
@@ -3849,11 +3878,12 @@ class ForkMeshWorld extends HTMLElement {
       this.world.updateMediaSpaces?.(this.mediaSpaces, this.mediaRoom);
       this.world.updateWorldBulletin?.(this.events);
       // Populate the Mastodon kiosk billboard on entry; the fetch is public,
-      // credential-free, and cached for five minutes. When a fresh snapshot
+      // credential-free, and cached for ten minutes. When a fresh snapshot
       // is already cached the load resolves without refetching, so push the
       // cached profile onto the rebuilt scene explicitly.
       void this.loadMastodonBoard();
       this.syncMastodonKiosk();
+      this.startMastodonRefresh();
       this.syncMemberLounge();
       void this.loadReferralLeaderboard();
       this.syncRepositoryScene();
@@ -4470,30 +4500,11 @@ class ForkMeshWorld extends HTMLElement {
             persistedInactive: true,
           }))
         : [];
-    // Public chat roster directory (user profiles only) doubles as the
-    // campfire-circle population: every public registered account gets a
-    // stool around the fire, and the roster length sizes the circle.
-        this.memberDirectory =
-      membersResult.status === "fulfilled" &&
-      Array.isArray(membersResult.value?.users)
-        ? membersResult.value.users
-            .map((user) => ({
-              name: sanitizePresenceText(user?.name, "", 32),
-              createdAt: Number.isFinite(Number(user?.createdAt))
-                ? Math.max(0, Number(user.createdAt))
-                : 0,
-              nodes: Array.isArray(user?.nodes) ? user.nodes.slice(0, 6) : [],
-              totalActiveMs: Number.isFinite(Number(user?.totalActiveMs))
-                ? Math.max(0, Number(user.totalActiveMs))
-                : Number.isFinite(Number(user?.activeMs))
-                  ? Math.max(0, Number(user.activeMs))
-                  : null,
-              avatar: sanitizePresenceText(user?.avatar, "", 240),
-              countryCode: sanitizePresenceText(user?.countryCode, "", 2),
-              status: sanitizePresenceText(user?.status, "", 80),
-            }))
-            .filter((user) => user.name)
+    this.memberDirectory =
+      membersResult.status === "fulfilled"
+        ? normalizeMemberDirectory(membersResult.value)
         : [];
+    this.memberDirectoryFetchedAt = Date.now();
     this.visitorStats =
       visitorsResult.status === "fulfilled" &&
       visitorsResult.value?.ok === true
@@ -6822,9 +6833,12 @@ class ForkMeshWorld extends HTMLElement {
     if (this.mastodonLoad) return this.mastodonLoad;
     const fresh =
       this.mastodonProfile &&
-      Date.now() - this.mastodonFetchedAt < 5 * 60 * 1000;
+      Date.now() - this.mastodonFetchedAt < MASTODON_REFRESH_MS;
     if (fresh && !force) return Promise.resolve();
     this.mastodonState = "loading";
+    // The countdown runs from the attempt, not the last success, so a failed
+    // fetch waits out the full window instead of retrying every tick.
+    this.mastodonRequestedAt = Date.now();
     this.renderMastodonBoard();
     this.mastodonLoad = (async () => {
       try {
@@ -6851,9 +6865,45 @@ class ForkMeshWorld extends HTMLElement {
         this.mastodonLoad = null;
         this.renderMastodonBoard();
         this.syncMastodonKiosk();
+        this.syncMastodonCountdown();
       }
     })();
+    this.syncMastodonCountdown();
     return this.mastodonLoad;
+  }
+
+  // The kiosk billboard reloads on a fixed ten-minute cadence, and the pac-man
+  // dial on the board is repainted every second so visitors can see when the
+  // next fetch lands. The tick, not a ten-minute interval, drives the refresh
+  // so a manual "Refresh" from the mini-app restarts the same window.
+  startMastodonRefresh() {
+    window.clearInterval(this.mastodonRefreshTimer);
+    this.mastodonRefreshTimer = window.setInterval(() => {
+      this.syncMastodonCountdown();
+    }, 1000);
+    this.syncMastodonCountdown();
+  }
+
+  mastodonRefreshRemaining() {
+    if (!this.mastodonRequestedAt) return 0;
+    return Math.max(
+      0,
+      this.mastodonRequestedAt + MASTODON_REFRESH_MS - Date.now(),
+    );
+  }
+
+  syncMastodonCountdown() {
+    const loading = Boolean(this.mastodonLoad);
+    const remaining = this.mastodonRefreshRemaining();
+    if (!loading && remaining <= 0) {
+      void this.loadMastodonBoard(true);
+      return;
+    }
+    this.world?.updateMastodonCountdown?.({
+      remainingMs: loading ? MASTODON_REFRESH_MS : remaining,
+      totalMs: MASTODON_REFRESH_MS,
+      loading,
+    });
   }
 
   // Mirror the mini-app's live profile onto the in-world kiosk billboard so
@@ -6897,6 +6947,7 @@ class ForkMeshWorld extends HTMLElement {
               })
             : "",
           text: marker ? `${marker} — ${body}` : body,
+          images: status.images.map((media) => media.url).filter(Boolean),
         };
       }),
     });
@@ -8399,7 +8450,12 @@ class ForkMeshWorld extends HTMLElement {
   startEventPolling() {
     window.clearInterval(this.eventsTimer);
     this.eventsTimer = window.setInterval(() => {
+      if (document.hidden) return;
       this.refreshCommunityEvents(this.isEventsPanelOpen());
+      // Rides the same tick so accounts that signed up while this tab has
+      // been open get their bench at the fire without a reload. The endpoint
+      // is edge-cached, and a signup purges that cache.
+      void this.refreshMemberDirectory();
     }, 60000);
   }
 
@@ -15668,27 +15724,96 @@ class ForkMeshWorld extends HTMLElement {
     void this.loadReferralLeaderboard();
   }
 
+  // An account created after this tab loaded is missing from the directory
+  // snapshot, so its owner would have no bench until the next refresh. Seat
+  // them from their own presence frame instead, and pull a fresh directory in
+  // the background to fill in their joined date and node count.
+  noteDirectoryMembers(names) {
+    const known = new Set(
+      this.memberDirectory.map((member) => member.name.toLowerCase()),
+    );
+    const added = [];
+    names.forEach((name) => {
+      const key = name.toLowerCase();
+      if (!name || known.has(key)) return;
+      known.add(key);
+      added.push({
+        name,
+        createdAt: 0,
+        nodes: [],
+        totalActiveMs: null,
+        avatar: "",
+        countryCode: "",
+        status: "",
+      });
+    });
+    if (!added.length) return false;
+    this.memberDirectory = [...this.memberDirectory, ...added];
+    void this.refreshMemberDirectory();
+    return true;
+  }
+
+  // Shares the edge-cached directory endpoint the chat roster uses. Throttled
+  // to its server-side TTL so a burst of arrivals still costs one request.
+  async refreshMemberDirectory() {
+    const now = Date.now();
+    if (now - (this.memberDirectoryFetchedAt || 0) < 30000) return;
+    this.memberDirectoryFetchedAt = now;
+    try {
+      const data = await this.fetchJSON("/api/accounts/users", {
+        auth: false,
+        timeout: 5000,
+      });
+      const directory = normalizeMemberDirectory(data);
+      if (!directory.length || this.destroyed) return;
+      this.memberDirectory = directory;
+      this.syncMemberLounge();
+    } catch (_) {}
+  }
+
   syncMemberLounge() {
     if (!this.world?.updateMemberLounge) return;
-    // Seat every public registered account in the circle around the campfire,
-    // except the ones already rendered as live or opted-in idle avatars —
-    // those keep their richer presence avatar instead of a duplicate
-    // directory figure, leaving their campfire stool visibly empty.
-    const present = new Set([
-      String(this.identity?.name || "").trim().toLowerCase(),
-    ]);
+    // Seat every public registered account in the circle around the campfire.
+    // Members already rendered as live or opted-in idle avatars keep their
+    // richer presence avatar instead of a duplicate directory figure, leaving
+    // their own named bench visibly empty while they are out and about.
+    const present = new Set();
+    const registered = [];
+    let guests = 0;
+    const note = (name, accountStatus) => {
+      const clean = String(name || "").trim();
+      if (!clean) return;
+      present.add(clean.toLowerCase());
+      const status = String(accountStatus || "Guest");
+      // A member who hides their name broadcasts the "Private visitor"
+      // sentinel, and the public directory omits private profiles entirely —
+      // neither owns a named bench.
+      if (
+        ACCOUNT_STATUS_VALUES.has(status) &&
+        status !== "Guest" &&
+        clean !== "Private visitor"
+      ) {
+        registered.push(clean.slice(0, 32));
+      } else {
+        guests += 1;
+      }
+    };
+    note(this.identity?.name, this.identity?.accountStatus);
     this.remotePlayers.forEach((player) =>
-      present.add(String(player?.name || "").trim().toLowerCase()),
+      note(player?.name, player?.accountStatus),
     );
     this.inactivePlayers.forEach((player) =>
-      present.add(String(player?.name || "").trim().toLowerCase()),
+      note(player?.name, player?.accountStatus),
     );
+    this.noteDirectoryMembers(registered);
     this.world.updateMemberLounge(
-      this.memberDirectory.filter(
-        (member) => !present.has(member.name.toLowerCase()),
-      ),
+      this.memberDirectory.map((member) => ({
+        ...member,
+        away: present.has(member.name.toLowerCase()),
+      })),
       this.memberDirectory.length,
       this.leaderboardMembers(),
+      guests,
     );
   }
 
@@ -15739,6 +15864,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.worldTicketTimer);
     window.clearInterval(this.diagnosticsTimer);
     window.clearInterval(this.updateCheckTimer);
+    window.clearInterval(this.mastodonRefreshTimer);
     window.clearTimeout(this.rendererRecoveryTimer);
     this.rendererRecoveryTimer = 0;
     this.peerGraceTimer = 0;

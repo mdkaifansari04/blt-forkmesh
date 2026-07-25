@@ -115,6 +115,10 @@ const TREE_LANDMARK_CLEARANCE = Object.freeze({
 // Shared by the seated pose and the presence frame so other visitors can render
 // a bench sitter sitting rather than standing on the plank.
 const CAMPFIRE_SEATED_ACTIVITY = "sitting beside the campfire";
+// Seated legs swing out in front of the sitter. Avatar fronts face local -Z,
+// so the positive pitch about X is the one that puts the knees over the front
+// edge of the bench instead of out behind it.
+const SEATED_LEG_PITCH = 1.3;
 const REGISTERED_LOUNGE_STATUSES = new Set([
   "Registered",
   "Supporting member",
@@ -1016,6 +1020,51 @@ function makeLabelSprite(THREE, title, subtitle, color) {
   return sprite;
 }
 
+// Name plate carried by every campfire bench: the account the seat belongs
+// to, and whether they are on it or out walking the world. An unclaimed seat
+// reads as the open guest bench.
+function campfireSeatPlateTexture(THREE, name, away) {
+  const label = String(name || "").trim().slice(0, 18);
+  const accent = label ? (away ? "#ffd479" : "#9ef7c6") : "#77d9ff";
+  return canvasTexture(THREE, 512, 160, (context) => {
+    context.clearRect(0, 0, 512, 160);
+    roundedRect(context, 6, 6, 500, 148, 16);
+    context.fillStyle = "rgba(6,17,14,0.88)";
+    context.fill();
+    context.strokeStyle = accent;
+    context.lineWidth = 5;
+    context.stroke();
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillStyle = "#f1fff6";
+    context.font = '700 56px "ForkMesh Favorit", system-ui, sans-serif';
+    context.fillText(label || "OPEN SEAT", 256, 62);
+    context.fillStyle = accent;
+    context.font = '400 28px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      label ? (away ? "OUT AND ABOUT" : "AT THE FIRE") : "GUESTS WELCOME",
+      256,
+      116,
+    );
+  });
+}
+
+function applySeatedLegPose(avatar) {
+  const legs = avatar?.userData;
+  if (!legs?.leftLeg || !legs?.rightLeg) return;
+  legs.leftLeg.rotation.x = SEATED_LEG_PITCH;
+  legs.rightLeg.rotation.x = SEATED_LEG_PITCH;
+}
+
+function makeCampfireSeatPlate(THREE) {
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({ transparent: true, depthWrite: false }),
+  );
+  sprite.scale.set(1.5, 0.47, 1);
+  sprite.visible = false;
+  return sprite;
+}
+
 // Stable, server-safe layout id built from the only durable name a scene prop
 // has: its placard title, or a node's name.
 function worldLayoutId(prefix, name) {
@@ -1238,19 +1287,93 @@ function addSectionPlaque(THREE, group, position, title, subtitle, color, distan
 
 // Worn on the head when a visitor has never stored a world-status emoji.
 const AVATAR_DEFAULT_FACE_EMOJI = "🙂";
-// Flat yellow of the standard emoji faces. The whole head uses it so the
-// wrapped emoji decal and the sphere behind it read as one continuous head.
+// Fallback for the head sphere when the worn emoji cannot be sampled. The
+// live colour is read back out of the rendered glyph instead (see
+// dominantEmojiColor) so the sphere is exactly the emoji's own face colour.
 const AVATAR_EMOJI_SKIN_COLOR = "#ffcc4d";
 
+// Most-common opaque colour in the drawn emoji. The head sphere is painted
+// with it so the wrapped decal and the sphere behind it are the same yellow
+// (or red, or blue) rather than a hand-picked approximation of one.
+function dominantEmojiColor(context, canvas) {
+  let pixels;
+  try {
+    pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  } catch (_) {
+    return "";
+  }
+  const buckets = new Map();
+  let opaque = 0;
+  for (let i = 0; i < pixels.length; i += 4) {
+    if (pixels[i + 3] < 224) continue;
+    opaque += 1;
+    const key =
+      ((pixels[i] >> 4) << 8) |
+      ((pixels[i + 1] >> 4) << 4) |
+      (pixels[i + 2] >> 4);
+    const bucket = buckets.get(key);
+    if (bucket) {
+      bucket.r += pixels[i];
+      bucket.g += pixels[i + 1];
+      bucket.b += pixels[i + 2];
+      bucket.count += 1;
+    } else {
+      buckets.set(key, {
+        r: pixels[i],
+        g: pixels[i + 1],
+        b: pixels[i + 2],
+        count: 1,
+      });
+    }
+  }
+  let best = null;
+  buckets.forEach((bucket) => {
+    if (!best || bucket.count > best.count) best = bucket;
+  });
+  // A glyph that barely rendered (or is mostly outline) would hand back a
+  // near-black head, so only trust a colour that actually dominates.
+  if (!best || !opaque || best.count / opaque < 0.25) return "";
+  const channel = (total) =>
+    Math.max(0, Math.min(255, Math.round(total / best.count)))
+      .toString(16)
+      .padStart(2, "0");
+  return `#${channel(best.r)}${channel(best.g)}${channel(best.b)}`;
+}
+
+// Mouse-activity antenna: one solid green, blinked hard on and hard off.
+const ANTENNA_LIT_COLOR = "#22e06a";
+const ANTENNA_DARK_COLOR = "#0d3b22";
+const ANTENNA_STALK_COLOR = "#1aa856";
+const ANTENNA_BLINK_MIN_HZ = 0.9;
+const ANTENNA_BLINK_MAX_HZ = 5.4;
+
+// The country flag is mapped onto every face of the torso and arm boxes.
+// The upward-facing tops are the ones read from across the square, so those
+// four UVs are turned a half turn to put the flag the right way round.
+function rotateBoxTopUVs(geometry) {
+  const uv = geometry.attributes?.uv;
+  if (!uv) return geometry;
+  // BoxGeometry lays its faces out +X, -X, +Y, -Y, +Z, -Z with four vertices
+  // each, so the top face owns vertices 8 through 11.
+  for (let i = 8; i < 12; i += 1) {
+    uv.setXY(i, 1 - uv.getX(i), 1 - uv.getY(i));
+  }
+  uv.needsUpdate = true;
+  return geometry;
+}
+
 function avatarFaceTexture(THREE, emoji) {
-  return canvasTexture(THREE, 128, 128, (context) => {
+  let color = "";
+  const texture = canvasTexture(THREE, 128, 128, (context, canvas) => {
     context.clearRect(0, 0, 128, 128);
     context.textAlign = "center";
     context.textBaseline = "middle";
     context.font = '118px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
     context.fillStyle = "#1d130c";
     context.fillText(emoji, 64, 68);
+    color = dominantEmojiColor(context, canvas);
   });
+  return { texture, color: color || AVATAR_EMOJI_SKIN_COLOR };
 }
 
 function syncAvatarFace(THREE, avatar) {
@@ -1258,9 +1381,17 @@ function syncAvatarFace(THREE, avatar) {
   if (!face?.material) return;
   const worn = avatar.userData.statusEmoji || AVATAR_DEFAULT_FACE_EMOJI;
   if (avatar.userData.faceEmojiShown === worn) return;
+  const drawn = avatarFaceTexture(THREE, worn);
   face.material.map?.dispose?.();
-  face.material.map = avatarFaceTexture(THREE, worn);
+  face.material.map = drawn.texture;
   face.material.needsUpdate = true;
+  // Same unlit material family as the decal, so the sphere and the emoji
+  // print the identical colour under every light in the world.
+  const skin = avatar.userData.skin;
+  if (skin) {
+    skin.color.set(drawn.color);
+    skin.needsUpdate = true;
+  }
   avatar.userData.faceEmojiShown = worn;
 }
 
@@ -1374,7 +1505,11 @@ function createAvatar(THREE, identity, options = {}) {
   const scale = options.scale || 1;
   const remote = Boolean(options.remote);
 
-  const skin = makeMaterial(THREE, AVATAR_EMOJI_SKIN_COLOR, { roughness: 0.92 });
+  // Unlit so the head sphere renders the sampled emoji colour exactly, with
+  // no lighting term to pull it off the flat decal wrapped over it.
+  const skin = new THREE.MeshBasicMaterial({
+    color: AVATAR_EMOJI_SKIN_COLOR,
+  });
   const shirt = makeMaterial(THREE, "#ffffff", {
     roughness: 0.8,
   });
@@ -1383,7 +1518,10 @@ function createAvatar(THREE, identity, options = {}) {
   const dark = makeMaterial(THREE, "#101d19", { roughness: 0.85 });
   const shoe = makeMaterial(THREE, "#07100e", { roughness: 0.82 });
 
-  const torso = new THREE.Mesh(new THREE.BoxGeometry(1.1, 1.5, 0.62), shirt);
+  const torso = new THREE.Mesh(
+    rotateBoxTopUVs(new THREE.BoxGeometry(1.1, 1.5, 0.62)),
+    shirt,
+  );
   torso.position.y = 2.15;
   group.add(torso);
 
@@ -1423,7 +1561,7 @@ function createAvatar(THREE, identity, options = {}) {
   faceMesh.rotation.y = Math.PI;
   group.add(faceMesh);
 
-  const limbGeometry = new THREE.BoxGeometry(0.29, 1.25, 0.32);
+  const limbGeometry = rotateBoxTopUVs(new THREE.BoxGeometry(0.29, 1.25, 0.32));
   const leftArm = new THREE.Mesh(limbGeometry, shirt);
   leftArm.position.set(-0.73, 2.08, 0);
   group.add(leftArm);
@@ -1431,20 +1569,28 @@ function createAvatar(THREE, identity, options = {}) {
   rightArm.position.x = 0.73;
   group.add(rightArm);
 
-  const bracelet = new THREE.Mesh(
-    new THREE.TorusGeometry(0.19, 0.045, 8, 24),
-    makeMaterial(THREE, "#9ef7c6", {
-      emissive: "#39c783",
-      emissiveIntensity: 1.4,
-      metalness: 0.42,
-      roughness: 0.32,
-    }),
+  // Mouse activity reads as an antenna sticking up out of the visitor's back
+  // that blinks solid green, faster the more their mouse is moving.
+  const antenna = new THREE.Group();
+  antenna.name = "mouse-activity-antenna";
+  const antennaStalk = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.03, 0.038, 1.36, 10),
+    new THREE.MeshBasicMaterial({ color: ANTENNA_STALK_COLOR }),
   );
-  bracelet.name = "mouse-activity-bracelet";
-  bracelet.rotation.x = Math.PI / 2;
-  bracelet.position.set(0.73, 1.52, 0);
-  bracelet.visible = identity.inputActive === true;
-  group.add(bracelet);
+  antennaStalk.position.y = 0.68;
+  antenna.add(antennaStalk);
+  const antennaBulb = new THREE.Mesh(
+    new THREE.SphereGeometry(0.12, 14, 12),
+    new THREE.MeshBasicMaterial({ color: ANTENNA_LIT_COLOR }),
+  );
+  antennaBulb.position.y = 1.42;
+  antenna.add(antennaBulb);
+  // Avatar fronts face -Z, so +Z is the back; leaned back far enough that the
+  // bulb clears the head instead of reading as a hat.
+  antenna.position.set(0, 2.55, 0.31);
+  antenna.rotation.x = 0.3;
+  antenna.visible = identity.inputActive === true;
+  group.add(antenna);
 
   const legGeometry = new THREE.BoxGeometry(0.42, 1.25, 0.45);
   const leftLeg = new THREE.Mesh(legGeometry, dark);
@@ -1484,7 +1630,10 @@ function createAvatar(THREE, identity, options = {}) {
     badge,
     shirt,
     shirtMeshes: [torso, leftArm, rightArm],
-    bracelet,
+    skin,
+    antenna,
+    antennaBulb,
+    inputEnergy: 0,
     phase: (seed % 100) / 10,
     targetPosition: new THREE.Vector3(),
     targetHeading: 0,
@@ -1538,7 +1687,7 @@ function syncAvatarActivity(avatar, identity) {
   }
   avatar.userData.inputActive = active;
   avatar.userData.accountStatus = identity.accountStatus || "Guest";
-  if (avatar.userData.bracelet) avatar.userData.bracelet.visible = active;
+  if (avatar.userData.antenna) avatar.userData.antenna.visible = active;
 }
 
 function updateAvatarBadge(THREE, avatar, identity, remote = false) {
@@ -1556,12 +1705,18 @@ function updateAvatarBadge(THREE, avatar, identity, remote = false) {
 
 function animateAvatarActivity(avatar, time, delta, reducedMotion) {
   if (!avatar?.userData) return;
-  const bracelet = avatar.userData.bracelet;
-  if (bracelet?.visible) {
-    bracelet.rotation.z += reducedMotion ? 0 : delta * 3.2;
-    bracelet.material.emissiveIntensity = reducedMotion
-      ? 1.15
-      : 1.1 + (Math.sin(time * 0.008 + avatar.userData.phase) + 1) * 0.55;
+  const antenna = avatar.userData.antenna;
+  const bulb = avatar.userData.antennaBulb;
+  if (antenna?.visible && bulb) {
+    // A square blink rather than a pulse, so it reads as an unambiguous
+    // on/off beacon. Idle mouse activity ticks slowly; a mouse that is
+    // really moving drives it up to a few blinks a second.
+    const energy = Math.max(0, Math.min(1, avatar.userData.inputEnergy || 0));
+    const hz = ANTENNA_BLINK_MIN_HZ +
+      energy * (ANTENNA_BLINK_MAX_HZ - ANTENNA_BLINK_MIN_HZ);
+    const cycle = (time * 0.001 * hz + avatar.userData.phase) % 1;
+    const lit = reducedMotion || cycle < 0.5;
+    bulb.material.color.set(lit ? ANTENNA_LIT_COLOR : ANTENNA_DARK_COLOR);
   }
   const inactiveFor = avatar.userData.inactiveSince
     ? Math.max(0, time - avatar.userData.inactiveSince)
@@ -1579,7 +1734,7 @@ function animateAvatarActivity(avatar, time, delta, reducedMotion) {
   avatar.traverse((child) => {
     if (
       !child.isMesh ||
-      child === bracelet ||
+      (antenna && antenna === child.parent) ||
       child.userData?.worldModerationControl
     ) return;
     const childMaterials = Array.isArray(child.material)
@@ -3815,7 +3970,13 @@ function worldBulletinTexture(THREE, events = [], offset = 0) {
   });
 }
 
-const MASTODON_KIOSK_VISIBLE_TOOTS = 3;
+// Two posts at a time, but each card is tall enough for the full text plus the
+// post's image attachments. The board is repainted from the same snapshot the
+// mini-app renders.
+const MASTODON_KIOSK_VISIBLE_TOOTS = 2;
+const MASTODON_KIOSK_WIDTH = 1536;
+const MASTODON_KIOSK_HEIGHT = 2048;
+const MASTODON_KIOSK_REFRESH_MS = 10 * 60 * 1000;
 
 function wrapCanvasText(context, text, x, y, maxWidth, lineHeight, maxLines = Infinity) {
   const words = String(text || "").split(/\s+/).filter(Boolean);
@@ -3840,47 +4001,49 @@ function wrapCanvasText(context, text, x, y, maxWidth, lineHeight, maxLines = In
 }
 
 function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage = null) {
-  return canvasTexture(THREE, 1280, 1600, (context) => {
+  const WIDTH = MASTODON_KIOSK_WIDTH;
+  const HEIGHT = MASTODON_KIOSK_HEIGHT;
+  return canvasTexture(THREE, WIDTH, HEIGHT, (context) => {
     context.fillStyle = "#191a2e";
-    context.fillRect(0, 0, 1280, 1600);
+    context.fillRect(0, 0, WIDTH, HEIGHT);
     if (!snapshot) {
       // No live profile yet (still fetching, or mastodon.social unreachable):
       // fall back to the static kiosk sign describing the board.
       context.fillStyle = "#6364ff";
-      context.fillRect(12, 12, 1256, 222);
+      context.fillRect(12, 12, 1512, 260);
       context.fillStyle = "#f2f3ff";
-      context.font = '800 132px "ForkMesh Favorit", sans-serif';
-      context.fillText("MASTODON", 82, 172);
+      context.font = '800 150px "ForkMesh Favorit", sans-serif';
+      context.fillText("MASTODON", 96, 200);
       context.fillStyle = "#c8c9ff";
-      context.font = '700 64px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("@forkmesh", 82, 400);
-      context.font = '600 50px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("@mastodon.social", 82, 482);
+      context.font = '700 72px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("@forkmesh", 96, 470);
+      context.font = '600 56px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("@mastodon.social", 96, 562);
       context.strokeStyle = "rgba(99,100,255,0.5)";
       context.lineWidth = 4;
       context.beginPath();
-      context.moveTo(82, 564);
-      context.lineTo(1198, 564);
+      context.moveTo(96, 656);
+      context.lineTo(1440, 656);
       context.stroke();
       context.fillStyle = "#e8e9ff";
-      context.font = '700 56px "ForkMesh Mono", ui-monospace, monospace';
+      context.font = '700 60px "ForkMesh Mono", ui-monospace, monospace';
       [
         "LIVE PUBLIC PROFILE",
         "FOLLOWERS · FOLLOWING · POSTS",
-        "BIO · VERIFIED LINKS",
-        "LATEST TOOTS, SCROLLABLE",
+        "FULL POSTS WITH IMAGES",
+        "REFRESHED EVERY 10 MINUTES",
       ].forEach((line, index) => {
-        context.fillText(line, 82, 700 + index * 120);
+        context.fillText(line, 96, 810 + index * 136);
       });
       context.fillStyle = "#8b9bf4";
-      context.font = '800 64px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("TAP / CLICK TO OPEN", 82, 1350);
+      context.font = '800 68px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("TAP / CLICK TO OPEN", 96, 1740);
       context.fillStyle = "#7a7ca8";
-      context.font = '600 42px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("READ-ONLY · FETCHED FROM MASTODON.SOCIAL", 82, 1475);
+      context.font = '600 44px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("READ-ONLY · FETCHED FROM MASTODON.SOCIAL", 96, 1892);
       context.strokeStyle = "#6364ff";
       context.lineWidth = 16;
-      context.strokeRect(12, 12, 1256, 1576);
+      context.strokeRect(12, 12, 1512, 2024);
       return;
     }
     const image = (url) =>
@@ -3890,85 +4053,85 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
     const header = image(snapshot.headerURL);
     context.save();
     context.beginPath();
-    context.rect(16, 16, 1248, 300);
+    context.rect(16, 16, 1504, 360);
     context.clip();
     if (header?.naturalWidth > 0 && header?.naturalHeight > 0) {
       const scale = Math.max(
-        1248 / header.naturalWidth,
-        300 / header.naturalHeight,
+        1504 / header.naturalWidth,
+        360 / header.naturalHeight,
       );
       const width = header.naturalWidth * scale;
       const height = header.naturalHeight * scale;
       context.drawImage(
         header,
-        16 + (1248 - width) / 2,
-        16 + (300 - height) / 2,
+        16 + (1504 - width) / 2,
+        16 + (360 - height) / 2,
         width,
         height,
       );
     } else {
       context.fillStyle = "#43389c";
-      context.fillRect(16, 16, 1248, 300);
+      context.fillRect(16, 16, 1504, 360);
     }
-    const shade = context.createLinearGradient(0, 96, 0, 316);
+    const shade = context.createLinearGradient(0, 120, 0, 376);
     shade.addColorStop(0, "rgba(15,16,36,0)");
     shade.addColorStop(1, "rgba(15,16,36,0.9)");
     context.fillStyle = shade;
-    context.fillRect(16, 16, 1248, 300);
+    context.fillRect(16, 16, 1504, 360);
     context.fillStyle = "rgba(15,16,36,0.62)";
-    roundedRect(context, 36, 36, 386, 64, 18);
+    roundedRect(context, 40, 40, 420, 70, 20);
     context.fill();
     context.fillStyle = "#f2f3ff";
-    context.font = '800 40px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("MASTODON · LIVE", 58, 82);
+    context.font = '800 44px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("MASTODON · LIVE", 64, 92);
     context.restore();
     // Avatar overlapping the banner edge, then identity beside it.
     const avatar = image(snapshot.avatarURL);
     context.fillStyle = "#191a2e";
-    roundedRect(context, 38, 226, 188, 188, 40);
+    roundedRect(context, 40, 276, 208, 208, 44);
     context.fill();
     context.save();
-    roundedRect(context, 48, 236, 168, 168, 32);
+    roundedRect(context, 52, 288, 184, 184, 36);
     context.clip();
     if (avatar?.naturalWidth > 0) {
-      context.drawImage(avatar, 48, 236, 168, 168);
+      context.drawImage(avatar, 52, 288, 184, 184);
     } else {
       context.fillStyle = "#43389c";
-      context.fillRect(48, 236, 168, 168);
+      context.fillRect(52, 288, 184, 184);
       context.fillStyle = "#c8c9ff";
-      context.font = '800 104px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("@", 92, 358);
+      context.font = '800 112px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("@", 100, 418);
     }
     context.restore();
     context.fillStyle = "#f2f3ff";
-    context.font = '800 58px "ForkMesh Favorit", sans-serif';
-    context.fillText(String(snapshot.displayName || "ForkMesh"), 248, 392);
+    context.font = '800 64px "ForkMesh Favorit", sans-serif';
+    context.fillText(String(snapshot.displayName || "ForkMesh"), 280, 452);
     context.fillStyle = "#c8c9ff";
-    context.font = '600 34px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(String(snapshot.acct || "@forkmesh@mastodon.social"), 248, 442);
+    context.font = '600 38px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(String(snapshot.acct || "@forkmesh@mastodon.social"), 280, 510);
     [
       ["FOLLOWERS", snapshot.followers],
       ["FOLLOWING", snapshot.following],
       ["POSTS", snapshot.posts],
       ["JOINED", snapshot.joined],
     ].forEach(([label, value], index) => {
-      const x = 48 + index * 308;
+      const x = 56 + index * 366;
       context.fillStyle = "#8b8db8";
-      context.font = '700 26px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(label, x, 510);
+      context.font = '700 28px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(label, x, 584);
       context.fillStyle = "#f2f3ff";
-      context.font = '800 54px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(String(value ?? "—"), x, 572);
+      context.font = '800 58px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(String(value ?? "—"), x, 652);
     });
     context.strokeStyle = "rgba(99,100,255,0.5)";
     context.lineWidth = 4;
     context.beginPath();
-    context.moveTo(48, 616);
-    context.lineTo(1232, 616);
+    context.moveTo(56, 700);
+    context.lineTo(1480, 700);
     context.stroke();
     context.fillStyle = "#8b9bf4";
-    context.font = '800 36px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("LATEST TOOTS", 48, 674);
+    context.font = '800 38px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("LATEST TOOTS", 56, 760);
     const toots = Array.isArray(snapshot.toots) ? snapshot.toots : [];
     const start = clamp(
       Number(offset) || 0,
@@ -3978,51 +4141,164 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
     if (toots.length > MASTODON_KIOSK_VISIBLE_TOOTS) {
       context.textAlign = "right";
       context.fillStyle = "#7a7ca8";
-      context.font = '700 28px "ForkMesh Mono", ui-monospace, monospace';
+      context.font = '700 30px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(
         `${start + 1}–${Math.min(
           start + MASTODON_KIOSK_VISIBLE_TOOTS,
           toots.length,
         )} / ${toots.length} · SCROLL ▲▼`,
-        1232,
-        672,
+        1480,
+        758,
       );
       context.textAlign = "left";
     }
     const entries = toots.slice(start, start + MASTODON_KIOSK_VISIBLE_TOOTS);
     if (!entries.length) {
       context.fillStyle = "#c8c9ff";
-      context.font = '600 36px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("NO PUBLIC TOOTS YET", 48, 770);
+      context.font = '600 40px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("NO PUBLIC TOOTS YET", 56, 860);
     }
     entries.forEach((toot, index) => {
-      const y = 712 + index * 262;
+      const top = 800 + index * 556;
+      const images = (Array.isArray(toot.images) ? toot.images : [])
+        .map((url) => String(url || ""))
+        .filter(Boolean)
+        .slice(0, 4);
       context.fillStyle = "#c8c9ff";
-      context.font = '700 30px "ForkMesh Mono", ui-monospace, monospace';
+      context.font = '700 32px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(
         [toot.author, toot.date].filter(Boolean).join(" · "),
-        48,
-        y + 30,
+        56,
+        top + 36,
       );
       context.fillStyle = "#e8e9ff";
-      context.font = '600 32px "ForkMesh Mono", ui-monospace, monospace';
-      wrapCanvasText(context, toot.text, 48, y + 86, 1184, 44, 4);
+      context.font = '600 34px "ForkMesh Mono", ui-monospace, monospace';
+      // The full post text runs until it hits the card's image strip; posts
+      // longer than the card still end at a whole line rather than mid-word.
+      const lines = wrapCanvasText(
+        context,
+        toot.text,
+        56,
+        top + 100,
+        1424,
+        46,
+        images.length ? 4 : 7,
+      );
+      if (images.length) {
+        // Attachments below the text, cover-cropped into equal tiles. Tiles
+        // that have not loaded CORS-clean stay as empty plates.
+        const gap = 18;
+        const height = 180;
+        const width = Math.min(
+          360,
+          (1424 - gap * (images.length - 1)) / images.length,
+        );
+        const y = top + 116 + Math.max(lines, 1) * 46;
+        images.forEach((url, position) => {
+          const x = 56 + position * (width + gap);
+          context.save();
+          roundedRect(context, x, y, width, height, 18);
+          context.clip();
+          const media = image(url);
+          if (media?.naturalWidth > 0 && media?.naturalHeight > 0) {
+            const scale = Math.max(
+              width / media.naturalWidth,
+              height / media.naturalHeight,
+            );
+            context.drawImage(
+              media,
+              x + (width - media.naturalWidth * scale) / 2,
+              y + (height - media.naturalHeight * scale) / 2,
+              media.naturalWidth * scale,
+              media.naturalHeight * scale,
+            );
+          } else {
+            context.fillStyle = "#232445";
+            context.fillRect(x, y, width, height);
+            context.fillStyle = "#7a7ca8";
+            context.font = '700 26px "ForkMesh Mono", ui-monospace, monospace';
+            context.fillText("IMAGE", x + 24, y + height / 2 + 10);
+          }
+          context.restore();
+        });
+      }
       context.strokeStyle = "rgba(99,100,255,0.28)";
       context.lineWidth = 3;
       context.beginPath();
-      context.moveTo(48, y + 240);
-      context.lineTo(1232, y + 240);
+      context.moveTo(56, top + 526);
+      context.lineTo(1480, top + 526);
       context.stroke();
     });
     context.fillStyle = "#8b9bf4";
-    context.font = '800 34px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("TAP / CLICK TO OPEN THE FULL PROFILE", 48, 1534);
+    context.font = '800 38px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("TAP / CLICK TO OPEN THE FULL PROFILE", 56, 1958);
     context.fillStyle = "#7a7ca8";
-    context.font = '600 26px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("LIVE · READ-ONLY · FETCHED FROM MASTODON.SOCIAL", 48, 1576);
+    context.font = '600 28px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      "LIVE · READ-ONLY · REFRESHED EVERY 10 MINUTES FROM MASTODON.SOCIAL",
+      56,
+      2006,
+    );
     context.strokeStyle = "#6364ff";
     context.lineWidth = 16;
-    context.strokeRect(12, 12, 1256, 1576);
+    context.strokeRect(12, 12, 1512, 2024);
+  });
+}
+
+// The pac-man dial that rides on the kiosk frame: the disc is whole right
+// after a fetch and is eaten away as the ten-minute refresh window elapses.
+// It repaints once a second on its own small texture so the big board texture
+// is only rebuilt when the snapshot itself changes.
+function mastodonCountdownTexture(
+  THREE,
+  remainingMs = MASTODON_KIOSK_REFRESH_MS,
+  totalMs = MASTODON_KIOSK_REFRESH_MS,
+  loading = false,
+) {
+  const total = Math.max(1000, Number(totalMs) || MASTODON_KIOSK_REFRESH_MS);
+  const remaining = clamp(Number(remainingMs) || 0, 0, total);
+  const seconds = Math.ceil(remaining / 1000);
+  return canvasTexture(THREE, 256, 256, (context) => {
+    context.fillStyle = "rgba(15,16,36,0.88)";
+    roundedRect(context, 6, 6, 244, 244, 36);
+    context.fill();
+    context.strokeStyle = "#6364ff";
+    context.lineWidth = 6;
+    roundedRect(context, 6, 6, 244, 244, 36);
+    context.stroke();
+    const centerX = 128;
+    const centerY = 108;
+    const radius = 66;
+    // A closed mouth would read as a plain disc, so keep a chomp that flips
+    // every second even when the window has only just reset.
+    const chomp = seconds % 2 === 0 ? 0.42 : 0.14;
+    const mouth = loading
+      ? 0.42
+      : clamp(Math.max(chomp, (1 - remaining / total) * Math.PI), 0, Math.PI);
+    context.fillStyle = loading ? "#8b9bf4" : "#ffd257";
+    context.beginPath();
+    context.moveTo(centerX, centerY);
+    context.arc(centerX, centerY, radius, mouth, Math.PI * 2 - mouth);
+    context.closePath();
+    context.fill();
+    context.fillStyle = "#191a2e";
+    context.beginPath();
+    context.arc(centerX + 8, centerY - 32, 9, 0, Math.PI * 2);
+    context.fill();
+    context.textAlign = "center";
+    context.fillStyle = "#e8e9ff";
+    context.font = '800 46px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      loading
+        ? "SYNC"
+        : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`,
+      centerX,
+      206,
+    );
+    context.fillStyle = "#8b8db8";
+    context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(loading ? "FETCHING" : "NEXT SYNC", centerX, 236);
+    context.textAlign = "left";
   });
 }
 
@@ -4034,7 +4310,7 @@ function createMastodonKiosk(THREE, interactive) {
   group.position.set(33.5, 0, -18.5);
   group.rotation.y = Math.atan2(-group.position.x, -group.position.z);
   const base = new THREE.Mesh(
-    new THREE.BoxGeometry(5.8, 0.4, 2.2),
+    new THREE.BoxGeometry(7.6, 0.4, 2.2),
     makeMaterial(THREE, "#20213a", { metalness: 0.2, roughness: 0.7 }),
   );
   base.position.y = 0.2;
@@ -4043,22 +4319,32 @@ function createMastodonKiosk(THREE, interactive) {
     makeMaterial(THREE, "#2c2d4d", { metalness: 0.4, roughness: 0.5 }),
   );
   post.position.y = 1.3;
-  // A larger billboard so the live profile header, stats, and latest toots
-  // are readable from the Office approach.
+  // A larger billboard so the live profile header, stats, and the full text
+  // and images of the latest toots are readable from the Office approach.
   const frame = new THREE.Mesh(
-    new THREE.BoxGeometry(5.5, 7.2, 0.36),
+    new THREE.BoxGeometry(7.9, 10.4, 0.36),
     makeMaterial(THREE, "#43389c", { metalness: 0.35, roughness: 0.45 }),
   );
-  frame.position.y = 5.35;
+  frame.position.y = 6.95;
   const face = new THREE.Mesh(
-    new THREE.PlaneGeometry(5.0, 6.25),
+    new THREE.PlaneGeometry(7.2, 9.6),
     new THREE.MeshBasicMaterial({
       map: mastodonKioskTexture(THREE),
       toneMapped: false,
     }),
   );
   face.name = "forkmesh-mastodon-kiosk-face";
-  face.position.set(0, 5.35, 0.2);
+  face.position.set(0, 6.95, 0.2);
+  const countdown = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.1, 1.1),
+    new THREE.MeshBasicMaterial({
+      map: mastodonCountdownTexture(THREE),
+      transparent: true,
+      toneMapped: false,
+    }),
+  );
+  countdown.name = "forkmesh-mastodon-kiosk-countdown";
+  countdown.position.set(2.0, 10.75, 0.3);
   const makeKioskControl = (label, direction, y) => {
     const control = new THREE.Mesh(
       new THREE.PlaneGeometry(0.7, 0.7),
@@ -4078,13 +4364,13 @@ function createMastodonKiosk(THREE, interactive) {
         toneMapped: false,
       }),
     );
-    control.position.set(2.15, y, 0.3);
+    control.position.set(3.1, y, 0.3);
     control.userData.interactive = `mastodon-kiosk-scroll-${direction}`;
     return control;
   };
-  const scrollUp = makeKioskControl("▲", "up", 8.4);
-  const scrollDown = makeKioskControl("▼", "down", 2.3);
-  group.add(base, post, frame, face, scrollUp, scrollDown);
+  const scrollUp = makeKioskControl("▲", "up", 11.35);
+  const scrollDown = makeKioskControl("▼", "down", 2.55);
+  group.add(base, post, frame, face, countdown, scrollUp, scrollDown);
   group.traverse((child) => {
     if (!child.isMesh) return;
     if (!child.userData.interactive) {
@@ -4759,6 +5045,12 @@ export function createWorldScene({
   registerMovableObject("mastodon-kiosk", mastodonKiosk);
   let mastodonKioskSnapshot = null;
   let mastodonKioskOffset = 0;
+  let mastodonKioskCountdown = {
+    remainingMs: MASTODON_KIOSK_REFRESH_MS,
+    totalMs: MASTODON_KIOSK_REFRESH_MS,
+    loading: false,
+  };
+  let mastodonKioskCountdownKey = "";
   const mastodonKioskImages = new Map();
   const mastodonKioskWheelTargets = [];
   mastodonKiosk.traverse((child) => {
@@ -4846,6 +5138,29 @@ export function createWorldScene({
     innerFlame.scale.set(size * 0.82, size * 0.9, size * 0.82);
     fireLight.intensity = 3.2 * fireLevel + Math.sin(time * 0.013) * 0.7;
   });
+  // The real bench count depends on the member roster, which is still an
+  // in-flight network request when the scene first renders. Rather than
+  // seat a placeholder ring that immediately resizes (and jumps every seated
+  // avatar) once the roster arrives, show a spark orbiting the flames until
+  // rebuildCampfireCircle first runs with real data.
+  const benchLoadingSpark = new THREE.Mesh(
+    new THREE.SphereGeometry(0.09, 12, 8),
+    makeMaterial(THREE, "#ffffff", {
+      emissive: "#ffd27a",
+      emissiveIntensity: 2.4,
+    }),
+  );
+  const BENCH_LOADING_SPARK_RADIUS = 1.6;
+  campfire.add(benchLoadingSpark);
+  animated.push((time) => {
+    if (!benchLoadingSpark.visible) return;
+    const spin = time * 0.004;
+    benchLoadingSpark.position.set(
+      Math.cos(spin) * BENCH_LOADING_SPARK_RADIUS,
+      0.9 + Math.sin(time * 0.01) * 0.05,
+      Math.sin(spin) * BENCH_LOADING_SPARK_RADIUS,
+    );
+  });
   // Benches sit back far enough from the pit to leave a wide walkable ring
   // between the seats and the stones (and to clear the log pile at ~2.6). The
   // circle carries one wooden bench per registered member — occupied by a
@@ -4865,6 +5180,7 @@ export function createWorldScene({
         Math.round(Number(neededSeats) || 0),
       ),
     );
+    benchLoadingSpark.visible = false;
     if (campfire.userData.seatCount === count) {
       return campfire.userData.seatOffsets;
     }
@@ -4884,6 +5200,7 @@ export function createWorldScene({
       (count * CAMPFIRE_SEAT_SPACING) / (2 * Math.PI),
     );
     const seatOffsets = [];
+    const benches = [];
     for (let index = 0; index < count; index += 1) {
       const angle = (index / count) * Math.PI * 2;
       const bench = new THREE.Group();
@@ -4908,6 +5225,12 @@ export function createWorldScene({
         leg.position.set(end, 0.205, 0);
         bench.add(leg);
       });
+      // Name plate for whoever owns this bench, floated just above the
+      // plank so an empty seat still says who is out walking the world.
+      const plate = makeCampfireSeatPlate(THREE);
+      plate.position.set(0, 1.02, 0);
+      bench.add(plate);
+      benches.push({ bench, plate, labelKey: null });
       ring.add(bench);
       // Offsets land sitters just above the plank, matching the local
       // player's bench-seat pose height.
@@ -4920,9 +5243,27 @@ export function createWorldScene({
     campfire.userData.seatRing = ring;
     campfire.userData.seatCount = count;
     campfire.userData.seatOffsets = seatOffsets;
+    campfire.userData.seatBenches = benches;
     return seatOffsets;
   }
-  rebuildCampfireCircle(CAMPFIRE_CIRCLE_MIN_SEATS);
+
+  // Repaints one bench plate, skipping the canvas work when the seat already
+  // shows this name and away state. The ring is not built until the first
+  // updateMemberLounge, so an earlier call simply finds no bench.
+  function setCampfireSeatLabel(index, name, away) {
+    const bench = (campfire.userData.seatBenches || [])[index];
+    if (!bench) return;
+    const key = `${name} ${away ? "away" : "here"}`;
+    if (bench.labelKey === key) return;
+    bench.labelKey = key;
+    bench.plate.visible = true;
+    bench.plate.material.map?.dispose?.();
+    bench.plate.material.map = campfireSeatPlateTexture(THREE, name, away);
+    bench.plate.material.needsUpdate = true;
+  }
+  // No placeholder ring here: the spark above keeps the fire lively until
+  // updateMemberLounge below runs with the real roster and calls
+  // rebuildCampfireCircle with an accurate seat count.
   setShadows(campfire);
   world.add(campfire);
   registerMovableObject("campfire", campfire);
@@ -5431,6 +5772,13 @@ export function createWorldScene({
   let diagnosticsPointerMoves = 0;
   let diagnosticsPointerLastAt = 0;
   let diagnosticsPointerWorstGapMs = 0;
+  // Rolling 0..1 measure of how much the mouse is actually moving, decayed
+  // between samples. It only drives the local avatar's antenna blink rate;
+  // nothing about it is sent to other visitors.
+  let pointerEnergy = 0;
+  let pointerEnergyAt = 0;
+  let pointerEnergyX = 0;
+  let pointerEnergyY = 0;
   let lastMovementEmit = 0;
   let lastPosition = player.position.clone();
   let wasWalking = false;
@@ -6099,8 +6447,7 @@ export function createWorldScene({
       avatar.position.copy(chair.position);
       avatar.position.y = 0.72;
       avatar.rotation.y = chair.yaw + Math.PI;
-      avatar.userData.leftLeg.rotation.x = -1.3;
-      avatar.userData.rightLeg.rotation.x = -1.3;
+      applySeatedLegPose(avatar);
     } else {
       const seed = hashNumber(participant?.id || "office-participant");
       avatar.position.set(
@@ -6274,6 +6621,42 @@ export function createWorldScene({
       mastodonKioskMaxOffset(),
     );
     return repaintMastodonKiosk();
+  }
+
+  // The dial is its own small texture: a one-second countdown tick must not
+  // rebuild the 1536×2048 board texture.
+  function repaintMastodonCountdown() {
+    const dial = mastodonKiosk.getObjectByName(
+      "forkmesh-mastodon-kiosk-countdown",
+    );
+    if (!dial?.material) return false;
+    dial.material.map?.dispose?.();
+    dial.material.map = mastodonCountdownTexture(
+      THREE,
+      mastodonKioskCountdown.remainingMs,
+      mastodonKioskCountdown.totalMs,
+      mastodonKioskCountdown.loading,
+    );
+    dial.material.needsUpdate = true;
+    return true;
+  }
+
+  function updateMastodonCountdown({
+    remainingMs = MASTODON_KIOSK_REFRESH_MS,
+    totalMs = MASTODON_KIOSK_REFRESH_MS,
+    loading = false,
+  } = {}) {
+    const total = Math.max(1000, Number(totalMs) || MASTODON_KIOSK_REFRESH_MS);
+    const remaining = clamp(Number(remainingMs) || 0, 0, total);
+    const key = `${loading ? 1 : 0}:${Math.ceil(remaining / 1000)}:${total}`;
+    if (key === mastodonKioskCountdownKey) return false;
+    mastodonKioskCountdownKey = key;
+    mastodonKioskCountdown = {
+      remainingMs: remaining,
+      totalMs: total,
+      loading: Boolean(loading),
+    };
+    return repaintMastodonCountdown();
   }
 
   function scrollMastodonKiosk(direction) {
@@ -6667,8 +7050,7 @@ export function createWorldScene({
     player.rotation.y = benchSeat.heading;
     player.userData.leftArm.rotation.x = 0;
     player.userData.rightArm.rotation.x = 0;
-    player.userData.leftLeg.rotation.x = -1.3;
-    player.userData.rightLeg.rotation.x = -1.3;
+    applySeatedLegPose(player);
   }
 
   function standUpFromBench() {
@@ -6694,6 +7076,7 @@ export function createWorldScene({
         player.position.distanceToSquared(benchSeat.position) > 9;
       if (!displaced && !movement.lengthSq() && !dashTarget && !jumpQueued) {
         applyBenchSeatPose();
+        player.userData.inputEnergy = decayedPointerEnergy(performance.now());
         animateAvatarActivity(player, time, delta, reducedMotion);
         wasWalking = false;
         return;
@@ -6774,6 +7157,7 @@ export function createWorldScene({
     if (jumpVelocity === 0) {
       player.position.y += walking ? Math.abs(Math.sin(time * 0.012)) * 0.035 : 0;
     }
+    player.userData.inputEnergy = decayedPointerEnergy(performance.now());
     animateAvatarActivity(player, time, delta, reducedMotion);
 
     if (
@@ -6832,8 +7216,12 @@ export function createWorldScene({
         !walking;
       avatar.userData.leftArm.rotation.x = gait;
       avatar.userData.rightArm.rotation.x = -gait;
-      avatar.userData.leftLeg.rotation.x = seatedAtCampfire ? -1.3 : -gait * 0.7;
-      avatar.userData.rightLeg.rotation.x = seatedAtCampfire ? -1.3 : gait * 0.7;
+      avatar.userData.leftLeg.rotation.x = seatedAtCampfire
+        ? SEATED_LEG_PITCH
+        : -gait * 0.7;
+      avatar.userData.rightLeg.rotation.x = seatedAtCampfire
+        ? SEATED_LEG_PITCH
+        : gait * 0.7;
       if (recentlyActiveInLounge && !walking && !reducedMotion) {
         avatar.position.y =
           avatar.userData.targetPosition.y +
@@ -7113,15 +7501,21 @@ export function createWorldScene({
       avatar.userData.campfireSeated =
         String(remote.activity || "") === CAMPFIRE_SEATED_ACTIVITY;
       if (useRegisteredLounge) {
-        // Idle and returning members walk to the empty stools left after the
-        // seated directory figures, joining the same circle around the fire.
+        // Idle and returning members walk back to the bench that carries
+        // their own name; anyone the directory has not caught up with yet
+        // takes one of the open stools past the seated figures.
         const seats = campfire.userData.seatOffsets || [];
+        const owned = campfire.userData.seatByName?.get(
+          String(remote.name || "").trim().toLowerCase(),
+        );
         const taken = Math.min(
           campfire.userData.memberFigureCount || 0,
           Math.max(0, seats.length - 1),
         );
         const open = Math.max(1, seats.length - taken);
-        const seat = seats[taken + (hashNumber(remote.id) % open)];
+        const seat = Number.isInteger(owned)
+          ? seats[owned]
+          : seats[taken + (hashNumber(remote.id) % open)];
         const offset = seat || new THREE.Vector3();
         avatar.userData.targetPosition.copy(campfire.position);
         avatar.userData.targetPosition.add(offset);
@@ -7267,6 +7661,7 @@ export function createWorldScene({
     members = [],
     totalCount = 0,
     leaderboardMembers = members,
+    guests = 0,
   ) {
     const total = Math.max(0, Math.min(999999, Number(totalCount) || 0));
     const leaderboardFace = activeLeaderboardSign.userData.face;
@@ -7288,22 +7683,44 @@ export function createWorldScene({
       activeLeaderboardSign.userData.key = leaderboardKey;
     }
     // Registered members sit in a circle around the campfire facing the
-    // flames. The circle holds one bench per registered account, so members
-    // currently walking the world as live avatars leave visibly empty seats,
-    // plus one extra bench that always stays open for the next guest: when a
-    // new account joins and takes it, the roster grows and the rebuilt ring
-    // brings a fresh open bench with it.
+    // flames. Every account in the directory owns one numbered bench for the
+    // whole session — a member out walking the world leaves theirs visibly
+    // empty, with their name still on it — and the ring carries one bench
+    // that always stays open for the next guest plus one more for every
+    // guest already here, so the circle grows as people arrive.
     const roster = (Array.isArray(members) ? members : []).filter((member) =>
       String(member?.name || "").trim(),
     );
-    const seats = rebuildCampfireCircle(Math.max(total, roster.length) + 1);
+    const guestSeats = Math.max(0, Math.min(64, Math.round(Number(guests) || 0)));
+    const seats = rebuildCampfireCircle(
+      Math.max(total, roster.length) + guestSeats + 1,
+    );
     const seen = new Set();
+    const seatByName = new Map();
     roster
       .slice(0, Math.max(1, seats.length))
       .forEach((member, index) => {
         const name = String(member.name).trim().slice(0, 32);
         const id = `member:${name.toLowerCase()}`;
-        if (seen.has(id)) return;
+        if (seatByName.has(name.toLowerCase())) {
+          // Two rows for one account: leave the extra bench open.
+          setCampfireSeatLabel(index, "", false);
+          return;
+        }
+        seatByName.set(name.toLowerCase(), index);
+        // The bench keeps the member's name whether or not they are on it,
+        // so the empty seats read as "who is out and about" rather than as
+        // unclaimed furniture.
+        setCampfireSeatLabel(index, name, member.away === true);
+        if (member.away === true) {
+          const parked = loungeMembers.get(id);
+          if (parked) {
+            world.remove(parked);
+            disposeObject3D(parked);
+            loungeMembers.delete(id);
+          }
+          return;
+        }
         seen.add(id);
         let figure = loungeMembers.get(id);
         if (!figure) {
@@ -7350,10 +7767,14 @@ export function createWorldScene({
         // face local -Z, so the inward heading is atan2(x, z), matching
         // sitOnCampfireBench.
         figure.rotation.y = seat ? Math.atan2(seat.x, seat.z) : 0;
-        figure.userData.leftLeg.rotation.x = -1.3;
-        figure.userData.rightLeg.rotation.x = -1.3;
+        applySeatedLegPose(figure);
       });
-    campfire.userData.memberFigureCount = Math.min(seen.size, seats.length);
+    // Benches past the roster are the open guest seats.
+    for (let index = roster.length; index < seats.length; index += 1) {
+      setCampfireSeatLabel(index, "", false);
+    }
+    campfire.userData.seatByName = seatByName;
+    campfire.userData.memberFigureCount = Math.min(roster.length, seats.length);
     loungeMembers.forEach((figure, id) => {
       if (seen.has(id)) return;
       world.remove(figure);
@@ -9672,8 +10093,30 @@ export function createWorldScene({
     } catch (_) {}
   }
 
+  // Energy fades with a ~0.5s half life so the antenna slows back down soon
+  // after the mouse stops instead of coasting.
+  function decayedPointerEnergy(now) {
+    if (!pointerEnergyAt) return 0;
+    const elapsed = Math.max(0, now - pointerEnergyAt) / 1000;
+    return pointerEnergy * Math.pow(0.25, elapsed);
+  }
+
+  function recordPointerEnergy(event, now) {
+    const x = Number(event.clientX) || 0;
+    const y = Number(event.clientY) || 0;
+    if (pointerEnergyAt) {
+      const moved = Math.hypot(x - pointerEnergyX, y - pointerEnergyY);
+      // ~700px of travel inside one half life saturates the blink rate.
+      pointerEnergy = Math.min(1, decayedPointerEnergy(now) + moved / 700);
+    }
+    pointerEnergyAt = now;
+    pointerEnergyX = x;
+    pointerEnergyY = y;
+  }
+
   function handlePointerMove(event) {
     const pointerNow = performance.now();
+    recordPointerEnergy(event, pointerNow);
     if (diagnosticsPointerLastAt > 0) {
       diagnosticsPointerWorstGapMs = Math.max(
         diagnosticsPointerWorstGapMs,
@@ -10367,9 +10810,14 @@ export function createWorldScene({
         return;
       }
     }
-    const currentZoom =
-      cameraMode === "first-person" ? firstPersonZoom : cameraZoom;
-    setCameraZoom(currentZoom * Math.exp(deltaPixels * 0.0015));
+    const firstPerson = cameraMode === "first-person";
+    const currentZoom = firstPerson ? firstPersonZoom : cameraZoom;
+    // Third person pulls the camera back as the wheel scrolls down; through
+    // the visitor's own eyes that reads backwards, so first person scrolls
+    // the other way — wheel down zooms in on what they are looking at.
+    setCameraZoom(
+      currentZoom * Math.exp(deltaPixels * (firstPerson ? -0.0015 : 0.0015)),
+    );
   }
 
   function handleKeyDown(event) {
@@ -10845,6 +11293,7 @@ export function createWorldScene({
     updateOfficeMarketingTasks,
     updateWorldBulletin,
     updateMastodonKiosk,
+    updateMastodonCountdown,
     setOfficeSeatState,
     showOfficeBubble,
     leaveOfficeInterior,

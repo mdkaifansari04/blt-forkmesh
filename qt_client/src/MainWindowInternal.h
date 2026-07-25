@@ -431,6 +431,12 @@ constexpr int kNodeLightRole = Qt::UserRole + 13;
 // a behind node is expected to catch up at the next tick. Only a safety net
 // now: push events notify mirror peers the moment the source moves.
 constexpr qint64 kMirrorSyncIntervalMs = 15LL * 60 * 1000;
+
+// Extra labels this machine answers to when a workflow declares `runs-on:`
+// (free-form, comma/space separated — e.g. "ios, xcode, gpu"). The machine's
+// node name, its mirror-executor node name and the platform are always labels;
+// this setting only adds capability tags on top of them.
+constexpr auto kActionNodeLabelsSetting = "actions/nodeLabels";
 // Defined further down; used early by MirrorSyncDelegate to pick chart colors.
 bool currentThemeIsDark();
 
@@ -2988,8 +2994,9 @@ const QString kPublishAgentsToWebSetting =
 const QString kAutoFixAgentConflictsSetting =
     QStringLiteral("agents/autoFixConflicts");
 // When a repo's tests or build fail (the same kind of failure this very task
-// was dispatched to fix), automatically start an agent to fix them instead of
-// waiting for a manual dispatch. Default on; can be disabled in Settings.
+// was dispatched to fix), automatically send the failure back to whichever
+// agent session last worked on that branch instead of waiting for a manual
+// dispatch (adhoc #306). Default on; can be disabled in Settings.
 const QString kAutoFixFailuresSetting =
     QStringLiteral("agents/autoFixFailures");
 // Whether to hide external `claude` CLI sessions (ones ForkMesh didn't start
@@ -7782,6 +7789,28 @@ inline QString nodeListIdentityKey(const MemberInfo &m)
     if (!nodeName.isEmpty())
         return nodeName;
     return m.name.trimmed();
+}
+
+// A temporary world/website chat visitor — a human passing through the public
+// room, never a serving node — so every node surface (Nodes directory, top-bar
+// node dropdown, relay nodes dialog) must skip them (adhoc #308: "World Guest
+// fb9d" rows in the Nodes list). The web chat stamps these accountKind "guest";
+// frames sent before that stamp existed are recognised by the placeholder names
+// the world assigns ("World visitor · <name>", "World Guest ab12", "Guest 1234")
+// — but only when the peer never advertised a registered node identity, so a
+// real node someone happens to have named "Guest ..." keeps its row.
+inline bool isTemporaryChatGuest(const MemberInfo &m)
+{
+    const QString kind = m.accountKind.trimmed().toLower();
+    if (kind == QLatin1String("guest"))
+        return true;
+    if (!kind.isEmpty() || !m.nodeName.trimmed().isEmpty())
+        return false;
+    static const QRegularExpression legacyGuestName(
+        QString::fromUtf8("^(?:world visitor\\s*\xC2\xB7.*|world guest\\s+\\S+|"
+                          "guest\\s+\\d+)$"),
+        QRegularExpression::CaseInsensitiveOption);
+    return legacyGuestName.match(m.name.trimmed()).hasMatch();
 }
 
 // Open issue count for the advertised catalog issueCount. Closed issues keep

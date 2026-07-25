@@ -846,6 +846,17 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
                           .arg(wf.name, owner, name));
             continue;
         }
+        // A workflow dedicated to other nodes isn't ours to run: the node it
+        // names sees the same push and picks it up there. Nothing is queued
+        // here, so the run history stays on the node that actually executes it.
+        if (!wf.runsOnNode(actionNodeLabels())) {
+            logSystem(QString::fromUtf8(
+                          "Actions: \xE2\x80\x9C%1\xE2\x80\x9D is dedicated to "
+                          "%2 \xE2\x80\x94 this node (%3) is skipping it.")
+                          .arg(wf.name, workflowDedicationLabel(wf),
+                               actionNodeLabels().join(QStringLiteral(", "))));
+            continue;
+        }
 
         ActionRun run;
         run.owner = owner;
@@ -987,6 +998,40 @@ void MainWindow::refreshOpenRepoDetail()
         typingFocus->setFocus(Qt::OtherFocusReason);
 }
 
+QStringList MainWindow::actionNodeLabels() const
+{
+    QSettings settings;
+    return ActionFile::nodeLabels(
+        machineNodeName(),
+        settings
+            .value(QString::fromLatin1(
+                forkmesh::mirror_actions::kNodeSetting))
+            .toString(),
+        settings.value(QString::fromLatin1(kActionNodeLabelsSetting))
+            .toString());
+}
+
+QString MainWindow::workflowDedicationLabel(const ActionWorkflow &workflow) const
+{
+    return workflow.runsOn.join(QStringLiteral(", "));
+}
+
+void MainWindow::saveActionNodeLabels(const QString &labels)
+{
+    const QStringList clean = ActionFile::parseLabelList(labels);
+    QSettings settings;
+    if (clean.isEmpty())
+        settings.remove(QString::fromLatin1(kActionNodeLabelsSetting));
+    else
+        settings.setValue(QString::fromLatin1(kActionNodeLabelsSetting),
+                          clean.join(QStringLiteral(", ")));
+    logSystem(QStringLiteral("Actions: this node answers to %1.")
+                  .arg(actionNodeLabels().join(QStringLiteral(", "))));
+    // A workflow may have just become (un)runnable here.
+    if (m_actionWorkflowList)
+        refreshRepoActions();
+}
+
 void MainWindow::processActionQueue()
 {
     if (m_actionRunners.isEmpty())
@@ -1052,6 +1097,20 @@ void MainWindow::processActionQueue()
             run->status = ActionStatus::Failed;
             m_actionStore->saveRun(*run);
             scheduleMirrorActionsSummary(0);
+            continue;
+        }
+        // The dedication is re-checked immediately before execution, not just
+        // when the run was queued: this node's labels (or the workflow's
+        // `runs-on`) may have changed while the run sat in the queue.
+        if (!wf.runsOnNode(actionNodeLabels())) {
+            run->status = ActionStatus::Skipped;
+            m_actionStore->saveRun(*run);
+            scheduleMirrorActionsSummary(0);
+            logSystem(QString::fromUtf8(
+                          "Actions: skipped \xE2\x80\x9C%1\xE2\x80\x9D for "
+                          "%2/%3 \xE2\x80\x94 it is dedicated to %4.")
+                          .arg(run->workflowName, run->owner, run->name,
+                               workflowDedicationLabel(wf)));
             continue;
         }
         // start() emits statusChanged synchronously (which reloads m_actionRuns),
@@ -1188,6 +1247,8 @@ void MainWindow::onRunFinished(int runId, bool ok)
                           QString::fromUtf8("%1 \xC2\xB7 %2/%3")
                               .arg(run->workflowName, run->owner, run->name),
                           !ok && !cancelled);
+        if (!ok && !cancelled)
+            maybeAutoFixFailedRun(*run);
     }
     if (runId == m_selectedRunId)
         showRun(runId); // finished: reload the complete log from disk
@@ -2382,6 +2443,18 @@ void MainWindow::refreshRepoActions()
             triggers << QStringLiteral("on: release");
         if (wf.allowsManualRun())
             triggers << QStringLiteral("manual");
+        // Dedicated workflows say where they run, and grey out here when that
+        // node isn't this one — this node will never queue them.
+        if (!wf.runsOn.isEmpty()) {
+            triggers << QStringLiteral("runs-on: ") +
+                            workflowDedicationLabel(wf);
+            if (!wf.runsOnNode(actionNodeLabels())) {
+                item->setText(wf.name + QString::fromUtf8("  \xC2\xB7  ") +
+                              workflowDedicationLabel(wf));
+                item->setForeground(palette().color(QPalette::Disabled,
+                                                    QPalette::Text));
+            }
+        }
         // Valid workflows get a checkbox so the owner can switch each one off
         // individually; unchecking skips it on push and hides its manual-run bar.
         if (wf.valid) {
@@ -2437,6 +2510,15 @@ void MainWindow::updateManualRunBar()
         return;
     m_actionManualRunButton->setText(
         QString::fromUtf8("Run \xE2\x80\x9C%1\xE2\x80\x9D").arg(wf->name));
+    // A workflow dedicated to another node can't start here, so say so on the
+    // button instead of failing after the click.
+    const bool ours = wf->runsOnNode(actionNodeLabels());
+    m_actionManualRunButton->setEnabled(ours);
+    m_actionManualRunButton->setToolTip(
+        ours ? QString()
+             : QString::fromUtf8("Dedicated to %1 \xE2\x80\x94 start this "
+                                 "workflow from that node.")
+                   .arg(workflowDedicationLabel(*wf)));
 
     // Populate the branch list from the repo's mirror, keeping the user's choice
     // (or defaulting to main) selected.
@@ -2522,6 +2604,15 @@ void MainWindow::runSelectedWorkflowManually()
     const ActionWorkflow wf = ActionFile::parse(path, content);
     if (!wf.valid) {
         flashMessage(QStringLiteral("Workflow is invalid: %1").arg(wf.error));
+        return;
+    }
+    // Manual runs honour the dedication too: pushing "Run" here would otherwise
+    // execute an iOS build or a Cloudflare deploy on the wrong machine.
+    if (!wf.runsOnNode(actionNodeLabels())) {
+        flashMessage(QString::fromUtf8(
+                         "\xE2\x80\x9C%1\xE2\x80\x9D runs on %2 \xE2\x80\x94 "
+                         "start it from that node.")
+                         .arg(wf.name, workflowDedicationLabel(wf)));
         return;
     }
 
@@ -2805,6 +2896,16 @@ void MainWindow::rerunSelectedRun()
     const int repoIndex = repoIndexFor(run.owner, run.name);
     if (repoIndex < 0)
         return;
+    const ActionWorkflow rerunWorkflow =
+        ActionFile::parse(run.workflowPath, run.workflowContent);
+    if (!rerunWorkflow.runsOnNode(actionNodeLabels())) {
+        flashMessage(QString::fromUtf8(
+                         "\xE2\x80\x9C%1\xE2\x80\x9D runs on %2 \xE2\x80\x94 "
+                         "rerun it from that node.")
+                         .arg(run.workflowName,
+                              workflowDedicationLabel(rerunWorkflow)));
+        return;
+    }
     QString snapshotError;
     if (workflowContentAt(m_repositories.at(repoIndex).mirrorPath,
                           run.commit, run.workflowPath) !=
@@ -2934,6 +3035,68 @@ void MainWindow::fixSelectedRunWithAgent(const QString &provider, const QString 
     if (sessionId > 0)
         flashMessage(QStringLiteral("Started a %1 agent to fix \"%2\".")
                          .arg(agentProviderName(provider), run->workflowName));
+}
+
+// adhoc #306: with kAutoFixFailuresSetting on (the default), a failed run whose
+// branch still has an agent session attached is sent straight back to that
+// session — the same steer-and-resume treatment fixAgentConflictsWithAgent()
+// gives a conflicted branch — instead of waiting for a human to notice and
+// click "Fix with agent". Only the most recently attached, non-external
+// session for this exact owner/name/branch is used ("the agent that was last
+// working on it"); if none ever ran on this branch, or it's already active,
+// this is a no-op — a currently-running session will see the failure on its
+// own next pass, and there's no "last agent" to hand a brand-new branch to.
+void MainWindow::maybeAutoFixFailedRun(const ActionRun &run)
+{
+    if (!QSettings().value(kAutoFixFailuresSetting, true).toBool())
+        return;
+    const QString branch = run.ref.startsWith(QLatin1String("refs/heads/"))
+                               ? run.ref.mid(11)
+                               : run.ref;
+    if (branch.isEmpty())
+        return;
+    int sessionId = 0;
+    QString sessionProvider;
+    for (const AgentSession &s : std::as_const(m_agentSessions)) {
+        if (s.owner == run.owner && s.name == run.name &&
+            s.branchName == branch && !isExternalSession(s.id)) {
+            sessionId = s.id; // sessions are stored oldest-first; keep the last match
+            sessionProvider = s.provider;
+        }
+    }
+    if (sessionId <= 0)
+        return;
+    const AgentSession *session = findAgentSession(sessionId);
+    if (!session || session->status == AgentStatus::Running ||
+        session->status == AgentStatus::Queued ||
+        session->status == AgentStatus::Waiting)
+        return;
+
+    const QString log = m_actionStore ? m_actionStore->readLog(run) : QString();
+    constexpr int kMaxLogChars = 12000;
+    const QString logTail =
+        log.size() <= kMaxLogChars
+            ? log
+            : QStringLiteral("...(log truncated; showing the tail)...\n") +
+                  log.right(kMaxLogChars);
+    const QString prompt =
+        QStringLiteral(
+            "The \"%1\" CI workflow failed for %2/%3 (commit %4, ref %5). Find "
+            "what broke and fix it so the workflow succeeds. Full run log:\n\n%6")
+            .arg(run.workflowName, run.owner, run.name, run.commit.left(8),
+                 run.ref, logTail);
+    const QString workflowName = run.workflowName;
+
+    m_pendingSteerMessage.insert(sessionId, prompt);
+    if (sessionProvider == QLatin1String("claude-code") ||
+        agentIsCodexProvider(sessionProvider))
+        applyTranscriptEvent(
+            sessionId,
+            QJsonObject{{QStringLiteral("type"), QStringLiteral("_local_user")},
+                        {QStringLiteral("text"), prompt}});
+    continueAgentSession(sessionId);
+    flashMessage(QStringLiteral("Sent \"%1\"'s failure back to its agent.")
+                     .arg(workflowName));
 }
 
 void MainWindow::clearActionRuns()
