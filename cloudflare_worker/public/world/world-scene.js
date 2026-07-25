@@ -32,6 +32,11 @@ const CAMERA_ZOOM_MAX = 8;
 const CAMERA_LOOK_SENSITIVITY = 0.0022;
 const CAMERA_PITCH_MIN = 0.08;
 const CAMERA_PITCH_MAX = 1.24;
+const FIRST_PERSON_EYE_HEIGHT = 2.2;
+const FIRST_PERSON_PITCH_MIN = -1.1;
+const FIRST_PERSON_PITCH_MAX = 1.1;
+const REPOSITORY_FIRST_PERSON_DISTANCE = 5.5;
+const REPOSITORY_FIRST_PERSON_PITCH = -0.08;
 const LIGHT_LEVEL_MIN = 40;
 const LIGHT_LEVEL_MAX = 140;
 const LIGHT_LEVEL_DEFAULT = 100;
@@ -502,7 +507,11 @@ function memberLoungePlaqueTexture(
 
 function activeLeaderboardTexture(THREE, members = []) {
   const rows = (Array.isArray(members) ? members : [])
-    .filter((member) => String(member?.name || "").trim())
+    .filter(
+      (member) =>
+        String(member?.name || "").trim() &&
+        Number(member?.totalActiveMs ?? member?.activeMs ?? 0) > 0,
+    )
     .slice(0, 6);
   return canvasTexture(THREE, 768, 512, (context) => {
     context.clearRect(0, 0, 768, 512);
@@ -1896,6 +1905,18 @@ function createRegisteredUserLounge(THREE, animated, interactive) {
   canopy.rotation.x = Math.PI / 2;
   canopy.position.y = 4.2;
   lounge.add(canopy);
+  const loadingArc = new THREE.Mesh(
+    new THREE.TorusGeometry(5.8, 0.22, 10, 24, Math.PI * 0.26),
+    makeMaterial(THREE, "#d9ffea", {
+      emissive: "#62e6a4",
+      emissiveIntensity: 1.25,
+      metalness: 0.32,
+    }),
+  );
+  loadingArc.rotation.x = Math.PI / 2;
+  loadingArc.position.y = 4.2;
+  loadingArc.visible = false;
+  lounge.add(loadingArc);
   for (const angle of [0, Math.PI / 2, Math.PI, Math.PI * 1.5]) {
     const column = new THREE.Mesh(
       new THREE.CylinderGeometry(0.12, 0.17, 3.9, 8),
@@ -1910,13 +1931,13 @@ function createRegisteredUserLounge(THREE, animated, interactive) {
       const x = -4.5 + column * 1.8;
       const z = -1.8 + row * 1.8;
       const seat = new THREE.Mesh(
-        new THREE.BoxGeometry(1.25, 0.25, 1.05),
+        new THREE.BoxGeometry(1.25, 0.08, 1.05),
         makeMaterial(THREE, row === 0 ? "#5ca783" : "#3f755e", {
           emissive: row === 0 ? "#245c46" : "#173d2e",
           emissiveIntensity: 0.35,
         }),
       );
-      seat.position.set(x, 0.53, z);
+      seat.position.set(x, 0.42, z);
       lounge.add(seat);
       seatOffsets.push(new THREE.Vector3(x, 0.38, z));
     }
@@ -1938,11 +1959,20 @@ function createRegisteredUserLounge(THREE, animated, interactive) {
   activityBeacon.position.set(0, 4.2, 0);
   lounge.add(activityBeacon);
   lounge.userData.activityBeacon = activityBeacon;
+  lounge.userData.loadingArc = loadingArc;
+  lounge.userData.loading = false;
   setShadows(lounge);
   animated.push((time) => {
     const pulse = (Math.sin(time * 0.0018) + 1) * 0.5;
     canopy.material.emissiveIntensity = 0.55 + pulse * 0.55;
     activityBeacon.intensity = 0.9 + pulse * 1.1;
+    if (lounge.userData.loading) {
+      loadingArc.visible = true;
+      loadingArc.rotation.z = time * 0.006;
+    } else {
+      loadingArc.visible = false;
+      loadingArc.rotation.z = 0;
+    }
   });
   return lounge;
 }
@@ -3272,6 +3302,7 @@ export function createWorldScene({
   renderer.domElement.setAttribute("aria-hidden", "true");
   renderer.domElement.tabIndex = -1;
   renderer.domElement.dataset.cameraControl = "drag";
+  renderer.domElement.dataset.cameraMode = "third-person";
   renderer.domElement.dataset.dragging = "false";
   container.appendChild(renderer.domElement);
 
@@ -3358,7 +3389,6 @@ export function createWorldScene({
     information: createInformationBooth,
     fountain: createFountain,
     repositories: createRepositoryDistrict,
-    organizations: createOrganizationQuarter,
     broadcast: createBroadcastGarden,
     office: createForkMeshOffice,
   };
@@ -3761,6 +3791,8 @@ export function createWorldScene({
   let environmentFogDensity = 0.0085;
   let cameraYaw = Math.atan2(CAMERA_OFFSET[0], CAMERA_OFFSET[2]);
   let cameraPitch = Math.asin(CAMERA_OFFSET[1] / CAMERA_DISTANCE);
+  let firstPersonPitch = 0;
+  let cameraMode = "third-person";
   let jumpVelocity = 0;
   let jumpQueued = false;
   // Per-device movement tuning (scales the shared defaults above). Acceleration
@@ -4054,6 +4086,9 @@ export function createWorldScene({
   }
 
   function enterOfficeLobby() {
+    // The Office uses its own shared orbital framing and participant model.
+    // Never leave the town avatar's eye camera active behind that scene.
+    setCameraMode("third-person");
     officeSceneMode = "lobby";
     selectedLandmark = "office";
     currentSpace = "office";
@@ -4215,6 +4250,30 @@ export function createWorldScene({
     setTheme(currentTheme);
   }
 
+  function setCameraMode(mode) {
+    const wantsFirstPerson =
+      mode === true ||
+      String(mode || "").trim().toLocaleLowerCase() === "first-person";
+    // First person follows the Town avatar. The Office has a separate local
+    // participant and camera target, so reject that mode while its scene is open.
+    const nextMode =
+      wantsFirstPerson && officeSceneMode === "town"
+        ? "first-person"
+        : "third-person";
+    if (nextMode !== cameraMode) cancelDash();
+    cameraMode = nextMode;
+    if (cameraMode === "first-person") {
+      cameraFocus = null;
+      player.visible = false;
+      playerLabel.style.opacity = "0";
+      playerLabel.style.visibility = "hidden";
+    } else {
+      player.visible = true;
+    }
+    renderer.domElement.dataset.cameraMode = cameraMode;
+    return cameraMode;
+  }
+
   function focusRepositoryPortal(owner, name) {
     const key = `${String(owner || "").toLocaleLowerCase()}/${String(
       name || "",
@@ -4233,6 +4292,48 @@ export function createWorldScene({
     cameraYaw = -record.angle - Math.PI / 2;
     cameraPitch = 0.16;
     cameraZoom = Math.min(cameraZoom, 0.55);
+    return true;
+  }
+
+  function enterRepositoryFirstPerson(owner, name) {
+    if (officeSceneMode !== "town") return false;
+    const key = `${String(owner || "").toLocaleLowerCase()}/${String(
+      name || "",
+    ).toLocaleLowerCase()}`;
+    const record = repositoryPortals.get(key);
+    if (!record?.group || !focusRepositoryPortal(owner, name)) return false;
+
+    const portalPosition = new THREE.Vector3();
+    record.group.getWorldPosition(portalPosition);
+    // focusRepositoryPortal points the view from the portal's inward normal
+    // toward its face. Put the actual avatar on that normal so this remains a
+    // true first-person view and multiplayer peers see the same spatial visit.
+    player.position.set(
+      portalPosition.x +
+        Math.sin(cameraYaw) * REPOSITORY_FIRST_PERSON_DISTANCE,
+      currentFloorY,
+      portalPosition.z +
+        Math.cos(cameraYaw) * REPOSITORY_FIRST_PERSON_DISTANCE,
+    );
+    player.rotation.y = cameraYaw;
+    jumpQueued = false;
+    jumpVelocity = 0;
+    keyboardMovementSpeed = baseMoveSpeed();
+    lastPosition.copy(player.position);
+    wasWalking = false;
+    lastMovementEmit = performance.now();
+    firstPersonPitch = REPOSITORY_FIRST_PERSON_PITCH;
+    setCameraMode("first-person");
+    focusedRepositoryKey = key;
+    onMovement({
+      x: Number(player.position.x.toFixed(2)),
+      y: Number(player.position.y.toFixed(2)),
+      z: Number(player.position.z.toFixed(2)),
+      heading: Number(player.rotation.y.toFixed(3)),
+      activity: "exploring a repository graph",
+      space: currentSpace,
+      moving: false,
+    });
     return true;
   }
 
@@ -4581,9 +4682,27 @@ export function createWorldScene({
   }
 
   function updateCamera(delta) {
+    if (cameraMode === "first-person" && officeSceneMode === "town") {
+      const eye = player.position
+        .clone()
+        .add(new THREE.Vector3(0, FIRST_PERSON_EYE_HEIGHT, 0));
+      const horizontal = Math.cos(firstPersonPitch);
+      const direction = new THREE.Vector3(
+        -Math.sin(cameraYaw) * horizontal,
+        -Math.sin(firstPersonPitch),
+        -Math.cos(cameraYaw) * horizontal,
+      );
+      // A following eye camera must not ease behind the moving avatar. Copying
+      // the position directly avoids visible lag and motion sickness.
+      camera.position.copy(eye);
+      camera.lookAt(eye.clone().add(direction));
+      return;
+    }
     const target = cameraFocus
       ? cameraFocus.clone()
-      : player.position.clone().add(new THREE.Vector3(0, 2.2, 0));
+      : player.position
+          .clone()
+          .add(new THREE.Vector3(0, FIRST_PERSON_EYE_HEIGHT, 0));
     const officeFocused = Boolean(cameraFocus && selectedLandmark === "office");
     const officeInteriorFocused = officeSceneMode !== "town";
     // PR #47's Office framing, expressed as a distance scale so the orbital
@@ -4761,7 +4880,7 @@ export function createWorldScene({
         const offset = seat || new THREE.Vector3();
         avatar.userData.targetPosition.copy(registeredUserLounge.position);
         avatar.userData.targetPosition.add(offset);
-        avatar.userData.targetHeading = Math.PI;
+        avatar.userData.targetHeading = 0;
       } else if (sharedInactive) {
         const restArea = landmarkById("neighborhood").position;
         const seat = hashNumber(remote.id) % 8;
@@ -4916,6 +5035,11 @@ export function createWorldScene({
     const leaderboardFace = activeLeaderboardSign.userData.face;
     const leaderboardKey = JSON.stringify(
       (Array.isArray(leaderboardMembers) ? leaderboardMembers : [])
+        .filter(
+          (member) =>
+            String(member?.name || "").trim() &&
+            Number(member?.totalActiveMs ?? member?.activeMs ?? 0) > 0,
+        )
         .slice(0, 6)
         .map((member) => [
           String(member?.name || ""),
@@ -4973,7 +5097,7 @@ export function createWorldScene({
         const seat = seats[index % Math.max(1, seats.length)];
         figure.position.copy(registeredUserLounge.position);
         if (seat) figure.position.add(seat);
-        figure.rotation.y = Math.PI;
+        figure.rotation.y = 0;
       });
     loungeMembers.forEach((figure, id) => {
       if (seen.has(id)) return;
@@ -4981,6 +5105,10 @@ export function createWorldScene({
       disposeObject3D(figure);
       loungeMembers.delete(id);
     });
+  }
+
+  function setMemberLoungeLoading(loading = false) {
+    registeredUserLounge.userData.loading = Boolean(loading);
   }
 
   function visitNeighborhoodHome(ownerId) {
@@ -5288,6 +5416,48 @@ export function createWorldScene({
         0.075,
         0.52,
       );
+      const tableTextPlane = (text, width, height, fontSize, color = "#071c16") => {
+        const texture = canvasTexture(THREE, 768, 160, (context) => {
+          context.clearRect(0, 0, 768, 160);
+          context.fillStyle = color;
+          context.font = `700 ${fontSize}px "ForkMesh Mono", ui-monospace, monospace`;
+          context.textAlign = "center";
+          context.textBaseline = "middle";
+          context.fillText(text, 384, 82, 730);
+        });
+        return new THREE.Mesh(
+          new THREE.PlaneGeometry(width, height),
+          new THREE.MeshBasicMaterial({
+            map: texture,
+            transparent: true,
+            toneMapped: false,
+            side: THREE.DoubleSide,
+            depthWrite: false,
+          }),
+        );
+      };
+      const tableTopLabel = (rowCount, tableName, width) => {
+        const texture = canvasTexture(THREE, 768, 768, (context) => {
+          context.clearRect(0, 0, 768, 768);
+          context.fillStyle = "#071c16";
+          context.textAlign = "center";
+          context.textBaseline = "middle";
+          context.font = `800 ${rowCount.length > 5 ? 146 : 184}px "ForkMesh Mono", ui-monospace, monospace`;
+          context.fillText(rowCount, 384, 278, 710);
+          context.font = '700 72px "ForkMesh Mono", ui-monospace, monospace';
+          context.fillText(tableName, 384, 508, 710);
+        });
+        return new THREE.Mesh(
+          new THREE.PlaneGeometry(width, width),
+          new THREE.MeshBasicMaterial({
+            map: texture,
+            transparent: true,
+            toneMapped: false,
+            side: THREE.DoubleSide,
+            depthWrite: false,
+          }),
+        );
+      };
       safeTables.forEach((table, index) => {
         const column = index % columns;
         const row = Math.floor(index / columns);
@@ -5325,59 +5495,35 @@ export function createWorldScene({
         bar.userData.tableName = table.name;
         bar.userData.rowCount = table.rowCount;
         tableLayer.add(bar);
+        // The complete table identity is printed on its top face: a large row
+        // count fills the width, with the table name immediately beneath it.
+        const topLabel = tableTopLabel(
+          table.rowCount.toLocaleString("en-US"),
+          table.name,
+          barWidth * 0.96,
+        );
+        topLabel.name = `system-capacity-row-count:${table.name}`;
+        topLabel.position.set(
+          bar.position.x,
+          0.38 + height + 0.014,
+          bar.position.z,
+        );
+        topLabel.rotation.x = -Math.PI / 2;
+        tableLayer.add(topLabel);
+        const nameLabel = tableTextPlane(
+          table.name,
+          barWidth * 0.96,
+          Math.min(0.22, Math.max(0.11, height * 0.16)),
+          38,
+        );
+        nameLabel.name = `system-capacity-table-name:${table.name}`;
+        nameLabel.position.set(
+          bar.position.x,
+          0.38 + Math.min(height * 0.58, Math.max(0.16, height - 0.12)),
+          bar.position.z - barWidth / 2 - 0.012,
+        );
+        tableLayer.add(nameLabel);
       });
-
-      const legendTexture = canvasTexture(THREE, 1536, 640, (context) => {
-        context.clearRect(0, 0, 1536, 640);
-        roundedRect(context, 6, 6, 1524, 628, 18);
-        context.fillStyle = "rgba(6, 23, 18, 0.94)";
-        context.fill();
-        context.strokeStyle = "#80e8ff";
-        context.lineWidth = 6;
-        context.stroke();
-        context.fillStyle = "#d9ffea";
-        context.font =
-          '700 34px "ForkMesh Mono", ui-monospace, monospace';
-        context.fillText(
-          `SYSTEM CAPACITY · ${safeTables.length} D1 TABLE${safeTables.length === 1 ? "" : "S"} · ROW COUNTS`,
-          34,
-          48,
-        );
-        const legendColumns = Math.min(
-          8,
-          Math.max(1, Math.ceil(safeTables.length / 14)),
-        );
-        const legendRows = Math.ceil(
-          safeTables.length / legendColumns,
-        );
-        const columnWidth = 1470 / legendColumns;
-        const rowHeight = 548 / Math.max(1, legendRows);
-        const fontSize = clamp(Math.floor(rowHeight * 0.52), 12, 25);
-        context.font = `500 ${fontSize}px "ForkMesh Mono", ui-monospace, monospace`;
-        safeTables.forEach((table, index) => {
-          const column = Math.floor(index / legendRows);
-          const row = index % legendRows;
-          context.fillStyle = index < 3 ? "#9ef7c6" : "#b6d9ce";
-          context.fillText(
-            `${table.name.slice(0, 20)} ${table.rowCount.toLocaleString("en-US")}`,
-            34 + column * columnWidth,
-            84 + (row + 0.7) * rowHeight,
-            columnWidth - 24,
-          );
-        });
-      });
-      const legend = new THREE.Mesh(
-        new THREE.PlaneGeometry(11.1, 3.45),
-        new THREE.MeshBasicMaterial({
-          map: legendTexture,
-          transparent: true,
-          toneMapped: false,
-          side: THREE.DoubleSide,
-        }),
-      );
-      legend.name = "system-capacity-table-legend";
-      legend.position.set(0, 2.35, -4.48);
-      tableLayer.add(legend);
       layer.add(tableLayer);
     }
 
@@ -5782,6 +5928,7 @@ export function createWorldScene({
           Number.isSafeInteger(rawBytes) && rawBytes >= 0
             ? Math.min(rawBytes, 2 ** 50)
             : 0;
+        const rawStarCount = Number(record.starCount);
         return {
           owner,
           name,
@@ -5790,6 +5937,11 @@ export function createWorldScene({
           liveHost: record.liveHost === true,
           isPrivate: record.isPrivate === true,
           source: String(record.source || "").slice(0, 40),
+          starCount:
+            Number.isSafeInteger(rawStarCount) && rawStarCount >= 0
+              ? Math.min(rawStarCount, 10_000_000)
+              : null,
+          starred: record.starred === true,
         };
       })
       .sort((left, right) => left.key.localeCompare(right.key));
@@ -5808,6 +5960,8 @@ export function createWorldScene({
         record.liveHost,
         record.isPrivate,
         record.source,
+        record.starCount,
+        record.starred,
       ]),
     ]);
     const previousCatalog = world.userData.repositoryCatalogLayer;
@@ -5949,6 +6103,8 @@ export function createWorldScene({
         liveHost: record.liveHost,
         isPrivate: record.isPrivate,
         source: record.source,
+        starCount: record.starCount,
+        starred: record.starred,
         angle,
       };
       for (const mesh of [disk, outline]) {
@@ -5987,6 +6143,37 @@ export function createWorldScene({
       label.position.set(0, -1.42, 0.12);
       label.visible = isActive;
       node.add(label);
+
+      if (isActive && !record.isPrivate) {
+        const starLabel = makeLabelSprite(
+          THREE,
+          `★ ${
+            Number.isSafeInteger(record.starCount)
+              ? record.starCount.toLocaleString("en-US")
+              : "—"
+          }`,
+          record.starred
+            ? "STARRED · CLICK TO REMOVE"
+            : Number.isSafeInteger(record.starCount)
+              ? "CLICK TO STAR"
+              : "STAR COUNT LOADING",
+          record.starred ? "#f7c96b" : "#9ef7c6",
+        );
+        starLabel.name =
+          `repository-star:${record.owner}/${record.name}`;
+        starLabel.scale.set(1.5, 0.48, 1);
+        starLabel.position.set(0, 3.5, 0.42);
+        starLabel.userData.landmark = "repositories";
+        starLabel.userData.repositoryStar = {
+          owner: record.owner,
+          name: record.name,
+          starCount: record.starCount,
+          starred: record.starred,
+        };
+        starLabel.renderOrder = 8;
+        node.add(starLabel);
+        interactive.push(starLabel);
+      }
 
       const base = new THREE.Mesh(baseGeometry, materials.base);
       base.name = `repository-portal-base:${record.owner}/${record.name}`;
@@ -6736,6 +6923,9 @@ export function createWorldScene({
   function setCameraZoom(value) {
     const next = Number(value);
     if (!Number.isFinite(next)) return cameraZoom;
+    // First person has no orbit distance. Wheel and pinch remain consumed by
+    // their handlers but preserve the third-person zoom for a predictable exit.
+    if (cameraMode === "first-person") return cameraZoom;
     cameraZoom = clamp(next, CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX);
     scene.fog.density = environmentFogDensity * zoomFogMultiplier();
     return cameraZoom;
@@ -6766,11 +6956,19 @@ export function createWorldScene({
     // The canvas behaves like a grabbed world: pull the scene with the
     // pointer, so the camera turns opposite to the hand's travel direction.
     cameraYaw -= deltaX * CAMERA_LOOK_SENSITIVITY;
-    cameraPitch = clamp(
-      cameraPitch + deltaY * CAMERA_LOOK_SENSITIVITY,
-      CAMERA_PITCH_MIN,
-      CAMERA_PITCH_MAX,
-    );
+    if (cameraMode === "first-person") {
+      firstPersonPitch = clamp(
+        firstPersonPitch + deltaY * CAMERA_LOOK_SENSITIVITY,
+        FIRST_PERSON_PITCH_MIN,
+        FIRST_PERSON_PITCH_MAX,
+      );
+    } else {
+      cameraPitch = clamp(
+        cameraPitch + deltaY * CAMERA_LOOK_SENSITIVITY,
+        CAMERA_PITCH_MIN,
+        CAMERA_PITCH_MAX,
+      );
+    }
   }
 
   function handlePointerDown(event) {
@@ -6989,12 +7187,17 @@ export function createWorldScene({
         id === "repositories" && hit.object.userData.repositorySizeNode
           ? { ...hit.object.userData.repositorySizeNode }
           : null;
+      const repositoryStar =
+        id === "repositories" && hit.object.userData.repositoryStar
+          ? { ...hit.object.userData.repositoryStar }
+          : null;
       if (
         !repository &&
-        !repositorySizeNode
+        !repositorySizeNode &&
+        !repositoryStar
       ) {
         focusLandmark(id);
-      } else {
+      } else if (repository || repositorySizeNode) {
         const target = repository || repositorySizeNode;
         focusRepositoryPortal(target.owner, target.name);
       }
@@ -7005,6 +7208,7 @@ export function createWorldScene({
         ).slice(0, 40),
         repository,
         repositorySizeNode,
+        repositoryStar,
         graphNode:
           id === "repositories" && hit.object.userData.graphNode
             ? { ...hit.object.userData.graphNode }
@@ -7086,7 +7290,8 @@ export function createWorldScene({
       event.preventDefault();
     }
     if (event.code === "Escape") {
-      clearFocus();
+      if (cameraMode === "first-person") setCameraMode("third-person");
+      else clearFocus();
     }
   }
 
@@ -7235,15 +7440,20 @@ export function createWorldScene({
     // main removed the floating landmark labels (adhoc #243); only the player
     // and remote name plates remain, and they are a town-scene concern.
     if (officeSceneMode === "town") {
-      updateScreenLabel(
-        THREE,
-        player,
-        playerLabel,
-        camera,
-        rect.width,
-        rect.height,
-        player.userData.emojiStatusSprite ? 5.7 : 4.5,
-      );
+      if (cameraMode === "first-person") {
+        playerLabel.style.opacity = "0";
+        playerLabel.style.visibility = "hidden";
+      } else {
+        updateScreenLabel(
+          THREE,
+          player,
+          playerLabel,
+          camera,
+          rect.width,
+          rect.height,
+          player.userData.emojiStatusSprite ? 5.7 : 4.5,
+        );
+      }
       remotePlayers.forEach((avatar, id) => {
         updateScreenLabel(
           THREE,
@@ -7400,7 +7610,9 @@ export function createWorldScene({
     showOfficeBubble,
     leaveOfficeInterior,
     focusRepositoryPortal,
+    enterRepositoryFirstPerson,
     clearFocus,
+    setCameraMode,
     setTheme,
     setLightLevel,
     setMovementTuning,
@@ -7412,6 +7624,7 @@ export function createWorldScene({
     setRemotePlayers,
     updateArrivalStats,
     updateMemberLounge,
+    setMemberLoungeLoading,
     updateNetworkNodes,
     focusNetworkNode,
     updateFederatedInstances,
@@ -7432,11 +7645,16 @@ export function createWorldScene({
     dispose,
     setCameraZoom,
     getCameraState: () => ({
+      mode: cameraMode,
+      firstPerson: cameraMode === "first-person",
       zoom: cameraZoom,
       minZoom: CAMERA_ZOOM_MIN,
       maxZoom: CAMERA_ZOOM_MAX,
       yaw: cameraYaw,
-      pitch: cameraPitch,
+      pitch:
+        cameraMode === "first-person" ? firstPersonPitch : cameraPitch,
+      orbitPitch: cameraPitch,
+      firstPersonPitch,
       dragging: primaryPointerId !== null,
       pointerLocked: false,
     }),

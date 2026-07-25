@@ -2509,6 +2509,15 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <button
               class="world-top-link"
               type="button"
+              data-world-camera-toggle
+              aria-pressed="false"
+              title="Enter first-person view"
+            >
+              <span aria-hidden="true">⌖</span><span data-world-camera-label>First person</span>
+            </button>
+            <button
+              class="world-top-link"
+              type="button"
               data-world-sound-toggle
               aria-pressed="false"
               title="Enable World sounds"
@@ -2808,6 +2817,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         <section
           class="world-account"
           data-world-account
+          data-world-account-panel
           role="dialog"
           aria-modal="true"
           aria-labelledby="world-account-title"
@@ -3120,6 +3130,7 @@ class ForkMeshWorld extends HTMLElement {
     this.mediaSpaces = [];
     this.mediaRoom = normalizeMediaRoom(null);
     this.activeRepository = null;
+    this.repositoryStarStates = new Map();
     this.repositoryMapState = "idle";
     this.repositoryMapTarget = "";
     this.repositoryMapSelection = 0;
@@ -3426,6 +3437,10 @@ class ForkMeshWorld extends HTMLElement {
             this.selectRepositoryPortal(meta.repository);
             return;
           }
+          if (id === "repositories" && meta.repositoryStar) {
+            void this.toggleRepositoryStar(meta.repositoryStar);
+            return;
+          }
           if (id === "repositories" && meta.repositorySizeNode) {
             this.selectRepositorySizeNode(meta.repositorySizeNode);
             return;
@@ -3467,6 +3482,7 @@ class ForkMeshWorld extends HTMLElement {
           this.toggleWorldAccount(true, "login");
         },
       });
+      this.syncWorldCameraModeButton();
       this.syncConstructionMarkers();
       this.officeMeeting = createWorldOfficeMeeting({
         root: this,
@@ -3485,6 +3501,7 @@ class ForkMeshWorld extends HTMLElement {
         meeting: this.officeMeeting,
       });
       this.world.setTheme(this.settings.theme);
+      this.world.setMemberLoungeLoading?.(true);
       this.world.setLightLevel(this.settings.lightLevel);
       this.world.setMovementTuning?.(this.movementTuning());
       await Promise.allSettled([contextPromise, dataPromise]);
@@ -3500,6 +3517,7 @@ class ForkMeshWorld extends HTMLElement {
       this.world.updateFediverseDirectory(this.fediverseDirectory);
       this.world.updateMediaSpaces?.(this.mediaSpaces, this.mediaRoom);
       this.syncMemberLounge();
+      this.world.setMemberLoungeLoading?.(false);
       this.syncRepositoryScene();
       if (this.repositories.length) {
         // The scene and authenticated live catalog are both ready. Populate
@@ -4668,6 +4686,10 @@ class ForkMeshWorld extends HTMLElement {
         this.toggleWorldSound();
         return;
       }
+      if (event.target.closest("[data-world-camera-toggle]")) {
+        this.toggleWorldCameraMode();
+        return;
+      }
       const landmarkButton = event.target.closest("[data-world-landmark]");
       if (landmarkButton) {
         const id = landmarkButton.dataset.worldLandmark;
@@ -4822,6 +4844,16 @@ class ForkMeshWorld extends HTMLElement {
       const pullMerge = event.target.closest("[data-world-pull-merge]");
       if (pullMerge) {
         void this.mergeRepositoryPull();
+        return;
+      }
+      const repositoryStar = event.target.closest("[data-world-repo-star]");
+      if (repositoryStar) {
+        const [owner, name] = String(
+          repositoryStar.dataset.worldRepoKey || "",
+        ).split("/");
+        if (owner && name) {
+          void this.toggleRepositoryStar({ owner, name });
+        }
         return;
       }
       const graphNode = event.target.closest("[data-world-graph-node]");
@@ -8600,6 +8632,241 @@ class ForkMeshWorld extends HTMLElement {
     return commits;
   }
 
+  repositoryStarKey(owner, name) {
+    const safeOwner = sanitizePresenceText(owner, "", 40).toLowerCase();
+    const safeName = sanitizePresenceText(name, "", 60).toLowerCase();
+    return safeOwner && safeName ? `${safeOwner}/${safeName}` : "";
+  }
+
+  repositoryStarStateFor(repository = {}) {
+    const key = this.repositoryStarKey(
+      repository.owner,
+      repository.repo || repository.name,
+    );
+    return (
+      this.repositoryStarStates.get(key) || {
+        status: repository.isPrivate ? "unavailable" : "idle",
+        count: null,
+        starred: false,
+        mutating: false,
+      }
+    );
+  }
+
+  applyRepositoryStarState(owner, name, nextState) {
+    const key = this.repositoryStarKey(owner, name);
+    if (!key) return null;
+    if (
+      !this.repositoryStarStates.has(key) &&
+      this.repositoryStarStates.size >= 200
+    ) {
+      this.repositoryStarStates.delete(
+        this.repositoryStarStates.keys().next().value,
+      );
+    }
+    const previous = this.repositoryStarStates.get(key) || {};
+    const state = {
+      status: String(nextState?.status || previous.status || "idle"),
+      count:
+        Number.isSafeInteger(nextState?.count) && nextState.count >= 0
+          ? Math.min(nextState.count, 10_000_000)
+          : Number.isSafeInteger(previous.count)
+            ? previous.count
+            : null,
+      starred:
+        typeof nextState?.starred === "boolean"
+          ? nextState.starred
+          : previous.starred === true,
+      mutating: nextState?.mutating === true,
+    };
+    this.repositoryStarStates.set(key, state);
+    const [safeOwner, safeName] = key.split("/");
+    this.repositories.forEach((repository) => {
+      if (
+        this.repositoryStarKey(repository.owner, repository.name) === key
+      ) {
+        repository.starCount = state.count;
+        repository.starred = state.starred;
+      }
+    });
+    if (
+      this.activeRepository &&
+      this.repositoryStarKey(
+        this.activeRepository.owner,
+        this.activeRepository.repo,
+      ) === key
+    ) {
+      this.activeRepository.starCount = state.count;
+      this.activeRepository.starred = state.starred;
+    }
+    return { ...state, owner: safeOwner, name: safeName };
+  }
+
+  refreshRepositoryStarUI() {
+    if (this.repositoryMapState === "ready" && this.activeRepository) {
+      this.renderRepositoryExplorer();
+    }
+    this.syncRepositoryScene();
+  }
+
+  async loadRepositoryStarState(owner, name, isPrivate = false, force = false) {
+    const key = this.repositoryStarKey(owner, name);
+    if (!key) return null;
+    if (isPrivate) {
+      this.applyRepositoryStarState(owner, name, {
+        status: "unavailable",
+        count: null,
+        starred: false,
+      });
+      return null;
+    }
+    const current = this.repositoryStarStates.get(key);
+    if (!force && ["loading", "ready"].includes(current?.status)) {
+      return current;
+    }
+    this.applyRepositoryStarState(owner, name, {
+      status: "loading",
+      count: current?.count,
+      starred: current?.starred === true,
+    });
+    this.refreshRepositoryStarUI();
+    const [safeOwner, safeName] = key.split("/");
+    const base = `/api/repo/${encodeURIComponent(
+      safeOwner,
+    )}/${encodeURIComponent(safeName)}/star`;
+    try {
+      const payload = await this.fetchJSON(base, {
+        cache: "no-store",
+        timeout: 5000,
+      });
+      const count = Number(payload?.count);
+      if (
+        payload?.ok !== true ||
+        !Number.isSafeInteger(count) ||
+        count < 0 ||
+        typeof payload?.starred !== "boolean"
+      ) {
+        throw new Error("invalid_star_state");
+      }
+      const state = this.applyRepositoryStarState(owner, name, {
+        status: "ready",
+        count,
+        starred: payload.starred,
+      });
+      this.refreshRepositoryStarUI();
+      return state;
+    } catch (_) {
+      const state = this.applyRepositoryStarState(owner, name, {
+        status: "unavailable",
+        count: current?.count,
+        starred: current?.starred === true,
+      });
+      this.refreshRepositoryStarUI();
+      return state;
+    }
+  }
+
+  async toggleRepositoryStar(repository = {}) {
+    const owner = sanitizePresenceText(repository.owner, "", 40);
+    const name = sanitizePresenceText(
+      repository.repo || repository.name,
+      "",
+      60,
+    );
+    const key = this.repositoryStarKey(owner, name);
+    if (!key) return false;
+    const catalogRecord = this.repositories.find(
+      (candidate) =>
+        this.repositoryStarKey(candidate.owner, candidate.name) === key,
+    );
+    if (
+      repository.isPrivate === true ||
+      catalogRecord?.isPrivate === true ||
+      (this.activeRepository?.isPrivate === true &&
+        this.repositoryStarKey(
+          this.activeRepository.owner,
+          this.activeRepository.repo,
+        ) === key)
+    ) {
+      this.toast("Stars are available for public repositories.");
+      return false;
+    }
+    if (!this.sessionAuthenticated || !validWorldSession()) {
+      const starButton = this.$$("[data-world-repo-star]").find(
+        (button) =>
+          String(button.dataset.worldRepoKey || "").toLowerCase() === key,
+      );
+      this.toggleWorldAccount(
+        true,
+        "login",
+        starButton,
+      );
+      return false;
+    }
+    let current = this.repositoryStarStates.get(key);
+    if (current?.status !== "ready") {
+      current = await this.loadRepositoryStarState(owner, name, false, true);
+    }
+    if (
+      current?.status !== "ready" ||
+      current.mutating ||
+      !Number.isSafeInteger(current.count)
+    ) {
+      this.toast("The repository star state is temporarily unavailable.");
+      return false;
+    }
+    this.applyRepositoryStarState(owner, name, {
+      ...current,
+      mutating: true,
+    });
+    this.refreshRepositoryStarUI();
+    const nextStarred = current.starred !== true;
+    const base = `/api/repo/${encodeURIComponent(
+      owner,
+    )}/${encodeURIComponent(name)}/star`;
+    try {
+      const payload = await this.postJSON(
+        base,
+        {},
+        {
+          method: nextStarred ? "POST" : "DELETE",
+          timeout: 8000,
+        },
+      );
+      const count = Number(payload?.count);
+      if (
+        payload?.ok !== true ||
+        !Number.isSafeInteger(count) ||
+        count < 0 ||
+        typeof payload?.starred !== "boolean"
+      ) {
+        throw new Error("invalid_star_state");
+      }
+      this.applyRepositoryStarState(owner, name, {
+        status: "ready",
+        count,
+        starred: payload.starred,
+        mutating: false,
+      });
+      this.refreshRepositoryStarUI();
+      this.toast(
+        payload.starred
+          ? `${owner}/${name} added to your stars.`
+          : `${owner}/${name} removed from your stars.`,
+      );
+      return true;
+    } catch (_) {
+      this.applyRepositoryStarState(owner, name, {
+        ...current,
+        status: "ready",
+        mutating: false,
+      });
+      this.refreshRepositoryStarUI();
+      this.toast("The repository star could not be updated.");
+      return false;
+    }
+  }
+
   syncRepositoryScene() {
     if (!this.world) return;
     const active =
@@ -8629,8 +8896,15 @@ class ForkMeshWorld extends HTMLElement {
     const active = this.activeRepository;
     const focused =
       active &&
-      this.world?.focusRepositoryPortal?.(active.owner, active.repo) === true;
-    if (!focused) this.world?.focusLandmark?.("repositories");
+      this.world?.enterRepositoryFirstPerson?.(
+        active.owner,
+        active.repo,
+      ) === true;
+    if (!focused) {
+      this.world?.setCameraMode?.("third-person");
+      this.world?.focusLandmark?.("repositories");
+    }
+    this.syncWorldCameraModeButton();
   }
 
   selectRepositoryPortal(portal) {
@@ -8913,6 +9187,11 @@ class ForkMeshWorld extends HTMLElement {
       this.clearPullReviewScrollTracking();
       this.renderRepositoryMapStatus();
       this.syncRepositoryScene();
+      void this.loadRepositoryStarState(
+        safeOwner,
+        safeRepo,
+        this.activeRepository?.isPrivate === true,
+      );
       if (options.revealScene === true) this.revealRepositoryScene();
       return true;
     }
@@ -8981,6 +9260,11 @@ class ForkMeshWorld extends HTMLElement {
     this.repositoryMapState = "ready";
     this.renderRepositoryMapStatus();
     this.syncRepositoryScene();
+    void this.loadRepositoryStarState(
+      safeOwner,
+      safeRepo,
+      this.activeRepository.isPrivate === true,
+    );
     if (options.revealScene === true) this.revealRepositoryScene();
     void this.loadRepositorySecurity(safeOwner, safeRepo, false);
     return true;
@@ -10204,6 +10488,13 @@ class ForkMeshWorld extends HTMLElement {
     const mirrorItems = Array.isArray(active.mirrors?.mirrors)
       ? active.mirrors.mirrors
       : [];
+    const starState = this.repositoryStarStateFor(active);
+    const starKey = this.repositoryStarKey(active.owner, active.repo);
+    const starCount = Number.isSafeInteger(starState.count)
+      ? compactNumber(starState.count)
+      : starState.status === "loading"
+        ? "…"
+        : "—";
     const graphEntities = buildRepositoryGraphEntities(active);
     const entityNodes = [
       ...graphEntities.map((entity) => ({
@@ -10257,6 +10548,25 @@ class ForkMeshWorld extends HTMLElement {
             <small>commit ${escapeHTML(String(active.commit || "").slice(0, 12))}</small>
           </div>
           <div class="world-repo-map-actions">
+            ${
+              active.isPrivate
+                ? ""
+                : `<button
+                    class="world-repo-star"
+                    type="button"
+                    data-world-repo-star
+                    data-world-repo-key="${escapeHTML(starKey)}"
+                    aria-pressed="${starState.starred === true ? "true" : "false"}"
+                    aria-label="${
+                      starState.starred === true ? "Remove star from" : "Star"
+                    } ${escapeHTML(active.owner)}/${escapeHTML(active.repo)}"
+                    ${starState.mutating ? "disabled" : ""}
+                  >
+                    <span aria-hidden="true">★</span>
+                    <span>${starState.starred === true ? "Starred" : "Star"}</span>
+                    <strong data-world-repo-star-count>${escapeHTML(starCount)}</strong>
+                  </button>`
+            }
             <button type="button" data-world-repo-scene>Visit edge sunburst</button>
             ${
               active.path
@@ -11972,6 +12282,40 @@ class ForkMeshWorld extends HTMLElement {
       output.textContent = next >= WORLD_MOVE_ACCEL_MAX ? "∞" : `${next}%`;
     }
     return next;
+  }
+
+  syncWorldCameraModeButton() {
+    const button = this.$("[data-world-camera-toggle]");
+    const label = this.$("[data-world-camera-label]");
+    const firstPerson =
+      this.world?.getCameraState?.().mode === "first-person";
+    button?.setAttribute("aria-pressed", String(firstPerson));
+    if (button) {
+      button.title = firstPerson
+        ? "Exit first-person view"
+        : "Enter first-person view";
+      button.setAttribute(
+        "aria-label",
+        firstPerson
+          ? "Exit first-person view"
+          : "Enter first-person view",
+      );
+    }
+    if (label) label.textContent = firstPerson ? "Third person" : "First person";
+    return firstPerson;
+  }
+
+  toggleWorldCameraMode() {
+    if (!this.world?.setCameraMode) return;
+    const firstPerson = this.syncWorldCameraModeButton();
+    const next = firstPerson ? "third-person" : "first-person";
+    this.world.setCameraMode(next);
+    this.syncWorldCameraModeButton();
+    this.toast(
+      next === "first-person"
+        ? "First-person view enabled."
+        : "Third-person view restored.",
+    );
   }
 
   async toggleWorldSound() {

@@ -845,6 +845,103 @@ def test_repository_world_uses_authorized_https_metadata_and_size_aware_nodes():
     assert 'data-world-repo-filter="coverage" disabled' not in APP
 
 
+def test_repository_world_reuses_the_star_api_and_keeps_login_in_world():
+    for selector in (
+        "data-world-repo-star",
+        "data-world-repo-key",
+        "data-world-repo-star-count",
+    ):
+        assert selector in APP
+    star_control_start = APP.index('class="world-repo-star"')
+    star_control = APP[
+        star_control_start:
+        star_control_start + 1200
+    ]
+    assert "aria-pressed" in star_control
+    assert "data-world-repo-star-count" in star_control
+    loader = APP[
+        APP.index("  async loadRepositoryStarState("):
+        APP.index(
+            "\n  async toggleRepositoryStar(",
+            APP.index("  async loadRepositoryStarState("),
+        )
+    ]
+    assert ")}/star`" in loader
+    assert "this.fetchJSON(base" in loader
+    assert 'cache: "no-store"' in loader
+    toggle = APP[
+        APP.index("  async toggleRepositoryStar("):
+        APP.index(
+            "\n  syncRepositoryScene()",
+            APP.index("  async toggleRepositoryStar("),
+        )
+    ]
+    assert ")}/star`" in toggle
+    assert "this.postJSON(" in toggle
+    assert 'nextStarred ? "POST" : "DELETE"' in toggle
+    assert 'this.toggleWorldAccount(\n        true,\n        "login",' in toggle
+    assert "data-world-account-panel" in APP
+
+
+def test_world_first_person_camera_has_accessible_toggle_and_scene_api():
+    toggle_start = APP.index("data-world-camera-toggle")
+    toggle = APP[toggle_start:toggle_start + 500]
+    assert 'aria-pressed="false"' in toggle
+    assert 'title="Enter first-person view"' in toggle
+    assert "data-world-camera-label" in toggle
+    assert (
+        'event.target.closest("[data-world-camera-toggle]")'
+        in APP
+    )
+
+    sync_start = APP.index("  syncWorldCameraModeButton() {")
+    sync = APP[
+        sync_start:
+        APP.index("\n  toggleWorldCameraMode()", sync_start)
+    ]
+    for contract in (
+        '"first-person"',
+        '"aria-pressed"',
+        '"Exit first-person view"',
+        '"Enter first-person view"',
+        '"Third person"',
+        '"First person"',
+    ):
+        assert contract in sync
+
+    scene_mode_start = SCENE.index("  function setCameraMode(mode) {")
+    scene_mode = SCENE[
+        scene_mode_start:
+        SCENE.index("\n  function focusRepositoryPortal(", scene_mode_start)
+    ]
+    assert 'player.visible = false' in scene_mode
+    assert 'player.visible = true' in scene_mode
+    assert "renderer.domElement.dataset.cameraMode = cameraMode" in scene_mode
+
+    repository_entry_start = SCENE.index(
+        "  function enterRepositoryFirstPerson(",
+    )
+    repository_entry = SCENE[
+        repository_entry_start:
+        SCENE.index("\n  function clearFocus()", repository_entry_start)
+    ]
+    assert 'setCameraMode("first-person")' in repository_entry
+    assert "player.position.set(" in repository_entry
+    assert "onMovement({" in repository_entry
+
+    reveal_start = APP.index("  revealRepositoryScene() {")
+    reveal = APP[
+        reveal_start:
+        APP.index("\n  selectRepositoryPortal(", reveal_start)
+    ]
+    assert "this.world?.enterRepositoryFirstPerson?.(" in reveal
+    assert 'this.world?.setCameraMode?.("third-person")' in reveal
+    assert "this.syncWorldCameraModeButton();" in reveal
+    assert "enterRepositoryFirstPerson," in SCENE
+    assert "setCameraMode," in SCENE
+    assert "getCameraState:" in SCENE
+
+
 def test_world_autoloads_the_live_catalog_attested_flagship_repository_map():
     assert 'owner: "forkmesh",\n  repo: "forkmesh"' in APP
     bootstrap = APP[

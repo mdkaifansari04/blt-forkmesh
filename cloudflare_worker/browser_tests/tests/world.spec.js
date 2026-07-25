@@ -44,6 +44,7 @@ async function prepareWorldPage(
     chatPassphrase = "",
     worldSocketHandler = null,
     repositoryFixture = null,
+    repositoryStarFixture = null,
     accountFixture = null,
     unavailablePaths = [],
     chatChannels = [],
@@ -499,7 +500,67 @@ ${longContext}
       const pullMergeMatch = url.pathname.match(
         /^\/api\/repo\/forkmesh\/forkmesh\/pulls\/44\/merge$/,
       );
-      if (pullMergeMatch && route.request().method() === "POST") {
+      if (
+        repositoryStarFixture &&
+        url.pathname === `${repoBase}/star`
+      ) {
+        const method = route.request().method();
+        const authorization =
+          route.request().headers().authorization || "";
+        let requestBody = null;
+        if (route.request().postData()) {
+          try {
+            requestBody = route.request().postDataJSON();
+          } catch (_) {
+            requestBody = "invalid-json";
+          }
+        }
+        if (!Array.isArray(repositoryStarFixture.requests)) {
+          repositoryStarFixture.requests = [];
+        }
+        repositoryStarFixture.requests.push({
+          path: url.pathname,
+          method,
+          authorization,
+          body: requestBody,
+        });
+        repositoryStarFixture.count = Math.max(
+          0,
+          Number(repositoryStarFixture.count) || 0,
+        );
+        repositoryStarFixture.starred =
+          repositoryStarFixture.starred === true;
+        if (method === "GET") {
+          body = {
+            ok: true,
+            count: repositoryStarFixture.count,
+            starred: Boolean(session && repositoryStarFixture.starred),
+          };
+        } else if (!["POST", "DELETE"].includes(method)) {
+          status = 405;
+          body = { error: "method_not_allowed" };
+        } else if (!session?.sessionToken || !authorization) {
+          status = 401;
+          body = { error: "invalid_session" };
+        } else if (repositoryStarFixture.failMutation) {
+          status = 503;
+          body = { error: "fixture_unavailable" };
+        } else {
+          const nextStarred = method === "POST";
+          if (nextStarred !== repositoryStarFixture.starred) {
+            repositoryStarFixture.count = Math.max(
+              0,
+              repositoryStarFixture.count + (nextStarred ? 1 : -1),
+            );
+          }
+          repositoryStarFixture.starred = nextStarred;
+          body = {
+            ok: true,
+            count: repositoryStarFixture.count,
+            starred: repositoryStarFixture.starred,
+          };
+        }
+      } else if (pullMergeMatch && route.request().method() === "POST") {
         let request = {};
         try {
           request = route.request().postDataJSON();
@@ -867,6 +928,19 @@ async function openWorldPullReview(page, number = 44) {
   await expect(
     page.getByRole("heading", { name: `Pull request #${number}` }),
   ).toBeVisible();
+}
+
+async function openWorldRepositoryExplorer(page) {
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.repositoryMapState === "ready" &&
+      shell?.activeRepository?.owner === "forkmesh" &&
+      shell?.activeRepository?.repo === "forkmesh";
+  });
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.openLandmark("repositories"),
+  );
 }
 
 test("signed-in World receives private and global notifications", async ({
@@ -2964,6 +3038,210 @@ test("an incomplete healthy-mirror state attestation cannot auto-load the flagsh
   expect(
     repositoryReads.filter((path) => path.endsWith("/tree")),
   ).toHaveLength(0);
+});
+
+test("repository stars toggle in-place through the exact organization alias", async ({
+  page,
+  context,
+}) => {
+  const starFixture = { count: 7, starred: false, requests: [] };
+  await prepareWorldPage(page, "world-repository-star", {
+    session: {
+      nodeName: "star-tester",
+      sessionToken: "star-session-token",
+    },
+    repositoryFixture: {},
+    repositoryStarFixture: starFixture,
+  });
+  await openWorldRepositoryExplorer(page);
+
+  const originalURL = page.url();
+  const originalPages = context.pages().length;
+  const star = page.locator(
+    '[data-world-repo-star][data-world-repo-key="forkmesh/forkmesh"]',
+  );
+  await expect(star).toBeVisible();
+  await expect(star).toHaveAttribute("aria-pressed", "false");
+  await expect(star.locator("[data-world-repo-star-count]")).toHaveText("7");
+
+  await star.click();
+  await expect(star).toHaveAttribute("aria-pressed", "true");
+  await expect(star.locator("[data-world-repo-star-count]")).toHaveText("8");
+
+  await star.click();
+  await expect(star).toHaveAttribute("aria-pressed", "false");
+  await expect(star.locator("[data-world-repo-star-count]")).toHaveText("7");
+
+  expect(page.url()).toBe(originalURL);
+  expect(context.pages()).toHaveLength(originalPages);
+  expect(
+    starFixture.requests.filter((request) => request.method === "GET").length,
+  ).toBeGreaterThanOrEqual(1);
+  expect(
+    starFixture.requests
+      .filter((request) => request.method !== "GET")
+      .map((request) => ({
+        path: request.path,
+        method: request.method,
+        authorization: request.authorization,
+        body: request.body,
+      })),
+  ).toEqual([
+    {
+      path: "/api/repo/forkmesh/forkmesh/star",
+      method: "POST",
+      authorization: "Bearer star-session-token",
+      body: {},
+    },
+    {
+      path: "/api/repo/forkmesh/forkmesh/star",
+      method: "DELETE",
+      authorization: "Bearer star-session-token",
+      body: {},
+    },
+  ]);
+  expect(
+    starFixture.requests.every(
+      (request) =>
+        request.path === "/api/repo/forkmesh/forkmesh/star",
+    ),
+  ).toBe(true);
+});
+
+test("signed-out repository star opens the in-world account panel without mutation", async ({
+  page,
+  context,
+}) => {
+  const starFixture = { count: 11, starred: false, requests: [] };
+  await prepareWorldPage(page, "world-repository-star-guest", {
+    repositoryFixture: {},
+    repositoryStarFixture: starFixture,
+  });
+  await openWorldRepositoryExplorer(page);
+
+  const originalURL = page.url();
+  const originalPages = context.pages().length;
+  const star = page.locator(
+    '[data-world-repo-star][data-world-repo-key="forkmesh/forkmesh"]',
+  );
+  await expect(star).toHaveAttribute("aria-pressed", "false");
+  await expect(star.locator("[data-world-repo-star-count]")).toHaveText("11");
+  await star.click();
+
+  const account = page.locator("[data-world-account-panel]");
+  await expect(account).toHaveAttribute("data-open", "true");
+  await expect(account).toHaveAttribute("aria-hidden", "false");
+  expect(
+    starFixture.requests.filter((request) =>
+      ["POST", "DELETE"].includes(request.method),
+    ),
+  ).toHaveLength(0);
+  expect(
+    starFixture.requests.filter((request) => request.method === "GET").length,
+  ).toBeGreaterThanOrEqual(1);
+  expect(page.url()).toBe(originalURL);
+  expect(context.pages()).toHaveLength(originalPages);
+});
+
+test("camera toggle enters first-person and restores the local player", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "world-first-person-toggle");
+  await waitForWorld(page);
+
+  const toggle = page.locator("[data-world-camera-toggle]");
+  await expect(toggle).toBeVisible();
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await expect(toggle).toHaveAttribute(
+    "aria-label",
+    "Enter first-person view",
+  );
+  await expect(toggle.locator("[data-world-camera-label]")).toHaveText(
+    "First person",
+  );
+
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await expect(toggle).toHaveAttribute(
+    "aria-label",
+    "Exit first-person view",
+  );
+  await expect(toggle.locator("[data-world-camera-label]")).toHaveText(
+    "Third person",
+  );
+  expect(
+    await page.locator("forkmesh-world").evaluate((shell) => ({
+      camera: shell.world.getCameraState(),
+      playerVisible: shell.world.player.visible,
+      canvasMode: shell.world.renderer.domElement.dataset.cameraMode,
+    })),
+  ).toMatchObject({
+    camera: { mode: "first-person", firstPerson: true },
+    playerVisible: false,
+    canvasMode: "first-person",
+  });
+
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await expect(toggle).toHaveAttribute(
+    "aria-label",
+    "Enter first-person view",
+  );
+  await expect(toggle.locator("[data-world-camera-label]")).toHaveText(
+    "First person",
+  );
+  expect(
+    await page.locator("forkmesh-world").evaluate((shell) => ({
+      camera: shell.world.getCameraState(),
+      playerVisible: shell.world.player.visible,
+      canvasMode: shell.world.renderer.domElement.dataset.cameraMode,
+    })),
+  ).toMatchObject({
+    camera: { mode: "third-person", firstPerson: false },
+    playerVisible: true,
+    canvasMode: "third-person",
+  });
+});
+
+test("visiting the repository sunburst enters first-person and can exit", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "world-repository-first-person", {
+    repositoryFixture: {},
+  });
+  await openWorldRepositoryExplorer(page);
+
+  await page.locator("[data-world-repo-scene]").click();
+  const toggle = page.locator("[data-world-camera-toggle]");
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await expect(toggle).toHaveAttribute(
+    "aria-label",
+    "Exit first-person view",
+  );
+  expect(
+    await page.locator("forkmesh-world").evaluate((shell) => ({
+      camera: shell.world.getCameraState(),
+      playerVisible: shell.world.player.visible,
+      canvasMode: shell.world.renderer.domElement.dataset.cameraMode,
+    })),
+  ).toMatchObject({
+    camera: { mode: "first-person", firstPerson: true },
+    playerVisible: false,
+    canvasMode: "first-person",
+  });
+
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await expect(toggle).toHaveAttribute(
+    "aria-label",
+    "Enter first-person view",
+  );
+  expect(
+    await page.locator("forkmesh-world").evaluate((shell) => ({
+      mode: shell.world.getCameraState().mode,
+      playerVisible: shell.world.player.visible,
+    })),
+  ).toEqual({ mode: "third-person", playerVisible: true });
 });
 
 test("pull requests open and become viewed entirely inside the repository World", async ({

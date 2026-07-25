@@ -3171,6 +3171,29 @@ forkmesh-world.world-office-active .world-quick-dock {
   gap: 6px;
 }
 
+.world-repo-map-actions .world-repo-star {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.world-repo-map-actions .world-repo-star[aria-pressed="true"] {
+  border-color: var(--world-sun);
+  color: var(--world-sun);
+}
+
+.world-repo-map-actions .world-repo-star strong {
+  min-width: 1.4em;
+  margin: 0;
+  color: currentcolor;
+  text-align: center;
+}
+
+.world-repo-map-actions .world-repo-star:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
 .world-repo-summary {
   grid-template-columns: repeat(5, 1fr);
 }
