@@ -318,7 +318,42 @@
           end-to-end encryption boundary against the relay operator.
         </p>
 
-        <h3 id="message-envelope">2.3 Message envelope</h3>
+        <h3 id="personal-direct-messages">2.3 Personal direct messages</h3>
+        <p>
+          Personal direct messages connect exactly two active registered users.
+          Either participant can start the conversation, and starting the same
+          pair again returns the existing conversation regardless of which user
+          initiated it. Self-messaging and group conversations are rejected.
+          Administrators have no implicit access: an account must be one of the
+          two stored participants to list, open, or connect to the conversation.
+        </p>
+        <p>
+          Conversation and participant names are encrypted at rest. Blind
+          indexes enforce one conversation per unordered pair and authorize
+          participant lookups without exposing those names. The browser lists
+          its conversations through <code>GET /api/chat/direct-messages</code>
+          or starts one with <code>POST /api/chat/direct-messages</code> and a
+          <code>username</code> field.
+        </p>
+        <p>
+          A participant requests a non-cacheable passphrase and 60-second
+          WebSocket ticket through
+          <code>GET /api/chat/direct-messages/&lt;conversation-id&gt;/room-access</code>.
+          The socket at
+          <code>/api/chat/direct-messages/&lt;conversation-id&gt;/ws?ticket=…</code>
+          rechecks the active account and participant row before reaching the
+          Durable Object. Missing conversations and unauthorized accounts both
+          receive not found, including platform administrators.
+        </p>
+        <p>
+          Direct messages use the same relay-readable AES-GCM transport,
+          encrypted attachment frames, and retained ciphertext limits as other
+          chat rooms. The relay derives each conversation passphrase, so this is
+          access-controlled encryption rather than end-to-end encryption
+          against the relay operator.
+        </p>
+
+        <h3 id="message-envelope">2.4 Message envelope</h3>
         <p>Each frame on the wire is JSON:</p>
         <pre><code>{ "kind": "cipher", "v": 1, "nonce": "&lt;b64 12 bytes&gt;", "tag": "&lt;b64 16 bytes&gt;", "body": "&lt;b64 ciphertext&gt;" }</code></pre>
         <p>
@@ -335,7 +370,7 @@
           there is no plaintext upload endpoint.
         </p>
 
-        <h3 id="history-retention">2.4 History retention</h3>
+        <h3 id="history-retention">2.5 History retention</h3>
         <p>
           The relay keeps the last few days of <strong>encrypted</strong>
           frames so a late-joining node sees some backlog when no peer is
@@ -455,6 +490,9 @@
             <tr><td><code>GET</code> | <code>POST</code> | <code>DELETE /api/chat/channels/&lt;id&gt;/members</code></td><td>administrator-only private membership list, invitation, and revocation</td></tr>
             <tr><td><code>GET /api/chat/channels/&lt;id&gt;/room-access</code></td><td>issue the current channel passphrase and short-lived ticket after visibility-aware authorization</td></tr>
             <tr><td><code>GET /api/chat/channels/&lt;id&gt;/ws?ticket=…</code></td><td>ticketed channel WebSocket with active-account, visibility, membership, and key-version admission checks</td></tr>
+            <tr><td><code>GET</code> | <code>POST /api/chat/direct-messages</code></td><td>list participant conversations or idempotently start one with another active registered user</td></tr>
+            <tr><td><code>GET /api/chat/direct-messages/&lt;id&gt;/room-access</code></td><td>issue conversation credentials only when the active account is one of the two participants</td></tr>
+            <tr><td><code>GET /api/chat/direct-messages/&lt;id&gt;/ws?ticket=…</code></td><td>ticketed direct-message WebSocket with active-account and participant admission checks</td></tr>
             <tr><td><code>* /api/repo/&lt;owner&gt;/&lt;repo&gt;/host</code></td><td>legacy control channel; repository payload frames fail closed</td></tr>
             <tr><td><code>GET /api/repo/&lt;owner&gt;/&lt;repo&gt;/{tree,blob,blobs,raw,history,commit,branches,search}</code></td><td>website browse — proxied over ordinary HTTPS to a healthy authenticated mirror origin</td></tr>
           </tbody>

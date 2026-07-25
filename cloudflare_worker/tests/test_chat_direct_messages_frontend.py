@@ -6,6 +6,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CHAT = (ROOT / "public" / "chat.js").read_text(encoding="utf-8")
 HTML = (ROOT / "public" / "chat.html").read_text(encoding="utf-8")
+PROTOCOL = (
+    ROOT / "public" / "docs" / "protocol" / "index.html"
+).read_text(encoding="utf-8")
 
 
 def _function_source(name):
@@ -93,3 +96,16 @@ def test_direct_message_rendering_uses_distinct_labels_and_no_forkbot():
     assert "isDirectMessageKey(scope)" in _function_source(
         "frameMatchesScope"
     )
+
+
+def test_protocol_documents_participant_only_direct_messages():
+    for marker in (
+        'id="personal-direct-messages"',
+        "/api/chat/direct-messages",
+        "/room-access",
+        "/ws?ticket=",
+        "exactly two active registered users",
+        "Administrators have no implicit access",
+        "relay-readable AES-GCM",
+    ):
+        assert marker in PROTOCOL
