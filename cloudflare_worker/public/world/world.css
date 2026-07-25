@@ -3947,48 +3947,6 @@ forkmesh-world {
   pointer-events: none;
 }
 
-.world-object-label {
-  position: absolute;
-  display: grid;
-  transform: translate(-50%, -100%);
-  justify-items: center;
-  gap: 4px;
-  transition: opacity 120ms ease;
-}
-
-.world-object-label button {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  border: 1px solid var(--label-color, var(--world-line-strong));
-  border-radius: 0;
-  background: rgb(7 17 15 / 0.82);
-  color: var(--world-copy);
-  padding: 5px 8px;
-  cursor: pointer;
-  font-size: 0.62rem;
-  white-space: nowrap;
-  backdrop-filter: blur(10px);
-}
-
-.world-construction-mark-destination {
-  font-size: 0.58rem;
-}
-
-.world-object-label button:hover,
-.world-object-label button:focus-visible {
-  background: var(--label-color, var(--world-mint));
-  color: #07110f;
-  outline: none;
-}
-
-.world-object-label::after {
-  content: "";
-  width: 1px;
-  height: 12px;
-  background: var(--label-color, var(--world-line-strong));
-}
-
 .world-player-label {
   position: absolute;
   display: grid;
@@ -4051,8 +4009,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     gap: 4px;
   }
 
-  .world-construction-mark-map,
-  .world-construction-mark-destination {
+  .world-construction-mark-map {
     width: 1.2em;
     height: 1.2em;
     font-size: 0.56rem;
@@ -4239,11 +4196,6 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 
   .world-tour {
     bottom: calc(var(--safe-bottom) + 122px);
-  }
-
-  .world-object-label button {
-    padding: 4px 6px;
-    font-size: 0.55rem;
   }
 }
 

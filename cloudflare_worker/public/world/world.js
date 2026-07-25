@@ -5493,7 +5493,6 @@ class ForkMeshWorld extends HTMLElement {
         );
       });
     });
-    this.world?.updateLandmarkConstruction?.(this.landmarkCapabilities);
   }
 
   updateDistances() {

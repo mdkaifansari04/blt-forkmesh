@@ -1918,16 +1918,7 @@ test("construction markers distinguish verified live landmarks from unavailable 
   await expect(mapMarker("security")).toBeVisible();
   await expect(mapMarker("workshops")).toBeVisible();
 
-  const destinationMarker = (id) =>
-    page.locator(
-      `[data-landmark-label="${id}"] [data-world-construction-marker="${id}"]`,
-    );
-  await expect(destinationMarker("routing")).toHaveAttribute("hidden", "");
-  await expect(destinationMarker("organizations")).not.toHaveAttribute(
-    "hidden",
-    "",
-  );
-  await expect(destinationMarker("organizations")).toHaveAttribute(
+  await expect(mapMarker("organizations")).toHaveAttribute(
     "aria-label",
     /Under construction:.*organization directory integration/i,
   );
