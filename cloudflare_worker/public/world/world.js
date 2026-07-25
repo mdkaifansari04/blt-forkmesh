@@ -72,9 +72,13 @@ const RENDERER_RECOVERY_KEY = "forkmesh.world.renderer-recovery.v1";
 const RENDERER_RECOVERY_DELAY_MS = 1500;
 const RENDERER_RECOVERY_WINDOW_MS = 30 * 1000;
 const POSITION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
-// The Mastodon kiosk refetches the public profile on this cadence; the pac-man
-// dial on the billboard counts the same window down.
+// The Mastodon kiosk refetches the public profile on this cadence; the MM:SS
+// timer on the billboard counts the same window down.
 const MASTODON_REFRESH_MS = 10 * 60 * 1000;
+// Mastodon has no "replies to my account" endpoint, so the replies section is
+// built from the thread context of the newest toots that report replies.
+const MASTODON_REPLY_THREADS = 4;
+const MASTODON_REPLY_LIMIT = 12;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const CHAT_BUBBLE_JOIN_GRACE_MS = 20 * 1000;
 const POSITION_RADIUS = 72;
@@ -3455,6 +3459,7 @@ class ForkMeshWorld extends HTMLElement {
     this.officeTasks = null;
     this.mastodonProfile = null;
     this.mastodonStatuses = [];
+    this.mastodonReplies = [];
     this.mastodonState = "idle";
     this.mastodonFetchedAt = 0;
     this.mastodonRequestedAt = 0;
@@ -7033,6 +7038,14 @@ class ForkMeshWorld extends HTMLElement {
           .slice(0, MASTODON_STATUS_LIMIT);
         this.mastodonFetchedAt = Date.now();
         this.mastodonState = "ready";
+        // Threads are walked one per toot, so paint the profile and toots
+        // first and let the replies section fill in behind them.
+        this.renderMastodonBoard();
+        this.syncMastodonKiosk();
+        this.mastodonReplies = await this.fetchMastodonReplies(
+          account,
+          this.mastodonStatuses,
+        );
       } catch (_) {
         // Keep any previously fetched snapshot on a refresh failure.
         this.mastodonState = this.mastodonProfile ? "ready" : "error";
@@ -7047,8 +7060,47 @@ class ForkMeshWorld extends HTMLElement {
     return this.mastodonLoad;
   }
 
-  // The kiosk billboard reloads on a fixed ten-minute cadence, and the pac-man
-  // dial on the board is repainted every second so visitors can see when the
+  // Public replies other accounts left on the newest toots. Mastodon exposes
+  // them only per-thread, so this walks the context of a bounded number of
+  // toots that report replies and keeps the descendants that are not ours. A
+  // thread that fails to load is skipped rather than blanking the section.
+  async fetchMastodonReplies(account, statuses) {
+    const threads = statuses
+      .filter((status) => status.id && status.repliesCount > 0)
+      .slice(0, MASTODON_REPLY_THREADS);
+    const seen = new Set();
+    const replies = [];
+    for (const thread of threads) {
+      let context = null;
+      try {
+        context = await this.fetchMastodonJSON(
+          `https://mastodon.social/api/v1/statuses/${encodeURIComponent(
+            thread.id,
+          )}/context`,
+        );
+      } catch (_) {
+        continue;
+      }
+      const descendants = Array.isArray(context?.descendants)
+        ? context.descendants.slice(0, MASTODON_STATUS_LIMIT)
+        : [];
+      for (const entry of descendants) {
+        const reply = normalizeMastodonStatus(entry);
+        if (!reply?.id || !reply.text) continue;
+        // Our own posts further down a thread are not "replies from users".
+        if (reply.authorAcct === account.acct) continue;
+        if (seen.has(reply.id)) continue;
+        seen.add(reply.id);
+        replies.push(reply);
+      }
+    }
+    return replies
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+      .slice(0, MASTODON_REPLY_LIMIT);
+  }
+
+  // The kiosk billboard reloads on a fixed ten-minute cadence, and the MM:SS
+  // timer on the board is repainted every second so visitors can see when the
   // next fetch lands. The tick, not a ten-minute interval, drives the refresh
   // so a manual "Refresh" from the mini-app restarts the same window.
   startMastodonRefresh() {
@@ -7127,6 +7179,19 @@ class ForkMeshWorld extends HTMLElement {
           images: status.images.map((media) => media.url).filter(Boolean),
         };
       }),
+      replies: this.mastodonReplies.map((reply) => ({
+        author: reply.authorName,
+        acct: reply.authorAcct ? `@${reply.authorAcct}` : "",
+        avatar: reply.authorAvatar,
+        url: reply.url,
+        date: reply.createdAt
+          ? new Date(reply.createdAt).toLocaleDateString([], {
+              month: "short",
+              day: "numeric",
+            })
+          : "",
+        text: reply.text || "(image reply)",
+      })),
     });
   }
 
@@ -7272,6 +7337,7 @@ class ForkMeshWorld extends HTMLElement {
       <div class="world-mastodon-app">
         ${this.mastodonProfileHTML()}
         ${this.mastodonTootsHTML()}
+        ${this.mastodonRepliesHTML()}
       </div>`;
   }
 
@@ -7465,6 +7531,61 @@ class ForkMeshWorld extends HTMLElement {
       <section class="world-mastodon-toots" aria-label="Latest public toots">
         <h3>Latest toots</h3>
         <div class="world-mastodon-toot-list" data-world-mastodon-toots tabindex="0">
+          ${body}
+        </div>
+      </section>`;
+  }
+
+  // Who replied, with their avatar — the same data the kiosk's REPLIES strip
+  // renders, in full here.
+  mastodonRepliesHTML() {
+    const replies = this.mastodonReplies;
+    const body = replies.length
+      ? replies
+          .map((reply) => {
+            const date = reply.createdAt
+              ? new Date(reply.createdAt).toLocaleDateString([], {
+                  year: "numeric",
+                  month: "short",
+                  day: "numeric",
+                })
+              : "";
+            return `
+              <article class="world-mastodon-reply">
+                ${
+                  reply.authorAvatar
+                    ? `<img src="${escapeHTML(
+                        reply.authorAvatar,
+                      )}" alt="" loading="lazy" />`
+                    : '<span class="world-mastodon-reply-icon" aria-hidden="true">@</span>'
+                }
+                <div>
+                  <header>
+                    <strong>${escapeHTML(reply.authorName)}</strong>
+                    <span>@${escapeHTML(reply.authorAcct)}</span>
+                    <time>${escapeHTML(date)}</time>
+                  </header>
+                  <p class="world-mastodon-text">${escapeHTML(reply.text)}</p>
+                  ${
+                    reply.url
+                      ? `<a href="${escapeHTML(
+                          reply.url,
+                        )}" target="_blank" rel="noopener noreferrer">Open reply</a>`
+                      : ""
+                  }
+                </div>
+              </article>`;
+          })
+          .join("")
+      : `<p class="world-mastodon-status" role="status">${
+          this.mastodonState === "loading" || this.mastodonLoad
+            ? "Loading replies from the fediverse…"
+            : "No public replies on the latest toots yet."
+        }</p>`;
+    return `
+      <section class="world-mastodon-replies" aria-label="Replies from the fediverse">
+        <h3>Replies</h3>
+        <div class="world-mastodon-reply-list" data-world-mastodon-replies tabindex="0">
           ${body}
         </div>
       </section>`;
