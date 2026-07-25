@@ -3345,6 +3345,7 @@ class ForkMeshWorld extends HTMLElement {
     this.pullReviewSelection = 0;
     this.pullViewedFiles = new Map();
     this.pullReviewScrollCleanup = null;
+    this.expandedRepositoryIssuePage = 0;
     this.securityTriage = null;
     this.remotePlayers = new Map();
     this.localPeers = new Map();
@@ -3740,6 +3741,14 @@ class ForkMeshWorld extends HTMLElement {
             this.selectRepositorySizeNode(meta.repositorySizeNode);
             return;
           }
+          if (id === "repositories" && meta.repositoryIssuePage) {
+            this.toggleRepositoryIssuePage(meta.repositoryIssuePage);
+            return;
+          }
+          if (id === "repositories" && meta.repositoryPullPage) {
+            this.loadRepositoryPullReview(meta.repositoryPullPage.number);
+            return;
+          }
           if (id === "repositories" && meta.graphNode) {
             this.selectRepositoryGraphNode(meta.graphNode);
             return;
@@ -3770,7 +3779,7 @@ class ForkMeshWorld extends HTMLElement {
           this.handleRendererStateChange(state);
         },
         onForkbotChat: () => {
-          this.openWorldChat("/dashboard/chat", this.$("[data-world-chat-open]"));
+          this.openChatTerminal("@forkbot ");
         },
         onPlayForkmeshSong: () => {
           void this.playForkmeshSong();
@@ -9932,6 +9941,7 @@ class ForkMeshWorld extends HTMLElement {
     if (!active) {
       this.world.updateRepositoryGraph?.([], []);
       this.world.updateRepositorySizeMap?.({}, {});
+      this.world.updateRepositoryRecordDesk?.({}, {});
       return;
     }
     this.world.updateRepositoryGraph?.(
@@ -9944,6 +9954,19 @@ class ForkMeshWorld extends HTMLElement {
       commit: active.commit,
       path: active.path || "",
     });
+    // The open issue box and pull-request review desk beside the portal reuse
+    // the same commit-matched records as the explorer panel; nothing here is
+    // fetched separately or invented for the scene.
+    this.world.updateRepositoryRecordDesk?.(
+      { owner: active.owner, repo: active.repo },
+      {
+        issues: Array.isArray(active.entityRecords?.issues)
+          ? active.entityRecords.issues
+          : [],
+        pulls: this.repositoryPullRecords(active),
+        expandedIssue: this.expandedRepositoryIssuePage,
+      },
+    );
   }
 
   repositoriesWithLiveSocialState() {
@@ -10047,6 +10070,36 @@ class ForkMeshWorld extends HTMLElement {
     // so do not mistake a safely opened tab for a popup-blocker failure.
     window.open(path, "_blank", "noopener,noreferrer");
     this.toast(`Opening ${owner}/${name} in a new tab…`);
+  }
+
+  toggleRepositoryIssuePage(page) {
+    const active = this.activeRepository;
+    const owner = sanitizePresenceText(page?.owner, "", 40);
+    const name = sanitizePresenceText(page?.name, "", 60);
+    const number = safePullNumber(page?.number);
+    if (
+      !active ||
+      !number ||
+      owner.toLocaleLowerCase() !== active.owner.toLocaleLowerCase() ||
+      name.toLocaleLowerCase() !== active.repo.toLocaleLowerCase()
+    ) {
+      return;
+    }
+    if (this.expandedRepositoryIssuePage === number) {
+      // A second click on the already-expanded page follows the signed issue
+      // thread on the repository website, mirroring the portal base link.
+      const path = `/${encodeURIComponent(owner)}/${encodeURIComponent(
+        name,
+      )}/issues/${number}`;
+      window.open(path, "_blank", "noopener,noreferrer");
+      this.toast(`Opening issue #${number} in a new tab…`);
+      return;
+    }
+    this.expandedRepositoryIssuePage = number;
+    this.world?.setRepositoryIssuePageExpanded?.(number);
+    this.toast(
+      `Issue #${number}${page?.state ? ` (${page.state})` : ""}: click the expanded page to open the full thread.`,
+    );
   }
 
   selectRepositorySizeNode(node) {
@@ -10317,6 +10370,7 @@ class ForkMeshWorld extends HTMLElement {
       this.repositoryView = "map";
       this.pullReview = null;
       this.pullReviewSelection += 1;
+      this.expandedRepositoryIssuePage = 0;
       this.clearPullReviewScrollTracking();
       this.renderRepositoryMapStatus();
       this.syncRepositoryScene();
@@ -10337,6 +10391,7 @@ class ForkMeshWorld extends HTMLElement {
     this.repositoryView = "map";
     this.pullReview = null;
     this.pullReviewSelection += 1;
+    this.expandedRepositoryIssuePage = 0;
     this.clearPullReviewScrollTracking();
     const selection = ++this.repositoryMapSelection;
     this.repositoryMapState = "loading";
@@ -13379,6 +13434,34 @@ class ForkMeshWorld extends HTMLElement {
     const frameURL = "/dashboard/chat?worldEmbed=1";
     frame.dataset.worldChatUrl = frameURL;
     frame.src = frameURL;
+  }
+
+  // Open the collapsed bottom-right CHAT bar (not the full chat overlay) and
+  // hand the composer a starting message so a visitor talking to ForkBot can
+  // start typing immediately. Uses postMessage rather than a query param
+  // because the terminal iframe is loaded once and kept alive across clicks.
+  openChatTerminal(prefillText = "") {
+    const details = this.$("[data-world-chat-terminal]");
+    const frame = this.$("[data-world-chat-terminal-frame]");
+    if (!details || !frame) return;
+    this.closeLandmark();
+    this.toggleSettings(false);
+    if (this.tourIndex >= 0) this.stopTour();
+    this.closeWorldChat();
+    const alreadyLoaded = Boolean(frame.dataset.worldChatUrl);
+    this.loadChatTerminalFrame();
+    details.open = true;
+    const sendPrefill = () => {
+      frame.contentWindow?.postMessage(
+        { type: "forkmesh:chat-prefill", text: prefillText },
+        location.origin,
+      );
+    };
+    if (alreadyLoaded) {
+      window.setTimeout(sendPrefill, 80);
+    } else {
+      frame.addEventListener("load", sendPrefill, { once: true });
+    }
   }
 
   // Mirror the newest live chat line into the collapsed CHAT bar so the
