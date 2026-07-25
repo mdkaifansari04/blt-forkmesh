@@ -3343,6 +3343,7 @@ class ForkMeshWorld extends HTMLElement {
     this.botDirectory = [];
     this.worldLimits = null;
     this.systemCapacityTables = [];
+    this.systemCapacityDurableObjects = [];
     this.systemCapacityFocus = "";
     this.systemCapacitySort = { key: "rowCount", direction: "desc" };
     this.detailReturnFocus = null;
@@ -4205,6 +4206,34 @@ class ForkMeshWorld extends HTMLElement {
           })
           .filter(Boolean)
           .slice(0, 128)
+      : [];
+    // Bindings are discovered by the Worker from its own environment, so a
+    // newly bound Durable Object class appears here without a client change.
+    this.systemCapacityDurableObjects = Array.isArray(
+      ticket?.systemCapacity?.durableObjects,
+    )
+      ? ticket.systemCapacity.durableObjects
+          .map((record) => {
+            const binding = String(record?.binding || record?.id || "").trim();
+            const bytesTotal = Number(record?.bytesTotal);
+            const messages = Number(record?.messages);
+            return /^[A-Z][A-Z0-9_]{0,63}$/.test(binding)
+              ? {
+                  binding,
+                  name: String(record?.name || binding).slice(0, 36),
+                  bytesTotal:
+                    Number.isSafeInteger(bytesTotal) && bytesTotal > 0
+                      ? bytesTotal
+                      : 0,
+                  messages:
+                    Number.isSafeInteger(messages) && messages > 0
+                      ? messages
+                      : 0,
+                }
+              : null;
+          })
+          .filter(Boolean)
+          .slice(0, 32)
       : [];
     this.updateIdentityUI();
     this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
@@ -6050,38 +6079,56 @@ class ForkMeshWorld extends HTMLElement {
     this.renderSystemCapacityTables();
     if (!this.world?.updateSystemCapacity) return;
     const limits = this.worldLimits;
-    if (!limits && !this.systemCapacityTables.length) {
+    const detected = this.systemCapacityDurableObjects;
+    if (!limits && !this.systemCapacityTables.length && !detected.length) {
       this.world.updateSystemCapacity([]);
       return;
     }
+    const live = this.systemCapacityLiveConnections();
+    // The auto-detected binding list is authoritative when the Worker sent
+    // one; the two locally observable services stand in for it otherwise.
+    const objects = detected.length
+      ? detected.map((record) => ({
+          id: record.binding,
+          name: record.name,
+          bytesTotal: record.bytesTotal,
+          messages: record.messages,
+          ...(live.get(record.binding) || {}),
+        }))
+      : [...live.entries()].map(([binding, record]) => ({
+          id: binding,
+          ...record,
+        }));
+    this.world.updateSystemCapacity({
+      objects,
+      tables: this.systemCapacityTables,
+    });
+  }
+
+  systemCapacityLiveConnections() {
+    // Connection counts the browser can observe for itself, keyed by the
+    // Durable Object binding that serves them.
+    const live = new Map();
+    const limits = this.worldLimits;
+    if (!limits) return live;
     const worldSocketOnline =
       this.socket?.readyState === WebSocket.OPEN && Boolean(this.serverPeerId);
     const chatConnected = Number(this.network?.stats?.clients);
-    const objects = [];
-    if (limits && worldSocketOnline) {
-      objects.push({
-        id: "forkmesh-world",
+    if (worldSocketOnline) {
+      live.set("FORKMESH_WORLD", {
         name: "Town Square presence",
         usage: { connections: 1 + this.remotePlayers.size },
         limits: { connections: limits.worldConnections },
       });
     }
-    if (
-      limits &&
-      Number.isFinite(chatConnected) &&
-      chatConnected >= 0
-    ) {
-      objects.push({
-        id: "forkmesh-general-chat",
+    if (Number.isFinite(chatConnected) && chatConnected >= 0) {
+      live.set("FORKMESH_MAINNODE_ROOM", {
         name: "#general chat · cached live count",
         usage: { connections: chatConnected },
         limits: { connections: limits.chatConnections },
       });
     }
-    this.world.updateSystemCapacity({
-      objects,
-      tables: this.systemCapacityTables,
-    });
+    return live;
   }
 
   async moderateWorldPeer(action) {

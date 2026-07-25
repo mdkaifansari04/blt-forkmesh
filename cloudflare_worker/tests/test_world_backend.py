@@ -515,13 +515,34 @@ def _world_fetch_runtime(now=50_000):
         "JsResponse": SimpleNamespace(
             new=lambda *args, **kwargs: SimpleNamespace(status=101)),
     }
-    for name in ("_ws_attachment", "_ws_attr", "ForkMeshWorld"):
+    traffic_writes = []
+
+    async def d1_run(_env, sql, *args):
+        traffic_writes.append((sql, args))
+        return None
+
+    namespace.update({
+        "DURABLE_OBJECT_BINDING_RE": re.compile(r"[A-Z][A-Z0-9_]{0,63}"),
+        "DURABLE_OBJECT_TRAFFIC_FLUSH_MS": 60_000,
+        "DURABLE_OBJECT_TRAFFIC_FLUSH_BYTES": 262_144,
+        "DURABLE_OBJECT_TRAFFIC_MAX": 9_007_199_254_740_991,
+        "d1_run": d1_run,
+    })
+    for name in (
+        "durable_object_traffic_note",
+        "durable_object_traffic_flush",
+        "_ws_attachment",
+        "_ws_attr",
+        "ForkMeshWorld",
+    ):
         node = _top_level_node(name)
         module = ast.fix_missing_locations(
             ast.Module(body=[node], type_ignores=[]))
         exec(compile(module, str(ENTRY), "exec"), namespace)
     instance = namespace["ForkMeshWorld"]()
     instance.ctx = _Ctx()
+    instance.env = object()
+    instance.traffic_writes = traffic_writes
     return instance, clock
 
 
