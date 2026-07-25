@@ -5207,6 +5207,9 @@ void MainWindow::syncPrivateRepositoryWithRecipients(
                 }
                 saveRepositories();
                 refreshRepositoryList();
+                // Same as the public path: the materialization is temporary,
+                // so the working copy's push URL/hook must track its path.
+                ensurePushHook(current);
                 if (index == m_repoDetailIndex)
                     refreshOpenRepoDetail();
                 startRepoHosts(); // private repos remain categorically excluded
@@ -5834,6 +5837,12 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
             }
             saveRepositories(); // never persists the temporary mirrorPath
             refreshRepositoryList();
+            // The served mirror now lives in a fresh temporary
+            // materialization (a new path on every seal/app start), so the
+            // working copy's push URL and the post-receive hook must follow
+            // it — otherwise a plain `git push` keeps targeting the removed
+            // plaintext mirror and fails.
+            ensurePushHook(current);
 
             if (!result->legacyRemoved) {
                 logSystem(QStringLiteral("Public mirror: ") +
