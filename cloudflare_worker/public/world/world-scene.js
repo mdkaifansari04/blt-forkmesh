@@ -25,8 +25,10 @@ const PLAYER_DASH_SPEED = 48;
 const PLAYER_DASH_ARRIVE_DISTANCE = 0.3;
 const CAMERA_OFFSET = [17, 16, 21];
 const CAMERA_DISTANCE = Math.hypot(...CAMERA_OFFSET);
-const CAMERA_ZOOM_MIN = 0.12;
-const CAMERA_ZOOM_MAX = 3.2;
+// Keep the full world available as a strategic overview while still allowing
+// close inspection of a repository surface and its subscriber details.
+const CAMERA_ZOOM_MIN = 0.035;
+const CAMERA_ZOOM_MAX = 8;
 const CAMERA_LOOK_SENSITIVITY = 0.0022;
 const CAMERA_PITCH_MIN = 0.08;
 const CAMERA_PITCH_MAX = 1.24;
@@ -65,6 +67,30 @@ const MOVEMENT_KEYS = new Set([
 const REGISTERED_LOUNGE_POSITION = Object.freeze([-22, 0, 25]);
 const DURABLE_OBJECT_DISTRICT_POSITION = Object.freeze([8, 0, -27]);
 const SERVER_CABINET_YARD_ORIGIN = Object.freeze([18, 0, 0]);
+const ARRIVAL_GRID_BOUNDS = Object.freeze({
+  minX: -10.8,
+  maxX: 10.8,
+  minZ: 14,
+  maxZ: 32.4,
+});
+const TREE_TARGET_COUNT = 96;
+const TREE_CANDIDATE_LIMIT = 1200;
+const TREE_MIN_SPACING = 4.2;
+const TREE_MIN_RADIUS = 9;
+const TREE_PORTAL_CLEARANCE = 7;
+const TREE_LANDMARK_CLEARANCE = Object.freeze({
+  information: 7,
+  fountain: 9,
+  repositories: 9,
+  organizations: 10,
+  fediverse: 9,
+  security: 8,
+  events: 9,
+  neighborhood: 9,
+  workshops: 8,
+  broadcast: 9,
+  office: 10,
+});
 const REGISTERED_LOUNGE_STATUSES = new Set([
   "Registered",
   "Supporting member",
@@ -155,6 +181,104 @@ function hashNumber(value) {
     hash = Math.imul(hash, 16777619);
   }
   return Math.abs(hash >>> 0);
+}
+
+function deterministicFraction(value) {
+  return (hashNumber(value) % 1_000_003) / 1_000_003;
+}
+
+function pointInsideBounds(x, z, bounds) {
+  return (
+    x >= bounds.minX &&
+    x <= bounds.maxX &&
+    z >= bounds.minZ &&
+    z <= bounds.maxZ
+  );
+}
+
+function isArrivalGridPosition(x, z) {
+  return pointInsideBounds(Number(x) || 0, Number(z) || 0, ARRIVAL_GRID_BOUNDS);
+}
+
+function arrivalFacingHeading(x, z, heading) {
+  return isArrivalGridPosition(x, z) ? Math.PI : heading;
+}
+
+function deterministicTreeLayout() {
+  const positions = [];
+  const maxRadius = REPOSITORY_EDGE_RADIUS - TREE_PORTAL_CLEARANCE;
+  const cabinetBounds = {
+    minX: SERVER_CABINET_YARD_ORIGIN[0] + 6,
+    maxX: SERVER_CABINET_YARD_ORIGIN[0] + 34,
+    minZ: SERVER_CABINET_YARD_ORIGIN[2] - 14,
+    maxZ: SERVER_CABINET_YARD_ORIGIN[2] + 14,
+  };
+  const durableBounds = {
+    minX: DURABLE_OBJECT_DISTRICT_POSITION[0] - 10,
+    maxX: DURABLE_OBJECT_DISTRICT_POSITION[0] + 10,
+    minZ: DURABLE_OBJECT_DISTRICT_POSITION[2] - 8,
+    maxZ: DURABLE_OBJECT_DISTRICT_POSITION[2] + 8,
+  };
+  for (
+    let candidate = 0;
+    candidate < TREE_CANDIDATE_LIMIT &&
+    positions.length < TREE_TARGET_COUNT;
+    candidate += 1
+  ) {
+    const radiusUnit = deterministicFraction(`tree-radius:${candidate}`);
+    const radius = Math.sqrt(
+      TREE_MIN_RADIUS ** 2 +
+        radiusUnit * (maxRadius ** 2 - TREE_MIN_RADIUS ** 2),
+    );
+    const angle =
+      deterministicFraction(`tree-angle:${candidate}`) * Math.PI * 2;
+    const x = Math.cos(angle) * radius;
+    const z = Math.sin(angle) * radius;
+    if (
+      pointInsideBounds(x, z, ARRIVAL_GRID_BOUNDS) ||
+      pointInsideBounds(x, z, cabinetBounds) ||
+      pointInsideBounds(x, z, durableBounds)
+    ) {
+      continue;
+    }
+    if (Math.hypot(x - 8, z - 8) < 5.5) continue;
+    if (
+      Math.hypot(
+        x - REGISTERED_LOUNGE_POSITION[0],
+        z - REGISTERED_LOUNGE_POSITION[2],
+      ) < 11.5
+    ) {
+      continue;
+    }
+    if (
+      LANDMARKS.some((landmark) => {
+        const clearance = TREE_LANDMARK_CLEARANCE[landmark.id] || 8;
+        return (
+          Math.hypot(
+            x - landmark.position[0],
+            z - landmark.position[2],
+          ) < clearance
+        );
+      })
+    ) {
+      continue;
+    }
+    if (
+      positions.some(
+        (tree) => Math.hypot(x - tree.x, z - tree.z) < TREE_MIN_SPACING,
+      )
+    ) {
+      continue;
+    }
+    positions.push({
+      x,
+      z,
+      scale:
+        0.7 + deterministicFraction(`tree-scale:${candidate}`) * 0.38,
+      colorIndex: hashNumber(`tree-color:${candidate}`) % 4,
+    });
+  }
+  return positions;
 }
 
 function canvasTexture(THREE, width, height, draw) {
@@ -271,6 +395,25 @@ function badgeTexture(THREE, identity, accent = "#9ef7c6") {
   });
 }
 
+function repositorySubscriberIconTexture(THREE, subscriber, accent = "#d5b6ff") {
+  return canvasTexture(THREE, 128, 128, (context) => {
+    context.clearRect(0, 0, 128, 128);
+    context.beginPath();
+    context.arc(64, 64, 58, 0, Math.PI * 2);
+    context.fillStyle = "#0b1c19";
+    context.fill();
+    context.strokeStyle = accent;
+    context.lineWidth = 7;
+    context.stroke();
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = '52px "Apple Color Emoji", "Segoe UI Emoji", sans-serif';
+    context.fillStyle = "#f1fff6";
+    const flag = String(subscriber?.flag || "◌").slice(0, 2);
+    context.fillText(flag, 64, 62);
+  });
+}
+
 function countryShirtTexture(THREE, identity) {
   const code = /^[A-Z]{2}$/.test(String(identity.countryCode || ""))
     ? String(identity.countryCode)
@@ -324,11 +467,34 @@ function wordTexture(THREE, title, subtitle, color = "#9ef7c6") {
 // The Member Lounge plaque carries the section name, the live registered-user
 // total, and room for the tiny account button — one surface instead of a
 // floating count card hovering over the lounge.
-function memberLoungePlaqueTexture(THREE, totalCount, color = "#9ef7c6") {
+function activeDurationLabel(value) {
+  const milliseconds = Number(value);
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) {
+    return "ACTIVE TIME NOT REPORTED";
+  }
+  let seconds = Math.floor(milliseconds / 1000);
+  const days = Math.floor(seconds / 86400);
+  seconds %= 86400;
+  const hours = Math.floor(seconds / 3600);
+  seconds %= 3600;
+  const minutes = Math.floor(seconds / 60);
+  seconds %= 60;
+  return `${days}d ${hours}h ${minutes}m ${seconds}s`;
+}
+
+function memberLoungePlaqueTexture(
+  THREE,
+  totalCount,
+  members = [],
+  color = "#9ef7c6",
+) {
   // Until the directory loads the plaque says it is counting rather than
   // claiming a total of zero.
   const known = totalCount !== null && Number.isFinite(Number(totalCount));
   const total = Math.max(0, Math.min(999999, Number(totalCount) || 0));
+  const rows = (Array.isArray(members) ? members : [])
+    .filter((member) => String(member?.name || "").trim())
+    .slice(0, 4);
   return canvasTexture(THREE, 768, 352, (context) => {
     context.clearRect(0, 0, 768, 352);
     roundedRect(context, 4, 4, 760, 344, 14);
@@ -341,28 +507,37 @@ function memberLoungePlaqueTexture(THREE, totalCount, color = "#9ef7c6") {
     context.textBaseline = "middle";
     context.fillStyle = "#f1fff6";
     context.font = '700 52px "ForkMesh Favorit", system-ui, sans-serif';
-    context.fillText("MEMBER LOUNGE", 42, 72);
+    context.fillText("ACTIVE LEADERBOARD", 42, 44);
     context.fillStyle = color;
     context.font = '700 44px "ForkMesh Favorit", system-ui, sans-serif';
     context.fillText(
       known ? `${total} MEMBER${total === 1 ? "" : "S"}` : "MEMBERS",
       42,
-      142,
+      86,
     );
     context.font = '400 23px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(
       (known ? "total registered users" : "counting registered users")
         .toUpperCase(),
       42,
-      192,
+      116,
     );
     context.fillStyle = "rgba(217,255,234,0.66)";
-    context.font = '400 20px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(
-      "registered contributors · recent activity glows".toUpperCase(),
-      42,
-      232,
-    );
+    context.font = '400 19px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("REGISTERED USER · TOTAL ACTIVE TIME", 42, 142);
+    rows.forEach((member, index) => {
+      const top = 174 + index * 41;
+      const name = String(member.name).trim().slice(0, 22);
+      const duration = activeDurationLabel(
+        member.totalActiveMs ?? member.activeMs,
+      );
+      context.fillStyle = "#f1fff6";
+      context.font = '700 24px "ForkMesh Favorit", system-ui, sans-serif';
+      context.fillText(`${index + 1}. ${name}`, 42, top);
+      context.fillStyle = color;
+      context.font = '400 19px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(duration.slice(0, 31), 42, top + 22);
+    });
   });
 }
 
@@ -766,7 +941,7 @@ function makeMemberLoungePlaque(THREE, color = "#9ef7c6") {
   const face = new THREE.Mesh(
     new THREE.PlaneGeometry(3.44, 1.577),
     new THREE.MeshBasicMaterial({
-      map: memberLoungePlaqueTexture(THREE, null, color),
+      map: memberLoungePlaqueTexture(THREE, null, [], color),
       transparent: true,
     }),
   );
@@ -780,7 +955,8 @@ function makeMemberLoungePlaque(THREE, color = "#9ef7c6") {
     }),
   );
   authButton.name = "forkmesh-member-lounge-auth-button";
-  authButton.position.set(-0.84, -0.55, 0.012);
+  authButton.position.set(-0.84, -0.55, 0.12);
+  authButton.scale.set(1.12, 1.12, 1);
   authButton.userData.worldAuthAction = "login";
   face.add(authButton);
   plaque.userData.face = face;
@@ -2790,58 +2966,6 @@ function createBroadcastGarden(THREE, position, interactive, animated) {
   return group;
 }
 
-function createSupportCenter(THREE, position, interactive, animated) {
-  const group = new THREE.Group();
-  const base = new THREE.Mesh(
-    new THREE.CylinderGeometry(3.6, 4.1, 0.48, 12),
-    makeMaterial(THREE, "#3a3025", { metalness: 0.16 }),
-  );
-  base.position.y = 0.24;
-  group.add(base);
-  const desk = new THREE.Mesh(
-    new THREE.BoxGeometry(4.8, 1.35, 1.35),
-    makeMaterial(THREE, "#cf9f61", {
-      emissive: "#765026",
-      emissiveIntensity: 0.28,
-    }),
-  );
-  desk.position.set(0, 1.0, 0);
-  group.add(desk);
-  for (let index = 0; index < 3; index += 1) {
-    const beacon = new THREE.Mesh(
-      new THREE.OctahedronGeometry(0.36, 0),
-      makeMaterial(THREE, ["#ffd08f", "#9ef7c6", "#8fcfff"][index], {
-        emissive: ["#a86b28", "#2f8f60", "#356f9f"][index],
-        emissiveIntensity: 0.75,
-      }),
-    );
-    beacon.position.set((index - 1) * 1.35, 2.3, 0);
-    group.add(beacon);
-    animated.push((time) => {
-      beacon.position.y = 2.3 + Math.sin(time * 0.0015 + index) * 0.12;
-      beacon.rotation.y = time * 0.0006 * (index % 2 ? -1 : 1);
-    });
-  }
-  addSectionPlaque(
-    THREE,
-    group,
-    position,
-    "SUPPORT CENTER",
-    "voluntary · transparent · no returns",
-    "#ffd08f",
-    5.2,
-  );
-  group.position.set(...position);
-  group.userData.landmark = "support";
-  group.traverse((child) => {
-    if (!child.isMesh) return;
-    child.userData.landmark = "support";
-    interactive.push(child);
-  });
-  setShadows(group);
-  return group;
-}
-
 function createForkMeshOffice(THREE, position, interactive, animated) {
   const group = new THREE.Group();
   const concrete = makeMaterial(THREE, "#18231f", {
@@ -3134,7 +3258,7 @@ export function createWorldScene({
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.08;
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.type = THREE.PCFShadowMap;
   renderer.domElement.className = "world-canvas";
   renderer.domElement.setAttribute("aria-hidden", "true");
   renderer.domElement.tabIndex = -1;
@@ -3171,37 +3295,6 @@ export function createWorldScene({
   ground.receiveShadow = true;
   ground.userData.ground = true;
   world.add(ground);
-
-  const plaza = new THREE.Mesh(
-    new THREE.CylinderGeometry(16.5, 17.4, 0.34, 64),
-    makeMaterial(THREE, "#d2dfd6", { roughness: 0.82 }),
-  );
-  plaza.position.y = 0.17;
-  plaza.receiveShadow = true;
-  plaza.userData.ground = true;
-  world.add(plaza);
-
-  const plazaLines = new THREE.Group();
-  for (let radius = 3; radius <= 15; radius += 3) {
-    const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(radius, 0.025, 6, 96),
-      makeMaterial(THREE, radius % 6 === 0 ? "#6e9a86" : "#9eb4a8"),
-    );
-    ring.rotation.x = Math.PI / 2;
-    ring.position.y = 0.36;
-    plazaLines.add(ring);
-  }
-  for (let index = 0; index < 12; index += 1) {
-    const angle = (index / 12) * Math.PI * 2;
-    const lineMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(0.025, 0.035, 16.2),
-      makeMaterial(THREE, "#98afa3"),
-    );
-    lineMesh.position.y = 0.36;
-    lineMesh.rotation.y = angle;
-    plazaLines.add(lineMesh);
-  }
-  world.add(plazaLines);
 
   // The room assigns one of 64 ephemeral slots: ten columns per row. The
   // outline makes the arrival contract visible without turning it into a
@@ -3244,10 +3337,10 @@ export function createWorldScene({
     arrivalBox.add(line);
   }
   const arrivalPlaque = makeArrivalPlaque(THREE);
-  // Just past the grid's front edge (cells end at z ≈ 17.4), turned back
-  // toward the grid so arriving visitors — and the camera behind them —
-  // read it head-on.
+  // Just past the grid's front edge (cells end at z ≈ 17.4), facing inward
+  // toward the Town Square center as visitors leave the welcome grid.
   arrivalPlaque.position.set(0, 0, 15.2);
+  arrivalPlaque.rotation.y = Math.PI;
   setShadows(arrivalPlaque);
   arrivalBox.add(arrivalPlaque);
   world.add(arrivalBox);
@@ -3263,7 +3356,6 @@ export function createWorldScene({
     neighborhood: createNeighborhood,
     workshops: createCodeWorkshops,
     broadcast: createBroadcastGarden,
-    support: createSupportCenter,
     office: createForkMeshOffice,
   };
   LANDMARKS.forEach((landmark) => {
@@ -3278,16 +3370,23 @@ export function createWorldScene({
   });
 
   const treeColors = ["#2f8c5f", "#397655", "#4b9e68", "#27634a"];
-  for (let index = 0; index < 62; index += 1) {
-    const angle = (index / 62) * Math.PI * 2 + (index % 5) * 0.07;
-    const radius = 20 + (index % 7) * 2.25;
-    const x = Math.cos(angle) * radius;
-    const z = Math.sin(angle) * radius;
-    if (LANDMARKS.some((landmark) => Math.hypot(x - landmark.position[0], z - landmark.position[2]) < 5)) {
-      continue;
-    }
-    world.add(createTree(THREE, x, z, 0.72 + (index % 5) * 0.1, treeColors[index % treeColors.length]));
-  }
+  const treeField = new THREE.Group();
+  treeField.name = "world-tree-field";
+  const treeLayout = deterministicTreeLayout();
+  treeLayout.forEach((placement, index) => {
+    const tree = createTree(
+      THREE,
+      placement.x,
+      placement.z,
+      placement.scale,
+      treeColors[placement.colorIndex],
+    );
+    tree.name = `world-tree:${index}`;
+    tree.userData.worldTree = true;
+    treeField.add(tree);
+  });
+  treeField.userData.treeCount = treeLayout.length;
+  world.add(treeField);
 
   const campfire = new THREE.Group();
   campfire.position.set(8, 0, 8);
@@ -3375,7 +3474,7 @@ export function createWorldScene({
 
   const player = createAvatar(THREE, identity);
   player.position.set(-8.1, 0.38, 30);
-  player.rotation.y = 0;
+  player.rotation.y = Math.PI;
   world.add(player);
   const playerLabel = makePlayerLabel(player, labelLayer);
 
@@ -4391,7 +4490,7 @@ export function createWorldScene({
     currentSpace = space;
     currentFloorY = WORLD_SPACE_FLOORS[space];
     player.position.set(x, currentFloorY, z);
-    player.rotation.y = heading;
+    player.rotation.y = arrivalFacingHeading(x, z, heading);
     lastPosition.copy(player.position);
     wasWalking = false;
     cameraFocus = null;
@@ -4544,7 +4643,11 @@ export function createWorldScene({
           clamp(Number(remote.y) || 0.38, 0.38, 40),
           clamp(Number(remote.z) || 0, -WORLD_RADIUS, WORLD_RADIUS),
         );
-        avatar.userData.targetHeading = Number(remote.heading) || 0;
+        avatar.userData.targetHeading = arrivalFacingHeading(
+          avatar.userData.targetPosition.x,
+          avatar.userData.targetPosition.z,
+          Number(remote.heading) || 0,
+        );
       }
       avatar.userData.status = remote.activity || "exploring";
       if (avatar.userData.badgeKey !== badgeKey) {
@@ -4660,7 +4763,11 @@ export function createWorldScene({
     arrivalPlaque.userData.statsShown = key;
   }
 
-  function updateMemberLounge(members = [], totalCount = 0) {
+  function updateMemberLounge(
+    members = [],
+    totalCount = 0,
+    leaderboardMembers = members,
+  ) {
     const total = Math.max(0, Math.min(999999, Number(totalCount) || 0));
     const countSign = registeredUserLounge.userData.memberCountSign;
     if (countSign && registeredUserLounge.userData.memberCountShown !== total) {
@@ -4668,6 +4775,7 @@ export function createWorldScene({
       countSign.material.map = memberLoungePlaqueTexture(
         THREE,
         total,
+        leaderboardMembers,
         "#9ef7c6",
       );
       countSign.material.needsUpdate = true;
@@ -5593,6 +5701,43 @@ export function createWorldScene({
       base.position.set(0, -2.38, 0);
       base.scale.x = portalDensityScale;
       node.add(base);
+      const subscribers = Array.isArray(record.mastodonSubscribers)
+        ? record.mastodonSubscribers
+            .filter((subscriber) => String(subscriber?.name || subscriber?.handle || "").trim())
+            .slice(0, 6)
+        : [];
+      if (subscribers.length) {
+        const subscriberLayer = new THREE.Group();
+        subscriberLayer.name = "repository-mastodon-subscribers";
+        subscribers.forEach((subscriber, subscriberIndex) => {
+          const name = String(
+            subscriber.name || subscriber.handle || "subscriber",
+          ).slice(0, 20);
+          const icon = new THREE.Mesh(
+            new THREE.PlaneGeometry(0.46, 0.46),
+            new THREE.MeshBasicMaterial({
+              map: repositorySubscriberIconTexture(THREE, subscriber),
+              transparent: true,
+              depthWrite: false,
+            }),
+          );
+          const column = subscriberIndex % 3;
+          const row = Math.floor(subscriberIndex / 3);
+          icon.position.set((column - 1) * 0.7, -1.05 - row * 0.72, 0.52);
+          icon.rotation.y = Math.PI;
+          subscriberLayer.add(icon);
+          const details = [
+            subscriber.handle || subscriber.network || "Mastodon",
+            subscriber.status || subscriber.instance || "subscribed",
+          ].filter(Boolean).join(" · ").slice(0, 34);
+          const label = makeLabelSprite(THREE, name, details, "#d5b6ff");
+          label.scale.set(1.05, 0.34, 1);
+          label.position.set(icon.position.x, icon.position.y - 0.36, 0.53);
+          subscriberLayer.add(label);
+        });
+        node.add(subscriberLayer);
+        node.userData.mastodonSubscribers = subscribers;
+      }
       node.userData.repositoryPortal = repositoryPortal;
       node.userData.repositoryFace = face;
       node.userData.repositoryLabel = label;
@@ -5677,18 +5822,6 @@ export function createWorldScene({
     const sizeMeshes = [];
     let labelCount = 0;
 
-    const backing = new THREE.Mesh(
-      new THREE.CircleGeometry(outerRadius + 0.09, 72),
-      makeMaterial(THREE, "#081b22", {
-        emissive: "#0e3541",
-        emissiveIntensity: 0.32,
-        metalness: 0.18,
-        roughness: 0.5,
-      }),
-    );
-    backing.name = "repository-size-map-backing";
-    backing.position.z = -0.11;
-    layer.add(backing);
     const perimeter = new THREE.Mesh(
       new THREE.TorusGeometry(outerRadius + 0.1, 0.055, 8, 72),
       makeMaterial(THREE, "#9ef7c6", {

@@ -117,7 +117,6 @@ def test_world_contains_the_initial_city_districts_without_a_clock():
         "neighborhood",
         "workshops",
         "broadcast",
-        "support",
         "office",
     ):
         assert f'id: "{landmark}"' in DATA
@@ -160,7 +159,6 @@ def test_landmarks_are_spread_out_inside_the_repository_portal_perimeter():
         "neighborhood": (-45, -17),
         "workshops": (-17, -46),
         "broadcast": (10, 46),
-        "support": (-18, 44),
         "office": (45, -27),
     }
     for landmark, (x, z) in positions.items():
@@ -207,7 +205,6 @@ def test_scene_builds_playable_landmarks_and_badged_avatars():
         "createNeighborhood",
         "createCodeWorkshops",
         "createBroadcastGarden",
-        "createSupportCenter",
         "createForkMeshOffice",
     ):
         assert f"function {builder}" in SCENE
@@ -470,7 +467,11 @@ def test_avatar_faces_keyboard_travel_direction_and_intro_can_stay_dismissed():
         SCENE.index("  function handlePointerUp")
     ]
     assert "dashTarget" not in single_tap
-    assert "player.rotation.y = 0" in SCENE
+    assert "player.rotation.y = Math.PI" in SCENE
+    assert "function arrivalFacingHeading(x, z, heading)" in SCENE
+    assert "isArrivalGridPosition(x, z) ? Math.PI : heading" in SCENE
+    assert "player.rotation.y = arrivalFacingHeading(x, z, heading)" in SCENE
+    assert "avatar.userData.targetHeading = arrivalFacingHeading(" in SCENE
     assert "INTRO_DISMISSED_KEY" in APP
     assert "data-world-arrival-dismiss" in APP
     assert 'localStorage.setItem(INTRO_DISMISSED_KEY, "1")' in APP
@@ -1444,7 +1445,7 @@ def test_world_uses_nonhuman_infrastructure_without_the_world_spanning_grid():
     assert "electricMeshJunction" not in SCENE
     assert "createElectricMeshCityGrid" not in SCENE
     assert "registered-user-lounge" in SCENE
-    assert "registered contributors · recent activity glows" in SCENE
+    assert '"ACTIVE LEADERBOARD"' in SCENE
     for status in (
         "Registered",
         "Supporting member",
@@ -1454,6 +1455,25 @@ def test_world_uses_nonhuman_infrastructure_without_the_world_spanning_grid():
         assert status in SCENE
     assert "useRegisteredLounge" in SCENE
     assert 'avatar.userData.loungeActivity === "recent"' in SCENE
+
+
+def test_world_has_no_pale_plaza_and_places_trees_deterministically_clear_of_use():
+    assert "new THREE.CylinderGeometry(16.5, 17.4, 0.34, 64)" not in SCENE
+    assert "const plazaLines = new THREE.Group()" not in SCENE
+    assert "function createFountain" in SCENE
+    assert "new THREE.CylinderGeometry(4.4, 4.4, 0.16, 48)" in SCENE
+    assert "const TREE_TARGET_COUNT = 96" in SCENE
+    assert "const TREE_CANDIDATE_LIMIT = 1200" in SCENE
+    assert "function deterministicTreeLayout()" in SCENE
+    assert "deterministicFraction(`tree-radius:${candidate}`)" in SCENE
+    assert "pointInsideBounds(x, z, ARRIVAL_GRID_BOUNDS)" in SCENE
+    assert "pointInsideBounds(x, z, cabinetBounds)" in SCENE
+    assert "pointInsideBounds(x, z, durableBounds)" in SCENE
+    assert "TREE_LANDMARK_CLEARANCE[landmark.id]" in SCENE
+    assert "TREE_MIN_SPACING" in SCENE
+    assert 'treeField.name = "world-tree-field"' in SCENE
+    assert "treeField.userData.treeCount = treeLayout.length" in SCENE
+    assert "const radius = 20 + (index % 7) * 2.25" not in SCENE
 
 
 def test_world_member_lounge_plaque_carries_count_and_account_button():
@@ -1660,16 +1680,15 @@ def test_information_booth_deep_link_carries_no_cloudflare_secret():
     assert '"URL Protocol" ""' in WINDOWS_PACKAGER
 
 
-def test_support_center_is_distinct_truthful_and_non_custodial():
-    assert 'id: "support"' in DATA
-    assert "Project Support Center" in DATA
-    assert "function createSupportCenter" in SCENE
-    assert "SUPPORT CENTER" in SCENE
+def test_support_center_is_not_rendered_in_the_world():
+    assert 'id: "support"' not in DATA
+    assert "Project Support Center" not in DATA
+    assert "function createSupportCenter" not in SCENE
+    assert "SUPPORT CENTER" not in SCENE
+    assert "supportPanelHTML()" not in APP
+    # Supporting-member account routes remain available outside the removed
+    # in-World landmark.
     assert "https://www.patreon.com/16434219/join" in APP
-    assert "mailto:founders@forkmesh.com" in APP
-    assert "Voluntary project support · no financial return" in APP
-    assert "does not buy governance dominance" in APP
-    assert "separate from the Global Reward Pool" in APP
 
 
 def test_town_square_community_placement_is_context_only_and_collapsible():
@@ -1816,6 +1835,7 @@ def test_arrival_grid_sign_is_a_front_plaque_with_visit_counters():
     assert "function arrivalPlaqueTexture" in SCENE
     assert 'plaque.name = "world-arrival-plaque"' in SCENE
     assert "arrivalPlaque.position.set(0, 0, 15.2)" in SCENE
+    assert "arrivalPlaque.rotation.y = Math.PI" in SCENE
     assert "arrivalLabel" not in SCENE
     assert '"TOTAL VISITORS"' in SCENE
     assert '"TODAY"' in SCENE

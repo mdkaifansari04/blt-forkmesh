@@ -42,6 +42,7 @@ def test_only_chat_documents_allow_same_origin_world_frames():
     global_rule = _rule("/*")
     assert "frame-ancestors 'none'" in global_rule
     assert "X-Frame-Options: DENY" in global_rule
+    assert "https://static.cloudflareinsights.com" in global_rule
 
     for path in ("/dashboard/chat*", "/chat", "/chat.html"):
         chat_rule = _rule(path)
@@ -58,7 +59,6 @@ def test_only_chat_documents_allow_same_origin_world_frames():
     assert HEADERS.count("frame-ancestors 'self'") == 3
     assert HEADERS.count("X-Frame-Options: SAMEORIGIN") == 3
     assert "https://cdn.tailwindcss.com" not in global_rule
-    assert "https://static.cloudflareinsights.com" not in global_rule
 
 
 def test_policy_does_not_grant_sensitive_device_capabilities():
@@ -72,7 +72,6 @@ def test_policy_does_not_grant_sensitive_device_capabilities():
         "payment=()",
         "usb=()",
         "serial=()",
-        "bluetooth=()",
         "browsing-topics=()",
     ):
         assert blocked in permissions

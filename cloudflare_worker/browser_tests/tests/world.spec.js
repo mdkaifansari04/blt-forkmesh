@@ -1543,6 +1543,108 @@ test("enhanced Town Square starts in WebGL and keeps keyboard navigation", async
   );
 });
 
+test("Town Square trees use the full safe field while arrival faces inward", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "world-tree-field");
+  await waitForWorld(page);
+
+  const state = await page.locator("forkmesh-world").evaluate((shell) => {
+    const scene = shell.world.scene;
+    const treeField = scene.getObjectByName("world-tree-field");
+    const trees = treeField?.children.map((tree) => ({
+      x: tree.position.x,
+      z: tree.position.z,
+      radius: Math.hypot(tree.position.x, tree.position.z),
+    })) || [];
+    let palePlaza = false;
+    let fountainPool = false;
+    scene.traverse((object) => {
+      const geometry = object.geometry;
+      if (geometry?.type !== "CylinderGeometry") return;
+      const { radiusTop, radiusBottom, height } = geometry.parameters || {};
+      if (
+        Math.abs(Number(radiusTop) - 16.5) < 0.001 &&
+        Math.abs(Number(radiusBottom) - 17.4) < 0.001
+      ) {
+        palePlaza = true;
+      }
+      if (
+        Math.abs(Number(radiusTop) - 4.4) < 0.001 &&
+        Math.abs(Number(radiusBottom) - 4.4) < 0.001 &&
+        Math.abs(Number(height) - 0.16) < 0.001
+      ) {
+        fountainPool = true;
+      }
+    });
+
+    shell.world.setSpawn({
+      x: 0,
+      y: 0.38,
+      z: 30,
+      heading: 0,
+      space: "town-square",
+    });
+    shell.world.setRemotePlayers([
+      {
+        id: "arrival-facing-peer",
+        name: "Arrival peer",
+        x: 2,
+        y: 0.38,
+        z: 30,
+        heading: 0,
+        accountStatus: "Guest",
+      },
+    ]);
+    const remote = scene.getObjectByName("avatar:arrival-facing-peer");
+    return {
+      palePlaza,
+      fountainPool,
+      signHeading: scene.getObjectByName("world-arrival-plaque")?.rotation.y,
+      playerHeading: shell.world.player.rotation.y,
+      remoteHeading: remote?.userData?.targetHeading,
+      treeCount: trees.length,
+      radii: trees.map((tree) => tree.radius),
+      quadrants: [0, 1, 2, 3].map(
+        (quadrant) =>
+          trees.filter((tree) => {
+            const actual =
+              tree.x >= 0
+                ? tree.z >= 0 ? 0 : 3
+                : tree.z >= 0 ? 1 : 2;
+            return actual === quadrant;
+          }).length,
+      ),
+      arrivalTrees: trees.filter(
+        (tree) =>
+          tree.x >= -10.8 &&
+          tree.x <= 10.8 &&
+          tree.z >= 14 &&
+          tree.z <= 32.4,
+      ).length,
+      cabinetTrees: trees.filter(
+        (tree) =>
+          tree.x >= 24 &&
+          tree.x <= 52 &&
+          tree.z >= -14 &&
+          tree.z <= 14,
+      ).length,
+    };
+  });
+
+  expect(state.palePlaza).toBe(false);
+  expect(state.fountainPool).toBe(true);
+  expect(state.signHeading).toBeCloseTo(Math.PI, 5);
+  expect(state.playerHeading).toBeCloseTo(Math.PI, 5);
+  expect(state.remoteHeading).toBeCloseTo(Math.PI, 5);
+  expect(state.treeCount).toBe(96);
+  expect(Math.min(...state.radii)).toBeLessThan(20);
+  expect(Math.max(...state.radii)).toBeGreaterThan(55);
+  state.quadrants.forEach((count) => expect(count).toBeGreaterThan(12));
+  expect(state.arrivalTrees).toBe(0);
+  expect(state.cabinetTrees).toBe(0);
+});
+
 test("an expired persisted session stays guest-only without private request fanout or Three.js material warnings", async ({
   page,
 }) => {

@@ -1989,6 +1989,11 @@ function cleanRepositories(payload) {
               .map((topic) => String(topic).slice(0, 30))
               .slice(0, 12)
           : [],
+        mastodonSubscribers: Array.isArray(repo.mastodonSubscribers)
+          ? repo.mastodonSubscribers.slice(0, 12)
+          : Array.isArray(repo.subscribers)
+            ? repo.subscribers.slice(0, 12)
+            : [],
       };
     })
     .slice(0, 200);
@@ -2236,7 +2241,6 @@ const LOCAL_LIVE_LANDMARKS = new Set([
   "information",
   "neighborhood",
   "broadcast",
-  "support",
 ]);
 
 const LANDMARK_CONSTRUCTION_REASONS = Object.freeze({
@@ -4084,13 +4088,21 @@ class ForkMeshWorld extends HTMLElement {
     // Public chat roster directory (user profiles only) doubles as the Member
     // Lounge population: every public registered account gets a seat, and the
     // roster length feeds the total-members sign at the lounge front.
-    this.memberDirectory =
+        this.memberDirectory =
       membersResult.status === "fulfilled" &&
       Array.isArray(membersResult.value?.users)
         ? membersResult.value.users
             .map((user) => ({
               name: sanitizePresenceText(user?.name, "", 32),
               nodes: Array.isArray(user?.nodes) ? user.nodes.slice(0, 6) : [],
+              totalActiveMs: Number.isFinite(Number(user?.totalActiveMs))
+                ? Math.max(0, Number(user.totalActiveMs))
+                : Number.isFinite(Number(user?.activeMs))
+                  ? Math.max(0, Number(user.activeMs))
+                  : null,
+              avatar: sanitizePresenceText(user?.avatar, "", 240),
+              countryCode: sanitizePresenceText(user?.countryCode, "", 2),
+              status: sanitizePresenceText(user?.status, "", 80),
             }))
             .filter((user) => user.name)
         : [];
@@ -6047,7 +6059,6 @@ class ForkMeshWorld extends HTMLElement {
       neighborhood: () => this.neighborhoodPanelHTML(),
       workshops: () => this.workshopPanelHTML(),
       broadcast: () => this.broadcastPanelHTML(),
-      support: () => this.supportPanelHTML(),
     };
     return panels[id]?.() || "";
   }
@@ -8098,58 +8109,6 @@ class ForkMeshWorld extends HTMLElement {
         <div class="world-notice world-notice-safe">
           <strong>Licensed-source boundary</strong>
           <span>Every add confirms provider terms and no rebroadcast. The API accepts supported HTTPS provider pages only, never raw stream/file URLs; playback remains opt-in and provider-controlled. Owners and explicitly granted moderators can add, remove, schedule, or stop items.</span>
-        </div>
-      </section>`;
-  }
-
-  supportPanelHTML() {
-    const options = [
-      {
-        label: "Recurring project support",
-        destination: "Patreon · published ForkMesh creator page",
-        purpose:
-          "Ongoing development, infrastructure, documentation, accessibility, and community operations.",
-        href: PATREON_URL,
-        action: "Open Patreon",
-      },
-      {
-        label: "Direct project sponsorship",
-        destination: "ForkMesh founders · direct contact",
-        purpose:
-          "Discuss a disclosed one-time sponsorship purpose and destination before any transfer.",
-        href: "mailto:founders@forkmesh.com?subject=Direct%20ForkMesh%20project%20support",
-        action: "Contact founders",
-      },
-      {
-        label: "Community membership",
-        destination: "ForkMesh account and public community",
-        purpose:
-          "Join discussions, operate a mirror, improve code, report issues, or attend events without purchasing access.",
-        href: "/signup",
-        action: "Join the community",
-      },
-    ];
-    return `
-      <section class="world-feature-card" aria-label="Transparent ForkMesh project support">
-        <div class="world-building-grid">
-          ${options
-            .map(
-              (option) => `<article>
-                <span>${escapeHTML(option.label)}</span>
-                <strong>${escapeHTML(option.destination)}</strong>
-                <p>${escapeHTML(option.purpose)}</p>
-                <a href="${escapeHTML(option.href)}" ${
-                  option.href.startsWith("https://")
-                    ? 'target="_blank" rel="noopener noreferrer"'
-                    : ""
-                }>${escapeHTML(option.action)}</a>
-              </article>`,
-            )
-            .join("")}
-        </div>
-        <div class="world-notice world-notice-warning">
-          <strong>Voluntary project support · no financial return</strong>
-          <span>ForkMesh does not custody a supporter’s wallet keys or user funds. Support is voluntary, is separate from the Global Reward Pool, does not guarantee a reward or financial return, and does not buy governance dominance, node selection, security approval, or investment rights.</span>
         </div>
       </section>`;
   }
@@ -11685,8 +11644,6 @@ class ForkMeshWorld extends HTMLElement {
         "Choose a repository and analysis scope in the workshop panel.",
       broadcast:
         "Audio starts only after your explicit play action and stays local to this device.",
-      support:
-        "Project support is voluntary, separate from node rewards, and never promises returns or governance dominance.",
     };
     this.toast(messages[action] || "This district is being connected to its technical backend.");
   }
@@ -13198,6 +13155,7 @@ class ForkMeshWorld extends HTMLElement {
         (member) => !present.has(member.name.toLowerCase()),
       ),
       this.memberDirectory.length,
+      this.memberDirectory,
     );
   }
 
