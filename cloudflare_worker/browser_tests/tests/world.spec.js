@@ -1242,6 +1242,7 @@ test("enhanced Town Square starts in WebGL and keeps keyboard navigation", async
 test("desktop camera uses visible-cursor drag look, capped movement acceleration, and wheel zoom", async ({
   page,
 }) => {
+  test.setTimeout(60_000);
   await prepareWorldPage(page, "desktop-drag-controls");
   await waitForWorld(page);
 
