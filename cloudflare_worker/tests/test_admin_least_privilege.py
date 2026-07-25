@@ -22,7 +22,7 @@ def _function_source(name):
 
 def test_admin_inventory_lists_all_application_tables_but_keeps_sensitive_rows_restricted():
     assert "ADMIN_VISIBLE_TABLES" not in TEXT
-    assert "ADMIN_PURGE_TABLES = frozenset({" in TEXT
+    assert "def _admin_purge_allowed(table):" in TEXT
     table_list = _function_source("_admin_list_tables")
     assert "sqlite_%" in table_list
     assert "_cf_%" in table_list
@@ -64,17 +64,27 @@ def test_generic_insert_and_update_fail_closed_without_database_writes():
 
 def test_operational_purges_are_allowlisted_and_content_digested():
     admin = _function_source("_admin_selected_rows_digest")
-    assert "table not in ADMIN_PURGE_TABLES" in admin
+    assert "_admin_purge_allowed(table)" in admin
     assert "hashlib.sha256(canonical).hexdigest()" in admin
 
     start = TEXT.index("    async def _admin(self, request):")
     relay_admin = TEXT[
         start:TEXT.index("\n    async def _route(", start)
     ]
-    assert "table not in ADMIN_PURGE_TABLES" in relay_admin
+    assert "_admin_purge_allowed(table)" in relay_admin
     assert '"rowDigestBefore"' in relay_admin
     assert "generic database mutation is " in relay_admin
     assert "purpose-built audited action" in relay_admin
+
+
+def test_bulk_delete_is_blocked_only_for_hidden_tables():
+    # Row selection + "Delete selected" is the default for every table whose
+    # rows actually render; only ADMIN_HIDDEN_TABLES stays fully read-only.
+    purge_fn = _function_source("_admin_purge_allowed")
+    assert "table not in ADMIN_HIDDEN_TABLES" in purge_fn
+
+    table_view = _function_source("_render_table_view")
+    assert "purge_allowed = _admin_purge_allowed(table)" in table_view
 
 
 def test_local_reward_snapshot_reverifies_signed_evidence_and_operations():
