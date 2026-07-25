@@ -4038,6 +4038,7 @@ export function createWorldScene({
   onOfficeMeetingBoardSelect = () => {},
   onWorldBulletinSelect = () => {},
   onMastodonBoardSelect = () => {},
+  onSystemCapacityTableSelect = () => {},
   onRendererStateChange = () => {},
   onOfficeChairSelect = () => {},
   onOfficeMovement = () => {},
@@ -6936,6 +6937,9 @@ export function createWorldScene({
 
     const existing = systemCapacityPlatform.userData.metricsLayer;
     if (existing) {
+      // Table bars are pickable, so the old ones have to leave the interactive
+      // list before they are disposed or clicks would raycast dead meshes.
+      removeInteractiveObject(interactive, existing);
       systemCapacityPlatform.remove(existing);
       disposeObject3D(existing);
       systemCapacityPlatform.userData.metricsLayer = null;
@@ -6975,26 +6979,6 @@ export function createWorldScene({
         0.075,
         0.52,
       );
-      const tableTextPlane = (text, width, height, fontSize, color = "#071c16") => {
-        const texture = canvasTexture(THREE, 768, 160, (context) => {
-          context.clearRect(0, 0, 768, 160);
-          context.fillStyle = color;
-          context.font = `700 ${fontSize}px "ForkMesh Mono", ui-monospace, monospace`;
-          context.textAlign = "center";
-          context.textBaseline = "middle";
-          context.fillText(text, 384, 82, 730);
-        });
-        return new THREE.Mesh(
-          new THREE.PlaneGeometry(width, height),
-          new THREE.MeshBasicMaterial({
-            map: texture,
-            transparent: true,
-            toneMapped: false,
-            side: THREE.DoubleSide,
-            depthWrite: false,
-          }),
-        );
-      };
       const tableTopLabel = (rowCount, tableName, width) => {
         const texture = canvasTexture(THREE, 768, 768, (context) => {
           context.clearRect(0, 0, 768, 768);
@@ -7053,6 +7037,9 @@ export function createWorldScene({
         );
         bar.userData.tableName = table.name;
         bar.userData.rowCount = table.rowCount;
+        // Clicking a bar opens the floating table browser for that table.
+        bar.userData.interactive = "system-capacity-table";
+        interactive.push(bar);
         tableLayer.add(bar);
         // The complete table identity is printed on its top face: a large row
         // count fills the width, with the table name immediately beneath it.
@@ -7069,19 +7056,6 @@ export function createWorldScene({
         );
         topLabel.rotation.x = -Math.PI / 2;
         tableLayer.add(topLabel);
-        const nameLabel = tableTextPlane(
-          table.name,
-          barWidth * 0.96,
-          Math.min(0.22, Math.max(0.11, height * 0.16)),
-          38,
-        );
-        nameLabel.name = `system-capacity-table-name:${table.name}`;
-        nameLabel.position.set(
-          bar.position.x,
-          0.38 + Math.min(height * 0.58, Math.max(0.16, height - 0.12)),
-          bar.position.z - barWidth / 2 - 0.012,
-        );
-        tableLayer.add(nameLabel);
       });
       layer.add(tableLayer);
     }
@@ -8942,6 +8916,13 @@ export function createWorldScene({
     }
     if (hit?.object?.userData?.interactive === "mastodon-board") {
       onMastodonBoardSelect();
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "system-capacity-table") {
+      onSystemCapacityTableSelect({
+        name: String(hit.object.userData.tableName || ""),
+        rowCount: Number(hit.object.userData.rowCount) || 0,
+      });
       return;
     }
     if (

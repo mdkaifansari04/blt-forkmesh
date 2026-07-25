@@ -1302,6 +1302,85 @@ forkmesh-world {
   padding: 24px 24px max(32px, var(--safe-bottom));
 }
 
+/* Database table browser: opened by clicking a bar on the System Capacity
+   platform. The header row stays put while the counts scroll underneath. */
+.world-capacity-tables {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.world-capacity-summary {
+  margin: 0;
+  border-bottom: 1px solid var(--world-line);
+  padding: 0 24px 14px;
+  color: var(--world-muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.world-capacity-scroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 24px max(24px, var(--safe-bottom));
+}
+
+.world-capacity-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+}
+
+.world-capacity-table th,
+.world-capacity-table td {
+  border-bottom: 1px solid var(--world-line);
+  padding: 8px 6px;
+  text-align: left;
+  font-weight: 400;
+}
+
+.world-capacity-table .is-numeric {
+  text-align: right;
+  font-family: "ForkMesh Mono", ui-monospace, monospace;
+}
+
+.world-capacity-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  border-bottom: 1px solid var(--world-line-strong);
+  background: #081511;
+  padding: 0;
+}
+
+.world-capacity-table thead button {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 10px 6px;
+  color: var(--world-muted);
+  font: inherit;
+  letter-spacing: 0.08em;
+  text-align: inherit;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.world-capacity-table thead button:hover,
+.world-capacity-table thead button:focus-visible {
+  color: var(--detail-color);
+  outline: none;
+}
+
+.world-capacity-table tbody th {
+  word-break: break-all;
+}
+
+.world-capacity-table tbody tr[data-current="true"] {
+  color: var(--detail-color);
+}
+
 /* Mastodon mini app: fixed profile summary with independently scrollable
    toots underneath, matching the kiosk beside the ForkMesh Office. */
 .world-mastodon-app {

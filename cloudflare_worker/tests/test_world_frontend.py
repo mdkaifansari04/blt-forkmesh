@@ -1763,11 +1763,30 @@ def test_system_capacity_scene_combines_service_limits_and_database_rows():
     assert ".slice(0, 128)" in SCENE
     assert "visibleTableCount" in SCENE
     assert "system-capacity-row-count:" in SCENE
-    assert "system-capacity-table-name:" in SCENE
+    # The table name is printed on the bar's top face only; the old upright
+    # label behind each bar was removed.
+    assert "system-capacity-table-name:" not in SCENE
     assert "metricsAvailable" in SCENE
     assert "metricsSignature" in SCENE
     assert "metricsSignature === signature" in SCENE
     assert "updateSystemCapacity," in SCENE
+
+
+def test_system_capacity_tables_open_a_sortable_scrollable_panel():
+    assert '"system-capacity-table"' in SCENE
+    assert "onSystemCapacityTableSelect" in SCENE
+    assert "removeInteractiveObject(interactive, existing)" in SCENE
+    assert "onSystemCapacityTableSelect: (table) =>" in APP
+    assert "openSystemCapacityTables(table)" in APP
+    assert "sortSystemCapacityTables(key)" in APP
+    assert "renderSystemCapacityTables()" in APP
+    assert 'data-world-capacity-sort="name"' in APP
+    assert 'data-world-capacity-sort="rowCount"' in APP
+    assert '[data-world-capacity-sort]' in APP
+    assert 'detail.dataset.openLandmark !== "system-capacity-tables"' in APP
+    assert ".world-capacity-scroll" in CSS
+    assert ".world-capacity-table thead th" in CSS
+    assert "position: sticky" in CSS
 
 
 def test_world_lighting_is_static_daylight_with_a_local_persisted_control():
