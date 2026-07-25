@@ -31,7 +31,8 @@ def test_live_node_builder_preserves_signed_repo_facts_and_unknown_telemetry():
         requestedRepo: "forkmesh",
         mirrors: [
           {{
-            node: "mirror2", status: "online", integrity: "ok",
+            node: "mirror2", machineName: "rack-a-berlin",
+            status: "online", integrity: "ok",
             cloneAvailable: true, commit, branch: "main", sizeBytes: 44,
             issueCount: 7, commitCount: 80, branchCount: 3, pullCount: 5,
             discussionCount: 2, artifactCount: 1, platform: "linux",
@@ -63,6 +64,10 @@ def test_live_node_builder_preserves_signed_repo_facts_and_unknown_telemetry():
     nodes = json.loads(result.stdout)
     assert [node["name"] for node in nodes] == ["mirror2", "mirror3"]
     mirror2 = nodes[0]
+    # The machine's advertised node name rides along for display; the account
+    # name stays the identity key. A node that never advertised one omits it.
+    assert mirror2["machineName"] == "rack-a-berlin"
+    assert "machineName" not in nodes[1]
     assert mirror2["commit"] == "a" * 40
     assert mirror2["branch"] == "main"
     assert mirror2["pullCount"] == 5
@@ -194,6 +199,10 @@ def test_world_fetches_the_flagship_mirror_snapshot_once_and_uses_cabinets():
     assert "COMMIT SUBJECT NOT REPORTED" in SCENE
     assert "AUTHOR NOT REPORTED" in SCENE
     assert "mirrorCommitAgeLabel" in SCENE
+    # The cabinet title is the machine's advertised node name, falling back to
+    # the account for publishers that predate the machineName catalog field.
+    assert 'String(node?.machineName || node?.name || "MIRROR")' in SCENE
+    assert "machineName: node?.machineName" in SCENE
     assert "nodeDataKey" in SCENE
     assert ".slice(0, 64)" in SCENE
     assert "mirror-server-front-panel" in SCENE
