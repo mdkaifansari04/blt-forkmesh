@@ -1574,21 +1574,21 @@ function createAvatar(THREE, identity, options = {}) {
   const antenna = new THREE.Group();
   antenna.name = "mouse-activity-antenna";
   const antennaStalk = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.028, 0.036, 1.02, 10),
+    new THREE.CylinderGeometry(0.03, 0.038, 1.36, 10),
     new THREE.MeshBasicMaterial({ color: ANTENNA_STALK_COLOR }),
   );
-  antennaStalk.position.y = 0.51;
+  antennaStalk.position.y = 0.68;
   antenna.add(antennaStalk);
   const antennaBulb = new THREE.Mesh(
-    new THREE.SphereGeometry(0.11, 14, 12),
+    new THREE.SphereGeometry(0.12, 14, 12),
     new THREE.MeshBasicMaterial({ color: ANTENNA_LIT_COLOR }),
   );
-  antennaBulb.position.y = 1.08;
+  antennaBulb.position.y = 1.42;
   antenna.add(antennaBulb);
-  // Avatar fronts face -Z, so +Z is the back; tilted so it leans away from
-  // the head instead of through it.
-  antenna.position.set(0, 2.62, 0.28);
-  antenna.rotation.x = 0.22;
+  // Avatar fronts face -Z, so +Z is the back; leaned back far enough that the
+  // bulb clears the head instead of reading as a hat.
+  antenna.position.set(0, 2.55, 0.31);
+  antenna.rotation.x = 0.3;
   antenna.visible = identity.inputActive === true;
   group.add(antenna);
 
