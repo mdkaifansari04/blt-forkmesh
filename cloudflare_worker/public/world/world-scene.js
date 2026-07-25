@@ -2078,26 +2078,9 @@ function createRegisteredUserLounge(THREE, animated, interactive) {
     column.position.set(Math.cos(angle) * 5.8, 2.1, Math.sin(angle) * 5.8);
     lounge.add(column);
   }
-  const seatOffsets = [];
-  for (let row = 0; row < 3; row += 1) {
-    for (let column = 0; column < 6; column += 1) {
-      const x = -4.5 + column * 1.8;
-      const z = -1.8 + row * 1.8;
-      const seat = new THREE.Mesh(
-        new THREE.BoxGeometry(1.25, 0.08, 1.05),
-        makeMaterial(THREE, row === 0 ? "#5ca783" : "#3f755e", {
-          emissive: row === 0 ? "#245c46" : "#173d2e",
-          emissiveIntensity: 0.35,
-        }),
-      );
-      seat.position.set(x, 0.42, z);
-      lounge.add(seat);
-      seatOffsets.push(new THREE.Vector3(x, 0.38, z));
-    }
-  }
-  lounge.userData.seatOffsets = seatOffsets;
-  // The lounge plaque carries the member total and the account button, so no
-  // separate floating count card hovers over the lounge.
+  // Members no longer sit here — the directory figures gather around the
+  // campfire circle instead — so the lounge keeps only the plaque, which
+  // carries the member total and the account button (no floating count card).
   const plaque = placeSectionPlaque(
     lounge,
     makeMemberLoungePlaque(THREE, "#9ef7c6"),
@@ -4462,39 +4445,73 @@ export function createWorldScene({
     innerFlame.scale.set(size * 0.82, size * 0.9, size * 0.82);
     fireLight.intensity = 3.2 * fireLevel + Math.sin(time * 0.013) * 0.7;
   });
-  // Benches sit back far enough from the pit to leave a wide walkable ring
-  // between the seats and the stones (and to clear the log pile at ~2.6).
+  // Stools sit back far enough from the pit to leave a wide walkable ring
+  // between the seats and the stones (and to clear the log pile at ~2.6). The
+  // circle carries one log stool per registered member — occupied by a seated
+  // directory figure while the member is away, left empty (and sittable) while
+  // they walk the world as a live avatar — and widens whenever a new account
+  // joins so everyone still fits around the fire.
   const CAMPFIRE_BENCH_RADIUS = 6.2;
-  for (let index = 0; index < 6; index += 1) {
-    const angle = (index / 6) * Math.PI * 2;
-    const bench = new THREE.Group();
-    const seat = new THREE.Mesh(
-      new THREE.BoxGeometry(2.1, 0.15, 0.52),
-      makeMaterial(THREE, "#6c4d35"),
+  const CAMPFIRE_CIRCLE_MIN_SEATS = 6;
+  const CAMPFIRE_CIRCLE_MAX_SEATS = 96;
+  const CAMPFIRE_SEAT_SPACING = 2.1;
+  function rebuildCampfireCircle(neededSeats) {
+    const count = Math.max(
+      CAMPFIRE_CIRCLE_MIN_SEATS,
+      Math.min(
+        CAMPFIRE_CIRCLE_MAX_SEATS,
+        Math.round(Number(neededSeats) || 0),
+      ),
     );
-    seat.position.y = 0.62;
-    bench.add(seat);
-    for (const x of [-0.75, 0.75]) {
-      const leg = new THREE.Mesh(
-        new THREE.BoxGeometry(0.1, 0.55, 0.38),
-        makeMaterial(THREE, "#26372f"),
-      );
-      leg.position.set(x, 0.3, 0);
-      bench.add(leg);
+    if (campfire.userData.seatCount === count) {
+      return campfire.userData.seatOffsets;
     }
-    bench.position.set(
-      Math.cos(angle) * CAMPFIRE_BENCH_RADIUS,
-      0,
-      Math.sin(angle) * CAMPFIRE_BENCH_RADIUS,
+    const previous = campfire.userData.seatRing;
+    if (previous) {
+      previous.traverse((child) => {
+        const interactiveIndex = interactive.indexOf(child);
+        if (interactiveIndex >= 0) interactive.splice(interactiveIndex, 1);
+      });
+      campfire.remove(previous);
+      disposeObject3D(previous);
+    }
+    const ring = new THREE.Group();
+    ring.name = "campfire-member-circle";
+    const radius = Math.max(
+      CAMPFIRE_BENCH_RADIUS,
+      (count * CAMPFIRE_SEAT_SPACING) / (2 * Math.PI),
     );
-    bench.rotation.y = -angle + Math.PI / 2;
-    // Seat coordinates are read from the live world matrix at click time, so a
-    // relocated campfire needs no bookkeeping and the seats can never drift.
-    seat.userData.campfireBench = true;
-    interactive.push(seat);
-    setShadows(bench);
-    campfire.add(bench);
+    const seatOffsets = [];
+    for (let index = 0; index < count; index += 1) {
+      const angle = (index / count) * Math.PI * 2;
+      const seat = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.42, 0.5, 0.5, 10),
+        makeMaterial(THREE, "#70472a", { roughness: 0.86 }),
+      );
+      seat.position.set(
+        Math.cos(angle) * radius,
+        0.25,
+        Math.sin(angle) * radius,
+      );
+      // Seat coordinates are read from the live world matrix at click time, so a
+      // relocated campfire needs no bookkeeping and the seats can never drift.
+      seat.userData.campfireBench = true;
+      interactive.push(seat);
+      ring.add(seat);
+      // Offsets land sitters just above the stool top, matching the local
+      // player's bench-seat pose height.
+      seatOffsets.push(
+        new THREE.Vector3(seat.position.x, seat.position.y + 0.1, seat.position.z),
+      );
+    }
+    setShadows(ring);
+    campfire.add(ring);
+    campfire.userData.seatRing = ring;
+    campfire.userData.seatCount = count;
+    campfire.userData.seatOffsets = seatOffsets;
+    return seatOffsets;
   }
+  rebuildCampfireCircle(CAMPFIRE_CIRCLE_MIN_SEATS);
   setShadows(campfire);
   world.add(campfire);
   registerMovableObject("campfire", campfire);
@@ -6290,7 +6307,12 @@ export function createWorldScene({
         : recentlyActiveInLounge
           ? Math.sin(time * 0.012 + avatar.userData.phase) * 0.18
           : 0;
-      const seatedAtCampfire = avatar.userData.campfireSeated === true && !walking;
+      // Members occupying a stool in the campfire circle sit like local bench
+      // sitters do once they arrive at their seat.
+      const seatedAtCampfire =
+        (avatar.userData.campfireSeated === true ||
+          Boolean(avatar.userData.loungeActivity)) &&
+        !walking;
       avatar.userData.leftArm.rotation.x = gait;
       avatar.userData.rightArm.rotation.x = -gait;
       avatar.userData.leftLeg.rotation.x = seatedAtCampfire ? -1.3 : -gait * 0.7;
@@ -6574,12 +6596,21 @@ export function createWorldScene({
       avatar.userData.campfireSeated =
         String(remote.activity || "") === CAMPFIRE_SEATED_ACTIVITY;
       if (useRegisteredLounge) {
-        const seats = registeredUserLounge.userData.seatOffsets || [];
-        const seat = seats[hashNumber(remote.id) % Math.max(1, seats.length)];
+        // Idle and returning members walk to the empty stools left after the
+        // seated directory figures, joining the same circle around the fire.
+        const seats = campfire.userData.seatOffsets || [];
+        const taken = Math.min(
+          campfire.userData.memberFigureCount || 0,
+          Math.max(0, seats.length - 1),
+        );
+        const open = Math.max(1, seats.length - taken);
+        const seat = seats[taken + (hashNumber(remote.id) % open)];
         const offset = seat || new THREE.Vector3();
-        avatar.userData.targetPosition.copy(registeredUserLounge.position);
+        avatar.userData.targetPosition.copy(campfire.position);
         avatar.userData.targetPosition.add(offset);
-        avatar.userData.targetHeading = 0;
+        // Face the flames at the circle's centre (remote headings use
+        // atan2(dx, dz) toward the walk direction).
+        avatar.userData.targetHeading = Math.atan2(-offset.x, -offset.z);
       } else if (sharedInactive) {
         const restArea = landmarkById("neighborhood").position;
         const seat = hashNumber(remote.id) % 8;
@@ -6749,10 +6780,16 @@ export function createWorldScene({
       leaderboardFace.material.needsUpdate = true;
       activeLeaderboardSign.userData.key = leaderboardKey;
     }
-    const seats = registeredUserLounge.userData.seatOffsets || [];
+    // Registered members sit in a circle around the campfire facing the
+    // flames. The circle holds one stool per registered account, so members
+    // currently walking the world as live avatars leave visibly empty seats,
+    // and it expands whenever a new account joins so everyone still fits.
+    const roster = (Array.isArray(members) ? members : []).filter((member) =>
+      String(member?.name || "").trim(),
+    );
+    const seats = rebuildCampfireCircle(Math.max(total, roster.length));
     const seen = new Set();
-    (Array.isArray(members) ? members : [])
-      .filter((member) => String(member?.name || "").trim())
+    roster
       .slice(0, Math.max(1, seats.length))
       .forEach((member, index) => {
         const name = String(member.name).trim().slice(0, 32);
@@ -6770,7 +6807,7 @@ export function createWorldScene({
               countryCode: "",
               browser: "Hidden",
               os: "Hidden",
-              status: "resting in the member lounge",
+              status: "sitting around the campfire",
               accountStatus: "Registered",
               localTime: "",
               activityCategory: "hidden",
@@ -6789,10 +6826,15 @@ export function createWorldScene({
           loungeMembers.set(id, figure);
         }
         const seat = seats[index % Math.max(1, seats.length)];
-        figure.position.copy(registeredUserLounge.position);
+        figure.position.copy(campfire.position);
         if (seat) figure.position.add(seat);
-        figure.rotation.y = 0;
+        // Face the fire at the circle's centre and hold a seated pose on the
+        // stool, matching the local player's bench-seat legs.
+        figure.rotation.y = seat ? Math.atan2(-seat.x, -seat.z) : 0;
+        figure.userData.leftLeg.rotation.x = -1.3;
+        figure.userData.rightLeg.rotation.x = -1.3;
       });
+    campfire.userData.memberFigureCount = Math.min(seen.size, seats.length);
     loungeMembers.forEach((figure, id) => {
       if (seen.has(id)) return;
       world.remove(figure);
