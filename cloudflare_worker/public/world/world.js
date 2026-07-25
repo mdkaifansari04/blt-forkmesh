@@ -2656,7 +2656,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           <summary aria-label="Open World chat in a terminal panel">
             <span class="world-diagnostics-light" data-state="online" aria-hidden="true"></span>
             <strong>CHAT</strong>
-            <span data-world-chat-terminal-last>Chat stays inside ForkMesh World</span>
+            <span data-world-chat-terminal-last>Connecting to global #general…</span>
             <span class="world-diagnostics-toggle" aria-hidden="true">⌃</span>
           </summary>
           <div class="world-chat-terminal-body">
@@ -2698,7 +2698,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <div>
               <p class="world-eyebrow">LIVE COLLABORATION</p>
               <h2 id="world-chat-title">World chat</h2>
-              <span>Chat stays inside ForkMesh World.</span>
+              <span>Global #general — the same room as the website's /chat.</span>
             </div>
             <button type="button" data-world-chat-close aria-label="Close World chat">×</button>
           </header>
@@ -3220,6 +3220,9 @@ class ForkMeshWorld extends HTMLElement {
       .replace(/^World visitor\s*·\s*/i, "")
       .trim();
     this.setChatTerminalLastMessage(sender, text);
+    // Replayed history updates only the collapsed CHAT bar — never a bubble,
+    // so reconnects do not resurrect old messages above avatars.
+    if (data.history === true) return;
     if (data.self === true) {
       this.world?.showChatBubble?.(this.identity?.id, text, true);
       return;
@@ -4422,6 +4425,9 @@ class ForkMeshWorld extends HTMLElement {
     chatTerminal?.addEventListener("toggle", () => {
       if (chatTerminal.open) this.loadChatTerminalFrame();
     });
+    // Load the chat frame immediately so the collapsed CHAT bar always shows
+    // the most recent global #general message, not a static placeholder.
+    this.loadChatTerminalFrame();
     this.addEventListener("click", (event) => {
       const chatLink = event.target.closest(
         "[data-world-chat-open], a[href^='/dashboard/chat']",
