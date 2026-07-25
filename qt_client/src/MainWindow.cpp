@@ -78,6 +78,9 @@ MainWindow::~MainWindow()
     }
     m_cloudflareActiveSecret.fill(QChar(u'\0'));
     m_cloudflareActiveSecret.clear();
+    for (QString &password : m_hostSessionPasswords)
+        password.fill(QChar(u'\0'));
+    m_hostSessionPasswords.clear();
 
     forkmesh::setCrashContext(
         QStringLiteral("MainWindow teardown\nregistered diff views: %1")

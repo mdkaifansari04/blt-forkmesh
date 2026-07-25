@@ -1,0 +1,181 @@
+"""Account sessions are random, revocable, cookie-safe, and non-replayable."""
+
+import ast
+import asyncio
+import hashlib
+import hmac
+from pathlib import Path
+import re
+import sqlite3
+from types import SimpleNamespace
+from urllib.parse import urlparse
+
+
+ROOT = Path(__file__).resolve().parents[1]
+ENTRY = ROOT / "src" / "entry.py"
+TEXT = ENTRY.read_text(encoding="utf-8")
+
+
+def _source(name):
+    tree = ast.parse(TEXT)
+    for node in tree.body:
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == name
+        ):
+            return ast.get_source_segment(TEXT, node)
+    raise AssertionError(name)
+
+
+def _lookup_namespace(row, token, now=2_000_000):
+    updates = []
+
+    async def first(_env, sql, *_args):
+        if "FROM account_sessions" in sql:
+            return dict(row) if row else None
+        if "FROM users" in sql:
+            return {"data": {"name": "alice", "status": "active", "kind": "user"}}
+        raise AssertionError(sql)
+
+    async def run(_env, sql, *args):
+        updates.append((sql, args))
+
+    namespace = {
+        "ACCOUNT_SESSION_TOKEN_RE": re.compile(
+            r"^v2\.([A-Za-z0-9_-]{24,64})\.([A-Za-z0-9_-]{32,96})$"),
+        "ACCOUNT_SESSION_TOUCH_MS": 300_000,
+        "Date": SimpleNamespace(now=lambda: now),
+        "clean_string": lambda value, maximum: str(value or "")[:maximum],
+        "d1_first": first,
+        "d1_run": run,
+        "decrypt_row": lambda _env, value: asyncio.sleep(0, result=value),
+        "_account_kind": lambda rec: rec.get("kind"),
+        "_account_session_token_digest": lambda _env, value: hmac.new(
+            b"server-secret",
+            ("forkmesh-account-session-token-v2\n" + value).encode(),
+            "sha256",
+        ).hexdigest(),
+        "hmac": hmac,
+    }
+    exec(_source("_account_session_lookup"), namespace)
+    return namespace["_account_session_lookup"], updates
+
+
+def test_session_lookup_rejects_revoked_expired_and_wrong_digest():
+    token = "v2." + "a" * 32 + "." + "b" * 43
+    digest = hmac.new(
+        b"server-secret",
+        ("forkmesh-account-session-token-v2\n" + token).encode(),
+        "sha256",
+    ).hexdigest()
+    base = {
+        "account_bi": "account-bi",
+        "token_digest": digest,
+        "last_seen_at": 0,
+        "expires_at": 3_000_000,
+        "revoked_at": 0,
+    }
+    lookup, updates = _lookup_namespace(base, token)
+    account_bi, rec, session_id = asyncio.run(lookup(object(), token))
+    assert account_bi == "account-bi"
+    assert rec["name"] == "alice"
+    assert session_id == "a" * 32
+    assert updates and "last_seen_at" in updates[0][0]
+
+    for override in (
+        {"revoked_at": 1},
+        {"expires_at": 2_000_000},
+        {"token_digest": "0" * 64},
+    ):
+        lookup, _ = _lookup_namespace({**base, **override}, token)
+        assert asyncio.run(lookup(object(), token)) == ("", None, "")
+
+
+def test_cookie_marker_uses_cookie_and_mutations_require_exact_origin():
+    namespace = {
+        "clean_string": lambda value, maximum: str(value or "")[:maximum],
+        "_cookie_value": lambda request, _name: request.cookie,
+        "ACCOUNT_SESSION_COOKIE": "forkmesh_account",
+        "urlparse": urlparse,
+    }
+    exec(_source("_request_account_session_token"), namespace)
+    exec(_source("_request_same_origin"), namespace)
+    request = SimpleNamespace(
+        url="https://forkmesh.com/api/profile",
+        cookie="v2." + "a" * 32 + "." + "b" * 43,
+        headers={
+            "authorization": "Bearer cookie",
+            "origin": "https://forkmesh.com",
+        },
+    )
+    token, cookie_auth = namespace["_request_account_session_token"](
+        request, {"sessionToken": "cookie"})
+    assert token == request.cookie
+    assert cookie_auth is True
+    assert namespace["_request_same_origin"](request) is True
+    request.headers["origin"] = "https://mirror.forkmesh.com"
+    assert namespace["_request_same_origin"](request) is False
+
+
+def test_logout_reset_delete_and_rotation_revoke_sessions():
+    logout = _source("_account_logout")
+    reset = _source("_account_reset_password")
+    rotate = _source("_account_rotate")
+    delete = _source("_delete_account_namespace")
+    rename = _source("_rename_account_namespace")
+    assert "_account_revoke_sessions(env, account_bi, session_id)" in logout
+    assert "_clear_account_session_cookie()" in logout
+    assert "_account_revoke_sessions(env, name_bi)" in reset
+    assert "_account_revoke_sessions(env, name_bi)" in rotate
+    assert "DELETE FROM account_sessions WHERE account_bi=?" in delete
+    assert "UPDATE account_sessions SET account_bi=?" in rename
+
+
+def test_browser_storage_contains_only_cookie_marker_on_https():
+    public = ROOT / "public"
+    for rel in (
+        "login.js",
+        "signup.js",
+        "dashboard.js",
+        "dashboard/js/02-helpers.js",
+        "dashboard-chat.js",
+        "chat.js",
+        "world/world.js",
+    ):
+        text = (public / rel).read_text(encoding="utf-8")
+        assert '"cookie"' in text, rel
+        assert 'location.protocol === "https:"' in text, rel
+
+
+def test_session_migration_applies_to_sqlite():
+    migration = (
+        ROOT / "migrations" / "0073_revocable_account_sessions.sql"
+    ).read_text(encoding="utf-8")
+    database = sqlite3.connect(":memory:")
+    database.executescript(migration)
+    columns = {
+        row[1]
+        for row in database.execute("PRAGMA table_info(account_sessions)")
+    }
+    assert {
+        "session_id",
+        "account_bi",
+        "token_digest",
+        "expires_at",
+        "revoked_at",
+    }.issubset(columns)
+    database.close()
+
+
+def test_token_digest_is_keyed_and_domain_separated():
+    namespace = {
+        "hmac": hmac,
+        "_account_session_secret": lambda _env: b"server-secret",
+    }
+    exec(_source("_account_session_token_digest"), namespace)
+    digest = namespace["_account_session_token_digest"](object(), "bearer")
+    assert digest == hmac.new(
+        b"server-secret",
+        b"forkmesh-account-session-token-v2\nbearer",
+        hashlib.sha256,
+    ).hexdigest()
