@@ -3,8 +3,9 @@
 The Worker adapter owns account sessions, organization membership, row
 encryption, and D1 access.  This module deliberately receives no platform
 administrator primitive: only active members of the configured organization
-can read the board, and only organization owner/admin or maintain+ members can
-create or reassign work.
+can manage the board, while any active registered user can read and operate
+only work assigned to that account. Organization owner/admin or maintain+
+members can create or reassign work to any active registered user.
 
 Task copy, assignee labels, and check-in notes are encrypted at rest.  The
 plaintext columns contain only opaque blind indexes, bounded state, and
@@ -279,7 +280,7 @@ async def _create(
     member = await runtime.active_user(assignee)
     if not member:
         return _response(
-            runtime, {"error": "assignee_not_active_member"}, status=400)
+            runtime, {"error": "assignee_not_active_user"}, status=400)
     count = await runtime.d1_first(
         "SELECT COUNT(*) AS count FROM world_office_marketing_tasks "
         "WHERE org_bi=?",
@@ -371,7 +372,7 @@ async def _update(
     member = await runtime.active_user(assignee)
     if not member:
         return _response(
-            runtime, {"error": "assignee_not_active_member"}, status=400)
+            runtime, {"error": "assignee_not_active_user"}, status=400)
     if str(row.get("status") or "") == "active":
         return _response(
             runtime, {"error": "active_task_cannot_be_updated"}, status=409)

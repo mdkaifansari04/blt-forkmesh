@@ -56,6 +56,7 @@ class FakeRuntime:
             )
         }
         self.users["inactive"]["active"] = False
+        self.users["rootadmin"]["is_admin"] = True
         self.memberships = {
             "alice": ("owner", "admin"),
             "mary": ("member", "maintain"),
@@ -192,6 +193,14 @@ async def test_org_authorization_manager_roles_and_filtered_reads():
     assert outsider["data"]["canManage"] is False
     assert outsider["data"]["tasks"] == []
     assert "members" not in outsider["data"]
+    admin_bypass = await tasks_api.handle(
+        runtime.use("POST", "rootadmin", {
+            "title": "Platform admin is not an org manager",
+            "assignee": "rootadmin",
+        }),
+        tasks_api.PREFIX,
+    )
+    assert admin_bypass["status"] == 403
 
     write_only = await tasks_api.handle(
         runtime.use("POST", "wendy", {
@@ -237,7 +246,7 @@ async def test_org_authorization_manager_roles_and_filtered_reads():
 
     inactive_assignee = await create_task(runtime, "inactive")
     assert inactive_assignee["status"] == 400
-    assert inactive_assignee["data"]["error"] == "assignee_not_active_member"
+    assert inactive_assignee["data"]["error"] == "assignee_not_active_user"
 
     external_task = await create_task(runtime, "eve", "External assignment")
     assert external_task["status"] == 201
@@ -247,6 +256,22 @@ async def test_org_authorization_manager_roles_and_filtered_reads():
     assert [task["assignee"] for task in external_view["data"]["tasks"]] == [
         "eve"
     ]
+    external_id = external_task["data"]["task"]["id"]
+    external_start = await tasks_api.handle(
+        runtime.use("POST", "eve", {}),
+        f"{tasks_api.PREFIX}/{external_id}/start",
+    )
+    assert external_start["status"] == 200
+    external_checkin = await tasks_api.handle(
+        runtime.use("POST", "eve", {"state": "going_well"}),
+        f"{tasks_api.PREFIX}/{external_id}/checkin",
+    )
+    assert external_checkin["status"] == 200
+    external_stop = await tasks_api.handle(
+        runtime.use("POST", "eve", {}),
+        f"{tasks_api.PREFIX}/stop-active",
+    )
+    assert external_stop["data"]["stopped"] is True
     external_manage = await tasks_api.handle(
         runtime.use("POST", "eve", {
             "title": "No management bypass",
@@ -356,6 +381,60 @@ async def test_assignee_only_server_timer_checkins_and_single_active_task():
 
 
 @run_async_test
+async def test_world_exit_stop_active_is_server_timed_idempotent_and_private():
+    runtime = FakeRuntime()
+    created = await create_task(runtime, "bob", "Stop on World exit")
+    task_id = created["data"]["task"]["id"]
+    started = await tasks_api.handle(
+        runtime.use("POST", "bob", {}),
+        f"{tasks_api.PREFIX}/{task_id}/start",
+    )
+    assert started["status"] == 200
+    runtime.now_ms += 12_345
+
+    cross_origin = await tasks_api.handle(
+        runtime.use("POST", "bob", {}, same_origin=False),
+        f"{tasks_api.PREFIX}/stop-active",
+    )
+    assert cross_origin["status"] == 403
+
+    stopped = await tasks_api.handle(
+        runtime.use("POST", "bob", {}),
+        f"{tasks_api.PREFIX}/stop-active",
+    )
+    assert stopped == {
+        "status": 200,
+        "data": {
+            "ok": True,
+            "stopped": True,
+            "serverNow": runtime.now_ms,
+        },
+        "cache_control": "no-store, max-age=0, must-revalidate",
+        "headers": {"x-content-type-options": "nosniff"},
+    }
+    row = runtime.db.execute(
+        "SELECT status,elapsed_ms,started_at,next_checkin_at "
+        "FROM world_office_marketing_tasks WHERE task_id=?",
+        (task_id,),
+    ).fetchone()
+    assert tuple(row) == ("idle", 12_345, 0, 0)
+
+    repeated = await tasks_api.handle(
+        runtime.use("POST", "bob", {}),
+        f"{tasks_api.PREFIX}/stop-active",
+    )
+    assert repeated["status"] == 200
+    assert repeated["data"]["stopped"] is False
+    assert "task" not in repeated["data"]
+
+    unauthenticated = await tasks_api.handle(
+        runtime.use("POST", "", {}),
+        f"{tasks_api.PREFIX}/stop-active",
+    )
+    assert unauthenticated["status"] == 401
+
+
+@run_async_test
 async def test_encrypted_copy_same_origin_reassignment_and_metadata_only_audit():
     runtime = FakeRuntime()
     denied_origin = await tasks_api.handle(
@@ -413,7 +492,8 @@ async def test_encrypted_copy_same_origin_reassignment_and_metadata_only_audit()
     assert details not in audit_dump
     assert note not in audit_dump
     assert all(
-        set(item["details"]).issubset({"assigned", "fields", "state"})
+        set(item["details"]).issubset({
+            "assigned", "fields", "state", "source"})
         for item in runtime.audits
     )
 

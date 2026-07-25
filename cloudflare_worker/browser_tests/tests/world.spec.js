@@ -1405,6 +1405,82 @@ test("an empty Office shows a green open door and admits without a code", async 
   });
 });
 
+test("the exterior keypad does not admit an empty Office", async ({ page }) => {
+  const officeEntryRequests = [];
+  await prepareWorldPage(page, "office-empty-exterior-keypad", {
+    officeOccupied: false,
+    officeEntryRequests,
+  });
+  await waitForWorld(page);
+  await moveToOfficeEntrance(page);
+  const result = await page.locator("forkmesh-world").evaluate(async (shell) =>
+    shell.officeController.enterOffice({ source: "keypad" })
+  );
+  expect(result).toBe(false);
+  await expect(page.locator("[data-world-office-lobby]")).toBeHidden();
+  await expect(page.locator("[data-world-office-keypad]")).toBeHidden();
+  expect(officeEntryRequests).toHaveLength(0);
+});
+
+test("walking through an empty Office doorway admits once without the prompt", async ({
+  page,
+}) => {
+  const officeEntryRequests = [];
+  await prepareWorldPage(page, "office-walk-in-entry", {
+    officeOccupied: false,
+    officeEntryRequests,
+  });
+  await waitForWorld(page);
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setPaused(false);
+    shell.world.player.position.set(45, 0.38, -20.15);
+    shell.world.setControl("forward", true);
+  });
+  try {
+    await expect(page.locator("[data-world-office-lobby]")).toBeVisible();
+  } finally {
+    await page.locator("forkmesh-world").evaluate((shell) => {
+      shell.world.setControl("forward", false);
+    });
+  }
+  await page.waitForTimeout(250);
+  expect(officeEntryRequests).toHaveLength(1);
+  expect(officeEntryRequests[0]).toMatchObject({
+    method: "POST",
+    body: {},
+  });
+});
+
+test("walking into an occupied Office stops at its keypad without posting", async ({
+  page,
+}) => {
+  const officeEntryRequests = [];
+  await prepareWorldPage(page, "office-walk-in-occupied", {
+    officeOccupied: true,
+    officeEntryRequests,
+  });
+  await waitForWorld(page);
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setPaused(false);
+    shell.world.player.position.set(45, 0.38, -20.15);
+    shell.world.setControl("forward", true);
+  });
+  const keypad = page.locator("[data-world-office-keypad]");
+  try {
+    await expect(keypad).toBeVisible();
+  } finally {
+    await page.locator("forkmesh-world").evaluate((shell) => {
+      shell.world.setControl("forward", false);
+    });
+  }
+  await expect(page.locator("[data-world-canvas-wrap] canvas")).toHaveAttribute(
+    "data-camera-mode",
+    "first-person",
+  );
+  await page.waitForTimeout(250);
+  expect(officeEntryRequests).toHaveLength(0);
+});
+
 test("an occupied Office requires four digits without leaking them", async ({
   page,
 }) => {

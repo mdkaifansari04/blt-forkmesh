@@ -81,6 +81,7 @@ const MOVEMENT_KEYS = new Set([
   "ArrowRight",
 ]);
 const REGISTERED_LOUNGE_POSITION = Object.freeze([-22, 0, 25]);
+const ACTIVE_LEADERBOARD_POSITION = Object.freeze([-11.5, 0, 25]);
 const SYSTEM_CAPACITY_PLATFORM_POSITION = Object.freeze([8, 0, -27]);
 const SERVER_CABINET_YARD_ORIGIN = Object.freeze([18, 0, 0]);
 const ARRIVAL_GRID_BOUNDS = Object.freeze({
@@ -3135,7 +3136,15 @@ function officeKeypadDisplayTexture(THREE, value = "", mode = "entry") {
     context.font = '700 24px "ForkMesh Mono", ui-monospace, monospace';
     context.textAlign = "left";
     context.textBaseline = "middle";
-    context.fillText(mode === "set" ? "SET CODE" : "ACCESS CODE", 24, 34);
+    context.fillText(
+      mode === "set"
+        ? "SET CODE"
+        : mode === "guide"
+          ? "SET INSIDE"
+          : "ACCESS CODE",
+      24,
+      34,
+    );
     context.fillStyle = "#d9ffea";
     context.font = '800 64px "ForkMesh Mono", ui-monospace, monospace';
     context.textAlign = "center";
@@ -3845,8 +3854,11 @@ export function createWorldScene({
   );
   world.add(registeredUserLounge);
   const activeLeaderboardSign = makeActiveLeaderboardSign(THREE);
-  activeLeaderboardSign.position.set(-13.5, 0, 16.8);
-  activeLeaderboardSign.rotation.y = Math.atan2(13.5, -16.8);
+  activeLeaderboardSign.position.set(...ACTIVE_LEADERBOARD_POSITION);
+  activeLeaderboardSign.rotation.y = Math.atan2(
+    -ACTIVE_LEADERBOARD_POSITION[0],
+    -ACTIVE_LEADERBOARD_POSITION[2],
+  );
   world.add(activeLeaderboardSign);
   const systemCapacityPlatform = createSystemCapacityPlatform(THREE);
   world.add(systemCapacityPlatform);
@@ -4327,6 +4339,8 @@ export function createWorldScene({
   let lastOfficeMovementEmit = 0;
   let officeWasMoving = false;
   let officeExitPending = false;
+  let officeDoorwayEntryPending = false;
+  let officeDoorwayEntryArmed = true;
   let officeKeypadFocused = false;
   let officeKeypadFocusedLocation = "exterior";
   let officeExitHandler = null;
@@ -4440,6 +4454,11 @@ export function createWorldScene({
     officeExitHandler = typeof handler === "function" ? handler : null;
   }
 
+  function setOfficeDoorwayEntryPending(pending = false) {
+    officeDoorwayEntryPending = pending === true;
+    return officeDoorwayEntryPending;
+  }
+
   function setOfficeKeypadHandler(handler) {
     officeKeypadHandler = typeof handler === "function" ? handler : null;
   }
@@ -4459,7 +4478,8 @@ export function createWorldScene({
       keypad?.userData?.officeKeypadDisplay ||
       office?.userData?.officeKeypadDisplay;
     const digits = String(value || "").replace(/\D/g, "").slice(0, 4);
-    const safeMode = mode === "set" ? "set" : "entry";
+    const safeMode =
+      mode === "set" ? "set" : mode === "guide" ? "guide" : "entry";
     if (!keypad || !display?.material) return digits;
     if (
       keypad.userData.officeKeypadDigits === digits &&
@@ -4580,15 +4600,39 @@ export function createWorldScene({
     const previousX = previousPosition.x - office.position.x;
     const previousZ = previousPosition.z - office.position.z;
     const doorClearance = OFFICE_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS;
-    // Even an open door waits at its threshold for the server-approved entry
-    // ticket. The scene transition is the only path through the exterior shell.
+    const doorwayThreshold = OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS;
+    if (
+      localZ > doorwayThreshold + 0.32 &&
+      localZ > previousZ + 0.01
+    ) {
+      officeDoorwayEntryArmed = true;
+    }
+    const crossedDoorway =
+      Math.abs(localX) <= doorClearance &&
+      previousZ >= doorwayThreshold &&
+      localZ < doorwayThreshold;
+    // The player physically crosses the threshold first, but remains outside
+    // until the server admission promise resolves. The armed/pending pair
+    // prevents a held movement key from posting once per animation frame.
     if (
       Math.abs(localX) <= doorClearance &&
       previousZ >= OFFICE_FRONT_Z
     ) {
-      player.position.z =
-        office.position.z + OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS;
+      player.position.z = office.position.z + doorwayThreshold;
       cancelDash();
+      if (
+        crossedDoorway &&
+        officeDoorwayEntryArmed &&
+        !officeDoorwayEntryPending
+      ) {
+        officeDoorwayEntryArmed = false;
+        officeDoorwayEntryPending = true;
+        onOfficeEnter({
+          source: "doorway",
+          occupied: Boolean(office.userData.officeOccupied),
+          available: office.userData.officeAvailable !== false,
+        });
+      }
       return true;
     }
 
@@ -4845,6 +4889,7 @@ export function createWorldScene({
     selectedLandmark = "office";
     officeKeypadFocused = false;
     officeExitPending = false;
+    officeDoorwayEntryPending = false;
     currentSpace = "town-square";
     currentFloorY = 0.38;
     cameraFocus = new THREE.Vector3(
@@ -5074,6 +5119,7 @@ export function createWorldScene({
     officeLocalParticipantId = "";
     officeWasMoving = false;
     officeExitPending = false;
+    officeDoorwayEntryPending = false;
     officeLobbyPlayer.visible = false;
     cameraFocus = null;
     setOfficeParticipants([]);
@@ -8748,6 +8794,7 @@ export function createWorldScene({
     enterOfficeMeeting,
     beginOfficeExit,
     setOfficeExitHandler,
+    setOfficeDoorwayEntryPending,
     focusOfficeKeypad,
     blurOfficeKeypad,
     setOfficeKeypadDigits,

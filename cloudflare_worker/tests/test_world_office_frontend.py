@@ -220,6 +220,54 @@ def test_office_exit_is_completed_at_the_physical_door_not_by_the_ui_button():
     assert "world.setOfficeExitHandler?.(null)" in source
 
 
+def test_walking_through_the_doorway_requests_admission_once():
+    office = office_source()
+    scene = SCENE_PATH.read_text(encoding="utf-8")
+    for contract in (
+        "let officeDoorwayEntryPending = false;",
+        "let officeDoorwayEntryArmed = true;",
+        "const crossedDoorway =",
+        "officeDoorwayEntryArmed &&",
+        "!officeDoorwayEntryPending",
+        "officeDoorwayEntryArmed = false;",
+        "officeDoorwayEntryPending = true;",
+        'source: "doorway"',
+        "function setOfficeDoorwayEntryPending(pending = false)",
+        "setOfficeDoorwayEntryPending,",
+    ):
+        assert contract in scene
+
+    entry = office[
+        office.index("async function enterOffice(entry = {})"):
+        office.index("function openFallback")
+    ]
+    assert 'entry?.source === "doorway"' in entry
+    assert 'return await requestOfficeEntry("")' in entry
+    assert "world.setOfficeDoorwayEntryPending?.(false)" in entry
+
+
+def test_exterior_keypad_never_admits_an_empty_office_or_sets_occupant_code():
+    office = office_source()
+    entry = office[
+        office.index("async function enterOffice(entry = {})"):
+        office.index("function openFallback")
+    ]
+    assert 'if (entry?.source === "keypad")' in entry
+    keypad_guard = entry[entry.index('if (entry?.source === "keypad")'):]
+    assert 'world.focusOfficeKeypad?.("entry", "exterior")' in keypad_guard
+    assert keypad_guard.index("return false;") < keypad_guard.index(
+        'requestOfficeEntry("")'
+    )
+
+    routing = office[
+        office.index("async function onSceneKeypadKey"):
+        office.index("function onClick")
+    ]
+    assert 'location === "interior"' in routing
+    assert 'openKeypad("set", "interior")' in routing
+    assert 'enterOffice({ source: "keypad" })' in routing
+
+
 def test_close_up_keypad_keeps_digits_local_and_supports_capability_gated_updates():
     office = office_source()
     scene = SCENE_PATH.read_text(encoding="utf-8")
@@ -241,6 +289,9 @@ def test_close_up_keypad_keeps_digits_local_and_supports_capability_gated_update
         "payload.canSetCode === true",
         "payload.codeManagement?.canSetCode === true",
         "!occupancy.canSetCode",
+        "!active",
+        "!meeting.inRoom",
+        "officeEntryExpiresAt <= Date.now()",
         "root.postJSON(",
         "[OFFICE_ENTRY_HEADER]: officeEntryTicket",
         "world.setOfficeKeypadHandler?.((key, context)",

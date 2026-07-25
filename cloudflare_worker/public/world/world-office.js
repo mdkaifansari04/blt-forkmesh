@@ -138,7 +138,9 @@ export function createWorldOfficeController({
 
   function setEntryPending(pending) {
     entryPending = pending === true;
-    if (keypadInput) keypadInput.disabled = entryPending;
+    if (keypadInput) {
+      keypadInput.disabled = entryPending || keypadMode === "guide";
+    }
     if (keypadSubmit) keypadSubmit.disabled = entryPending;
     renderPrompt();
   }
@@ -155,6 +157,11 @@ export function createWorldOfficeController({
       keypad.setAttribute("aria-hidden", "true");
     }
     if (keypadInput) keypadInput.value = "";
+    if (keypadInput) keypadInput.disabled = entryPending;
+    if (keypadSubmit) {
+      keypadSubmit.disabled = entryPending;
+      keypadSubmit.textContent = "Enter";
+    }
     world.setOfficeKeypadDigits?.(
       "",
       previousMode,
@@ -168,7 +175,8 @@ export function createWorldOfficeController({
   }
 
   function openKeypad(mode = "entry", location = "exterior") {
-    const safeMode = mode === "set" ? "set" : "entry";
+    const safeMode =
+      mode === "set" ? "set" : mode === "guide" ? "guide" : "entry";
     const safeLocation = location === "interior" ? "interior" : "exterior";
     const ticketValid =
       Boolean(officeEntryTicket) && officeEntryExpiresAt > Date.now();
@@ -185,7 +193,13 @@ export function createWorldOfficeController({
       meeting.inRoom &&
       occupancy.canSetCode &&
       ticketValid;
-    if (!entryAllowed && !managementAllowed) return false;
+    const guideAllowed =
+      safeMode === "guide" &&
+      safeLocation === "exterior" &&
+      !active &&
+      occupancy.available &&
+      !occupancy.occupied;
+    if (!entryAllowed && !managementAllowed && !guideAllowed) return false;
     keypadOpen = true;
     keypadMode = safeMode;
     keypadLocation = safeLocation;
@@ -194,22 +208,34 @@ export function createWorldOfficeController({
       keypad.setAttribute("aria-hidden", "false");
     }
     if (keypadInput) keypadInput.value = "";
+    if (keypadInput) keypadInput.disabled = safeMode === "guide";
+    if (keypadSubmit) {
+      keypadSubmit.disabled = false;
+      keypadSubmit.textContent =
+        safeMode === "guide" ? "Got it" : safeMode === "set" ? "Set code" : "Enter";
+    }
     if (keypadTitle) {
       keypadTitle.textContent =
         safeMode === "set"
           ? "Set a new four-digit Office code"
-          : "Enter the four-digit code";
+          : safeMode === "guide"
+            ? "Set the Office code from inside"
+            : "Enter the four-digit code";
     }
     if (keypadHelp) {
       keypadHelp.textContent =
         safeMode === "set"
           ? "The code is sent only to the same-origin management endpoint. ForkMesh never stores it in this browser."
-          : "This four-digit code is an Office-door coordination check, not account authentication. Room membership and encrypted-channel permissions are still enforced separately.";
+          : safeMode === "guide"
+            ? "Walk through the open door, join an Office room, and use the keypad just inside. Only the current authenticated live occupant can set or change the code."
+            : "This four-digit code is an Office-door coordination check, not account authentication. Room membership and encrypted-channel permissions are still enforced separately.";
     }
     setKeypadStatus(
       safeMode === "set"
         ? "Choose four digits. The backend will still verify your management permission."
-        : "The Office is occupied. Enter the shared four-digit coordination code.",
+        : safeMode === "guide"
+          ? "No code is sent from this exterior panel while the Office is empty."
+          : "The Office is occupied. Enter the shared four-digit coordination code.",
     );
     world.focusOfficeKeypad?.(safeMode, safeLocation);
     world.setOfficeKeypadDigits?.("", safeMode, safeLocation);
@@ -386,7 +412,7 @@ export function createWorldOfficeController({
     } catch (error) {
       if (error?.status === 403 && !code) {
         setOccupancy({ available: true, occupied: true });
-        openKeypad();
+        openKeypad("entry", "exterior");
         setKeypadStatus(
           "The Office became occupied. Enter the shared four-digit code.",
         );
@@ -399,6 +425,7 @@ export function createWorldOfficeController({
             ? "That four-digit code was not accepted."
             : "Office entry is temporarily unavailable.";
       setKeypadStatus(message, "error");
+      if (!code) world.focusOfficeKeypad?.("entry", "exterior");
       if (keypadInput) {
         keypadInput.value = "";
         world.setOfficeKeypadDigits?.(
@@ -460,18 +487,27 @@ export function createWorldOfficeController({
   }
 
   async function enterOffice(entry = {}) {
-    if (proximity !== "nearby" || active) return false;
-    if (!occupancy.available) {
-      await refreshOccupancy();
+    const doorwayEntry = entry?.source === "doorway";
+    try {
+      if (proximity !== "nearby" || active) return false;
+      if (!occupancy.available) {
+        await refreshOccupancy();
+      }
+      if (!occupancy.available) {
+        setKeypadStatus("Office door status is unavailable.", "error");
+        if (doorwayEntry) world.focusOfficeKeypad?.("entry", "exterior");
+        return false;
+      }
+      if (occupancy.occupied) {
+        return openKeypad("entry", "exterior");
+      }
+      if (entry?.source === "keypad") {
+        return openKeypad("guide", "exterior");
+      }
+      return await requestOfficeEntry("");
+    } finally {
+      if (doorwayEntry) world.setOfficeDoorwayEntryPending?.(false);
     }
-    if (!occupancy.available) {
-      setKeypadStatus("Office door status is unavailable.", "error");
-      return false;
-    }
-    if (occupancy.occupied) {
-      return openKeypad("entry", "exterior");
-    }
-    return requestOfficeEntry("");
   }
 
   function openFallback(trigger = null) {
@@ -558,7 +594,7 @@ export function createWorldOfficeController({
     ) {
       return false;
     }
-    if (normalized === "focus") return true;
+    if (normalized === "focus" || keypadMode === "guide") return true;
     if (normalized === "clear") {
       keypadInput.value = "";
       onKeypadInput();
@@ -585,7 +621,7 @@ export function createWorldOfficeController({
     );
     if (keypadDigit) {
       event.preventDefault();
-      if (!keypadInput || entryPending) return;
+      if (!keypadInput || entryPending || keypadMode === "guide") return;
       const digit = String(keypadDigit.dataset.worldOfficeKeypadDigit || "");
       if (/^\d$/.test(digit) && keypadInput.value.length < 4) {
         keypadInput.value += digit;
@@ -596,6 +632,7 @@ export function createWorldOfficeController({
     }
     if (event.target.closest("[data-world-office-keypad-clear]")) {
       event.preventDefault();
+      if (keypadMode === "guide") return;
       if (keypadInput) keypadInput.value = "";
       onKeypadInput();
       keypadInput?.focus();
@@ -679,6 +716,13 @@ export function createWorldOfficeController({
   function onKeypadSubmit(event) {
     event.preventDefault();
     if (!keypadOpen || entryPending || !keypadInput) return;
+    if (keypadMode === "guide") {
+      closeKeypad({ restoreFocus: false });
+      root.toast?.(
+        "Walk through the open door, join a room, then use the keypad inside.",
+      );
+      return;
+    }
     const code = keypadInput.value.replace(/\D/g, "").slice(0, 4);
     // Clear the secret from the DOM before the network request starts. It is
     // sent only in the same-origin POST body and never enters URLs, storage,
@@ -714,6 +758,7 @@ export function createWorldOfficeController({
     occupancyTimer = null;
     tasks?.setActive?.(false);
     world.setOfficeExitHandler?.(null);
+    world.setOfficeDoorwayEntryPending?.(false);
     world.setOfficeKeypadHandler?.(null);
     root.removeEventListener("click", onClick);
     window.removeEventListener("keydown", onKeyDown);

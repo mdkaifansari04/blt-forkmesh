@@ -7,7 +7,9 @@ import base64
 import hmac
 import re
 import tomllib
+from types import SimpleNamespace
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -113,6 +115,7 @@ def _entry_handler():
     node = _top_level_node("office_general_entry_handler")
     module = ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[]))
     state = {"occupied": False, "participantCount": 0}
+    request_code = [""]
 
     class _FakeResponse(dict):
         def __init__(self, data, status):
@@ -122,12 +125,20 @@ def _entry_handler():
     async def blind_index(_env, _value):
         return "a" * 64
 
-    async def room_state(_env, _rate_key, code_approved=None):
+    async def room_state(
+            _env, _rate_key, code_approved=None, code_digest=""):
         assert isinstance(code_approved, bool)
+        assert code_digest == (
+            "digest:" + str(request_code[0])
+            if request_code[0] else "")
         if state["occupied"] and not code_approved:
             return None, _FakeResponse(
                 {"error": "invalid_entry_code"}, 403)
-        return dict(state), None
+        return {
+            **state,
+            "codeConfigured": False,
+            "canSetCode": False,
+        }, None
 
     async def bounded_json_request(request, max_bytes):
         assert max_bytes == 128
@@ -143,6 +154,8 @@ def _entry_handler():
         "_office_entry_ticket_claims": lambda _env, _token: {
             "expires": 1_800_000_060_000,
         },
+        "_office_entry_code_digest": (
+            lambda _env, code: "digest:" + str(code)),
         "_office_general_room_state": room_state,
         "_request_same_origin": lambda request: request.same_origin,
         "_transient_client_address": lambda _request: "192.0.2.1",
@@ -154,7 +167,13 @@ def _entry_handler():
         "re": re,
     }
     exec(compile(module, str(ENTRY), "exec"), namespace)
-    return namespace["office_general_entry_handler"], state
+    original = namespace["office_general_entry_handler"]
+
+    async def handler(env, request):
+        request_code[0] = request.data.get("code", "")
+        return await original(env, request)
+
+    return handler, state
 
 
 class _EntryRequest:
@@ -207,6 +226,353 @@ def test_office_entry_rejects_cross_origin_posts_before_admission():
         "status": 403,
         "data": {"error": "origin_not_allowed"},
     }
+
+
+def _office_code_protocol():
+    names = {
+        "_ws_attachment",
+        "_ws_attr",
+        "_office_entry_code_digest",
+        "_office_socket_code_state",
+        "_office_entry_digest_approved",
+        "_office_live_account",
+    }
+    parsed = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    nodes = [
+        node for node in parsed.body
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name in names
+        )
+        or (
+            isinstance(node, ast.ClassDef)
+            and node.name == "ForkMeshOfficeRoom"
+        )
+    ]
+    assert {
+        node.name for node in nodes
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    } == names
+    module = ast.fix_missing_locations(
+        ast.Module(body=nodes, type_ignores=[]))
+
+    class _Date:
+        @staticmethod
+        def now():
+            return 1_800_000_000_000
+
+    class _World:
+        OFFICE_PUBLIC_FIELDS = ("id",)
+        OFFICE_MAX_CONNECTIONS = 50
+
+        @staticmethod
+        def public_office_presence(state):
+            return {"id": str((state or {}).get("id") or "")}
+
+        @staticmethod
+        def office_presence_is_stale(_last, _now):
+            return False
+
+        @staticmethod
+        def advance_office_broadcast_window(_start, count, now):
+            return True, now, count + 1
+
+    def json_response(data, status=200, **_kwargs):
+        return {"status": status, "data": data}
+
+    namespace = {
+        "DurableObject": object,
+        "Date": _Date,
+        "OFFICE_INTERNAL_RE": re.compile(
+            r"^/api/world/office/(world-general|[0-9a-f]{32})/"
+            r"v([1-9][0-9]*)/(ws|revoke|status|entry|code)$"),
+        "_require_data_secret": lambda env: env.DATA_KEY,
+        "base64": base64,
+        "hmac": hmac,
+        "json": __import__("json"),
+        "json_response": json_response,
+        "method_name": lambda request: request.method,
+        "re": re,
+        "to_js": lambda value: value,
+        "urlparse": urlparse,
+        "world_protocol": _World,
+    }
+    exec(compile(module, str(ENTRY), "exec"), namespace)
+    return namespace
+
+
+class _OfficeSocket:
+    def __init__(self, account_bi, digest="", departed=False):
+        self.attachment = SimpleNamespace(
+            id=account_bi[:8],
+            account_bi=account_bi,
+            scope="world-general",
+            version=1,
+            trusted_name="User",
+            trusted_status="Registered",
+            last=1_800_000_000_000,
+            rl_start=1_800_000_000_000,
+            rl_count=0,
+            departed=departed,
+            entry_code_digest=digest,
+        )
+        self.closed = False
+
+    def deserializeAttachment(self):
+        return self.attachment
+
+    def serializeAttachment(self, value):
+        self.attachment = SimpleNamespace(**dict(value))
+
+    def close(self, _code, _reason):
+        self.closed = True
+
+    def send(self, _message):
+        return None
+
+
+class _OfficeContext:
+    def __init__(self, sockets):
+        self.sockets = sockets
+
+    def getWebSockets(self, _tag):
+        return list(self.sockets)
+
+
+class _OfficeInternalRequest:
+    method = "POST"
+
+    def __init__(self, account_bi, digest):
+        self.url = (
+            "https://forkmesh.internal/api/world/office/"
+            "world-general/v1/code"
+        )
+        self.headers = {
+            "x-forkmesh-office-account-bi": account_bi,
+            "x-forkmesh-office-code-digest": digest,
+        }
+
+
+def test_office_session_code_is_keyed_compared_and_cleared_when_empty():
+    namespace = _office_code_protocol()
+    digest = namespace["_office_entry_code_digest"](_Env(), "2468")
+    wrong = namespace["_office_entry_code_digest"](_Env(), "0000")
+    assert re.fullmatch(r"[0-9a-f]{64}", digest)
+    assert digest != wrong
+    assert "2468" not in digest
+    assert namespace["_office_entry_code_digest"](_Env(), "12x4") == ""
+    assert namespace["_office_entry_digest_approved"](
+        True, digest, digest, False) is True
+    assert namespace["_office_entry_digest_approved"](
+        True, digest, wrong, True) is False
+    assert namespace["_office_entry_digest_approved"](
+        False, "", "", True) is True
+
+    account = "a" * 64
+    first = _OfficeSocket(account)
+    second = _OfficeSocket("b" * 64)
+    room = namespace["ForkMeshOfficeRoom"]()
+    room.ctx = _OfficeContext([first, second])
+    assert room._set_session_code_digest([first, second], digest) is True
+    assert namespace["_office_socket_code_state"](
+        [first, second]) == (True, digest)
+
+    room._depart(first, 1000, "")
+    assert second.attachment.entry_code_digest == digest
+    room._depart(second, 1000, "")
+    assert first.attachment.entry_code_digest == ""
+    assert second.attachment.entry_code_digest == ""
+    assert namespace["_office_socket_code_state"]([]) == (False, "")
+
+
+def test_office_room_accepts_code_change_only_from_matching_live_account():
+    namespace = _office_code_protocol()
+    account = "a" * 64
+    digest = "d" * 64
+    socket = _OfficeSocket(account)
+    room = namespace["ForkMeshOfficeRoom"]()
+    room.ctx = _OfficeContext([socket])
+
+    denied = asyncio.run(room.fetch(
+        _OfficeInternalRequest("b" * 64, digest)))
+    assert denied["status"] == 403
+    assert socket.attachment.entry_code_digest == ""
+
+    accepted = asyncio.run(room.fetch(
+        _OfficeInternalRequest(account, digest)))
+    assert accepted == {
+        "status": 200,
+        "data": {
+            "ok": True,
+            "occupied": True,
+            "codeConfigured": True,
+            "canSetCode": True,
+        },
+    }
+    assert socket.attachment.entry_code_digest == digest
+
+    empty = namespace["ForkMeshOfficeRoom"]()
+    empty.ctx = _OfficeContext([])
+    prelock = asyncio.run(empty.fetch(
+        _OfficeInternalRequest(account, "e" * 64)))
+    assert prelock["status"] == 403
+    assert prelock["data"]["occupied"] is False
+
+
+def _code_handler():
+    node = _top_level_node("office_general_code_handler")
+    module = ast.fix_missing_locations(ast.Module(
+        body=[node], type_ignores=[]))
+    state = {
+        "account_bi": "a" * 64,
+        "account": {"name": "alice", "status": "active", "kind": "user"},
+        "live": True,
+        "forwarded": [],
+    }
+
+    async def account_session(_env, _request):
+        return state["account_bi"], state["account"]
+
+    async def bounded_json(request, max_bytes):
+        assert max_bytes == 128
+        return request.data
+
+    async def set_code(_env, account_bi, digest):
+        state["forwarded"].append((account_bi, digest))
+        if not state["live"]:
+            return None, {
+                "status": 403,
+                "data": {"error": "office_occupant_required"},
+            }
+        return {
+            "occupied": True,
+            "codeConfigured": True,
+            "canSetCode": True,
+        }, None
+
+    def json_response(data, status=200, **_kwargs):
+        return {"status": status, "data": data}
+
+    namespace = {
+        "OFFICE_ENTRY_REQUEST_MAX_BYTES": 128,
+        "RequestBodyTooLarge": type("RequestBodyTooLarge", (BaseException,), {}),
+        "_account_kind": lambda record: record.get("kind", ""),
+        "_account_session_record": account_session,
+        "_office_entry_code_digest": lambda _env, _code: "d" * 64,
+        "_office_general_set_code": set_code,
+        "_request_same_origin": lambda request: request.same_origin,
+        "bounded_json_request": bounded_json,
+        "json_response": json_response,
+        "method_name": lambda request: request.method,
+        "re": re,
+    }
+    exec(compile(module, str(ENTRY), "exec"), namespace)
+    return namespace["office_general_code_handler"], state
+
+
+class _CodeRequest:
+    method = "POST"
+    same_origin = True
+
+    def __init__(self, data):
+        self.data = data
+        # An expired/stale entry proof is intentionally not decisive once the
+        # authenticated account still has a live Office socket.
+        self.headers = {"x-forkmesh-office-entry": "expired-proof"}
+
+
+def test_office_code_handler_requires_same_origin_registered_live_occupant():
+    handler, state = _code_handler()
+    request = _CodeRequest({"code": "2468"})
+    request.same_origin = False
+    cross_origin = asyncio.run(handler(_Env(), request))
+    assert cross_origin["status"] == 403
+    assert state["forwarded"] == []
+
+    request.same_origin = True
+    state["account_bi"] = ""
+    state["account"] = None
+    unauthenticated = asyncio.run(handler(_Env(), request))
+    assert unauthenticated["status"] == 401
+
+    state["account_bi"] = "a" * 64
+    state["account"] = {
+        "name": "rootadmin",
+        "status": "active",
+        "kind": "user",
+        "isAdmin": True,
+    }
+    state["live"] = False
+    not_present = asyncio.run(handler(_Env(), request))
+    assert not_present["status"] == 403
+
+    state["live"] = True
+    accepted = asyncio.run(handler(_Env(), request))
+    assert accepted["status"] == 200
+    assert accepted["data"] == {
+        "ok": True,
+        "occupied": True,
+        "codeConfigured": True,
+        "canSetCode": True,
+    }
+    assert state["forwarded"][-1] == ("a" * 64, "d" * 64)
+    assert "2468" not in repr(state["forwarded"])
+
+
+def test_office_status_exposes_boolean_state_without_secret_or_count():
+    node = _top_level_node("office_general_status_handler")
+    module = ast.fix_missing_locations(ast.Module(
+        body=[node], type_ignores=[]))
+
+    async def account_session(_env, _request):
+        return "a" * 64, {
+            "name": "alice",
+            "status": "active",
+            "kind": "user",
+        }
+
+    async def room_state(_env, occupant_bi=""):
+        assert occupant_bi == "a" * 64
+        return {
+            "occupied": True,
+            "codeConfigured": False,
+            "canSetCode": True,
+        }, None
+
+    def json_response(data, status=200, **_kwargs):
+        return {"status": status, "data": data}
+
+    namespace = {
+        "_account_kind": lambda record: record.get("kind", ""),
+        "_account_session_record": account_session,
+        "_office_general_room_state": room_state,
+        "json_response": json_response,
+        "method_name": lambda request: request.method,
+        "re": re,
+    }
+    exec(compile(module, str(ENTRY), "exec"), namespace)
+
+    class _StatusRequest:
+        method = "GET"
+
+    class _FallbackEnv(_Env):
+        OFFICE_ENTRY_CODE = "2468"
+
+    response = asyncio.run(namespace["office_general_status_handler"](
+        _FallbackEnv(), _StatusRequest()))
+    assert response == {
+        "status": 200,
+        "data": {
+            "ok": True,
+            "occupied": True,
+            "codeConfigured": True,
+            "requiresCode": True,
+            "canSetCode": True,
+        },
+    }
+    assert all(isinstance(value, bool) for value in response["data"].values())
+    assert "2468" not in repr(response)
+    assert "participant" not in repr(response).lower()
 
 
 def _access_handler():
@@ -327,6 +693,7 @@ def test_office_general_access_and_socket_routes_are_registered():
     for route in (
         "/api/world/office/general/status",
         "/api/world/office/general/entry",
+        "/api/world/office/general/code",
         "/api/world/office/general/access",
         "/api/world/office/general/ws",
     ):
@@ -334,6 +701,7 @@ def test_office_general_access_and_socket_routes_are_registered():
     assert "OFFICE_CHANNEL_WS_RE" in route_source
     assert "/api/world/office/channels/" in ENTRY_TEXT
     assert "office_general_access_handler" in route_source
+    assert "office_general_code_handler" in route_source
     assert "_office_general_socket_handler" in route_source
     assert "_office_channel_socket_handler" in route_source
 
@@ -363,6 +731,17 @@ def test_office_general_access_and_socket_routes_are_registered():
     assert "_office_general_room_state" in status_source
     assert "participantCount" not in status_source
     assert "occupied" in status_source
+    assert "participantCount" not in status_source
+
+    code_source = ast.unparse(
+        _top_level_node("office_general_code_handler"))
+    assert "_request_same_origin" in code_source
+    assert "_account_session_record" in code_source
+    assert "_office_entry_code_digest" in code_source
+    assert "_office_general_set_code" in code_source
+    assert "_is_admin" not in code_source
+    assert "_audit_sensitive_action" not in code_source
+    assert "OFFICE_ENTRY_CODE" not in code_source
 
 
 def test_office_internal_upgrade_strips_browser_credentials_and_query():
@@ -413,10 +792,13 @@ def test_office_room_uses_hibernation_attachments_without_storage():
     assert "webSocketError" in source
     assert "x-forkmesh-office-rate-key" in source
     assert "x-forkmesh-office-code-approved" in source
+    assert "x-forkmesh-office-code-digest" in source
+    assert "x-forkmesh-office-account-bi" in source
     assert "_office_entry_rate_step" in source
-    assert "len(self._live_sockets(cleanup=True))" in source
-    assert source.index("len(self._live_sockets(cleanup=True))") < (
+    assert "peers = self._live_sockets(cleanup=True)" in source
+    assert source.index("peers = self._live_sockets(cleanup=True)") < (
         source.index("entry_code_required"))
+    assert "participantCount" not in source
     for forbidden in (
         "ctx.storage.put",
         "ctx.storage.get",

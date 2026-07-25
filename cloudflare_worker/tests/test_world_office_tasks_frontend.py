@@ -148,6 +148,10 @@ def test_task_panel_is_overlayed_responsive_and_reduced_motion_safe():
     ):
         assert selector in css
     assert '.world-office-task-panel[data-open="true"]' in css
+    assert (
+        '.fm-world:has(.world-office-task-panel[data-open="true"])'
+        in css
+    )
     assert "@media (max-width: 720px)" in css
     assert "@media (prefers-reduced-motion: reduce)" in css
 

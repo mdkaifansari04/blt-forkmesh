@@ -1603,6 +1603,19 @@ def test_world_uses_nonhuman_infrastructure_without_the_world_spanning_grid():
     assert 'avatar.userData.loungeActivity === "recent"' in SCENE
 
 
+def test_active_leaderboard_is_right_of_the_member_lounge_and_faces_center():
+    assert (
+        "const ACTIVE_LEADERBOARD_POSITION = Object.freeze([-11.5, 0, 25]);"
+        in SCENE
+    )
+    assert (
+        "activeLeaderboardSign.position.set(...ACTIVE_LEADERBOARD_POSITION)"
+        in SCENE
+    )
+    assert "-ACTIVE_LEADERBOARD_POSITION[0]" in SCENE
+    assert "-ACTIVE_LEADERBOARD_POSITION[2]" in SCENE
+
+
 def test_world_has_no_pale_plaza_and_places_trees_deterministically_clear_of_use():
     assert "new THREE.CylinderGeometry(16.5, 17.4, 0.34, 64)" not in SCENE
     assert "const plazaLines = new THREE.Group()" not in SCENE

@@ -1598,6 +1598,13 @@ forkmesh-world {
   transform: translateY(0);
 }
 
+.fm-world:has(.world-office-task-panel[data-open="true"])
+  :is(.world-office-lobby, .world-office-room) {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .world-office-panel-heading {
   position: sticky;
   z-index: 3;
@@ -2044,6 +2051,12 @@ forkmesh-world {
   color: var(--world-copy);
   padding: 0 10px;
   font: inherit;
+}
+
+.world-office-task-manager input,
+.world-office-task-manager select {
+  width: 100%;
+  min-width: 0;
 }
 
 .world-office-task-manager button,
