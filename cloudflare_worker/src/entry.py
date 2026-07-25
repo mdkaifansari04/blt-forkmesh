@@ -2475,7 +2475,7 @@ async def network_leaderboards(env):
         if size_bytes > 0:
             bytes_by_owner[owner] = bytes_by_owner.get(owner, 0) + size_bytes
         detail = node_details.setdefault(owner.lower(), {
-            "name": owner, "sizeBytes": 0,
+            "name": owner, "machineName": "", "sizeBytes": 0,
             "commit": "", "branch": "", "lastSync": "",
             "platform": "", "version": "", "nodeId": "", "_updatedMs": -1,
             "_recordCount": 0,
@@ -2500,6 +2500,8 @@ async def network_leaderboards(env):
         updated_ms = _catalog_updated_ms(rec)
         if updated_ms > detail["_updatedMs"]:
             detail["_updatedMs"] = updated_ms
+            detail["machineName"] = clean_string(
+                rec.get("machineName", ""), MAX_NODE_NAME)
             detail["commit"] = clean_string(rec.get("commit", ""), 64)
             detail["branch"] = clean_string(rec.get("branch", ""), 120)
             detail["lastSync"] = clean_string(rec.get("lastSync", ""), 32)

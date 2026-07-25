@@ -123,6 +123,7 @@ function publicRepositoryRecord(mirror, payload) {
     platform: text(mirror?.platform, "", 24).toLowerCase(),
     version: text(mirror?.version, "", 32),
     id: text(mirror?.id, "", 120),
+    machineName: text(mirror?.machineName, "", 63) || null,
     ...commitMetadata(mirror),
   });
 }
@@ -146,6 +147,7 @@ function nodeAggregateRecord(node) {
     platform: text(node?.platform, "", 24).toLowerCase(),
     version: text(node?.version, "", 32),
     nodeId: text(node?.nodeId || node?.id, "", 120),
+    machineName: text(node?.machineName, "", 63) || null,
     ...commitMetadata(node),
   });
 }
@@ -255,6 +257,9 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
       const aggregate = nodeAggregateRecord(detail);
       return omitUnknownValues({
         name: displayName,
+        // The machine's advertised node name — the display label for the
+        // cabinet. The account (`name`) stays the identity/grouping key.
+        machineName: primary.machineName || aggregate.machineName || null,
         online: true,
         healthy:
           primary.status === "online" &&

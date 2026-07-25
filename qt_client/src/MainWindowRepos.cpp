@@ -349,6 +349,12 @@ QJsonObject normalizedCatalogV2Record(const QJsonObject &data)
         if (!value.isNull() && !value.isUndefined())
             record.insert(key, value);
     }
+    // The machine's node name is another optional extension: absent (never
+    // empty) when unset, so older clients' catalog-v2 signatures stay valid.
+    const QString machineName =
+        cleanCatalogString(data, QStringLiteral("machineName"), 63);
+    if (!machineName.isEmpty())
+        record.insert(QStringLiteral("machineName"), machineName);
     return record;
 }
 
@@ -4195,6 +4201,10 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                          {"encryptedManifestSig",
                           encryptedManifestSignature},
                          {"ownerUser", nodeOwnerDisplayName()},
+                         // This machine's node name (node/machineName), so
+                         // public mirror views can label the hardware
+                         // distinctly from the owning account.
+                         {"machineName", machineNodeName()},
                          {"commit", headCommit},
                          {"branch", headBranch},
                          {"issueCount", QString::number(issueCount)},
