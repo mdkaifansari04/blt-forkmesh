@@ -835,12 +835,13 @@
 
   // Inside the World embed, mirror each live chat line to the parent page so
   // it can float the message above the speaker's avatar and fade it out
-  // (world.js handleWorldChatMessage). Same-origin only; history replays are
-  // excluded so reconnects do not resurrect old bubbles.
+  // (world.js handleWorldChatMessage). Same-origin only. History replays are
+  // marked so the parent updates only its collapsed CHAT bar with the most
+  // recent line — reconnects never resurrect old bubbles.
   const WORLD_EMBED_BUBBLES =
     requestedParams.get("worldEmbed") === "1" && window.parent !== window;
 
-  function emitWorldChatBubble(sender, senderId, text) {
+  function emitWorldChatBubble(sender, senderId, text, history = false) {
     if (!WORLD_EMBED_BUBBLES) return;
     const line = String(text || "").trim().slice(0, 200);
     if (!line) return;
@@ -851,10 +852,22 @@
           sender: String(sender || "").slice(0, MAX_NAME),
           self: senderId === selfId,
           text: line,
+          history,
         },
         location.origin
       );
     } catch (_) {}
+  }
+
+  // Replayed entries can arrive out of order, so only forward a history line
+  // when it is the newest one seen — the parent's CHAT bar keeps the latest.
+  let newestHistoryTs = 0;
+  function emitWorldChatHistory(entry) {
+    if (!WORLD_EMBED_BUBBLES || !entry.text) return;
+    const ts = Number(entry.ts) || 0;
+    if (ts < newestHistoryTs) return;
+    newestHistoryTs = ts;
+    emitWorldChatBubble(entry.sender, entry.senderId, entry.text, true);
   }
 
   function allowedChatAccountKind(value) {
@@ -883,7 +896,12 @@
     kind = entry.senderId === selfId ? "self" : kind;
     appendMessage(kind, who, text, entry.id, entry.senderId,
                   Number(entry.ts) || Date.now(), attachment);
-    if (live) emitWorldChatBubble(who, entry.senderId, text);
+    if (live) {
+      newestHistoryTs = Math.max(newestHistoryTs, Number(entry.ts) || 0);
+      emitWorldChatBubble(who, entry.senderId, text);
+    } else {
+      emitWorldChatHistory({ sender: who, senderId: entry.senderId, text, ts: entry.ts });
+    }
   }
 
   async function verifyAdminDelete(plain) {
@@ -1107,10 +1125,17 @@
     send(plain);
     seen.add(plain.id);
     appendMessage("peer", plain.sender, plain.text, plain.id, plain.senderId, plain.ts);
+    // The asking client appends directly (not via renderChatEntry), so mirror
+    // the reply to the World embed here too — it floats over the ForkBot
+    // avatar walking the Town Square.
+    emitWorldChatBubble(plain.sender, plain.senderId, plain.text);
   }
 
   async function maybeAskForkbot(text) {
-    if (!userSession()) return;
+    // Anyone who can join the room can talk to ForkBot: signed-in users on
+    // the dashboard, and guests inside the public World room (the endpoint
+    // itself is sessionless).
+    if (!canJoinChat()) return;
     if (!FORKBOT_MENTION_RE.test(text || "")) return;
     // Drop the triggering line (sent separately as `message`) and ForkBot's own
     // replies, and cap the rest so ForkBot sees the lead-up conversation.

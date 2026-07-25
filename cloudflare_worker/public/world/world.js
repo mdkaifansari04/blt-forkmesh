@@ -48,6 +48,7 @@ const GUEST_ID_KEY = "forkmesh.world.guestId.v1";
 const FIRST_VISIT_KEY = "forkmesh.world.firstVisitAt.v1";
 const VISIT_COUNT_KEY = "forkmesh.world.publicVisitCount.v1";
 const INTRO_DISMISSED_KEY = "forkmesh.world.introDismissed.v1";
+const FORKBOT_GREETED_KEY = "forkmesh.world.forkbotGreeted.v1";
 const POSITION_KEY_PREFIX = "forkmesh.world.position.v1.";
 const POSITION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const POSITION_WRITE_INTERVAL_MS = 1000;
@@ -2628,14 +2629,13 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             class="world-fediverse-activity"
             data-world-fediverse-activity
             aria-labelledby="world-fediverse-activity-title"
+            hidden
           >
             <div class="world-panel-heading">
               <h2 id="world-fediverse-activity-title">Verified public feedback</h2>
               <span>MANUAL</span>
             </div>
-            <div data-world-fediverse-items>
-              <p class="world-rail-empty">No verified public repository feedback is currently listed.</p>
-            </div>
+            <div data-world-fediverse-items></div>
           </section>
           <div class="world-activity" aria-live="polite">
             <div class="world-activity-line" data-world-activity>
@@ -2689,7 +2689,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           <summary aria-label="Open World chat in a terminal panel">
             <span class="world-diagnostics-light" data-state="online" aria-hidden="true"></span>
             <strong>CHAT</strong>
-            <span data-world-chat-terminal-last>Chat stays inside ForkMesh World</span>
+            <span data-world-chat-terminal-last>Connecting to global #general…</span>
             <span class="world-diagnostics-toggle" aria-hidden="true">⌃</span>
           </summary>
           <div class="world-chat-terminal-body">
@@ -2731,7 +2731,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <div>
               <p class="world-eyebrow">LIVE COLLABORATION</p>
               <h2 id="world-chat-title">World chat</h2>
-              <span>Chat stays inside ForkMesh World.</span>
+              <span>Global #general — the same room as the website's /chat.</span>
             </div>
             <button type="button" data-world-chat-close aria-label="Close World chat">×</button>
           </header>
@@ -3235,6 +3235,7 @@ class ForkMeshWorld extends HTMLElement {
 
   handlePublicInputActivity = () => {
     if (this.destroyed || !this.identity) return;
+    this.maybeGreetForkbot();
     if (!this.identity.inputActive) {
       this.identity.inputActive = true;
       this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
@@ -3266,12 +3267,21 @@ class ForkMeshWorld extends HTMLElement {
       .replace(/^World visitor\s*·\s*/i, "")
       .trim();
     this.setChatTerminalLastMessage(sender, text);
+    // Replayed history updates only the collapsed CHAT bar — never a bubble,
+    // so reconnects do not resurrect old messages above avatars.
+    if (data.history === true) return;
     if (data.self === true) {
       this.world?.showChatBubble?.(this.identity?.id, text, true);
       return;
     }
     const senderName = sender.toLowerCase();
     if (!senderName) return;
+    // ForkBot replies are broadcast into the room with the fixed sender
+    // "forkbot"; float them over the wandering ForkBot avatar.
+    if (senderName === "forkbot") {
+      this.world?.showChatBubble?.("forkbot", text);
+      return;
+    }
     for (const [id, peer] of this.remotePlayers) {
       const peerName = String(peer?.name || "").trim().toLowerCase();
       // The public room truncates asserted names to 16 characters, so a
@@ -3285,6 +3295,28 @@ class ForkMeshWorld extends HTMLElement {
       }
     }
   };
+
+  // ForkBot walks over and welcomes a visitor the first time this browser
+  // shows signs of life — movement (handleMovement) or mouse/keyboard
+  // activity (handlePublicInputActivity). Once ever per browser, so
+  // returning visitors are not re-greeted every session.
+  maybeGreetForkbot() {
+    if (this.forkbotGreeted || this.destroyed || !this.world?.greetForkbot) {
+      return;
+    }
+    this.forkbotGreeted = true;
+    let alreadyGreeted = false;
+    try {
+      alreadyGreeted = localStorage.getItem(FORKBOT_GREETED_KEY) === "1";
+      localStorage.setItem(FORKBOT_GREETED_KEY, "1");
+    } catch (_) {}
+    if (alreadyGreeted) return;
+    const name = String(this.identity?.name || "").trim().slice(0, 24);
+    this.world.greetForkbot(
+      `Welcome${name ? `, ${name}` : ""}! I'm ForkBot — open the CHAT bar ` +
+        "below and mention @forkbot to talk with me.",
+    );
+  }
 
   recordPublicVisit(place) {
     const safePlace = String(place || "").toLowerCase().slice(0, 64);
@@ -4038,14 +4070,13 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   renderFediverseActivity() {
+    const section = this.$("[data-world-fediverse-activity]");
     const container = this.$("[data-world-fediverse-items]");
     if (!container) return;
     const items = this.fediverseMentions.slice(0, 3);
+    if (section) section.hidden = !items.length;
     if (!items.length) {
-      container.innerHTML = `
-        <p class="world-rail-empty">
-          No verified public repository feedback is currently listed.
-        </p>`;
+      container.replaceChildren();
       return;
     }
     const hasSession = Boolean(readSession()?.sessionToken);
@@ -4493,6 +4524,9 @@ class ForkMeshWorld extends HTMLElement {
     chatTerminal?.addEventListener("toggle", () => {
       if (chatTerminal.open) this.loadChatTerminalFrame();
     });
+    // Load the chat frame immediately so the collapsed CHAT bar always shows
+    // the most recent global #general message, not a static placeholder.
+    this.loadChatTerminalFrame();
     this.addEventListener("click", (event) => {
       const chatLink = event.target.closest(
         "[data-world-chat-open], a[href^='/dashboard/chat']",
@@ -12423,6 +12457,7 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   handleMovement(movement) {
+    this.maybeGreetForkbot();
     const space = WORLD_SPACE_IDS.has(String(movement?.space || ""))
       ? String(movement.space)
       : this.currentSpace;

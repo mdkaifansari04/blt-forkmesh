@@ -1647,6 +1647,40 @@ def test_linked_payout_page_has_a_truthful_non_custodial_notice():
     assert "never its private key" in PAYOUTS
 
 
+def test_forkbot_walks_the_world_and_greets_first_time_visitors():
+    # ForkBot is a wandering Town Square guide. Chat replies broadcast with
+    # the fixed sender "forkbot" float over its avatar, and it walks over to
+    # welcome a visitor the first time this browser moves or the mouse is
+    # active — once ever per browser, so returning visitors are not
+    # re-greeted every session.
+    assert 'const FORKBOT_PEER_ID = "forkbot";' in SCENE
+    assert "const forkbot = createAvatar(THREE, {" in SCENE
+    assert "function updateForkbot(delta, time)" in SCENE
+    assert "updateForkbot(delta, time);" in SCENE
+    assert "function greetForkbot(text)" in SCENE
+    assert "greetForkbot," in SCENE
+    # Bubbles addressed to the bot peer id resolve to the bot avatar.
+    assert "peerId === FORKBOT_PEER_ID" in SCENE
+    # Out-of-reach visitors still get greeted from wherever the bot got to.
+    assert "const FORKBOT_GREETING_TIMEOUT_MS = 12000;" in SCENE
+    assert (
+        'const FORKBOT_GREETED_KEY = "forkmesh.world.forkbotGreeted.v1";'
+        in APP
+    )
+    assert "maybeGreetForkbot() {" in APP
+    # Triggered by both first movement and first mouse/keyboard activity.
+    assert APP.count("this.maybeGreetForkbot();") == 2
+    assert 'this.world?.showChatBubble?.("forkbot", text);' in APP
+    # The asking client mirrors ForkBot replies into the World embed, and
+    # guests inside the public World room can talk to the bot (the endpoint
+    # itself is sessionless).
+    assert (
+        "emitWorldChatBubble(plain.sender, plain.senderId, plain.text);"
+        in DASHBOARD_CHAT
+    )
+    assert "if (!canJoinChat()) return;" in DASHBOARD_CHAT
+
+
 def test_world_updates_arrive_via_a_gentle_in_place_reload():
     # A deploy flips BUILD_REV on /api/version. The world notices on a slow
     # watcher, flushes the player's position, and reloads once behind a toast,

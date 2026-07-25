@@ -32,6 +32,17 @@ const CAMERA_PITCH_MAX = 1.24;
 const LIGHT_LEVEL_MIN = 40;
 const LIGHT_LEVEL_MAX = 140;
 const LIGHT_LEVEL_DEFAULT = 100;
+// ForkBot's world presence: a wandering guide anchored to the Town Square.
+// Chat bubbles addressed to this peer id float over its avatar, mirroring how
+// visitor bubbles work (world.js handleWorldChatMessage).
+const FORKBOT_PEER_ID = "forkbot";
+const FORKBOT_HOME = Object.freeze([6, 0.38, 12]);
+const FORKBOT_WANDER_RADIUS = 14;
+const FORKBOT_SPEED = 3.4;
+const FORKBOT_GREETING_RANGE = 3.2;
+// If a visitor is out of reach (travelled to another space, moderation walls,
+// …) the greeting still fires from wherever ForkBot got to.
+const FORKBOT_GREETING_TIMEOUT_MS = 12000;
 // Nothing hovers over the Town Square any more. The five unfinished
 // destinations are parked on the ground inside the works-in-progress barn, so
 // every space shares the same walkable floor as the square itself.
@@ -3843,6 +3854,26 @@ export function createWorldScene({
   world.add(player);
   const playerLabel = makePlayerLabel(player, labelLayer);
 
+  // ForkBot walks the Town Square like any visitor. It reuses the humanoid
+  // avatar so its walk reads the same as everyone else's, with a floating
+  // label telling visitors how to talk to it from the CHAT bar.
+  const forkbot = createAvatar(THREE, {
+    id: FORKBOT_PEER_ID,
+    name: "ForkBot",
+    accountStatus: "Bot",
+  });
+  forkbot.position.set(...FORKBOT_HOME);
+  const forkbotLabel = makeLabelSprite(
+    THREE,
+    "FORKBOT",
+    "community guide · say @forkbot in chat",
+    "#9ef7c6",
+  );
+  forkbotLabel.scale.set(4.6, 1.5, 1);
+  forkbotLabel.position.y = 4.6;
+  forkbot.add(forkbotLabel);
+  world.add(forkbot);
+
   const remotePlayers = new Map();
   const remoteLabels = new Map();
   const moderationActions = new WeakMap();
@@ -3854,6 +3885,9 @@ export function createWorldScene({
   const repositoryPortals = new Map();
   const emoteSprites = [];
   const rewardFlights = [];
+  const forkbotWanderTarget = new THREE.Vector3(...FORKBOT_HOME);
+  let forkbotNextWanderAt = 0;
+  let forkbotGreeting = null;
   const keys = new Set();
   const touchKeys = new Set();
   const touchPointers = new Map();
@@ -4343,6 +4377,78 @@ export function createWorldScene({
       }
       animateAvatarActivity(avatar, time, delta, reducedMotion);
     });
+  }
+
+  // ForkBot wanders the Town Square on its own; when world.js reports a
+  // visitor's first movement or mouse activity (greetForkbot) it walks over
+  // and floats a welcome bubble instead of picking the next wander spot.
+  function updateForkbot(delta, time) {
+    const data = forkbot.userData;
+    let target = forkbotWanderTarget;
+    if (forkbotGreeting) {
+      target = player.position;
+      const waited = performance.now() - forkbotGreeting.startedAt;
+      const reach = forkbot.position.distanceTo(player.position);
+      if (
+        reach <= FORKBOT_GREETING_RANGE ||
+        waited >= FORKBOT_GREETING_TIMEOUT_MS
+      ) {
+        showChatBubble(FORKBOT_PEER_ID, forkbotGreeting.message);
+        forkbotGreeting = null;
+        // Linger beside the visitor for a moment before wandering off.
+        forkbotWanderTarget.copy(forkbot.position);
+        forkbotNextWanderAt = time + 9000;
+        target = forkbotWanderTarget;
+      }
+    } else if (time >= forkbotNextWanderAt) {
+      const angle = Math.random() * Math.PI * 2;
+      const radius = 3 + Math.random() * FORKBOT_WANDER_RADIUS;
+      forkbotWanderTarget.set(
+        clamp(
+          FORKBOT_HOME[0] + Math.cos(angle) * radius,
+          -WORLD_RADIUS,
+          WORLD_RADIUS,
+        ),
+        FORKBOT_HOME[1],
+        clamp(
+          FORKBOT_HOME[2] + Math.sin(angle) * radius,
+          -WORLD_RADIUS,
+          WORLD_RADIUS,
+        ),
+      );
+      forkbotNextWanderAt = time + 4000 + Math.random() * 8000;
+    }
+    const dx = target.x - forkbot.position.x;
+    const dz = target.z - forkbot.position.z;
+    const distance = Math.hypot(dx, dz);
+    const arrive = forkbotGreeting ? FORKBOT_GREETING_RANGE * 0.8 : 0.4;
+    const walking = distance > arrive;
+    if (walking) {
+      const step = Math.min(distance - arrive, FORKBOT_SPEED * delta);
+      forkbot.position.x += (dx / distance) * step;
+      forkbot.position.z += (dz / distance) * step;
+    }
+    if (distance > 0.05) {
+      data.targetHeading = Math.atan2(dx, dz);
+    }
+    let headingDelta = data.targetHeading - forkbot.rotation.y;
+    headingDelta = Math.atan2(Math.sin(headingDelta), Math.cos(headingDelta));
+    forkbot.rotation.y += headingDelta * (1 - Math.pow(0.01, delta));
+    const gait = walking ? Math.sin(time * 0.009 + data.phase) * 0.42 : 0;
+    data.leftArm.rotation.x = gait;
+    data.rightArm.rotation.x = -gait;
+    data.leftLeg.rotation.x = -gait * 0.7;
+    data.rightLeg.rotation.x = gait * 0.7;
+  }
+
+  function greetForkbot(text) {
+    const message = String(text || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 140);
+    if (!message || forkbotGreeting) return false;
+    forkbotGreeting = { message, startedAt: performance.now() };
+    return true;
   }
 
   function updateCamera(delta) {
@@ -6195,7 +6301,9 @@ export function createWorldScene({
     const avatar =
       local || peerId === identity.id
         ? player
-        : remotePlayers.get(String(peerId || ""));
+        : peerId === FORKBOT_PEER_ID
+          ? forkbot
+          : remotePlayers.get(String(peerId || ""));
     if (!avatar) return false;
     // One bubble per speaker: a rapid follow-up message replaces the first
     // instead of stacking on top of it.
@@ -6624,6 +6732,7 @@ export function createWorldScene({
     lastFrame = time;
     walkPlayer(delta, time);
     updateRemotePlayers(delta, time);
+    updateForkbot(delta, time);
     if (!reducedMotion) {
       nodeInfrastructure.forEach((pylon, id) => {
         const phase = hashNumber(id) * 0.0001;
@@ -6829,6 +6938,7 @@ export function createWorldScene({
     updateRepositorySizeMap,
     playEmote,
     showChatBubble,
+    greetForkbot,
     playRewardEvent,
     setPaused,
     dispose,
