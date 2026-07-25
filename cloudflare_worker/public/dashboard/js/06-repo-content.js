@@ -621,6 +621,16 @@
       headers: { accept: "application/json", "cache-control": "no-cache" },
     });
     const data = await response.json().catch(() => ({}));
+    const servedBy = String(
+      response.headers.get("X-ForkMesh-Served-By") || "",
+    ).trim();
+    if (data && typeof data === "object" && !Array.isArray(data)) {
+      // Trust routing provenance from the Worker's response header, never an
+      // upstream JSON field. A metadata-cache hit intentionally has no header,
+      // so remove any body claim instead of presenting it as a live selection.
+      if (servedBy) data.servedBy = servedBy;
+      else delete data.servedBy;
+    }
     if (!response.ok || data.ok === false) {
       const error = new Error(data.error || `HTTP ${response.status}`);
       error.status = response.status;

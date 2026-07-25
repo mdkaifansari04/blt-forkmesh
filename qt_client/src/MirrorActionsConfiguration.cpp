@@ -9,18 +9,23 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
+#include <QLockFile>
 #include <QMap>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
+#include <QSaveFile>
 #include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QVariantList>
 #include <QVariantMap>
 
 #include <cstdio>
+#include <memory>
 
 #if defined(Q_OS_UNIX)
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -32,9 +37,13 @@ constexpr qsizetype kMaximumVariableValueBytes = 16 * 1024;
 constexpr qsizetype kMaximumVariableBytes = 48 * 1024;
 constexpr int kMaximumVariables = 64;
 constexpr qsizetype kMaximumCatalogResponseBytes = 4096;
+constexpr qsizetype kMaximumJournalBytes = 2 * 1024 * 1024;
+constexpr int kConfigurationLockTimeoutMs = 30 * 1000;
 constexpr auto kPythonProgram = "/usr/bin/python3";
 constexpr auto kRefreshProgram =
     "/opt/forkmesh-mirror/headless_mirror_refresh.py";
+constexpr auto kJournalType =
+    "forkmesh.mirror-actions-configuration-transaction";
 
 const QRegularExpression kRequestId(
     QStringLiteral("^[a-f0-9]{32}$"));
@@ -105,6 +114,274 @@ bool safeAbsolutePath(const QString &value)
     }
     const QFileInfo info(value);
     return info.isAbsolute() && !info.isSymLink();
+}
+
+QString transactionBasePath(const QSettings &settings)
+{
+    const QString settingsName = settings.fileName();
+    QString directory;
+    if (!settingsName.isEmpty() && QFileInfo(settingsName).isAbsolute()) {
+        directory = QFileInfo(settingsName).absolutePath();
+    } else {
+        directory = QDir(
+                        QStandardPaths::writableLocation(
+                            QStandardPaths::AppDataLocation))
+                        .filePath(QStringLiteral("actions"));
+    }
+    const QByteArray identity =
+        QCryptographicHash::hash(
+            (QString::number(int(settings.format())) + QLatin1Char(':') +
+             settingsName)
+                .toUtf8(),
+            QCryptographicHash::Sha256)
+            .toHex()
+            .left(24);
+    return QDir(directory)
+        .filePath(QStringLiteral(".forkmesh-actions-configuration-") +
+                  QString::fromLatin1(identity));
+}
+
+QString transactionJournalPath(const QSettings &settings)
+{
+    return transactionBasePath(settings) + QStringLiteral(".json");
+}
+
+QString transactionLockPath(const QSettings &settings)
+{
+    return transactionBasePath(settings) + QStringLiteral(".lock");
+}
+
+bool syncDirectory(const QString &path)
+{
+#if defined(Q_OS_UNIX)
+    const QByteArray encoded = QFile::encodeName(path);
+    const int descriptor =
+        ::open(encoded.constData(), O_RDONLY
+#if defined(O_DIRECTORY)
+                                   | O_DIRECTORY
+#endif
+        );
+    if (descriptor < 0)
+        return false;
+    const bool ok = ::fsync(descriptor) == 0;
+    ::close(descriptor);
+    return ok;
+#else
+    Q_UNUSED(path);
+    return true;
+#endif
+}
+
+QJsonObject encodeVariant(const QVariant &value, bool *ok);
+
+QJsonArray encodeVariantList(const QVariantList &values, bool *ok)
+{
+    QJsonArray encoded;
+    for (const QVariant &value : values) {
+        const QJsonObject item = encodeVariant(value, ok);
+        if (!*ok)
+            return {};
+        encoded.append(item);
+    }
+    return encoded;
+}
+
+QJsonObject encodeVariant(const QVariant &value, bool *ok)
+{
+    QJsonObject encoded;
+    switch (value.typeId()) {
+    case QMetaType::Bool:
+        encoded.insert(QStringLiteral("type"), QStringLiteral("bool"));
+        encoded.insert(QStringLiteral("value"), value.toBool());
+        break;
+    case QMetaType::Int:
+        encoded.insert(QStringLiteral("type"), QStringLiteral("int"));
+        encoded.insert(QStringLiteral("value"),
+                       QString::number(value.toInt()));
+        break;
+    case QMetaType::UInt:
+        encoded.insert(QStringLiteral("type"), QStringLiteral("uint"));
+        encoded.insert(QStringLiteral("value"),
+                       QString::number(value.toUInt()));
+        break;
+    case QMetaType::LongLong:
+        encoded.insert(QStringLiteral("type"), QStringLiteral("longlong"));
+        encoded.insert(QStringLiteral("value"),
+                       QString::number(value.toLongLong()));
+        break;
+    case QMetaType::ULongLong:
+        encoded.insert(QStringLiteral("type"), QStringLiteral("ulonglong"));
+        encoded.insert(QStringLiteral("value"),
+                       QString::number(value.toULongLong()));
+        break;
+    case QMetaType::Double:
+        encoded.insert(QStringLiteral("type"), QStringLiteral("double"));
+        encoded.insert(QStringLiteral("value"),
+                       QString::number(value.toDouble(), 'g', 17));
+        break;
+    case QMetaType::QString:
+        encoded.insert(QStringLiteral("type"), QStringLiteral("string"));
+        encoded.insert(QStringLiteral("value"), value.toString());
+        break;
+    case QMetaType::QByteArray:
+        encoded.insert(QStringLiteral("type"), QStringLiteral("bytes"));
+        encoded.insert(
+            QStringLiteral("value"),
+            QString::fromLatin1(
+                value.toByteArray().toBase64(QByteArray::Base64UrlEncoding |
+                                             QByteArray::OmitTrailingEquals)));
+        break;
+    case QMetaType::QStringList: {
+        encoded.insert(QStringLiteral("type"), QStringLiteral("strings"));
+        QJsonArray strings;
+        for (const QString &item : value.toStringList())
+            strings.append(item);
+        encoded.insert(QStringLiteral("value"), strings);
+        break;
+    }
+    case QMetaType::QVariantList:
+        encoded.insert(QStringLiteral("type"), QStringLiteral("list"));
+        encoded.insert(QStringLiteral("value"),
+                       encodeVariantList(value.toList(), ok));
+        break;
+    case QMetaType::QVariantMap: {
+        encoded.insert(QStringLiteral("type"), QStringLiteral("map"));
+        QJsonObject values;
+        const QVariantMap map = value.toMap();
+        for (auto it = map.constBegin(); it != map.constEnd(); ++it) {
+            const QJsonObject item = encodeVariant(it.value(), ok);
+            if (!*ok)
+                return {};
+            values.insert(it.key(), item);
+        }
+        encoded.insert(QStringLiteral("value"), values);
+        break;
+    }
+    default:
+        *ok = false;
+        return {};
+    }
+    return encoded;
+}
+
+bool exactObjectFields(const QJsonObject &object,
+                       std::initializer_list<QString> fields)
+{
+    QSet<QString> expected(fields.begin(), fields.end());
+    QSet<QString> actual;
+    for (auto it = object.constBegin(); it != object.constEnd(); ++it)
+        actual.insert(it.key());
+    return actual == expected;
+}
+
+QVariant decodeVariant(const QJsonObject &encoded, bool *ok)
+{
+    if (!exactObjectFields(
+            encoded,
+            {QStringLiteral("type"), QStringLiteral("value")})) {
+        *ok = false;
+        return {};
+    }
+    const QString type = encoded.value(QStringLiteral("type")).toString();
+    const QJsonValue raw = encoded.value(QStringLiteral("value"));
+    if (type == QLatin1String("bool") && raw.isBool())
+        return raw.toBool();
+    if (type == QLatin1String("string") && raw.isString())
+        return raw.toString();
+    if (type == QLatin1String("bytes") && raw.isString()) {
+        const QByteArray text = raw.toString().toLatin1();
+        static const QRegularExpression base64Url(
+            QStringLiteral("^[A-Za-z0-9_-]*$"));
+        if (!base64Url.match(QString::fromLatin1(text)).hasMatch()) {
+            *ok = false;
+            return {};
+        }
+        const QByteArray value =
+            QByteArray::fromBase64(
+                text, QByteArray::Base64UrlEncoding |
+                          QByteArray::AbortOnBase64DecodingErrors);
+        if (value.toBase64(QByteArray::Base64UrlEncoding |
+                           QByteArray::OmitTrailingEquals) != text) {
+            *ok = false;
+            return {};
+        }
+        return value;
+    }
+    if ((type == QLatin1String("int") ||
+         type == QLatin1String("uint") ||
+         type == QLatin1String("longlong") ||
+         type == QLatin1String("ulonglong") ||
+         type == QLatin1String("double")) &&
+        raw.isString()) {
+        bool converted = false;
+        if (type == QLatin1String("int")) {
+            const int value = raw.toString().toInt(&converted);
+            if (converted)
+                return value;
+        } else if (type == QLatin1String("uint")) {
+            const uint value = raw.toString().toUInt(&converted);
+            if (converted)
+                return value;
+        } else if (type == QLatin1String("longlong")) {
+            const qlonglong value = raw.toString().toLongLong(&converted);
+            if (converted)
+                return value;
+        } else if (type == QLatin1String("ulonglong")) {
+            const qulonglong value =
+                raw.toString().toULongLong(&converted);
+            if (converted)
+                return value;
+        } else {
+            const double value = raw.toString().toDouble(&converted);
+            if (converted && qIsFinite(value))
+                return value;
+        }
+        *ok = false;
+        return {};
+    }
+    if (type == QLatin1String("strings") && raw.isArray()) {
+        QStringList values;
+        for (const QJsonValue &item : raw.toArray()) {
+            if (!item.isString()) {
+                *ok = false;
+                return {};
+            }
+            values.append(item.toString());
+        }
+        return values;
+    }
+    if (type == QLatin1String("list") && raw.isArray()) {
+        QVariantList values;
+        for (const QJsonValue &item : raw.toArray()) {
+            if (!item.isObject()) {
+                *ok = false;
+                return {};
+            }
+            const QVariant value = decodeVariant(item.toObject(), ok);
+            if (!*ok)
+                return {};
+            values.append(value);
+        }
+        return values;
+    }
+    if (type == QLatin1String("map") && raw.isObject()) {
+        QVariantMap values;
+        const QJsonObject object = raw.toObject();
+        for (auto it = object.constBegin(); it != object.constEnd(); ++it) {
+            if (!it.value().isObject()) {
+                *ok = false;
+                return {};
+            }
+            const QVariant value =
+                decodeVariant(it.value().toObject(), ok);
+            if (!*ok)
+                return {};
+            values.insert(it.key(), value);
+        }
+        return values;
+    }
+    *ok = false;
+    return {};
 }
 
 QJsonObject readGatewayConfiguration(QString *pathOut)
@@ -224,16 +501,14 @@ bool prepareActionMirror(const QString &source, const QString &destination)
         30000);
 }
 
-bool upsertRepository(QSettings &settings, const QString &owner,
-                      const QString &repository, const QString &source,
-                      const QString &mirror, const QString &branch,
-                      bool enabled)
+constexpr auto kRepositoriesSetting = "repositories/items";
+
+QList<QVariantMap> readRepositories(QSettings &settings)
 {
-    constexpr auto repositoriesKey = "repositories/items";
     QList<QVariantMap> records;
     const int count = settings.beginReadArray(
-        QString::fromLatin1(repositoriesKey));
-    records.reserve(qMax(0, count) + 1);
+        QString::fromLatin1(kRepositoriesSetting));
+    records.reserve(qMax(0, count));
     for (int index = 0; index < count; ++index) {
         settings.setArrayIndex(index);
         QVariantMap record;
@@ -243,7 +518,15 @@ bool upsertRepository(QSettings &settings, const QString &owner,
         records.append(record);
     }
     settings.endArray();
+    return records;
+}
 
+QList<QVariantMap> configuredRepositories(
+    const QList<QVariantMap> &current, const QString &owner,
+    const QString &repository, const QString &source, const QString &mirror,
+    const QString &branch, bool enabled)
+{
+    QList<QVariantMap> records = current;
     int match = -1;
     for (int index = 0; index < records.size(); ++index) {
         if (records.at(index).value(QStringLiteral("owner")).toString() ==
@@ -276,8 +559,16 @@ bool upsertRepository(QSettings &settings, const QString &owner,
     } else {
         records.append(configured);
     }
+    return records;
+}
 
-    settings.beginWriteArray(QString::fromLatin1(repositoriesKey),
+void writeRepositories(QSettings &settings,
+                       const QList<QVariantMap> &records)
+{
+    // Remove the old array first so shortening a record cannot retain stale,
+    // executable fields beyond the newly staged transaction.
+    settings.remove(QString::fromLatin1(kRepositoriesSetting));
+    settings.beginWriteArray(QString::fromLatin1(kRepositoriesSetting),
                              records.size());
     for (int index = 0; index < records.size(); ++index) {
         settings.setArrayIndex(index);
@@ -286,7 +577,383 @@ bool upsertRepository(QSettings &settings, const QString &owner,
             settings.setValue(it.key(), it.value());
     }
     settings.endArray();
+}
+
+const QStringList &configurationSettingKeys()
+{
+    static const QStringList keys{
+        QString::fromLatin1(kEnabledSetting),
+        QString::fromLatin1(kGenerationSetting),
+        QString::fromLatin1(kNodeSetting),
+        QStringLiteral("actions/mirrorRefreshConfigPath"),
+        QStringLiteral("actions/mirrorStatePath"),
+        QString::fromLatin1(kSummaryPathSetting),
+        QStringLiteral("actions/mirrorConfiguredAt"),
+        QStringLiteral("actions/variables"),
+    };
+    return keys;
+}
+
+struct ConfigurationSnapshot {
+    QMap<QString, QVariant> repositoryValues;
+    QMap<QString, QVariant> directValues;
+    QSet<QString> presentDirectKeys;
+};
+
+bool operator==(const ConfigurationSnapshot &left,
+                const ConfigurationSnapshot &right)
+{
+    return left.repositoryValues == right.repositoryValues &&
+           left.directValues == right.directValues &&
+           left.presentDirectKeys == right.presentDirectKeys;
+}
+
+ConfigurationSnapshot captureConfiguration(QSettings &settings)
+{
+    ConfigurationSnapshot snapshot;
+    const QString repositoryPrefix =
+        QString::fromLatin1(kRepositoriesSetting) + QLatin1Char('/');
+    const QStringList allKeys = settings.allKeys();
+    for (const QString &key : allKeys) {
+        if (key.startsWith(repositoryPrefix))
+            snapshot.repositoryValues.insert(key, settings.value(key));
+    }
+    for (const QString &key : configurationSettingKeys()) {
+        if (settings.contains(key)) {
+            snapshot.presentDirectKeys.insert(key);
+            snapshot.directValues.insert(key, settings.value(key));
+        }
+    }
+    return snapshot;
+}
+
+std::unique_ptr<QSettings> independentSettings(const QSettings &settings)
+{
+    if (settings.fileName().isEmpty())
+        return {};
+    return std::make_unique<QSettings>(settings.fileName(),
+                                       settings.format());
+}
+
+bool durableConfigurationMatches(QSettings &settings,
+                                 const ConfigurationSnapshot &expected)
+{
+    settings.sync();
+    if (settings.status() != QSettings::NoError)
+        return false;
+    std::unique_ptr<QSettings> verifier = independentSettings(settings);
+    if (!verifier)
+        return captureConfiguration(settings) == expected;
+    verifier->sync();
+    return verifier->status() == QSettings::NoError &&
+           captureConfiguration(*verifier) == expected;
+}
+
+bool restoreConfiguration(QSettings &settings,
+                          const ConfigurationSnapshot &snapshot)
+{
+    settings.remove(QString::fromLatin1(kRepositoriesSetting));
+    for (auto it = snapshot.repositoryValues.constBegin();
+         it != snapshot.repositoryValues.constEnd(); ++it) {
+        settings.setValue(it.key(), it.value());
+    }
+    for (const QString &key : configurationSettingKeys()) {
+        if (snapshot.presentDirectKeys.contains(key))
+            settings.setValue(key, snapshot.directValues.value(key));
+        else
+            settings.remove(key);
+    }
+    settings.sync();
+    if (settings.status() != QSettings::NoError)
+        return false;
+    const QString fileName = settings.fileName();
+    if (!fileName.isEmpty() && QFileInfo(fileName).exists() &&
+        !QFile::setPermissions(
+            fileName,
+            QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
+        return false;
+    }
+    return durableConfigurationMatches(settings, snapshot);
+}
+
+QJsonObject encodeSnapshot(const ConfigurationSnapshot &snapshot, bool *ok)
+{
+    QJsonObject repositories;
+    for (auto it = snapshot.repositoryValues.constBegin();
+         it != snapshot.repositoryValues.constEnd(); ++it) {
+        const QJsonObject encoded = encodeVariant(it.value(), ok);
+        if (!*ok)
+            return {};
+        repositories.insert(it.key(), encoded);
+    }
+    QJsonObject direct;
+    for (auto it = snapshot.directValues.constBegin();
+         it != snapshot.directValues.constEnd(); ++it) {
+        const QJsonObject encoded = encodeVariant(it.value(), ok);
+        if (!*ok)
+            return {};
+        direct.insert(it.key(), encoded);
+    }
+    QJsonArray present;
+    for (const QString &key : snapshot.presentDirectKeys)
+        present.append(key);
+    return QJsonObject{
+        {QStringLiteral("repositoryValues"), repositories},
+        {QStringLiteral("directValues"), direct},
+        {QStringLiteral("presentDirectKeys"), present},
+    };
+}
+
+bool decodeValueMap(const QJsonObject &object, const QString &prefix,
+                    bool direct, QMap<QString, QVariant> *values)
+{
+    if (!values)
+        return false;
+    for (auto it = object.constBegin(); it != object.constEnd(); ++it) {
+        const bool allowed =
+            direct ? configurationSettingKeys().contains(it.key())
+                   : it.key().startsWith(prefix);
+        if (!allowed || !it.value().isObject())
+            return false;
+        bool ok = true;
+        const QVariant value =
+            decodeVariant(it.value().toObject(), &ok);
+        if (!ok)
+            return false;
+        values->insert(it.key(), value);
+    }
     return true;
+}
+
+bool decodeSnapshot(const QJsonObject &encoded,
+                    ConfigurationSnapshot *snapshot)
+{
+    if (!snapshot ||
+        !exactObjectFields(
+            encoded,
+            {QStringLiteral("repositoryValues"),
+             QStringLiteral("directValues"),
+             QStringLiteral("presentDirectKeys")}) ||
+        !encoded.value(QStringLiteral("repositoryValues")).isObject() ||
+        !encoded.value(QStringLiteral("directValues")).isObject() ||
+        !encoded.value(QStringLiteral("presentDirectKeys")).isArray()) {
+        return false;
+    }
+    ConfigurationSnapshot decoded;
+    const QString repositoryPrefix =
+        QString::fromLatin1(kRepositoriesSetting) + QLatin1Char('/');
+    if (!decodeValueMap(
+            encoded.value(QStringLiteral("repositoryValues")).toObject(),
+            repositoryPrefix, false, &decoded.repositoryValues) ||
+        !decodeValueMap(
+            encoded.value(QStringLiteral("directValues")).toObject(),
+            {}, true, &decoded.directValues)) {
+        return false;
+    }
+    for (const QJsonValue &value :
+         encoded.value(QStringLiteral("presentDirectKeys")).toArray()) {
+        if (!value.isString() ||
+            !configurationSettingKeys().contains(value.toString()) ||
+            decoded.presentDirectKeys.contains(value.toString())) {
+            return false;
+        }
+        decoded.presentDirectKeys.insert(value.toString());
+    }
+    if (decoded.presentDirectKeys.size() != decoded.directValues.size()) {
+        return false;
+    }
+    for (auto it = decoded.directValues.constBegin();
+         it != decoded.directValues.constEnd(); ++it) {
+        if (!decoded.presentDirectKeys.contains(it.key()))
+            return false;
+    }
+    *snapshot = decoded;
+    return true;
+}
+
+struct ConfigurationJournal {
+    QString requestId;
+    QString gatewayPath;
+    bool previousEnabled = false;
+    bool requestedEnabled = false;
+    ConfigurationSnapshot previous;
+};
+
+QJsonObject journalPayload(const ConfigurationJournal &journal, bool *ok)
+{
+    const QJsonObject previous = encodeSnapshot(journal.previous, ok);
+    if (!*ok)
+        return {};
+    return QJsonObject{
+        {QStringLiteral("type"), QString::fromLatin1(kJournalType)},
+        {QStringLiteral("schemaVersion"), 1},
+        {QStringLiteral("requestId"), journal.requestId},
+        {QStringLiteral("gatewayPath"), journal.gatewayPath},
+        {QStringLiteral("previousEnabled"), journal.previousEnabled},
+        {QStringLiteral("requestedEnabled"), journal.requestedEnabled},
+        {QStringLiteral("previous"), previous},
+    };
+}
+
+QByteArray encodeJournal(const ConfigurationJournal &journal)
+{
+    bool ok = true;
+    QJsonObject payload = journalPayload(journal, &ok);
+    if (!ok)
+        return {};
+    const QByteArray canonical =
+        QJsonDocument(payload).toJson(QJsonDocument::Compact);
+    payload.insert(
+        QStringLiteral("sha256"),
+        QString::fromLatin1(
+            QCryptographicHash::hash(canonical,
+                                     QCryptographicHash::Sha256)
+                .toHex()));
+    const QByteArray encoded =
+        QJsonDocument(payload).toJson(QJsonDocument::Compact);
+    return encoded.size() <= kMaximumJournalBytes ? encoded : QByteArray();
+}
+
+bool decodeJournal(const QByteArray &encoded,
+                   ConfigurationJournal *journal)
+{
+    if (!journal || encoded.isEmpty() ||
+        encoded.size() > kMaximumJournalBytes)
+        return false;
+    QJsonParseError parseError;
+    const QJsonDocument document =
+        QJsonDocument::fromJson(encoded, &parseError);
+    if (parseError.error != QJsonParseError::NoError ||
+        !document.isObject()) {
+        return false;
+    }
+    QJsonObject payload = document.object();
+    if (!exactObjectFields(
+            payload,
+            {QStringLiteral("type"), QStringLiteral("schemaVersion"),
+             QStringLiteral("requestId"), QStringLiteral("gatewayPath"),
+             QStringLiteral("previousEnabled"),
+             QStringLiteral("requestedEnabled"),
+             QStringLiteral("previous"), QStringLiteral("sha256")}) ||
+        payload.value(QStringLiteral("type")).toString() !=
+            QLatin1String(kJournalType) ||
+        payload.value(QStringLiteral("schemaVersion")).toInt() != 1 ||
+        !payload.value(QStringLiteral("previousEnabled")).isBool() ||
+        !payload.value(QStringLiteral("requestedEnabled")).isBool() ||
+        !payload.value(QStringLiteral("previous")).isObject()) {
+        return false;
+    }
+    const QString checksum =
+        payload.take(QStringLiteral("sha256")).toString().toLower();
+    static const QRegularExpression exactSha(
+        QStringLiteral("^[a-f0-9]{64}$"));
+    if (!exactSha.match(checksum).hasMatch())
+        return false;
+    const QByteArray canonical =
+        QJsonDocument(payload).toJson(QJsonDocument::Compact);
+    if (QString::fromLatin1(
+            QCryptographicHash::hash(canonical,
+                                     QCryptographicHash::Sha256)
+                .toHex()) != checksum) {
+        return false;
+    }
+    const QString requestId =
+        payload.value(QStringLiteral("requestId")).toString();
+    const QString gatewayPath =
+        payload.value(QStringLiteral("gatewayPath")).toString();
+    ConfigurationSnapshot previous;
+    if (!kRequestId.match(requestId).hasMatch() ||
+        !safeAbsolutePath(gatewayPath) ||
+        !decodeSnapshot(
+            payload.value(QStringLiteral("previous")).toObject(),
+            &previous)) {
+        return false;
+    }
+    journal->requestId = requestId;
+    journal->gatewayPath = gatewayPath;
+    journal->previousEnabled =
+        payload.value(QStringLiteral("previousEnabled")).toBool();
+    journal->requestedEnabled =
+        payload.value(QStringLiteral("requestedEnabled")).toBool();
+    journal->previous = previous;
+    return true;
+}
+
+bool writeJournal(const QSettings &settings,
+                  const ConfigurationJournal &journal)
+{
+    const QByteArray encoded = encodeJournal(journal);
+    if (encoded.isEmpty())
+        return false;
+    const QString path = transactionJournalPath(settings);
+    const QString parent = QFileInfo(path).absolutePath();
+    if (!QDir().mkpath(parent))
+        return false;
+    QSaveFile file(path);
+    file.setDirectWriteFallback(false);
+    if (!file.open(QIODevice::WriteOnly) ||
+        !file.setPermissions(
+            QFileDevice::ReadOwner | QFileDevice::WriteOwner) ||
+        file.write(encoded) != encoded.size() || !file.commit() ||
+        !QFile::setPermissions(
+            path, QFileDevice::ReadOwner | QFileDevice::WriteOwner) ||
+        !syncDirectory(parent)) {
+        return false;
+    }
+    QFile verify(path);
+    if (!verify.open(QIODevice::ReadOnly) ||
+        verify.size() <= 0 || verify.size() > kMaximumJournalBytes) {
+        return false;
+    }
+    ConfigurationJournal decoded;
+    return decodeJournal(verify.readAll(), &decoded) &&
+           decoded.requestId == journal.requestId &&
+           decoded.gatewayPath == journal.gatewayPath &&
+           decoded.previousEnabled == journal.previousEnabled &&
+           decoded.requestedEnabled == journal.requestedEnabled &&
+           decoded.previous == journal.previous;
+}
+
+enum class JournalReadResult {
+    Missing,
+    Loaded,
+    Invalid,
+};
+
+JournalReadResult readJournal(const QSettings &settings,
+                              ConfigurationJournal *journal)
+{
+    const QString path = transactionJournalPath(settings);
+    const QFileInfo info(path);
+    if (!info.exists())
+        return JournalReadResult::Missing;
+    if (!info.isFile() || info.isSymLink() || info.size() <= 0 ||
+        info.size() > kMaximumJournalBytes ||
+        info.permissions().testFlag(QFileDevice::ReadGroup) ||
+        info.permissions().testFlag(QFileDevice::WriteGroup) ||
+        info.permissions().testFlag(QFileDevice::ReadOther) ||
+        info.permissions().testFlag(QFileDevice::WriteOther)) {
+        return JournalReadResult::Invalid;
+    }
+#if defined(Q_OS_UNIX)
+    if (info.ownerId() != static_cast<uint>(::geteuid()))
+        return JournalReadResult::Invalid;
+#endif
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return JournalReadResult::Invalid;
+    return decodeJournal(file.readAll(), journal)
+               ? JournalReadResult::Loaded
+               : JournalReadResult::Invalid;
+}
+
+bool removeJournal(const QSettings &settings)
+{
+    const QString path = transactionJournalPath(settings);
+    if (QFileInfo::exists(path) && !QFile::remove(path))
+        return false;
+    return !QFileInfo::exists(path) &&
+           syncDirectory(QFileInfo(path).absolutePath());
 }
 
 bool restrictSettingsFile(QSettings &settings)
@@ -398,7 +1065,78 @@ bool publishCatalogConfiguration(const QString &refreshConfigurationPath,
                enabled;
 }
 
+bool recoverPendingLocked(
+    QSettings &settings,
+    const CatalogConfigurationPublisher &publisher,
+    QString *errorCode)
+{
+    if (errorCode)
+        errorCode->clear();
+    ConfigurationJournal journal;
+    const JournalReadResult read = readJournal(settings, &journal);
+    if (read == JournalReadResult::Missing)
+        return true;
+    if (read == JournalReadResult::Invalid) {
+        if (errorCode)
+            *errorCode = QStringLiteral("configuration_journal_invalid");
+        return false;
+    }
+
+    // Never announce or attempt an external rollback until the exact prior
+    // local configuration has been durably restored and independently read
+    // back. That prevents a false-success response from leaving new secrets or
+    // a partial repository record live behind an old catalog toggle.
+    if (!restoreConfiguration(settings, journal.previous)) {
+        if (errorCode)
+            *errorCode =
+                QStringLiteral("configuration_local_rollback_failed");
+        return false;
+    }
+
+    if (journal.requestedEnabled != journal.previousEnabled) {
+        const bool catalogRestored =
+            publisher
+                ? publisher(journal.gatewayPath, journal.previousEnabled)
+                : publishCatalogConfiguration(
+                      journal.gatewayPath, journal.previousEnabled);
+        if (!catalogRestored) {
+            if (errorCode)
+                *errorCode =
+                    QStringLiteral("configuration_catalog_rollback_failed");
+            return false;
+        }
+    }
+
+    if (!removeJournal(settings)) {
+        if (errorCode)
+            *errorCode =
+                QStringLiteral("configuration_journal_cleanup_failed");
+        return false;
+    }
+    return true;
+}
+
 } // namespace
+
+QString configurationRecoveryJournalPath(const QSettings &settings)
+{
+    return transactionJournalPath(settings);
+}
+
+bool recoverPendingConfiguration(
+    QSettings &settings,
+    const CatalogConfigurationPublisher &publisher,
+    QString *errorCode)
+{
+    QLockFile lock(transactionLockPath(settings));
+    lock.setStaleLockTime(30 * 1000);
+    if (!lock.tryLock(kConfigurationLockTimeoutMs)) {
+        if (errorCode)
+            *errorCode = QStringLiteral("configuration_busy");
+        return false;
+    }
+    return recoverPendingLocked(settings, publisher, errorCode);
+}
 
 QJsonObject applyConfiguration(const QJsonObject &request,
                                QSettings &settings,
@@ -432,6 +1170,21 @@ QJsonObject applyConfiguration(const QJsonObject &request,
         return result(requestId, node, requestedEnabled, false, 0, false,
                       QStringLiteral("node_mismatch"));
     }
+
+    QLockFile lock(transactionLockPath(settings));
+    lock.setStaleLockTime(30 * 1000);
+    if (!lock.tryLock(kConfigurationLockTimeoutMs)) {
+        return result(requestId, node, requestedEnabled, false, 0, false,
+                      QStringLiteral("configuration_busy"));
+    }
+    QString recoveryError;
+    if (!recoverPendingLocked(settings, publisher, &recoveryError)) {
+        return result(requestId, node, requestedEnabled, false, 0, false,
+                      recoveryError.isEmpty()
+                          ? QStringLiteral("configuration_recovery_failed")
+                          : recoveryError);
+    }
+
     // Refuse before changing any executable state unless the existing local
     // settings store can be synchronized and restricted to its owner.
     if (!restrictSettingsFile(settings)) {
@@ -514,13 +1267,55 @@ QJsonObject applyConfiguration(const QJsonObject &request,
                       QStringLiteral("actions_mirror_unavailable"));
     }
 
-    if (!upsertRepository(settings, owner, repository, source, mirror, branch,
-                          requestedEnabled)) {
+    // Everything below is staged in memory first. In particular, replacement
+    // secrets do not become visible to the long-running node until the signed
+    // catalog publication has succeeded.
+    const QList<QVariantMap> repositories =
+        configuredRepositories(readRepositories(settings), owner, repository,
+                               source, mirror, branch, requestedEnabled);
+    const ConfigurationSnapshot previous =
+        captureConfiguration(settings);
+    const bool previousEnabled =
+        settings.value(QString::fromLatin1(kEnabledSetting), false).toBool();
+    const auto publish = [&](const QString &path, bool enabled) {
+        return publisher ? publisher(path, enabled)
+                         : publishCatalogConfiguration(path, enabled);
+    };
+    const auto clearVariables = [&] {
+        for (QString &value : variables)
+            value.fill(QChar::Null);
+        variables.clear();
+    };
+    const int variableCount = replaceVariables ? variables.size() : 0;
+    const ConfigurationJournal journal{
+        requestId,
+        gatewayPath,
+        previousEnabled,
+        requestedEnabled,
+        previous,
+    };
+    if (!writeJournal(settings, journal)) {
+        clearVariables();
         return result(requestId, node, requestedEnabled, false, 0, false,
-                      QStringLiteral("settings_write_failed"));
+                      QStringLiteral("configuration_journal_write_failed"));
     }
+
+    if (!publish(gatewayPath, requestedEnabled)) {
+        clearVariables();
+        QString rollbackError;
+        const bool rolledBack =
+            recoverPendingLocked(settings, publisher, &rollbackError);
+        return result(requestId, node, requestedEnabled, false, 0, false,
+                      rolledBack
+                          ? QStringLiteral("catalog_update_failed")
+                          : (rollbackError.isEmpty()
+                                 ? QStringLiteral(
+                                       "configuration_recovery_failed")
+                                 : rollbackError));
+    }
+
+    writeRepositories(settings, repositories);
     settings.setValue(QString::fromLatin1(kEnabledSetting), requestedEnabled);
-    settings.setValue(QString::fromLatin1(kGenerationSetting), requestId);
     settings.setValue(QString::fromLatin1(kNodeSetting), node);
     settings.setValue(QStringLiteral("actions/mirrorRefreshConfigPath"),
                       gatewayPath);
@@ -533,31 +1328,51 @@ QJsonObject applyConfiguration(const QJsonObject &request,
             .filePath(QStringLiteral("actions-summary.json")));
     settings.setValue(QStringLiteral("actions/mirrorConfiguredAt"),
                       QDateTime::currentMSecsSinceEpoch());
+    QByteArray encodedVariables;
     if (replaceVariables) {
         QJsonObject object;
         for (auto it = variables.constBegin(); it != variables.constEnd();
              ++it)
             object.insert(it.key(), it.value());
+        encodedVariables =
+            QJsonDocument(object).toJson(QJsonDocument::Compact);
         settings.setValue(
             QStringLiteral("actions/variables"),
-            QJsonDocument(object).toJson(QJsonDocument::Compact));
+            encodedVariables);
     }
-    if (!restrictSettingsFile(settings)) {
-        return result(requestId, node, requestedEnabled, false, 0, false,
-                      QStringLiteral("settings_write_failed"));
-    }
+    // The generation is the long-running node's commit marker. Write it last
+    // so no observer can treat a partially populated configuration as live.
+    settings.setValue(QString::fromLatin1(kGenerationSetting), requestId);
 
-    const int variableCount = replaceVariables ? variables.size() : 0;
-    for (QString &value : variables)
-        value.fill(QChar::Null);
-    variables.clear();
-    const bool published =
-        publisher ? publisher(gatewayPath, requestedEnabled)
-                  : publishCatalogConfiguration(gatewayPath,
-                                                requestedEnabled);
-    if (!published) {
+    const ConfigurationSnapshot committed =
+        captureConfiguration(settings);
+    clearVariables();
+    encodedVariables.fill('\0');
+    encodedVariables.clear();
+    if (!restrictSettingsFile(settings) ||
+        !durableConfigurationMatches(settings, committed)) {
+        QString rollbackError;
+        const bool rolledBack =
+            recoverPendingLocked(settings, publisher, &rollbackError);
         return result(requestId, node, requestedEnabled, false, 0, false,
-                      QStringLiteral("catalog_update_failed"));
+                      rolledBack
+                          ? QStringLiteral("settings_write_failed")
+                          : (rollbackError.isEmpty()
+                                 ? QStringLiteral(
+                                       "configuration_recovery_failed")
+                                 : rollbackError));
+    }
+    if (!removeJournal(settings)) {
+        QString rollbackError;
+        const bool rolledBack =
+            recoverPendingLocked(settings, publisher, &rollbackError);
+        return result(
+            requestId, node, requestedEnabled, false, 0, false,
+            rolledBack
+                ? QStringLiteral("configuration_finalize_failed")
+                : (rollbackError.isEmpty()
+                       ? QStringLiteral("configuration_recovery_failed")
+                       : rollbackError));
     }
     return result(requestId, node, requestedEnabled, replaceVariables,
                   variableCount,

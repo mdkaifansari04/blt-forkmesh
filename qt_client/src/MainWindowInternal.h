@@ -26,6 +26,7 @@
 
 #include "MarkdownEditor.h"
 #include "MessageRow.h"
+#include "MainnodeRoom.h"
 #include "PullReviewModel.h"
 #include "RepoHost.h"
 #include "RepoSecurity.h"
@@ -2580,13 +2581,10 @@ const QString kServerUrlSetting = QStringLiteral("server/url");
     // field; self-hosting one is a first-class target — see /docs#self-hosting), but
 // this path shape is a network-wide protocol constant, so it lives in one place
 // instead of being spelled out at each call site.
-const QString kMainnodeDefaultHost = QStringLiteral("forkmesh.com");
-const QString kMainnodeRoomPath =
-    QStringLiteral("/api/repo/mainnode/forkmesh/rooms/general/ws");
-const QString kLocalServerUrl =
-    QStringLiteral("ws://127.0.0.1:8787") + kMainnodeRoomPath;
-const QString kDefaultServerUrl =
-    QStringLiteral("wss://") + kMainnodeDefaultHost + kMainnodeRoomPath;
+const QString kMainnodeDefaultHost = forkmesh::mainnode::kDefaultHost;
+const QString kMainnodeRoomPath = forkmesh::mainnode::kRoomPath;
+const QString kLocalServerUrl = forkmesh::mainnode::kLocalServerUrl;
+const QString kDefaultServerUrl = forkmesh::mainnode::kDefaultServerUrl;
 const QString kRoomNameSetting = QStringLiteral("server/room");
 // Local World dev server (cloudflare_worker/tools/world_dev_server.py). The
 // World button probes this before falling back to the relay portal; set it to
@@ -2603,7 +2601,7 @@ const QString kEmailVerifiedSettingPrefix =
     QStringLiteral("account/emailVerified/");
 const QString kServersArray = QStringLiteral("servers/items");
 const QString kActiveServerSetting = QStringLiteral("servers/active");
-const QString kDefaultRoomName = QStringLiteral("general");
+const QString kDefaultRoomName = forkmesh::mainnode::kDefaultRoomName;
 const QString kRepositoriesArray = QStringLiteral("repositories/items");
 const QString kMirrorRootSetting = QStringLiteral("repositories/mirrorRoot");
 const QString kLastRepositorySetting = QStringLiteral("repositories/lastOpen");

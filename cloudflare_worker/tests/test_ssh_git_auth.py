@@ -12,6 +12,8 @@ import pwd
 import shutil
 import sqlite3
 import subprocess
+import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -195,6 +197,8 @@ def _gateway_config(tmp_path, **overrides):
     root = tmp_path / "repos"
     root.mkdir(parents=True)
     root.chmod(0o755)
+    capacity = tmp_path / "capacity"
+    capacity.mkdir(mode=0o700)
     true_program = str(Path(shutil.which("true") or "/usr/bin/true").resolve())
     config = {
         "schemaVersion": 1,
@@ -203,12 +207,17 @@ def _gateway_config(tmp_path, **overrides):
         "gatewayExecutable": true_program,
         "refreshNotifier": true_program,
         "repositoryRoot": str(root),
+        "limits": {
+            **ssh_gateway.DEFAULT_LIMITS,
+            "capacityDirectory": str(capacity),
+        },
         "repositories": [
             {
                 "owner": "alice-node",
                 "name": "widget",
                 "path": "alice-node/widget.git",
                 "access": "read-write",
+                "maxStorageBytes": 16 * 1024 * 1024 * 1024,
             }
         ],
     }
@@ -217,6 +226,17 @@ def _gateway_config(tmp_path, **overrides):
     path.write_text(json.dumps(config), encoding="utf-8")
     path.chmod(0o644)
     return path, root
+
+
+def _gateway_limits(tmp_path, **overrides):
+    capacity = tmp_path / "runtime-capacity"
+    capacity.mkdir(mode=0o700, exist_ok=True)
+    values = {
+        **ssh_gateway.DEFAULT_LIMITS,
+        "capacityDirectory": str(capacity),
+    }
+    values.update(overrides)
+    return ssh_gateway.GatewayLimits(values)
 
 
 def test_gateway_config_rejects_symlink_writable_and_unknown_broker(
@@ -263,6 +283,33 @@ def test_gateway_runtime_rejects_unknown_fields_and_relative_token_path(
         ssh_gateway.Config(path)
 
 
+def test_gateway_limits_reject_invalid_reservations_and_alias_quota_bypass(tmp_path):
+    path, _root = _gateway_config(tmp_path)
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["limits"]["reservedReceiveSessions"] = value["limits"][
+        "maxConcurrentSessions"
+    ]
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ssh_gateway.GatewayError, match="invalid gateway limits"):
+        ssh_gateway.Config(path)
+
+    value["limits"]["reservedReceiveSessions"] = 4
+    value["repositories"].append(
+        {
+            "owner": "alias-node",
+            "name": "widget",
+            "path": "alice-node/widget.git",
+            "access": "read-write",
+            "maxStorageBytes": 17 * 1024 * 1024 * 1024,
+        }
+    )
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(
+        ssh_gateway.GatewayError, match="invalid repository allowlist"
+    ):
+        ssh_gateway.Config(path)
+
+
 def test_gateway_parses_only_exact_git_commands():
     assert ssh_gateway._parse_original_command(
         "git-receive-pack 'alice-node/widget.git'"
@@ -278,16 +325,246 @@ def test_gateway_parses_only_exact_git_commands():
     ):
         with pytest.raises(ssh_gateway.GatewayError):
             ssh_gateway._parse_original_command(command)
+    with pytest.raises(ssh_gateway.GatewayError):
+        ssh_gateway._parse_original_command("x" * 513)
+
+
+def test_capacity_reserves_sessions_and_processes_for_authorized_pushes(tmp_path):
+    limits = _gateway_limits(
+        tmp_path,
+        maxConcurrentSessions=3,
+        reservedReceiveSessions=1,
+        maxConcurrentProcesses=3,
+        reservedReceiveProcesses=1,
+    )
+    for prefix in ("session", "process"):
+        readers = [
+            ssh_gateway._acquire_slot(
+                limits.capacity_directory,
+                prefix,
+                maximum=3,
+                reserved_receive=1,
+                receive=False,
+            )
+            for _index in range(2)
+        ]
+        try:
+            with pytest.raises(ssh_gateway.GatewayError, match="at capacity"):
+                ssh_gateway._acquire_slot(
+                    limits.capacity_directory,
+                    prefix,
+                    maximum=3,
+                    reserved_receive=1,
+                    receive=False,
+                )
+            writer = ssh_gateway._acquire_slot(
+                limits.capacity_directory,
+                prefix,
+                maximum=3,
+                reserved_receive=1,
+                receive=True,
+            )
+            try:
+                with pytest.raises(ssh_gateway.GatewayError, match="at capacity"):
+                    ssh_gateway._acquire_slot(
+                        limits.capacity_directory,
+                        prefix,
+                        maximum=3,
+                        reserved_receive=1,
+                        receive=True,
+                    )
+            finally:
+                writer.close()
+        finally:
+            for reader in readers:
+                reader.close()
+
+    repository = tmp_path / "widget.git"
+    first = ssh_gateway._acquire_repository_write_slot(
+        limits.capacity_directory, repository
+    )
+    try:
+        with pytest.raises(ssh_gateway.GatewayError, match="at capacity"):
+            ssh_gateway._acquire_repository_write_slot(
+                limits.capacity_directory, repository
+            )
+    finally:
+        first.close()
+
+
+def test_slow_git_service_kills_the_complete_process_group(tmp_path):
+    marker = tmp_path / "escaped-child"
+    child = (
+        "import pathlib,signal,time;"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+        "time.sleep(0.8);"
+        f"pathlib.Path({str(marker)!r}).write_text('alive')"
+    )
+    parent = (
+        "import subprocess,sys,time;"
+        f"subprocess.Popen([sys.executable,'-c',{child!r}]);"
+        "time.sleep(30)"
+    )
+    with pytest.raises(ssh_gateway.GatewayError, match="deadline exceeded"):
+        ssh_gateway._run_git_service(
+            [sys.executable, "-c", parent],
+            {
+                "PATH": "/usr/bin:/bin",
+                "LANG": "C",
+                "LC_ALL": "C",
+            },
+            deadline_seconds=0.2,
+            termination_grace_seconds=0.1,
+        )
+    time.sleep(0.9)
+    assert not marker.exists()
+
+
+def test_interrupted_receive_cleans_only_new_transaction_artifacts(tmp_path):
+    repository = tmp_path / "widget.git"
+    (repository / "objects" / "pack").mkdir(parents=True)
+    (repository / "refs" / "heads").mkdir(parents=True)
+    existing = repository / "refs" / "heads" / "existing.lock"
+    existing.write_text("keep", encoding="ascii")
+    before = ssh_gateway._receive_artifacts(repository, 5)
+
+    quarantine = repository / "objects" / "incoming-test"
+    quarantine.mkdir()
+    (quarantine / "pack").write_bytes(b"partial")
+    temporary_pack = repository / "objects" / "pack" / "tmp_partial"
+    temporary_pack.write_bytes(b"partial")
+    new_lock = repository / "refs" / "heads" / "main.lock"
+    new_lock.write_text("partial", encoding="ascii")
+
+    ssh_gateway._cleanup_interrupted_receive(repository, before, 5)
+    assert existing.read_text(encoding="ascii") == "keep"
+    assert not quarantine.exists()
+    assert not temporary_pack.exists()
+    assert not new_lock.exists()
+
+
+def test_receive_max_input_size_rejects_an_oversized_pack(tmp_path):
+    work = tmp_path / "work"
+    bare = tmp_path / "repository.git"
+    subprocess.run(
+        ["git", "init", "-b", "main", str(work)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(work), "config", "user.name", "Test"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(work), "config", "user.email", "test@example.invalid"],
+        check=True,
+    )
+    (work / "payload.bin").write_bytes(os.urandom(256 * 1024))
+    subprocess.run(["git", "-C", str(work), "add", "payload.bin"], check=True)
+    subprocess.run(
+        ["git", "-C", str(work), "commit", "-m", "oversized"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "init", "--bare", str(bare)],
+        check=True,
+        capture_output=True,
+    )
+    wrapper = tmp_path / "bounded-receive-pack"
+    wrapper.write_text(
+        "#!/bin/sh\nexec git -c receive.maxInputSize=65536 "
+        "-c receive.unpackLimit=0 receive-pack \"$@\"\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o700)
+    pushed = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(work),
+            "push",
+            "--receive-pack=" + str(wrapper),
+            str(bare),
+            "main",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    assert pushed.returncode != 0
+    assert b"exceeds" in pushed.stderr.lower()
+
+
+def test_gateway_rejects_receive_before_start_when_repository_is_over_quota(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "repos"
+    repository = root / "alice-node" / "widget.git"
+    repository.parent.mkdir(parents=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(repository)],
+        check=True,
+        capture_output=True,
+    )
+    # Logical size is counted as well as allocated blocks, so a sparse file
+    # cannot evade the application quota.
+    oversized = repository / "objects" / "oversized"
+    with oversized.open("wb") as stream:
+        stream.truncate(17 * 1024 * 1024)
+    limits = _gateway_limits(
+        tmp_path,
+        receiveMaxInputBytes=1024 * 1024,
+        defaultRepositoryMaxBytes=16 * 1024 * 1024,
+    )
+    config = SimpleNamespace(
+        repositories={
+            ("alice-node", "widget"): (
+                repository,
+                True,
+                16 * 1024 * 1024,
+            )
+        },
+        repository_root=root,
+        refresh_notifier=Path("/opt/forkmesh/ssh-refresh-notify"),
+        limits=limits,
+    )
+    monkeypatch.setenv(
+        "SSH_ORIGINAL_COMMAND", "git-receive-pack 'alice-node/widget.git'"
+    )
+    monkeypatch.setattr(
+        ssh_gateway,
+        "_api",
+        lambda _config, payload: {
+            "authorized": True,
+            "keyId": payload["keyId"],
+            "owner": payload["owner"],
+            "repository": payload["repository"],
+            "operation": payload["operation"],
+            "repositoryRelativePath": "alice-node/widget.git",
+        },
+    )
+    monkeypatch.setattr(
+        ssh_gateway,
+        "_run_git_service",
+        lambda *_args, **_kwargs: pytest.fail(
+            "an over-quota repository must not start receive-pack"
+        ),
+    )
+    with pytest.raises(ssh_gateway.GatewayError, match="storage quota exceeded"):
+        ssh_gateway._serve(config, "sk_" + "a" * 24)
 
 
 def test_gateway_runs_hardened_git_without_shell_after_authorization(
     monkeypatch,
+    tmp_path,
 ):
     repo_path = Path("/srv/forkmesh/git/alice-node/widget.git")
     config = SimpleNamespace(
         repositories={("alice-node", "widget"): (repo_path, True)},
         repository_root=Path("/srv/forkmesh/git"),
         refresh_notifier=Path("/opt/forkmesh/ssh-refresh-notify"),
+        limits=_gateway_limits(tmp_path),
     )
     monkeypatch.setenv(
         "SSH_ORIGINAL_COMMAND", "git-receive-pack 'alice-node/widget.git'"
@@ -308,7 +585,17 @@ def test_gateway_runs_hardened_git_without_shell_after_authorization(
     )
     monkeypatch.setattr(ssh_gateway, "_bare_repository", lambda path: True)
     monkeypatch.setattr(Path, "resolve", lambda self, strict=False: self)
+    monkeypatch.setattr(
+        ssh_gateway, "_repository_size_bytes", lambda *_args, **_kwargs: 0
+    )
     commands = []
+
+    def fake_git(command, environment, **kwargs):
+        commands.append((command, {**kwargs, "env": environment}))
+        assert environment["GIT_TERMINAL_PROMPT"] == "0"
+        return 0
+
+    monkeypatch.setattr(ssh_gateway, "_run_git_service", fake_git)
 
     def fake_run(command, **kwargs):
         commands.append((command, kwargs))
@@ -330,9 +617,16 @@ def test_gateway_runs_hardened_git_without_shell_after_authorization(
         "uploadpack.allowReachableSHA1InWant=false",
         "uploadpack.allowAnySHA1InWant=false",
         "receive.hideRefs=refs/forkmesh/",
+        "receive.unpackLimit=0",
+        "pack.threads=2",
         "safe.directory=" + str(repo_path),
     ):
         assert setting in git_command
+    assert any(
+        setting.startswith("receive.maxInputSize=") for setting in git_command
+    )
+    assert git_options["deadline_seconds"] == 600
+    assert git_options["termination_grace_seconds"] == 3
     assert not any(
         setting.startswith("uploadpack.packObjectsHook") for setting in git_command
     )
@@ -415,6 +709,7 @@ def test_real_ssh_git_services_hide_and_protect_internal_merge_refs(tmp_path):
 
 def test_gateway_allows_only_explicit_aliases_to_same_local_repository(
     monkeypatch,
+    tmp_path,
 ):
     repo_path = Path("/srv/forkmesh/git/mirror2/forkmesh.git")
     config = SimpleNamespace(
@@ -425,6 +720,7 @@ def test_gateway_allows_only_explicit_aliases_to_same_local_repository(
         },
         repository_root=Path("/srv/forkmesh/git"),
         refresh_notifier=Path("/opt/forkmesh/ssh-refresh-notify"),
+        limits=_gateway_limits(tmp_path),
     )
     monkeypatch.setenv(
         "SSH_ORIGINAL_COMMAND",
@@ -432,13 +728,21 @@ def test_gateway_allows_only_explicit_aliases_to_same_local_repository(
     )
     monkeypatch.setattr(ssh_gateway, "_bare_repository", lambda path: True)
     monkeypatch.setattr(Path, "resolve", lambda self, strict=False: self)
+    monkeypatch.setattr(
+        ssh_gateway, "_repository_size_bytes", lambda *_args, **_kwargs: 0
+    )
     captured = []
 
-    def fake_run(command, **_kwargs):
+    def fake_git(command, _environment, **_kwargs):
         captured.append(command)
-        return SimpleNamespace(returncode=0)
+        return 0
 
-    monkeypatch.setattr(ssh_gateway.subprocess, "run", fake_run)
+    monkeypatch.setattr(ssh_gateway, "_run_git_service", fake_git)
+    monkeypatch.setattr(
+        ssh_gateway.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0),
+    )
     monkeypatch.setattr(
         ssh_gateway,
         "_api",

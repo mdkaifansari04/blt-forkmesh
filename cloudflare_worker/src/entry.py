@@ -7117,7 +7117,8 @@ async def catalog_handler(env, request):
         # static website with no key, still get the public-only list). The result is
         # per-viewer, so an authenticated request must never read from or write to
         # the SHARED public edge cache — that would leak private repos to everyone.
-        params = parse_qs(urlparse(request.url).query)
+        params = parse_qs(urlparse(
+            str(getattr(request, "url", "") or "")).query)
         admin_query = _admin_query(params.get("admin", [""])[0])
         headers = getattr(request, "headers", {}) or {}
         cache_control = (headers.get("cache-control") or "").lower()
@@ -7705,6 +7706,12 @@ async def native_repository_logo_handler(
     if not suggestions:
         if method_name(request) != "GET":
             return json_response({"error": "method_not_allowed"}, status=405)
+        params = parse_qs(urlparse(request.url).query)
+        if params.get("image", [""])[0] == "1":
+            logo = await service._official_logo(env, repository_id)
+            logo = logo or repository_import.deterministic_logo(record)
+            return _repository_logo_image_response(
+                logo, public=not bool(record.get("isPrivate")))
         response = await service.logo_for_record(env, repository_id, record)
         return response
 
@@ -7720,6 +7727,47 @@ async def native_repository_logo_handler(
 
     return await service.native_logo_suggestions(
         env, request, repository_id, record, can_admin)
+
+
+def _repository_logo_image_response(logo, public=True):
+    """Serve one validated native logo as image bytes for social clients."""
+    data_url = str(
+        (logo or {}).get("dataUrl", "")
+        if isinstance(logo, dict) else "")
+    if not data_url.startswith("data:image/") or "," not in data_url:
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+    header, encoded = data_url.split(",", 1)
+    media_type = header[5:].split(";", 1)[0].strip().lower()
+    if media_type not in (
+        "image/svg+xml", "image/png", "image/jpeg", "image/webp"
+    ):
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+    try:
+        if ";base64" in header.lower():
+            raw = base64.b64decode(encoded, validate=True)
+        elif media_type == "image/svg+xml":
+            raw = unquote(encoded).encode("utf-8")
+        else:
+            raw = b""
+    except Exception:
+        raw = b""
+    if not raw or len(raw) > 2 * 1024 * 1024:
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+    return JsResponse.new(Uint8Array.new(_to_js(bytes(raw))), to_js({
+        "status": 200,
+        "headers": {
+            "content-type": media_type,
+            "cache-control": (
+                "public, max-age=300"
+                if public
+                else "private, no-store, max-age=0, must-revalidate"
+            ),
+            "x-content-type-options": "nosniff",
+        },
+    }))
 
 
 async def _repo_about_public(env, request, owner, repo):
@@ -9343,7 +9391,8 @@ async def _clean_profile_links(env, rec, raw_links):
     return out, None
 
 
-async def _account_public_payload(env, rec, session_token=None):
+async def _account_public_payload(
+        env, rec, session_token=None, session_device_label=""):
     name = rec.get("name", "")
     solana = (rec.get("solana") or "").strip()
     has_payout = bool(solana and SOLANA_RE.match(solana))
@@ -9369,7 +9418,8 @@ async def _account_public_payload(env, rec, session_token=None):
         "sessionToken": (
             session_token
             if session_token is not None
-            else await _account_session_token(env, name)
+            else await _account_session_token(
+                env, name, session_device_label)
         ),
         "avatarPng": rec.get("avatar_png", ""),
         "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
@@ -9731,6 +9781,18 @@ def _generalized_client_category(request):
     return "other-client" if ua else ""
 
 
+def _account_session_device_label(request, desktop=False):
+    """Return a coarse owner-visible label without retaining a raw user agent."""
+    if desktop:
+        return "Desktop node"
+    return {
+        "mobile-browser": "Mobile browser",
+        "browser": "Web browser",
+        "automated-client": "Automated client",
+        "other-client": "Other client",
+    }.get(_generalized_client_category(request), "Unknown device")
+
+
 async def _world_moderation_tokens(env, request, now=None):
     """Derive rotating moderation subjects while raw request data is transient."""
     now = int(Date.now()) if now is None else int(now)
@@ -10015,7 +10077,9 @@ async def _account_signup(env, request):
     # pick up the new account on their next poll instead of a TTL later.
     await edge_cache_delete(USERS_DIRECTORY_CACHE_KEY)
     await edge_cache_delete(CHAT_ACTIVITY_CACHE_KEY)
-    payload = await _account_public_payload(env, rec)
+    payload = await _account_public_payload(
+        env, rec,
+        session_device_label=_account_session_device_label(request))
     return json_response(
         payload,
         status=201,
@@ -10362,7 +10426,10 @@ async def _account_finalize(env, request):
             env, link_code, node=name, pubkey=rec.get("pubkey", ""))
         if result.get("linked"):
             rec["owner"] = result.get("user", "")
-    payload = await _account_public_payload(env, rec)
+    payload = await _account_public_payload(
+        env, rec,
+        session_device_label=_account_session_device_label(
+            request, desktop=bool(pubkey)))
     return json_response(
         payload,
         status=201,
@@ -11527,7 +11594,10 @@ async def _account_login(env, request):
         desktop_capable = primary_key_matched and enabled and "owner_sign" in caps
         session_caps = caps if desktop_capable else CLIENT_CAPABILITIES.split(",")
         device_kind = device.get("kind", "desktop_node") if device else "desktop_node"
-        payload = await _account_public_payload(env, rec)
+        payload = await _account_public_payload(
+            env, rec,
+            session_device_label=_account_session_device_label(
+                request, desktop=True))
         payload = _with_session_capabilities(
             payload, session_kind="desktop_node", device_kind=device_kind,
             key_matched=True, desktop_capable=desktop_capable,
@@ -11539,7 +11609,9 @@ async def _account_login(env, request):
             },
         )
 
-    payload = await _account_public_payload(env, rec)
+    payload = await _account_public_payload(
+        env, rec,
+        session_device_label=_account_session_device_label(request))
     payload = _with_session_capabilities(
         payload, session_kind="account", device_kind="web_or_mobile",
         key_matched=False, desktop_capable=False)
@@ -11646,6 +11718,116 @@ async def _account_logout(env, request):
     return json_response(
         {"ok": True},
         extra_headers={"Set-Cookie": _clear_account_session_cookie()},
+        cache_control="no-store, max-age=0, must-revalidate",
+    )
+
+
+async def _account_sessions(env, request, target_session_id=""):
+    """List or revoke this account's sessions without exposing client details."""
+    method = method_name(request)
+    token, cookie_auth = _request_account_session_token(request, {})
+    if (
+        cookie_auth
+        and method == "DELETE"
+        and not _request_same_origin(request)
+    ):
+        token = ""
+    account_bi, rec, current_session_id = await _account_session_lookup(
+        env, token, touch=method == "GET")
+    if not account_bi or not rec or not current_session_id:
+        return json_response(
+            {"error": "invalid_session"}, status=401,
+            cache_control="no-store, max-age=0, must-revalidate")
+
+    now = int(Date.now())
+    actor = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+    if method == "GET" and not target_session_id:
+        rows = await d1_all(
+            env,
+            "SELECT session_id,created_at,last_seen_at,expires_at,device_label "
+            "FROM account_sessions WHERE account_bi=? AND revoked_at=0 "
+            "AND expires_at>? ORDER BY last_seen_at DESC,created_at DESC "
+            "LIMIT ?",
+            account_bi, now, ACCOUNT_SESSION_MAX_ACTIVE,
+        )
+        sessions = []
+        for row in rows or []:
+            session_id = clean_string(row.get("session_id", ""), 64)
+            if not re.fullmatch(r"[A-Za-z0-9_-]{24,64}", session_id):
+                continue
+            sessions.append({
+                "id": session_id,
+                "deviceLabel": (
+                    clean_string(row.get("device_label", ""), 80)
+                    or "Unknown device"
+                ),
+                "createdAt": int(row.get("created_at") or 0),
+                "lastSeenAt": int(row.get("last_seen_at") or 0),
+                "expiresAt": int(row.get("expires_at") or 0),
+                "current": session_id == current_session_id,
+            })
+        return json_response(
+            {
+                "ok": True,
+                "sessions": sessions,
+                "privacyNotice": (
+                    "Only a broad device category and session timestamps are "
+                    "shown. ForkMesh does not expose IP addresses or raw user "
+                    "agents in session management."
+                ),
+            },
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+
+    if method != "DELETE":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"allow": "GET, DELETE"})
+
+    target_session_id = clean_string(target_session_id, 64).strip()
+    revoke_current = False
+    if target_session_id == "others":
+        await d1_run(
+            env,
+            "UPDATE account_sessions SET revoked_at=? "
+            "WHERE account_bi=? AND session_id<>? AND revoked_at=0",
+            now, account_bi, current_session_id,
+        )
+        audit_target = "all-other-devices"
+        audit_scope = "others"
+    else:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{24,64}", target_session_id):
+            return json_response(
+                {"error": "invalid_session_id"}, status=400,
+                cache_control="no-store, max-age=0, must-revalidate")
+        owned = await d1_first(
+            env,
+            "SELECT session_id FROM account_sessions "
+            "WHERE account_bi=? AND session_id=? AND revoked_at=0 "
+            "AND expires_at>?",
+            account_bi, target_session_id, now,
+        )
+        if not owned:
+            return json_response(
+                {"error": "session_not_found"}, status=404,
+                cache_control="no-store, max-age=0, must-revalidate")
+        await _account_revoke_sessions(
+            env, account_bi, target_session_id)
+        revoke_current = target_session_id == current_session_id
+        audit_target = target_session_id
+        audit_scope = "current" if revoke_current else "device"
+
+    await _audit_sensitive_action(
+        env, actor, "account.session_revoke", "account_session",
+        audit_target, "success", {"scope": audit_scope})
+    headers = (
+        {"Set-Cookie": _clear_account_session_cookie()}
+        if revoke_current else None
+    )
+    return json_response(
+        {"ok": True, "currentRevoked": revoke_current},
+        extra_headers=headers,
         cache_control="no-store, max-age=0, must-revalidate",
     )
 
@@ -15541,7 +15723,17 @@ async def org_repos_handler(env, request, org):
                 )
                 if not allowed:
                     continue
-            visible.append({"repo": linked_repo, "node": node_owner})
+            public_record = {"repo": linked_repo, "node": node_owner}
+            # The gateway authorizes an organization SSH path by resolving it
+            # back to this linked node before checking the allowlist. Publish
+            # that stable organization URL here (rather than leaking the
+            # backing-node path into the repo page) only when the backing
+            # repository is explicitly enabled for SSH.
+            ssh_url = _ssh_alias_repository_url(
+                env, org_name, node_owner, linked_repo)
+            if ssh_url:
+                public_record["sshUrl"] = ssh_url
+            visible.append(public_record)
         return json_response({"ok": True, "repos": visible},
                              cache_control="no-store")
     if method not in ("POST", "DELETE"):
@@ -17912,6 +18104,25 @@ def _ssh_repository_url(env, owner, repo):
         settings["host"], settings["port"], owner, repo)
 
 
+def _ssh_alias_repository_url(env, alias_owner, backing_owner, repo):
+    """Return an org-facing SSH URL backed by an allowlisted node repo.
+
+    The SSH gateway's authorization endpoint independently resolves the alias
+    to ``backing_owner`` before every clone/push. This helper therefore checks
+    gateway access against that canonical backing path, but keeps the public
+    organization namespace in the URL shown to users.
+    """
+    settings = _ssh_gateway_settings(env)
+    if (
+        not settings["configured"]
+        or not ssh_auth.gateway_repository_access(
+            settings["repositories"], backing_owner, repo)
+    ):
+        return ""
+    return ssh_auth.ssh_repository_url(
+        settings["host"], settings["port"], alias_owner, repo)
+
+
 async def _ssh_json_body(request, max_bytes=32 * 1024):
     try:
         announced = int(request.headers.get("content-length") or 0)
@@ -18449,6 +18660,16 @@ async def accounts_handler(env, request):
         return await _account_rotate(env, request)
     if url.path == "/api/accounts/logout" and method == "POST":
         return await _account_logout(env, request)
+    if url.path.rstrip("/") == "/api/accounts/sessions" and method == "GET":
+        return await _account_sessions(env, request)
+    account_session_prefix = "/api/accounts/sessions/"
+    if (
+        url.path.startswith(account_session_prefix)
+        and method == "DELETE"
+    ):
+        session_id = url.path[len(account_session_prefix):].strip("/")
+        if "/" not in session_id:
+            return await _account_sessions(env, request, session_id)
     if url.path == "/api/accounts/admin-session" and method == "POST":
         return await _account_admin_session(env, request)
     if url.path == "/api/accounts/rotate" and method == "POST":
@@ -19396,6 +19617,18 @@ async def _ap_build_actor_doc(env, origin, kind, handle, rec):
                 icon_url = media_url
             elif media.get("kind") == "banner":
                 image_url = media_url
+        # The native repository logo API always has an original,
+        # locally-generated fallback. Use its real image projection when no
+        # owner-uploaded fediverse logo exists, rather than giving every
+        # repository the instance avatar.
+        if icon_url == origin + AP_AVATAR_PATH:
+            versioner = globals().get("_repository_social_version")
+            logo_version = (
+                versioner(catalog_rec) if callable(versioner) else "")
+            icon_url = "%s/api/repo/%s/%s/logo?image=1" % (
+                origin, quote(owner), quote(repo))
+            if logo_version:
+                icon_url += "&v=" + quote(logo_version, safe="")
     # Profile metadata rows: the canonical page link (VERIFIABLE — the served
     # page carries a reciprocal rel="me" back to this same URL, which is also
     # the actor's `url`, so Mastodon's link verification turns it green) and
@@ -20635,6 +20868,27 @@ async def repo_media_handler(env, request, owner, repo, media_kind):
     }))
     await edge_cache_put(cache_key, resp)
     return resp
+
+
+def _repository_social_version(record):
+    """Return a public card/page cache token tied to repository state.
+
+    ``stateHash`` authenticates the complete advertised refs set and therefore
+    changes for main, tags, or the pull-metadata branch. Older publishers may
+    only carry the checked-out commit; that remains a useful state-bound
+    fallback. A Worker build revision is deliberately not used: deploying
+    unrelated frontend code must not decide whether a repository preview is
+    current.
+    """
+    source = record if isinstance(record, dict) else {}
+    state_hash = clean_string(
+        source.get("stateHash", ""), 64).strip().lower()
+    if re.fullmatch(r"[0-9a-f]{64}", state_hash):
+        return state_hash
+    commit = clean_string(source.get("commit", ""), 64).strip().lower()
+    if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit):
+        return commit
+    return ""
 
 
 async def repo_card_handler(env, request, owner, repo):
@@ -30240,12 +30494,20 @@ async def _https_mirror_proxy(
             if value is not None:
                 raw_headers[name] = str(value)
         response_headers = https_routing.response_headers(raw_headers)
+        # A public node name is safe operational provenance (it is already
+        # listed on the repository's Mirrors tab). Attach it only to the live
+        # upstream response that this request actually selected. Edge-held
+        # metadata responses are rebuilt by repository_metadata_cache_get
+        # without this header, so a cache hit can never falsely claim that a
+        # particular mirror just served it.
+        response_headers["X-ForkMesh-Served-By"] = endpoint["node"]
         await _https_mirror_route_advance(
             env, context, endpoint["node"], operation)
         await repository_metadata_cache_put(
             metadata_cache_key, upstream, status)
-        # The selected origin and node are deliberately omitted. This streams
-        # the body; the Worker does not materialize repository bytes.
+        # The private endpoint origin remains masked. The public node identity
+        # above is bounded routing provenance; repository bytes still stream
+        # without being materialized by the Worker.
         return JsResponse.new(
             upstream.body,
             to_js({"status": status, "headers": response_headers}),
@@ -31810,6 +32072,8 @@ class Default(WorkerEntrypoint):
         cache_key = ""
         explicit_public = False
         data_owner = owner
+        repo_record = {}
+        social_version = ""
         if owner and repo:
             # Only an explicit public catalog row may contribute names,
             # description, actor links, or a shared cache entry. Private and
@@ -31826,11 +32090,39 @@ class Default(WorkerEntrypoint):
             explicit_public = not await _repo_is_private(
                 self.env, data_owner, repo)
             if explicit_public:
-                cache_key = "%s/%s/%s" % (
-                    origin, quote(owner), quote(repo))
-                cached = await edge_cache_match(cache_key)
-                if cached is not None:
-                    return cached
+                try:
+                    await ensure_schema(self.env)
+                    repo_bi = await blind_index(
+                        self.env, data_owner + "/" + repo)
+                    repo_row = await d1_first(
+                        self.env,
+                        "SELECT data FROM repositories WHERE key_bi=?",
+                        repo_bi)
+                    repo_record = (
+                        await decrypt_row(self.env, repo_row.get("data"))
+                        if repo_row else {})
+                    explicit_public = bool(
+                        repo_record
+                        and repo_record.get("visibility") == "public"
+                        and _catalog_record_matches_identity(
+                            repo_record, data_owner, repo))
+                except Exception:
+                    # A crawler must never receive public metadata or a shared
+                    # cache entry when the signed record cannot be re-read.
+                    explicit_public = False
+                    repo_record = {}
+                if explicit_public:
+                    social_version = _repository_social_version(repo_record)
+                    # A state-less legacy record may still render its generic
+                    # shell, but it cannot safely create a reusable social
+                    # cache entry until it republishes a commit/state pin.
+                    if social_version:
+                        cache_key = "%s/%s/%s?repo-state=%s" % (
+                            origin, quote(owner), quote(repo),
+                            quote(social_version, safe=""))
+                        cached = await edge_cache_match(cache_key)
+                        if cached is not None:
+                            return cached
         base = url.scheme + "://" + url.netloc + "/"
         try:
             resp = await self.env.ASSETS.fetch(base + DASHBOARD_REPO_ASSET)
@@ -31850,22 +32142,12 @@ class Default(WorkerEntrypoint):
             # (adhoc #46, see repo_card_handler / og_card.py) — instead of a
             # full-bleed logo. og:description carries the catalog description
             # so the unfurl text matches the repo, not the generic shell copy.
-            og_image = "%s/api/repo/%s/%s/card.png?v=%s" % (
-                origin, quote(owner), quote(repo),
-                quote(_build_rev(self.env), safe=""))
-            og_description = ""
-            try:
-                await ensure_schema(self.env)
-                repo_bi = await blind_index(
-                    self.env, data_owner + "/" + repo)
-                repo_row = await d1_first(
-                    self.env,
-                    "SELECT data FROM repositories WHERE key_bi=?", repo_bi)
-                rec = (await decrypt_row(
-                    self.env, repo_row.get("data"))) if repo_row else None
-                og_description = str((rec or {}).get("description", "") or "")
-            except Exception:
-                pass
+            og_image = "%s/api/repo/%s/%s/card.png" % (
+                origin, quote(owner), quote(repo))
+            if social_version:
+                og_image += "?v=" + quote(social_version, safe="")
+            og_description = str(
+                repo_record.get("description", "") or "")
             if not og_description:
                 og_description = ("%s/%s on ForkMesh — distributed Git "
                                   "hosting on a mesh of desktop nodes."
@@ -31897,7 +32179,7 @@ class Default(WorkerEntrypoint):
         page = Response(body, status=200, headers={
             "content-type": "text/html; charset=utf-8",
             "cache-control": (
-                "public, max-age=300" if explicit_public
+                "public, max-age=300" if cache_key
                 else "no-store, max-age=0, must-revalidate"),
         })
         if cache_key:
@@ -31916,19 +32198,28 @@ class Default(WorkerEntrypoint):
         handle = ap.repo_handle(owner.lower(), repo.lower())
         await ensure_schema(self.env)
         if (not await _ap_enabled(self.env)
-                or await _repo_is_private(self.env, owner, repo)):
+                or not await _ap_repo_federates(self.env, owner, repo)):
             return await self._serve_not_found_page(url)
+        data_owner = await _ap_org_alias_owner(
+            self.env, owner, repo)
         cache_key = "%s/@%s" % (origin, handle)
         cached = await edge_cache_match(cache_key)
         if cached is not None:
             return cached
-        key_bi = await blind_index(self.env, owner + "/" + repo)
+        key_bi = await blind_index(self.env, data_owner + "/" + repo)
         repo_row = await d1_first(
             self.env,
             "SELECT is_private, data FROM repositories WHERE key_bi=?", key_bi)
         if not repo_row:
             return await self._serve_not_found_page(url)
         rec = await decrypt_row(self.env, repo_row.get("data"))
+        if (
+            not rec
+            or rec.get("visibility") != "public"
+            or not _catalog_record_matches_identity(
+                rec, data_owner, repo)
+        ):
+            return await self._serve_not_found_page(url)
         description = clean_string(
             (rec or {}).get("description", "") or "", 240).strip()
         # Branding: owner-uploaded logo/banner (repo About tab), else defaults.
@@ -31945,6 +32236,12 @@ class Default(WorkerEntrypoint):
                 icon_url = media_url
             elif media.get("kind") == "banner":
                 image_url = media_url
+        if icon_url == AP_AVATAR_PATH:
+            logo_version = _repository_social_version(rec)
+            icon_url = "/api/repo/%s/%s/logo?image=1" % (
+                quote(owner), quote(repo))
+            if logo_version:
+                icon_url += "&v=" + quote(logo_version, safe="")
         actor_bi = await _ap_actor_bi(self.env, AP_ACTOR_REPO, handle)
         followers_row = await d1_first(
             self.env, "SELECT COUNT(*) AS c FROM ap_followers WHERE actor_bi=?",

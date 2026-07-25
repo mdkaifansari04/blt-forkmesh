@@ -116,6 +116,7 @@ set(FORKMESH_APP_SOURCES
     src/ForkMeshIdentity.h
     src/ForkMeshIdentity.cpp
     src/ChatBackend.h
+    src/MainnodeRoom.h
     src/RoomCrypto.h
     src/RoomCrypto.cpp
     src/CoveCrypto.h
@@ -517,6 +518,31 @@ if(FORKMESH_BUILD_TESTS)
         set_target_properties(forkmesh-control-tests PROPERTIES MACOSX_BUNDLE FALSE)
     endif()
 
+    # Desktop/public-World chat convergence: saved settings migrate only the
+    # retired shared-room route, blackholed upgrades have a deadline, and every
+    # failure/network transition yields one bounded reconnect.
+    qt_add_executable(forkmesh-chat-transport-tests
+        tests/test_chat_transport.cpp
+        src/MainnodeRoom.h
+        src/ChatBackend.h
+        src/RoomCrypto.h
+        src/RoomCrypto.cpp
+        src/SystemStats.h
+        src/SystemStats.cpp
+        src/ServerNode.h
+        src/ServerNode.cpp
+    )
+    target_include_directories(forkmesh-chat-transport-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(forkmesh-chat-transport-tests PRIVATE
+        FORKMESH_SERVER_NODE_TESTS)
+    target_link_libraries(forkmesh-chat-transport-tests PRIVATE
+        Qt6::Core Qt6::Network OpenSSL::Crypto)
+    if(APPLE)
+        set_target_properties(forkmesh-chat-transport-tests PROPERTIES
+            MACOSX_BUNDLE FALSE)
+    endif()
+
     # ForkMesh Actions trust boundary: repository-state-bound approvals plus
     # real Linux namespace/resource isolation. The integration cases execute
     # hostile workflows and prove host secrets, source writes, egress, runaway
@@ -748,7 +774,8 @@ if(FORKMESH_BUILD_TESTS)
     set_target_properties(
         forkmesh-tests forkmesh-ide-tests forkmesh-world-speech-tests
         forkmesh-codex-tests
-        forkmesh-control-tests forkmesh-action-security-tests
+        forkmesh-control-tests forkmesh-chat-transport-tests
+        forkmesh-action-security-tests
         forkmesh-private-mirror-tests
         forkmesh-public-mirror-tests
         forkmesh-e2e-stub-agent forkmesh-e2e
@@ -774,6 +801,8 @@ if(FORKMESH_BUILD_TESTS)
              COMMAND forkmesh-world-speech-tests)
     add_test(NAME forkmesh-codex-tests COMMAND forkmesh-codex-tests)
     add_test(NAME forkmesh-control-tests COMMAND forkmesh-control-tests)
+    add_test(NAME forkmesh-chat-transport-tests
+             COMMAND forkmesh-chat-transport-tests)
     add_test(NAME forkmesh-action-security-tests
              COMMAND forkmesh-action-security-tests)
     add_test(NAME forkmesh-private-mirror-tests
@@ -794,7 +823,8 @@ if(FORKMESH_BUILD_TESTS)
         USES_TERMINAL)
     add_dependencies(check forkmesh-tests forkmesh-ide-tests
         forkmesh-world-speech-tests forkmesh-codex-tests
-        forkmesh-control-tests forkmesh-action-security-tests
+        forkmesh-control-tests forkmesh-chat-transport-tests
+        forkmesh-action-security-tests
         forkmesh-private-mirror-tests
         forkmesh-public-mirror-tests
         forkmesh-window-tests forkmesh-perf-tests forkmesh-e2e
@@ -806,6 +836,7 @@ if(FORKMESH_BUILD_TESTS)
     foreach(_forkmesh_test_target
             forkmesh-tests forkmesh-ide-tests forkmesh-world-speech-tests
             forkmesh-codex-tests forkmesh-control-tests
+            forkmesh-chat-transport-tests
             forkmesh-action-security-tests
             forkmesh-private-mirror-tests forkmesh-public-mirror-tests
             forkmesh-reward-pool-tests forkmesh-e2e-stub-agent forkmesh-e2e

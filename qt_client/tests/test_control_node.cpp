@@ -8,13 +8,19 @@
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QMap>
+#include <QMutex>
 #include <QProcess>
 #include <QSettings>
 #include <QSet>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QThread>
+#include <QWaitCondition>
 
+#include <atomic>
 #include <cstdio>
+#include <thread>
 
 namespace {
 
@@ -47,6 +53,15 @@ bool runProcess(const QString &program, const QStringList &arguments,
            process.waitForFinished(15000) &&
            process.exitStatus() == QProcess::NormalExit &&
            process.exitCode() == 0;
+}
+
+QMap<QString, QVariant> settingsValues(QSettings &settings)
+{
+    QMap<QString, QVariant> values;
+    settings.sync();
+    for (const QString &key : settings.allKeys())
+        values.insert(key, settings.value(key));
+    return values;
 }
 
 } // namespace
@@ -935,7 +950,7 @@ int main(int argc, char **argv)
          }},
     };
     bool catalogPublisherCalled = false;
-    bool catalogPublishedAfterLocalSetup = false;
+    bool catalogPublishedBeforeLocalCommit = false;
     QString publishedRefreshConfiguration;
     bool publishedActionsEnabled = false;
     const QJsonObject applied =
@@ -945,19 +960,11 @@ int main(int argc, char **argv)
                 catalogPublisherCalled = true;
                 publishedRefreshConfiguration = path;
                 publishedActionsEnabled = enabled;
-                catalogPublishedAfterLocalSetup =
-                    actionSettings
-                            .value(QString::fromLatin1(
-                                forkmesh::mirror_actions::
-                                    kGenerationSetting))
-                            .toString() ==
-                        nodeActionsRequest
-                            .value(QStringLiteral("requestId"))
-                            .toString() &&
-                    actionSettings
-                        .value(QString::fromLatin1(
-                            forkmesh::mirror_actions::kEnabledSetting))
-                        .toBool();
+                catalogPublishedBeforeLocalCommit =
+                    !actionSettings.contains(QString::fromLatin1(
+                        forkmesh::mirror_actions::kGenerationSetting)) &&
+                    !actionSettings.contains(
+                        QStringLiteral("actions/variables"));
                 return true;
             });
     check(applied.value(QStringLiteral("ok")).toBool() &&
@@ -965,7 +972,7 @@ int main(int argc, char **argv)
               applied.value(QStringLiteral("variablesReplaced")).toBool() &&
               applied.value(QStringLiteral("variableCount")).toInt() == 2 &&
               catalogPublisherCalled &&
-              catalogPublishedAfterLocalSetup &&
+              catalogPublishedBeforeLocalCommit &&
               publishedRefreshConfiguration == gatewayConfig &&
               publishedActionsEnabled &&
               !QJsonDocument(applied)
@@ -974,23 +981,63 @@ int main(int argc, char **argv)
               !QJsonDocument(applied)
                    .toJson(QJsonDocument::Compact)
                    .contains("node-local-only-value"),
-          "node helper publishes the catalog toggle after local setup and returns only bounded metadata");
+          "node helper publishes the catalog before atomically exposing staged local settings and returns only bounded metadata");
+    const QMap<QString, QVariant> confirmedSettings =
+        settingsValues(actionSettings);
     QJsonObject unconfirmedRequest = nodeActionsRequest;
     unconfirmedRequest.insert(
         QStringLiteral("requestId"),
         QStringLiteral("fedcba9876543210fedcba9876543210"));
-    unconfirmedRequest.remove(QStringLiteral("variables"));
+    unconfirmedRequest.insert(QStringLiteral("actionsEnabled"), false);
+    unconfirmedRequest.insert(
+        QStringLiteral("variables"),
+        QJsonObject{
+            {QStringLiteral("mode"), QStringLiteral("replace")},
+            {QStringLiteral("values"),
+             QJsonObject{
+                 {QStringLiteral("ROLLBACK_SECRET"),
+                  QStringLiteral("must-never-be-committed")},
+             }},
+        });
+    bool unpublishedSettingsStayedCommitted = false;
+    int failedPublicationCalls = 0;
     const QJsonObject unconfirmed =
         forkmesh::mirror_actions::applyConfiguration(
             unconfirmedRequest, actionSettings,
-            [](const QString &, bool) { return false; });
+            [&](const QString &, bool enabled) {
+                ++failedPublicationCalls;
+                if (!enabled) {
+                    unpublishedSettingsStayedCommitted =
+                        actionSettings
+                                .value(QString::fromLatin1(
+                                    forkmesh::mirror_actions::
+                                        kGenerationSetting))
+                                .toString() ==
+                            nodeActionsRequest
+                                .value(QStringLiteral("requestId"))
+                                .toString() &&
+                        actionSettings
+                            .value(QString::fromLatin1(
+                                forkmesh::mirror_actions::kEnabledSetting))
+                            .toBool() &&
+                        !actionSettings
+                             .value(QStringLiteral("actions/variables"))
+                             .toByteArray()
+                             .contains("must-never-be-committed");
+                    return false;
+                }
+                return true; // explicit rollback to the prior catalog state
+            });
     check(!unconfirmed.value(QStringLiteral("ok")).toBool() &&
               unconfirmed.value(QStringLiteral("errorCode")).toString() ==
                   QStringLiteral("catalog_update_failed") &&
+              failedPublicationCalls == 2 &&
+              unpublishedSettingsStayedCommitted &&
+              settingsValues(actionSettings) == confirmedSettings &&
               !QJsonDocument(unconfirmed)
                    .toJson(QJsonDocument::Compact)
-                   .contains("DEPLOY_TOKEN"),
-          "node helper fails closed when the signed catalog toggle is not confirmed");
+                   .contains("must-never-be-committed"),
+          "failed catalog publication leaves every prior setting and secret unchanged");
     const QJsonObject savedVariables =
         QJsonDocument::fromJson(
             actionSettings
@@ -1042,6 +1089,255 @@ int main(int argc, char **argv)
             (QFileDevice::ReadGroup | QFileDevice::WriteGroup |
              QFileDevice::ReadOther | QFileDevice::WriteOther)),
           "node helper restricts its device-local settings file");
+
+    const QString recoveryJournal =
+        forkmesh::mirror_actions::configurationRecoveryJournalPath(
+            actionSettings);
+    auto restoreJournal = [&](const QByteArray &encoded) {
+        QFile file(recoveryJournal);
+        const bool written =
+            file.open(QIODevice::WriteOnly | QIODevice::Truncate) &&
+            file.write(encoded) == encoded.size();
+        file.close();
+        return written &&
+               QFile::setPermissions(
+                   recoveryJournal,
+                   QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    };
+    QJsonObject crashRequest = nodeActionsRequest;
+    crashRequest.insert(
+        QStringLiteral("requestId"),
+        QStringLiteral("11111111111111111111111111111111"));
+    crashRequest.insert(QStringLiteral("actionsEnabled"), false);
+    crashRequest.insert(
+        QStringLiteral("variables"),
+        QJsonObject{
+            {QStringLiteral("mode"), QStringLiteral("replace")},
+            {QStringLiteral("values"),
+             QJsonObject{
+                 {QStringLiteral("CRASH_SECRET"),
+                  QStringLiteral("replacement-not-yet-live")},
+             }},
+        });
+    QByteArray interruptedJournal;
+    bool crashPublicationSawOldSettings = false;
+    const QJsonObject crashApplied =
+        forkmesh::mirror_actions::applyConfiguration(
+            crashRequest, actionSettings,
+            [&](const QString &, bool enabled) {
+                QFile journal(recoveryJournal);
+                if (journal.open(QIODevice::ReadOnly))
+                    interruptedJournal = journal.readAll();
+                crashPublicationSawOldSettings =
+                    !enabled &&
+                    settingsValues(actionSettings) == confirmedSettings &&
+                    !interruptedJournal.contains(
+                        "replacement-not-yet-live");
+                return true;
+            });
+    check(crashApplied.value(QStringLiteral("ok")).toBool() &&
+              !interruptedJournal.isEmpty() &&
+              crashPublicationSawOldSettings &&
+              !QFileInfo::exists(recoveryJournal),
+          "durable recovery journal exists before publication, excludes replacement secrets, and is removed only after commit");
+
+    // Reinstall the exact journal captured while publication was in flight.
+    // The local settings are now fully new, which is a stronger recovery case
+    // than a process dying midway through QSettings synchronization.
+    check(restoreJournal(interruptedJournal),
+          "interrupted transaction journal can be restored for crash simulation");
+    int crashRollbackCalls = 0;
+    QString crashRecoveryError;
+    const bool crashRecovered =
+        forkmesh::mirror_actions::recoverPendingConfiguration(
+            actionSettings,
+            [&](const QString &path, bool enabled) {
+                ++crashRollbackCalls;
+                return path == gatewayConfig && enabled;
+            },
+            &crashRecoveryError);
+    check(crashRecovered && crashRecoveryError.isEmpty() &&
+              crashRollbackCalls == 1 &&
+              settingsValues(actionSettings) == confirmedSettings &&
+              !QFileInfo::exists(recoveryJournal),
+          "startup recovery durably restores old settings before rolling back the published catalog");
+
+    // Capture a second interrupted transaction so local and external rollback
+    // failures can be exercised independently and retried from one durable
+    // journal.
+    QJsonObject failureRequest = crashRequest;
+    failureRequest.insert(
+        QStringLiteral("requestId"),
+        QStringLiteral("22222222222222222222222222222222"));
+    QByteArray failureJournal;
+    const QJsonObject failureApplied =
+        forkmesh::mirror_actions::applyConfiguration(
+            failureRequest, actionSettings,
+            [&](const QString &, bool) {
+                QFile journal(recoveryJournal);
+                if (journal.open(QIODevice::ReadOnly))
+                    failureJournal = journal.readAll();
+                return true;
+            });
+    actionSettings.sync();
+    QFile currentSettingsFile(actionSettingsPath);
+    QByteArray currentSettingsBytes;
+    if (currentSettingsFile.open(QIODevice::ReadOnly))
+        currentSettingsBytes = currentSettingsFile.readAll();
+    currentSettingsFile.close();
+    check(failureApplied.value(QStringLiteral("ok")).toBool() &&
+              !failureJournal.isEmpty() &&
+              !currentSettingsBytes.isEmpty() &&
+              restoreJournal(failureJournal),
+          "second interrupted transaction fixture is durable");
+
+    // Make the settings filename itself a directory. This fails even when the
+    // test runs as root and proves catalog rollback is not attempted when the
+    // prior local values cannot be durably restored.
+    actionSettings.sync();
+    check(QFile::remove(actionSettingsPath) &&
+              QDir().mkpath(actionSettingsPath),
+          "local rollback failure fixture blocks the settings file");
+    QSettings brokenSettings(actionSettingsPath, QSettings::IniFormat);
+    bool catalogTouchedBeforeLocalRestore = false;
+    QString localRollbackError;
+    const bool localRollbackRecovered =
+        forkmesh::mirror_actions::recoverPendingConfiguration(
+            brokenSettings,
+            [&](const QString &, bool) {
+                catalogTouchedBeforeLocalRestore = true;
+                return true;
+            },
+            &localRollbackError);
+    check(!localRollbackRecovered &&
+              localRollbackError ==
+                  QStringLiteral("configuration_local_rollback_failed") &&
+              !catalogTouchedBeforeLocalRestore &&
+              QFileInfo::exists(recoveryJournal),
+          "failed local durability verification leaves the journal and never reports or attempts catalog rollback");
+
+    QDir blockedSettings(actionSettingsPath);
+    check(blockedSettings.removeRecursively(),
+          "blocked settings fixture is removed");
+    QFile repairedSettings(actionSettingsPath);
+    check(repairedSettings.open(
+              QIODevice::WriteOnly | QIODevice::Truncate) &&
+              repairedSettings.write(currentSettingsBytes) ==
+                  currentSettingsBytes.size(),
+          "settings file is repaired for rollback retry");
+    repairedSettings.close();
+    QFile::setPermissions(actionSettingsPath,
+                          QFileDevice::ReadOwner |
+                              QFileDevice::WriteOwner);
+
+    QSettings rollbackSettings(actionSettingsPath, QSettings::IniFormat);
+    int failedCatalogRollbackCalls = 0;
+    QString catalogRollbackError;
+    const bool catalogRollbackRecovered =
+        forkmesh::mirror_actions::recoverPendingConfiguration(
+            rollbackSettings,
+            [&](const QString &, bool enabled) {
+                ++failedCatalogRollbackCalls;
+                return !enabled; // previous state is enabled, so fail
+            },
+            &catalogRollbackError);
+    check(!catalogRollbackRecovered &&
+              catalogRollbackError ==
+                  QStringLiteral("configuration_catalog_rollback_failed") &&
+              failedCatalogRollbackCalls == 1 &&
+              settingsValues(rollbackSettings) == confirmedSettings &&
+              QFileInfo::exists(recoveryJournal),
+          "failed catalog rollback keeps the verified old local state and journal for retry");
+    QString retryError;
+    const bool retryRecovered =
+        forkmesh::mirror_actions::recoverPendingConfiguration(
+            rollbackSettings,
+            [&](const QString &path, bool enabled) {
+                return path == gatewayConfig && enabled;
+            },
+            &retryError);
+    check(retryRecovered && retryError.isEmpty() &&
+              settingsValues(rollbackSettings) == confirmedSettings &&
+              !QFileInfo::exists(recoveryJournal),
+          "catalog rollback retries idempotently and removes the journal only after success");
+
+    // Two helpers targeting the same QSettings file must serialize the whole
+    // snapshot/publish/write/finalize interval, not merely their writes.
+    QJsonObject concurrentFirst = nodeActionsRequest;
+    concurrentFirst.remove(QStringLiteral("variables"));
+    concurrentFirst.insert(
+        QStringLiteral("requestId"),
+        QStringLiteral("33333333333333333333333333333333"));
+    concurrentFirst.insert(QStringLiteral("actionsEnabled"), true);
+    QJsonObject concurrentSecond = concurrentFirst;
+    concurrentSecond.insert(
+        QStringLiteral("requestId"),
+        QStringLiteral("44444444444444444444444444444444"));
+    concurrentSecond.insert(QStringLiteral("actionsEnabled"), false);
+    QMutex concurrencyMutex;
+    QWaitCondition concurrencyCondition;
+    bool firstPublisherEntered = false;
+    bool releaseFirstPublisher = false;
+    std::atomic_bool secondPublisherEntered{false};
+    QJsonObject concurrentFirstResult;
+    QJsonObject concurrentSecondResult;
+    std::thread firstHelper([&] {
+        QSettings helperSettings(actionSettingsPath,
+                                 QSettings::IniFormat);
+        concurrentFirstResult =
+            forkmesh::mirror_actions::applyConfiguration(
+                concurrentFirst, helperSettings,
+                [&](const QString &, bool) {
+                    QMutexLocker guard(&concurrencyMutex);
+                    firstPublisherEntered = true;
+                    concurrencyCondition.wakeAll();
+                    while (!releaseFirstPublisher)
+                        concurrencyCondition.wait(&concurrencyMutex);
+                    return true;
+                });
+    });
+    {
+        QMutexLocker guard(&concurrencyMutex);
+        if (!firstPublisherEntered)
+            concurrencyCondition.wait(&concurrencyMutex, 10000);
+    }
+    std::thread secondHelper([&] {
+        QSettings helperSettings(actionSettingsPath,
+                                 QSettings::IniFormat);
+        concurrentSecondResult =
+            forkmesh::mirror_actions::applyConfiguration(
+                concurrentSecond, helperSettings,
+                [&](const QString &, bool) {
+                    secondPublisherEntered.store(true);
+                    return true;
+                });
+    });
+    QThread::msleep(150);
+    const bool secondWasSerialized =
+        firstPublisherEntered && !secondPublisherEntered.load();
+    {
+        QMutexLocker guard(&concurrencyMutex);
+        releaseFirstPublisher = true;
+        concurrencyCondition.wakeAll();
+    }
+    firstHelper.join();
+    secondHelper.join();
+    QSettings concurrentResultSettings(actionSettingsPath,
+                                       QSettings::IniFormat);
+    check(secondWasSerialized &&
+              concurrentFirstResult.value(QStringLiteral("ok")).toBool() &&
+              concurrentSecondResult.value(QStringLiteral("ok")).toBool() &&
+              secondPublisherEntered.load() &&
+              concurrentResultSettings
+                      .value(QString::fromLatin1(
+                          forkmesh::mirror_actions::
+                              kGenerationSetting))
+                      .toString() ==
+                  concurrentSecond
+                      .value(QStringLiteral("requestId"))
+                      .toString() &&
+              !QFileInfo::exists(recoveryJournal),
+          "concurrent helpers serialize publication and commit under one process-safe lock");
 
     const QString summaryStoreRoot =
         mirrorActionsRoot.filePath(QStringLiteral("summary-store"));

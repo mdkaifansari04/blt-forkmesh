@@ -1454,6 +1454,141 @@
     // The Organizations tab is data-driven and only fetched when first opened.
     if (activeSection === "organizations") initOrgsSection();
     if (activeSection === "ssh-keys") loadSshKeys();
+    // Session state changes on other devices, so re-entering this tab always
+    // performs a fresh no-store read instead of keeping a page-lifetime copy.
+    if (activeSection === "account") loadAccountSessions({ force: true });
+  }
+
+  // ---- Active account sessions ---------------------------------------------
+  let accountSessionsLoaded = false;
+  let accountSessionsLoading = null;
+
+  function setAccountSessionStatus(message, kind = "") {
+    const target = $("[data-account-session-status]");
+    if (!target) return;
+    target.textContent = message || "";
+    target.className = "min-h-4 text-xs " + (
+      kind === "bad" ? "text-red-400"
+        : kind === "good" ? "text-emerald-400"
+          : "text-muted-foreground"
+    );
+  }
+
+  async function accountSessionApi(method, path = "") {
+    const token = state.session?.sessionToken || "";
+    if (!token) throw new Error("invalid_session");
+    const response = await fetch("/api/accounts/sessions" + path, {
+      method,
+      headers: {
+        accept: "application/json",
+        authorization: "Bearer " + token,
+      },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `http_${response.status}`);
+    }
+    return data;
+  }
+
+  function renderAccountSessions(data) {
+    const list = $("[data-account-session-list]");
+    if (!list) return;
+    const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
+    if (!sessions.length) {
+      list.innerHTML = '<p class="p-4 text-sm text-muted-foreground">No active sessions were returned.</p>';
+      return;
+    }
+    list.innerHTML = sessions.map((session, index) => `
+      <article class="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between ${index ? "border-t border-border" : ""}">
+        <div class="min-w-0">
+          <p class="text-sm font-semibold text-foreground">
+            ${escapeHtml(session.deviceLabel || "Unknown device")}
+            ${session.current ? '<span class="ml-2 rounded-full border border-emerald-500/50 px-2 py-0.5 text-[11px] text-emerald-300">This device</span>' : ""}
+          </p>
+          <p class="mt-1 text-xs text-muted-foreground">Last active ${escapeHtml(formatTimeAgo(Number(session.lastSeenAt || 0)))} · signed in ${escapeHtml(formatDate(Number(session.createdAt || 0)))} · expires ${escapeHtml(formatDate(Number(session.expiresAt || 0)))}</p>
+        </div>
+        <button type="button" data-account-session-revoke="${escapeHtml(session.id || "")}" data-account-session-current="${session.current ? "true" : "false"}" class="inline-flex h-8 shrink-0 items-center justify-center rounded-md border border-red-500/50 px-3 text-xs font-semibold text-red-300 hover:bg-red-500/10">
+          ${session.current ? "Sign out here" : "Sign out"}
+        </button>
+      </article>`).join("");
+  }
+
+  function bindAccountSessionControls() {
+    const list = $("[data-account-session-list]");
+    if (list && list.dataset.controlsBound !== "true") {
+      list.dataset.controlsBound = "true";
+      list.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-account-session-revoke]");
+        if (!button) return;
+        revokeAccountSession(
+          button.dataset.accountSessionRevoke || "",
+          button.dataset.accountSessionCurrent === "true");
+      });
+    }
+    const others = $("[data-account-sessions-revoke-others]");
+    if (others && others.dataset.controlsBound !== "true") {
+      others.dataset.controlsBound = "true";
+      others.addEventListener("click", () => revokeOtherAccountSessions());
+    }
+  }
+
+  async function loadAccountSessions({ force = false } = {}) {
+    if (!$("[data-account-session-list]")) return;
+    bindAccountSessionControls();
+    if (accountSessionsLoaded && !force) return;
+    if (accountSessionsLoading) return accountSessionsLoading;
+    accountSessionsLoading = (async () => {
+      try {
+        const data = await accountSessionApi("GET");
+        renderAccountSessions(data);
+        accountSessionsLoaded = true;
+        setAccountSessionStatus(data.privacyNotice || "");
+      } catch (error) {
+        const list = $("[data-account-session-list]");
+        if (list) {
+          list.innerHTML = `<p class="p-4 text-sm text-red-400">${error.message === "invalid_session" ? "Sign in to manage active sessions." : "Could not load active sessions."}</p>`;
+        }
+      } finally {
+        accountSessionsLoading = null;
+      }
+    })();
+    return accountSessionsLoading;
+  }
+
+  async function revokeAccountSession(sessionId, current) {
+    if (!sessionId || !window.confirm(current
+      ? "Sign out this device now?"
+      : "Sign out that device?")) return;
+    try {
+      const result = await accountSessionApi(
+        "DELETE", "/" + encodeURIComponent(sessionId));
+      if (current || result.currentRevoked) {
+        logout();
+        return;
+      }
+      accountSessionsLoaded = false;
+      await loadAccountSessions({ force: true });
+      setAccountSessionStatus("That device was signed out.", "good");
+    } catch (_) {
+      setAccountSessionStatus("Could not sign out that device.", "bad");
+    }
+  }
+
+  async function revokeOtherAccountSessions() {
+    if (!window.confirm("Sign out every other active device?")) return;
+    const button = $("[data-account-sessions-revoke-others]");
+    if (button) button.disabled = true;
+    try {
+      await accountSessionApi("DELETE", "/others");
+      accountSessionsLoaded = false;
+      await loadAccountSessions({ force: true });
+      setAccountSessionStatus("All other devices were signed out.", "good");
+    } catch (_) {
+      setAccountSessionStatus("Could not sign out the other devices.", "bad");
+    } finally {
+      if (button) button.disabled = false;
+    }
   }
 
   // ---- SSH public keys (settings tab) ---------------------------------------
@@ -6635,6 +6770,16 @@
       headers: { accept: "application/json", "cache-control": "no-cache" },
     });
     const data = await response.json().catch(() => ({}));
+    const servedBy = String(
+      response.headers.get("X-ForkMesh-Served-By") || "",
+    ).trim();
+    if (data && typeof data === "object" && !Array.isArray(data)) {
+      // Trust routing provenance from the Worker's response header, never an
+      // upstream JSON field. A metadata-cache hit intentionally has no header,
+      // so remove any body claim instead of presenting it as a live selection.
+      if (servedBy) data.servedBy = servedBy;
+      else delete data.servedBy;
+    }
     if (!response.ok || data.ok === false) {
       const error = new Error(data.error || `HTTP ${response.status}`);
       error.status = response.status;
@@ -11978,6 +12123,7 @@
         ...origin,
         owner: organization,
         name: repository,
+        sshUrl: String(linked.sshUrl || origin.sshUrl || "").trim(),
         canonicalOwner: organization,
         canonicalName: repository,
         servingOwner: linkedOwner,

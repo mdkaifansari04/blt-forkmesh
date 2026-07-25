@@ -1924,7 +1924,8 @@ def test_worker_routes_raw_repository_blobs_through_direct_https_gateway():
     assert REPO_DIRECT_BROWSE_GATE in ENTRY_TEXT
     assert "return await _https_mirror_proxy(" in ENTRY_TEXT
     assert "upstream.body," in ENTRY_TEXT
-    assert "The selected origin and node are deliberately omitted" in ENTRY_TEXT
+    assert 'response_headers["X-ForkMesh-Served-By"] = endpoint["node"]' in ENTRY_TEXT
+    assert "The private endpoint origin remains masked" in ENTRY_TEXT
     # The node gateway streams `git cat-file blob` directly to the masked edge
     # response. It does not base64-encode/reassemble media in a Durable Object.
     assert 'if operation == "raw":' in gateway

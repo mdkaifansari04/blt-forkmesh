@@ -252,6 +252,11 @@ public:
     // Live WebSocket / Durable Object diagnostics for the Network tab. Backends
     // without a socket return an empty list.
     virtual QList<QJsonObject> networkDiagnostics() const { return {}; }
+    // Let a continuously connected backend react immediately to an operating
+    // system reachability transition. The default is a no-op for local/offline
+    // backends; relay sockets use it to cancel a stale dial while offline and
+    // perform one immediate, deterministic dial when connectivity returns.
+    virtual void setNetworkAvailable(bool available) { Q_UNUSED(available); }
     virtual void shutdown() = 0;
     virtual QString modeName() const = 0;
 

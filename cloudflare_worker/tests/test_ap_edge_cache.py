@@ -575,6 +575,7 @@ def _actor_doc_globals():
         "_ap_org_alias_owner": _ap_org_alias_owner,
         "_ap_user_federates": _ap_user_federates,
         "_ap_domain_of": lambda origin: "forkmesh.com",
+        "quote": quote,
         "repo_web_href": lambda owner, repo: "/%s/%s" % (owner, repo),
         "_ap_actor_url": lambda origin, kind, handle: (
             origin + "/ap/repos/%s/%s" % tuple(handle.split(".", 1))
@@ -596,3 +597,6 @@ def test_repo_actor_url_is_fediverse_profile_page_not_git_page():
                     if a.get("name") == "Repository")
     assert "https://forkmesh.com/owner/repo" in repo_row["value"]
     assert "/@owner.repo" not in repo_row["value"]
+    assert doc["icon"]["url"] == (
+        "https://forkmesh.com/api/repo/owner/repo/logo?image=1"
+    )

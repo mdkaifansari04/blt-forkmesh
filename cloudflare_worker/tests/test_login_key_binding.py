@@ -242,7 +242,8 @@ def _login_harness(rec, *, device_proof_valid=True, initial_devices=None,
     async def _is_admin(_env, _name):
         return False
 
-    async def _account_public_payload(_env, account):
+    async def _account_public_payload(
+            _env, account, _session_token=None, **_kwargs):
         solana = account.get("solana", "")
         return {
             "ok": True,
@@ -290,6 +291,10 @@ def _login_harness(rec, *, device_proof_valid=True, initial_devices=None,
             "_save_account": _save_account,
             "_is_admin": _is_admin,
             "_account_public_payload": _account_public_payload,
+            "_account_session_device_label": (
+                lambda _request, desktop=False:
+                "Desktop node" if desktop else "Web browser"
+            ),
             "_account_session_token": _account_session_token,
             "_account_session_cookie": lambda _token: "account-session",
             "json_response": _json_response,
@@ -750,7 +755,7 @@ def test_concurrent_first_device_bind_allows_exactly_one_account_winner():
             + "\n" + DEVICE_TS
         ).encode()
 
-    async def account_payload(_env, rec):
+    async def account_payload(_env, rec, _session_token=None, **_kwargs):
         return {
             "ok": True,
             "nodeName": rec["name"],
@@ -791,6 +796,10 @@ def test_concurrent_first_device_bind_allows_exactly_one_account_winner():
         "_save_account": noop,
         "touch_registered_node": noop,
         "_account_public_payload": account_payload,
+        "_account_session_device_label": (
+            lambda _request, desktop=False:
+            "Desktop node" if desktop else "Web browser"
+        ),
         "_account_session_token": lambda _env, name: "session:" + name,
         "_account_session_cookie": lambda _token: "account",
         "json_response": _json_response,

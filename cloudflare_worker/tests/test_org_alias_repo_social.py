@@ -127,7 +127,14 @@ def test_crawler_gets_alias_canonical_card_and_backing_catalog_metadata():
 
     async def decrypt_row(_env, value):
         assert value == "encrypted"
-        return {"description": "Current organization repository"}
+        return {
+            "owner": "mirror2",
+            "name": "forkmesh",
+            "visibility": "public",
+            "description": "Current organization repository",
+            "stateHash": "a" * 64,
+            "commit": "b" * 40,
+        }
 
     async def edge_cache_match(_key):
         return None
@@ -149,8 +156,14 @@ def test_crawler_gets_alias_canonical_card_and_backing_catalog_metadata():
         "blind_index": blind_index,
         "d1_first": d1_first,
         "decrypt_row": decrypt_row,
+        "_catalog_record_matches_identity": (
+            lambda rec, owner, repo:
+            rec.get("owner") == owner and rec.get("name") == repo
+        ),
+        "_repository_social_version": (
+            lambda rec: rec.get("stateHash", "")
+        ),
         "_html_escape": html.escape,
-        "_build_rev": lambda _env: "test-rev",
         "og_card": SimpleNamespace(CARD_W=1200, CARD_H=630),
     })
     subject = page_class()
@@ -175,18 +188,84 @@ def test_crawler_gets_alias_canonical_card_and_backing_catalog_metadata():
     assert (
         '<meta property="og:image" '
         'content="https://forkmesh.com/api/repo/forkmesh/forkmesh/card.png'
-        '?v=test-rev">'
+        '?v=' + ("a" * 64) + '">'
         in response.body)
     assert (
         '<meta name="twitter:image" '
         'content="https://forkmesh.com/api/repo/forkmesh/forkmesh/card.png'
-        '?v=test-rev">'
+        '?v=' + ("a" * 64) + '">'
         in response.body)
     assert "Current organization repository" in response.body
     assert "mirror2" not in response.body
     assert ("privacy", "mirror2", "forkmesh") in reads
     assert ("catalog", "mirror2/forkmesh") in reads
-    assert cached[0][0] == "https://forkmesh.com/forkmesh/forkmesh"
+    assert cached[0][0] == (
+        "https://forkmesh.com/forkmesh/forkmesh?repo-state=" + ("a" * 64)
+    )
+
+
+def test_repository_social_version_tracks_refs_then_commit_without_build_rev():
+    version = _load_function("_repository_social_version", {
+        "clean_string": catalog.clean_string,
+        "re": re,
+    })
+    assert version({
+        "stateHash": "a" * 64,
+        "commit": "b" * 40,
+    }) == "a" * 64
+    assert version({"commit": "b" * 40}) == "b" * 40
+    assert version({"stateHash": "not-a-pin", "commit": "also-bad"}) == ""
+    page_source = ast.get_source_segment(
+        ENTRY_TEXT,
+        next(
+            child
+            for node in ast.parse(ENTRY_TEXT).body
+            if isinstance(node, ast.ClassDef) and node.name == "Default"
+            for child in node.body
+            if isinstance(child, ast.AsyncFunctionDef)
+            and child.name == "_serve_repo_page"
+        ),
+    )
+    assert "_repository_social_version(repo_record)" in page_source
+    assert "_build_rev" not in page_source
+
+
+def test_alias_ssh_url_checks_backing_allowlist_but_publishes_org_path():
+    functions = {}
+    for name in (
+        "_ssh_gateway_settings",
+        "_ssh_alias_repository_url",
+    ):
+        functions[name] = _load_function(name, {
+            **functions,
+            "ssh_auth": _module("ssh_keys"),
+        })
+    env = SimpleNamespace(
+        SSH_GATEWAY_HOST="ssh.forkmesh.com",
+        SSH_GATEWAY_PORT="22",
+        SSH_GATEWAY_TOKEN="t" * 32,
+        SSH_GATEWAY_REPOSITORIES="mirror2/forkmesh=read-write",
+    )
+    assert functions["_ssh_alias_repository_url"](
+        env, "forkmesh", "mirror2", "forkmesh",
+    ) == "ssh://git@ssh.forkmesh.com/forkmesh/forkmesh.git"
+    assert functions["_ssh_alias_repository_url"](
+        env, "forkmesh", "mirror3", "forkmesh",
+    ) == ""
+
+    org_handler = ast.get_source_segment(
+        ENTRY_TEXT,
+        next(
+            node for node in ast.parse(ENTRY_TEXT).body
+            if isinstance(node, ast.AsyncFunctionDef)
+            and node.name == "org_repos_handler"
+        ),
+    )
+    assert "_ssh_alias_repository_url(" in org_handler
+    detail_js = (
+        ROOT / "public" / "dashboard" / "js" / "08-repo-detail-network.js"
+    ).read_text(encoding="utf-8")
+    assert "sshUrl: String(linked.sshUrl || origin.sshUrl || \"\").trim()" in detail_js
 
 
 class _BinaryResponse:
@@ -279,6 +358,151 @@ def test_alias_card_renders_public_identity_after_internal_route_rewrite():
     assert rendered[0]["description"] == "Catalog from mirror2"
     assert cache_puts[0][0] == (
         "https://forkmesh.com/api/repo/forkmesh/forkmesh/card.png?v=test-rev")
+
+
+def _alias_repo_profile(uploaded_logo=True):
+    reads = []
+    rendered = []
+
+    async def repo_federates(_env, owner, repo):
+        reads.append(("federates", owner, repo))
+        return True
+
+    async def alias_owner(_env, owner, repo):
+        reads.append(("alias", owner, repo))
+        return "mirror2"
+
+    async def blind_index(_env, value):
+        reads.append(("catalog", value))
+        return "repo-bi"
+
+    async def d1_first(_env, sql, *params):
+        if "FROM repositories" in sql:
+            assert params == ("repo-bi",)
+            return {"is_private": 0, "data": "repo-record"}
+        if "FROM ap_followers" in sql:
+            return {"c": 4}
+        raise AssertionError(sql)
+
+    async def d1_all(_env, sql, *params):
+        if "FROM repo_media" in sql:
+            return (
+                [{"kind": "logo", "updated_at": 77}]
+                if uploaded_logo else []
+            )
+        if "FROM ap_objects" in sql:
+            return []
+        raise AssertionError(sql)
+
+    async def decrypt_row(_env, value):
+        assert value == "repo-record"
+        return {
+            "owner": "mirror2",
+            "name": "forkmesh",
+            "visibility": "public",
+            "description": "Canonical organization repository",
+        }
+
+    def profile_html(**kwargs):
+        rendered.append(kwargs)
+        return (
+            "<html><body>"
+            + kwargs["title"]
+            + "|"
+            + kwargs["icon_url"]
+            + "|"
+            + kwargs["code_url"]
+            + "</body></html>"
+        )
+
+    page_class = _load_default_method("_serve_repo_profile_page", {
+        "ap": SimpleNamespace(
+            repo_handle=lambda owner, repo: owner + "." + repo,
+            iso_utc=lambda value: str(value),
+        ),
+        "ensure_schema": lambda _env: _async_none(),
+        "_ap_enabled": lambda _env: _async_value(True),
+        "_ap_repo_federates": repo_federates,
+        "_ap_org_alias_owner": alias_owner,
+        "edge_cache_match": lambda _key: _async_value(None),
+        "blind_index": blind_index,
+        "d1_first": d1_first,
+        "d1_all": d1_all,
+        "decrypt_row": decrypt_row,
+        "_catalog_record_matches_identity": (
+            lambda record, owner, repo:
+            record.get("owner") == owner and record.get("name") == repo
+        ),
+        "_repository_social_version": (
+            lambda record: record.get("stateHash", "")
+        ),
+        "clean_string": catalog.clean_string,
+        "MAX_NODE_NAME": 63,
+        "quote": quote,
+        "_ap_actor_bi": lambda *_args: _async_value("actor-bi"),
+        "AP_ACTOR_REPO": "repo",
+        "AP_AVATAR_PATH": "/assets/fediverse-avatar.png",
+        "AP_BANNER_PATH": "/assets/fediverse-banner.png",
+        "_html_escape": html.escape,
+        "_ap_domain_of": lambda origin: urlparse(origin).netloc,
+        "repo_web_href": lambda owner, repo: "/" + owner + "/" + repo,
+        "_repo_fedi_profile_html": profile_html,
+        "Response": _Response,
+        "edge_cache_put": lambda *_args: _async_none(),
+    })
+    subject = page_class()
+    subject.env = SimpleNamespace()
+    response = _run(subject._serve_repo_profile_page(
+        urlparse("https://forkmesh.com/@forkmesh.forkmesh"),
+        "forkmesh",
+        "forkmesh",
+    ))
+    return response, rendered[0], reads
+
+
+def test_alias_repo_actor_profile_reads_backing_repo_but_keeps_public_branding():
+    response, rendered, reads = _alias_repo_profile(uploaded_logo=True)
+    assert response.status == 200
+    assert rendered["title"] == "forkmesh/forkmesh"
+    assert rendered["code_url"] == "https://forkmesh.com/forkmesh/forkmesh"
+    assert rendered["icon_url"] == (
+        "/api/repo/forkmesh/forkmesh/media/logo.png?v=77"
+    )
+    assert ("federates", "forkmesh", "forkmesh") in reads
+    assert ("alias", "forkmesh", "forkmesh") in reads
+    assert ("catalog", "mirror2/forkmesh") in reads
+    assert "mirror2" not in response.body
+
+
+def test_alias_repo_actor_profile_uses_valid_default_when_no_logo_is_uploaded():
+    response, rendered, _reads = _alias_repo_profile(uploaded_logo=False)
+    assert response.status == 200
+    assert rendered["icon_url"] == (
+        "/api/repo/forkmesh/forkmesh/logo?image=1"
+    )
+
+
+def test_native_repository_logo_image_projection_serves_generated_svg():
+    image_response = _load_function("_repository_logo_image_response", {
+        "base64": __import__("base64"),
+        "unquote": unquote,
+        "json_response": lambda data, status=200, **_kwargs: SimpleNamespace(
+            status=status, data=data),
+        "JsResponse": _BinaryResponse,
+        "Uint8Array": _Uint8Array,
+        "_to_js": lambda value: value,
+        "to_js": lambda value: value,
+    })
+    generated = _module("repository_imports").deterministic_logo({
+        "name": "forkmesh",
+        "metadata": {"description": "Mesh repository"},
+    })
+    response = image_response(generated)
+    assert response.status == 200
+    assert response.headers["content-type"] == "image/svg+xml"
+    assert bytes(response.body).startswith(b"<svg ")
+    missing = image_response({"dataUrl": "data:text/plain,not-an-image"})
+    assert missing.status == 404
 
 
 async def _async_none():

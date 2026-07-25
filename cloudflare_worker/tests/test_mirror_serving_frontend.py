@@ -243,3 +243,51 @@ def test_direct_https_mirror_reads_bypass_the_cached_fetchjson():
     # /mirrors, /releases/downloads, /api/repositories), not repository bytes.
     assert "fetchJson(repoLiveUrl(" not in DASHBOARD_JS
     assert "fetchJson(`${repoApiBase(repo)}/branches`)" not in DASHBOARD_JS
+
+
+def test_live_serving_header_is_injected_and_cache_hits_clear_body_claims():
+    fragment = (
+        PUBLIC / "dashboard" / "js" / "06-repo-content.js"
+    ).read_text(encoding="utf-8")
+    function_source = fragment[
+        fragment.index("  async function fetchRepoJson("):
+        fragment.index("\n\n  const PULL_METADATA_BRANCH")
+    ]
+    script = """
+const assert = require("assert");
+%s
+const queue = [
+  {
+    ok: true,
+    status: 200,
+    headers: { get(name) {
+      return name.toLowerCase() === "x-forkmesh-served-by" ? "mirror2" : null;
+    } },
+    async json() { return { ok: true, servedBy: "untrusted-body" }; },
+  },
+  {
+    ok: true,
+    status: 200,
+    headers: { get() { return null; } },
+    async json() { return { ok: true, servedBy: "stale-cache-claim" }; },
+  },
+];
+global.fetch = async () => queue.shift();
+(async () => {
+  const live = await fetchRepoJson("/live");
+  assert.equal(live.servedBy, "mirror2");
+  const cached = await fetchRepoJson("/cached");
+  assert.equal(Object.prototype.hasOwnProperty.call(cached, "servedBy"), false);
+})().catch((error) => {
+  process.stderr.write(String(error && error.stack || error));
+  process.exit(1);
+});
+""" % function_source
+    result = subprocess.run(
+        ["node"],
+        input=script,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stderr == ""

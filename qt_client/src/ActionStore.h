@@ -20,7 +20,8 @@ inline const QString Cancelled = QStringLiteral("cancelled");
 inline const QString Skipped = QStringLiteral("skipped");
 } // namespace ActionStatus
 
-// One workflow run, persisted as <root>/runs/<owner>-<name>/<id>/meta.json with a
+// One workflow run, persisted as
+// <root>/runs/v2-<sha256(length-delimited owner/name)>/<id>/meta.json with a
 // sibling log.txt. Runs are local CI artifacts and are never committed to git.
 struct ActionRun {
     int id = 0;
@@ -43,7 +44,10 @@ struct ActionRun {
     qint64 startedAtMs = 0;
     qint64 finishedAtMs = 0;
 
-    QString repoKey() const; // sanitized "<owner>-<name>"
+    // Collision-resistant, filesystem/settings-safe repository storage key.
+    QString repoKey() const;
+    // Pre-v2 lossy key, exposed only so ActionStore can migrate old records.
+    QString legacyRepoKey() const;
     QJsonObject toJson() const;
     static ActionRun fromJson(const QJsonObject &obj);
 };
@@ -96,6 +100,9 @@ public:
 private:
     QString runsDir() const; // <root>/runs
     QString runDir(const ActionRun &run) const;
+    QString legacyRunDir(const ActionRun &run) const;
+    QString existingRunDir(const ActionRun &run) const;
+    void migrateLegacyRecords();
     int nextId() const;
 
     QString m_root;

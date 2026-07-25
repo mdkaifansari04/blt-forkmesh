@@ -12,6 +12,7 @@
 #include "PrivateMirrorStore.h"
 
 #include <QFutureWatcher>
+#include <QNetworkInformation>
 #include <QtConcurrent/QtConcurrentRun>
 
 using namespace forkmesh::ui;
@@ -1246,6 +1247,11 @@ void MainWindow::startSession()
     server->setConnectionAuthorizer([this](const QUrl &endpoint) {
         return authorizeFirewallConnection(QStringLiteral("WebSocket"), endpoint);
     });
+    if (const auto *networkInfo = QNetworkInformation::instance();
+        networkInfo &&
+        networkInfo->reachability() ==
+            QNetworkInformation::Reachability::Disconnected)
+        server->setNetworkAvailable(false);
     // Fail over across every configured mainnode (issue #364): the active server
     // is tried first, then the rest in order, so a dead or quota-limited mainnode
     // no longer strands the client. ServerNode rotates through the list on each
@@ -1736,6 +1742,7 @@ void MainWindow::fetchRoomPassphrase()
     QUrlQuery query;
     query.addQueryItem("owner", roomOwner);
     query.addQueryItem("repo", roomRepo);
+    query.addQueryItem("room", kDefaultRoomName);
     query.addQueryItem("node", node);
     query.addQueryItem("ts", ts);
     query.addQueryItem("sig", m_profileIdentity.signData(canonical));
@@ -1745,7 +1752,12 @@ void MainWindow::fetchRoomPassphrase()
         const QJsonObject resp = QJsonDocument::fromJson(reply->readAll()).object();
         reply->deleteLater();
         const QString pass = resp.value("passphrase").toString();
-        if (!pass.isEmpty()) {
+        const bool matchingScope =
+            resp.value("ok").toBool() &&
+            resp.value("scope").toString() ==
+                QStringLiteral("mainnode/forkmesh") &&
+            resp.value("room").toString() == kDefaultRoomName;
+        if (matchingScope && !pass.isEmpty()) {
             m_roomPassphrase = pass;
             // The backend may already be connected on the constructor's
             // fallback key (this fetch races the initial connect) — re-key it

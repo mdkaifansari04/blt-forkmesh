@@ -3,9 +3,14 @@
 #include "ActionStore.h"
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QEventLoop>
 #include <QFile>
+#include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -154,6 +159,119 @@ int main(int argc, char **argv)
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
                        temp.filePath(QStringLiteral("settings")));
     QSettings().clear();
+
+    // Pre-v2 storage replaced every non [A-Za-z0-9.-] character with "_".
+    // These two distinct repositories therefore shared both run and approval
+    // storage. The v2 key must split their records without copying that
+    // ambiguous trust decision to either repository.
+    ActionRun collisionA;
+    collisionA.id = 11;
+    collisionA.owner = QStringLiteral("team/a");
+    collisionA.name = QStringLiteral("repo");
+    collisionA.workflowPath = QStringLiteral(".forkmesh/collision.yml");
+    collisionA.workflowContent = QStringLiteral("name: collision");
+    collisionA.repositoryTree = QStringLiteral("tree-a");
+    collisionA.executionDigest = QStringLiteral("digest-a");
+    ActionRun collisionB = collisionA;
+    collisionB.id = 12;
+    collisionB.owner = QStringLiteral("team_a");
+    ActionRun legacySolo = collisionA;
+    legacySolo.id = 13;
+    legacySolo.owner = QStringLiteral("legacy/team");
+    legacySolo.name = QStringLiteral("solo");
+    legacySolo.workflowPath = QStringLiteral(".forkmesh/solo.yml");
+    legacySolo.workflowContent = QStringLiteral("name: solo");
+    legacySolo.repositoryTree = QStringLiteral("tree-solo");
+    legacySolo.executionDigest = QStringLiteral("digest-solo");
+
+    check(collisionA.legacyRepoKey() == collisionB.legacyRepoKey(),
+          "legacy repository key fixture reproduces the lossy collision");
+    check(collisionA.repoKey() != collisionB.repoKey() &&
+              QRegularExpression(QStringLiteral("^v2-[a-f0-9]{64}$"))
+                  .match(collisionA.repoKey())
+                  .hasMatch(),
+          "length-delimited SHA-256 repository keys are path safe and collision resistant");
+
+    const QString actionsRoot = temp.filePath(QStringLiteral("actions"));
+    auto writeLegacyRun = [&](const ActionRun &run, const QByteArray &log) {
+        const QString directory =
+            actionsRoot + QStringLiteral("/runs/") + run.legacyRepoKey() +
+            QLatin1Char('/') + QString::number(run.id);
+        return QDir().mkpath(directory) &&
+               writeFile(directory + QStringLiteral("/meta.json"),
+                         QJsonDocument(run.toJson())
+                             .toJson(QJsonDocument::Compact)) &&
+               writeFile(directory + QStringLiteral("/log.txt"), log);
+    };
+    check(writeLegacyRun(collisionA, QByteArray("collision A log\n")) &&
+              writeLegacyRun(collisionB, QByteArray("collision B log\n")) &&
+              writeLegacyRun(legacySolo, QByteArray("solo log\n")),
+          "legacy run fixtures are persisted under lossy keys");
+    const QString legacyArtifact =
+        actionsRoot + QStringLiteral("/artifacts/") +
+        legacySolo.legacyRepoKey() + QStringLiteral("/13");
+    check(QDir().mkpath(legacyArtifact) &&
+              writeFile(legacyArtifact + QStringLiteral("/result.txt"),
+                        QByteArray("artifact\n")),
+          "legacy artifact fixture is persisted");
+
+    auto approvalDocument = [](const ActionRun &run) {
+        QJsonObject approvals;
+        approvals.insert(
+            run.workflowPath,
+            QJsonObject{
+                {QStringLiteral("schema"), 2},
+                {QStringLiteral("workflowContent"), run.workflowContent},
+                {QStringLiteral("repositoryTree"), run.repositoryTree},
+                {QStringLiteral("executionDigest"), run.executionDigest},
+            });
+        return QJsonDocument(approvals).toJson(QJsonDocument::Compact);
+    };
+    QSettings migrationSettings;
+    migrationSettings.setValue(
+        QStringLiteral("actions/approved/") + collisionA.legacyRepoKey(),
+        approvalDocument(collisionA));
+    migrationSettings.setValue(
+        QStringLiteral("actions/approved/") + legacySolo.legacyRepoKey(),
+        approvalDocument(legacySolo));
+    migrationSettings.sync();
+
+    ActionStore migrationStore(actionsRoot);
+    check(QFileInfo::exists(
+              actionsRoot + QStringLiteral("/runs/") +
+              collisionA.repoKey() + QStringLiteral("/11/meta.json")) &&
+              QFileInfo::exists(
+                  actionsRoot + QStringLiteral("/runs/") +
+                  collisionB.repoKey() + QStringLiteral("/12/meta.json")) &&
+              migrationStore.readLog(collisionA) ==
+                  QStringLiteral("collision A log\n") &&
+              migrationStore.readLog(collisionB) ==
+                  QStringLiteral("collision B log\n"),
+          "legacy colliding runs migrate into separate canonical directories");
+    check(QFileInfo::exists(
+              actionsRoot + QStringLiteral("/artifacts/") +
+              legacySolo.repoKey() + QStringLiteral("/13/result.txt")),
+          "legacy run artifacts migrate with their exact repository and run");
+    check(!ActionStore::isApproved(
+              collisionA.repoKey(), collisionA.workflowPath,
+              collisionA.workflowContent, collisionA.repositoryTree,
+              collisionA.executionDigest) &&
+              !ActionStore::isApproved(
+                  collisionB.repoKey(), collisionB.workflowPath,
+                  collisionB.workflowContent, collisionB.repositoryTree,
+                  collisionB.executionDigest),
+          "ambiguous legacy approval collision fails closed for both repositories");
+    check(!ActionStore::isApproved(
+              legacySolo.repoKey(), legacySolo.workflowPath,
+              legacySolo.workflowContent, legacySolo.repositoryTree,
+              legacySolo.executionDigest) &&
+              ActionStore::lastApprovedContent(
+                  legacySolo.repoKey(), legacySolo.workflowPath) ==
+                  legacySolo.workflowContent &&
+              !QSettings().contains(
+                  QStringLiteral("actions/approved/") +
+                  legacySolo.legacyRepoKey()),
+          "unambiguous legacy approval migrates as review-only content and fails closed");
 
     const QString repository = temp.filePath(QStringLiteral("repository"));
     QDir().mkpath(repository + QStringLiteral("/.forkmesh"));

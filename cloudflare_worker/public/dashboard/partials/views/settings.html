@@ -338,6 +338,21 @@
                   <section id="settings-account" data-settings-section="account" class="hidden pb-8">
                     <h2 class="text-2xl font-semibold tracking-normal text-foreground">Account</h2>
                     <p class="mt-1 text-sm leading-6 text-muted-foreground">Your node name is your public account and repository namespace. Change your username from the <button data-settings-section-link="public-profile" type="button" class="font-semibold text-[#2f81f7] hover:underline">Public profile</button> settings — renaming it moves owned repository URLs to the new namespace.</p>
+                    <div class="mt-6 grid max-w-3xl gap-3">
+                      <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                        <div>
+                          <h3 class="text-base font-semibold text-foreground">Active sessions</h3>
+                          <p class="mt-1 text-sm leading-6 text-muted-foreground">Review signed-in browsers and desktop clients. ForkMesh shows only a broad device category and timestamps—not IP addresses or raw browser details.</p>
+                        </div>
+                        <button data-account-sessions-revoke-others type="button" class="inline-flex h-9 shrink-0 items-center justify-center rounded-md border border-border px-3 text-sm font-semibold text-foreground hover:bg-secondary">
+                          Sign out other devices
+                        </button>
+                      </div>
+                      <p data-account-session-status role="status" class="min-h-4 text-xs text-muted-foreground"></p>
+                      <div data-account-session-list class="grid overflow-hidden rounded-md border border-border bg-card">
+                        <p class="p-4 text-sm text-muted-foreground">Loading active sessions…</p>
+                      </div>
+                    </div>
                   </section>
 
                   <section id="settings-ssh-keys" data-settings-section="ssh-keys" class="hidden pb-8">

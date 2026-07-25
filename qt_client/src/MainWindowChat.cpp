@@ -51,6 +51,7 @@ void MainWindow::loadServers()
         hostSettings, kHostsSetting, &m_hostSessionPasswords);
 
     m_servers.clear();
+    bool migratedDefaultRoom = false;
     const QString json = QSettings().value(kServersArray).toString();
     const QJsonArray array = QJsonDocument::fromJson(json.toUtf8()).array();
     for (const QJsonValue &value : array) {
@@ -61,6 +62,9 @@ void MainWindow::loadServers()
         ServerConfig server;
         server.url = canonicalServerUrl(url);
         server.room = obj.value("room").toString(kDefaultRoomName);
+        migratedDefaultRoom |=
+            forkmesh::mainnode::migrateSavedDefaultRoom(
+                &server.url, &server.room);
         m_servers.append(server);
     }
 
@@ -77,12 +81,30 @@ void MainWindow::loadServers()
                          : savedUrl;
         server.room =
             QSettings().value(kRoomNameSetting, kDefaultRoomName).toString();
+        migratedDefaultRoom |=
+            forkmesh::mainnode::migrateSavedDefaultRoom(
+                &server.url, &server.room);
         m_servers.append(server);
     }
 
     m_activeServer = QSettings().value(kActiveServerSetting, 0).toInt();
     if (m_activeServer < 0 || m_activeServer >= m_servers.size())
         m_activeServer = 0;
+    // An older install can have a current servers/items array beside stale
+    // legacy single-server keys. Detect that split state too; saveServers()
+    // below reconciles the compatibility keys to the selected current entry.
+    QString legacySingleUrl =
+        QSettings().value(kServerUrlSetting).toString().trimmed();
+    QString legacySingleRoom =
+        QSettings().value(kRoomNameSetting, kDefaultRoomName).toString();
+    migratedDefaultRoom |=
+        forkmesh::mainnode::migrateSavedDefaultRoom(
+            &legacySingleUrl, &legacySingleRoom);
+    // Write the one-way migration immediately. Other startup paths still read
+    // the legacy single-server keys, and a crash before the user opens Settings
+    // must not put the next launch back onto the retired room.
+    if (migratedDefaultRoom)
+        saveServers();
 }
 
 void MainWindow::saveServers()
@@ -4516,21 +4538,24 @@ void MainWindow::initRelayReachabilityWatch()
     connect(QNetworkInformation::instance(),
             &QNetworkInformation::reachabilityChanged, this,
             [this](QNetworkInformation::Reachability reachability) {
-                if (!m_relayRadar)
-                    return;
                 if (reachability ==
                     QNetworkInformation::Reachability::Disconnected) {
                     // Definitive: no network interface is up. No point probing;
                     // mark the outage as established so a later probe failure
                     // doesn't get the one-blip grace period.
                     m_relayProbeFailures = 2;
-                    static_cast<RelayRadarWidget *>(m_relayRadar)
-                        ->setUnreachable();
+                    if (m_relayRadar)
+                        static_cast<RelayRadarWidget *>(m_relayRadar)
+                            ->setUnreachable();
+                    if (m_backend)
+                        m_backend->setNetworkAvailable(false);
                 } else {
                     // Link is (possibly) back: confirm with a real probe right
                     // away. The radar stays red until the probe succeeds, so a
                     // half-up link never shows a false green.
                     probeRelayLatency();
+                    if (m_backend)
+                        m_backend->setNetworkAvailable(true);
                 }
             });
 }

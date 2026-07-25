@@ -22,6 +22,21 @@ QJsonObject applyConfiguration(const QJsonObject &request,
                                const CatalogConfigurationPublisher &publisher =
                                    CatalogConfigurationPublisher());
 
+// Reconcile an interrupted catalog/settings transaction. Recovery restores and
+// durably verifies the exact previous local configuration before rolling the
+// catalog back, then removes the owner-only journal. It is safe and idempotent
+// at process startup and before a new configuration request.
+bool recoverPendingConfiguration(
+    QSettings &settings,
+    const CatalogConfigurationPublisher &publisher =
+        CatalogConfigurationPublisher(),
+    QString *errorCode = nullptr);
+
+// Exposed for diagnostics and crash-recovery tests. The journal contains only
+// transaction metadata plus a protected snapshot of values already stored on
+// this device; replacement values are never written to it before publication.
+QString configurationRecoveryJournalPath(const QSettings &settings);
+
 // Read, validate, and apply one bounded JSON request from stdin. This is a
 // short-lived helper mode used by `forkmesh --configure-mirror-actions-stdin`.
 // It writes exactly one base64url result sentinel and no request contents.

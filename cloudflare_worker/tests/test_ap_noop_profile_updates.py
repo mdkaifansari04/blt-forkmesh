@@ -439,10 +439,15 @@ def test_profile_and_repo_pages_use_edge_cache_without_bypassing_privacy():
             < profile_body.index("edge_cache_match"))
     assert (profile_body.index("_account_row")
             < profile_body.index("edge_cache_match"))
-    # The repo page still checks the edge cache before any D1 work, even though
-    # a cache miss now looks up the repo's logo for the OpenGraph card.
-    assert (repo_body.index("edge_cache_match")
-            < repo_body.index("ensure_schema"))
+    # A repo-page cache key is derived from the exact signed state/commit pin.
+    # Re-read and validate the public catalog row before cache lookup so a
+    # prior state's shell cannot be reused after a privacy/state transition.
+    assert (repo_body.index("ensure_schema")
+            < repo_body.index("edge_cache_match"))
+    assert (repo_body.index("_catalog_record_matches_identity")
+            < repo_body.index("edge_cache_match"))
+    assert (repo_body.index("_repository_social_version")
+            < repo_body.index("edge_cache_match"))
 
 
 def test_repo_page_injects_opengraph_card_with_stats_image():

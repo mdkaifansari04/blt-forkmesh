@@ -588,6 +588,31 @@ int main(int argc, char *argv[])
         return 0;
     }
 
+    // A mirror Actions helper can be killed after the catalog toggle is
+    // published but before its local settings transaction is committed. Revert
+    // any such owner-only journal before MainWindow reads repository records or
+    // secrets. Failure is deliberately startup-fatal: running against a partial
+    // configuration would make the recovery record meaningless.
+    {
+        QSettings recoverySettings;
+        QString recoveryError;
+        if (!forkmesh::mirror_actions::recoverPendingConfiguration(
+                recoverySettings, {}, &recoveryError)) {
+            const QString message =
+                QStringLiteral(
+                    "ForkMesh could not recover an interrupted mirror Actions "
+                    "configuration (%1). No Actions services were started.")
+                    .arg(recoveryError.isEmpty()
+                             ? QStringLiteral("unknown recovery error")
+                             : recoveryError);
+            qCritical().noquote() << message;
+            if (!headless)
+                QMessageBox::critical(nullptr, QStringLiteral("ForkMesh"),
+                                      message);
+            return 2;
+        }
+    }
+
     // Bundle a colour-emoji font so 🎉/🙊/✅ paint in full colour in chat
     // messages (and everywhere else) even on systems that ship no colour-emoji
     // font of their own (common on Linux). Registering it and appending it to

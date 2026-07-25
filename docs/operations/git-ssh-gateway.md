@@ -126,12 +126,28 @@ validate it with
   "gatewayExecutable": "/opt/forkmesh-mirror/ssh-gateway-entrypoint",
   "refreshNotifier": "/opt/forkmesh-mirror/ssh-refresh-notify",
   "repositoryRoot": "/srv/forkmesh-git",
+  "limits": {
+    "capacityDirectory": "/run/forkmesh-ssh-gateway",
+    "maxConcurrentSessions": 16,
+    "reservedReceiveSessions": 4,
+    "maxConcurrentProcesses": 12,
+    "reservedReceiveProcesses": 3,
+    "uploadPackDeadlineSeconds": 900,
+    "receivePackDeadlineSeconds": 600,
+    "terminationGraceSeconds": 3,
+    "receiveMaxInputBytes": 268435456,
+    "defaultRepositoryMaxBytes": 17179869184,
+    "storageScanDeadlineSeconds": 10,
+    "cleanupDeadlineSeconds": 5,
+    "maxPackThreads": 2
+  },
   "repositories": [
     {
       "owner": "mirror2",
       "name": "forkmesh",
       "path": "mirror2/forkmesh.git",
-      "access": "read-write"
+      "access": "read-write",
+      "maxStorageBytes": 17179869184
     }
   ]
 }
@@ -148,6 +164,14 @@ Use a root-owned `0750` repository root and a dedicated repository-sharing
 group. The bare repository itself can be owned by `forkmesh-mirror` with that
 group and mode `2770`; add only `git` and `forkmesh-mirror` to the
 group. Do not recursively make a private repository world-readable.
+Install
+[`forkmesh-ssh-gateway.conf`](../../packaging/tmpfiles.d/forkmesh-ssh-gateway.conf)
+through `systemd-tmpfiles` before enabling SSH. The capacity directory is
+private to `git`; file locks in it bound concurrent forced-command sessions and
+Git service processes across sshd children. Read sessions can use only the
+general slots, while an authenticated, Worker-authorized push can also use the
+reserved receive slots. Repository aliases that point at one bare repository
+must use the same `maxStorageBytes` value.
 
 Install the tracked broker service, fixed wrappers, and
 [`99-forkmesh-git.conf`](../../packaging/ssh/99-forkmesh-git.conf). The Match
@@ -170,7 +194,25 @@ carrying forward only OpenSSH's required `SSH_ORIGINAL_COMMAND` and the optional
 1 or 2 and an exact upload-pack/receive-pack command.
 Command-line configuration disables repository hooks, pack-object hooks,
 alternate-ref commands, fsmonitor programs, credential helpers, and the `ext`
-transport. After a successful receive only, the gateway invokes the fixed
+transport. Upload and receive processes run in isolated process groups with
+separate deadlines; timeout or gateway interruption terminates the complete
+group, first with `SIGTERM` and then `SIGKILL` after the short grace period.
+Both operations consume a global process slot and use a bounded pack-thread
+count. A receive additionally takes a per-repository writer slot, asks Git to
+enforce `receive.maxInputSize`, disables loose-object unpacking, checks the
+repository's logical/allocated size before and after the transaction, and
+leaves conservative space for pack indexes and transaction metadata. A failed
+or interrupted receive reaps only transaction lock, temporary-pack, and
+quarantine artifacts that did not exist when that receive began.
+
+The configured storage value is an application limit, not a replacement for a
+filesystem project quota or a separately mounted size-limited volume. Apply one
+of those OS-level controls to each writable repository when a hard physical
+disk boundary is required. The gateway fails closed if its capacity directory
+or bounded storage scan is unavailable, if a repository is already at its
+application quota, or if no eligible slot remains.
+
+After a successful in-quota receive only, the gateway invokes the fixed
 root-owned notifier with no arguments or inherited push data. A failed
 notification never rewrites an already-committed push as failed.
 
@@ -179,11 +221,16 @@ path/service then runs refresh as `forkmesh-mirror`, restarts only
 `forkmesh-mirror.service`, and verifies identity-bound signed health over both
 loopback and the gateway configuration's public Cloudflare origin using the
 pinned Ed25519 node key before registering the active generation. Both checks
-share one bounded deadline, ignore ambient proxies, and reject redirects. The
-flow fails closed if either proof is unavailable; the independent renewal timer
-can republish after a later transient outage. It never derives a command, path,
-unit, or argument from a pushed ref, push option, repository content, or SSH
-environment. See
+share one bounded deadline, ignore ambient proxies, and reject redirects. A
+failed publication is retained as a fixed retry marker with a generic,
+root-written state record and capped exponential backoff; it is never deleted
+as if it succeeded. `ssh_post_receive_refresh.py ... status` exposes only the
+pending/processing/retry phase, attempt count, and next retry time. The
+`forkmesh-mirror-reconcile.timer` retries due work and performs a full
+repository reconciliation every 30 minutes, while the independent renewal
+timer republishes signed liveness between reconciliations. It never derives a
+command, path, unit, or argument from a pushed ref, push option, repository
+content, or SSH environment. See
 [`ssh-post-receive-refresh.schema.json`](../ssh-post-receive-refresh.schema.json).
 
 The bridge rebuilds every child environment from fixed literals and propagates
@@ -199,6 +246,8 @@ restart, signed-health verification, or registration.
 Validate before reloading sshd:
 
 ```bash
+sudo systemd-tmpfiles --create \
+  /usr/lib/tmpfiles.d/forkmesh-ssh-gateway.conf
 sudo systemctl start forkmesh-ssh-authorization-broker.service
 sudo -u git /opt/forkmesh-mirror/ssh-gateway-entrypoint check
 sudo -u git \

@@ -140,6 +140,14 @@ def test_public_repository_metadata_cache_is_attestation_keyed_and_bounded():
         "repository_metadata_cache_put(\n"
         "            metadata_cache_key, upstream, status)"
     ) in proxy
+    assert (
+        'response_headers["X-ForkMesh-Served-By"] = endpoint["node"]'
+        in proxy
+    )
+    assert (
+        proxy.index("repository_metadata_cache_get(metadata_cache_key)")
+        < proxy.index('response_headers["X-ForkMesh-Served-By"]')
+    )
     get_source = _function_source("repository_metadata_cache_get")
     put_source = _function_source("repository_metadata_cache_put")
     assert '"no-store, max-age=0, must-revalidate"' in get_source
@@ -147,6 +155,7 @@ def test_public_repository_metadata_cache_is_attestation_keyed_and_bounded():
     assert "int(status or 0) != 200" in put_source
     assert "content_length <= 0" in put_source
     assert "content_length > REPOSITORY_METADATA_CACHE_MAX_BYTES" in put_source
+    assert "X-ForkMesh-Served-By" not in get_source
 
     class MustNotClone:
         def clone(self):

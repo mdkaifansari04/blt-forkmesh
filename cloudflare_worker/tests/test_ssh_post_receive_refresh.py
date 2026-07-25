@@ -249,6 +249,13 @@ def test_run_stops_after_two_refresh_failures(tmp_path, monkeypatch):
         ),
     ]
     assert not config.trigger_path.exists()
+    status = bridge.refresh_status(config)
+    assert status["ok"] is False
+    assert status["status"] == "retry-pending"
+    assert status["retryPending"] is True
+    assert status["attempts"] == 1
+    assert status["phase"] == "refresh"
+    assert status["lastError"] == "publication_phase_failed"
 
 
 def test_run_does_not_retry_refresh_without_remaining_deadline(
@@ -328,6 +335,135 @@ def test_run_never_retries_later_publication_phases(
     assert events.count("register") <= 1
     assert sleeps == []
     assert not config.trigger_path.exists()
+    status = bridge.refresh_status(config)
+    assert status["status"] == "retry-pending"
+    assert status["phase"] == failure_phase
+
+
+def test_failed_publication_is_durable_deferred_then_retried(
+    tmp_path, monkeypatch
+):
+    config = _config(tmp_path)
+    config.trigger_path.write_text("forkmesh-refresh-v1\n", encoding="ascii")
+    monkeypatch.setattr(bridge.os, "geteuid", lambda: 0)
+    now_ms = [1_000_000]
+
+    def failing_runner(_command, **_kwargs):
+        return SimpleNamespace(returncode=1)
+
+    with pytest.raises(bridge.RefreshBridgeError):
+        bridge.run(
+            config,
+            runner=failing_runner,
+            health_waiter=lambda _config: None,
+            refresh_sleeper=lambda _seconds: None,
+            clock_ms=lambda: now_ms[0],
+        )
+
+    retry_path = config.trigger_path.with_name(".retry")
+    state_path = config.trigger_path.with_name("refresh-state.json")
+    assert retry_path.is_file()
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state == {
+        "attempts": 1,
+        "lastError": "publication_phase_failed",
+        "nextRetryAt": 1_060_000,
+        "phase": "refresh",
+        "schemaVersion": 1,
+        "status": "retry-pending",
+        "updatedAt": 1_000_000,
+    }
+    # The periodic service sees the retained work but does not spin before the
+    # capped backoff expires.
+    calls = []
+    deferred = bridge.run(
+        config,
+        runner=lambda command, **_kwargs: calls.append(command),
+        health_waiter=lambda _config: calls.append(["health"]),
+        clock_ms=lambda: now_ms[0] + 59_999,
+        reconcile=True,
+    )
+    assert deferred == {
+        "ok": False,
+        "event": "ssh_push_refresh_retry_deferred",
+    }
+    assert calls == []
+    assert retry_path.is_file()
+
+    events = []
+
+    def successful_runner(command, **_kwargs):
+        events.append(
+            "restart" if command[0] == "/usr/bin/systemctl" else command[-1]
+        )
+        return SimpleNamespace(returncode=0)
+
+    published = bridge.run(
+        config,
+        runner=successful_runner,
+        health_waiter=lambda _config: events.append("health"),
+        refresh_sleeper=lambda _seconds: pytest.fail(
+            "successful retry must not sleep"
+        ),
+        clock_ms=lambda: now_ms[0] + 60_000,
+        reconcile=True,
+    )
+    assert published["event"] == "ssh_push_refresh_published"
+    assert events == ["refresh", "restart", "health", "register"]
+    assert not retry_path.exists()
+    status = bridge.refresh_status(
+        config, clock_ms=lambda: now_ms[0] + 60_000)
+    assert status["ok"] is True
+    assert status["status"] == "published"
+    assert status["attempts"] == 0
+    assert status["lastError"] == ""
+
+
+def test_reconcile_recovers_processing_marker_left_by_killed_service(
+    tmp_path, monkeypatch
+):
+    config = _config(tmp_path)
+    processing = config.trigger_path.with_name(".processing")
+    processing.write_text("forkmesh-refresh-v1\n", encoding="ascii")
+    monkeypatch.setattr(bridge.os, "geteuid", lambda: 0)
+    events = []
+
+    def runner(command, **_kwargs):
+        events.append(
+            "restart" if command[0] == "/usr/bin/systemctl" else command[-1]
+        )
+        return SimpleNamespace(returncode=0)
+
+    result = bridge.run(
+        config,
+        runner=runner,
+        health_waiter=lambda _config: events.append("health"),
+        reconcile=True,
+    )
+    assert result["event"] == "ssh_push_refresh_published"
+    assert events == ["refresh", "restart", "health", "register"]
+    assert not processing.exists()
+
+
+def test_periodic_reconcile_runs_without_a_push_marker(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    monkeypatch.setattr(bridge.os, "geteuid", lambda: 0)
+    events = []
+
+    def runner(command, **_kwargs):
+        events.append(
+            "restart" if command[0] == "/usr/bin/systemctl" else command[-1]
+        )
+        return SimpleNamespace(returncode=0)
+
+    result = bridge.run(
+        config,
+        runner=runner,
+        health_waiter=lambda _config: events.append("health"),
+        reconcile=True,
+    )
+    assert result["event"] == "ssh_push_refresh_published"
+    assert events == ["refresh", "restart", "health", "register"]
 
 
 def test_signed_health_binds_both_origins_to_nonce_node_key_and_signature(tmp_path):
@@ -671,6 +807,18 @@ def test_refresh_packaging_has_no_user_derived_commands():
     path_unit = (
         PROJECT_ROOT / "packaging" / "systemd" / "forkmesh-mirror-refresh.path"
     ).read_text(encoding="utf-8")
+    reconcile_service = (
+        PROJECT_ROOT
+        / "packaging"
+        / "systemd"
+        / "forkmesh-mirror-reconcile.service"
+    ).read_text(encoding="utf-8")
+    reconcile_timer = (
+        PROJECT_ROOT
+        / "packaging"
+        / "systemd"
+        / "forkmesh-mirror-reconcile.timer"
+    ).read_text(encoding="utf-8")
     notifier = (PROJECT_ROOT / "packaging" / "ssh" / "ssh-refresh-notify").read_text(
         encoding="utf-8"
     )
@@ -678,12 +826,19 @@ def test_refresh_packaging_has_no_user_derived_commands():
     assert "forkmesh-mirror.service" not in notifier
     assert "$@" not in notifier
     assert "SSH_ORIGINAL_COMMAND" not in notifier
+    assert "/run/forkmesh-mirror-refresh/pending" in notifier
+    assert "mktemp" in notifier
+    assert "forkmesh-refresh-v1" in notifier
     assert "ExecStart=/usr/bin/python3 -I " in service
+    assert " reconcile" in reconcile_service
+    assert "OnUnitActiveSec=30min" in reconcile_timer
+    assert "Persistent=true" in reconcile_timer
+    assert "RandomizedDelaySec=2min" in reconcile_timer
     assert (
         "CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SETGID CAP_SETUID"
         in service
     )
-    for unit in (service, gateway_service):
+    for unit in (service, reconcile_service, gateway_service):
         assert (
             "Environment=TMPDIR=/var/lib/forkmesh-mirror/runtime-tmp"
             in unit

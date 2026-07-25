@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import base64
 from dataclasses import dataclass
+import fcntl
 import hashlib
 import ipaddress
 import json
@@ -54,6 +55,8 @@ MAX_HEALTH_BYTES = 64 * 1024
 REFRESH_TIMEOUT_SECONDS = 30 * 60
 REFRESH_MAX_ATTEMPTS = 2
 REFRESH_RETRY_DELAY_SECONDS = 2.0
+PERSISTENT_RETRY_DELAYS_SECONDS = (60, 5 * 60, 15 * 60, 60 * 60)
+MAX_PERSISTENT_ATTEMPTS = 32
 SERVICE_TIMEOUT_SECONDS = 2 * 60
 DEFAULT_HEALTH_TIMEOUT_SECONDS = 180
 HEALTH_REQUEST_TIMEOUT_SECONDS = 3.0
@@ -343,6 +346,152 @@ def notify(
             temporary.unlink()
         except FileNotFoundError:
             pass
+
+
+def _processing_path(config: BridgeConfig) -> Path:
+    return config.trigger_path.with_name(".processing")
+
+
+def _retry_path(config: BridgeConfig) -> Path:
+    return config.trigger_path.with_name(".retry")
+
+
+def _state_path(config: BridgeConfig) -> Path:
+    return config.trigger_path.with_name("refresh-state.json")
+
+
+def _safe_marker(path: Path) -> bool:
+    """Return whether *path* is one bounded regular coalescing marker."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or stat.S_ISLNK(info.st_mode)
+        or info.st_nlink != 1
+        or info.st_size <= 0
+        or info.st_size > 128
+    ):
+        raise RefreshBridgeError("refresh trigger is unsafe")
+    return True
+
+
+def _atomic_json(path: Path, value: dict[str, Any]) -> None:
+    """Durably replace one root-service state file without following links."""
+    raw = (
+        json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    parent = path.parent
+    temporary = parent / (".state-" + secrets.token_hex(12))
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(temporary, flags, 0o600)
+    try:
+        os.write(descriptor, raw)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    try:
+        os.replace(temporary, path)
+        directory_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _read_state(config: BridgeConfig) -> dict[str, Any]:
+    path = _state_path(config)
+    try:
+        info = path.lstat()
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or info.st_nlink != 1
+            or info.st_size <= 0
+            or info.st_size > 4096
+        ):
+            raise RefreshBridgeError("refresh state is unsafe")
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RefreshBridgeError("refresh state is invalid") from exc
+    if not isinstance(value, dict) or value.get("schemaVersion") != 1:
+        raise RefreshBridgeError("refresh state is invalid")
+    return value
+
+
+def _write_state(
+    config: BridgeConfig,
+    *,
+    status: str,
+    attempts: int,
+    now_ms: int,
+    phase: str = "",
+    next_retry_at: int = 0,
+) -> None:
+    if status not in {"published", "retry-pending", "processing"}:
+        raise RefreshBridgeError("refresh state is invalid")
+    _atomic_json(
+        _state_path(config),
+        {
+            "schemaVersion": 1,
+            "status": status,
+            "attempts": max(0, min(int(attempts), MAX_PERSISTENT_ATTEMPTS)),
+            "phase": phase if phase in {
+                "", "refresh", "restart", "health", "register"
+            } else "refresh",
+            "updatedAt": int(now_ms),
+            "nextRetryAt": max(0, int(next_retry_at)),
+            # Deliberately generic: command output, repository names, refs,
+            # paths, credentials, and exception strings never enter this file.
+            "lastError": (
+                "publication_phase_failed" if status == "retry-pending" else ""
+            ),
+        },
+    )
+
+
+def refresh_status(
+    config: BridgeConfig,
+    *,
+    clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
+) -> dict[str, Any]:
+    """Return a bounded, secret-free local health view for operators."""
+    state = _read_state(config)
+    pending = _safe_marker(config.trigger_path)
+    processing = _safe_marker(_processing_path(config))
+    retry = _safe_marker(_retry_path(config))
+    status = str(state.get("status") or "idle")
+    if processing:
+        status = "processing"
+    elif pending:
+        status = "pending"
+    elif retry:
+        status = "retry-pending"
+    next_retry_at = int(state.get("nextRetryAt") or 0)
+    now = int(clock_ms())
+    return {
+        "ok": status not in {"retry-pending"},
+        "status": status,
+        "pending": bool(pending),
+        "processing": bool(processing),
+        "retryPending": bool(retry),
+        "attempts": max(
+            0, min(int(state.get("attempts") or 0), MAX_PERSISTENT_ATTEMPTS)
+        ),
+        "phase": str(state.get("phase") or ""),
+        "nextRetryAt": next_retry_at,
+        "retryDue": bool(retry and (not next_retry_at or next_retry_at <= now)),
+        "lastError": str(state.get("lastError") or ""),
+    }
 
 
 def _run_command(
@@ -686,21 +835,142 @@ def wait_for_signed_health(
     raise RefreshBridgeError("signed gateway health did not become ready")
 
 
-def _claim_trigger(config: BridgeConfig) -> Path | None:
-    processing = config.trigger_path.with_name(".processing")
-    try:
-        info = config.trigger_path.lstat()
-    except FileNotFoundError:
+def _claim_trigger(
+    config: BridgeConfig,
+    *,
+    allow_retry: bool = False,
+    clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
+) -> Path | None:
+    processing = _processing_path(config)
+    # Recover work left claimed if the oneshot was killed or the machine
+    # restarted between claim and completion. systemd serializes this service,
+    # so an existing processing marker is never a concurrent worker.
+    if _safe_marker(processing):
+        return processing
+    if _safe_marker(config.trigger_path):
+        os.replace(config.trigger_path, processing)
+        return processing
+    if not allow_retry or not _safe_marker(_retry_path(config)):
         return None
-    if (
-        not stat.S_ISREG(info.st_mode)
-        or stat.S_ISLNK(info.st_mode)
-        or info.st_nlink != 1
-        or info.st_size > 128
-    ):
-        raise RefreshBridgeError("refresh trigger is unsafe")
-    os.replace(config.trigger_path, processing)
+    state = _read_state(config)
+    next_retry_at = int(state.get("nextRetryAt") or 0)
+    if next_retry_at and next_retry_at > int(clock_ms()):
+        return None
+    os.replace(_retry_path(config), processing)
     return processing
+
+
+def _persistent_failure(
+    config: BridgeConfig,
+    processing: Path | None,
+    *,
+    phase: str,
+    clock_ms: Callable[[], int],
+) -> None:
+    now = int(clock_ms())
+    previous = _read_state(config)
+    attempts = min(
+        int(previous.get("attempts") or 0) + 1,
+        MAX_PERSISTENT_ATTEMPTS,
+    )
+    delay_index = min(
+        max(attempts - 1, 0), len(PERSISTENT_RETRY_DELAYS_SECONDS) - 1
+    )
+    next_retry_at = now + int(
+        PERSISTENT_RETRY_DELAYS_SECONDS[delay_index] * 1000
+    )
+    retry = _retry_path(config)
+    if processing is not None and _safe_marker(processing):
+        os.replace(processing, retry)
+    elif not _safe_marker(retry):
+        _atomic_json(
+            retry,
+            {"schemaVersion": 1, "type": "forkmesh-refresh-retry"},
+        )
+    _write_state(
+        config,
+        status="retry-pending",
+        attempts=attempts,
+        now_ms=now,
+        phase=phase,
+        next_retry_at=next_retry_at,
+    )
+
+
+def _publication_succeeded(
+    config: BridgeConfig,
+    processing: Path | None,
+    *,
+    clock_ms: Callable[[], int],
+) -> None:
+    if processing is not None:
+        try:
+            processing.unlink()
+        except FileNotFoundError:
+            pass
+    try:
+        _retry_path(config).unlink()
+    except FileNotFoundError:
+        pass
+    _write_state(
+        config,
+        status="published",
+        attempts=0,
+        now_ms=int(clock_ms()),
+    )
+
+
+def _run_locked(
+    config: BridgeConfig,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[Any]] = subprocess.run,
+    health_waiter: Callable[[BridgeConfig], None] = wait_for_signed_health,
+    refresh_monotonic: Callable[[], float] = time.monotonic,
+    refresh_sleeper: Callable[[float], None] = time.sleep,
+    clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
+    reconcile: bool = False,
+) -> dict[str, Any]:
+    if os.geteuid() != 0:
+        raise RefreshBridgeError("refresh orchestration requires root")
+    processing = _claim_trigger(
+        config, allow_retry=reconcile, clock_ms=clock_ms)
+    if processing is None and not reconcile:
+        return {"ok": True, "event": "ssh_push_refresh_idle"}
+    if (
+        processing is None
+        and reconcile
+        and _safe_marker(_retry_path(config))
+    ):
+        # The periodic reconciliation timer also drives persistent retries, but
+        # respects their bounded backoff rather than spinning a failing unit.
+        return {"ok": False, "event": "ssh_push_refresh_retry_deferred"}
+    phase = "refresh"
+    _write_state(
+        config,
+        status="processing",
+        attempts=int(_read_state(config).get("attempts") or 0),
+        now_ms=int(clock_ms()),
+        phase=phase,
+    )
+    try:
+        _refresh_with_retry(
+            config,
+            runner=runner,
+            monotonic=refresh_monotonic,
+            sleeper=refresh_sleeper,
+        )
+        phase = "restart"
+        _restart_gateway(config, runner=runner)
+        phase = "health"
+        health_waiter(config)
+        phase = "register"
+        _run_as_mirror(config, "register", runner=runner)
+        _publication_succeeded(config, processing, clock_ms=clock_ms)
+        return {"ok": True, "event": "ssh_push_refresh_published"}
+    except BaseException:
+        _persistent_failure(
+            config, processing, phase=phase, clock_ms=clock_ms)
+        raise
 
 
 def run(
@@ -710,27 +980,49 @@ def run(
     health_waiter: Callable[[BridgeConfig], None] = wait_for_signed_health,
     refresh_monotonic: Callable[[], float] = time.monotonic,
     refresh_sleeper: Callable[[float], None] = time.sleep,
+    clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
+    reconcile: bool = False,
 ) -> dict[str, Any]:
+    """Serialize path-triggered and timer-triggered publication work."""
     if os.geteuid() != 0:
         raise RefreshBridgeError("refresh orchestration requires root")
-    processing = _claim_trigger(config)
+    lock_path = config.trigger_path.with_name(".orchestrator.lock")
+    flags = os.O_RDWR | os.O_CREAT
+    flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
-        _refresh_with_retry(
+        descriptor = os.open(lock_path, flags, 0o600)
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise RefreshBridgeError("refresh orchestration lock is unsafe")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+    except RefreshBridgeError:
+        try:
+            os.close(descriptor)
+        except (NameError, OSError):
+            pass
+        raise
+    except OSError as exc:
+        try:
+            os.close(descriptor)
+        except (NameError, OSError):
+            pass
+        raise RefreshBridgeError(
+            "refresh orchestration lock is unavailable") from exc
+    try:
+        return _run_locked(
             config,
             runner=runner,
-            monotonic=refresh_monotonic,
-            sleeper=refresh_sleeper,
+            health_waiter=health_waiter,
+            refresh_monotonic=refresh_monotonic,
+            refresh_sleeper=refresh_sleeper,
+            clock_ms=clock_ms,
+            reconcile=reconcile,
         )
-        _restart_gateway(config, runner=runner)
-        health_waiter(config)
-        _run_as_mirror(config, "register", runner=runner)
-        return {"ok": True, "event": "ssh_push_refresh_published"}
     finally:
-        if processing is not None:
-            try:
-                processing.unlink()
-            except FileNotFoundError:
-                pass
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -743,7 +1035,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="absolute root-owned bridge configuration",
     )
-    parser.add_argument("mode", choices=("notify", "run"))
+    parser.add_argument("mode", choices=("notify", "run", "reconcile", "status"))
     return parser
 
 
@@ -754,12 +1046,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.mode == "notify":
             notify(config)
             return 0
-        result = run(config)
+        if args.mode == "status":
+            result = refresh_status(config)
+        else:
+            result = run(config, reconcile=args.mode == "reconcile")
         print(
             json.dumps(result, sort_keys=True, separators=(",", ":")),
             flush=True,
         )
-        return 0
+        return 0 if result.get("ok") is not False else 1
     except RefreshBridgeError as exc:
         print(f"ForkMesh SSH refresh: {exc}", file=sys.stderr)
         return 2

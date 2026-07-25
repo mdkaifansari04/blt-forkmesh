@@ -192,8 +192,12 @@ def test_repo_page_og_tags_point_at_card():
     assert 'og_image = origin + "/assets/logo.png"' not in ENTRY_SRC
     # ...replaced by the rendered card, with large-image hints so Mastodon
     # renders it full width instead of as a thumbnail.
-    assert '/card.png?v=%s" % (' in ENTRY_SRC
-    assert "quote(_build_rev(self.env), safe=\"\")" in ENTRY_SRC
+    assert 'og_image += "?v=" + quote(social_version, safe="")' in ENTRY_SRC
+    assert "social_version = _repository_social_version(repo_record)" in ENTRY_SRC
+    assert "_build_rev(self.env)" not in ENTRY_SRC[
+        ENTRY_SRC.index("async def _serve_repo_page"):
+        ENTRY_SRC.index("async def _serve_repo_profile_page")
+    ]
     assert 'summary_large_image' in ENTRY_SRC
     assert 'og:image:width' in ENTRY_SRC and 'og:image:height' in ENTRY_SRC
     assert 'og:description' in ENTRY_SRC

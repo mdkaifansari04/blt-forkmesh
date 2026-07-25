@@ -318,6 +318,20 @@ def test_qt_signature_binds_the_requested_repository_scope():
     assert '"forkmesh-room-key-v2\\n" + node + "\\n" + roomOwner + "\\n"' in setup
     assert 'query.addQueryItem("owner", roomOwner)' in setup
     assert 'query.addQueryItem("repo", roomRepo)' in setup
+    assert 'query.addQueryItem("room", kDefaultRoomName)' in setup
+    assert 'resp.value("room").toString() == kDefaultRoomName' in setup
+
+
+def test_qt_default_room_matches_the_public_world_room_and_migrates_safely():
+    room_header = (
+        ENTRY.parents[2] / "qt_client" / "src" / "MainnodeRoom.h"
+    ).read_text(encoding="utf-8")
+    assert 'kDefaultRoomName = QStringLiteral("world-general")' in room_header
+    assert (
+        '"/api/repo/mainnode/forkmesh/rooms/world-general/ws"'
+        in room_header
+    )
+    assert "url.path() == kLegacyRoomPath || url.path() == kRoomPath" in room_header
 
 
 def test_missing_or_unauthorized_scope_is_normalized_to_not_found():

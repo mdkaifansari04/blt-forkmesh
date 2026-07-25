@@ -496,6 +496,7 @@
         ...origin,
         owner: organization,
         name: repository,
+        sshUrl: String(linked.sshUrl || origin.sshUrl || "").trim(),
         canonicalOwner: organization,
         canonicalName: repository,
         servingOwner: linkedOwner,
