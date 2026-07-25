@@ -969,9 +969,25 @@ function makeLabelSprite(THREE, title, subtitle, color) {
   return sprite;
 }
 
+// Stable, server-safe layout id built from the only durable name a scene prop
+// has: its placard title, or a node's name.
+function worldLayoutId(prefix, name) {
+  const slug = String(name || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+  return slug ? prefix + slug : "";
+}
+
+function plaqueLayoutId(title) {
+  return worldLayoutId("plaque-", title);
+}
+
 function makeGroundPlaque(THREE, title, subtitle, color) {
   const plaque = new THREE.Group();
   plaque.name = "forkmesh-section-plaque";
+  plaque.userData.plaqueLayoutId = plaqueLayoutId(title);
   const base = new THREE.Mesh(
     new THREE.BoxGeometry(3.9, 0.22, 1.5),
     makeMaterial(THREE, "#233b33", { roughness: 0.82 }),
@@ -1086,6 +1102,7 @@ function arrivalPlaqueTexture(THREE, stats) {
 function makeArrivalPlaque(THREE) {
   const plaque = new THREE.Group();
   plaque.name = "world-arrival-plaque";
+  plaque.userData.plaqueLayoutId = plaqueLayoutId("arrival");
   const base = new THREE.Mesh(
     new THREE.BoxGeometry(4.1, 0.24, 1.6),
     makeMaterial(THREE, "#233b33", { roughness: 0.82 }),
@@ -4361,13 +4378,33 @@ export function createWorldScene({
   const movableWorldObjects = new Map();
   const layoutHandles = new Map();
   const layoutDragOffset = new THREE.Vector3();
+  // Last placement received from /api/world/layout, kept so objects that only
+  // exist after live data arrives (node cabinets) can adopt their locked spot
+  // the moment they are built.
+  const lockedWorldLayout = new Map();
+  // One R press is a 15° step: fine enough to line a placard up with a path,
+  // coarse enough that a quarter turn is six taps.
+  const LAYOUT_ROTATION_STEP = Math.PI / 12;
+  const LAYOUT_COMMIT_DELAY_MS = 450;
   let layoutEditingEnabled = false;
   let draggedLayoutObject = null;
+  let activeLayoutObject = null;
+  let layoutCommitTimer = 0;
 
   function registerMovableObject(id, object) {
-    if (!object || movableWorldObjects.has(id)) return;
+    if (!object) return;
     object.userData.layoutId = id;
-    movableWorldObjects.set(id, object);
+    if (!movableWorldObjects.has(id)) {
+      // Authored heading. Locked rotations are stored as an offset from it so
+      // a row written before rotation existed (rotation 0) leaves the object
+      // facing exactly the way the scene built it.
+      if (!Number.isFinite(object.userData.layoutBaseRotation)) {
+        object.userData.layoutBaseRotation = object.rotation.y;
+      }
+      movableWorldObjects.set(id, object);
+    }
+    applyLockedPlacement(id, object);
+    if (layoutEditingEnabled) ensureLayoutHandles();
   }
 
   const worldBulletin = new THREE.Group();
@@ -4700,6 +4737,15 @@ export function createWorldScene({
   const systemCapacityPlatform = createSystemCapacityPlatform(THREE);
   world.add(systemCapacityPlatform);
   registerMovableObject("system-capacity-platform", systemCapacityPlatform);
+
+  // Every placard is individually movable, not just the section it belongs to:
+  // a sign that reads well from the path is often a step away from where the
+  // section itself wants to sit.
+  world.traverse((child) => {
+    const plaqueId = String(child.userData?.plaqueLayoutId || "");
+    if (!plaqueId || movableWorldObjects.has(plaqueId)) return;
+    registerMovableObject(plaqueId, child);
+  });
 
   const player = createAvatar(THREE, identity);
   player.position.set(-8.1, 0.38, 30);
@@ -7124,12 +7170,14 @@ export function createWorldScene({
         left.distance - right.distance || left.z - right.z || left.x - right.x,
     );
     const seen = new Set();
+    const takenLayoutIds = new Set();
     const removeCabinet = (cabinet) => {
       cabinet?.traverse?.((child) => {
         if (!child.userData?.nodeCabinet) return;
         const interactiveIndex = interactive.indexOf(child);
         if (interactiveIndex >= 0) interactive.splice(interactiveIndex, 1);
       });
+      forgetMovableObject(cabinet?.userData?.layoutId);
       world.remove(cabinet);
       disposeObject3D(cabinet);
     };
@@ -7174,6 +7222,15 @@ export function createWorldScene({
         routingX - slot.x,
         routingZ - slot.z,
       );
+      // The yard slot is only the default: registering the cabinet re-applies
+      // any administrator-locked position and turn on top of it, and it has to
+      // happen after the slot assignment above overwrites both.
+      const layoutId = worldLayoutId("node-", nodeName);
+      if (layoutId && !takenLayoutIds.has(layoutId)) {
+        takenLayoutIds.add(layoutId);
+        cabinet.userData.layoutBaseRotation = cabinet.rotation.y;
+        registerMovableObject(layoutId, cabinet);
+      }
     });
     nodeInfrastructure.forEach((cabinet, id) => {
       if (seen.has(id)) return;
@@ -9329,13 +9386,18 @@ export function createWorldScene({
       if (draggedLayoutObject) {
         // Drag by delta from the press point so grabbing the tiny handle
         // never snaps the object's origin to the pointer.
-        const point = groundPointAt(event.clientX, event.clientY);
+        const point = layoutGroundPoint(
+          draggedLayoutObject,
+          event.clientX,
+          event.clientY,
+        );
         if (point) {
           layoutDragOffset.set(
             draggedLayoutObject.position.x - point.x,
             0,
             draggedLayoutObject.position.z - point.z,
           );
+          setActiveLayoutObject(draggedLayoutObject);
         } else {
           draggedLayoutObject = null;
         }
@@ -9399,7 +9461,11 @@ export function createWorldScene({
     }
     if (event.pointerId !== primaryPointerId) return;
     if (draggedLayoutObject) {
-      const point = groundPointAt(event.clientX, event.clientY);
+      const point = layoutGroundPoint(
+        draggedLayoutObject,
+        event.clientX,
+        event.clientY,
+      );
       if (point) {
         moveWorldObject(
           draggedLayoutObject,
@@ -9489,11 +9555,11 @@ export function createWorldScene({
     if (draggedLayoutObject) {
       const movedObject = draggedLayoutObject;
       draggedLayoutObject = null;
-      onLayoutObjectMoved({
-        id: String(movedObject.userData.layoutId || ""),
-        x: Number(movedObject.position.x.toFixed(2)),
-        z: Number(movedObject.position.z.toFixed(2)),
-      });
+      if (layoutCommitTimer) {
+        clearTimeout(layoutCommitTimer);
+        layoutCommitTimer = 0;
+      }
+      commitLayoutObject(movedObject);
       lastGestureDragged = true;
       pointerGestureMoved = false;
       return;
@@ -9760,6 +9826,16 @@ export function createWorldScene({
     return point;
   }
 
+  // Section placards and node cabinets can sit inside a parent group, so the
+  // pointer's ground point is converted into the space the object's position
+  // actually lives in before it is used as a drag target.
+  function layoutGroundPoint(object, clientX, clientY) {
+    const point = groundPointAt(clientX, clientY);
+    if (!point) return null;
+    const parent = object?.parent;
+    return parent && parent !== world ? parent.worldToLocal(point) : point;
+  }
+
   function moveWorldObject(object, targetX, targetZ) {
     const radius = Math.hypot(targetX, targetZ);
     const scale = radius > WORLD_RADIUS ? WORLD_RADIUS / radius : 1;
@@ -9784,14 +9860,137 @@ export function createWorldScene({
     }
   }
 
+  function normalizeLayoutRotation(value) {
+    const turn = Math.PI * 2;
+    const rotation = Number(value);
+    if (!Number.isFinite(rotation)) return 0;
+    return ((rotation % turn) + turn) % turn;
+  }
+
+  // Locked rotation is an offset from the object's authored heading, applied
+  // on top of it rather than replacing it.
+  function rotateWorldObject(object, rotation) {
+    if (!object) return;
+    const offset = normalizeLayoutRotation(rotation);
+    const base = Number(object.userData.layoutBaseRotation);
+    object.userData.layoutRotation = offset;
+    object.rotation.y = (Number.isFinite(base) ? base : 0) + offset;
+  }
+
+  function applyLockedPlacement(id, object) {
+    const locked = lockedWorldLayout.get(String(id || ""));
+    if (!locked || !object) return;
+    moveWorldObject(object, locked.x, locked.z);
+    rotateWorldObject(object, locked.rotation);
+  }
+
   function applyWorldLayout(objects) {
     (Array.isArray(objects) ? objects : []).forEach((entry) => {
-      const object = movableWorldObjects.get(String(entry?.id || ""));
+      const id = String(entry?.id || "");
       const x = Number(entry?.x);
       const z = Number(entry?.z);
-      if (!object || !Number.isFinite(x) || !Number.isFinite(z)) return;
-      moveWorldObject(object, x, z);
+      if (!id || !Number.isFinite(x) || !Number.isFinite(z)) return;
+      lockedWorldLayout.set(id, {
+        x,
+        z,
+        rotation: normalizeLayoutRotation(entry?.rotation),
+      });
+      const object = movableWorldObjects.get(id);
+      if (object) applyLockedPlacement(id, object);
     });
+  }
+
+  function commitLayoutObject(object) {
+    const id = String(object?.userData?.layoutId || "");
+    if (!id) return;
+    const move = {
+      id,
+      x: Number(object.position.x.toFixed(2)),
+      z: Number(object.position.z.toFixed(2)),
+      rotation: Number(
+        normalizeLayoutRotation(object.userData.layoutRotation).toFixed(4),
+      ),
+    };
+    lockedWorldLayout.set(id, {
+      x: move.x,
+      z: move.z,
+      rotation: move.rotation,
+    });
+    onLayoutObjectMoved(move);
+  }
+
+  // Holding R spins the object continuously; only the settled result is worth
+  // an administrator write, so coalesce the burst into a single save.
+  function scheduleLayoutCommit(object) {
+    if (layoutCommitTimer) clearTimeout(layoutCommitTimer);
+    layoutCommitTimer = setTimeout(() => {
+      layoutCommitTimer = 0;
+      commitLayoutObject(object);
+    }, LAYOUT_COMMIT_DELAY_MS);
+  }
+
+  function setActiveLayoutObject(object) {
+    activeLayoutObject = object || null;
+    // The grabbed object's handle turns amber so it is obvious which prop the
+    // R key will rotate.
+    layoutHandles.forEach((handle, id) => {
+      handle.material?.color?.set?.(
+        activeLayoutObject && activeLayoutObject.userData.layoutId === id
+          ? "#ffd25f"
+          : "#ff5df1",
+      );
+    });
+  }
+
+  // Where the object's move handle currently sits, expressed in the space its
+  // position lives in.
+  function layoutHandlePoint(object) {
+    const handle = layoutHandles.get(String(object.userData.layoutId || ""));
+    if (!handle) return null;
+    const point = handle.getWorldPosition(new THREE.Vector3());
+    const parent = object.parent;
+    return parent && parent !== world ? parent.worldToLocal(point) : point;
+  }
+
+  function rotateActiveLayoutObject(direction) {
+    const target = draggedLayoutObject || activeLayoutObject;
+    if (!target) return false;
+    // Turn the object about the point its handle marks — its visible centre —
+    // rather than the group origin. The arrival grid and other groups keep
+    // their geometry well away from origin, where a plain yaw would swing them
+    // across the square instead of spinning them where they stand.
+    const pivot = layoutHandlePoint(target);
+    rotateWorldObject(
+      target,
+      Number(target.userData.layoutRotation || 0) +
+        LAYOUT_ROTATION_STEP * direction,
+    );
+    const moved = pivot ? layoutHandlePoint(target) : null;
+    if (pivot && moved) {
+      moveWorldObject(
+        target,
+        target.position.x + (pivot.x - moved.x),
+        target.position.z + (pivot.z - moved.z),
+      );
+    }
+    // A dragged object saves on release; a parked one has no other trigger.
+    if (!draggedLayoutObject) scheduleLayoutCommit(target);
+    return true;
+  }
+
+  function forgetMovableObject(id) {
+    const key = String(id || "");
+    const object = movableWorldObjects.get(key);
+    if (!object) return;
+    if (draggedLayoutObject === object) draggedLayoutObject = null;
+    if (activeLayoutObject === object) activeLayoutObject = null;
+    const handle = layoutHandles.get(key);
+    if (handle) {
+      const index = interactive.indexOf(handle);
+      if (index >= 0) interactive.splice(index, 1);
+      layoutHandles.delete(key);
+    }
+    movableWorldObjects.delete(key);
   }
 
   function ensureLayoutHandles() {
@@ -9824,7 +10023,10 @@ export function createWorldScene({
       );
       handle.renderOrder = 30;
       handle.userData.layoutHandle = id;
-      handle.visible = false;
+      // Node cabinets register long after the editor was switched on, so a
+      // fresh handle adopts the current editing state instead of staying dark
+      // until the next toggle.
+      handle.visible = layoutEditingEnabled;
       object.add(handle);
       interactive.push(handle);
       layoutHandles.set(id, handle);
@@ -9837,7 +10039,10 @@ export function createWorldScene({
     layoutHandles.forEach((handle) => {
       handle.visible = layoutEditingEnabled;
     });
-    if (!layoutEditingEnabled) draggedLayoutObject = null;
+    if (!layoutEditingEnabled) {
+      draggedLayoutObject = null;
+      setActiveLayoutObject(null);
+    }
   }
 
   function handleDoubleClick(event) {
@@ -9919,6 +10124,13 @@ export function createWorldScene({
     if (event.code === "Space") {
       if (player.position.y <= currentFloorY + 0.02) jumpQueued = true;
       event.preventDefault();
+    }
+    // R turns the object being dragged — or the one most recently grabbed —
+    // a step at a time; hold Shift to turn it back the other way.
+    if (event.code === "KeyR" && layoutEditingEnabled) {
+      if (rotateActiveLayoutObject(event.shiftKey ? -1 : 1)) {
+        event.preventDefault();
+      }
     }
     if (event.code === "Escape") {
       if (cameraMode === "first-person") setCameraMode("third-person");
@@ -10325,6 +10537,10 @@ export function createWorldScene({
     keys.clear();
     touchKeys.clear();
     touchMovement.set(0, 0);
+    if (layoutCommitTimer) {
+      clearTimeout(layoutCommitTimer);
+      layoutCommitTimer = 0;
+    }
     scene.traverse((child) => {
       child.geometry?.dispose?.();
       if (Array.isArray(child.material)) {
