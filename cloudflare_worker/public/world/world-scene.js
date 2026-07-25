@@ -119,13 +119,6 @@ const CAMPFIRE_SEATED_ACTIVITY = "sitting beside the campfire";
 // so the positive pitch about X is the one that puts the knees over the front
 // edge of the bench instead of out behind it.
 const SEATED_LEG_PITCH = 1.3;
-
-function applySeatedLegPose(avatar) {
-  const legs = avatar?.userData;
-  if (!legs?.leftLeg || !legs?.rightLeg) return;
-  legs.leftLeg.rotation.x = SEATED_LEG_PITCH;
-  legs.rightLeg.rotation.x = SEATED_LEG_PITCH;
-}
 const REGISTERED_LOUNGE_STATUSES = new Set([
   "Registered",
   "Supporting member",
@@ -1054,6 +1047,13 @@ function campfireSeatPlateTexture(THREE, name, away) {
       116,
     );
   });
+}
+
+function applySeatedLegPose(avatar) {
+  const legs = avatar?.userData;
+  if (!legs?.leftLeg || !legs?.rightLeg) return;
+  legs.leftLeg.rotation.x = SEATED_LEG_PITCH;
+  legs.rightLeg.rotation.x = SEATED_LEG_PITCH;
 }
 
 function makeCampfireSeatPlate(THREE) {
