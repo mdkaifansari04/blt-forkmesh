@@ -2591,8 +2591,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               )}">${escapeHTML(
                 ACCOUNT_STATUS_ICONS[identity.accountStatus] || "○",
               )}</span>
-              <span class="world-shirt-tech" data-world-shirt-tech>${escapeHTML(identity.browser)} · ${escapeHTML(identity.os)}</span>
-              <span class="world-shirt-name" data-world-shirt-name>${escapeHTML(identity.name)}</span>
             </button>
           </nav>
         </header>
@@ -6006,8 +6004,6 @@ class ForkMeshWorld extends HTMLElement {
     const visible = publicIdentity(this.identity, this.settings);
     const flag = this.$("[data-world-shirt-flag]");
     const account = this.$("[data-world-shirt-account]");
-    const tech = this.$("[data-world-shirt-tech]");
-    const shirtName = this.$("[data-world-shirt-name]");
     const badge = this.$("[data-world-shirt-badge]");
     if (flag) flag.textContent = visible.flag;
     if (account) {
@@ -6015,8 +6011,6 @@ class ForkMeshWorld extends HTMLElement {
         ACCOUNT_STATUS_ICONS[visible.accountStatus] || "○";
       account.title = visible.accountStatus || "Guest";
     }
-    if (tech) tech.textContent = `${visible.browser} · ${visible.os}`;
-    if (shirtName) shirtName.textContent = visible.name;
     if (badge) {
       // The badge is the settings entry point; keep the name/status copy that
       // used to sit beside it reachable as its tooltip and accessible name.
