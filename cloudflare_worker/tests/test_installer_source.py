@@ -166,6 +166,43 @@ def test_installer_echoes_owner_when_attached():
     assert "Node:   vps-1" in result.stdout
 
 
+def test_installer_rejects_dangerous_source_targets():
+    result = _run_prefix(
+        '{"ok":true,"node":"forkmesh","repo":"forkmesh"}',
+        {"FORKMESH_DIR": "/"},
+    )
+    assert result.returncode != 0
+    assert "unsafe FORKMESH_DIR target" in result.stderr
+
+
+def test_installer_refuses_unmanaged_existing_custom_source(tmp_path):
+    source = tmp_path / "forkmesh" / "src"
+    source.mkdir(parents=True)
+    sentinel = source / "operator-data"
+    sentinel.write_text("preserve me", encoding="utf-8")
+    result = _run_prefix(
+        '{"ok":true,"node":"forkmesh","repo":"forkmesh"}',
+        {"FORKMESH_DIR": str(source)},
+    )
+    assert result.returncode != 0
+    assert "not marked as an owner-matched ForkMesh install" in result.stderr
+    assert sentinel.read_text(encoding="utf-8") == "preserve me"
+
+
+def test_installer_refuses_symlink_source_target(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    source = tmp_path / "forkmesh" / "src"
+    source.parent.mkdir()
+    source.symlink_to(real, target_is_directory=True)
+    result = _run_prefix(
+        '{"ok":true,"node":"forkmesh","repo":"forkmesh"}',
+        {"FORKMESH_DIR": str(source)},
+    )
+    assert result.returncode != 0
+    assert "non-symlink path" in result.stderr or "may not be a symlink" in result.stderr
+
+
 def test_installer_stops_when_no_mirror_is_online():
     result = _run_with_response(
         '{"ok":false,"error":"no_online_install_source"}'

@@ -2,6 +2,7 @@
 """Static contracts for the playable ForkMesh World frontend."""
 
 from pathlib import Path
+import hashlib
 import json
 import subprocess
 
@@ -480,6 +481,117 @@ def test_broadcast_garden_offers_the_first_party_forkmesh_song_on_demand():
     assert "data-world-radio-stop" in hosted
 
 
+def test_focus_music_catalog_manifest_and_bundles_are_complete_and_lightweight():
+    music_dir = PUBLIC / "assets" / "music"
+    manifest = json.loads(
+        (music_dir / "music-manifest.json").read_text(encoding="utf-8")
+    )
+    module_uri = (WORLD / "world-data.js").resolve().as_uri()
+    completed = subprocess.run(
+        [
+            "node",
+            "--input-type=module",
+            "-e",
+            (
+                f'import {{ FOCUS_MUSIC_TRACKS }} from {json.dumps(module_uri)};'
+                "process.stdout.write(JSON.stringify(FOCUS_MUSIC_TRACKS));"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    tracks = json.loads(completed.stdout)
+
+    assert len(tracks) == 3
+    assert tracks[0]["id"] == "heavenly-loop"
+    assert tracks[0]["name"] == "Heavenly Loop"
+    assert "const DEFAULT_FOCUS_MUSIC_TRACK_ID = FOCUS_MUSIC_TRACKS[0].id;" in APP
+    assert len({track["id"] for track in tracks}) == 3
+    assert len({track["trackUrl"] for track in tracks}) == 3
+
+    assert manifest["schemaVersion"] == 1
+    assert manifest["license"] == {
+        "id": "CC0-1.0",
+        "url": "https://creativecommons.org/publicdomain/zero/1.0/",
+    }
+    manifest_tracks = manifest["tracks"]
+    assert [track["id"] for track in manifest_tracks] == [
+        track["id"] for track in tracks
+    ]
+
+    total_bytes = 0
+    for track, record in zip(tracks, manifest_tracks, strict=True):
+        bundled = music_dir / record["bundledFile"]
+        payload = bundled.read_bytes()
+        size = len(payload)
+        total_bytes += size
+
+        assert track["trackUrl"] == f"/assets/music/{record['bundledFile']}"
+        assert track["name"] == record["title"]
+        assert track["artist"] == record["creator"]
+        assert track["sourceUrl"] == record["sourcePage"]
+        assert track["license"] == "CC0 1.0"
+        assert track["licenseUrl"] == manifest["license"]["url"]
+        assert record["sourcePage"].startswith("https://opengameart.org/content/")
+        assert record["sourceFile"].startswith("https://opengameart.org/")
+        assert record["durationSeconds"] >= 30
+        assert record["modification"]
+        assert size == record["bundledBytes"]
+        assert size <= 4 * 1024 * 1024
+        assert hashlib.sha256(payload).hexdigest() == record["bundledSha256"]
+
+    assert total_bytes == sum(
+        record["bundledBytes"] for record in manifest_tracks
+    )
+    assert total_bytes <= 8 * 1024 * 1024
+    assert max(record["durationSeconds"] for record in manifest_tracks) >= 9 * 60
+
+
+def test_focus_music_is_explicit_local_looped_playback_without_polling():
+    for selector in (
+        "data-world-focus-track",
+        "data-world-focus-play",
+        "data-world-focus-pause",
+        "data-world-focus-stop",
+        "data-world-focus-mute",
+        "data-world-focus-volume",
+        "data-world-focus-now",
+    ):
+        assert selector in APP
+    assert "Heavenly Loop is selected by default" in APP
+    assert "music never starts until you press Play" in APP
+    assert "focusMusicTrackId: DEFAULT_FOCUS_MUSIC_TRACK_ID" in APP
+    assert "focusMusicVolume: DEFAULT_FOCUS_MUSIC_VOLUME" in APP
+    assert "focusMusicMuted: false" in APP
+    assert "writeJSON(localStorage, SETTINGS_KEY, this.settings)" in APP
+
+    start = APP.index("  async playFocusMusic(")
+    end = APP.index("\n  stopFocusMusic(", start)
+    playback = APP[start:end]
+    assert "new AudioElement(track.trackUrl)" in playback
+    assert "element.loop = true" in playback
+    assert "await element.play()" in playback
+    assert "setInterval(" not in playback
+    assert "setTimeout(" not in playback
+    assert "fetch(" not in playback
+    assert "WebSocket" not in playback
+    assert "BroadcastChannel" not in playback
+
+    connected = APP[
+        APP.index("  connectedCallback()"):APP.index(
+            "\n  disconnectedCallback()", APP.index("  connectedCallback()")
+        )
+    ]
+    assert "playFocusMusic(" not in connected
+    bootstrap = APP[
+        APP.index("  async bootstrap()"):APP.index(
+            "\n  handleVisibility", APP.index("  async bootstrap()")
+        )
+    ]
+    assert "playFocusMusic(" not in bootstrap
+
+
 def test_join_cues_are_country_specific_local_opt_in_and_rate_limited():
     assert "playCountryJoinSound(countryCode, force = false)" in APP
     assert 'message.type === "join"' in APP
@@ -608,7 +720,13 @@ def test_repository_world_uses_authorized_https_metadata_and_size_aware_nodes():
     assert "data-world-repo-filter" in APP
     assert "updateRepositoryGraph" in APP
     assert "updateRepositoryGraph" in SCENE
-    assert "Node scale reflects blob size" in APP
+    assert "byte share to arc width and directory depth to concentric rings" in APP
+    assert "updateRepositoryCatalog" in APP
+    assert "updateRepositoryCatalog" in SCENE
+    assert "updateRepositorySizeMap" in APP
+    assert "updateRepositorySizeMap" in SCENE
+    assert "new THREE.ExtrudeGeometry" in SCENE
+    assert "active.sizes" in APP
     for entity in (
         "Contributor",
         "Issues",
@@ -777,10 +895,9 @@ def test_repository_map_autoload_is_deduplicated_and_never_overrides_manual_choi
     assert "if (!automatic) this.repositoryManualSelection = key;" in load_map
     assert "const selection = ++this.repositoryMapSelection;" in load_map
     assert "selection !== this.repositoryMapSelection" in load_map
-    assert (
-        'this.loadRepositoryMap(owner, name, { automatic: false });'
-        in APP
-    )
+    assert "this.loadRepositoryMap(owner, name, {" in APP
+    assert "automatic: false" in APP
+    assert "revealScene: true" in APP
     assert "data-world-repository-map-state=\"unavailable\"" in APP
     assert "did not substitute sample files, guessed entries, or stale analysis" in APP
 
@@ -1233,10 +1350,38 @@ def test_world_uses_nonhuman_infrastructure_a_member_lounge_and_city_grid():
     assert 'avatar.userData.loungeActivity === "recent"' in SCENE
 
 
+def test_world_member_lounge_plaque_carries_count_and_account_button():
+    # adhoc #248: the floating member-count card is folded into the ground
+    # plaque, which also carries one tiny account button — log in / sign up for
+    # guests, log out for signed-in members.
+    assert "function memberLoungePlaqueTexture" in SCENE
+    assert "function memberLoungeAuthTexture" in SCENE
+    assert "function makeMemberLoungePlaque" in SCENE
+    lounge = SCENE[
+        SCENE.index("function createRegisteredUserLounge"):
+        SCENE.index("function createDurableObjectDistrict")
+    ]
+    # No floating count sprite hovers over the lounge any more.
+    assert "makeLabelSprite" not in lounge
+    assert "makeMemberLoungePlaque(THREE" in lounge
+    assert '"LOG OUT" : "LOG IN / SIGN UP"' in SCENE
+    assert 'authButton.userData.worldAuthAction = "login"' in SCENE
+    assert "function syncLoungeAuthButton" in SCENE
+    assert 'signedIn ? "logout" : "login"' in SCENE
+    # The button is raycast-selectable and reports through onAccountAction.
+    assert "interactive.push(plaque.userData.authButton)" in SCENE
+    assert "onAccountAction = () => {}" in SCENE
+    assert 'authAction === "login" || authAction === "logout"' in SCENE
+    # world.js opens the existing account panel or logs the device out.
+    assert "onAccountAction: (action) =>" in APP
+    assert "void this.logoutFromWorld();" in APP
+    assert 'this.toggleWorldAccount(true, "login");' in APP
+
+
 def test_world_member_lounge_seats_directory_users_with_total_count():
     # The lounge is populated from the public users directory (adhoc #228):
-    # registered accounts appear seated even when offline, and a sign at the
-    # lounge front shows the total registered-user count.
+    # registered accounts appear seated even when offline, and the lounge
+    # plaque shows the total registered-user count.
     assert "function updateMemberLounge" in SCENE
     assert "memberCountSign" in SCENE
     assert "total registered users" in SCENE

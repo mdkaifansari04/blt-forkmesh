@@ -3,10 +3,12 @@
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QRegularExpression>
+#include <QSettings>
 #include <QSet>
 #include <QStandardPaths>
 
@@ -262,7 +264,186 @@ QPair<QJsonValue, QJsonValue> normalizedTelemetryUsagePair(
     return {used, total};
 }
 
+bool isSafeSshEndpoint(const QString &host, const QString &sshUser)
+{
+    static const QRegularExpression hostPattern(
+        QStringLiteral("^[A-Za-z0-9](?:[A-Za-z0-9.:-]{0,251}[A-Za-z0-9])?$"));
+    static const QRegularExpression userPattern(
+        QStringLiteral("^[A-Za-z_][A-Za-z0-9_.-]{0,63}$"));
+    const QString cleanHost = host.trimmed();
+    return cleanHost.size() <= 253 &&
+           !cleanHost.contains(QStringLiteral("..")) &&
+           hostPattern.match(cleanHost).hasMatch() &&
+           userPattern.match(sshUser.trimmed()).hasMatch();
+}
+
+QJsonArray scrubSavedHostPasswords(
+    const QJsonArray &hosts, QHash<QString, QString> *sessionPasswords,
+    bool *changed)
+{
+    static const QStringList secretFields{
+        QStringLiteral("pass"), QStringLiteral("password"),
+        QStringLiteral("sshPassword"), QStringLiteral("adminPassword")};
+    QJsonArray cleanHosts;
+    bool removedSecret = false;
+    for (const QJsonValue &value : hosts) {
+        if (!value.isObject()) {
+            cleanHosts.append(value);
+            continue;
+        }
+        QJsonObject host = value.toObject();
+        QString migratedPassword;
+        for (const QString &field : secretFields) {
+            if (!host.contains(field))
+                continue;
+            if (migratedPassword.isEmpty())
+                migratedPassword = host.value(field).toString();
+            host.remove(field);
+            removedSecret = true;
+        }
+        if (sessionPasswords && !migratedPassword.isEmpty()) {
+            const QString key = savedHostCredentialKey(
+                host.value(QStringLiteral("name")).toString(),
+                host.value(QStringLiteral("ip")).toString(),
+                host.value(QStringLiteral("user")).toString());
+            QString replacedPassword = sessionPasswords->take(key);
+            replacedPassword.fill(QChar::Null);
+            sessionPasswords->insert(key, migratedPassword);
+        }
+        cleanHosts.append(host);
+    }
+    if (changed)
+        *changed = removedSecret;
+    return cleanHosts;
+}
+
 } // namespace
+
+HostSshCommand buildHostSshCommand(const QString &host,
+                                   const QString &sshUser,
+                                   const QString &sshPassword,
+                                   const QString &remoteCommand,
+                                   QString *error)
+{
+    HostSshCommand command;
+    if (!isSafeSshEndpoint(host, sshUser)) {
+        if (error)
+            *error = QStringLiteral("The saved SSH host or username is invalid.");
+        return command;
+    }
+    if (remoteCommand.trimmed().isEmpty() ||
+        remoteCommand.contains(QChar::Null)) {
+        if (error)
+            *error = QStringLiteral("The remote SSH command is invalid.");
+        return command;
+    }
+
+    const QString appDataDir =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    const QString sshStateDir =
+        QDir(appDataDir).filePath(QStringLiteral("ssh"));
+    if (appDataDir.isEmpty() || !QDir().mkpath(sshStateDir)) {
+        if (error)
+            *error = QStringLiteral(
+                "ForkMesh could not create its persistent SSH trust store.");
+        return command;
+    }
+    QFile::setPermissions(
+        sshStateDir,
+        QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+            QFileDevice::ExeOwner);
+    const QString knownHostsPath =
+        QDir(sshStateDir).filePath(QStringLiteral("known_hosts"));
+    if (!QFileInfo::exists(knownHostsPath)) {
+        QFile knownHosts(knownHostsPath);
+        if (!knownHosts.open(QIODevice::WriteOnly | QIODevice::NewOnly)) {
+            if (error) {
+                *error = QStringLiteral(
+                    "ForkMesh could not initialize its persistent SSH trust "
+                    "store.");
+            }
+            return command;
+        }
+        knownHosts.close();
+    }
+    QFile::setPermissions(knownHostsPath,
+                          QFileDevice::ReadOwner |
+                              QFileDevice::WriteOwner);
+
+    QStringList arguments{
+        QStringLiteral("-o"), QStringLiteral("StrictHostKeyChecking=accept-new"),
+        QStringLiteral("-o"),
+        QStringLiteral("UserKnownHostsFile=") + knownHostsPath,
+        QStringLiteral("-o"), QStringLiteral("HashKnownHosts=yes"),
+        QStringLiteral("-o"), QStringLiteral("UpdateHostKeys=yes"),
+        QStringLiteral("-o"), QStringLiteral("ConnectTimeout=30"),
+    };
+    command.environment = QProcessEnvironment::systemEnvironment();
+    command.environment.remove(QStringLiteral("SSHPASS"));
+    if (sshPassword.isEmpty()) {
+        command.program = QStringLiteral("ssh");
+        arguments << QStringLiteral("-o") << QStringLiteral("BatchMode=yes")
+                  << QStringLiteral("-o")
+                  << QStringLiteral("PreferredAuthentications=publickey");
+    } else {
+        command.program = QStringLiteral("sshpass");
+        command.environment.insert(QStringLiteral("SSHPASS"), sshPassword);
+        arguments.prepend(QStringLiteral("ssh"));
+        arguments.prepend(QStringLiteral("-e"));
+        // Let an agent/default key win when available, then use the
+        // session-only password. Never disable public-key authentication.
+        arguments << QStringLiteral("-o")
+                  << QStringLiteral(
+                         "PreferredAuthentications=publickey,password");
+    }
+    arguments << sshUser.trimmed() + QLatin1Char('@') + host.trimmed()
+              << remoteCommand;
+    command.arguments = arguments;
+    if (error)
+        error->clear();
+    return command;
+}
+
+QString savedHostCredentialKey(const QString &nodeName, const QString &host,
+                               const QString &sshUser)
+{
+    const QJsonArray identity{
+        nodeName.trimmed(), host.trimmed().toLower(), sshUser.trimmed()};
+    return QString::fromUtf8(
+        QJsonDocument(identity).toJson(QJsonDocument::Compact));
+}
+
+QJsonArray loadSavedHosts(QSettings &settings, const QString &settingsKey,
+                          QHash<QString, QString> *sessionPasswords)
+{
+    const QJsonArray stored =
+        QJsonDocument::fromJson(
+            settings.value(settingsKey).toString().toUtf8())
+            .array();
+    bool changed = false;
+    const QJsonArray clean =
+        scrubSavedHostPasswords(stored, sessionPasswords, &changed);
+    if (changed) {
+        settings.setValue(
+            settingsKey,
+            QString::fromUtf8(
+                QJsonDocument(clean).toJson(QJsonDocument::Compact)));
+        settings.sync();
+    }
+    return clean;
+}
+
+void saveSavedHosts(QSettings &settings, const QString &settingsKey,
+                    const QJsonArray &hosts)
+{
+    const QJsonArray clean =
+        scrubSavedHostPasswords(hosts, nullptr, nullptr);
+    settings.setValue(
+        settingsKey,
+        QString::fromUtf8(
+            QJsonDocument(clean).toJson(QJsonDocument::Compact)));
+    settings.sync();
+}
 
 QString validateMirrorActionsConfigurationRequest(
     const MirrorActionsConfigurationRequest &request)
@@ -387,32 +568,16 @@ MirrorActionsSshCommand buildMirrorActionsSshCommand(
         "--configure-mirror-actions-stdin; "
         "else printf 'ForkMesh Actions helper is not installed.\\n' >&2; "
         "exit 127; fi");
-    QStringList sshArguments{
-        QStringLiteral("-o"), QStringLiteral("IdentitiesOnly=yes"),
-        QStringLiteral("-o"), QStringLiteral("StrictHostKeyChecking=accept-new"),
-        QStringLiteral("-o"), QStringLiteral("ConnectTimeout=30"),
-    };
-    command.environment = QProcessEnvironment::systemEnvironment();
-    command.environment.remove(QStringLiteral("SSHPASS"));
-    if (sshPassword.isEmpty()) {
-        command.program = QStringLiteral("ssh");
-        sshArguments << QStringLiteral("-o") << QStringLiteral("BatchMode=yes")
-                     << QStringLiteral("-o")
-                     << QStringLiteral("PreferredAuthentications=publickey");
-    } else {
-        command.program = QStringLiteral("sshpass");
-        command.environment.insert(QStringLiteral("SSHPASS"), sshPassword);
-        sshArguments.prepend(QStringLiteral("ssh"));
-        sshArguments.prepend(QStringLiteral("-e"));
-        sshArguments << QStringLiteral("-o")
-                     << QStringLiteral("PreferredAuthentications=password")
-                     << QStringLiteral("-o")
-                     << QStringLiteral("PubkeyAuthentication=no");
+    const HostSshCommand ssh = buildHostSshCommand(
+        request.host, request.sshUser, sshPassword, remoteCommand, error);
+    if (ssh.program.isEmpty()) {
+        command.standardInput.fill('\0');
+        command.standardInput.clear();
+        return command;
     }
-    sshArguments << request.sshUser.trimmed() + QLatin1Char('@') +
-                        request.host.trimmed()
-                 << remoteCommand;
-    command.arguments = sshArguments;
+    command.program = ssh.program;
+    command.arguments = ssh.arguments;
+    command.environment = ssh.environment;
     if (error)
         error->clear();
     return command;

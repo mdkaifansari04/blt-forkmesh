@@ -29,7 +29,11 @@ cloudflare_worker/browser_tests/playwright-report/
 # NEVER committed (issue #304; see docs/design/release-binary-publishing.md).
 # Only the small signed release metadata under .forkmesh/releases/ is tracked.
 .forkmesh/release-blobs/
+# Release publisher private keys are local trust roots, never repository data.
+release-signing-key*.pem
+.forkmesh/*release*private*.pem
 forkmesh-variables.json
 forkmesh-hosts.md
 todo.md
 todo2.md
+improvements.md

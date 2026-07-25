@@ -11,12 +11,25 @@
 #include "ActionStore.h"
 
 class QProcess;
+class QTimer;
 
-// Executes a single approved workflow run. Checks the pushed commit out into a
-// detached worktree of the bare mirror, then runs each step's `run:` through a
-// shell with the global variables injected into the environment. Output is
-// streamed live (signal) and persisted to the run's log.txt, with secret values
-// redacted. One run at a time; MainWindow serializes a queue through it.
+struct ActionSandboxLimits {
+    qint64 maxMemoryBytes = 4LL * 1024 * 1024 * 1024;
+    qint64 maxFileBytes = 1024LL * 1024 * 1024;
+    qint64 maxWorkspaceBytes = 2LL * 1024 * 1024 * 1024;
+    int maxProcesses = 128;
+    int maxOpenFiles = 256;
+    int maxCpuSeconds = 20 * 60;
+    int stepTimeoutMs = 30 * 60 * 1000;
+    int jobTimeoutMs = 2 * 60 * 60 * 1000;
+};
+
+// Executes a single approved workflow run. On Linux, every step runs fail-closed
+// inside a bubblewrap user/PID/mount/IPC/UTS namespace as uid 65534, with the
+// source snapshot mounted read-only, a disposable writable clone, no host home
+// or environment, network disabled by default, and hard resource/deadline
+// limits. Output is streamed live (signal) and persisted to the run's log.txt,
+// with explicit workflow variables redacted.
 class ActionRunner : public QObject
 {
     Q_OBJECT
@@ -35,6 +48,13 @@ public:
     // throwaway worktree and record the run as Cancelled. No-op when idle.
     void stop();
 
+    // Tests use short deadlines and smaller quotas without weakening the fixed
+    // production defaults above.
+    void setSandboxLimitsForTesting(const ActionSandboxLimits &limits);
+
+    // A node must never silently fall back to unsandboxed execution.
+    static bool sandboxAvailable(QString *reason = nullptr);
+
 signals:
     void logLine(int runId, const QString &text);
     void statusChanged(int runId, const QString &status);
@@ -45,10 +65,23 @@ signals:
     void releaseMetadataLanded(int runId);
 
 private:
-    enum class Phase { Idle, Checkout, Step };
+    enum class Phase {
+        Idle,
+        Checkout,
+        WorkspaceClone,
+        WorkspaceCheckout,
+        Step
+    };
 
     void launch(Phase phase, const QString &program, const QStringList &args,
                 const QString &workingDir);
+    void launchSandboxedStep(const QString &command);
+    QStringList sandboxArguments(const QString &shell,
+                                 const QString &command) const;
+    QMap<QString, QString> explicitWorkflowVariables() const;
+    bool verifyWorkspaceSnapshot(QString *reason = nullptr) const;
+    bool workspaceWithinQuota(QString *reason = nullptr) const;
+    void terminateCurrentProcess(bool timedOut);
     void onProcessFinished(int exitCode);
     void runNextStep();
     void emitLog(const QString &text);
@@ -77,6 +110,10 @@ private:
     // release tag. Surgically rewrites only the version token on that one line —
     // never any unrelated edits — and returns true when the working copy changed.
     bool landVersionHeader();
+    bool landReleaseArtifacts();
+    bool landActionArtifacts();
+    bool copySandboxTree(const QString &source, const QString &destination,
+                         qint64 maxBytes, QString *error);
     bool isReleaseRun() const;
     QString redact(QString text) const;
 
@@ -87,12 +124,20 @@ private:
     ActionRun m_run;
     ActionWorkflow m_workflow;
     QString m_mirror;
+    QString m_sandboxRoot;
     QString m_worktree;
+    QString m_workspace;
+    QString m_sandboxHome;
+    QString m_sandboxTmp;
+    QString m_releaseStaging;
     QString m_repoWorkTree; // owner's working copy (may be empty on a mirror-only node)
     QString m_currentStepLabel;
     QString m_currentCommand;
     QMap<QString, QString> m_variables;
+    QMap<QString, QString> m_exposedVariables;
     QStringList m_secrets; // values to redact from logs
+    bool m_networkAllowed = false;
+    ActionSandboxLimits m_limits;
     int m_stepIndex = 0;
     qsizetype m_processOutputBytes = 0;
     qsizetype m_processOutputSuppressedBytes = 0;
@@ -100,5 +145,11 @@ private:
     QByteArray m_processOutputTail;
     QByteArray m_crashOutputTail;
     bool m_processOutputTruncated = false;
+    bool m_processTimedOut = false;
+    bool m_jobTimedOut = false;
+    QByteArray m_processStdin;
+    QString m_systemdUnit;
+    QTimer *m_stepTimer = nullptr;
+    QTimer *m_jobTimer = nullptr;
     QProcess *m_process = nullptr;
 };

@@ -7,6 +7,7 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QClipboard>
+#include <QCryptographicHash>
 #include <QFile>
 #include <QCheckBox>
 #include <QDebug>
@@ -445,7 +446,23 @@ int main(int argc, char *argv[])
         // override exists only in the FORKMESH_WINDOW_TESTS target.
         const QByteArray testCommit(
             "0123456789abcdef0123456789abcdef01234567");
+        const QByteArray testManifestDigest(64, 'b');
         qputenv("FORKMESH_TEST_BUILD_COMMIT", testCommit);
+        qputenv("FORKMESH_TEST_RELEASE_MANIFEST_SHA256",
+                QByteArray("not-a-digest"));
+        qsizetype untrustedUploadBytes = -1;
+        QString untrustedError;
+        const QString untrustedCommand =
+            window.testFleetBinaryInstallRemoteCommand(
+                false, &untrustedUploadBytes, &untrustedError);
+        check(untrustedCommand.isEmpty() && untrustedUploadBytes == 0 &&
+                  untrustedError.contains(QStringLiteral(
+                      "must be an exact 64-hex")),
+              QStringLiteral(
+                  "fleet binary deployment fails closed without a valid "
+                  "controller release-manifest trust anchor"));
+        qputenv("FORKMESH_TEST_RELEASE_MANIFEST_SHA256",
+                testManifestDigest);
         const QString commandBuildCommit = QString::fromLatin1(testCommit);
 
         qsizetype uploadBytes = -1;
@@ -468,6 +485,10 @@ int main(int argc, char *argv[])
                       QStringLiteral("FORKMESH_EXPECTED_BUILD_COMMIT=")) &&
                   command.contains(
                       QStringLiteral("FORKMESH_EXPECTED_RELEASE_VERSION=")) &&
+                  command.contains(QStringLiteral(
+                      "FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256=")) &&
+                  command.contains(
+                      QString::fromLatin1(testManifestDigest)) &&
                   command.contains(commandBuildCommit) &&
                   !command.contains(QStringLiteral("FORKMESH_FROM_SOURCE=1")),
               QStringLiteral("fleet binary install is pinned to the published "
@@ -524,6 +545,31 @@ int main(int argc, char *argv[])
               QStringLiteral("explicit destructive fleet reinstall also uses "
                              "the commit-matched published binary-only release"));
         qunsetenv("FORKMESH_TEST_BUILD_COMMIT");
+        qunsetenv("FORKMESH_TEST_RELEASE_MANIFEST_SHA256");
+
+        QFile runningBinary(QCoreApplication::applicationFilePath());
+        QCryptographicHash runningBinaryHash(
+            QCryptographicHash::Sha256);
+        const bool hashOpened = runningBinary.open(QIODevice::ReadOnly);
+        const bool hashRead =
+            hashOpened && runningBinaryHash.addData(&runningBinary);
+        const QString expectedUploadDigest =
+            QString::fromLatin1(runningBinaryHash.result().toHex());
+        qsizetype directUploadBytes = -1;
+        QString directUploadError;
+        const QString directUploadCommand =
+            window.testDirectBinaryInstallRemoteCommand(
+                &directUploadBytes, &directUploadError);
+        check(hashRead && !directUploadCommand.isEmpty() &&
+                  directUploadError.isEmpty() && directUploadBytes > 0 &&
+                  expectedUploadDigest.size() == 64 &&
+                  directUploadCommand.contains(
+                      QStringLiteral("FORKMESH_LOCAL_BINARY_SHA256=")) &&
+                  directUploadCommand.contains(expectedUploadDigest) &&
+                  !directUploadCommand.contains(QStringLiteral(
+                      "FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256=")),
+              QStringLiteral(
+                  "direct controller uploads pin the exact local binary SHA-256"));
     }
     if (fleetBinaryInstallOnly)
         return failures == 0 ? 0 : 1;
@@ -655,6 +701,16 @@ int main(int argc, char *argv[])
               QStringLiteral("hostActionsButton")) != nullptr,
           QStringLiteral(
               "saved mirror hosts expose the stdin-only Actions controller"));
+    check(!QSettings()
+               .value(QStringLiteral("hosts/list"))
+               .toString()
+               .contains(QStringLiteral("test-password-never-rendered")) &&
+              !QSettings()
+                   .value(QStringLiteral("hosts/list"))
+                   .toString()
+                   .contains(QStringLiteral("\"pass\"")),
+          QStringLiteral(
+              "opening Hosts migrates legacy SSH passwords out of persistent settings"));
     check(window.findChild<QWidget *>(
               QStringLiteral("hostActionsVariablesTable")) == nullptr,
           QStringLiteral(
