@@ -353,15 +353,18 @@ forkmesh-world {
   place-items: center;
   width: 46px;
   height: 46px;
+  border-radius: 50%;
   background: rgb(7 17 15 / 0.76);
   padding: 4px;
+  overflow: hidden;
   backdrop-filter: blur(18px);
 }
 
 .world-brand img {
-  width: 30px;
-  height: 34px;
-  object-fit: contain;
+  width: 25px;
+  height: 25px;
+  border-radius: 50%;
+  object-fit: cover;
   flex: 0 0 auto;
   position: relative;
   z-index: 1;
@@ -575,6 +578,7 @@ forkmesh-world {
 
 .world-map:not(.is-expanded) {
   width: 44px;
+  justify-self: end;
 }
 
 .world-map:not(.is-expanded) .world-panel-heading {
@@ -1123,20 +1127,33 @@ forkmesh-world {
   color: var(--world-copy);
 }
 
-/* Chat docks into the same bottom terminal strip as DEBUG: DEBUG owns the
-   right edge, CHAT owns the left edge, and the panel expands upward. */
+/* Chat stays open above the DEBUG strip at the lower-right. */
 .world-chat-terminal {
-  right: auto;
-  left: 0;
+  right: 0;
+  bottom: var(--world-diagnostics-height);
+  left: auto;
   z-index: 46;
-  width: min(440px, calc(100vw - 150px));
-  border-left: 0;
-  border-right: 1px solid var(--world-line);
+  width: min(440px, calc(100vw - 24px));
+  border-left: 1px solid var(--world-line);
+  border-right: 0;
 }
 
 .world-chat-terminal-body {
-  height: min(52vh, 380px);
+  height: min(64vh, 520px);
   border-top: 1px solid var(--world-line);
+}
+
+.world-chat-terminal[open] > summary {
+  min-height: 24px;
+  padding-block: 2px;
+}
+
+.world-chat-terminal[open] [data-world-chat-terminal-last] {
+  display: none;
+}
+
+.world-chat-terminal[open] .world-diagnostics-toggle {
+  margin-left: auto;
 }
 
 .world-chat-terminal-frame {
@@ -1748,6 +1765,10 @@ forkmesh-world {
   border-bottom: 1px solid var(--world-line);
   background: rgb(7 20 16 / 0.98);
   padding: 18px 20px;
+}
+
+.world-office-panel-heading > div {
+  min-width: 0;
 }
 
 .world-office-panel-heading h2 {
@@ -5269,12 +5290,14 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 
   .world-office-panel-actions {
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
     padding: 10px 12px;
   }
 
   .world-office-panel-actions button {
-    flex: 1 1 180px;
+    width: 100%;
+    min-width: 0;
   }
 
   .world-office-task-manager form {

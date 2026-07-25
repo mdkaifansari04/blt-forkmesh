@@ -32,6 +32,8 @@ const CAMERA_ZOOM_MIN = 0.06;
 const CAMERA_ZOOM_MAX = 28;
 const CAMERA_FAR_PLANE = 1200;
 const CAMERA_LOOK_SENSITIVITY = 0.0022;
+const RENDER_STALL_THRESHOLD_MS = 150;
+const RENDER_STALL_LOG_COOLDOWN_MS = 1000;
 // Dragging upward lowers the orbit eye beneath the target, which is how this
 // camera looks into the sky. Allow the full arc in both directions.
 const CAMERA_PITCH_MIN = -Math.PI / 2 + 0.01;
@@ -4824,6 +4826,7 @@ export function createWorldScene({
   let diagnosticsRendererTriangles = 0;
   let diagnosticsLongestFrameMs = 0;
   let diagnosticsLongFrames = 0;
+  let lastRenderStallLogAt = 0;
   let diagnosticsPointerMoves = 0;
   let diagnosticsPointerLastAt = 0;
   let diagnosticsPointerWorstGapMs = 0;
@@ -9141,6 +9144,22 @@ export function createWorldScene({
     lastFrame = time;
     diagnosticsLongestFrameMs = Math.max(diagnosticsLongestFrameMs, rawFrameMs);
     if (rawFrameMs > 34) diagnosticsLongFrames += 1;
+    // Report genuine visible-tab stalls without flooding DevTools during a
+    // prolonged hitch. Ordinary 30–60fps variance remains in diagnostics but
+    // does not produce console noise.
+    if (
+      rawFrameMs >= RENDER_STALL_THRESHOLD_MS &&
+      document.visibilityState === "visible" &&
+      time - lastRenderStallLogAt >= RENDER_STALL_LOG_COOLDOWN_MS
+    ) {
+      lastRenderStallLogAt = time;
+      console.warn("[ForkMesh World] Render stall detected", {
+        frameMs: Math.round(rawFrameMs),
+        cameraMode,
+        space: currentSpace,
+        interactiveObjects: interactive.length,
+      });
+    }
     // Only the town scene walks the shared avatar and its neighbours; inside an
     // Office meeting the seated participant is driven instead (PR #47).
     if (officeSceneMode === "town") {

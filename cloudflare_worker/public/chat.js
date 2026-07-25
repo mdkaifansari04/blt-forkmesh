@@ -1986,7 +1986,8 @@ function handlePlain(plain, scope = roomScopeForChannel()) {
       removeMessage(plain.target);
     });
   } else if (type === "hello" && !plain.to) {
-    appendSystem(sender + " joined");
+    // Presence is shown in the World itself; do not add join noise to the
+    // message timeline or push the composer upward.
   } else if (type === "bye") {
     appendSystem(sender + " left");
   }

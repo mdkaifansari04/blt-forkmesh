@@ -2935,7 +2935,9 @@
           if (box && key in apSettings) box.checked = Boolean(apSettings[key]);
         });
       }
-      const handle = String(body.fediverse?.handle || "");
+      // Mirrors may report their own actor handle, but the repository UI
+      // advertises the canonical ForkMesh actor everywhere.
+      const handle = "@forkmesh.forkmesh@forkmesh.com";
       if (handle) {
         const handleEl = $("[data-repo-watch-handle]");
         if (handleEl) handleEl.textContent = handle;

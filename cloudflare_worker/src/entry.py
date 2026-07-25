@@ -18876,6 +18876,10 @@ AP_DATE_SKEW_MS = 12 * 60 * 60 * 1000
 AP_IMMEDIATE_DELIVERIES = 5
 AP_CRON_DELIVERIES = 20
 AP_DIGEST_CRON_BATCH = 12
+# Follower avatars/bios backfilled per tick (one signed GET each), and the
+# number of rotating selection windows the sweep cycles through.
+AP_PROFILE_REFRESH_BATCH = 3
+AP_PROFILE_REFRESH_WINDOWS = 8
 AP_FEDI_KINDS = ("issue", "pull", "discussion", "commit", "release")
 # Brand images served from Static Assets, shown as every actor's avatar and
 # profile header on Mastodon-compatible servers.
@@ -20036,6 +20040,41 @@ async def _ap_remote_actor(env, actor_id, force_refresh=False):
         "url": ess["url"], "updated_at": now, "avatar_url": avatar_url,
         "summary": summary,
     }
+
+
+async def _ap_refresh_follower_profiles(env, limit, window=0):
+    """Backfill the cached avatar/bio of accounts that follow a local actor.
+
+    A follower row only carries routing fields; the presentation a "who follows
+    this repository" surface shows comes from the cached actor document, which
+    is otherwise only refreshed when that actor next delivers something (or
+    never, for a quiet follower — and never for any row written before
+    migration 0078). This sweeps the oldest cache entries that are still missing
+    those columns, bounded to one signed GET each.
+
+    The window rotates the selection so a permanently unreachable server — whose
+    row keeps its old updated_at and therefore keeps sorting first — cannot
+    starve every other follower out of the batch."""
+    limit = max(1, int(limit))
+    candidates = (
+        "SELECT actor_id FROM ap_remote_actors"
+        " WHERE actor_id IN (SELECT follower_id FROM ap_followers)"
+        "   AND (avatar_url IS NULL OR summary IS NULL)"
+        " ORDER BY updated_at LIMIT ? OFFSET ?")
+    offset = max(0, int(window)) * limit
+    rows = await d1_all(env, candidates, limit, offset)
+    if not rows and offset:
+        # Backlog smaller than this window: sweep from the front instead of
+        # idling the tick.
+        rows = await d1_all(env, candidates, limit, 0)
+    refreshed = 0
+    for row in rows or []:
+        actor_id = str(row.get("actor_id") or "")
+        if not actor_id:
+            continue
+        if await _ap_remote_actor(env, actor_id, force_refresh=True):
+            refreshed += 1
+    return refreshed
 
 
 async def _ap_deliver_body(env, actor_url, priv_b64, inbox_url, body_str):
@@ -30651,6 +30690,22 @@ class Default(WorkerEntrypoint):
                 await log_cron_error(
                     self.env, "/cron/activitypub-digests",
                     "_ap_process_digest_queues failed: "
+                    + _safe_error_text(error),
+                    error=error, failures=cron_failures)
+        # Follower presentation backfill: a repo's follower gallery shows each
+        # account's published avatar and bio, which only lands in the cache when
+        # that actor is next fetched. Three signed GETs every 20 minutes fills
+        # the backlog in the background (one indexed SELECT when there is none).
+        if minute % 20 == 12:
+            try:
+                await ensure_schema(self.env)
+                await _ap_refresh_follower_profiles(
+                    self.env, AP_PROFILE_REFRESH_BATCH,
+                    (minute // 20) % AP_PROFILE_REFRESH_WINDOWS)
+            except BaseException as error:
+                await log_cron_error(
+                    self.env, "/cron/activitypub-follower-profiles",
+                    "_ap_refresh_follower_profiles failed: "
                     + _safe_error_text(error),
                     error=error, failures=cron_failures)
         # Relay federation: a federated relay registers + reports its online

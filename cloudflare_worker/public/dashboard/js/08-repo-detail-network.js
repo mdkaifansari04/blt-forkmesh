@@ -82,7 +82,9 @@
     const forkCount = stableMockNumber(`${actionSeed}:fork`, 0, 12);
     // Watch is real: it is the repo's fediverse follower count (see
     // loadRepoFediverse), and the button opens the follow-from-Mastodon card.
-    const fediHandle = `@${(repo.owner || "").toLowerCase()}.${(repo.name || "").toLowerCase()}@${location.host}`;
+    // The public repository actor is the canonical ForkMesh identity. Do not
+    // derive it from a mirror hostname or replica owner name.
+    const fediHandle = "@forkmesh.forkmesh@forkmesh.com";
     // Deep link that opens this repo's fediverse actor on Mastodon (any
     // instance resolves a remote acct handle; mastodon.social is the default).
     const mastodonUrl = `https://mastodon.social/${fediHandle}`;

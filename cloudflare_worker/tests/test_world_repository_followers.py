@@ -20,6 +20,8 @@ revert the totals).
 Run: python3 -m pytest cloudflare_worker/tests/test_world_repository_followers.py
 """
 
+import ast
+import asyncio
 import importlib.util
 import re
 import sqlite3
@@ -27,7 +29,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ENTRY = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
+ENTRY_PATH = ROOT / "src" / "entry.py"
+ENTRY = ENTRY_PATH.read_text(encoding="utf-8")
 SCHEMA = (ROOT / "src" / "schema.py").read_text(encoding="utf-8")
 MIGRATION = ROOT / "migrations" / "0078_ap_remote_actor_profile.sql"
 WORLD = (ROOT / "public" / "world" / "world.js").read_text(encoding="utf-8")
@@ -44,6 +47,17 @@ def _sibling_module(name):
 
 
 ap = _sibling_module("activitypub")
+
+
+def _load_function(name, namespace):
+    for node in ast.parse(ENTRY, filename=str(ENTRY_PATH)).body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                and node.name == name:
+            module = ast.fix_missing_locations(
+                ast.Module(body=[node], type_ignores=[]))
+            exec(compile(module, str(ENTRY_PATH), "exec"), namespace)
+            return namespace[name]
+    raise AssertionError(name + " not found")
 
 
 # --- storage ------------------------------------------------------------------
@@ -89,6 +103,92 @@ def test_cached_actor_write_sanitizes_avatar_and_bio():
     assert "ap_threads.sanitize_remote_content(ess.get(\"summary\")" in prelude
     assert "avatar_url=excluded.avatar_url" in write[1]
     assert "summary=excluded.summary" in write[1]
+
+
+def _profile_sweep(rows, fetched, fails=()):
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.executescript(
+        "CREATE TABLE ap_remote_actors ("
+        " actor_id TEXT PRIMARY KEY, avatar_url TEXT, summary TEXT,"
+        " updated_at INTEGER NOT NULL);"
+        "CREATE TABLE ap_followers ("
+        " actor_bi TEXT, follower_id TEXT);")
+    for actor_id, avatar, summary, updated_at in rows:
+        db.execute(
+            "INSERT INTO ap_remote_actors VALUES (?,?,?,?)",
+            (actor_id, avatar, summary, updated_at))
+        db.execute(
+            "INSERT INTO ap_followers VALUES ('actor:repo', ?)", (actor_id,))
+
+    async def d1_all(_env, sql, *args):
+        return [dict(row) for row in db.execute(sql, args).fetchall()]
+
+    async def _ap_remote_actor(_env, actor_id, force_refresh=False):
+        assert force_refresh is True
+        fetched.append(actor_id)
+        # An unreachable server leaves the cached row exactly as it was.
+        return None if actor_id in fails else {"actor_id": actor_id}
+
+    return _load_function("_ap_refresh_follower_profiles", {
+        "d1_all": d1_all,
+        "_ap_remote_actor": _ap_remote_actor,
+    })
+
+
+def test_profile_sweep_only_refreshes_followers_missing_their_presentation():
+    fetched = []
+    sweep = _profile_sweep(
+        [
+            # Oldest cache first, and only rows still missing avatar/bio.
+            ("https://m.s/users/old", None, None, 10),
+            ("https://f.o/users/mid", "", None, 20),
+            ("https://h.io/users/done", "https://h.io/a.png", "bio", 5),
+        ],
+        fetched,
+    )
+    assert asyncio.run(sweep(object(), 3)) == 2
+    assert fetched == ["https://m.s/users/old", "https://f.o/users/mid"]
+
+
+def test_profile_sweep_window_rotates_past_unreachable_servers():
+    # Two dead servers hold the oldest cache entries forever (a failed fetch
+    # never updates the row), so window 0 must not be the only batch that runs.
+    rows = [
+        ("https://dead.one/users/a", None, None, 1),
+        ("https://dead.two/users/b", None, None, 2),
+        ("https://live.one/users/c", None, None, 3),
+        ("https://live.two/users/d", None, None, 4),
+    ]
+    dead = {"https://dead.one/users/a", "https://dead.two/users/b"}
+
+    first = []
+    assert asyncio.run(
+        _profile_sweep(rows, first, dead)(object(), 2, 0)) == 0
+    assert first == ["https://dead.one/users/a", "https://dead.two/users/b"]
+
+    rotated = []
+    assert asyncio.run(
+        _profile_sweep(rows, rotated, dead)(object(), 2, 1)) == 2
+    assert rotated == ["https://live.one/users/c", "https://live.two/users/d"]
+
+    # A window past the end of a short backlog sweeps from the front instead of
+    # idling the tick.
+    beyond = []
+    assert asyncio.run(
+        _profile_sweep(rows, beyond, dead)(object(), 2, 9)) == 0
+    assert beyond == ["https://dead.one/users/a", "https://dead.two/users/b"]
+
+
+def test_profile_sweep_runs_on_its_own_bounded_cron_slot():
+    cron = ENTRY.split("if minute % 20 == 12:", 1)
+    assert len(cron) == 2
+    slot = cron[1][:600]
+    assert "_ap_refresh_follower_profiles(" in slot
+    assert "AP_PROFILE_REFRESH_BATCH" in slot
+    assert "AP_PROFILE_REFRESH_WINDOWS" in slot
+    assert "/cron/activitypub-follower-profiles" in slot
+    assert "AP_PROFILE_REFRESH_BATCH = 3" in ENTRY
 
 
 # --- the public follower list -------------------------------------------------

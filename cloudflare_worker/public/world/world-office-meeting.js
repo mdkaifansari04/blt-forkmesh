@@ -446,7 +446,18 @@ export function createWorldOfficeMeeting({
     }
     seenMessages.add(messageId);
     const participant = await verifiedBubbleParticipant(plain);
-    const sender = participant?.name || "Remote channel participant";
+    const senderParticipant = participants.get(
+      String(plain.senderId || "").slice(0, 64),
+    );
+    const claimedSender = String(plain.sender || "").trim().slice(0, 32);
+    // A verified proof wins; otherwise use the sender's currently joined room
+    // identity, then their bounded chat label. The generic fallback made every
+    // valid remote message read as an anonymous participant.
+    const sender =
+      participant?.name ||
+      senderParticipant?.name ||
+      claimedSender ||
+      "Office visitor";
     const text = String(plain.text || "").slice(0, MAX_MEETING_TEXT);
     const attachment = attachmentFromEntry(plain);
     const item = document.createElement("li");
