@@ -323,7 +323,8 @@ HostSshCommand buildHostSshCommand(const QString &host,
                                    const QString &sshUser,
                                    const QString &sshPassword,
                                    const QString &remoteCommand,
-                                   QString *error)
+                                   QString *error,
+                                   const QString &identityFile)
 {
     HostSshCommand command;
     if (!isSafeSshEndpoint(host, sshUser)) {
@@ -378,6 +379,22 @@ HostSshCommand buildHostSshCommand(const QString &host,
         QStringLiteral("-o"), QStringLiteral("UpdateHostKeys=yes"),
         QStringLiteral("-o"), QStringLiteral("ConnectTimeout=30"),
     };
+    // Pin authentication to a ForkMesh-managed key when the saved host records
+    // one (auto-provisioned Vultr mirrors). -i is argv-safe for any path;
+    // IdentitiesOnly stops the agent offering unrelated keys first.
+    const QString identity = identityFile.trimmed();
+    if (!identity.isEmpty()) {
+        if (identity.contains(QChar::Null) ||
+            !QFileInfo(identity).isFile()) {
+            if (error)
+                *error = QStringLiteral(
+                    "The managed SSH key for this host is missing.");
+            return command;
+        }
+        arguments << QStringLiteral("-i") << identity
+                  << QStringLiteral("-o")
+                  << QStringLiteral("IdentitiesOnly=yes");
+    }
     command.environment = QProcessEnvironment::systemEnvironment();
     command.environment.remove(QStringLiteral("SSHPASS"));
     if (sshPassword.isEmpty()) {
@@ -552,7 +569,8 @@ QByteArray buildMirrorActionsConfigurationPayload(
 
 MirrorActionsSshCommand buildMirrorActionsSshCommand(
     const MirrorActionsConfigurationRequest &request,
-    const QString &sshPassword, QString *error)
+    const QString &sshPassword, QString *error,
+    const QString &identityFile)
 {
     MirrorActionsSshCommand command;
     command.standardInput =
@@ -569,7 +587,8 @@ MirrorActionsSshCommand buildMirrorActionsSshCommand(
         "else printf 'ForkMesh Actions helper is not installed.\\n' >&2; "
         "exit 127; fi");
     const HostSshCommand ssh = buildHostSshCommand(
-        request.host, request.sshUser, sshPassword, remoteCommand, error);
+        request.host, request.sshUser, sshPassword, remoteCommand, error,
+        identityFile);
     if (ssh.program.isEmpty()) {
         command.standardInput.fill('\0');
         command.standardInput.clear();
@@ -1428,6 +1447,150 @@ QByteArray mirrorManifestSigningPayload(const QJsonObject &request,
     if (error)
         error->clear();
     return payload;
+}
+
+QString validateVultrMirrorRequest(const QString &apiKey,
+                                   const QString &nodeName)
+{
+    static const QRegularExpression keyPattern(
+        QStringLiteral("^[A-Za-z0-9]{20,128}$"));
+    if (!keyPattern.match(apiKey.trimmed()).hasMatch()) {
+        return QStringLiteral(
+            "Enter your Vultr API key (Account \xE2\x86\x92 API in the Vultr "
+            "panel). It is used from memory only and never saved to disk.");
+    }
+    static const QRegularExpression nodePattern(
+        QStringLiteral("^[a-z][a-z0-9-]{0,62}$"));
+    if (!nodePattern.match(nodeName.trimmed()).hasMatch()) {
+        return QStringLiteral(
+            "The node name must start with a letter and contain only lowercase "
+            "letters, digits, or hyphens (63 characters maximum).");
+    }
+    return {};
+}
+
+QJsonObject cheapestVultrPlan(const QJsonArray &plans)
+{
+    QJsonObject best;
+    for (const QJsonValue &value : plans) {
+        const QJsonObject plan = value.toObject();
+        const double cost = plan.value(QStringLiteral("monthly_cost")).toDouble();
+        const QString id = plan.value(QStringLiteral("id")).toString();
+        if (id.isEmpty() || !std::isfinite(cost) || cost <= 0.0 ||
+            plan.value(QStringLiteral("locations")).toArray().isEmpty()) {
+            continue;
+        }
+        if (best.isEmpty()) {
+            best = plan;
+            continue;
+        }
+        const double bestCost =
+            best.value(QStringLiteral("monthly_cost")).toDouble();
+        if (cost < bestCost) {
+            best = plan;
+            continue;
+        }
+        if (cost > bestCost)
+            continue;
+        const double ram = plan.value(QStringLiteral("ram")).toDouble();
+        const double bestRam = best.value(QStringLiteral("ram")).toDouble();
+        if (ram > bestRam ||
+            (ram == bestRam &&
+             id < best.value(QStringLiteral("id")).toString())) {
+            best = plan;
+        }
+    }
+    return best;
+}
+
+QString vultrPlanRegion(const QJsonObject &plan)
+{
+    QStringList locations;
+    for (const QJsonValue &value :
+         plan.value(QStringLiteral("locations")).toArray()) {
+        const QString region = value.toString().trimmed();
+        if (!region.isEmpty())
+            locations.append(region);
+    }
+    std::sort(locations.begin(), locations.end());
+    return locations.isEmpty() ? QString() : locations.first();
+}
+
+QJsonObject latestVultrDebianOs(const QJsonArray &osList)
+{
+    QJsonObject best;
+    int bestVersion = -1;
+    static const QRegularExpression versionPattern(
+        QStringLiteral("\\b(\\d+)\\b"));
+    for (const QJsonValue &value : osList) {
+        const QJsonObject os = value.toObject();
+        if (os.value(QStringLiteral("family")).toString().toLower() !=
+                QLatin1String("debian") ||
+            os.value(QStringLiteral("arch")).toString().toLower() !=
+                QLatin1String("x64") ||
+            os.value(QStringLiteral("id")).toInt() <= 0) {
+            continue;
+        }
+        const QRegularExpressionMatch match =
+            versionPattern.match(os.value(QStringLiteral("name")).toString());
+        const int version = match.hasMatch() ? match.captured(1).toInt() : 0;
+        if (version > bestVersion ||
+            (version == bestVersion &&
+             os.value(QStringLiteral("id")).toInt() >
+                 best.value(QStringLiteral("id")).toInt())) {
+            best = os;
+            bestVersion = version;
+        }
+    }
+    return best;
+}
+
+QJsonObject vultrInstanceCreatePayload(const QString &nodeName,
+                                       const QString &planId,
+                                       const QString &regionId,
+                                       int osId,
+                                       const QString &sshKeyId)
+{
+    return {
+        {QStringLiteral("region"), regionId},
+        {QStringLiteral("plan"), planId},
+        {QStringLiteral("os_id"), osId},
+        {QStringLiteral("label"), nodeName.trimmed()},
+        {QStringLiteral("hostname"), nodeName.trimmed()},
+        {QStringLiteral("sshkey_id"), QJsonArray{sshKeyId}},
+        {QStringLiteral("backups"), QStringLiteral("disabled")},
+        {QStringLiteral("activation_email"), false},
+        {QStringLiteral("tags"),
+         QJsonArray{QStringLiteral("forkmesh-mirror")}},
+    };
+}
+
+QString vultrInstanceReadyIp(const QJsonObject &instance)
+{
+    if (instance.value(QStringLiteral("status")).toString() !=
+            QLatin1String("active") ||
+        instance.value(QStringLiteral("power_status")).toString() !=
+            QLatin1String("running")) {
+        return {};
+    }
+    const QString ip =
+        instance.value(QStringLiteral("main_ip")).toString().trimmed();
+    static const QRegularExpression ipv4Pattern(
+        QStringLiteral("^(?:\\d{1,3}\\.){3}\\d{1,3}$"));
+    if (ip.isEmpty() || ip == QLatin1String("0.0.0.0") ||
+        !ipv4Pattern.match(ip).hasMatch()) {
+        return {};
+    }
+    return ip;
+}
+
+QString vultrApiKeyFromVariables(const QMap<QString, QString> &variables)
+{
+    return storedCredential(variables, {
+                                           QStringLiteral("VULTR_API_KEY"),
+                                           QStringLiteral("VULTR_TOKEN"),
+                                           QStringLiteral("VULTR_KEY"),
+                                       });
 }
 
 } // namespace forkmesh::control
