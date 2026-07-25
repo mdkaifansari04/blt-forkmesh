@@ -58,7 +58,7 @@ def test_world_opens_the_mini_app_and_fetches_without_credentials():
     assert re.search(r"escapeHTML\(\s*status\.text,?\s*\)", world)
 
 
-def test_kiosk_refreshes_every_ten_minutes_behind_a_pacman_dial():
+def test_kiosk_refreshes_every_ten_minutes_behind_an_mmss_timer():
     world = _source(WORLD_PATH)
     scene = _source(SCENE_PATH)
     assert "const MASTODON_REFRESH_MS = 10 * 60 * 1000;" in world
@@ -74,6 +74,49 @@ def test_kiosk_refreshes_every_ten_minutes_behind_a_pacman_dial():
     assert '"forkmesh-mastodon-kiosk-countdown"' in scene
     assert "function updateMastodonCountdown(" in scene
     assert "updateMastodonCountdown," in scene
+    # A plain MM:SS readout: no ring, no arc, no progress sweep.
+    assert "function mastodonCountdownClock(" in scene
+    countdown = scene.split("function mastodonCountdownClock(", 1)[1].split(
+        "function createMastodonKiosk(", 1
+    )[0]
+    assert "context.arc(" not in countdown
+    assert "progress" not in countdown
+    assert 'String(seconds % 60).padStart(' in countdown
+
+
+def test_countdown_clock_formats_mm_ss():
+    scene = _source(SCENE_PATH)
+    body = scene.split("function mastodonCountdownClock(", 1)[1].split("\n}\n", 1)[0]
+    clock = _node(
+        "function mastodonCountdownClock(" + body + "\n}\n"
+        "process.stdout.write(JSON.stringify(["
+        "mastodonCountdownClock(0),"
+        "mastodonCountdownClock(59_000),"
+        "mastodonCountdownClock(10 * 60 * 1000),"
+        "]));"
+    )
+    assert clock == ["00:00", "00:59", "10:00"]
+
+
+def test_kiosk_and_mini_app_carry_replies_with_author_icons():
+    world = _source(WORLD_PATH)
+    scene = _source(SCENE_PATH)
+    # Replies are collected from the thread context of the newest toots.
+    assert "async fetchMastodonReplies(" in world
+    assert "/context`" in world
+    assert "reply.authorAcct === account.acct" in world
+    assert "const MASTODON_REPLY_LIMIT = 12;" in world
+    assert "replies: this.mastodonReplies.map(" in world
+    assert "avatar: reply.authorAvatar," in world
+    # Mini-app section plus the kiosk strip, each with the replier's icon.
+    assert "mastodonRepliesHTML()" in world
+    assert "data-world-mastodon-replies" in world
+    assert re.search(r"escapeHTML\(\s*reply\.text,?\s*\)", world)
+    assert re.search(r"escapeHTML\(\s*reply\.authorAvatar,?\s*\)", world)
+    assert "const MASTODON_KIOSK_VISIBLE_REPLIES = 3;" in scene
+    assert 'context.fillText("REPLIES", 56, 1750);' in scene
+    assert "const icon = image(reply.avatar);" in scene
+    assert "Array.isArray(snapshot.replies) ? snapshot.replies : []" in scene
 
 
 def test_kiosk_board_is_larger_and_carries_post_images():

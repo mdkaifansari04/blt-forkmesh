@@ -426,6 +426,60 @@ def test_coarse_activity_metadata_is_bounded_and_privacy_gated():
     assert hidden["firstVisitAge"] == "hidden"
 
 
+def test_exact_first_seen_and_joined_ages_stay_bounded_and_gated():
+    now = 1700000000000
+    current = world.default_presence("peer", now)
+    assert current["firstSeenMinutes"] == 0
+    assert current["joinedAt"] == 0
+    assert "firstSeenMinutes" in world.public_presence(current)
+    assert "joinedAt" in world.public_presence(current)
+
+    account = dict(current, accountStatus="Registered")
+    _, shared = world.sanitize_message({
+        "type": "presence",
+        "activityCategory": "viewing-repository",
+        "firstSeenMinutes": 137,
+        "joinedAt": now - 90 * 24 * 60 * 60 * 1000,
+    }, account, now)
+    assert shared["firstSeenMinutes"] == 137
+    assert shared["joinedAt"] == now - 90 * 24 * 60 * 60 * 1000
+
+    _, bounded = world.sanitize_message({
+        "type": "presence",
+        "activityCategory": "viewing-repository",
+        "firstSeenMinutes": 99999999,
+        # A "joined tomorrow" claim, and every pre-2020 or non-integer value,
+        # collapses to no joined date rather than a nonsense badge line.
+        "joinedAt": now + 60000,
+    }, account, now)
+    assert bounded["firstSeenMinutes"] == world.WORLD_FIRST_SEEN_MAX_MINUTES
+    assert bounded["joinedAt"] == 0
+
+    _, rejected = world.sanitize_message({
+        "type": "presence",
+        "activityCategory": "viewing-repository",
+        "firstSeenMinutes": "137",
+        "joinedAt": "2020-01-01",
+    }, account, now)
+    assert rejected["firstSeenMinutes"] == 0
+    assert rejected["joinedAt"] == 0
+
+    _, hidden = world.sanitize_message({
+        "type": "presence",
+        "activityCategory": "hidden",
+        "firstSeenMinutes": 137,
+    }, shared, now)
+    assert hidden["firstSeenMinutes"] == 0
+
+    # A connection the routing Worker never authenticated has no joined date.
+    _, guest = world.sanitize_message({
+        "type": "presence",
+        "activityCategory": "viewing-repository",
+        "joinedAt": now - 90 * 24 * 60 * 60 * 1000,
+    }, current, now)
+    assert guest["joinedAt"] == 0
+
+
 def test_arrival_slots_fill_unique_forward_facing_rows_of_ten():
     positions = [world.arrival_position(slot) for slot in range(21)]
     assert len({(item["x"], item["z"]) for item in positions}) == 21

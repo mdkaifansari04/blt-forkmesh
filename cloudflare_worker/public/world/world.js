@@ -41,7 +41,10 @@ import { buildRepositoryGraphEntities } from "./world-repository-graph.js";
 import { createWorldOfficeController } from "./world-office.js";
 import { createWorldOfficeMeeting } from "./world-office-meeting.js";
 import { createWorldOfficeTasksController } from "./world-office-tasks.js";
-import { createWorldScene } from "./world-scene.js";
+import {
+  CAMPFIRE_SEATED_ACTIVITY,
+  createWorldScene,
+} from "./world-scene.js";
 
 const THREE_MODULE_URL =
   "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.min.js";
@@ -56,6 +59,9 @@ const SETTINGS_KEY = "forkmesh.world.settings.v1";
 const GUEST_ID_KEY = "forkmesh.world.guestId.v1";
 const FIRST_VISIT_KEY = "forkmesh.world.firstVisitAt.v1";
 const VISIT_COUNT_KEY = "forkmesh.world.publicVisitCount.v1";
+// Mirrors WORLD_FIRST_SEEN_MAX_MINUTES / WORLD_JOINED_AT_MIN_MS in world.py.
+const FIRST_SEEN_MAX_MINUTES = 10 * 365 * 24 * 60;
+const JOINED_AT_MIN_MS = 1577836800000;
 const FORKBOT_GREETED_KEY = "forkmesh.world.forkbotGreeted.v1";
 const POSITION_KEY_PREFIX = "forkmesh.world.position.v1.";
 const DETAIL_WIDTH_KEY = "forkmesh.world.detailWidth.v1";
@@ -66,9 +72,13 @@ const RENDERER_RECOVERY_KEY = "forkmesh.world.renderer-recovery.v1";
 const RENDERER_RECOVERY_DELAY_MS = 1500;
 const RENDERER_RECOVERY_WINDOW_MS = 30 * 1000;
 const POSITION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
-// The Mastodon kiosk refetches the public profile on this cadence; the pac-man
-// dial on the billboard counts the same window down.
+// The Mastodon kiosk refetches the public profile on this cadence; the MM:SS
+// timer on the billboard counts the same window down.
 const MASTODON_REFRESH_MS = 10 * 60 * 1000;
+// Mastodon has no "replies to my account" endpoint, so the replies section is
+// built from the thread context of the newest toots that report replies.
+const MASTODON_REPLY_THREADS = 4;
+const MASTODON_REPLY_LIMIT = 12;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const CHAT_BUBBLE_JOIN_GRACE_MS = 20 * 1000;
 const POSITION_RADIUS = 72;
@@ -292,6 +302,22 @@ function firstVisitAge(timestamp, now = Date.now()) {
   return "over-a-year";
 }
 
+// The coarse bucket above still drives the privacy-safe fallback label; this
+// is the exact "first seen 12 minutes ago" reading the chest badge prefers.
+function firstSeenMinutes(timestamp, now = Date.now()) {
+  const age = Math.max(0, now - Number(timestamp || now));
+  return Math.max(0, Math.min(FIRST_SEEN_MAX_MINUTES, Math.floor(age / 60000)));
+}
+
+function boundedJoinedAt(value, now = Date.now()) {
+  const timestamp = Number(value);
+  return Number.isSafeInteger(timestamp) &&
+    timestamp >= JOINED_AT_MIN_MS &&
+    timestamp <= now
+    ? timestamp
+    : 0;
+}
+
 function sessionVisitCount(increment = false) {
   try {
     const current = Math.max(
@@ -446,6 +472,9 @@ function accountIdentity(session) {
     inputActive: false,
     visitCount: 0,
     firstVisitAge: "this-session",
+    firstSeenMinutes: 0,
+    // Filled in from the server-signed world ticket; guests never have one.
+    joinedAt: 0,
     activityCategory: "exploring-town-square",
   };
 }
@@ -614,6 +643,10 @@ function publicIdentity(identity, settings) {
     firstVisitAge: settings.privacy.activity
       ? String(identity.firstVisitAge || "this-session")
       : "hidden",
+    firstSeenMinutes: settings.privacy.activity
+      ? Math.max(0, Number(identity.firstSeenMinutes) || 0)
+      : 0,
+    joinedAt: boundedJoinedAt(identity.joinedAt),
     statusEmoji: publicStatus.emoji,
     statusNote: publicStatus.note,
     outfitColor:
@@ -775,11 +808,43 @@ function remotePlayer(peer) {
     ].includes(String(peer.firstVisitAge || ""))
       ? String(peer.firstVisitAge)
       : "hidden",
+    firstSeenMinutes: Math.max(
+      0,
+      Math.min(FIRST_SEEN_MAX_MINUTES, Number(peer.firstSeenMinutes) || 0),
+    ),
+    joinedAt: boundedJoinedAt(peer.joinedAt),
     statusEmoji: publicStatus.emoji,
     statusNote: publicStatus.note,
     moderationHandles,
     updatedAt: Math.max(0, Number(peer.updatedAt) || 0),
   };
+}
+
+// The public contribution feed doubles as the account's ForkMesh fediverse
+// timeline: these are exactly the events the relay federates as Notes.
+function worldFediverseFeedLines(recentActivity) {
+  const kinds = {
+    commits: "COMMITS",
+    issues: "ISSUES",
+    pulls: "PULL REQUESTS",
+    discussions: "DISCUSSIONS",
+    releases: "RELEASES",
+    reviews: "REVIEWS",
+  };
+  return (Array.isArray(recentActivity) ? recentActivity : [])
+    .slice(0, 6)
+    .map((entry) => {
+      const count = Math.max(0, Math.min(999, Number(entry?.count) || 0));
+      const kind = kinds[String(entry?.kind || "")] || "ACTIVITY";
+      const owner = sanitizePresenceText(entry?.repository?.owner, "", 20);
+      const name = sanitizePresenceText(entry?.repository?.name, "", 20);
+      const date = /^\d{4}-\d{2}-\d{2}$/.test(String(entry?.date || ""))
+        ? String(entry.date).slice(5)
+        : "";
+      const repository = owner && name ? `${owner}/${name}` : "";
+      return [date, `${count} ${kind}`, repository].filter(Boolean).join(" · ");
+    })
+    .filter(Boolean);
 }
 
 function compactNumber(value) {
@@ -2311,6 +2376,7 @@ function liveNodeRecords(network, mirrorCatalogs = []) {
 }
 
 const LOCAL_LIVE_LANDMARKS = new Set([
+  "campfire",
   "neighborhood",
   "broadcast",
 ]);
@@ -3394,6 +3460,7 @@ class ForkMeshWorld extends HTMLElement {
     this.officeTasks = null;
     this.mastodonProfile = null;
     this.mastodonStatuses = [];
+    this.mastodonReplies = [];
     this.mastodonState = "idle";
     this.mastodonFetchedAt = 0;
     this.mastodonRequestedAt = 0;
@@ -3489,6 +3556,7 @@ class ForkMeshWorld extends HTMLElement {
     if (this.mode === "public") document.body.classList.add("world-active");
     this.identity = accountIdentity(readSession());
     this.identity.firstVisitAge = firstVisitAge(this.firstVisitAt);
+    this.identity.firstSeenMinutes = firstSeenMinutes(this.firstVisitAt);
     this.identity.visitCount = this.publicVisitCount;
     this.identity.activityCategory = this.currentActivityCategory;
     this.settings = mergeSettings(readJSON(localStorage, SETTINGS_KEY, null));
@@ -3827,6 +3895,10 @@ class ForkMeshWorld extends HTMLElement {
         onRegionChange: (region) => this.updateRegion(region),
         onMovement: (movement) => this.handleMovement(movement),
         onModeration: (action) => this.moderateWorldPeer(action),
+        onFediverseProfile: (target) =>
+          void this.loadWorldFediverseProfile(target),
+        onFediverseFollow: (target) =>
+          void this.toggleWorldFediverseFollow(target),
         onLayoutObjectMoved: (move) => {
           void this.lockWorldObjectPlacement(move);
         },
@@ -5166,6 +5238,12 @@ class ForkMeshWorld extends HTMLElement {
           this.officeController?.focusOffice(landmarkButton);
           return;
         }
+        // The campfire spot is a destination rather than a reading panel:
+        // choosing it walks you straight back to your own bench.
+        if (id === "campfire") {
+          this.returnToCampfireBench();
+          return;
+        }
         // Map, alert, and navigation controls open a readable overlay without
         // moving the player or reframing the camera. Clicking the 3D landmark
         // itself remains the explicit spatial-focus interaction.
@@ -6173,6 +6251,102 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  // The chest's second tab. Everything shown is public profile data the
+  // account already publishes at /@name and to the fediverse; it is fetched
+  // only when a visitor actually opens the tab, never polled.
+  async loadWorldFediverseProfile(target = {}) {
+    const peerId = String(target.peerId || "");
+    const account = String(target.name || "").trim().toLowerCase();
+    if (
+      !WORLD_ACCOUNT_NAME_RE.test(account) ||
+      String(target.accountStatus || "Guest") === "Guest"
+    ) {
+      this.world?.setAvatarFediverseProfile?.(peerId, {
+        state: "unavailable",
+        handle: account ? `@${account}` : "",
+      });
+      return;
+    }
+    const viewer = validWorldSession()?.nodeName || "";
+    const query = viewer ? `?viewer=${encodeURIComponent(viewer)}` : "";
+    try {
+      const profile = await this.fetchJSON(
+        `/api/accounts/${encodeURIComponent(account)}${query}`,
+      );
+      if (this.destroyed) return;
+      if (profile?.exists !== true || profile?.profilePrivate === true) {
+        this.world?.setAvatarFediverseProfile?.(peerId, {
+          state: "unavailable",
+          handle: `@${account}`,
+        });
+        return;
+      }
+      const card = {
+        state: "ready",
+        account,
+        handle: `@${account}`,
+        // ForkMesh federates repository actors, not accounts, so the fediverse
+        // address is whichever handle the account published on its profile.
+        fediverse: sanitizePresenceText(profile.mastodon || "", "", 30),
+        bio: sanitizePresenceText(profile.profileBio || "", "", 60),
+        followers: Math.max(0, Number(profile.followers) || 0),
+        following: Math.max(0, Number(profile.following) || 0),
+        isFollowing: profile.isFollowing === true,
+        self: Boolean(viewer) && viewer === account,
+        canFollow: Boolean(viewer) && viewer !== account,
+        posts: [],
+      };
+      this.world?.setAvatarFediverseProfile?.(peerId, card);
+      const feed = await this.fetchJSON(
+        `/api/accounts/${encodeURIComponent(account)}/contributions`,
+      ).catch(() => null);
+      if (this.destroyed || !feed) return;
+      this.world?.setAvatarFediverseProfile?.(peerId, {
+        ...card,
+        posts: worldFediverseFeedLines(feed.recentActivity),
+      });
+    } catch (_) {
+      if (this.destroyed) return;
+      this.world?.setAvatarFediverseProfile?.(peerId, {
+        state: "unavailable",
+        handle: `@${account}`,
+      });
+    }
+  }
+
+  async toggleWorldFediverseFollow(target = {}) {
+    const peerId = String(target.peerId || "");
+    const account = String(target.name || "").trim().toLowerCase();
+    const following = target.following === true;
+    if (!WORLD_ACCOUNT_NAME_RE.test(account)) return;
+    if (!validWorldSession()) {
+      this.toast("Sign in to follow accounts from the World.");
+      await this.loadWorldFediverseProfile({
+        ...target,
+        accountStatus: "Registered",
+      });
+      return;
+    }
+    try {
+      await this.postJSON(
+        `/api/accounts/${encodeURIComponent(account)}/follow`,
+        {},
+        { method: following ? "DELETE" : "POST" },
+      );
+      this.toast(
+        following ? `Unfollowed @${account}.` : `Following @${account}.`,
+      );
+    } catch (error) {
+      this.toast(`Follow was not applied: ${error.message}`);
+    }
+    if (this.destroyed) return;
+    await this.loadWorldFediverseProfile({
+      peerId,
+      name: account,
+      accountStatus: "Registered",
+    });
+  }
+
   applyWorldLayoutEditor() {
     const enabled = this.identity?.isAdmin === true;
     this.world?.setLayoutEditor?.(enabled);
@@ -6432,11 +6606,14 @@ class ForkMeshWorld extends HTMLElement {
       );
     });
     this.recordPublicVisit(id || "town-square");
-    if (this.settings.privacy.activity) {
+    if (!this.settings.privacy.activity) {
+      this.lastMovement.activity = "online";
+    } else if (this.lastMovement.activity !== CAMPFIRE_SEATED_ACTIVITY) {
+      // Sitting down lands inside the campfire's own label radius. The seated
+      // activity is what other visitors render the pose from, so proximity
+      // must not relabel it as merely visiting the circle.
       this.lastMovement.activity =
         label === "Town Square" ? "exploring the Town Square" : `visiting ${label}`;
-    } else {
-      this.lastMovement.activity = "online";
     }
     this.currentActivityCategory = {
       repositories: "viewing-repository",
@@ -6908,6 +7085,14 @@ class ForkMeshWorld extends HTMLElement {
           .slice(0, MASTODON_STATUS_LIMIT);
         this.mastodonFetchedAt = Date.now();
         this.mastodonState = "ready";
+        // Threads are walked one per toot, so paint the profile and toots
+        // first and let the replies section fill in behind them.
+        this.renderMastodonBoard();
+        this.syncMastodonKiosk();
+        this.mastodonReplies = await this.fetchMastodonReplies(
+          account,
+          this.mastodonStatuses,
+        );
       } catch (_) {
         // Keep any previously fetched snapshot on a refresh failure.
         this.mastodonState = this.mastodonProfile ? "ready" : "error";
@@ -6922,8 +7107,47 @@ class ForkMeshWorld extends HTMLElement {
     return this.mastodonLoad;
   }
 
-  // The kiosk billboard reloads on a fixed ten-minute cadence, and the pac-man
-  // dial on the board is repainted every second so visitors can see when the
+  // Public replies other accounts left on the newest toots. Mastodon exposes
+  // them only per-thread, so this walks the context of a bounded number of
+  // toots that report replies and keeps the descendants that are not ours. A
+  // thread that fails to load is skipped rather than blanking the section.
+  async fetchMastodonReplies(account, statuses) {
+    const threads = statuses
+      .filter((status) => status.id && status.repliesCount > 0)
+      .slice(0, MASTODON_REPLY_THREADS);
+    const seen = new Set();
+    const replies = [];
+    for (const thread of threads) {
+      let context = null;
+      try {
+        context = await this.fetchMastodonJSON(
+          `https://mastodon.social/api/v1/statuses/${encodeURIComponent(
+            thread.id,
+          )}/context`,
+        );
+      } catch (_) {
+        continue;
+      }
+      const descendants = Array.isArray(context?.descendants)
+        ? context.descendants.slice(0, MASTODON_STATUS_LIMIT)
+        : [];
+      for (const entry of descendants) {
+        const reply = normalizeMastodonStatus(entry);
+        if (!reply?.id || !reply.text) continue;
+        // Our own posts further down a thread are not "replies from users".
+        if (reply.authorAcct === account.acct) continue;
+        if (seen.has(reply.id)) continue;
+        seen.add(reply.id);
+        replies.push(reply);
+      }
+    }
+    return replies
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+      .slice(0, MASTODON_REPLY_LIMIT);
+  }
+
+  // The kiosk billboard reloads on a fixed ten-minute cadence, and the MM:SS
+  // timer on the board is repainted every second so visitors can see when the
   // next fetch lands. The tick, not a ten-minute interval, drives the refresh
   // so a manual "Refresh" from the mini-app restarts the same window.
   startMastodonRefresh() {
@@ -7002,6 +7226,19 @@ class ForkMeshWorld extends HTMLElement {
           images: status.images.map((media) => media.url).filter(Boolean),
         };
       }),
+      replies: this.mastodonReplies.map((reply) => ({
+        author: reply.authorName,
+        acct: reply.authorAcct ? `@${reply.authorAcct}` : "",
+        avatar: reply.authorAvatar,
+        url: reply.url,
+        date: reply.createdAt
+          ? new Date(reply.createdAt).toLocaleDateString([], {
+              month: "short",
+              day: "numeric",
+            })
+          : "",
+        text: reply.text || "(image reply)",
+      })),
     });
   }
 
@@ -7147,6 +7384,7 @@ class ForkMeshWorld extends HTMLElement {
       <div class="world-mastodon-app">
         ${this.mastodonProfileHTML()}
         ${this.mastodonTootsHTML()}
+        ${this.mastodonRepliesHTML()}
       </div>`;
   }
 
@@ -7340,6 +7578,61 @@ class ForkMeshWorld extends HTMLElement {
       <section class="world-mastodon-toots" aria-label="Latest public toots">
         <h3>Latest toots</h3>
         <div class="world-mastodon-toot-list" data-world-mastodon-toots tabindex="0">
+          ${body}
+        </div>
+      </section>`;
+  }
+
+  // Who replied, with their avatar — the same data the kiosk's REPLIES strip
+  // renders, in full here.
+  mastodonRepliesHTML() {
+    const replies = this.mastodonReplies;
+    const body = replies.length
+      ? replies
+          .map((reply) => {
+            const date = reply.createdAt
+              ? new Date(reply.createdAt).toLocaleDateString([], {
+                  year: "numeric",
+                  month: "short",
+                  day: "numeric",
+                })
+              : "";
+            return `
+              <article class="world-mastodon-reply">
+                ${
+                  reply.authorAvatar
+                    ? `<img src="${escapeHTML(
+                        reply.authorAvatar,
+                      )}" alt="" loading="lazy" />`
+                    : '<span class="world-mastodon-reply-icon" aria-hidden="true">@</span>'
+                }
+                <div>
+                  <header>
+                    <strong>${escapeHTML(reply.authorName)}</strong>
+                    <span>@${escapeHTML(reply.authorAcct)}</span>
+                    <time>${escapeHTML(date)}</time>
+                  </header>
+                  <p class="world-mastodon-text">${escapeHTML(reply.text)}</p>
+                  ${
+                    reply.url
+                      ? `<a href="${escapeHTML(
+                          reply.url,
+                        )}" target="_blank" rel="noopener noreferrer">Open reply</a>`
+                      : ""
+                  }
+                </div>
+              </article>`;
+          })
+          .join("")
+      : `<p class="world-mastodon-status" role="status">${
+          this.mastodonState === "loading" || this.mastodonLoad
+            ? "Loading replies from the fediverse…"
+            : "No public replies on the latest toots yet."
+        }</p>`;
+    return `
+      <section class="world-mastodon-replies" aria-label="Replies from the fediverse">
+        <h3>Replies</h3>
+        <div class="world-mastodon-reply-list" data-world-mastodon-replies tabindex="0">
           ${body}
         </div>
       </section>`;
@@ -8789,6 +9082,22 @@ class ForkMeshWorld extends HTMLElement {
         ? `${owner.name || "The owner"} accepted your knock. You entered their visual front yard; normal collaboration permissions still apply.`
         : `Entered ${owner.name || "the owner"}’s public front yard. Normal collaboration permissions still apply.`,
     );
+  }
+
+  // The Campfire map spot seats you on the bench that carries your own name;
+  // guests, and members the roster has not seated yet, land on one of the
+  // benches the circle keeps open.
+  returnToCampfireBench() {
+    if (!this.world?.returnToCampfireBench?.(this.identity?.name || "")) {
+      this.toast(
+        this.officeController?.active
+          ? "Walk out through the Office door first, then head back to the fire."
+          : "The campfire benches are still being seated. Try again in a moment.",
+      );
+      return;
+    }
+    this.closeLandmark();
+    this.toast("Back on your bench around the campfire. Move to stand up.");
   }
 
   focusMusicPanelHTML() {
@@ -13296,6 +13605,10 @@ class ForkMeshWorld extends HTMLElement {
       this.officeController?.focusOffice();
       return;
     }
+    if (action === "campfire") {
+      this.returnToCampfireBench();
+      return;
+    }
     const messages = {
       reward:
         "Contributions are direct wallet-to-public-pool transfers. Reward plans are signed only in the instance owner’s local Qt client and shown as complete only after on-chain finality.",
@@ -15033,6 +15346,7 @@ class ForkMeshWorld extends HTMLElement {
     );
     this.identity.accountStatus = String(ticket.accountStatus);
     this.identity.isAdmin = ticket.isAdmin === true;
+    this.identity.joinedAt = boundedJoinedAt(ticket.joinedAt);
     this.identity.nodes = Array.from(
       {
         length: Math.max(
@@ -15052,6 +15366,7 @@ class ForkMeshWorld extends HTMLElement {
     if (this.identity) {
       this.identity.accountStatus = "Guest";
       this.identity.isAdmin = false;
+      this.identity.joinedAt = 0;
       this.identity.nodes = [];
     }
     this.worldTicket = "";
@@ -15430,6 +15745,7 @@ class ForkMeshWorld extends HTMLElement {
     let safe;
     if (message.type === "presence") {
       this.identity.firstVisitAge = firstVisitAge(this.firstVisitAt);
+      this.identity.firstSeenMinutes = firstSeenMinutes(this.firstVisitAt);
       this.identity.visitCount = this.publicVisitCount;
       this.identity.activityCategory = presenceActivity(
         this.settings,
@@ -15462,6 +15778,10 @@ class ForkMeshWorld extends HTMLElement {
         firstVisitAge: this.settings.privacy.activity
           ? this.identity.firstVisitAge
           : "hidden",
+        firstSeenMinutes: this.settings.privacy.activity
+          ? firstSeenMinutes(this.firstVisitAt)
+          : 0,
+        joinedAt: boundedJoinedAt(this.identity.joinedAt),
         publicDoor: ["closed", "knock", "open"].includes(
           this.settings.publicDoor,
         )

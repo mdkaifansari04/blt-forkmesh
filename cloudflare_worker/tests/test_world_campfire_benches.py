@@ -6,7 +6,10 @@ import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCENE = (ROOT / "public" / "world" / "world-scene.js").read_text(encoding="utf-8")
+WORLD = ROOT / "public" / "world"
+SCENE = (WORLD / "world-scene.js").read_text(encoding="utf-8")
+APP = (WORLD / "world.js").read_text(encoding="utf-8")
+DATA = (WORLD / "world-data.js").read_text(encoding="utf-8")
 
 
 def test_benches_ring_the_pit_from_a_distance():
@@ -130,6 +133,63 @@ def test_head_colour_is_sampled_from_the_edge_of_the_emoji():
         in SCENE
     )
     assert "skin.color.set(drawn.color);" in SCENE
+
+
+def test_campfire_is_a_world_map_spot_on_the_fire_itself():
+    # adhoc #321: the map carries a Campfire spot, and the fire stands on that
+    # landmark's coordinates so the two can never drift apart.
+    assert 'id: "campfire"' in DATA
+    assert 'shortLabel: "Campfire"' in DATA
+    block = DATA[DATA.index('id: "campfire"'):]
+    block = block[: block.index("\n  },")]
+    assert "position: [8, 0, 8]" in block
+    assert 'action: "campfire"' in block
+    assert "campfire.position.set(...landmarkById(\"campfire\").position);" in SCENE
+    # The spot is a local seating feature, so it never wears a construction
+    # marker waiting on a remote integration.
+    assert '  "campfire",\n' in APP.split("LOCAL_LIVE_LANDMARKS", 1)[1]
+
+
+def test_choosing_the_campfire_spot_seats_you_on_your_own_bench():
+    scene = SCENE.split("function returnToCampfireBench", 1)[1].split(
+        "\n  function ", 1
+    )[0]
+    # Your own named bench when the roster has seated you; otherwise the bench
+    # the circle always keeps open at the end of the ring.
+    assert "campfire.userData.seatByName" in scene
+    assert "benches.length - 1" in scene
+    assert "sitOnCampfireBench(seat)" in scene
+    # Leaving the Office stays a deliberate walk through its door.
+    assert 'officeSceneMode !== "town"' in scene
+    assert "returnToCampfireBench,\n" in SCENE
+
+    # The map button travels instead of opening a reading panel.
+    click = APP.split('const id = landmarkButton.dataset.worldLandmark;', 1)[1]
+    click = click[: click.index("this.openLandmark(id")]
+    assert 'if (id === "campfire")' in click
+    assert (
+        "this.world?.returnToCampfireBench?.(this.identity?.name || \"\")"
+        in APP
+    )
+
+
+def test_sitting_survives_the_campfire_landmark_proximity_label():
+    # The bench is inside the campfire landmark's own label radius, so the
+    # proximity relabel would otherwise overwrite the seated activity other
+    # visitors render the pose from.
+    assert "export const CAMPFIRE_SEATED_ACTIVITY" in SCENE
+    assert "  CAMPFIRE_SEATED_ACTIVITY,\n  createWorldScene,\n" in APP
+    location = APP.split("  updateLocation(label, id) {", 1)[1].split(
+        "\n  updateRegion(", 1
+    )[0]
+    assert "this.lastMovement.activity !== CAMPFIRE_SEATED_ACTIVITY" in location
+
+
+def test_campfire_clearing_keeps_its_landmark_tree_ring_out():
+    # Landmark tree clusters stand at radius 6.4-8.5, which is where the bench
+    # ring already is, so the campfire opts out of them.
+    trees = SCENE.split("for (let treeIndex = 0", 1)[0]
+    assert 'if (landmark.id === "campfire") return;' in trees
 
 
 def test_remote_bench_sitters_render_seated():
