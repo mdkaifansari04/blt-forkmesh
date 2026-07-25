@@ -431,6 +431,12 @@ constexpr int kNodeLightRole = Qt::UserRole + 13;
 // a behind node is expected to catch up at the next tick. Only a safety net
 // now: push events notify mirror peers the moment the source moves.
 constexpr qint64 kMirrorSyncIntervalMs = 15LL * 60 * 1000;
+
+// Extra labels this machine answers to when a workflow declares `runs-on:`
+// (free-form, comma/space separated — e.g. "ios, xcode, gpu"). The machine's
+// node name, its mirror-executor node name and the platform are always labels;
+// this setting only adds capability tags on top of them.
+constexpr auto kActionNodeLabelsSetting = "actions/nodeLabels";
 // Defined further down; used early by MirrorSyncDelegate to pick chart colors.
 bool currentThemeIsDark();
 
