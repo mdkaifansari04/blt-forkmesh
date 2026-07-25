@@ -305,6 +305,7 @@ from urls import (  # noqa: E402
     ACCOUNTS_RE,
     ACCOUNT_CONTRIBUTIONS_RE,
     ACCOUNT_FOLLOW_RE,
+    REFERRAL_LINK_RE,
     ORGS_RE,
     ORG_RE,
     ORG_MEMBERS_RE,
@@ -2519,6 +2520,99 @@ async def network_leaderboards(env):
         cache_seconds=NETWORK_STATS_TTL,
     )
     await edge_cache_put(NETWORK_LEADERBOARDS_CACHE_KEY, resp)
+    return resp
+
+
+# --- Referral program ---------------------------------------------------------
+# Every registered user account owns the share link /r/<name>. A click on the
+# link bumps that account's counter and bounces to /signup?ref=<name>; a
+# completed signup carrying that ref bumps the signup counter. Only aggregate
+# per-referrer counters exist (see referral_stats in schema.py) — who followed
+# a link or who signed up through it is never recorded.
+REFERRAL_LEADERBOARD_CACHE_KEY = (
+    "https://forkmesh.internal/api/referrals/leaderboard"
+)
+REFERRAL_LEADERBOARD_TTL = 30  # seconds per colo; counters tolerate the lag
+
+
+# Resolve a raw referral code to (name, blind index) — only active, real user
+# accounts participate, so junk /r/ paths and node accounts count nothing.
+async def _referral_account(env, raw_name):
+    name = clean_string(raw_name or "", MAX_NODE_NAME).strip().lower()
+    if not valid_node_name(name):
+        return "", ""
+    name_bi, rec = await _account_row(env, name)
+    if (not rec or rec.get("status") != "active" or
+            _account_kind(rec) != "user"):
+        return "", ""
+    return name, name_bi
+
+
+async def _referral_bump(env, name, name_bi, column):
+    await d1_run(
+        env,
+        "INSERT INTO referral_stats (referrer_bi, name, %s, last_ts) "
+        "VALUES (?,?,1,?) "
+        "ON CONFLICT(referrer_bi) DO UPDATE SET %s=%s+1, "
+        "name=excluded.name, last_ts=excluded.last_ts"
+        % (column, column, column),
+        name_bi, name, int(Date.now()))
+
+
+# GET /r/<name>: count the click, then land on signup with the ref attached so
+# the eventual account creation can credit the referrer.
+async def referral_click(env, raw_name):
+    await ensure_schema(env)
+    name = ""
+    try:
+        name, name_bi = await _referral_account(env, raw_name)
+        if name_bi:
+            await _referral_bump(env, name, name_bi, "clicks")
+    except Exception:
+        pass  # a broken counter must never break the signup funnel
+    target = "/signup" + ("?ref=" + quote(name) if name else "")
+    return Response("", status=302, headers={
+        "location": target,
+        "cache-control": "no-store, max-age=0, must-revalidate",
+    })
+
+
+# Credit a completed signup to the referrer named in the signup payload.
+# Called after the account is saved; self-referrals count nothing.
+async def _record_referral_signup(env, new_name, raw_ref):
+    try:
+        ref_name, ref_bi = await _referral_account(env, raw_ref)
+        if not ref_bi or ref_name == new_name:
+            return
+        await _referral_bump(env, ref_name, ref_bi, "signups")
+    except Exception:
+        pass  # attribution is best-effort; the account itself already exists
+
+
+REFERRAL_LEADERBOARD_LIMIT = 10
+
+
+async def referral_leaderboard(env):
+    cached = await edge_cache_match(REFERRAL_LEADERBOARD_CACHE_KEY)
+    if cached is not None:
+        return cached
+    await ensure_schema(env)
+    rows = await d1_all(
+        env,
+        "SELECT name, clicks, signups FROM referral_stats "
+        "WHERE clicks > 0 OR signups > 0 "
+        "ORDER BY signups DESC, clicks DESC, name LIMIT ?",
+        REFERRAL_LEADERBOARD_LIMIT)
+    board = [
+        {"name": clean_string(r.get("name", ""), MAX_NODE_NAME) or "user",
+         "clicks": int(r.get("clicks") or 0),
+         "signups": int(r.get("signups") or 0)}
+        for r in rows
+    ]
+    resp = json_response(
+        {"ok": True, "board": board},
+        cache_seconds=REFERRAL_LEADERBOARD_TTL)
+    await edge_cache_put(REFERRAL_LEADERBOARD_CACHE_KEY, resp)
     return resp
 
 
@@ -10315,6 +10409,8 @@ async def _account_signup(env, request):
     # pick up the new account on their next poll instead of a TTL later.
     await edge_cache_delete(USERS_DIRECTORY_CACHE_KEY)
     await edge_cache_delete(CHAT_ACTIVITY_CACHE_KEY)
+    # Credit the referrer named by the /r/<name> share link, if any.
+    await _record_referral_signup(env, name, data.get("ref", ""))
     payload = await _account_public_payload(
         env, rec,
         session_device_label=_account_session_device_label(request))
@@ -31597,6 +31693,11 @@ class Default(WorkerEntrypoint):
         if url.path in ("/api/network/leaderboards", "/api/network/leaderboards/"):
             return await network_leaderboards(self.env)
 
+        # Referral-program board (clicks + signups per share link) for the
+        # /referrals page and the World's referral leaderboard sign.
+        if url.path in ("/api/referrals/leaderboard", "/api/referrals/leaderboard/"):
+            return await referral_leaderboard(self.env)
+
         # 30-day per-system uptime history for the public /status page.
         if url.path in ("/api/status", "/api/status/"):
             return await status_history(self.env)
@@ -32249,6 +32350,13 @@ class Default(WorkerEntrypoint):
             return json_response(
                 {"error": "unavailable"}, status=503,
                 extra_headers=EXPECTED_DEGRADED_HEADERS)
+
+        # Referral share links: count the click, bounce to signup. Matched
+        # before the repo shortcut so /r/<name> never reads as owner/repo.
+        referral_match = REFERRAL_LINK_RE.match(url.path)
+        if referral_match:
+            return await referral_click(
+                self.env, unquote(referral_match.group(1)))
 
         # Repo shortcut URLs (/owner/repo and tab/tree/blob deep links) all
         # serve the prebuilt repo-detail page; its JS resolves the path. The
