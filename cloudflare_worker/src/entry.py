@@ -317,6 +317,7 @@ from urls import (  # noqa: E402
     ACCOUNT_CONTRIBUTIONS_RE,
     ACCOUNT_FOLLOW_RE,
     REFERRAL_LINK_RE,
+    REFERRAL_CARD_RE,
     ORGS_RE,
     ORG_RE,
     ORG_MEMBERS_RE,
@@ -2636,13 +2637,107 @@ async def _referral_bump(env, name, name_bi, column):
         name_bi, name, int(Date.now()))
 
 
+async def _referral_counts(env, name_bi):
+    """Live (clicks, signups, last activity ms) for one referrer."""
+    row = await d1_first(
+        env,
+        "SELECT clicks, signups, last_ts FROM referral_stats "
+        "WHERE referrer_bi=?", name_bi)
+    rec = row or {}
+    try:
+        return (int(rec.get("clicks") or 0), int(rec.get("signups") or 0),
+                int(rec.get("last_ts") or 0))
+    except (TypeError, ValueError):
+        return 0, 0, 0
+
+
+# Link-preview crawlers: when a share link is posted to Mastodon, every server
+# that sees the post fetches the URL, and Slack/Discord/Twitter do the same.
+# They get the preview page below instead of the 302 - and they never move the
+# counters, because a boost fanning a post out to 200 servers is not 200
+# clicks. Deliberately coarse: a false positive costs one uncounted click.
+REFERRAL_PREVIEW_AGENTS = (
+    "bot", "crawler", "spider", "preview", "mastodon", "pleroma", "akkoma",
+    "misskey", "friendica", "lemmy", "activitypub", "facebookexternalhit",
+    "whatsapp", "embedly", "iframely", "opengraph", "quora link", "curl/",
+    "wget/",
+)
+
+
+def _is_link_preview_agent(request):
+    try:
+        ua = str(request.headers.get("user-agent") or "").lower()[:512]
+    except Exception:
+        return False
+    return any(marker in ua for marker in REFERRAL_PREVIEW_AGENTS)
+
+
+def _referral_preview_page(origin, name, clicks, signups):
+    # Minimal HTML whose only job is to carry the OpenGraph tags; the card PNG
+    # they point at is rendered per request from the same counters, so the
+    # unfurl shows how far this link has actually travelled instead of the
+    # generic "Create account - ForkMesh" signup preview (adhoc #313). Humans
+    # who trip the crawler heuristic still land on signup via the refresh.
+    target = "/signup?ref=" + quote(name)
+    summary = "%s click%s and %s signup%s so far." % (
+        clicks, "" if clicks == 1 else "s",
+        signups, "" if signups == 1 else "s")
+    title = "Join ForkMesh with @%s" % name
+    description = (
+        "%s invites you to ForkMesh - distributed Git hosting on a mesh of "
+        "desktop nodes. %s" % ("@" + name, summary))
+    card = "%s/api/referrals/%s/card.png" % (origin, quote(name))
+    share = "%s/r/%s" % (origin, quote(name))
+    return (
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width, "
+        "initial-scale=1\">"
+        "<title>%s</title>"
+        "<meta name=\"description\" content=\"%s\">"
+        "<link rel=\"canonical\" href=\"%s\">"
+        "<meta property=\"og:type\" content=\"website\">"
+        "<meta property=\"og:site_name\" content=\"ForkMesh\">"
+        "<meta property=\"og:url\" content=\"%s\">"
+        "<meta property=\"og:title\" content=\"%s\">"
+        "<meta property=\"og:description\" content=\"%s\">"
+        "<meta property=\"og:image\" content=\"%s\">"
+        "<meta property=\"og:image:width\" content=\"%d\">"
+        "<meta property=\"og:image:height\" content=\"%d\">"
+        "<meta property=\"og:image:alt\" content=\"%s\">"
+        "<meta name=\"twitter:card\" content=\"summary_large_image\">"
+        "<meta name=\"twitter:title\" content=\"%s\">"
+        "<meta name=\"twitter:description\" content=\"%s\">"
+        "<meta name=\"twitter:image\" content=\"%s\">"
+        "<meta http-equiv=\"refresh\" content=\"0; url=%s\">"
+        "</head><body><p><a href=\"%s\">%s</a></p><p>%s</p></body></html>"
+        % (_html_escape(title), _html_escape(description), share,
+           share, _html_escape(title), _html_escape(description), card,
+           og_card.CARD_W, og_card.CARD_H,
+           _html_escape("%s: %s" % (title, summary)),
+           _html_escape(title), _html_escape(description), card,
+           _html_escape(target), _html_escape(target), _html_escape(title),
+           _html_escape(summary)))
+
+
 # GET /r/<name>: count the click, then land on signup with the ref attached so
-# the eventual account creation can credit the referrer.
-async def referral_click(env, raw_name):
+# the eventual account creation can credit the referrer. Link-preview crawlers
+# get an OpenGraph page carrying this referrer's live counters instead.
+async def referral_click(env, raw_name, request=None):
     await ensure_schema(env)
     name = ""
     try:
         name, name_bi = await _referral_account(env, raw_name)
+        if name_bi and request is not None and _is_link_preview_agent(request):
+            clicks, signups, _last_ts = await _referral_counts(env, name_bi)
+            return Response(
+                _referral_preview_page(
+                    _ap_origin(env, request), name, clicks, signups),
+                status=200, headers={
+                    "content-type": "text/html; charset=utf-8",
+                    # Counters are live: never let a shared cache freeze the
+                    # numbers a re-crawl is supposed to refresh.
+                    "cache-control": "no-store, max-age=0, must-revalidate",
+                })
         if name_bi:
             await _referral_bump(env, name, name_bi, "clicks")
     except Exception:
@@ -2652,6 +2747,46 @@ async def referral_click(env, raw_name):
         "location": target,
         "cache-control": "no-store, max-age=0, must-revalidate",
     })
+
+
+REFERRAL_CARD_TTL = 60  # seconds per colo; short so re-unfurls look live
+
+
+# GET /api/referrals/<name>/card.png: the og:image of the preview page above -
+# the referrer's handle plus their live click/signup counters, rendered the
+# same way as the repo info card (see og_card.py).
+async def referral_card_handler(env, request, raw_name):
+    if method_name(request) not in ("GET", "HEAD"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    await ensure_schema(env)
+    name, name_bi = await _referral_account(env, raw_name)
+    if not name_bi:
+        return json_response({"error": "not_found"}, status=404)
+    origin = _ap_origin(env, request)
+    cache_key = "%s/api/referrals/%s/card.png" % (origin, quote(name))
+    cached = await edge_cache_match_media(cache_key, "image/png")
+    if cached is not None:
+        return cached
+    clicks, signups, last_ts = await _referral_counts(env, name_bi)
+    png = og_card.render_referral_card({
+        "name": name,
+        "host": urlparse(origin).netloc or "forkmesh.com",
+        "clicks": clicks,
+        "signups": signups,
+        "lastTs": last_ts,
+    }, time.time())
+    # Uint8Array.new copies into a JS-owned buffer: a bare _to_js(bytes) view
+    # into WASM memory read off the GIL crashes the isolate (see
+    # repo_card_handler).
+    resp = JsResponse.new(Uint8Array.new(_to_js(bytes(png))), to_js({
+        "status": 200,
+        "headers": {
+            "content-type": "image/png",
+            "cache-control": "public, max-age=%d" % REFERRAL_CARD_TTL,
+        },
+    }))
+    await edge_cache_put(cache_key, resp)
+    return resp
 
 
 # Credit a completed signup to the referrer named in the signup payload.
@@ -31853,6 +31988,12 @@ class Default(WorkerEntrypoint):
         if url.path in ("/api/referrals/leaderboard", "/api/referrals/leaderboard/"):
             return await referral_leaderboard(self.env)
 
+        # Rendered share-link card (og:image of the /r/<name> preview page).
+        referral_card_match = REFERRAL_CARD_RE.match(url.path)
+        if referral_card_match:
+            return await referral_card_handler(
+                self.env, request, unquote(referral_card_match.group(1)))
+
         # 30-day per-system uptime history for the public /status page.
         if url.path in ("/api/status", "/api/status/"):
             return await status_history(self.env)
@@ -32517,7 +32658,7 @@ class Default(WorkerEntrypoint):
         referral_match = REFERRAL_LINK_RE.match(url.path)
         if referral_match:
             return await referral_click(
-                self.env, unquote(referral_match.group(1)))
+                self.env, unquote(referral_match.group(1)), request)
 
         # Repo shortcut URLs (/owner/repo and tab/tree/blob deep links) all
         # serve the prebuilt repo-detail page; its JS resolves the path. The

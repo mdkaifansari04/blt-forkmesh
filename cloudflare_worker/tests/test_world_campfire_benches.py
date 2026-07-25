@@ -93,6 +93,45 @@ def test_faces_wear_the_last_used_emoji_with_a_smile_default():
     assert "faceMesh.rotation.y = Math.PI;" in SCENE
 
 
+def test_emoji_wraps_the_head_with_no_gap_of_bare_sphere():
+    # adhoc #316: the decal used to stop short of the glyph, leaving corners
+    # and a rim of head-coloured sphere showing as a seam around the face.
+    # The canvas is now flooded underneath the glyph with its own rim colour,
+    # and the shell it is mapped onto wraps wider than the glyph itself.
+    assert 'context.globalCompositeOperation = "destination-over";' in SCENE
+    assert "context.fillRect(0, 0, 128, 128);" in SCENE
+    assert 'context.globalCompositeOperation = "source-over";' in SCENE
+
+    def span(name):
+        found = re.search(
+            rf"const AVATAR_FACE_{name} = Math\.PI \* ([\d.]+);", SCENE
+        )
+        assert found, f"AVATAR_FACE_{name} missing"
+        return float(found.group(1))
+
+    phi = span("PHI_LENGTH")
+    theta = span("THETA_LENGTH")
+    # Wider than the pre-#316 patch (0.84 phi by 0.68 theta) so the padding
+    # reaches past the face, and still centred on the avatar's front.
+    assert phi > 0.84 and theta > 0.68
+    assert abs(span("PHI_START") * 2 + phi - 1) < 1e-9
+    assert abs(span("THETA_START") * 2 + theta - 1) < 1e-9
+    for name in ("PHI_START", "PHI_LENGTH", "THETA_START", "THETA_LENGTH"):
+        assert f"AVATAR_FACE_{name},\n" in SCENE, f"{name} unused by the face"
+
+
+def test_head_colour_is_sampled_from_the_edge_of_the_emoji():
+    # adhoc #316: the head takes the glyph's own rim colour so the sphere and
+    # the decal wrapped over it are indistinguishable. The whole-glyph
+    # sampler stays as the fallback for emoji with no single rim colour.
+    assert "function edgeEmojiColor" in SCENE
+    assert (
+        "edgeEmojiColor(context, canvas) || dominantEmojiColor(context, canvas)"
+        in SCENE
+    )
+    assert "skin.color.set(drawn.color);" in SCENE
+
+
 def test_remote_bench_sitters_render_seated():
     assert (
         'const CAMPFIRE_SEATED_ACTIVITY = "sitting beside the campfire";' in SCENE

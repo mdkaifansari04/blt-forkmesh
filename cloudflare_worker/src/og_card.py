@@ -1,4 +1,4 @@
-"""Social-preview (OpenGraph) card renderer for repo pages.
+"""Social-preview (OpenGraph) card renderer for repo and referral pages.
 
 Pure (builtin-only, no ``js``/``workers`` runtime, no ``env``/DB access): a
 Mastodon/Slack/Twitter unfurl of a repo URL used to show only the ForkMesh
@@ -535,6 +535,16 @@ def format_count(value):
     return text.replace(".0", "")
 
 
+def format_exact(value):
+    """Exact, grouped count - the referral card's whole point is the number,
+    so 1,284 clicks must not collapse to the same '1.3k' as 1,285."""
+    try:
+        n = int(str(value).strip() or 0)
+    except (TypeError, ValueError):
+        n = 0
+    return "{:,}".format(n)
+
+
 def format_size(size_bytes):
     try:
         n = int(size_bytes or 0)
@@ -676,5 +686,68 @@ def render_repo_card(info, now_s):
     if right:
         canvas.text(CARD_W - pad - text_width(right, 2), footer_y + 4,
                     right, 2, _MUTED)
+    return canvas.png()
 
+
+def render_referral_card(info, now_s):
+    """Render the 1200x630 OpenGraph PNG for a /r/<name> share link.
+
+    The counters are the live values read at request time, so a Mastodon (or
+    Slack/Discord/Twitter) unfurl of the share link shows how far it has
+    actually travelled instead of the generic signup-page preview.
+
+    info keys: name (required), host, clicks, signups, lastTs.
+    """
+    name = str(info.get("name") or "")
+    canvas = _Canvas(CARD_W, CARD_H, _BG)
+
+    margin = 28
+    canvas.fill_rect(margin, margin, CARD_W - 2 * margin, CARD_H - 2 * margin,
+                     _CARD)
+    canvas.frame_rect(margin, margin, CARD_W - 2 * margin, CARD_H - 2 * margin,
+                      2, _BORDER)
+
+    pad = 72
+    logo_x = CARD_W - pad - _LOGO_W
+    canvas.blit_rgba(logo_x, margin + 40, _LOGO_W, _LOGO_H, _logo_rgba())
+
+    title = "@" + name
+    title_max_w = logo_x - pad - 40
+    scale = 6
+    while scale > 3 and text_width(title, scale) > title_max_w:
+        scale -= 1
+    canvas.text(pad, 96, _fit(title, scale, title_max_w), scale, _FG)
+
+    y = 96 + 7 * scale + 26
+    for line in _wrap("invites you to ForkMesh - distributed Git hosting on a "
+                      "mesh of desktop nodes.", 3, title_max_w, 2):
+        canvas.text(pad, y, line, 3, _TEXT)
+        y += 7 * 3 + 12
+
+    canvas.fill_rect(pad, 268, CARD_W - 2 * pad, 2, _BORDER)
+
+    # One wide row: the two counters this link has earned, plus how recently.
+    cells = (
+        ("CLICKS", format_exact(info.get("clicks"))),
+        ("SIGNUPS", format_exact(info.get("signups"))),
+        ("LAST ACTIVITY", format_age(info.get("lastTs"), now_s)),
+    )
+    grid_x = pad
+    grid_w = CARD_W - 2 * pad
+    col_w = grid_w // 3
+    for index, (label, value) in enumerate(cells):
+        cx = grid_x + index * col_w
+        value_scale = 10
+        while value_scale > 3 and text_width(value, value_scale) > col_w - 24:
+            value_scale -= 1
+        canvas.text(cx, 330, value, value_scale, _FG)
+        canvas.text(cx, 330 + 7 * 10 + 16, label, 2, _MUTED)
+
+    footer_y = CARD_H - margin - 48
+    host = str(info.get("host") or "forkmesh.com")
+    canvas.text(pad, footer_y,
+                _fit("%s/r/%s" % (host, name), 3, grid_w - 360), 3, _ACCENT)
+    right = "REFERRAL PROGRAM"
+    canvas.text(CARD_W - pad - text_width(right, 2), footer_y + 4,
+                right, 2, _MUTED)
     return canvas.png()

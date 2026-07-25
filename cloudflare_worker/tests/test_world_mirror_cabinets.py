@@ -202,3 +202,14 @@ def test_world_fetches_the_flagship_mirror_snapshot_once_and_uses_cabinets():
     assert "data-world-mirror-node-detail" in APP
     assert "operator-reported" in APP
     assert "createMirrorNodePylon" not in SCENE
+
+
+def test_status_beacons_are_open_topped_and_alert_colours_sweep():
+    # The world camera looks down on the yard, so the lens top has to stay
+    # uncapped for the status colour to be visible at all.
+    assert "beaconCap" not in SCENE
+    assert "beaconCollar" in SCENE
+    # Only degraded (red) and healing (yellow) beacons carry the rotating lobes.
+    assert 'statusColor === "#ff0000" || statusColor === "#ffcc00"' in SCENE
+    assert "group.userData.beaconSweep = beaconSweep" in SCENE
+    assert "sweep.rotation.y = time * 0.0038" in SCENE

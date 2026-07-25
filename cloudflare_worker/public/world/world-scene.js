@@ -1557,39 +1557,48 @@ function addSectionPlaque(THREE, group, position, title, subtitle, color, distan
 const AVATAR_DEFAULT_FACE_EMOJI = "🙂";
 // Fallback for the head sphere when the worn emoji cannot be sampled. The
 // live colour is read back out of the rendered glyph instead (see
-// dominantEmojiColor) so the sphere is exactly the emoji's own face colour.
+// edgeEmojiColor) so the sphere is exactly the emoji's own rim colour.
 const AVATAR_EMOJI_SKIN_COLOR = "#ffcc4d";
+// How far the emoji decal is wrapped around the head, centred on the front.
+// Both spans are wider than the glyph itself so the padded canvas carries the
+// emoji's rim colour past where the face ends and no bare sphere is left over.
+const AVATAR_FACE_PHI_START = Math.PI * 0.03;
+const AVATAR_FACE_PHI_LENGTH = Math.PI * 0.94;
+const AVATAR_FACE_THETA_START = Math.PI * 0.117;
+const AVATAR_FACE_THETA_LENGTH = Math.PI * 0.766;
 
-// Most-common opaque colour in the drawn emoji. The head sphere is painted
-// with it so the wrapped decal and the sphere behind it are the same yellow
-// (or red, or blue) rather than a hand-picked approximation of one.
-function dominantEmojiColor(context, canvas) {
-  let pixels;
+// Reads back the drawn glyph, or "" when the canvas is tainted.
+function emojiPixels(context, canvas) {
   try {
-    pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    return context.getImageData(0, 0, canvas.width, canvas.height).data;
   } catch (_) {
-    return "";
+    return null;
   }
+}
+
+// Dominant colour of a flat list of sampled [r, g, b] triples, bucketed at
+// 4 bits per channel. Returns "" unless one bucket owns at least `share` of
+// the samples: a glyph that barely rendered (or is mostly outline) would
+// otherwise hand back a near-black head.
+function dominantSampleColor(samples, share) {
   const buckets = new Map();
-  let opaque = 0;
-  for (let i = 0; i < pixels.length; i += 4) {
-    if (pixels[i + 3] < 224) continue;
-    opaque += 1;
+  const total = samples.length / 3;
+  for (let i = 0; i < samples.length; i += 3) {
     const key =
-      ((pixels[i] >> 4) << 8) |
-      ((pixels[i + 1] >> 4) << 4) |
-      (pixels[i + 2] >> 4);
+      ((samples[i] >> 4) << 8) |
+      ((samples[i + 1] >> 4) << 4) |
+      (samples[i + 2] >> 4);
     const bucket = buckets.get(key);
     if (bucket) {
-      bucket.r += pixels[i];
-      bucket.g += pixels[i + 1];
-      bucket.b += pixels[i + 2];
+      bucket.r += samples[i];
+      bucket.g += samples[i + 1];
+      bucket.b += samples[i + 2];
       bucket.count += 1;
     } else {
       buckets.set(key, {
-        r: pixels[i],
-        g: pixels[i + 1],
-        b: pixels[i + 2],
+        r: samples[i],
+        g: samples[i + 1],
+        b: samples[i + 2],
         count: 1,
       });
     }
@@ -1598,14 +1607,74 @@ function dominantEmojiColor(context, canvas) {
   buckets.forEach((bucket) => {
     if (!best || bucket.count > best.count) best = bucket;
   });
-  // A glyph that barely rendered (or is mostly outline) would hand back a
-  // near-black head, so only trust a colour that actually dominates.
-  if (!best || !opaque || best.count / opaque < 0.25) return "";
-  const channel = (total) =>
-    Math.max(0, Math.min(255, Math.round(total / best.count)))
+  if (!best || !total || best.count / total < share) return "";
+  const channel = (sum) =>
+    Math.max(0, Math.min(255, Math.round(sum / best.count)))
       .toString(16)
       .padStart(2, "0");
   return `#${channel(best.r)}${channel(best.g)}${channel(best.b)}`;
+}
+
+// Most-common opaque colour anywhere in the drawn emoji, used as the second
+// choice when the rim itself is too varied to read.
+function dominantEmojiColor(context, canvas) {
+  const pixels = emojiPixels(context, canvas);
+  if (!pixels) return "";
+  const samples = [];
+  for (let i = 0; i < pixels.length; i += 4) {
+    if (pixels[i + 3] < 224) continue;
+    samples.push(pixels[i], pixels[i + 1], pixels[i + 2]);
+  }
+  return dominantSampleColor(samples, 0.25);
+}
+
+// Colour of the emoji's own outer rim. The head sphere is painted with it and
+// the decal's padding is flooded with it, so the wrapped glyph and the sphere
+// behind it meet without a seam or a gap of some other yellow.
+function edgeEmojiColor(context, canvas) {
+  const pixels = emojiPixels(context, canvas);
+  if (!pixels) return "";
+  const width = canvas.width;
+  const height = canvas.height;
+  const centerX = (width - 1) / 2;
+  const centerY = (height - 1) / 2;
+  const reach = Math.round(Math.max(width, height) / 2);
+  // Step back in from the antialiased rim (and any dark outline drawn on it)
+  // before sampling, so the head takes the glyph's body colour.
+  const inset = Math.max(2, Math.round(Math.min(width, height) * 0.04));
+  const rays = 72;
+  const samples = [];
+  const opaqueAt = (x, y) =>
+    x >= 0 &&
+    y >= 0 &&
+    x < width &&
+    y < height &&
+    pixels[(y * width + x) * 4 + 3] >= 224;
+  for (let ray = 0; ray < rays; ray += 1) {
+    const angle = (ray / rays) * Math.PI * 2;
+    const stepX = Math.cos(angle);
+    const stepY = Math.sin(angle);
+    let rim = -1;
+    for (let d = reach; d >= 0; d -= 1) {
+      const x = Math.round(centerX + stepX * d);
+      const y = Math.round(centerY + stepY * d);
+      if (opaqueAt(x, y)) {
+        rim = d;
+        break;
+      }
+    }
+    if (rim < 0) continue;
+    const d = Math.max(0, rim - inset);
+    const x = Math.round(centerX + stepX * d);
+    const y = Math.round(centerY + stepY * d);
+    if (!opaqueAt(x, y)) continue;
+    const i = (y * width + x) * 4;
+    samples.push(pixels[i], pixels[i + 1], pixels[i + 2]);
+  }
+  // A rim that is half one colour and half another (flags, split glyphs) is
+  // not a skin tone; let the whole-glyph sampler answer instead.
+  if (samples.length < rays * 3 * 0.5) return "";
+  return dominantSampleColor(samples, 0.45);
 }
 
 // Mouse-activity antenna: one solid green, blinked hard on and hard off.
@@ -1632,14 +1701,26 @@ function rotateBoxTopUVs(geometry) {
 
 function avatarFaceTexture(THREE, emoji) {
   let color = "";
+  // The glyph is drawn smaller than the canvas so the decal (which is widened
+  // to match, see AVATAR_FACE_*) keeps the face at the same angular size while
+  // its padding wraps further around the head.
   const texture = canvasTexture(THREE, 128, 128, (context, canvas) => {
     context.clearRect(0, 0, 128, 128);
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.font = '118px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
+    context.font = '104px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
     context.fillStyle = "#1d130c";
-    context.fillText(emoji, 64, 68);
-    color = dominantEmojiColor(context, canvas);
+    context.fillText(emoji, 64, 67);
+    color =
+      edgeEmojiColor(context, canvas) || dominantEmojiColor(context, canvas);
+    // Flood everything the glyph did not cover — the padding and the corners
+    // outside a round emoji — with its own rim colour, painted underneath so
+    // the face itself is untouched. Nothing of the head shows through, so
+    // there is no gap and no seam where the decal ends.
+    context.globalCompositeOperation = "destination-over";
+    context.fillStyle = color || AVATAR_EMOJI_SKIN_COLOR;
+    context.fillRect(0, 0, 128, 128);
+    context.globalCompositeOperation = "source-over";
   });
   return { texture, color: color || AVATAR_EMOJI_SKIN_COLOR };
 }
@@ -1793,7 +1874,9 @@ function createAvatar(THREE, identity, options = {}) {
   torso.position.y = 2.15;
   group.add(torso);
 
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.45, 18, 14), skin);
+  // Same tessellation as the face shell wrapped over it, so the two silhouettes
+  // agree where the decal reaches around towards the ears.
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.45, 32, 24), skin);
   head.scale.y = 1.05;
   head.position.y = 3.36;
   group.add(head);
@@ -1815,14 +1898,16 @@ function createAvatar(THREE, identity, options = {}) {
   const faceMesh = new THREE.Mesh(
     new THREE.SphereGeometry(
       0.462,
-      18,
-      14,
-      Math.PI * 0.08,
-      Math.PI * 0.84,
-      Math.PI * 0.16,
-      Math.PI * 0.68,
+      32,
+      24,
+      AVATAR_FACE_PHI_START,
+      AVATAR_FACE_PHI_LENGTH,
+      AVATAR_FACE_THETA_START,
+      AVATAR_FACE_THETA_LENGTH,
     ),
-    new THREE.MeshBasicMaterial({ transparent: true }),
+    // The canvas is flooded opaque, so the decal renders in the solid pass and
+    // never sorts against the head sphere it is hugging.
+    new THREE.MeshBasicMaterial({}),
   );
   faceMesh.scale.y = 1.05;
   faceMesh.position.y = 3.36;
@@ -2503,9 +2588,14 @@ function createMirrorServerCabinet(THREE, node, id) {
         : online
           ? "#00cc44"
           : "#71837a";
+  // Yellow and red are the two statuses that want attention, so their lamps
+  // sweep like a rotating warning beacon; green and offline stay steady.
+  const alerting = statusColor === "#ff0000" || statusColor === "#ffcc00";
   // A single beacon lamp sits on the cabinet roof; its color is the status.
   // The lens is an unlit cylinder so the status reads as one flat, solid
-  // colour from every camera angle instead of shading into a gradient.
+  // colour from every camera angle instead of shading into a gradient. The
+  // top is left open — the world camera looks down on the yard, so a metal
+  // cap would hide the one part of the lamp that carries the status.
   const statusLight = new THREE.Group();
   const beaconBase = new THREE.Mesh(
     new THREE.CylinderGeometry(0.17, 0.19, 0.08, 20),
@@ -2517,20 +2607,57 @@ function createMirrorServerCabinet(THREE, node, id) {
   beaconBase.position.y = 0.04;
   statusLight.add(beaconBase);
   const beaconLens = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.15, 0.15, 0.24, 20),
+    new THREE.CylinderGeometry(0.15, 0.15, 0.3, 20),
     new THREE.MeshBasicMaterial({ color: statusColor, toneMapped: false }),
   );
-  beaconLens.position.y = 0.2;
+  beaconLens.position.y = 0.23;
   statusLight.add(beaconLens);
-  const beaconCap = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.16, 0.16, 0.05, 20),
+  // Only a thin collar rings the open mouth so the lens still reads as a
+  // fixture rather than a bare peg.
+  const beaconCollar = new THREE.Mesh(
+    new THREE.TorusGeometry(0.152, 0.016, 8, 20),
     makeMaterial(THREE, "#35463e", {
       metalness: 0.82,
       roughness: 0.3,
     }),
   );
-  beaconCap.position.y = 0.345;
-  statusLight.add(beaconCap);
+  beaconCollar.rotation.x = Math.PI / 2;
+  beaconCollar.position.y = 0.378;
+  statusLight.add(beaconCollar);
+  if (alerting) {
+    // Two opposed additive lobes hugging the lens: rotating the group reads as
+    // a sweeping light without an actual light source or a per-frame material
+    // rebuild, both of which are too expensive for a yard of 64 cabinets.
+    const beaconSweep = new THREE.Group();
+    const sweepMaterial = new THREE.MeshBasicMaterial({
+      color: statusColor,
+      toneMapped: false,
+      transparent: true,
+      opacity: 0.55,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    for (const thetaStart of [0, Math.PI]) {
+      const lobe = new THREE.Mesh(
+        new THREE.CylinderGeometry(
+          0.24,
+          0.24,
+          0.26,
+          10,
+          1,
+          true,
+          thetaStart,
+          Math.PI / 3,
+        ),
+        sweepMaterial,
+      );
+      beaconSweep.add(lobe);
+    }
+    beaconSweep.position.y = 0.23;
+    statusLight.add(beaconSweep);
+    group.userData.beaconSweep = beaconSweep;
+  }
   statusLight.position.set(0, 3.29, 0);
   group.add(statusLight);
 
@@ -2548,6 +2675,11 @@ function createMirrorServerCabinet(THREE, node, id) {
   group.userData.dataKey = nodeDataKey(node);
   group.userData.nodeRecord = { ...node };
   setShadows(group);
+  // The sweep is a glow, not geometry: shadow-casting it would paint a turning
+  // dark band across the cabinet roof.
+  if (group.userData.beaconSweep) {
+    setShadows(group.userData.beaconSweep, false, false);
+  }
   return group;
 }
 
@@ -11492,8 +11624,14 @@ export function createWorldScene({
       }
     }
     if (!reducedMotion) {
-      // Node beacons intentionally hold a steady colour and size — no spin or
-      // pulse — so a status reads the same in a screenshot as it does live.
+      // Node beacons hold a steady colour and size — no pulse — so a status
+      // reads the same in a screenshot as it does live. Only degraded and
+      // healing nodes carry a sweep, and it turns rather than fades, so the
+      // colour itself stays legible in a still frame.
+      nodeInfrastructure.forEach((cabinet) => {
+        const sweep = cabinet.userData?.beaconSweep;
+        if (sweep) sweep.rotation.y = time * 0.0038;
+      });
       botAgents.forEach((robot, id) => {
         const phase = hashNumber(id) * 0.0001;
         robot.position.y =

@@ -994,6 +994,9 @@ private:
     // Settings -> Security tab: private vulnerability reporting form.
     QWidget *buildVulnReportTab();
     void submitVulnerabilityReport();
+    // Settings -> Quick Setup tab: provision a fresh instance in one pass —
+    // identity, workflow credentials and world appearance applied together.
+    QWidget *buildQuickSetupTab();
     // Settings -> Data tab: where configuration data is stored, per-directory
     // file/folder breakdown, open/delete, and export/import as a .tar.gz backup.
     QWidget *buildDataSection();
@@ -1172,11 +1175,40 @@ private:
                                  QString *errorOut);
     // Save non-sensitive host metadata from the form without running the
     // installer. pass is cached only for the current process; it is never
-    // written to QSettings.
+    // written to QSettings. identityFile records the ForkMesh-managed private
+    // key path for auto-provisioned hosts (public metadata, no key material);
+    // when empty, an already-saved path for the same node is preserved.
     void addHostFromForm();
     void rememberHost(const QString &name, const QString &ip, const QString &user,
-                      const QString &pass, const QString &status = QStringLiteral("installed"));
+                      const QString &pass, const QString &status = QStringLiteral("installed"),
+                      const QString &identityFile = QString());
+    // The managed private-key path saved for a host, when the file still
+    // exists; empty otherwise (agent/default keys or password are used).
+    QString savedHostIdentityFile(const QString &name, const QString &ip,
+                                  const QString &user) const;
     void refreshHostsTable();
+    // --- One-click Vultr mirror (adhoc #315) ---------------------------------
+    // Create a brand-new mirror VPS on the user's Vultr account: pick the
+    // cheapest plan and newest Debian via the Vultr v2 API, create/reuse the
+    // ForkMesh-managed SSH key, boot the instance, then hand off to the normal
+    // runHostInstall flow which installs ForkMesh and auto-links the node to
+    // this account. The API key lives in memory only for the duration of the
+    // run; it is never written to QSettings or argv.
+    void createVultrMirrorFromForm();
+    void vultrApiCall(const QString &apiKey, const QString &path,
+                      const QByteArray &method, const QJsonObject &body,
+                      std::function<void(QJsonObject, QString)> onDone);
+    void ensureVultrManagedKeypair(
+        std::function<void(QString privateKeyPath, QString publicKey,
+                           QString error)> onDone);
+    void resolveVultrSshKeyId(
+        const QString &apiKey, const QString &publicKey,
+        std::function<void(QString keyId, QString error)> onDone);
+    void pollVultrInstance(const QString &apiKey, const QString &instanceId,
+                           const QString &node, const QString &identityFile);
+    void startVultrHostInstall(const QString &node, const QString &ip,
+                               const QString &identityFile);
+    void finishVultrProvision(bool ok, const QString &message);
     // Reload a saved host's server info from the table. A password is restored
     // only when it remains in this process's session cache.
     void loadHostIntoForm(int row, int column);
@@ -1917,6 +1949,24 @@ private:
     // Human-readable "this workflow belongs to <node>" text for logs and the UI.
     QString workflowDedicationLabel(const ActionWorkflow &workflow) const;
     void processActionQueue();
+    // An encrypted repository is served out of a temporary materialization whose
+    // directory is recreated by every sealing pass and deleted as soon as the
+    // replacement is installed. A run checks out of, clones from, and lands
+    // release artifacts into that directory for its whole lifetime, so a routine
+    // re-seal (publishing a release triggers one) can delete the mirror out from
+    // under an in-flight build: `git -C <mirror> worktree add` then fails with
+    // "cannot change to '/tmp/ForkMesh-XXXXXX/repository.git'" (adhoc #314).
+    // Returns the live materialization for this repository — writing its current
+    // path into `mirrorPath` when the record lagged behind a re-seal — and keeps
+    // that directory alive for as long as the caller holds the returned handle.
+    // Null for a plain durable mirror, which needs no pinning.
+    std::shared_ptr<void> pinActionMirror(const RepositoryRecord &repo,
+                                          QString *mirrorPath) const;
+    // Drop the pin taken for `runId`, first carrying any release artifacts the
+    // run landed into the mirror that is serving the repository now: a re-seal
+    // during a long build leaves the run writing its binaries into a directory
+    // that is about to be deleted along with the pin.
+    void releaseActionMirrorPin(int runId);
     // The runner currently executing `runId`, or nullptr if no runner is. Used
     // to target stop()/abort at the exact run rather than a single global runner.
     ActionRunner *runnerForRun(int runId) const;
@@ -3178,6 +3228,12 @@ private:
     // the record at it when the move fails). Returns true when the record was
     // modified and needs saving.
     bool reconcileMirrorPath(RepositoryRecord &repo);
+    // Point a record at the temporary materialization now serving it after a
+    // sealing pass. Release artifact blobs live beside the git data instead of
+    // in it, so they are carried into the replacement directory first —
+    // otherwise every re-seal silently drops the binaries this node hosts.
+    void adoptMaterializedMirror(RepositoryRecord &repo,
+                                 const QString &repositoryPath);
     void saveRepositories() const;
     void refreshRepositoryList();
     // Node handles offered by the @-mention autocomplete in comment editors:
@@ -3606,6 +3662,16 @@ private:
     QProcess *m_hostInstallProcess = nullptr; // running ssh install session, if any
     QProcess *m_hostLogProcess = nullptr;     // running ssh log-tail session, if any
     QProcess *m_hostActionsProcess = nullptr; // one-shot stdin-only Actions config
+    // One-click Vultr mirror provisioning (adhoc #315). The API key is read
+    // from the field (or a stored VULTR_API_KEY device variable) per run and
+    // deliberately has no persistent member.
+    QLineEdit *m_vultrApiKeyEdit = nullptr;
+    QLineEdit *m_vultrNameEdit = nullptr;
+    QPushButton *m_vultrCreateButton = nullptr;
+    QLabel *m_vultrStatus = nullptr;
+    bool m_vultrProvisionActive = false;
+    int m_vultrPollCount = 0;        // instance boot polls used this run
+    int m_vultrInstallAttempts = 0;  // SSH install attempts used this run
     // Installer link-code detection (adhoc #53): rolling tail of the install
     // output so the "Link code: NNNNNN" line survives chunk splits, and a
     // per-run guard so the link popup opens once.
@@ -4648,6 +4714,16 @@ private:
     QFileSystemWatcher *m_actionSpoolWatcher = nullptr;
     QList<ActionRun> m_actionRuns;   // loaded history, newest first
     QList<int> m_actionQueue;        // run ids queued for execution
+    // The encrypted mirror materialization a run is executing out of (see
+    // pinActionMirror). Held until the run finishes so a concurrent re-seal
+    // cannot delete the served mirror mid-build.
+    struct ActionMirrorPin {
+        std::shared_ptr<void> materialization; // keeps the directory alive
+        QString path;                          // mirror the run was handed
+        QString owner;
+        QString name;
+    };
+    QHash<int, ActionMirrorPin> m_actionMirrorPins; // run id -> pinned mirror
     QString m_mirrorActionsConfigGeneration;
     QString m_mirrorActionsRuntimeState;
     qint64 m_mirrorActionsRuntimeStateWrittenAtMs = 0;
