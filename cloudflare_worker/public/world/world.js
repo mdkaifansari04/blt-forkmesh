@@ -7508,11 +7508,12 @@ class ForkMeshWorld extends HTMLElement {
                 )}</strong><p>${escapeHTML(station.description)}</p></div>
                 <button type="button" data-world-radio="${escapeHTML(
                   station.id,
-                )}">${
-                  station.playMode === "external"
-                    ? "Open official player"
-                    : "Play with consent"
-                }</button>
+                )}">${escapeHTML(
+                  station.actionLabel ||
+                    (station.playMode === "external"
+                      ? "Open official player"
+                      : "Play with consent"),
+                )}</button>
                 <a href="${escapeHTML(station.homepageUrl)}" target="_blank" rel="noopener noreferrer">${
                   station.playMode === "external"
                     ? "Provider page"
@@ -10900,6 +10901,10 @@ class ForkMeshWorld extends HTMLElement {
       );
       return;
     }
+    if (station.playMode === "hosted") {
+      await this.playHostedTrack(station, now);
+      return;
+    }
     if (!this.soundEnabled) {
       now.innerHTML = `
         <span><strong>Sound is off</strong><small>Use the Sound button in the World toolbar first. Audio never starts automatically.</small></span>
@@ -10936,6 +10941,43 @@ class ForkMeshWorld extends HTMLElement {
       this.activeAudio = null;
       now.innerHTML = `
         <span>Playback was blocked or the provider stream is unavailable.</span>
+        <button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
+    }
+  }
+
+  // First-party ForkMesh audio shipped with the site. The button press is the
+  // consent gesture, so this path never starts on its own and never proxies a
+  // third-party stream.
+  async playHostedTrack(station, now) {
+    const AudioElement = window.Audio;
+    if (!AudioElement) {
+      now.innerHTML = `<span>Audio playback is unavailable in this browser.</span><button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
+      return;
+    }
+    const element = new AudioElement(station.trackUrl);
+    element.preload = "auto";
+    element.loop = false;
+    element.addEventListener("ended", () => this.stopRadio());
+    this.activeAudio = {
+      stop() {
+        try {
+          element.pause();
+          element.currentTime = 0;
+        } catch (_) {}
+      },
+    };
+    now.innerHTML = `
+      <span><strong>${escapeHTML(station.name)}</strong> · ${escapeHTML(
+        station.provider,
+      )}<small data-world-track>Hosted by ForkMesh · local playback only · stop any time.</small></span>
+      <button type="button" data-world-radio-stop>Mute / stop</button>`;
+    try {
+      await element.play();
+      this.toast(`${station.name} is playing on this device only.`);
+    } catch (_) {
+      this.activeAudio = null;
+      now.innerHTML = `
+        <span>Playback was blocked or the song could not be loaded.</span>
         <button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
     }
   }

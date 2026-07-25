@@ -464,6 +464,22 @@ def test_world_has_consent_aware_activity_events_workshops_and_media():
     assert "Audio never starts automatically" in APP
 
 
+def test_broadcast_garden_offers_the_first_party_forkmesh_song_on_demand():
+    assert (PUBLIC / "assets" / "songs" / "ForkMeshForever(IndiePop).mp3").exists()
+    assert "Listen to the ForkMesh song" in DATA
+    assert '"/assets/songs/ForkMeshForever(IndiePop).mp3"' in DATA
+    assert 'playMode: "hosted"' in DATA
+    assert "station.actionLabel" in APP
+    assert 'station.playMode === "hosted"' in APP
+    assert "async playHostedTrack(station, now)" in APP
+    hosted = APP[APP.index("  async playHostedTrack("):APP.index(
+        "\n  stopRadio(", APP.index("  async playHostedTrack(")
+    )]
+    assert "element.loop = false" in hosted
+    assert "await element.play()" in hosted
+    assert "data-world-radio-stop" in hosted
+
+
 def test_join_cues_are_country_specific_local_opt_in_and_rate_limited():
     assert "playCountryJoinSound(countryCode, force = false)" in APP
     assert 'message.type === "join"' in APP
