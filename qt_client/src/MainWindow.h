@@ -1172,11 +1172,40 @@ private:
                                  QString *errorOut);
     // Save non-sensitive host metadata from the form without running the
     // installer. pass is cached only for the current process; it is never
-    // written to QSettings.
+    // written to QSettings. identityFile records the ForkMesh-managed private
+    // key path for auto-provisioned hosts (public metadata, no key material);
+    // when empty, an already-saved path for the same node is preserved.
     void addHostFromForm();
     void rememberHost(const QString &name, const QString &ip, const QString &user,
-                      const QString &pass, const QString &status = QStringLiteral("installed"));
+                      const QString &pass, const QString &status = QStringLiteral("installed"),
+                      const QString &identityFile = QString());
+    // The managed private-key path saved for a host, when the file still
+    // exists; empty otherwise (agent/default keys or password are used).
+    QString savedHostIdentityFile(const QString &name, const QString &ip,
+                                  const QString &user) const;
     void refreshHostsTable();
+    // --- One-click Vultr mirror (adhoc #315) ---------------------------------
+    // Create a brand-new mirror VPS on the user's Vultr account: pick the
+    // cheapest plan and newest Debian via the Vultr v2 API, create/reuse the
+    // ForkMesh-managed SSH key, boot the instance, then hand off to the normal
+    // runHostInstall flow which installs ForkMesh and auto-links the node to
+    // this account. The API key lives in memory only for the duration of the
+    // run; it is never written to QSettings or argv.
+    void createVultrMirrorFromForm();
+    void vultrApiCall(const QString &apiKey, const QString &path,
+                      const QByteArray &method, const QJsonObject &body,
+                      std::function<void(QJsonObject, QString)> onDone);
+    void ensureVultrManagedKeypair(
+        std::function<void(QString privateKeyPath, QString publicKey,
+                           QString error)> onDone);
+    void resolveVultrSshKeyId(
+        const QString &apiKey, const QString &publicKey,
+        std::function<void(QString keyId, QString error)> onDone);
+    void pollVultrInstance(const QString &apiKey, const QString &instanceId,
+                           const QString &node, const QString &identityFile);
+    void startVultrHostInstall(const QString &node, const QString &ip,
+                               const QString &identityFile);
+    void finishVultrProvision(bool ok, const QString &message);
     // Reload a saved host's server info from the table. A password is restored
     // only when it remains in this process's session cache.
     void loadHostIntoForm(int row, int column);
@@ -3630,6 +3659,16 @@ private:
     QProcess *m_hostInstallProcess = nullptr; // running ssh install session, if any
     QProcess *m_hostLogProcess = nullptr;     // running ssh log-tail session, if any
     QProcess *m_hostActionsProcess = nullptr; // one-shot stdin-only Actions config
+    // One-click Vultr mirror provisioning (adhoc #315). The API key is read
+    // from the field (or a stored VULTR_API_KEY device variable) per run and
+    // deliberately has no persistent member.
+    QLineEdit *m_vultrApiKeyEdit = nullptr;
+    QLineEdit *m_vultrNameEdit = nullptr;
+    QPushButton *m_vultrCreateButton = nullptr;
+    QLabel *m_vultrStatus = nullptr;
+    bool m_vultrProvisionActive = false;
+    int m_vultrPollCount = 0;        // instance boot polls used this run
+    int m_vultrInstallAttempts = 0;  // SSH install attempts used this run
     // Installer link-code detection (adhoc #53): rolling tail of the install
     // output so the "Link code: NNNNNN" line survives chunk splits, and a
     // per-run guard so the link popup opens once.
