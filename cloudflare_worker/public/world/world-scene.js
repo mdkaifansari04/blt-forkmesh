@@ -4381,6 +4381,9 @@ export function createWorldScene({
     innerFlame.scale.set(size * 0.82, size * 0.9, size * 0.82);
     fireLight.intensity = 3.2 * fireLevel + Math.sin(time * 0.013) * 0.7;
   });
+  // Benches sit back far enough from the pit to leave a walkable ring between
+  // the seats and the stones (and to clear the log pile at ~2.6).
+  const CAMPFIRE_BENCH_RADIUS = 4;
   for (let index = 0; index < 6; index += 1) {
     const angle = (index / 6) * Math.PI * 2;
     const bench = new THREE.Group();
@@ -4398,7 +4401,11 @@ export function createWorldScene({
       leg.position.set(x, 0.3, 0);
       bench.add(leg);
     }
-    bench.position.set(Math.cos(angle) * 2.9, 0, Math.sin(angle) * 2.9);
+    bench.position.set(
+      Math.cos(angle) * CAMPFIRE_BENCH_RADIUS,
+      0,
+      Math.sin(angle) * CAMPFIRE_BENCH_RADIUS,
+    );
     bench.rotation.y = -angle + Math.PI / 2;
     const seatWorld = new THREE.Vector3(
       campfire.position.x + bench.position.x,
@@ -8986,7 +8993,12 @@ export function createWorldScene({
     if (hit?.object?.userData?.campfireBench) {
       const seat = hit.object.userData.campfireBench;
       player.position.copy(seat);
-      player.rotation.y = Math.atan2(8 - seat.x, 8 - seat.z);
+      // Face the flames: headings elsewhere use atan2(-dx, -dz), so pointing at
+      // the pit means negating the seat -> campfire vector.
+      player.rotation.y = Math.atan2(
+        seat.x - campfire.position.x,
+        seat.z - campfire.position.z,
+      );
       jumpVelocity = 0;
       onMovement({
         x: Number(player.position.x.toFixed(2)),
