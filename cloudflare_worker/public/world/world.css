@@ -3669,6 +3669,52 @@ forkmesh-world {
   outline: none;
 }
 
+.world-outfit-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+
+.world-outfit-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--world-line);
+  border-radius: 0;
+  background: #0b1c17;
+  color: var(--world-muted);
+  cursor: pointer;
+  font-size: 0.7rem;
+}
+
+.world-outfit-option::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--outfit-color, var(--world-line));
+  flex: none;
+}
+
+.world-outfit-option:hover,
+.world-outfit-option:focus-visible,
+.world-outfit-option[aria-pressed="true"] {
+  border-color: var(--world-mint);
+  color: var(--world-copy);
+  outline: none;
+}
+
+.world-outfit-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.world-upgrade-link {
+  color: #f2793a;
+}
+
 .world-light-control {
   display: grid;
   gap: 8px;

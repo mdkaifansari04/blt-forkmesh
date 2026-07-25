@@ -340,6 +340,18 @@ export const THEME_OPTIONS = [
   { id: "low-light", label: "Local low light" },
 ];
 
+// A Supporting member perk: a shared, other-visitors-see-it-too outfit color
+// that replaces the default country-flag shirt. Guests and Registered
+// accounts keep the default flag shirt; the server drops this field back to
+// "" for anyone whose trusted accountStatus isn't "Supporting member".
+export const OUTFIT_COLOR_OPTIONS = [
+  { id: "aurora", label: "Aurora green", color: "#39c783" },
+  { id: "ember", label: "Ember orange", color: "#f2793a" },
+  { id: "violet", label: "Signal violet", color: "#8b6df2" },
+  { id: "gold", label: "Founder's gold", color: "#e0b23e" },
+  { id: "slate", label: "Slate blue", color: "#3a6ea5" },
+];
+
 export const AVAILABILITY_OPTIONS = [
   { id: "online", label: "Online" },
   { id: "away", label: "Away" },
