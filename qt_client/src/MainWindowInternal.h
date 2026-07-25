@@ -2994,8 +2994,9 @@ const QString kPublishAgentsToWebSetting =
 const QString kAutoFixAgentConflictsSetting =
     QStringLiteral("agents/autoFixConflicts");
 // When a repo's tests or build fail (the same kind of failure this very task
-// was dispatched to fix), automatically start an agent to fix them instead of
-// waiting for a manual dispatch. Default on; can be disabled in Settings.
+// was dispatched to fix), automatically send the failure back to whichever
+// agent session last worked on that branch instead of waiting for a manual
+// dispatch (adhoc #306). Default on; can be disabled in Settings.
 const QString kAutoFixFailuresSetting =
     QStringLiteral("agents/autoFixFailures");
 // Whether to hide external `claude` CLI sessions (ones ForkMesh didn't start
