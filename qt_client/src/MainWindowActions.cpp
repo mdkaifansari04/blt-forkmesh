@@ -1247,6 +1247,8 @@ void MainWindow::onRunFinished(int runId, bool ok)
                           QString::fromUtf8("%1 \xC2\xB7 %2/%3")
                               .arg(run->workflowName, run->owner, run->name),
                           !ok && !cancelled);
+        if (!ok && !cancelled)
+            maybeAutoFixFailedRun(*run);
     }
     if (runId == m_selectedRunId)
         showRun(runId); // finished: reload the complete log from disk
@@ -3033,6 +3035,68 @@ void MainWindow::fixSelectedRunWithAgent(const QString &provider, const QString 
     if (sessionId > 0)
         flashMessage(QStringLiteral("Started a %1 agent to fix \"%2\".")
                          .arg(agentProviderName(provider), run->workflowName));
+}
+
+// adhoc #306: with kAutoFixFailuresSetting on (the default), a failed run whose
+// branch still has an agent session attached is sent straight back to that
+// session — the same steer-and-resume treatment fixAgentConflictsWithAgent()
+// gives a conflicted branch — instead of waiting for a human to notice and
+// click "Fix with agent". Only the most recently attached, non-external
+// session for this exact owner/name/branch is used ("the agent that was last
+// working on it"); if none ever ran on this branch, or it's already active,
+// this is a no-op — a currently-running session will see the failure on its
+// own next pass, and there's no "last agent" to hand a brand-new branch to.
+void MainWindow::maybeAutoFixFailedRun(const ActionRun &run)
+{
+    if (!QSettings().value(kAutoFixFailuresSetting, true).toBool())
+        return;
+    const QString branch = run.ref.startsWith(QLatin1String("refs/heads/"))
+                               ? run.ref.mid(11)
+                               : run.ref;
+    if (branch.isEmpty())
+        return;
+    int sessionId = 0;
+    QString sessionProvider;
+    for (const AgentSession &s : std::as_const(m_agentSessions)) {
+        if (s.owner == run.owner && s.name == run.name &&
+            s.branchName == branch && !isExternalSession(s.id)) {
+            sessionId = s.id; // sessions are stored oldest-first; keep the last match
+            sessionProvider = s.provider;
+        }
+    }
+    if (sessionId <= 0)
+        return;
+    const AgentSession *session = findAgentSession(sessionId);
+    if (!session || session->status == AgentStatus::Running ||
+        session->status == AgentStatus::Queued ||
+        session->status == AgentStatus::Waiting)
+        return;
+
+    const QString log = m_actionStore ? m_actionStore->readLog(run) : QString();
+    constexpr int kMaxLogChars = 12000;
+    const QString logTail =
+        log.size() <= kMaxLogChars
+            ? log
+            : QStringLiteral("...(log truncated; showing the tail)...\n") +
+                  log.right(kMaxLogChars);
+    const QString prompt =
+        QStringLiteral(
+            "The \"%1\" CI workflow failed for %2/%3 (commit %4, ref %5). Find "
+            "what broke and fix it so the workflow succeeds. Full run log:\n\n%6")
+            .arg(run.workflowName, run.owner, run.name, run.commit.left(8),
+                 run.ref, logTail);
+    const QString workflowName = run.workflowName;
+
+    m_pendingSteerMessage.insert(sessionId, prompt);
+    if (sessionProvider == QLatin1String("claude-code") ||
+        agentIsCodexProvider(sessionProvider))
+        applyTranscriptEvent(
+            sessionId,
+            QJsonObject{{QStringLiteral("type"), QStringLiteral("_local_user")},
+                        {QStringLiteral("text"), prompt}});
+    continueAgentSession(sessionId);
+    flashMessage(QStringLiteral("Sent \"%1\"'s failure back to its agent.")
+                     .arg(workflowName));
 }
 
 void MainWindow::clearActionRuns()

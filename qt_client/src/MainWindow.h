@@ -1875,6 +1875,12 @@ private:
     // Start a new coding agent to fix the selected (failed) run, on its own
     // branch/PR like any other ad-hoc agent run (adhoc #114).
     void fixSelectedRunWithAgent(const QString &provider, const QString &model);
+    // adhoc #306: if kAutoFixFailuresSetting is on (the default) and run's
+    // branch still has an agent session attached, send the failure straight
+    // back to that same session instead of waiting for a manual "Fix with
+    // agent" click or starting a brand-new agent. No-op if no session ever
+    // worked on this branch, or that session is still active.
+    void maybeAutoFixFailedRun(const ActionRun &run);
     // Delete every run currently shown in the Runs list (its meta + log on
     // disk); skips any run that's still in flight. Prompts for confirmation.
     void clearActionRuns();
