@@ -7486,8 +7486,9 @@ export function createWorldScene({
           Math.max(0, seats.length - 1),
         );
         const open = Math.max(1, seats.length - taken);
-        const seat =
-          seats[Number.isInteger(owned) ? owned : taken + (hashNumber(remote.id) % open)];
+        const seat = Number.isInteger(owned)
+          ? seats[owned]
+          : seats[taken + (hashNumber(remote.id) % open)];
         const offset = seat || new THREE.Vector3();
         avatar.userData.targetPosition.copy(campfire.position);
         avatar.userData.targetPosition.add(offset);
