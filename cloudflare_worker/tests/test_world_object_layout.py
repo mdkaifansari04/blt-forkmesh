@@ -21,7 +21,7 @@ ENTRY = ROOT / "src" / "entry.py"
 SCHEMA = ROOT / "src" / "schema.py"
 MIGRATION = ROOT / "migrations" / "0080_world_object_layout.sql"
 ROTATION_MIGRATION = (
-    ROOT / "migrations" / "0081_world_object_layout_rotation.sql")
+    ROOT / "migrations" / "0082_world_object_layout_rotation.sql")
 WORLD_JS = ROOT / "public" / "world" / "world.js"
 WORLD_SCENE_JS = ROOT / "public" / "world" / "world-scene.js"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")

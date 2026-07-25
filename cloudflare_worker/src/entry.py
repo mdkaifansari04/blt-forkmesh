@@ -5746,7 +5746,7 @@ SCHEMA_ALTER_STATEMENTS = [
     """ALTER TABLE mirror_https_endpoints
        ADD COLUMN forkmesh_operations_json TEXT NOT NULL DEFAULT '[]'""",
     # Heading offset in radians for an administrator-locked scene object
-    # (migration 0081). 0 keeps the object's authored rotation.
+    # (migration 0082). 0 keeps the object's authored rotation.
     "ALTER TABLE world_object_layout ADD COLUMN rotation REAL NOT NULL DEFAULT 0",
 ]
 
