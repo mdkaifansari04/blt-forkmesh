@@ -3026,9 +3026,10 @@ async def durable_object_request(request, target_url=None, include_body=False,
 DURABLE_OBJECT_BINDING_RE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 # Content-free relay accounting behind the System Capacity card. A Durable
 # Object counts the bytes it relays in the live instance and folds them into
-# one small D1 row per binding at most once a minute (or once a batch of bytes
-# has gone by), so even a busy room costs a handful of writes an hour.
-# Hibernation can only ever drop the current window, never a recorded total.
+# one small D1 row per binding: once on the first frame after a wake-up (an
+# idle object may hibernate again immediately, losing in-memory counters),
+# then at most once a minute or once a batch of bytes has gone by. Even a busy
+# room therefore costs a handful of writes an hour.
 DURABLE_OBJECT_TRAFFIC_FLUSH_MS = 60 * 1000
 DURABLE_OBJECT_TRAFFIC_FLUSH_BYTES = 262_144
 DURABLE_OBJECT_TRAFFIC_MAX = 9_007_199_254_740_991

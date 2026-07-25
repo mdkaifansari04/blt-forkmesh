@@ -237,6 +237,8 @@ def _office_code_protocol():
         "_office_socket_code_state",
         "_office_entry_digest_approved",
         "_office_live_account",
+        "durable_object_traffic_note",
+        "durable_object_traffic_flush",
     }
     parsed = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
     nodes = [
@@ -281,9 +283,17 @@ def _office_code_protocol():
     def json_response(data, status=200, **_kwargs):
         return {"status": status, "data": data}
 
+    async def d1_run(*_args):
+        return None
+
     namespace = {
         "DurableObject": object,
         "Date": _Date,
+        "d1_run": d1_run,
+        "DURABLE_OBJECT_BINDING_RE": re.compile(r"[A-Z][A-Z0-9_]{0,63}"),
+        "DURABLE_OBJECT_TRAFFIC_FLUSH_MS": 60_000,
+        "DURABLE_OBJECT_TRAFFIC_FLUSH_BYTES": 262_144,
+        "DURABLE_OBJECT_TRAFFIC_MAX": 9_007_199_254_740_991,
         "OFFICE_INTERNAL_RE": re.compile(
             r"^/api/world/office/(world-general|[0-9a-f]{32})/"
             r"v([1-9][0-9]*)/(ws|revoke|status|entry|code)$"),

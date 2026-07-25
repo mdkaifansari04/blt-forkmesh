@@ -34,8 +34,14 @@ NAMES = {
     "clean_string",
     "_ws_attachment",
     "_ws_attr",
+    "durable_object_traffic_note",
+    "durable_object_traffic_flush",
 }
 CONSTANTS = {
+    "DURABLE_OBJECT_BINDING_RE",
+    "DURABLE_OBJECT_TRAFFIC_FLUSH_MS",
+    "DURABLE_OBJECT_TRAFFIC_FLUSH_BYTES",
+    "DURABLE_OBJECT_TRAFFIC_MAX",
     "NODE_EVENT_MAX_SOCKETS",
     "NODE_SOCKET_STALE_MS",
     "NODE_EVENT_MSG_WINDOW_MS",
@@ -167,9 +173,16 @@ def _json_response(data, status=200, cache_seconds=None, cache_control=None,
             "headers": dict(extra_headers or {})}
 
 
-def _base_globals():
+def _base_globals(traffic_writes=None):
     socket_ids = iter(range(1, 100))
+
+    async def d1_run(_env, sql, *args):
+        if traffic_writes is not None:
+            traffic_writes.append((sql, args))
+        return None
+
     return {
+        "d1_run": d1_run,
         "asyncio": asyncio,
         "json": json,
         "re": re,
