@@ -712,6 +712,162 @@ int main(int argc, char **argv)
               .program.isEmpty(),
           "generic controller SSH rejects option-shaped hosts");
 
+    // Managed identity keys (adhoc #315): a recorded key file pins
+    // authentication to exactly that key; a missing file fails closed instead
+    // of silently falling back to the user's default keys.
+    QTemporaryDir identityDir;
+    const QString identityPath =
+        identityDir.filePath(QStringLiteral("vultr_mirror_ed25519"));
+    {
+        QFile identity(identityPath);
+        check(identity.open(QIODevice::WriteOnly) &&
+                  identity.write("managed-key-material") > 0,
+              "managed identity fixture is writable");
+    }
+    const auto identityCommand = forkmesh::control::buildHostSshCommand(
+        QStringLiteral("203.0.113.10"), QStringLiteral("root"), QString(),
+        QStringLiteral("true"), &actionsError, identityPath);
+    check(actionsError.isEmpty() &&
+              identityCommand.program == QStringLiteral("ssh") &&
+              identityCommand.arguments.contains(QStringLiteral("-i")) &&
+              identityCommand.arguments.contains(identityPath) &&
+              identityCommand.arguments.contains(
+                  QStringLiteral("IdentitiesOnly=yes")),
+          "a managed identity file is pinned with -i and IdentitiesOnly");
+    check(forkmesh::control::buildHostSshCommand(
+              QStringLiteral("203.0.113.10"), QStringLiteral("root"),
+              QString(), QStringLiteral("true"), &actionsError,
+              identityDir.filePath(QStringLiteral("missing_key")))
+              .program.isEmpty(),
+          "a missing managed identity file fails closed");
+
+    // One-click Vultr provisioning helpers (adhoc #315).
+    check(forkmesh::control::validateVultrMirrorRequest(
+              QStringLiteral("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"),
+              QStringLiteral("vultr-mirror-1"))
+              .isEmpty(),
+          "a plausible Vultr key and node name validate");
+    check(!forkmesh::control::validateVultrMirrorRequest(
+               QStringLiteral("short"), QStringLiteral("vultr-mirror-1"))
+               .isEmpty() &&
+              !forkmesh::control::validateVultrMirrorRequest(
+                   QStringLiteral("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"),
+                   QStringLiteral("Bad Name"))
+                   .isEmpty(),
+          "Vultr validation rejects malformed keys and node names");
+
+    const QJsonArray vultrPlans{
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("vc2-2c-4gb")},
+                    {QStringLiteral("monthly_cost"), 20},
+                    {QStringLiteral("ram"), 4096},
+                    {QStringLiteral("locations"),
+                     QJsonArray{QStringLiteral("ewr")}}},
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("vc2-1c-1gb")},
+                    {QStringLiteral("monthly_cost"), 5},
+                    {QStringLiteral("ram"), 1024},
+                    {QStringLiteral("locations"),
+                     QJsonArray{QStringLiteral("fra"),
+                                QStringLiteral("ams")}}},
+        // Cheaper but sold out everywhere: not deployable, must be skipped.
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("vc2-old")},
+                    {QStringLiteral("monthly_cost"), 3},
+                    {QStringLiteral("ram"), 512},
+                    {QStringLiteral("locations"), QJsonArray{}}},
+        // Same price, more RAM: preferred deterministically.
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("vhp-1c-2gb")},
+                    {QStringLiteral("monthly_cost"), 5},
+                    {QStringLiteral("ram"), 2048},
+                    {QStringLiteral("locations"),
+                     QJsonArray{QStringLiteral("syd")}}},
+    };
+    const QJsonObject cheapest =
+        forkmesh::control::cheapestVultrPlan(vultrPlans);
+    check(cheapest.value(QStringLiteral("id")).toString() ==
+              QStringLiteral("vhp-1c-2gb"),
+          "cheapest Vultr plan skips undeployable plans and breaks ties on RAM");
+    check(forkmesh::control::vultrPlanRegion(cheapest) ==
+              QStringLiteral("syd") &&
+              forkmesh::control::vultrPlanRegion(
+                  vultrPlans.at(1).toObject()) == QStringLiteral("ams"),
+          "Vultr region selection is the plan's first sorted location");
+    check(forkmesh::control::cheapestVultrPlan(QJsonArray()).isEmpty(),
+          "an empty Vultr plan list yields no selection");
+
+    const QJsonArray vultrOs{
+        QJsonObject{{QStringLiteral("id"), 401},
+                    {QStringLiteral("name"), QStringLiteral("Debian 11 x64")},
+                    {QStringLiteral("arch"), QStringLiteral("x64")},
+                    {QStringLiteral("family"), QStringLiteral("debian")}},
+        QJsonObject{{QStringLiteral("id"), 477},
+                    {QStringLiteral("name"),
+                     QStringLiteral("Debian 12 x64 (bookworm)")},
+                    {QStringLiteral("arch"), QStringLiteral("x64")},
+                    {QStringLiteral("family"), QStringLiteral("debian")}},
+        QJsonObject{{QStringLiteral("id"), 999},
+                    {QStringLiteral("name"),
+                     QStringLiteral("Ubuntu 24.04 LTS x64")},
+                    {QStringLiteral("arch"), QStringLiteral("x64")},
+                    {QStringLiteral("family"), QStringLiteral("ubuntu")}},
+        QJsonObject{{QStringLiteral("id"), 478},
+                    {QStringLiteral("name"),
+                     QStringLiteral("Debian 12 i386")},
+                    {QStringLiteral("arch"), QStringLiteral("i386")},
+                    {QStringLiteral("family"), QStringLiteral("debian")}},
+    };
+    check(forkmesh::control::latestVultrDebianOs(vultrOs)
+                  .value(QStringLiteral("id"))
+                  .toInt() == 477,
+          "latest Vultr Debian selection picks the newest x64 Debian only");
+
+    const QJsonObject instancePayload =
+        forkmesh::control::vultrInstanceCreatePayload(
+            QStringLiteral("vultr-mirror-1"), QStringLiteral("vhp-1c-2gb"),
+            QStringLiteral("syd"), 477, QStringLiteral("key-id-1"));
+    check(instancePayload.value(QStringLiteral("plan")).toString() ==
+                  QStringLiteral("vhp-1c-2gb") &&
+              instancePayload.value(QStringLiteral("region")).toString() ==
+                  QStringLiteral("syd") &&
+              instancePayload.value(QStringLiteral("os_id")).toInt() == 477 &&
+              instancePayload.value(QStringLiteral("sshkey_id")).toArray() ==
+                  QJsonArray{QStringLiteral("key-id-1")} &&
+              instancePayload.value(QStringLiteral("backups")).toString() ==
+                  QStringLiteral("disabled") &&
+              instancePayload.value(QStringLiteral("activation_email"))
+                      .toBool() == false &&
+              instancePayload.value(QStringLiteral("label")).toString() ==
+                  QStringLiteral("vultr-mirror-1"),
+          "the Vultr instance payload pins plan, region, OS, key and no extras");
+
+    const QJsonObject bootingInstance{
+        {QStringLiteral("status"), QStringLiteral("pending")},
+        {QStringLiteral("power_status"), QStringLiteral("running")},
+        {QStringLiteral("main_ip"), QStringLiteral("0.0.0.0")},
+    };
+    const QJsonObject readyInstance{
+        {QStringLiteral("status"), QStringLiteral("active")},
+        {QStringLiteral("power_status"), QStringLiteral("running")},
+        {QStringLiteral("main_ip"), QStringLiteral("203.0.113.99")},
+    };
+    QJsonObject stoppedInstance = readyInstance;
+    stoppedInstance.insert(QStringLiteral("power_status"),
+                           QStringLiteral("stopped"));
+    check(forkmesh::control::vultrInstanceReadyIp(bootingInstance).isEmpty() &&
+              forkmesh::control::vultrInstanceReadyIp(stoppedInstance)
+                  .isEmpty() &&
+              forkmesh::control::vultrInstanceReadyIp(readyInstance) ==
+                  QStringLiteral("203.0.113.99"),
+          "instance readiness requires active+running and a real IPv4");
+
+    QMap<QString, QString> vultrVariables;
+    vultrVariables.insert(QStringLiteral("vultr_api_key"),
+                          QStringLiteral("STOREDVULTRKEY01234567890"));
+    vultrVariables.insert(QStringLiteral("OTHER"),
+                          QStringLiteral("unrelated"));
+    check(forkmesh::control::vultrApiKeyFromVariables(vultrVariables) ==
+                  QStringLiteral("STOREDVULTRKEY01234567890") &&
+              forkmesh::control::vultrApiKeyFromVariables({}).isEmpty(),
+          "the stored VULTR_API_KEY device variable is resolved case-insensitively");
+
     QTemporaryDir hostSettingsDir;
     const QString hostSettingsPath =
         hostSettingsDir.filePath(QStringLiteral("controller.ini"));
