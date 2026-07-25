@@ -113,7 +113,7 @@ export const LANDMARKS = [
       "Public, restricted, and private floors are visually distinct.",
       "Members can display current work without revealing sensitive browsing data.",
       "Mirror nodes can be linked to a user or organization.",
-      "Sky offices remain functional collaboration rooms, not decorative NFTs.",
+      "The sky office is an unfinished collaboration room, parked in the works-in-progress barn.",
     ],
     primary: { label: "Visit organization lobby", action: "organizations" },
     secondary: { label: "Manage organizations", href: "/dashboard/settings/organizations" },
@@ -175,7 +175,7 @@ export const LANDMARKS = [
     summary: "Portals lead to repository worlds, sky campuses, events, and workshops.",
     metaphor: "Launch pads turn URLs and collaboration rooms into destinations.",
     reality:
-      "Each destination keeps standard permission checks and graceful HTML fallbacks. Travel never changes the viewer’s lighting; scheduled events remain UTC.",
+      "Each destination keeps standard permission checks and graceful HTML fallbacks. Travel never changes the viewer’s lighting; scheduled events remain UTC. None of the five destinations is finished, so they are parked on the ground in the works-in-progress barn south of the Town Square instead of floating overhead.",
     status: "Route preview",
     statusTone: "prototype",
     bullets: [
@@ -369,6 +369,18 @@ export const THEME_OPTIONS = [
   { id: "winter", label: "Daylight + winter" },
   { id: "cyberpunk", label: "Local cyberpunk" },
   { id: "low-light", label: "Local low light" },
+];
+
+// A Supporting member perk: a shared, other-visitors-see-it-too outfit color
+// that replaces the default country-flag shirt. Guests and Registered
+// accounts keep the default flag shirt; the server drops this field back to
+// "" for anyone whose trusted accountStatus isn't "Supporting member".
+export const OUTFIT_COLOR_OPTIONS = [
+  { id: "aurora", label: "Aurora green", color: "#39c783" },
+  { id: "ember", label: "Ember orange", color: "#f2793a" },
+  { id: "violet", label: "Signal violet", color: "#8b6df2" },
+  { id: "gold", label: "Founder's gold", color: "#e0b23e" },
+  { id: "slate", label: "Slate blue", color: "#3a6ea5" },
 ];
 
 export const AVAILABILITY_OPTIONS = [

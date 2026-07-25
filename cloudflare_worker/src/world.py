@@ -70,6 +70,11 @@ WORLD_ACCOUNT_STATUS_VALUES = frozenset({
     "Guest", "Registered", "Supporting member", "Mirror operator",
     "Organization admin", "Verified bot",
 })
+# A Supporting member perk: an alternate avatar outfit color that replaces the
+# default country-flag shirt. "" means "use the default flag shirt".
+WORLD_OUTFIT_COLOR_VALUES = frozenset({
+    "", "aurora", "ember", "violet", "gold", "slate",
+})
 WORLD_SPACE_VALUES = frozenset({
     "town-square", "east", "central", "west", "sky-campus",
     "space-station", "code-planet", "organization-region", "planet-atlas",
@@ -106,7 +111,7 @@ WORLD_PUBLIC_FIELDS = (
     "id", "name", "countryCode", "browser", "os", "status", "localTime",
     "activityCategory", "inputActive", "visitCount", "firstVisitAge",
     "accountStatus", "nodeCount", "space",
-    "publicDoor", "statusEmoji", "statusNote",
+    "publicDoor", "statusEmoji", "statusNote", "outfitColor",
     "x", "y", "z", "yaw", "moving", "updatedAt",
 )
 
@@ -387,6 +392,7 @@ def default_presence(peer_id, now):
         "publicDoor": "closed",
         "statusEmoji": "",
         "statusNote": "",
+        "outfitColor": "",
         "x": 0.0,
         "y": 0.0,
         "z": 0.0,
@@ -628,6 +634,13 @@ def sanitize_message(payload, current, now, country_source="",
                 payload.get("statusNote"))
         if not state.get("statusEmoji"):
             state["statusNote"] = ""
+        # The outfit color perk is validated against the connection's own
+        # trusted accountStatus, never the client-claimed one: a Guest or
+        # Registered payload requesting a color is silently reset to "".
+        if "outfitColor" in payload:
+            state["outfitColor"] = (
+                _choice(payload.get("outfitColor"), WORLD_OUTFIT_COLOR_VALUES, "")
+                if state.get("accountStatus") == "Supporting member" else "")
         if "space" in payload:
             state["space"] = _choice(
                 payload.get("space"), WORLD_SPACE_VALUES, "town-square")

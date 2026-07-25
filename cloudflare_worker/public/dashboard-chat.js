@@ -1107,10 +1107,17 @@
     send(plain);
     seen.add(plain.id);
     appendMessage("peer", plain.sender, plain.text, plain.id, plain.senderId, plain.ts);
+    // The asking client appends directly (not via renderChatEntry), so mirror
+    // the reply to the World embed here too — it floats over the ForkBot
+    // avatar walking the Town Square.
+    emitWorldChatBubble(plain.sender, plain.senderId, plain.text);
   }
 
   async function maybeAskForkbot(text) {
-    if (!userSession()) return;
+    // Anyone who can join the room can talk to ForkBot: signed-in users on
+    // the dashboard, and guests inside the public World room (the endpoint
+    // itself is sessionless).
+    if (!canJoinChat()) return;
     if (!FORKBOT_MENTION_RE.test(text || "")) return;
     // Drop the triggering line (sent separately as `message`) and ForkBot's own
     // replies, and cap the rest so ForkBot sees the lead-up conversation.
