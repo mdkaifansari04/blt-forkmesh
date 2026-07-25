@@ -4731,7 +4731,7 @@ export function createWorldScene({
       chat: true,
       startedAt: performance.now(),
       // Longer messages linger longer before fading out.
-      duration: Math.min(7500, 3200 + message.length * 30),
+      duration: Math.min(14000, 10000 + message.length * 30),
       baseHeight: 5.2,
       rise: 0.5,
       fadeStart: 0.75,
