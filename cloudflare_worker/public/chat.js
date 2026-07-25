@@ -39,6 +39,7 @@ const PUBLIC_WORLD_ROOM_KEY_ENDPOINT =
 const PUBLIC_WORLD_CHAT_WS_PATH =
   "/api/repo/mainnode/forkmesh/rooms/world-general/ws";
 const PRIVATE_CHANNELS_ENDPOINT = "/api/chat/channels";
+const DIRECT_MESSAGES_ENDPOINT = "/api/chat/direct-messages";
 const PRIVATE_CHANNEL_REFRESH_MS = 30000;
 const FORKBOT_ENDPOINT = "/api/forkbot/chat";
 const FORKBOT_SENDER_ID = "forkbot";
@@ -81,6 +82,7 @@ const VISITOR_IDLE_FORGET_MS = 10 * 60 * 1000;
 const GROUP_WINDOW_MS = 5 * 60 * 1000; // same-sender messages collapse under one header
 const REACTION_EMOJI = ["👍", "❤️", "😂", "🎉", "👀", "🚀"];
 const ACTIVE_CHANNEL_KEY = "forkmesh.chat.channel";
+const ACTIVE_DIRECT_KEY = "forkmesh.chat.direct";
 const CHAT_SIGN_IN_REQUIRED = "Sign in again to join chat";
 const OFFICE_SESSION_EXPIRED =
   "Your session expired. Log in again to use authorized channels.";
@@ -121,6 +123,15 @@ const channelMembersTitle = document.querySelector("#chat-channel-members-title"
 const channelInviteForm = document.querySelector("#chat-channel-invite-form");
 const channelUsernameInput = document.querySelector("#chat-channel-username");
 const channelMembersEl = document.querySelector("#chat-channel-members");
+const directSection = document.querySelector("#chat-direct-section");
+const directCreateBtn = document.querySelector("#chat-direct-create");
+const directListEl = document.querySelector("#chat-direct-list");
+const directDialog = document.querySelector("#chat-direct-dialog");
+const directDialogClose = document.querySelector("#chat-direct-dialog-close");
+const directSearch = document.querySelector("#chat-direct-search");
+const directOptions = document.querySelector("#chat-direct-options");
+const directEmpty = document.querySelector("#chat-direct-empty");
+const directError = document.querySelector("#chat-direct-error");
 const officeManageLink = document.querySelector("#chat-office-manage");
 const officeAlert = document.querySelector("#chat-office-alert");
 const officeAlertCopy = document.querySelector("#chat-office-alert-copy");
@@ -150,6 +161,7 @@ const selfId = (() => {
 const roomPassphrases = new Map();
 const roomKeys = new Map();
 const privateChannels = new Map();
+const directMessages = new Map();
 let roomTransport = null;
 let openCallbacks = [];
 let cachedUserSession = null;
@@ -173,9 +185,14 @@ const reactions = new Map();
 const roster = new Map();
 let activeChannel = "#general";
 let savedPrivateChannelId = "";
+let savedDirectMessageId = "";
 try {
   const saved = localStorage.getItem(ACTIVE_CHANNEL_KEY);
   if (/^[0-9a-f]{32}$/.test(saved || "")) savedPrivateChannelId = saved;
+  const savedDirect = localStorage.getItem(ACTIVE_DIRECT_KEY);
+  if (/^[0-9a-f]{32}$/.test(savedDirect || "")) {
+    savedDirectMessageId = savedDirect;
+  }
 } catch (_) {}
 // Rolling per-channel buffer of the most recent decrypted messages, forwarded
 // to ForkBot so it can resolve references like "that bug" from the
@@ -252,15 +269,40 @@ function privateChannelForKey(channel) {
   return privateChannels.get(String(channel).slice("private:".length)) || null;
 }
 
+function isDirectMessageKey(channel) {
+  return /^direct:[0-9a-f]{32}$/.test(String(channel || ""));
+}
+
+function directMessageKey(conversationId) {
+  return "direct:" + String(conversationId || "");
+}
+
+function directMessageForKey(channel) {
+  if (!isDirectMessageKey(channel)) return null;
+  return directMessages.get(String(channel).slice("direct:".length)) || null;
+}
+
 function channelDisplayLabel(channel = activeChannel) {
   if (channel === "#general") return "#general";
+  const direct = directMessageForKey(channel);
+  if (direct) {
+    const record = direct;
+    return "@" + record.otherUser;
+  }
   const record = privateChannelForKey(channel);
   return record ? "#" + record.name : "Channel";
 }
 
+function channelWireLabel(channel = activeChannel) {
+  const direct = directMessageForKey(channel);
+  return direct ? "direct:" + direct.id : channelDisplayLabel(channel);
+}
+
 function canJoinChannel(channel = activeChannel) {
   return roomScopeForChannel(channel) === "public-world-general" ||
-    Boolean(userSession() && privateChannelForKey(channel));
+    Boolean(userSession() && (
+      privateChannelForKey(channel) || directMessageForKey(channel)
+    ));
 }
 
 // The public World #general passphrase is intentionally available to guests
@@ -334,6 +376,16 @@ async function privateChannelRequest(path, options = {}) {
 }
 
 async function fetchRoomAccess(channelKey = activeChannel) {
+  const direct = directMessageForKey(channelKey);
+  if (direct) {
+    const access = await privateChannelRequest(
+      DIRECT_MESSAGES_ENDPOINT + "/" + direct.id + "/room-access"
+    );
+    if (!access.passphrase || !access.room || !access.webSocketUrl) {
+      throw new Error("Direct message room access unavailable.");
+    }
+    return access;
+  }
   const channel = privateChannelForKey(channelKey);
   if (!channel) throw new Error("Channel unavailable.");
   const access = await privateChannelRequest(
@@ -842,7 +894,9 @@ function moveMentionSuggest(step) {
 function normalizeChannelKey(channel) {
   const value = String(channel || "").trim();
   if (value === "#general") return value;
-  return isPrivateChannelKey(value) && privateChannelForKey(value) ? value : "";
+  if (isPrivateChannelKey(value) && privateChannelForKey(value)) return value;
+  if (isDirectMessageKey(value) && directMessageForKey(value)) return value;
+  return "";
 }
 
 function ensureChannel(channelKey) {
@@ -866,7 +920,9 @@ function bumpUnread(channel) {
 function renderRooms() {
   if (!roomsEl) return;
   roomsEl.textContent = "";
-  const names = [...channelMeta.keys()].sort((a, b) => {
+  const names = [...channelMeta.keys()]
+    .filter((name) => !isDirectMessageKey(name))
+    .sort((a, b) => {
     if (a === "#general" || b === "#general") return a === "#general" ? -1 : 1;
     return channelDisplayLabel(a).localeCompare(channelDisplayLabel(b));
   });
@@ -899,17 +955,49 @@ function renderRooms() {
     btn.addEventListener("click", () => setActiveChannel(name));
     roomsEl.append(btn);
   }
+  renderDirectMessages();
+}
+
+function renderDirectMessages() {
+  if (!directListEl) return;
+  directListEl.textContent = "";
+  const conversations = [...directMessages.values()]
+    .sort((a, b) => a.otherUser.localeCompare(b.otherUser));
+  for (const direct of conversations) {
+    const key = directMessageKey(direct.id);
+    const meta = channelMeta.get(key) || { unread: 0 };
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className =
+      "chat-room chat-direct-row" + (key === activeChannel ? " is-active" : "");
+    button.setAttribute("aria-label", `Direct message with ${direct.otherUser}`);
+    button.title = `Direct message with ${direct.otherUser}`;
+    button.append(makeAvatar(direct.otherUser, "user"));
+    const label = document.createElement("span");
+    label.className = "chat-room-name";
+    label.textContent = direct.otherUser;
+    button.append(label);
+    if (meta.unread > 0 && key !== activeChannel) {
+      const badge = document.createElement("span");
+      badge.className = "chat-room-unread";
+      badge.textContent = meta.unread > 99 ? "99+" : String(meta.unread);
+      button.append(badge);
+    }
+    button.addEventListener("click", () => setActiveChannel(key));
+    directListEl.append(button);
+  }
 }
 
 function updateChannelHeading() {
   const channel = privateChannelForKey(activeChannel);
+  const direct = directMessageForKey(activeChannel);
   const label = channelDisplayLabel(activeChannel);
   if (channelTitleEl) channelTitleEl.textContent = label;
   if (channelVisibilityBadge) {
-    channelVisibilityBadge.hidden = !channel;
-    channelVisibilityBadge.textContent = channel
-      ? channel.visibility
-      : "";
+    channelVisibilityBadge.hidden = !channel && !direct;
+    channelVisibilityBadge.textContent = direct ? "direct" : (
+      channel ? channel.visibility : ""
+    );
   }
 }
 
@@ -920,6 +1008,8 @@ function updateAdminChannelControls() {
     officeManageLink.hidden = !(isOfficeEmbed && userSession()?.isAdmin);
   }
   if (channelCreateBtn) channelCreateBtn.hidden = !session?.isAdmin;
+  if (directSection) directSection.hidden = !session || isOfficeEmbed;
+  if (directCreateBtn) directCreateBtn.hidden = !session || isOfficeEmbed;
   if (channelManageBtn) {
     channelManageBtn.hidden = !(
       session?.isAdmin &&
@@ -942,12 +1032,22 @@ function setActiveChannel(name, options = {}) {
   activeChannel = channel;
   try {
     const record = privateChannelForKey(channel);
-    if (record) {
+    const direct = directMessageForKey(channel);
+    if (direct) {
+      savedDirectMessageId = direct.id;
+      savedPrivateChannelId = "";
+      localStorage.setItem(ACTIVE_DIRECT_KEY, direct.id);
+      localStorage.removeItem(ACTIVE_CHANNEL_KEY);
+    } else if (record) {
       savedPrivateChannelId = record.id;
+      savedDirectMessageId = "";
       localStorage.setItem(ACTIVE_CHANNEL_KEY, record.id);
+      localStorage.removeItem(ACTIVE_DIRECT_KEY);
     } else {
       savedPrivateChannelId = "";
+      savedDirectMessageId = "";
       localStorage.removeItem(ACTIVE_CHANNEL_KEY);
+      localStorage.removeItem(ACTIVE_DIRECT_KEY);
     }
   } catch (_) {}
   const meta = channelMeta.get(channel);
@@ -1024,6 +1124,69 @@ function reconcilePrivateChannels(records, options = {}) {
   }
   updateAdminChannelControls();
   renderRooms();
+}
+
+function reconcileDirectMessages(records, options = {}) {
+  const previous = new Map(directMessages);
+  directMessages.clear();
+  for (const value of Array.isArray(records) ? records : []) {
+    const id = String(value?.id || "");
+    const otherUser = String(value?.otherUser || "").trim().toLowerCase();
+    if (!/^[0-9a-f]{32}$/.test(id) || !otherUser) continue;
+    directMessages.set(id, {
+      id,
+      otherUser,
+      updatedAt: Number(value.updatedAt) || 0,
+      keyVersion: Number(value.keyVersion) || 1,
+    });
+    ensureChannel(directMessageKey(id));
+  }
+  for (const id of previous.keys()) {
+    if (!directMessages.has(id)) {
+      releaseChannelMessages(directMessageKey(id));
+    }
+  }
+
+  if (savedDirectMessageId && !directMessages.has(savedDirectMessageId)) {
+    savedDirectMessageId = "";
+    try { localStorage.removeItem(ACTIVE_DIRECT_KEY); } catch (_) {}
+  }
+
+  const activeDirect = directMessageForKey(activeChannel);
+  if (isDirectMessageKey(activeChannel) && !activeDirect) {
+    setActiveChannel("#general");
+    return;
+  }
+  if (activeDirect) {
+    const old = previous.get(activeDirect.id);
+    if (old && old.keyVersion !== activeDirect.keyVersion) switchChatRoom();
+  } else if (
+    options.selectSaved !== false &&
+    savedDirectMessageId &&
+    directMessages.has(savedDirectMessageId)
+  ) {
+    setActiveChannel(directMessageKey(savedDirectMessageId), {
+      connect: options.connect,
+    });
+  }
+  updateAdminChannelControls();
+  renderDirectMessages();
+}
+
+async function refreshDirectMessages(options = {}) {
+  if (!userSession()) {
+    reconcileDirectMessages([], options);
+    return;
+  }
+  try {
+    const data = await privateChannelRequest(DIRECT_MESSAGES_ENDPOINT);
+    reconcileDirectMessages(data.conversations || [], options);
+  } catch (error) {
+    if (error?.code === "auth") {
+      reconcileDirectMessages([], options);
+      if (isDirectMessageKey(activeChannel)) setActiveChannel("#general");
+    }
+  }
 }
 
 async function refreshPrivateChannels(options = {}) {
@@ -1203,6 +1366,88 @@ function openChannelDialog(showMembers = false) {
     ? channelUsernameInput
     : channelNameInput;
   focusTarget?.focus();
+}
+
+function directMessageErrorMessage(error) {
+  const messages = {
+    user_not_found: "That active registered user was not found.",
+    cannot_message_self: "Choose another person to message.",
+    auth: OFFICE_SESSION_EXPIRED,
+    invalid_session: OFFICE_SESSION_EXPIRED,
+    unavailable: OFFICE_RELAY_UNAVAILABLE,
+    request_failed: OFFICE_RELAY_UNAVAILABLE,
+  };
+  return messages[error?.code] || "The direct message could not be opened.";
+}
+
+function setDirectMessageError(message) {
+  if (directError) directError.textContent = String(message || "");
+}
+
+function renderDirectMessagePicker() {
+  if (!directOptions) return;
+  directOptions.textContent = "";
+  const query = String(directSearch?.value || "").trim().toLowerCase();
+  const currentName = String(userSession()?.nodeName || "").trim().toLowerCase();
+  const users = [...registeredUsers.values()]
+    .filter((user) => user.name !== currentName)
+    .filter((user) => !query || user.name.includes(query))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  for (const user of users) {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = "chat-direct-option";
+    option.setAttribute("role", "listitem");
+    option.setAttribute("aria-label", `Message ${user.name}`);
+    option.append(makeAvatar(user.name, "user"));
+    const label = document.createElement("span");
+    label.textContent = "@" + user.name;
+    option.append(label);
+    option.addEventListener("click", () => startDirectMessage(user.name));
+    directOptions.append(option);
+  }
+  if (directEmpty) {
+    directEmpty.hidden = users.length > 0;
+    directEmpty.textContent = registeredUsers.size
+      ? "No registered users match your search."
+      : "No registered users are available yet.";
+  }
+}
+
+function openDirectMessageDialog() {
+  if (!userSession() || !directDialog || isOfficeEmbed) return;
+  setDirectMessageError("");
+  if (directSearch) directSearch.value = "";
+  renderDirectMessagePicker();
+  refreshUsersDirectory();
+  if (typeof directDialog.showModal === "function") directDialog.showModal();
+  else directDialog.setAttribute("open", "");
+  directSearch?.focus();
+}
+
+async function startDirectMessage(username) {
+  if (!userSession()) return;
+  const normalized = String(username || "").trim().toLowerCase();
+  if (!normalized) return;
+  setDirectMessageError("");
+  try {
+    const data = await privateChannelRequest(DIRECT_MESSAGES_ENDPOINT, {
+      method: "POST",
+      body: JSON.stringify({ username: normalized }),
+    });
+    const conversation = data.conversation;
+    if (!conversation?.id) throw new Error("Direct message unavailable.");
+    reconcileDirectMessages(
+      [...directMessages.values(), conversation],
+      { selectSaved: false, connect: false },
+    );
+    if (directMessages.has(conversation.id)) {
+      setActiveChannel(directMessageKey(conversation.id));
+    }
+    directDialog?.close();
+  } catch (error) {
+    setDirectMessageError(directMessageErrorMessage(error));
+  }
 }
 
 // ---- people (right pane) -------------------------------------------------------
@@ -1397,6 +1642,7 @@ async function refreshUsersDirectory() {
   }
   directorySeeded = true;
   renderInitialMemberPicker();
+  renderDirectMessagePicker();
   schedulePeopleRender();
 }
 
@@ -1425,6 +1671,7 @@ function renderPeople() {
   // even in a silent room).
   forgetIdleVisitors();
   peopleEl.textContent = "";
+  const currentName = String(userSession()?.nodeName || "").trim().toLowerCase();
   // Collapse multiple entries for the same person into one row: a person can
   // surface under several ids (history-replayed old senderIds, or the same
   // account from other tabs/devices) that all carry the same display name.
@@ -1473,7 +1720,9 @@ function renderPeople() {
       // (relative URL — a self-hosted relay links to its own pages). ForkBot
       // isn't an account, so its row stays a plain div.
       const hasProfile = person.kind === "user";
-      const row = document.createElement(hasProfile ? "a" : "div");
+      let row;
+      if (hasProfile) row = document.createElement("a");
+      else row = document.createElement("div");
       const online = personIsOnline(person);
       row.className = "chat-person" + (online ? "" : " is-offline");
       row.title = person.name + (online ? " · online" : " · offline");
@@ -1485,7 +1734,21 @@ function renderPeople() {
       const dot = document.createElement("span");
       dot.className = "chat-presence-dot" + (online ? " is-online" : "");
       row.append(label, dot);
-      peopleEl.append(row);
+      if (hasProfile && currentName && person.name.toLowerCase() !== currentName) {
+        const wrapper = document.createElement("div");
+        wrapper.className = "chat-person-row";
+        const message = document.createElement("button");
+        message.type = "button";
+        message.className = "chat-person-message";
+        message.textContent = "✉";
+        message.setAttribute("aria-label", `Message ${person.name}`);
+        message.title = `Message ${person.name}`;
+        message.addEventListener("click", () => startDirectMessage(person.name));
+        wrapper.append(row, message);
+        peopleEl.append(wrapper);
+      } else {
+        peopleEl.append(row);
+      }
     }
   };
   renderSection("Users", bySection.user);
@@ -1548,7 +1811,7 @@ function toggleReaction(messageId, emoji) {
   const rec = rows.get(messageId);
   const mine = Boolean(reactions.get(messageId)?.get(emoji)?.has(selfId));
   const plain = makePlain("reaction", {
-    conversation: channelDisplayLabel((rec && rec.channel) || activeChannel),
+    conversation: channelWireLabel((rec && rec.channel) || activeChannel),
     target: messageId,
     emoji,
     reactorId: selfId,
@@ -1897,11 +2160,11 @@ function normalizedPublicWorldFrame(
 
 function frameMatchesScope(plain, scope) {
   if (scope !== "public-world-general") {
-    if (!isPrivateChannelKey(scope)) return false;
+    if (!isPrivateChannelKey(scope) && !isDirectMessageKey(scope)) return false;
     if (plain.type === "history" || plain.type === "hello" ||
         plain.type === "presence" || plain.type === "bye") return true;
-    return plain.channel === channelDisplayLabel(scope) ||
-      plain.conversation === channelDisplayLabel(scope);
+    return plain.channel === channelWireLabel(scope) ||
+      plain.conversation === channelWireLabel(scope);
   }
   if (plain.type === "history") return true;
   if (plain.type === "hello" || plain.type === "presence" ||
@@ -1923,7 +2186,8 @@ function renderChatEntry(entry, kind, scope = roomScopeForChannel()) {
   entry = normalizedPublicWorldFrame(entry, scope);
   const channelKey = scope === "public-world-general" ? "#general" : scope;
   if (scope === "public-world-general" && entry.channel !== "#general") return;
-  if (isPrivateChannelKey(scope) && entry.channel !== channelDisplayLabel(scope)) return;
+  if ((isPrivateChannelKey(scope) || isDirectMessageKey(scope)) &&
+      entry.channel !== channelWireLabel(scope)) return;
   // A private-room message from a room we weren't invited to is ignored, the
   // same honour-model as the desktop client.
   if (entry.private) return;
@@ -2083,7 +2347,7 @@ function broadcastForkbotMessage(text) {
 
 async function maybeAskForkbot(text) {
   if (!userSession()) return;
-  if (isPrivateChannelKey(activeChannel)) return;
+  if (isPrivateChannelKey(activeChannel) || isDirectMessageKey(activeChannel)) return;
   if (!FORKBOT_MENTION_RE.test(text || "")) return;
   // The triggering line is the last buffer entry (appendMessage ran just
   // before this) and is sent separately as `message`; drop it, drop ForkBot's
@@ -2152,15 +2416,16 @@ function handleTransportState(state, detail) {
       return;
     }
     if (!officeAuthorizationExpired) showOfficeFailure("");
-    setStatus(
-      scope === "public-world-general"
-        ? "Connected · public World #general"
+    const direct = directMessageForKey(scope);
+    setStatus(scope === "public-world-general"
+      ? "Connected · public World #general"
+      : direct
+        ? `Connected · direct ${channelDisplayLabel(scope)}`
         : `Connected · ${
           privateChannelForKey(scope)?.visibility || "private"
-        } ${channelDisplayLabel(scope)}`
-    );
+        } ${channelDisplayLabel(scope)}`);
     send(makePlain("hello", {
-      channels: [channelDisplayLabel(activeChannel)],
+      channels: [channelWireLabel(activeChannel)],
     }));
     noteSelfRoster();
     const callbacks = openCallbacks;
@@ -2261,7 +2526,7 @@ async function sendAttachment(file) {
   const encodedFile = bytesToB64(buffer);
   runWhenConnected(() => {
     const plain = makePlain("chat", {
-      channel: channelDisplayLabel(activeChannel),
+      channel: channelWireLabel(activeChannel),
       fileName,
       fileMime,
       file: encodedFile,
@@ -2305,7 +2570,7 @@ function sendCurrentMessage() {
   runWhenConnected(() => {
     const clipped = text.slice(0, MAX_TEXT);
     const plain = makePlain("chat", {
-      channel: channelDisplayLabel(activeChannel),
+      channel: channelWireLabel(activeChannel),
       text: clipped,
     });
     send(plain);
@@ -2340,6 +2605,7 @@ async function initChat() {
   await hydrateUserSession();
   ensureChannel("#general");
   await refreshPrivateChannels({ connect: false });
+  await refreshDirectMessages({ connect: false });
   const label = channelDisplayLabel(activeChannel);
   updateChannelHeading();
   if (input) input.placeholder = `Message ${label}…`;
@@ -2354,7 +2620,10 @@ async function initChat() {
     refreshUsersDirectory();
     markChatActivitySeen();
   }, USERS_DIRECTORY_REFRESH_MS);
-  setInterval(refreshPrivateChannels, PRIVATE_CHANNEL_REFRESH_MS);
+  setInterval(() => {
+    refreshPrivateChannels();
+    refreshDirectMessages();
+  }, PRIVATE_CHANNEL_REFRESH_MS);
   // Public World #general connects for everyone. Private channels remain
   // session-gated and each uses its own ticketed room and current key version.
   if (canJoinChannel()) {
@@ -2369,6 +2638,9 @@ async function initChat() {
   channelCreateBtn?.addEventListener("click", () => openChannelDialog(false));
   channelManageBtn?.addEventListener("click", () => openChannelDialog(true));
   channelDialogClose?.addEventListener("click", () => channelDialog?.close());
+  directCreateBtn?.addEventListener("click", openDirectMessageDialog);
+  directDialogClose?.addEventListener("click", () => directDialog?.close());
+  directSearch?.addEventListener("input", renderDirectMessagePicker);
   channelCreateForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     createChannel(

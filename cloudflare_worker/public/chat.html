@@ -168,7 +168,8 @@
 
       #chat-channel-manage { font-size: 12px; }
 
-      #chat-channel-dialog {
+      #chat-channel-dialog,
+      #chat-direct-dialog {
         width: min(520px, calc(100vw - 32px));
         max-height: min(720px, calc(100vh - 32px));
         margin: auto;
@@ -181,7 +182,8 @@
         box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
       }
 
-      #chat-channel-dialog::backdrop { background: rgba(0, 0, 0, 0.62); }
+      #chat-channel-dialog::backdrop,
+      #chat-direct-dialog::backdrop { background: rgba(0, 0, 0, 0.62); }
 
       .chat-channel-dialog-body {
         display: grid;
@@ -218,7 +220,8 @@
       .chat-channel-form { display: flex; gap: 8px; }
       .chat-channel-form input,
       .chat-channel-create-form input,
-      .chat-channel-create-form select {
+      .chat-channel-create-form select,
+      #chat-direct-search {
         flex: 1;
         width: 100%;
         min-width: 0;
@@ -232,7 +235,8 @@
       }
       .chat-channel-form input:focus,
       .chat-channel-create-form input:focus,
-      .chat-channel-create-form select:focus {
+      .chat-channel-create-form select:focus,
+      #chat-direct-search:focus {
         border-color: var(--accent);
       }
       .chat-channel-form button,
@@ -353,7 +357,8 @@
         letter-spacing: 0.08em;
       }
 
-      #chat-channel-error {
+      #chat-channel-error,
+      #chat-direct-error {
         min-height: 17px;
         margin: 0;
         color: #f85149;
@@ -388,6 +393,73 @@
         display: flex;
         flex-direction: column;
         gap: 2px;
+      }
+
+      .chat-direct-section {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        border-top: 1px solid var(--border);
+      }
+
+      #chat-direct-list {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 0 8px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+
+      .chat-direct-row .chat-avatar {
+        width: 22px;
+        height: 22px;
+        margin: 0;
+        font-size: 10px;
+      }
+
+      #chat-direct-options {
+        display: grid;
+        gap: 4px;
+        max-height: 320px;
+        overflow-y: auto;
+      }
+
+      .chat-direct-option {
+        display: flex;
+        align-items: center;
+        min-width: 0;
+        gap: 10px;
+        width: 100%;
+        padding: 9px 10px;
+        border: none;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--fg);
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .chat-direct-option:hover,
+      .chat-direct-option:focus-visible {
+        background: var(--surface2);
+        outline: 1px solid var(--accent);
+      }
+
+      .chat-direct-option span:last-child {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      #chat-direct-empty {
+        margin: 0;
+        color: var(--muted);
+        font-size: 12px;
       }
 
       .chat-room {
@@ -968,6 +1040,8 @@
       }
 
       .chat-person {
+        flex: 1;
+        min-width: 0;
         display: flex;
         align-items: center;
         gap: 9px;
@@ -979,6 +1053,33 @@
 
       .chat-person:hover { background: var(--surface2); }
       a.chat-person:hover .chat-person-name { text-decoration: underline; text-underline-offset: 2px; }
+
+      .chat-person-row {
+        display: flex;
+        align-items: center;
+        min-width: 0;
+        gap: 3px;
+      }
+
+      .chat-person-message {
+        flex: 0 0 auto;
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        border: 1px solid transparent;
+        border-radius: 7px;
+        background: transparent;
+        color: var(--muted);
+        cursor: pointer;
+      }
+
+      .chat-person-message:hover,
+      .chat-person-message:focus-visible {
+        border-color: var(--border);
+        background: var(--surface2);
+        color: var(--fg);
+        outline: none;
+      }
 
       .chat-person .chat-avatar { width: 26px; height: 26px; font-size: 12px; margin: 0; }
 
@@ -1064,6 +1165,7 @@
       html[data-chat-embed="office"] .chat-e2e-note { display: none; }
       html[data-chat-embed="office"] .chat-admin-action { display: none; }
       html[data-chat-embed="office"] #chat-channel-dialog { display: none; }
+      html[data-chat-embed="office"] #chat-direct-dialog { display: none; }
 
       html[data-chat-embed="office"] .chat-rooms-pane,
       html[data-chat-embed="office"] .chat-main-pane,
@@ -1104,7 +1206,16 @@
           border-bottom: 1px solid var(--border);
         }
         .chat-rooms-pane .chat-pane-title { padding: 10px 12px; }
-        #chat-rooms { flex-direction: row; overflow-x: auto; overflow-y: hidden; padding: 6px 8px; }
+        #chat-rooms,
+        #chat-direct-list { flex-direction: row; overflow-x: auto; overflow-y: hidden; padding: 6px 8px; }
+        .chat-direct-section {
+          min-width: 0;
+          flex-direction: row;
+          align-items: center;
+          border-top: none;
+          border-left: 1px solid var(--border);
+        }
+        .chat-direct-section .chat-pane-title { padding: 10px 8px; }
         .chat-room { width: auto; white-space: nowrap; }
         .chat-name-wrap { display: none; }
         .chat-main-head { gap: 8px; padding: 8px 12px; }
@@ -1154,6 +1265,13 @@
             <button id="chat-channel-create" class="chat-admin-action" type="button" aria-label="Create channel" title="Create channel" hidden>+</button>
           </div>
           <div id="chat-rooms"></div>
+          <section id="chat-direct-section" class="chat-direct-section" aria-labelledby="chat-direct-title" hidden>
+            <div class="chat-pane-title chat-pane-title-row">
+              <span id="chat-direct-title">Direct messages</span>
+              <button id="chat-direct-create" class="chat-admin-action" type="button" aria-label="New direct message" title="New direct message">+</button>
+            </div>
+            <div id="chat-direct-list"></div>
+          </section>
         </aside>
 
         <!-- middle: conversation -->
@@ -1282,6 +1400,19 @@
             </form>
             <div id="chat-channel-members" aria-live="polite"></div>
           </section>
+        </div>
+      </dialog>
+
+      <dialog id="chat-direct-dialog" aria-labelledby="chat-direct-dialog-title">
+        <div class="chat-channel-dialog-body">
+          <div class="chat-channel-dialog-head">
+            <h2 id="chat-direct-dialog-title">New direct message</h2>
+            <button id="chat-direct-dialog-close" type="button" aria-label="Close direct message picker">×</button>
+          </div>
+          <p id="chat-direct-error" role="alert" aria-live="polite"></p>
+          <input id="chat-direct-search" type="search" autocomplete="off" placeholder="Search people" aria-label="Search people to message" />
+          <div id="chat-direct-options" role="list" aria-label="People available to message"></div>
+          <p id="chat-direct-empty" aria-live="polite">Loading registered users...</p>
         </div>
       </dialog>
     </div>
