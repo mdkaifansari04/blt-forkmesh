@@ -73,6 +73,14 @@ const PRESENCE_PROFILE_DEBOUNCE_MS = 300;
 const MOVEMENT_SEND_INTERVAL_MS = 1000;
 const PRESENCE_STALE_MS = 22000;
 const WORLD_TICKET_REFRESH_MS = 5 * 60 * 1000;
+// Gentle self-update: the relay stamps a new BUILD_REV on every deploy and
+// echoes it from /api/version. A slow watcher notices the flip, saves the
+// player's position, and reloads once — the restored position makes the new
+// build appear in place without the player ever touching refresh.
+const WORLD_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+const WORLD_UPDATE_CHECK_MIN_GAP_MS = 60 * 1000;
+const WORLD_UPDATE_RELOAD_DELAY_MS = 1400;
+const WORLD_UPDATE_RELOADED_REV_KEY = "forkmesh.world.updateReloadedRev.v1";
 const WORLD_NOTIFICATION_POLL_MS = 30 * 1000;
 const MIRROR_STATUS_POLL_MS = 30 * 1000;
 const WORLD_MANUAL_BLOCK_DURATION_MS = 60 * 60 * 1000;
@@ -1985,26 +1993,84 @@ function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
       (mirror) =>
         String(mirror?.status || "").toLowerCase() === "online" &&
         mirror?.cloneAvailable === true &&
-        String(mirror?.integrity || "").toLowerCase() === "ok",
+        String(mirror?.integrity || "").toLowerCase() === "ok" &&
+        mirror?.behind !== true,
     );
+    const attestedMirrorCommits = new Map();
+    healthy.forEach((mirror) => {
+      const node = sanitizePresenceText(
+        mirror?.node || mirror?.owner,
+        "",
+        40,
+      ).toLowerCase();
+      const commit = immutableGitOid(mirror?.commit);
+      if (!node || !commit) return;
+      if (!attestedMirrorCommits.has(node)) {
+        attestedMirrorCommits.set(node, new Set());
+      }
+      attestedMirrorCommits.get(node).add(commit);
+    });
+    // A stale/offline repository listing must not erase the immutable pin
+    // unanimously reported by the mirrors that can actually serve the clone.
+    // Conversely, duplicate or disagreeing eligible reports remain ambiguous
+    // and fail closed instead of selecting a majority or freshest timestamp.
+    const attestedCandidatesByNode = new Map();
+    candidates.forEach((candidate) => {
+      const { record } = candidate;
+      const node = record.owner.toLowerCase();
+      const reportedCommits = attestedMirrorCommits.get(
+        node,
+      );
+      const commit = immutableGitOid(record.commit);
+      if (
+        !commit ||
+        reportedCommits?.size !== 1 ||
+        !reportedCommits.has(commit)
+      ) {
+        return;
+      }
+      if (!attestedCandidatesByNode.has(node)) {
+        attestedCandidatesByNode.set(node, []);
+      }
+      attestedCandidatesByNode.get(node).push(candidate);
+    });
+    const completeAttestation =
+      attestedMirrorCommits.size > 0 &&
+      [...attestedMirrorCommits.entries()].every(
+        ([node, commits]) =>
+          commits.size === 1 &&
+          attestedCandidatesByNode.get(node)?.length === 1,
+      );
+    const attestedCandidates = completeAttestation
+      ? [...attestedCandidatesByNode.values()].map(([candidate]) => candidate)
+      : [];
     const preferredNode = String(healthy[0]?.node || "").toLowerCase();
     const preferred =
-      candidates.find(
+      attestedCandidates.find(
         ({ record }) => record.owner.toLowerCase() === preferredNode,
       )?.record ||
+      attestedCandidates
+        .map(({ record }) => record)
+        .sort((left, right) => right.updatedAt - left.updatedAt)[0] ||
       candidates
         .map(({ record }) => record)
         .sort((left, right) => right.updatedAt - left.updatedAt)[0];
     const commits = new Set(
-      candidates
+      attestedCandidates
         .map(({ record }) => immutableGitOid(record.commit))
         .filter(Boolean),
     );
     const stateHashes = new Set(
-      candidates
+      attestedCandidates
         .map(({ record }) => String(record.stateHash || "").toLowerCase())
         .filter((value) => /^[0-9a-f]{64}$/.test(value)),
     );
+    const completeStateHashAttestation =
+      attestedCandidates.length > 0 &&
+      stateHashes.size === 1 &&
+      attestedCandidates.every(({ record }) =>
+        /^[0-9a-f]{64}$/.test(String(record.stateHash || "").toLowerCase()),
+      );
     const reportedPullCounts = mirrors
       .map((mirror) => Number(mirror?.pullCount))
       .filter(
@@ -2029,7 +2095,7 @@ function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
       mirrorCount: mirrors.length,
       pullCount,
       commit: commits.size === 1 ? [...commits][0] : "",
-      stateHash: stateHashes.size === 1 ? [...stateHashes][0] : "",
+      stateHash: completeStateHashAttestation ? [...stateHashes][0] : "",
       mirrorAliases: candidates.map(({ record }) => ({
         owner: record.owner,
         name: record.name,
@@ -2547,7 +2613,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           <summary aria-label="Open World chat in a terminal panel">
             <span class="world-diagnostics-light" data-state="online" aria-hidden="true"></span>
             <strong>CHAT</strong>
-            <span>Chat stays inside ForkMesh World</span>
+            <span data-world-chat-terminal-last>Chat stays inside ForkMesh World</span>
             <span class="world-diagnostics-toggle" aria-hidden="true">⌃</span>
           </summary>
           <div class="world-chat-terminal-body">
@@ -2962,6 +3028,9 @@ class ForkMeshWorld extends HTMLElement {
     this.diagnosticsOutboundSample = 0;
     this.lastDiagnosticsSnapshot = null;
     this.buildDiagnostics = { version: "", revision: "" };
+    this.updateCheckTimer = 0;
+    this.lastUpdateCheckAt = 0;
+    this.updateReloadPending = false;
     this.peerGraceTimer = 0;
     this.peerGraceUntil = 0;
     this.pingTimer = 0;
@@ -3057,6 +3126,7 @@ class ForkMeshWorld extends HTMLElement {
     this.startDiagnostics();
     this.bootstrap();
     this.startWorldTicketRefresh();
+    this.startUpdateWatch();
   }
 
   disconnectedCallback() {
@@ -3100,14 +3170,15 @@ class ForkMeshWorld extends HTMLElement {
     if (!data || data.type !== "forkmesh:world-chat") return;
     const text = String(data.text || "").trim();
     if (!text) return;
+    const sender = String(data.sender || "")
+      .replace(/^World visitor\s*·\s*/i, "")
+      .trim();
+    this.setChatTerminalLastMessage(sender, text);
     if (data.self === true) {
       this.world?.showChatBubble?.(this.identity?.id, text, true);
       return;
     }
-    const senderName = String(data.sender || "")
-      .replace(/^World visitor\s*·\s*/i, "")
-      .trim()
-      .toLowerCase();
+    const senderName = sender.toLowerCase();
     if (!senderName) return;
     for (const [id, peer] of this.remotePlayers) {
       const peerName = String(peer?.name || "").trim().toLowerCase();
@@ -3262,7 +3333,10 @@ class ForkMeshWorld extends HTMLElement {
       try {
         this.socket?.close(1000, "page hidden");
       } catch (_) {}
-    } else if (!this.socket) {
+      return;
+    }
+    void this.checkForWorldUpdate();
+    if (!this.socket) {
       this.refreshWorldTicket();
       this.connectPresence();
       void this.refreshMirrorCatalogs();
@@ -11220,6 +11294,14 @@ class ForkMeshWorld extends HTMLElement {
     frame.src = frameURL;
   }
 
+  // Mirror the newest live chat line into the collapsed CHAT bar so the
+  // bottom strip shows the latest message without opening the panel.
+  setChatTerminalLastMessage(sender, text) {
+    const label = this.$("[data-world-chat-terminal-last]");
+    if (!label) return;
+    label.textContent = sender ? `${sender}: ${text}` : text;
+  }
+
   closeWorldChat() {
     const panel = this.$("[data-world-chat]");
     const backdrop = this.$(".world-chat-backdrop");
@@ -11452,6 +11534,56 @@ class ForkMeshWorld extends HTMLElement {
       panel.setAttribute("aria-hidden", "true");
     }
     this.world?.clearFocus();
+  }
+
+  startUpdateWatch() {
+    window.clearInterval(this.updateCheckTimer);
+    this.updateCheckTimer = window.setInterval(
+      () => void this.checkForWorldUpdate(),
+      WORLD_UPDATE_CHECK_INTERVAL_MS,
+    );
+  }
+
+  async checkForWorldUpdate() {
+    if (this.destroyed || this.updateReloadPending || document.hidden) return;
+    // Visibility flips can arrive in bursts; keep the check to at most one
+    // relay request per minute so hidden/visible churn never adds load.
+    const now = Date.now();
+    if (now - this.lastUpdateCheckAt < WORLD_UPDATE_CHECK_MIN_GAP_MS) return;
+    this.lastUpdateCheckAt = now;
+    let build;
+    try {
+      build = normalizeBuildDiagnostics(
+        await this.fetchJSON("/api/version", { auth: false, timeout: 5000 }),
+      );
+    } catch (_) {
+      return; // Offline or relay backpressure: a later quiet tick retries.
+    }
+    if (this.destroyed || this.updateReloadPending || !build.revision) return;
+    const known = String(this.buildDiagnostics?.revision || "");
+    if (!known) {
+      // The boot fetch failed or has not landed yet: adopt this revision as
+      // the baseline instead of treating it as an update.
+      this.buildDiagnostics = { ...this.buildDiagnostics, ...build };
+      this.renderDiagnostics();
+      return;
+    }
+    if (build.revision === known) return;
+    let reloadedFor = "";
+    try {
+      reloadedFor =
+        sessionStorage.getItem(WORLD_UPDATE_RELOADED_REV_KEY) || "";
+    } catch (_) {}
+    // One reload per revision: if a cache keeps reporting a revision this tab
+    // already reloaded for, stay put rather than reload-looping the player.
+    if (reloadedFor === build.revision) return;
+    this.updateReloadPending = true;
+    try {
+      sessionStorage.setItem(WORLD_UPDATE_RELOADED_REV_KEY, build.revision);
+    } catch (_) {}
+    this.captureWorldPosition(true);
+    this.toast("✨ The World just updated — bringing you along in place…");
+    window.setTimeout(() => location.reload(), WORLD_UPDATE_RELOAD_DELAY_MS);
   }
 
   startDiagnostics() {
@@ -12384,6 +12516,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.broadcastTimer);
     window.clearInterval(this.worldTicketTimer);
     window.clearInterval(this.diagnosticsTimer);
+    window.clearInterval(this.updateCheckTimer);
     this.peerGraceTimer = 0;
     this.profilePresenceTimer = 0;
     this.movementSendTimer = 0;
