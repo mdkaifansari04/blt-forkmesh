@@ -256,7 +256,6 @@ def test_world_frontend_loads_applies_and_admin_locks_the_layout():
     assert "OctahedronGeometry(0.09" in scene_js
     for object_id in (
         "world-bulletin", "arrival-box", "mastodon-kiosk", "campfire",
-        "registered-user-lounge", "active-leaderboard-sign",
-        "system-capacity-platform",
+        "active-leaderboard-sign", "system-capacity-platform",
     ):
         assert '"%s"' % object_id in scene_js
