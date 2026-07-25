@@ -1917,6 +1917,24 @@ private:
     // Human-readable "this workflow belongs to <node>" text for logs and the UI.
     QString workflowDedicationLabel(const ActionWorkflow &workflow) const;
     void processActionQueue();
+    // An encrypted repository is served out of a temporary materialization whose
+    // directory is recreated by every sealing pass and deleted as soon as the
+    // replacement is installed. A run checks out of, clones from, and lands
+    // release artifacts into that directory for its whole lifetime, so a routine
+    // re-seal (publishing a release triggers one) can delete the mirror out from
+    // under an in-flight build: `git -C <mirror> worktree add` then fails with
+    // "cannot change to '/tmp/ForkMesh-XXXXXX/repository.git'" (adhoc #314).
+    // Returns the live materialization for this repository — writing its current
+    // path into `mirrorPath` when the record lagged behind a re-seal — and keeps
+    // that directory alive for as long as the caller holds the returned handle.
+    // Null for a plain durable mirror, which needs no pinning.
+    std::shared_ptr<void> pinActionMirror(const RepositoryRecord &repo,
+                                          QString *mirrorPath) const;
+    // Drop the pin taken for `runId`, first carrying any release artifacts the
+    // run landed into the mirror that is serving the repository now: a re-seal
+    // during a long build leaves the run writing its binaries into a directory
+    // that is about to be deleted along with the pin.
+    void releaseActionMirrorPin(int runId);
     // The runner currently executing `runId`, or nullptr if no runner is. Used
     // to target stop()/abort at the exact run rather than a single global runner.
     ActionRunner *runnerForRun(int runId) const;
@@ -3178,6 +3196,12 @@ private:
     // the record at it when the move fails). Returns true when the record was
     // modified and needs saving.
     bool reconcileMirrorPath(RepositoryRecord &repo);
+    // Point a record at the temporary materialization now serving it after a
+    // sealing pass. Release artifact blobs live beside the git data instead of
+    // in it, so they are carried into the replacement directory first —
+    // otherwise every re-seal silently drops the binaries this node hosts.
+    void adoptMaterializedMirror(RepositoryRecord &repo,
+                                 const QString &repositoryPath);
     void saveRepositories() const;
     void refreshRepositoryList();
     // Node handles offered by the @-mention autocomplete in comment editors:
@@ -4648,6 +4672,16 @@ private:
     QFileSystemWatcher *m_actionSpoolWatcher = nullptr;
     QList<ActionRun> m_actionRuns;   // loaded history, newest first
     QList<int> m_actionQueue;        // run ids queued for execution
+    // The encrypted mirror materialization a run is executing out of (see
+    // pinActionMirror). Held until the run finishes so a concurrent re-seal
+    // cannot delete the served mirror mid-build.
+    struct ActionMirrorPin {
+        std::shared_ptr<void> materialization; // keeps the directory alive
+        QString path;                          // mirror the run was handed
+        QString owner;
+        QString name;
+    };
+    QHash<int, ActionMirrorPin> m_actionMirrorPins; // run id -> pinned mirror
     QString m_mirrorActionsConfigGeneration;
     QString m_mirrorActionsRuntimeState;
     qint64 m_mirrorActionsRuntimeStateWrittenAtMs = 0;
