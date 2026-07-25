@@ -913,24 +913,6 @@ QWidget *MainWindow::buildSettingsSection()
         nodeStatChecks.append(check);
     }
 
-    // Opt-in crash/stall telemetry (issue #354). OFF by default: when on, the
-    // previous session's crash summary and UI-stall records are uploaded to the
-    // mainnode on startup so bugs reach a triage queue instead of dying in a
-    // local log. Only the app version, OS, and an anonymized node hash are sent;
-    // repo names and filesystem paths are scrubbed out client-side first.
-    auto *telemetryCheck =
-        new QCheckBox("Upload crash & UI-stall reports to help fix bugs");
-    telemetryCheck->setChecked(
-        QSettings().value(kUploadTelemetrySetting, false).toBool());
-    telemetryCheck->setToolTip(
-        "On startup, send the previous session's crash summary and UI-stall "
-        "records to the mainnode so they reach a triage queue. Only the app "
-        "version, OS, and an anonymized node hash go with them; repo names and "
-        "file paths are scrubbed out first. Off by default.");
-    connect(telemetryCheck, &QCheckBox::toggled, this, [](bool enabled) {
-        QSettings().setValue(kUploadTelemetrySetting, enabled);
-    });
-
     auto *agentsLabel = new QLabel("AGENTS");
     agentsLabel->setObjectName("sectionLabel");
     auto *agentsHint = new QLabel(
@@ -1679,7 +1661,6 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addWidget(nodeStatsHint);
     for (QCheckBox *check : std::as_const(nodeStatChecks))
         generalCol->addWidget(check);
-    generalCol->addWidget(telemetryCheck);
     generalCol->addSpacing(6);
     generalCol->addWidget(startupLabel);
     generalCol->addWidget(m_autostartCheck);
