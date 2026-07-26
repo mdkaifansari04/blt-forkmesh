@@ -8079,6 +8079,44 @@ inline int mirrorCommitCount(const QString &mirrorPath, const QString &branch)
     return ok ? n : -1;
 }
 
+// Subject / author / commit time of one commit, read from a git directory (a
+// bare mirror or a working copy). Returns an empty identity when the repo or
+// the commit isn't there — a peer can advertise a commit we never fetched.
+inline CommitIdentity gitCommitIdentity(const QString &gitPath,
+                                        const QString &commit)
+{
+    CommitIdentity identity;
+    if (gitPath.trimmed().isEmpty() || commit.trimmed().isEmpty() ||
+        !QDir(gitPath).exists())
+        return identity;
+    QByteArray out;
+    if (!runGitCapture(gitPath,
+                       {"show", "-s", "--format=%s%n%an%n%ct", commit}, &out,
+                       nullptr))
+        return identity;
+    const QStringList lines = QString::fromUtf8(out).split('\n');
+    if (lines.size() < 3)
+        return identity;
+    identity.subject = lines.at(0).trimmed().left(kMaxCommitSubjectChars);
+    identity.author = lines.at(1).trimmed().left(kMaxCommitAuthorChars);
+    identity.committedAtMs =
+        qMax(qint64(0), lines.at(2).trimmed().toLongLong() * 1000);
+    return identity;
+}
+
+// The same lookup across a node's two copies: prefer the served bare mirror,
+// falling back to the working copy for a source node whose primary-branch tip
+// is ahead of the mirror it serves.
+inline CommitIdentity mirrorCommitIdentity(const QString &mirrorPath,
+                                           const QString &workTreePath,
+                                           const QString &commit)
+{
+    CommitIdentity identity = gitCommitIdentity(mirrorPath, commit);
+    if (identity.subject.isEmpty() && identity.author.isEmpty())
+        identity = gitCommitIdentity(workTreePath, commit);
+    return identity;
+}
+
 // Commit activity histogram for the website repository list: 52 weekly buckets,
 // oldest to newest, across every served ref in the bare mirror.
 inline QJsonArray mirrorCommitActivityWeeks(const QString &mirrorPath,

@@ -401,6 +401,14 @@ def build_repo_mirrors_payload(
             # Mirror nodes view fills these columns even for an offline node (adhoc #56).
             "commit": str(rec.get("commit") or "").strip(),
             "branch": str(rec.get("branch") or "").strip(),
+            # What that commit says and who wrote it, mirrored from the node's
+            # signed record, so a hash alone isn't all a viewer gets. Optional
+            # catalog-v2 extensions: None when the node never published them.
+            "lastCommitMessage": (
+                str(rec.get("commitSubject") or "").strip() or None),
+            "lastCommitAuthorName": (
+                str(rec.get("commitAuthorName") or "").strip() or None),
+            "lastCommitAt": _mirror_ms(rec.get("commitAt")),
             "issueCount": issue_count,
             "commitCount": _int_field(rec, "commitCount"),
             "branchCount": _int_field(rec, "branchCount"),

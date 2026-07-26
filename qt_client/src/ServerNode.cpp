@@ -162,6 +162,11 @@ void writeMirrors(QJsonObject &message, const QList<MirrorAdvert> &mirrors)
         head.insert("d", m.discussionCount); // discussions
         head.insert("w", m.worktreeCount);   // working-copy worktrees (agent tasks)
         head.insert("a", m.artifactCount);   // release artifacts hosted for download
+        // Who made the advertised commit and what it says, so peers can show the
+        // latest commit by name instead of a bare hash they may not hold.
+        head.insert("m", m.commitIdentity.subject.left(kMaxCommitSubjectChars));
+        head.insert("n", m.commitIdentity.author.left(kMaxCommitAuthorChars));
+        head.insert("e", double(m.commitIdentity.committedAtMs));
         heads.insert(m.ownerName, head);
     }
     message.insert("mirrors", names);
@@ -194,6 +199,12 @@ QList<MirrorAdvert> readMirrors(const QJsonObject &message)
             head.contains("d") ? head.value("d").toInt(-1) : -1;
         advert.worktreeCount = head.contains("w") ? head.value("w").toInt(-1) : -1;
         advert.artifactCount = head.contains("a") ? head.value("a").toInt(-1) : -1;
+        advert.commitIdentity.subject =
+            head.value("m").toString().left(kMaxCommitSubjectChars);
+        advert.commitIdentity.author =
+            head.value("n").toString().left(kMaxCommitAuthorChars);
+        advert.commitIdentity.committedAtMs =
+            qMax(qint64(0), qint64(head.value("e").toDouble()));
         mirrors.append(advert);
     }
     return mirrors;
@@ -1088,7 +1099,11 @@ void ServerNode::setMirroredRepos(const QList<MirrorAdvert> &repos)
                   repos.at(i).worktreeCount !=
                       m_mirroredRepos.at(i).worktreeCount ||
                   repos.at(i).artifactCount !=
-                      m_mirroredRepos.at(i).artifactCount;
+                      m_mirroredRepos.at(i).artifactCount ||
+                  repos.at(i).commitIdentity.subject !=
+                      m_mirroredRepos.at(i).commitIdentity.subject ||
+                  repos.at(i).commitIdentity.author !=
+                      m_mirroredRepos.at(i).commitIdentity.author;
     if (!changed)
         return;
     m_mirroredRepos = repos;
