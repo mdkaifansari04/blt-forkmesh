@@ -2187,6 +2187,11 @@ function cleanRepositories(payload) {
         commit: /^[0-9a-f]{40,64}$/.test(commit) ? commit : "",
         stateHash: /^[0-9a-f]{64}$/.test(stateHash) ? stateHash : "",
         rootCommit: immutableGitOid(repo.rootCommit),
+        // A repository owner is a user/org identity; nodeId is the machine
+        // identity that signed and serves this particular catalog record.
+        // Keep both so organization alias attestation never compares a user
+        // name (for example jett) with a node name (for example forkmesh).
+        nodeId: sanitizePresenceText(repo.nodeId, "", 96),
         pullCount:
           Number.isSafeInteger(pullCount) &&
           pullCount >= 0 &&
@@ -2301,13 +2306,30 @@ function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
         )
         .filter(Boolean),
     );
+    const mirrorNodeById = new Map();
+    mirrors.forEach((mirror) => {
+      const node = sanitizePresenceText(
+        mirror?.node || mirror?.owner,
+        "",
+        40,
+      ).toLowerCase();
+      const id = sanitizePresenceText(mirror?.id, "", 96);
+      if (node && id && !mirrorNodeById.has(id)) {
+        mirrorNodeById.set(id, node);
+      }
+    });
+    const servingNodeFor = (record) => {
+      const owner = String(record?.owner || "").toLowerCase();
+      if (nodes.has(owner)) return owner;
+      return mirrorNodeById.get(String(record?.nodeId || "")) || "";
+    };
     const candidates = source
       .map((record, index) => ({ record, index }))
       .filter(
         ({ record }) =>
           !record.isPrivate &&
           record.name.toLowerCase() === repo.toLowerCase() &&
-          nodes.has(record.owner.toLowerCase()),
+          Boolean(servingNodeFor(record)),
       );
     if (!candidates.length) return;
     candidates.forEach(({ index }) => consumed.add(index));
@@ -2344,7 +2366,7 @@ function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
     const attestedCandidatesByNode = new Map();
     candidates.forEach((candidate) => {
       const { record } = candidate;
-      const node = record.owner.toLowerCase();
+      const node = servingNodeFor(record);
       const reportedCommits = attestedMirrorCommits.get(
         node,
       );
@@ -2374,7 +2396,7 @@ function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
     const preferredNode = String(healthy[0]?.node || "").toLowerCase();
     const preferred =
       attestedCandidates.find(
-        ({ record }) => record.owner.toLowerCase() === preferredNode,
+        ({ record }) => servingNodeFor(record) === preferredNode,
       )?.record ||
       attestedCandidates
         .map(({ record }) => record)

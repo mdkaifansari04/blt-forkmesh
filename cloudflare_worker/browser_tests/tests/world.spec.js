@@ -822,12 +822,16 @@ ${longContext}
           }
         }
       } else if (url.pathname === "/api/repositories") {
-        const repositoryOwners = repositoryFixture.staleOfflineAlias
+        const repositoryOwners =
+          repositoryFixture.staleOfflineAlias ||
+          repositoryFixture.sourceUserOwner
           ? ["jett", "mirror2", "mirror3"]
           : ["mirror2", "mirror3"];
         body = {
           repositories: repositoryOwners.map((owner) => {
-            const stale = owner === "jett";
+            const stale =
+              repositoryFixture.staleOfflineAlias && owner === "jett";
+            const source = owner === "jett";
             const conflicting =
               repositoryFixture.conflictingHealthyAlias &&
               owner === "mirror3";
@@ -837,7 +841,11 @@ ${longContext}
             return {
               owner,
               name: "forkmesh",
-              source: stale ? "local-node" : "remote-clone",
+              source: source ? "local-node" : "remote-clone",
+              nodeId:
+                repositoryFixture.sourceUserOwner && source
+                  ? "source-node-id"
+                  : owner,
               liveHost: !stale,
               commit: stale || conflicting ? "d".repeat(40) : codeOid,
               stateHash: missingStateHash
@@ -853,6 +861,7 @@ ${longContext}
       } else if (url.pathname === `${repoBase}/mirrors`) {
         const mirrorNodes = ["mirror2", "mirror3"];
         if (repositoryFixture.staleOfflineAlias) mirrorNodes.push("jett");
+        if (repositoryFixture.sourceUserOwner) mirrorNodes.unshift("forkmesh");
         body = {
           ok: true,
           owner: "forkmesh",
@@ -864,6 +873,7 @@ ${longContext}
               node === "mirror3";
             return {
               node,
+              id: node === "forkmesh" ? "source-node-id" : node,
               status: stale ? "offline" : "online",
               integrity: stale ? "healing" : "ok",
               cloneAvailable: !stale,
@@ -3621,6 +3631,39 @@ test("a stale offline alias cannot erase the live mirrors' flagship pin", async 
       ],
     },
     mapState: "ready",
+    activeCommit: "a".repeat(40),
+  });
+});
+
+test("the flagship pin keeps user ownership separate from source node identity", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  await prepareWorldPage(page, "world-source-user-node-identity", {
+    repositoryFixture: { sourceUserOwner: true },
+  });
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.repositoryMapState === "ready";
+  });
+
+  const snapshot = await page.locator("forkmesh-world").evaluate((shell) => {
+    const alias = shell.repositories.find(
+      (record) =>
+        record.owner === "forkmesh" &&
+        record.name === "forkmesh" &&
+        record.source === "organization-alias",
+    );
+    return {
+      aliasCommit: alias?.commit || "",
+      servingOwner: alias?.servingOwner || "",
+      activeCommit: shell.activeRepository?.commit || "",
+    };
+  });
+  expect(snapshot).toEqual({
+    aliasCommit: "a".repeat(40),
+    servingOwner: "jett",
     activeCommit: "a".repeat(40),
   });
 });
