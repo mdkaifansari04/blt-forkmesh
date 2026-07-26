@@ -741,6 +741,76 @@ int main(int argc, char **argv)
               .program.isEmpty(),
           "a missing managed identity file fails closed");
 
+    // Host size map (adhoc #390): a read-only `du` browser over the same
+    // authenticated SSH channel.
+    check(forkmesh::control::normalizeRemoteDiskPath(
+              QStringLiteral("/var//lib/./forkmesh/")) ==
+                  QStringLiteral("/var/lib/forkmesh") &&
+              forkmesh::control::normalizeRemoteDiskPath(
+                  QStringLiteral("/var/lib/..")) == QStringLiteral("/var") &&
+              forkmesh::control::normalizeRemoteDiskPath(
+                  QStringLiteral("/../..")) == QStringLiteral("/") &&
+              forkmesh::control::normalizeRemoteDiskPath(QString()) ==
+                  QStringLiteral("/"),
+          "remote size-map paths collapse to canonical absolute paths");
+    check(forkmesh::control::normalizeRemoteDiskPath(
+              QStringLiteral("var/lib")).isEmpty() &&
+              forkmesh::control::normalizeRemoteDiskPath(
+                  QStringLiteral("/var\nrm -rf /")).isEmpty(),
+          "relative and newline-bearing size-map paths are rejected");
+
+    QString diskError;
+    const QString diskCommand = forkmesh::control::buildHostDiskUsageCommand(
+        QStringLiteral("/srv/it's here"), &diskError);
+    check(diskError.isEmpty() &&
+              diskCommand.startsWith(QStringLiteral("sh -lc '")) &&
+              diskCommand.contains(QStringLiteral("du -x -k -a -d 1")) &&
+              diskCommand.contains(QStringLiteral("'\\''")) &&
+              !diskCommand.contains(QStringLiteral("rm ")) &&
+              !diskCommand.contains(QStringLiteral("chmod")),
+          "the size-map command is a single quoted read-only du level");
+    check(forkmesh::control::buildHostDiskUsageCommand(
+              QStringLiteral("relative/path"), &diskError).isEmpty() &&
+              !diskError.isEmpty(),
+          "the size-map command refuses a non-absolute path");
+
+    const QByteArray diskOutput =
+        QByteArray("Welcome to Ubuntu (banner noise)\n") +
+        "FORKMESH-DU1 d 2048 " + QByteArray("/var/log").toBase64() + "\n" +
+        "FORKMESH-DU1 f 4 " + QByteArray("/var/notes 'x'.txt").toBase64() + "\n" +
+        "FORKMESH-DU1 d 8192 " + QByteArray("/var/lib").toBase64() + "\n" +
+        "FORKMESH-DU1 T 10244 " + QByteArray("/var").toBase64() + "\n" +
+        "FORKMESH-DU1-END\n";
+    const auto usage =
+        forkmesh::control::parseHostDiskUsage(diskOutput, QStringLiteral("/var"));
+    check(usage.complete && usage.error.isEmpty() &&
+              usage.totalBytes == 10244LL * 1024 &&
+              usage.entries.size() == 3 &&
+              usage.entries.at(0).path == QStringLiteral("/var/lib") &&
+              usage.entries.at(0).name == QStringLiteral("lib") &&
+              usage.entries.at(0).directory &&
+              usage.entries.at(0).bytes == 8192LL * 1024 &&
+              usage.entries.at(2).name == QStringLiteral("notes 'x'.txt") &&
+              !usage.entries.at(2).directory,
+          "the size map parses banner-wrapped du sentinels largest first");
+    const auto diskFailure = forkmesh::control::parseHostDiskUsage(
+        QByteArray("FORKMESH-DU1-ERROR ") + QByteArray("nope").toBase64() + "\n",
+        QStringLiteral("/root"));
+    check(diskFailure.complete && diskFailure.error == QStringLiteral("nope") &&
+              diskFailure.entries.isEmpty(),
+          "a host-side size-map refusal surfaces as an error, not an empty tree");
+    check(forkmesh::control::parseHostDiskUsage(
+              QByteArray("ssh: connect to host port 22: Connection refused\n"),
+              QStringLiteral("/"))
+              .complete == false,
+          "a transport failure never looks like a complete size map");
+    check(forkmesh::control::formatDiskSize(0) == QStringLiteral("0 B") &&
+              forkmesh::control::formatDiskSize(1536) ==
+                  QStringLiteral("1.5 KB") &&
+              forkmesh::control::formatDiskSize(3LL * 1024 * 1024 * 1024) ==
+                  QStringLiteral("3.0 GB"),
+          "size-map byte formatting is human readable");
+
     // One-click Vultr provisioning helpers (adhoc #315).
     check(forkmesh::control::validateVultrMirrorRequest(
               QStringLiteral("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"),

@@ -1083,6 +1083,12 @@ private:
     void viewHostLogsForSelection(int row);
     void runHostLogSession(const QString &ip, const QString &user,
                           const QString &pass, const QString &node);
+    // Browse a saved host's disk usage over its authenticated SSH channel: one
+    // read-only `du` level per directory, so the biggest consumers of the
+    // host's disk can be drilled into without leaving the app.
+    void browseHostDiskUsageForSelection(int row);
+    void runHostDiskUsageBrowser(const QString &ip, const QString &user,
+                                 const QString &pass, const QString &node);
     // Configure a saved mirror host's Actions executor over its authenticated
     // SSH channel. Secret values are collected in a one-shot dialog and sent
     // only in a bounded JSON stdin payload; they are never saved in QSettings
@@ -3679,6 +3685,7 @@ private:
     QProcess *m_hostInstallProcess = nullptr; // running ssh install session, if any
     QProcess *m_hostLogProcess = nullptr;     // running ssh log-tail session, if any
     QProcess *m_hostActionsProcess = nullptr; // one-shot stdin-only Actions config
+    QProcess *m_hostDiskProcess = nullptr;    // running ssh size-map read, if any
     // One-click Vultr mirror provisioning (adhoc #315). The API key is read
     // from the field (or a stored VULTR_API_KEY device variable) per run and
     // deliberately has no persistent member.
