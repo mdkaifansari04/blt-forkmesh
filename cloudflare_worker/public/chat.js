@@ -104,20 +104,10 @@ const peopleEl = document.querySelector("#chat-people");
 const peopleTitleEl = document.querySelector("#chat-people-title");
 const channelTitleEl = document.querySelector("#chat-channel-title");
 const channelVisibilityBadge = document.querySelector("#chat-channel-visibility-badge");
-const channelCreateBtn = document.querySelector("#chat-channel-create");
 const channelManageBtn = document.querySelector("#chat-channel-manage");
 const channelDialog = document.querySelector("#chat-channel-dialog");
 const channelDialogClose = document.querySelector("#chat-channel-dialog-close");
 const channelError = document.querySelector("#chat-channel-error");
-const channelCreateForm = document.querySelector("#chat-channel-create-form");
-const channelNameInput = document.querySelector("#chat-channel-name");
-const channelVisibilitySelect = document.querySelector("#chat-channel-visibility");
-const channelVisibilityHelp = document.querySelector("#chat-channel-visibility-help");
-const channelInitialMembers = document.querySelector("#chat-channel-initial-members");
-const channelUserSearch = document.querySelector("#chat-channel-user-search");
-const channelUserOptions = document.querySelector("#chat-channel-user-options");
-const channelUserEmpty = document.querySelector("#chat-channel-user-empty");
-const channelSelectedCount = document.querySelector("#chat-channel-selected-count");
 const channelMembersSection = document.querySelector("#chat-channel-members-section");
 const channelMembersTitle = document.querySelector("#chat-channel-members-title");
 const channelInviteForm = document.querySelector("#chat-channel-invite-form");
@@ -1013,7 +1003,6 @@ function updateAdminChannelControls() {
   if (officeManageLink) {
     officeManageLink.hidden = !(isOfficeEmbed && userSession()?.isAdmin);
   }
-  if (channelCreateBtn) channelCreateBtn.hidden = !session?.isAdmin;
   if (directSection) directSection.hidden = !session || isOfficeEmbed;
   if (directCreateBtn) directCreateBtn.hidden = !session || isOfficeEmbed;
   if (channelManageBtn) {
@@ -1345,36 +1334,6 @@ async function refreshChannelMembers() {
   }
 }
 
-async function createChannel(name, visibility, members) {
-  setChannelError("");
-  try {
-    const data = await privateChannelRequest(PRIVATE_CHANNELS_ENDPOINT, {
-      method: "POST",
-      body: JSON.stringify({
-        name: String(name || "").trim().toLowerCase(),
-        visibility: visibility === "public" ? "public" : "private",
-        members: Array.isArray(members) ? members : [],
-      }),
-    });
-    await refreshPrivateChannels({ selectSaved: false });
-    const channel = data.channel;
-    if (channel?.id && privateChannels.has(channel.id)) {
-      setActiveChannel(privateChannelKey(channel.id));
-      const created = privateChannels.get(channel.id);
-      const canManageMembers = created?.visibility === "private";
-      if (channelMembersSection) {
-        channelMembersSection.hidden = !canManageMembers;
-      }
-      if (canManageMembers) await refreshChannelMembers();
-    }
-    channelCreateForm?.reset();
-    selectedInitialMembers.clear();
-    if (channelUserSearch) channelUserSearch.value = "";
-    syncInitialMemberVisibility();
-  } catch (error) {
-    setChannelError(privateChannelErrorMessage(error));
-  }
-}
 
 async function inviteChannelMember(username) {
   const channel = activeManageableChannel();
@@ -1410,22 +1369,16 @@ async function removeChannelMember(username) {
 
 function openChannelDialog(showMembers = false) {
   const session = userSession();
-  if (!session?.isAdmin || !channelDialog) return;
-  setChannelError("");
   const channel = activeManageableChannel();
+  if (!session?.isAdmin || !channelDialog || !showMembers || !channel) return;
+  setChannelError("");
   if (channelMembersSection) {
-    channelMembersSection.hidden = !(showMembers && channel);
+    channelMembersSection.hidden = false;
   }
-  syncInitialMemberVisibility();
-  renderInitialMemberPicker();
-  refreshUsersDirectory();
-  if (showMembers && channel) refreshChannelMembers();
+  refreshChannelMembers();
   if (typeof channelDialog.showModal === "function") channelDialog.showModal();
   else channelDialog.setAttribute("open", "");
-  const focusTarget = showMembers && channel
-    ? channelUsernameInput
-    : channelNameInput;
-  focusTarget?.focus();
+  channelUsernameInput?.focus();
 }
 
 function directMessageErrorMessage(error) {
@@ -1643,66 +1596,7 @@ function forgetIdleVisitors() {
 
 const directoryKnown = new Set(); // lowercased account names already merged
 const registeredUsers = new Map();
-const selectedInitialMembers = new Set();
 let directorySeeded = false;
-
-function renderInitialMemberPicker() {
-  if (!channelUserOptions) return;
-  channelUserOptions.textContent = "";
-  const query = String(channelUserSearch?.value || "").trim().toLowerCase();
-  const currentName = String(userSession()?.nodeName || "").trim().toLowerCase();
-  const users = [...registeredUsers.values()]
-    .filter((user) => user.name !== currentName)
-    .filter((user) => !query || user.name.includes(query))
-    .sort((a, b) => a.name.localeCompare(b.name));
-
-  for (const user of users) {
-    const option = document.createElement("label");
-    option.className = "chat-channel-user-option";
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.value = user.name;
-    checkbox.checked = selectedInitialMembers.has(user.name);
-    checkbox.addEventListener("change", () => {
-      if (checkbox.checked) selectedInitialMembers.add(user.name);
-      else selectedInitialMembers.delete(user.name);
-      if (channelSelectedCount) {
-        const count = selectedInitialMembers.size;
-        channelSelectedCount.textContent = `${count} selected`;
-      }
-    });
-    const label = document.createElement("span");
-    label.textContent = "@" + user.name;
-    option.append(checkbox, label);
-    channelUserOptions.append(option);
-  }
-
-  if (channelSelectedCount) {
-    const count = selectedInitialMembers.size;
-    channelSelectedCount.textContent = `${count} selected`;
-  }
-  if (channelUserEmpty) {
-    channelUserEmpty.hidden = users.length > 0;
-    channelUserEmpty.textContent = registeredUsers.size
-      ? "No registered users match your search."
-      : "No registered users are available yet.";
-  }
-}
-
-function syncInitialMemberVisibility() {
-  const isPrivate = channelVisibilitySelect?.value !== "public";
-  if (channelInitialMembers) channelInitialMembers.hidden = !isPrivate;
-  if (channelVisibilityHelp) {
-    channelVisibilityHelp.textContent = isPrivate
-      ? "Only selected users and administrators can join."
-      : "Every registered user can discover and join this channel.";
-  }
-  if (!isPrivate) {
-    selectedInitialMembers.clear();
-    if (channelUserSearch) channelUserSearch.value = "";
-  }
-  renderInitialMemberPicker();
-}
 
 async function refreshUsersDirectory() {
   let users;
@@ -1745,7 +1639,6 @@ async function refreshUsersDirectory() {
     }
   }
   directorySeeded = true;
-  renderInitialMemberPicker();
   renderDirectMessagePicker();
   schedulePeopleRender();
 }
@@ -2743,24 +2636,12 @@ async function initChat() {
   }
   sendBtn.addEventListener("click", sendCurrentMessage);
   if (clearBtn) clearBtn.addEventListener("click", clearChat);
-  channelCreateBtn?.addEventListener("click", () => openChannelDialog(false));
   channelManageBtn?.addEventListener("click", () => openChannelDialog(true));
   channelDialogClose?.addEventListener("click", () => channelDialog?.close());
   directCreateBtn?.addEventListener("click", openDirectMessageDialog);
   directMoreBtn?.addEventListener("click", loadMoreDirectMessages);
   directDialogClose?.addEventListener("click", () => directDialog?.close());
   directSearch?.addEventListener("input", scheduleDirectMessageSearch);
-  channelCreateForm?.addEventListener("submit", (event) => {
-    event.preventDefault();
-    createChannel(
-      channelNameInput?.value || "",
-      channelVisibilitySelect?.value || "private",
-      [...selectedInitialMembers],
-    );
-  });
-  channelVisibilitySelect?.addEventListener(
-    "change", syncInitialMemberVisibility);
-  channelUserSearch?.addEventListener("input", renderInitialMemberPicker);
   channelInviteForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     inviteChannelMember(channelUsernameInput?.value || "");

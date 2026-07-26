@@ -51,8 +51,8 @@ def test_removed_or_rotated_channel_closes_stale_room_and_falls_back():
 
 
 def test_admin_channel_controls_are_accessible_and_hidden_by_default():
-    assert 'id="chat-channel-create"' in HTML
-    assert 'aria-label="Create channel"' in HTML
+    assert 'id="chat-channel-create"' not in HTML
+    assert 'aria-label="Create channel"' not in HTML
     assert 'id="chat-channel-dialog"' in HTML
     assert 'aria-labelledby="chat-channel-dialog-title"' in HTML
     assert 'id="chat-channel-manage"' in HTML
@@ -63,18 +63,18 @@ def test_admin_channel_controls_are_accessible_and_hidden_by_default():
     assert "session?.isAdmin" in CHAT
 
 
-def test_admin_controls_create_invite_list_and_remove_members():
-    assert "async function createChannel(" in CHAT
+def test_admin_controls_invite_list_and_remove_members_without_creation_ui():
+    assert "async function createChannel(" not in CHAT
+    assert 'id="chat-channel-create-form"' not in HTML
     assert "async function refreshChannelMembers(" in CHAT
     assert "async function inviteChannelMember(" in CHAT
     assert "async function removeChannelMember(" in CHAT
-    assert 'privateChannelRequest(PRIVATE_CHANNELS_ENDPOINT, {' in CHAT
-    assert 'method: "POST"' in CHAT
     assert '`/api/chat/channels/${channel.id}/members`' in CHAT
+    assert 'method: "POST"' in CHAT
     assert 'method: "DELETE"' in CHAT
 
 
-def test_create_form_selects_visibility_and_initial_registered_users():
+def test_create_form_visibility_and_initial_member_picker_are_removed():
     for marker in (
         'id="chat-channel-visibility"',
         '<option value="private"',
@@ -83,17 +83,15 @@ def test_create_form_selects_visibility_and_initial_registered_users():
         'id="chat-channel-user-search"',
         'id="chat-channel-user-options"',
         'id="chat-channel-selected-count"',
-        'id="chat-channel-visibility-badge"',
+        'chat-channel-create-submit',
     ):
-        assert marker in HTML
+        assert marker not in HTML
 
-    create = _function_source("createChannel")
-    assert "visibility" in create
-    assert "members" in create
-    assert "selectedInitialMembers" in CHAT
+    assert 'id="chat-channel-visibility-badge"' in HTML
+    assert "selectedInitialMembers" not in CHAT
+    assert "renderInitialMemberPicker" not in CHAT
+    assert "syncInitialMemberVisibility" not in CHAT
     assert "registeredUsers" in CHAT
-    assert "renderInitialMemberPicker" in CHAT
-    assert "syncInitialMemberVisibility" in CHAT
 
 
 def test_channel_visibility_controls_labels_and_private_member_management():
