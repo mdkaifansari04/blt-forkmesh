@@ -32,6 +32,8 @@ def _runtime(
     cookie_auth=False,
     same_origin=True,
     valid_session=True,
+    account_rec=None,
+    activity_seen=0,
 ):
     calls = []
     audits = []
@@ -43,6 +45,8 @@ def _runtime(
 
     async def first(_env, sql, *args):
         calls.append(("first", sql, args))
+        if "MAX(seen)" in sql:
+            return {"seen": activity_seen}
         return {"session_id": args[1]} if owned else None
 
     async def run(_env, sql, *args):
@@ -52,7 +56,8 @@ def _runtime(
         lookups.append((token, touch))
         if not valid_session or not token:
             return "", None, ""
-        return "account-bi", {"name": "alice"}, "c" * 32
+        return ("account-bi", dict(account_rec or {"name": "alice"}),
+                "c" * 32)
 
     async def revoke(_env, account_bi, session_id=""):
         calls.append(("revoke", account_bi, session_id))
@@ -64,6 +69,8 @@ def _runtime(
         return {"body": body, "status": status, **kwargs}
 
     namespace = {
+        "ACCOUNT_EMAIL_STATUS_DELIVERED": "delivered",
+        "ACCOUNT_EMAIL_STATUS_FAILED": "failed",
         "ACCOUNT_SESSION_MAX_ACTIVE": 20,
         "Date": SimpleNamespace(now=lambda: now),
         "MAX_NODE_NAME": 63,
@@ -82,6 +89,8 @@ def _runtime(
         "method_name": lambda request: request.method,
         "re": re,
     }
+    exec(_source("_account_last_seen"), namespace)
+    exec(_source("_account_email_activity"), namespace)
     exec(_source("_account_sessions"), namespace)
     return namespace["_account_sessions"], calls, audits, lookups
 
@@ -107,6 +116,14 @@ def test_session_list_is_account_scoped_and_contains_no_network_identity():
         "expiresAt": 3_000_000,
         "current": True,
     }]
+    # Account-level activity for the settings screen: last seen anywhere and
+    # the last email that went out, with its outcome.
+    assert response["body"]["account"] == {
+        "lastSeenAt": 1_500_000,
+        "lastEmailAt": 0,
+        "lastEmailStatus": "",
+        "lastEmailKind": "",
+    }
     encoded = json.dumps(response)
     assert "203.0.113.9" not in encoded
     assert "sensitive raw agent" not in encoded
@@ -114,6 +131,39 @@ def test_session_list_is_account_scoped_and_contains_no_network_identity():
     assert "WHERE account_bi=?" in query[1]
     assert query[2][0] == "account-bi"
     assert lookups == [("bearer", True)]
+
+
+def test_session_list_reports_last_seen_and_last_email():
+    rows = [{
+        "session_id": "c" * 32,
+        "created_at": 1_000_000,
+        "last_seen_at": 1_500_000,
+        "expires_at": 3_000_000,
+        "device_label": "Mobile browser",
+    }]
+    sessions, calls, _audits, _lookups = _runtime(
+        rows=rows,
+        # A linked device was seen more recently than any browser session.
+        activity_seen=1_900_000,
+        account_rec={
+            "name": "alice",
+            "last_email_ts": 1_700_000,
+            "last_email_kind": "notifications",
+            "last_email_ok": False,
+        })
+    response = asyncio.run(sessions(
+        object(), SimpleNamespace(method="GET", headers={})))
+    assert response["body"]["account"] == {
+        "lastSeenAt": 1_900_000,
+        "lastEmailAt": 1_700_000,
+        "lastEmailStatus": "failed",
+        "lastEmailKind": "notifications",
+    }
+    activity = next(
+        call for call in calls if call[0] == "first" and "MAX(seen)" in call[1])
+    assert activity[2] == ("account-bi", "account-bi")
+    # No subject, body, or recipient address is stored or returned.
+    assert "@" not in json.dumps(response["body"]["account"])
 
 
 def test_session_revoke_is_scoped_and_audited():

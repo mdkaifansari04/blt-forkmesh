@@ -21,7 +21,7 @@ ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 # clean_string lives in catalog.py (imported by entry.py), so it is stubbed
 # in the harness rather than AST-extracted.
 FUNCS = {"_send_feedback_emails", "_feedback_email_content", "_account_kind",
-         "valid_node_name"}
+         "valid_node_name", "_stamp_account_email"}
 
 CONSTANTS = [
     node for node in ast.parse(ENTRY_TEXT).body
@@ -54,6 +54,7 @@ def _harness(accounts, send_results=None):
     sends = []          # (to, subject, from_email, from_name)
     send_results = list(send_results or [])
     table = {}          # account_bi -> (name, sent_at)
+    saved = {}          # account_bi -> stamped record
 
     class _DateStub:
         @staticmethod
@@ -83,6 +84,9 @@ def _harness(accounts, send_results=None):
         sends.append((to_email, subject, from_email, from_name))
         return send_results.pop(0) if send_results else True
 
+    async def _save_account(_env, account_bi, rec):
+        saved[account_bi] = dict(rec)
+
     def _html_escape(value):
         return (str(value).replace("&", "&amp;").replace("<", "&lt;")
                 .replace(">", "&gt;"))
@@ -96,6 +100,7 @@ def _harness(accounts, send_results=None):
         "d1_run": d1_run,
         "decrypt_row": decrypt_row,
         "_send_email": _send_email,
+        "_save_account": _save_account,
         "_html_escape": _html_escape,
         "_forkmesh_email_card_html": _forkmesh_email_card_html,
         "MAX_NODE_NAME": 63,
@@ -105,6 +110,7 @@ def _harness(accounts, send_results=None):
     })
     ns["_sends"] = sends
     ns["_table"] = table
+    ns["_saved"] = saved
     return ns
 
 
@@ -135,6 +141,12 @@ def test_sends_once_to_eligible_users_only():
     assert set(ns["_table"]) == {"bi:alice"}
 
     # Second run: the send-log row excludes alice; nothing further goes out.
+    # The account screen's "last emailed" stamp records the send and outcome.
+    stamp = ns["_saved"]["bi:alice"]
+    assert stamp["last_email_kind"] == "feedback"
+    assert stamp["last_email_ok"] is True
+    assert stamp["last_email_ts"] == NOW
+
     sent_again = asyncio.run(ns["_send_feedback_emails"](object()))
     assert sent_again == 0
     assert len(ns["_sends"]) == 1
@@ -144,6 +156,7 @@ def test_failed_send_releases_the_claim_for_retry():
     ns = _harness([_user("bi:alice", "alice")], send_results=[False, True])
     assert asyncio.run(ns["_send_feedback_emails"](object())) == 0
     assert ns["_table"] == {}          # claim released on failure
+    assert ns["_saved"]["bi:alice"]["last_email_ok"] is False
     assert asyncio.run(ns["_send_feedback_emails"](object())) == 1
     assert set(ns["_table"]) == {"bi:alice"}
     assert len(ns["_sends"]) == 2      # retried exactly once
