@@ -273,6 +273,9 @@ QPushButton#repoAction {
 QPushButton#repoAction:hover { background-color: #30363d; }
 QPushButton#repoAction::menu-indicator { width: 0; }
 #repoTabBar { border-bottom: 1px solid #30363d; }
+/* Thin activity rail down the repo detail page's left edge (adhoc #357); its
+   Code/Git items paint themselves (ActivityRailButton). */
+#repoActivityRail { background-color: #010409; border-right: 1px solid #30363d; }
 #commitsList {
     background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
 }
@@ -1462,6 +1465,8 @@ QPushButton#repoAction {
 QPushButton#repoAction:hover { background-color: #f3f4f6; }
 QPushButton#repoAction::menu-indicator { width: 0; }
 #repoTabBar { border-bottom: 1px solid #d0d7de; }
+/* Thin activity rail down the repo detail page's left edge (adhoc #357). */
+#repoActivityRail { background-color: #f6f8fa; border-right: 1px solid #d0d7de; }
 #commitsList {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
 }

@@ -5368,6 +5368,13 @@ void MainWindow::applyRepoPushButtonState(int index, const RepoPushState &state)
 {
     if (!m_repoPushButton)
         return;
+    // The activity rail's Git icon spins while the open repo is pushing or
+    // publishing (adhoc #357); this runs on every sync start/finish repaint, so
+    // the spinner tracks the same membership the button text does.
+    if (m_railGitButton)
+        m_railGitButton->setSyncing(
+            index >= 0 && index == m_repoDetailIndex &&
+            (m_pushingRepos.contains(index) || m_syncingRepos.contains(index)));
     auto hideButton = [this] {
         m_repoPushButton->hide();
         m_repoPushButton->setEnabled(false);
