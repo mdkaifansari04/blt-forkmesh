@@ -10319,6 +10319,11 @@ async def _account_users_directory(env, request):
         out.append(_account_chat_user_payload(
             rec, row.get("total_active_ms", 0)))
 
+    # The campfire seats members in this same array order, one bench per
+    # account for the session — so this is sorted by join date (oldest
+    # first) rather than left in the query's alphabetical fetch order.
+    out.sort(key=lambda user: user.get("createdAt", 0))
+
     resp = json_response({"ok": True, "users": out},
                          cache_seconds=USERS_DIRECTORY_TTL)
     await edge_cache_put(USERS_DIRECTORY_CACHE_KEY, resp)
