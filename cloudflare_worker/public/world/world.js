@@ -44,6 +44,7 @@ import { createWorldOfficeMeeting } from "./world-office-meeting.js";
 import { createWorldOfficeTasksController } from "./world-office-tasks.js";
 import {
   CAMPFIRE_SEATED_ACTIVITY,
+  SWING_RIDING_ACTIVITY,
   createWorldScene,
 } from "./world-scene.js";
 
@@ -70,6 +71,10 @@ const VISIT_COUNT_KEY = "forkmesh.world.publicVisitCount.v1";
 const FIRST_SEEN_MAX_MINUTES = 10 * 365 * 24 * 60;
 const JOINED_AT_MIN_MS = 1577836800000;
 const FORKBOT_GREETED_KEY = "forkmesh.world.forkbotGreeted.v1";
+// Mirrors FORKBOT_MENTION_RE in chat.js / dashboard-chat.js (the clients that
+// actually forward the mention to /api/forkbot/chat), so the in-world droid
+// gets excited for exactly the messages the bot will answer.
+const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
 const POSITION_KEY_PREFIX = "forkmesh.world.position.v1.";
 const DETAIL_WIDTH_KEY = "forkmesh.world.detailWidth.v1";
 const DETAIL_WIDTH_MIN = 320;
@@ -87,7 +92,9 @@ const MASTODON_REFRESH_MS = 10 * 60 * 1000;
 const MASTODON_REPLY_THREADS = 4;
 const MASTODON_REPLY_LIMIT = 12;
 // Twitter and Reddit have no CORS-open public API, so their banners repaint
-// from the Worker's edge-cached proxy on the same ten-minute cadence.
+// from the Worker's edge-cached proxy on the same ten-minute cadence. The
+// blog board rides the same snapshot: the Worker reads its own static blog
+// index and folds the feature cards into the payload.
 const SOCIAL_POSTS_URL = "/api/world/social-posts";
 const SOCIAL_REFRESH_MS = 10 * 60 * 1000;
 const POSITION_WRITE_INTERVAL_MS = 1000;
@@ -123,7 +130,7 @@ const WORLD_UPDATE_CHECK_MIN_GAP_MS = 60 * 1000;
 const WORLD_UPDATE_RELOAD_DELAY_MS = 1400;
 const WORLD_UPDATE_RELOADED_REV_KEY = "forkmesh.world.updateReloadedRev.v1";
 const WORLD_NOTIFICATION_POLL_MS = 30 * 1000;
-const MIRROR_STATUS_POLL_MS = 30 * 1000;
+const MIRROR_STATUS_POLL_MS = 5 * 1000;
 const WORLD_MANUAL_BLOCK_DURATION_MS = 60 * 60 * 1000;
 const WORLD_SCORE_LOOP_MS = 4 * 60 * 60 * 1000;
 const DEFAULT_FOCUS_MUSIC_TRACK_ID = FOCUS_MUSIC_TRACKS[0].id;
@@ -135,6 +142,11 @@ const WORLD_LIGHT_LEVEL_DEFAULT = 100;
 const WORLD_MOVE_SPEED_MIN = 50;
 const WORLD_MOVE_SPEED_MAX = 300;
 const WORLD_MOVE_SPEED_DEFAULT = 100;
+// Swing-ride pumping strength; session-only because the control is only on
+// screen while actually riding one of the town swings.
+const WORLD_SWING_SPEED_MIN = 10;
+const WORLD_SWING_SPEED_MAX = 100;
+const WORLD_SWING_SPEED_DEFAULT = 55;
 const WORLD_MOVE_ACCEL_MIN = 25;
 // The top slider position is the "instant" sentinel — it maps to infinite
 // acceleration so the player reaches top speed the moment a key is pressed.
@@ -2839,7 +2851,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </div>
         </details>
 
-        <details class="world-diagnostics world-chat-terminal" data-world-chat-terminal>
+        <details class="world-diagnostics world-chat-terminal${settings.debugPanel ? "" : " world-chat-terminal--debug-hidden"}" data-world-chat-terminal>
           <summary aria-label="Open World chat in a terminal panel">
             <span class="world-diagnostics-light" data-state="online" aria-hidden="true"></span>
             <strong>CHAT</strong>
@@ -2857,6 +2869,28 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         </details>
 
         <div class="world-toast" data-world-toast role="status"></div>
+        <div class="world-swing-panel" data-world-swing-panel hidden>
+          <span>
+            <strong>Swing speed</strong>
+            <output data-world-swing-speed-output>${WORLD_SWING_SPEED_DEFAULT}%</output>
+          </span>
+          <input
+            type="range"
+            min="${WORLD_SWING_SPEED_MIN}"
+            max="${WORLD_SWING_SPEED_MAX}"
+            step="5"
+            value="${WORLD_SWING_SPEED_DEFAULT}"
+            data-world-swing-speed
+            aria-label="Swing speed"
+          />
+          <button
+            type="button"
+            class="world-swing-dismount"
+            data-world-swing-dismount
+          >
+            Hop off
+          </button>
+        </div>
         <button
           class="world-detail-backdrop"
           type="button"
@@ -3552,6 +3586,8 @@ class ForkMeshWorld extends HTMLElement {
     this.socialFeedsSnapshot = null;
     this.socialFeedsLoad = null;
     this.socialFeedsTimer = 0;
+    this.socialFeedsRequestedAt = 0;
+    this.socialFeedsFetchedAt = 0;
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
     const requestedLandmark = worldQuery.get("landmark") || "";
@@ -3781,6 +3817,11 @@ class ForkMeshWorld extends HTMLElement {
     if (Date.now() < this.chatBubblesEnabledAt) return;
     if (data.self === true) {
       this.world?.showChatBubble?.(this.identity?.id, text, true);
+      // Mentioning ForkBot sends the excited droid over to the speaker; its
+      // chest screen echoes the line and thinks until the reply broadcasts.
+      if (FORKBOT_MENTION_RE.test(text)) {
+        this.world?.exciteForkbot?.(this.identity?.id, text);
+      }
       return;
     }
     const senderName = sender.toLowerCase();
@@ -3801,9 +3842,16 @@ class ForkMeshWorld extends HTMLElement {
       ) {
         if (Date.now() < Number(peer.chatBubblesEnabledAt || 0)) return;
         this.world?.showChatBubble?.(id, text);
+        if (FORKBOT_MENTION_RE.test(text)) {
+          this.world?.exciteForkbot?.(id, text);
+        }
         return;
       }
     }
+    // No live peer with that name: a member talking from the website while
+    // their avatar sits on its campfire bench gets the bubble over the
+    // seated figure instead (world-scene showMemberChatBubble).
+    this.world?.showMemberChatBubble?.(sender, text);
   };
 
   // ForkBot walks over and welcomes a visitor the first time this browser
@@ -3972,6 +4020,7 @@ class ForkMeshWorld extends HTMLElement {
           void this.playForkmeshSong();
         },
         onCreateRepository: () => this.openRepositoryCreateForm(),
+        onSwingRide: (state) => this.handleSwingRide(state),
         onOfficeChairSelect: (chairId) => {
           this.officeMeeting?.requestSeat(chairId);
         },
@@ -4047,8 +4096,9 @@ class ForkMeshWorld extends HTMLElement {
       void this.loadMastodonBoard();
       this.syncMastodonKiosk();
       this.startMastodonRefresh();
-      // Same pattern for the Twitter/Reddit banners: push any cached
-      // snapshot onto the rebuilt scene, then keep the ten-minute cadence.
+      // Same pattern for the Twitter/Reddit/blog banners: push any cached
+      // snapshot onto the rebuilt scene, then keep the ten-minute cadence
+      // (whose one-second tick also drives the stand clocks).
       this.syncSocialBanners();
       this.startSocialBannersRefresh();
       this.syncMemberLounge();
@@ -5312,6 +5362,10 @@ class ForkMeshWorld extends HTMLElement {
         this.toggleWorldCameraMode();
         return;
       }
+      if (event.target.closest("[data-world-swing-dismount]")) {
+        this.world?.dismountSwing?.();
+        return;
+      }
       if (event.target.closest("[data-world-screenshot]")) {
         this.startScreenshotCapture();
         return;
@@ -5760,6 +5814,13 @@ class ForkMeshWorld extends HTMLElement {
         this.commitPublicSettings();
         const diagnostics = this.$("[data-world-diagnostics]");
         if (diagnostics) diagnostics.hidden = !debugPanel.checked;
+        const chatTerminal = this.$("[data-world-chat-terminal]");
+        if (chatTerminal) {
+          chatTerminal.classList.toggle(
+            "world-chat-terminal--debug-hidden",
+            !debugPanel.checked,
+          );
+        }
         return;
       }
       const emojiCategory = event.target.closest(
@@ -5829,6 +5890,11 @@ class ForkMeshWorld extends HTMLElement {
       const moveAccel = event.target.closest("[data-world-move-accel]");
       if (moveAccel) {
         this.setMoveAccel(moveAccel.value);
+        return;
+      }
+      const swingSpeed = event.target.closest("[data-world-swing-speed]");
+      if (swingSpeed) {
+        this.setSwingSpeed(swingSpeed.value);
         return;
       }
       if (event.target.closest("[data-world-repo-filter='directory']")) {
@@ -6707,10 +6773,14 @@ class ForkMeshWorld extends HTMLElement {
     this.recordPublicVisit(id || "town-square");
     if (!this.settings.privacy.activity) {
       this.lastMovement.activity = "online";
-    } else if (this.lastMovement.activity !== CAMPFIRE_SEATED_ACTIVITY) {
-      // Sitting down lands inside the campfire's own label radius. The seated
-      // activity is what other visitors render the pose from, so proximity
-      // must not relabel it as merely visiting the circle.
+    } else if (
+      this.lastMovement.activity !== CAMPFIRE_SEATED_ACTIVITY &&
+      this.lastMovement.activity !== SWING_RIDING_ACTIVITY
+    ) {
+      // Sitting down lands inside the campfire's own label radius, and the
+      // swing set sits inside the Town Square's. The seated and riding
+      // activities are what other visitors render the pose from, so proximity
+      // must not relabel them as merely visiting the area.
       this.lastMovement.activity =
         label === "Town Square" ? "exploring the Town Square" : `visiting ${label}`;
     }
@@ -7269,6 +7339,7 @@ class ForkMeshWorld extends HTMLElement {
   // markup.
   loadSocialBanners() {
     if (this.socialFeedsLoad) return this.socialFeedsLoad;
+    this.socialFeedsRequestedAt = Date.now();
     this.socialFeedsLoad = (async () => {
       const controller = new AbortController();
       const timeout = window.setTimeout(() => controller.abort(), 10000);
@@ -7282,23 +7353,96 @@ class ForkMeshWorld extends HTMLElement {
           throw new Error(`social posts returned ${response.status}`);
         }
         this.socialFeedsSnapshot = await response.json();
+        this.socialFeedsFetchedAt = Date.now();
         this.syncSocialBanners();
       } catch (_) {
         // Keep the previous snapshot — or the static signs — on failure.
       } finally {
         window.clearTimeout(timeout);
         this.socialFeedsLoad = null;
+        this.syncSocialBannerTimers();
       }
     })();
+    this.syncSocialBannerTimers();
     return this.socialFeedsLoad;
   }
 
+  // Like the Mastodon kiosk, a one-second tick drives both the stand clocks
+  // and the ten-minute reload: when the countdown reaches zero the next tick
+  // starts the fetch, so a repaint from a fresh snapshot restarts the same
+  // window the boards were counting down.
   startSocialBannersRefresh() {
     window.clearInterval(this.socialFeedsTimer);
     this.socialFeedsTimer = window.setInterval(() => {
-      void this.loadSocialBanners();
-    }, SOCIAL_REFRESH_MS);
+      this.syncSocialBannerTimers();
+    }, 1000);
     void this.loadSocialBanners();
+  }
+
+  socialRefreshRemaining() {
+    if (!this.socialFeedsRequestedAt) return 0;
+    return Math.max(
+      0,
+      this.socialFeedsRequestedAt + SOCIAL_REFRESH_MS - Date.now(),
+    );
+  }
+
+  // Milliseconds since the newest post in a proxied feed, or null when the
+  // feed has no dated posts (unfetched, unavailable, or the blog's undated
+  // feature articles).
+  socialNewestPostAgo(feed) {
+    let latest = 0;
+    for (const post of Array.isArray(feed?.posts) ? feed.posts : []) {
+      const at = Number(post?.createdAt) || 0;
+      if (at > latest) latest = at;
+    }
+    return latest ? Math.max(0, Date.now() - latest) : null;
+  }
+
+  // Age of the snapshot itself: the server stamps `now` when it builds the
+  // payload, so an edge-cached read still reports how old the data really
+  // is. Feeds the blog board's SYNCED plate.
+  socialSnapshotAge() {
+    const stamp =
+      Number(this.socialFeedsSnapshot?.now) || this.socialFeedsFetchedAt;
+    return stamp ? Math.max(0, Date.now() - stamp) : null;
+  }
+
+  syncSocialBannerTimers() {
+    const loading = Boolean(this.socialFeedsLoad);
+    const remaining = this.socialRefreshRemaining();
+    if (!loading && remaining <= 0) {
+      void this.loadSocialBanners();
+      return;
+    }
+    const snapshot = this.socialFeedsSnapshot;
+    const timers = (sinceMs) => ({
+      remainingMs: loading ? SOCIAL_REFRESH_MS : remaining,
+      totalMs: SOCIAL_REFRESH_MS,
+      loading,
+      sinceMs,
+    });
+    this.world?.updateSocialBannerTimers?.({
+      twitter: timers(this.socialNewestPostAgo(snapshot?.twitter)),
+      reddit: timers(this.socialNewestPostAgo(snapshot?.reddit)),
+      blog: timers(this.socialSnapshotAge()),
+    });
+  }
+
+  // Feed item images are published as absolute forkmesh.com URLs. The board
+  // draws them onto a canvas texture, so they must load same-origin: keep
+  // only the /assets path and let this page's own origin serve it. Anything
+  // else (an off-site image, a data: URL) is dropped and the card keeps its
+  // placeholder plate.
+  socialPostImage(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    try {
+      const url = new URL(raw, window.location.origin);
+      return url.pathname.startsWith("/assets/") ? url.pathname : "";
+    } catch (_) {
+      return "";
+    }
   }
 
   socialPostDate(createdAt) {
@@ -7315,11 +7459,17 @@ class ForkMeshWorld extends HTMLElement {
   syncSocialBanners() {
     const snapshot = this.socialFeedsSnapshot;
     if (!snapshot) return;
-    const bound = (feed, meta) => ({
+    const bound = (
+      feed,
+      meta,
+      text = (post) => String(post?.text || ""),
+      extra = () => ({}),
+    ) => ({
       state: feed?.state === "ready" ? "ready" : "unavailable",
       posts: (Array.isArray(feed?.posts) ? feed.posts : []).map((post) => ({
-        text: String(post?.text || "").slice(0, 400),
+        text: text(post).slice(0, 400),
         meta: meta(post),
+        ...extra(post),
       })),
     });
     this.world?.updateSocialBanners?.({
@@ -7342,6 +7492,19 @@ class ForkMeshWorld extends HTMLElement {
         ]
           .filter(Boolean)
           .join(" · "),
+      ),
+      // Blog items have no dates or counts: the meta line is the section +
+      // feature number the RSS category carries, the headline is the item
+      // title, and the board prints the item's description as preview text
+      // under its artwork.
+      blog: bound(
+        snapshot.blog,
+        (post) => String(post?.meta || ""),
+        (post) => String(post?.text || ""),
+        (post) => ({
+          detail: String(post?.detail || "").slice(0, 260),
+          image: this.socialPostImage(post?.image),
+        }),
       ),
     });
   }
@@ -14408,6 +14571,39 @@ class ForkMeshWorld extends HTMLElement {
     return next;
   }
 
+  setSwingSpeed(value) {
+    const numeric = Number(value);
+    const next = Math.min(
+      WORLD_SWING_SPEED_MAX,
+      Math.max(
+        WORLD_SWING_SPEED_MIN,
+        Number.isFinite(numeric) ? numeric : WORLD_SWING_SPEED_DEFAULT,
+      ),
+    );
+    this.swingSpeed = next;
+    this.world?.setSwingSpeed?.(next);
+    const input = this.$("[data-world-swing-speed]");
+    const output = this.$("[data-world-swing-speed-output]");
+    if (input && Number(input.value) !== next) input.value = String(next);
+    if (output) output.textContent = `${next}%`;
+    return next;
+  }
+
+  handleSwingRide({ riding = false, denied = false } = {}) {
+    if (denied) {
+      this.toast("That swing is taken — grab a free one.");
+      return;
+    }
+    const panel = this.$("[data-world-swing-panel]");
+    if (panel) panel.hidden = !riding;
+    if (riding) {
+      this.setSwingSpeed(this.swingSpeed ?? WORLD_SWING_SPEED_DEFAULT);
+      this.toast(
+        "Swinging! Drag the swing-speed slider to pump harder, click the swing again to hop off, and try the camera button for a first-person ride.",
+      );
+    }
+  }
+
   syncWorldCameraModeButton() {
     const button = this.$("[data-world-camera-toggle]");
     const label = this.$("[data-world-camera-label]");
@@ -14531,7 +14727,7 @@ class ForkMeshWorld extends HTMLElement {
       marquee.style.width = `${rect.width}px`;
       marquee.style.height = `${rect.height}px`;
     });
-    overlay.addEventListener("pointerup", (event) => {
+    overlay.addEventListener("pointerup", async (event) => {
       if (!origin) return;
       const rect = selectionRect(event);
       origin = null;
@@ -14540,7 +14736,7 @@ class ForkMeshWorld extends HTMLElement {
         this.toast("Drag a larger area to capture a screenshot.");
         return;
       }
-      const shot = this.captureWorldRegion(rect);
+      const shot = await this.captureWorldRegion(rect);
       if (!shot) {
         this.toast("That area is outside the 3D world view.");
         return;
@@ -14554,7 +14750,7 @@ class ForkMeshWorld extends HTMLElement {
     this.appendChild(overlay);
   }
 
-  captureWorldRegion(rect) {
+  async captureWorldRegion(rect) {
     const world = this.world;
     const canvas = world?.renderer?.domElement;
     if (!canvas) return null;
@@ -14565,31 +14761,143 @@ class ForkMeshWorld extends HTMLElement {
     } catch (_) {
       return null;
     }
-    const bounds = canvas.getBoundingClientRect();
+    const root = this.$("[data-world-root]");
+    const canvasBounds = canvas.getBoundingClientRect();
+    // The HUD is DOM painted over the canvas, so the crop is clamped to the
+    // world root — everything the player sees, chrome included.
+    const bounds = root ? root.getBoundingClientRect() : canvasBounds;
     const left = Math.max(rect.left, bounds.left);
     const top = Math.max(rect.top, bounds.top);
     const right = Math.min(rect.left + rect.width, bounds.right);
     const bottom = Math.min(rect.top + rect.height, bounds.bottom);
     if (right - left < 4 || bottom - top < 4) return null;
-    const scaleX = canvas.width / Math.max(1, bounds.width);
-    const scaleY = canvas.height / Math.max(1, bounds.height);
+    const scaleX = canvas.width / Math.max(1, canvasBounds.width);
+    const scaleY = canvas.height / Math.max(1, canvasBounds.height);
     const shot = document.createElement("canvas");
     shot.width = Math.max(1, Math.round((right - left) * scaleX));
     shot.height = Math.max(1, Math.round((bottom - top) * scaleY));
     const context = shot.getContext("2d");
     if (!context) return null;
+    // Read the WebGL buffer back before anything awaits — the next paint
+    // clears it.
     context.drawImage(
       canvas,
-      (left - bounds.left) * scaleX,
-      (top - bounds.top) * scaleY,
-      (right - left) * scaleX,
-      (bottom - top) * scaleY,
       0,
       0,
-      shot.width,
-      shot.height,
+      canvas.width,
+      canvas.height,
+      (canvasBounds.left - left) * scaleX,
+      (canvasBounds.top - top) * scaleY,
+      canvasBounds.width * scaleX,
+      canvasBounds.height * scaleY,
     );
+    if (root) {
+      const hud = await this.renderHudImage(root, bounds);
+      if (hud) {
+        context.drawImage(
+          hud,
+          (bounds.left - left) * scaleX,
+          (bounds.top - top) * scaleY,
+          bounds.width * scaleX,
+          bounds.height * scaleY,
+        );
+      }
+    }
     return shot;
+  }
+
+  // Rasterizes the HUD layers (top bar, rails, labels, panels) so a capture
+  // shows the interface the player is looking at and not a bare 3D frame.
+  // Anything that fails to serialize degrades to a canvas-only screenshot.
+  async renderHudImage(root, bounds) {
+    const width = Math.max(1, Math.round(bounds.width));
+    const height = Math.max(1, Math.round(bounds.height));
+    let markup = "";
+    try {
+      const clone = root.cloneNode(true);
+      clone.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
+      // The 3D canvas is drawn from the live renderer, and the capture
+      // overlay/annotator are capture chrome — neither belongs in the clone.
+      clone
+        .querySelectorAll(
+          "canvas, [data-world-canvas-wrap], .world-shot-overlay, .world-shot-annotator, script",
+        )
+        .forEach((node) => node.remove());
+      clone.style.width = `${width}px`;
+      clone.style.height = `${height}px`;
+      clone.style.margin = "0";
+      await this.inlineHudImages(root, clone);
+      markup = new XMLSerializer().serializeToString(clone);
+    } catch (_) {
+      return null;
+    }
+    const styles = this.hudStylesheetText();
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><foreignObject x="0" y="0" width="100%" height="100%"><style xmlns="http://www.w3.org/1999/xhtml">/*<![CDATA[*/${styles}/*]]>*/</style>${markup}</foreignObject></svg>`;
+    try {
+      return await new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error("HUD layer did not rasterize."));
+        image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+      });
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // Foreign-object rasterization never fetches subresources, so same-origin
+  // HUD artwork (the brand mark, avatars) is inlined as data URLs first.
+  async inlineHudImages(root, clone) {
+    this.hudImageCache = this.hudImageCache || new Map();
+    const live = Array.from(root.querySelectorAll("img"));
+    const copies = Array.from(clone.querySelectorAll("img"));
+    await Promise.all(
+      copies.map(async (image, index) => {
+        const source = live[index]?.currentSrc || image.getAttribute("src") || "";
+        if (!source || source.startsWith("data:")) return;
+        if (!this.hudImageCache.has(source)) {
+          this.hudImageCache.set(
+            source,
+            (async () => {
+              try {
+                const response = await fetch(source, { cache: "force-cache" });
+                if (!response.ok) return "";
+                const blob = await response.blob();
+                return await new Promise((resolve) => {
+                  const reader = new FileReader();
+                  reader.onload = () => resolve(String(reader.result || ""));
+                  reader.onerror = () => resolve("");
+                  reader.readAsDataURL(blob);
+                });
+              } catch (_) {
+                return "";
+              }
+            })(),
+          );
+        }
+        const encoded = await this.hudImageCache.get(source);
+        if (encoded) image.setAttribute("src", encoded);
+        else image.remove();
+      }),
+    );
+  }
+
+  // Same-origin rules only; a cross-origin sheet throws on cssRules and is
+  // simply skipped.
+  hudStylesheetText() {
+    if (typeof this.hudStyleText === "string") return this.hudStyleText;
+    const parts = [];
+    for (const sheet of Array.from(document.styleSheets || [])) {
+      let rules = null;
+      try {
+        rules = sheet.cssRules;
+      } catch (_) {
+        continue;
+      }
+      for (const rule of Array.from(rules || [])) parts.push(rule.cssText);
+    }
+    this.hudStyleText = parts.join("\n");
+    return this.hudStyleText;
   }
 
   openScreenshotAnnotator(shot) {
@@ -16362,8 +16670,18 @@ class ForkMeshWorld extends HTMLElement {
     // scene plays when a cabinet's commit visibly changes, both come from the
     // re-fetched signed mirror payload, never from unauthenticated frame data.
     const node = sanitizePresenceText(message?.node, "", 40);
-    if (!node) return;
-    this.toast(`Fresh code just landed on mirror node “${node}”.`);
+    const repo = sanitizePresenceText(message?.repo, "", 60);
+    if (!node || !repo) return;
+    // The publisher can be a user-backed source or a mirror node. Neither is
+    // the public repository owner. Keep that internal routing identity out of
+    // visitor-facing copy; the flagship organization remains forkmesh.
+    const publicOwner =
+      repo.toLowerCase() === FLAGSHIP_REPOSITORY.repo
+        ? FLAGSHIP_REPOSITORY.owner
+        : sanitizePresenceText(message?.repositoryOwner, "", 40);
+    this.toast(
+      `Fresh code landed on “${publicOwner ? `${publicOwner}/` : ""}${repo}”.`,
+    );
     // One coalesced refresh replaces waiting out the 30-second mirror poll, so
     // the yard updates near-instantly without adding steady-state traffic.
     window.clearTimeout(this.mirrorPushRefreshTimer);

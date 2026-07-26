@@ -184,7 +184,10 @@ def test_sitting_survives_the_campfire_landmark_proximity_label():
     # proximity relabel would otherwise overwrite the seated activity other
     # visitors render the pose from.
     assert "export const CAMPFIRE_SEATED_ACTIVITY" in SCENE
-    assert "  CAMPFIRE_SEATED_ACTIVITY,\n  createWorldScene,\n" in APP
+    assert (
+        "  CAMPFIRE_SEATED_ACTIVITY,\n  SWING_RIDING_ACTIVITY,\n"
+        "  createWorldScene,\n" in APP
+    )
     location = APP.split("  updateLocation(label, id) {", 1)[1].split(
         "\n  updateRegion(", 1
     )[0]
@@ -264,3 +267,30 @@ def test_member_total_burns_as_a_number_in_the_fire():
     assert "memberCountSprite.visible = false;" in SCENE
     # Repainted only when the count moves; the roster refresh is on a timer.
     assert "if (memberCountShown === count) return;" in SCENE
+
+
+def test_seated_members_get_a_chat_bubble_over_their_bench():
+    # adhoc #363: a member talking in the website chat is usually not a live
+    # world peer — their avatar is the figure sitting on their own campfire
+    # bench, so the bubble floats over that seated figure.
+    assert "function showMemberChatBubble(name, text)" in SCENE
+    bubble = SCENE.split("function showMemberChatBubble", 1)[1].split(
+        "\n  }", 1
+    )[0]
+    assert 'loungeMembers.has(`member:${wanted}`)' in bubble
+    # Truncated senders (16-character room names) still find their bench.
+    assert "if (wanted.length < 16) return false;" in bubble
+    # The bubble resolver reaches seated figures, not just live peers.
+    assert (
+        'remotePlayers.get(String(peerId || "")) ||\n'
+        '            loungeMembers.get(String(peerId || ""))' in SCENE
+    )
+    assert "showMemberChatBubble," in SCENE
+    # Only after no live peer matched, so a member walking the world keeps
+    # the bubble over their own avatar.
+    chat = APP.split("handleWorldChatMessage = (event) => {", 1)[1].split(
+        "\n  };", 1
+    )[0]
+    assert chat.index("this.world?.showChatBubble?.(id, text);") < chat.index(
+        "this.world?.showMemberChatBubble?.(sender, text);"
+    )

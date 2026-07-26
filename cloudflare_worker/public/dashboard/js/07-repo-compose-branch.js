@@ -772,6 +772,22 @@
     const isSource = Boolean(refMirror && mirror === refMirror);
     const behind = online && commit && refCommit && commit !== refCommit;
     const integrityRejected = mirror.integrity === "rejected";
+    const activity = String(mirror.activity || "").trim().toLowerCase();
+    const activityLabel = {
+      "running-actions": "running actions",
+      syncing: "syncing refs",
+      verifying: "verifying",
+      "integrity-blocked": "integrity blocked",
+      "awaiting-verification": "awaiting verification",
+      serving: "serving",
+      offline: "offline",
+    }[activity] || "";
+    const activityClass =
+      activity === "integrity-blocked"
+        ? "border-destructive/40 bg-destructive/10 text-destructive"
+        : ["syncing", "verifying", "awaiting-verification"].includes(activity)
+          ? "border-amber-500/40 bg-amber-500/10 text-amber-600"
+          : "border-primary/40 bg-primary/10 text-primary";
     const dotColor = !online
       ? "text-muted-foreground"
       : behind
@@ -789,6 +805,7 @@
               ${isSource ? '<span class="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">source of truth</span>' : ""}
               ${behind ? '<span class="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600">out of sync</span>' : ""}
               ${integrityRejected ? '<span class="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">failing integrity pin</span>' : ""}
+              ${activityLabel ? `<span class="shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${activityClass}">${escapeHtml(activityLabel)}</span>` : ""}
               ${version ? `<span class="shrink-0 text-[10px] text-muted-foreground font-mono">${escapeHtml(version)}</span>` : ""}
             </div>
             <span class="flex shrink-0 items-center gap-2 text-xs font-mono ${online ? "text-primary" : "text-muted-foreground"}">
@@ -800,7 +817,7 @@
         </div>`;
   }
 
-  function renderMirrorRow(mirror, servedBy) {
+  function renderMirrorRow(mirror, servedBy, refMirror) {
     const online = mirror.status === "online";
     const isServing = online && mirrorRowIsServing(mirror, servedBy);
     const rowClass = isServing
@@ -811,11 +828,17 @@
     const version = rawVersion
       ? (rawVersion[0].toLowerCase() === "v" ? rawVersion : `v${rawVersion}`)
       : "";
+    const isSource = Boolean(refMirror && mirror === refMirror);
+    const integrityRejected = mirror.integrity === "rejected";
     return `
         <div class="${rowClass}">
           <i data-lucide="${online ? "radio" : "circle"}" class="mt-0.5 h-4 w-4 ${online ? "text-primary" : "text-muted-foreground"}"></i>
           <span class="min-w-0">
-            <span class="block min-w-0 truncate text-foreground font-mono">${escapeHtml(mirror.owner || mirror.node || mirror.name || "mirror")}</span>
+            <span class="flex min-w-0 flex-wrap items-center gap-1.5">
+              <span class="min-w-0 truncate text-foreground font-mono">${escapeHtml(mirror.owner || mirror.node || mirror.name || "mirror")}</span>
+              ${isSource ? '<span class="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">source of truth</span>' : ""}
+              ${integrityRejected ? '<span class="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">failing integrity pin</span>' : ""}
+            </span>
             ${version ? `<span class="mt-0.5 block min-w-0 truncate text-[10px] text-muted-foreground font-mono">${escapeHtml(version)}</span>` : ""}
           </span>
           <span class="flex shrink-0 items-center gap-2 text-xs font-mono ${online ? "text-primary" : "text-muted-foreground"}">
@@ -827,13 +850,16 @@
 
   // The "Live mirror" summary in the About aside gets its own compact list of
   // every mirror currently online for this repo (the full tab-level list
-  // lives under the Mirrors tab and includes offline ones too).
+  // lives under the Mirrors tab and includes offline ones too). It shares the
+  // same source-of-truth / integrity-pin badges as the Mirrors tab so the
+  // canonical node and any signature failure are visible without switching tabs.
   function renderRepoLiveMirrorList(mirrors, servedBy) {
     const container = $("[data-repo-live-mirror-list]");
     if (!container) return;
     const online = mirrors.filter((mirror) => mirror.status === "online");
+    const refMirror = pickReferenceMirror(mirrors);
     container.innerHTML = online.length
-      ? online.map((mirror) => renderMirrorRow(mirror, servedBy)).join("")
+      ? online.map((mirror) => renderMirrorRow(mirror, servedBy, refMirror)).join("")
       : '<div class="border-t border-border px-3 py-2 text-xs text-muted-foreground">No mirrors online right now.</div>';
   }
 
@@ -859,10 +885,11 @@
   }
 
   async function loadRepoMirrors(repo) {
+    const background = arguments[1]?.background === true;
     const container = $("[data-repo-mirrors]");
     // Owner-only "ask a node to mirror your repo" control (issue #385).
     renderMirrorRequestForm(repo);
-    if (container) container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading mirrors...")}</div>`;
+    if (container && !background) container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading mirrors...")}</div>`;
     try {
       const data = await fetchJson(`${repoApiBase(repo)}/mirrors`);
       const mirrors = Array.isArray(data.mirrors) ? data.mirrors : [];
@@ -896,8 +923,10 @@
       }
       renderRepoMirrorLists(mirrors, state.repoServedBy);
     } catch (_) {
-      if (container) container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Mirror health is unavailable right now.</div>';
-      renderRepoLiveMirrorList([], state.repoServedBy);
+      if (!background) {
+        if (container) container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Mirror health is unavailable right now.</div>';
+        renderRepoLiveMirrorList([], state.repoServedBy);
+      }
     } finally {
       window.lucide?.createIcons();
     }
@@ -910,6 +939,20 @@
   // re-fetch host health so the nodes visibly converge without a manual reload.
   let liveMirrorRefreshTimer = null;
   let liveMirrorConfirmTimer = null;
+  const REPO_MIRROR_POLL_MS = 5 * 1000;
+  let repoMirrorPollTimer = null;
+  function startRepoMirrorPolling() {
+    if (repoMirrorPollTimer) return;
+    repoMirrorPollTimer = window.setInterval(() => {
+      const repo = state.selectedRepo;
+      if (
+        !repo ||
+        document.visibilityState !== "visible" ||
+        !document.querySelector("[data-repo-mirrors]")
+      ) return;
+      void loadRepoMirrors(repo, { background: true });
+    }, REPO_MIRROR_POLL_MS);
+  }
   function refreshOpenRepoMirrors() {
     const repo = state.selectedRepo;
     // Only meaningful while the Mirrors panel is actually mounted.

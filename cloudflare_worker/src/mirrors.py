@@ -380,8 +380,33 @@ def build_repo_mirrors_payload(
             integrity = "healing"
         else:
             integrity = "rejected"
+        if not online:
+            activity = "offline"
+        elif actions_state == "running":
+            activity = "running-actions"
+        elif behind:
+            # The node is live but its last signed publication is not the
+            # freshest exact refs state. This is a truthful, Worker-observable
+            # "sync pending/in progress" signal without guessing which local
+            # process is currently consuming CPU.
+            activity = "syncing"
+        elif integrity == "healing":
+            activity = "verifying"
+        elif integrity == "rejected":
+            activity = "integrity-blocked"
+        elif integrity == "unknown":
+            activity = "awaiting-verification"
+        else:
+            activity = "serving"
+        node_name = (
+            str(rec.get("machineName") or "").strip()
+            or str(rec.get("owner") or "").strip()
+        )
         mirrors.append({
-            "node": str(rec.get("owner") or "").strip(),
+            # A node is a machine, not the user/account that owns its catalog
+            # row. Older publishers did not advertise machineName, so retain
+            # owner only as a compatibility fallback.
+            "node": node_name,
             "owner": str(rec.get("owner") or "").strip(),
             "ownerUser": str(rec.get("ownerUser") or "").strip(),
             # The publishing machine's advertised node name (may differ from
@@ -435,6 +460,8 @@ def build_repo_mirrors_payload(
             "diskUsedBytes": disk_used,
             "diskTotalBytes": disk_total,
             "integrity": integrity,
+            "activity": activity,
+            "activityUpdatedAt": seen or last_sync,
         })
 
     mirrors.sort(

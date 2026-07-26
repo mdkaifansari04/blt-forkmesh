@@ -173,6 +173,31 @@ def test_payload_groups_public_root_commit_mirrors_and_sorts_online_first():
     assert payload["mirrors"][1]["cloneAvailable"] is True
 
 
+def test_payload_keeps_machine_node_and_user_owner_as_distinct_identities():
+    now = 1_000_000
+    row = _row(
+        "a", "jett", "forkmesh", root="abc", synced="990000",
+        owner_user="jett",
+    )
+    row["data"]["machineName"] = "forkmesh"
+    payload = build_repo_mirrors_payload(
+        "jett",
+        "forkmesh",
+        [row],
+        {"a": now - 1_000},
+        {},
+        now,
+        600_000,
+        5_000,
+    )
+
+    mirror = payload["mirrors"][0]
+    assert mirror["node"] == "forkmesh"
+    assert mirror["machineName"] == "forkmesh"
+    assert mirror["owner"] == "jett"
+    assert mirror["ownerUser"] == "jett"
+
+
 def test_identical_signed_ref_states_are_not_behind_only_due_to_sync_time():
     now = 1_000_000
     exact_state = "a" * 64

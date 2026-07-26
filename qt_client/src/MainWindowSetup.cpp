@@ -955,20 +955,6 @@ bool MainWindow::testShowRepoIssuesTab()
     return m_repoDetailStack->currentIndex() == 2;
 }
 
-void MainWindow::testShowPublishBar(bool on)
-{
-    if (m_repoPushButton) {
-        if (on) {
-            m_repoPushButton->setText(QStringLiteral("Sync"));
-            m_repoPushButton->setEnabled(true);
-            positionRepoPushButton(); // floats it above the Code tab
-        }
-        m_repoPushButton->setVisible(on);
-    }
-    if (m_repoPublishBar)
-        m_repoPublishBar->setVisible(on);
-}
-
 int MainWindow::testRepoTabContentTop()
 {
     return m_repoDetailStack ? m_repoDetailStack->mapTo(this, QPoint(0, 0)).y() : -1;

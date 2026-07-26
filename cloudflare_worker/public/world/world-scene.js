@@ -73,6 +73,13 @@ const FORKBOT_GREETING_RANGE = 3.2;
 // If a visitor is out of reach (travelled to another space, moderation walls,
 // …) the greeting still fires from wherever ForkBot got to.
 const FORKBOT_GREETING_TIMEOUT_MS = 12000;
+// A chat mention (exciteForkbot) sends the droid rushing to the speaker at a
+// faster clip than its idle wander. The chest screen echoes the mention alone
+// for a beat before the thinking dots join it, and the wait for a reply is
+// bounded so an unavailable bot doesn't leave the dots running forever.
+const FORKBOT_EXCITED_SPEED = 5.6;
+const FORKBOT_ECHO_MS = 2500;
+const FORKBOT_THINKING_TIMEOUT_MS = 45000;
 // The public World has one shared ground plane plus three regional labels.
 // Deprecated off-world destinations are deliberately not valid spawn spaces.
 const WORLD_SPACE_FLOORS = Object.freeze({
@@ -119,6 +126,10 @@ const TREE_LANDMARK_CLEARANCE = Object.freeze({
 // a bench sitter sitting rather than standing on the plank. Exported because
 // the shell must keep it out of the landmark-proximity activity label.
 export const CAMPFIRE_SEATED_ACTIVITY = "sitting beside the campfire";
+// Shared by the swing-set ride and the presence frame for the same reason:
+// exported so the shell keeps it out of the landmark-proximity activity label
+// while a visitor is riding one of the town swings.
+export const SWING_RIDING_ACTIVITY = "swinging on the town swing set";
 // Legs hinge at the hip and again at the knee. Avatar fronts face local -Z, so
 // the positive pitch about X is the one that swings the knee over the front
 // edge of the bench instead of out behind the sitter; the knee then folds back
@@ -167,49 +178,42 @@ const LOCAL_ENVIRONMENT_OVERLAYS = Object.freeze({
     tintStrength: 0.2,
     lightMultiplier: 0.76,
     exposureMultiplier: 0.88,
-    fogMultiplier: 1.22,
   },
   snow: {
     tint: "#dcece9",
     tintStrength: 0.22,
     lightMultiplier: 1.04,
     exposureMultiplier: 1.02,
-    fogMultiplier: 1.16,
   },
   winter: {
     tint: "#b9ccca",
     tintStrength: 0.27,
     lightMultiplier: 0.94,
     exposureMultiplier: 0.96,
-    fogMultiplier: 1.18,
   },
   cyberpunk: {
     tint: "#35104c",
     tintStrength: 0.34,
     lightMultiplier: 0.9,
     exposureMultiplier: 0.9,
-    fogMultiplier: 1.12,
   },
   "low-light": {
     tint: "#07110f",
     tintStrength: 0.18,
     lightMultiplier: 0.64,
     exposureMultiplier: 0.7,
-    fogMultiplier: 1.05,
   },
 });
 const DAYLIGHT_ENVIRONMENT = Object.freeze({
   // Keep the far overview visually continuous with the ground. The former
   // pale sky read as a hazy cover when the whole world was zoomed out.
   background: "#174434",
-  fog: "#9bc6b5",
   hemiSky: "#d8fff1",
   hemiGround: "#25493a",
   sun: "#fff0bd",
   sunPower: 3.7,
   hemiPower: 2.1,
   exposure: 1.12,
-  fogDensity: 0.0068,
 });
 const ACCOUNT_STATUS_ICONS = Object.freeze({
   Guest: "○",
@@ -1683,6 +1687,70 @@ function chatBubbleTexture(THREE, name, text) {
   });
 }
 
+// Repaints ForkBot's chest screen in place. `state` is null for the idle
+// wordmark, or { message, thinking, dotPhase } while ForkBot is answering a
+// mention: the echoed line renders in quotes and, once thinking starts, a row
+// of pulsing dots runs beneath it until the reply is broadcast.
+function drawForkbotScreen(context, canvas, state) {
+  const width = canvas.width;
+  const height = canvas.height;
+  context.clearRect(0, 0, width, height);
+  roundedRect(context, 3, 3, width - 6, height - 6, 20);
+  context.fillStyle = "#06181d";
+  context.fill();
+  context.strokeStyle = "#4dc8e8";
+  context.lineWidth = 5;
+  context.stroke();
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  if (!state) {
+    context.fillStyle = "#2fa5c4";
+    context.font = '700 44px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("FORKBOT", width / 2, height / 2);
+    return;
+  }
+  context.fillStyle = "#e9fbff";
+  context.font = '600 34px "ForkMesh Favorit", system-ui, sans-serif';
+  const words = `“${state.message}”`.split(/\s+/).filter(Boolean);
+  const lines = [""];
+  for (const word of words) {
+    const current = lines[lines.length - 1];
+    const candidate = current ? `${current} ${word}` : word;
+    if (!current || context.measureText(candidate).width <= width - 56) {
+      lines[lines.length - 1] = candidate;
+    } else if (lines.length < 3) {
+      lines.push(word);
+    } else {
+      lines[2] += "…";
+      break;
+    }
+  }
+  const textCenter = state.thinking ? height / 2 - 26 : height / 2;
+  lines.forEach((line, index) => {
+    context.fillText(
+      line,
+      width / 2,
+      textCenter + (index - (lines.length - 1) / 2) * 40,
+      width - 56,
+    );
+  });
+  if (state.thinking) {
+    for (let dot = 0; dot < 3; dot += 1) {
+      const active = dot === state.dotPhase % 3;
+      context.fillStyle = active ? "#9ef7c6" : "#2c5a66";
+      context.beginPath();
+      context.arc(
+        width / 2 + (dot - 1) * 44,
+        height - 40,
+        active ? 13 : 9,
+        0,
+        Math.PI * 2,
+      );
+      context.fill();
+    }
+  }
+}
+
 function moderationControlTexture(THREE, title, subtitle, color) {
   return canvasTexture(THREE, 512, 160, (context) => {
     context.clearRect(0, 0, 512, 160);
@@ -2883,6 +2951,8 @@ function nodeDataKey(node) {
     online: mirrorNodeIsOnline(node),
     healthy: node?.healthy,
     integrity: node?.integrity,
+    activity: node?.activity,
+    activityUpdatedAt: node?.activityUpdatedAt,
     cloneAvailable: node?.cloneAvailable,
     commit: node?.commit,
     branch: node?.branch,
@@ -3003,6 +3073,11 @@ function mirrorCommitSnapshot(node, repo) {
 function serverPanelTexture(THREE, node) {
   const online = mirrorNodeIsOnline(node);
   const integrity = String(node?.integrity || "unknown").toLowerCase();
+  const activity = String(node?.activity || "unknown")
+    .replace(/[^a-z0-9-]/gi, "")
+    .replace(/-/g, " ")
+    .toUpperCase()
+    .slice(0, 24);
   const repo = Array.isArray(node?.repositories) ? node.repositories[0] : null;
   const repositoryLabel =
     repo?.owner && repo?.name
@@ -3066,7 +3141,7 @@ function serverPanelTexture(THREE, node) {
     context.font = '600 21px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#8ca99a";
     context.textAlign = "right";
-    context.fillText(`SYNCED ${syncAgo}`, 966, 124);
+    context.fillText(activity || `SYNCED ${syncAgo}`, 966, 124);
     context.textAlign = "left";
 
     context.strokeStyle = "#294339";
@@ -3297,10 +3372,13 @@ function createMirrorServerCabinet(THREE, node, id) {
   group.add(rearPanel);
 
   const integrity = String(node?.integrity || "unknown").toLowerCase();
+  const activity = String(node?.activity || "unknown").toLowerCase();
   const statusColor =
     integrity === "rejected" || integrity === "degraded"
       ? "#ff0000"
-      : integrity === "healing" || (online && node?.cloneAvailable !== true)
+      : integrity === "healing" || activity === "syncing" ||
+          activity === "awaiting-verification" ||
+          (online && node?.cloneAvailable !== true)
         ? "#ffcc00"
         : online
           ? "#00cc44"
@@ -5608,18 +5686,30 @@ function mastodonLastPostClock(sinceMs) {
   return `${Math.floor(hours / 24)}D AGO`;
 }
 
-function mastodonLastPostColor(sinceMs) {
+function mastodonLastPostColor(
+  sinceMs,
+  freshMs = MASTODON_POST_FRESH_MS,
+  staleMs = MASTODON_POST_STALE_MS,
+) {
   const since = Number(sinceMs) || 0;
-  if (since < MASTODON_POST_FRESH_MS) return "#9ef7c6";
-  if (since < MASTODON_POST_STALE_MS) return "#ffb454";
+  if (since < freshMs) return "#9ef7c6";
+  if (since < staleMs) return "#ffb454";
   return "#ff7a7a";
 }
 
 // The plate beside the sync clock: how long since @forkmesh last posted,
 // tinted green / amber / red by the cadence thresholds above so a glance at
 // the stand says whether it is time to post again. sinceMs of null (nothing
-// fetched yet) renders a neutral placeholder.
-function mastodonLastPostTexture(THREE, sinceMs = null) {
+// fetched yet) renders a neutral placeholder. The social banners reuse the
+// same plate with their own label and thresholds (the blog board has no
+// post dates, so its plate reads the snapshot age as "SYNCED").
+function mastodonLastPostTexture(
+  THREE,
+  sinceMs = null,
+  label = "LAST POST",
+  freshMs = MASTODON_POST_FRESH_MS,
+  staleMs = MASTODON_POST_STALE_MS,
+) {
   const known = Number.isFinite(Number(sinceMs)) && Number(sinceMs) >= 0;
   return canvasTexture(THREE, 256, 128, (context) => {
     context.fillStyle = "rgba(15,16,36,0.72)";
@@ -5628,8 +5718,10 @@ function mastodonLastPostTexture(THREE, sinceMs = null) {
     context.textAlign = "center";
     context.fillStyle = "#8b8db8";
     context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("LAST POST", 128, 44);
-    context.fillStyle = known ? mastodonLastPostColor(sinceMs) : "#8b9bf4";
+    context.fillText(label, 128, 44);
+    context.fillStyle = known
+      ? mastodonLastPostColor(sinceMs, freshMs, staleMs)
+      : "#8b9bf4";
     context.font = '800 44px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(known ? mastodonLastPostClock(sinceMs) : "--", 128, 96);
   });
@@ -5791,6 +5883,13 @@ const SOCIAL_BANNER_WIDTH = 1536;
 const SOCIAL_BANNER_HEIGHT = 2048;
 const SOCIAL_BANNER_POST_TOP = 760;
 const SOCIAL_BANNER_POST_PITCH = 290;
+// A board whose feed carries artwork and preview text (the blog's RSS items)
+// draws taller cards: a 16:9 thumbnail beside the headline and the item's
+// description under it, so fewer of them fit on the same face.
+const SOCIAL_BANNER_ART_VISIBLE_POSTS = 3;
+const SOCIAL_BANNER_ART_POST_PITCH = 372;
+const SOCIAL_BANNER_ART_WIDTH = 400;
+const SOCIAL_BANNER_ART_HEIGHT = 225;
 
 const TWITTER_BANNER_OPTIONS = Object.freeze({
   id: "twitter",
@@ -5809,6 +5908,11 @@ const TWITTER_BANNER_OPTIONS = Object.freeze({
   ],
   footer: "OPENS X.COM IN A NEW TAB",
   url: "https://x.com/forkmesh",
+  staleness: {
+    label: "LAST POST",
+    freshMs: MASTODON_POST_FRESH_MS,
+    staleMs: MASTODON_POST_STALE_MS,
+  },
 });
 
 const REDDIT_BANNER_OPTIONS = Object.freeze({
@@ -5828,9 +5932,109 @@ const REDDIT_BANNER_OPTIONS = Object.freeze({
   ],
   footer: "OPENS REDDIT.COM IN A NEW TAB",
   url: "https://www.reddit.com/r/forkmesh/",
+  staleness: {
+    label: "LAST POST",
+    freshMs: MASTODON_POST_FRESH_MS,
+    staleMs: MASTODON_POST_STALE_MS,
+  },
 });
 
-function socialBannerTexture(THREE, options, snapshot = null) {
+// The blog board continues the same ring past Reddit. Its posts come from
+// the blog's own RSS feed (/blog/rss.xml), so each card shows the item's
+// artwork and preview text. The articles carry no dates, so the staleness
+// plate reads how old the fetched snapshot is: green within a healthy sync
+// window, red once the feed looks stuck.
+const BLOG_BANNER_OPTIONS = Object.freeze({
+  id: "blog",
+  position: [19.8, 0, -32.8],
+  accent: "#3fb950",
+  frameColor: "#1d5c33",
+  titleColor: "#f0fff5",
+  divider: "rgba(63,185,80,0.5)",
+  title: "FORKMESH BLOG",
+  handle: "forkmesh.com/blog",
+  host: "every feature, explained",
+  feedHeading: "FROM THE BLOG",
+  postArt: true,
+  lines: [
+    "FEATURE DEEP DIVES",
+    "MIRRORS · AGENTS · CI · CHAT",
+    "RSS: FORKMESH.COM/BLOG/RSS.XML",
+  ],
+  footer: "RSS FEED AT /BLOG/RSS.XML",
+  url: "https://forkmesh.com/blog",
+  staleness: {
+    label: "SYNCED",
+    freshMs: 15 * 60 * 1000,
+    staleMs: 60 * 60 * 1000,
+  },
+});
+
+// One artwork-carrying card on a social board: the post's own image on the
+// left (cover-cropped into a 16:9 tile), then its meta line, headline, and
+// the preview text the feed item's description carries. An image that has
+// not decoded yet — or one a host refuses to serve CORS-clean, which would
+// taint the canvas and break the WebGL upload — keeps the placeholder plate.
+function drawSocialBannerPostCard(context, post, top, resolveImage) {
+  const width = SOCIAL_BANNER_ART_WIDTH;
+  const height = SOCIAL_BANNER_ART_HEIGHT;
+  const textX = 96 + width + 40;
+  const textWidth = 1440 - textX;
+  context.save();
+  roundedRect(context, 96, top, width, height, 18);
+  context.clip();
+  const media =
+    typeof resolveImage === "function" ? resolveImage(post.image) : null;
+  if (media?.naturalWidth > 0 && media?.naturalHeight > 0) {
+    const scale = Math.max(
+      width / media.naturalWidth,
+      height / media.naturalHeight,
+    );
+    context.drawImage(
+      media,
+      96 + (width - media.naturalWidth * scale) / 2,
+      top + (height - media.naturalHeight * scale) / 2,
+      media.naturalWidth * scale,
+      media.naturalHeight * scale,
+    );
+  } else {
+    context.fillStyle = "#232445";
+    context.fillRect(96, top, width, height);
+    context.fillStyle = "#7a7ca8";
+    context.font = '700 28px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("IMAGE", 120, top + height / 2 + 10);
+  }
+  context.restore();
+  context.fillStyle = "#8b9bf4";
+  context.font = '600 34px "ForkMesh Mono", ui-monospace, monospace';
+  context.fillText(
+    clipCanvasText(context, post.meta, textWidth),
+    textX,
+    top + 36,
+  );
+  context.fillStyle = "#e8e9ff";
+  context.font = '500 50px "ForkMesh Favorit", sans-serif';
+  const headlines = wrapCanvasText(
+    context, post.text, textX, top + 104, textWidth, 58, 2);
+  context.fillStyle = "#a9abd4";
+  context.font = '400 36px "ForkMesh Favorit", sans-serif';
+  wrapCanvasText(
+    context,
+    post.detail,
+    textX,
+    top + 120 + headlines * 58,
+    textWidth,
+    44,
+    3,
+  );
+}
+
+function socialBannerTexture(
+  THREE,
+  options,
+  snapshot = null,
+  resolveImage = null,
+) {
   const WIDTH = SOCIAL_BANNER_WIDTH;
   const HEIGHT = SOCIAL_BANNER_HEIGHT;
   return canvasTexture(THREE, WIDTH, HEIGHT, (context) => {
@@ -5867,11 +6071,18 @@ function socialBannerTexture(THREE, options, snapshot = null) {
       context.font = '600 44px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(options.footer, 96, 1900);
     } else {
+      const art = Boolean(options.postArt);
+      const pitch = art
+        ? SOCIAL_BANNER_ART_POST_PITCH
+        : SOCIAL_BANNER_POST_PITCH;
       const posts = (Array.isArray(snapshot.posts) ? snapshot.posts : [])
-        .slice(0, SOCIAL_BANNER_VISIBLE_POSTS);
+        .slice(
+          0,
+          art ? SOCIAL_BANNER_ART_VISIBLE_POSTS : SOCIAL_BANNER_VISIBLE_POSTS,
+        );
       context.fillStyle = "#8b9bf4";
       context.font = '700 48px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("LATEST POSTS", 96, 726);
+      context.fillText(options.feedHeading || "LATEST POSTS", 96, 726);
       if (!posts.length) {
         context.fillStyle = "#e8e9ff";
         context.font = '700 60px "ForkMesh Mono", ui-monospace, monospace';
@@ -5881,19 +6092,27 @@ function socialBannerTexture(THREE, options, snapshot = null) {
         context.fillText("BE THE FIRST OVER THERE", 96, 1000);
       }
       posts.forEach((post, index) => {
-        const top = SOCIAL_BANNER_POST_TOP + index * SOCIAL_BANNER_POST_PITCH;
-        context.fillStyle = "#8b9bf4";
-        context.font = '600 40px "ForkMesh Mono", ui-monospace, monospace';
-        context.fillText(clipCanvasText(context, post.meta, 1344), 96, top);
-        context.fillStyle = "#e8e9ff";
-        context.font = '500 52px "ForkMesh Favorit", sans-serif';
-        wrapCanvasText(context, post.text, 96, top + 76, 1344, 66, 3);
+        const top = SOCIAL_BANNER_POST_TOP + index * pitch;
+        if (art) {
+          drawSocialBannerPostCard(context, post, top, resolveImage);
+        } else {
+          context.fillStyle = "#8b9bf4";
+          context.font = '600 40px "ForkMesh Mono", ui-monospace, monospace';
+          context.fillText(clipCanvasText(context, post.meta, 1344), 96, top);
+          context.fillStyle = "#e8e9ff";
+          context.font = '500 52px "ForkMesh Favorit", sans-serif';
+          wrapCanvasText(context, post.text, 96, top + 76, 1344, 66, 3);
+        }
         if (index < posts.length - 1) {
+          // Art cards run taller than the text-only ones (three lines of
+          // preview text under a two-line headline), so their rule sits
+          // closer to the next card rather than through the last line.
+          const rule = top + pitch - (art ? 20 : 66);
           context.strokeStyle = "rgba(139,155,244,0.25)";
           context.lineWidth = 2;
           context.beginPath();
-          context.moveTo(96, top + SOCIAL_BANNER_POST_PITCH - 66);
-          context.lineTo(1440, top + SOCIAL_BANNER_POST_PITCH - 66);
+          context.moveTo(96, rule);
+          context.lineTo(1440, rule);
           context.stroke();
         }
       });
@@ -5943,7 +6162,29 @@ function createSocialBanner(THREE, interactive, options) {
   );
   face.name = `forkmesh-${options.id}-banner-face`;
   face.position.set(0, 6.75, 0.2);
-  group.add(base, post, frame, face);
+  // The same stand plates the Mastodon kiosk carries: the MM:SS countdown to
+  // the next feed sync on the left, the staleness readout on the right.
+  const countdown = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.6, 0.8),
+    new THREE.MeshBasicMaterial({
+      map: mastodonCountdownTexture(THREE),
+      transparent: true,
+      toneMapped: false,
+    }),
+  );
+  countdown.name = `forkmesh-${options.id}-banner-countdown`;
+  countdown.position.set(-0.95, 1.15, 0.3);
+  const staleness = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.6, 0.8),
+    new THREE.MeshBasicMaterial({
+      map: mastodonLastPostTexture(THREE, null, options.staleness.label),
+      transparent: true,
+      toneMapped: false,
+    }),
+  );
+  staleness.name = `forkmesh-${options.id}-banner-lastpost`;
+  staleness.position.set(0.95, 1.15, 0.3);
+  group.add(base, post, frame, face, countdown, staleness);
   group.traverse((child) => {
     if (!child.isMesh) return;
     child.userData.interactive = "social-banner-open";
@@ -6384,6 +6625,7 @@ export function createWorldScene({
   onForkbotChat = () => {},
   onPlayForkmeshSong = () => {},
   onCreateRepository = () => {},
+  onSwingRide = () => {},
 }) {
   // Phones frequently expose a high-density screen to a comparatively small
   // GPU.  Use the same scene, but avoid allocating multisample and shadow-map
@@ -6395,7 +6637,6 @@ export function createWorldScene({
   );
   const scene = new THREE.Scene();
   scene.background = new THREE.Color("#174434");
-  scene.fog = new THREE.FogExp2("#8ebaa8", 0.0085);
 
   const camera = new THREE.PerspectiveCamera(
     44,
@@ -6644,8 +6885,9 @@ export function createWorldScene({
   world.add(mastodonKiosk);
   registerMovableObject("mastodon-kiosk", mastodonKiosk);
   // Twitter and Reddit flank the Mastodon kiosk on the same ring toward the
-  // Office, one board-width of clearance on either side so all three read as
-  // one social row on the approach.
+  // Office, one board-width of clearance on either side, and the blog board
+  // continues the row past Reddit so all four read as one social row on the
+  // approach.
   const twitterBanner = createSocialBanner(
     THREE, interactive, TWITTER_BANNER_OPTIONS);
   world.add(twitterBanner);
@@ -6654,30 +6896,120 @@ export function createWorldScene({
     THREE, interactive, REDDIT_BANNER_OPTIONS);
   world.add(redditBanner);
   registerMovableObject("reddit-banner", redditBanner);
+  const blogBanner = createSocialBanner(
+    THREE, interactive, BLOG_BANNER_OPTIONS);
+  world.add(blogBanner);
+  registerMovableObject("blog-banner", blogBanner);
   const socialBanners = [
     { group: twitterBanner, options: TWITTER_BANNER_OPTIONS },
     { group: redditBanner, options: REDDIT_BANNER_OPTIONS },
+    { group: blogBanner, options: BLOG_BANNER_OPTIONS },
   ];
 
-  // Repaint both banner faces from the Worker's /api/world/social-posts
+  // Post artwork (the blog feed's item images) is a same-origin /assets URL:
+  // it only reaches the board texture once it decodes CORS-clean, and its
+  // load repaints the boards that draw art. A host that refuses the read
+  // simply leaves the placeholder plate in place.
+  const socialBannerImages = new Map();
+
+  function socialBannerImage(url) {
+    const key = String(url || "");
+    if (!key) return null;
+    const cached = socialBannerImages.get(key);
+    if (cached) return cached.image;
+    const record = { image: null };
+    socialBannerImages.set(key, record);
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.decoding = "async";
+    image.onload = () => {
+      if (disposed) return;
+      record.image = image;
+      for (const banner of socialBanners) {
+        if (banner.options.postArt) repaintSocialBanner(banner);
+      }
+    };
+    image.onerror = () => {};
+    image.src = key;
+    return null;
+  }
+
+  function repaintSocialBanner(record) {
+    const face = record.group.getObjectByName(
+      `forkmesh-${record.options.id}-banner-face`,
+    );
+    if (!face?.material) return false;
+    face.material.map?.dispose?.();
+    face.material.map = socialBannerTexture(
+      THREE, record.options, record.snapshot || null, socialBannerImage);
+    face.material.needsUpdate = true;
+    return true;
+  }
+
+  // Repaint the banner faces from the Worker's /api/world/social-posts
   // snapshot. A feed that is missing or unavailable keeps (or returns to)
   // the static sign rather than showing a blank board.
   function updateSocialBanners(payload) {
     for (const record of socialBanners) {
-      const face = record.group.getObjectByName(
-        `forkmesh-${record.options.id}-banner-face`,
-      );
-      if (!face?.material) continue;
       const feed = payload?.[record.options.id];
-      const snapshot =
+      record.snapshot =
         feed && typeof feed === "object" && feed.state === "ready"
           ? { posts: Array.isArray(feed.posts) ? feed.posts : [] }
           : null;
-      face.material.map?.dispose?.();
-      face.material.map = socialBannerTexture(
-        THREE, record.options, snapshot);
-      face.material.needsUpdate = true;
+      repaintSocialBanner(record);
     }
+  }
+
+  // The stand plates under each banner: a per-second countdown to the next
+  // feed sync and a per-minute staleness readout. Both key their repaints
+  // like the Mastodon kiosk plates so a tick that changes nothing visible
+  // never rebuilds a texture.
+  function updateSocialBannerTimers(payload) {
+    let repainted = false;
+    for (const record of socialBanners) {
+      const timers = payload?.[record.options.id];
+      if (!timers || typeof timers !== "object") continue;
+      const total = Math.max(
+        1000, Number(timers.totalMs) || MASTODON_KIOSK_REFRESH_MS);
+      const remaining = clamp(Number(timers.remainingMs) || 0, 0, total);
+      const loading = Boolean(timers.loading);
+      const countdownKey =
+        `${loading ? 1 : 0}:${Math.ceil(remaining / 1000)}:${total}`;
+      if (countdownKey !== record.countdownKey) {
+        record.countdownKey = countdownKey;
+        const dial = record.group.getObjectByName(
+          `forkmesh-${record.options.id}-banner-countdown`,
+        );
+        if (dial?.material) {
+          dial.material.map?.dispose?.();
+          dial.material.map = mastodonCountdownTexture(
+            THREE, remaining, total, loading);
+          dial.material.needsUpdate = true;
+          repainted = true;
+        }
+      }
+      const since =
+        Number.isFinite(Number(timers.sinceMs)) && Number(timers.sinceMs) >= 0
+          ? Number(timers.sinceMs)
+          : null;
+      const sinceKey =
+        since === null ? "-" : String(Math.floor(since / 60_000));
+      if (sinceKey !== record.stalenessKey) {
+        record.stalenessKey = sinceKey;
+        const plate = record.group.getObjectByName(
+          `forkmesh-${record.options.id}-banner-lastpost`,
+        );
+        if (plate?.material) {
+          const config = record.options.staleness;
+          plate.material.map?.dispose?.();
+          plate.material.map = mastodonLastPostTexture(
+            THREE, since, config.label, config.freshMs, config.staleMs);
+          plate.material.needsUpdate = true;
+          repainted = true;
+        }
+      }
+    }
+    return repainted;
   }
   let mastodonKioskSnapshot = null;
   let mastodonKioskOffset = 0;
@@ -6958,6 +7290,127 @@ export function createWorldScene({
   landmarkObjects.set("campfire", campfire);
   registerMovableObject("campfire", campfire);
 
+  // A wooden swing set west of the fountain: three swings hang from one beam,
+  // so up to three visitors can ride at once. Clicking a seat starts the ride
+  // and clicking it again hops off; the shell's swing-speed slider scales the
+  // pumping, and the regular camera toggle watches the ride in first or third
+  // person because both camera modes follow the player's position.
+  const SWING_SET_POSITION = Object.freeze([-20, 0, 9]);
+  const SWING_SEAT_COUNT = 3;
+  const SWING_SEAT_SPACING = 2.3;
+  const SWING_BEAM_HEIGHT = 4.6;
+  const SWING_ROPE_LENGTH = 3.4;
+  const SWING_SEAT_HALF_THICKNESS = 0.05;
+  const SWING_MIN_AMPLITUDE = 0.14;
+  const SWING_MAX_AMPLITUDE = 1.05;
+  const SWING_REMOTE_AMPLITUDE = 0.55;
+  // A remote visitor parked this close to a seat's rest spot is riding it.
+  const SWING_REST_CLAIM_DISTANCE_SQ = 0.81;
+  const SWING_ARM_HOLD_PITCH = 1.15;
+  const swingSet = new THREE.Group();
+  swingSet.name = "swing-set";
+  swingSet.position.set(...SWING_SET_POSITION);
+  // Local -Z (the way avatars face) points at the fountain so riders swing
+  // looking across the Town Square.
+  swingSet.rotation.y = Math.atan2(SWING_SET_POSITION[0], SWING_SET_POSITION[2]);
+  const swingFrameMaterial = makeMaterial(THREE, "#6f5136", { roughness: 0.82 });
+  const swingFrameWidth = SWING_SEAT_COUNT * SWING_SEAT_SPACING + 1.6;
+  const swingLegSpread = 1.7;
+  const swingLegLength = Math.hypot(SWING_BEAM_HEIGHT, swingLegSpread);
+  [-1, 1].forEach((side) => {
+    [-1, 1].forEach((lean) => {
+      const leg = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.09, 0.11, swingLegLength, 8),
+        swingFrameMaterial,
+      );
+      leg.position.set(
+        (side * swingFrameWidth) / 2,
+        SWING_BEAM_HEIGHT / 2,
+        (lean * swingLegSpread) / 2,
+      );
+      leg.rotation.x = -lean * Math.atan2(swingLegSpread, SWING_BEAM_HEIGHT);
+      swingSet.add(leg);
+    });
+  });
+  const swingBeam = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.1, 0.1, swingFrameWidth + 0.7, 10),
+    swingFrameMaterial,
+  );
+  swingBeam.rotation.z = Math.PI / 2;
+  swingBeam.position.y = SWING_BEAM_HEIGHT;
+  swingSet.add(swingBeam);
+  const swingRopeMaterial = makeMaterial(THREE, "#d8cdb4", { roughness: 0.9 });
+  const swingSeatMaterial = makeMaterial(THREE, "#a8763e", { roughness: 0.6 });
+  const swingStates = [];
+  for (let seatIndex = 0; seatIndex < SWING_SEAT_COUNT; seatIndex += 1) {
+    const pivot = new THREE.Group();
+    pivot.position.set(
+      (seatIndex - (SWING_SEAT_COUNT - 1) / 2) * SWING_SEAT_SPACING,
+      SWING_BEAM_HEIGHT,
+      0,
+    );
+    [-1, 1].forEach((side) => {
+      const rope = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.03, 0.03, SWING_ROPE_LENGTH, 6),
+        swingRopeMaterial,
+      );
+      rope.position.set(side * 0.45, -SWING_ROPE_LENGTH / 2, 0);
+      rope.userData.swingSeat = seatIndex;
+      interactive.push(rope);
+      pivot.add(rope);
+    });
+    const seat = new THREE.Mesh(
+      new THREE.BoxGeometry(1.05, SWING_SEAT_HALF_THICKNESS * 2, 0.48),
+      swingSeatMaterial,
+    );
+    seat.position.y = -SWING_ROPE_LENGTH;
+    seat.userData.swingSeat = seatIndex;
+    interactive.push(seat);
+    pivot.add(seat);
+    swingSet.add(pivot);
+    // The rest anchor hangs outside the pivot so occupancy checks and the
+    // step-off spot read the seat's still position, not the moving plank.
+    const anchor = new THREE.Object3D();
+    anchor.position.set(
+      pivot.position.x,
+      SWING_BEAM_HEIGHT - SWING_ROPE_LENGTH,
+      0,
+    );
+    swingSet.add(anchor);
+    swingStates.push({
+      pivot,
+      seat,
+      anchor,
+      amplitude: 0,
+      // Staggered so idle and remote-ridden swings never move in lockstep.
+      phase: seatIndex * 1.3,
+      remoteId: "",
+    });
+  }
+  const swingPendulumOmega = Math.sqrt(9.8 / SWING_ROPE_LENGTH);
+  animated.push((time, delta) => {
+    swingStates.forEach((swing, seatIndex) => {
+      const target =
+        swingRide?.index === seatIndex
+          ? swingRideAmplitude()
+          : swing.remoteId
+            ? SWING_REMOTE_AMPLITUDE
+            : 0;
+      swing.amplitude += (target - swing.amplitude) * Math.min(1, delta * 1.4);
+      if (swing.amplitude < 0.01 && !target) {
+        swing.pivot.rotation.x = 0;
+        return;
+      }
+      // Pumping harder swings a little faster as well as higher; the phase is
+      // continuous so speed changes never snap the seat sideways.
+      swing.phase += swingPendulumOmega * (0.8 + swing.amplitude * 0.5) * delta;
+      swing.pivot.rotation.x = swing.amplitude * Math.sin(swing.phase);
+    });
+  });
+  setShadows(swingSet);
+  world.add(swingSet);
+  registerMovableObject("swing-set", swingSet);
+
   const activeLeaderboardSign = makeActiveLeaderboardSign(THREE);
   activeLeaderboardSign.position.set(...ACTIVE_LEADERBOARD_POSITION);
   activeLeaderboardSign.rotation.y = Math.atan2(
@@ -7085,14 +7538,33 @@ export function createWorldScene({
   forkbot.add(antennaLight);
   forkbot.userData.forkbotAntennaLight = antennaLight;
   forkbot.userData.rollingBall = rollingBall;
+  // The chest screen (adhoc #369): idle it shows the FORKBOT wordmark; when a
+  // mention pulls the droid over it echoes the speaker's line and then runs
+  // the thinking dots (updateForkbot) until the reply lands in the room.
+  const forkbotScreenTexture = canvasTexture(THREE, 512, 224, (context, canvas) =>
+    drawForkbotScreen(context, canvas, null),
+  );
+  const forkbotScreen = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.82, 0.36),
+    new THREE.MeshBasicMaterial({ map: forkbotScreenTexture, toneMapped: false }),
+  );
+  forkbotScreen.position.set(0, 1.02, 0.58);
+  forkbot.add(forkbotScreen);
   forkbot.traverse((child) => {
     if (!child.isMesh) return;
     child.userData.forkbotChat = true;
     interactive.push(child);
   });
   animated.push((time) => {
-    antennaLight.material.emissiveIntensity = 1.2 + (Math.sin(time * 0.006) + 1) * 0.5;
-    eye.material.emissiveIntensity = 1.25 + (Math.sin(time * 0.008) + 1) * 0.75;
+    // An excited ForkBot (someone just mentioned it) flashes its antenna and
+    // eye much faster than the idle glow.
+    const excited = Boolean(forkbotExcitement);
+    antennaLight.material.emissiveIntensity = excited
+      ? 2.2 + (Math.sin(time * 0.022) + 1) * 1.1
+      : 1.2 + (Math.sin(time * 0.006) + 1) * 0.5;
+    eye.material.emissiveIntensity = excited
+      ? 2 + (Math.sin(time * 0.028) + 1) * 0.9
+      : 1.25 + (Math.sin(time * 0.008) + 1) * 0.75;
   });
   world.add(forkbot);
 
@@ -7443,6 +7915,7 @@ export function createWorldScene({
   const forkbotWanderTarget = new THREE.Vector3(...FORKBOT_HOME);
   let forkbotNextWanderAt = 0;
   let forkbotGreeting = null;
+  let forkbotExcitement = null;
   const keys = new Set();
   const touchKeys = new Set();
   const touchMovement = new THREE.Vector2();
@@ -7485,7 +7958,6 @@ export function createWorldScene({
   let focusedRepositoryKey = "";
   let cameraZoom = 1;
   let firstPersonZoom = 1;
-  let environmentFogDensity = 0.0085;
   let cameraYaw = Math.atan2(CAMERA_OFFSET[0], CAMERA_OFFSET[2]);
   let cameraPitch = Math.asin(CAMERA_OFFSET[1] / CAMERA_DISTANCE);
   let firstPersonPitch = 0;
@@ -7502,6 +7974,11 @@ export function createWorldScene({
   // Set while the player is sitting on a campfire bench: the seat pose is held
   // every frame until the visitor walks, dashes or jumps away from it.
   let benchSeat = null;
+  // Set while the player is riding a swing: the avatar is glued to the moving
+  // seat every frame until a second click — or any movement input — hops off.
+  let swingRide = null;
+  // 0..1 from the shell's swing-speed slider; maps onto the pendulum amplitude.
+  let swingSpeedLevel = 0.55;
   let primaryPointerId = null;
   let draggedCampfireLog = null;
   let pointerGestureMoved = false;
@@ -7529,28 +8006,21 @@ export function createWorldScene({
   function updateWorldEnvironment() {
     const state = {
       background: new THREE.Color(DAYLIGHT_ENVIRONMENT.background),
-      fog: new THREE.Color(DAYLIGHT_ENVIRONMENT.fog),
       hemiSky: new THREE.Color(DAYLIGHT_ENVIRONMENT.hemiSky),
       hemiGround: new THREE.Color(DAYLIGHT_ENVIRONMENT.hemiGround),
       sun: new THREE.Color(DAYLIGHT_ENVIRONMENT.sun),
       sunPower: DAYLIGHT_ENVIRONMENT.sunPower,
       hemiPower: DAYLIGHT_ENVIRONMENT.hemiPower,
       exposure: DAYLIGHT_ENVIRONMENT.exposure,
-      fogDensity: DAYLIGHT_ENVIRONMENT.fogDensity,
     };
     const overlay = LOCAL_ENVIRONMENT_OVERLAYS[currentTheme];
     if (overlay) {
       const tint = new THREE.Color(overlay.tint);
       state.background.lerp(tint, overlay.tintStrength);
-      state.fog.lerp(tint, overlay.tintStrength * 0.72);
       state.hemiSky.lerp(tint, overlay.tintStrength * 0.42);
       state.sun.lerp(tint, overlay.tintStrength * 0.18);
     }
     scene.background.copy(state.background);
-    scene.fog.color.copy(state.fog);
-    environmentFogDensity =
-      state.fogDensity * (overlay?.fogMultiplier || 1);
-    scene.fog.density = environmentFogDensity * zoomFogMultiplier();
     const lightMultiplier = lightLevel / LIGHT_LEVEL_DEFAULT;
     hemisphere.color.copy(state.hemiSky);
     hemisphere.groundColor.copy(state.hemiGround);
@@ -7573,19 +8043,6 @@ export function createWorldScene({
     weather.rain.visible = currentTheme === "rain";
     weather.snow.visible = currentTheme === "snow" || currentTheme === "winter";
     updateWorldEnvironment();
-  }
-
-  function zoomFogMultiplier() {
-    // At the strategic overview distance, atmospheric fog would wash the
-    // whole world into a pale blur. Preserve local depth, but make the far
-    // view readable across the bounded overview range.
-    const normalized = clamp(
-      (cameraZoom - 1) / Math.max(0.001, CAMERA_ZOOM_MAX - 1),
-      0,
-      1,
-    );
-    if (normalized >= 0.45) return 0;
-    return 1 - normalized / 0.45;
   }
 
   function setLightLevel(value) {
@@ -8125,7 +8582,6 @@ export function createWorldScene({
     officeLobbyPlayer.visible = true;
     officeExitPending = false;
     scene.background.set("#0d1e19");
-    scene.fog.color.set("#0d1e19");
     return true;
   }
 
@@ -8492,7 +8948,7 @@ export function createWorldScene({
     setOfficeParticipants([]);
     officeBubbles.forEach((element) => element.remove());
     officeBubbles.clear();
-    // Re-apply the theme to restore the town background/fog the Office overrode.
+    // Re-apply the theme to restore the town background the Office overrode.
     // PR #47 called applyTheme(); main's equivalent is setTheme().
     setTheme(currentTheme);
     onMovement({
@@ -8767,6 +9223,7 @@ export function createWorldScene({
   // Sitting is a local pose, not a teleport: the avatar lands on the plank it
   // was clicked on, faces the flames and keeps that pose until it moves again.
   function sitOnCampfireBench(seat) {
+    dismountSwing({ relocate: false });
     const seatPoint = seat.getWorldPosition(new THREE.Vector3());
     benchSeat = {
       // Hips on the plank, not feet: the avatar drops until its thighs rest on
@@ -8819,6 +9276,122 @@ export function createWorldScene({
     applyLegPitch(player, 0, 0);
   }
 
+  function swingRideAmplitude() {
+    return (
+      SWING_MIN_AMPLITUDE +
+      (SWING_MAX_AMPLITUDE - SWING_MIN_AMPLITUDE) * swingSpeedLevel
+    );
+  }
+
+  function setSwingSpeed(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return;
+    swingSpeedLevel = Math.min(1, Math.max(0.1, numeric / 100));
+  }
+
+  function swingSeatRestPoint(index) {
+    return swingStates[index].anchor.getWorldPosition(new THREE.Vector3());
+  }
+
+  // Riding is a local pose like the campfire sit, but on a moving seat: the
+  // avatar is re-glued to the plank every frame, so both camera modes follow
+  // the arc for free. A second click on the same swing hops off.
+  function rideSwing(index) {
+    if (officeSceneMode !== "town") return;
+    const swing = swingStates[index];
+    if (!swing) return;
+    if (swingRide?.index === index) {
+      dismountSwing();
+      return;
+    }
+    if (swing.remoteId) {
+      onSwingRide({
+        riding: Boolean(swingRide),
+        seat: swingRide ? swingRide.index : -1,
+        denied: true,
+      });
+      return;
+    }
+    standUpFromBench();
+    swingRide = { index };
+    cancelDash();
+    cameraFocus = null;
+    jumpVelocity = 0;
+    jumpQueued = false;
+    applySwingRidePose();
+    lastPosition.copy(player.position);
+    onMovement({
+      x: Number(player.position.x.toFixed(2)),
+      y: Number(player.position.y.toFixed(2)),
+      z: Number(player.position.z.toFixed(2)),
+      heading: Number(player.rotation.y.toFixed(3)),
+      space: currentSpace,
+      moving: false,
+      activity: SWING_RIDING_ACTIVITY,
+    });
+    onSwingRide({ riding: true, seat: index, denied: false });
+  }
+
+  function applySwingRidePose() {
+    if (!swingRide) return;
+    const swing = swingStates[swingRide.index];
+    const seatTop = swing.seat.getWorldPosition(new THREE.Vector3());
+    player.position.set(
+      seatTop.x,
+      seatedAvatarY(seatTop.y + SWING_SEAT_HALF_THICKNESS, player.scale.x),
+      seatTop.z,
+    );
+    // Yaw first, then pitch in the yawed frame: with the default XYZ order the
+    // lean below would be a world-X pitch, which on a swing set that faces the
+    // fountain at an angle reads as the rider rocking side to side.
+    player.rotation.order = "YXZ";
+    player.rotation.y = swingSet.rotation.y;
+    // Lean with the ropes so the body traces the arc instead of staying bolt
+    // upright at the peaks.
+    player.rotation.x = swing.pivot.rotation.x;
+    player.userData.leftArm.rotation.x = SWING_ARM_HOLD_PITCH;
+    player.userData.rightArm.rotation.x = SWING_ARM_HOLD_PITCH;
+    applySeatedLegPose(player);
+  }
+
+  function dismountSwing({ relocate = true } = {}) {
+    if (!swingRide) return;
+    const index = swingRide.index;
+    swingRide = null;
+    player.rotation.x = 0;
+    player.userData.leftArm.rotation.x = 0;
+    player.userData.rightArm.rotation.x = 0;
+    applyLegPitch(player, 0, 0);
+    if (relocate) {
+      // Step off just in front of the seat's rest spot rather than standing
+      // up inside the moving plank.
+      const rest = swingSeatRestPoint(index);
+      const heading = swingSet.rotation.y;
+      player.position.set(
+        rest.x - Math.sin(heading) * 1.1,
+        currentFloorY,
+        rest.z - Math.cos(heading) * 1.1,
+      );
+      player.rotation.y = heading;
+      lastPosition.copy(player.position);
+      onMovement({
+        x: Number(player.position.x.toFixed(2)),
+        y: Number(player.position.y.toFixed(2)),
+        z: Number(player.position.z.toFixed(2)),
+        heading: Number(player.rotation.y.toFixed(3)),
+        space: currentSpace,
+        moving: false,
+        activity:
+          currentLocation === "Town Square"
+            ? "exploring the Town Square"
+            : `visiting ${currentLocation}`,
+      });
+    } else {
+      player.position.y = currentFloorY;
+    }
+    onSwingRide({ riding: false, seat: -1, denied: false });
+  }
+
   // The world map's Campfire spot is a trip home: it puts the avatar on the
   // bench that carries this member's name and holds the same seated pose
   // clicking the plank gives. Guests — and members the directory has not
@@ -8850,6 +9423,23 @@ export function createWorldScene({
       inputStrength,
       movement,
     } = movementInput();
+    if (swingRide) {
+      // Like the bench below: relocation ends the ride, and so does any
+      // movement input, which keeps WASD as the universal "get off" gesture
+      // alongside the second click on the seat.
+      const displaced =
+        player.position.distanceToSquared(
+          swingSeatRestPoint(swingRide.index),
+        ) > 36;
+      if (!displaced && !movement.lengthSq() && !dashTarget && !jumpQueued) {
+        applySwingRidePose();
+        player.userData.inputEnergy = decayedPointerEnergy(performance.now());
+        animateAvatarActivity(player, time, delta, reducedMotion);
+        wasWalking = false;
+        return;
+      }
+      dismountSwing({ relocate: false });
+    }
     if (benchSeat) {
       // Anything that relocates the avatar (a space change, a teleport) also
       // ends the sit; otherwise the held pose would drag it back to the bench.
@@ -8975,12 +9565,57 @@ export function createWorldScene({
   }
 
   function updateRemotePlayers(delta, time) {
-    remotePlayers.forEach((avatar) => {
+    // Swing occupancy is re-derived every frame from where visitors stand: a
+    // remote visitor parked on a seat's rest spot is riding that swing, which
+    // is what caps the ride at three people and lets a local click on a taken
+    // seat be refused.
+    swingStates.forEach((swing) => {
+      swing.remoteId = "";
+    });
+    const swingRestPoints = swingStates.map((swing) =>
+      swing.anchor.getWorldPosition(new THREE.Vector3()),
+    );
+    remotePlayers.forEach((avatar, remoteId) => {
       avatar.position.lerp(avatar.userData.targetPosition, 1 - Math.pow(0.002, delta));
       let headingDelta = avatar.userData.targetHeading - avatar.rotation.y;
       headingDelta = Math.atan2(Math.sin(headingDelta), Math.cos(headingDelta));
       avatar.rotation.y += headingDelta * (1 - Math.pow(0.01, delta));
       const walking = avatar.position.distanceToSquared(avatar.userData.targetPosition) > 0.01;
+      let riddenSwing = -1;
+      if (!walking) {
+        for (let seatIndex = 0; seatIndex < swingStates.length; seatIndex += 1) {
+          if (swingRide?.index === seatIndex) continue;
+          if (swingStates[seatIndex].remoteId) continue;
+          const rest = swingRestPoints[seatIndex];
+          const dx = avatar.userData.targetPosition.x - rest.x;
+          const dz = avatar.userData.targetPosition.z - rest.z;
+          if (dx * dx + dz * dz < SWING_REST_CLAIM_DISTANCE_SQ) {
+            riddenSwing = seatIndex;
+            swingStates[seatIndex].remoteId = remoteId;
+            break;
+          }
+        }
+      }
+      if (riddenSwing >= 0) {
+        const swing = swingStates[riddenSwing];
+        const seatTop = swing.seat.getWorldPosition(new THREE.Vector3());
+        avatar.position.set(
+          seatTop.x,
+          seatedAvatarY(seatTop.y + SWING_SEAT_HALF_THICKNESS, avatar.scale.x),
+          seatTop.z,
+        );
+        // Same yaw-then-pitch order as the local rider so the lean stays
+        // front-to-back along the ropes instead of rolling sideways.
+        avatar.rotation.order = "YXZ";
+        avatar.rotation.y = swingSet.rotation.y;
+        avatar.rotation.x = swing.pivot.rotation.x;
+        avatar.userData.leftArm.rotation.x = SWING_ARM_HOLD_PITCH;
+        avatar.userData.rightArm.rotation.x = SWING_ARM_HOLD_PITCH;
+        applySeatedLegPose(avatar);
+        animateAvatarActivity(avatar, time, delta, reducedMotion);
+        return;
+      }
+      avatar.rotation.x = 0;
       const recentlyActiveInLounge =
         avatar.userData.loungeActivity === "recent";
       const gait = walking
@@ -9012,11 +9647,38 @@ export function createWorldScene({
 
   // ForkBot wanders the Town Square on its own; when world.js reports a
   // visitor's first movement or mouse activity (greetForkbot) it walks over
-  // and floats a welcome bubble instead of picking the next wander spot.
+  // and floats a welcome bubble instead of picking the next wander spot. A
+  // chat mention (exciteForkbot) outranks both: the droid rushes to whoever
+  // spoke while its chest screen echoes the line and then thinks out loud.
   function updateForkbot(delta, time) {
     const data = forkbot.userData;
     let target = forkbotWanderTarget;
-    if (forkbotGreeting) {
+    let speed = FORKBOT_SPEED;
+    if (forkbotExcitement) {
+      target = forkbotExcitement.avatar.position;
+      speed = FORKBOT_EXCITED_SPEED;
+      const waited = performance.now() - forkbotExcitement.startedAt;
+      if (!forkbotExcitement.thinking && waited >= FORKBOT_ECHO_MS) {
+        forkbotExcitement.thinking = true;
+      }
+      if (forkbotExcitement.thinking) {
+        const dotPhase = Math.floor(time / 400) % 3;
+        if (dotPhase !== forkbotExcitement.dotPhase) {
+          forkbotExcitement.dotPhase = dotPhase;
+          paintForkbotScreen({
+            message: forkbotExcitement.message,
+            thinking: true,
+            dotPhase,
+          });
+        }
+      }
+      // The reply normally clears this state (showChatBubble); the timeout
+      // only covers an unavailable bot so the dots don't run forever.
+      if (waited >= FORKBOT_THINKING_TIMEOUT_MS) {
+        settleForkbot(time);
+        target = forkbotWanderTarget;
+      }
+    } else if (forkbotGreeting) {
       target = player.position;
       const waited = performance.now() - forkbotGreeting.startedAt;
       const reach = forkbot.position.distanceTo(player.position);
@@ -9052,10 +9714,11 @@ export function createWorldScene({
     const dx = target.x - forkbot.position.x;
     const dz = target.z - forkbot.position.z;
     const distance = Math.hypot(dx, dz);
-    const arrive = forkbotGreeting ? FORKBOT_GREETING_RANGE * 0.8 : 0.4;
+    const arrive =
+      forkbotGreeting || forkbotExcitement ? FORKBOT_GREETING_RANGE * 0.8 : 0.4;
     const walking = distance > arrive;
     if (walking) {
-      const step = Math.min(distance - arrive, FORKBOT_SPEED * delta);
+      const step = Math.min(distance - arrive, speed * delta);
       forkbot.position.x += (dx / distance) * step;
       forkbot.position.z += (dz / distance) * step;
     }
@@ -9066,9 +9729,55 @@ export function createWorldScene({
     headingDelta = Math.atan2(Math.sin(headingDelta), Math.cos(headingDelta));
     forkbot.rotation.y += headingDelta * (1 - Math.pow(0.01, delta));
     if (walking) {
-      data.rollingBall.rotation.x -= FORKBOT_SPEED * delta * 1.8;
+      data.rollingBall.rotation.x -= speed * delta * 1.8;
       data.rollingBall.rotation.z = Math.sin(time * 0.006 + data.phase) * 0.08;
     }
+    // Excited hops so the mention visibly lands even from across the square.
+    forkbot.position.y =
+      forkbotExcitement && !reducedMotion
+        ? FORKBOT_HOME[1] +
+          Math.abs(Math.sin(time * 0.012 + data.phase)) * 0.16
+        : FORKBOT_HOME[1];
+  }
+
+  function paintForkbotScreen(state) {
+    const canvas = forkbotScreenTexture.image;
+    drawForkbotScreen(canvas.getContext("2d"), canvas, state);
+    forkbotScreenTexture.needsUpdate = true;
+  }
+
+  // adhoc #369: any live speaker mentioning ForkBot in chat (world.js
+  // handleWorldChatMessage) pulls the droid over to them. The chest screen
+  // echoes the line straight away; once the echo has had a beat the thinking
+  // dots run (updateForkbot) until the reply is broadcast into the room.
+  function exciteForkbot(peerId, text) {
+    const message = String(text || "").replace(/\s+/g, " ").trim().slice(0, 90);
+    if (!message) return false;
+    const avatar =
+      peerId === identity.id
+        ? player
+        : remotePlayers.get(String(peerId || "")) ||
+          loungeMembers.get(String(peerId || ""));
+    if (!avatar) return false;
+    forkbotGreeting = null;
+    forkbotExcitement = {
+      avatar,
+      message,
+      startedAt: performance.now(),
+      thinking: false,
+      dotPhase: 0,
+    };
+    paintForkbotScreen({ message, thinking: false, dotPhase: 0 });
+    return true;
+  }
+
+  // Back to the idle wordmark, lingering beside the speaker for a moment
+  // before the next wander pick.
+  function settleForkbot(time) {
+    forkbotExcitement = null;
+    paintForkbotScreen(null);
+    forkbotWanderTarget.copy(forkbot.position);
+    forkbotNextWanderAt = time + 9000;
   }
 
   function greetForkbot(text) {
@@ -10547,6 +11256,7 @@ export function createWorldScene({
           liveHost: record.liveHost === true,
           isPrivate: record.isPrivate === true,
           source: String(record.source || "").slice(0, 40),
+          mirrorState: String(record.mirrorState || "").slice(0, 24),
           starCount:
             Number.isSafeInteger(rawStarCount) && rawStarCount >= 0
               ? Math.min(rawStarCount, 10_000_000)
@@ -10758,8 +11468,21 @@ export function createWorldScene({
         );
         selectedHalo.name = "repository-selected-halo";
         selectedHalo.scale.setScalar(nodeRadius);
+        selectedHalo.userData.repositoryHaloScale = nodeRadius;
         face.add(selectedHalo);
         usedMaterials.add(materials.selected);
+        const orbitMarker = new THREE.Mesh(
+          new THREE.SphereGeometry(0.105, 12, 8),
+          materials.selected,
+        );
+        orbitMarker.name = "repository-live-orbit-marker";
+        orbitMarker.userData.repositoryOrbitRadius = nodeRadius * 1.38;
+        orbitMarker.position.set(
+          orbitMarker.userData.repositoryOrbitRadius,
+          0,
+          0.08,
+        );
+        face.add(orbitMarker);
       }
       node.add(face);
 
@@ -10777,7 +11500,15 @@ export function createWorldScene({
               : record.mirrorState === "offline"
                 ? "MIRRORS OFFLINE"
                 : "STUB · MIRROR NEEDED",
-        isActive ? "#9ef7c6" : record.isPrivate ? "#d5b6ff" : "#77d9ff",
+        isActive
+          ? "#9ef7c6"
+          : record.isPrivate
+            ? "#d5b6ff"
+            : record.mirrorState === "syncing"
+              ? "#f0c66f"
+              : record.mirrorState === "offline"
+                ? "#91a39a"
+                : "#77d9ff",
       );
       label.name = `repository-portal-label:${record.owner}/${record.name}`;
       label.scale.set(2.8, 0.76, 1);
@@ -11840,8 +12571,13 @@ export function createWorldScene({
         ? player
         : peerId === FORKBOT_PEER_ID
           ? forkbot
-          : remotePlayers.get(String(peerId || ""));
+          : remotePlayers.get(String(peerId || "")) ||
+            loungeMembers.get(String(peerId || ""));
     if (!avatar) return false;
+    // ForkBot's own line is the reply the thinking dots were waiting for.
+    if (avatar === forkbot && forkbotExcitement) {
+      settleForkbot(performance.now());
+    }
     // One bubble per speaker: a rapid follow-up message replaces the first
     // instead of stacking on top of it.
     for (let index = emoteSprites.length - 1; index >= 0; index -= 1) {
@@ -11880,6 +12616,26 @@ export function createWorldScene({
       fadeStart: 0.75,
     });
     return true;
+  }
+
+  // A registered member who is not in the world as a live peer still sits on
+  // their own campfire bench (updateMemberLounge), so a chat line from them
+  // floats over the seated figure's head instead of going nowhere.
+  function showMemberChatBubble(name, text) {
+    const wanted = String(name || "").trim().toLowerCase();
+    if (!wanted) return false;
+    if (loungeMembers.has(`member:${wanted}`)) {
+      return showChatBubble(`member:${wanted}`, text);
+    }
+    // The public room truncates asserted names to 16 characters, so a
+    // truncated sender may only be a prefix of the seated member's name.
+    if (wanted.length < 16) return false;
+    for (const id of loungeMembers.keys()) {
+      if (id.slice("member:".length).startsWith(wanted)) {
+        return showChatBubble(id, text);
+      }
+    }
+    return false;
   }
 
   // Repaints the fountain's treasury board with the public pool address QR
@@ -12001,7 +12757,6 @@ export function createWorldScene({
       return firstPersonZoom;
     }
     cameraZoom = clamp(next, CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX);
-    scene.fog.density = environmentFogDensity * zoomFogMultiplier();
     return cameraZoom;
   }
 
@@ -12415,6 +13170,10 @@ export function createWorldScene({
       sitOnCampfireBench(hit.object);
       return;
     }
+    if (Number.isInteger(hit?.object?.userData?.swingSeat)) {
+      rideSwing(hit.object.userData.swingSeat);
+      return;
+    }
     if (hit?.object?.userData?.forkbotChat) {
       onForkbotChat();
       return;
@@ -12800,6 +13559,20 @@ export function createWorldScene({
       sitOnCampfireBench(benchHit.object);
       return;
     }
+    // The same rule for the swing set: a double tap on a seat is a request to
+    // ride it, not to dash to the ground the swing hangs over.
+    const swingHit = raycaster
+      .intersectObjects(interactive, false)
+      .find(
+        ({ object }) =>
+          Number.isInteger(object.userData?.swingSeat) &&
+          objectIsEffectivelyVisible(object),
+      );
+    if (swingHit) {
+      event.preventDefault();
+      rideSwing(swingHit.object.userData.swingSeat);
+      return;
+    }
     const point = groundPointAt(event.clientX, event.clientY);
     if (!point) return;
     event.preventDefault();
@@ -13053,6 +13826,22 @@ export function createWorldScene({
       }
     }
     if (!reducedMotion) {
+      repositoryPortals.forEach(({ group }) => {
+        const halo = group.getObjectByName("repository-selected-halo");
+        const marker = group.getObjectByName("repository-live-orbit-marker");
+        if (halo?.userData?.repositoryHaloScale) {
+          const pulse =
+            halo.userData.repositoryHaloScale *
+            (1 + Math.sin(time * 0.0032) * 0.055);
+          halo.scale.setScalar(pulse);
+        }
+        if (marker?.userData?.repositoryOrbitRadius) {
+          const angle = time * 0.0024;
+          const radius = marker.userData.repositoryOrbitRadius;
+          marker.position.x = Math.cos(angle) * radius;
+          marker.position.y = Math.sin(angle) * radius;
+        }
+      });
       // Node beacons hold a steady colour and size — no pulse — so a status
       // reads the same in a screenshot as it does live. Only degraded and
       // healing nodes carry a sweep, and it turns rather than fades, so the
@@ -13362,6 +14151,7 @@ export function createWorldScene({
     updateMastodonKiosk,
     updateMastodonCountdown,
     updateSocialBanners,
+    updateSocialBannerTimers,
     setOfficeSeatState,
     showOfficeBubble,
     leaveOfficeInterior,
@@ -13378,6 +14168,18 @@ export function createWorldScene({
     travelToRegion,
     visitNeighborhoodHome,
     returnToCampfireBench,
+    rideSwing,
+    dismountSwing,
+    setSwingSpeed,
+    getSwingState: () => ({
+      riding: Boolean(swingRide),
+      seat: swingRide ? swingRide.index : -1,
+      speedLevel: swingSpeedLevel,
+      seats: swingStates.map((swing) => ({
+        remoteId: swing.remoteId,
+        amplitude: Number(swing.amplitude.toFixed(3)),
+      })),
+    }),
     setRemotePlayers,
     setAvatarFediverseProfile,
     setAvatarFaceImage,
@@ -13403,7 +14205,9 @@ export function createWorldScene({
     setLayoutEditor,
     playEmote,
     showChatBubble,
+    showMemberChatBubble,
     greetForkbot,
+    exciteForkbot,
     updateRewardPool,
     playRewardEvent,
     setPaused,
