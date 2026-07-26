@@ -7560,16 +7560,12 @@ export function createWorldScene({
   }
 
   function zoomFogMultiplier() {
-    // At the strategic overview distance, atmospheric fog would wash the
-    // whole world into a pale blur. Preserve local depth, but make the far
-    // view readable across the bounded overview range.
-    const normalized = clamp(
-      (cameraZoom - 1) / Math.max(0.001, CAMERA_ZOOM_MAX - 1),
-      0,
-      1,
-    );
-    if (normalized >= 0.45) return 0;
-    return 1 - normalized / 0.45;
+    // Exponential fog attenuates with camera distance, so any nonzero
+    // density reads as a pale haze once the camera pulls back past the
+    // default distance. Keep fog for close-up depth only and cut it fast so
+    // zoomed-out views stay full color and crisp.
+    if (cameraZoom <= 1) return 1;
+    return clamp(1 - (cameraZoom - 1) / 0.25, 0, 1);
   }
 
   function setLightLevel(value) {
