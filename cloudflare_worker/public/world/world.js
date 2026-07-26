@@ -3804,6 +3804,10 @@ class ForkMeshWorld extends HTMLElement {
         return;
       }
     }
+    // No live peer with that name: a member talking from the website while
+    // their avatar sits on its campfire bench gets the bubble over the
+    // seated figure instead (world-scene showMemberChatBubble).
+    this.world?.showMemberChatBubble?.(sender, text);
   };
 
   // ForkBot walks over and welcomes a visitor the first time this browser

@@ -11799,7 +11799,8 @@ export function createWorldScene({
         ? player
         : peerId === FORKBOT_PEER_ID
           ? forkbot
-          : remotePlayers.get(String(peerId || ""));
+          : remotePlayers.get(String(peerId || "")) ||
+            loungeMembers.get(String(peerId || ""));
     if (!avatar) return false;
     // One bubble per speaker: a rapid follow-up message replaces the first
     // instead of stacking on top of it.
@@ -11839,6 +11840,26 @@ export function createWorldScene({
       fadeStart: 0.75,
     });
     return true;
+  }
+
+  // A registered member who is not in the world as a live peer still sits on
+  // their own campfire bench (updateMemberLounge), so a chat line from them
+  // floats over the seated figure's head instead of going nowhere.
+  function showMemberChatBubble(name, text) {
+    const wanted = String(name || "").trim().toLowerCase();
+    if (!wanted) return false;
+    if (loungeMembers.has(`member:${wanted}`)) {
+      return showChatBubble(`member:${wanted}`, text);
+    }
+    // The public room truncates asserted names to 16 characters, so a
+    // truncated sender may only be a prefix of the seated member's name.
+    if (wanted.length < 16) return false;
+    for (const id of loungeMembers.keys()) {
+      if (id.slice("member:".length).startsWith(wanted)) {
+        return showChatBubble(id, text);
+      }
+    }
+    return false;
   }
 
   // Repaints the fountain's treasury board with the public pool address QR
@@ -13361,6 +13382,7 @@ export function createWorldScene({
     setLayoutEditor,
     playEmote,
     showChatBubble,
+    showMemberChatBubble,
     greetForkbot,
     updateRewardPool,
     playRewardEvent,
