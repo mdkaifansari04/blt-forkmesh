@@ -7206,10 +7206,16 @@ class ForkMeshWorld extends HTMLElement {
             day: "2-digit",
           })
         : "—",
+      note: account.note,
+      fields: account.fields.map((field) => ({
+        name: field.name,
+        value: field.value,
+        verified: field.verified,
+      })),
       toots: this.mastodonStatuses.map((status) => {
         const marker = [
-          status.pinned ? "📌" : "",
-          status.boostedFrom ? `🔁 @${status.boostedFrom}` : "",
+          status.pinned ? "📌 PINNED" : "",
+          status.boostedFrom ? `🔁 BOOSTED FROM @${status.boostedFrom}` : "",
           status.spoiler ? `⚠ ${status.spoiler}` : "",
         ]
           .filter(Boolean)
@@ -7219,6 +7225,7 @@ class ForkMeshWorld extends HTMLElement {
           (status.images.length ? "(image attachment)" : "Open toot");
         return {
           author: status.authorName,
+          acct: status.authorAcct ? `@${status.authorAcct}` : "",
           url: status.url,
           date: status.createdAt
             ? new Date(status.createdAt).toLocaleDateString([], {
@@ -7227,8 +7234,12 @@ class ForkMeshWorld extends HTMLElement {
                 day: "numeric",
               })
             : "",
-          text: marker ? `${marker} — ${body}` : body,
+          marker,
+          text: body,
           images: status.images.map((media) => media.url).filter(Boolean),
+          replies: formatMastodonCount(status.repliesCount),
+          boosts: formatMastodonCount(status.reblogsCount),
+          stars: formatMastodonCount(status.favouritesCount),
         };
       }),
       replies: this.mastodonReplies.map((reply) => ({

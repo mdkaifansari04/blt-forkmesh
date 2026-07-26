@@ -4507,16 +4507,17 @@ function worldBulletinTexture(THREE, events = [], offset = 0) {
   });
 }
 
-// Two posts at a time, but each card is tall enough for the full text plus the
-// post's image attachments. The board is repainted from the same snapshot the
-// mini-app renders.
-const MASTODON_KIOSK_VISIBLE_TOOTS = 2;
-const MASTODON_KIOSK_VISIBLE_REPLIES = 3;
-// Vertical pitch of one toot card. Tightened from 556 so the replies strip
-// fits under the two cards without pushing the footer off the board.
-const MASTODON_KIOSK_TOOT_PITCH = 470;
+// Three posts at a time on a board twice as tall as the old one, so each card
+// holds the full text, a deep image strip, and the post's engagement counts.
+// The board is repainted from the same snapshot the mini-app renders.
+const MASTODON_KIOSK_VISIBLE_TOOTS = 3;
+const MASTODON_KIOSK_VISIBLE_REPLIES = 5;
+// Vertical pitch of one toot card, and the top of the first card. The extra
+// height over the old 470 all goes to the attachment strip.
+const MASTODON_KIOSK_TOOT_PITCH = 720;
+const MASTODON_KIOSK_TOOT_TOP = 1390;
 const MASTODON_KIOSK_WIDTH = 1536;
-const MASTODON_KIOSK_HEIGHT = 2048;
+const MASTODON_KIOSK_HEIGHT = 4096;
 const MASTODON_KIOSK_REFRESH_MS = 10 * 60 * 1000;
 
 // Shared by the board texture and the "open in a new tab" buttons so both
@@ -4595,7 +4596,9 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
       [
         "LIVE PUBLIC PROFILE",
         "FOLLOWERS · FOLLOWING · POSTS",
+        "BIO AND VERIFIED PROFILE LINKS",
         "FULL POSTS WITH IMAGES",
+        "STARS · BOOSTS · REPLY COUNTS",
         "REPLIES WITH AUTHOR ICONS",
         "REFRESHED EVERY 10 MINUTES",
       ].forEach((line, index) => {
@@ -4603,13 +4606,13 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
       });
       context.fillStyle = "#8b9bf4";
       context.font = '800 68px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("TAP / CLICK TO OPEN", 96, 1740);
+      context.fillText("TAP / CLICK TO OPEN", 96, 3860);
       context.fillStyle = "#7a7ca8";
       context.font = '600 44px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("READ-ONLY · FETCHED FROM MASTODON.SOCIAL", 96, 1892);
+      context.fillText("READ-ONLY · FETCHED FROM MASTODON.SOCIAL", 96, 4012);
       context.strokeStyle = "#6364ff";
       context.lineWidth = 16;
-      context.strokeRect(12, 12, 1512, 2024);
+      context.strokeRect(12, 12, 1512, 4072);
       return;
     }
     const image = (url) =>
@@ -4619,56 +4622,56 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
     const header = image(snapshot.headerURL);
     context.save();
     context.beginPath();
-    context.rect(16, 16, 1504, 360);
+    context.rect(16, 16, 1504, 560);
     context.clip();
     if (header?.naturalWidth > 0 && header?.naturalHeight > 0) {
       const scale = Math.max(
         1504 / header.naturalWidth,
-        360 / header.naturalHeight,
+        560 / header.naturalHeight,
       );
       const width = header.naturalWidth * scale;
       const height = header.naturalHeight * scale;
       context.drawImage(
         header,
         16 + (1504 - width) / 2,
-        16 + (360 - height) / 2,
+        16 + (560 - height) / 2,
         width,
         height,
       );
     } else {
       context.fillStyle = "#43389c";
-      context.fillRect(16, 16, 1504, 360);
+      context.fillRect(16, 16, 1504, 560);
     }
-    const shade = context.createLinearGradient(0, 120, 0, 376);
+    const shade = context.createLinearGradient(0, 300, 0, 576);
     shade.addColorStop(0, "rgba(15,16,36,0)");
     shade.addColorStop(1, "rgba(15,16,36,0.9)");
     context.fillStyle = shade;
-    context.fillRect(16, 16, 1504, 360);
+    context.fillRect(16, 16, 1504, 560);
     context.restore();
     // Avatar overlapping the banner edge, then identity beside it.
     const avatar = image(snapshot.avatarURL);
     context.fillStyle = "#191a2e";
-    roundedRect(context, 40, 276, 208, 208, 44);
+    roundedRect(context, 40, 476, 208, 208, 44);
     context.fill();
     context.save();
-    roundedRect(context, 52, 288, 184, 184, 36);
+    roundedRect(context, 52, 488, 184, 184, 36);
     context.clip();
     if (avatar?.naturalWidth > 0) {
-      context.drawImage(avatar, 52, 288, 184, 184);
+      context.drawImage(avatar, 52, 488, 184, 184);
     } else {
       context.fillStyle = "#43389c";
-      context.fillRect(52, 288, 184, 184);
+      context.fillRect(52, 488, 184, 184);
       context.fillStyle = "#c8c9ff";
       context.font = '800 112px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("@", 100, 418);
+      context.fillText("@", 100, 618);
     }
     context.restore();
     context.fillStyle = "#f2f3ff";
     context.font = '800 64px "ForkMesh Favorit", sans-serif';
-    context.fillText(String(snapshot.displayName || "ForkMesh"), 280, 452);
+    context.fillText(String(snapshot.displayName || "ForkMesh"), 280, 652);
     context.fillStyle = "#c8c9ff";
     context.font = '600 38px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(String(snapshot.acct || "@forkmesh@mastodon.social"), 280, 510);
+    context.fillText(String(snapshot.acct || "@forkmesh@mastodon.social"), 280, 710);
     [
       ["FOLLOWERS", snapshot.followers],
       ["FOLLOWING", snapshot.following],
@@ -4678,20 +4681,49 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
       const x = 56 + index * 366;
       context.fillStyle = "#8b8db8";
       context.font = '700 28px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(label, x, 584);
+      context.fillText(label, x, 790);
       context.fillStyle = "#f2f3ff";
       context.font = '800 58px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(String(value ?? "—"), x, 652);
+      context.fillText(String(value ?? "—"), x, 858);
+    });
+    // Bio, then the profile's own link fields with their verification ticks —
+    // the same block the mini-app prints under the stats.
+    context.fillStyle = "#c8c9ff";
+    context.font = '600 34px "ForkMesh Mono", ui-monospace, monospace';
+    wrapCanvasText(context, snapshot.note, 56, 930, 1424, 46, 4);
+    const fields = (Array.isArray(snapshot.fields) ? snapshot.fields : [])
+      .filter(Boolean)
+      .slice(0, 4);
+    fields.forEach((field, index) => {
+      const y = 1120 + index * 52;
+      context.fillStyle = "#8b8db8";
+      context.font = '700 28px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        clipCanvasText(context, String(field.name || "").toUpperCase(), 320),
+        56,
+        y,
+      );
+      context.fillStyle = field.verified ? "#9ef7c6" : "#e8e9ff";
+      context.font = '600 30px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        clipCanvasText(
+          context,
+          `${field.value || ""}${field.verified ? " ✓" : ""}`,
+          1024,
+        ),
+        420,
+        y,
+      );
     });
     context.strokeStyle = "rgba(99,100,255,0.5)";
     context.lineWidth = 4;
     context.beginPath();
-    context.moveTo(56, 700);
-    context.lineTo(1480, 700);
+    context.moveTo(56, 1290);
+    context.lineTo(1480, 1290);
     context.stroke();
     context.fillStyle = "#8b9bf4";
     context.font = '800 38px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("LATEST TOOTS", 56, 760);
+    context.fillText("LATEST TOOTS", 56, 1340);
     const toots = Array.isArray(snapshot.toots) ? snapshot.toots : [];
     const start = clamp(
       Number(offset) || 0,
@@ -4708,7 +4740,7 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
           toots.length,
         )} / ${toots.length} · SCROLL ▲▼`,
         1480,
-        758,
+        1340,
       );
       context.textAlign = "left";
     }
@@ -4716,10 +4748,10 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
     if (!entries.length) {
       context.fillStyle = "#c8c9ff";
       context.font = '600 40px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("NO PUBLIC TOOTS YET", 56, 860);
+      context.fillText("NO PUBLIC TOOTS YET", 56, 1450);
     }
     entries.forEach((toot, index) => {
-      const top = 800 + index * MASTODON_KIOSK_TOOT_PITCH;
+      const top = MASTODON_KIOSK_TOOT_TOP + index * MASTODON_KIOSK_TOOT_PITCH;
       const images = (Array.isArray(toot.images) ? toot.images : [])
         .map((url) => String(url || ""))
         .filter(Boolean)
@@ -4727,33 +4759,43 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
       context.fillStyle = "#c8c9ff";
       context.font = '700 32px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(
-        [toot.author, toot.date].filter(Boolean).join(" · "),
+        clipCanvasText(
+          context,
+          [toot.author, toot.acct, toot.date].filter(Boolean).join(" · "),
+          1424,
+        ),
         56,
         top + 36,
       );
+      // Pinned / boosted / content-warning markers get their own highlighted
+      // line above the body instead of being folded into the text.
+      const marker = String(toot.marker || "").trim();
+      if (marker) {
+        context.fillStyle = "#ffd257";
+        context.font = '700 30px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText(clipCanvasText(context, marker, 1424), 56, top + 82);
+      }
       context.fillStyle = "#e8e9ff";
       context.font = '600 34px "ForkMesh Mono", ui-monospace, monospace';
       // The full post text runs until it hits the card's image strip; posts
       // longer than the card still end at a whole line rather than mid-word.
-      // Cards with attachments give the text two tighter lines so the taller
-      // image strip below still clears the bottom of the card.
       wrapCanvasText(
         context,
         toot.text,
         56,
-        images.length ? top + 78 : top + 100,
+        marker ? top + 134 : top + 92,
         1424,
-        images.length ? 40 : 46,
-        images.length ? 2 : 6,
+        46,
+        images.length ? (marker ? 3 : 4) : marker ? 10 : 11,
       );
       if (images.length) {
         // Attachments below the text, cover-cropped into tiles that divide the
-        // full card width at double the old height. Tiles that have not loaded
-        // CORS-clean stay as empty plates.
+        // full card width. Tiles that have not loaded CORS-clean stay as empty
+        // plates.
         const gap = 18;
-        const height = 300;
+        const height = 360;
         const width = (1424 - gap * (images.length - 1)) / images.length;
-        const y = top + 126;
+        const y = top + 296;
         images.forEach((url, position) => {
           const x = 56 + position * (width + gap);
           context.save();
@@ -4782,14 +4824,27 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
           context.restore();
         });
       }
+      // Engagement counts sit on the card's bottom rule: stars, boosts, and
+      // how many people replied to that post.
+      context.fillStyle = "#8b9bf4";
+      context.font = '700 30px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        [
+          `⭐ ${toot.stars ?? 0} STARS`,
+          `🔁 ${toot.boosts ?? 0} BOOSTS`,
+          `💬 ${toot.replies ?? 0} REPLIES`,
+        ].join("   ·   "),
+        56,
+        top + 692,
+      );
       // Rule between the cards only: the last card runs straight into the
-      // replies strip so the taller image tiles keep their clearance.
+      // replies strip so the tall image tiles keep their clearance.
       if (index < entries.length - 1) {
         context.strokeStyle = "rgba(99,100,255,0.28)";
         context.lineWidth = 3;
         context.beginPath();
-        context.moveTo(56, top + 450);
-        context.lineTo(1480, top + 450);
+        context.moveTo(56, top + 706);
+        context.lineTo(1480, top + 706);
         context.stroke();
       }
     });
@@ -4801,26 +4856,26 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
       .slice(0, MASTODON_KIOSK_VISIBLE_REPLIES);
     context.fillStyle = "#8b9bf4";
     context.font = '800 38px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("REPLIES", 56, 1750);
+    context.fillText("REPLIES", 56, 3560);
     if (!replies.length) {
       context.fillStyle = "#7a7ca8";
       context.font = '600 32px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("NO PUBLIC REPLIES YET", 56, 1812);
+      context.fillText("NO PUBLIC REPLIES YET", 56, 3622);
     }
     replies.forEach((reply, index) => {
-      const top = 1764 + index * 58;
+      const top = 3596 + index * 78;
       const icon = image(reply.avatar);
       context.save();
-      roundedRect(context, 56, top, 50, 50, 14);
+      roundedRect(context, 56, top, 60, 60, 16);
       context.clip();
       if (icon?.naturalWidth > 0) {
-        context.drawImage(icon, 56, top, 50, 50);
+        context.drawImage(icon, 56, top, 60, 60);
       } else {
         context.fillStyle = "#43389c";
-        context.fillRect(56, top, 50, 50);
+        context.fillRect(56, top, 60, 60);
         context.fillStyle = "#c8c9ff";
-        context.font = '800 34px "ForkMesh Mono", ui-monospace, monospace';
-        context.fillText("@", 68, top + 38);
+        context.font = '800 40px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("@", 68, top + 46);
       }
       context.restore();
       context.fillStyle = "#c8c9ff";
@@ -4829,24 +4884,24 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
         .map((part) => String(part || "").trim())
         .filter(Boolean)
         .join(" · ");
-      context.fillText(clipCanvasText(context, who, 1344), 128, top + 20);
+      context.fillText(clipCanvasText(context, who, 1344), 138, top + 24);
       context.fillStyle = "#e8e9ff";
       context.font = '600 30px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(clipCanvasText(context, reply.text, 1344), 128, top + 50);
+      context.fillText(clipCanvasText(context, reply.text, 1344), 138, top + 58);
     });
     context.fillStyle = "#8b9bf4";
     context.font = '800 38px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("TAP / CLICK TO OPEN THE FULL PROFILE", 56, 1980);
+    context.fillText("TAP / CLICK TO OPEN THE FULL PROFILE", 56, 4028);
     context.fillStyle = "#7a7ca8";
     context.font = '600 28px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(
       "LIVE · READ-ONLY · REFRESHED EVERY 10 MINUTES FROM MASTODON.SOCIAL",
       56,
-      2020,
+      4068,
     );
     context.strokeStyle = "#6364ff";
     context.lineWidth = 16;
-    context.strokeRect(12, 12, 1512, 2024);
+    context.strokeRect(12, 12, 1512, 4072);
   });
 }
 
@@ -4909,22 +4964,23 @@ function createMastodonKiosk(THREE, interactive) {
     makeMaterial(THREE, "#2c2d4d", { metalness: 0.4, roughness: 0.5 }),
   );
   post.position.y = 1.3;
-  // A larger billboard so the live profile header, stats, and the full text
-  // and images of the latest toots are readable from the Office approach.
+  // A billboard twice as tall as the old one: the same 0.75-wide stand now
+  // carries the live profile header, bio, stats, three full toot cards with
+  // deep image strips, and the replies strip without crowding any of them.
   const frame = new THREE.Mesh(
-    new THREE.BoxGeometry(7.9, 10.4, 0.36),
+    new THREE.BoxGeometry(7.9, 20.0, 0.36),
     makeMaterial(THREE, "#43389c", { metalness: 0.35, roughness: 0.45 }),
   );
-  frame.position.y = 6.95;
+  frame.position.y = 11.75;
   const face = new THREE.Mesh(
-    new THREE.PlaneGeometry(7.2, 9.6),
+    new THREE.PlaneGeometry(7.2, 19.2),
     new THREE.MeshBasicMaterial({
       map: mastodonKioskTexture(THREE),
       toneMapped: false,
     }),
   );
   face.name = "forkmesh-mastodon-kiosk-face";
-  face.position.set(0, 6.95, 0.2);
+  face.position.set(0, 11.75, 0.2);
   // Sits on the stand under the board, off the artwork entirely, so the board
   // itself is all profile and posts. Wide and short: it reads a MM:SS clock,
   // not a dial.
@@ -4991,12 +5047,14 @@ function createMastodonKiosk(THREE, interactive) {
     button.visible = false;
     return button;
   };
-  // One button beside the profile identity, one beside each of the two
+  // One button beside the profile identity, one beside each of the three
   // visible toot cards, each opening that item's mastodon.social page in a
-  // new tab instead of the in-app board.
-  const openProfile = makeOpenButton("profile", 3.25, 9.55);
-  const openToot0 = makeOpenButton("toot-0", 3.25, 6.9);
-  const openToot1 = makeOpenButton("toot-1", 3.25, 4.7);
+  // new tab instead of the in-app board. The heights track the card headings
+  // on the taller board.
+  const openProfile = makeOpenButton("profile", 3.25, 18.3);
+  const openToot0 = makeOpenButton("toot-0", 3.25, 14.65);
+  const openToot1 = makeOpenButton("toot-1", 3.25, 11.3);
+  const openToot2 = makeOpenButton("toot-2", 3.25, 7.9);
   group.add(
     base,
     post,
@@ -5008,6 +5066,7 @@ function createMastodonKiosk(THREE, interactive) {
     openProfile,
     openToot0,
     openToot1,
+    openToot2,
   );
   group.traverse((child) => {
     if (!child.isMesh) return;
@@ -7307,6 +7366,7 @@ export function createWorldScene({
     );
     setMastodonOpenButton("toot-0", visibleToots[0]?.url);
     setMastodonOpenButton("toot-1", visibleToots[1]?.url);
+    setMastodonOpenButton("toot-2", visibleToots[2]?.url);
     return true;
   }
 
@@ -7340,7 +7400,7 @@ export function createWorldScene({
   }
 
   // The dial is its own small texture: a one-second countdown tick must not
-  // rebuild the 1536×2048 board texture.
+  // rebuild the 1536×4096 board texture.
   function repaintMastodonCountdown() {
     const dial = mastodonKiosk.getObjectByName(
       "forkmesh-mastodon-kiosk-countdown",
