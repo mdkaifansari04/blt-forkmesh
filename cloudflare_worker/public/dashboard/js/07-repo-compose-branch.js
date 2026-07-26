@@ -800,7 +800,7 @@
         </div>`;
   }
 
-  function renderMirrorRow(mirror, servedBy) {
+  function renderMirrorRow(mirror, servedBy, refMirror) {
     const online = mirror.status === "online";
     const isServing = online && mirrorRowIsServing(mirror, servedBy);
     const rowClass = isServing
@@ -811,11 +811,17 @@
     const version = rawVersion
       ? (rawVersion[0].toLowerCase() === "v" ? rawVersion : `v${rawVersion}`)
       : "";
+    const isSource = Boolean(refMirror && mirror === refMirror);
+    const integrityRejected = mirror.integrity === "rejected";
     return `
         <div class="${rowClass}">
           <i data-lucide="${online ? "radio" : "circle"}" class="mt-0.5 h-4 w-4 ${online ? "text-primary" : "text-muted-foreground"}"></i>
           <span class="min-w-0">
-            <span class="block min-w-0 truncate text-foreground font-mono">${escapeHtml(mirror.owner || mirror.node || mirror.name || "mirror")}</span>
+            <span class="flex min-w-0 flex-wrap items-center gap-1.5">
+              <span class="min-w-0 truncate text-foreground font-mono">${escapeHtml(mirror.owner || mirror.node || mirror.name || "mirror")}</span>
+              ${isSource ? '<span class="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">source of truth</span>' : ""}
+              ${integrityRejected ? '<span class="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">failing integrity pin</span>' : ""}
+            </span>
             ${version ? `<span class="mt-0.5 block min-w-0 truncate text-[10px] text-muted-foreground font-mono">${escapeHtml(version)}</span>` : ""}
           </span>
           <span class="flex shrink-0 items-center gap-2 text-xs font-mono ${online ? "text-primary" : "text-muted-foreground"}">
@@ -827,13 +833,16 @@
 
   // The "Live mirror" summary in the About aside gets its own compact list of
   // every mirror currently online for this repo (the full tab-level list
-  // lives under the Mirrors tab and includes offline ones too).
+  // lives under the Mirrors tab and includes offline ones too). It shares the
+  // same source-of-truth / integrity-pin badges as the Mirrors tab so the
+  // canonical node and any signature failure are visible without switching tabs.
   function renderRepoLiveMirrorList(mirrors, servedBy) {
     const container = $("[data-repo-live-mirror-list]");
     if (!container) return;
     const online = mirrors.filter((mirror) => mirror.status === "online");
+    const refMirror = pickReferenceMirror(mirrors);
     container.innerHTML = online.length
-      ? online.map((mirror) => renderMirrorRow(mirror, servedBy)).join("")
+      ? online.map((mirror) => renderMirrorRow(mirror, servedBy, refMirror)).join("")
       : '<div class="border-t border-border px-3 py-2 text-xs text-muted-foreground">No mirrors online right now.</div>';
   }
 
