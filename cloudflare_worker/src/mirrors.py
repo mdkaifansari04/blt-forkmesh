@@ -307,9 +307,21 @@ def build_repo_mirrors_payload(
         rec = row["data"]
         key = row.get("key_bi")
         seen = _mirror_ms((presence or {}).get(key))
-        online = bool(seen and now - seen <= stale_ms)
         hosted = _mirror_ms(rec.get("hostedSince")) or _mirror_ms((first_hosted or {}).get(key))
         last_sync = _mirror_ms(rec.get("lastSync"))
+        # Public byte serving no longer keeps the legacy host WebSocket open.
+        # A source-of-truth desktop still signs and publishes its local-node
+        # catalog while it is alive, so that fresh publication is its bounded
+        # liveness lease. Remote clones keep using independently challenged
+        # endpoint presence and cannot self-declare online this way.
+        local_publication_seen = (
+            last_sync
+            if str(rec.get("source") or "local-node") == "local-node"
+            else None
+        )
+        effective_seen = seen or local_publication_seen
+        online = bool(
+            effective_seen and now - effective_seen <= stale_ms)
         try:
             size_bytes = max(0, int(rec.get("sizeBytes") or 0))
         except (TypeError, ValueError):
@@ -414,7 +426,7 @@ def build_repo_mirrors_payload(
             "machineName": str(rec.get("machineName") or "").strip(),
             "repo": str(rec.get("name") or "").strip(),
             "status": "online" if online else "offline",
-            "lastSeen": seen if online else None,
+            "lastSeen": effective_seen if online else None,
             "hostedSince": hosted,
             "syncAgeMs": max(0, now - last_sync) if last_sync else None,
             "lastSync": last_sync,
@@ -461,7 +473,7 @@ def build_repo_mirrors_payload(
             "diskTotalBytes": disk_total,
             "integrity": integrity,
             "activity": activity,
-            "activityUpdatedAt": seen or last_sync,
+            "activityUpdatedAt": effective_seen or last_sync,
         })
 
     mirrors.sort(
