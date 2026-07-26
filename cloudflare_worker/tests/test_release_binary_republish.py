@@ -305,3 +305,21 @@ def test_release_workflow_requires_committed_version_and_verifies_binary():
     assert '--tag "${FORKMESH_TAG:-}"' not in workflow
     assert "Sync the version header to the release tag" not in workflow
     assert "sed -i.bak" not in workflow
+
+
+def test_release_build_parallelism_follows_the_sandbox_budget():
+    """The Actions cgroup, not the host, decides how many compilers fit.
+
+    `nproc` inside the sandbox reports every host core: oversubscribing the CPU
+    quota ran the build into the step deadline (every release after v0.7.0 was
+    SIGTERMed mid-compile), and one g++ per host core can exceed MemoryMax.
+    """
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert 'jobs="${FORKMESH_ACTIONS_CPUS:-}"' in workflow
+    assert 'mem_mb="${FORKMESH_ACTIONS_MEMORY_MB:-0}"' in workflow
+    assert "mem_jobs=$((mem_mb / 1024))" in workflow
+    assert '[ "$jobs" -gt "$mem_jobs" ] && jobs="$mem_jobs"' in workflow
+    assert workflow.index('jobs="${FORKMESH_ACTIONS_CPUS:-}"') < workflow.index(
+        'cmake --build qt_client/build-release -j"$jobs"'
+    )
