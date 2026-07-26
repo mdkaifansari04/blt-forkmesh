@@ -8340,11 +8340,19 @@ async def catalog_handler(env, request):
             env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
         exists = prior_row is not None
         prior_commit = ""
+        prior_state_hash = ""
         # Reject rollbacks: a replayed older record must not be able to repin an
         # earlier (validly-signed) repo state and downgrade the served refs.
         if exists:
             prior = await decrypt_row(env, prior_row["data"]) or {}
             prior_commit = clean_string(prior.get("commit", ""), 64)
+            candidate_prior_state = clean_string(
+                prior.get("stateHash", ""), 64).strip().lower()
+            if (
+                    (prior.get("source") or "local-node") == "local-node"
+                    and re.fullmatch(
+                        r"[0-9a-f]{64}", candidate_prior_state)):
+                prior_state_hash = candidate_prior_state
             try:
                 if int(record["updatedAt"]) < int(prior.get("updatedAt", 0) or 0):
                     return json_response({"error": "stale_update"}, status=409)
@@ -8384,13 +8392,28 @@ async def catalog_handler(env, request):
         # must never fail the publish itself.
         if state_hash and record.get("source") == "local-node":
             try:
-                await d1_run(
-                    env,
-                    "INSERT INTO repo_state_history (key_bi, state_hash, ts) "
-                    "VALUES (?,?,?) ON CONFLICT(key_bi, state_hash) "
-                    "DO UPDATE SET ts=excluded.ts",
-                    key_bi, state_hash.strip().lower(), int(Date.now()),
-                )
+                # Preserve the state being replaced explicitly. Older releases
+                # wrote history best-effort after replacing the catalog row, so
+                # an upgraded repository can otherwise lose its only
+                # last-known-good handoff pin on the first new publication.
+                # The previous record was already owner-signature-verified when
+                # accepted; remote-clone self-pins never enter this path.
+                history_states = [
+                    digest for digest in (
+                        prior_state_hash,
+                        state_hash.strip().lower(),
+                    )
+                    if digest
+                ]
+                for digest in dict.fromkeys(history_states):
+                    await d1_run(
+                        env,
+                        "INSERT INTO repo_state_history "
+                        "(key_bi, state_hash, ts) VALUES (?,?,?) "
+                        "ON CONFLICT(key_bi, state_hash) "
+                        "DO UPDATE SET ts=excluded.ts",
+                        key_bi, digest, int(Date.now()),
+                    )
                 await d1_run(
                     env,
                     "DELETE FROM repo_state_history WHERE key_bi=? "
@@ -8613,7 +8636,49 @@ def _native_repository_logo_record(record, owner, repo):
         "metadata": metadata,
         # Missing or malformed visibility stays private/fail-closed.
         "isPrivate": source.get("visibility") != "public",
+        "commit": clean_string(source.get("commit", ""), 64).lower(),
     }
+
+
+def _committed_repository_logo_url(record, owner, repo):
+    """Return the immutable raw URL for a conventional root project logo."""
+    source = record if isinstance(record, dict) else {}
+    if source.get("isPrivate", source.get("visibility") != "public"):
+        return ""
+    commit = clean_string(source.get("commit", ""), 64).strip().lower()
+    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit):
+        return ""
+    metadata = source.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = source.get("logoMetadata")
+    file_structure = (
+        metadata.get("fileStructure")
+        if isinstance(metadata, dict) else None
+    )
+    if not isinstance(file_structure, list):
+        return ""
+    files = {
+        str(path or "").strip().lower(): str(path or "").strip()
+        for path in file_structure
+        if (
+            isinstance(path, str)
+            and "/" not in path.strip().rstrip("/")
+        )
+    }
+    path = next(
+        (
+            files[name]
+            for name in ("logo.png", "logo.webp", "logo.jpg", "logo.jpeg")
+            if name in files
+        ),
+        "",
+    )
+    if not path:
+        return ""
+    return (
+        "/api/repo/%s/%s/raw?path=%s&ref=%s"
+        % (quote(owner), quote(repo), quote(path), quote(commit))
+    )
 
 
 async def _native_repository_logo_context(env, request, owner, repo):
@@ -8647,12 +8712,28 @@ async def native_repository_logo_handler(
     if not suggestions:
         if method_name(request) != "GET":
             return json_response({"error": "method_not_allowed"}, status=405)
+        committed_logo_url = _committed_repository_logo_url(
+            record, owner, repo)
         params = parse_qs(urlparse(request.url).query)
         if params.get("image", [""])[0] == "1":
+            if committed_logo_url:
+                return Response("", status=302, headers={
+                    "location": committed_logo_url,
+                    "cache-control": "public, max-age=300",
+                })
             logo = await service._official_logo(env, repository_id)
             logo = logo or repository_import.deterministic_logo(record)
             return _repository_logo_image_response(
                 logo, public=not bool(record.get("isPrivate")))
+        if committed_logo_url:
+            return json_response({
+                "ok": True,
+                "repositoryId": repository_id,
+                "logo": {
+                    "dataUrl": committed_logo_url,
+                    "source": "repository",
+                },
+            }, cache_control="no-store")
         response = await service.logo_for_record(env, repository_id, record)
         return response
 
@@ -8775,7 +8856,12 @@ async def _repo_about_public(env, request, owner, repo):
             logo_record)
         resolved_logo = approved_logo or generated_logo
     if not logo_url:
-        logo_url = str(resolved_logo.get("dataUrl") or "")
+        committed_logo_resolver = globals().get(
+            "_committed_repository_logo_url")
+        logo_url = (
+            committed_logo_resolver(rec, display_owner, repo)
+            if callable(committed_logo_resolver) else ""
+        ) or str(resolved_logo.get("dataUrl") or "")
     followers = 0
     followers_list = []
     fedi_enabled = await _ap_enabled(env)
@@ -31117,10 +31203,12 @@ async def _https_mirror_public_context(env, owner, repo):
             == "remote-clone"
         ):
             pins = set()
+            current_pins = set()
             target_state = clean_string(
                 target.get("stateHash", ""), 64).lower()
             if re.fullmatch(r"[0-9a-f]{64}", target_state):
                 pins.add(target_state)
+                current_pins.add(target_state)
             for state in history.get(
                     str(target_row.get("key_bi") or ""), []):
                 state = clean_string(state, 64).lower()
@@ -31130,12 +31218,24 @@ async def _https_mirror_public_context(env, owner, repo):
         else:
             pins = clone_state_pins(
                 target, target_row.get("key_bi"), members, history)
+            current_pins = set()
+            for row in members:
+                record = row.get("data") or {}
+                state = clean_string(
+                    record.get("stateHash", ""), 64).lower()
+                if (
+                    str(record.get("source") or "local-node")
+                    == "local-node"
+                    and re.fullmatch(r"[0-9a-f]{64}", state)
+                ):
+                    current_pins.add(state)
         # Direct routing never uses the legacy unpinned fail-open behavior. An
         # owner must publish an authenticated refs digest before a remote
         # endpoint can advertise or resolve that repository.
         if not pins:
             return None
         allowed = set()
+        current_nodes = set()
         source = None
         for row in members:
             record = row.get("data") or {}
@@ -31147,6 +31247,8 @@ async def _https_mirror_public_context(env, owner, repo):
             if pins and state not in pins:
                 continue
             allowed.add(node)
+            if state in current_pins:
+                current_nodes.add(node)
             if (
                 source is None
                 and str(record.get("source") or "local-node")
@@ -31169,6 +31271,10 @@ async def _https_mirror_public_context(env, owner, repo):
             "owner": canonical_owner,
             "repo": canonical_repo,
             "nodes": allowed,
+            # Ordinary reads prefer the newest source generation. Recent
+            # signed generations remain available strictly as failover while
+            # their nodes converge.
+            "currentNodes": current_nodes,
             "pins": set(pins),
             "repoBi": await blind_index(
                 env, canonical_owner + "/" + canonical_repo.lower()),
@@ -31214,6 +31320,17 @@ async def _https_mirror_candidates(env, context, preferred_region, sticky=""):
         preferred_region=preferred_region,
         cursor=int((cursor_row or {}).get("cursor") or 0),
     )
+    current_nodes = {
+        str(node or "").lower()
+        for node in context.get("currentNodes", set())
+    }
+    if current_nodes:
+        selected.sort(
+            key=lambda item: (
+                0 if str(item.get("node") or "").lower()
+                in current_nodes else 1
+            )
+        )
     sticky = str(sticky or "").lower()
     if sticky:
         selected.sort(key=lambda item: 0 if item["node"] == sticky else 1)

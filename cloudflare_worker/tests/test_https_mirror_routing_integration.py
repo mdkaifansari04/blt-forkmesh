@@ -857,12 +857,14 @@ def test_selection_is_public_group_scoped_fresh_integrity_and_abuse_gated():
     assert "visibility" in context
     assert "repo_mirror_same_group" in context
     assert "clone_state_pins" in context
+    assert '"currentNodes": current_nodes' in context
     assert "FROM org_repos" in context
     assert 'target.get("stateHash", "")' in context
     assert '"remote-clone"' in context
     assert "context[\"nodes\"]" in candidates
     assert "preferred_region" in candidates
     assert "select_endpoints" in candidates
+    assert 'context.get("currentNodes", set())' in candidates
     assert "ENDPOINT_STALE_MS" in edge
     assert "abuseBlocked" in edge
     assert "integrity" in edge

@@ -7,6 +7,7 @@ import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -69,6 +70,9 @@ def make_bare_repository(tmp_path):
         encoding="utf-8",
     )
     (source / "image.bin").write_bytes(b"\x00\x01\x02")
+    (source / "logo.png").write_bytes(
+        b"\x89PNG\r\n\x1a\n" + b"repository-owned-logo"
+    )
     run(["git", "add", "."], source)
     run(["git", "commit", "-m", "Initial files"], source)
     (source / "src" / "main.py").write_text(
@@ -791,6 +795,42 @@ def test_tree_blob_history_commit_branches_search_stats_and_sizes(application):
         payload = decode_json(response)
         assert payload["ok"] is True
         assert field in payload
+    tree = decode_json(
+        dispatch(
+            app,
+            "tree",
+            {},
+            request_id="tree_exact_commit_time",
+        )
+    )
+    assert re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}",
+        tree["latestCommit"]["date"],
+    )
+    assert all(
+        re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}",
+            commit["date"],
+        )
+        for commit in decode_json(
+            dispatch(
+                app,
+                "history",
+                {},
+                request_id="history_exact_commit_times",
+            )
+        )["commits"]
+    )
+    raw = dispatch(
+        app,
+        "raw",
+        {"path": "logo.png"},
+        request_id="raw_repository_logo",
+    )
+    assert raw.status == 200
+    assert raw.content_type == "image/png"
+    assert raw.stream is not None
+    assert raw.stream.content_type == "image/png"
     blob = decode_json(
         dispatch(
             app,
