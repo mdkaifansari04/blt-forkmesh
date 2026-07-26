@@ -8952,10 +8952,33 @@ async def repo_mirrors_handler(env, request, owner, repo):
             and await privacy_reader(env, owner, repo)):
         return json_response(
             {"error": "not_found"}, status=404, cache_control="no-store")
+    # The router internally rewrites an organization URL to its backing node.
+    # Recover the untouched public identity for response/cache presentation;
+    # backing node identity remains an authorization detail and must not turn
+    # /forkmesh/forkmesh into a user-owned /jett/forkmesh repository in UIs.
+    public_owner = str(owner or "").strip().lower()
+    public_repo = str(repo or "").strip().lower()
+    try:
+        original_match = REPO_API_PREFIX_RE.match(
+            urlparse(str(getattr(request, "url", "") or "")).path)
+        requested_owner = safe_segment(
+            original_match.group(1)) if original_match else ""
+        requested_repo = safe_segment(
+            original_match.group(2)) if original_match else ""
+        if (
+            requested_owner
+            and requested_repo == public_repo
+            and requested_owner != public_owner
+            and await _org_repo_node(
+                env, requested_owner, requested_repo) == public_owner
+        ):
+            public_owner = requested_owner
+    except Exception:
+        pass
     # Public, poll-heavy payload (repo page + desktop mirror panel): serve
     # from the edge for a few seconds so a burst of viewers costs one build.
     cache_key = ("https://forkmesh.internal/api/repo/%s/%s/mirrors"
-                 % (quote(str(owner or "")), quote(str(repo or ""))))
+                 % (quote(public_owner), quote(public_repo)))
     cached = await edge_cache_match(cache_key)
     if cached is not None:
         return cached
@@ -9036,6 +9059,8 @@ async def repo_mirrors_handler(env, request, owner, repo):
     )
     if payload is None:
         return json_response({"error": "not_found"}, status=404)
+    payload["owner"] = public_owner
+    payload["repo"] = public_repo
     # Owner column: a headless mirror's catalog record carries no ownerUser of
     # its own, but the node account may be claim-linked to a user (adhoc #53:
     # the node record's `owner` field names the linked user). Resolve that link
