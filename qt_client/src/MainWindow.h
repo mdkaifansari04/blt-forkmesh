@@ -1752,6 +1752,11 @@ private:
     // isn't retried forever; the guard clears once the conflict is gone.
     void maybeAutoFixAgentConflict(const AgentSession &session,
                                    const AgentDiffStat &stat);
+    // Stash the quick-add composer's provider/model/mode dropdowns onto the
+    // given session, so the next resume runs with what the user has selected
+    // right now. Shared by the follow-up path and the bare "add" (continue,
+    // nothing typed) path.
+    void applyComposerSelectionToAgentSession(int sessionId);
     // Steer m_selectedAgentSessionId with a follow-up message. Shared by the
     // agent detail composer's Send button and the footer quick-add's up-arrow
     // ("send to the visible agent") button.
@@ -5732,6 +5737,10 @@ private:
     // "owner/name" repos with an SSH mirror push in flight (pushToSshMirrorRemotes),
     // so overlapping sync completions can't stack pushes to the same gateway.
     QSet<QString> m_sshMirrorPushing;
+    // A sync can finish while that asynchronous push is still transferring.
+    // Remember it instead of dropping it: once every gateway attempt finishes,
+    // push the newest served snapshot again so moving refs converge exactly.
+    QSet<QString> m_sshMirrorPushPending;
     // Last push state computed for m_pushStateIndex, so updateRepoPushButton can
     // paint the "Sync" button instantly from cache (e.g. flip to "Syncing
     // changes…" the moment Sync is clicked) while a worker recomputes off-thread.
