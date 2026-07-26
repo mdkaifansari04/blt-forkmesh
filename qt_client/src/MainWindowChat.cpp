@@ -7712,7 +7712,8 @@ QWidget *MainWindow::buildHostsSection()
         "that host. Click Actions to enable its executor and optionally replace "
         "its device-local variables through a one-shot SSH stdin request; secret "
         "values are never saved by this controller. Click Logs to open a live "
-        "SSH tail for that host. "
+        "SSH tail for that host. Click Remove to drop a host from this list "
+        "without touching it \xE2\x80\x94 no SSH session is opened. "
         "Double-click a host instead to reload it into the form "
         "above for editing."));
     hostsHint->setObjectName("mutedLabel");
@@ -7830,6 +7831,30 @@ void MainWindow::refreshHostsTable()
             });
         });
         cellRow->addWidget(uninstallBtn);
+
+        // Per-row Remove button: drop this host from the saved list only. Unlike
+        // Uninstall, this opens no SSH session and changes nothing on the remote
+        // host \xe2\x80\x94 it just stops the app tracking it here (e.g. to clean
+        // up a host that was already reformatted/decommissioned elsewhere).
+        auto *removeBtn = new QPushButton(QStringLiteral("Remove"));
+        removeBtn->setCursor(Qt::PointingHandCursor);
+        setOcticon(removeBtn, "x", 12);
+        connect(removeBtn, &QPushButton::clicked, this, [this, i] {
+            const QString name =
+                m_hostsTable->item(i, 0) ? m_hostsTable->item(i, 0)->text() : QString();
+            const auto reply = QMessageBox::question(
+                this, QStringLiteral("Remove saved host"),
+                QString::fromUtf8(
+                    "Remove \"%1\" from this list? This only forgets it here "
+                    "\xE2\x80\x94 ForkMesh is NOT uninstalled from that host.")
+                    .arg(name),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+            if (reply != QMessageBox::Yes)
+                return;
+            QTimer::singleShot(0, this, [this, i] { forgetHostAtRow(i); });
+        });
+        cellRow->addWidget(removeBtn);
+
         auto *viewLogsBtn = new QPushButton(QStringLiteral("Logs"));
         viewLogsBtn->setCursor(Qt::PointingHandCursor);
         setOcticon(viewLogsBtn, "terminal", 12);
@@ -10604,6 +10629,32 @@ void MainWindow::rememberHost(const QString &name, const QString &ip,
     }
     forkmesh::control::saveSavedHosts(settings, kHostsSetting, hosts);
     refreshHostsTable();
+}
+
+void MainWindow::forgetHostAtRow(int row)
+{
+    if (!m_hostsTable || row < 0 || row >= m_hostsTable->rowCount())
+        return;
+    QSettings settings;
+    QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
+    if (row >= hosts.size())
+        return;
+    const QJsonObject removed = hosts.at(row).toObject();
+    hosts.removeAt(row);
+    const QString credentialKey = forkmesh::control::savedHostCredentialKey(
+        removed.value(QStringLiteral("name")).toString(),
+        removed.value(QStringLiteral("ip")).toString(),
+        removed.value(QStringLiteral("user")).toString());
+    QString oldPassword = m_hostSessionPasswords.take(credentialKey);
+    oldPassword.fill(QChar::Null);
+    forkmesh::control::saveSavedHosts(settings, kHostsSetting, hosts);
+    refreshHostsTable();
+    if (m_hostInstallStatus) {
+        m_hostInstallStatus->setText(QString::fromUtf8(
+            "Removed \"%1\" from the saved hosts list.")
+                .arg(removed.value(QStringLiteral("name")).toString()));
+    }
 }
 
 QString MainWindow::savedHostIdentityFile(const QString &name, const QString &ip,
