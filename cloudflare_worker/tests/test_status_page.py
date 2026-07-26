@@ -1029,6 +1029,7 @@ def test_installer_delivery_is_checked_every_ten_minutes_and_public():
     assert '"release.json", "release.json.sig", "SHASUMS256.txt"' in ENTRY_TEXT
     assert "releases/blob/sha256/" in ENTRY_TEXT
     assert "Cloudflare cannot execute Bash" in ENTRY_TEXT
+    assert "source-build fallback" in ENTRY_TEXT
 
 
 def test_status_page_renders_current_state_grid():

@@ -1820,11 +1820,11 @@ STATUS_SYSTEM_CHECKS = {
         "the root tree contains README.md, and the README body is readable."),
     "installer": (
         "Every 10 minutes, loads install.sh, asks the live install-source "
-        "selector for a reachable mirror, reads the signed release manifest, "
-        "checksum list and detached signature through that mirror, and confirms "
-        "the Linux x86_64 release blob is reachable by its SHA-256 URL. "
-        "Cloudflare cannot execute Bash, so this verifies the complete hosted "
-        "delivery chain rather than claiming the Worker ran the installer."),
+        "selector for a reachable mirror, and validates either the signed "
+        "Linux x86_64 prebuilt chain or the source-build fallback the installer "
+        "uses when no prebuilt is reachable. Cloudflare cannot execute Bash, so "
+        "this verifies its hosted inputs and fallback rather than claiming the "
+        "Worker ran the installer."),
     "git_hosting": (
         "Checks for at least one account-bound direct HTTPS endpoint with a "
         "signed, integrity-matching ForkMesh repository proof observed within "
@@ -2049,6 +2049,43 @@ async def _installer_delivery_probe(env):
     ):
         return False, "No reachable mirror is available to the installer"
 
+    async def source_fallback():
+        # `install.sh` deliberately falls back to a source build when a
+        # platform binary is unpublished or temporarily unavailable. Validate
+        # the essential build inputs through the same live mirror router so the
+        # status row tracks whether the documented one-liner still has a viable
+        # path, not whether its optional fast path is populated.
+        required = {
+            "qt_client/CMakeLists.txt": "project(ForkMesh",
+            "qt_client/src/main.cpp": "#include <QApplication>",
+        }
+        for path, marker in required.items():
+            response = await _routed_repository_read(
+                env,
+                "https://forkmesh.internal/api/repo/forkmesh/forkmesh/"
+                "blob?path=" + quote(path),
+                "blob",
+                bypass_cache=True,
+            )
+            status, raw = await response_text(response, 1024 * 1024)
+            try:
+                body = json.loads(raw)
+            except Exception:
+                body = {}
+            content = (
+                str(body.get("content") or "")
+                if isinstance(body, dict) else "")
+            if status != 200 or body.get("ok") is not True or marker not in content:
+                return False, "source-build input is unavailable: " + path
+        return True, ""
+
+    async def fallback_or_failure(prebuilt_reason):
+        fallback_ok, fallback_reason = await source_fallback()
+        if fallback_ok:
+            return True, ""
+        return False, (
+            prebuilt_reason + "; installer " + fallback_reason)
+
     release_files = {}
     for filename in (
             "release.json", "release.json.sig", "SHASUMS256.txt"):
@@ -2066,7 +2103,8 @@ async def _installer_delivery_probe(env):
             body = {}
         content = str(body.get("content") or "") if isinstance(body, dict) else ""
         if status != 200 or body.get("ok") is not True or not content:
-            return False, "Installer release metadata is unavailable: " + filename
+            return await fallback_or_failure(
+                "Installer release metadata is unavailable: " + filename)
         release_files[filename] = content
 
     try:
@@ -2087,7 +2125,8 @@ async def _installer_delivery_probe(env):
         or checksum_line not in release_files["SHASUMS256.txt"]
         or not release_files["release.json.sig"].strip()
     ):
-        return False, "Installer release metadata is incomplete or inconsistent"
+        return await fallback_or_failure(
+            "Installer release metadata is incomplete or inconsistent")
 
     release_response = await _routed_repository_read(
         env,
@@ -2098,7 +2137,8 @@ async def _installer_delivery_probe(env):
         bypass_cache=True,
     )
     if int(getattr(release_response, "status", 0) or 0) != 200:
-        return False, "Installer release binary is unreachable"
+        return await fallback_or_failure(
+            "Installer release binary is unreachable")
     return True, ""
 
 
