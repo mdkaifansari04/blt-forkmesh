@@ -167,49 +167,42 @@ const LOCAL_ENVIRONMENT_OVERLAYS = Object.freeze({
     tintStrength: 0.2,
     lightMultiplier: 0.76,
     exposureMultiplier: 0.88,
-    fogMultiplier: 1.22,
   },
   snow: {
     tint: "#dcece9",
     tintStrength: 0.22,
     lightMultiplier: 1.04,
     exposureMultiplier: 1.02,
-    fogMultiplier: 1.16,
   },
   winter: {
     tint: "#b9ccca",
     tintStrength: 0.27,
     lightMultiplier: 0.94,
     exposureMultiplier: 0.96,
-    fogMultiplier: 1.18,
   },
   cyberpunk: {
     tint: "#35104c",
     tintStrength: 0.34,
     lightMultiplier: 0.9,
     exposureMultiplier: 0.9,
-    fogMultiplier: 1.12,
   },
   "low-light": {
     tint: "#07110f",
     tintStrength: 0.18,
     lightMultiplier: 0.64,
     exposureMultiplier: 0.7,
-    fogMultiplier: 1.05,
   },
 });
 const DAYLIGHT_ENVIRONMENT = Object.freeze({
   // Keep the far overview visually continuous with the ground. The former
   // pale sky read as a hazy cover when the whole world was zoomed out.
   background: "#174434",
-  fog: "#9bc6b5",
   hemiSky: "#d8fff1",
   hemiGround: "#25493a",
   sun: "#fff0bd",
   sunPower: 3.7,
   hemiPower: 2.1,
   exposure: 1.12,
-  fogDensity: 0.0068,
 });
 const ACCOUNT_STATUS_ICONS = Object.freeze({
   Guest: "○",
@@ -6459,7 +6452,6 @@ export function createWorldScene({
   );
   const scene = new THREE.Scene();
   scene.background = new THREE.Color("#174434");
-  scene.fog = new THREE.FogExp2("#8ebaa8", 0.0085);
 
   const camera = new THREE.PerspectiveCamera(
     44,
@@ -7607,7 +7599,6 @@ export function createWorldScene({
   let focusedRepositoryKey = "";
   let cameraZoom = 1;
   let firstPersonZoom = 1;
-  let environmentFogDensity = 0.0085;
   let cameraYaw = Math.atan2(CAMERA_OFFSET[0], CAMERA_OFFSET[2]);
   let cameraPitch = Math.asin(CAMERA_OFFSET[1] / CAMERA_DISTANCE);
   let firstPersonPitch = 0;
@@ -7651,28 +7642,21 @@ export function createWorldScene({
   function updateWorldEnvironment() {
     const state = {
       background: new THREE.Color(DAYLIGHT_ENVIRONMENT.background),
-      fog: new THREE.Color(DAYLIGHT_ENVIRONMENT.fog),
       hemiSky: new THREE.Color(DAYLIGHT_ENVIRONMENT.hemiSky),
       hemiGround: new THREE.Color(DAYLIGHT_ENVIRONMENT.hemiGround),
       sun: new THREE.Color(DAYLIGHT_ENVIRONMENT.sun),
       sunPower: DAYLIGHT_ENVIRONMENT.sunPower,
       hemiPower: DAYLIGHT_ENVIRONMENT.hemiPower,
       exposure: DAYLIGHT_ENVIRONMENT.exposure,
-      fogDensity: DAYLIGHT_ENVIRONMENT.fogDensity,
     };
     const overlay = LOCAL_ENVIRONMENT_OVERLAYS[currentTheme];
     if (overlay) {
       const tint = new THREE.Color(overlay.tint);
       state.background.lerp(tint, overlay.tintStrength);
-      state.fog.lerp(tint, overlay.tintStrength * 0.72);
       state.hemiSky.lerp(tint, overlay.tintStrength * 0.42);
       state.sun.lerp(tint, overlay.tintStrength * 0.18);
     }
     scene.background.copy(state.background);
-    scene.fog.color.copy(state.fog);
-    environmentFogDensity =
-      state.fogDensity * (overlay?.fogMultiplier || 1);
-    scene.fog.density = environmentFogDensity * zoomFogMultiplier();
     const lightMultiplier = lightLevel / LIGHT_LEVEL_DEFAULT;
     hemisphere.color.copy(state.hemiSky);
     hemisphere.groundColor.copy(state.hemiGround);
@@ -7695,19 +7679,6 @@ export function createWorldScene({
     weather.rain.visible = currentTheme === "rain";
     weather.snow.visible = currentTheme === "snow" || currentTheme === "winter";
     updateWorldEnvironment();
-  }
-
-  function zoomFogMultiplier() {
-    // At the strategic overview distance, atmospheric fog would wash the
-    // whole world into a pale blur. Preserve local depth, but make the far
-    // view readable across the bounded overview range.
-    const normalized = clamp(
-      (cameraZoom - 1) / Math.max(0.001, CAMERA_ZOOM_MAX - 1),
-      0,
-      1,
-    );
-    if (normalized >= 0.45) return 0;
-    return 1 - normalized / 0.45;
   }
 
   function setLightLevel(value) {
@@ -8247,7 +8218,6 @@ export function createWorldScene({
     officeLobbyPlayer.visible = true;
     officeExitPending = false;
     scene.background.set("#0d1e19");
-    scene.fog.color.set("#0d1e19");
     return true;
   }
 
@@ -8614,7 +8584,7 @@ export function createWorldScene({
     setOfficeParticipants([]);
     officeBubbles.forEach((element) => element.remove());
     officeBubbles.clear();
-    // Re-apply the theme to restore the town background/fog the Office overrode.
+    // Re-apply the theme to restore the town background the Office overrode.
     // PR #47 called applyTheme(); main's equivalent is setTheme().
     setTheme(currentTheme);
     onMovement({
@@ -11962,7 +11932,8 @@ export function createWorldScene({
         ? player
         : peerId === FORKBOT_PEER_ID
           ? forkbot
-          : remotePlayers.get(String(peerId || ""));
+          : remotePlayers.get(String(peerId || "")) ||
+            loungeMembers.get(String(peerId || ""));
     if (!avatar) return false;
     // One bubble per speaker: a rapid follow-up message replaces the first
     // instead of stacking on top of it.
@@ -12002,6 +11973,26 @@ export function createWorldScene({
       fadeStart: 0.75,
     });
     return true;
+  }
+
+  // A registered member who is not in the world as a live peer still sits on
+  // their own campfire bench (updateMemberLounge), so a chat line from them
+  // floats over the seated figure's head instead of going nowhere.
+  function showMemberChatBubble(name, text) {
+    const wanted = String(name || "").trim().toLowerCase();
+    if (!wanted) return false;
+    if (loungeMembers.has(`member:${wanted}`)) {
+      return showChatBubble(`member:${wanted}`, text);
+    }
+    // The public room truncates asserted names to 16 characters, so a
+    // truncated sender may only be a prefix of the seated member's name.
+    if (wanted.length < 16) return false;
+    for (const id of loungeMembers.keys()) {
+      if (id.slice("member:".length).startsWith(wanted)) {
+        return showChatBubble(id, text);
+      }
+    }
+    return false;
   }
 
   // Repaints the fountain's treasury board with the public pool address QR
@@ -12123,7 +12114,6 @@ export function createWorldScene({
       return firstPersonZoom;
     }
     cameraZoom = clamp(next, CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX);
-    scene.fog.density = environmentFogDensity * zoomFogMultiplier();
     return cameraZoom;
   }
 
@@ -13526,6 +13516,7 @@ export function createWorldScene({
     setLayoutEditor,
     playEmote,
     showChatBubble,
+    showMemberChatBubble,
     greetForkbot,
     updateRewardPool,
     playRewardEvent,

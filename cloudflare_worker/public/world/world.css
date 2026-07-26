@@ -1140,6 +1140,11 @@ forkmesh-world {
   border-top: 1px solid var(--world-line);
 }
 
+/* No DEBUG strip reserved below chat, so it can sit flush at the bottom. */
+.world-chat-terminal.world-chat-terminal--debug-hidden {
+  bottom: 0;
+}
+
 .world-chat-terminal[open] > summary {
   min-height: 24px;
   padding-block: 2px;
