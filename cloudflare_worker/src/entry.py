@@ -517,6 +517,10 @@ from pull_badge import patch_file_stats, pull_badge_png  # noqa: E402
 # another js-free sibling module the test suite imports directly.
 import og_card  # noqa: E402
 
+# The blog's RSS 2.0 feed, derived from the shipped static blog index. Serves
+# /blog/rss.xml and, through world_social_feeds, the world's blog banner.
+import blog_feed  # noqa: E402
+
 # Largest git-req-chunk (push pack fragment) forwarded to the host in one WS
 # message; matches the host's 256 KiB git-chunk ceiling so neither side trips
 # the relay's ~1 MiB message cap.
@@ -4189,6 +4193,56 @@ WORLD_SOCIAL_POSTS_CACHE_KEY = (
 WORLD_SOCIAL_POSTS_TTL = 600
 
 
+BLOG_RSS_CACHE_KEY = "https://forkmesh.internal/blog/rss.xml"
+# The blog index is a build artifact, so the feed only changes on deploy; half
+# an hour at the edge keeps subscriber polling (and the world banner's own
+# ten-minute refresh) off the origin without making a new post wait.
+BLOG_RSS_TTL = 1800
+
+
+async def _blog_feed_document(env, request):
+    """Build the blog's RSS document from our own static index.
+
+    Reads blog.html through env.ASSETS (no external fetch, no D1) and returns
+    "" when the asset is missing or parses to nothing, so callers can fall
+    back instead of publishing an empty feed.
+    """
+    origin = urlparse(request.url)
+    resp = await env.ASSETS.fetch(
+        origin.scheme + "://" + origin.netloc + "/"
+        + blog_feed.BLOG_INDEX_ASSET)
+    if int(getattr(resp, "status", 0)) != 200:
+        return ""
+    return blog_feed.build_feed(str(await resp.text()), int(Date.now()))
+
+
+async def blog_rss_handler(env, request):
+    """GET /blog/rss.xml — the public feed for the blog.
+
+    Worker-owned (see run_worker_first in wrangler.toml) because the assets
+    router would otherwise treat rss.xml as a post slug and redirect it.
+    """
+    if method_name(request) not in ("GET", "HEAD"):
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            extra_headers={"allow": "GET, HEAD"})
+    cached = await edge_cache_match(BLOG_RSS_CACHE_KEY)
+    if cached is not None:
+        return cached
+    try:
+        document = await _blog_feed_document(env, request)
+    except Exception:
+        document = ""
+    if not document:
+        return json_response({"error": "blog_feed_unavailable"}, status=503)
+    resp = Response(document, status=200, headers={
+        "content-type": "application/rss+xml; charset=utf-8",
+        "cache-control": "public, max-age=%d" % BLOG_RSS_TTL,
+    })
+    await edge_cache_put(BLOG_RSS_CACHE_KEY, resp)
+    return resp
+
+
 async def _world_social_fetch_text(url, headers):
     try:
         resp = await js_fetch(url, to_js({
@@ -4210,8 +4264,9 @@ async def world_social_posts_handler(env, request):
     The external upstreams are best-effort: a network refusal (X retiring
     the syndication page, Reddit rate-limiting the colo) downgrades that
     banner to its static sign via state=unavailable instead of failing the
-    read. The blog feed reads our own static blog index through env.ASSETS,
-    so it never leaves the Worker.
+    read. The blog board reads the blog's own RSS document, built here from
+    our static index through env.ASSETS, so it never leaves the Worker and
+    shows exactly what subscribers get.
     """
     if method_name(request) != "GET":
         return json_response(
@@ -4250,13 +4305,9 @@ async def world_social_posts_handler(env, request):
             reddit_ok = True
     blog_posts, blog_ok = [], False
     try:
-        origin = urlparse(request.url)
-        blog_resp = await env.ASSETS.fetch(
-            origin.scheme + "://" + origin.netloc + "/"
-            + world_social_feeds.BLOG_INDEX_ASSET)
-        if int(getattr(blog_resp, "status", 0)) == 200:
-            blog_posts = world_social_feeds.normalize_blog_index(
-                str(await blog_resp.text()))
+        blog_rss = await _blog_feed_document(env, request)
+        if blog_rss:
+            blog_posts = world_social_feeds.normalize_blog_feed(blog_rss)
             blog_ok = bool(blog_posts)
     except Exception:
         blog_posts, blog_ok = [], False
@@ -32312,6 +32363,11 @@ class Default(WorkerEntrypoint):
 
         if url.path in BLOCKED_STATIC_HTML_PATHS:
             return await self._serve_not_found_page(url)
+
+        if url.path in (
+                blog_feed.FEED_PATH, "/blog/feed.xml",
+                "/rss.xml", "/feed.xml"):
+            return await blog_rss_handler(self.env, request)
 
         if url.path in ("/health", "/api/mainnode"):
             return json_response(

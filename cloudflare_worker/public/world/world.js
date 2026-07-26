@@ -7417,6 +7417,22 @@ class ForkMeshWorld extends HTMLElement {
     });
   }
 
+  // Feed item images are published as absolute forkmesh.com URLs. The board
+  // draws them onto a canvas texture, so they must load same-origin: keep
+  // only the /assets path and let this page's own origin serve it. Anything
+  // else (an off-site image, a data: URL) is dropped and the card keeps its
+  // placeholder plate.
+  socialPostImage(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    try {
+      const url = new URL(raw, window.location.origin);
+      return url.pathname.startsWith("/assets/") ? url.pathname : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
   socialPostDate(createdAt) {
     const stamp = Number(createdAt) || 0;
     if (!stamp) return "";
@@ -7431,11 +7447,17 @@ class ForkMeshWorld extends HTMLElement {
   syncSocialBanners() {
     const snapshot = this.socialFeedsSnapshot;
     if (!snapshot) return;
-    const bound = (feed, meta, text = (post) => String(post?.text || "")) => ({
+    const bound = (
+      feed,
+      meta,
+      text = (post) => String(post?.text || ""),
+      extra = () => ({}),
+    ) => ({
       state: feed?.state === "ready" ? "ready" : "unavailable",
       posts: (Array.isArray(feed?.posts) ? feed.posts : []).map((post) => ({
         text: text(post).slice(0, 400),
         meta: meta(post),
+        ...extra(post),
       })),
     });
     this.world?.updateSocialBanners?.({
@@ -7459,17 +7481,18 @@ class ForkMeshWorld extends HTMLElement {
           .filter(Boolean)
           .join(" · "),
       ),
-      // Blog cards have no dates or counts: the meta line is the section +
-      // feature number the blog index shows, and the body pairs the title
-      // with its blurb.
+      // Blog items have no dates or counts: the meta line is the section +
+      // feature number the RSS category carries, the headline is the item
+      // title, and the board prints the item's description as preview text
+      // under its artwork.
       blog: bound(
         snapshot.blog,
         (post) => String(post?.meta || ""),
-        (post) =>
-          [post?.text, post?.detail]
-            .filter(Boolean)
-            .map(String)
-            .join(" — "),
+        (post) => String(post?.text || ""),
+        (post) => ({
+          detail: String(post?.detail || "").slice(0, 260),
+          image: this.socialPostImage(post?.image),
+        }),
       ),
     });
   }
