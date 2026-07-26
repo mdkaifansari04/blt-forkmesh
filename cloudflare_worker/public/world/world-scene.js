@@ -119,6 +119,10 @@ const TREE_LANDMARK_CLEARANCE = Object.freeze({
 // a bench sitter sitting rather than standing on the plank. Exported because
 // the shell must keep it out of the landmark-proximity activity label.
 export const CAMPFIRE_SEATED_ACTIVITY = "sitting beside the campfire";
+// Shared by the swing-set ride and the presence frame for the same reason:
+// exported so the shell keeps it out of the landmark-proximity activity label
+// while a visitor is riding one of the town swings.
+export const SWING_RIDING_ACTIVITY = "swinging on the town swing set";
 // Legs hinge at the hip and again at the knee. Avatar fronts face local -Z, so
 // the positive pitch about X is the one that swings the knee over the front
 // edge of the bench instead of out behind the sitter; the knee then folds back
@@ -6373,6 +6377,7 @@ export function createWorldScene({
   onForkbotChat = () => {},
   onPlayForkmeshSong = () => {},
   onCreateRepository = () => {},
+  onSwingRide = () => {},
 }) {
   // Phones frequently expose a high-density screen to a comparatively small
   // GPU.  Use the same scene, but avoid allocating multisample and shadow-map
@@ -6947,6 +6952,127 @@ export function createWorldScene({
   landmarkObjects.set("campfire", campfire);
   registerMovableObject("campfire", campfire);
 
+  // A wooden swing set west of the fountain: three swings hang from one beam,
+  // so up to three visitors can ride at once. Clicking a seat starts the ride
+  // and clicking it again hops off; the shell's swing-speed slider scales the
+  // pumping, and the regular camera toggle watches the ride in first or third
+  // person because both camera modes follow the player's position.
+  const SWING_SET_POSITION = Object.freeze([-20, 0, 9]);
+  const SWING_SEAT_COUNT = 3;
+  const SWING_SEAT_SPACING = 2.3;
+  const SWING_BEAM_HEIGHT = 4.6;
+  const SWING_ROPE_LENGTH = 3.4;
+  const SWING_SEAT_HALF_THICKNESS = 0.05;
+  const SWING_MIN_AMPLITUDE = 0.14;
+  const SWING_MAX_AMPLITUDE = 1.05;
+  const SWING_REMOTE_AMPLITUDE = 0.55;
+  // A remote visitor parked this close to a seat's rest spot is riding it.
+  const SWING_REST_CLAIM_DISTANCE_SQ = 0.81;
+  const SWING_ARM_HOLD_PITCH = 1.15;
+  const swingSet = new THREE.Group();
+  swingSet.name = "swing-set";
+  swingSet.position.set(...SWING_SET_POSITION);
+  // Local -Z (the way avatars face) points at the fountain so riders swing
+  // looking across the Town Square.
+  swingSet.rotation.y = Math.atan2(SWING_SET_POSITION[0], SWING_SET_POSITION[2]);
+  const swingFrameMaterial = makeMaterial(THREE, "#6f5136", { roughness: 0.82 });
+  const swingFrameWidth = SWING_SEAT_COUNT * SWING_SEAT_SPACING + 1.6;
+  const swingLegSpread = 1.7;
+  const swingLegLength = Math.hypot(SWING_BEAM_HEIGHT, swingLegSpread);
+  [-1, 1].forEach((side) => {
+    [-1, 1].forEach((lean) => {
+      const leg = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.09, 0.11, swingLegLength, 8),
+        swingFrameMaterial,
+      );
+      leg.position.set(
+        (side * swingFrameWidth) / 2,
+        SWING_BEAM_HEIGHT / 2,
+        (lean * swingLegSpread) / 2,
+      );
+      leg.rotation.x = -lean * Math.atan2(swingLegSpread, SWING_BEAM_HEIGHT);
+      swingSet.add(leg);
+    });
+  });
+  const swingBeam = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.1, 0.1, swingFrameWidth + 0.7, 10),
+    swingFrameMaterial,
+  );
+  swingBeam.rotation.z = Math.PI / 2;
+  swingBeam.position.y = SWING_BEAM_HEIGHT;
+  swingSet.add(swingBeam);
+  const swingRopeMaterial = makeMaterial(THREE, "#d8cdb4", { roughness: 0.9 });
+  const swingSeatMaterial = makeMaterial(THREE, "#a8763e", { roughness: 0.6 });
+  const swingStates = [];
+  for (let seatIndex = 0; seatIndex < SWING_SEAT_COUNT; seatIndex += 1) {
+    const pivot = new THREE.Group();
+    pivot.position.set(
+      (seatIndex - (SWING_SEAT_COUNT - 1) / 2) * SWING_SEAT_SPACING,
+      SWING_BEAM_HEIGHT,
+      0,
+    );
+    [-1, 1].forEach((side) => {
+      const rope = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.03, 0.03, SWING_ROPE_LENGTH, 6),
+        swingRopeMaterial,
+      );
+      rope.position.set(side * 0.45, -SWING_ROPE_LENGTH / 2, 0);
+      rope.userData.swingSeat = seatIndex;
+      interactive.push(rope);
+      pivot.add(rope);
+    });
+    const seat = new THREE.Mesh(
+      new THREE.BoxGeometry(1.05, SWING_SEAT_HALF_THICKNESS * 2, 0.48),
+      swingSeatMaterial,
+    );
+    seat.position.y = -SWING_ROPE_LENGTH;
+    seat.userData.swingSeat = seatIndex;
+    interactive.push(seat);
+    pivot.add(seat);
+    swingSet.add(pivot);
+    // The rest anchor hangs outside the pivot so occupancy checks and the
+    // step-off spot read the seat's still position, not the moving plank.
+    const anchor = new THREE.Object3D();
+    anchor.position.set(
+      pivot.position.x,
+      SWING_BEAM_HEIGHT - SWING_ROPE_LENGTH,
+      0,
+    );
+    swingSet.add(anchor);
+    swingStates.push({
+      pivot,
+      seat,
+      anchor,
+      amplitude: 0,
+      // Staggered so idle and remote-ridden swings never move in lockstep.
+      phase: seatIndex * 1.3,
+      remoteId: "",
+    });
+  }
+  const swingPendulumOmega = Math.sqrt(9.8 / SWING_ROPE_LENGTH);
+  animated.push((time, delta) => {
+    swingStates.forEach((swing, seatIndex) => {
+      const target =
+        swingRide?.index === seatIndex
+          ? swingRideAmplitude()
+          : swing.remoteId
+            ? SWING_REMOTE_AMPLITUDE
+            : 0;
+      swing.amplitude += (target - swing.amplitude) * Math.min(1, delta * 1.4);
+      if (swing.amplitude < 0.01 && !target) {
+        swing.pivot.rotation.x = 0;
+        return;
+      }
+      // Pumping harder swings a little faster as well as higher; the phase is
+      // continuous so speed changes never snap the seat sideways.
+      swing.phase += swingPendulumOmega * (0.8 + swing.amplitude * 0.5) * delta;
+      swing.pivot.rotation.x = swing.amplitude * Math.sin(swing.phase);
+    });
+  });
+  setShadows(swingSet);
+  world.add(swingSet);
+  registerMovableObject("swing-set", swingSet);
+
   const activeLeaderboardSign = makeActiveLeaderboardSign(THREE);
   activeLeaderboardSign.position.set(...ACTIVE_LEADERBOARD_POSITION);
   activeLeaderboardSign.rotation.y = Math.atan2(
@@ -7491,6 +7617,11 @@ export function createWorldScene({
   // Set while the player is sitting on a campfire bench: the seat pose is held
   // every frame until the visitor walks, dashes or jumps away from it.
   let benchSeat = null;
+  // Set while the player is riding a swing: the avatar is glued to the moving
+  // seat every frame until a second click — or any movement input — hops off.
+  let swingRide = null;
+  // 0..1 from the shell's swing-speed slider; maps onto the pendulum amplitude.
+  let swingSpeedLevel = 0.55;
   let primaryPointerId = null;
   let draggedCampfireLog = null;
   let pointerGestureMoved = false;
@@ -8756,6 +8887,7 @@ export function createWorldScene({
   // Sitting is a local pose, not a teleport: the avatar lands on the plank it
   // was clicked on, faces the flames and keeps that pose until it moves again.
   function sitOnCampfireBench(seat) {
+    dismountSwing({ relocate: false });
     const seatPoint = seat.getWorldPosition(new THREE.Vector3());
     benchSeat = {
       // Hips on the plank, not feet: the avatar drops until its thighs rest on
@@ -8808,6 +8940,118 @@ export function createWorldScene({
     applyLegPitch(player, 0, 0);
   }
 
+  function swingRideAmplitude() {
+    return (
+      SWING_MIN_AMPLITUDE +
+      (SWING_MAX_AMPLITUDE - SWING_MIN_AMPLITUDE) * swingSpeedLevel
+    );
+  }
+
+  function setSwingSpeed(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return;
+    swingSpeedLevel = Math.min(1, Math.max(0.1, numeric / 100));
+  }
+
+  function swingSeatRestPoint(index) {
+    return swingStates[index].anchor.getWorldPosition(new THREE.Vector3());
+  }
+
+  // Riding is a local pose like the campfire sit, but on a moving seat: the
+  // avatar is re-glued to the plank every frame, so both camera modes follow
+  // the arc for free. A second click on the same swing hops off.
+  function rideSwing(index) {
+    if (officeSceneMode !== "town") return;
+    const swing = swingStates[index];
+    if (!swing) return;
+    if (swingRide?.index === index) {
+      dismountSwing();
+      return;
+    }
+    if (swing.remoteId) {
+      onSwingRide({
+        riding: Boolean(swingRide),
+        seat: swingRide ? swingRide.index : -1,
+        denied: true,
+      });
+      return;
+    }
+    standUpFromBench();
+    swingRide = { index };
+    cancelDash();
+    cameraFocus = null;
+    jumpVelocity = 0;
+    jumpQueued = false;
+    applySwingRidePose();
+    lastPosition.copy(player.position);
+    onMovement({
+      x: Number(player.position.x.toFixed(2)),
+      y: Number(player.position.y.toFixed(2)),
+      z: Number(player.position.z.toFixed(2)),
+      heading: Number(player.rotation.y.toFixed(3)),
+      space: currentSpace,
+      moving: false,
+      activity: SWING_RIDING_ACTIVITY,
+    });
+    onSwingRide({ riding: true, seat: index, denied: false });
+  }
+
+  function applySwingRidePose() {
+    if (!swingRide) return;
+    const swing = swingStates[swingRide.index];
+    const seatTop = swing.seat.getWorldPosition(new THREE.Vector3());
+    player.position.set(
+      seatTop.x,
+      seatedAvatarY(seatTop.y + SWING_SEAT_HALF_THICKNESS, player.scale.x),
+      seatTop.z,
+    );
+    player.rotation.y = swingSet.rotation.y;
+    // Lean with the ropes so the body traces the arc instead of staying bolt
+    // upright at the peaks.
+    player.rotation.x = swing.pivot.rotation.x;
+    player.userData.leftArm.rotation.x = SWING_ARM_HOLD_PITCH;
+    player.userData.rightArm.rotation.x = SWING_ARM_HOLD_PITCH;
+    applySeatedLegPose(player);
+  }
+
+  function dismountSwing({ relocate = true } = {}) {
+    if (!swingRide) return;
+    const index = swingRide.index;
+    swingRide = null;
+    player.rotation.x = 0;
+    player.userData.leftArm.rotation.x = 0;
+    player.userData.rightArm.rotation.x = 0;
+    applyLegPitch(player, 0, 0);
+    if (relocate) {
+      // Step off just in front of the seat's rest spot rather than standing
+      // up inside the moving plank.
+      const rest = swingSeatRestPoint(index);
+      const heading = swingSet.rotation.y;
+      player.position.set(
+        rest.x - Math.sin(heading) * 1.1,
+        currentFloorY,
+        rest.z - Math.cos(heading) * 1.1,
+      );
+      player.rotation.y = heading;
+      lastPosition.copy(player.position);
+      onMovement({
+        x: Number(player.position.x.toFixed(2)),
+        y: Number(player.position.y.toFixed(2)),
+        z: Number(player.position.z.toFixed(2)),
+        heading: Number(player.rotation.y.toFixed(3)),
+        space: currentSpace,
+        moving: false,
+        activity:
+          currentLocation === "Town Square"
+            ? "exploring the Town Square"
+            : `visiting ${currentLocation}`,
+      });
+    } else {
+      player.position.y = currentFloorY;
+    }
+    onSwingRide({ riding: false, seat: -1, denied: false });
+  }
+
   // The world map's Campfire spot is a trip home: it puts the avatar on the
   // bench that carries this member's name and holds the same seated pose
   // clicking the plank gives. Guests — and members the directory has not
@@ -8839,6 +9083,23 @@ export function createWorldScene({
       inputStrength,
       movement,
     } = movementInput();
+    if (swingRide) {
+      // Like the bench below: relocation ends the ride, and so does any
+      // movement input, which keeps WASD as the universal "get off" gesture
+      // alongside the second click on the seat.
+      const displaced =
+        player.position.distanceToSquared(
+          swingSeatRestPoint(swingRide.index),
+        ) > 36;
+      if (!displaced && !movement.lengthSq() && !dashTarget && !jumpQueued) {
+        applySwingRidePose();
+        player.userData.inputEnergy = decayedPointerEnergy(performance.now());
+        animateAvatarActivity(player, time, delta, reducedMotion);
+        wasWalking = false;
+        return;
+      }
+      dismountSwing({ relocate: false });
+    }
     if (benchSeat) {
       // Anything that relocates the avatar (a space change, a teleport) also
       // ends the sit; otherwise the held pose would drag it back to the bench.
@@ -8964,12 +9225,54 @@ export function createWorldScene({
   }
 
   function updateRemotePlayers(delta, time) {
-    remotePlayers.forEach((avatar) => {
+    // Swing occupancy is re-derived every frame from where visitors stand: a
+    // remote visitor parked on a seat's rest spot is riding that swing, which
+    // is what caps the ride at three people and lets a local click on a taken
+    // seat be refused.
+    swingStates.forEach((swing) => {
+      swing.remoteId = "";
+    });
+    const swingRestPoints = swingStates.map((swing) =>
+      swing.anchor.getWorldPosition(new THREE.Vector3()),
+    );
+    remotePlayers.forEach((avatar, remoteId) => {
       avatar.position.lerp(avatar.userData.targetPosition, 1 - Math.pow(0.002, delta));
       let headingDelta = avatar.userData.targetHeading - avatar.rotation.y;
       headingDelta = Math.atan2(Math.sin(headingDelta), Math.cos(headingDelta));
       avatar.rotation.y += headingDelta * (1 - Math.pow(0.01, delta));
       const walking = avatar.position.distanceToSquared(avatar.userData.targetPosition) > 0.01;
+      let riddenSwing = -1;
+      if (!walking) {
+        for (let seatIndex = 0; seatIndex < swingStates.length; seatIndex += 1) {
+          if (swingRide?.index === seatIndex) continue;
+          if (swingStates[seatIndex].remoteId) continue;
+          const rest = swingRestPoints[seatIndex];
+          const dx = avatar.userData.targetPosition.x - rest.x;
+          const dz = avatar.userData.targetPosition.z - rest.z;
+          if (dx * dx + dz * dz < SWING_REST_CLAIM_DISTANCE_SQ) {
+            riddenSwing = seatIndex;
+            swingStates[seatIndex].remoteId = remoteId;
+            break;
+          }
+        }
+      }
+      if (riddenSwing >= 0) {
+        const swing = swingStates[riddenSwing];
+        const seatTop = swing.seat.getWorldPosition(new THREE.Vector3());
+        avatar.position.set(
+          seatTop.x,
+          seatedAvatarY(seatTop.y + SWING_SEAT_HALF_THICKNESS, avatar.scale.x),
+          seatTop.z,
+        );
+        avatar.rotation.y = swingSet.rotation.y;
+        avatar.rotation.x = swing.pivot.rotation.x;
+        avatar.userData.leftArm.rotation.x = SWING_ARM_HOLD_PITCH;
+        avatar.userData.rightArm.rotation.x = SWING_ARM_HOLD_PITCH;
+        applySeatedLegPose(avatar);
+        animateAvatarActivity(avatar, time, delta, reducedMotion);
+        return;
+      }
+      avatar.rotation.x = 0;
       const recentlyActiveInLounge =
         avatar.userData.loungeActivity === "recent";
       const gait = walking
@@ -12404,6 +12707,10 @@ export function createWorldScene({
       sitOnCampfireBench(hit.object);
       return;
     }
+    if (Number.isInteger(hit?.object?.userData?.swingSeat)) {
+      rideSwing(hit.object.userData.swingSeat);
+      return;
+    }
     if (hit?.object?.userData?.forkbotChat) {
       onForkbotChat();
       return;
@@ -12787,6 +13094,20 @@ export function createWorldScene({
     if (benchHit) {
       event.preventDefault();
       sitOnCampfireBench(benchHit.object);
+      return;
+    }
+    // The same rule for the swing set: a double tap on a seat is a request to
+    // ride it, not to dash to the ground the swing hangs over.
+    const swingHit = raycaster
+      .intersectObjects(interactive, false)
+      .find(
+        ({ object }) =>
+          Number.isInteger(object.userData?.swingSeat) &&
+          objectIsEffectivelyVisible(object),
+      );
+    if (swingHit) {
+      event.preventDefault();
+      rideSwing(swingHit.object.userData.swingSeat);
       return;
     }
     const point = groundPointAt(event.clientX, event.clientY);
@@ -13367,6 +13688,18 @@ export function createWorldScene({
     travelToRegion,
     visitNeighborhoodHome,
     returnToCampfireBench,
+    rideSwing,
+    dismountSwing,
+    setSwingSpeed,
+    getSwingState: () => ({
+      riding: Boolean(swingRide),
+      seat: swingRide ? swingRide.index : -1,
+      speedLevel: swingSpeedLevel,
+      seats: swingStates.map((swing) => ({
+        remoteId: swing.remoteId,
+        amplitude: Number(swing.amplitude.toFixed(3)),
+      })),
+    }),
     setRemotePlayers,
     setAvatarFediverseProfile,
     setAvatarFaceImage,
