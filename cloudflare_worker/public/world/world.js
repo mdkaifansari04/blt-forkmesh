@@ -16750,8 +16750,18 @@ class ForkMeshWorld extends HTMLElement {
     // scene plays when a cabinet's commit visibly changes, both come from the
     // re-fetched signed mirror payload, never from unauthenticated frame data.
     const node = sanitizePresenceText(message?.node, "", 40);
-    if (!node) return;
-    this.toast(`Fresh code just landed on mirror node “${node}”.`);
+    const repo = sanitizePresenceText(message?.repo, "", 60);
+    if (!node || !repo) return;
+    // The publisher can be a user-backed source or a mirror node. Neither is
+    // the public repository owner. Keep that internal routing identity out of
+    // visitor-facing copy; the flagship organization remains forkmesh.
+    const publicOwner =
+      repo.toLowerCase() === FLAGSHIP_REPOSITORY.repo
+        ? FLAGSHIP_REPOSITORY.owner
+        : sanitizePresenceText(message?.repositoryOwner, "", 40);
+    this.toast(
+      `Fresh code landed on “${publicOwner ? `${publicOwner}/` : ""}${repo}”.`,
+    );
     // One coalesced refresh replaces waiting out the 30-second mirror poll, so
     // the yard updates near-instantly without adding steady-state traffic.
     window.clearTimeout(this.mirrorPushRefreshTimer);

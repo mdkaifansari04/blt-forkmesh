@@ -1251,7 +1251,10 @@
   }
 
   function initHomePage() {
-    renderHomeChangelog();
+    renderHomeBlogPosts();
+    // The blog card fills in from the edge-cached feed; the baked markup
+    // already shows its loading state.
+    void loadHomeBlogPosts();
     // Feed + top repositories fill in when loadRepositories()/loadNotifications()
     // resolve — both re-render the home containers.
     // Active agent sessions (adhoc #81) need the catalog first so we know which
@@ -1324,6 +1327,7 @@
       repo = await findOrganizationRepository(requested);
     }
     if (repo) {
+      startRepoMirrorPolling();
       // The owner-only Agents tab is only a recognized route when the session
       // can assign agents, which is decided from nodes/isAdmin that only land
       // after hydrateCanonicalProfile resolves. When the refreshed URL points

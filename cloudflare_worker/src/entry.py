@@ -8952,10 +8952,33 @@ async def repo_mirrors_handler(env, request, owner, repo):
             and await privacy_reader(env, owner, repo)):
         return json_response(
             {"error": "not_found"}, status=404, cache_control="no-store")
+    # The router internally rewrites an organization URL to its backing node.
+    # Recover the untouched public identity for response/cache presentation;
+    # backing node identity remains an authorization detail and must not turn
+    # /forkmesh/forkmesh into a user-owned /jett/forkmesh repository in UIs.
+    public_owner = str(owner or "").strip().lower()
+    public_repo = str(repo or "").strip().lower()
+    try:
+        original_match = REPO_API_PREFIX_RE.match(
+            urlparse(str(getattr(request, "url", "") or "")).path)
+        requested_owner = safe_segment(
+            original_match.group(1)) if original_match else ""
+        requested_repo = safe_segment(
+            original_match.group(2)) if original_match else ""
+        if (
+            requested_owner
+            and requested_repo == public_repo
+            and requested_owner != public_owner
+            and await _org_repo_node(
+                env, requested_owner, requested_repo) == public_owner
+        ):
+            public_owner = requested_owner
+    except Exception:
+        pass
     # Public, poll-heavy payload (repo page + desktop mirror panel): serve
     # from the edge for a few seconds so a burst of viewers costs one build.
     cache_key = ("https://forkmesh.internal/api/repo/%s/%s/mirrors"
-                 % (quote(str(owner or "")), quote(str(repo or ""))))
+                 % (quote(public_owner), quote(public_repo)))
     cached = await edge_cache_match(cache_key)
     if cached is not None:
         return cached
@@ -9036,6 +9059,8 @@ async def repo_mirrors_handler(env, request, owner, repo):
     )
     if payload is None:
         return json_response({"error": "not_found"}, status=404)
+    payload["owner"] = public_owner
+    payload["repo"] = public_repo
     # Owner column: a headless mirror's catalog record carries no ownerUser of
     # its own, but the node account may be claim-linked to a user (adhoc #53:
     # the node record's `owner` field names the linked user). Resolve that link
@@ -19320,20 +19345,25 @@ def _ssh_repository_url(env, owner, repo):
 def _ssh_alias_repository_url(env, alias_owner, backing_owner, repo):
     """Return an org-facing SSH URL backed by an allowlisted node repo.
 
-    The SSH gateway's authorization endpoint independently resolves the alias
-    to ``backing_owner`` before every clone/push. This helper therefore checks
-    gateway access against that canonical backing path, but keeps the public
-    organization namespace in the URL shown to users.
+    The organization alias is an explicit read route on a mirror gateway. Its
+    backing user/source identity is checked by the authorization endpoint but
+    is never substituted into the public URL or the node-local repository
+    path. This keeps users, nodes, and public organization repositories as
+    separate identities.
     """
     settings = _ssh_gateway_settings(env)
     if (
         not settings["configured"]
         or not ssh_auth.gateway_repository_access(
-            settings["repositories"], backing_owner, repo)
+            settings["repositories"], alias_owner, repo)
     ):
         return ""
-    host = settings["nodeHosts"].get(
-        str(backing_owner or "").strip().lower())
+    host = (
+        settings["nodeHosts"].get(
+            str(alias_owner or "").strip().lower())
+        or settings["nodeHosts"].get(
+            str(backing_owner or "").strip().lower())
+    )
     return ssh_auth.ssh_repository_url(
         host or settings["host"], settings["port"], alias_owner, repo)
 
@@ -19686,8 +19716,10 @@ async def ssh_gateway_authorize_handler(env, request):
     # node namespace before repository lookup, permission enforcement, and the
     # path returned to the gateway.
     canonical_owner = await _org_repo_node(env, owner, repo) or owner
+    is_org_alias = canonical_owner != owner
+    route_owner = owner if is_org_alias else canonical_owner
     gateway_access = _ssh_gateway_repository_access(
-        env, canonical_owner, repo)
+        env, route_owner, repo)
     repo_bi = await blind_index(env, canonical_owner + "/" + repo)
     repo_row = await d1_first(
         env,
@@ -19758,9 +19790,9 @@ async def ssh_gateway_authorize_handler(env, request):
         "keyId": key_id,
         "requestId": request_id,
         "operation": operation,
-        "owner": canonical_owner,
+        "owner": route_owner,
         "repository": repo,
-        "repositoryRelativePath": canonical_owner + "/" + repo + ".git",
+        "repositoryRelativePath": route_owner + "/" + repo + ".git",
     }, cache_control="no-store")
 
 

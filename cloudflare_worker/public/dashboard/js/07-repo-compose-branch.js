@@ -884,7 +884,8 @@
     window.lucide?.createIcons();
   }
 
-  async function loadRepoMirrors(repo, { background = false } = {}) {
+  async function loadRepoMirrors(repo) {
+    const background = arguments[1]?.background === true;
     const container = $("[data-repo-mirrors]");
     // Owner-only "ask a node to mirror your repo" control (issue #385).
     renderMirrorRequestForm(repo);
@@ -939,15 +940,19 @@
   let liveMirrorRefreshTimer = null;
   let liveMirrorConfirmTimer = null;
   const REPO_MIRROR_POLL_MS = 5 * 1000;
-  window.setInterval(() => {
-    const repo = state.selectedRepo;
-    if (
-      !repo ||
-      document.visibilityState !== "visible" ||
-      !document.querySelector("[data-repo-mirrors]")
-    ) return;
-    void loadRepoMirrors(repo, { background: true });
-  }, REPO_MIRROR_POLL_MS);
+  let repoMirrorPollTimer = null;
+  function startRepoMirrorPolling() {
+    if (repoMirrorPollTimer) return;
+    repoMirrorPollTimer = window.setInterval(() => {
+      const repo = state.selectedRepo;
+      if (
+        !repo ||
+        document.visibilityState !== "visible" ||
+        !document.querySelector("[data-repo-mirrors]")
+      ) return;
+      void loadRepoMirrors(repo, { background: true });
+    }, REPO_MIRROR_POLL_MS);
+  }
   function refreshOpenRepoMirrors() {
     const repo = state.selectedRepo;
     // Only meaningful while the Mirrors panel is actually mounted.
