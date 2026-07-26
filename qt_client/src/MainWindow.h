@@ -368,10 +368,11 @@ public:
                                                const QString &name,
                                                const QString &description,
                                                const QString &firstPrompt,
-                                               bool addReadme)
+                                               bool addReadme,
+                                               bool isPrivate = false)
     {
         return provisionNewRepository(dest, name, description, firstPrompt,
-                                      addReadme, nullptr);
+                                      addReadme, isPrivate, nullptr);
     }
     int testAddPublishedRepository(const QString &owner, const QString &name,
                                    const QString &mirrorPath);
@@ -1096,9 +1097,14 @@ private:
     // stops+relaunches the daemon — an update straight from source without
     // waiting for a published release (adhoc). A source build never uploads this
     // app's binary, so fromSource forces the direct-upload path off.
+    // suppressFailureStatus is set by callers that will retry a failed attempt
+    // themselves (the Vultr auto-provision flow): it skips the terminal
+    // "Install failed" status/host-list update so a retryable hiccup doesn't
+    // read as a final failure before the caller's own retries are exhausted.
     void runHostInstall(bool forceUploadBinary = false,
                         std::function<void(bool)> onFinished = {},
-                        bool reinstall = false, bool fromSource = false);
+                        bool reinstall = false, bool fromSource = false,
+                        bool suppressFailureStatus = false);
     // SSH into a saved host and run the hosted uninstaller (uninstall.sh),
     // which removes the ForkMesh binary, launcher and ALL of that host's data.
     void runHostUninstall();
@@ -3266,10 +3272,11 @@ private:
     // .forkmesh/info.json description, initial-committed, registered, published,
     // and (when firstPrompt is non-empty) has its first issue filed. Returns the
     // new repository index, or -1 with a message in *error on failure.
+    // isPrivate keeps the repo out of the public catalog from the start.
     int provisionNewRepository(const QString &dest, const QString &name,
                                const QString &description,
                                const QString &firstPrompt, bool addReadme,
-                               QString *error);
+                               bool isPrivate, QString *error);
     // Clone a remote repo (GitHub/GitLab/any https git URL) into a local working
     // copy, then add it like a local repo. An optional per-host access token
     // (Settings) authenticates the clone to dodge unauthenticated rate limits.
@@ -3672,6 +3679,10 @@ private:
     QString m_hostInstallLogCarry;
     int m_hostInstallLogFg = -1;
     bool m_hostInstallLogBold = false;
+    // Bounded tail of the raw (pre-ANSI-parsing) ssh output for the current
+    // install/uninstall run, used only to classify a failed exit code into an
+    // actionable hint (e.g. a firewall-blocked connection timeout).
+    QString m_hostInstallRawTail;
     QTableWidget *m_hostsTable = nullptr;
     QProcess *m_hostInstallProcess = nullptr; // running ssh install session, if any
     QProcess *m_hostLogProcess = nullptr;     // running ssh log-tail session, if any
