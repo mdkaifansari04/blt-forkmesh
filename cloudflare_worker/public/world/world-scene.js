@@ -11245,6 +11245,7 @@ export function createWorldScene({
           liveHost: record.liveHost === true,
           isPrivate: record.isPrivate === true,
           source: String(record.source || "").slice(0, 40),
+          mirrorState: String(record.mirrorState || "").slice(0, 24),
           starCount:
             Number.isSafeInteger(rawStarCount) && rawStarCount >= 0
               ? Math.min(rawStarCount, 10_000_000)
@@ -11456,8 +11457,21 @@ export function createWorldScene({
         );
         selectedHalo.name = "repository-selected-halo";
         selectedHalo.scale.setScalar(nodeRadius);
+        selectedHalo.userData.repositoryHaloScale = nodeRadius;
         face.add(selectedHalo);
         usedMaterials.add(materials.selected);
+        const orbitMarker = new THREE.Mesh(
+          new THREE.SphereGeometry(0.105, 12, 8),
+          materials.selected,
+        );
+        orbitMarker.name = "repository-live-orbit-marker";
+        orbitMarker.userData.repositoryOrbitRadius = nodeRadius * 1.38;
+        orbitMarker.position.set(
+          orbitMarker.userData.repositoryOrbitRadius,
+          0,
+          0.08,
+        );
+        face.add(orbitMarker);
       }
       node.add(face);
 
@@ -11475,7 +11489,15 @@ export function createWorldScene({
               : record.mirrorState === "offline"
                 ? "MIRRORS OFFLINE"
                 : "STUB · MIRROR NEEDED",
-        isActive ? "#9ef7c6" : record.isPrivate ? "#d5b6ff" : "#77d9ff",
+        isActive
+          ? "#9ef7c6"
+          : record.isPrivate
+            ? "#d5b6ff"
+            : record.mirrorState === "syncing"
+              ? "#f0c66f"
+              : record.mirrorState === "offline"
+                ? "#91a39a"
+                : "#77d9ff",
       );
       label.name = `repository-portal-label:${record.owner}/${record.name}`;
       label.scale.set(2.8, 0.76, 1);
@@ -13793,6 +13815,22 @@ export function createWorldScene({
       }
     }
     if (!reducedMotion) {
+      repositoryPortals.forEach(({ group }) => {
+        const halo = group.getObjectByName("repository-selected-halo");
+        const marker = group.getObjectByName("repository-live-orbit-marker");
+        if (halo?.userData?.repositoryHaloScale) {
+          const pulse =
+            halo.userData.repositoryHaloScale *
+            (1 + Math.sin(time * 0.0032) * 0.055);
+          halo.scale.setScalar(pulse);
+        }
+        if (marker?.userData?.repositoryOrbitRadius) {
+          const angle = time * 0.0024;
+          const radius = marker.userData.repositoryOrbitRadius;
+          marker.position.x = Math.cos(angle) * radius;
+          marker.position.y = Math.sin(angle) * radius;
+        }
+      });
       // Node beacons hold a steady colour and size — no pulse — so a status
       // reads the same in a screenshot as it does live. Only degraded and
       // healing nodes carry a sweep, and it turns rather than fades, so the

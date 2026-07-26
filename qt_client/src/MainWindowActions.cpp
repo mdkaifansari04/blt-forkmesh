@@ -983,7 +983,7 @@ void MainWindow::refreshOpenRepoDetail()
     updateRepoDetailStatus();
     updateRepoActionMenus();
     updateRepoCodeSize();
-    updateRepoPushButton();
+    refreshRepoSyncIndicators();
     refreshRepoPinBanner(); // a sync may have advanced refs past the pinned hash
     m_treeLoadedForIndex = -1; // force the explorer tree to rebuild on next use
     if (m_filesStack && m_filesStack->currentIndex() == 2)
@@ -1338,7 +1338,7 @@ void MainWindow::onReleaseMetadataLanded(int runId)
         m_repoDetailStack &&
         m_repoDetailStack->currentIndex() == m_releasesTabIndex)
         loadReleasesPanel();
-    updateRepoPushButton();
+    refreshRepoSyncIndicators();
 }
 
 // After action-run state changes, keep an open PR's Checks tab and the inline
@@ -2165,50 +2165,6 @@ void MainWindow::positionActionStrip()
         x = qMax(0, page->width() - tabWidth);
     m_actionStrip->move(x, y);
     m_actionStrip->raise();
-}
-
-// Float the "Sync" button in the band just above the Code tab, raised
-// one above the tab bar. As an overlay it occupies no layout space, so toggling
-// it never shifts the tabs or page content.
-void MainWindow::positionRepoPushButton()
-{
-    if (!m_repoPushButton || !m_repoCodeTab)
-        return;
-    // The repo-detail page itself, not m_repoDetailStack->parentWidget(): the
-    // stack now lives inside its own QScrollArea (688850a7), so its parent is
-    // that scroll's viewport. These bars float over the meta band just above the
-    // tab row, so they must be parented to the page — anchoring them to the
-    // viewport pushes them into the scrolled body, away from the tabs.
-    QWidget *page = m_repoDetailSection;
-    if (!page)
-        return;
-    if (m_repoPushButton->parentWidget() != page)
-        m_repoPushButton->setParent(page); // hides it; reveal() re-shows
-    const int w = m_repoPushButton->sizeHint().width();
-    const int h = m_repoPushButton->sizeHint().height();
-    const QPoint tl = m_repoCodeTab->mapTo(page, QPoint(0, 0));
-    int x = tl.x();
-    int y = tl.y() - h - 1; // the meta band above the tab row
-    if (y < 0)
-        y = 0;
-    if (x + w > page->width())
-        x = qMax(0, page->width() - w);
-    m_repoPushButton->setGeometry(x, y, w, h);
-    m_repoPushButton->raise();
-
-    // The eye icon rides just to the right of Sync, same row, same reveal.
-    if (m_repoPushEyeButton) {
-        if (m_repoPushEyeButton->parentWidget() != page)
-            m_repoPushEyeButton->setParent(page);
-        const int ew = m_repoPushEyeButton->sizeHint().width();
-        const int eh = m_repoPushEyeButton->sizeHint().height();
-        int ex = x + w + 4;
-        int ey = y + (h - eh) / 2;
-        if (ex + ew > page->width())
-            ex = qMax(0, page->width() - ew);
-        m_repoPushEyeButton->setGeometry(ex, ey, ew, eh);
-        m_repoPushEyeButton->raise();
-    }
 }
 
 void MainWindow::updateAgentsTabIndicator()

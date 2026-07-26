@@ -270,7 +270,7 @@ def test_org_alias_remote_clone_is_still_an_official_social_actor():
         None, "forkmesh", "forkmesh")) is True
 
 
-def test_alias_ssh_url_checks_backing_allowlist_but_publishes_org_path():
+def test_alias_ssh_url_checks_public_alias_allowlist_and_publishes_org_path():
     functions = {}
     for name in (
         "_ssh_gateway_settings",
@@ -284,15 +284,15 @@ def test_alias_ssh_url_checks_backing_allowlist_but_publishes_org_path():
         SSH_GATEWAY_HOST="ssh.forkmesh.com",
         SSH_GATEWAY_PORT="22",
         SSH_GATEWAY_TOKEN="t" * 32,
-        SSH_GATEWAY_REPOSITORIES="mirror2/forkmesh=read-write",
-        SSH_GATEWAY_NODE_HOSTS="mirror2=ssh-mirror2.forkmesh.com",
+        SSH_GATEWAY_REPOSITORIES="forkmesh/forkmesh=read-only",
+        SSH_GATEWAY_NODE_HOSTS="forkmesh=ssh-mirror2.forkmesh.com",
     )
     assert functions["_ssh_alias_repository_url"](
         env, "forkmesh", "mirror2", "forkmesh",
     ) == "ssh://git@ssh-mirror2.forkmesh.com/forkmesh/forkmesh.git"
     assert functions["_ssh_alias_repository_url"](
         env, "forkmesh", "mirror3", "forkmesh",
-    ) == ""
+    ) == "ssh://git@ssh-mirror2.forkmesh.com/forkmesh/forkmesh.git"
 
     org_handler = ast.get_source_segment(
         ENTRY_TEXT,

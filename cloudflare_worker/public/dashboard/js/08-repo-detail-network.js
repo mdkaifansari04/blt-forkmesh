@@ -1324,6 +1324,7 @@
       repo = await findOrganizationRepository(requested);
     }
     if (repo) {
+      startRepoMirrorPolling();
       // The owner-only Agents tab is only a recognized route when the session
       // can assign agents, which is decided from nodes/isAdmin that only land
       // after hydrateCanonicalProfile resolves. When the refreshed URL points
