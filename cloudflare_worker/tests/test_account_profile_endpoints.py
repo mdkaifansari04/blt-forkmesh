@@ -325,6 +325,10 @@ def test_worker_exposes_public_user_directory_for_chat_without_private_fields():
 
     assert '"LEFT JOIN world_user_activity a ON a.account_bi=u.user_bi "' in body
     assert '"ORDER BY u.username COLLATE NOCASE LIMIT ?"' in body
+    # The campfire seats members in this array's order, one bench per
+    # account, so the response is resorted by join date (oldest first)
+    # rather than left in the query's alphabetical fetch order.
+    assert 'out.sort(key=lambda user: user.get("createdAt", 0))' in body
     assert "last_touch_at" not in body
     assert "FROM accounts" not in body
     assert '_account_kind(rec) != "user"' in body
