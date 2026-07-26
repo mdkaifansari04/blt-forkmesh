@@ -6627,7 +6627,8 @@ QWidget *MainWindow::buildNetworkReposSection()
     header->addWidget(m_networkReposStatus);
 
     // Create a brand-new repository right from the Repos tab. Reuses the shared
-    // New repository dialog (name/description/first prompt/README/location), so
+    // New repository dialog (name/description/first prompt/visibility/README/
+    // location), so
     // the "info needed to create a repo" is shown inline instead of buried in
     // Settings.
     auto *newRepoButton = new QPushButton(QStringLiteral("New repository\xE2\x80\xA6"));

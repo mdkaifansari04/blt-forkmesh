@@ -368,10 +368,11 @@ public:
                                                const QString &name,
                                                const QString &description,
                                                const QString &firstPrompt,
-                                               bool addReadme)
+                                               bool addReadme,
+                                               bool isPrivate = false)
     {
         return provisionNewRepository(dest, name, description, firstPrompt,
-                                      addReadme, nullptr);
+                                      addReadme, isPrivate, nullptr);
     }
     int testAddPublishedRepository(const QString &owner, const QString &name,
                                    const QString &mirrorPath);
@@ -3271,10 +3272,11 @@ private:
     // .forkmesh/info.json description, initial-committed, registered, published,
     // and (when firstPrompt is non-empty) has its first issue filed. Returns the
     // new repository index, or -1 with a message in *error on failure.
+    // isPrivate keeps the repo out of the public catalog from the start.
     int provisionNewRepository(const QString &dest, const QString &name,
                                const QString &description,
                                const QString &firstPrompt, bool addReadme,
-                               QString *error);
+                               bool isPrivate, QString *error);
     // Clone a remote repo (GitHub/GitLab/any https git URL) into a local working
     // copy, then add it like a local repo. An optional per-host access token
     // (Settings) authenticates the clone to dodge unauthenticated rate limits.

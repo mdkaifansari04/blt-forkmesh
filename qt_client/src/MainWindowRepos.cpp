@@ -1568,7 +1568,8 @@ void MainWindow::promptAddRepository()
 void MainWindow::createNewRepository()
 {
     // A single "new repository" screen: name + description + an optional first
-    // prompt + a README choice + where on disk to create it. Everything past the
+    // prompt + public/private visibility + a README choice + where on disk to
+    // create it. Everything past the
     // dialog (git init, seeding, mirror + publish) lives in
     // provisionNewRepository so it can be exercised without the UI.
     QDialog dialog(this);
@@ -1587,6 +1588,38 @@ void MainWindow::createNewRepository()
         "Optional: the first thing you want done here. Filed as issue #1 so an "
         "agent can pick it up."));
     promptEdit->setMaximumHeight(96);
+
+    // Visibility is decided up front so a repo that should never be public is
+    // never published as one: provisionNewRepository seals the private replica
+    // before any catalog record exists.
+    auto *publicRadio = new QRadioButton(QStringLiteral("Public"), &dialog);
+    auto *privateRadio = new QRadioButton(QStringLiteral("Private"), &dialog);
+    publicRadio->setCursor(Qt::PointingHandCursor);
+    privateRadio->setCursor(Qt::PointingHandCursor);
+    publicRadio->setChecked(true);
+    publicRadio->setToolTip(
+        QStringLiteral("Listed in the catalog; anyone can browse and clone it."));
+    privateRadio->setToolTip(
+        QStringLiteral("Hidden from the public catalog and clone routes. Only "
+                       "you and people you share it with can read it."));
+    auto *visibilityHint = new QLabel(
+        QStringLiteral("Public repos appear in the catalog. Private repos stay "
+                       "hidden until you share them."),
+        &dialog);
+    visibilityHint->setObjectName(QStringLiteral("statusLine"));
+    visibilityHint->setWordWrap(true);
+    auto *visibilityRow = new QHBoxLayout;
+    visibilityRow->setContentsMargins(0, 0, 0, 0);
+    visibilityRow->addWidget(publicRadio);
+    visibilityRow->addWidget(privateRadio);
+    visibilityRow->addStretch(1);
+    auto *visibilityBox = new QVBoxLayout;
+    visibilityBox->setContentsMargins(0, 0, 0, 0);
+    visibilityBox->setSpacing(2);
+    visibilityBox->addLayout(visibilityRow);
+    visibilityBox->addWidget(visibilityHint);
+    auto *visibilityWidget = new QWidget(&dialog);
+    visibilityWidget->setLayout(visibilityBox);
 
     auto *readmeBox =
         new QCheckBox(QStringLiteral("Add a README on the main branch"), &dialog);
@@ -1616,6 +1649,7 @@ void MainWindow::createNewRepository()
     form->addRow(QStringLiteral("Name"), nameEdit);
     form->addRow(QStringLiteral("Description"), descriptionEdit);
     form->addRow(QStringLiteral("First prompt"), promptEdit);
+    form->addRow(QStringLiteral("Visibility"), visibilityWidget);
     form->addRow(QString(), readmeBox);
     form->addRow(QStringLiteral("Location"), locationWidget);
 
@@ -1664,7 +1698,7 @@ void MainWindow::createNewRepository()
         QString error;
         const int index = provisionNewRepository(
             dest, name, descriptionEdit->toPlainText(), promptEdit->toPlainText(),
-            readmeBox->isChecked(), &error);
+            readmeBox->isChecked(), privateRadio->isChecked(), &error);
         if (index < 0) {
             QMessageBox::warning(&dialog, "New repository",
                                  error.isEmpty()
@@ -1683,7 +1717,7 @@ void MainWindow::createNewRepository()
 int MainWindow::provisionNewRepository(const QString &dest, const QString &name,
                                        const QString &description,
                                        const QString &firstPrompt, bool addReadme,
-                                       QString *error)
+                                       bool isPrivate, QString *error)
 {
     const auto fail = [&](const QString &message) -> int {
         if (error)
@@ -1785,6 +1819,9 @@ int MainWindow::provisionNewRepository(const QString &dest, const QString &name,
     repo.description = about;
     repo.solanaAddress = savedSolanaAddress();
     repo.publishToNetwork = true;
+    // A repo created private never has a public catalog record: publish below
+    // routes through syncRepository, which seals the private replica instead.
+    repo.isPrivate = isPrivate;
     repo.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
     repo.mirrorPath = repositoryMirrorRoot() + "/" +
                       repoSegment(repo.owner, QStringLiteral("owner")) + "-" +
@@ -1812,8 +1849,9 @@ int MainWindow::provisionNewRepository(const QString &dest, const QString &name,
     }
 
     publishRepositoryAfterMirrorRefresh(index, false);
-    logSystem("New repository: created " + repo.owner + "/" + repo.name + " in " +
-              dest + ".");
+    logSystem("New repository: created " +
+              QString(repo.isPrivate ? "private " : "public ") + repo.owner + "/" +
+              repo.name + " in " + dest + ".");
     flashMessage(QStringLiteral("Created %1/%2.").arg(repo.owner, repo.name));
     return index;
 }
