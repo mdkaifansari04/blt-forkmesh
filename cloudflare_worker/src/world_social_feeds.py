@@ -10,6 +10,7 @@ Cloudflare/Pyodide runtime.
 import json
 import re
 from email.utils import parsedate_to_datetime
+from html import unescape as _unescape
 
 
 TWITTER_HANDLE = "forkmesh"
@@ -29,6 +30,10 @@ REDDIT_LISTING_URL = (
 # Reddit rejects generic user agents; the documented convention is
 # platform:app-id:version (by /u/owner).
 REDDIT_USER_AGENT = "web:forkmesh-world-banner:v1 (by /u/forkmesh)"
+# The blog is one of our own static assets, so the handler reads the index
+# through env.ASSETS (no external fetch) and this module only parses it.
+BLOG_URL = "https://forkmesh.com/blog"
+BLOG_INDEX_ASSET = "blog.html"
 
 SOCIAL_POSTS_LIMIT = 6
 MAX_POST_TEXT = 400
@@ -36,6 +41,16 @@ MAX_POST_AUTHOR = 40
 
 _NEXT_DATA_RE = re.compile(
     r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>',
+    re.DOTALL,
+)
+
+# One feature card on the static blog index (blog.html). The cards are
+# uniform generated markup: anchor, meta line, title, then the blurb.
+_BLOG_CARD_RE = re.compile(
+    r'<a class="blog1-card" href="(?P<href>/blog/[^"]+)"[^>]*>'
+    r'.*?<p class="blog1-card-meta">(?P<meta>.*?)</p>'
+    r'\s*<h3>(?P<title>.*?)</h3>'
+    r'\s*<p>(?P<blurb>.*?)</p>',
     re.DOTALL,
 )
 
@@ -163,10 +178,36 @@ def normalize_twitter_timeline(next_data):
     return posts
 
 
-def social_posts_payload(now, twitter_posts, reddit_posts,
-                         twitter_ok, reddit_ok):
-    """One public payload for both banners; states let a banner keep its
-    static sign when its feed is unreachable while the other stays live."""
+def normalize_blog_index(html):
+    """Bound the blog index's feature cards to the banner's post shape.
+
+    The static cards carry no dates, so createdAt stays 0 and the board's
+    staleness plate reads the snapshot age instead of a last-post age.
+    """
+    posts = []
+    for match in _BLOG_CARD_RE.finditer(str(html or "")):
+        title = _clean_text(_unescape(match.group("title")), 120)
+        if not title:
+            continue
+        href = match.group("href")
+        posts.append({
+            "id": _clean_text(href.strip("/").split("/")[-1], 80),
+            "text": title,
+            "detail": _clean_text(_unescape(match.group("blurb"))),
+            "meta": _clean_text(_unescape(match.group("meta")), 80),
+            "createdAt": 0,
+            "url": "https://forkmesh.com" + href,
+        })
+        if len(posts) >= SOCIAL_POSTS_LIMIT:
+            break
+    return posts
+
+
+def social_posts_payload(now, twitter_posts, reddit_posts, blog_posts,
+                         twitter_ok, reddit_ok, blog_ok):
+    """One public payload for all three banners; states let a banner keep
+    its static sign when its feed is unreachable while the others stay
+    live."""
     return {
         "ok": True,
         "now": int(now),
@@ -181,5 +222,11 @@ def social_posts_payload(now, twitter_posts, reddit_posts,
             "url": REDDIT_PROFILE_URL,
             "state": "ready" if reddit_ok else "unavailable",
             "posts": reddit_posts if reddit_ok else [],
+        },
+        "blog": {
+            "handle": "forkmesh.com/blog",
+            "url": BLOG_URL,
+            "state": "ready" if blog_ok else "unavailable",
+            "posts": blog_posts if blog_ok else [],
         },
     }
