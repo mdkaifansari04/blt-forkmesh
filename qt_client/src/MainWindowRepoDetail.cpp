@@ -8924,9 +8924,11 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_scmDiff = new QTextBrowser;
     m_scmDiff->setObjectName("diffView");
     registerDiffView(m_scmDiff);
+    // Sticky per-file header + read-progress tracking over the combined
+    // working-tree diff (adhoc #399).
+    setupScmDiffPane();
     m_scmDiff->setHtml(QStringLiteral(
-        "<p style='color:#8b949e'>Select a change or open all changes to view "
-        "the diff.</p>"));
+        "<p style='color:#8b949e'>No working-tree changes to review.</p>"));
     changesLayout->addWidget(m_scmDiff, 1);
 
     m_commitsStack->addWidget(changesPage); // kCommitWorkspaceChangesPage

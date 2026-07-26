@@ -2507,13 +2507,47 @@ private:
     // Shared commit body for both buttons above. Returns true once a commit lands
     // so "Commit & push" only pushes after a successful commit.
     bool performScmCommit();
+    // Bring a file's section of the combined working-tree diff into view.
     void showScmDiff(const QString &path, bool staged, bool untracked);
-    // "Open Changes" for a whole group: a combined diff of every staged (or every
-    // unstaged + untracked) file, rendered in the same diff pane as a single file.
+    // "Open Changes" for a whole group: jump the combined diff to the first
+    // staged (or first unstaged/untracked) file.
     void showScmDiffAll(bool staged);
-    // Walk the working-tree changes with the up/down buttons: step through the
-    // open file's hunks first and only move to the next (+1) / previous (-1)
-    // changed file once past the last/first hunk.
+    // Render every working-tree change into one scrollable diff (adhoc #399),
+    // caching the per-file anchors/labels the sticky header and the read-progress
+    // tracking need. Skips the (expensive) re-layout when nothing changed.
+    void renderScmCombinedDiff();
+    // Build the sticky header overlay + scroll wiring for the combined diff.
+    // Called once, right after m_scmDiff is constructed.
+    void setupScmDiffPane();
+    // Scroll the combined diff so this file's section sits at the top. Staged and
+    // unstaged copies of one path render as separate sections; `staged` picks it.
+    void scrollScmDiffToFile(const QString &path, bool staged);
+    // Follow the combined diff's scroll: keep the sticky header on the topmost
+    // visible file, advance its read-progress chart / percentage, and select that
+    // file in the tree. Cheap (no re-render); runs on every scroll tick.
+    void updateScmDiffScrollState();
+    // Position the sticky header across the top of the changes diff viewport.
+    void layoutScmStickyHeader();
+    // Walk the rendered combined diff once, caching each file header's absolute y
+    // into m_scmFileTops so the per-tick sticky update stays cheap.
+    void computeScmFileTops();
+    // Debounced off the changes diff scrollbar: check off every file that has been
+    // scrolled all the way through as "Viewed" and re-render (collapsing them).
+    void applyScmAutoMarkViewedOnScroll();
+    // Select a file in the changes tree without scrolling the diff back to it
+    // (used while the selection follows the scroll).
+    void selectScmFileInTree(const QString &path, bool staged);
+    // The changes-tree row for a path on the staged / unstaged side, or nullptr.
+    QTreeWidgetItem *scmFindItem(const QString &path, bool staged) const;
+    // Refresh the "N of M files viewed" counter above the changes tree.
+    void updateScmViewedCount();
+    // "viewed:" toggles inside the combined working-tree diff.
+    void onScmDiffAnchorClicked(const QUrl &url);
+    // QSettings context (see loadDiffViewed) for the working-tree diff.
+    static QString scmViewedContext();
+    // Walk the working-tree changes with the up/down buttons: every file shares
+    // one scrollable view, so this just jumps to the next (+1) / previous (-1)
+    // hunk, crossing file boundaries on its own.
     void scmSelectAdjacentChange(int delta);
     // Scroll the changes diff to the next (+1) / previous (-1) hunk. With fromEnd
     // the search starts at the bottom (used when entering a file from below).
@@ -4401,6 +4435,8 @@ private:
     QLineEdit *m_scmMessage = nullptr;
     QTextBrowser *m_scmDiff = nullptr;
     QLabel *m_scmCountLabel = nullptr;
+    QLabel *m_scmViewedLabel = nullptr;  // "3 of 26 files viewed"
+    QPushButton *m_scmAutoViewedButton = nullptr; // auto-mark-viewed-on-scroll
     QPushButton *m_scmGenerateButton = nullptr;
     QComboBox *m_scmGenModel = nullptr;       // AI model for inline generation
     QComboBox *m_scmGenKind = nullptr;        // "Commit message" vs "X post"
@@ -4422,10 +4458,30 @@ private:
     // Last `git status` output, so a focus/tab-click rescan can skip the (flickery)
     // full tree rebuild when nothing in the working tree actually changed.
     QByteArray m_scmStatusCache;
-    // Rendered per-file diff HTML, keyed by "staged|untracked|path", so clicking
-    // between files (or walking them with the up/down buttons) is instant after the
-    // first view. Cleared whenever the working tree is rescanned.
-    QHash<QString, QString> m_scmDiffCache;
+    // Combined working-tree diff (adhoc #399): every changed file lives in one
+    // scrollable view, so reviewing is a single scroll and each file checks itself
+    // off as "Viewed" once its end has passed the viewport bottom.
+    // Section key is "s|<path>" / "u|<path>" — a path modified *and* staged
+    // renders twice, once per side — in rendered (top-to-bottom) order.
+    QString m_scmCombinedPatch;      // cached raw patch behind the render
+    int m_scmCombinedStagedFiles = 0; // how many of its files are the staged half
+    bool m_scmPatchValid = false;    // false until the patch is (re-)read from git
+    QStringList m_scmSectionKeys;
+    QStringList m_scmSectionAnchors; // "file-N" per section, aligned to the keys
+    QStringList m_scmSectionPaths;   // repo-relative path per section
+    QList<int> m_scmFileTops;        // cached absolute y of each section header
+    QHash<QString, QString> m_scmStickyLabelHtml; // section key -> sticky label
+    QString m_scmDiffRenderKey;      // skip the re-layout when nothing changed
+    QFrame *m_scmStickyHeader = nullptr;
+    QLabel *m_scmStickyPath = nullptr;
+    PacmanProgress *m_scmStickyPacman = nullptr;
+    QLabel *m_scmStickyPercent = nullptr; // "42%" read-through of this file
+    QPushButton *m_scmStickyViewed = nullptr;
+    QString m_scmStickySection;      // section key shown in the sticky header
+    QTimer *m_scmAutoViewedDebounce = nullptr;
+    // Set while the tree selection is following the diff scroll, so
+    // currentItemChanged doesn't bounce the diff back to the file header.
+    bool m_scmSuppressFileScroll = false;
     // Commits tab: a stack flipping between the list and a per-commit diff view.
     QStackedWidget *m_commitsStack = nullptr;
     QLabel *m_commitTitle = nullptr;
