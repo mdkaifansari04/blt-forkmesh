@@ -232,7 +232,10 @@
 
   function nativeRepositoryLogoDataUrl(value) {
     const url = String(value || "");
-    return /^data:image\/(?:svg\+xml|png|jpeg|webp)(?:;|,)/i.test(url)
+    return (
+      /^data:image\/(?:svg\+xml|png|jpeg|webp)(?:;|,)/i.test(url)
+      || /^\/api\/repo\/[^/?#]+\/[^/?#]+\/raw\?[^#]+$/i.test(url)
+    )
       ? url
       : "";
   }

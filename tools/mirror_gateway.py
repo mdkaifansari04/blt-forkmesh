@@ -1828,8 +1828,7 @@ class GitRepository:
             "log",
             "-n",
             "20",
-            "--date=format:%Y-%m-%d",
-            "--format=%H%x1f%an%x1f%ad%x1f%s",
+            "--format=%H%x1f%an%x1f%cI%x1f%s",
             commit,
         ]
         if path:
@@ -2278,10 +2277,9 @@ class GitRepository:
             self.git_dir,
             [
                 "log",
-                "--date=format:%Y-%m-%d",
                 "-n",
                 "60",
-                "--format=%H%x1f%an%x1f%ad%x1f%s",
+                "--format=%H%x1f%an%x1f%cI%x1f%s",
                 commit,
             ],
             max_output=512 * 1024,
@@ -2310,8 +2308,7 @@ class GitRepository:
             [
                 "show",
                 "-s",
-                "--date=format:%Y-%m-%d %H:%M",
-                "--format=%H%x1f%an%x1f%ad%x1f%P%x1f%s%x1f%b",
+                "--format=%H%x1f%an%x1f%cI%x1f%P%x1f%s%x1f%b",
                 commit,
             ],
             max_output=512 * 1024,
@@ -3665,10 +3662,11 @@ class GatewayApplication:
                 return json_response(
                     repository.blobs(query["paths"], query.get("ref", "")))
             if operation == "raw":
+                stream = repository.raw_spec(query)
                 return GatewayResponse(
                     200,
-                    "application/octet-stream",
-                    stream=repository.raw_spec(query),
+                    stream.content_type,
+                    stream=stream,
                 )
             if operation == "release-blob":
                 return GatewayResponse(
