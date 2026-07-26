@@ -264,6 +264,39 @@ def parse_gateway_repository_allowlist(value: object) -> dict[str, str]:
     return repositories
 
 
+def parse_gateway_node_hosts(value: object) -> dict[str, str]:
+    """Parse optional per-node SSH gateway hosts.
+
+    Format: ``node-a=ssh-a.example.org,node-b=192.0.2.10``.  The mapping only
+    selects the transport host; repository authorization remains independently
+    constrained by ``SSH_GATEWAY_REPOSITORIES``.  As with that allowlist, one
+    malformed or conflicting entry fails the whole value closed.
+    """
+
+    raw = str(value or "").strip()
+    if not raw:
+        return {}
+    if len(raw.encode("utf-8")) > MAX_GATEWAY_ALLOWLIST_BYTES:
+        return {}
+    hosts: dict[str, str] = {}
+    entries = raw.split(",")
+    if len(entries) > MAX_GATEWAY_REPOSITORIES:
+        return {}
+    for raw_entry in entries:
+        raw_owner, separator, raw_host = raw_entry.strip().partition("=")
+        owner = raw_owner.strip().lower()
+        host = configured_gateway_host(raw_host)
+        if (
+            separator != "="
+            or not _OWNER_RE.fullmatch(owner)
+            or not host
+            or owner in hosts
+        ):
+            return {}
+        hosts[owner] = host
+    return hosts
+
+
 def gateway_repository_access(
     repositories: object, owner: object, repository: object
 ) -> str:
