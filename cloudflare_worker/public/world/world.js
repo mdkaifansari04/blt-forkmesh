@@ -4,6 +4,7 @@ import {
   FOCUS_MUSIC_TRACKS,
   LANDMARKS,
   OUTFIT_COLOR_OPTIONS,
+  OUTFIT_STYLE_OPTIONS,
   RADIO_STATIONS,
   THEME_OPTIONS,
   TOUR_STEPS,
@@ -168,6 +169,7 @@ const ACCOUNT_STATUS_ICONS = Object.freeze({
   "Verified bot": "⌘",
 });
 const OUTFIT_COLOR_VALUES = new Set(OUTFIT_COLOR_OPTIONS.map((option) => option.id));
+const OUTFIT_STYLE_VALUES = new Set(OUTFIT_STYLE_OPTIONS.map((option) => option.id));
 const PATREON_URL = "https://www.patreon.com/16434219/join";
 const WORLD_SPACE_IDS = new Set([
   "town-square",
@@ -528,6 +530,8 @@ function defaultSettings() {
     statusEmoji: "",
     statusNote: "",
     outfitColor: "",
+    outfitStyle: "",
+    faceImage: false,
     privacy: {
       name: true,
       country: true,
@@ -609,6 +613,10 @@ function mergeSettings(stored) {
     outfitColor: OUTFIT_COLOR_VALUES.has(String(stored?.outfitColor || ""))
       ? String(stored.outfitColor)
       : defaults.outfitColor,
+    outfitStyle: OUTFIT_STYLE_VALUES.has(String(stored?.outfitStyle || ""))
+      ? String(stored.outfitStyle)
+      : defaults.outfitStyle,
+    faceImage: stored?.faceImage === true,
     privacy: {
       ...defaults.privacy,
       ...(stored?.privacy || {}),
@@ -679,6 +687,14 @@ function publicIdentity(identity, settings) {
       OUTFIT_COLOR_VALUES.has(settings.outfitColor)
         ? settings.outfitColor
         : "",
+    outfitStyle:
+      identity.accountStatus === "Supporting member" &&
+      OUTFIT_STYLE_VALUES.has(settings.outfitStyle)
+        ? settings.outfitStyle
+        : "",
+    faceImage:
+      identity.accountStatus === "Supporting member" &&
+      settings.faceImage === true,
   };
 }
 
@@ -807,6 +823,10 @@ function remotePlayer(peer) {
     outfitColor: OUTFIT_COLOR_VALUES.has(String(peer.outfitColor || ""))
       ? String(peer.outfitColor)
       : "",
+    outfitStyle: OUTFIT_STYLE_VALUES.has(String(peer.outfitStyle || ""))
+      ? String(peer.outfitStyle)
+      : "",
+    faceImage: peer.faceImage === true,
     nodes: Array.from(
       { length: Math.max(0, Math.min(6, Number(peer.nodeCount) || 0)) },
       () => "node",
@@ -2573,6 +2593,16 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         ${isSupportingMember ? "" : "disabled"}
       >${escapeHTML(outfit.label)}</button>`,
   ).join("");
+  const outfitStyleSwatches = OUTFIT_STYLE_OPTIONS.map(
+    (style) => `
+      <button
+        type="button"
+        class="world-outfit-option"
+        data-world-outfit-style="${escapeHTML(style.id)}"
+        aria-pressed="${String(settings.outfitStyle === style.id)}"
+        ${isSupportingMember ? "" : "disabled"}
+      >${escapeHTML(style.label)}</button>`,
+  ).join("");
 
   const privacyOptions = [
     ["name", "Show chosen display name"],
@@ -3366,13 +3396,28 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </fieldset>
 
           <fieldset class="world-setting-group">
-            <legend>Outfit color · Supporting member perk</legend>
+            <legend>Outfit &amp; face · Supporting member perks</legend>
+            <p class="world-setting-note">
+              Every coder already wears a unique outfit tailored from their
+              public name — cut, colourway, trims, and monogram. Supporting
+              members can pin their favourite cut and colourway instead.
+            </p>
+            <div class="world-outfit-grid">${outfitStyleSwatches}</div>
             <div class="world-outfit-grid">${outfitSwatches}</div>
+            <label class="world-privacy-option">
+              <span>Wear my account avatar photo as my face</span>
+              <input
+                type="checkbox"
+                data-world-face-image
+                ${settings.faceImage ? "checked" : ""}
+                ${isSupportingMember ? "" : "disabled"}
+              />
+            </label>
             <small>
               ${
                 isSupportingMember
-                  ? "Your outfit color replaces the default flag shirt and is visible to every visitor."
-                  : `<a href="${escapeHTML(PATREON_URL)}" target="_blank" rel="noreferrer">Become a Supporting member on Patreon</a> to unlock a custom outfit color everyone in the World can see.`
+                  ? "Your pinned cut, colourway, and face photo are visible to every visitor. The face photo is the avatar image already published on your account profile; upload or change it from your dashboard profile settings."
+                  : `<a href="${escapeHTML(PATREON_URL)}" target="_blank" rel="noreferrer">Become a Supporting member on Patreon</a> to pin an outfit cut and colourway — and wear your account avatar photo as your face — for everyone in the World to see.`
               }
             </small>
           </fieldset>
@@ -5388,6 +5433,13 @@ class ForkMeshWorld extends HTMLElement {
         void this.loadMastodonBoard(true);
         return;
       }
+      const outfitStyleButton = event.target.closest(
+        "[data-world-outfit-style]",
+      );
+      if (outfitStyleButton) {
+        this.setOutfitStyle(outfitStyleButton.dataset.worldOutfitStyle);
+        return;
+      }
       const outfitButton = event.target.closest("[data-world-outfit]");
       if (outfitButton) {
         this.setOutfitColor(outfitButton.dataset.worldOutfit);
@@ -5675,6 +5727,11 @@ class ForkMeshWorld extends HTMLElement {
       if (input) {
         this.settings.privacy[input.dataset.worldPrivacy] = input.checked;
         this.commitPublicSettings();
+        return;
+      }
+      const faceImage = event.target.closest("[data-world-face-image]");
+      if (faceImage) {
+        this.setFaceImage(faceImage.checked);
         return;
       }
       const availability = event.target.closest("[data-world-availability]");
@@ -14053,8 +14110,122 @@ class ForkMeshWorld extends HTMLElement {
     this.toast(
       label
         ? `${label} outfit is now visible to every visitor.`
-        : "Outfit reset to the default flag shirt.",
+        : "Outfit colourway back to the one your name tailors.",
     );
+  }
+
+  setOutfitStyle(style) {
+    if (this.identity.accountStatus !== "Supporting member") {
+      this.toast("Become a Supporting member on Patreon to pin an outfit cut.");
+      return;
+    }
+    if (!OUTFIT_STYLE_OPTIONS.some((option) => option.id === style)) return;
+    this.settings.outfitStyle =
+      this.settings.outfitStyle === style ? "" : style;
+    this.saveSettings();
+    this.$$("[data-world-outfit-style]").forEach((button) => {
+      button.setAttribute(
+        "aria-pressed",
+        String(button.dataset.worldOutfitStyle === this.settings.outfitStyle),
+      );
+    });
+    this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
+    this.sendPresence({ type: "presence" });
+    const label = OUTFIT_STYLE_OPTIONS.find(
+      (option) => option.id === this.settings.outfitStyle,
+    )?.label;
+    this.toast(
+      label
+        ? `${label} cut is now visible to every visitor.`
+        : "Outfit cut back to the one your name tailors.",
+    );
+  }
+
+  setFaceImage(enabled) {
+    if (this.identity.accountStatus !== "Supporting member") {
+      const input = this.$("[data-world-face-image]");
+      if (input) input.checked = false;
+      this.toast(
+        "Become a Supporting member on Patreon to wear your account avatar photo.",
+      );
+      return;
+    }
+    this.settings.faceImage = enabled === true;
+    this.saveSettings();
+    this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
+    this.sendPresence({ type: "presence" });
+    if (this.settings.faceImage) {
+      this.syncWorldFaceImages([]);
+      this.toast(
+        "Your account avatar photo is now your face. Manage the photo from your dashboard profile.",
+      );
+    } else {
+      this.toast("Back to the emoji face.");
+    }
+  }
+
+  // Resolve the already-public account avatar for every Supporting member who
+  // opted in to wearing it, then dress their 3D face with it. Only the opt-in
+  // boolean travels over presence; the image comes from the edge-cached
+  // /api/accounts/{name} lookup and is cached here per account for the session.
+  syncWorldFaceImages(players) {
+    const wearers = (Array.isArray(players) ? players : [])
+      .filter(
+        (peer) =>
+          peer?.faceImage === true &&
+          String(peer.accountStatus || "") === "Supporting member",
+      )
+      .map((peer) => ({
+        peerId: String(peer.id || ""),
+        name: String(peer.name || ""),
+      }));
+    if (
+      this.settings?.faceImage === true &&
+      this.identity?.accountStatus === "Supporting member"
+    ) {
+      wearers.push({
+        peerId: String(this.identity.id || ""),
+        name: String(this.identity.name || ""),
+      });
+    }
+    if (!wearers.length) return;
+    if (!this.worldFaceImages) this.worldFaceImages = new Map();
+    wearers.forEach(({ peerId, name }) => {
+      const account = name.trim().toLowerCase();
+      if (!peerId || !WORLD_ACCOUNT_NAME_RE.test(account)) return;
+      const dress = (url) => {
+        if (url && !this.destroyed) {
+          this.world?.setAvatarFaceImage?.(peerId, url);
+        }
+      };
+      const cached = this.worldFaceImages.get(account);
+      if (typeof cached === "string") {
+        dress(cached);
+        return;
+      }
+      if (cached) {
+        cached.then(dress);
+        return;
+      }
+      const pending = this.fetchJSON(
+        `/api/accounts/${encodeURIComponent(account)}`,
+      )
+        .then((profile) => {
+          const png = String(profile?.avatarPng || "");
+          const url =
+            png && /^[A-Za-z0-9+/=]+$/.test(png)
+              ? `data:image/png;base64,${png}`
+              : "";
+          this.worldFaceImages.set(account, url);
+          return url;
+        })
+        .catch(() => {
+          this.worldFaceImages.set(account, "");
+          return "";
+        });
+      this.worldFaceImages.set(account, pending);
+      pending.then(dress);
+    });
   }
 
   setLightLevel(value) {
@@ -15888,6 +16059,14 @@ class ForkMeshWorld extends HTMLElement {
           OUTFIT_COLOR_VALUES.has(this.settings.outfitColor)
             ? this.settings.outfitColor
             : "",
+        outfitStyle:
+          this.identity.accountStatus === "Supporting member" &&
+          OUTFIT_STYLE_VALUES.has(this.settings.outfitStyle)
+            ? this.settings.outfitStyle
+            : "",
+        faceImage:
+          this.identity.accountStatus === "Supporting member" &&
+          this.settings.faceImage === true,
       };
     } else if (message.type === "move") {
       safe = {
@@ -16139,6 +16318,7 @@ class ForkMeshWorld extends HTMLElement {
       });
     }
     this.world?.setRemotePlayers([...combined.values()]);
+    this.syncWorldFaceImages([...combined.values()]);
     this.syncMemberLounge();
     this.updateSystemCapacityMetrics();
   }
