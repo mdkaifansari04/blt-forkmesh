@@ -4,6 +4,7 @@ import {
   FOCUS_MUSIC_TRACKS,
   LANDMARKS,
   OUTFIT_COLOR_OPTIONS,
+  OUTFIT_STYLE_OPTIONS,
   RADIO_STATIONS,
   THEME_OPTIONS,
   TOUR_STEPS,
@@ -85,6 +86,10 @@ const MASTODON_REFRESH_MS = 10 * 60 * 1000;
 // built from the thread context of the newest toots that report replies.
 const MASTODON_REPLY_THREADS = 4;
 const MASTODON_REPLY_LIMIT = 12;
+// Twitter and Reddit have no CORS-open public API, so their banners repaint
+// from the Worker's edge-cached proxy on the same ten-minute cadence.
+const SOCIAL_POSTS_URL = "/api/world/social-posts";
+const SOCIAL_REFRESH_MS = 10 * 60 * 1000;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const CHAT_BUBBLE_JOIN_GRACE_MS = 20 * 1000;
 const POSITION_RADIUS = 72;
@@ -168,6 +173,7 @@ const ACCOUNT_STATUS_ICONS = Object.freeze({
   "Verified bot": "⌘",
 });
 const OUTFIT_COLOR_VALUES = new Set(OUTFIT_COLOR_OPTIONS.map((option) => option.id));
+const OUTFIT_STYLE_VALUES = new Set(OUTFIT_STYLE_OPTIONS.map((option) => option.id));
 const PATREON_URL = "https://www.patreon.com/16434219/join";
 const WORLD_SPACE_IDS = new Set([
   "town-square",
@@ -528,6 +534,8 @@ function defaultSettings() {
     statusEmoji: "",
     statusNote: "",
     outfitColor: "",
+    outfitStyle: "",
+    faceImage: false,
     privacy: {
       name: true,
       country: true,
@@ -609,6 +617,10 @@ function mergeSettings(stored) {
     outfitColor: OUTFIT_COLOR_VALUES.has(String(stored?.outfitColor || ""))
       ? String(stored.outfitColor)
       : defaults.outfitColor,
+    outfitStyle: OUTFIT_STYLE_VALUES.has(String(stored?.outfitStyle || ""))
+      ? String(stored.outfitStyle)
+      : defaults.outfitStyle,
+    faceImage: stored?.faceImage === true,
     privacy: {
       ...defaults.privacy,
       ...(stored?.privacy || {}),
@@ -679,6 +691,14 @@ function publicIdentity(identity, settings) {
       OUTFIT_COLOR_VALUES.has(settings.outfitColor)
         ? settings.outfitColor
         : "",
+    outfitStyle:
+      identity.accountStatus === "Supporting member" &&
+      OUTFIT_STYLE_VALUES.has(settings.outfitStyle)
+        ? settings.outfitStyle
+        : "",
+    faceImage:
+      identity.accountStatus === "Supporting member" &&
+      settings.faceImage === true,
   };
 }
 
@@ -807,6 +827,10 @@ function remotePlayer(peer) {
     outfitColor: OUTFIT_COLOR_VALUES.has(String(peer.outfitColor || ""))
       ? String(peer.outfitColor)
       : "",
+    outfitStyle: OUTFIT_STYLE_VALUES.has(String(peer.outfitStyle || ""))
+      ? String(peer.outfitStyle)
+      : "",
+    faceImage: peer.faceImage === true,
     nodes: Array.from(
       { length: Math.max(0, Math.min(6, Number(peer.nodeCount) || 0)) },
       () => "node",
@@ -2225,6 +2249,11 @@ function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
         String(mirror?.integrity || "").toLowerCase() === "ok" &&
         mirror?.behind !== true,
     );
+    const reachable = mirrors.filter(
+      (mirror) =>
+        String(mirror?.status || "").toLowerCase() === "online" &&
+        mirror?.cloneAvailable === true,
+    );
     const attestedMirrorCommits = new Map();
     healthy.forEach((mirror) => {
       const node = sanitizePresenceText(
@@ -2321,6 +2350,13 @@ function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
       servingName: preferred.name,
       source: "organization-alias",
       liveHost: healthy.length > 0,
+      mirrorState: healthy.length
+        ? "live"
+        : reachable.length
+          ? "syncing"
+          : mirrors.length
+            ? "offline"
+            : "stub",
       mirrorCount: mirrors.length,
       pullCount,
       commit: commits.size === 1 ? [...commits][0] : "",
@@ -2560,6 +2596,16 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         aria-pressed="${String(settings.outfitColor === outfit.id)}"
         ${isSupportingMember ? "" : "disabled"}
       >${escapeHTML(outfit.label)}</button>`,
+  ).join("");
+  const outfitStyleSwatches = OUTFIT_STYLE_OPTIONS.map(
+    (style) => `
+      <button
+        type="button"
+        class="world-outfit-option"
+        data-world-outfit-style="${escapeHTML(style.id)}"
+        aria-pressed="${String(settings.outfitStyle === style.id)}"
+        ${isSupportingMember ? "" : "disabled"}
+      >${escapeHTML(style.label)}</button>`,
   ).join("");
 
   const privacyOptions = [
@@ -3354,13 +3400,28 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </fieldset>
 
           <fieldset class="world-setting-group">
-            <legend>Outfit color · Supporting member perk</legend>
+            <legend>Outfit &amp; face · Supporting member perks</legend>
+            <p class="world-setting-note">
+              Every coder already wears a unique outfit tailored from their
+              public name — cut, colourway, trims, and monogram. Supporting
+              members can pin their favourite cut and colourway instead.
+            </p>
+            <div class="world-outfit-grid">${outfitStyleSwatches}</div>
             <div class="world-outfit-grid">${outfitSwatches}</div>
+            <label class="world-privacy-option">
+              <span>Wear my account avatar photo as my face</span>
+              <input
+                type="checkbox"
+                data-world-face-image
+                ${settings.faceImage ? "checked" : ""}
+                ${isSupportingMember ? "" : "disabled"}
+              />
+            </label>
             <small>
               ${
                 isSupportingMember
-                  ? "Your outfit color replaces the default flag shirt and is visible to every visitor."
-                  : `<a href="${escapeHTML(PATREON_URL)}" target="_blank" rel="noreferrer">Become a Supporting member on Patreon</a> to unlock a custom outfit color everyone in the World can see.`
+                  ? "Your pinned cut, colourway, and face photo are visible to every visitor. The face photo is the avatar image already published on your account profile; upload or change it from your dashboard profile settings."
+                  : `<a href="${escapeHTML(PATREON_URL)}" target="_blank" rel="noreferrer">Become a Supporting member on Patreon</a> to pin an outfit cut and colourway — and wear your account avatar photo as your face — for everyone in the World to see.`
               }
             </small>
           </fieldset>
@@ -3488,6 +3549,9 @@ class ForkMeshWorld extends HTMLElement {
     this.mastodonRequestedAt = 0;
     this.mastodonLoad = null;
     this.mastodonRefreshTimer = 0;
+    this.socialFeedsSnapshot = null;
+    this.socialFeedsLoad = null;
+    this.socialFeedsTimer = 0;
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
     const requestedLandmark = worldQuery.get("landmark") || "";
@@ -3983,6 +4047,10 @@ class ForkMeshWorld extends HTMLElement {
       void this.loadMastodonBoard();
       this.syncMastodonKiosk();
       this.startMastodonRefresh();
+      // Same pattern for the Twitter/Reddit banners: push any cached
+      // snapshot onto the rebuilt scene, then keep the ten-minute cadence.
+      this.syncSocialBanners();
+      this.startSocialBannersRefresh();
       this.syncMemberLounge();
       void this.loadReferralLeaderboard();
       this.syncRepositoryScene();
@@ -5377,6 +5445,13 @@ class ForkMeshWorld extends HTMLElement {
         void this.loadMastodonBoard(true);
         return;
       }
+      const outfitStyleButton = event.target.closest(
+        "[data-world-outfit-style]",
+      );
+      if (outfitStyleButton) {
+        this.setOutfitStyle(outfitStyleButton.dataset.worldOutfitStyle);
+        return;
+      }
       const outfitButton = event.target.closest("[data-world-outfit]");
       if (outfitButton) {
         this.setOutfitColor(outfitButton.dataset.worldOutfit);
@@ -5664,6 +5739,11 @@ class ForkMeshWorld extends HTMLElement {
       if (input) {
         this.settings.privacy[input.dataset.worldPrivacy] = input.checked;
         this.commitPublicSettings();
+        return;
+      }
+      const faceImage = event.target.closest("[data-world-face-image]");
+      if (faceImage) {
+        this.setFaceImage(faceImage.checked);
         return;
       }
       const availability = event.target.closest("[data-world-availability]");
@@ -7180,6 +7260,90 @@ class ForkMeshWorld extends HTMLElement {
       this.syncMastodonCountdown();
     }, 1000);
     this.syncMastodonCountdown();
+  }
+
+  // The Twitter and Reddit banners repaint from the Worker's proxy snapshot
+  // (/api/world/social-posts). The read is public, credential-free, and
+  // edge-cached for ten minutes, so a scene rebuild can re-request it
+  // cheaply. Remote text is drawn onto a canvas texture, never injected as
+  // markup.
+  loadSocialBanners() {
+    if (this.socialFeedsLoad) return this.socialFeedsLoad;
+    this.socialFeedsLoad = (async () => {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 10000);
+      try {
+        const response = await fetch(SOCIAL_POSTS_URL, {
+          credentials: "omit",
+          headers: { accept: "application/json" },
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error(`social posts returned ${response.status}`);
+        }
+        this.socialFeedsSnapshot = await response.json();
+        this.syncSocialBanners();
+      } catch (_) {
+        // Keep the previous snapshot — or the static signs — on failure.
+      } finally {
+        window.clearTimeout(timeout);
+        this.socialFeedsLoad = null;
+      }
+    })();
+    return this.socialFeedsLoad;
+  }
+
+  startSocialBannersRefresh() {
+    window.clearInterval(this.socialFeedsTimer);
+    this.socialFeedsTimer = window.setInterval(() => {
+      void this.loadSocialBanners();
+    }, SOCIAL_REFRESH_MS);
+    void this.loadSocialBanners();
+  }
+
+  socialPostDate(createdAt) {
+    const stamp = Number(createdAt) || 0;
+    if (!stamp) return "";
+    return new Date(stamp).toLocaleDateString([], {
+      month: "short",
+      day: "numeric",
+    });
+  }
+
+  // Mirror the proxy snapshot onto the in-world banner boards, reduced to the
+  // bounded display strings the canvas painter draws.
+  syncSocialBanners() {
+    const snapshot = this.socialFeedsSnapshot;
+    if (!snapshot) return;
+    const bound = (feed, meta) => ({
+      state: feed?.state === "ready" ? "ready" : "unavailable",
+      posts: (Array.isArray(feed?.posts) ? feed.posts : []).map((post) => ({
+        text: String(post?.text || "").slice(0, 400),
+        meta: meta(post),
+      })),
+    });
+    this.world?.updateSocialBanners?.({
+      twitter: bound(snapshot.twitter, (post) =>
+        [
+          this.socialPostDate(post?.createdAt),
+          `♥ ${formatMastodonCount(post?.likes)}`,
+          `🔁 ${formatMastodonCount(post?.retweets)}`,
+          String(post?.author || ""),
+        ]
+          .filter(Boolean)
+          .join(" · "),
+      ),
+      reddit: bound(snapshot.reddit, (post) =>
+        [
+          this.socialPostDate(post?.createdAt),
+          `▲ ${formatMastodonCount(post?.score)}`,
+          `💬 ${formatMastodonCount(post?.comments)}`,
+          post?.author ? `u/${post.author}` : "",
+        ]
+          .filter(Boolean)
+          .join(" · "),
+      ),
+    });
   }
 
   mastodonRefreshRemaining() {
@@ -14042,8 +14206,122 @@ class ForkMeshWorld extends HTMLElement {
     this.toast(
       label
         ? `${label} outfit is now visible to every visitor.`
-        : "Outfit reset to the default flag shirt.",
+        : "Outfit colourway back to the one your name tailors.",
     );
+  }
+
+  setOutfitStyle(style) {
+    if (this.identity.accountStatus !== "Supporting member") {
+      this.toast("Become a Supporting member on Patreon to pin an outfit cut.");
+      return;
+    }
+    if (!OUTFIT_STYLE_OPTIONS.some((option) => option.id === style)) return;
+    this.settings.outfitStyle =
+      this.settings.outfitStyle === style ? "" : style;
+    this.saveSettings();
+    this.$$("[data-world-outfit-style]").forEach((button) => {
+      button.setAttribute(
+        "aria-pressed",
+        String(button.dataset.worldOutfitStyle === this.settings.outfitStyle),
+      );
+    });
+    this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
+    this.sendPresence({ type: "presence" });
+    const label = OUTFIT_STYLE_OPTIONS.find(
+      (option) => option.id === this.settings.outfitStyle,
+    )?.label;
+    this.toast(
+      label
+        ? `${label} cut is now visible to every visitor.`
+        : "Outfit cut back to the one your name tailors.",
+    );
+  }
+
+  setFaceImage(enabled) {
+    if (this.identity.accountStatus !== "Supporting member") {
+      const input = this.$("[data-world-face-image]");
+      if (input) input.checked = false;
+      this.toast(
+        "Become a Supporting member on Patreon to wear your account avatar photo.",
+      );
+      return;
+    }
+    this.settings.faceImage = enabled === true;
+    this.saveSettings();
+    this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
+    this.sendPresence({ type: "presence" });
+    if (this.settings.faceImage) {
+      this.syncWorldFaceImages([]);
+      this.toast(
+        "Your account avatar photo is now your face. Manage the photo from your dashboard profile.",
+      );
+    } else {
+      this.toast("Back to the emoji face.");
+    }
+  }
+
+  // Resolve the already-public account avatar for every Supporting member who
+  // opted in to wearing it, then dress their 3D face with it. Only the opt-in
+  // boolean travels over presence; the image comes from the edge-cached
+  // /api/accounts/{name} lookup and is cached here per account for the session.
+  syncWorldFaceImages(players) {
+    const wearers = (Array.isArray(players) ? players : [])
+      .filter(
+        (peer) =>
+          peer?.faceImage === true &&
+          String(peer.accountStatus || "") === "Supporting member",
+      )
+      .map((peer) => ({
+        peerId: String(peer.id || ""),
+        name: String(peer.name || ""),
+      }));
+    if (
+      this.settings?.faceImage === true &&
+      this.identity?.accountStatus === "Supporting member"
+    ) {
+      wearers.push({
+        peerId: String(this.identity.id || ""),
+        name: String(this.identity.name || ""),
+      });
+    }
+    if (!wearers.length) return;
+    if (!this.worldFaceImages) this.worldFaceImages = new Map();
+    wearers.forEach(({ peerId, name }) => {
+      const account = name.trim().toLowerCase();
+      if (!peerId || !WORLD_ACCOUNT_NAME_RE.test(account)) return;
+      const dress = (url) => {
+        if (url && !this.destroyed) {
+          this.world?.setAvatarFaceImage?.(peerId, url);
+        }
+      };
+      const cached = this.worldFaceImages.get(account);
+      if (typeof cached === "string") {
+        dress(cached);
+        return;
+      }
+      if (cached) {
+        cached.then(dress);
+        return;
+      }
+      const pending = this.fetchJSON(
+        `/api/accounts/${encodeURIComponent(account)}`,
+      )
+        .then((profile) => {
+          const png = String(profile?.avatarPng || "");
+          const url =
+            png && /^[A-Za-z0-9+/=]+$/.test(png)
+              ? `data:image/png;base64,${png}`
+              : "";
+          this.worldFaceImages.set(account, url);
+          return url;
+        })
+        .catch(() => {
+          this.worldFaceImages.set(account, "");
+          return "";
+        });
+      this.worldFaceImages.set(account, pending);
+      pending.then(dress);
+    });
   }
 
   setLightLevel(value) {
@@ -15877,6 +16155,14 @@ class ForkMeshWorld extends HTMLElement {
           OUTFIT_COLOR_VALUES.has(this.settings.outfitColor)
             ? this.settings.outfitColor
             : "",
+        outfitStyle:
+          this.identity.accountStatus === "Supporting member" &&
+          OUTFIT_STYLE_VALUES.has(this.settings.outfitStyle)
+            ? this.settings.outfitStyle
+            : "",
+        faceImage:
+          this.identity.accountStatus === "Supporting member" &&
+          this.settings.faceImage === true,
       };
     } else if (message.type === "move") {
       safe = {
@@ -16152,6 +16438,7 @@ class ForkMeshWorld extends HTMLElement {
       });
     }
     this.world?.setRemotePlayers([...combined.values()]);
+    this.syncWorldFaceImages([...combined.values()]);
     this.syncMemberLounge();
     this.updateSystemCapacityMetrics();
   }
@@ -16342,6 +16629,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.diagnosticsTimer);
     window.clearInterval(this.updateCheckTimer);
     window.clearInterval(this.mastodonRefreshTimer);
+    window.clearInterval(this.socialFeedsTimer);
     window.clearTimeout(this.rendererRecoveryTimer);
     this.rendererRecoveryTimer = 0;
     this.peerGraceTimer = 0;

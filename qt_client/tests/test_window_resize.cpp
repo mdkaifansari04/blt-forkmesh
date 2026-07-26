@@ -1106,17 +1106,17 @@ int main(int argc, char *argv[])
         window.testShowRepoIssuesTab();
         QApplication::processEvents();
         const int tabGap = window.testRepoTabGapAroundIssues();
-        const int looperGap = window.testIssueLooperGapAboveIssuesTab();
-        const int looperDelta = window.testIssueLooperCenterDelta();
+        const int looperGap = window.testIssueLooperGapFromNewIssueButton();
+        const bool looperAligned = window.testIssueLooperRowAligned();
         const int navTrailingGap = window.testTopNavTrailingGap();
-        check(tabGap >= 8 && looperGap >= -1 && qAbs(looperDelta) <= 24 &&
+        check(tabGap >= 8 && looperGap >= -1 && looperAligned &&
                   navTrailingGap >= 0 && navTrailingGap <= 28,
-              QString("responsive top rows keep breathing room and anchor the "
-                      "issue looper (tabGap=%1 looperGap=%2 looperDelta=%3 "
-                      "navTrailingGap=%4)")
+              QString("responsive top rows keep breathing room and place the "
+                      "issue looper beside New issue (tabGap=%1 looperGap=%2 "
+                      "looperAligned=%3 navTrailingGap=%4)")
                   .arg(tabGap)
                   .arg(looperGap)
-                  .arg(looperDelta)
+                  .arg(looperAligned)
                   .arg(navTrailingGap));
 
     // Issue #207: the commit detail page must expose a restore/revert action
