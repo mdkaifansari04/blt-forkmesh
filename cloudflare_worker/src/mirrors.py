@@ -380,6 +380,24 @@ def build_repo_mirrors_payload(
             integrity = "healing"
         else:
             integrity = "rejected"
+        if not online:
+            activity = "offline"
+        elif actions_state == "running":
+            activity = "running-actions"
+        elif behind:
+            # The node is live but its last signed publication is not the
+            # freshest exact refs state. This is a truthful, Worker-observable
+            # "sync pending/in progress" signal without guessing which local
+            # process is currently consuming CPU.
+            activity = "syncing"
+        elif integrity == "healing":
+            activity = "verifying"
+        elif integrity == "rejected":
+            activity = "integrity-blocked"
+        elif integrity == "unknown":
+            activity = "awaiting-verification"
+        else:
+            activity = "serving"
         mirrors.append({
             "node": str(rec.get("owner") or "").strip(),
             "owner": str(rec.get("owner") or "").strip(),
@@ -435,6 +453,8 @@ def build_repo_mirrors_payload(
             "diskUsedBytes": disk_used,
             "diskTotalBytes": disk_total,
             "integrity": integrity,
+            "activity": activity,
+            "activityUpdatedAt": seen or last_sync,
         })
 
     mirrors.sort(
