@@ -87,7 +87,9 @@ const MASTODON_REFRESH_MS = 10 * 60 * 1000;
 const MASTODON_REPLY_THREADS = 4;
 const MASTODON_REPLY_LIMIT = 12;
 // Twitter and Reddit have no CORS-open public API, so their banners repaint
-// from the Worker's edge-cached proxy on the same ten-minute cadence.
+// from the Worker's edge-cached proxy on the same ten-minute cadence. The
+// blog board rides the same snapshot: the Worker reads its own static blog
+// index and folds the feature cards into the payload.
 const SOCIAL_POSTS_URL = "/api/world/social-posts";
 const SOCIAL_REFRESH_MS = 10 * 60 * 1000;
 const POSITION_WRITE_INTERVAL_MS = 1000;
@@ -3552,6 +3554,8 @@ class ForkMeshWorld extends HTMLElement {
     this.socialFeedsSnapshot = null;
     this.socialFeedsLoad = null;
     this.socialFeedsTimer = 0;
+    this.socialFeedsRequestedAt = 0;
+    this.socialFeedsFetchedAt = 0;
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
     const requestedLandmark = worldQuery.get("landmark") || "";
@@ -4051,8 +4055,9 @@ class ForkMeshWorld extends HTMLElement {
       void this.loadMastodonBoard();
       this.syncMastodonKiosk();
       this.startMastodonRefresh();
-      // Same pattern for the Twitter/Reddit banners: push any cached
-      // snapshot onto the rebuilt scene, then keep the ten-minute cadence.
+      // Same pattern for the Twitter/Reddit/blog banners: push any cached
+      // snapshot onto the rebuilt scene, then keep the ten-minute cadence
+      // (whose one-second tick also drives the stand clocks).
       this.syncSocialBanners();
       this.startSocialBannersRefresh();
       this.syncMemberLounge();
@@ -7280,6 +7285,7 @@ class ForkMeshWorld extends HTMLElement {
   // markup.
   loadSocialBanners() {
     if (this.socialFeedsLoad) return this.socialFeedsLoad;
+    this.socialFeedsRequestedAt = Date.now();
     this.socialFeedsLoad = (async () => {
       const controller = new AbortController();
       const timeout = window.setTimeout(() => controller.abort(), 10000);
@@ -7293,23 +7299,80 @@ class ForkMeshWorld extends HTMLElement {
           throw new Error(`social posts returned ${response.status}`);
         }
         this.socialFeedsSnapshot = await response.json();
+        this.socialFeedsFetchedAt = Date.now();
         this.syncSocialBanners();
       } catch (_) {
         // Keep the previous snapshot — or the static signs — on failure.
       } finally {
         window.clearTimeout(timeout);
         this.socialFeedsLoad = null;
+        this.syncSocialBannerTimers();
       }
     })();
+    this.syncSocialBannerTimers();
     return this.socialFeedsLoad;
   }
 
+  // Like the Mastodon kiosk, a one-second tick drives both the stand clocks
+  // and the ten-minute reload: when the countdown reaches zero the next tick
+  // starts the fetch, so a repaint from a fresh snapshot restarts the same
+  // window the boards were counting down.
   startSocialBannersRefresh() {
     window.clearInterval(this.socialFeedsTimer);
     this.socialFeedsTimer = window.setInterval(() => {
-      void this.loadSocialBanners();
-    }, SOCIAL_REFRESH_MS);
+      this.syncSocialBannerTimers();
+    }, 1000);
     void this.loadSocialBanners();
+  }
+
+  socialRefreshRemaining() {
+    if (!this.socialFeedsRequestedAt) return 0;
+    return Math.max(
+      0,
+      this.socialFeedsRequestedAt + SOCIAL_REFRESH_MS - Date.now(),
+    );
+  }
+
+  // Milliseconds since the newest post in a proxied feed, or null when the
+  // feed has no dated posts (unfetched, unavailable, or the blog's undated
+  // feature articles).
+  socialNewestPostAgo(feed) {
+    let latest = 0;
+    for (const post of Array.isArray(feed?.posts) ? feed.posts : []) {
+      const at = Number(post?.createdAt) || 0;
+      if (at > latest) latest = at;
+    }
+    return latest ? Math.max(0, Date.now() - latest) : null;
+  }
+
+  // Age of the snapshot itself: the server stamps `now` when it builds the
+  // payload, so an edge-cached read still reports how old the data really
+  // is. Feeds the blog board's SYNCED plate.
+  socialSnapshotAge() {
+    const stamp =
+      Number(this.socialFeedsSnapshot?.now) || this.socialFeedsFetchedAt;
+    return stamp ? Math.max(0, Date.now() - stamp) : null;
+  }
+
+  syncSocialBannerTimers() {
+    const loading = Boolean(this.socialFeedsLoad);
+    const remaining = this.socialRefreshRemaining();
+    if (!loading && remaining <= 0) {
+      void this.loadSocialBanners();
+      return;
+    }
+    const snapshot = this.socialFeedsSnapshot;
+    const timers = (sinceMs) => ({
+      remainingMs: loading ? SOCIAL_REFRESH_MS : remaining,
+      totalMs: SOCIAL_REFRESH_MS,
+      loading,
+      sinceMs,
+    });
+    this.world?.updateSocialBannerTimers?.({
+      twitter: timers(this.socialNewestPostAgo(snapshot?.twitter)),
+      reddit: timers(this.socialNewestPostAgo(snapshot?.reddit)),
+      blog: timers(this.socialSnapshotAge()),
+    });
   }
 
   socialPostDate(createdAt) {
@@ -7326,10 +7389,10 @@ class ForkMeshWorld extends HTMLElement {
   syncSocialBanners() {
     const snapshot = this.socialFeedsSnapshot;
     if (!snapshot) return;
-    const bound = (feed, meta) => ({
+    const bound = (feed, meta, text = (post) => String(post?.text || "")) => ({
       state: feed?.state === "ready" ? "ready" : "unavailable",
       posts: (Array.isArray(feed?.posts) ? feed.posts : []).map((post) => ({
-        text: String(post?.text || "").slice(0, 400),
+        text: text(post).slice(0, 400),
         meta: meta(post),
       })),
     });
@@ -7353,6 +7416,18 @@ class ForkMeshWorld extends HTMLElement {
         ]
           .filter(Boolean)
           .join(" · "),
+      ),
+      // Blog cards have no dates or counts: the meta line is the section +
+      // feature number the blog index shows, and the body pairs the title
+      // with its blurb.
+      blog: bound(
+        snapshot.blog,
+        (post) => String(post?.meta || ""),
+        (post) =>
+          [post?.text, post?.detail]
+            .filter(Boolean)
+            .map(String)
+            .join(" — "),
       ),
     });
   }

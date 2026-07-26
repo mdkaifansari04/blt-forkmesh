@@ -5590,18 +5590,30 @@ function mastodonLastPostClock(sinceMs) {
   return `${Math.floor(hours / 24)}D AGO`;
 }
 
-function mastodonLastPostColor(sinceMs) {
+function mastodonLastPostColor(
+  sinceMs,
+  freshMs = MASTODON_POST_FRESH_MS,
+  staleMs = MASTODON_POST_STALE_MS,
+) {
   const since = Number(sinceMs) || 0;
-  if (since < MASTODON_POST_FRESH_MS) return "#9ef7c6";
-  if (since < MASTODON_POST_STALE_MS) return "#ffb454";
+  if (since < freshMs) return "#9ef7c6";
+  if (since < staleMs) return "#ffb454";
   return "#ff7a7a";
 }
 
 // The plate beside the sync clock: how long since @forkmesh last posted,
 // tinted green / amber / red by the cadence thresholds above so a glance at
 // the stand says whether it is time to post again. sinceMs of null (nothing
-// fetched yet) renders a neutral placeholder.
-function mastodonLastPostTexture(THREE, sinceMs = null) {
+// fetched yet) renders a neutral placeholder. The social banners reuse the
+// same plate with their own label and thresholds (the blog board has no
+// post dates, so its plate reads the snapshot age as "SYNCED").
+function mastodonLastPostTexture(
+  THREE,
+  sinceMs = null,
+  label = "LAST POST",
+  freshMs = MASTODON_POST_FRESH_MS,
+  staleMs = MASTODON_POST_STALE_MS,
+) {
   const known = Number.isFinite(Number(sinceMs)) && Number(sinceMs) >= 0;
   return canvasTexture(THREE, 256, 128, (context) => {
     context.fillStyle = "rgba(15,16,36,0.72)";
@@ -5610,8 +5622,10 @@ function mastodonLastPostTexture(THREE, sinceMs = null) {
     context.textAlign = "center";
     context.fillStyle = "#8b8db8";
     context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("LAST POST", 128, 44);
-    context.fillStyle = known ? mastodonLastPostColor(sinceMs) : "#8b9bf4";
+    context.fillText(label, 128, 44);
+    context.fillStyle = known
+      ? mastodonLastPostColor(sinceMs, freshMs, staleMs)
+      : "#8b9bf4";
     context.font = '800 44px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(known ? mastodonLastPostClock(sinceMs) : "--", 128, 96);
   });
@@ -5791,6 +5805,11 @@ const TWITTER_BANNER_OPTIONS = Object.freeze({
   ],
   footer: "OPENS X.COM IN A NEW TAB",
   url: "https://x.com/forkmesh",
+  staleness: {
+    label: "LAST POST",
+    freshMs: MASTODON_POST_FRESH_MS,
+    staleMs: MASTODON_POST_STALE_MS,
+  },
 });
 
 const REDDIT_BANNER_OPTIONS = Object.freeze({
@@ -5810,6 +5829,40 @@ const REDDIT_BANNER_OPTIONS = Object.freeze({
   ],
   footer: "OPENS REDDIT.COM IN A NEW TAB",
   url: "https://www.reddit.com/r/forkmesh/",
+  staleness: {
+    label: "LAST POST",
+    freshMs: MASTODON_POST_FRESH_MS,
+    staleMs: MASTODON_POST_STALE_MS,
+  },
+});
+
+// The blog board continues the same ring past Reddit. Its posts are the
+// static feature articles (no dates), so the staleness plate reads how old
+// the fetched snapshot is: green within a healthy sync window, red once the
+// feed looks stuck.
+const BLOG_BANNER_OPTIONS = Object.freeze({
+  id: "blog",
+  position: [19.8, 0, -32.8],
+  accent: "#3fb950",
+  frameColor: "#1d5c33",
+  titleColor: "#f0fff5",
+  divider: "rgba(63,185,80,0.5)",
+  title: "FORKMESH BLOG",
+  handle: "forkmesh.com/blog",
+  host: "every feature, explained",
+  feedHeading: "FROM THE BLOG",
+  lines: [
+    "FEATURE DEEP DIVES",
+    "MIRRORS · AGENTS · CI · CHAT",
+    "NEW POSTS AS FEATURES SHIP",
+  ],
+  footer: "OPENS THE BLOG IN A NEW TAB",
+  url: "https://forkmesh.com/blog",
+  staleness: {
+    label: "SYNCED",
+    freshMs: 15 * 60 * 1000,
+    staleMs: 60 * 60 * 1000,
+  },
 });
 
 function socialBannerTexture(THREE, options, snapshot = null) {
@@ -5853,7 +5906,7 @@ function socialBannerTexture(THREE, options, snapshot = null) {
         .slice(0, SOCIAL_BANNER_VISIBLE_POSTS);
       context.fillStyle = "#8b9bf4";
       context.font = '700 48px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("LATEST POSTS", 96, 726);
+      context.fillText(options.feedHeading || "LATEST POSTS", 96, 726);
       if (!posts.length) {
         context.fillStyle = "#e8e9ff";
         context.font = '700 60px "ForkMesh Mono", ui-monospace, monospace';
@@ -5925,7 +5978,29 @@ function createSocialBanner(THREE, interactive, options) {
   );
   face.name = `forkmesh-${options.id}-banner-face`;
   face.position.set(0, 6.75, 0.2);
-  group.add(base, post, frame, face);
+  // The same stand plates the Mastodon kiosk carries: the MM:SS countdown to
+  // the next feed sync on the left, the staleness readout on the right.
+  const countdown = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.6, 0.8),
+    new THREE.MeshBasicMaterial({
+      map: mastodonCountdownTexture(THREE),
+      transparent: true,
+      toneMapped: false,
+    }),
+  );
+  countdown.name = `forkmesh-${options.id}-banner-countdown`;
+  countdown.position.set(-0.95, 1.15, 0.3);
+  const staleness = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.6, 0.8),
+    new THREE.MeshBasicMaterial({
+      map: mastodonLastPostTexture(THREE, null, options.staleness.label),
+      transparent: true,
+      toneMapped: false,
+    }),
+  );
+  staleness.name = `forkmesh-${options.id}-banner-lastpost`;
+  staleness.position.set(0.95, 1.15, 0.3);
+  group.add(base, post, frame, face, countdown, staleness);
   group.traverse((child) => {
     if (!child.isMesh) return;
     child.userData.interactive = "social-banner-open";
@@ -6625,8 +6700,9 @@ export function createWorldScene({
   world.add(mastodonKiosk);
   registerMovableObject("mastodon-kiosk", mastodonKiosk);
   // Twitter and Reddit flank the Mastodon kiosk on the same ring toward the
-  // Office, one board-width of clearance on either side so all three read as
-  // one social row on the approach.
+  // Office, one board-width of clearance on either side, and the blog board
+  // continues the row past Reddit so all four read as one social row on the
+  // approach.
   const twitterBanner = createSocialBanner(
     THREE, interactive, TWITTER_BANNER_OPTIONS);
   world.add(twitterBanner);
@@ -6635,12 +6711,17 @@ export function createWorldScene({
     THREE, interactive, REDDIT_BANNER_OPTIONS);
   world.add(redditBanner);
   registerMovableObject("reddit-banner", redditBanner);
+  const blogBanner = createSocialBanner(
+    THREE, interactive, BLOG_BANNER_OPTIONS);
+  world.add(blogBanner);
+  registerMovableObject("blog-banner", blogBanner);
   const socialBanners = [
     { group: twitterBanner, options: TWITTER_BANNER_OPTIONS },
     { group: redditBanner, options: REDDIT_BANNER_OPTIONS },
+    { group: blogBanner, options: BLOG_BANNER_OPTIONS },
   ];
 
-  // Repaint both banner faces from the Worker's /api/world/social-posts
+  // Repaint the banner faces from the Worker's /api/world/social-posts
   // snapshot. A feed that is missing or unavailable keeps (or returns to)
   // the static sign rather than showing a blank board.
   function updateSocialBanners(payload) {
@@ -6659,6 +6740,58 @@ export function createWorldScene({
         THREE, record.options, snapshot);
       face.material.needsUpdate = true;
     }
+  }
+
+  // The stand plates under each banner: a per-second countdown to the next
+  // feed sync and a per-minute staleness readout. Both key their repaints
+  // like the Mastodon kiosk plates so a tick that changes nothing visible
+  // never rebuilds a texture.
+  function updateSocialBannerTimers(payload) {
+    let repainted = false;
+    for (const record of socialBanners) {
+      const timers = payload?.[record.options.id];
+      if (!timers || typeof timers !== "object") continue;
+      const total = Math.max(
+        1000, Number(timers.totalMs) || MASTODON_KIOSK_REFRESH_MS);
+      const remaining = clamp(Number(timers.remainingMs) || 0, 0, total);
+      const loading = Boolean(timers.loading);
+      const countdownKey =
+        `${loading ? 1 : 0}:${Math.ceil(remaining / 1000)}:${total}`;
+      if (countdownKey !== record.countdownKey) {
+        record.countdownKey = countdownKey;
+        const dial = record.group.getObjectByName(
+          `forkmesh-${record.options.id}-banner-countdown`,
+        );
+        if (dial?.material) {
+          dial.material.map?.dispose?.();
+          dial.material.map = mastodonCountdownTexture(
+            THREE, remaining, total, loading);
+          dial.material.needsUpdate = true;
+          repainted = true;
+        }
+      }
+      const since =
+        Number.isFinite(Number(timers.sinceMs)) && Number(timers.sinceMs) >= 0
+          ? Number(timers.sinceMs)
+          : null;
+      const sinceKey =
+        since === null ? "-" : String(Math.floor(since / 60_000));
+      if (sinceKey !== record.stalenessKey) {
+        record.stalenessKey = sinceKey;
+        const plate = record.group.getObjectByName(
+          `forkmesh-${record.options.id}-banner-lastpost`,
+        );
+        if (plate?.material) {
+          const config = record.options.staleness;
+          plate.material.map?.dispose?.();
+          plate.material.map = mastodonLastPostTexture(
+            THREE, since, config.label, config.freshMs, config.staleMs);
+          plate.material.needsUpdate = true;
+          repainted = true;
+        }
+      }
+    }
+    return repainted;
   }
   let mastodonKioskSnapshot = null;
   let mastodonKioskOffset = 0;
@@ -13341,6 +13474,7 @@ export function createWorldScene({
     updateMastodonKiosk,
     updateMastodonCountdown,
     updateSocialBanners,
+    updateSocialBannerTimers,
     setOfficeSeatState,
     showOfficeBubble,
     leaveOfficeInterior,
