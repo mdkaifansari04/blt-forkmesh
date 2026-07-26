@@ -275,7 +275,16 @@ public:
     {
         m_homeRoster.clear();
         m_removedPeerIds.clear();
+        m_peerLastSeenMs.clear();
     }
+    // Backdates every remembered sighting by `ageMs` so a test can exercise the
+    // idle-visitor sweep without waiting ten real minutes (adhoc #404).
+    void testAgePeerSightings(qint64 ageMs)
+    {
+        for (auto it = m_peerLastSeenMs.begin(); it != m_peerLastSeenMs.end(); ++it)
+            *it -= ageMs;
+    }
+    QList<MemberInfo> testHomeRoster() const { return m_homeRoster; }
     // Sets the live roster directly (skipping setRoster's side effects, e.g.
     // refreshRepositoryList's node-switcher bookkeeping) and rebuilds the Mirror
     // nodes panel, so a test can exercise loadMirrorNodesPanel's row-building
@@ -5691,6 +5700,12 @@ private:
     QTimer *m_chatDirectoryTimer = nullptr;
     bool m_chatDirectoryLoaded = false; // first fill done (may legitimately be empty)
     QSet<QString> m_removedPeerIds;  // IDs explicitly removed via removeChatMember
+    // When each roster peer was last seen live, so guests and World visitors
+    // (throwaway browser sessions) are forgotten after ChatVisitorPresence::
+    // kVisitorIdleMs of silence instead of being retained as dead offline rows
+    // the way a real node or account is (adhoc #404). Pruned to the current
+    // roster on every update, so it can't outgrow it.
+    QHash<QString, qint64> m_peerLastSeenMs;
     // True once this node has posted (or confirmed it already posted) its one-time
     // welcome greeting this run, so the per-roster check stays cheap (issue #192).
     bool m_welcomeAnnounced = false;

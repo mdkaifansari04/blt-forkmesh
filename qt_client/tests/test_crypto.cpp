@@ -4,6 +4,7 @@
 #include "../src/AgentStore.h"
 #include "../src/BackoffNetworkAccessManager.h"
 #include "../src/ChatHistoryLimits.h"
+#include "../src/ChatVisitorPresence.h"
 #include "../src/CommitCommentStore.h"
 #include "../src/CoveCrypto.h"
 #include "../src/CoveStore.h"
@@ -393,6 +394,31 @@ int main(int argc, char *argv[])
         check(oversized.size() == 1 && !oversized.first().contains("file") &&
                   oversized.first().value("fileName").toString() == "huge.bin",
               "oversized file payloads are stripped from stored history");
+    }
+
+    {
+        // Transient visitors (adhoc #404): a browser guest is forgotten after
+        // ten idle minutes, while nodes and accounts keep their offline row.
+        using namespace ChatVisitorPresence;
+        check(isTransientVisitor(QStringLiteral("guest"), QStringLiteral("jett")),
+              "an advertised guest account kind marks a transient visitor");
+        check(isTransientVisitor(QString(), QStringLiteral("Guest 1667")) &&
+                  isTransientVisitor(QString(), QStringLiteral("World Guest f49ab8")) &&
+                  isTransientVisitor(QString(),
+                                     QString::fromUtf8("World visitor \xC2\xB7 jett")),
+              "guest and World-visitor names mark a transient visitor");
+        check(!isTransientVisitor(QStringLiteral("node"), QStringLiteral("mirror-1")) &&
+                  !isTransientVisitor(QStringLiteral("user"), QStringLiteral("jett")) &&
+                  !isTransientVisitor(QString(), QStringLiteral("guesthouse")),
+              "nodes, accounts, and guest-lookalike names are not visitors");
+
+        const qint64 now = 1700000000000LL;
+        check(!visitorIsIdle(now - kVisitorIdleMs + 1000, now),
+              "a visitor seen inside the idle window is kept");
+        check(visitorIsIdle(now - kVisitorIdleMs - 1000, now),
+              "a visitor silent past the idle window is forgotten");
+        check(!visitorIsIdle(0, now),
+              "a visitor with no sighting yet is left alone");
     }
 
     {
