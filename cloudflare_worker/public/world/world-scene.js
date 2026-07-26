@@ -2831,7 +2831,7 @@ function createSystemCapacityPlatform(THREE) {
     district,
     SYSTEM_CAPACITY_PLATFORM_POSITION,
     "SYSTEM CAPACITY",
-    "live services + database rows",
+    "durable objects + database rows",
     "#80e8ff",
     9,
   );
@@ -2850,6 +2850,20 @@ function createSystemCapacityPlatform(THREE) {
   district.add(emptyMarker);
   setShadows(district);
   return district;
+}
+
+function formatCapacityBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  const step = Math.min(
+    units.length - 1,
+    Math.floor(Math.log(value) / Math.log(1024)),
+  );
+  const scaled = value / 1024 ** step;
+  const shown =
+    scaled >= 100 || step === 0 ? Math.round(scaled) : scaled.toFixed(1);
+  return `${shown} ${units[step]}`;
 }
 
 function systemCapacityMetricPairs(record) {
@@ -8872,16 +8886,23 @@ export function createWorldScene({
       .map((record) => {
         const name = String(record?.name || record?.id || "").trim();
         const pairs = systemCapacityMetricPairs(record);
-        return name && pairs.length
+        // A discovered Durable Object with no client-observable limit still
+        // earns a plinth: its relayed byte total is the whole point, and a
+        // binding that has relayed nothing yet is itself worth showing.
+        const bytesTotal = Number(record?.bytesTotal);
+        const bytes =
+          Number.isSafeInteger(bytesTotal) && bytesTotal > 0 ? bytesTotal : 0;
+        return name
           ? {
               name: name.slice(0, 36),
               id: String(record?.id || name).slice(0, 72),
               pairs,
+              bytes,
             }
           : null;
       })
       .filter(Boolean)
-      .slice(0, 4);
+      .slice(0, 8);
     const tables = Array.isArray(metrics?.tables) ? metrics.tables : [];
     const safeTables = [
       ...new Map(
@@ -9040,6 +9061,12 @@ export function createWorldScene({
       layer.add(tableLayer);
     }
 
+    // Relayed bytes have no configured ceiling, so the busiest Durable Object
+    // sets the scale the others are drawn against.
+    const peakBytes = safeRecords.reduce(
+      (peak, record) => Math.max(peak, record.bytes),
+      0,
+    );
     safeRecords.forEach((record, index) => {
       const object = new THREE.Group();
       object.name = `system-capacity-service:${record.id}`;
@@ -9048,8 +9075,9 @@ export function createWorldScene({
         currentUsage: metric.usage,
         configuredLimit: metric.limit,
       }));
+      object.userData.bytesRelayed = record.bytes;
 
-      const spacing = 2.5;
+      const spacing = safeRecords.length > 5 ? 1.65 : 2.5;
       object.position.set(
         (index - (safeRecords.length - 1) / 2) * spacing,
         0.38,
@@ -9067,7 +9095,13 @@ export function createWorldScene({
       object.add(plinth);
 
       const firstMetric = record.pairs[0];
-      const rawRatio = firstMetric.usage / firstMetric.limit;
+      // Without a limit to fill against, the column shows this object's share
+      // of the busiest object's traffic (log-scaled, like the table bars).
+      const rawRatio = firstMetric
+        ? firstMetric.usage / firstMetric.limit
+        : peakBytes
+          ? Math.log1p(record.bytes) / Math.log1p(peakBytes)
+          : 0;
       const ratio = clamp(rawRatio, 0, 1);
       const overLimit = rawRatio > 1;
       const housing = new THREE.Mesh(
@@ -9090,17 +9124,20 @@ export function createWorldScene({
         }),
       );
       fill.position.y = 0.25 + fillHeight / 2;
-      fill.userData.currentUsage = firstMetric.usage;
-      fill.userData.configuredLimit = firstMetric.limit;
+      fill.userData.currentUsage = firstMetric
+        ? firstMetric.usage
+        : record.bytes;
+      fill.userData.configuredLimit = firstMetric ? firstMetric.limit : 0;
       object.add(fill);
 
-      const exactValues = record.pairs
-        .slice(0, 2)
-        .map(
-          (metric) =>
-            `${metric.key} ${metric.usage}/${metric.limit}`,
-        )
-        .join(" · ");
+      const exactValues = [
+        ...record.pairs
+          .slice(0, 2)
+          .map((metric) => `${metric.key} ${metric.usage}/${metric.limit}`),
+        ...(record.bytes || !record.pairs.length
+          ? [`${formatCapacityBytes(record.bytes)} relayed`]
+          : []),
+      ].join(" · ");
       const label = makeLabelSprite(
         THREE,
         record.name,

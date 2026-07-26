@@ -569,13 +569,34 @@ def _world_fetch_runtime(now=50_000):
         "JsResponse": SimpleNamespace(
             new=lambda *args, **kwargs: SimpleNamespace(status=101)),
     }
-    for name in ("_ws_attachment", "_ws_attr", "ForkMeshWorld"):
+    traffic_writes = []
+
+    async def d1_run(_env, sql, *args):
+        traffic_writes.append((sql, args))
+        return None
+
+    namespace.update({
+        "DURABLE_OBJECT_BINDING_RE": re.compile(r"[A-Z][A-Z0-9_]{0,63}"),
+        "DURABLE_OBJECT_TRAFFIC_FLUSH_MS": 60_000,
+        "DURABLE_OBJECT_TRAFFIC_FLUSH_BYTES": 262_144,
+        "DURABLE_OBJECT_TRAFFIC_MAX": 9_007_199_254_740_991,
+        "d1_run": d1_run,
+    })
+    for name in (
+        "durable_object_traffic_note",
+        "durable_object_traffic_flush",
+        "_ws_attachment",
+        "_ws_attr",
+        "ForkMeshWorld",
+    ):
         node = _top_level_node(name)
         module = ast.fix_missing_locations(
             ast.Module(body=[node], type_ignores=[]))
         exec(compile(module, str(ENTRY), "exec"), namespace)
     instance = namespace["ForkMeshWorld"]()
     instance.ctx = _Ctx()
+    instance.env = object()
+    instance.traffic_writes = traffic_writes
     return instance, clock
 
 
@@ -864,6 +885,12 @@ def _world_socket_runtime(now=50_000):
     def ws_attr(socket, key, default=None):
         return getattr(socket.attachment, key, default)
 
+    traffic_writes = []
+
+    async def d1_run(_env, sql, *args):
+        traffic_writes.append((sql, args))
+        return None
+
     namespace = {
         "DurableObject": DurableObject,
         "Date": SimpleNamespace(now=lambda: now),
@@ -873,12 +900,24 @@ def _world_socket_runtime(now=50_000):
         "to_js": lambda value: value,
         "json": json,
         "re": re,
+        "DURABLE_OBJECT_BINDING_RE": re.compile(r"[A-Z][A-Z0-9_]{0,63}"),
+        "DURABLE_OBJECT_TRAFFIC_FLUSH_MS": 60_000,
+        "DURABLE_OBJECT_TRAFFIC_FLUSH_BYTES": 262_144,
+        "DURABLE_OBJECT_TRAFFIC_MAX": 9_007_199_254_740_991,
+        "d1_run": d1_run,
     }
-    node = _top_level_node("ForkMeshWorld")
-    module = ast.fix_missing_locations(
-        ast.Module(body=[node], type_ignores=[]))
-    exec(compile(module, str(ENTRY), "exec"), namespace)
+    for name in (
+        "durable_object_traffic_note",
+        "durable_object_traffic_flush",
+        "ForkMeshWorld",
+    ):
+        node = _top_level_node(name)
+        module = ast.fix_missing_locations(
+            ast.Module(body=[node], type_ignores=[]))
+        exec(compile(module, str(ENTRY), "exec"), namespace)
     instance = namespace["ForkMeshWorld"]()
+    instance.env = object()
+    instance.traffic_writes = traffic_writes
     broadcasts = []
     instance._live_sockets = lambda cleanup=False: []
     instance._broadcast = (
@@ -1252,6 +1291,19 @@ def test_world_ticket_capacity_is_queried_and_returned_only_for_admins():
             capacity_calls.append(True)
             return [{"name": "repositories", "rowCount": 12}]
 
+        async def durable_objects(_env):
+            capacity_calls.append("durable")
+            return [{
+                "id": "FORKMESH_WORLD",
+                "binding": "FORKMESH_WORLD",
+                "name": "World",
+                "bytesIn": 30,
+                "bytesOut": 70,
+                "bytesTotal": 100,
+                "messages": 4,
+                "updatedAt": 50_000,
+            }]
+
         def json_response(data, **kwargs):
             return {"data": data, **kwargs}
 
@@ -1267,6 +1319,7 @@ def test_world_ticket_capacity_is_queried_and_returned_only_for_admins():
             "WORLD_TICKET_TTL_MS": 60_000,
             "_world_ticket_encode": lambda _env, _claim: "signed-ticket",
             "_world_system_capacity": system_capacity,
+            "_world_durable_objects": durable_objects,
         }
         node = _top_level_node("world_ticket_handler")
         module = ast.fix_missing_locations(
@@ -1297,8 +1350,18 @@ def test_world_ticket_capacity_is_queried_and_returned_only_for_admins():
     }))
     assert admin_data["systemCapacity"] == {
         "tables": [{"name": "repositories", "rowCount": 12}],
+        "durableObjects": [{
+            "id": "FORKMESH_WORLD",
+            "binding": "FORKMESH_WORLD",
+            "name": "World",
+            "bytesIn": 30,
+            "bytesOut": 70,
+            "bytesTotal": 100,
+            "messages": 4,
+            "updatedAt": 50_000,
+        }],
     }
-    assert admin_calls == [True]
+    assert admin_calls == [True, "durable"]
 
 
 def test_arrival_counter_keeps_only_fixed_size_unique_sketches():

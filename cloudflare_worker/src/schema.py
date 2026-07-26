@@ -906,6 +906,17 @@ SCHEMA_STATEMENTS = [
         rank INTEGER NOT NULL CHECK (rank >= 1 AND rank <= 247),
         PRIMARY KEY (bucket_start, register_id)
     ) WITHOUT ROWID""",
+    # Content-free relay accounting behind the System Capacity platform
+    # (migration 0083). One row per Durable Object binding: how many bytes and
+    # frames that class has relayed. No room key, account, peer id, instance
+    # id, or message content is stored, and each Durable Object folds its
+    # in-memory counters in at most once a minute.
+    """CREATE TABLE IF NOT EXISTS durable_object_traffic (
+        binding TEXT PRIMARY KEY,
+        bytes_in INTEGER NOT NULL DEFAULT 0 CHECK (bytes_in >= 0),
+        bytes_out INTEGER NOT NULL DEFAULT 0 CHECK (bytes_out >= 0),
+        messages INTEGER NOT NULL DEFAULT 0 CHECK (messages >= 0),
+        updated_at INTEGER NOT NULL DEFAULT 0 CHECK (updated_at >= 0))""",
     # Aggregate-only Town Square arrival odometer for the Arrival Grid plaque
     # (migration 0074). Each accepted world join adds one to a coarse
     # 10-minute UTC bucket; rows never carry a visitor id, country, IP, or
