@@ -156,6 +156,22 @@ def test_gateway_token_and_repository_allowlist_fail_closed():
         assert ssh_keys.parse_gateway_repository_allowlist(invalid) == {}
 
 
+def test_gateway_node_hosts_are_validated_and_fail_closed():
+    assert ssh_keys.parse_gateway_node_hosts(
+        "mirror2=ssh.forkmesh.com,mirror3=207.246.87.248"
+    ) == {
+        "mirror2": "ssh.forkmesh.com",
+        "mirror3": "207.246.87.248",
+    }
+    for invalid in (
+        "mirror2",
+        "mirror2=https://ssh.forkmesh.com",
+        "../mirror=ssh.forkmesh.com",
+        "mirror2=ssh-a.example,mirror2=ssh-b.example",
+    ):
+        assert ssh_keys.parse_gateway_node_hosts(invalid) == {}
+
+
 def test_worker_publishes_url_only_for_explicit_gateway_repo():
     namespace = _load_entry(
         "_ssh_gateway_settings",
@@ -173,6 +189,11 @@ def test_worker_publishes_url_only_for_explicit_gateway_repo():
         == "ssh://git@ssh.example.org/alice-node/widget.git"
     )
     assert namespace["_ssh_repository_url"](env, "alice-node", "not-hosted") == ""
+    env.SSH_GATEWAY_NODE_HOSTS = "alice-node=ssh-node.example.org"
+    assert (
+        namespace["_ssh_repository_url"](env, "alice-node", "widget")
+        == "ssh://git@ssh-node.example.org/alice-node/widget.git"
+    )
     env.SSH_GATEWAY_REPOSITORIES = ""
     assert namespace["_ssh_repository_url"](env, "alice-node", "widget") == ""
 

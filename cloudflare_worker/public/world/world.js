@@ -71,6 +71,10 @@ const VISIT_COUNT_KEY = "forkmesh.world.publicVisitCount.v1";
 const FIRST_SEEN_MAX_MINUTES = 10 * 365 * 24 * 60;
 const JOINED_AT_MIN_MS = 1577836800000;
 const FORKBOT_GREETED_KEY = "forkmesh.world.forkbotGreeted.v1";
+// Mirrors FORKBOT_MENTION_RE in chat.js / dashboard-chat.js (the clients that
+// actually forward the mention to /api/forkbot/chat), so the in-world droid
+// gets excited for exactly the messages the bot will answer.
+const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
 const POSITION_KEY_PREFIX = "forkmesh.world.position.v1.";
 const DETAIL_WIDTH_KEY = "forkmesh.world.detailWidth.v1";
 const DETAIL_WIDTH_MIN = 320;
@@ -3813,6 +3817,11 @@ class ForkMeshWorld extends HTMLElement {
     if (Date.now() < this.chatBubblesEnabledAt) return;
     if (data.self === true) {
       this.world?.showChatBubble?.(this.identity?.id, text, true);
+      // Mentioning ForkBot sends the excited droid over to the speaker; its
+      // chest screen echoes the line and thinks until the reply broadcasts.
+      if (FORKBOT_MENTION_RE.test(text)) {
+        this.world?.exciteForkbot?.(this.identity?.id, text);
+      }
       return;
     }
     const senderName = sender.toLowerCase();
@@ -3833,6 +3842,9 @@ class ForkMeshWorld extends HTMLElement {
       ) {
         if (Date.now() < Number(peer.chatBubblesEnabledAt || 0)) return;
         this.world?.showChatBubble?.(id, text);
+        if (FORKBOT_MENTION_RE.test(text)) {
+          this.world?.exciteForkbot?.(id, text);
+        }
         return;
       }
     }

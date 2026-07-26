@@ -2204,6 +2204,34 @@ def test_forkbot_rolls_through_the_world_for_explicit_chat_interactions():
     assert "if (!canJoinChat()) return;" in DASHBOARD_CHAT
 
 
+def test_forkbot_mention_excites_the_droid_with_echo_screen_and_thinking_dots():
+    # adhoc #369: as soon as anyone in the world mentions ForkBot in chat, the
+    # droid gets excited and rushes over to the speaker. Its chest screen
+    # echoes the line that mentioned it, then runs a thinking indicator until
+    # the reply (broadcast with sender "forkbot") lands in the room.
+    assert "const FORKBOT_EXCITED_SPEED = 5.6;" in SCENE
+    assert "const FORKBOT_ECHO_MS = 2500;" in SCENE
+    assert "const FORKBOT_THINKING_TIMEOUT_MS = 45000;" in SCENE
+    assert "function drawForkbotScreen(context, canvas, state)" in SCENE
+    assert "function exciteForkbot(peerId, text)" in SCENE
+    assert "exciteForkbot," in SCENE
+    # The screen repaints in place (echo, then animated dots) rather than
+    # allocating a new texture per frame.
+    assert "forkbotScreenTexture.needsUpdate = true;" in SCENE
+    # ForkBot's own reply bubble is what stops the thinking indicator, with a
+    # bounded fallback so an unavailable bot doesn't think forever.
+    assert "if (avatar === forkbot && forkbotExcitement) {" in SCENE
+    assert "waited >= FORKBOT_THINKING_TIMEOUT_MS" in SCENE
+    # The world client matches the same mention pattern the chat clients
+    # forward to /api/forkbot/chat, for the visitor's own line and for remote
+    # peers' lines alike.
+    assert (
+        "const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\\b/i;"
+        in APP
+    )
+    assert APP.count("this.world?.exciteForkbot?.(") == 2
+
+
 def test_clicking_forkbot_opens_the_terminal_bar_with_a_mention_prefilled():
     # adhoc #284: ForkBot should drop a visitor into the small, docked CHAT
     # bar (not the full-screen chat overlay), with "@forkbot " already typed

@@ -19209,6 +19209,8 @@ def _ssh_gateway_settings(env):
         getattr(env, "SSH_GATEWAY_TOKEN", ""))
     repositories = ssh_auth.parse_gateway_repository_allowlist(
         getattr(env, "SSH_GATEWAY_REPOSITORIES", ""))
+    node_hosts = ssh_auth.parse_gateway_node_hosts(
+        getattr(env, "SSH_GATEWAY_NODE_HOSTS", ""))
     try:
         port = int(getattr(env, "SSH_GATEWAY_PORT", 22) or 22)
     except (TypeError, ValueError):
@@ -19219,6 +19221,7 @@ def _ssh_gateway_settings(env):
         "host": host if configured else "",
         "port": port if configured else 0,
         "repositories": repositories if configured else {},
+        "nodeHosts": node_hosts if configured else {},
     }
 
 
@@ -19238,8 +19241,9 @@ def _ssh_repository_url(env, owner, repo):
             settings["repositories"], owner, repo)
     ):
         return ""
+    host = settings["nodeHosts"].get(str(owner or "").strip().lower())
     return ssh_auth.ssh_repository_url(
-        settings["host"], settings["port"], owner, repo)
+        host or settings["host"], settings["port"], owner, repo)
 
 
 def _ssh_alias_repository_url(env, alias_owner, backing_owner, repo):
@@ -19257,8 +19261,10 @@ def _ssh_alias_repository_url(env, alias_owner, backing_owner, repo):
             settings["repositories"], backing_owner, repo)
     ):
         return ""
+    host = settings["nodeHosts"].get(
+        str(backing_owner or "").strip().lower())
     return ssh_auth.ssh_repository_url(
-        settings["host"], settings["port"], alias_owner, repo)
+        host or settings["host"], settings["port"], alias_owner, repo)
 
 
 async def _ssh_json_body(request, max_bytes=32 * 1024):
