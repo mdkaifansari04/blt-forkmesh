@@ -222,6 +222,23 @@ def _private_room_current():
     return module
 
 
+def _source_for(name, class_name=""):
+    tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    body = tree.body
+    if class_name:
+        parent = next(
+            node for node in body
+            if isinstance(node, ast.ClassDef) and node.name == class_name
+        )
+        body = parent.body
+    node = next(
+        item for item in body
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and item.name == name
+    )
+    return ast.get_source_segment(ENTRY_TEXT, node)
+
+
 def test_direct_key_is_versioned_and_domain_separated():
     namespace, _clock = _helpers()
     env = _Env()
@@ -350,3 +367,30 @@ def test_live_direct_socket_rechecks_participant_membership():
     assert asyncio.run(namespace["_private_room_current"](self, socket)) is False
     state["participant"] = True
     assert asyncio.run(namespace["_private_room_current"](self, socket)) is True
+
+
+def test_worker_routes_direct_api_and_socket_before_generic_rooms():
+    source = _source_for("_route", class_name="Default")
+    api_at = source.index("chat_direct_messages_api.handle")
+    socket_at = source.index("_chat_direct_socket_handler")
+    generic_room_at = source.index("room_key_from_path")
+    assert api_at < generic_room_at
+    assert socket_at < generic_room_at
+
+
+def test_account_removal_revokes_and_deletes_direct_message_state():
+    cleanup = _source_for("_delete_chat_direct_conversations")
+    revoke_at = cleanup.index("_revoke_chat_direct_room")
+    participants_at = cleanup.index(
+        '"DELETE FROM chat_direct_participants WHERE conversation_id=?"'
+    )
+    conversations_at = cleanup.index(
+        '"DELETE FROM chat_direct_conversations WHERE conversation_id=?"'
+    )
+    history_at = cleanup.index('"DELETE FROM chat_history WHERE room_key=?"')
+    assert revoke_at < participants_at < conversations_at < history_at
+
+    rename = _source_for("_rename_account_namespace")
+    delete = _source_for("_delete_account_namespace")
+    assert "_delete_chat_direct_conversations(env, name_bi)" in rename
+    assert "_delete_chat_direct_conversations(env, name_bi)" in delete
