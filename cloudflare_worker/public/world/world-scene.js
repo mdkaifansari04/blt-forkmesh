@@ -713,6 +713,59 @@ function syncChestTabs(THREE, avatar) {
   });
 }
 
+// Leading colours of the drawn flag glyph, strongest first, bucketed the same
+// way as dominantSampleColor. Buckets under 6% of the opaque pixels are noise
+// (antialiasing, thin emblems) and are dropped. Empty when the canvas is
+// tainted or the glyph did not render as a colour flag.
+function flagShirtPalette(context, canvas) {
+  const pixels = emojiPixels(context, canvas);
+  if (!pixels) return [];
+  const buckets = new Map();
+  let total = 0;
+  for (let i = 0; i < pixels.length; i += 4) {
+    if (pixels[i + 3] < 224) continue;
+    total += 1;
+    const key =
+      ((pixels[i] >> 4) << 8) |
+      ((pixels[i + 1] >> 4) << 4) |
+      (pixels[i + 2] >> 4);
+    const bucket = buckets.get(key);
+    if (bucket) {
+      bucket.r += pixels[i];
+      bucket.g += pixels[i + 1];
+      bucket.b += pixels[i + 2];
+      bucket.count += 1;
+    } else {
+      buckets.set(key, {
+        r: pixels[i],
+        g: pixels[i + 1],
+        b: pixels[i + 2],
+        count: 1,
+      });
+    }
+  }
+  if (!total) return [];
+  const channel = (sum, count) =>
+    Math.max(0, Math.min(255, Math.round(sum / count)))
+      .toString(16)
+      .padStart(2, "0");
+  return [...buckets.values()]
+    .filter((bucket) => bucket.count / total >= 0.06)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 3)
+    .map(
+      (bucket) =>
+        `#${channel(bucket.r, bucket.count)}${channel(
+          bucket.g,
+          bucket.count,
+        )}${channel(bucket.b, bucket.count)}`,
+    );
+}
+
+// The one flag glyph the avatar wears is the chest badge's; the shirt never
+// prints it. The cloth is a stylised take on the flag instead — its strongest
+// colour as the body, the next two as a diagonal sash with piping — falling
+// back to the seeded neutral kit when the flag cannot be drawn or sampled.
 function countryShirtTexture(THREE, identity) {
   const code = /^[A-Z]{2}$/.test(String(identity.countryCode || ""))
     ? String(identity.countryCode)
@@ -720,7 +773,7 @@ function countryShirtTexture(THREE, identity) {
   const flag = code && identity.flag && identity.flag !== "◌"
     ? identity.flag
     : "◌";
-  return canvasTexture(THREE, 256, 256, (context) => {
+  return canvasTexture(THREE, 256, 256, (context, canvas) => {
     const seed = hashNumber(code || "neutral");
     const palettes = [
       ["#174f3d", "#9ef7c6"],
@@ -729,17 +782,33 @@ function countryShirtTexture(THREE, identity) {
       ["#573965", "#d5b6ff"],
       ["#6a3346", "#ff9eb7"],
     ];
-    const [base, stripe] = palettes[seed % palettes.length];
-    context.fillStyle = code ? "#f7fbf8" : base;
+    let [base, sash] = palettes[seed % palettes.length];
+    let piping = "#f7fbf8";
+    if (flag !== "◌") {
+      // Drawn big only to be sampled, then painted over entirely: nothing of
+      // the glyph itself survives onto the cloth.
+      context.clearRect(0, 0, 256, 256);
+      context.textAlign = "center";
+      context.textBaseline = "middle";
+      context.font = '224px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
+      context.fillText(flag, 128, 128);
+      const sampled = flagShirtPalette(context, canvas);
+      if (sampled.length >= 2) {
+        [base, sash] = sampled;
+        piping = sampled[2] || "#f7fbf8";
+      }
+    }
+    context.fillStyle = base;
     context.fillRect(0, 0, 256, 256);
-    context.fillStyle = stripe;
-    context.fillRect(0, 0, 256, 34);
-    context.fillRect(0, 222, 256, 34);
-    context.textAlign = "center";
-    context.textBaseline = "middle";
-    context.font = '150px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
-    context.fillStyle = "#ffffff";
-    context.fillText(flag, 128, 128);
+    context.save();
+    context.translate(128, 128);
+    context.rotate(-Math.PI / 8);
+    context.fillStyle = sash;
+    context.fillRect(-256, -40, 512, 80);
+    context.fillStyle = piping;
+    context.fillRect(-256, -64, 512, 12);
+    context.fillRect(-256, 52, 512, 12);
+    context.restore();
   });
 }
 
@@ -1759,9 +1828,10 @@ const ANTENNA_STALK_COLOR = "#1aa856";
 const ANTENNA_BLINK_MIN_HZ = 0.9;
 const ANTENNA_BLINK_MAX_HZ = 5.4;
 
-// The country flag is mapped onto every face of the torso and arm boxes.
-// The upward-facing tops are the ones read from across the square, so those
-// four UVs are turned a half turn to put the flag the right way round.
+// The flag-coloured shirt cloth is mapped onto every face of the torso and
+// arm boxes. The upward-facing tops are the ones read from across the square,
+// so those four UVs are turned a half turn to keep the sash running the same
+// way round.
 function rotateBoxTopUVs(geometry) {
   const uv = geometry.attributes?.uv;
   if (!uv) return geometry;
