@@ -1162,25 +1162,12 @@ int main(int argc, char *argv[])
 
     window.resize(480, 420);
     QApplication::processEvents();
-    window.testShowPublishBar(false);
-    QApplication::processEvents();
-    const int topBarHidden = window.testRepoTabContentTop();
-    const int hBarHidden = window.height();
-    window.testShowPublishBar(true);
-    QApplication::processEvents();
-    const int topBarShown = window.testRepoTabContentTop();
-    const int hBarShown = window.height();
-    qInfo("REPRO mirror-nodes @480x420: tab-content top hidden=%d shown=%d ; window h hidden=%d shown=%d",
-          topBarHidden, topBarShown, hBarHidden, hBarShown);
-    // The publish/sync bar reserves its height even when hidden, so toggling it
-    // (as a push then a mirror pickup does) must not shift the tab content beneath
-    // it nor grow the window — what read as the view "resizing" on small screens.
-    check(topBarHidden == topBarShown && hBarShown <= 420 + 8,
-          QString("publish/sync bar toggling does not reflow the page "
-                  "(tab-content top %1 -> %2, window height %3px)")
-              .arg(topBarHidden).arg(topBarShown).arg(hBarShown));
-    if (topBarHidden != topBarShown || hBarShown > 420 + 8)
-        dumpTallMinimums(window);
+    // adhoc #374 removed the floating publish/sync pill that used to hover in the
+    // band above the Code tab (and with it the "toggling it must not reflow the
+    // page" repro): nothing may float there any more.
+    check(!findButtonStartingWith(window, "Sync (") &&
+              !findButtonStartingWith(window, "Syncing"),
+          QStringLiteral("no floating Sync button above the Code tab"));
 
     // issue #272: clicking "Update from main" rebuilds the worktrees panel. The
     // rebuild must keep the same worktree selected so its diff/detail pane stays

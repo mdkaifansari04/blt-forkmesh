@@ -103,6 +103,8 @@ function publicRepositoryRecord(mirror, payload) {
     branch: text(mirror?.branch, "", 120),
     status: text(mirror?.status, "unknown", 24).toLowerCase(),
     integrity: text(mirror?.integrity, "unknown", 24).toLowerCase(),
+    activity: text(mirror?.activity, "unknown", 32).toLowerCase(),
+    activityUpdatedAt: timestamp(mirror?.activityUpdatedAt),
     cloneAvailable: mirror?.cloneAvailable === true,
     behind: mirror?.behind === true,
     lastSeen: timestamp(mirror?.lastSeen),
@@ -266,6 +268,8 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
           primary.integrity === "ok",
         status: primary.status || "online",
         integrity: primary.integrity || "unknown",
+        activity: primary.activity || "unknown",
+        activityUpdatedAt: primary.activityUpdatedAt || null,
         cloneAvailable:
           primary.cloneAvailable === true && primary.integrity === "ok",
         behind: primary.behind === true,
