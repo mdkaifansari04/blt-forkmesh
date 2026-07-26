@@ -48,8 +48,8 @@ ROOM_MSG_MAX_PER_WINDOW = 20
 # and forwarding to it instead of letting ghost peers inflate the roster.
 ROOM_CLIENT_STALE_MS = 3 * 60 * 1000
 # Catalog write throttle per owner, and a hard cap on records an owner may hold.
-CATALOG_WRITE_COOLDOWN_MS = 5 * 1000
-CATALOG_MAX_RECORDS_PER_OWNER = 50
+CATALOG_WRITE_COOLDOWN_MS = 500
+CATALOG_MAX_RECORDS_PER_OWNER = 100
 # Per-repository control-channel request rate limit. Repository bytes use the
 # direct-HTTPS gateway and never consume this socket budget.
 HOST_RATE_WINDOW_MS = 10 * 1000
@@ -222,6 +222,7 @@ NOTIFICATION_KINDS = frozenset({
     "mirror_request",
     "pending_reward",
     "org_succession",
+    "repository_hosted",
 })
 NOTIFICATION_EMAIL_KINDS = (
     "mention",
@@ -8422,6 +8423,16 @@ async def catalog_handler(env, request):
         # never rolls back an otherwise valid catalog publication.
         await _https_mirror_refresh_catalog_publisher_health(env, record)
         await purge_catalog_related_caches()
+        if (
+                record["visibility"] == "public"
+                and record.get("source") == "remote-clone"):
+            try:
+                await _promote_hosted_repository_import(env, record)
+            except Exception:
+                # Import metadata and its notification are useful secondary
+                # effects. The signed native catalog is still authoritative
+                # and must not be rolled back if this bounded linkage fails.
+                pass
         # A public record whose advertised head moved means freshly pushed code
         # just landed on this mirror node. Announce it to the live World room —
         # after the cache purge above, so a viewer's immediate refresh reads
@@ -8499,7 +8510,8 @@ async def catalog_handler(env, request):
         canonical = ("forkmesh-catalog-delete-v1\n" + owner + "\n" + name +
                      "\n" + ts).encode()
         try:
-            authorized = await ed25519_verify(owner_pub, sig, canonical)
+            authorized = await _verify_owner_signature(
+                env, owner, sig, canonical)
         except Exception:
             await _audit_sensitive_action(
                 env, owner, "repository.delete", "repository",
@@ -9136,12 +9148,13 @@ async def repo_mirrors_handler(env, request, owner, repo):
     history = {}
     group_keys = [str(r.get("key_bi") or "") for r in catalog_rows
                   if r.get("key_bi")]
-    if group_keys:
+    for offset in range(0, len(group_keys), 80):
+        key_batch = group_keys[offset:offset + 80]
         hist_rows = await d1_all(
             env,
             "SELECT key_bi, state_hash FROM repo_state_history"
-            " WHERE key_bi IN (%s)" % ",".join("?" for _ in group_keys),
-            *group_keys)
+            " WHERE key_bi IN (%s)" % ",".join("?" for _ in key_batch),
+            *key_batch)
         for r in hist_rows:
             history.setdefault(str(r.get("key_bi") or ""), []).append(
                 r.get("state_hash"))
@@ -9564,7 +9577,17 @@ async def _repo_is_private(env, owner, repo):
             "SELECT is_private, data FROM repositories WHERE key_bi=?",
             key_bi,
         )
-        if not row or int(row.get("is_private", 1) or 0) != 0:
+        if not row:
+            hosted_resolver = globals().get(
+                "_hosted_repository_import_route")
+            hosted_route = (
+                await hosted_resolver(env, owner, repo)
+                if callable(hosted_resolver) else None)
+            if hosted_route and tuple(hosted_route) != (owner, repo):
+                return await _repo_is_private(
+                    env, hosted_route[0], hosted_route[1])
+            return True
+        if int(row.get("is_private", 1) or 0) != 0:
             return True
         # Migration 0011 historically defaulted existing rows to public.
         # Validate that the signed encrypted record itself explicitly says
@@ -23262,6 +23285,73 @@ async def enqueue_notification(env, recipient, kind, title, body="", repo="",
     return True
 
 
+async def _promote_hosted_repository_import(env, catalog_record):
+    """Link one verified mirror catalog to its public provider import."""
+    mirror_owner = clean_string(
+        catalog_record.get("owner"), MAX_NODE_NAME).lower()
+    repository_name = safe_segment(clean_string(
+        catalog_record.get("name"), MAX_REPO_SEGMENT))
+    if mirror_owner not in ("mirror2", "mirror3") or not repository_name:
+        return False
+    rows = await d1_all(
+        env,
+        "SELECT id, data FROM repository_imports "
+        "WHERE provider='codeberg' AND is_private=0 "
+        "AND status NOT IN ('actively_mirrored','archived') "
+        "ORDER BY updated_at DESC LIMIT ?",
+        repository_import.MAX_PUBLIC_IMPORTS,
+    )
+    for row in rows or []:
+        record = await decrypt_row(env, row.get("data"))
+        if (
+                not isinstance(record, dict)
+                or clean_string(record.get("name"), 100).casefold()
+                != repository_name.casefold()):
+            continue
+        target_owner = clean_string(
+            record.get("targetOwner"), MAX_NODE_NAME).lower()
+        if not valid_node_name(target_owner):
+            continue
+        now = int(Date.now())
+        record["status"] = "actively_mirrored"
+        record["statusLabel"] = "Actively mirrored"
+        record["mirrored"] = True
+        record["sourceCodeFetched"] = True
+        record["mirror"] = {
+            "owner": mirror_owner,
+            "name": repository_name,
+            "live": True,
+        }
+        record["mirrorNotice"] = (
+            "The full Git repository is hosted and served by ForkMesh.")
+        record["updatedAt"] = now
+        await d1_run(
+            env,
+            "UPDATE repository_imports SET status=?, data=?, updated_at=? "
+            "WHERE id=?",
+            "actively_mirrored", await encrypt_row(env, record), now,
+            str(row.get("id") or ""),
+        )
+        await enqueue_notification(
+            env,
+            target_owner,
+            "repository_hosted",
+            repository_name + " is now fully hosted by ForkMesh",
+            body=(
+                "The Codeberg import is synced, cloneable through ForkMesh, "
+                "and available as a size map in the World."),
+            repo=target_owner + "/" + repository_name,
+            href="/" + target_owner + "/" + repository_name,
+            actor=mirror_owner,
+            source="repository_import",
+            dedupe="repository-hosted:" + str(row.get("id") or ""),
+            ts=now,
+            meta={"importId": str(row.get("id") or "")},
+        )
+        return True
+    return False
+
+
 async def notify_mentions(env, owner, repo, actor, title, body, href, source,
                           number=0):
     # number is optional (0 = not a numbered item, e.g. a brand-new PR before
@@ -30407,6 +30497,65 @@ async def _https_mirror_expected_forkmesh_refs(env):
         return ""
 
 
+async def _https_mirror_accepted_forkmesh_refs(env):
+    """Current and recent source-attested states accepted during convergence.
+
+    The source publication and a mirror refresh cannot commit atomically across
+    independent machines.  Keep the direct-HTTPS lease valid while a healthy
+    mirror still serves a recent state that the source genuinely signed; an
+    unknown state remains rejected by the health challenge.
+    """
+    try:
+        owner = await _org_repo_node(env, "forkmesh", "forkmesh") or "forkmesh"
+        key_bi = await blind_index(env, owner + "/forkmesh")
+        row = await d1_first(
+            env,
+            "SELECT data,is_private FROM repositories WHERE key_bi=?",
+            key_bi,
+        )
+        if not row or int(row.get("is_private", 1) or 0) != 0:
+            return frozenset()
+        record = await decrypt_row(env, row.get("data"))
+        if not record or record.get("visibility") != "public":
+            return frozenset()
+        pins = set()
+        current = clean_string(record.get("stateHash", ""), 64).lower()
+        if re.fullmatch(r"[0-9a-f]{64}", current):
+            pins.add(current)
+        history = await d1_all(
+            env,
+            "SELECT state_hash FROM repo_state_history WHERE key_bi=? "
+            "ORDER BY ts DESC LIMIT ?",
+            key_bi,
+            STATE_PIN_HISTORY,
+        )
+        for item in history or []:
+            digest = clean_string(
+                item.get("state_hash", ""), 64).strip().lower()
+            if re.fullmatch(r"[0-9a-f]{64}", digest):
+                pins.add(digest)
+        return frozenset(pins)
+    except Exception:
+        return frozenset()
+
+
+def _https_mirror_refs_match(refs_digest, accepted_refs):
+    """Compare a proof with a bounded set of exact source-signed ref states."""
+    digest = str(refs_digest or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        return False
+    candidates = (
+        (accepted_refs,)
+        if isinstance(accepted_refs, str)
+        else (accepted_refs or ())
+    )
+    return any(
+        re.fullmatch(r"[0-9a-f]{64}", str(item or "").strip().lower())
+        and hmac.compare_digest(digest, str(item).strip().lower())
+        for item in candidates
+    )
+
+
 async def _https_mirror_refresh_registered_health(env, node):
     """Best-effort activation for one exact registered endpoint.
 
@@ -30427,10 +30576,10 @@ async def _https_mirror_refresh_registered_health(env, node):
         )
         if not row:
             return False
-        expected = await _https_mirror_expected_forkmesh_refs(env)
-        if not expected:
+        accepted = await _https_mirror_accepted_forkmesh_refs(env)
+        if not accepted:
             return False
-        return bool(await _https_mirror_health_one(env, row, expected))
+        return bool(await _https_mirror_health_one(env, row, accepted))
     except Exception:
         # Registration remains safely pending. A transient control-plane fetch
         # failure must not roll back its authenticated endpoint record.
@@ -30486,7 +30635,7 @@ async def _https_mirror_mark_failed(env, row, now):
     )
 
 
-async def _https_mirror_health_one(env, row, expected_forkmesh_refs):
+async def _https_mirror_health_one(env, row, accepted_forkmesh_refs):
     """Verify one fresh node-signed health and forkmesh/forkmesh proof."""
     now = int(Date.now())
     node = clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower()
@@ -30583,8 +30732,8 @@ async def _https_mirror_health_one(env, row, expected_forkmesh_refs):
         general_healthy
         and available
         and proof_integrity == "ok"
-        and expected_forkmesh_refs
-        and hmac.compare_digest(refs_digest, expected_forkmesh_refs)
+        and _https_mirror_refs_match(
+            refs_digest, accepted_forkmesh_refs)
         and HTTPS_MIRROR_REQUIRED_FORKMESH_OPERATIONS.issubset(
             set(operations))
     )
@@ -30638,9 +30787,9 @@ async def https_mirror_health_cron(env):
     )
     if not rows:
         return
-    expected = await _https_mirror_expected_forkmesh_refs(env)
+    accepted = await _https_mirror_accepted_forkmesh_refs(env)
     await asyncio.gather(
-        *[_https_mirror_health_one(env, row, expected) for row in rows],
+        *[_https_mirror_health_one(env, row, accepted) for row in rows],
         return_exceptions=True,
     )
 
@@ -30843,6 +30992,42 @@ async def _https_mirror_private_proxy(env, request, private_record):
         cache_control="no-store")
 
 
+async def _hosted_repository_import_route(env, owner, repo):
+    """Resolve one public logical import name to its physical mirror catalog."""
+    owner_l = clean_string(owner, MAX_NODE_NAME).strip().lower()
+    repo_l = clean_string(repo, MAX_REPO_SEGMENT).strip().lower()
+    if not valid_node_name(owner_l) or not safe_segment(repo_l):
+        return None
+    rows = await d1_all(
+        env,
+        "SELECT data FROM repository_imports "
+        "WHERE is_private=0 AND status='actively_mirrored' "
+        "ORDER BY updated_at DESC LIMIT ?",
+        repository_import.MAX_PUBLIC_IMPORTS,
+    )
+    for row in rows or []:
+        record = await decrypt_row(env, row.get("data"))
+        if not isinstance(record, dict):
+            continue
+        target_owner = clean_string(
+            record.get("targetOwner"), MAX_NODE_NAME).strip().lower()
+        name = clean_string(
+            record.get("name"), MAX_REPO_SEGMENT).strip().lower()
+        if target_owner != owner_l or name != repo_l:
+            continue
+        mirror = record.get("mirror") or {}
+        mirror_owner = clean_string(
+            mirror.get("owner"), MAX_NODE_NAME).strip().lower()
+        mirror_name = clean_string(
+            mirror.get("name"), MAX_REPO_SEGMENT).strip()
+        if (
+                mirror_owner in ("mirror2", "mirror3")
+                and valid_node_name(mirror_owner)
+                and safe_segment(mirror_name)):
+            return mirror_owner, mirror_name
+    return None
+
+
 async def _https_mirror_public_context(env, owner, repo):
     """Return canonical public repo identity and integrity-approved node set."""
     owner_l = clean_string(owner, MAX_NODE_NAME).strip().lower()
@@ -30874,7 +31059,21 @@ async def _https_mirror_public_context(env, owner, repo):
                 target_row = row
                 break
         if not target_row:
-            return None
+            hosted_route = await _hosted_repository_import_route(
+                env, owner_l, repo_l)
+            if hosted_route:
+                hosted_owner, hosted_repo = hosted_route
+                for row in rows:
+                    record = row.get("data") or {}
+                    if (
+                            str(record.get("owner") or "").lower()
+                            == hosted_owner
+                            and str(record.get("name") or "").lower()
+                            == hosted_repo.lower()):
+                        target_row = row
+                        break
+            if not target_row:
+                return None
         target = target_row["data"]
         members = [
             row for row in rows
@@ -30885,13 +31084,14 @@ async def _https_mirror_public_context(env, owner, repo):
             for row in members if row.get("key_bi")
         ]
         history = {}
-        if group_keys:
+        for offset in range(0, len(group_keys), 80):
+            key_batch = group_keys[offset:offset + 80]
             history_rows = await d1_all(
                 env,
                 "SELECT key_bi,state_hash FROM repo_state_history"
                 " WHERE key_bi IN (%s)"
-                % ",".join("?" for _ in group_keys),
-                *group_keys,
+                % ",".join("?" for _ in key_batch),
+                *key_batch,
             )
             for item in history_rows or []:
                 history.setdefault(
@@ -30970,7 +31170,8 @@ async def _https_mirror_public_context(env, owner, repo):
             "repo": canonical_repo,
             "nodes": allowed,
             "pins": set(pins),
-            "repoBi": await blind_index(env, owner_l + "/" + repo_l),
+            "repoBi": await blind_index(
+                env, canonical_owner + "/" + canonical_repo.lower()),
         }
     except Exception:
         return None

@@ -33,6 +33,7 @@ import posixpath
 import re
 import selectors
 import signal
+import shutil
 import stat
 import subprocess
 import sys
@@ -71,6 +72,7 @@ MAX_ACTIONS_SUMMARY_CLOCK_SKEW_MS = 60 * 1000
 SYSTEM_ACTIONS_SUMMARY_PATH = Path(
     "/var/lib/forkmesh-mirror/gateway/actions-summary.json"
 )
+HOSTED_PUBLIC_GIT_ROOT = Path("/srv/forkmesh-git/imports")
 COLLABORATION_TREE_ROOTS = frozenset({"pulls", ".forkmesh/issues"})
 PUBLIC_OPERATIONS = frozenset(
     {
@@ -102,6 +104,9 @@ NODE_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 REPO_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{12,80}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+RUNTIME_DIRECTORY_RE = re.compile(
+    r"^forkmesh-mirror-runtime-[A-Za-z0-9_]+$"
+)
 OPAQUE_REPLICA_RE = re.compile(r"^[0-9a-f]{64}$")
 AGE_NATIVE_HEADER = b"age-encryption.org/v1\n"
 AGE_ARMORED_HEADER = b"-----BEGIN AGE ENCRYPTED FILE-----\n"
@@ -993,21 +998,47 @@ def load_config(path: Path) -> GatewayConfig:
             "operations",
             "releaseStore",
             "encryptedArchive",
+            "gitDir",
         }
         if "gitDir" in item:
-            raise GatewayError(
-                "plaintext gitDir is prohibited; enabled public mirrors "
-                "require encryptedArchive storage"
-            )
+            git_dir_raw = item.get("gitDir")
+            hosted_root = (HOSTED_PUBLIC_GIT_ROOT / node).resolve()
+            try:
+                hosted_root_info = hosted_root.lstat()
+                git_dir = Path(str(git_dir_raw or "")).resolve()
+                git_dir_info = git_dir.lstat()
+            except OSError as exc:
+                raise GatewayError(
+                    "plaintext gitDir is prohibited outside the fixed "
+                    "read-only hosted-import root") from exc
+            if (
+                not isinstance(git_dir_raw, str)
+                or not git_dir_raw
+                or not stat.S_ISDIR(hosted_root_info.st_mode)
+                or stat.S_ISLNK(hosted_root_info.st_mode)
+                or hosted_root_info.st_uid != os.geteuid()
+                or not stat.S_ISDIR(git_dir_info.st_mode)
+                or stat.S_ISLNK(git_dir_info.st_mode)
+                or git_dir_info.st_uid != os.geteuid()
+                or git_dir.parent != hosted_root
+                or git_dir.name != name + ".git"
+                or archive_raw
+                or "merge-pull" in operations
+                or "actions-status" in operations
+                or "release-blob" in operations
+            ):
+                raise GatewayError(
+                    "plaintext gitDir is prohibited outside the fixed "
+                    "read-only hosted-import root")
         if set(item) - allowed_repository_fields:
             raise GatewayError("repository entry contains an unknown field")
-        if not archive_raw:
+        if git_dir is None and not archive_raw:
             raise GatewayError(
                 "enabled public repository requires encryptedArchive storage"
             )
-        if not isinstance(archive_raw, dict):
+        if git_dir is None and not isinstance(archive_raw, dict):
             raise GatewayError("encryptedArchive must be an object")
-        if set(archive_raw) != {
+        if git_dir is None and set(archive_raw) != {
             "scheme",
             "ciphertextPath",
             "ciphertextSha256",
@@ -1017,33 +1048,38 @@ def load_config(path: Path) -> GatewayConfig:
             raise GatewayError(
                 "encryptedArchive contains an unknown or missing field"
             )
-        scheme = str(archive_raw.get("scheme") or "")
-        if scheme != "age-encrypted-tar-v1":
+        scheme = str(archive_raw.get("scheme") or "") if archive_raw else ""
+        if git_dir is None and scheme != "age-encrypted-tar-v1":
             raise GatewayError(
                 "encryptedArchive scheme must be age-encrypted-tar-v1"
             )
-        ciphertext_raw = archive_raw.get("ciphertextPath")
+        ciphertext_raw = archive_raw.get("ciphertextPath") if archive_raw else None
         ciphertext_hash = str(
-            archive_raw.get("ciphertextSha256") or ""
+            archive_raw.get("ciphertextSha256") or "" if archive_raw else ""
         ).lower()
-        key_reference = str(archive_raw.get("keyReference") or "")
+        key_reference = str(
+            archive_raw.get("keyReference") or "" if archive_raw else "")
         if (
+            git_dir is None
+            and (
             not isinstance(ciphertext_raw, str)
             or not ciphertext_raw
             or not SHA256_RE.fullmatch(ciphertext_hash)
             or not re.fullmatch(r"[A-Za-z0-9._:/@+-]{3,240}", key_reference)
+            )
         ):
             raise GatewayError("encryptedArchive metadata is invalid")
-        encrypted_archive = EncryptedArchive(
-            scheme=scheme,
-            ciphertext_path=(base / ciphertext_raw).resolve(),
-            ciphertext_sha256=ciphertext_hash,
-            key_reference=key_reference,
-            materialize_command=_validate_command(
-                archive_raw.get("materializeCommand"),
-                "encryptedArchive.materializeCommand",
-            ),
-        )
+        if git_dir is None:
+            encrypted_archive = EncryptedArchive(
+                scheme=scheme,
+                ciphertext_path=(base / ciphertext_raw).resolve(),
+                ciphertext_sha256=ciphertext_hash,
+                key_reference=key_reference,
+                materialize_command=_validate_command(
+                    archive_raw.get("materializeCommand"),
+                    "encryptedArchive.materializeCommand",
+                ),
+            )
 
         release_store = None
         if item.get("releaseStore"):
@@ -3162,13 +3198,13 @@ class GatewayApplication:
             "requestId": request_id,
             "published": True,
         }
-        for field in (
+        for result_field in (
             "baseBefore", "head", "pullsBefore", "baseAfter", "pullsAfter"
         ):
-            oid = str(value.get(field) or "").lower()
+            oid = str(value.get(result_field) or "").lower()
             if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", oid):
                 raise GatewayError("merge executor result is invalid")
-            output[field] = oid
+            output[result_field] = oid
         return json_response(output, 200)
 
     def _run_merge_job(
@@ -3908,6 +3944,49 @@ class MirrorGatewayServer(ThreadingHTTPServer):
         )
 
 
+def cleanup_stale_runtime(root: Path) -> int:
+    """Remove only gateway-owned materializations between service starts."""
+    if not root.is_absolute() or root != Path(os.path.normpath(str(root))):
+        raise GatewayError("runtime cleanup root is invalid")
+    try:
+        root_info = root.lstat()
+    except OSError as exc:
+        raise GatewayError("runtime cleanup root is unavailable") from exc
+    if (
+        not stat.S_ISDIR(root_info.st_mode)
+        or stat.S_ISLNK(root_info.st_mode)
+        or root_info.st_uid != os.geteuid()
+        or stat.S_IMODE(root_info.st_mode) & (stat.S_IRWXG | stat.S_IRWXO)
+    ):
+        raise GatewayError("runtime cleanup root is unsafe")
+    removed = 0
+    try:
+        candidates = tuple(root.iterdir())
+    except OSError as exc:
+        raise GatewayError("runtime cleanup root cannot be listed") from exc
+    for path in candidates:
+        if not RUNTIME_DIRECTORY_RE.fullmatch(path.name):
+            continue
+        try:
+            info = path.lstat()
+            resolved = path.resolve()
+        except OSError as exc:
+            raise GatewayError("runtime materialization is unsafe") from exc
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or resolved.parent != root.resolve()
+        ):
+            raise GatewayError("runtime materialization is unsafe")
+        try:
+            shutil.rmtree(path)
+        except OSError as exc:
+            raise GatewayError("runtime materialization cleanup failed") from exc
+        removed += 1
+    return removed
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -3925,6 +4004,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="BARE_REPOSITORY",
         help="print the canonical heads/tags SHA-256 integrity pin",
     )
+    source.add_argument(
+        "--cleanup-runtime",
+        type=Path,
+        metavar="DIRECTORY",
+        help="remove stale gateway materializations before service startup",
+    )
     parser.add_argument(
         "--check",
         action="store_true",
@@ -3937,6 +4022,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     application: GatewayApplication | None = None
     try:
+        if args.cleanup_runtime is not None:
+            removed = cleanup_stale_runtime(args.cleanup_runtime)
+            print(_canonical_json({"ok": True, "removed": removed}))
+            return 0
         if args.refs_sha256 is not None:
             repository_path = args.refs_sha256.resolve()
             _ensure_bare_repository(repository_path)
@@ -3973,7 +4062,12 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
         try:
-            server.serve_forever(poll_interval=0.5)
+            try:
+                server.serve_forever(poll_interval=0.5)
+            except KeyboardInterrupt:
+                # systemd uses SIGINT so TemporaryDirectory cleanup runs
+                # instead of leaking one materialized repository per restart.
+                pass
         finally:
             server.server_close()
         return 0

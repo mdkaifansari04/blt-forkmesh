@@ -385,6 +385,95 @@ def test_refresh_renders_one_archive_for_all_aliases_and_check_is_dry(
     assert installation["age_secret"] not in gateway_path.read_text()
 
 
+def test_refresh_reuses_unchanged_generation_and_prunes_superseded_archives(
+    installation,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config = installation["config"]
+    refresh_tool.refresh(config)
+    archive_directory = installation["archive"]
+    first = tuple(archive_directory.glob("archive-*.age"))
+    assert len(first) == 1
+
+    real_helper_call = refresh_tool._helper_call
+
+    def forbid_seal(config, mode, request=None):
+        if mode == "seal-repository":
+            raise AssertionError("unchanged refs must not be resealed")
+        return real_helper_call(config, mode, request)
+
+    monkeypatch.setattr(refresh_tool, "_helper_call", forbid_seal)
+    assert refresh_tool.refresh(config)["event"] == "refresh_complete"
+    assert tuple(archive_directory.glob("archive-*.age")) == first
+
+    monkeypatch.setattr(refresh_tool, "_helper_call", real_helper_call)
+    (installation["work"] / "README.md").write_text(
+        "new bounded generation\n", encoding="utf-8"
+    )
+    _run(["git", "add", "README.md"], installation["work"])
+    _run(["git", "commit", "-m", "bounded generation"], installation["work"])
+    _run(["git", "push", "mirror", "main"], installation["work"])
+    refresh_tool.refresh(config)
+    second = tuple(archive_directory.glob("archive-*.age"))
+    assert len(second) == 1
+    assert second != first
+
+
+def test_hosted_repository_sidecar_adds_direct_integrity_pinned_repository(
+    installation,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    config = installation["config"]
+    imports_root = tmp_path / "imports"
+    repository = imports_root / config.node_owner / "codeberg-demo.git"
+    repository.parent.mkdir(parents=True)
+    _run(["git", "clone", "--bare", str(installation["work"]), str(repository)])
+    monkeypatch.setattr(
+        refresh_tool,
+        "HOSTED_REPOSITORIES_ROOT",
+        imports_root,
+    )
+    sidecar = (
+        config.gateway_config_path.parent
+        / refresh_tool.HOSTED_REPOSITORIES_FILE
+    )
+    sidecar.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "type": refresh_tool.HOSTED_REPOSITORIES_TYPE,
+                "repositories": [
+                    {
+                        "owner": config.node_owner,
+                        "name": "codeberg-demo",
+                        "sourceRepository": str(repository),
+                        "sourceUrl": "https://codeberg.org/example/codeberg-demo",
+                        "importId": "ext_" + "a" * 24,
+                        "description": "Fully hosted import",
+                        "branch": "main",
+                        "createdAt": 1785000000000,
+                        "publishedStateHash": "",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    sidecar.chmod(0o600)
+
+    rendered = refresh_tool._hosted_gateway_repositories(config)
+    assert len(rendered) == 1
+    assert rendered[0]["owner"] == config.node_owner
+    assert rendered[0]["name"] == "codeberg-demo"
+    assert rendered[0]["gitDir"] == str(repository)
+    assert rendered[0]["integrity"]["expectedRefsSha256"] == (
+        refresh_tool._repository_refs_sha256(config, repository)
+    )
+    assert "merge-pull" not in rendered[0]["operations"]
+    assert "release-blob" not in rendered[0]["operations"]
+
+
 def test_actions_status_operation_renders_only_fixed_adjacent_summary_path(
     installation,
 ):

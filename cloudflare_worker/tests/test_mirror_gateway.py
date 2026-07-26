@@ -98,6 +98,24 @@ def make_bare_repository(tmp_path):
     return bare, commit
 
 
+def test_runtime_cleanup_removes_only_gateway_materializations(tmp_path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(mode=0o700)
+    stale_one = runtime / "forkmesh-mirror-runtime-a1_b2"
+    stale_two = runtime / "forkmesh-mirror-runtime-z9"
+    unrelated = runtime / "operator-data"
+    stale_one.mkdir()
+    stale_two.mkdir()
+    unrelated.mkdir()
+    (stale_one / "pack").write_bytes(b"stale")
+    (unrelated / "keep").write_bytes(b"owned elsewhere")
+
+    assert gateway.cleanup_stale_runtime(runtime) == 2
+    assert not stale_one.exists()
+    assert not stale_two.exists()
+    assert (unrelated / "keep").read_bytes() == b"owned elsewhere"
+
+
 def signed_manifest(origin="https://mirror.example.test", node="mirror-a"):
     manifest = {
         "schemaVersion": 1,
@@ -368,6 +386,39 @@ def test_config_requires_loopback_public_integrity_and_no_secret_fields(tmp_path
         gateway.GatewayError, match="age-encrypted-tar-v1"
     ):
         gateway.load_config(ambiguous_path)
+
+
+def test_config_allows_read_only_git_dir_only_in_hosted_import_root(
+    tmp_path, monkeypatch
+):
+    hosted_root = tmp_path / "imports"
+    node_root = hosted_root / "mirror-a"
+    node_root.mkdir(parents=True)
+    bare, _commit = make_bare_repository(node_root)
+    repository = node_root / "project.git"
+    bare.rename(repository)
+    monkeypatch.setattr(gateway, "HOSTED_PUBLIC_GIT_ROOT", hosted_root)
+    config = gateway.load_config(
+        write_config(
+            tmp_path,
+            repository,
+            repositories=[
+                {
+                    "owner": "mirror-a",
+                    "name": "project",
+                    "visibility": "public",
+                    "enabled": True,
+                    "gitDir": str(repository),
+                    "integrity": {
+                        "expectedRefsSha256": gateway.refs_sha256(repository),
+                    },
+                    "operations": ["git-info-refs", "git-upload-pack", "sizes"],
+                }
+            ],
+        )
+    )
+    assert config.repositories[0].git_dir == repository
+    assert config.repositories[0].encrypted_archive is None
 
 
 def test_identical_alias_archives_materialize_once_with_distinct_configs(
