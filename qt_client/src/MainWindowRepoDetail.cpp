@@ -8380,15 +8380,87 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->setMinimumHeight(0);
     m_repoDetailStack->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
 
-    auto *layout = new QVBoxLayout(page);
+    // --- Thin activity rail down the page's left edge (adhoc #357): a Code
+    // entry (file browser) and a Git entry (current changes), VS-Code style.
+    // The Git icon carries a blue badge with the working-tree change count
+    // (kept fresh by refreshSourceControl) that flips to a spinner while a
+    // sync/publish is in flight (applyRepoPushButtonState); the selected entry
+    // shows a 2px line along its left edge.
+    m_railCodeButton = new ActivityRailButton(QStringLiteral("code"),
+                                              QStringLiteral("Code"));
+    m_railCodeButton->setToolTip(QStringLiteral("Browse the repository files"));
+    connect(m_railCodeButton, &QPushButton::clicked, this, [this] {
+        // Same path as clicking the Code tab: land on the file browser.
+        if (m_repoDetailTabs && m_repoDetailTabs->button(0))
+            m_repoDetailTabs->button(0)->click();
+        updateRepoActivityRail();
+    });
+    m_railGitButton = new ActivityRailButton(QStringLiteral("git-branch"),
+                                             QString());
+    m_railGitButton->setToolTip(
+        QStringLiteral("Source control \xE2\x80\x94 view the current changes"));
+    connect(m_railGitButton, &QPushButton::clicked, this, [this] {
+        // Open the commits/changes workspace inside the Code overview. Going
+        // through the commit strip's toggle runs its deferred list build and
+        // change rescan; when it's already showing, just re-assert the view.
+        if (m_historyButton && !m_historyButton->isChecked())
+            m_historyButton->click();
+        else
+            showOverviewCommits();
+        updateRepoActivityRail();
+    });
+    auto *rail = new QWidget;
+    rail->setObjectName("repoActivityRail");
+    rail->setFixedWidth(46);
+    auto *railLayout = new QVBoxLayout(rail);
+    railLayout->setContentsMargins(0, 8, 0, 8);
+    railLayout->setSpacing(2);
+    railLayout->addWidget(m_railCodeButton, 0, Qt::AlignHCenter);
+    railLayout->addWidget(m_railGitButton, 0, Qt::AlignHCenter);
+    railLayout->addStretch();
+    // The checked states mirror the visible view (Code tab, and which body the
+    // overview shows), so track every stack the navigation helpers drive.
+    connect(m_repoDetailStack, &QStackedWidget::currentChanged, this,
+            [this](int) { updateRepoActivityRail(); });
+    if (m_overviewBodyStack)
+        connect(m_overviewBodyStack, &QStackedWidget::currentChanged, this,
+                [this](int) { updateRepoActivityRail(); });
+    if (m_filesStack)
+        connect(m_filesStack, &QStackedWidget::currentChanged, this,
+                [this](int) { updateRepoActivityRail(); });
+    updateRepoActivityRail();
+
+    auto *content = new QVBoxLayout;
+    content->setContentsMargins(0, 0, 0, 0);
+    content->setSpacing(6);
+    content->addLayout(headerRow);
+    content->addWidget(m_repoDetailNotice);
+    content->addWidget(metaBand);
+    content->addWidget(tabBarScroll);
+    content->addWidget(m_repoDetailStack, 1);
+    auto *layout = new QHBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(6);
-    layout->addLayout(headerRow);
-    layout->addWidget(m_repoDetailNotice);
-    layout->addWidget(metaBand);
-    layout->addWidget(tabBarScroll);
-    layout->addWidget(m_repoDetailStack, 1);
+    layout->setSpacing(0);
+    layout->addWidget(rail);
+    layout->addLayout(content, 1);
     return page;
+}
+
+// The rail highlights what's actually on screen: Code while the repo detail
+// view sits anywhere on the Code tab's file side, Git while the Code overview
+// body shows the commits/changes workspace. Exclusive, like an editor's
+// activity bar.
+void MainWindow::updateRepoActivityRail()
+{
+    if (!m_railCodeButton || !m_railGitButton)
+        return;
+    const bool onCode =
+        m_repoDetailStack && m_repoDetailStack->currentIndex() == 0;
+    const bool onChanges =
+        onCode && m_filesStack && m_filesStack->currentIndex() == 0 &&
+        m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 1;
+    m_railCodeButton->setChecked(onCode && !onChanges);
+    m_railGitButton->setChecked(onChanges);
 }
 
 
