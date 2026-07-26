@@ -4204,11 +4204,14 @@ async def _world_social_fetch_text(url, headers):
 
 
 async def world_social_posts_handler(env, request):
-    """Public read-only proxy feeding the Twitter and Reddit world banners.
+    """Public read-only proxy feeding the Twitter, Reddit, and blog world
+    banners.
 
-    Both upstreams are best-effort: a network refusal (X retiring the
-    syndication page, Reddit rate-limiting the colo) downgrades that banner
-    to its static sign via state=unavailable instead of failing the read.
+    The external upstreams are best-effort: a network refusal (X retiring
+    the syndication page, Reddit rate-limiting the colo) downgrades that
+    banner to its static sign via state=unavailable instead of failing the
+    read. The blog feed reads our own static blog index through env.ASSETS,
+    so it never leaves the Worker.
     """
     if method_name(request) != "GET":
         return json_response(
@@ -4245,10 +4248,22 @@ async def world_social_posts_handler(env, request):
             reddit_posts = world_social_feeds.normalize_reddit_listing(
                 listing)
             reddit_ok = True
+    blog_posts, blog_ok = [], False
+    try:
+        origin = urlparse(request.url)
+        blog_resp = await env.ASSETS.fetch(
+            origin.scheme + "://" + origin.netloc + "/"
+            + world_social_feeds.BLOG_INDEX_ASSET)
+        if int(getattr(blog_resp, "status", 0)) == 200:
+            blog_posts = world_social_feeds.normalize_blog_index(
+                str(await blog_resp.text()))
+            blog_ok = bool(blog_posts)
+    except Exception:
+        blog_posts, blog_ok = [], False
     resp = json_response(
         world_social_feeds.social_posts_payload(
-            int(Date.now()), twitter_posts, reddit_posts,
-            twitter_ok, reddit_ok),
+            int(Date.now()), twitter_posts, reddit_posts, blog_posts,
+            twitter_ok, reddit_ok, blog_ok),
         cache_seconds=WORLD_SOCIAL_POSTS_TTL,
     )
     await edge_cache_put(WORLD_SOCIAL_POSTS_CACHE_KEY, resp)
@@ -19194,6 +19209,8 @@ def _ssh_gateway_settings(env):
         getattr(env, "SSH_GATEWAY_TOKEN", ""))
     repositories = ssh_auth.parse_gateway_repository_allowlist(
         getattr(env, "SSH_GATEWAY_REPOSITORIES", ""))
+    node_hosts = ssh_auth.parse_gateway_node_hosts(
+        getattr(env, "SSH_GATEWAY_NODE_HOSTS", ""))
     try:
         port = int(getattr(env, "SSH_GATEWAY_PORT", 22) or 22)
     except (TypeError, ValueError):
@@ -19204,6 +19221,7 @@ def _ssh_gateway_settings(env):
         "host": host if configured else "",
         "port": port if configured else 0,
         "repositories": repositories if configured else {},
+        "nodeHosts": node_hosts if configured else {},
     }
 
 
@@ -19223,8 +19241,9 @@ def _ssh_repository_url(env, owner, repo):
             settings["repositories"], owner, repo)
     ):
         return ""
+    host = settings["nodeHosts"].get(str(owner or "").strip().lower())
     return ssh_auth.ssh_repository_url(
-        settings["host"], settings["port"], owner, repo)
+        host or settings["host"], settings["port"], owner, repo)
 
 
 def _ssh_alias_repository_url(env, alias_owner, backing_owner, repo):
@@ -19242,8 +19261,10 @@ def _ssh_alias_repository_url(env, alias_owner, backing_owner, repo):
             settings["repositories"], backing_owner, repo)
     ):
         return ""
+    host = settings["nodeHosts"].get(
+        str(backing_owner or "").strip().lower())
     return ssh_auth.ssh_repository_url(
-        settings["host"], settings["port"], alias_owner, repo)
+        host or settings["host"], settings["port"], alias_owner, repo)
 
 
 async def _ssh_json_body(request, max_bytes=32 * 1024):

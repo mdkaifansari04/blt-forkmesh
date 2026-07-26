@@ -184,7 +184,10 @@ def test_sitting_survives_the_campfire_landmark_proximity_label():
     # proximity relabel would otherwise overwrite the seated activity other
     # visitors render the pose from.
     assert "export const CAMPFIRE_SEATED_ACTIVITY" in SCENE
-    assert "  CAMPFIRE_SEATED_ACTIVITY,\n  createWorldScene,\n" in APP
+    assert (
+        "  CAMPFIRE_SEATED_ACTIVITY,\n  SWING_RIDING_ACTIVITY,\n"
+        "  createWorldScene,\n" in APP
+    )
     location = APP.split("  updateLocation(label, id) {", 1)[1].split(
         "\n  updateRegion(", 1
     )[0]

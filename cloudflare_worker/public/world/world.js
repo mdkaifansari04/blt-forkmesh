@@ -44,6 +44,7 @@ import { createWorldOfficeMeeting } from "./world-office-meeting.js";
 import { createWorldOfficeTasksController } from "./world-office-tasks.js";
 import {
   CAMPFIRE_SEATED_ACTIVITY,
+  SWING_RIDING_ACTIVITY,
   createWorldScene,
 } from "./world-scene.js";
 
@@ -91,7 +92,9 @@ const MASTODON_REFRESH_MS = 10 * 60 * 1000;
 const MASTODON_REPLY_THREADS = 4;
 const MASTODON_REPLY_LIMIT = 12;
 // Twitter and Reddit have no CORS-open public API, so their banners repaint
-// from the Worker's edge-cached proxy on the same ten-minute cadence.
+// from the Worker's edge-cached proxy on the same ten-minute cadence. The
+// blog board rides the same snapshot: the Worker reads its own static blog
+// index and folds the feature cards into the payload.
 const SOCIAL_POSTS_URL = "/api/world/social-posts";
 const SOCIAL_REFRESH_MS = 10 * 60 * 1000;
 const POSITION_WRITE_INTERVAL_MS = 1000;
@@ -139,6 +142,11 @@ const WORLD_LIGHT_LEVEL_DEFAULT = 100;
 const WORLD_MOVE_SPEED_MIN = 50;
 const WORLD_MOVE_SPEED_MAX = 300;
 const WORLD_MOVE_SPEED_DEFAULT = 100;
+// Swing-ride pumping strength; session-only because the control is only on
+// screen while actually riding one of the town swings.
+const WORLD_SWING_SPEED_MIN = 10;
+const WORLD_SWING_SPEED_MAX = 100;
+const WORLD_SWING_SPEED_DEFAULT = 55;
 const WORLD_MOVE_ACCEL_MIN = 25;
 // The top slider position is the "instant" sentinel — it maps to infinite
 // acceleration so the player reaches top speed the moment a key is pressed.
@@ -2861,6 +2869,28 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         </details>
 
         <div class="world-toast" data-world-toast role="status"></div>
+        <div class="world-swing-panel" data-world-swing-panel hidden>
+          <span>
+            <strong>Swing speed</strong>
+            <output data-world-swing-speed-output>${WORLD_SWING_SPEED_DEFAULT}%</output>
+          </span>
+          <input
+            type="range"
+            min="${WORLD_SWING_SPEED_MIN}"
+            max="${WORLD_SWING_SPEED_MAX}"
+            step="5"
+            value="${WORLD_SWING_SPEED_DEFAULT}"
+            data-world-swing-speed
+            aria-label="Swing speed"
+          />
+          <button
+            type="button"
+            class="world-swing-dismount"
+            data-world-swing-dismount
+          >
+            Hop off
+          </button>
+        </div>
         <button
           class="world-detail-backdrop"
           type="button"
@@ -3556,6 +3586,8 @@ class ForkMeshWorld extends HTMLElement {
     this.socialFeedsSnapshot = null;
     this.socialFeedsLoad = null;
     this.socialFeedsTimer = 0;
+    this.socialFeedsRequestedAt = 0;
+    this.socialFeedsFetchedAt = 0;
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
     const requestedLandmark = worldQuery.get("landmark") || "";
@@ -3988,6 +4020,7 @@ class ForkMeshWorld extends HTMLElement {
           void this.playForkmeshSong();
         },
         onCreateRepository: () => this.openRepositoryCreateForm(),
+        onSwingRide: (state) => this.handleSwingRide(state),
         onOfficeChairSelect: (chairId) => {
           this.officeMeeting?.requestSeat(chairId);
         },
@@ -4063,8 +4096,9 @@ class ForkMeshWorld extends HTMLElement {
       void this.loadMastodonBoard();
       this.syncMastodonKiosk();
       this.startMastodonRefresh();
-      // Same pattern for the Twitter/Reddit banners: push any cached
-      // snapshot onto the rebuilt scene, then keep the ten-minute cadence.
+      // Same pattern for the Twitter/Reddit/blog banners: push any cached
+      // snapshot onto the rebuilt scene, then keep the ten-minute cadence
+      // (whose one-second tick also drives the stand clocks).
       this.syncSocialBanners();
       this.startSocialBannersRefresh();
       this.syncMemberLounge();
@@ -5328,6 +5362,10 @@ class ForkMeshWorld extends HTMLElement {
         this.toggleWorldCameraMode();
         return;
       }
+      if (event.target.closest("[data-world-swing-dismount]")) {
+        this.world?.dismountSwing?.();
+        return;
+      }
       if (event.target.closest("[data-world-screenshot]")) {
         this.startScreenshotCapture();
         return;
@@ -5852,6 +5890,11 @@ class ForkMeshWorld extends HTMLElement {
       const moveAccel = event.target.closest("[data-world-move-accel]");
       if (moveAccel) {
         this.setMoveAccel(moveAccel.value);
+        return;
+      }
+      const swingSpeed = event.target.closest("[data-world-swing-speed]");
+      if (swingSpeed) {
+        this.setSwingSpeed(swingSpeed.value);
         return;
       }
       if (event.target.closest("[data-world-repo-filter='directory']")) {
@@ -6730,10 +6773,14 @@ class ForkMeshWorld extends HTMLElement {
     this.recordPublicVisit(id || "town-square");
     if (!this.settings.privacy.activity) {
       this.lastMovement.activity = "online";
-    } else if (this.lastMovement.activity !== CAMPFIRE_SEATED_ACTIVITY) {
-      // Sitting down lands inside the campfire's own label radius. The seated
-      // activity is what other visitors render the pose from, so proximity
-      // must not relabel it as merely visiting the circle.
+    } else if (
+      this.lastMovement.activity !== CAMPFIRE_SEATED_ACTIVITY &&
+      this.lastMovement.activity !== SWING_RIDING_ACTIVITY
+    ) {
+      // Sitting down lands inside the campfire's own label radius, and the
+      // swing set sits inside the Town Square's. The seated and riding
+      // activities are what other visitors render the pose from, so proximity
+      // must not relabel them as merely visiting the area.
       this.lastMovement.activity =
         label === "Town Square" ? "exploring the Town Square" : `visiting ${label}`;
     }
@@ -7292,6 +7339,7 @@ class ForkMeshWorld extends HTMLElement {
   // markup.
   loadSocialBanners() {
     if (this.socialFeedsLoad) return this.socialFeedsLoad;
+    this.socialFeedsRequestedAt = Date.now();
     this.socialFeedsLoad = (async () => {
       const controller = new AbortController();
       const timeout = window.setTimeout(() => controller.abort(), 10000);
@@ -7305,23 +7353,80 @@ class ForkMeshWorld extends HTMLElement {
           throw new Error(`social posts returned ${response.status}`);
         }
         this.socialFeedsSnapshot = await response.json();
+        this.socialFeedsFetchedAt = Date.now();
         this.syncSocialBanners();
       } catch (_) {
         // Keep the previous snapshot — or the static signs — on failure.
       } finally {
         window.clearTimeout(timeout);
         this.socialFeedsLoad = null;
+        this.syncSocialBannerTimers();
       }
     })();
+    this.syncSocialBannerTimers();
     return this.socialFeedsLoad;
   }
 
+  // Like the Mastodon kiosk, a one-second tick drives both the stand clocks
+  // and the ten-minute reload: when the countdown reaches zero the next tick
+  // starts the fetch, so a repaint from a fresh snapshot restarts the same
+  // window the boards were counting down.
   startSocialBannersRefresh() {
     window.clearInterval(this.socialFeedsTimer);
     this.socialFeedsTimer = window.setInterval(() => {
-      void this.loadSocialBanners();
-    }, SOCIAL_REFRESH_MS);
+      this.syncSocialBannerTimers();
+    }, 1000);
     void this.loadSocialBanners();
+  }
+
+  socialRefreshRemaining() {
+    if (!this.socialFeedsRequestedAt) return 0;
+    return Math.max(
+      0,
+      this.socialFeedsRequestedAt + SOCIAL_REFRESH_MS - Date.now(),
+    );
+  }
+
+  // Milliseconds since the newest post in a proxied feed, or null when the
+  // feed has no dated posts (unfetched, unavailable, or the blog's undated
+  // feature articles).
+  socialNewestPostAgo(feed) {
+    let latest = 0;
+    for (const post of Array.isArray(feed?.posts) ? feed.posts : []) {
+      const at = Number(post?.createdAt) || 0;
+      if (at > latest) latest = at;
+    }
+    return latest ? Math.max(0, Date.now() - latest) : null;
+  }
+
+  // Age of the snapshot itself: the server stamps `now` when it builds the
+  // payload, so an edge-cached read still reports how old the data really
+  // is. Feeds the blog board's SYNCED plate.
+  socialSnapshotAge() {
+    const stamp =
+      Number(this.socialFeedsSnapshot?.now) || this.socialFeedsFetchedAt;
+    return stamp ? Math.max(0, Date.now() - stamp) : null;
+  }
+
+  syncSocialBannerTimers() {
+    const loading = Boolean(this.socialFeedsLoad);
+    const remaining = this.socialRefreshRemaining();
+    if (!loading && remaining <= 0) {
+      void this.loadSocialBanners();
+      return;
+    }
+    const snapshot = this.socialFeedsSnapshot;
+    const timers = (sinceMs) => ({
+      remainingMs: loading ? SOCIAL_REFRESH_MS : remaining,
+      totalMs: SOCIAL_REFRESH_MS,
+      loading,
+      sinceMs,
+    });
+    this.world?.updateSocialBannerTimers?.({
+      twitter: timers(this.socialNewestPostAgo(snapshot?.twitter)),
+      reddit: timers(this.socialNewestPostAgo(snapshot?.reddit)),
+      blog: timers(this.socialSnapshotAge()),
+    });
   }
 
   socialPostDate(createdAt) {
@@ -7338,10 +7443,10 @@ class ForkMeshWorld extends HTMLElement {
   syncSocialBanners() {
     const snapshot = this.socialFeedsSnapshot;
     if (!snapshot) return;
-    const bound = (feed, meta) => ({
+    const bound = (feed, meta, text = (post) => String(post?.text || "")) => ({
       state: feed?.state === "ready" ? "ready" : "unavailable",
       posts: (Array.isArray(feed?.posts) ? feed.posts : []).map((post) => ({
-        text: String(post?.text || "").slice(0, 400),
+        text: text(post).slice(0, 400),
         meta: meta(post),
       })),
     });
@@ -7365,6 +7470,18 @@ class ForkMeshWorld extends HTMLElement {
         ]
           .filter(Boolean)
           .join(" · "),
+      ),
+      // Blog cards have no dates or counts: the meta line is the section +
+      // feature number the blog index shows, and the body pairs the title
+      // with its blurb.
+      blog: bound(
+        snapshot.blog,
+        (post) => String(post?.meta || ""),
+        (post) =>
+          [post?.text, post?.detail]
+            .filter(Boolean)
+            .map(String)
+            .join(" — "),
       ),
     });
   }
@@ -14429,6 +14546,39 @@ class ForkMeshWorld extends HTMLElement {
       output.textContent = next >= WORLD_MOVE_ACCEL_MAX ? "∞" : `${next}%`;
     }
     return next;
+  }
+
+  setSwingSpeed(value) {
+    const numeric = Number(value);
+    const next = Math.min(
+      WORLD_SWING_SPEED_MAX,
+      Math.max(
+        WORLD_SWING_SPEED_MIN,
+        Number.isFinite(numeric) ? numeric : WORLD_SWING_SPEED_DEFAULT,
+      ),
+    );
+    this.swingSpeed = next;
+    this.world?.setSwingSpeed?.(next);
+    const input = this.$("[data-world-swing-speed]");
+    const output = this.$("[data-world-swing-speed-output]");
+    if (input && Number(input.value) !== next) input.value = String(next);
+    if (output) output.textContent = `${next}%`;
+    return next;
+  }
+
+  handleSwingRide({ riding = false, denied = false } = {}) {
+    if (denied) {
+      this.toast("That swing is taken — grab a free one.");
+      return;
+    }
+    const panel = this.$("[data-world-swing-panel]");
+    if (panel) panel.hidden = !riding;
+    if (riding) {
+      this.setSwingSpeed(this.swingSpeed ?? WORLD_SWING_SPEED_DEFAULT);
+      this.toast(
+        "Swinging! Drag the swing-speed slider to pump harder, click the swing again to hop off, and try the camera button for a first-person ride.",
+      );
+    }
   }
 
   syncWorldCameraModeButton() {
