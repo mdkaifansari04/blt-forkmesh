@@ -384,6 +384,9 @@ def build_repo_mirrors_payload(
             "node": str(rec.get("owner") or "").strip(),
             "owner": str(rec.get("owner") or "").strip(),
             "ownerUser": str(rec.get("ownerUser") or "").strip(),
+            # The publishing machine's advertised node name (may differ from
+            # the owning account); display-only, never an identity key.
+            "machineName": str(rec.get("machineName") or "").strip(),
             "repo": str(rec.get("name") or "").strip(),
             "status": "online" if online else "offline",
             "lastSeen": seen if online else None,
