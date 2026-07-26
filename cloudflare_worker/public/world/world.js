@@ -11278,7 +11278,11 @@ class ForkMeshWorld extends HTMLElement {
     const base = `/api/repo/${encodeURIComponent(safeOwner)}/${encodeURIComponent(
       safeRepo,
     )}`;
-    const tree = await this.fetchJSON(`${base}/tree?path=`, {
+    const expectedCommit = immutableGitOid(options.expectedCommit);
+    const treeURL = expectedCommit
+      ? `${base}/tree?path=&ref=${encodeURIComponent(expectedCommit)}`
+      : `${base}/tree?path=`;
+    const tree = await this.fetchJSON(treeURL, {
       timeout: REPOSITORY_METADATA_TIMEOUT_MS,
       cache: "no-store",
     });
@@ -11520,6 +11524,8 @@ class ForkMeshWorld extends HTMLElement {
     let request = this.repositoryMapLoads.get(key);
     if (!request) {
       request = this.fetchRepositoryMapSnapshot(safeOwner, safeRepo, {
+        expectedCommit:
+          expectedCommits.size === 1 ? [...expectedCommits][0] : "",
         onTree: preview,
         onSizes: preview,
       });
