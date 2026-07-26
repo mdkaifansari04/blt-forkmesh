@@ -1209,6 +1209,19 @@ private:
     void startVultrHostInstall(const QString &node, const QString &ip,
                                const QString &identityFile);
     void finishVultrProvision(bool ok, const QString &message);
+    // Cloudflare API v4 call for the DNS record a fresh Vultr mirror needs
+    // (adhoc #331). Same shape as vultrApiCall: the token travels only in the
+    // Authorization header of this HTTPS request.
+    void cloudflareApiCall(const QString &apiToken, const QString &path,
+                           const QByteArray &method, const QJsonObject &body,
+                           std::function<void(QJsonObject, QString)> onDone);
+    // Point "<node>.<zone>" at a freshly booted Vultr instance so it joins the
+    // mesh under a stable name like the other mirrors. Reports the hostname it
+    // provisioned, or an empty string when no Cloudflare credentials/zone are
+    // configured or the record could not be written — provisioning continues
+    // either way, the node just keeps its raw address.
+    void ensureVultrMirrorDns(const QString &node, const QString &ip,
+                              std::function<void(QString hostname)> onDone);
     // Reload a saved host's server info from the table. A password is restored
     // only when it remains in this process's session cache.
     void loadHostIntoForm(int row, int column);
@@ -3673,6 +3686,7 @@ private:
     bool m_vultrProvisionActive = false;
     int m_vultrPollCount = 0;        // instance boot polls used this run
     int m_vultrInstallAttempts = 0;  // SSH install attempts used this run
+    QString m_vultrDnsHostname;      // Cloudflare name provisioned this run
     // Installer link-code detection (adhoc #53): rolling tail of the install
     // output so the "Link code: NNNNNN" line survives chunk splits, and a
     // per-run guard so the link popup opens once.

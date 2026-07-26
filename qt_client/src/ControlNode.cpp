@@ -1593,4 +1593,124 @@ QString vultrApiKeyFromVariables(const QMap<QString, QString> &variables)
                                        });
 }
 
+QString cloudflareZoneNameFromVariables(
+    const QMap<QString, QString> &variables)
+{
+    return storedCredential(variables,
+                            {
+                                QStringLiteral("CLOUDFLARE_ZONE"),
+                                QStringLiteral("CLOUDFLARE_ZONE_NAME"),
+                                QStringLiteral("CF_ZONE"),
+                            });
+}
+
+QString vultrMirrorDnsHostname(const QString &nodeName,
+                               const QString &zoneName)
+{
+    static const QRegularExpression labelPattern(
+        QStringLiteral("^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"));
+    static const QRegularExpression zonePattern(
+        QStringLiteral("^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+                       "(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"));
+    const QString node = nodeName.trimmed().toLower();
+    QString zone = zoneName.trimmed().toLower();
+    while (zone.endsWith(QLatin1Char('.')))
+        zone.chop(1);
+    if (!labelPattern.match(node).hasMatch() ||
+        !zonePattern.match(zone).hasMatch()) {
+        return {};
+    }
+    const QString hostname = node + QLatin1Char('.') + zone;
+    return hostname.size() <= 253 ? hostname : QString();
+}
+
+QJsonObject vultrMirrorDnsRecordPayload(const QString &hostname,
+                                        const QString &ip)
+{
+    const QString name = hostname.trimmed().toLower();
+    const QString address = ip.trimmed();
+    static const QRegularExpression namePattern(
+        QStringLiteral("^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+                       "(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"));
+    if (!namePattern.match(name).hasMatch() || name.size() > 253)
+        return {};
+    const QStringList octets = address.split(QLatin1Char('.'));
+    if (octets.size() != 4 || address == QLatin1String("0.0.0.0"))
+        return {};
+    for (const QString &octet : octets) {
+        bool ok = false;
+        const int value = octet.toInt(&ok);
+        if (!ok || octet.isEmpty() || octet.size() > 3 || value < 0 ||
+            value > 255) {
+            return {};
+        }
+    }
+    return {
+        {QStringLiteral("type"), QStringLiteral("A")},
+        {QStringLiteral("name"), name},
+        {QStringLiteral("content"), address},
+        // DNS-only: the node is reached over SSH and its own listeners, and a
+        // proxied answer would break both. The direct HTTPS mirror endpoint
+        // keeps its own proxied Tunnel record.
+        {QStringLiteral("proxied"), false},
+        {QStringLiteral("ttl"), 1},
+        {QStringLiteral("comment"), QStringLiteral("ForkMesh mirror node")},
+    };
+}
+
+QString cloudflareZoneId(const QJsonArray &zones, const QString &zoneName)
+{
+    QString zone = zoneName.trimmed().toLower();
+    while (zone.endsWith(QLatin1Char('.')))
+        zone.chop(1);
+    if (zone.isEmpty())
+        return {};
+    static const QRegularExpression idPattern(
+        QStringLiteral("^[A-Za-z0-9_-]{1,128}$"));
+    QString found;
+    for (const QJsonValue &value : zones) {
+        const QJsonObject candidate = value.toObject();
+        if (candidate.value(QStringLiteral("name")).toString().trimmed().toLower() !=
+            zone) {
+            continue;
+        }
+        const QString id = candidate.value(QStringLiteral("id")).toString().trimmed();
+        if (!idPattern.match(id).hasMatch())
+            return {};
+        if (!found.isEmpty() && found != id)
+            return {};
+        found = id;
+    }
+    return found;
+}
+
+QString cloudflareDnsRecordId(const QJsonArray &records,
+                              const QString &hostname,
+                              const QString &recordType)
+{
+    const QString name = hostname.trimmed().toLower();
+    const QString type = recordType.trimmed().toUpper();
+    if (name.isEmpty() || type.isEmpty())
+        return {};
+    static const QRegularExpression idPattern(
+        QStringLiteral("^[A-Za-z0-9_-]{1,128}$"));
+    QString found;
+    for (const QJsonValue &value : records) {
+        const QJsonObject record = value.toObject();
+        if (record.value(QStringLiteral("name")).toString().trimmed().toLower() !=
+                name ||
+            record.value(QStringLiteral("type")).toString().trimmed().toUpper() !=
+                type) {
+            continue;
+        }
+        const QString id = record.value(QStringLiteral("id")).toString().trimmed();
+        if (!idPattern.match(id).hasMatch())
+            return {};
+        if (!found.isEmpty() && found != id)
+            return {};
+        found = id;
+    }
+    return found;
+}
+
 } // namespace forkmesh::control

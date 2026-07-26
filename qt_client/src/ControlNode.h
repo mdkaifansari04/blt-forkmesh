@@ -318,4 +318,39 @@ QString vultrInstanceReadyIp(const QJsonObject &instance);
 // variable (same contract as cloudflareApiTokenFromVariables).
 QString vultrApiKeyFromVariables(const QMap<QString, QString> &variables);
 
+// --- Cloudflare DNS for a fresh Vultr mirror (adhoc #331) ------------------
+// A brand-new Vultr instance is only reachable at a raw address, so it never
+// joins the mesh under a stable name the way the hand-provisioned mirrors do.
+// These helpers derive the node's record in the operator's own Cloudflare zone
+// so one-click provisioning ends with "<node>.<zone>" resolving to it. The
+// record is DNS-only: the node answers on SSH and its own ports, and the
+// proxied Tunnel hostname of the direct HTTPS gateway stays a separate record.
+
+// The zone the mesh's mirror records live in, stored as a device-local Actions
+// variable (the Control node page's saved zone wins over this).
+QString cloudflareZoneNameFromVariables(const QMap<QString, QString> &variables);
+
+// "<node>.<zone>" for a mirror node, lowercased. Empty when either half is
+// missing or is not a plain DNS label/zone name, so a malformed pair can never
+// reach the Cloudflare API.
+QString vultrMirrorDnsHostname(const QString &nodeName,
+                               const QString &zoneName);
+
+// Exact DNS record body for the node: a DNS-only A record at automatic TTL,
+// commented so the record is recognizable in the Cloudflare dashboard. Empty
+// when the hostname or IPv4 address is malformed.
+QJsonObject vultrMirrorDnsRecordPayload(const QString &hostname,
+                                        const QString &ip);
+
+// From GET /zones: the id of the requested zone, matched on the exact name.
+// Empty unless exactly one zone matches, so an ambiguous token never writes.
+QString cloudflareZoneId(const QJsonArray &zones, const QString &zoneName);
+
+// From GET /zones/<id>/dns_records: the id of an existing record for this
+// hostname, so repeated deploys of the same node name update in place instead
+// of stacking duplicate answers. Empty when there is no single such record.
+QString cloudflareDnsRecordId(const QJsonArray &records,
+                              const QString &hostname,
+                              const QString &recordType);
+
 } // namespace forkmesh::control
