@@ -673,6 +673,14 @@ export function createWorldOfficeController({
     if (event.target.closest("[data-world-office-exit]")) {
       event.preventDefault();
       collapse();
+      return;
+    }
+    // The lobby is a room picker, not a live meeting: no one else can see
+    // you standing there, so its X/"Return to Town Square" exit immediately
+    // rather than sending you to walk through the physical door.
+    if (event.target.closest("[data-world-office-lobby-exit]")) {
+      event.preventDefault();
+      completeOfficeExit();
     }
   }
 
