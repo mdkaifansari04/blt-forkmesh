@@ -8073,10 +8073,12 @@ async def catalog_handler(env, request):
         prior_row = await d1_first(
             env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
         exists = prior_row is not None
+        prior_commit = ""
         # Reject rollbacks: a replayed older record must not be able to repin an
         # earlier (validly-signed) repo state and downgrade the served refs.
         if exists:
             prior = await decrypt_row(env, prior_row["data"]) or {}
+            prior_commit = clean_string(prior.get("commit", ""), 64)
             try:
                 if int(record["updatedAt"]) < int(prior.get("updatedAt", 0) or 0):
                     return json_response({"error": "stale_update"}, status=409)
@@ -8155,6 +8157,20 @@ async def catalog_handler(env, request):
         # never rolls back an otherwise valid catalog publication.
         await _https_mirror_refresh_catalog_publisher_health(env, record)
         await purge_catalog_related_caches()
+        # A public record whose advertised head moved means freshly pushed code
+        # just landed on this mirror node. Announce it to the live World room —
+        # after the cache purge above, so a viewer's immediate refresh reads
+        # the new head. Best-effort and already bounded by catalog_rate_check:
+        # a World relay hiccup must never fail an authorized publication.
+        new_commit = record.get("commit", "")
+        if (record["visibility"] == "public" and exists
+                and re.fullmatch(r"[0-9a-f]{40,64}", new_commit)
+                and new_commit != prior_commit):
+            try:
+                await _world_broadcast_mirror_push(
+                    env, owner, record["name"], new_commit)
+            except Exception:
+                pass
         payload = {
             "ok": True,
             "repository": record,
@@ -10591,6 +10607,36 @@ async def _world_disconnect_manual_block(
     except Exception:
         return 0
     return max(0, min(64, int(result.get("disconnected") or 0)))
+
+
+def _world_mirror_push_signature(env, node, repo, commit):
+    canonical = (
+        "forkmesh-world-mirror-push-v1\n%s\n%s\n%s"
+        % (node, repo, commit)
+    ).encode()
+    return hmac.new(
+        _account_session_secret(env), canonical, "sha256").hexdigest()
+
+
+async def _world_broadcast_mirror_push(env, node, repo, commit):
+    """Tell the live World room a mirror node's served head just advanced."""
+    world_id = env.FORKMESH_WORLD.idFromName("town-square-v1")
+    world_object = env.FORKMESH_WORLD.get(world_id)
+    payload = {"node": node, "repo": repo, "commit": commit}
+    control_request = JsRequest.new(
+        "https://forkmesh.internal/api/world/mirror-push",
+        to_js({
+            "method": "POST",
+            "headers": {
+                "content-type": "application/json",
+                "x-forkmesh-world-control": _world_mirror_push_signature(
+                    env, node, repo, commit),
+            },
+            "body": json.dumps(payload, separators=(",", ":")),
+        }),
+    )
+    response = await world_object.fetch(control_request)
+    return int(getattr(response, "status", 0) or 0) == 200
 
 
 async def world_moderation_handler(env, request):
@@ -33517,6 +33563,8 @@ class ForkMeshWorld(DurableObject):
         path = urlparse(request.url).path
         if path.rstrip("/") == "/api/world/manual-block":
             return await self._manual_block(request)
+        if path.rstrip("/") == "/api/world/mirror-push":
+            return await self._mirror_push(request)
         if path.rstrip("/") != "/api/world/ws":
             return json_response({"error": "not_found"}, status=404)
 
@@ -33622,6 +33670,47 @@ class ForkMeshWorld(DurableObject):
 
         return JsResponse.new(
             None, to_js({"status": 101, "webSocket": client}))
+
+    async def _mirror_push(self, request):
+        """Relay a signed outer-Worker head-advance notice to every visitor.
+
+        Only the outer Worker holds the control HMAC, so browser sockets can
+        never inject or forge this frame. The frame itself carries no facts a
+        client acts on directly — viewers re-read the signed public mirror
+        payload and animate from that verified state.
+        """
+        if method_name(request) != "POST":
+            return json_response({"error": "method_not_allowed"}, status=405)
+        try:
+            data = await bounded_json_request(request)
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+        if not isinstance(data, dict):
+            return json_response({"error": "invalid_json"}, status=400)
+        node = clean_string(data.get("node", ""), MAX_NODE_NAME).strip()
+        repo = clean_string(data.get("repo", ""), 120).strip()
+        commit = str(data.get("commit") or "").strip().lower()
+        try:
+            signature = str(
+                request.headers.get("x-forkmesh-world-control") or "")
+        except Exception:
+            signature = ""
+        expected = _world_mirror_push_signature(self.env, node, repo, commit)
+        if (
+            not node
+            or not re.fullmatch(r"[0-9a-f]{40,64}", commit)
+            or not hmac.compare_digest(signature, expected)
+        ):
+            return json_response({"error": "unauthorized"}, status=401)
+        self._broadcast({
+            "type": "mirror-push",
+            "node": node,
+            "repo": repo,
+            # A short id is plenty for the announcement; the full head comes
+            # from the signed mirror payload each client refreshes.
+            "commit": commit[:12],
+        })
+        return json_response({"ok": True, "delivered": True})
 
     async def _manual_block(self, request):
         """Disconnect sockets selected by a signed outer-Worker command."""
