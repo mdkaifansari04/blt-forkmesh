@@ -1193,6 +1193,10 @@ private:
     QString savedHostIdentityFile(const QString &name, const QString &ip,
                                   const QString &user) const;
     void refreshHostsTable();
+    // Drop a saved host from this app's list only \xe2\x80\x94 no SSH session is
+    // opened and nothing is changed on the remote host itself. Use Uninstall
+    // instead to actually remove ForkMesh from the host.
+    void forgetHostAtRow(int row);
     // --- One-click Vultr mirror (adhoc #315) ---------------------------------
     // Create a brand-new mirror VPS on the user's Vultr account: pick the
     // cheapest plan and newest Debian via the Vultr v2 API, create/reuse the
