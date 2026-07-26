@@ -44,6 +44,7 @@ import { createWorldOfficeMeeting } from "./world-office-meeting.js";
 import { createWorldOfficeTasksController } from "./world-office-tasks.js";
 import {
   CAMPFIRE_SEATED_ACTIVITY,
+  SWING_RIDING_ACTIVITY,
   createWorldScene,
 } from "./world-scene.js";
 
@@ -137,6 +138,11 @@ const WORLD_LIGHT_LEVEL_DEFAULT = 100;
 const WORLD_MOVE_SPEED_MIN = 50;
 const WORLD_MOVE_SPEED_MAX = 300;
 const WORLD_MOVE_SPEED_DEFAULT = 100;
+// Swing-ride pumping strength; session-only because the control is only on
+// screen while actually riding one of the town swings.
+const WORLD_SWING_SPEED_MIN = 10;
+const WORLD_SWING_SPEED_MAX = 100;
+const WORLD_SWING_SPEED_DEFAULT = 55;
 const WORLD_MOVE_ACCEL_MIN = 25;
 // The top slider position is the "instant" sentinel — it maps to infinite
 // acceleration so the player reaches top speed the moment a key is pressed.
@@ -2859,6 +2865,28 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         </details>
 
         <div class="world-toast" data-world-toast role="status"></div>
+        <div class="world-swing-panel" data-world-swing-panel hidden>
+          <span>
+            <strong>Swing speed</strong>
+            <output data-world-swing-speed-output>${WORLD_SWING_SPEED_DEFAULT}%</output>
+          </span>
+          <input
+            type="range"
+            min="${WORLD_SWING_SPEED_MIN}"
+            max="${WORLD_SWING_SPEED_MAX}"
+            step="5"
+            value="${WORLD_SWING_SPEED_DEFAULT}"
+            data-world-swing-speed
+            aria-label="Swing speed"
+          />
+          <button
+            type="button"
+            class="world-swing-dismount"
+            data-world-swing-dismount
+          >
+            Hop off
+          </button>
+        </div>
         <button
           class="world-detail-backdrop"
           type="button"
@@ -3980,6 +4008,7 @@ class ForkMeshWorld extends HTMLElement {
           void this.playForkmeshSong();
         },
         onCreateRepository: () => this.openRepositoryCreateForm(),
+        onSwingRide: (state) => this.handleSwingRide(state),
         onOfficeChairSelect: (chairId) => {
           this.officeMeeting?.requestSeat(chairId);
         },
@@ -5321,6 +5350,10 @@ class ForkMeshWorld extends HTMLElement {
         this.toggleWorldCameraMode();
         return;
       }
+      if (event.target.closest("[data-world-swing-dismount]")) {
+        this.world?.dismountSwing?.();
+        return;
+      }
       if (event.target.closest("[data-world-screenshot]")) {
         this.startScreenshotCapture();
         return;
@@ -5845,6 +5878,11 @@ class ForkMeshWorld extends HTMLElement {
       const moveAccel = event.target.closest("[data-world-move-accel]");
       if (moveAccel) {
         this.setMoveAccel(moveAccel.value);
+        return;
+      }
+      const swingSpeed = event.target.closest("[data-world-swing-speed]");
+      if (swingSpeed) {
+        this.setSwingSpeed(swingSpeed.value);
         return;
       }
       if (event.target.closest("[data-world-repo-filter='directory']")) {
@@ -6723,10 +6761,14 @@ class ForkMeshWorld extends HTMLElement {
     this.recordPublicVisit(id || "town-square");
     if (!this.settings.privacy.activity) {
       this.lastMovement.activity = "online";
-    } else if (this.lastMovement.activity !== CAMPFIRE_SEATED_ACTIVITY) {
-      // Sitting down lands inside the campfire's own label radius. The seated
-      // activity is what other visitors render the pose from, so proximity
-      // must not relabel it as merely visiting the circle.
+    } else if (
+      this.lastMovement.activity !== CAMPFIRE_SEATED_ACTIVITY &&
+      this.lastMovement.activity !== SWING_RIDING_ACTIVITY
+    ) {
+      // Sitting down lands inside the campfire's own label radius, and the
+      // swing set sits inside the Town Square's. The seated and riding
+      // activities are what other visitors render the pose from, so proximity
+      // must not relabel them as merely visiting the area.
       this.lastMovement.activity =
         label === "Town Square" ? "exploring the Town Square" : `visiting ${label}`;
     }
@@ -14492,6 +14534,39 @@ class ForkMeshWorld extends HTMLElement {
       output.textContent = next >= WORLD_MOVE_ACCEL_MAX ? "∞" : `${next}%`;
     }
     return next;
+  }
+
+  setSwingSpeed(value) {
+    const numeric = Number(value);
+    const next = Math.min(
+      WORLD_SWING_SPEED_MAX,
+      Math.max(
+        WORLD_SWING_SPEED_MIN,
+        Number.isFinite(numeric) ? numeric : WORLD_SWING_SPEED_DEFAULT,
+      ),
+    );
+    this.swingSpeed = next;
+    this.world?.setSwingSpeed?.(next);
+    const input = this.$("[data-world-swing-speed]");
+    const output = this.$("[data-world-swing-speed-output]");
+    if (input && Number(input.value) !== next) input.value = String(next);
+    if (output) output.textContent = `${next}%`;
+    return next;
+  }
+
+  handleSwingRide({ riding = false, denied = false } = {}) {
+    if (denied) {
+      this.toast("That swing is taken — grab a free one.");
+      return;
+    }
+    const panel = this.$("[data-world-swing-panel]");
+    if (panel) panel.hidden = !riding;
+    if (riding) {
+      this.setSwingSpeed(this.swingSpeed ?? WORLD_SWING_SPEED_DEFAULT);
+      this.toast(
+        "Swinging! Drag the swing-speed slider to pump harder, click the swing again to hop off, and try the camera button for a first-person ride.",
+      );
+    }
   }
 
   syncWorldCameraModeButton() {

@@ -1189,6 +1189,59 @@ forkmesh-world {
   visibility: visible;
 }
 
+.world-swing-panel {
+  position: absolute;
+  z-index: 30;
+  left: 50%;
+  bottom: calc(var(--safe-bottom) + 132px);
+  transform: translateX(-50%);
+  display: grid;
+  gap: 8px;
+  width: min(300px, calc(100vw - 28px));
+  border: 1px solid var(--world-line-strong);
+  background: var(--world-panel-solid);
+  padding: 10px 14px;
+  color: var(--world-muted);
+  font-size: 0.7rem;
+}
+
+.world-swing-panel[hidden] {
+  display: none;
+}
+
+.world-swing-panel > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.world-swing-panel strong,
+.world-swing-panel output {
+  color: var(--world-copy);
+  font-family: "ForkMesh Mono", monospace;
+}
+
+.world-swing-panel input {
+  width: 100%;
+  accent-color: var(--world-mint-deep);
+  cursor: pointer;
+}
+
+.world-swing-dismount {
+  justify-self: end;
+  border: 1px solid var(--world-line-strong);
+  background: transparent;
+  color: var(--world-copy);
+  font: inherit;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+
+.world-swing-dismount:hover {
+  border-color: var(--world-mint-deep);
+}
+
 .world-hud .world-detail-backdrop {
   position: absolute;
   z-index: 19;
