@@ -2025,6 +2025,17 @@ SCHEMA_STATEMENTS = [
         PRIMARY KEY (badge_slug, account_bi))""",
     "CREATE INDEX IF NOT EXISTS idx_badge_awards_account "
     "ON badge_awards(account_bi)",
+    # Inbound website referrals: one row per referring hostname, counting the
+    # http(s) sites that link visitors to this instance (migration 0084). The
+    # host is the only thing kept — never the referring URL's path or query,
+    # the landing path, an IP, a user agent, or any visitor identity.
+    """CREATE TABLE IF NOT EXISTS site_referrers (
+        host TEXT PRIMARY KEY,
+        visits INTEGER NOT NULL DEFAULT 0,
+        first_ts INTEGER NOT NULL DEFAULT 0,
+        last_ts INTEGER NOT NULL DEFAULT 0)""",
+    "CREATE INDEX IF NOT EXISTS idx_site_referrers_rank "
+    "ON site_referrers(visits DESC, last_ts DESC)",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the

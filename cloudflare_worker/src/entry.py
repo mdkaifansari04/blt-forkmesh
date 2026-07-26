@@ -3667,6 +3667,158 @@ async def referral_leaderboard(env):
     return resp
 
 
+# --- Inbound website referrals ------------------------------------------------
+# Which other websites link people here. Counted from the Referer header of
+# ordinary page loads: only the referring hostname is kept, as a per-host
+# counter, so the board can answer "who sends the mesh traffic" without any
+# per-visitor record — no IP, no user agent, no landing path, and never the
+# referring URL's own path or query string.
+SITE_REFERRER_LEADERBOARD_CACHE_KEY = (
+    "https://forkmesh.internal/api/referrals/sites"
+)
+SITE_REFERRER_LEADERBOARD_TTL = 60  # seconds per colo; counters tolerate lag
+SITE_REFERRER_LEADERBOARD_LIMIT = 10
+# Referer is attacker-controlled (classic analytics referrer spam), so the
+# table is capped: the hourly prune keeps the busiest hosts and drops the long
+# tail a spammer would grow. Existing hosts keep counting either way.
+SITE_REFERRER_RETAIN_HOSTS = 500
+MAX_SITE_REFERRER_HOST = 100
+
+_SITE_REFERRER_HOST_RE = re.compile(
+    r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$")
+
+# Names that are this instance itself, a sibling service, or a dev host: an
+# internal hop is not another website sending us a visitor.
+SITE_REFERRER_SELF_HOSTS = frozenset({
+    "forkmesh.com", "b.forkmesh.com", "forkmesh.internal", "localhost",
+})
+
+
+def _site_referrer_host(referer, self_host=""):
+    """Referring hostname to count for one request, or "" to count nothing.
+
+    Deliberately strict: only http(s) URLs with a real multi-label hostname
+    count, so IP literals, intranet names, and junk headers never reach the
+    board. ``www.`` is folded away so one site is one row.
+    """
+    raw = str(referer or "").strip()[:512]
+    if "://" not in raw:
+        return ""
+    try:
+        parsed = urlparse(raw)
+        host = str(parsed.hostname or "")
+    except Exception:
+        return ""
+    if parsed.scheme not in ("http", "https"):
+        return ""
+    host = host.strip().lower().rstrip(".")
+    if host.startswith("www."):
+        host = host[4:]
+    if not host or len(host) > MAX_SITE_REFERRER_HOST:
+        return ""
+    if not _SITE_REFERRER_HOST_RE.match(host):
+        return ""  # single-label names, IPv6 literals, credentials, junk
+    if host.replace(".", "").isdigit():
+        return ""  # bare IPv4 literal
+    if host.endswith(".local") or host.endswith(".internal"):
+        return ""
+    if host in SITE_REFERRER_SELF_HOSTS:
+        return ""
+    own = str(self_host or "").strip().lower().rstrip(".")
+    if own.startswith("www."):
+        own = own[4:]
+    if own and (host == own or host.endswith("." + own)
+                or own.endswith("." + host)):
+        return ""  # this deployment, a sibling subdomain, or its parent zone
+    return host
+
+
+def _is_page_navigation(request):
+    """True for a top-level HTML page load, not an asset or subresource."""
+    try:
+        headers = request.headers
+        dest = str(headers.get("sec-fetch-dest") or "").strip().lower()
+        mode = str(headers.get("sec-fetch-mode") or "").strip().lower()
+        accept = str(headers.get("accept") or "").lower()
+    except Exception:
+        return False
+    # The Sec-Fetch-* pair is absent on older browsers; Accept alone then
+    # decides, which is the same signal the rest of the site uses.
+    if dest and dest != "document":
+        return False
+    if mode and mode != "navigate":
+        return False
+    return "text/html" in accept
+
+
+async def record_site_referral(env, request, url, status):
+    """Count one visit that another website sent us. Best-effort: never
+    raises, because a counter must not break or fail a page load."""
+    try:
+        if int(status or 0) != 200 or method_name(request) != "GET":
+            return
+        if not _is_page_navigation(request):
+            return
+        if _is_link_preview_agent(request):
+            return  # unfurlers re-fetch shared links; that is not a visit
+        host = _site_referrer_host(
+            request.headers.get("referer"), getattr(url, "hostname", "") or "")
+        if not host:
+            return
+        await ensure_schema(env)
+        now = int(Date.now())
+        await d1_run(
+            env,
+            "INSERT INTO site_referrers (host, visits, first_ts, last_ts) "
+            "VALUES (?,1,?,?) "
+            "ON CONFLICT(host) DO UPDATE SET visits=visits+1, "
+            "last_ts=excluded.last_ts",
+            host, now, now)
+    except Exception:
+        pass
+
+
+async def site_referrer_leaderboard(env):
+    cached = await edge_cache_match(SITE_REFERRER_LEADERBOARD_CACHE_KEY)
+    if cached is not None:
+        return cached
+    await ensure_schema(env)
+    rows = await d1_all(
+        env,
+        "SELECT host, visits, last_ts FROM site_referrers WHERE visits > 0 "
+        "ORDER BY visits DESC, last_ts DESC, host LIMIT ?",
+        SITE_REFERRER_LEADERBOARD_LIMIT)
+    board = [
+        {"host": clean_string(r.get("host", ""), MAX_SITE_REFERRER_HOST),
+         "visits": int(r.get("visits") or 0),
+         "lastTs": int(r.get("last_ts") or 0)}
+        for r in rows if r.get("host")
+    ]
+    totals = await d1_first(
+        env,
+        "SELECT COUNT(*) AS hosts, SUM(visits) AS visits FROM site_referrers "
+        "WHERE visits > 0") or {}
+    resp = json_response(
+        {"ok": True, "board": board,
+         "sites": int(totals.get("hosts") or 0),
+         "visits": int(totals.get("visits") or 0)},
+        cache_seconds=SITE_REFERRER_LEADERBOARD_TTL)
+    await edge_cache_put(SITE_REFERRER_LEADERBOARD_CACHE_KEY, resp)
+    return resp
+
+
+async def prune_site_referrers(env):
+    """Keep the board bounded: the busiest hosts stay, the long tail goes."""
+    await ensure_schema(env)
+    await d1_run(
+        env,
+        "DELETE FROM site_referrers WHERE host NOT IN ("
+        "SELECT host FROM site_referrers "
+        "ORDER BY visits DESC, last_ts DESC LIMIT ?)",
+        SITE_REFERRER_RETAIN_HOSTS)
+
+
 def _short_wallet(addr):
     addr = (addr or "").strip()
     if len(addr) <= 10:
@@ -33842,6 +33994,17 @@ class Default(WorkerEntrypoint):
                     self.env, "/cron/purge-stale-account-devices",
                     "purge_stale_account_devices failed: " + _safe_error_text(error),
                     error=error, failures=cron_failures)
+        # Hourly: bound the inbound-website board. Referer headers are
+        # attacker-controlled, so the long tail a spammer could grow is
+        # dropped and only the busiest hosts are retained.
+        if minute % 60 == 17:
+            try:
+                await prune_site_referrers(self.env)
+            except BaseException as error:
+                await log_cron_error(
+                    self.env, "/cron/prune-site-referrers",
+                    "prune_site_referrers failed: " + _safe_error_text(error),
+                    error=error, failures=cron_failures)
         # Hourly organization-succession warning pass. It reads only the
         # configured owner's generalized activity maximum and emits at most one
         # deduplicated warning per inactivity deadline. It never opens a grace
@@ -33941,6 +34104,10 @@ class Default(WorkerEntrypoint):
             status = int(getattr(response, "status", 200) or 200)
         except Exception:
             status = 200
+        # Credit the website that sent this visitor. Gated to served page
+        # navigations carrying an external Referer, so the extra D1 write only
+        # happens on the rare request that is actually an inbound referral.
+        await record_site_referral(self.env, request, url, status)
         if status >= 500:
             # An offline node's content being re-requested (502/503/504 on a
             # tunnel path) is expected in a P2P network — host_presence and
@@ -34514,6 +34681,11 @@ class Default(WorkerEntrypoint):
         # /referrals page and the World's referral leaderboard sign.
         if url.path in ("/api/referrals/leaderboard", "/api/referrals/leaderboard/"):
             return await referral_leaderboard(self.env)
+
+        # Inbound website board (visits per referring hostname) for the
+        # /referrals page.
+        if url.path in ("/api/referrals/sites", "/api/referrals/sites/"):
+            return await site_referrer_leaderboard(self.env)
 
         # Rendered share-link card (og:image of the /r/<name> preview page).
         referral_card_match = REFERRAL_CARD_RE.match(url.path)
