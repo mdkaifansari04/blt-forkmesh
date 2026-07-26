@@ -9330,6 +9330,10 @@ export function createWorldScene({
       seatedAvatarY(seatTop.y + SWING_SEAT_HALF_THICKNESS, player.scale.x),
       seatTop.z,
     );
+    // Yaw first, then pitch in the yawed frame: with the default XYZ order the
+    // lean below would be a world-X pitch, which on a swing set that faces the
+    // fountain at an angle reads as the rider rocking side to side.
+    player.rotation.order = "YXZ";
     player.rotation.y = swingSet.rotation.y;
     // Lean with the ropes so the body traces the arc instead of staying bolt
     // upright at the peaks.
@@ -9589,6 +9593,9 @@ export function createWorldScene({
           seatedAvatarY(seatTop.y + SWING_SEAT_HALF_THICKNESS, avatar.scale.x),
           seatTop.z,
         );
+        // Same yaw-then-pitch order as the local rider so the lean stays
+        // front-to-back along the ropes instead of rolling sideways.
+        avatar.rotation.order = "YXZ";
         avatar.rotation.y = swingSet.rotation.y;
         avatar.rotation.x = swing.pivot.rotation.x;
         avatar.userData.leftArm.rotation.x = SWING_ARM_HOLD_PITCH;
