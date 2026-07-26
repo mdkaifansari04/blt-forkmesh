@@ -30908,9 +30908,10 @@ def _https_mirror_request_query(url, operation, release_sha=""):
 async def _https_mirror_repository_proof(env, endpoint, context, operation):
     """Require a fresh signed refs/operation proof for this public repo."""
     now = int(Date.now())
+    route_owner = context.get("routeOwner") or context["owner"]
     pins_key = ",".join(sorted(context["pins"]))
     memo_key = (
-        endpoint["node"], context["owner"], context["repo"], pins_key)
+        endpoint["node"], route_owner, context["repo"], pins_key)
     memo = _HTTPS_MIRROR_REPO_PROOF_MEMO.get(memo_key)
     if memo and now - memo["checkedAt"] <= HTTPS_MIRROR_REPO_PROOF_TTL_MS:
         return operation in memo["operations"]
@@ -30918,7 +30919,7 @@ async def _https_mirror_repository_proof(env, endpoint, context, operation):
     target = (
         endpoint["baseUrl"] + "/health?nonce=" + quote(nonce)
         + "&issuedAt=" + str(now)
-        + "&owner=" + quote(context["owner"])
+        + "&owner=" + quote(route_owner)
         + "&repo=" + quote(context["repo"])
     )
     status, text = await _https_mirror_fetch_text(
@@ -30955,7 +30956,7 @@ async def _https_mirror_repository_proof(env, endpoint, context, operation):
             and data.get("publicKey") == endpoint["publicKey"]
             and data.get("transport") == "direct-https"
             and isinstance(proof, dict)
-            and proof.get("owner") == context["owner"]
+            and proof.get("owner") == route_owner
             and proof.get("repository") == context["repo"]
             and proof.get("available") is True
             and proof.get("integrity") == "ok"
@@ -31668,6 +31669,35 @@ async def _https_mirror_proxy(
     if context is None:
         return json_response(
             {"error": "not_found"}, status=404, cache_control="no-store")
+    # org_alias_rewrite gives access checks and pin selection the canonical
+    # backing node. Repository bytes must still be requested from the gateway
+    # under the untouched public organization identity. The rewrite preserves
+    # request.url, so recover only an alias that D1 verifies maps to that node.
+    try:
+        original_url = urlparse(str(getattr(request, "url", "") or ""))
+        original_match = (
+            GIT_INFO_RE.match(original_url.path)
+            or GIT_PACK_RE.match(original_url.path)
+            or RELEASE_BLOB_RE.match(original_url.path)
+            or REPO_HOST_RE.match(original_url.path)
+        )
+        route_owner = (
+            safe_segment(original_match.group(1)) if original_match else "")
+        route_repo = (
+            safe_segment(original_match.group(2)) if original_match else "")
+        if (
+            route_owner
+            and route_repo == context["repo"]
+            and route_owner != context["owner"]
+            and await _org_repo_node(
+                env, route_owner, route_repo) == context["owner"]
+        ):
+            context = dict(context)
+            context["routeOwner"] = route_owner
+            context["repoBi"] = await blind_index(
+                env, route_owner + "/" + route_repo)
+    except Exception:
+        pass
     method = method_name(request)
     if operation == "git-upload-pack" and method != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
@@ -31718,7 +31748,7 @@ async def _https_mirror_proxy(
             continue
         target = https_routing.masked_target_url(
             endpoint["baseUrl"],
-            context["owner"],
+            context.get("routeOwner") or context["owner"],
             context["repo"],
             operation,
             query,
