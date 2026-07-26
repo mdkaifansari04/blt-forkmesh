@@ -97,6 +97,10 @@ const MASTODON_REPLY_LIMIT = 12;
 // index and folds the feature cards into the payload.
 const SOCIAL_POSTS_URL = "/api/world/social-posts";
 const SOCIAL_REFRESH_MS = 10 * 60 * 1000;
+// Placements this browser locked in, kept only long enough to outlive a stale
+// read of the shared layout document. See rememberWorldLayout.
+const WORLD_LAYOUT_ECHO_KEY = "forkmesh.world.layout.echo.v1";
+const WORLD_LAYOUT_ECHO_TTL_MS = 10 * 60 * 1000;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const CHAT_BUBBLE_JOIN_GRACE_MS = 20 * 1000;
 const POSITION_RADIUS = 72;
@@ -3930,10 +3934,7 @@ class ForkMeshWorld extends HTMLElement {
       // The shared object layout is a tiny, edge-cached public document.
       // Request it immediately so administrator-locked placements are already
       // available by the time the scene finishes constructing.
-      const layoutPromise = this.fetchJSON("/api/world/layout", {
-        auth: false,
-        timeout: 5000,
-      }).catch(() => null);
+      const layoutPromise = this.fetchWorldLayout();
       // Validate the optional persisted account session before issuing any
       // private World reads. This prevents an expired local token from
       // fanning out into a page full of avoidable 401/403 requests.
@@ -4072,7 +4073,7 @@ class ForkMeshWorld extends HTMLElement {
       this.world.setMovementTuning?.(this.movementTuning());
       void layoutPromise.then((layout) => {
         if (this.destroyed) return;
-        this.world?.applyWorldLayout?.(layout?.objects);
+        this.world?.applyWorldLayout?.(this.mergedWorldLayout(layout?.objects));
       });
       await Promise.allSettled([contextPromise, dataPromise]);
       this.world.updateIdentity(publicIdentity(this.identity, this.settings));
@@ -6526,6 +6527,89 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
+  // Read the locked placement document. Every read goes through here so a
+  // reload lands on the placements the square was actually left in:
+  //
+  //   * the five-second budget is spent while the scene is still building
+  //     itself and the abort timer shares that busy main thread, so a read
+  //     dropped on a slow machine used to be swallowed for the whole session,
+  //     rebuilding the square from its authored coordinates. Retry instead.
+  //   * the response is public and cacheable for a minute, so skip the HTTP
+  //     cache: someone stepping back into the World must not be handed a copy
+  //     from before the last move. The Worker's own edge cache still absorbs
+  //     the read.
+  async fetchWorldLayout(attempts = 3) {
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      if (this.destroyed) return null;
+      try {
+        return await this.fetchJSON("/api/world/layout", {
+          auth: false,
+          timeout: 5000,
+          cache: "no-store",
+        });
+      } catch (_) {
+        if (attempt === attempts) return null;
+        await new Promise((resolve) =>
+          window.setTimeout(resolve, 400 * attempt),
+        );
+      }
+    }
+    return null;
+  }
+
+  // The layout document is held in the Worker's edge cache for a minute and a
+  // write only purges the colo that took it, so the read an administrator
+  // makes seconds later — the reload they do to check the save — can still be
+  // answered with the placements from before their move. Keep what the save
+  // returned and let it stand in until the served document catches up.
+  rememberWorldLayout(objects) {
+    if (!Array.isArray(objects) || !objects.length) return;
+    try {
+      window.localStorage.setItem(
+        WORLD_LAYOUT_ECHO_KEY,
+        JSON.stringify({ savedAt: Date.now(), objects }),
+      );
+    } catch (_) {}
+  }
+
+  rememberedWorldLayout() {
+    try {
+      const stored = JSON.parse(
+        window.localStorage.getItem(WORLD_LAYOUT_ECHO_KEY) || "null",
+      );
+      if (!Array.isArray(stored?.objects)) return [];
+      const age = Date.now() - Number(stored.savedAt || 0);
+      if (!(age >= 0 && age < WORLD_LAYOUT_ECHO_TTL_MS)) {
+        window.localStorage.removeItem(WORLD_LAYOUT_ECHO_KEY);
+        return [];
+      }
+      return stored.objects;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  // The served document wins per object; a placement this browser locked in
+  // more recently than the copy that came back fills the gap until it does.
+  // Both stamps are the Worker's own, so a skewed local clock cannot reorder
+  // them.
+  mergedWorldLayout(objects) {
+    const merged = new Map();
+    for (const entry of Array.isArray(objects) ? objects : []) {
+      const id = String(entry?.id || "");
+      if (id) merged.set(id, entry);
+    }
+    for (const entry of this.rememberedWorldLayout()) {
+      const id = String(entry?.id || "");
+      if (!id) continue;
+      const served = merged.get(id);
+      if (Number(entry?.updatedAt || 0) > Number(served?.updatedAt || 0)) {
+        merged.set(id, entry);
+      }
+    }
+    return [...merged.values()];
+  }
+
   async lockWorldObjectPlacement(move) {
     if (!this.identity?.isAdmin) return;
     const id = String(move?.id || "");
@@ -6540,19 +6624,15 @@ class ForkMeshWorld extends HTMLElement {
         z,
         rotation: Number.isFinite(rotation) ? rotation : 0,
       });
+      this.rememberWorldLayout(result?.objects);
       this.world?.applyWorldLayout?.(result?.objects);
       this.toast("Object placement locked in for every visitor.");
     } catch (error) {
       this.toast(`The new object placement was not saved: ${error.message}`);
       // Re-apply the persisted layout so this scene matches what everyone
       // else still sees.
-      try {
-        const layout = await this.fetchJSON("/api/world/layout", {
-          auth: false,
-          timeout: 5000,
-        });
-        this.world?.applyWorldLayout?.(layout?.objects);
-      } catch (_) {}
+      const layout = await this.fetchWorldLayout();
+      this.world?.applyWorldLayout?.(this.mergedWorldLayout(layout?.objects));
     }
   }
 
