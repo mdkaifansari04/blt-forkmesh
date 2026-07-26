@@ -19,6 +19,8 @@ enum MirrorNodeColumn {
     MirrorNodeColNode = 0,
     MirrorNodeColOwner,
     MirrorNodeColCommit,
+    MirrorNodeColMessage,
+    MirrorNodeColAuthor,
     MirrorNodeColSynced,
     MirrorNodeColSize,
     MirrorNodeColIssues,
@@ -1073,9 +1075,10 @@ QWidget *MainWindow::buildMirrorNodesTab()
     m_mirrorNodesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_mirrorNodesTable);
     m_mirrorNodesTable->setHorizontalHeaderLabels(
-        {"Node", "Owner", "Latest commit", "Synced", "Size", "Issues", "Commits",
-         "Branches", "Pulls", "Discussions", "CPU", "RAM", "Disk",
-         "Platform", "Version", "Node id", "Clones", "Website", "Artifacts"});
+        {"Node", "Owner", "Latest commit", "Message", "Author", "Synced", "Size",
+         "Issues", "Commits", "Branches", "Pulls", "Discussions", "CPU", "RAM",
+         "Disk", "Platform", "Version", "Node id", "Clones", "Website",
+         "Artifacts"});
     m_mirrorNodesTable->verticalHeader()->setVisible(false);
     m_mirrorNodesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_mirrorNodesTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -1090,6 +1093,8 @@ QWidget *MainWindow::buildMirrorNodesTab()
     mh->setSectionResizeMode(MirrorNodeColNode, QHeaderView::Stretch);
     mh->setSectionResizeMode(MirrorNodeColOwner, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColCommit, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColMessage, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColAuthor, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColSynced, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColSize, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColIssues, QHeaderView::ResizeToContents);
@@ -1269,6 +1274,8 @@ void MainWindow::loadMirrorNodesPanel()
         mirrorPrimaryBranchTip(localMirror, repo.localPath);
     selfAdvert.branch = selfTip.branch;
     selfAdvert.commit = selfTip.commit;
+    selfAdvert.commitIdentity =
+        mirrorCommitIdentity(localMirror, repo.localPath, selfTip.commit);
     const QString servedBranch = selfAdvert.branch;
     const QString servedCommit = mirrorBranchCommit(localMirror, servedBranch);
     selfAdvert.updatedMs = repo.lastSyncMs;
@@ -1573,6 +1580,56 @@ void MainWindow::loadMirrorNodesPanel()
                 QStringLiteral("%1 %2").arg(n).arg(n == 1 ? singular : plural));
         return item;
     };
+    // Resolve what a node's advertised commit says and who wrote it. The node
+    // reports it itself (live advert or catalog record); when it doesn't — an
+    // older peer — fall back to reading the same hash out of our own mirror.
+    // Commit identities are immutable per hash, so cache them: this panel is
+    // rebuilt on every roster update and one `git show` per row froze the GUI
+    // thread while a peer's presence flickered (adhoc #83).
+    auto resolveCommitIdentity = [this, &localMirror](
+                                     const QString &commit,
+                                     const CommitIdentity &advertised) {
+        if (!advertised.subject.isEmpty() || !advertised.author.isEmpty())
+            return advertised;
+        if (commit.isEmpty())
+            return CommitIdentity{};
+        if (m_commitIdentityCache.size() > 5000)
+            m_commitIdentityCache.clear(); // safety valve, never hit in practice
+        auto cached = m_commitIdentityCache.constFind(commit);
+        if (cached == m_commitIdentityCache.constEnd())
+            cached = m_commitIdentityCache.insert(
+                commit, gitCommitIdentity(localMirror, commit));
+        return cached.value();
+    };
+    // Message / Author columns: what the node's latest commit says and who
+    // wrote it. Long subjects are elided so the columns can't stretch the table
+    // out; the full text stays on the tooltip. Shared by both row builders.
+    auto setCommitIdentityCells = [this](int row,
+                                         const CommitIdentity &identity) {
+        const QString dash = QString::fromUtf8("\xE2\x80\x94");
+        const QString subject = identity.subject.trimmed();
+        auto *messageItem = new QTableWidgetItem(
+            subject.isEmpty()
+                ? dash
+                : (subject.size() > 72
+                       ? subject.left(71) + QString::fromUtf8("\xE2\x80\xA6")
+                       : subject));
+        if (!subject.isEmpty()) {
+            messageItem->setToolTip(
+                identity.committedAtMs > 0
+                    ? subject + "\n" +
+                          QDateTime::fromMSecsSinceEpoch(identity.committedAtMs)
+                              .toString(Qt::ISODate)
+                    : subject);
+        }
+        m_mirrorNodesTable->setItem(row, MirrorNodeColMessage, messageItem);
+        const QString author = identity.author.trimmed();
+        auto *authorItem = new QTableWidgetItem(author.isEmpty() ? dash : author);
+        if (!author.isEmpty())
+            authorItem->setToolTip(
+                QStringLiteral("Authored the node's latest commit"));
+        m_mirrorNodesTable->setItem(row, MirrorNodeColAuthor, authorItem);
+    };
     // Mark a node the relay refuses to serve because of the integrity pin: the
     // clone gate rejects every clone from it until the node syncs to a state the
     // source of truth attested (or the owner resets the pin). Applied to the
@@ -1693,35 +1750,22 @@ void MainWindow::loadMirrorNodesPanel()
         m_mirrorNodesTable->setItem(row, MirrorNodeColOwner,
                                     makeOwnerCell(ownerDisplay));
 
-        // Latest commit: short hash + branch; tooltip carries the subject/date
-        // when we hold the same commit in our own mirror.
+        // Latest commit: short hash + branch, with the subject/author of that
+        // commit in their own columns beside it.
         QString commitText = QString::fromUtf8("\xE2\x80\x94");
         QString commitTip;
+        CommitIdentity commitIdentity;
         if (advert && !advert->commit.isEmpty()) {
             commitText = advert->commit.left(10);
             if (!advert->branch.isEmpty())
                 commitText += "  (" + advert->branch + ")";
             commitTip = advert->commit;
-            // Commit subjects are immutable per hash — cache them so the panel's
-            // roster-driven rebuilds don't re-shell one `git show` per row every
-            // time a peer's presence flickers (stall log: loadMirrorNodesPanel
-            // <- setRoster).
-            if (m_commitSubjectCache.size() > 5000)
-                m_commitSubjectCache.clear(); // safety valve, never hit in practice
-            auto cached = m_commitSubjectCache.constFind(advert->commit);
-            if (cached == m_commitSubjectCache.constEnd()) {
-                QByteArray subject;
-                QString s;
-                if (!localMirror.isEmpty() &&
-                    runGitCapture(localMirror,
-                                  {"show", "-s", "--format=%s", advert->commit},
-                                  &subject, nullptr))
-                    s = QString::fromUtf8(subject).trimmed();
-                cached = m_commitSubjectCache.insert(advert->commit, s);
-            }
-            if (!cached.value().isEmpty())
-                commitTip = cached.value() + "\n" + advert->commit;
+            commitIdentity =
+                resolveCommitIdentity(advert->commit, advert->commitIdentity);
+            if (!commitIdentity.subject.isEmpty())
+                commitTip = commitIdentity.subject + "\n" + advert->commit;
         }
+        setCommitIdentityCells(row, commitIdentity);
         auto *commitItem = new QTableWidgetItem(commitText);
         commitItem->setToolTip(commitTip);
         markMismatch(commitItem,
@@ -1984,9 +2028,25 @@ void MainWindow::loadMirrorNodesPanel()
                 if (!catBranch.isEmpty())
                     catCommitText += "  (" + catBranch + ")";
             }
+            // The subject/author the publishing node signed into its catalog
+            // record, so an offline node still names its latest commit.
+            CommitIdentity catIdentity;
+            catIdentity.subject =
+                m.value(QStringLiteral("lastCommitMessage")).toString().trimmed();
+            catIdentity.author = m.value(QStringLiteral("lastCommitAuthorName"))
+                                     .toString()
+                                     .trimmed();
+            catIdentity.committedAtMs =
+                qMax(qint64(0), qint64(m.value(QStringLiteral("lastCommitAt"))
+                                           .toDouble()));
+            catIdentity = resolveCommitIdentity(catCommit, catIdentity);
+            setCommitIdentityCells(row, catIdentity);
             auto *catCommitItem = new QTableWidgetItem(catCommitText);
             if (!catCommit.isEmpty())
-                catCommitItem->setToolTip(catCommit);
+                catCommitItem->setToolTip(
+                    catIdentity.subject.isEmpty()
+                        ? catCommit
+                        : catIdentity.subject + "\n" + catCommit);
             markMismatch(catCommitItem,
                          !catCommit.isEmpty() && !referenceCommit.isEmpty() &&
                              catCommit != referenceCommit,

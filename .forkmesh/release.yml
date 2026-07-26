@@ -49,6 +49,47 @@ jobs:
             exit 1
           fi
 
+          # Resolve the release signing key BEFORE the (multi-minute) build.
+          # Publishing fails closed without an Ed25519 key, and the Actions
+          # sandbox mounts no part of the host filesystem — so a secret holding
+          # a key *path* can never name a real file inside the run. Take the key
+          # material itself through the ordinary variables/secrets channel
+          # ($FORKMESH_RELEASE_SIGNING_KEY_PEM, raw PEM or a single line with \n
+          # escapes, since the variables dialog is one line) and materialize it
+          # 0600 in the sandbox. Checking it here means a misconfigured node
+          # fails in seconds instead of after a full release build.
+          signing_key="${FORKMESH_RELEASE_SIGNING_KEY:-}"
+          signing_key_pem="$FORKMESH_RELEASE_SIGNING_KEY_PEM"
+          if [ -z "$signing_key" ] && [ -n "$signing_key_pem" ]; then
+            signing_key="${TMPDIR:-/tmp}/forkmesh-release-signing-key.pem"
+            trap 'rm -f "$signing_key"' EXIT INT TERM
+            (umask 077; printf '%b\n' "$signing_key_pem" > "$signing_key")
+          fi
+          if [ -z "$signing_key" ] || [ ! -f "$signing_key" ]; then
+            echo "ERROR: no Ed25519 release signing key is configured." >&2
+            echo "       Release metadata is signed supply-chain input, so publishing fails closed." >&2
+            echo "       Generate a key once (keep it out of git):" >&2
+            echo "         openssl genpkey -algorithm Ed25519 -out release-ed25519-private.pem" >&2
+            echo "       then store its contents in the FORKMESH_RELEASE_SIGNING_KEY_PEM variable" >&2
+            echo "       (Settings -> Actions -> Variables / secrets), or set" >&2
+            echo "       FORKMESH_RELEASE_SIGNING_KEY to a key file readable inside the run." >&2
+            exit 1
+          fi
+          # A key that cannot produce a 64-byte Ed25519 signature (wrong
+          # algorithm, truncated paste, mangled newlines) is rejected now rather
+          # than after the build, by signing a throwaway probe with the exact
+          # command the publisher uses.
+          probe="${TMPDIR:-/tmp}/forkmesh-release-signing-probe"
+          printf 'forkmesh release signing probe\n' > "$probe"
+          if ! openssl pkeyutl -sign -rawin -inkey "$signing_key" \
+               -in "$probe" -out "${probe}.sig" 2>/dev/null ||
+             [ "$(wc -c < "${probe}.sig" | tr -d ' ')" != "64" ]; then
+            rm -f "$probe" "${probe}.sig"
+            echo "ERROR: the configured release signing key is not a usable Ed25519 private key." >&2
+            exit 1
+          fi
+          rm -f "$probe" "${probe}.sig"
+
           # Map this host's uname to the asset name install.sh autodetects.
           os="$(uname -s)"
           arch="$(uname -m)"
@@ -201,13 +242,9 @@ jobs:
           fi
 
           cas="${FORKMESH_RELEASE_CAS:-.forkmesh/release-blobs}"
-          if [ -z "${FORKMESH_RELEASE_SIGNING_KEY:-}" ] ||
-             [ ! -f "$FORKMESH_RELEASE_SIGNING_KEY" ]; then
-            echo "ERROR: FORKMESH_RELEASE_SIGNING_KEY must point to the local Ed25519 release private key." >&2
-            exit 1
-          fi
           tools/forkmesh-release-publish.sh \
             --channel "$channel" \
+            --signing-key "$signing_key" \
             --tag "$release_tag" \
             --build-commit "$revision" \
             --cas-dir "$cas" \

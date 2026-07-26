@@ -1124,6 +1124,56 @@ def _source_branch_commit(config: RefreshConfig) -> str:
     return commit
 
 
+def _source_commit_identity(config: RefreshConfig) -> dict[str, str]:
+    """Subject, author and date of the published head commit.
+
+    Repository content is untrusted: the subject and author are bounded, and any
+    control character (a crafted commit could carry newlines or an ANSI escape)
+    is dropped before the values reach the signed catalog record. A commit that
+    can't be read leaves every field absent rather than publishing a blank.
+    """
+    try:
+        raw = _run_bounded(
+            _git_prefix(config)
+            + [
+                "show",
+                "-s",
+                "--format=%s%n%an%n%ct",
+                _source_revision(config),
+                "--",
+            ],
+            maximum_output=8 * 1024,
+            timeout=60,
+        )
+        lines = raw.decode("utf-8", "replace").split("\n")
+    except (RefreshError, UnicodeDecodeError):
+        return {}
+    if len(lines) < 3:
+        return {}
+
+    def sanitized(value: str, maximum: int) -> str:
+        text = "".join(
+            " " if character < " " or character == "\x7f" else character
+            for character in value
+        )
+        return " ".join(text.split())[:maximum]
+
+    result: dict[str, str] = {}
+    subject = sanitized(lines[0], 120)
+    if subject:
+        result["commitSubject"] = subject
+    author = sanitized(lines[1], 64)
+    if author:
+        result["commitAuthorName"] = author
+    try:
+        committed_at = int(lines[2].strip())
+    except (TypeError, ValueError):
+        committed_at = 0
+    if 0 < committed_at < 1 << 34:
+        result["commitAt"] = str(committed_at * 1000)
+    return result
+
+
 def _source_revision(config: RefreshConfig) -> str:
     return (
         "refs/heads/" + config.catalog.branch
@@ -1536,6 +1586,12 @@ def _sample_repository_statistics(
     sample("pullCount", lambda: _source_pull_count(config))
     sample("discussionCount", lambda: _source_discussion_count(config))
     sample("artifactCount", lambda: _source_artifact_count(config))
+    try:
+        result.update(_source_commit_identity(config))
+    except Exception:
+        # Same independence rule as the counts above: an unreadable commit
+        # message must not cost the mirror its lease renewal.
+        pass
     return result
 
 
