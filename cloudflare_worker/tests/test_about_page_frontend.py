@@ -16,7 +16,7 @@ def test_about_page_uses_terms_inspired_header_treatment():
     html = _about_html()
 
     assert 'href="/site-header.css"' in html
-    assert 'src="/site-header.js"' in html
+    assert 'src="/site-header.js?v=' in html
     assert '<div data-forkmesh-header="simple"></div>' in html
     assert 'class="about-shell' in html
     assert 'class="mesh-bg"' in html
@@ -40,7 +40,7 @@ def test_about_page_uses_standard_footer_mount():
 
     for marker in (
         'href="/site-footer.css"',
-        'src="/site-footer.js"',
+        'src="/site-footer.js?v=',
         '<div data-forkmesh-footer="standard"></div>',
     ):
         assert marker in html

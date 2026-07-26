@@ -77,4 +77,7 @@ def test_dashboard_js_is_served_as_a_static_asset():
 
 def test_shell_still_references_dashboard_js():
     shell = (PUBLIC / "dashboard" / "shell.html").read_text(encoding="utf-8")
-    assert 'src="/dashboard.js?v=public-profiles"' in shell
+    # Bare src: the ?v= is stamped into the composed pages from the one content
+    # hash the build computes, never hand-written into the authored shell.
+    assert 'src="/dashboard.js" defer' in shell
+    assert "?v=" not in shell

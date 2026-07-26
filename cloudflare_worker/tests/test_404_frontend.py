@@ -38,7 +38,7 @@ def test_404_page_keeps_homepage_brand_and_navigation_escape_routes():
 
     for marker in (
         'href="/site-header.css"',
-        'src="/site-header.js"',
+        'src="/site-header.js?v=',
         '<div data-forkmesh-header="simple"></div>',
         'href="/"',
         "Back home",

@@ -867,7 +867,7 @@ def test_dashboard_has_scoped_light_dark_appearance_controls():
         assert theme_key in site_header_js
     for docs_page in (PUBLIC / "docs.html", PUBLIC / "docs" / "index.html"):
         docs = _read(docs_page)
-        assert 'src="/site-header.js"' in docs
+        assert 'src="/site-header.js?v=' in docs
         assert 'id="theme-toggle"' not in docs
         assert "function applyTheme" not in docs
         assert "localStorage" not in docs

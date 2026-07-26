@@ -190,7 +190,32 @@ def content_version(text):
 # at build time; the rest are authored files served straight from ``public/``.
 # Adding a bundle is one edit here (plus its ``<script>`` tag) — the build tool,
 # the stamper, and the frontend tests all derive from this list.
-CACHE_BUSTED_BUNDLES = ("dashboard.js", "dashboard-chat.js")
+#
+# No document ever hand-writes a ``?v=``: the authored HTML links the bare
+# ``/name.js`` and the build stamps the hash in, so a bundle edit updates every
+# page that references it from this one place (the hand-bumped ``?v=`` strings
+# that preceded this — public-profiles, auth-simple-1, verify-recap-1 — went
+# stale in whichever page the bumper forgot).
+CACHE_BUSTED_BUNDLES = (
+    # Dashboard.
+    "dashboard.js",
+    "dashboard-chat.js",
+    # Shared site chrome, on nearly every marketing/auth page.
+    "site-header.js",
+    "site-footer.js",
+    "home-header-auth.js",
+    "static-page.js",
+    "blog-social.js",
+    # Per-page site bundles.
+    "login.js",
+    "signup.js",
+    "forgot-password.js",
+    "reset-password.js",
+    "security-report.js",
+    "mirror-payouts.js",
+    "referrals.js",
+    "outreach.js",
+)
 
 
 def asset_versions(read, composed=None):
@@ -229,6 +254,27 @@ def stamp_asset_versions(html, versions):
         return '%s?v=%s"' % (base, version)
 
     return ASSET_SCRIPT_RE.sub(_stamp, html)
+
+
+# Everything under public/dashboard/ is either a compose input (shell.html, the
+# partials) or a composed output stamped from that compose — so the in-place
+# stamping pass skips the whole subtree.
+STAMPED_PAGE_EXCLUDE_PREFIX = "dashboard/"
+
+
+def stamped_site_pages(rel_paths):
+    """The authored HTML documents the build stamps ``?v=`` into in place.
+
+    ``rel_paths`` is every ``public/``-relative ``*.html`` path. Marketing, auth,
+    docs, blog and world pages are hand-written (not composed), so the build
+    rewrites their first-party ``<script>`` queries where they sit; stamping is
+    idempotent because :func:`stamp_asset_versions` replaces any existing query.
+    Shared by the build tool and the tests so both agree on the covered set.
+    """
+    return sorted(
+        rel for rel in rel_paths
+        if not rel.startswith(STAMPED_PAGE_EXCLUDE_PREFIX)
+    )
 
 
 def compose_page_from_reader(read, page_id):

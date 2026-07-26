@@ -39,7 +39,7 @@ def test_contribution_counting_guide_documents_native_public_ledger():
         assert marker in html
 
     assert '<link rel="stylesheet" href="/site-header.css"' in html
-    assert '<script src="/site-header.js"' in html
+    assert '<script src="/site-header.js?v=' in html
     assert '<div data-forkmesh-header="simple"></div>' in html
     assert 'href="/docs/contributions"' in docs_index
 
@@ -100,7 +100,7 @@ def test_docs_pages_mount_the_universal_site_header():
         html = _read(page)
 
         assert 'href="/site-header.css"' in html
-        assert 'src="/site-header.js"' in html
+        assert 'src="/site-header.js?v=' in html
         assert '<div data-forkmesh-header="simple"></div>' in html
         # The duplicated chrome is gone; docs-specific tools stay.
         assert 'aria-label="Docs header"' not in html

@@ -369,7 +369,7 @@ def test_every_public_page_uses_the_shared_theme_control():
         html = read(page)
         assert '<meta name="color-scheme" content="light dark"' in html, page
         assert 'href="/site-header.css"' in html, page
-        assert 'src="/site-header.js"' in html, page
+        assert 'src="/site-header.js?v=' in html, page
         assert '<div data-forkmesh-header="simple"></div>' in html, page
         assert 'id="theme-toggle"' not in html, page
 

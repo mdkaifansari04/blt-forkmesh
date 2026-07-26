@@ -38,7 +38,7 @@ def test_homepage_no_longer_client_redirects():
     assert 'title="Interactive ForkMesh World"' in footer_js
     assert "Open World full screen" in footer_js
     assert "repositories, source code, documentation" in footer_js
-    assert 'src="/site-footer.js"' in INDEX_HTML
+    assert 'src="/site-footer.js?v=' in INDEX_HTML
 
 
 def test_worker_owns_root_without_cookie_routing():

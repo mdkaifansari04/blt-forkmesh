@@ -78,7 +78,7 @@ def test_blog_page_mounts_the_universal_site_header():
     html = _read(BLOG_PAGE)
 
     assert 'href="/site-header.css"' in html
-    assert 'src="/site-header.js"' in html
+    assert 'src="/site-header.js?v=' in html
     assert '<div data-forkmesh-header="simple"></div>' in html
     assert 'class="blog1-topbar"' not in html
     assert "Sign Up / Log In" not in html
