@@ -2,6 +2,7 @@ import {
   LANDMARKS,
   OUTFIT_COLOR_OPTIONS,
   WORLD_REGIONS,
+  flagEmoji,
   landmarkById,
   normalizeWorldStatus,
 } from "./world-data.js";
@@ -8694,15 +8695,23 @@ export function createWorldScene({
         seen.add(id);
         let figure = loungeMembers.get(id);
         if (!figure) {
+          // The directory carries the coarse country/browser/OS the member
+          // saved on their account, so an away member's bench figure wears
+          // their own flag shirt and client badge instead of a blank one.
+          const memberCountry = /^[A-Z]{2}$/.test(
+            String(member.countryCode || "").toUpperCase(),
+          )
+            ? String(member.countryCode).toUpperCase()
+            : "";
           figure = createAvatar(
             THREE,
             {
               id,
               name,
-              flag: "◌",
-              countryCode: "",
-              browser: "Hidden",
-              os: "Hidden",
+              flag: memberCountry ? flagEmoji(memberCountry) : "◌",
+              countryCode: memberCountry,
+              browser: String(member.browser || "Hidden"),
+              os: String(member.os || "Hidden"),
               status: "sitting around the campfire",
               accountStatus: "Registered",
               localTime: "",
