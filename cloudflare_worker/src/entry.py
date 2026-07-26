@@ -1885,27 +1885,17 @@ async def _flagship_repository_probe(env):
     # nodes; none are substituted from D1 or a Worker-side copy.
     shell_response = await env.ASSETS.fetch(JsRequest.new(
         "https://forkmesh.internal/dashboard/repo.html"))
-    tree_request = JsRequest.new(
-        "https://forkmesh.internal/api/repo/forkmesh/forkmesh/tree?path=")
-    blob_request = JsRequest.new(
-        "https://forkmesh.internal/api/repo/forkmesh/forkmesh/"
-        "blob?path=README.md")
-    tree_response, blob_response = await asyncio.gather(
-        _https_mirror_proxy(
-            env, tree_request, "forkmesh", "forkmesh", "tree"),
-        _https_mirror_proxy(
-            env, blob_request, "forkmesh", "forkmesh", "blob"),
-    )
-    shell, tree, readme = await asyncio.gather(
-        bounded_response(shell_response, 512 * 1024),
-        bounded_response(tree_response, 2 * 1024 * 1024),
-        bounded_response(blob_response, 512 * 1024),
-    )
-    shell_status, shell_text = shell
-    tree_status, tree_text = tree
-    blob_status, blob_text = readme
+    shell_status, shell_text = await bounded_response(
+        shell_response, 512 * 1024)
     if shell_status != 200 or 'data-page="repo"' not in shell_text:
         return False, "Repository page shell did not load (HTTP %d)" % shell_status
+
+    tree_request = JsRequest.new(
+        "https://forkmesh.internal/api/repo/forkmesh/forkmesh/tree?path=")
+    tree_response = await _https_mirror_proxy(
+        env, tree_request, "forkmesh", "forkmesh", "tree")
+    tree_status, tree_text = await bounded_response(
+        tree_response, 2 * 1024 * 1024)
     try:
         tree_data = json.loads(tree_text)
     except Exception:
@@ -1917,8 +1907,25 @@ async def _flagship_repository_probe(env):
         and str(item.get("type") or "").lower() == "blob"
         for item in (entries if isinstance(entries, list) else [])
     )
-    if tree_status != 200 or tree_data.get("ok") is not True or not has_readme:
-        return False, "Root repository tree did not contain README.md"
+    if tree_status != 200:
+        return False, "Root repository tree failed (HTTP %d)" % tree_status
+    if tree_data.get("ok") is not True:
+        return False, "Root repository tree returned an invalid response"
+    if not has_readme:
+        names = ",".join(
+            clean_string(item.get("name", ""), 40)
+            for item in entries[:8] if isinstance(item, dict))
+        return False, (
+            "Root repository tree did not contain README.md"
+            + (": " + names if names else ""))
+
+    blob_request = JsRequest.new(
+        "https://forkmesh.internal/api/repo/forkmesh/forkmesh/"
+        "blob?path=README.md")
+    blob_response = await _https_mirror_proxy(
+        env, blob_request, "forkmesh", "forkmesh", "blob")
+    blob_status, blob_text = await bounded_response(
+        blob_response, 512 * 1024)
     try:
         blob_data = json.loads(blob_text)
     except Exception:
