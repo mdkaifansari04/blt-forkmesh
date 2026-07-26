@@ -1089,6 +1089,43 @@
     return data;
   }
 
+  // Mirrors IssueStore::contentForSigning's "comment" case (body NUL
+  // attachments) and the desktop's inbox POST (verify_issue_event in the
+  // worker). Unlike a new issue's "open" event, a comment is signed against the
+  // issue's real number - the maintainer's node appends it to that issue when it
+  // drains the inbox (IssueStore::applyRemoteEvent).
+  async function submitWebIssueComment(repo, number, body) {
+    const { privateKey, pub } = await getWebIssueKey();
+    const ts = Math.floor(Date.now() / 1000);
+    const cleanBody = String(body || "").replace(/[\r\n]+$/, "");
+    // comment event content = body \0 attachments(joined by ","; empty here)
+    const NUL = String.fromCharCode(0);
+    const contentHash = await sha256HexLower(cleanBody + NUL);
+    const canonical = `forkmesh-issue-event-v1\ncomment\n${number}\n${pub}\n${ts}\n${contentHash}`;
+    const sig = bytesToB64url(await crypto.subtle.sign({ name: "Ed25519" }, privateKey, ISSUE_TEXT_ENCODER.encode(canonical)));
+    const event = {
+      type: "comment",
+      id: "comment-web-" + ts,
+      body: cleanBody,
+      attachments: [],
+      author: pub,
+      authorName: state.session?.nodeName || "",
+      ts,
+      sig,
+    };
+    const payload = { owner: repo.owner, repo: repo.name, number, event };
+    const response = await fetch(`${repoApiBase(repo)}/issues`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    return data;
+  }
+
   // Mirrors DiscussionStore::contentForSigning's "comment" case (just the
   // reply body) and the desktop's discussion inbox POST (verify_discussion_event
   // in the worker). Replies are signed against the discussion's real number -
@@ -1247,6 +1284,60 @@
       throw new Error(data.error || `HTTP ${response.status}`);
     }
     return data;
+  }
+
+  async function handleIssueCommentSubmit(repo, form) {
+    if (!repo || !form) return;
+    const number = Number(form.dataset.repoIssueCommentNumber || 0);
+    const bodyInput = form.querySelector("[data-repo-issue-comment-body]");
+    const submit = form.querySelector("[data-repo-issue-comment-submit]");
+    const hint = form.querySelector("[data-repo-issue-comment-hint]");
+    const setHint = (text, tone) => {
+      if (hint) hint.className = `text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
+      if (hint) hint.textContent = text;
+    };
+    const body = String(bodyInput?.value || "").trim();
+    if (!number) {
+      setHint("This issue hasn't finished loading yet.", "bad");
+      return;
+    }
+    if (!body) {
+      setHint("Write a comment before sending.", "bad");
+      bodyInput?.focus();
+      return;
+    }
+    if (submit) submit.disabled = true;
+    setHint("Signing and sending…");
+    try {
+      await submitWebIssueComment(repo, number, body);
+      // Show the comment straight away: it only reaches the mirror once the
+      // maintainer's node drains the inbox, so the timeline can't reload it yet.
+      const timeline = form.parentElement?.querySelector("[data-repo-issue-timeline]");
+      if (timeline) {
+        if (timeline.dataset.empty === "true") {
+          timeline.innerHTML = "";
+          timeline.dataset.empty = "false";
+          timeline.className = "border-t border-border";
+        }
+        timeline.insertAdjacentHTML("beforeend", renderIssueTimelineComment({
+          authorName: state.session?.nodeName || "you",
+          ts: Math.floor(Date.now() / 1000), body,
+        }));
+      }
+      if (bodyInput) bodyInput.value = "";
+      if (submit) submit.disabled = false;
+      setHint("Comment sent to the maintainer's inbox for review.", "good");
+    } catch (error) {
+      if (submit) submit.disabled = false;
+      const code = String(error?.message || "");
+      setHint(
+        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
+          : code === "author_quota" ? "You've reached the submission limit for this repository."
+          : code === "issue_too_large" ? "The comment is too large - please shorten it."
+          : code === "bad_signature" ? "Could not verify the comment's signature."
+          : "Could not send the comment. Please try again.",
+        "bad");
+    }
   }
 
   async function handleDiscussionReplySubmit(repo, form) {
@@ -7006,6 +7097,20 @@
     }
   }
 
+  function renderIssueTimelineComment(ev) {
+    const who = ev.authorName || ev.author || "unknown";
+    const when = formatRecordDate(ev.ts);
+    const body = String(ev.body || "").trim();
+    return `
+      <div class="border-t border-border px-4 py-3 text-sm first:border-t-0">
+        <div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span class="font-medium text-foreground">${escapeHtml(who)}</span>
+          <span>commented</span><span>&middot;</span><span>${escapeHtml(when)}</span>
+        </div>
+        ${body ? `<div class="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">${escapeHtml(body)}</div>` : ""}
+      </div>`;
+  }
+
   // Full issue activity timeline: comment events render as bodied cards and
   // every other event as an activity line, in chronological order, so the
   // detail view shows every action stored in the issue JSON (adhoc #45). The
@@ -7025,15 +7130,7 @@
       const when = formatRecordDate(ev.ts);
       if (ev.type === "comment") {
         if (deletedComments.has(ev.id)) continue;
-        const body = String(ev.body || "").trim();
-        items.push(`
-          <div class="border-t border-border px-4 py-3 text-sm first:border-t-0">
-            <div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-              <span class="font-medium text-foreground">${escapeHtml(who)}</span>
-              <span>commented</span><span>&middot;</span><span>${escapeHtml(when)}</span>
-            </div>
-            ${body ? `<div class="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">${escapeHtml(body)}</div>` : ""}
-          </div>`);
+        items.push(renderIssueTimelineComment(ev));
         continue;
       }
       items.push(`
@@ -7790,6 +7887,23 @@
     }).filter(Boolean);
   }
 
+  function renderIssueCommentForm(number) {
+    if (!state.session?.nodeName) {
+      return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login" class="font-medium text-primary hover:underline">Log in</a> to comment on this issue.</div>`;
+    }
+    return `
+      <form data-repo-issue-comment-form data-repo-issue-comment-number="${escapeHtml(number)}" class="grid gap-2 border-t border-border bg-secondary/20 p-4">
+        ${composeIdentityHtml(state.session, "Commenting")}
+        <label class="grid gap-1 text-xs font-medium text-muted-foreground">Comment
+          <textarea data-repo-issue-comment-body rows="3" placeholder="Leave a comment. Markdown is supported." class="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"></textarea>
+        </label>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <span data-repo-issue-comment-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
+          <button type="submit" data-repo-issue-comment-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Comment</button>
+        </div>
+      </form>`;
+  }
+
   function renderDiscussionReplyForm(number) {
     if (!state.session?.nodeName) {
       return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login" class="font-medium text-primary hover:underline">Log in</a> to reply to this discussion.</div>`;
@@ -8007,9 +8121,17 @@
     const metadata = recordDetailMeta(kind, values);
     const pendingNotice = options.pending ? `
         <div class="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-3 text-xs text-muted-foreground">This ${escapeHtml(config.itemLabel)} is still syncing to the maintainer's inbox and hasn't been drained to the public mirror yet, so it doesn't have a number assigned.</div>` : "";
-    const issueTimeline = (!isPulls && !isDiscussions) ? renderIssueTimeline(parsed.issueEvents) : "";
-    const issueTimelineSection = issueTimeline
-      ? `<div data-repo-issue-timeline class="border-t border-border">${issueTimeline}</div>`
+    const isIssues = !isPulls && !isDiscussions;
+    const issueTimeline = isIssues ? renderIssueTimeline(parsed.issueEvents) : "";
+    // Always mount the timeline container for issues so a comment posted from
+    // the form below has somewhere to land, but keep it borderless while empty.
+    const issueTimelineSection = isIssues
+      ? `<div data-repo-issue-timeline data-empty="${issueTimeline ? "false" : "true"}" class="${issueTimeline ? "border-t border-border" : ""}">${issueTimeline}</div>`
+      : "";
+    // A pending issue is still in the maintainer's inbox and has no number yet,
+    // so there's nothing for a comment's signature to bind to.
+    const issueCommentSection = isIssues && !options.pending
+      ? renderIssueCommentForm(number)
       : "";
     const pullPatch = parsed.pullPatch || { patch: "", files: [], unavailable: false };
     const pullConversation = parsed.pullConversation || [];
@@ -8082,6 +8204,7 @@
                 </div>
                 <div data-repo-record-body class="whitespace-pre-wrap px-4 py-4 text-sm leading-6 text-foreground">${escapeHtml(body)}</div>
                 ${issueTimelineSection}
+                ${issueCommentSection}
                 ${pullConversationSection}
               </section>`}
             <section class="overflow-hidden rounded-lg border border-border" data-repo-federated-thread>
@@ -14161,6 +14284,12 @@
     if (issueImportForm && state.selectedRepo) {
       event.preventDefault();
       handleIssueImportSubmit(state.selectedRepo, issueImportForm);
+      return;
+    }
+    const issueCommentForm = event.target.closest("[data-repo-issue-comment-form]");
+    if (issueCommentForm && state.selectedRepo) {
+      event.preventDefault();
+      handleIssueCommentSubmit(state.selectedRepo, issueCommentForm);
       return;
     }
     const discussionReplyForm = event.target.closest("[data-repo-discussion-reply-form]");

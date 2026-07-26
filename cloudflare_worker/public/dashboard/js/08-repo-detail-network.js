@@ -2166,6 +2166,12 @@
       handleIssueImportSubmit(state.selectedRepo, issueImportForm);
       return;
     }
+    const issueCommentForm = event.target.closest("[data-repo-issue-comment-form]");
+    if (issueCommentForm && state.selectedRepo) {
+      event.preventDefault();
+      handleIssueCommentSubmit(state.selectedRepo, issueCommentForm);
+      return;
+    }
     const discussionReplyForm = event.target.closest("[data-repo-discussion-reply-form]");
     if (discussionReplyForm && state.selectedRepo) {
       event.preventDefault();
