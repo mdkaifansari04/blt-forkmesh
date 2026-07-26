@@ -57,6 +57,10 @@
     // to. null until the first cross-repo fetch resolves so the panel can tell
     // "loading" apart from "no active sessions".
     homeAgentSessions: null,
+    // Home right-rail "Latest from the blog" (adhoc #381): the newest posts
+    // parsed from /blog/rss.xml. null until the feed read resolves so the card
+    // can tell "loading" apart from "feed unavailable".
+    homeBlogPosts: null,
     longDiffOverrides: {},
     repoCommitDetail: null,
     repoRecordDetail: null,
@@ -5110,21 +5114,80 @@
     hydrateNativeRepositoryLogos(container);
   }
 
-  function renderHomeChangelog() {
-    const container = $("[data-home-changelog-list]");
+  // Home right-rail "Latest from the blog" (adhoc #381): the newest feature
+  // posts with their artwork, read from the blog's own RSS document. The feed
+  // is derived from the shipped blog index and edge-cached for thirty minutes
+  // (see blog_feed.py), so this is one cheap same-origin read per dashboard
+  // load rather than a second hand-maintained copy of the post list.
+  const HOME_BLOG_POST_LIMIT = 3;
+  const HOME_BLOG_FEED_URL = "/blog/rss.xml";
+
+  // Feed URLs are absolute against forkmesh.com; keep only the path so the
+  // dashboard links and paints artwork from whatever origin it is served on
+  // (and never loads an image from a foreign host).
+  function homeBlogUrl(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    try {
+      const parsed = new URL(raw, window.location.origin);
+      return parsed.pathname + parsed.search;
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function parseHomeBlogFeed(xml) {
+    const doc = new DOMParser().parseFromString(String(xml || ""), "application/xml");
+    if (doc.querySelector("parsererror")) return [];
+    return Array.from(doc.querySelectorAll("item"))
+      .map((item) => ({
+        title: (item.querySelector("title")?.textContent || "").trim(),
+        href: homeBlogUrl(item.querySelector("link")?.textContent),
+        meta: (item.querySelector("category")?.textContent || "").trim(),
+        image: homeBlogUrl(item.querySelector("enclosure")?.getAttribute("url")),
+      }))
+      .filter((post) => post.title && post.href)
+      .slice(0, HOME_BLOG_POST_LIMIT);
+  }
+
+  function homeBlogPostCard(post) {
+    return `
+      <a href="${escapeHtml(post.href)}" class="group block overflow-hidden rounded-md border border-border hover:bg-secondary">
+        ${post.image ? `<img src="${escapeHtml(post.image)}" alt="" loading="lazy" class="block aspect-[16/9] w-full object-cover" />` : ""}
+        <span class="block px-3 py-2.5">
+          ${post.meta ? `<span class="block truncate font-mono text-[10px] uppercase text-muted-foreground">${escapeHtml(post.meta)}</span>` : ""}
+          <span class="mt-1 block text-sm font-semibold leading-5 text-foreground group-hover:text-accent">${escapeHtml(post.title)}</span>
+        </span>
+      </a>
+    `;
+  }
+
+  function renderHomeBlogPosts() {
+    const container = $("[data-home-blog-list]");
     if (!container) return;
-    const items = [
-      { label: "The Living Code City", meta: "v0.7.0 · July 2026", href: "/changelog" },
-      { label: "The Agent Mesh", meta: "v0.5.0 · June 2026", href: "/changelog" },
-      { label: "Autonomous agents", meta: "v0.4.0 · June 2026", href: "/changelog" },
-    ];
-    container.innerHTML = items.map((item) => `
-      <article class="relative">
-        <span class="absolute -left-[1.18rem] top-1.5 h-2 w-2 rounded-full bg-muted-foreground"></span>
-        <p class="text-xs text-muted-foreground">${escapeHtml(item.meta)}</p>
-        <a href="${escapeHtml(item.href)}" class="mt-1 block text-sm font-semibold leading-5 text-foreground hover:text-accent">${escapeHtml(item.label)}</a>
-      </article>
-    `).join("");
+    const posts = state.homeBlogPosts;
+    if (posts === null) {
+      container.innerHTML = '<div class="text-sm text-muted-foreground"><span class="fm-spinner" aria-hidden="true"></span>Loading blog posts...</div>';
+      return;
+    }
+    container.innerHTML = posts.length
+      ? posts.map(homeBlogPostCard).join("")
+      : '<div class="text-sm text-muted-foreground">Blog posts are unavailable right now.</div>';
+  }
+
+  async function loadHomeBlogPosts() {
+    if (!$("[data-home-blog-list]")) return;
+    try {
+      const response = await fetch(HOME_BLOG_FEED_URL, {
+        credentials: "omit",
+        headers: { accept: "application/rss+xml, application/xml" },
+      });
+      if (!response.ok) throw new Error(`blog feed returned ${response.status}`);
+      state.homeBlogPosts = parseHomeBlogFeed(await response.text());
+    } catch (_) {
+      state.homeBlogPosts = [];
+    }
+    renderHomeBlogPosts();
   }
 
   // Home left-rail "Active agent sessions" (adhoc #81). Renders the aggregated
@@ -5230,7 +5293,7 @@
     renderSidebarRepositories();
     renderHomeRepositories();
     renderHomeFeed();
-    renderHomeChangelog();
+    renderHomeBlogPosts();
     renderHomeAgentSessions();
     renderProfileRepositories();
     renderProfileRepositoryCount();
@@ -13185,7 +13248,10 @@
   }
 
   function initHomePage() {
-    renderHomeChangelog();
+    renderHomeBlogPosts();
+    // The blog card fills in from the edge-cached feed; the baked markup
+    // already shows its loading state.
+    void loadHomeBlogPosts();
     // Feed + top repositories fill in when loadRepositories()/loadNotifications()
     // resolve — both re-render the home containers.
     // Active agent sessions (adhoc #81) need the catalog first so we know which
