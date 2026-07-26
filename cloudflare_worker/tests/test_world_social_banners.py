@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Contracts for the Twitter and Reddit banners beside the Mastodon kiosk."""
+"""Contracts for the Twitter, Reddit, and blog banners beside the Mastodon
+kiosk."""
 
 from pathlib import Path
 import sys
@@ -158,11 +159,105 @@ def test_twitter_timeline_extraction_and_normalization():
 
 def test_payload_states_gate_each_feed_independently():
     payload = feeds.social_posts_payload(
-        123, [{"id": "t"}], [{"id": "r"}], False, True)
+        123, [{"id": "t"}], [{"id": "r"}], [{"id": "b"}], False, True, True)
     assert payload["ok"] is True and payload["now"] == 123
     assert payload["twitter"]["state"] == "unavailable"
     assert payload["twitter"]["posts"] == []
     assert payload["reddit"]["state"] == "ready"
     assert payload["reddit"]["posts"] == [{"id": "r"}]
+    assert payload["blog"]["state"] == "ready"
+    assert payload["blog"]["posts"] == [{"id": "b"}]
     assert payload["twitter"]["url"] == "https://x.com/forkmesh"
     assert payload["reddit"]["url"] == "https://www.reddit.com/r/forkmesh/"
+    assert payload["blog"]["url"] == "https://forkmesh.com/blog"
+    gated = feeds.social_posts_payload(1, [], [], [{"id": "b"}], True, True,
+                                       False)
+    assert gated["blog"]["state"] == "unavailable"
+    assert gated["blog"]["posts"] == []
+
+
+_BLOG_CARD_HTML = (
+    '<a class="blog1-card" href="/blog/desktop-node-mirrors/"'
+    ' data-section="mesh">'
+    '<img class="blog1-post-image" src="/x.webp" alt="">'
+    '<div class="blog1-card-copy">'
+    '<p class="blog1-card-meta">Distributed hosting &amp; more · Feature 01'
+    '</p>\n<h3>Desktop-node mirrors</h3>\n'
+    '<p>Actively   mirrored\nrepositories live on independent nodes.</p>'
+    '</div></a>'
+)
+
+
+def test_blog_index_normalization_bounds_and_links():
+    posts = feeds.normalize_blog_index(_BLOG_CARD_HTML)
+    assert len(posts) == 1
+    post = posts[0]
+    assert post["id"] == "desktop-node-mirrors"
+    assert post["text"] == "Desktop-node mirrors"
+    assert post["meta"] == "Distributed hosting & more · Feature 01"
+    assert post["detail"] == (
+        "Actively mirrored repositories live on independent nodes.")
+    # Static feature cards carry no dates; the board's staleness plate reads
+    # the snapshot age instead.
+    assert post["createdAt"] == 0
+    assert post["url"] == "https://forkmesh.com/blog/desktop-node-mirrors/"
+    # Malformed markup degrades to an empty list, never raises.
+    assert feeds.normalize_blog_index(None) == []
+    assert feeds.normalize_blog_index("<html>no cards</html>") == []
+
+
+def test_blog_index_is_bounded_to_the_banner_post_limit():
+    html = _BLOG_CARD_HTML * 20
+    posts = feeds.normalize_blog_index(html)
+    assert len(posts) == feeds.SOCIAL_POSTS_LIMIT
+
+
+def test_blog_index_parses_the_shipped_blog_page():
+    blog_html = _source(ROOT / "public" / "blog.html")
+    posts = feeds.normalize_blog_index(blog_html)
+    assert len(posts) == feeds.SOCIAL_POSTS_LIMIT
+    assert all(post["text"] and post["meta"] for post in posts)
+    assert all(post["url"].startswith("https://forkmesh.com/blog/")
+               for post in posts)
+
+
+def test_scene_places_the_blog_banner_on_the_social_row():
+    scene = _source(SCENE_PATH)
+    assert "BLOG_BANNER_OPTIONS" in scene
+    assert "position: [19.8, 0, -32.8]" in scene
+    assert 'registerMovableObject("blog-banner", blogBanner);' in scene
+    assert '"https://forkmesh.com/blog"' in scene
+
+
+def test_banners_carry_sync_and_staleness_plates():
+    scene = _source(SCENE_PATH)
+    # Each banner stand carries the kiosk's two plates: the MM:SS countdown
+    # to the next feed sync and the color-coded staleness readout.
+    assert "banner-countdown" in scene
+    assert "banner-lastpost" in scene
+    assert "function updateSocialBannerTimers(payload)" in scene
+    assert "updateSocialBannerTimers,\n" in scene
+    # The blog board has no post dates, so its plate reads the snapshot age.
+    assert 'label: "SYNCED"' in scene
+    assert scene.count('label: "LAST POST"') == 2
+
+
+def test_world_drives_the_banner_clocks_on_a_one_second_tick():
+    world = _source(WORLD_PATH)
+    assert "syncSocialBannerTimers()" in world
+    assert "this.world?.updateSocialBannerTimers?.(" in world
+    assert "socialNewestPostAgo(feed)" in world
+    assert "socialSnapshotAge()" in world
+    # The tick, not a ten-minute interval, drives the reload so the countdown
+    # and the fetch can never drift apart.
+    idx = world.index("startSocialBannersRefresh() {")
+    assert "1000" in world[idx:idx + 300]
+
+
+def test_worker_folds_the_blog_index_into_the_social_snapshot():
+    entry = _source(ENTRY_PATH)
+    assert "world_social_feeds.BLOG_INDEX_ASSET" in entry
+    assert "world_social_feeds.normalize_blog_index" in entry
+    # The blog read stays inside the Worker's own static assets.
+    idx = entry.index("world_social_feeds.BLOG_INDEX_ASSET")
+    assert "env.ASSETS.fetch" in entry[idx - 400:idx]
