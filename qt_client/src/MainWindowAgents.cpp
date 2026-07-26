@@ -5292,8 +5292,30 @@ bool MainWindow::deleteStoredAgentSession(int sessionId)
     // can hand the number back out (nextId() reuses the highest deleted id), or the
     // reused id would inherit this dead session's cached transcript/resume state.
     purgeSessionState(snapshot.id);
-    if (m_selectedAgentSessionId == sessionId)
-        m_selectedAgentSessionId = -1;
+    if (m_selectedAgentSessionId == sessionId) {
+        // Land on the row that was just above the deleted one (issue #353) instead
+        // of letting refreshAgentTable's "not found" fallback jump to the top of
+        // the list. Falls back to the row below when the deleted row was first.
+        int neighborId = -1;
+        if (m_agentTable) {
+            int row = -1;
+            for (int r = 0; r < m_agentTable->rowCount(); ++r) {
+                QTableWidgetItem *it = m_agentTable->item(r, 0);
+                if (it && it->data(Qt::UserRole).toInt() == sessionId) {
+                    row = r;
+                    break;
+                }
+            }
+            if (row > 0) {
+                if (QTableWidgetItem *it = m_agentTable->item(row - 1, 0))
+                    neighborId = it->data(Qt::UserRole).toInt();
+            } else if (row == 0 && m_agentTable->rowCount() > 1) {
+                if (QTableWidgetItem *it = m_agentTable->item(row + 1, 0))
+                    neighborId = it->data(Qt::UserRole).toInt();
+            }
+        }
+        m_selectedAgentSessionId = neighborId;
+    }
     return true;
 }
 
