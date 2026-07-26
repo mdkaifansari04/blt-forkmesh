@@ -3331,11 +3331,6 @@ QWidget *MainWindow::buildBreadcrumb()
         showSection(kNetworkReposSectionIndex);
     });
 
-    // m_repoPushButton ("Publish N") is created in buildRepoDetailSection where
-    // its row lives, so it is parented before it can ever be shown. (Building it
-    // in a section constructed later left it parentless and it popped up as its
-    // own floating window.)
-
     m_breadcrumb = new QLabel;
     m_breadcrumb->setObjectName("breadcrumb");
     m_breadcrumb->setTextFormat(Qt::RichText);
@@ -3861,8 +3856,6 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addSpacing(10);
     mainRow->addWidget(m_repoLabel);
     mainRow->addWidget(m_repoMenuButton);
-    // m_repoPushButton ("Publish N") now lives in its own row above the repo tab
-    // bar (see buildRepoDetail), not in the top navigation row.
     mainRow->addSpacing(12);
     mainRow->addWidget(m_breadcrumb);
     mainRow->addStretch();
@@ -3991,7 +3984,7 @@ QWidget *MainWindow::buildBreadcrumb()
     updateNotificationButton();
     updateChatButton();
     updateNavSolanaBalance();
-    updateRepoPushButton();
+    refreshRepoSyncIndicators();
     updateNavRebuildButton();
     updateNodeOnlineControls();
     return bar;
@@ -4241,7 +4234,7 @@ void MainWindow::updateBreadcrumb()
 {
     // The active relay (favicon + domain) now lives in the relay switcher.
     updateRelaySwitcher();
-    updateRepoPushButton();
+    refreshRepoSyncIndicators();
     if (!m_breadcrumb)
         return;
     // The relay / node / repo switchers and the always-visible section nav (with
@@ -5197,400 +5190,24 @@ bool MainWindow::relayPublishRepo(const RepositoryRecord &repo,
     return true;
 }
 
-// Gather the rich-tooltip detail for a pending sync: the pending commits (subject
-// + per-commit line diffstat, newest first, capped) and the aggregate +/- line
-// counts over the whole range. `base` is the ref the pending commits are ahead of
-// (a served-mirror commit, or @{upstream}); empty means "from the root commit".
-// Shells git on the given path only, so it's safe on the worker thread.
-void MainWindow::collectPushDetail(const QString &localPath, const QString &base,
-                                   RepoPushState *st)
+// Keep the open repo's sync-derived indicators in step after anything that may
+// have changed the push state (a new local commit, a completed publish/sync).
+// The floating "Sync (N)" pill this used to paint above the Code tab is gone
+// (adhoc #374), and with it the off-thread ahead/behind walks that fed only its
+// label and tooltip — what's left is the activity rail's spinning Git glyph and
+// the commit list's "waiting to sync" markers.
+void MainWindow::refreshRepoSyncIndicators()
 {
-    if (!st || localPath.isEmpty())
-        return;
-    constexpr int kMax = 8; // cap the list so a big backlog can't blow up the tooltip
-    const QString logRange =
-        base.isEmpty() ? QStringLiteral("HEAD") : base + QStringLiteral("..HEAD");
-
-    // One `git log --numstat` pass gives every pending commit's subject and its
-    // added/removed lines. Records are split on RS (0x1e); within a record the
-    // header line is "<hash>\x1f<subject>", followed by numstat rows.
-    QByteArray logOut;
-    if (runGitCapture(localPath,
-                      {QStringLiteral("log"), logRange,
-                       QStringLiteral("--max-count=%1").arg(kMax + 1),
-                       QStringLiteral("--numstat"),
-                       QStringLiteral("--format=%x1e%h%x1f%s")},
-                      &logOut, nullptr)) {
-        const QList<QByteArray> records = logOut.split('\x1e');
-        for (const QByteArray &record : records) {
-            if (record.trimmed().isEmpty())
-                continue;
-            if (st->commits.size() >= kMax) {
-                st->extraCommits++;
-                continue;
-            }
-            const int nl = record.indexOf('\n');
-            const QByteArray head = nl >= 0 ? record.left(nl) : record;
-            const int us = head.indexOf('\x1f');
-            RepoPushState::PendingCommit c;
-            c.hash = QString::fromUtf8(us >= 0 ? head.left(us) : head).trimmed();
-            c.subject = QString::fromUtf8(us >= 0 ? head.mid(us + 1) : QByteArray());
-            if (nl >= 0) {
-                const QList<QByteArray> rows = record.mid(nl + 1).split('\n');
-                for (const QByteArray &row : rows) {
-                    const QList<QByteArray> cols = row.split('\t');
-                    if (cols.size() < 2)
-                        continue; // blank line, or a binary file's "-\t-\t"
-                    bool okA = false, okR = false;
-                    const int a = QString::fromUtf8(cols[0]).toInt(&okA);
-                    const int r = QString::fromUtf8(cols[1]).toInt(&okR);
-                    if (okA) c.added += a;
-                    if (okR) c.removed += r;
-                }
-            }
-            st->commits << c;
-        }
-    }
-
-    // Aggregate +/- over the FULL range (including commits past the cap) so the
-    // headline totals stay honest. `git diff --numstat A HEAD` collapses the whole
-    // span; from the root, diff against the empty tree.
-    static const QString kEmptyTree =
-        QStringLiteral("4b825dc642cb6eb9a060e54bf8d69288fbee4904");
-    QByteArray diffOut;
-    if (runGitCapture(localPath,
-                      {QStringLiteral("diff"), QStringLiteral("--numstat"),
-                       base.isEmpty() ? kEmptyTree : base, QStringLiteral("HEAD")},
-                      &diffOut, nullptr)) {
-        const QList<QByteArray> rows = diffOut.split('\n');
-        for (const QByteArray &row : rows) {
-            const QList<QByteArray> cols = row.split('\t');
-            if (cols.size() < 2)
-                continue;
-            bool okA = false, okR = false;
-            const int a = QString::fromUtf8(cols[0]).toInt(&okA);
-            const int r = QString::fromUtf8(cols[1]).toInt(&okR);
-            if (okA) st->added += a;
-            if (okR) st->removed += r;
-        }
-    }
-}
-
-// Resolve every git-derived count the "Sync" button needs — the relay /
-// upstream classification, unpublished/ahead/behind walks. Each is a rev-list /
-// rev-parse subprocess on the working copy + served mirror, so this is the part
-// that used to freeze the window on every commit/sync; it runs on a worker thread
-// (see updateRepoPushButton). It reads only the passed-in record and free git
-// helpers, never m_repositories or a widget, so it is safe off the GUI thread.
-MainWindow::RepoPushState
-MainWindow::computeRepoPushState(const RepositoryRecord &repo) const
-{
-    RepoPushState st;
-    if (repo.localPath.isEmpty() || !QDir(repo.localPath).exists(".git"))
-        return st; // st.valid stays false
-    st.valid = true;
-
-    // Commits we're behind by (incoming, to pull) — from the served mirror for a
-    // relay repo, else the configured upstream. Used to flag a two-way sync.
-    auto behindCount = [](const RepositoryRecord &r) -> int {
-        QString ref;
-        if (!r.mirrorPath.isEmpty())
-            ref = mirrorBranchCommit(r.mirrorPath, mirrorHeadBranch(r.mirrorPath));
-        else {
-            QByteArray u;
-            if (runGitCapture(r.localPath,
-                              {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
-                               QStringLiteral("--symbolic-full-name"),
-                               QStringLiteral("@{upstream}")},
-                              &u, nullptr))
-                ref = QString::fromUtf8(u).trimmed();
-        }
-        if (ref.isEmpty())
-            return 0;
-        QByteArray b;
-        if (!runGitCapture(r.localPath,
-                           {QStringLiteral("rev-list"), QStringLiteral("--count"),
-                            QStringLiteral("HEAD..%1").arg(ref)},
-                           &b, nullptr))
-            return 0;
-        return QString::fromUtf8(b).trimmed().toInt();
-    };
-
-    // ForkMesh relay-backed repo: the relay has no git-receive-pack, so publish
-    // local commits by syncing the served mirror from this working copy.
-    QString relayBranch;
-    int unpublished = 0;
-    if (relayPublishRepo(repo, &relayBranch, &unpublished)) {
-        st.relay = true;
-        st.unpublished = unpublished;
-        st.behind = behindCount(repo);
-        st.target = QStringLiteral("your served mirror");
-        if (unpublished > 0)
-            collectPushDetail(repo.localPath,
-                              mirrorBranchCommit(repo.mirrorPath,
-                                                 mirrorHeadBranch(repo.mirrorPath)),
-                              &st);
-        return st;
-    }
-
-    QByteArray upstreamOut;
-    if (!runGitCapture(repo.localPath,
-                       {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
-                        QStringLiteral("--symbolic-full-name"),
-                        QStringLiteral("@{upstream}")},
-                       &upstreamOut, nullptr))
-        return st;
-    const QString upstream = QString::fromUtf8(upstreamOut).trimmed();
-    if (upstream.isEmpty())
-        return st;
-    st.hasUpstream = true;
-    st.upstreamRef = upstream;
-
-    QByteArray countOut;
-    if (!runGitCapture(repo.localPath,
-                       {QStringLiteral("rev-list"), QStringLiteral("--count"),
-                        QStringLiteral("@{upstream}..HEAD")},
-                       &countOut, nullptr))
-        return st;
-    st.ahead = QString::fromUtf8(countOut).trimmed().toInt();
-    st.behind = behindCount(repo);
-    st.target = upstream;
-    if (st.ahead > 0)
-        collectPushDetail(repo.localPath, upstream, &st);
-    return st;
-}
-
-// Paint the "Sync" button from an already-computed RepoPushState (no git).
-// Runs on the GUI thread, reads the live m_pushingRepos/m_syncingRepos membership
-// so a Sync click flips it to "Syncing…" the instant the click marks the
-// repo, and hides the button whenever there's nothing pending.
-void MainWindow::applyRepoPushButtonState(int index, const RepoPushState &state)
-{
-    if (!m_repoPushButton)
-        return;
-    // The activity rail's Git icon spins while the open repo is pushing or
-    // publishing (adhoc #357); this runs on every sync start/finish repaint, so
-    // the spinner tracks the same membership the button text does.
-    if (m_railGitButton)
-        m_railGitButton->setSyncing(
-            index >= 0 && index == m_repoDetailIndex &&
-            (m_pushingRepos.contains(index) || m_syncingRepos.contains(index)));
-    auto hideButton = [this] {
-        m_repoPushButton->hide();
-        m_repoPushButton->setEnabled(false);
-        if (m_repoPushEyeButton)
-            m_repoPushEyeButton->hide();
-        if (m_repoPushTimer)
-            m_repoPushTimer->stop(); // hidden: no need to keep repositioning it
-        if (m_repoPublishBar)
-            m_repoPublishBar->hide();
-    };
-    // Reveal the floating sync button positioned just above the Code tab. As an
-    // overlay (not a laid-out widget) it never reflows the page underneath — even
-    // while a mirror picks up a push on the Mirror nodes screen. A modest timer
-    // keeps it pinned over the tab as the window resizes or tabs reflow.
-    auto reveal = [this] {
-        positionRepoPushButton(); // reparents to the page + anchors over Code
-        m_repoPushButton->show();
-        m_repoPushButton->raise();
-        if (m_repoPushEyeButton) {
-            m_repoPushEyeButton->show();
-            m_repoPushEyeButton->raise();
-        }
-        if (m_repoPublishBar)
-            m_repoPublishBar->show();
-        if (!m_repoPushTimer) {
-            m_repoPushTimer = new QTimer(this);
-            connect(m_repoPushTimer, &QTimer::timeout, this,
-                    &MainWindow::positionRepoPushButton);
-        }
-        if (!m_repoPushTimer->isActive())
-            m_repoPushTimer->start(300);
-    };
-    // Outgoing (↑), incoming (↓), or both at once (⇅). The double-headed arrow is
-    // how the button shows it's syncing both ways.
-    auto arrow = [](int out, int in) -> QString {
-        if (out > 0 && in > 0) return QString::fromUtf8(" \xE2\x87\x85"); // ⇅
-        if (in > 0) return QString::fromUtf8(" \xE2\x86\x93");            // ↓
-        return QString::fromUtf8(" \xE2\x86\x91");                        // ↑
-    };
-    // A rich (HTML) tooltip that answers "what am I about to sync, and where to?":
-    // a one-line summary (count + destination + aggregate ± lines), then the pending
-    // commits with their per-commit line-change markers. `count` is the true pending
-    // total; state.commits is the capped, detail-bearing subset.
-    auto minus = QString::fromUtf8("\xE2\x88\x92"); // U+2212 minus (matches diff UI)
-    auto detailTip = [&minus](int count, const QString &fromRepo,
-                              const RepoPushState &s) -> QString {
-        const QString headline =
-            QStringLiteral("Sync <b>%1</b> commit%2 from %3 to <b>%4</b>")
-                .arg(count)
-                .arg(count == 1 ? QString() : QStringLiteral("s"),
-                     fromRepo.toHtmlEscaped(),
-                     (s.target.isEmpty() ? QStringLiteral("your served mirror")
-                                         : s.target).toHtmlEscaped());
-        QString html = QStringLiteral("<div style='white-space:nowrap'>%1")
-                           .arg(headline);
-        if (s.behind > 0)
-            html += QStringLiteral(
-                        " <span style='color:#8b949e'>(and pull %1 incoming)</span>")
-                        .arg(s.behind);
-        if (s.added > 0 || s.removed > 0)
-            html += QStringLiteral(
-                        " &nbsp;<span style='color:#3fb950'>+%1</span> "
-                        "<span style='color:#f85149'>%2%3</span>")
-                        .arg(s.added).arg(minus).arg(s.removed);
-        html += QStringLiteral("</div>");
-        if (!s.commits.isEmpty()) {
-            html += QStringLiteral("<table cellspacing='0' cellpadding='0' "
-                                   "style='margin-top:4px'>");
-            for (const RepoPushState::PendingCommit &c : s.commits)
-                html += QStringLiteral(
-                            "<tr>"
-                            "<td style='color:#8b949e;padding-right:8px'><code>%1</code></td>"
-                            "<td style='color:#3fb950;padding-right:4px'>+%2</td>"
-                            "<td style='color:#f85149;padding-right:8px'>%3%4</td>"
-                            "<td style='white-space:nowrap'>%5</td>"
-                            "</tr>")
-                            .arg(c.hash.toHtmlEscaped())
-                            .arg(c.added)
-                            .arg(minus).arg(c.removed)
-                            .arg(c.subject.toHtmlEscaped());
-            html += QStringLiteral("</table>");
-            if (s.extraCommits > 0)
-                html += QStringLiteral(
-                            "<div style='color:#8b949e;margin-top:2px'>"
-                            "+%1 more commit%2</div>")
-                            .arg(s.extraCommits)
-                            .arg(s.extraCommits == 1 ? QString() : QStringLiteral("s"));
-        }
-        return html;
-    };
-
-    if (index < 0 || index >= m_repositories.size() || !state.valid) {
-        hideButton();
-        return;
-    }
-    const RepositoryRecord &repo = m_repositories.at(index);
-    const int behind = state.behind;
-
-    if (m_pushingRepos.contains(index)) {
-        setOcticon(m_repoPushButton, "sync", 14);
-        m_repoPushButton->setText(QString::fromUtf8("Syncing")
-                                  + arrow(1, behind) + QString::fromUtf8("\xE2\x80\xA6"));
-        m_repoPushButton->setToolTip(
-            behind > 0
-                ? QStringLiteral("Syncing both ways: pushing local commits and "
-                                 "pulling %1 incoming").arg(behind)
-                : QStringLiteral("Syncing local commits upstream"));
-        reveal();
-        return;
-    }
-
-    if (state.relay) {
-        const int unpublished = state.unpublished;
-        if (m_syncingRepos.contains(index)) {
-            setOcticon(m_repoPushButton, "sync", 14);
-            m_repoPushButton->setText(QString::fromUtf8("Syncing")
-                                      + arrow(qMax(unpublished, 1), behind)
-                                      + QString::fromUtf8("\xE2\x80\xA6"));
-            m_repoPushButton->setToolTip(
-                behind > 0
-                    ? QStringLiteral("Syncing both ways: publishing to your served "
-                                     "mirror and pulling %1 incoming").arg(behind)
-                    : QStringLiteral("Publishing local commits to your served mirror"));
-            reveal();
-            return;
-        }
-        if (unpublished <= 0) {
-            hideButton();
-            return;
-        }
-        setOcticon(m_repoPushButton, "sync", 14);
-        // Surface the pending count right on the button — a small number above the
-        // Commits tab — instead of hiding it in the tooltip (issue #208).
-        m_repoPushButton->setText(QStringLiteral("Sync (%1)").arg(unpublished)
-                                  + arrow(unpublished, behind));
-        m_repoPushButton->setToolTip(detailTip(
-            unpublished, QStringLiteral("%1/%2").arg(repo.owner, repo.name), state));
-        m_repoPushButton->setEnabled(true);
-        reveal();
-        return;
-    }
-
-    if (!state.hasUpstream || state.ahead <= 0) {
-        hideButton();
-        return;
-    }
-    const int ahead = state.ahead;
-
-    // A repo with a real upstream remote (origin/main, …). "Sync" with a
-    // direction arrow — ⇅ when there's also incoming to pull. The count and target
-    // move to the tooltip; pushCurrentRepoUpstream still does the push.
-    setOcticon(m_repoPushButton, "sync", 14);
-    // Show the pending commit count on the button itself (issue #208).
-    m_repoPushButton->setText(QStringLiteral("Sync (%1)").arg(ahead)
-                              + arrow(ahead, behind));
-    m_repoPushButton->setToolTip(detailTip(
-        ahead, QStringLiteral("%1/%2").arg(repo.owner, repo.name), state));
-    m_repoPushButton->setEnabled(true);
-    reveal();
-}
-
-void MainWindow::updateRepoPushButton()
-{
-    if (!m_repoPushButton)
-        return;
-    // This runs whenever the push state may have changed (a new local commit, a
-    // completed publish/sync). If the commit list is on screen, keep its "waiting
-    // to sync" markers in step so they appear/clear without a manual refresh.
+    // Only while the commit list is on screen; a cheap no-op otherwise.
     refreshCommitMarkersIfStale();
 
+    // The activity rail's Git icon spins while the open repo is pushing or
+    // publishing (adhoc #357).
     const int index = m_repoDetailIndex;
-    // Paint immediately from the last computed state so a Sync/Syncing click flips
-    // the button without waiting on git; applyRepoPushButtonState reads the live
-    // m_pushingRepos/m_syncingRepos membership. A stale cache is corrected the
-    // moment the worker below finishes.
-    applyRepoPushButtonState(index,
-                             m_pushStateIndex == index ? m_pushState : RepoPushState{});
-
-    if (index < 0 || index >= m_repositories.size())
-        return;
-    const RepositoryRecord &repo = m_repositories.at(index);
-    if (repo.localPath.isEmpty() || !QDir(repo.localPath).exists(".git"))
-        return;
-
-    // Recompute the git-derived counts off the GUI thread. These shell several
-    // rev-list/rev-parse subprocesses on the working copy + served mirror, and this
-    // is called after every commit (issue/comment), every sync start/finish, and on
-    // the 60s home-stats timer — running them here froze the window each time. The
-    // worker only reads path strings (computeRepoPushState touches no member state);
-    // the result is applied back on the main thread. Coalesce while one is in flight
-    // so a burst of calls runs at most one extra recompute.
-    if (m_pushStateInFlight) {
-        m_pushStatePending = true;
-        return;
-    }
-    m_pushStateInFlight = true;
-    const RepositoryRecord repoCopy = repo;
-    auto result = std::make_shared<RepoPushState>();
-    QThread *worker = QThread::create(
-        [this, repoCopy, result] { *result = computeRepoPushState(repoCopy); });
-    connect(worker, &QThread::finished, this, [this, worker, index, result] {
-        worker->deleteLater();
-        m_pushStateInFlight = false;
-        m_pushState = *result;
-        m_pushStateIndex = index;
-        // Repaint only if the open repo is still the one we computed for.
-        if (index == m_repoDetailIndex)
-            applyRepoPushButtonState(index, *result);
-        // A request that arrived mid-flight (e.g. the sync we kicked has since
-        // finished) gets one fresh recompute now.
-        if (m_pushStatePending) {
-            m_pushStatePending = false;
-            updateRepoPushButton();
-        }
-    });
-    worker->start();
+    if (m_railGitButton)
+        m_railGitButton->setSyncing(index >= 0 &&
+                                    (m_pushingRepos.contains(index) ||
+                                     m_syncingRepos.contains(index)));
 }
 
 // Canonicalize and hash the stdout of `git for-each-ref
@@ -5962,7 +5579,7 @@ void MainWindow::pushCurrentRepoUpstream()
             flashMessage(QStringLiteral("No upstream branch is configured for %1/%2.")
                              .arg(repo.owner, repo.name),
                          true);
-            updateRepoPushButton();
+            refreshRepoSyncIndicators();
             return;
         }
         upstream = QString::fromUtf8(upstreamOut).trimmed();
@@ -5975,7 +5592,7 @@ void MainWindow::pushCurrentRepoUpstream()
     // (possibly modal) result. Mark the repo "pushing" now so the button flips to
     // its busy state and the entry guard blocks a second click during the scan.
     m_pushingRepos.insert(index);
-    updateRepoPushButton();
+    refreshRepoSyncIndicators();
 
     struct PushScan {
         QList<RepoSecurityFinding> findings;
@@ -6004,7 +5621,7 @@ void MainWindow::pushCurrentRepoUpstream()
             if (index < 0 || index >= m_repositories.size() ||
                 m_repositories.at(index).localPath != repo.localPath) {
                 m_pushingRepos.remove(index);
-                updateRepoPushButton();
+                refreshRepoSyncIndicators();
                 return;
             }
             if (!scan.findings.isEmpty()) {
@@ -6039,7 +5656,7 @@ void MainWindow::pushCurrentRepoUpstream()
                 box.exec();
                 if (box.clickedButton() != bypassBtn) {
                     m_pushingRepos.remove(index);
-                    updateRepoPushButton();
+                    refreshRepoSyncIndicators();
                     return;
                 }
                 logSystem(
@@ -6056,7 +5673,7 @@ void MainWindow::pushCurrentRepoUpstream()
                                          "the served mirror.")
                               .arg(repo.owner, repo.name));
                 syncRepository(index, /*quiet=*/false);
-                updateRepoPushButton();
+                refreshRepoSyncIndicators();
                 return;
             }
             startRepoPush(index, repo, upstream, scan.ahead);
@@ -6070,7 +5687,7 @@ void MainWindow::pushCurrentRepoUpstream()
 void MainWindow::startRepoPush(int index, const RepositoryRecord &repo,
                                const QString &upstream, int ahead)
 {
-    updateRepoPushButton();
+    refreshRepoSyncIndicators();
     logSystem(QStringLiteral("Git: pushing %1/%2 to %3.")
                   .arg(repo.owner, repo.name, upstream));
 
@@ -6111,7 +5728,7 @@ void MainWindow::startRepoPush(int index, const RepositoryRecord &repo,
                                      .arg(repo.owner, repo.name, detail.left(160)),
                                  true);
                 }
-                updateRepoPushButton();
+                refreshRepoSyncIndicators();
             });
     connect(process, &QProcess::errorOccurred, this,
             [this, process, index, repo](QProcess::ProcessError) {
@@ -6125,7 +5742,7 @@ void MainWindow::startRepoPush(int index, const RepositoryRecord &repo,
                 flashMessage(QStringLiteral("Could not run git push for %1/%2.")
                                  .arg(repo.owner, repo.name),
                              true);
-                updateRepoPushButton();
+                refreshRepoSyncIndicators();
             });
     process->start(QStringLiteral("git"),
                    {QStringLiteral("-C"), repo.localPath, QStringLiteral("push")});

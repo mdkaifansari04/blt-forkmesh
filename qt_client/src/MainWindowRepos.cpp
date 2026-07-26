@@ -975,7 +975,7 @@ void MainWindow::refreshRepositoryList()
     // Re-entrancy guard (adhoc #247): the periodic m_homeStatsTimer fires this once
     // a minute, which can land inside another heavy refresh's GitKeepAlive pump.
     // Running the per-repo git reads (mirror head/commit/size) plus
-    // updateRepoPushButton nested in that pump stacks synchronous git work and
+    // refreshRepoSyncIndicators nested in that pump stacks synchronous git work and
     // stalls the GUI. Coalesce + defer to a fresh event-loop turn instead; the
     // deferred call re-checks the guard and re-arms if the pump is still active.
     if (m_heavyRefreshInFlight) {
@@ -1164,7 +1164,7 @@ void MainWindow::refreshRepositoryList()
         m_repoMenuEntries.append(entry);
     }
     updateRepoSwitcher();
-    updateRepoPushButton();
+    refreshRepoSyncIndicators();
     updateRepoDetailStatus();
     updateRepoActionMenus();
     updateHomeStats();
@@ -4803,14 +4803,14 @@ void MainWindow::propagateRepoUpdate(int index)
         return;
     if (m_syncingRepos.contains(index))
         return;
-    // Repaint the "Sync" button's pending count right away rather than waiting on
-    // the mirror-fetch round-trip below (prep thread + fetch subprocess +
-    // housekeeping thread) to reach refreshRepositoryList's updateRepoPushButton()
-    // call: that left the button visibly lagging the "N commits not yet synced"
-    // banner, which loadCommits() already paints synchronously the instant a
-    // commit lands.
+    // Repaint the sync indicators (rail spinner, "waiting to sync" commit markers)
+    // right away rather than waiting on the mirror-fetch round-trip below (prep
+    // thread + fetch subprocess + housekeeping thread) to reach
+    // refreshRepositoryList's refreshRepoSyncIndicators() call: that left them
+    // visibly lagging the "N commits not yet synced" banner, which loadCommits()
+    // already paints synchronously the instant a commit lands.
     if (index == m_repoDetailIndex)
-        updateRepoPushButton();
+        refreshRepoSyncIndicators();
     // syncRepository fetches the bare mirror from the local working copy, so the
     // just-committed issue/PR lands in the mirror. On a detected change it
     // refreshes the open detail (updating the Issues/PR counts) and broadcasts
