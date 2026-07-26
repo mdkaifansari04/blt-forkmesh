@@ -38,6 +38,13 @@ run_worker_first = [
   "!/dashboard/profile/repositories",
   "/index.html",
   "/blog.html",
+  # The blog's RSS feed is built from blog.html at request time, so the
+  # Worker must own it before the assets router treats rss.xml as a post
+  # slug. /rss.xml is the root-level alias (and the _redirects safety net).
+  "/blog/rss.xml",
+  "/blog/feed.xml",
+  "/rss.xml",
+  "/feed.xml",
   "/login.html",
   "/signup.html",
   "/forgot-password.html",
