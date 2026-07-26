@@ -7610,7 +7610,8 @@ QWidget *MainWindow::buildHostsSection()
 
     auto *vultrHint = new QLabel(QString::fromUtf8(
         "One click deploys a brand-new cloud mirror on your Vultr account: "
-        "ForkMesh picks the cheapest available plan running the latest Debian, "
+        "ForkMesh picks the cheapest available IPv4 plan (Vultr's IPv6-only "
+        "tiers are unreachable for the mesh) running the latest Debian, "
         "creates and manages the SSH key for it automatically, boots the "
         "instance, installs ForkMesh over SSH and links the new node to your "
         "account so it starts mirroring and syncing right away. The API key "
@@ -7635,8 +7636,9 @@ QWidget *MainWindow::buildHostsSection()
         QStringLiteral("Vultr API key — kept in memory only"));
     vultrForm->addRow(QStringLiteral("Vultr API key"), m_vultrApiKeyEdit);
     m_vultrNameEdit = new QLineEdit;
-    m_vultrNameEdit->setPlaceholderText(
-        QStringLiteral("Optional — defaults to vultr-mirror-1, -2, \xE2\x80\xA6"));
+    m_vultrNameEdit->setPlaceholderText(QString::fromUtf8(
+        "Optional \xE2\x80\x94 defaults to the next free mirrorN "
+        "(mirror5, mirror6, \xE2\x80\xA6)"));
     vultrForm->addRow(QStringLiteral("Node name"), m_vultrNameEdit);
     vultrCol->addLayout(vultrForm);
 
@@ -11078,18 +11080,26 @@ void MainWindow::createVultrMirrorFromForm()
     const QJsonArray hosts = forkmesh::control::loadSavedHosts(
         settings, kHostsSetting, &m_hostSessionPasswords);
     QSet<QString> used;
-    for (const QJsonValue &value : hosts)
-        used.insert(value.toObject()
-                        .value(QStringLiteral("name"))
-                        .toString()
-                        .toLower());
+    QStringList knownNames;
+    for (const QJsonValue &value : hosts) {
+        const QString name = value.toObject()
+                                 .value(QStringLiteral("name"))
+                                 .toString()
+                                 .toLower();
+        used.insert(name);
+        knownNames.append(name);
+    }
     if (node.isEmpty()) {
-        // First unused vultr-mirror-N.
-        for (int i = 1; i <= 999 && node.isEmpty(); ++i) {
-            const QString candidate =
-                QStringLiteral("vultr-mirror-%1").arg(i);
-            if (!used.contains(candidate))
-                node = candidate;
+        // Continue the fleet's mirrorN numbering rather than naming the node
+        // after its hosting provider: the account's linked nodes carry the
+        // mirrors this device never saved as hosts (adhoc #344).
+        knownNames += m_profileLinkedNodes;
+        node = forkmesh::control::nextMirrorNodeName(knownNames);
+        if (node.isEmpty()) {
+            if (m_vultrStatus)
+                m_vultrStatus->setText(QStringLiteral(
+                    "Could not pick a free mirror name — enter one."));
+            return;
         }
     } else if (used.contains(node.toLower())) {
         if (m_vultrStatus)
@@ -11285,6 +11295,16 @@ void MainWindow::pollVultrInstance(const QString &apiKey,
             const QString ip =
                 forkmesh::control::vultrInstanceReadyIp(instance);
             if (ip.isEmpty()) {
+                if (forkmesh::control::vultrInstanceIsIpv6Only(instance)) {
+                    // Nothing in the mesh can reach a v6-only host, and waiting
+                    // out the poll budget would never change that (adhoc #344).
+                    finishVultrProvision(false, QStringLiteral(
+                        "Vultr gave this instance an IPv6 address only, which "
+                        "the mesh cannot reach. Destroy instance %1 in the "
+                        "Vultr panel and retry — ForkMesh only deploys IPv4 "
+                        "plans.").arg(instanceId));
+                    return;
+                }
                 if (++m_vultrPollCount >= kMaxPolls) {
                     finishVultrProvision(false, QStringLiteral(
                         "The instance did not become ready in time. Check "
