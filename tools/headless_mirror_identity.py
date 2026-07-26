@@ -114,6 +114,9 @@ PUBLIC_CATALOG_INPUT_FIELDS = frozenset(
         "source",
         "commit",
         "branch",
+        "commitSubject",
+        "commitAuthorName",
+        "commitAt",
         "issueCount",
         "issueMaxNumber",
         "commitCount",
@@ -1918,6 +1921,18 @@ def _normalized_public_catalog(
     if disk_total is not None:
         record["diskUsedBytes"] = disk_used
         record["diskTotalBytes"] = disk_total
+    # Subject / author / date of the published head commit. Optional extension
+    # fields, kept absent (never empty) exactly as the Worker normalizes them,
+    # so an older publisher's catalog-v2 signature still verifies.
+    commit_subject = _clean_string(source.get("commitSubject", ""), 120)
+    if commit_subject:
+        record["commitSubject"] = commit_subject
+    commit_author_name = _clean_string(source.get("commitAuthorName", ""), 64)
+    if commit_author_name:
+        record["commitAuthorName"] = commit_author_name
+    commit_at = _clean_string(source.get("commitAt", ""), 16)
+    if commit_at:
+        record["commitAt"] = commit_at
     return record
 
 

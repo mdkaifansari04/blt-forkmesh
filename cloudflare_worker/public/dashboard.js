@@ -1514,6 +1514,45 @@
       </article>`).join("");
   }
 
+  // Coarse kinds only — the Worker stores when an account was emailed and
+  // whether the provider accepted it, never the subject or body.
+  const ACCOUNT_EMAIL_KIND_LABELS = {
+    verification: "Email verification",
+    password_reset: "Password reset",
+    feedback: "Founder feedback",
+    notifications: "Notification digest",
+    general_chat: "#general digest",
+  };
+
+  function renderAccountActivity(data) {
+    const account = data?.account || {};
+    const lastSeen = $("[data-account-last-seen]");
+    if (lastSeen) {
+      const seenAt = Number(account.lastSeenAt || 0);
+      lastSeen.textContent = seenAt ? formatTimeAgo(seenAt) : "Never";
+      lastSeen.title = seenAt ? formatDate(seenAt) : "";
+    }
+    const emailedAt = Number(account.lastEmailAt || 0);
+    const lastEmail = $("[data-account-last-email]");
+    if (lastEmail) {
+      lastEmail.textContent = emailedAt ? formatTimeAgo(emailedAt) : "Never emailed";
+      lastEmail.title = emailedAt ? formatDate(emailedAt) : "";
+    }
+    const detail = $("[data-account-last-email-detail]");
+    if (detail) {
+      const status = String(account.lastEmailStatus || "");
+      const kind = ACCOUNT_EMAIL_KIND_LABELS[String(account.lastEmailKind || "")] || "Email";
+      detail.textContent = !emailedAt ? "" : kind + " · " + (
+        status === "delivered" ? "Delivered to the mail provider"
+          : status === "failed" ? "The mail provider rejected it"
+            : "Delivery status unknown");
+      detail.className = "mt-1 text-xs " + (
+        status === "delivered" && emailedAt ? "text-emerald-400"
+          : status === "failed" && emailedAt ? "text-red-400"
+            : "text-muted-foreground");
+    }
+  }
+
   function bindAccountSessionControls() {
     const list = $("[data-account-session-list]");
     if (list && list.dataset.controlsBound !== "true") {
@@ -1542,6 +1581,7 @@
       try {
         const data = await accountSessionApi("GET");
         renderAccountSessions(data);
+        renderAccountActivity(data);
         accountSessionsLoaded = true;
         setAccountSessionStatus(data.privacyNotice || "");
       } catch (error) {
@@ -3825,6 +3865,16 @@
         link.textContent = "@" + data.acct;
         link.href = data.url;
       }
+      // Pops the feed out into its own window so it can sit beside the
+      // dashboard instead of replacing the tab.
+      const popout = card.querySelector("[data-profile-fediverse-popout]");
+      if (popout) {
+        popout.onclick = () => {
+          window.open(
+            data.url, "forkmesh-fediverse-feed",
+            "noopener,width=520,height=860");
+        };
+      }
       const list = card.querySelector("[data-profile-fediverse-posts]");
       if (list) {
         list.textContent = "";
@@ -3853,6 +3903,7 @@
         }
       }
       card.hidden = false;
+      window.lucide?.createIcons();
     });
   }
 

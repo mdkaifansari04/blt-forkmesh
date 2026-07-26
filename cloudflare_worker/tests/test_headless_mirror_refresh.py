@@ -908,7 +908,9 @@ def test_headless_catalog_samples_truthful_repository_statistics(installation):
     stats = refresh_tool._sample_repository_statistics(
         installation["config"]
     )
-    assert stats == {
+    assert {
+        key: value for key, value in stats.items() if key != "commitAt"
+    } == {
         "commitCount": "2",
         "branchCount": "3",
         "issueCount": "2",
@@ -916,7 +918,12 @@ def test_headless_catalog_samples_truthful_repository_statistics(installation):
         "pullCount": "2",
         "discussionCount": "2",
         "artifactCount": "2",
+        # Who made the published head commit and what it says, so the Mirror
+        # nodes view and the World cabinets can name it (adhoc #337).
+        "commitSubject": "add collaboration metadata",
+        "commitAuthorName": "ForkMesh test",
     }
+    assert int(stats["commitAt"]) > 0
     assert "worktreeCount" not in stats
     assert "clonesServed" not in stats
     assert "websiteServed" not in stats
