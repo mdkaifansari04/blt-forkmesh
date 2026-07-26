@@ -688,8 +688,9 @@ function createAvatarChestTabs(THREE) {
       }),
     );
     button.name = `world-chest-tab-${spec.tab}`;
-    // Avatar fronts face -Z, matching the badge just above these tabs.
-    button.position.set(spec.x, 1.7, -0.318);
+    // Avatar fronts face -Z, matching the badge just above these tabs. The
+    // tabs sit flush under the badge so the wallet chip fits beneath them.
+    button.position.set(spec.x, 1.79, -0.318);
     button.rotation.y = Math.PI;
     button.userData.chestTab = spec.tab;
     button.renderOrder = 3;
@@ -2377,6 +2378,23 @@ const ANTENNA_STALK_COLOR = "#1aa856";
 const ANTENNA_BLINK_MIN_HZ = 0.9;
 const ANTENNA_BLINK_MAX_HZ = 5.4;
 
+// Chest activity light: one colour per coarse account-recency bucket from the
+// server ("active within …"). The freshest bucket breathes softly in
+// animateAvatarActivity; every older bucket holds a steady colour, stepping
+// bright green → dim green → green-orange → green-red → orange → red → grey.
+const ACTIVITY_LIGHT_COLORS = Object.freeze({
+  hour: "#3ce97f",
+  "5h": "#2e8054",
+  "24h": "#94b23a",
+  "3d": "#b1892f",
+  "5d": "#e0762c",
+  "10d": "#d63b30",
+  stale: "#767c85",
+});
+const ACTIVITY_LIGHT_BREATH_HZ = 0.33;
+
+const AVATAR_SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
 // The flag-coloured shirt cloth is mapped onto every face of the torso and
 // arm boxes. The upward-facing tops are the ones read from across the square,
 // so those four UVs are turned a half turn to keep the sash running the same
@@ -2677,6 +2695,20 @@ function createAvatar(THREE, identity, options = {}) {
   antenna.visible = identity.inputActive === true;
   group.add(antenna);
 
+  // Account activity light: a small lamp pinned high on the chest whose
+  // colour steps through ACTIVITY_LIGHT_COLORS as the account's coarse
+  // recency bucket ages. syncAvatarActivity keeps it current and it stays
+  // dark on anonymous guests.
+  const activityLight = new THREE.Mesh(
+    new THREE.SphereGeometry(0.055, 14, 12),
+    new THREE.MeshBasicMaterial({ color: ACTIVITY_LIGHT_COLORS.hour }),
+  );
+  activityLight.name = "account-activity-light";
+  // Avatar fronts face -Z; half-sunk into the torso above the badge corner.
+  activityLight.position.set(-0.4, 2.82, -0.31);
+  activityLight.visible = false;
+  group.add(activityLight);
+
   // Each leg is a hip pivot carrying a thigh, and a knee pivot carrying the
   // shin plus that leg's shoe. Standing (every pitch at zero) the two segments
   // stack into the same block the single-box leg used to be, but the joints let
@@ -2724,6 +2756,22 @@ function createAvatar(THREE, identity, options = {}) {
   const chestTabs = createAvatarChestTabs(THREE);
   group.add(chestTabs);
 
+  // Wallet chip: a small QR of the account's published Solana address worn
+  // on the lower chest under the tabs. Hidden until the identity carries an
+  // address; syncAvatarWallet paints the QR, balance, and recency ring.
+  const walletChip = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.28, 0.28),
+    new THREE.MeshBasicMaterial({ transparent: true }),
+  );
+  walletChip.name = "wallet-chip";
+  // Slightly proud of the torso (and any operator belt) so nothing occludes
+  // the QR; avatar fronts face -Z like the badge above it.
+  walletChip.position.set(0, 1.54, -0.345);
+  walletChip.rotation.y = Math.PI;
+  walletChip.renderOrder = 3;
+  walletChip.visible = false;
+  group.add(walletChip);
+
   group.scale.setScalar(scale);
   group.userData = {
     id: identity.id,
@@ -2746,6 +2794,10 @@ function createAvatar(THREE, identity, options = {}) {
     skin,
     antenna,
     antennaBulb,
+    activityLight,
+    activityBucket: "",
+    walletChip,
+    walletKey: "",
     inputEnergy: 0,
     phase: (seed % 100) / 10,
     targetPosition: new THREE.Vector3(),
@@ -2766,6 +2818,8 @@ function createAvatar(THREE, identity, options = {}) {
   };
   syncOperatorBelt(THREE, group, identity.nodes?.length || 0);
   syncAvatarStatus(THREE, group, identity);
+  syncAvatarActivity(group, identity);
+  syncAvatarWallet(THREE, group, identity);
   setShadows(group, true, true);
   return group;
 }
@@ -2808,6 +2862,22 @@ function syncAvatarActivity(avatar, identity) {
   avatar.userData.inputActive = active;
   avatar.userData.accountStatus = identity.accountStatus || "Guest";
   if (avatar.userData.antenna) avatar.userData.antenna.visible = active;
+  const light = avatar.userData.activityLight;
+  if (light) {
+    const bucket = ACTIVITY_LIGHT_COLORS[identity.activityBucket]
+      ? String(identity.activityBucket)
+      : "";
+    avatar.userData.activityBucket = bucket;
+    // The light reads account recency, so it stays dark on anonymous guests.
+    light.visible =
+      Boolean(bucket) && avatar.userData.accountStatus !== "Guest";
+    if (light.visible) {
+      // The "hour" breath overrides colour and scale every frame; older
+      // buckets hold their steady step here.
+      light.material.color.set(ACTIVITY_LIGHT_COLORS[bucket]);
+      light.scale.setScalar(1);
+    }
+  }
 }
 
 function renderAvatarBadge(THREE, avatar, remote = false) {
@@ -2844,6 +2914,7 @@ function updateAvatarBadge(THREE, avatar, identity, remote = false) {
     applyAvatarFaceImage(THREE, avatar, "");
   }
   syncAvatarActivity(avatar, identity);
+  syncAvatarWallet(THREE, avatar, identity);
   syncAvatarStatus(THREE, avatar, identity);
 }
 
@@ -2861,6 +2932,23 @@ function animateAvatarActivity(avatar, time, delta, reducedMotion) {
     const cycle = (time * 0.001 * hz + avatar.userData.phase) % 1;
     const lit = reducedMotion || cycle < 0.5;
     bulb.material.color.set(lit ? ANTENNA_LIT_COLOR : ANTENNA_DARK_COLOR);
+  }
+  const light = avatar.userData.activityLight;
+  if (light?.visible && avatar.userData.activityBucket === "hour") {
+    // Accounts active within the hour breathe: a slow sine swell rather than
+    // the antenna's hard blink, easing between dimmed and full green.
+    const breath = reducedMotion
+      ? 1
+      : 0.5 +
+        0.5 *
+          Math.sin(
+            time * 0.001 * ACTIVITY_LIGHT_BREATH_HZ * Math.PI * 2 +
+              avatar.userData.phase,
+          );
+    light.material.color
+      .set(ACTIVITY_LIGHT_COLORS.hour)
+      .multiplyScalar(0.55 + 0.45 * breath);
+    light.scale.setScalar(0.92 + 0.16 * breath);
   }
   const inactiveFor = avatar.userData.inactiveSince
     ? Math.max(0, time - avatar.userData.inactiveSince)
@@ -3730,6 +3818,69 @@ function drawQrModules(context, text, x, y, size) {
     }
   }
   return true;
+}
+
+// The chest wallet chip: the account's published Solana address as a QR,
+// ringed with the transaction-recency colour and captioned with the public
+// balance the app layer fetched.
+function walletChipTexture(THREE, wallet) {
+  const ring =
+    ACTIVITY_LIGHT_COLORS[wallet.txBucket] || ACTIVITY_LIGHT_COLORS.stale;
+  return canvasTexture(THREE, 256, 256, (context) => {
+    context.clearRect(0, 0, 256, 256);
+    roundedRect(context, 6, 6, 244, 244, 24);
+    context.fillStyle = "rgba(7, 18, 14, 0.94)";
+    context.fill();
+    // The ring wears the same colour ladder as the chest activity light,
+    // keyed to how recently the wallet last saw a transaction.
+    roundedRect(context, 40, 12, 176, 176, 14);
+    context.strokeStyle = ring;
+    context.lineWidth = 10;
+    context.stroke();
+    const drawn = drawQrModules(context, wallet.address, 53, 25, 150);
+    if (!drawn) {
+      context.fillStyle = "rgba(158, 247, 198, 0.14)";
+      context.fillRect(53, 25, 150, 150);
+    }
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = '700 30px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#f7c96b";
+    const sol = Number(wallet.sol);
+    context.fillText(
+      Number.isFinite(sol)
+        ? `◎ ${sol.toLocaleString("en-US", { maximumFractionDigits: 4 })}`
+        : "◎ …",
+      128,
+      222,
+    );
+  });
+}
+
+function syncAvatarWallet(THREE, avatar, identity) {
+  const chip = avatar?.userData?.walletChip;
+  if (!chip?.material) return;
+  const address = AVATAR_SOLANA_ADDRESS_RE.test(String(identity?.solana || ""))
+    ? String(identity.solana)
+    : "";
+  const wallet = {
+    address,
+    sol: Number.isFinite(Number(identity?.walletSol))
+      ? Number(identity.walletSol)
+      : null,
+    txBucket: ACTIVITY_LIGHT_COLORS[identity?.walletTxBucket]
+      ? String(identity.walletTxBucket)
+      : "",
+  };
+  const key = `${wallet.address} ${wallet.sol} ${wallet.txBucket}`;
+  if (avatar.userData.walletKey === key) return;
+  avatar.userData.walletKey = key;
+  chip.visible = Boolean(wallet.address);
+  if (!wallet.address) return;
+  const old = chip.material.map;
+  chip.material.map = walletChipTexture(THREE, wallet);
+  chip.material.needsUpdate = true;
+  old?.dispose?.();
 }
 
 function rewardTreasuryState(state = {}) {
@@ -10108,6 +10259,10 @@ export function createWorldScene({
         outfitColor: remote.outfitColor || "",
         outfitStyle: remote.outfitStyle || "",
         faceImage: remote.faceImage === true,
+        activityBucket: remote.activityBucket || "",
+        solana: remote.solana || "",
+        walletSol: remote.walletSol ?? null,
+        walletTxBucket: remote.walletTxBucket || "",
       };
       const badgeKey = JSON.stringify(badgeIdentity);
       if (!avatar) {
@@ -10415,6 +10570,9 @@ export function createWorldScene({
                 : [],
               statusEmoji: "",
               statusNote: "",
+              // The directory's coarse recency bucket drives the bench
+              // figure's chest activity light.
+              activityBucket: member.activityBucket || "",
             },
             { remote: true, scale: 0.88 },
           );
@@ -10424,6 +10582,13 @@ export function createWorldScene({
           // same way a live peer's do.
           registerAvatarChestControls(figure, id);
         }
+        // The 30s directory refresh can age a seated member's recency bucket
+        // without recreating the figure, so re-sync the chest light in place.
+        syncAvatarActivity(figure, {
+          inputActive: false,
+          accountStatus: "Registered",
+          activityBucket: member.activityBucket || "",
+        });
         const seat = seats[index % Math.max(1, seats.length)];
         figure.position.copy(campfire.position);
         if (seat) figure.position.add(seat);

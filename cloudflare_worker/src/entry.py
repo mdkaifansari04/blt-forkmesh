@@ -3857,6 +3857,54 @@ def _world_inactive_public_id(account_bi):
     ).hexdigest()[:20]
 
 
+# Coarse recency ladder for the avatar chest activity light and the wallet
+# QR's transaction ring. Each label reads "within this window"; anything past
+# ten days is "stale". These are buckets, never timestamps: the finest public
+# step is a whole hour, far coarser than a last-seen instant.
+WORLD_ACTIVITY_LIGHT_BUCKETS = (
+    (60 * 60 * 1000, "hour"),
+    (5 * 60 * 60 * 1000, "5h"),
+    (24 * 60 * 60 * 1000, "24h"),
+    (3 * 24 * 60 * 60 * 1000, "3d"),
+    (5 * 24 * 60 * 60 * 1000, "5d"),
+    (10 * 24 * 60 * 60 * 1000, "10d"),
+)
+
+
+def _world_activity_light_bucket(age_ms):
+    try:
+        age = max(0, int(age_ms))
+    except (TypeError, ValueError):
+        return "stale"
+    for limit, bucket in WORLD_ACTIVITY_LIGHT_BUCKETS:
+        if age < limit:
+            return bucket
+    return "stale"
+
+
+async def _world_user_activity_buckets(env):
+    """Map account_bi -> coarse chest-light recency bucket, all accounts.
+
+    Kept as its own query, well apart from the public user-directory payload
+    builder, so that function never sees (or could leak) a raw touch
+    timestamp -- only the bucket label crosses that boundary.
+    """
+    now = int(Date.now())
+    rows = await d1_all(
+        env, "SELECT account_bi,last_touch_at FROM world_user_activity")
+    buckets = {}
+    for row in rows or []:
+        try:
+            touch = int(row.get("last_touch_at") or 0)
+        except (TypeError, ValueError):
+            touch = 0
+        if touch <= 0:
+            continue
+        buckets[row.get("account_bi")] = _world_activity_light_bucket(
+            now - touch)
+    return buckets
+
+
 def _world_inactive_recency(updated_at, now):
     try:
         age = max(0, int(now) - int(updated_at or 0))
@@ -3898,6 +3946,10 @@ async def world_inactive_handler(env, request):
             claim = world_protocol.trusted_presence_claim(
                 rec.get("name", ""), rec.get("accountStatus", "Guest"),
                 rec.get("nodeCount", 0))
+            try:
+                inactive_age = now - int(row.get("updated_at") or 0)
+            except (TypeError, ValueError):
+                inactive_age = None
             people.append({
                 "id": _world_inactive_public_id(row.get("account_bi")),
                 "name": claim["name"] or "Private contributor",
@@ -3906,6 +3958,8 @@ async def world_inactive_handler(env, request):
                 "availability": status,
                 "lastActive": _world_inactive_recency(
                     row.get("updated_at"), now),
+                # Drives the seating card's chest activity light.
+                "activityBucket": _world_activity_light_bucket(inactive_age),
             })
         return json_response(
             {
@@ -3981,6 +4035,59 @@ async def world_inactive_handler(env, request):
         },
         cache_control="no-store, max-age=0, must-revalidate",
     )
+
+
+# Seconds one address's wallet chip (balance + tx-recency bucket) is held in
+# the colo edge cache. The chip is decorative, so staleness is cheap and the
+# cache bounds the RPC cost to one pair of public reads per address per TTL
+# per colo no matter how many avatars wear the same wallet.
+WORLD_WALLET_BADGE_TTL = 600
+WORLD_WALLET_CACHE_PREFIX = "https://forkmesh.internal/api/world/wallet?address="
+
+
+async def world_wallet_badge_handler(env, request):
+    """Public data for an avatar's chest wallet QR chip.
+
+    Read-only on-chain lookups for an address the account holder already chose
+    to publish: the SOL balance plus the same coarse recency bucket the chest
+    activity light uses, keyed to the wallet's newest transaction.
+    """
+    if method_name(request) != "GET":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    params = parse_qs(urlparse(request.url).query)
+    address = str(params.get("address", [""])[0] or "").strip()
+    if not SOLANA_RE.match(address):
+        return json_response({"error": "bad_address"}, status=400)
+    cache_key = WORLD_WALLET_CACHE_PREFIX + address
+    cached = await edge_cache_match(cache_key)
+    if cached is not None:
+        return cached
+    lamports = await _solana_balance_lamports(env, address)
+    tx_bucket = ""
+    signatures = await _solana_rpc(
+        env, "getSignaturesForAddress", [address, {"limit": 1}])
+    result = signatures.get("result") if isinstance(signatures, dict) else None
+    if isinstance(result, list):
+        tx_bucket = "stale"
+        newest = result[0] if result else None
+        block_time = newest.get("blockTime") if isinstance(newest, dict) else None
+        try:
+            tx_bucket = _world_activity_light_bucket(
+                int(Date.now()) - int(block_time) * 1000)
+        except (TypeError, ValueError):
+            tx_bucket = "stale"
+    resp = json_response({
+        "ok": True,
+        "address": address,
+        "lamports": lamports,
+        "sol": (lamports / LAMPORTS_PER_SOL) if lamports is not None else None,
+        "txBucket": tx_bucket,
+    }, cache_seconds=WORLD_WALLET_BADGE_TTL)
+    # Only a successful read is worth pinning for the whole TTL; a dead RPC
+    # window should retry on the next request instead of caching the outage.
+    if lamports is not None or tx_bucket:
+        await edge_cache_put(cache_key, resp)
+    return resp
 
 
 # --- Town Square approximate unique visitor counter -------------------------
@@ -10374,7 +10481,7 @@ def _account_world_client_fields(rec):
     )
 
 
-def _account_chat_user_payload(rec, total_active_ms=0):
+def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
     name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
     return {
         "name": name,
@@ -10388,6 +10495,10 @@ def _account_chat_user_payload(rec, total_active_ms=0):
         # directory deliberately exposes neither a last-seen timestamp nor the
         # current activity interval used by an authenticated World tab.
         "totalActiveMs": _world_public_total_active_ms(total_active_ms),
+        # The bench figure's chest activity light: a seven-step recency
+        # bucket the caller already derived from the raw touch timestamp, so
+        # this function never sees (or could leak) that timestamp itself.
+        "activityBucket": activity_bucket,
         **_account_world_client_fields(rec),
     }
 
@@ -10412,11 +10523,14 @@ async def _account_users_directory(env, request):
     seen = set()
     rows = await d1_all(
         env,
-        "SELECT u.data,a.total_active_ms FROM users u "
+        "SELECT u.data,u.user_bi,a.total_active_ms FROM users u "
         "LEFT JOIN world_user_activity a ON a.account_bi=u.user_bi "
         "ORDER BY u.username COLLATE NOCASE LIMIT ?",
         1000,
     )
+    # A bucket label only, joined in from its own query so this function
+    # body never handles the raw touch timestamp behind it.
+    activity_buckets = await _world_user_activity_buckets(env)
     for row in rows or []:
         rec = await decrypt_row(env, row.get("data", ""))
         if (not rec or _account_kind(rec) != "user"
@@ -10428,7 +10542,8 @@ async def _account_users_directory(env, request):
             continue
         seen.add(name)
         out.append(_account_chat_user_payload(
-            rec, row.get("total_active_ms", 0)))
+            rec, row.get("total_active_ms", 0),
+            activity_buckets.get(row.get("user_bi"), "")))
 
     # The campfire seats members in this same array order, one bench per
     # account for the session — so this is sorted by join date (oldest
@@ -32503,6 +32618,9 @@ class Default(WorkerEntrypoint):
 
         if url.path in ("/api/world/inactive", "/api/world/inactive/"):
             return await world_inactive_handler(self.env, request)
+
+        if url.path in ("/api/world/wallet", "/api/world/wallet/"):
+            return await world_wallet_badge_handler(self.env, request)
 
         if url.path in ("/api/world/visitors", "/api/world/visitors/"):
             return await world_visitors_handler(self.env, request)

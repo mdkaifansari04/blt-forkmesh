@@ -127,7 +127,7 @@ WORLD_PUBLIC_FIELDS = (
     "firstSeenMinutes", "joinedAt",
     "accountStatus", "nodeCount", "space",
     "publicDoor", "statusEmoji", "statusNote", "outfitColor",
-    "outfitStyle", "faceImage",
+    "outfitStyle", "faceImage", "solana",
     "x", "y", "z", "yaw", "moving", "updatedAt",
 )
 
@@ -135,6 +135,7 @@ _COUNTRY_RE = re.compile(r"^[A-Z]{2}$")
 _LOCAL_TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 _PEER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 _P256_COORDINATE_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
+_SOLANA_ADDRESS_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 
 
 def approximate_country_code(value):
@@ -452,6 +453,9 @@ def default_presence(peer_id, now):
         "outfitColor": "",
         "outfitStyle": "",
         "faceImage": False,
+        # The chest wallet-QR address. A self-claim like the display name,
+        # but only a ticket-authenticated account may wear one.
+        "solana": "",
         "x": 0.0,
         "y": 0.0,
         "z": 0.0,
@@ -724,6 +728,17 @@ def sanitize_message(payload, current, now, country_source="",
             state["faceImage"] = (
                 payload.get("faceImage") is True
                 and state.get("accountStatus") == "Supporting member")
+        # The chest wallet QR shows an address its owner already chose to
+        # publish on their account. It is validated as base58 and gated to
+        # authenticated accounts so an anonymous socket cannot dress itself
+        # in an arbitrary wallet.
+        if "solana" in payload:
+            raw_solana = str(payload.get("solana") or "")
+            state["solana"] = (
+                raw_solana
+                if state.get("accountStatus") != "Guest"
+                and _SOLANA_ADDRESS_RE.fullmatch(raw_solana)
+                else "")
         if "space" in payload:
             state["space"] = _choice(
                 payload.get("space"), WORLD_SPACE_VALUES, "town-square")

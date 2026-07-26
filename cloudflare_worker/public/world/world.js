@@ -526,6 +526,11 @@ function accountIdentity(session) {
     // Filled in from the server-signed world ticket; guests never have one.
     joinedAt: 0,
     activityCategory: "exploring-town-square",
+    // The published payout address worn as the chest wallet QR; balance and
+    // transaction recency are filled in by applyWalletBadges.
+    solana: sessionSolanaAddress(session),
+    walletSol: null,
+    walletTxBucket: "",
   };
 }
 
@@ -715,6 +720,16 @@ function publicIdentity(identity, settings) {
     faceImage:
       identity.accountStatus === "Supporting member" &&
       settings.faceImage === true,
+    // The wallet chip is public by construction: an address its owner saved
+    // to publish, plus on-chain balance/recency the app fetched for it.
+    solana: WORLD_SOLANA_ADDRESS_RE.test(String(identity.solana || ""))
+      ? String(identity.solana)
+      : "",
+    walletSol: identity.walletSol ?? null,
+    walletTxBucket: activityLightBucket(identity.walletTxBucket),
+    // A visitor at this keyboard is by definition active within the hour;
+    // the light itself stays dark until the account is authenticated.
+    activityBucket: "hour",
   };
 }
 
@@ -771,6 +786,37 @@ function presenceActivity(settings, automatic = "exploring-town-square") {
   return ACTIVITY_OPTIONS.some((option) => option.id === chosen)
     ? chosen
     : "exploring-town-square";
+}
+
+// The server's coarse "active within …" recency ladder for the avatar chest
+// light and the wallet QR's transaction ring; "stale" is past ten days.
+const ACTIVITY_LIGHT_BUCKET_VALUES = new Set([
+  "hour",
+  "5h",
+  "24h",
+  "3d",
+  "5d",
+  "10d",
+  "stale",
+]);
+
+function activityLightBucket(value) {
+  return ACTIVITY_LIGHT_BUCKET_VALUES.has(String(value || ""))
+    ? String(value)
+    : "";
+}
+
+const WORLD_SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+// The chip is decorative and the worker edge-caches per address, so one
+// balance refresh every ten minutes per address is plenty.
+const WALLET_BADGE_TTL_MS = 10 * 60 * 1000;
+
+// The chest wallet QR wears the Solana payout address the account holder
+// saved on their profile to publish; anything else stays off the avatar.
+function sessionSolanaAddress(session) {
+  const address = String(session?.solana || "").trim();
+  return WORLD_SOLANA_ADDRESS_RE.test(address) ? address : "";
 }
 
 function boundedPresenceNumber(value) {
@@ -882,6 +928,11 @@ function remotePlayer(peer) {
     statusNote: publicStatus.note,
     moderationHandles,
     updatedAt: Math.max(0, Number(peer.updatedAt) || 0),
+    solana: WORLD_SOLANA_ADDRESS_RE.test(String(peer.solana || ""))
+      ? String(peer.solana)
+      : "",
+    // A live presence frame is by definition activity within the hour.
+    activityBucket: "hour",
   };
 }
 
@@ -1373,6 +1424,8 @@ function normalizeMemberDirectory(value) {
       browser: presenceLabel(user?.browser, "Hidden", "Hidden"),
       os: presenceLabel(user?.os, "Hidden", "Hidden"),
       status: sanitizePresenceText(user?.status, "", 80),
+      // Coarse recency bucket for the bench figure's chest activity light.
+      activityBucket: activityLightBucket(user?.activityBucket),
     }))
     .filter((user) => user.name);
 }
@@ -3561,6 +3614,8 @@ class ForkMeshWorld extends HTMLElement {
     this.remotePlayers = new Map();
     this.localPeers = new Map();
     this.inactivePlayers = [];
+    // address → {sol, txBucket, fetchedAt, pending} for the chest wallet QR.
+    this.walletBadges = new Map();
     this.memberDirectory = [];
     this.memberDirectoryFetchedAt = 0;
     this.worldClientProfileKey = "";
@@ -4743,6 +4798,7 @@ class ForkMeshWorld extends HTMLElement {
             activity: "idle",
             availability: String(person.availability || "inactive"),
             lastActive: String(person.lastActive || "Last active recently"),
+            activityBucket: activityLightBucket(person.activityBucket),
             publicDoor: "closed",
             space: "town-square",
             x: 0,
@@ -4757,6 +4813,8 @@ class ForkMeshWorld extends HTMLElement {
         ? normalizeMemberDirectory(membersResult.value)
         : [];
     this.memberDirectoryFetchedAt = Date.now();
+    // Refresh the local avatar's wallet chip alongside the world data poll.
+    this.applyWalletBadges();
     this.visitorStats =
       visitorsResult.status === "fulfilled" &&
       visitorsResult.value?.ok === true
@@ -16564,6 +16622,11 @@ class ForkMeshWorld extends HTMLElement {
         faceImage:
           this.identity.accountStatus === "Supporting member" &&
           this.settings.faceImage === true,
+        solana: WORLD_SOLANA_ADDRESS_RE.test(
+          String(this.identity.solana || ""),
+        )
+          ? String(this.identity.solana)
+          : "",
       };
     } else if (message.type === "move") {
       safe = {
@@ -16848,10 +16911,67 @@ class ForkMeshWorld extends HTMLElement {
         });
       });
     }
-    this.world?.setRemotePlayers([...combined.values()]);
-    this.syncWorldFaceImages([...combined.values()]);
+    const players = [...combined.values()].map((player) => {
+      if (!player?.solana) return player;
+      const wallet = this.walletBadgeFor(player.solana);
+      return {
+        ...player,
+        walletSol: wallet?.sol ?? null,
+        walletTxBucket: wallet?.txBucket || "",
+      };
+    });
+    this.world?.setRemotePlayers(players);
+    this.syncWorldFaceImages(players);
     this.syncMemberLounge();
     this.updateSystemCapacityMetrics();
+  }
+
+  // Public balance and transaction-recency bucket for one published wallet
+  // address, refreshed from the edge-cached worker endpoint at most once per
+  // TTL. Returns the cached entry immediately (possibly still pending).
+  walletBadgeFor(address) {
+    if (!WORLD_SOLANA_ADDRESS_RE.test(String(address || ""))) return null;
+    let entry = this.walletBadges.get(address);
+    const fresh = entry && Date.now() - entry.fetchedAt < WALLET_BADGE_TTL_MS;
+    if (!fresh && !entry?.pending) {
+      if (!entry) {
+        entry = { sol: null, txBucket: "", fetchedAt: 0, pending: false };
+        this.walletBadges.set(address, entry);
+      }
+      entry.pending = true;
+      this.fetchJSON(
+        `/api/world/wallet?address=${encodeURIComponent(address)}`,
+        { auth: false, timeout: 5000 },
+      )
+        .then((body) => {
+          entry.sol = Number.isFinite(Number(body?.sol))
+            ? Number(body.sol)
+            : null;
+          entry.txBucket = activityLightBucket(body?.txBucket);
+        })
+        .catch(() => {})
+        .finally(() => {
+          entry.pending = false;
+          entry.fetchedAt = Date.now();
+          this.applyWalletBadges();
+        });
+    }
+    return entry;
+  }
+
+  // Pushes the freshest wallet data onto the local avatar and every rendered
+  // peer; called whenever a wallet lookup settles.
+  applyWalletBadges() {
+    if (this.destroyed) return;
+    if (this.identity?.solana && this.settings) {
+      const wallet = this.walletBadgeFor(this.identity.solana);
+      this.identity.walletSol = wallet?.sol ?? null;
+      this.identity.walletTxBucket = wallet?.txBucket || "";
+      this.world?.updateIdentity(
+        publicIdentity(this.identity, this.settings),
+      );
+    }
+    this.renderPeers();
   }
 
   // The viewer's shareable referral link — only real user accounts (never
