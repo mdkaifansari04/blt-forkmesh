@@ -2021,6 +2021,11 @@ private:
     void approveSelectedRun();
     void rejectSelectedRun();
     ActionRun *findRun(int runId);
+    // Whether a queued run's `needs:` workflows have already succeeded for the
+    // same commit. Waiting runs stay queued; blocked ones are skipped.
+    ActionNeeds::State actionRunNeedsState(int runId, QString *detail);
+    // Log "waiting for X" once per queued run, not on every queue sweep.
+    void noteActionRunWaiting(int runId, const QString &detail);
     int repoIndexFor(const QString &owner, const QString &name) const;
     // Settings: global variables/secrets editor.
     void reloadVariablesTable();
@@ -4757,6 +4762,7 @@ private:
     QFileSystemWatcher *m_actionSpoolWatcher = nullptr;
     QList<ActionRun> m_actionRuns;   // loaded history, newest first
     QList<int> m_actionQueue;        // run ids queued for execution
+    QSet<int> m_actionWaitingRuns;   // queued ids already logged as `needs:`-blocked
     // The encrypted mirror materialization a run is executing out of (see
     // pinActionMirror). Held until the run finishes so a concurrent re-seal
     // cannot delete the served mirror mid-build.
