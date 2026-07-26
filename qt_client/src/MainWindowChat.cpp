@@ -11119,6 +11119,7 @@ void MainWindow::createVultrMirrorFromForm()
     m_vultrProvisionActive = true;
     m_vultrPollCount = 0;
     m_vultrInstallAttempts = 0;
+    m_vultrInstallUseLocalBinary = false;
     m_vultrInstallAttemptLog.clear();
     m_vultrDnsHostname.clear();
     m_hostInstallAttemptBanner.clear();
@@ -11407,8 +11408,8 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
     // reports it active, so an early attempt failing is expected, not a
     // real failure — only the last attempt should report "Install failed".
     const bool isFinalAttempt = m_vultrInstallAttempts >= kMaxInstallAttempts;
-    runHostInstall(false, [this, node, ip, identityFile,
-                           attemptLabel](bool ok) {
+    runHostInstall(m_vultrInstallUseLocalBinary, [this, node, ip, identityFile,
+                           attemptLabel, isFinalAttempt](bool ok) {
         if (!m_vultrProvisionActive)
             return;
         m_vultrInstallAttemptLog.append(
@@ -11442,6 +11443,27 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
                 "the network that owns that range); it is saved under Hosts "
                 "\xE2\x80\x94 fix the address there and click Update.")
                 .arg(ip, unroutable));
+            return;
+        }
+        // A brand-new instance has nobody mirroring it yet, so a relay
+        // download/clone (the default path) can never succeed no matter how
+        // many times it is retried the same way. Switch this and every later
+        // attempt this run to uploading this app's own release binary
+        // directly over the SSH session instead — that needs no online
+        // mirror at all — and retry right away rather than waiting out the
+        // "host not reachable yet" backoff below, since SSH clearly worked.
+        if (!m_vultrInstallUseLocalBinary && !isFinalAttempt &&
+            m_hostInstallRawTail.contains(
+                QStringLiteral("No online ForkMesh node"))) {
+            m_vultrInstallUseLocalBinary = true;
+            if (m_vultrStatus)
+                m_vultrStatus->setText(QString::fromUtf8(
+                    "No online mirror to install from yet \xE2\x80\x94 "
+                    "retrying with this app's own release uploaded "
+                    "directly\xE2\x80\xA6"));
+            QTimer::singleShot(2000, this, [this, node, ip, identityFile] {
+                startVultrHostInstall(node, ip, identityFile);
+            });
             return;
         }
         if (m_vultrInstallAttempts >= kMaxInstallAttempts) {
