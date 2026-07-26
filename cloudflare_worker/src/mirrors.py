@@ -134,7 +134,7 @@ def repo_clone_online(rec, served_groups):
 
 def build_repo_mirrors_payload(
     owner, repo, rows, presence, first_hosted, now, stale_ms, sync_tolerance_ms,
-    history=None, linked_canonical=False,
+    history=None, linked_canonical=False, reachable_nodes=None,
 ):
     def clone_target(rec):
         raw = str((rec or {}).get("cloneUrl") or "").strip()
@@ -305,6 +305,10 @@ def build_repo_mirrors_payload(
     mirrors = []
     for row in members:
         rec = row["data"]
+        node_name = (
+            str(rec.get("machineName") or "").strip()
+            or str(rec.get("owner") or "").strip()
+        )
         key = row.get("key_bi")
         seen = _mirror_ms((presence or {}).get(key))
         hosted = _mirror_ms(rec.get("hostedSince")) or _mirror_ms((first_hosted or {}).get(key))
@@ -327,6 +331,8 @@ def build_repo_mirrors_payload(
         )
         online = bool(
             effective_seen and now - effective_seen <= effective_stale_ms)
+        if reachable_nodes is not None:
+            online = online and node_name.lower() in reachable_nodes
         try:
             size_bytes = max(0, int(rec.get("sizeBytes") or 0))
         except (TypeError, ValueError):
@@ -415,10 +421,7 @@ def build_repo_mirrors_payload(
             activity = "awaiting-verification"
         else:
             activity = "serving"
-        node_name = (
-            str(rec.get("machineName") or "").strip()
-            or str(rec.get("owner") or "").strip()
-        )
+        serving = online and integrity == "ok"
         mirrors.append({
             # A node is a machine, not the user/account that owns its catalog
             # row. Older publishers did not advertise machineName, so retain
@@ -430,13 +433,13 @@ def build_repo_mirrors_payload(
             # the owning account); display-only, never an identity key.
             "machineName": str(rec.get("machineName") or "").strip(),
             "repo": str(rec.get("name") or "").strip(),
-            "status": "online" if online else "offline",
+            "status": "online" if serving else "offline",
             "lastSeen": effective_seen if online else None,
             "hostedSince": hosted,
             "syncAgeMs": max(0, now - last_sync) if last_sync else None,
             "lastSync": last_sync,
             "behind": behind,
-            "cloneAvailable": online,
+            "cloneAvailable": serving,
             "sizeBytes": size_bytes,
             "source": str(rec.get("source") or "").strip(),
             # Node facts the publishing node mirrored into its catalog record, so the

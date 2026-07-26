@@ -589,7 +589,7 @@
         </div>`;
       }).join("");
     } catch (_) {
-      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Commit history is unavailable until a live desktop host serves this repository.</div>';
+      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Commit history is unavailable until a reachable mirror host serves this repository.</div>';
     } finally {
       window.lucide?.createIcons();
     }
@@ -655,7 +655,7 @@
       state.repoCommitDetail = { repo, data };
       container.innerHTML = renderRepoCommitDetail(repo, data);
     } catch (_) {
-      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Commit detail is unavailable until a live desktop host serves this commit.</div>';
+      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Commit detail is unavailable until a reachable mirror host serves this commit.</div>';
     } finally {
       window.lucide?.createIcons();
     }
@@ -904,7 +904,7 @@
         const availability = $("[data-repo-availability-status]");
         if (availability) {
           availability.textContent = repo.liveHost
-            ? "host online"
+            ? "mirror online"
             : "served by mirror";
           availability.classList.remove("text-muted-foreground");
           availability.classList.add("text-primary");
@@ -1103,7 +1103,7 @@
       releases.sort((a, b) => (Number(b.created_at) || 0) - (Number(a.created_at) || 0));
       container.innerHTML = releases.map((release) => renderRepoRelease(repo, release, downloads)).join("");
     } catch (_) {
-      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Releases are unavailable until a live desktop host serves the .forkmesh/releases/ folder.</div>';
+      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Releases are unavailable until a reachable mirror host serves the .forkmesh/releases/ folder.</div>';
     } finally {
       window.lucide?.createIcons();
     }

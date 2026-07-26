@@ -904,10 +904,14 @@ async def edge_cache_delete(cache_key):
 # this TTL is only a backstop that lets a colo re-fetch if a state-hash update is
 # ever missed. See git_advert_cache_key and Default._clone_advert_cache_key.
 GIT_ADVERT_CACHE_TTL = 300
-REPOSITORY_METADATA_CACHE_TTL = 300
+# Repository pages are an operational view, so do not let a healthy node's
+# prior branch head mask a just-synchronized commit for five minutes. The
+# attested-state cache key remains the primary invalidation mechanism; this
+# short backstop bounds freshness even if a catalog pin update is delayed.
+REPOSITORY_METADATA_CACHE_TTL = 30
 REPOSITORY_METADATA_CACHE_MAX_BYTES = 8 * 1024 * 1024
 REPOSITORY_METADATA_CACHE_PREFIX = (
-    "https://forkmesh.internal/repository-metadata/v1/"
+    "https://forkmesh.internal/repository-metadata/v2/"
 )
 
 
@@ -1784,6 +1788,7 @@ STATUS_SYSTEMS = [
     ("api", "API"),
     ("database", "Database"),
     ("flagship_repository", "forkmesh/forkmesh repository page"),
+    ("installer", "Installer delivery"),
     ("git_hosting", "Git hosting network"),
     ("realtime", "Realtime sync (chat & tunnels)"),
     ("durable_objects", "Durable Objects (free-tier duration limit)"),
@@ -1813,6 +1818,13 @@ STATUS_SYSTEM_CHECKS = {
         "loads the root repository tree and README.md blob through the same "
         "public API used by the page. Passes only when the page shell renders, "
         "the root tree contains README.md, and the README body is readable."),
+    "installer": (
+        "Every 10 minutes, loads install.sh, asks the live install-source "
+        "selector for a reachable mirror, reads the signed release manifest, "
+        "checksum list and detached signature through that mirror, and confirms "
+        "the Linux x86_64 release blob is reachable by its SHA-256 URL. "
+        "Cloudflare cannot execute Bash, so this verifies the complete hosted "
+        "delivery chain rather than claiming the Worker ran the installer."),
     "git_hosting": (
         "Checks for at least one account-bound direct HTTPS endpoint with a "
         "signed, integrity-matching ForkMesh repository proof observed within "
@@ -1840,6 +1852,8 @@ STATUS_MINUTES_SHOWN = 60  # width of the per-minute strip on /status
 STATUS_MINUTE_RETAIN_MS = 90 * 60 * 1000
 FLAGSHIP_REPOSITORY_URL = "https://forkmesh.com/forkmesh/forkmesh"
 FLAGSHIP_MONITOR_ID = "forkmesh/forkmesh"
+INSTALLER_MONITOR_ID = "installer-delivery"
+INSTALLER_CHECK_INTERVAL_MS = 10 * 60 * 1000
 
 
 def _flagship_monitor_duration(milliseconds):
@@ -1857,6 +1871,27 @@ def _flagship_monitor_duration(milliseconds):
         (" %d minute%s" % (
             remainder, "" if remainder == 1 else "s")) if remainder else "",
     )
+
+
+async def _routed_repository_read(
+        env, url, operation, release_sha="", bypass_cache=False):
+    request = JsRequest.new(url)
+    route_url = urlparse(request.url)
+    aliased = await org_alias_rewrite(env, request, route_url)
+    if aliased is not None:
+        request, route_url = aliased
+    route = (
+        RELEASE_BLOB_RE.match(route_url.path)
+        if operation == "release-blob"
+        else REPO_HOST_RE.match(route_url.path)
+    )
+    if not route:
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+    return await _https_mirror_proxy(
+        env, request, safe_segment(route.group(1)),
+        safe_segment(route.group(2)), operation,
+        release_sha=release_sha, bypass_cache=bypass_cache)
 
 
 async def _flagship_repository_probe(env):
@@ -1877,20 +1912,6 @@ async def _flagship_repository_probe(env):
             else (status, "")
         )
 
-    async def routed_repository_read(url, operation):
-        request = JsRequest.new(url)
-        route_url = urlparse(request.url)
-        aliased = await org_alias_rewrite(env, request, route_url)
-        if aliased is not None:
-            request, route_url = aliased
-        route = REPO_HOST_RE.match(route_url.path)
-        if not route:
-            return json_response(
-                {"error": "not_found"}, status=404, cache_control="no-store")
-        return await _https_mirror_proxy(
-            env, request, safe_segment(route.group(1)),
-            safe_segment(route.group(2)), operation)
-
     # Scheduled Workers cannot hairpin through their own public hostname
     # reliably (Cloudflare returns a synthetic 404/52x before the request
     # reaches the Worker). Read the same static shell from the bound asset
@@ -1904,9 +1925,10 @@ async def _flagship_repository_probe(env):
     if shell_status != 200 or 'data-page="repo"' not in shell_text:
         return False, "Repository page shell did not load (HTTP %d)" % shell_status
 
-    tree_response = await routed_repository_read(
+    tree_response = await _routed_repository_read(
+        env,
         "https://forkmesh.internal/api/repo/forkmesh/forkmesh/tree?path=",
-        "tree")
+        "tree", bypass_cache=True)
     tree_status, tree_text = await bounded_response(
         tree_response, 2 * 1024 * 1024)
     try:
@@ -1932,10 +1954,11 @@ async def _flagship_repository_probe(env):
             "Root repository tree did not contain README.md"
             + (": " + names if names else ""))
 
-    blob_response = await routed_repository_read(
+    blob_response = await _routed_repository_read(
+        env,
         "https://forkmesh.internal/api/repo/forkmesh/forkmesh/"
         "blob?path=README.md",
-        "blob")
+        "blob", bypass_cache=True)
     blob_status, blob_text = await bounded_response(
         blob_response, 512 * 1024)
     try:
@@ -1950,6 +1973,129 @@ async def _flagship_repository_probe(env):
     ):
         return False, "README.md body did not load"
     return True, ""
+
+
+async def _installer_delivery_probe(env):
+    """Verify every hosted input used by curl install.sh | bash."""
+
+    async def response_text(response, maximum):
+        status = int(getattr(response, "status", 0) or 0)
+        text = str(await response.text())
+        if len(text.encode("utf-8")) > maximum:
+            return status, ""
+        return status, text
+
+    shell = await env.ASSETS.fetch(JsRequest.new(
+        "https://forkmesh.internal/install.sh"))
+    shell_status, shell_text = await response_text(shell, 512 * 1024)
+    if (
+        shell_status != 200
+        or not shell_text.startswith("#!/usr/bin/env bash")
+        or "INSTALLER_VERSION=" not in shell_text
+        or "/api/install-source" not in shell_text
+    ):
+        return False, "install.sh did not load as a valid ForkMesh installer"
+
+    source_response = await install_source(env)
+    source_status, source_text = await response_text(
+        source_response, 128 * 1024)
+    try:
+        source_data = json.loads(source_text)
+    except Exception:
+        source_data = {}
+    if (
+        source_status != 200
+        or not isinstance(source_data, dict)
+        or source_data.get("ok") is not True
+        or not source_data.get("nodes")
+    ):
+        return False, "No reachable mirror is available to the installer"
+
+    release_files = {}
+    for filename in (
+            "release.json", "release.json.sig", "SHASUMS256.txt"):
+        response = await _routed_repository_read(
+            env,
+            "https://forkmesh.internal/api/repo/forkmesh/forkmesh/"
+            "blob?path=.forkmesh/releases/latest/" + filename,
+            "blob",
+            bypass_cache=True,
+        )
+        status, raw = await response_text(response, 512 * 1024)
+        try:
+            body = json.loads(raw)
+        except Exception:
+            body = {}
+        content = str(body.get("content") or "") if isinstance(body, dict) else ""
+        if status != 200 or body.get("ok") is not True or not content:
+            return False, "Installer release metadata is unavailable: " + filename
+        release_files[filename] = content
+
+    try:
+        manifest = json.loads(release_files["release.json"])
+    except Exception:
+        manifest = {}
+    assets = manifest.get("assets") if isinstance(manifest, dict) else []
+    linux_asset = next((
+        asset for asset in (assets if isinstance(assets, list) else [])
+        if isinstance(asset, dict)
+        and asset.get("os") == "linux"
+        and asset.get("arch") == "x86_64"
+    ), None)
+    digest = str((linux_asset or {}).get("blob_sha256") or "").lower()
+    checksum_line = digest + "  " + str((linux_asset or {}).get("name") or "")
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", digest)
+        or checksum_line not in release_files["SHASUMS256.txt"]
+        or not release_files["release.json.sig"].strip()
+    ):
+        return False, "Installer release metadata is incomplete or inconsistent"
+
+    release_response = await _routed_repository_read(
+        env,
+        "https://forkmesh.internal/api/repo/forkmesh/forkmesh/"
+        "releases/blob/sha256/" + digest,
+        "release-blob",
+        release_sha=digest,
+        bypass_cache=True,
+    )
+    if int(getattr(release_response, "status", 0) or 0) != 200:
+        return False, "Installer release binary is unreachable"
+    return True, ""
+
+
+async def _installer_delivery_status(env, now):
+    row = await d1_first(
+        env,
+        "SELECT is_up,reason,checked_at FROM repository_monitor_state "
+        "WHERE monitor_id=?",
+        INSTALLER_MONITOR_ID,
+    )
+    if (
+        row
+        and int(row.get("checked_at") or 0) > 0
+        and now - int(row.get("checked_at") or 0) < INSTALLER_CHECK_INTERVAL_MS
+    ):
+        return bool(row.get("is_up")), str(row.get("reason") or "")
+    is_up, reason = await _installer_delivery_probe(env)
+    await d1_run(
+        env,
+        """INSERT INTO repository_monitor_state
+             (monitor_id,is_up,changed_at,outage_started_at,checked_at,reason,
+              notified_state)
+           VALUES (?,?,?,?,?,?,?)
+           ON CONFLICT(monitor_id) DO UPDATE SET
+             is_up=excluded.is_up,
+             changed_at=CASE
+               WHEN repository_monitor_state.is_up!=excluded.is_up
+               THEN excluded.checked_at
+               ELSE repository_monitor_state.changed_at END,
+             checked_at=excluded.checked_at,
+             reason=excluded.reason""",
+        INSTALLER_MONITOR_ID, 1 if is_up else 0, now,
+        0 if is_up else now, now, reason, "",
+    )
+    return is_up, reason
 
 
 async def _repository_monitor_admin_emails(env):
@@ -2176,6 +2322,17 @@ async def record_status_sample(env):
                 env, False, reason["flagship_repository"], now)
         except Exception:
             pass
+
+    try:
+        installer_ok, installer_reason = await _installer_delivery_status(
+            env, now)
+        ok["installer"] = installer_ok
+        if not installer_ok:
+            reason["installer"] = installer_reason
+    except Exception as exc:
+        ok["installer"] = False
+        reason["installer"] = (
+            "Installer delivery probe failed: " + str(exc)[:160])
 
     try:
         cutoff = now - HTTPS_MIRROR_STATUS_FRESH_MS
@@ -9486,6 +9643,21 @@ async def repo_mirrors_handler(env, request, owner, repo):
         str(owner or "").strip().lower(),
         str(repo or "").strip().lower(),
     )
+    endpoint_rows = await d1_all(
+        env,
+        """SELECT node_name FROM mirror_https_endpoints
+            WHERE checked_at>=? AND forkmesh_verified_at>=?
+              AND healthy=1 AND forkmesh_active=1
+              AND integrity='ok' AND abuse_blocked=0""",
+        now - HTTPS_MIRROR_STATUS_FRESH_MS,
+        now - HTTPS_MIRROR_STATUS_FRESH_MS,
+    )
+    reachable_nodes = {
+        clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower()
+        for row in endpoint_rows or []
+        if valid_node_name(
+            clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower())
+    }
     payload = build_repo_mirrors_payload(
         owner,
         repo,
@@ -9497,6 +9669,7 @@ async def repo_mirrors_handler(env, request, owner, repo):
         5 * 1000,
         history,
         linked_canonical=bool(linked_row),
+        reachable_nodes=reachable_nodes,
     )
     if payload is None:
         return json_response({"error": "not_found"}, status=404)
@@ -32399,7 +32572,7 @@ async def repository_pull_merge_handler(
 
 
 async def _https_mirror_proxy(
-        env, request, owner, repo, operation, release_sha=""):
+        env, request, owner, repo, operation, release_sha="", bypass_cache=False):
     """Stream a public read through healthy endpoints under the original URL."""
     context = await _https_mirror_public_context(env, owner, repo)
     if context is None:
@@ -32445,7 +32618,9 @@ async def _https_mirror_proxy(
         repository_metadata_cache_key(context, operation, query)
         if method == "GET" else ""
     )
-    cached_metadata = await repository_metadata_cache_get(metadata_cache_key)
+    cached_metadata = (
+        await repository_metadata_cache_get(metadata_cache_key)
+        if not bypass_cache else None)
     if cached_metadata is not None:
         return cached_metadata
     body = b""
@@ -32578,8 +32753,9 @@ async def _https_mirror_proxy(
         response_headers["X-ForkMesh-Served-By"] = endpoint["node"]
         await _https_mirror_route_advance(
             env, context, endpoint["node"], operation)
-        await repository_metadata_cache_put(
-            metadata_cache_key, upstream, status)
+        if not bypass_cache:
+            await repository_metadata_cache_put(
+                metadata_cache_key, upstream, status)
         # The private endpoint origin remains masked. The public node identity
         # above is bounded routing provenance; repository bytes still stream
         # without being materialized by the Worker.

@@ -118,6 +118,8 @@ def _sample_env(now, error_paths, host_online=True, db_ok=True, error_rows=None)
         return None
     async def repository_probe(_env):
         return True, ""
+    async def installer_status(_env, _now):
+        return True, ""
 
     extra = {
         "Date": _Clock,
@@ -127,6 +129,7 @@ def _sample_env(now, error_paths, host_online=True, db_ok=True, error_rows=None)
         "d1_run": d1_run,
         "_flagship_repository_probe": repository_probe,
         "_record_flagship_monitor_transition": noop,
+        "_installer_delivery_status": installer_status,
     }
     return extra, inserted, hourly, minutely
 
@@ -150,7 +153,7 @@ def test_all_systems_recorded_ok_with_no_errors_and_a_live_https_mirror():
     results, reasons, _minutes = _run_sample(error_paths=[], host_online=True, db_ok=True)
     assert set(results) == {
         "website", "api", "database", "flagship_repository",
-        "git_hosting", "realtime", "durable_objects",
+        "installer", "git_hosting", "realtime", "durable_objects",
     }
     assert all(failure == 0 for failure in results.values())
     assert all(reason is None for reason in reasons.values())
@@ -999,7 +1002,7 @@ def test_current_snapshot_survives_a_failing_read():
     assert out["current"]["catalogRepos"] is None
     assert out["current"]["onlineNodes"] == 0
     # systems still rendered despite the failed metric
-    assert len(out["systems"]) == 7
+    assert len(out["systems"]) == 8
 
 
 def test_flagship_repository_monitor_is_public_and_deduplicates_email_states():
@@ -1015,6 +1018,15 @@ def test_flagship_repository_monitor_is_public_and_deduplicates_email_states():
     assert "[ForkMesh outage]" in ENTRY_TEXT
     assert "[ForkMesh recovered]" in ENTRY_TEXT
     assert "The outage lasted " in ENTRY_TEXT
+
+
+def test_installer_delivery_is_checked_every_ten_minutes_and_public():
+    assert '("installer", "Installer delivery")' in ENTRY_TEXT
+    assert "INSTALLER_CHECK_INTERVAL_MS = 10 * 60 * 1000" in ENTRY_TEXT
+    assert "async def _installer_delivery_probe" in ENTRY_TEXT
+    assert '"release.json", "release.json.sig", "SHASUMS256.txt"' in ENTRY_TEXT
+    assert "releases/blob/sha256/" in ENTRY_TEXT
+    assert "Cloudflare cannot execute Bash" in ENTRY_TEXT
 
 
 def test_status_page_renders_current_state_grid():

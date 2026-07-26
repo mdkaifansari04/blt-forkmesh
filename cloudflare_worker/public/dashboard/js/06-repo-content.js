@@ -262,7 +262,7 @@
       // The tree fetch drives the commit summary; if no mirror answered, still
       // resolve the loading skeleton to the repo-derived fallback metadata.
       updateRepoCommitSummary(null, repo);
-      treeBody.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">No live desktop host is serving this repository tree right now.</div>';
+      treeBody.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">No reachable mirror host is serving this repository tree right now.</div>';
       if (!path) {
         const readmeBody = detail.querySelector("[data-repo-readme-body]");
         if (readmeBody) {
@@ -1713,7 +1713,7 @@
       container.innerHTML = renderRepoRecordDetail(repo, kind, number, parsed);
       loadFederatedReplies(repo, kind, number, container);
     } catch (_) {
-      container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">This ${escapeHtml(config.itemLabel)} is unavailable until a live desktop host serves ${escapeHtml(recordPath)}.</div>`;
+      container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">This ${escapeHtml(config.itemLabel)} is unavailable until a reachable mirror host serves ${escapeHtml(recordPath)}.</div>`;
     } finally {
       window.lucide?.createIcons();
     }
@@ -2135,7 +2135,7 @@
       renderRepoIssues();
       applyRemotePendingIssueCount(repo);
     } catch (_) {
-      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Issues are unavailable until a live desktop host serves the .forkmesh/issues/ folder.</div>';
+      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Issues are unavailable until a reachable mirror host serves the .forkmesh/issues/ folder.</div>';
     }
   }
 
@@ -2283,7 +2283,7 @@
       state.projectsView.issues = issues;
       renderRepoProjects();
     } catch (_) {
-      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Projects are unavailable until a live desktop host serves the .forkmesh/projects/ folder.</div>';
+      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Projects are unavailable until a reachable mirror host serves the .forkmesh/projects/ folder.</div>';
     }
   }
 
@@ -2502,7 +2502,7 @@
         setRepoCollectionCounts("pulls", openPulls, items.length - openPulls);
       }
     } catch (_) {
-      container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${escapeHtml(config.label)} are unavailable until a live desktop host serves the ${escapeHtml(config.dir)}/ folder.</div>`;
+      container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${escapeHtml(config.label)} are unavailable until a reachable mirror host serves the ${escapeHtml(config.dir)}/ folder.</div>`;
     } finally {
       window.lucide?.createIcons();
     }
@@ -2959,7 +2959,18 @@
         });
       }
       const logo = $("[data-repo-social-logo]");
-      if (logo) logo.src = body.logoUrl || body.defaultLogoUrl || "/assets/fediverse-avatar.png";
+      if (logo) {
+        const logoUrl = await loadNativeRepositoryLogo(
+          nativeRepositoryLogoEndpoint(repo),
+        );
+        if (logoUrl) {
+          logo.src = logoUrl;
+          logo.classList.remove("hidden");
+        } else {
+          logo.removeAttribute("src");
+          logo.classList.add("hidden");
+        }
+      }
       const banner = $("[data-repo-social-banner]");
       if (banner) {
         const url = body.bannerUrl || body.defaultBannerUrl || "/assets/fediverse-banner.png";
