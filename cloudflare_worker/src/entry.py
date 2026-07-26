@@ -313,7 +313,9 @@ from urls import (  # noqa: E402
     CHAT_CHANNEL_HISTORY_RE,
     CHAT_CHANNEL_WS_RE,
     CHAT_DIRECT_MESSAGES_RE,
+    CHAT_DIRECT_MESSAGE_USERS_RE,
     CHAT_DIRECT_MESSAGE_ROOM_ACCESS_RE,
+    CHAT_DIRECT_MESSAGE_READ_RE,
     CHAT_DIRECT_MESSAGE_WS_RE,
     REPO_ISSUES_RE,
     REPO_PULLS_RE,
@@ -5795,6 +5797,25 @@ async def _chat_direct_passphrase(env, conversation_id, key_version):
     return bytes(Uint8Array.new(digest).to_py()).hex()
 
 
+async def _chat_direct_message_retained(
+        env, conversation_id, account_bi, retained_at):
+    await _contribution_run_batch(env, [
+        (
+            "UPDATE chat_direct_conversations "
+            "SET updated_at=?,message_count=message_count+1 "
+            "WHERE conversation_id=?",
+            (retained_at, conversation_id),
+        ),
+        (
+            "UPDATE chat_direct_participants "
+            "SET last_read_count=(SELECT message_count "
+            "FROM chat_direct_conversations WHERE conversation_id=?) "
+            "WHERE conversation_id=? AND participant_bi=?",
+            (conversation_id, conversation_id, account_bi),
+        ),
+    ])
+
+
 def _office_entry_ticket(env, account_bi):
     """Issue a short-lived, account-bound proof of Office admission."""
     account_bi = str(account_bi or "")
@@ -7338,6 +7359,51 @@ class _ChatChannelsRuntime(_WorldCommunityRuntime):
 
 
 class _ChatDirectMessagesRuntime(_WorldCommunityRuntime):
+    async def search_accounts(self, query, limit):
+        value = clean_string(query or "", MAX_NODE_NAME).strip().lower()
+        if not value:
+            return []
+        escaped = (
+            value.replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+        prefix = escaped + "%"
+        contains = "%" + escaped + "%"
+        rows = await d1_all(
+            self.env,
+            "SELECT data,username FROM users "
+            "WHERE username LIKE ? ESCAPE '\\' "
+            "ORDER BY CASE WHEN username=? THEN 0 "
+            "WHEN username LIKE ? ESCAPE '\\' THEN 1 ELSE 2 END,"
+            "username COLLATE NOCASE LIMIT ?",
+            contains,
+            value,
+            prefix,
+            max(int(limit) * 5, int(limit)),
+        )
+        names = []
+        for row in rows or []:
+            try:
+                record = await decrypt_row(self.env, row.get("data"))
+            except Exception:
+                record = None
+            name = clean_string(
+                (record or {}).get("name") or row.get("username") or "",
+                MAX_NODE_NAME,
+            ).strip().lower()
+            if (
+                record
+                and record.get("status") == "active"
+                and _account_kind(record) == "user"
+                and valid_node_name(name)
+                and name not in names
+            ):
+                names.append(name)
+                if len(names) >= int(limit):
+                    break
+        return names
+
     async def room_access(
             self, conversation_id, key_version, account_bi):
         room = (
@@ -10908,6 +10974,8 @@ async def _mirror_account_identity_tables(env, name_bi, rec, email_bi=None,
     if kind == "user":
         if email_bi is None and rec.get("email"):
             email_bi = await blind_index(env, clean_string(rec.get("email", ""), 254).lower())
+        if js_nullish(ip_bi):
+            ip_bi = ""
         enc_user = await encrypt_row(env, rec)
         await d1_run(
             env,
@@ -10918,7 +10986,7 @@ async def _mirror_account_identity_tables(env, name_bi, rec, email_bi=None,
                  email_bi=COALESCE(excluded.email_bi, users.email_bi),
                  username=excluded.username,
                  is_admin=CASE WHEN ? THEN excluded.is_admin ELSE users.is_admin END,
-                 ip_bi=COALESCE(excluded.ip_bi, users.ip_bi)""",
+                 ip_bi=COALESCE(NULLIF(excluded.ip_bi, ''), users.ip_bi)""",
             name_bi, enc_user, email_bi, name,
             int(is_admin or 0), ip_bi, 1 if is_admin is not None else 0)
     else:
@@ -35397,7 +35465,9 @@ class Default(WorkerEntrypoint):
                 self.env, request, chat_direct_socket.group(1))
         if (
             CHAT_DIRECT_MESSAGES_RE.match(url.path)
+            or CHAT_DIRECT_MESSAGE_USERS_RE.match(url.path)
             or CHAT_DIRECT_MESSAGE_ROOM_ACCESS_RE.match(url.path)
+            or CHAT_DIRECT_MESSAGE_READ_RE.match(url.path)
         ):
             return await chat_direct_messages_api.handle(
                 _ChatDirectMessagesRuntime(self.env, request), url.path)
@@ -37983,6 +38053,14 @@ class ForkMeshRoom(DurableObject):
             msg_id = (await sha256_hex(message))[:40]
             await chat_history_store(self.env, room_key, msg_id,
                                      int(Date.now()), message)
+            direct_id = str(_ws_attr(ws, "direct_id", "") or "")
+            account_bi = str(_ws_attr(ws, "account_bi", "") or "")
+            if (
+                re.fullmatch(r"[0-9a-f]{32}", direct_id)
+                and re.fullmatch(r"[0-9a-f]{64}", account_bi)
+            ):
+                await _chat_direct_message_retained(
+                    self.env, direct_id, account_bi, int(Date.now()))
         except Exception:
             pass
 

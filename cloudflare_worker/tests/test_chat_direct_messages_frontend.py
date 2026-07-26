@@ -70,6 +70,27 @@ def test_starting_a_direct_message_reuses_the_server_conversation():
     assert "directMessageKey(conversation.id)" in source
 
 
+def test_direct_picker_searches_authenticated_active_users():
+    source = _function_source("refreshDirectMessageSearch")
+    assert 'DIRECT_MESSAGES_ENDPOINT + "/users?query="' in source
+    assert "privateChannelRequest" in source
+    assert "directSearchResults" in source
+
+
+def test_people_action_failures_have_visible_page_feedback():
+    source = _function_source("startDirectMessage")
+    assert "directDialog?.open" in source
+    assert "setStatus(message)" in source
+
+
+def test_direct_sidebar_uses_server_unread_counts_and_pagination():
+    reconcile = _function_source("reconcileDirectMessages")
+    refresh = _function_source("refreshDirectMessages")
+    assert "value.unreadCount" in reconcile
+    assert "nextCursor" in refresh
+    assert "chat-direct-more" in HTML
+
+
 def test_people_keep_profile_links_and_add_separate_message_actions():
     source = _function_source("renderPeople")
     assert 'document.createElement(hasProfile ? "a" : "div")' in source
@@ -103,6 +124,9 @@ def test_protocol_documents_participant_only_direct_messages():
         'id="personal-direct-messages"',
         "/api/chat/direct-messages",
         "/room-access",
+        "/users?query=",
+        "/read",
+        "cursor-paginated",
         "/ws?ticket=",
         "exactly two active registered users",
         "Administrators have no implicit access",

@@ -413,6 +413,26 @@
         gap: 2px;
       }
 
+      #chat-direct-more {
+        flex: 0 0 auto;
+        margin: 0 8px 10px;
+        min-height: 32px;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: transparent;
+        color: var(--muted);
+        cursor: pointer;
+        font: inherit;
+        font-size: 12px;
+      }
+
+      #chat-direct-more:hover,
+      #chat-direct-more:focus-visible {
+        border-color: var(--accent);
+        color: var(--fg);
+        outline: none;
+      }
+
       .chat-direct-row .chat-avatar {
         width: 22px;
         height: 22px;
@@ -1282,6 +1302,7 @@
               <button id="chat-direct-create" class="chat-admin-action" type="button" aria-label="New direct message" title="New direct message">+</button>
             </div>
             <div id="chat-direct-list"></div>
+            <button id="chat-direct-more" type="button" hidden>Load older conversations</button>
           </section>
         </aside>
 

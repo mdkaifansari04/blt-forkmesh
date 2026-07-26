@@ -331,9 +331,19 @@
           Conversation and participant names are encrypted at rest. Blind
           indexes enforce one conversation per unordered pair and authorize
           participant lookups without exposing those names. The browser lists
-          its conversations through <code>GET /api/chat/direct-messages</code>
-          or starts one with <code>POST /api/chat/direct-messages</code> and a
-          <code>username</code> field.
+          its conversations through the cursor-paginated
+          <code>GET /api/chat/direct-messages</code> collection or starts one
+          with <code>POST /api/chat/direct-messages</code> and a
+          <code>username</code> field. New-pair creation is account-throttled,
+          while reopening an existing pair does not consume that budget.
+        </p>
+        <p>
+          Authenticated username lookup uses
+          <code>GET /api/chat/direct-messages/users?query=…</code>. It searches
+          all active registered users, including accounts excluded from the
+          public profile directory, because profile publication and direct
+          message eligibility are separate choices. Results are bounded and
+          empty queries never enumerate the account database.
         </p>
         <p>
           A participant requests a non-cacheable passphrase and 60-second
@@ -344,6 +354,14 @@
           rechecks the active account and participant row before reaching the
           Durable Object. Missing conversations and unauthorized accounts both
           receive not found, including platform administrators.
+        </p>
+        <p>
+          Retained direct-message frames advance an opaque message counter.
+          Each participant has a server-side read cursor, exposed only as a
+          bounded <code>unreadCount</code> in their own conversation listing.
+          Opening room access or posting to
+          <code>/api/chat/direct-messages/&lt;conversation-id&gt;/read</code>
+          advances that participant's cursor without exposing plaintext.
         </p>
         <p>
           Direct messages use the same relay-readable AES-GCM transport,

@@ -358,15 +358,33 @@ SCHEMA_STATEMENTS = [
         data TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
-        key_version INTEGER NOT NULL DEFAULT 1 CHECK (key_version >= 1))""",
+        key_version INTEGER NOT NULL DEFAULT 1 CHECK (key_version >= 1),
+        message_count INTEGER NOT NULL DEFAULT 0 CHECK (message_count >= 0))""",
     """CREATE TABLE IF NOT EXISTS chat_direct_participants (
         conversation_id TEXT NOT NULL,
         participant_bi TEXT NOT NULL,
         data TEXT NOT NULL,
         joined_at INTEGER NOT NULL,
+        last_read_count INTEGER NOT NULL DEFAULT 0
+            CHECK (last_read_count >= 0),
+        initiated INTEGER NOT NULL DEFAULT 0 CHECK (initiated IN (0, 1)),
         PRIMARY KEY (conversation_id, participant_bi))""",
     "CREATE INDEX IF NOT EXISTS idx_chat_direct_participants_account "
     "ON chat_direct_participants(participant_bi, conversation_id)",
+    "CREATE INDEX IF NOT EXISTS idx_chat_direct_participants_creation_rate "
+    "ON chat_direct_participants(participant_bi, initiated, joined_at)",
+    """CREATE TRIGGER IF NOT EXISTS trg_chat_direct_creation_rate
+        BEFORE INSERT ON chat_direct_participants
+        WHEN NEW.initiated = 1 AND (
+          SELECT COUNT(*)
+          FROM chat_direct_participants
+          WHERE participant_bi = NEW.participant_bi
+            AND initiated = 1
+            AND joined_at > NEW.joined_at - 3600000
+        ) >= 20
+        BEGIN
+          SELECT RAISE(ABORT, 'chat_direct_creation_rate_limited');
+        END""",
     # --- Relay federation (main relay only) ---------------------------------
     # Allowlist of relays that federate with this (main) relay. A relay is known
     # by its Ed25519 pubkey; only status='approved' relays may custody signups

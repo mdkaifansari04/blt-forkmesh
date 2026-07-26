@@ -14,6 +14,7 @@ ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 FUNCTIONS = {
     "_chat_direct_passphrase",
+    "_chat_direct_message_retained",
     "_chat_direct_ticket",
     "_chat_direct_ticket_claims",
     "_require_data_secret",
@@ -266,6 +267,37 @@ def test_direct_ticket_round_trip_and_expiry():
     }
     clock[0] += 61_000
     assert namespace["_chat_direct_ticket_claims"](env, token) is None
+
+
+def test_retained_direct_message_atomically_advances_sender_cursor():
+    namespace, clock = _helpers()
+    calls = []
+
+    async def run_batch(env, statements):
+        calls.append((env, statements))
+
+    namespace["_contribution_run_batch"] = run_batch
+    env = _Env()
+    conversation_id = "a" * 32
+    account_bi = "b" * 64
+    asyncio.run(namespace["_chat_direct_message_retained"](
+        env,
+        conversation_id,
+        account_bi,
+        clock[0],
+    ))
+
+    assert len(calls) == 1
+    statements = calls[0][1]
+    assert len(statements) == 2
+    assert "message_count=message_count+1" in statements[0][0]
+    assert "last_read_count=(SELECT message_count" in statements[1][0]
+    assert statements[0][1] == (clock[0], conversation_id)
+    assert statements[1][1] == (
+        conversation_id,
+        conversation_id,
+        account_bi,
+    )
 
 
 def test_direct_socket_requires_participant_even_for_an_admin():

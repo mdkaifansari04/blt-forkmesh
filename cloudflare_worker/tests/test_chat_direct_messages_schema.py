@@ -15,30 +15,45 @@ import urls  # noqa: E402
 
 
 def test_direct_message_migration_and_lazy_schema_match():
-    migration = ROOT / "migrations" / "0079_chat_direct_messages.sql"
-    assert migration.exists()
-    sql = migration.read_text(encoding="utf-8")
+    create_migration = (
+        ROOT / "migrations" / "0079_chat_direct_messages.sql"
+    )
+    limits_migration = (
+        ROOT / "migrations" / "0084_chat_direct_message_limits.sql"
+    )
+    assert create_migration.exists()
+    assert limits_migration.exists()
+    sql = create_migration.read_text(encoding="utf-8") + "\n"
+    sql += limits_migration.read_text(encoding="utf-8")
     joined = "\n".join(schema.SCHEMA_STATEMENTS)
     for marker in (
         "CREATE TABLE IF NOT EXISTS chat_direct_conversations",
         "CREATE TABLE IF NOT EXISTS chat_direct_participants",
         "idx_chat_direct_participants_account",
+        "message_count",
+        "last_read_count",
+        "initiated",
+        "trg_chat_direct_creation_rate",
     ):
         assert marker in sql
         assert marker in joined
 
 
 def test_direct_message_schema_enforces_one_pair_and_two_unique_participants():
-    sql = (
+    create_sql = (
         ROOT / "migrations" / "0079_chat_direct_messages.sql"
     ).read_text(encoding="utf-8")
+    limits_sql = (
+        ROOT / "migrations" / "0084_chat_direct_message_limits.sql"
+    ).read_text(encoding="utf-8")
     db = sqlite3.connect(":memory:")
-    db.executescript(sql)
+    db.executescript(create_sql)
+    db.executescript(limits_sql)
     conversation_id = "a" * 32
     db.execute(
         "INSERT INTO chat_direct_conversations "
-        "(conversation_id,pair_bi,data,created_at,updated_at,key_version) "
-        "VALUES (?,?,?,?,?,1)",
+        "(conversation_id,pair_bi,data,created_at,updated_at,key_version,"
+        "message_count) VALUES (?,?,?,?,?,1,0)",
         (conversation_id, "pair-bi", "sealed", 1, 1),
     )
     db.execute(
@@ -50,8 +65,8 @@ def test_direct_message_schema_enforces_one_pair_and_two_unique_participants():
     try:
         db.execute(
             "INSERT INTO chat_direct_conversations "
-            "(conversation_id,pair_bi,data,created_at,updated_at,key_version) "
-            "VALUES (?,?,?,?,?,1)",
+            "(conversation_id,pair_bi,data,created_at,updated_at,key_version,"
+            "message_count) VALUES (?,?,?,?,?,1,0)",
             ("b" * 32, "pair-bi", "sealed", 1, 1),
         )
     except sqlite3.IntegrityError:
@@ -86,3 +101,39 @@ def test_direct_message_routes_are_exact_and_opaque():
     assert not urls.CHAT_DIRECT_MESSAGE_WS_RE.fullmatch(
         "/api/chat/direct-messages/alice/ws"
     )
+    assert urls.CHAT_DIRECT_MESSAGE_USERS_RE.fullmatch(
+        "/api/chat/direct-messages/users"
+    )
+    assert urls.CHAT_DIRECT_MESSAGE_READ_RE.fullmatch(
+        f"/api/chat/direct-messages/{conversation_id}/read"
+    )
+
+
+def test_direct_message_schema_atomically_enforces_creation_rate():
+    create_sql = (
+        ROOT / "migrations" / "0079_chat_direct_messages.sql"
+    ).read_text(encoding="utf-8")
+    limits_sql = (
+        ROOT / "migrations" / "0084_chat_direct_message_limits.sql"
+    ).read_text(encoding="utf-8")
+    db = sqlite3.connect(":memory:")
+    db.executescript(create_sql)
+    db.executescript(limits_sql)
+    for index in range(20):
+        db.execute(
+            "INSERT INTO chat_direct_participants "
+            "(conversation_id,participant_bi,data,joined_at,initiated) "
+            "VALUES (?,?,?,?,1)",
+            (f"{index:032x}", "alice-bi", "sealed", 1000 + index),
+        )
+    try:
+        db.execute(
+            "INSERT INTO chat_direct_participants "
+            "(conversation_id,participant_bi,data,joined_at,initiated) "
+            "VALUES (?,?,?,?,1)",
+            ("f" * 32, "alice-bi", "sealed", 2000),
+        )
+    except sqlite3.IntegrityError as error:
+        assert "chat_direct_creation_rate_limited" in str(error)
+    else:
+        raise AssertionError("creation rate trigger must reject request 21")

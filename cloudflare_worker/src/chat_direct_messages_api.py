@@ -4,15 +4,27 @@ import re
 
 
 DIRECT_MESSAGE_BODY_MAX_BYTES = 16 * 1024
+DIRECT_MESSAGE_PAGE_DEFAULT = 50
+DIRECT_MESSAGE_PAGE_MAX = 100
+DIRECT_MESSAGE_SEARCH_MAX = 20
+DIRECT_MESSAGE_CREATE_WINDOW_MS = 60 * 60 * 1000
+DIRECT_MESSAGE_CREATE_MAX_PER_WINDOW = 20
 COLLECTION_RE = re.compile(r"^/api/chat/direct-messages/?$")
+USERS_RE = re.compile(r"^/api/chat/direct-messages/users/?$")
 ROOM_ACCESS_RE = re.compile(
     r"^/api/chat/direct-messages/([0-9a-f]{32})/room-access/?$")
+READ_RE = re.compile(
+    r"^/api/chat/direct-messages/([0-9a-f]{32})/read/?$")
+CURSOR_RE = re.compile(r"^([0-9]{1,20})\.([0-9a-f]{32})$")
 
 
-def _response(runtime, data, status=200, allow=""):
+def _response(runtime, data, status=200, allow="", retry_after_ms=0):
     headers = {"x-content-type-options": "nosniff"}
     if allow:
         headers["allow"] = allow
+    if retry_after_ms:
+        seconds = max(1, (int(retry_after_ms) + 999) // 1000)
+        headers["retry-after"] = str(seconds)
     return runtime.response(
         data,
         status=status,
@@ -47,19 +59,27 @@ def _conversation_payload(row, record, actor):
     other_user = _other_user(record, actor)
     if not other_user:
         return None
+    message_count = max(0, int(row.get("message_count") or 0))
+    last_read_count = max(0, int(row.get("last_read_count") or 0))
     return {
         "id": str(row.get("conversation_id") or ""),
         "otherUser": other_user,
         "updatedAt": int(row.get("updated_at") or 0),
         "keyVersion": int(row.get("key_version") or 1),
+        "unreadCount": max(0, message_count - last_read_count),
     }
 
 
-async def _conversation_by_pair(runtime, pair_bi):
+async def _conversation_by_pair(runtime, pair_bi, account_bi):
     return await runtime.d1_first(
-        "SELECT conversation_id,data,updated_at,key_version "
-        "FROM chat_direct_conversations WHERE pair_bi=?",
+        "SELECT c.conversation_id,c.data,c.updated_at,c.key_version,"
+        "c.message_count,p.last_read_count "
+        "FROM chat_direct_conversations c "
+        "JOIN chat_direct_participants p "
+        "ON p.conversation_id=c.conversation_id "
+        "WHERE c.pair_bi=? AND p.participant_bi=?",
         pair_bi,
+        account_bi,
     )
 
 
@@ -71,6 +91,21 @@ async def _opened_payload(runtime, row, actor):
     except Exception:
         return None
     return _conversation_payload(row, record, actor)
+
+
+async def _creation_throttle(runtime, account_bi, now):
+    cutoff = int(now) - DIRECT_MESSAGE_CREATE_WINDOW_MS
+    row = await runtime.d1_first(
+        "SELECT COUNT(*) AS n,MIN(joined_at) AS oldest "
+        "FROM chat_direct_participants "
+        "WHERE participant_bi=? AND initiated=1 AND joined_at>?",
+        account_bi,
+        cutoff,
+    )
+    if int((row or {}).get("n") or 0) < DIRECT_MESSAGE_CREATE_MAX_PER_WINDOW:
+        return 0
+    oldest = int((row or {}).get("oldest") or now)
+    return max(1, oldest + DIRECT_MESSAGE_CREATE_WINDOW_MS - int(now))
 
 
 async def _start_conversation(runtime, account_bi, actor, data):
@@ -85,14 +120,23 @@ async def _start_conversation(runtime, account_bi, actor, data):
     pair_bi = await runtime.blind(
         "chat-direct-pair:" + ":".join(sorted((account_bi, target_bi)))
     )
-    existing = await _conversation_by_pair(runtime, pair_bi)
+    existing = await _conversation_by_pair(runtime, pair_bi, account_bi)
     payload = await _opened_payload(runtime, existing, actor)
     if payload:
         return _response(
             runtime, {"ok": True, "conversation": payload})
 
-    conversation_id = runtime.new_id()
     now = runtime.now()
+    retry_after_ms = await _creation_throttle(runtime, account_bi, now)
+    if retry_after_ms:
+        return _response(
+            runtime,
+            {"error": "rate_limited", "retryAfterMs": retry_after_ms},
+            status=429,
+            retry_after_ms=retry_after_ms,
+        )
+
+    conversation_id = runtime.new_id()
     record = {"participants": sorted((actor, target))}
     sealed_record = await runtime.seal(record)
     sealed_actor = await runtime.seal({"username": actor})
@@ -100,36 +144,47 @@ async def _start_conversation(runtime, account_bi, actor, data):
     statements = [
         (
             "INSERT INTO chat_direct_conversations "
-            "(conversation_id,pair_bi,data,created_at,updated_at,key_version) "
-            "VALUES (?,?,?,?,?,1)",
+            "(conversation_id,pair_bi,data,created_at,updated_at,key_version,"
+            "message_count) VALUES (?,?,?,?,?,1,0)",
             (conversation_id, pair_bi, sealed_record, now, now),
         ),
         (
             "INSERT INTO chat_direct_participants "
-            "(conversation_id,participant_bi,data,joined_at) "
-            "VALUES (?,?,?,?)",
+            "(conversation_id,participant_bi,data,joined_at,last_read_count,"
+            "initiated) VALUES (?,?,?,?,0,1)",
             (conversation_id, account_bi, sealed_actor, now),
         ),
         (
             "INSERT INTO chat_direct_participants "
-            "(conversation_id,participant_bi,data,joined_at) "
-            "VALUES (?,?,?,?)",
+            "(conversation_id,participant_bi,data,joined_at,last_read_count,"
+            "initiated) VALUES (?,?,?,?,0,0)",
             (conversation_id, target_bi, sealed_target, now),
         ),
     ]
     try:
         await runtime.batch(statements)
     except Exception:
-        raced = await _conversation_by_pair(runtime, pair_bi)
+        raced = await _conversation_by_pair(runtime, pair_bi, account_bi)
         raced_payload = await _opened_payload(runtime, raced, actor)
         if raced_payload:
             return _response(
                 runtime, {"ok": True, "conversation": raced_payload})
+        retry_after_ms = await _creation_throttle(
+            runtime, account_bi, now)
+        if retry_after_ms:
+            return _response(
+                runtime,
+                {"error": "rate_limited", "retryAfterMs": retry_after_ms},
+                status=429,
+                retry_after_ms=retry_after_ms,
+            )
         raise
     row = {
         "conversation_id": conversation_id,
         "updated_at": now,
         "key_version": 1,
+        "message_count": 0,
+        "last_read_count": 0,
     }
     return _response(
         runtime,
@@ -141,27 +196,87 @@ async def _start_conversation(runtime, account_bi, actor, data):
     )
 
 
+def _page_options(runtime):
+    params = runtime.query_params()
+    raw_limit = str(params.get("limit") or DIRECT_MESSAGE_PAGE_DEFAULT)
+    if not raw_limit.isdigit():
+        return None
+    limit = int(raw_limit)
+    if limit < 1 or limit > DIRECT_MESSAGE_PAGE_MAX:
+        return None
+    raw_cursor = str(params.get("cursor") or "")
+    if not raw_cursor:
+        return limit, None, ""
+    match = CURSOR_RE.fullmatch(raw_cursor)
+    if not match:
+        return None
+    return limit, int(match.group(1)), match.group(2)
+
+
 async def _list_conversations(runtime, account_bi, actor):
-    rows = await runtime.d1_all(
-        "SELECT c.conversation_id,c.data,c.updated_at,c.key_version "
+    options = _page_options(runtime)
+    if not options:
+        return _response(runtime, {"error": "invalid_page"}, status=400)
+    limit, cursor_updated_at, cursor_id = options
+    sql = (
+        "SELECT c.conversation_id,c.data,c.updated_at,c.key_version,"
+        "c.message_count,p.last_read_count "
         "FROM chat_direct_participants p "
         "JOIN chat_direct_conversations c "
         "ON c.conversation_id=p.conversation_id "
         "WHERE p.participant_bi=? "
-        "ORDER BY c.updated_at DESC,c.conversation_id",
-        account_bi,
     )
+    args = [account_bi]
+    if cursor_updated_at is not None:
+        sql += (
+            "AND (c.updated_at<? OR "
+            "(c.updated_at=? AND c.conversation_id>?)) "
+        )
+        args.extend((cursor_updated_at, cursor_updated_at, cursor_id))
+    sql += "ORDER BY c.updated_at DESC,c.conversation_id LIMIT ?"
+    args.append(limit + 1)
+    rows = await runtime.d1_all(sql, *args)
+    page = rows[:limit]
     conversations = []
-    for row in rows:
+    for row in page:
         payload = await _opened_payload(runtime, row, actor)
         if payload:
             conversations.append(payload)
-    return _response(runtime, {"conversations": conversations})
+    next_cursor = ""
+    if len(rows) > limit and page:
+        last = page[-1]
+        next_cursor = "%d.%s" % (
+            int(last.get("updated_at") or 0),
+            str(last.get("conversation_id") or ""),
+        )
+    return _response(
+        runtime,
+        {"conversations": conversations, "nextCursor": next_cursor},
+    )
 
 
-async def _room_access(runtime, account_bi, actor, conversation_id):
-    row = await runtime.d1_first(
-        "SELECT c.conversation_id,c.data,c.updated_at,c.key_version "
+async def _search_users(runtime, actor):
+    query = str(runtime.query_params().get("query") or "").strip().lower()
+    if not query:
+        return _response(runtime, {"users": []})
+    if len(query) > 63:
+        return _response(runtime, {"error": "invalid_query"}, status=400)
+    names = await runtime.search_accounts(query, DIRECT_MESSAGE_SEARCH_MAX)
+    users = []
+    seen = set()
+    for value in names or []:
+        name = str(value or "").strip().lower()
+        if not name or name == actor or name in seen:
+            continue
+        seen.add(name)
+        users.append({"name": name})
+    return _response(runtime, {"users": users})
+
+
+async def _participant_conversation(runtime, account_bi, conversation_id):
+    return await runtime.d1_first(
+        "SELECT c.conversation_id,c.data,c.updated_at,c.key_version,"
+        "c.message_count,p.last_read_count "
         "FROM chat_direct_conversations c "
         "JOIN chat_direct_participants p "
         "ON p.conversation_id=c.conversation_id "
@@ -169,6 +284,35 @@ async def _room_access(runtime, account_bi, actor, conversation_id):
         conversation_id,
         account_bi,
     )
+
+
+async def _mark_read(runtime, account_bi, conversation_id):
+    row = await _participant_conversation(
+        runtime, account_bi, conversation_id)
+    if not row:
+        return None
+    await runtime.d1_run(
+        "UPDATE chat_direct_participants "
+        "SET last_read_count=(SELECT message_count "
+        "FROM chat_direct_conversations WHERE conversation_id=?) "
+        "WHERE conversation_id=? AND participant_bi=?",
+        conversation_id,
+        conversation_id,
+        account_bi,
+    )
+    row["last_read_count"] = row.get("message_count") or 0
+    return row
+
+
+async def _mark_read_response(runtime, account_bi, conversation_id):
+    row = await _mark_read(runtime, account_bi, conversation_id)
+    if not row:
+        return _response(runtime, {"error": "not_found"}, status=404)
+    return _response(runtime, {"ok": True})
+
+
+async def _room_access(runtime, account_bi, actor, conversation_id):
+    row = await _mark_read(runtime, account_bi, conversation_id)
     payload = await _opened_payload(runtime, row, actor)
     if not payload:
         return _response(runtime, {"error": "not_found"}, status=404)
@@ -183,28 +327,26 @@ async def _room_access(runtime, account_bi, actor, conversation_id):
 
 
 async def handle(runtime, path):
-    """Serve direct-message collection and participant room access."""
+    """Serve direct-message discovery, collection, and participant access."""
     await runtime.ensure_schema()
     normalized_path = str(path or "")
     collection = COLLECTION_RE.fullmatch(normalized_path)
+    users = USERS_RE.fullmatch(normalized_path)
     room_access = ROOM_ACCESS_RE.fullmatch(normalized_path)
-    if not (collection or room_access):
+    read = READ_RE.fullmatch(normalized_path)
+    if not (collection or users or room_access or read):
         return _response(runtime, {"error": "not_found"}, status=404)
 
     method = runtime.method()
-    if collection and method not in {"GET", "POST"}:
+    allowed = "GET, POST" if collection else (
+        "POST" if read else "GET"
+    )
+    if method not in {value.strip() for value in allowed.split(",")}:
         return _response(
             runtime,
             {"error": "method_not_allowed"},
             status=405,
-            allow="GET, POST",
-        )
-    if room_access and method != "GET":
-        return _response(
-            runtime,
-            {"error": "method_not_allowed"},
-            status=405,
-            allow="GET",
+            allow=allowed,
         )
 
     data = None
@@ -218,10 +360,15 @@ async def handle(runtime, path):
         return _response(
             runtime, {"error": "invalid_session"}, status=401)
 
+    if users:
+        return await _search_users(runtime, actor)
     if collection and method == "GET":
         return await _list_conversations(runtime, account_bi, actor)
     if collection and method == "POST":
         return await _start_conversation(
             runtime, account_bi, actor, data)
+    if read:
+        return await _mark_read_response(
+            runtime, account_bi, read.group(1))
     return await _room_access(
         runtime, account_bi, actor, room_access.group(1))

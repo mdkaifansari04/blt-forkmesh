@@ -32,23 +32,33 @@ class FakeRuntime:
             (ROOT / "migrations" / "0079_chat_direct_messages.sql")
             .read_text(encoding="utf-8")
         )
+        self.db.executescript(
+            (ROOT / "migrations" / "0084_chat_direct_message_limits.sql")
+            .read_text(encoding="utf-8")
+        )
         self.actor = ""
         self.request_method = "GET"
         self.request_data = {}
+        self.request_query = {}
         self.clock = 1_800_000_000_000
         self.accounts = {"admin", "alice", "bob", "carol"}
+        self.private_accounts = set()
         self.ids = 0
         self.fail_batch_at = None
         self.room_access_calls = []
 
-    def use(self, method, actor="", data=None):
+    def use(self, method, actor="", data=None, query=None):
         self.request_method = method
         self.actor = actor
         self.request_data = {} if data is None else data
+        self.request_query = {} if query is None else dict(query)
         return self
 
     def method(self):
         return self.request_method
+
+    def query_params(self):
+        return dict(self.request_query)
 
     def now(self):
         return self.clock
@@ -88,6 +98,19 @@ class FakeRuntime:
             return "", ""
         return f"bi:{normalized}", normalized
 
+    async def search_accounts(self, query, limit):
+        query = str(query or "").strip().lower()
+        matches = [
+            name for name in self.accounts
+            if query in name and name != self.actor
+        ]
+        matches.sort(key=lambda name: (
+            0 if name == query else 1,
+            0 if name.startswith(query) else 1,
+            name,
+        ))
+        return matches[:limit]
+
     async def blind(self, value):
         digest = hashlib.sha256(str(value).encode()).hexdigest()
         return "blind:" + digest
@@ -117,6 +140,10 @@ class FakeRuntime:
     async def d1_first(self, sql, *args):
         row = self.db.execute(sql, args).fetchone()
         return dict(row) if row is not None else None
+
+    async def d1_run(self, sql, *args):
+        self.db.execute(sql, args)
+        self.db.commit()
 
     async def batch(self, statements):
         self.db.execute("BEGIN")
@@ -152,6 +179,13 @@ async def room_access(runtime, actor, conversation_id):
     return await api.handle(
         runtime.use("GET", actor),
         f"/api/chat/direct-messages/{conversation_id}/room-access",
+    )
+
+
+async def mark_read(runtime, actor, conversation_id):
+    return await api.handle(
+        runtime.use("POST", actor),
+        f"/api/chat/direct-messages/{conversation_id}/read",
     )
 
 
@@ -210,6 +244,7 @@ async def test_only_participants_list_and_access_a_direct_message():
         "otherUser": "bob",
         "updatedAt": runtime.clock,
         "keyVersion": 1,
+        "unreadCount": 0,
     }]
     assert bob["data"]["conversations"][0]["otherUser"] == "alice"
     assert admin["data"]["conversations"] == []
@@ -266,3 +301,110 @@ async def test_collection_validates_json_and_methods():
     assert wrong_method["headers"]["allow"] == "GET, POST"
     assert wrong_resource_method["status"] == 405
     assert wrong_resource_method["headers"]["allow"] == "GET"
+
+
+@run_async_test
+async def test_authenticated_search_finds_private_active_users():
+    runtime = FakeRuntime()
+    runtime.private_accounts.add("bob")
+
+    found = await api.handle(
+        runtime.use("GET", "alice", query={"query": "bob"}),
+        "/api/chat/direct-messages/users",
+    )
+    unauthenticated = await api.handle(
+        runtime.use("GET", "guest", query={"query": "bob"}),
+        "/api/chat/direct-messages/users",
+    )
+
+    assert found["status"] == 200
+    assert found["data"] == {"users": [{"name": "bob"}]}
+    assert unauthenticated["status"] == 401
+
+
+@run_async_test
+async def test_conversation_listing_is_cursor_paginated():
+    runtime = FakeRuntime()
+    runtime.accounts.update({"dave", "erin"})
+    await start_dm(runtime, "alice", "bob")
+    runtime.clock += 1
+    await start_dm(runtime, "alice", "carol")
+    runtime.clock += 1
+    await start_dm(runtime, "alice", "dave")
+
+    first = await api.handle(
+        runtime.use("GET", "alice", query={"limit": "2"}),
+        "/api/chat/direct-messages",
+    )
+    second = await api.handle(
+        runtime.use(
+            "GET",
+            "alice",
+            query={"limit": "2", "cursor": first["data"]["nextCursor"]},
+        ),
+        "/api/chat/direct-messages",
+    )
+
+    assert [
+        item["otherUser"] for item in first["data"]["conversations"]
+    ] == ["dave", "carol"]
+    assert first["data"]["nextCursor"]
+    assert [
+        item["otherUser"] for item in second["data"]["conversations"]
+    ] == ["bob"]
+    assert second["data"]["nextCursor"] == ""
+
+
+@run_async_test
+async def test_new_conversation_creation_is_rate_limited_but_reopen_is_not():
+    runtime = FakeRuntime()
+    targets = [f"user{index}" for index in range(
+        api.DIRECT_MESSAGE_CREATE_MAX_PER_WINDOW + 1
+    )]
+    runtime.accounts.update(targets)
+
+    first = None
+    for target in targets[:-1]:
+        response = await start_dm(runtime, "alice", target)
+        assert response["status"] == 201
+        first = first or response
+
+    blocked = await start_dm(runtime, "alice", targets[-1])
+    reopened = await start_dm(runtime, "alice", targets[0])
+    runtime.clock += api.DIRECT_MESSAGE_CREATE_WINDOW_MS
+    created_later = await start_dm(runtime, "alice", targets[-1])
+
+    assert blocked["status"] == 429
+    assert blocked["data"]["error"] == "rate_limited"
+    assert blocked["data"]["retryAfterMs"] > 0
+    assert reopened["status"] == 200
+    assert reopened["data"]["conversation"]["id"] == (
+        first["data"]["conversation"]["id"]
+    )
+    assert created_later["status"] == 201
+
+
+@run_async_test
+async def test_unread_count_is_durable_and_marked_read_by_participant():
+    runtime = FakeRuntime()
+    created = await start_dm(runtime, "alice", "bob")
+    conversation_id = created["data"]["conversation"]["id"]
+    runtime.db.execute(
+        "UPDATE chat_direct_conversations "
+        "SET message_count=3,updated_at=? WHERE conversation_id=?",
+        (runtime.clock + 10, conversation_id),
+    )
+    runtime.db.execute(
+        "UPDATE chat_direct_participants SET last_read_count=3 "
+        "WHERE conversation_id=? AND participant_bi=?",
+        (conversation_id, "bi:alice"),
+    )
+    runtime.db.commit()
+
+    before = await list_dms(runtime, "bob")
+    marked = await mark_read(runtime, "bob", conversation_id)
+    after = await list_dms(runtime, "bob")
+
+    assert before["data"]["conversations"][0]["unreadCount"] == 3
+    assert marked["status"] == 200
+    assert after["data"]["conversations"][0]["unreadCount"] == 0

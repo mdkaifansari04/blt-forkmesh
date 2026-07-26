@@ -164,3 +164,5 @@ def test_retention_requires_boolean_true_and_budgets_before_d1_write():
     assert "envelope.get('persist') is True" in source
     assert source.index("_retention_ingress_admitted") < source.index(
         "chat_history_store")
+    assert source.index("chat_history_store") < source.index(
+        "_chat_direct_message_retained")

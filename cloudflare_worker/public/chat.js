@@ -126,6 +126,7 @@ const channelMembersEl = document.querySelector("#chat-channel-members");
 const directSection = document.querySelector("#chat-direct-section");
 const directCreateBtn = document.querySelector("#chat-direct-create");
 const directListEl = document.querySelector("#chat-direct-list");
+const directMoreBtn = document.querySelector("#chat-direct-more");
 const directDialog = document.querySelector("#chat-direct-dialog");
 const directDialogClose = document.querySelector("#chat-direct-dialog-close");
 const directSearch = document.querySelector("#chat-direct-search");
@@ -162,6 +163,11 @@ const roomPassphrases = new Map();
 const roomKeys = new Map();
 const privateChannels = new Map();
 const directMessages = new Map();
+const directSearchResults = new Map();
+const directReadPending = new Set();
+let directNextCursor = "";
+let directSearchTimer = null;
+let directSearchRequest = 0;
 let roomTransport = null;
 let openCallbacks = [];
 let cachedUserSession = null;
@@ -1128,24 +1134,41 @@ function reconcilePrivateChannels(records, options = {}) {
 
 function reconcileDirectMessages(records, options = {}) {
   const previous = new Map(directMessages);
-  directMessages.clear();
+  const replace = options.append !== true;
+  if (replace) directMessages.clear();
   for (const value of Array.isArray(records) ? records : []) {
     const id = String(value?.id || "");
     const otherUser = String(value?.otherUser || "").trim().toLowerCase();
     if (!/^[0-9a-f]{32}$/.test(id) || !otherUser) continue;
+    const unreadCount = Math.max(0, Number(value.unreadCount) || 0);
     directMessages.set(id, {
       id,
       otherUser,
       updatedAt: Number(value.updatedAt) || 0,
       keyVersion: Number(value.keyVersion) || 1,
+      unreadCount,
     });
-    ensureChannel(directMessageKey(id));
-  }
-  for (const id of previous.keys()) {
-    if (!directMessages.has(id)) {
-      releaseChannelMessages(directMessageKey(id));
+    const key = directMessageKey(id);
+    ensureChannel(key);
+    const meta = channelMeta.get(key);
+    if (meta) {
+      meta.unread = key === activeChannel
+        ? 0
+        : unreadCount;
     }
   }
+  if (replace) {
+    for (const id of previous.keys()) {
+      if (!directMessages.has(id)) {
+        releaseChannelMessages(directMessageKey(id));
+      }
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(options, "nextCursor")) {
+    directNextCursor = String(options.nextCursor || "");
+  }
+  if (directMoreBtn) directMoreBtn.hidden = !directNextCursor;
 
   if (savedDirectMessageId && !directMessages.has(savedDirectMessageId)) {
     savedDirectMessageId = "";
@@ -1175,17 +1198,54 @@ function reconcileDirectMessages(records, options = {}) {
 
 async function refreshDirectMessages(options = {}) {
   if (!userSession()) {
-    reconcileDirectMessages([], options);
+    directNextCursor = "";
+    reconcileDirectMessages([], { ...options, nextCursor: "" });
     return;
   }
   try {
-    const data = await privateChannelRequest(DIRECT_MESSAGES_ENDPOINT);
-    reconcileDirectMessages(data.conversations || [], options);
+    const cursor = String(options.cursor || "");
+    const endpoint = cursor
+      ? DIRECT_MESSAGES_ENDPOINT + "?cursor=" + encodeURIComponent(cursor)
+      : DIRECT_MESSAGES_ENDPOINT;
+    const data = await privateChannelRequest(endpoint);
+    reconcileDirectMessages(data.conversations || [], {
+      ...options,
+      append: Boolean(cursor) || options.preserve === true,
+      nextCursor: data.nextCursor || "",
+    });
   } catch (error) {
     if (error?.code === "auth") {
-      reconcileDirectMessages([], options);
+      directNextCursor = "";
+      reconcileDirectMessages([], { ...options, nextCursor: "" });
       if (isDirectMessageKey(activeChannel)) setActiveChannel("#general");
     }
+  }
+}
+
+function loadMoreDirectMessages() {
+  if (!directNextCursor) return;
+  refreshDirectMessages({
+    cursor: directNextCursor,
+    selectSaved: false,
+    connect: false,
+  });
+}
+
+async function markDirectMessageRead(channelKey) {
+  const direct = directMessageForKey(channelKey);
+  if (!direct || directReadPending.has(direct.id)) return;
+  directReadPending.add(direct.id);
+  const meta = channelMeta.get(channelKey);
+  if (meta) meta.unread = 0;
+  renderDirectMessages();
+  try {
+    await privateChannelRequest(
+      DIRECT_MESSAGES_ENDPOINT + "/" + direct.id + "/read",
+      { method: "POST" },
+    );
+  } catch (_) {
+  } finally {
+    directReadPending.delete(direct.id);
   }
 }
 
@@ -1372,6 +1432,7 @@ function directMessageErrorMessage(error) {
   const messages = {
     user_not_found: "That active registered user was not found.",
     cannot_message_self: "Choose another person to message.",
+    rate_limited: "Too many new conversations. Try again later.",
     auth: OFFICE_SESSION_EXPIRED,
     invalid_session: OFFICE_SESSION_EXPIRED,
     unavailable: OFFICE_RELAY_UNAVAILABLE,
@@ -1389,7 +1450,13 @@ function renderDirectMessagePicker() {
   directOptions.textContent = "";
   const query = String(directSearch?.value || "").trim().toLowerCase();
   const currentName = String(userSession()?.nodeName || "").trim().toLowerCase();
-  const users = [...registeredUsers.values()]
+  const candidates = new Map(registeredUsers);
+  if (query) {
+    for (const [name, user] of directSearchResults) {
+      candidates.set(name, user);
+    }
+  }
+  const users = [...candidates.values()]
     .filter((user) => user.name !== currentName)
     .filter((user) => !query || user.name.includes(query))
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -1407,16 +1474,52 @@ function renderDirectMessagePicker() {
   }
   if (directEmpty) {
     directEmpty.hidden = users.length > 0;
-    directEmpty.textContent = registeredUsers.size
+    directEmpty.textContent = candidates.size
       ? "No registered users match your search."
       : "No registered users are available yet.";
   }
+}
+
+async function refreshDirectMessageSearch() {
+  const query = String(directSearch?.value || "").trim().toLowerCase();
+  const requestId = ++directSearchRequest;
+  directSearchResults.clear();
+  if (!query) {
+    renderDirectMessagePicker();
+    return;
+  }
+  try {
+    const data = await privateChannelRequest(
+      DIRECT_MESSAGES_ENDPOINT + "/users?query=" + encodeURIComponent(query)
+    );
+    if (requestId !== directSearchRequest) return;
+    for (const value of Array.isArray(data.users) ? data.users : []) {
+      const name = String(value?.name || "").trim().toLowerCase();
+      if (name) directSearchResults.set(name, { name, createdAt: 0 });
+    }
+    setDirectMessageError("");
+  } catch (error) {
+    if (requestId !== directSearchRequest) return;
+    setDirectMessageError(directMessageErrorMessage(error));
+  }
+  renderDirectMessagePicker();
+}
+
+function scheduleDirectMessageSearch() {
+  renderDirectMessagePicker();
+  if (directSearchTimer) clearTimeout(directSearchTimer);
+  directSearchTimer = setTimeout(() => {
+    directSearchTimer = null;
+    refreshDirectMessageSearch();
+  }, 180);
 }
 
 function openDirectMessageDialog() {
   if (!userSession() || !directDialog || isOfficeEmbed) return;
   setDirectMessageError("");
   if (directSearch) directSearch.value = "";
+  directSearchResults.clear();
+  directSearchRequest += 1;
   renderDirectMessagePicker();
   refreshUsersDirectory();
   if (typeof directDialog.showModal === "function") directDialog.showModal();
@@ -1445,7 +1548,9 @@ async function startDirectMessage(username) {
     }
     directDialog?.close();
   } catch (error) {
-    setDirectMessageError(directMessageErrorMessage(error));
+    const message = directMessageErrorMessage(error);
+    setDirectMessageError(message);
+    if (!directDialog?.open) setStatus(message);
   }
 }
 
@@ -2289,6 +2394,12 @@ function handlePlain(plain, scope = roomScopeForChannel()) {
   } else if (type === "bye") {
     appendSystem(sender + " left");
   }
+  if (
+    isDirectMessageKey(scope)
+    && (type === "chat" || type === "history")
+  ) {
+    markDirectMessageRead(scope);
+  }
 }
 
 async function onFrame(event, key = null, scope = roomScopeForChannel()) {
@@ -2619,7 +2730,7 @@ async function initChat() {
   }, USERS_DIRECTORY_REFRESH_MS);
   setInterval(() => {
     refreshPrivateChannels();
-    refreshDirectMessages();
+    refreshDirectMessages({ preserve: true, selectSaved: false });
   }, PRIVATE_CHANNEL_REFRESH_MS);
   // Public World #general connects for everyone. Private channels remain
   // session-gated and each uses its own ticketed room and current key version.
@@ -2636,8 +2747,9 @@ async function initChat() {
   channelManageBtn?.addEventListener("click", () => openChannelDialog(true));
   channelDialogClose?.addEventListener("click", () => channelDialog?.close());
   directCreateBtn?.addEventListener("click", openDirectMessageDialog);
+  directMoreBtn?.addEventListener("click", loadMoreDirectMessages);
   directDialogClose?.addEventListener("click", () => directDialog?.close());
-  directSearch?.addEventListener("input", renderDirectMessagePicker);
+  directSearch?.addEventListener("input", scheduleDirectMessageSearch);
   channelCreateForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     createChannel(
