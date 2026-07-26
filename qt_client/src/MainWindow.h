@@ -5394,6 +5394,11 @@ private:
     bool m_nodeSwitching = false;      // a node switch's heavy load is running
     bool m_repoDetailLoading = false;  // re-entrancy guard for openRepoDetail
     bool m_branchesPanelLoading = false; // re-entrancy guard for loadBranchesPanel
+    // Re-entrancy guard for loadMirrorNodesPanel: its synchronous git reads pump
+    // the event loop, so a queued roster/mirror callback could start a second
+    // pass that appends its own rows on top of the half-built table — every node
+    // listed twice (adhoc #375).
+    bool m_mirrorNodesPanelLoading = false;
     bool m_agentMergeStateRefreshing = false; // refreshAgentMergeState worker in flight
     // Shared re-entrancy guard for the two heavy periodic refreshes
     // (refreshOpenRepoDetail + refreshRepositoryList): each runs synchronous git

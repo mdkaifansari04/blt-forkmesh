@@ -1224,6 +1224,19 @@ void MainWindow::loadMirrorNodesPanel()
 {
     if (!m_mirrorNodesTable)
         return;
+    // Re-entrancy guard (adhoc #375): every git read below — our own advert's
+    // head/counts, and the `git show` that names each row's commit — pumps the
+    // event loop on the GUI thread, so a queued rebuild (a roster heartbeat, a
+    // /mirrors reply) can land mid-build. That nested pass clears and refills
+    // the table, then this one resumes and appends its remaining rows on top of
+    // it — the table ends up listing every node twice, the stragglers with only
+    // the cells built after the pump. Drop the re-entrant call: the in-flight
+    // build finishes a consistent table, and anything it missed lands on the
+    // next rebuild (the roster re-keys this panel constantly).
+    // (Mirrors the m_branchesPanelLoading guard in loadBranchesPanel.)
+    if (m_mirrorNodesPanelLoading)
+        return;
+    QScopedValueRollback<bool> loadingGuard(m_mirrorNodesPanelLoading, true);
     TableRepaintGuard repaintGuard(m_mirrorNodesTable);
     m_mirrorNodesTable->setSortingEnabled(false);
     m_mirrorNodesTable->setRowCount(0);
