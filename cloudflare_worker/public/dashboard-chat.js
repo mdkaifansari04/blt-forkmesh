@@ -156,6 +156,19 @@
   let mentionCardEl = null;
   let activeMentionAnchor = null;
   let mentionHideTimer = null;
+  // People seen in this room (live frames and replayed history), keyed by
+  // lowercase handle: the relay keeps no roster, so this is what "who is here"
+  // means for the composer's @mention list. mentionDirectory holds registered
+  // accounts (fetched lazily on the first "@") so people who are offline right
+  // now can still be mentioned.
+  const mentionPeople = new Map();
+  const mentionDirectory = new Map();
+  let mentionDirectoryFetchedMs = 0;
+  let mentionDirectoryPending = null;
+  let mentionSuggestEl = null;
+  // null when closed, else { input, items, index, start, end } where start/end
+  // bound the "@partial" token in the input's value.
+  let mentionSuggest = null;
 
   function bytesToB64(bytes) {
     const arr = new Uint8Array(bytes);
@@ -619,6 +632,245 @@
     appendMentionText(container, text);
   }
 
+  // ---- @mention autocomplete ---------------------------------------------
+  // Typing "@" (plus an optional partial name) in the composer pops a
+  // suggestion list; Tab (or Enter / click) accepts the highlighted name,
+  // arrows move, Escape dismisses. Mirrors the full chat page composer
+  // (chat.js) so both surfaces mention the same way — and so "@forkbot" is
+  // reachable without typing it exactly.
+  const MENTION_DIRECTORY_ENDPOINT = "/api/accounts/users";
+  const MENTION_DIRECTORY_TTL_MS = 60000;
+  const MENTION_LIMIT = 8;
+  const MENTION_STALE_MS = 180000;
+  // Only names the renderer would actually link (CHAT_MENTION_RE) are worth
+  // suggesting: guest display names carry spaces and never become mentions.
+  const MENTIONABLE_NAME_RE = /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+  function rememberMentionPerson(name, tsMs) {
+    const key = mentionName(name);
+    if (!key || !MENTIONABLE_NAME_RE.test(key)) return;
+    const seenMs = Number(tsMs) || 0;
+    const prev = mentionPeople.get(key);
+    if (prev && prev.lastSeenMs >= seenMs) return;
+    mentionPeople.set(key, {
+      name: key,
+      kind: key === FORKBOT_SENDER_ID ? "bot" : "user",
+      lastSeenMs: seenMs,
+    });
+  }
+
+  // Registered accounts, so someone who has not spoken in this room yet is
+  // still mentionable. Fetched on the first "@" only (an idle dashboard tab
+  // never pays for it) and refreshed at most once a minute. Resolves true when
+  // it added names, so an open popup can re-render with them.
+  function refreshMentionDirectory() {
+    if (mentionDirectoryPending) return mentionDirectoryPending;
+    if (
+      mentionDirectoryFetchedMs &&
+      Date.now() - mentionDirectoryFetchedMs < MENTION_DIRECTORY_TTL_MS
+    ) {
+      return Promise.resolve(false);
+    }
+    mentionDirectoryPending = fetch(MENTION_DIRECTORY_ENDPOINT, {
+      headers: { accept: "application/json" },
+    })
+      .then((response) => (response.ok ? response.json() : null))
+      .catch(() => null)
+      .then((data) => {
+        mentionDirectoryFetchedMs = Date.now();
+        mentionDirectoryPending = null;
+        const users = data && Array.isArray(data.users) ? data.users : [];
+        let added = false;
+        for (const user of users) {
+          const key = mentionName(user && user.name);
+          if (!key || !MENTIONABLE_NAME_RE.test(key)) continue;
+          if (mentionDirectory.has(key)) continue;
+          mentionDirectory.set(key, { name: key, kind: "user", lastSeenMs: 0 });
+          added = true;
+        }
+        return added;
+      });
+    return mentionDirectoryPending;
+  }
+
+  // The "@partial" token the caret sits inside, or null. A mention starts at an
+  // "@" preceded by whitespace/start and uses the charset the renderer links.
+  function mentionTokenAtCaret(inputEl) {
+    if (!inputEl) return null;
+    const caret = inputEl.selectionStart;
+    if (caret == null || inputEl.selectionEnd !== caret) return null;
+    const before = String(inputEl.value || "").slice(0, caret);
+    const match = /(^|\s)@([A-Za-z0-9-]{0,32})$/.exec(before);
+    if (!match) return null;
+    return {
+      start: caret - match[2].length - 1, // include the "@"
+      end: caret,
+      partial: match[2].toLowerCase(),
+    };
+  }
+
+  function mentionIsOnline(person) {
+    return Date.now() - (person.lastSeenMs || 0) < MENTION_STALE_MS;
+  }
+
+  function mentionCandidates(partial) {
+    const self = mentionName(displayName());
+    const byName = new Map();
+    for (const person of mentionDirectory.values()) byName.set(person.name, person);
+    // Room presence wins over the directory entry: it carries a lastSeenMs.
+    for (const person of mentionPeople.values()) byName.set(person.name, person);
+    byName.set(FORKBOT_SENDER_ID, {
+      name: FORKBOT_SENDER_ID,
+      kind: "bot",
+      lastSeenMs: Date.now(),
+    });
+    byName.delete(self);
+    const matches = [...byName.values()].filter(
+      (person) => !partial || person.name.includes(partial));
+    matches.sort((a, b) => {
+      const aPrefix = partial && a.name.startsWith(partial) ? 0 : 1;
+      const bPrefix = partial && b.name.startsWith(partial) ? 0 : 1;
+      return (aPrefix - bPrefix) ||
+        (mentionIsOnline(b) - mentionIsOnline(a)) ||
+        a.name.localeCompare(b.name);
+    });
+    return matches.slice(0, MENTION_LIMIT);
+  }
+
+  function ensureMentionSuggest(inputEl) {
+    if (!mentionSuggestEl) {
+      mentionSuggestEl = document.createElement("div");
+      mentionSuggestEl.className =
+        "absolute left-0 right-0 z-30 mb-2 overflow-y-auto rounded-lg border " +
+        "border-border bg-background p-1 shadow-lg";
+      // bottom/max-height inline: the dashboard ships a pre-compiled Tailwind
+      // subset that has no bottom-full / max-h-56 rule to lean on.
+      mentionSuggestEl.style.bottom = "100%";
+      mentionSuggestEl.style.maxHeight = "224px";
+      mentionSuggestEl.hidden = true;
+      mentionSuggestEl.setAttribute("role", "listbox");
+      mentionSuggestEl.setAttribute("aria-label", "Mention a user");
+    }
+    // Anchor to the composer pill the input lives in, so the list floats over
+    // the transcript instead of pushing the composer around.
+    const host = inputEl.parentElement;
+    if (host && mentionSuggestEl.parentElement !== host) {
+      host.classList.add("relative");
+      host.append(mentionSuggestEl);
+    }
+    return mentionSuggestEl;
+  }
+
+  function closeMentionSuggest() {
+    mentionSuggest = null;
+    if (mentionSuggestEl) mentionSuggestEl.hidden = true;
+  }
+
+  function renderMentionSuggest() {
+    if (!mentionSuggest) return;
+    const box = ensureMentionSuggest(mentionSuggest.input);
+    box.textContent = "";
+    const hint = document.createElement("div");
+    hint.className = "px-2 py-1 text-[10px] text-muted-foreground";
+    hint.textContent = "Tab to mention · Esc to dismiss";
+    box.append(hint);
+    mentionSuggest.items.forEach((person, index) => {
+      const active = index === mentionSuggest.index;
+      const item = document.createElement("button");
+      item.type = "button";
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", active ? "true" : "false");
+      item.className =
+        "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs " +
+        (active
+          ? "bg-secondary text-foreground"
+          : "text-muted-foreground hover:bg-secondary/60");
+      const avatar = document.createElement("span");
+      avatar.className =
+        "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border " +
+        "border-border bg-secondary font-mono text-[10px] font-semibold text-foreground";
+      avatar.textContent = person.name.slice(0, 1).toUpperCase();
+      const label = document.createElement("span");
+      label.className = "truncate font-semibold";
+      label.textContent = "@" + person.name;
+      item.append(avatar, label);
+      if (mentionIsOnline(person)) {
+        const dot = document.createElement("span");
+        dot.className = "ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-primary";
+        dot.title = "Active in this room";
+        item.append(dot);
+      }
+      // mousedown, not click: click fires after the input's blur would have
+      // closed the popup.
+      item.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+        acceptMentionSuggest(index);
+      });
+      item.addEventListener("mouseenter", () => {
+        mentionSuggest.index = index;
+        renderMentionSuggest();
+      });
+      box.append(item);
+    });
+    box.hidden = false;
+    const activeItem = box.querySelector('[aria-selected="true"]');
+    if (activeItem) activeItem.scrollIntoView({ block: "nearest" });
+  }
+
+  function showMentionSuggest(inputEl) {
+    const token = mentionTokenAtCaret(inputEl);
+    if (!token) {
+      closeMentionSuggest();
+      return;
+    }
+    const items = mentionCandidates(token.partial);
+    if (!items.length) {
+      closeMentionSuggest();
+      return;
+    }
+    const prev = mentionSuggest && mentionSuggest.items[mentionSuggest.index];
+    let index = prev ? items.findIndex((person) => person.name === prev.name) : 0;
+    if (index < 0) index = 0;
+    mentionSuggest = { input: inputEl, items, index, start: token.start, end: token.end };
+    renderMentionSuggest();
+  }
+
+  function updateMentionSuggest(inputEl) {
+    if (!mentionTokenAtCaret(inputEl)) {
+      closeMentionSuggest();
+      return;
+    }
+    refreshMentionDirectory().then((added) => {
+      if (added && mentionSuggest && mentionSuggest.input === inputEl) {
+        showMentionSuggest(inputEl);
+      }
+    });
+    showMentionSuggest(inputEl);
+  }
+
+  function acceptMentionSuggest(index) {
+    if (!mentionSuggest) return;
+    const inputEl = mentionSuggest.input;
+    const person = mentionSuggest.items[
+      typeof index === "number" ? index : mentionSuggest.index];
+    if (!person || !inputEl) return;
+    const value = String(inputEl.value || "");
+    const inserted = "@" + person.name + " ";
+    inputEl.value =
+      value.slice(0, mentionSuggest.start) + inserted + value.slice(mentionSuggest.end);
+    const caret = mentionSuggest.start + inserted.length;
+    closeMentionSuggest();
+    inputEl.setSelectionRange(caret, caret);
+    inputEl.focus();
+  }
+
+  function moveMentionSuggest(step) {
+    if (!mentionSuggest) return;
+    const count = mentionSuggest.items.length;
+    mentionSuggest.index = (mentionSuggest.index + step + count) % count;
+    renderMentionSuggest();
+  }
+
   function setStatus(text) {
     document.querySelectorAll("[data-dashboard-chat-status]").forEach((el) => {
       el.textContent = text;
@@ -937,6 +1189,11 @@
     const attachment = attachmentFromEntry(entry);
     if (!text && !attachment) return;
     kind = entry.senderId === selfId ? "self" : kind;
+    // Anyone who has spoken here — including in replayed history — becomes a
+    // composer mention candidate.
+    if (entry.senderId !== selfId) {
+      rememberMentionPerson(who, live ? Date.now() : Number(entry.ts) || 0);
+    }
     appendMessage(kind, who, text, entry.id, entry.senderId,
                   Number(entry.ts) || Date.now(), attachment);
     if (live) {
@@ -999,6 +1256,9 @@
     if (type !== "history" && !allowedChatAccountKind(plain.accountKind)) return;
     plain = normalizedPublicWorldFrame(plain);
     const sender = String(plain.sender || "peer").slice(0, MAX_NAME);
+    // "hello"/"presence" frames are the only sign of someone who is here but
+    // has not typed yet; keep them in the mention list too.
+    if (plain.senderId !== selfId) rememberMentionPerson(sender, Date.now());
     if (type === "chat") {
       if (plain.channel === CHANNEL) renderChatEntry(plain, "peer", true);
     } else if (type === "history") {
@@ -1310,6 +1570,7 @@
     }
     const text = (inputEl?.value || "").trim();
     if (!text) return;
+    closeMentionSuggest();
     if (inputEl) inputEl.value = "";
     runWhenConnected(() => {
       const clipped = text.slice(0, MAX_TEXT);
@@ -1336,11 +1597,45 @@
       sendAttachment(file, attachmentControl);
     });
     inputEl.addEventListener("keydown", (event) => {
+      // While the mention list is open it owns Enter/Tab/arrows, so accepting a
+      // name never sends the half-typed message.
+      if (mentionSuggest && mentionSuggest.input === inputEl) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          moveMentionSuggest(1);
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          moveMentionSuggest(-1);
+          return;
+        }
+        if (event.key === "Tab" || event.key === "Enter") {
+          event.preventDefault();
+          acceptMentionSuggest();
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeMentionSuggest();
+          return;
+        }
+      }
       if (event.key === "Enter") {
         event.preventDefault();
         sendFrom(inputEl);
       }
     });
+    inputEl.addEventListener("input", () => updateMentionSuggest(inputEl));
+    inputEl.addEventListener("click", () => updateMentionSuggest(inputEl));
+    inputEl.addEventListener("keyup", (event) => {
+      // Caret moves that leave the value alone (no "input" event) can still
+      // enter or leave an "@token".
+      if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+        updateMentionSuggest(inputEl);
+      }
+    });
+    inputEl.addEventListener("blur", closeMentionSuggest);
   }
 
   async function initChat() {

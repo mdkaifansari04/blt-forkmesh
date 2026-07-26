@@ -1417,6 +1417,31 @@ function campfireSeatPlateTexture(THREE, name, away) {
   });
 }
 
+// The headline membership number, drawn as glowing embers on transparency so
+// it can hang inside the campfire's flames without a plate behind it.
+function campfireMemberCountTexture(THREE, total) {
+  const count = Math.max(0, Math.min(999999, Math.round(Number(total) || 0)));
+  const digits = count.toLocaleString("en-US");
+  return canvasTexture(THREE, 512, 256, (context) => {
+    context.clearRect(0, 0, 512, 256);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    const ember = context.createLinearGradient(0, 30, 0, 170);
+    ember.addColorStop(0, "#fff6cf");
+    ember.addColorStop(0.55, "#ffc457");
+    ember.addColorStop(1, "#ff7a2f");
+    context.shadowColor = "rgba(255,122,47,0.95)";
+    context.shadowBlur = 36;
+    context.fillStyle = ember;
+    context.font = '700 132px "ForkMesh Favorit", system-ui, sans-serif';
+    context.fillText(digits, 256, 104);
+    context.shadowBlur = 20;
+    context.fillStyle = "#ffdcac";
+    context.font = '400 40px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(count === 1 ? "MEMBER" : "MEMBERS", 256, 198);
+  });
+}
+
 // Carves rather than paints: a dark shadow above and a warm highlight below
 // read as a groove branded into the wood instead of ink sitting on top of it.
 function embossPlankText(context, text, x, y, font, glow) {
@@ -5928,12 +5953,42 @@ export function createWorldScene({
   const fireLight = new THREE.PointLight("#ffa14d", 3.2, 14, 1.8);
   fireLight.position.y = 1.1;
   campfire.add(fireLight);
+  // The membership total rides in the flames themselves rather than on yet
+  // another sign: an ember-lit numeral hovering over the pit, so the fire
+  // reads as "this many accounts sit here" at a glance. Hidden until the
+  // roster lands so it never flashes a placeholder zero.
+  const memberCountSprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      transparent: true,
+      depthWrite: false,
+    }),
+  );
+  const MEMBER_COUNT_HOVER_Y = 1.95;
+  memberCountSprite.position.y = MEMBER_COUNT_HOVER_Y;
+  memberCountSprite.scale.set(2.8, 1.4, 1);
+  memberCountSprite.visible = false;
+  campfire.add(memberCountSprite);
+  let memberCountShown = -1;
+  // Repaints only when the count actually moved: the roster refresh runs on a
+  // timer and would otherwise rebuild the canvas every pass.
+  function setCampfireMemberCount(total) {
+    const count = Math.max(0, Math.min(999999, Math.round(Number(total) || 0)));
+    if (memberCountShown === count) return;
+    memberCountShown = count;
+    memberCountSprite.material.map?.dispose?.();
+    memberCountSprite.material.map = campfireMemberCountTexture(THREE, count);
+    memberCountSprite.material.needsUpdate = true;
+    memberCountSprite.visible = true;
+  }
   animated.push((time) => {
     const flicker = 1 + Math.sin(time * 0.011) * 0.12 + Math.sin(time * 0.023) * 0.06;
     const size = fireLevel * flicker;
     flame.scale.set(size, fireLevel * (1 + Math.sin(time * 0.017) * 0.16), size);
     innerFlame.scale.set(size * 0.82, size * 0.9, size * 0.82);
     fireLight.intensity = 3.2 * fireLevel + Math.sin(time * 0.013) * 0.7;
+    // Drift with the flames so the number sits in the fire instead of on it.
+    memberCountSprite.position.y =
+      MEMBER_COUNT_HOVER_Y + Math.sin(time * 0.0017) * 0.07;
   });
   // The real bench count depends on the member roster, which is still an
   // in-flight network request when the scene first renders. Rather than
@@ -8646,6 +8701,8 @@ export function createWorldScene({
     guests = 0,
   ) {
     const total = Math.max(0, Math.min(999999, Number(totalCount) || 0));
+    // The flames carry the headline count of registered accounts.
+    setCampfireMemberCount(total);
     const leaderboardFace = activeLeaderboardSign.userData.face;
     const leaderboardKey = JSON.stringify(
       rankedActiveLeaderboardMembers(leaderboardMembers)
