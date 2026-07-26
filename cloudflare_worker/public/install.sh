@@ -440,15 +440,19 @@ ensure_mirror_candidates() {
   CURRENT_STEP="mirror"
   say "Resolving an online ForkMesh mirror to clone from…"
   resolve_install_node
-  local _node
-  for _node in $FORKMESH_NODES; do
-    REPO_CANDIDATES+=("${FORKMESH_HOST%/}/${_node}/${FORKMESH_NAME}")
-  done
+  # Clone through the stable source-of-truth route. The Worker uses the ranked
+  # signed endpoint set above to select/fail over between mirror2, mirror3, ...
+  # internally. Building node-namespaced clone URLs here tied the repository
+  # pin to a mirror alias and could return 503 even while the canonical
+  # forkmesh/forkmesh route was healthy.
+  REPO_CANDIDATES+=(
+    "${FORKMESH_HOST%/}/forkmesh/${FORKMESH_NAME}"
+  )
   REPO="${REPO_CANDIDATES[0]}"
   say "Using mirror node: $FORKMESH_NODE"
-  if [ "${#REPO_CANDIDATES[@]}" -gt 1 ]; then
-    say "  ${#REPO_CANDIDATES[@]} online mirrors available; will fall back if one is unreachable: $FORKMESH_NODES"
-  fi
+  case "$FORKMESH_NODES" in
+    *" "*) say "  Mirror gateway will fail over across: $FORKMESH_NODES" ;;
+  esac
   diag mirror 1
 }
 
