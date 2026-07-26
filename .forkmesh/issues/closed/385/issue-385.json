@@ -75,6 +75,18 @@
             "status": "closed",
             "ts": 1784327803925,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "04765762-f01d-4438-88b2-837b7acbfd0c",
+            "sig": "45nTeNynSft0GxEH0z6I7nnay0KND-N6ZZXxzMYJjZ-n4UL8hresmfN4lJ9trY0G8Q1awP1B19ycAV1M9hzSCw",
+            "ts": 1785033075696,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -87,6 +99,6 @@
     "startDate": 0,
     "status": "closed",
     "title": "let users ask other nodes to mirror for them",
-    "updatedAt": 1784327803925,
+    "updatedAt": 1785033075696,
     "votes": 0
 }
