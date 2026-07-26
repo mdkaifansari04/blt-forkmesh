@@ -3712,6 +3712,12 @@ private:
     bool m_vultrProvisionActive = false;
     int m_vultrPollCount = 0;        // instance boot polls used this run
     int m_vultrInstallAttempts = 0;  // SSH install attempts used this run
+    // Flipped once an attempt fails because no online node is mirroring the
+    // repo yet (the freshly-created instance has nothing to clone/download
+    // from) — every later attempt this run then uploads this app's own
+    // release binary directly over the SSH session instead, which needs no
+    // mirror at all.
+    bool m_vultrInstallUseLocalBinary = false;
     QString m_vultrDnsHostname;      // Cloudflare name provisioned this run
     // "Attempt N of M at HH:mm:ss — outcome" per install attempt this run, so
     // the window can show what every attempt did instead of only the last one.
