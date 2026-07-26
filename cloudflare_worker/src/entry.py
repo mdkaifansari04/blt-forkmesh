@@ -24793,6 +24793,26 @@ def _forkbot_attributed_body(body, source, actor):
     return "%s\n\n---\n_%s_" % (body, footer)
 
 
+async def _forkbot_rekey_alias_inbox(env, alias_owner, host_owner, repo,
+                                     repo_bi):
+    """Recover issue-inbox rows an earlier release filed under an organization
+    alias's blind index. No drain ever looked there (see _forkbot_enqueue_issue),
+    so those submissions are stranded; move them onto the backing node's key so
+    the next sync delivers them. Idempotent (the alias key ends up empty) and
+    best-effort — a hiccup here must never fail the new submission. The stored
+    item carries no owner binding, so re-keying it is a pure routing fix."""
+    if not host_owner or host_owner == alias_owner:
+        return
+    try:
+        alias_bi = await blind_index(env, alias_owner + "/" + repo)
+        if alias_bi and alias_bi != repo_bi:
+            await d1_run(
+                env, "UPDATE issue_inbox SET repo_bi=? WHERE repo_bi=?",
+                repo_bi, alias_bi)
+    except Exception:
+        pass
+
+
 async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester,
                                  source="forkbot", labels=None,
                                  attachments=None,
@@ -24803,7 +24823,18 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester,
     this path with its random review id so the owner node can later confirm
     the exact issue it materialized; inbound posts never call this directly."""
     await ensure_schema(env)
-    repo_bi = await blind_index(env, owner + "/" + repo)
+    # ForkBot names the repo by its PUBLIC url (forkmesh/forkmesh), which is an
+    # organization alias. Every drain path — the node's per-repo GET and the
+    # consolidated GET /api/sync — reads the inbox under the backing node's
+    # blind index, because /api/repo/... is org_alias_rewrite'd before routing
+    # and /api/sync selects the repositories rows the account actually owns.
+    # Keying the insert on the alias therefore dead-letters the row: it sits in
+    # issue_inbox forever and never reaches the repository. Resolve org->node
+    # for the storage key and the owner-directed notifications (a no-op for a
+    # plain node name); public strings/URLs stay on the alias in the caller.
+    host_owner = await _ap_org_alias_owner(env, owner, repo)
+    repo_bi = await blind_index(env, host_owner + "/" + repo)
+    await _forkbot_rekey_alias_inbox(env, owner, host_owner, repo, repo_bi)
     count = await d1_first(
         env, "SELECT COUNT(*) AS c FROM issue_inbox WHERE repo_bi=?", repo_bi)
     if count and int(count.get("c", 0) or 0) >= MAX_PENDING_ISSUES:
@@ -24871,13 +24902,16 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester,
     await _record_contributor(env, FORKBOT_AUTHOR, "issues")
     await _best_effort_inbox_side_effect(
         notify_pending_inbox(
-            env, owner, repo, "issue", FORKBOT_AUTHOR, item.get("titleIfNew", ""),
-            number))
+            env, host_owner, repo, "issue", FORKBOT_AUTHOR,
+            item.get("titleIfNew", ""), number))
     await _best_effort_inbox_side_effect(
         notify_mentions(
-            env, owner, repo, FORKBOT_AUTHOR, item.get("titleIfNew", ""),
+            env, host_owner, repo, FORKBOT_AUTHOR, item.get("titleIfNew", ""),
             event.get("body", ""), repo_web_href(owner, repo), "issue",
             number=number))
+    # Same push every other inbox write does: the owner's node syncs on the
+    # event frame instead of waiting out the 5-15 minute fallback poll.
+    await notify_repo_host(env, host_owner, repo, "issues")
     return True, item
 
 
@@ -24889,7 +24923,10 @@ async def _forkbot_enqueue_agent_request(env, owner, repo, number, requester):
     itself. Caller has already verified the requester is the repo owner/admin
     (the same privilege gate issues_handler applies to wantsAgent)."""
     await ensure_schema(env)
-    repo_bi = await blind_index(env, owner + "/" + repo)
+    # Key the row the way every drain reads it — see _forkbot_enqueue_issue.
+    host_owner = await _ap_org_alias_owner(env, owner, repo)
+    repo_bi = await blind_index(env, host_owner + "/" + repo)
+    await _forkbot_rekey_alias_inbox(env, owner, host_owner, repo, repo_bi)
     count = await d1_first(
         env, "SELECT COUNT(*) AS c FROM issue_inbox WHERE repo_bi=?", repo_bi)
     if count and int(count.get("c", 0) or 0) >= MAX_PENDING_ISSUES:
@@ -24936,8 +24973,9 @@ async def _forkbot_enqueue_agent_request(env, owner, repo, number, requester):
     )
     await _best_effort_inbox_side_effect(
         notify_pending_inbox(
-            env, owner, repo, "issue", FORKBOT_AUTHOR,
+            env, host_owner, repo, "issue", FORKBOT_AUTHOR,
             "agent request for issue #%d" % int(number), int(number)))
+    await notify_repo_host(env, host_owner, repo, "issues")
     return True, item
 
 
@@ -25080,8 +25118,13 @@ async def _forkbot_action_start_agent(env, owner, repo, number, sender):
     # network admin. Chat sender names are client-claimed, matching the trust
     # model of the web form's ownerAccount field.
     requester = clean_string(sender, MAX_NODE_NAME).strip().lower()
+    # When the repo is fronted by an organization alias, the account that owns
+    # it (and whose node would run the agent) is the backing node, not the org
+    # name in the URL — check against both so the real owner isn't refused.
+    host_owner = (await _ap_org_alias_owner(env, owner, repo)).lower()
     authorized = bool(requester) and (
-        requester == owner.lower() or await _is_admin(env, requester))
+        requester == owner.lower() or requester == host_owner
+        or await _is_admin(env, requester))
     if not authorized:
         return json_response({
             "ok": True,
