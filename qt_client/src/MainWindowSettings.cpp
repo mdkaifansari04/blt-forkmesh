@@ -1487,7 +1487,9 @@ QWidget *MainWindow::buildSettingsSection()
     varsLabel->setObjectName("sectionLabel");
     auto *varsHint = new QLabel(
         "Injected into every action run's environment and redacted from logs. "
-        "Add CLOUDFLARE_API_TOKEN here to let the deploy workflow authenticate.");
+        "Add CLOUDFLARE_API_TOKEN here to let the deploy workflow authenticate, "
+        "and FORKMESH_RELEASE_SIGNING_KEY_PEM (the Ed25519 private key itself) "
+        "to let the release workflow sign published builds.");
     varsHint->setObjectName("statusLine");
     varsHint->setWordWrap(true);
 
