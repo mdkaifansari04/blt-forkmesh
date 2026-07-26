@@ -525,7 +525,6 @@ function defaultSettings() {
     availability: "online",
     activityCategory: "automatic",
     publicDoor: "knock",
-    displayName: "",
     statusEmoji: "",
     statusNote: "",
     outfitColor: "",
@@ -541,6 +540,7 @@ function defaultSettings() {
     },
     labels: true,
     reducedData: false,
+    debugPanel: false,
   };
 }
 
@@ -603,6 +603,7 @@ function mergeSettings(stored) {
       ),
     ),
     focusMusicMuted: stored?.focusMusicMuted === true,
+    debugPanel: stored?.debugPanel === true,
     statusEmoji: publicStatus.emoji,
     statusNote: publicStatus.note,
     outfitColor: OUTFIT_COLOR_VALUES.has(String(stored?.outfitColor || ""))
@@ -616,11 +617,7 @@ function mergeSettings(stored) {
 }
 
 function publicIdentity(identity, settings) {
-  const chosenName = sanitizePresenceText(
-    identity.accountStatus === "Guest" ? settings.displayName : identity.name,
-    identity.name,
-    24,
-  );
+  const chosenName = sanitizePresenceText(identity.name, identity.name, 24);
   const publicStatus = normalizeWorldStatus(
     settings.statusEmoji,
     settings.statusNote,
@@ -2595,12 +2592,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
       }>${escapeHTML(option.label)}</option>`,
   ).join("");
 
-  const activityOptions = ACTIVITY_OPTIONS.map(
-    (option) => `
-      <option value="${escapeHTML(option.id)}" ${
-        settings.activityCategory === option.id ? "selected" : ""
-      }>${escapeHTML(option.label)}</option>`,
-  ).join("");
   const publicStatus = normalizeWorldStatus(
     settings.statusEmoji,
     settings.statusNote,
@@ -2765,7 +2756,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </button>
         </div>
 
-        <details class="world-diagnostics" data-world-diagnostics>
+        <details class="world-diagnostics" data-world-diagnostics ${settings.debugPanel ? "" : "hidden"}>
           <summary aria-label="Open local World performance and connection details">
             <span class="world-diagnostics-light" data-world-diagnostics-light data-state="connecting" aria-hidden="true"></span>
             <strong>DEBUG</strong>
@@ -3237,6 +3228,14 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               />
               <small>Full daylight is the default. This adjustment stays on this device and never changes the shared world.</small>
             </label>
+            <label class="world-privacy-option">
+              <span>Show debug panel</span>
+              <input
+                type="checkbox"
+                data-world-debug-panel
+                ${settings.debugPanel ? "checked" : ""}
+              />
+            </label>
           </fieldset>
 
           <fieldset class="world-setting-group">
@@ -3282,21 +3281,8 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           <fieldset class="world-setting-group">
             <legend>Public avatar badge</legend>
             <label class="world-field">
-              <span>Display name</span>
-              <input
-                type="text"
-                maxlength="24"
-                value="${escapeHTML(settings.displayName || identity.name)}"
-                data-world-display-name
-              />
-            </label>
-            <label class="world-field">
               <span>Availability</span>
               <select data-world-availability>${availabilityOptions}</select>
-            </label>
-            <label class="world-field">
-              <span>Generalized public activity</span>
-              <select data-world-activity-category>${activityOptions}</select>
             </label>
             <div class="world-status-editor">
               <div class="world-status-fields">
@@ -5687,12 +5673,12 @@ class ForkMeshWorld extends HTMLElement {
         }
         return;
       }
-      const activity = event.target.closest("[data-world-activity-category]");
-      if (activity) {
-        if (ACTIVITY_OPTIONS.some((option) => option.id === activity.value)) {
-          this.settings.activityCategory = activity.value;
-          this.commitPublicSettings();
-        }
+      const debugPanel = event.target.closest("[data-world-debug-panel]");
+      if (debugPanel) {
+        this.settings.debugPanel = debugPanel.checked;
+        this.commitPublicSettings();
+        const diagnostics = this.$("[data-world-diagnostics]");
+        if (diagnostics) diagnostics.hidden = !debugPanel.checked;
         return;
       }
       const emojiCategory = event.target.closest(
@@ -5740,16 +5726,6 @@ class ForkMeshWorld extends HTMLElement {
       if (mediaSpace) {
         this.loadMediaSpace(mediaSpace.value, true);
         return;
-      }
-      const name = event.target.closest("[data-world-display-name]");
-      if (name) {
-        this.settings.displayName = sanitizePresenceText(
-          name.value,
-          this.identity.name,
-          24,
-        );
-        name.value = this.settings.displayName;
-        this.commitPublicSettings();
       }
     });
 
