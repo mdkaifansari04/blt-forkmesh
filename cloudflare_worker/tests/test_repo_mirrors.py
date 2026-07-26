@@ -198,6 +198,22 @@ def test_payload_keeps_machine_node_and_user_owner_as_distinct_identities():
     assert mirror["ownerUser"] == "jett"
 
 
+def test_fresh_signed_local_publication_is_source_node_liveness():
+    now = 1_000_000
+    row = _row(
+        "a", "jett", "forkmesh", root="abc", synced="995000",
+        source="local-node",
+    )
+    row["data"]["machineName"] = "forkmesh"
+    payload = build_repo_mirrors_payload(
+        "jett", "forkmesh", [row], {}, {}, now, 600_000, 5_000)
+
+    source = payload["mirrors"][0]
+    assert source["node"] == "forkmesh"
+    assert source["status"] == "online"
+    assert source["lastSeen"] == 995_000
+
+
 def test_identical_signed_ref_states_are_not_behind_only_due_to_sync_time():
     now = 1_000_000
     exact_state = "a" * 64
@@ -640,9 +656,15 @@ def test_payload_groups_mirror_with_missing_root_commit_by_name():
 def test_payload_falls_back_to_repo_name_when_root_commit_is_absent():
     now = 1_000_000
     rows = [
-        _row("a", "mainnode", "forkmesh", synced="990000"),
-        _row("b", "backup", "ForkMesh", synced="980000"),
-        _row("c", "backup", "other", synced="999000"),
+        _row(
+            "a", "mainnode", "forkmesh", synced="990000",
+            source="remote-clone"),
+        _row(
+            "b", "backup", "ForkMesh", synced="980000",
+            source="remote-clone"),
+        _row(
+            "c", "backup", "other", synced="999000",
+            source="remote-clone"),
     ]
     payload = build_repo_mirrors_payload(
         "mainnode", "forkmesh", rows, {}, {}, now, 600_000, 5_000
