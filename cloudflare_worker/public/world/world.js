@@ -14704,7 +14704,7 @@ class ForkMeshWorld extends HTMLElement {
       marquee.style.width = `${rect.width}px`;
       marquee.style.height = `${rect.height}px`;
     });
-    overlay.addEventListener("pointerup", (event) => {
+    overlay.addEventListener("pointerup", async (event) => {
       if (!origin) return;
       const rect = selectionRect(event);
       origin = null;
@@ -14713,7 +14713,7 @@ class ForkMeshWorld extends HTMLElement {
         this.toast("Drag a larger area to capture a screenshot.");
         return;
       }
-      const shot = this.captureWorldRegion(rect);
+      const shot = await this.captureWorldRegion(rect);
       if (!shot) {
         this.toast("That area is outside the 3D world view.");
         return;
@@ -14727,7 +14727,7 @@ class ForkMeshWorld extends HTMLElement {
     this.appendChild(overlay);
   }
 
-  captureWorldRegion(rect) {
+  async captureWorldRegion(rect) {
     const world = this.world;
     const canvas = world?.renderer?.domElement;
     if (!canvas) return null;
@@ -14738,31 +14738,143 @@ class ForkMeshWorld extends HTMLElement {
     } catch (_) {
       return null;
     }
-    const bounds = canvas.getBoundingClientRect();
+    const root = this.$("[data-world-root]");
+    const canvasBounds = canvas.getBoundingClientRect();
+    // The HUD is DOM painted over the canvas, so the crop is clamped to the
+    // world root — everything the player sees, chrome included.
+    const bounds = root ? root.getBoundingClientRect() : canvasBounds;
     const left = Math.max(rect.left, bounds.left);
     const top = Math.max(rect.top, bounds.top);
     const right = Math.min(rect.left + rect.width, bounds.right);
     const bottom = Math.min(rect.top + rect.height, bounds.bottom);
     if (right - left < 4 || bottom - top < 4) return null;
-    const scaleX = canvas.width / Math.max(1, bounds.width);
-    const scaleY = canvas.height / Math.max(1, bounds.height);
+    const scaleX = canvas.width / Math.max(1, canvasBounds.width);
+    const scaleY = canvas.height / Math.max(1, canvasBounds.height);
     const shot = document.createElement("canvas");
     shot.width = Math.max(1, Math.round((right - left) * scaleX));
     shot.height = Math.max(1, Math.round((bottom - top) * scaleY));
     const context = shot.getContext("2d");
     if (!context) return null;
+    // Read the WebGL buffer back before anything awaits — the next paint
+    // clears it.
     context.drawImage(
       canvas,
-      (left - bounds.left) * scaleX,
-      (top - bounds.top) * scaleY,
-      (right - left) * scaleX,
-      (bottom - top) * scaleY,
       0,
       0,
-      shot.width,
-      shot.height,
+      canvas.width,
+      canvas.height,
+      (canvasBounds.left - left) * scaleX,
+      (canvasBounds.top - top) * scaleY,
+      canvasBounds.width * scaleX,
+      canvasBounds.height * scaleY,
     );
+    if (root) {
+      const hud = await this.renderHudImage(root, bounds);
+      if (hud) {
+        context.drawImage(
+          hud,
+          (bounds.left - left) * scaleX,
+          (bounds.top - top) * scaleY,
+          bounds.width * scaleX,
+          bounds.height * scaleY,
+        );
+      }
+    }
     return shot;
+  }
+
+  // Rasterizes the HUD layers (top bar, rails, labels, panels) so a capture
+  // shows the interface the player is looking at and not a bare 3D frame.
+  // Anything that fails to serialize degrades to a canvas-only screenshot.
+  async renderHudImage(root, bounds) {
+    const width = Math.max(1, Math.round(bounds.width));
+    const height = Math.max(1, Math.round(bounds.height));
+    let markup = "";
+    try {
+      const clone = root.cloneNode(true);
+      clone.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
+      // The 3D canvas is drawn from the live renderer, and the capture
+      // overlay/annotator are capture chrome — neither belongs in the clone.
+      clone
+        .querySelectorAll(
+          "canvas, [data-world-canvas-wrap], .world-shot-overlay, .world-shot-annotator, script",
+        )
+        .forEach((node) => node.remove());
+      clone.style.width = `${width}px`;
+      clone.style.height = `${height}px`;
+      clone.style.margin = "0";
+      await this.inlineHudImages(root, clone);
+      markup = new XMLSerializer().serializeToString(clone);
+    } catch (_) {
+      return null;
+    }
+    const styles = this.hudStylesheetText();
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><foreignObject x="0" y="0" width="100%" height="100%"><style xmlns="http://www.w3.org/1999/xhtml">/*<![CDATA[*/${styles}/*]]>*/</style>${markup}</foreignObject></svg>`;
+    try {
+      return await new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error("HUD layer did not rasterize."));
+        image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+      });
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // Foreign-object rasterization never fetches subresources, so same-origin
+  // HUD artwork (the brand mark, avatars) is inlined as data URLs first.
+  async inlineHudImages(root, clone) {
+    this.hudImageCache = this.hudImageCache || new Map();
+    const live = Array.from(root.querySelectorAll("img"));
+    const copies = Array.from(clone.querySelectorAll("img"));
+    await Promise.all(
+      copies.map(async (image, index) => {
+        const source = live[index]?.currentSrc || image.getAttribute("src") || "";
+        if (!source || source.startsWith("data:")) return;
+        if (!this.hudImageCache.has(source)) {
+          this.hudImageCache.set(
+            source,
+            (async () => {
+              try {
+                const response = await fetch(source, { cache: "force-cache" });
+                if (!response.ok) return "";
+                const blob = await response.blob();
+                return await new Promise((resolve) => {
+                  const reader = new FileReader();
+                  reader.onload = () => resolve(String(reader.result || ""));
+                  reader.onerror = () => resolve("");
+                  reader.readAsDataURL(blob);
+                });
+              } catch (_) {
+                return "";
+              }
+            })(),
+          );
+        }
+        const encoded = await this.hudImageCache.get(source);
+        if (encoded) image.setAttribute("src", encoded);
+        else image.remove();
+      }),
+    );
+  }
+
+  // Same-origin rules only; a cross-origin sheet throws on cssRules and is
+  // simply skipped.
+  hudStylesheetText() {
+    if (typeof this.hudStyleText === "string") return this.hudStyleText;
+    const parts = [];
+    for (const sheet of Array.from(document.styleSheets || [])) {
+      let rules = null;
+      try {
+        rules = sheet.cssRules;
+      } catch (_) {
+        continue;
+      }
+      for (const rule of Array.from(rules || [])) parts.push(rule.cssText);
+    }
+    this.hudStyleText = parts.join("\n");
+    return this.hudStyleText;
   }
 
   openScreenshotAnnotator(shot) {
