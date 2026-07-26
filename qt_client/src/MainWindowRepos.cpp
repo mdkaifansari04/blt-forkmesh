@@ -355,6 +355,23 @@ QJsonObject normalizedCatalogV2Record(const QJsonObject &data)
         cleanCatalogString(data, QStringLiteral("machineName"), 63);
     if (!machineName.isEmpty())
         record.insert(QStringLiteral("machineName"), machineName);
+    // Latest-commit subject/author/date: same optional-extension rule again, so
+    // a node that can't read them (or an older client) publishes no key at all
+    // rather than an empty one that would change the signed record.
+    const QString commitSubject =
+        cleanCatalogString(data, QStringLiteral("commitSubject"),
+                           kMaxCommitSubjectChars);
+    if (!commitSubject.isEmpty())
+        record.insert(QStringLiteral("commitSubject"), commitSubject);
+    const QString commitAuthorName =
+        cleanCatalogString(data, QStringLiteral("commitAuthorName"),
+                           kMaxCommitAuthorChars);
+    if (!commitAuthorName.isEmpty())
+        record.insert(QStringLiteral("commitAuthorName"), commitAuthorName);
+    const QString commitAt =
+        cleanCatalogString(data, QStringLiteral("commitAt"), 16);
+    if (!commitAt.isEmpty())
+        record.insert(QStringLiteral("commitAt"), commitAt);
     return record;
 }
 
@@ -1237,6 +1254,10 @@ void MainWindow::refreshRepositoryList()
                 advert.commit = primaryTip.commit;
                 if (advert.commit.isEmpty())
                     continue;
+                // Subject/author/date of that tip, so peers can name our latest
+                // commit rather than showing a hash they may not hold.
+                advert.commitIdentity = mirrorCommitIdentity(
+                    repo.mirrorPath, repo.localPath, advert.commit);
                 advert.updatedMs = repo.lastSyncMs;
                 // On-disk mirror size so peers can show how much data we're holding.
                 advert.sizeBytes = mirrorRepoSizeBytes(repo.mirrorPath);
@@ -4089,6 +4110,11 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
     logoInput.topics = publishedTopics;
     logoInput.contributionPayload = contributionLogoPayload;
     const QJsonObject logoMetadata = buildRepoLogoMetadata(logoInput);
+    // What the advertised head commit actually says, and who wrote it, so the
+    // Mirror nodes view and the World cabinets can name a node's latest commit
+    // even while that node is offline.
+    const CommitIdentity headIdentity =
+        mirrorCommitIdentity(repo.mirrorPath, repo.localPath, headCommit);
     const int issueCount = mirrorIssueCount(repo.mirrorPath, headBranch);
     // Highest issue number ever assigned (not just the open count), so the
     // relay can propose the same next number the desktop would for a ForkBot-
@@ -4207,6 +4233,12 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                          {"machineName", machineNodeName()},
                          {"commit", headCommit},
                          {"branch", headBranch},
+                         {"commitSubject", headIdentity.subject},
+                         {"commitAuthorName", headIdentity.author},
+                         {"commitAt",
+                          headIdentity.committedAtMs > 0
+                              ? QString::number(headIdentity.committedAtMs)
+                              : QString()},
                          {"issueCount", QString::number(issueCount)},
                          {"issueMaxNumber", QString::number(issueMaxNumber)},
                          {"commitCount", QString::number(commitCount)},

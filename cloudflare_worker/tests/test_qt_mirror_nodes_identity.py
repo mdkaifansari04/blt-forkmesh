@@ -38,6 +38,47 @@ def test_mirror_nodes_table_has_separate_owner_column():
     assert 'm.value(QStringLiteral("ownerUser"))' in load
 
 
+def test_mirror_nodes_show_the_latest_commit_message_and_author():
+    # A hash alone doesn't say what a node is serving, so every row names the
+    # commit's subject and author (adhoc #337). Peers advertise the identity
+    # themselves; our own mirror is only the fallback for older peers.
+    source = RELEASES.read_text(encoding="utf-8")
+    backend = BACKEND.read_text(encoding="utf-8")
+    server = SERVER_NODE.read_text(encoding="utf-8")
+    repos = REPOS.read_text(encoding="utf-8")
+    build = _body(
+        source,
+        "QWidget *MainWindow::buildMirrorNodesTab()",
+        "void MainWindow::requestMirrorNodesRefresh()",
+    )
+    load = _body(
+        source,
+        "void MainWindow::loadMirrorNodesPanel()",
+        "void MainWindow::fetchCatalogMirrors",
+    )
+
+    assert '"Latest commit", "Message", "Author"' in build
+    assert "MirrorNodeColMessage" in source and "MirrorNodeColAuthor" in source
+    # Both row builders (live roster and catalog-backed) fill the columns.
+    assert load.count("setCommitIdentityCells(row,") == 2
+    assert "resolveCommitIdentity(advert->commit, advert->commitIdentity)" in load
+    assert 'm.value(QStringLiteral("lastCommitMessage"))' in load
+    assert 'm.value(QStringLiteral("lastCommitAuthorName"))' in load
+
+    # The advert carries the identity across the wire so a node that doesn't
+    # hold a peer's commit can still name it.
+    assert "struct CommitIdentity" in backend
+    assert "CommitIdentity commitIdentity;" in backend
+    assert 'head.insert("m", m.commitIdentity.subject' in server
+    assert 'head.insert("n", m.commitIdentity.author' in server
+    assert "advert.commitIdentity.subject =" in server
+
+    # ...and into the signed catalog record, so an offline node still names it.
+    assert '{"commitSubject", headIdentity.subject}' in repos
+    assert '{"commitAuthorName", headIdentity.author}' in repos
+    assert 'record.insert(QStringLiteral("commitSubject"), commitSubject)' in repos
+
+
 def test_mirror_nodes_use_node_account_not_chat_name():
     source = RELEASES.read_text(encoding="utf-8")
     load = _body(

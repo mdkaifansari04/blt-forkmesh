@@ -36,6 +36,9 @@ def test_live_node_builder_preserves_signed_repo_facts_and_unknown_telemetry():
             cloneAvailable: true, commit, branch: "main", sizeBytes: 44,
             issueCount: 7, commitCount: 80, branchCount: 3, pullCount: 5,
             discussionCount: 2, artifactCount: 1, platform: "linux",
+            lastCommitMessage: "Show the last commit on every node",
+            lastCommitAuthorName: "Ada Lovelace",
+            lastCommitAt: 1750000000000,
             version: "0.7.0", cpuPercent: 32,
             memUsedBytes: 25, memTotalBytes: 100,
             diskUsedBytes: -1, diskTotalBytes: -1
@@ -70,6 +73,12 @@ def test_live_node_builder_preserves_signed_repo_facts_and_unknown_telemetry():
     assert "machineName" not in nodes[1]
     assert mirror2["commit"] == "a" * 40
     assert mirror2["branch"] == "main"
+    # What the cabinet's LAST COMMIT panel names: the subject, the author and
+    # when it landed, straight from the signed mirror record (adhoc #337). A
+    # node that never published them keeps the honest "not reported" state.
+    assert mirror2["lastCommitMessage"] == "Show the last commit on every node"
+    assert mirror2["lastCommitAuthorName"] == "Ada Lovelace"
+    assert mirror2["lastCommitAt"] == 1_750_000_000_000
     assert mirror2["pullCount"] == 5
     assert mirror2["sizeBytes"] == 44
     assert mirror2["version"] == "0.7.0"
@@ -85,6 +94,8 @@ def test_live_node_builder_preserves_signed_repo_facts_and_unknown_telemetry():
     # not replace that explicit unknown state for this exact mirror record.
     assert "pullCount" not in mirror3
     assert "issueCount" not in mirror3
+    assert "lastCommitMessage" not in mirror3
+    assert "lastCommitAuthorName" not in mirror3
     assert "cpuPercent" not in mirror3
     assert "memoryUsedBytes" not in mirror3
     assert "diskUsedBytes" not in mirror3

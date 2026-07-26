@@ -331,6 +331,35 @@ def test_payload_carries_node_facts_for_offline_mirrors():
     assert legacy["actionsState"] == "disabled"
 
 
+def test_payload_names_the_latest_commit_of_each_mirror():
+    # A node signs the subject/author/date of its head commit into its catalog
+    # record, so the Mirror nodes table and the World cabinets can say what the
+    # commit is instead of showing a bare hash (adhoc #337). A node that never
+    # published them stays truthfully unknown (None), never a blank string.
+    now = 1_000_000
+    rows = [
+        _row("a", "mainnode", "forkmesh", root="abc", synced="990000",
+             commit="686d7ebd1ef0", branch="main"),
+        _row("b", "legacy", "forkmesh", root="abc", synced="980000"),
+    ]
+    rows[0]["data"].update({
+        "commitSubject": "Show the last commit on every node",
+        "commitAuthorName": "Ada Lovelace",
+        "commitAt": "1750000000000",
+    })
+    payload = build_repo_mirrors_payload(
+        "mainnode", "forkmesh", rows, {}, {}, now, 600_000, 5_000
+    )
+    rich = payload["mirrors"][0]
+    assert rich["lastCommitMessage"] == "Show the last commit on every node"
+    assert rich["lastCommitAuthorName"] == "Ada Lovelace"
+    assert rich["lastCommitAt"] == 1_750_000_000_000
+    legacy = payload["mirrors"][1]
+    assert legacy["lastCommitMessage"] is None
+    assert legacy["lastCommitAuthorName"] is None
+    assert legacy["lastCommitAt"] is None
+
+
 def test_payload_defensively_bounds_or_hides_invalid_host_telemetry():
     now = 1_000_000
     rows = [
