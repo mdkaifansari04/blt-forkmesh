@@ -3005,6 +3005,33 @@ void MainWindow::showBranchDiff(const QString &branch)
         return;
     m_branchDiffBranch = branch;
     updateBranchDetailActions(branch);
+
+    // Auto-pull: as soon as the branch's detail view is behind base with no
+    // conflict, try the same update "Pull main" would do by hand, spinning that
+    // button while it runs, so landing on a branch is enough to bring it current
+    // without an extra click. Skipped when there's a conflict (the "Fix with
+    // agent" / "Merge editor" buttons own that case) and attempted at most once
+    // per branch so a declined stash prompt can't nag on every incidental
+    // rebuild of this panel while the branch stays selected. Deferred a tick so
+    // it runs after this call's own render rather than recursing into it (the
+    // pull re-renders itself via showBranchDiff() once it succeeds).
+    if (m_branchPullButton && m_branchPullButton->isEnabled() &&
+        (!m_branchFixButton || !m_branchFixButton->isVisible()) &&
+        m_branchAutoPullAttempted != branch) {
+        m_branchAutoPullAttempted = branch;
+        startButtonSpin(m_branchPullButton);
+        QTimer::singleShot(0, this, [this, branch] {
+            QPushButton *const spinButton = m_branchPullButton;
+            const auto spinGuard = qScopeGuard([this, spinButton] {
+                stopButtonSpin(spinButton);
+            });
+            if (m_branchDiffBranch != branch)
+                return;
+            GitKeepAlive keepAlive;
+            updateBranchFromBase(branch);
+        });
+    }
+
     m_branchDiffFileSpans.clear();
     m_branchDiffViewedContext.clear();
     // A new branch's diff hasn't been fetched yet; drop the cached patch so the

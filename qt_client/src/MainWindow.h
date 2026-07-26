@@ -4153,6 +4153,11 @@ private:
     QLabel *m_branchScopeLabel = nullptr;
     QTextBrowser *m_branchDiffView = nullptr;
     QString m_branchDiffBranch;
+    // Branch that auto-pull has already been attempted for (see showBranchDiff),
+    // so a declined stash prompt or an aborted merge doesn't re-nag every time the
+    // panel happens to rebuild while the same branch is still selected. Cleared
+    // implicitly by simply differing once a different branch is selected.
+    QString m_branchAutoPullAttempted;
     // Bumped each time a branch is selected / a scope diff is requested so the
     // off-thread git reads that build the scope list and render the diff can drop
     // their result if the user has since switched branch or scope (issue #353 —
