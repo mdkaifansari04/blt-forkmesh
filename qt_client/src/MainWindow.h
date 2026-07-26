@@ -1096,9 +1096,14 @@ private:
     // stops+relaunches the daemon — an update straight from source without
     // waiting for a published release (adhoc). A source build never uploads this
     // app's binary, so fromSource forces the direct-upload path off.
+    // suppressFailureStatus is set by callers that will retry a failed attempt
+    // themselves (the Vultr auto-provision flow): it skips the terminal
+    // "Install failed" status/host-list update so a retryable hiccup doesn't
+    // read as a final failure before the caller's own retries are exhausted.
     void runHostInstall(bool forceUploadBinary = false,
                         std::function<void(bool)> onFinished = {},
-                        bool reinstall = false, bool fromSource = false);
+                        bool reinstall = false, bool fromSource = false,
+                        bool suppressFailureStatus = false);
     // SSH into a saved host and run the hosted uninstaller (uninstall.sh),
     // which removes the ForkMesh binary, launcher and ALL of that host's data.
     void runHostUninstall();
@@ -3672,6 +3677,10 @@ private:
     QString m_hostInstallLogCarry;
     int m_hostInstallLogFg = -1;
     bool m_hostInstallLogBold = false;
+    // Bounded tail of the raw (pre-ANSI-parsing) ssh output for the current
+    // install/uninstall run, used only to classify a failed exit code into an
+    // actionable hint (e.g. a firewall-blocked connection timeout).
+    QString m_hostInstallRawTail;
     QTableWidget *m_hostsTable = nullptr;
     QProcess *m_hostInstallProcess = nullptr; // running ssh install session, if any
     QProcess *m_hostLogProcess = nullptr;     // running ssh log-tail session, if any

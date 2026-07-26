@@ -113,8 +113,8 @@ def test_kiosk_and_mini_app_carry_replies_with_author_icons():
     assert "data-world-mastodon-replies" in world
     assert re.search(r"escapeHTML\(\s*reply\.text,?\s*\)", world)
     assert re.search(r"escapeHTML\(\s*reply\.authorAvatar,?\s*\)", world)
-    assert "const MASTODON_KIOSK_VISIBLE_REPLIES = 3;" in scene
-    assert 'context.fillText("REPLIES", 56, 1750);' in scene
+    assert "const MASTODON_KIOSK_VISIBLE_REPLIES = 5;" in scene
+    assert 'context.fillText("REPLIES", 56, 3560);' in scene
     assert "const icon = image(reply.avatar);" in scene
     assert "Array.isArray(snapshot.replies) ? snapshot.replies : []" in scene
 
@@ -124,11 +124,41 @@ def test_kiosk_board_is_larger_and_carries_post_images():
     scene = _source(SCENE_PATH)
     assert "images: status.images.map((media) => media.url)" in world
     assert "const MASTODON_KIOSK_WIDTH = 1536;" in scene
-    assert "const MASTODON_KIOSK_HEIGHT = 2048;" in scene
-    # Board plane and canvas keep the same 0.75 aspect ratio.
-    assert "new THREE.PlaneGeometry(7.2, 9.6)" in scene
-    assert "new THREE.BoxGeometry(7.9, 10.4, 0.36)" in scene
+    # Twice as tall as the old 2048 board, so the attachment strip and a third
+    # toot card fit without crowding the replies section.
+    assert "const MASTODON_KIOSK_HEIGHT = 4096;" in scene
+    assert "const MASTODON_KIOSK_VISIBLE_TOOTS = 3;" in scene
+    # Board plane and canvas keep the same 0.375 aspect ratio.
+    assert "new THREE.PlaneGeometry(7.2, 19.2)" in scene
+    assert "new THREE.BoxGeometry(7.9, 20.0, 0.36)" in scene
     assert "Array.isArray(toot.images) ? toot.images : []" in scene
+    # A third open-in-a-new-tab button rides along with the third card.
+    assert 'setMastodonOpenButton("toot-2", visibleToots[2]?.url);' in scene
+
+
+def test_kiosk_cards_carry_stars_boosts_and_reply_counts():
+    world = _source(WORLD_PATH)
+    scene = _source(SCENE_PATH)
+    # The snapshot carries the engagement counts the mini-app footer shows.
+    assert "replies: formatMastodonCount(status.repliesCount)," in world
+    assert "boosts: formatMastodonCount(status.reblogsCount)," in world
+    assert "stars: formatMastodonCount(status.favouritesCount)," in world
+    for line in ("${toot.stars ?? 0} STARS", "${toot.boosts ?? 0} BOOSTS",
+                 "${toot.replies ?? 0} REPLIES"):
+        assert line in scene
+    # Pinned / boost / content-warning markers get their own card line.
+    assert "marker," in world
+    assert "const marker = String(toot.marker || \"\").trim();" in scene
+
+
+def test_kiosk_board_carries_the_profile_bio_and_link_fields():
+    world = _source(WORLD_PATH)
+    scene = _source(SCENE_PATH)
+    assert "note: account.note," in world
+    assert "fields: account.fields.map((field) => ({" in world
+    assert "wrapCanvasText(context, snapshot.note, 56, 930, 1424, 46, 4);" in scene
+    assert "Array.isArray(snapshot.fields) ? snapshot.fields : []" in scene
+    assert 'field.verified ? "#9ef7c6" : "#e8e9ff"' in scene
 
 
 def test_css_keeps_toots_scrollable_under_the_profile():

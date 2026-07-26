@@ -2711,9 +2711,13 @@ void MainWindow::promptNewRelease()
     // provider changes. The data string is passed straight through as the model.
     auto *agentNotesModelCombo = new QComboBox;
     agentNotesModelCombo->setToolTip("Which model the agent uses");
+    // Repopulating fires currentIndexChanged for every add/clear; block signals
+    // so that churn doesn't get persisted as the user's model choice below.
     auto populateModels = [agentNotesModelCombo](const QString &provider) {
+        const QSignalBlocker block(agentNotesModelCombo);
         agentNotesModelCombo->clear();
-        if (agentIsClaudeProvider(provider)) {
+        const bool claude = agentIsClaudeProvider(provider);
+        if (claude) {
             agentNotesModelCombo->addItem(QStringLiteral("Haiku"),
                                           QStringLiteral("claude-haiku-4-5"));
             agentNotesModelCombo->addItem(QStringLiteral("Sonnet"),
@@ -2728,12 +2732,31 @@ void MainWindow::promptNewRelease()
             agentNotesModelCombo->addItem(QStringLiteral("GPT"),
                                           QStringLiteral("gpt-4.1"));
         }
+        // Restore whichever model was last used to generate release notes with
+        // this provider family, falling back to the first item above.
+        selectModelComboValue(
+            agentNotesModelCombo,
+            QSettings()
+                .value(claude ? kReleaseNotesClaudeModelSetting
+                              : kReleaseNotesGptModelSetting)
+                .toString());
     };
     populateModels(agentNotesCombo->currentData().toString());
     connect(agentNotesCombo, &QComboBox::currentTextChanged, &dialog,
             [agentNotesCombo, populateModels](const QString &) {
                 populateModels(agentNotesCombo->currentData().toString());
             });
+    // Remember the chosen model as soon as it changes, so the next release
+    // dialog opens with it pre-selected instead of always the first item.
+    auto persistReleaseNotesModel = [agentNotesCombo, agentNotesModelCombo] {
+        const bool claude =
+            agentIsClaudeProvider(agentNotesCombo->currentData().toString());
+        QSettings().setValue(claude ? kReleaseNotesClaudeModelSetting
+                                     : kReleaseNotesGptModelSetting,
+                             selectedModelComboValue(agentNotesModelCombo));
+    };
+    connect(agentNotesModelCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            &dialog, [persistReleaseNotesModel](int) { persistReleaseNotesModel(); });
     auto *agentNotesRow = new QWidget;
     auto *agentNotesRowLayout = new QHBoxLayout(agentNotesRow);
     agentNotesRowLayout->setContentsMargins(0, 0, 0, 0);
