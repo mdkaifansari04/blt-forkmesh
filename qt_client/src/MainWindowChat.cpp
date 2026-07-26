@@ -7342,7 +7342,8 @@ QWidget *MainWindow::buildHostsSection()
         "that host. Click Actions to enable its executor and optionally replace "
         "its device-local variables through a one-shot SSH stdin request; secret "
         "values are never saved by this controller. Click Logs to open a live "
-        "SSH tail for that host. Click Remove to drop a host from this list "
+        "SSH tail for that host, or Size map to browse what is filling that "
+        "host's disk. Click Remove to drop a host from this list "
         "without touching it \xE2\x80\x94 no SSH session is opened. "
         "Double-click a host instead to reload it into the form "
         "above for editing."));
@@ -7494,6 +7495,24 @@ void MainWindow::refreshHostsTable()
             });
         });
         cellRow->addWidget(viewLogsBtn);
+
+        // Per-row Size map button: browse that host's disk usage over the same
+        // authenticated SSH channel, one read-only `du` level at a time, so a
+        // host that is filling up can be diagnosed from here.
+        auto *diskBtn = new QPushButton(QStringLiteral("Size map"));
+        diskBtn->setObjectName(QStringLiteral("hostDiskUsageButton"));
+        diskBtn->setCursor(Qt::PointingHandCursor);
+        diskBtn->setToolTip(QStringLiteral(
+            "Browse what is using disk space on this host over SSH. Read-only: "
+            "it only runs du, one directory level at a time."));
+        setOcticon(diskBtn, "pie-chart", 12);
+        connect(diskBtn, &QPushButton::clicked, this, [this, i] {
+            QTimer::singleShot(0, this, [this, i] {
+                browseHostDiskUsageForSelection(i);
+            });
+        });
+        cellRow->addWidget(diskBtn);
+
         auto *actionsBtn = new QPushButton(QStringLiteral("Actions"));
         actionsBtn->setObjectName(QStringLiteral("hostActionsButton"));
         actionsBtn->setCursor(Qt::PointingHandCursor);
@@ -10209,6 +10228,325 @@ void MainWindow::runHostLogSession(const QString &ip, const QString &user,
             });
 
     proc->start(ssh.program, ssh.arguments);
+    dialog->exec();
+}
+
+void MainWindow::browseHostDiskUsageForSelection(int row)
+{
+    if (m_hostDiskProcess &&
+        m_hostDiskProcess->state() != QProcess::NotRunning) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("A host size map is already loading."));
+        return;
+    }
+    if (!m_hostsTable || row < 0 || row >= m_hostsTable->rowCount())
+        return;
+    // Read the row directly instead of loading it into the install form: this
+    // is a read-only inspection and must not disturb whatever the form holds.
+    const auto cellText = [this, row](int column) {
+        const QTableWidgetItem *item = m_hostsTable->item(row, column);
+        return item ? item->text().trimmed() : QString();
+    };
+    const QString node = cellText(0);
+    const QString ip = cellText(1);
+    const QString user = cellText(2);
+    if (ip.isEmpty() || user.isEmpty() || node.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(QStringLiteral(
+                "Select a saved host row first, then click Size map."));
+        return;
+    }
+    const QString pass = m_hostSessionPasswords.value(
+        forkmesh::control::savedHostCredentialKey(node, ip, user));
+    runHostDiskUsageBrowser(ip, user, pass, node);
+}
+
+void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
+                                         const QString &pass,
+                                         const QString &node)
+{
+    if (ip.isEmpty() || user.isEmpty() || node.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("Enter host IP, SSH username and node name."));
+        return;
+    }
+
+    auto *dialog = new QDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setObjectName(QStringLiteral("hostDiskUsageDialog"));
+    dialog->setWindowTitle(QStringLiteral("Size map: %1").arg(node));
+    dialog->setMinimumSize(820, 560);
+    auto *layout = new QVBoxLayout(dialog);
+
+    auto *hint = new QLabel(QString::fromUtf8(
+        "ForkMesh measures one directory level at a time with <b>du</b> over "
+        "the same authenticated SSH channel the installer uses \xE2\x80\x94 "
+        "nothing is written on the host. Double-click a folder to drill into "
+        "the space it uses."));
+    hint->setObjectName("mutedLabel");
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
+
+    auto *nav = new QHBoxLayout;
+    auto *upButton = new QPushButton(QStringLiteral("Up"));
+    upButton->setObjectName(QStringLiteral("hostDiskUpButton"));
+    upButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(upButton, "arrow-left", 12);
+    nav->addWidget(upButton);
+    auto *pathEdit = new QLineEdit(QStringLiteral("/"));
+    pathEdit->setObjectName(QStringLiteral("hostDiskPathEdit"));
+    pathEdit->setPlaceholderText(
+        QStringLiteral("Absolute path on the host, e.g. /var/lib"));
+    nav->addWidget(pathEdit, 1);
+    auto *openButton = new QPushButton(QStringLiteral("Open"));
+    openButton->setObjectName(QStringLiteral("hostDiskOpenButton"));
+    openButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(openButton, "file-directory", 12);
+    nav->addWidget(openButton);
+    auto *refreshButton = new QPushButton(QStringLiteral("Refresh"));
+    refreshButton->setObjectName(QStringLiteral("hostDiskRefreshButton"));
+    refreshButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(refreshButton, "sync", 12);
+    nav->addWidget(refreshButton);
+    layout->addLayout(nav);
+
+    auto *totalLabel = new QLabel;
+    totalLabel->setObjectName(QStringLiteral("hostDiskTotalLabel"));
+    QFont totalFont = totalLabel->font();
+    totalFont.setBold(true);
+    totalLabel->setFont(totalFont);
+    layout->addWidget(totalLabel);
+
+    auto *table = new QTableWidget(0, 4);
+    table->setObjectName("issueTable");
+    table->setHorizontalHeaderLabels(
+        {QStringLiteral("Name"), QStringLiteral("Size"),
+         QStringLiteral("Share of this folder"), QStringLiteral("Type")});
+    table->verticalHeader()->setVisible(false);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setShowGrid(false);
+    table->horizontalHeader()->setStretchLastSection(false);
+    table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    table->horizontalHeader()->setSectionResizeMode(
+        1, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(
+        2, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(
+        3, QHeaderView::ResizeToContents);
+    layout->addWidget(table, 1);
+
+    auto *status = new QLabel(QString::fromUtf8(
+        "Measuring the host root \xE2\x80\xA6"));
+    status->setObjectName("mutedLabel");
+    status->setWordWrap(true);
+    layout->addWidget(status);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    if (auto *closeBtn = buttons->button(QDialogButtonBox::Close))
+        closeBtn->setDefault(true);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+
+    auto currentPath = std::make_shared<QString>(QStringLiteral("/"));
+    auto loadPath = std::make_shared<std::function<void(const QString &)>>();
+    *loadPath = [this, dialog, table, pathEdit, status, totalLabel, upButton,
+                 openButton, refreshButton, currentPath, ip, user, pass,
+                 node](const QString &requested) {
+        if (m_hostDiskProcess &&
+            m_hostDiskProcess->state() != QProcess::NotRunning) {
+            status->setText(QStringLiteral(
+                "Still measuring the previous folder on this host."));
+            return;
+        }
+        const QString path =
+            forkmesh::control::normalizeRemoteDiskPath(requested);
+        QString commandError;
+        const QString remoteCommand =
+            forkmesh::control::buildHostDiskUsageCommand(path, &commandError);
+        if (remoteCommand.isEmpty()) {
+            status->setText(commandError);
+            pathEdit->setText(*currentPath);
+            return;
+        }
+        QString sshError;
+        const forkmesh::control::HostSshCommand ssh =
+            forkmesh::control::buildHostSshCommand(
+                ip, user, pass, remoteCommand, &sshError,
+                savedHostIdentityFile(node, ip, user));
+        if (ssh.program.isEmpty()) {
+            status->setText(sshError);
+            return;
+        }
+
+        *currentPath = path;
+        pathEdit->setText(path);
+        table->setRowCount(0);
+        totalLabel->setText(QString());
+        status->setText(
+            QString::fromUtf8("Measuring %1 on %2@%3 \xE2\x80\xA6 a large "
+                              "directory tree can take a minute.")
+                .arg(path, user, ip));
+
+        const QList<QWidget *> navWidgets{upButton, openButton, refreshButton,
+                                          pathEdit};
+        for (QWidget *w : navWidgets)
+            w->setEnabled(false);
+
+        auto *proc = new QProcess(dialog);
+        m_hostDiskProcess = proc;
+        auto output = std::make_shared<QByteArray>();
+        proc->setProcessChannelMode(QProcess::MergedChannels);
+        proc->setProcessEnvironment(ssh.environment);
+        connect(proc, &QProcess::readyReadStandardOutput, dialog,
+                [proc, output] { output->append(proc->readAllStandardOutput()); });
+        connect(proc, &QProcess::finished, dialog,
+                [this, proc, output, table, status, totalLabel, navWidgets,
+                 path, ip, user](int code, QProcess::ExitStatus exitStatus) {
+                    if (m_hostDiskProcess == proc)
+                        m_hostDiskProcess = nullptr;
+                    for (QWidget *w : navWidgets)
+                        w->setEnabled(true);
+                    const forkmesh::control::HostDiskUsage usage =
+                        forkmesh::control::parseHostDiskUsage(*output, path);
+                    proc->deleteLater();
+                    if (!usage.error.isEmpty()) {
+                        status->setText(usage.error);
+                        return;
+                    }
+                    if (!usage.complete) {
+                        const QString tail = forkmesh::control::redactProcessOutput(
+                            QString::fromUtf8(output->right(2048)));
+                        QString message =
+                            QString::fromUtf8(
+                                "Could not read the size map for %1 (exit %2).")
+                                .arg(path)
+                                .arg(exitStatus == QProcess::NormalExit ? code
+                                                                        : 255);
+                        const QString sshHint =
+                            forkmesh::control::sshConnectionFailureHint(
+                                exitStatus == QProcess::NormalExit ? code : 255,
+                                tail, ip);
+                        if (!sshHint.isEmpty())
+                            message += QLatin1Char(' ') + sshHint;
+                        status->setText(message);
+                        return;
+                    }
+
+                    totalLabel->setText(
+                        QString::fromUtf8("%1 \xE2\x80\x94 %2 total, %3 entries")
+                            .arg(path,
+                                 forkmesh::control::formatDiskSize(
+                                     usage.totalBytes))
+                            .arg(usage.entries.size()));
+                    table->setRowCount(usage.entries.size());
+                    for (int i = 0; i < usage.entries.size(); ++i) {
+                        const forkmesh::control::HostDiskEntry &entry =
+                            usage.entries.at(i);
+                        auto *nameItem = new QTableWidgetItem(entry.name);
+                        nameItem->setIcon(themedOcticon(
+                            entry.directory ? QStringLiteral("file-directory")
+                                            : QStringLiteral("file"),
+                            QColor("#8b949e"), 13));
+                        nameItem->setToolTip(entry.path);
+                        nameItem->setData(Qt::UserRole, entry.path);
+                        nameItem->setData(Qt::UserRole + 1, entry.directory);
+                        table->setItem(i, 0, nameItem);
+                        table->setItem(
+                            i, 1,
+                            new QTableWidgetItem(
+                                forkmesh::control::formatDiskSize(entry.bytes)));
+                        // A share bar drawn in text: cell widgets would be one
+                        // extra widget per row on directories that hold
+                        // thousands of entries.
+                        const double share =
+                            usage.totalBytes > 0
+                                ? static_cast<double>(entry.bytes) /
+                                      static_cast<double>(usage.totalBytes)
+                                : 0.0;
+                        const int filled = qBound(
+                            0, static_cast<int>(std::lround(share * 20.0)), 20);
+                        table->setItem(
+                            i, 2,
+                            new QTableWidgetItem(
+                                QStringLiteral("%1 %2%")
+                                    .arg(QString(filled, QChar(0x2588)) +
+                                         QString(20 - filled, QChar(0x2591)))
+                                    .arg(share * 100.0, 0, 'f', 1)));
+                        table->setItem(
+                            i, 3,
+                            new QTableWidgetItem(entry.directory
+                                                     ? QStringLiteral("Folder")
+                                                     : QStringLiteral("File")));
+                    }
+                    status->setText(
+                        usage.entries.isEmpty()
+                            ? QString::fromUtf8(
+                                  "%1 holds nothing this SSH user can read.")
+                                  .arg(path)
+                            : QString::fromUtf8(
+                                  "Largest first. Double-click a folder to "
+                                  "drill in, or Up to go back."));
+                });
+        connect(proc, &QProcess::errorOccurred, dialog,
+                [this, proc, status, navWidgets](QProcess::ProcessError e) {
+                    if (e != QProcess::FailedToStart)
+                        return;
+                    if (m_hostDiskProcess == proc)
+                        m_hostDiskProcess = nullptr;
+                    for (QWidget *w : navWidgets)
+                        w->setEnabled(true);
+                    status->setText(QString::fromUtf8(
+                        "Could not start SSH. Install OpenSSH (and sshpass only "
+                        "when using password login) and try again."));
+                });
+        proc->start(ssh.program, ssh.arguments);
+    };
+
+    connect(upButton, &QPushButton::clicked, dialog, [currentPath, loadPath] {
+        (*loadPath)(*currentPath + QStringLiteral("/.."));
+    });
+    connect(refreshButton, &QPushButton::clicked, dialog,
+            [currentPath, loadPath] { (*loadPath)(*currentPath); });
+    connect(openButton, &QPushButton::clicked, dialog,
+            [pathEdit, loadPath] { (*loadPath)(pathEdit->text()); });
+    connect(pathEdit, &QLineEdit::returnPressed, dialog,
+            [pathEdit, loadPath] { (*loadPath)(pathEdit->text()); });
+    connect(table, &QTableWidget::cellDoubleClicked, dialog,
+            [table, status, loadPath](int row, int) {
+                const QTableWidgetItem *item = table->item(row, 0);
+                if (!item)
+                    return;
+                const QString path = item->data(Qt::UserRole).toString();
+                if (!item->data(Qt::UserRole + 1).toBool()) {
+                    status->setText(
+                        QStringLiteral("%1 is a file, not a folder.").arg(path));
+                    return;
+                }
+                (*loadPath)(path);
+            });
+
+    // A running measurement outlives its dialog otherwise: `du` over a big
+    // tree keeps the SSH session open long after the window is gone.
+    connect(dialog, &QDialog::finished, this, [this](int) {
+        if (!m_hostDiskProcess)
+            return;
+        if (m_hostDiskProcess->state() != QProcess::NotRunning) {
+            m_hostDiskProcess->terminate();
+            if (!m_hostDiskProcess->waitForFinished(250))
+                m_hostDiskProcess->kill();
+        }
+        m_hostDiskProcess = nullptr;
+    });
+
+    if (m_hostInstallStatus) {
+        m_hostInstallStatus->setText(
+            QString::fromUtf8("Opening the size map for %1@%2 (%3)...")
+                .arg(user, ip, node));
+    }
+    (*loadPath)(QStringLiteral("/"));
     dialog->exec();
 }
 
