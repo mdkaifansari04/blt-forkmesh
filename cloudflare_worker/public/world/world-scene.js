@@ -2914,6 +2914,17 @@ function mirrorMetric(value, maximum = Number.MAX_SAFE_INTEGER) {
     : null;
 }
 
+// The two ways a node answers for the repository — a git clone and a served
+// repository web request — counted together, so either kind of visit reads as
+// one "this cabinet just served somebody" event. Null when the node reports
+// neither counter; unreported values are never estimated.
+function mirrorServedTotal(node) {
+  const clones = mirrorMetric(node?.clonesServed, 1_000_000_000);
+  const website = mirrorMetric(node?.websiteServed, 1_000_000_000);
+  if (clones === null && website === null) return null;
+  return (clones || 0) + (website || 0);
+}
+
 function compactMirrorCount(value) {
   const number = mirrorMetric(value, 1_000_000_000);
   if (number === null) return "—";
@@ -3295,6 +3306,46 @@ function serverPanelTexture(THREE, node) {
       958,
     );
   });
+}
+
+// A pocket-sized stand-in for the agent a node just answered: the little
+// figure that shoots up out of a cabinet when it serves a clone or a
+// repository page. Unlit and self-owning — every launch builds its own
+// materials so it can fade out and dispose without touching shared palettes.
+function createServedVisitorFigure(THREE, accent = "#9ef7c6") {
+  const group = new THREE.Group();
+  group.name = "served-visitor";
+  const skin = new THREE.MeshBasicMaterial({
+    color: AVATAR_EMOJI_SKIN_COLOR,
+    transparent: true,
+    toneMapped: false,
+    depthWrite: false,
+  });
+  const suit = new THREE.MeshBasicMaterial({
+    color: accent,
+    transparent: true,
+    toneMapped: false,
+    depthWrite: false,
+  });
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.19, 12, 10), skin);
+  head.position.y = 1.16;
+  group.add(head);
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.5, 0.22), suit);
+  torso.position.y = 0.7;
+  group.add(torso);
+  // Arms swept overhead and legs trailing straight below: the silhouette still
+  // reads as a launched visitor at the size it shrinks to high in the sky.
+  for (const side of [-1, 1]) {
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.44, 0.1), suit);
+    arm.position.set(side * 0.25, 0.86, 0);
+    arm.rotation.z = side * 0.5;
+    group.add(arm);
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.44, 0.11), suit);
+    leg.position.set(side * 0.1, 0.22, 0);
+    group.add(leg);
+  }
+  group.userData.figureMaterials = [skin, suit];
+  return group;
 }
 
 function createMirrorServerCabinet(THREE, node, id) {
@@ -7901,6 +7952,7 @@ export function createWorldScene({
   const emoteSprites = [];
   const rewardFlights = [];
   const pushSurges = [];
+  const serveFlights = [];
   const forkbotWanderTarget = new THREE.Vector3(...FORKBOT_HOME);
   let forkbotNextWanderAt = 0;
   let forkbotGreeting = null;
@@ -10477,6 +10529,9 @@ export function createWorldScene({
       const priorCommit = String(
         cabinet?.userData?.nodeRecord?.commit || "",
       );
+      // Same idea for "this node just answered somebody": the served counters
+      // shown before this update, captured ahead of any rebuild.
+      const priorServed = mirrorServedTotal(cabinet?.userData?.nodeRecord);
       if (
         cabinet &&
         cabinet.userData.dataKey !== dataKey
@@ -10521,6 +10576,14 @@ export function createWorldScene({
       const nextCommit = String(node?.commit || "");
       if (priorCommit && nextCommit && nextCommit !== priorCommit) {
         spawnPushSurge(cabinet.position);
+      }
+      const nextServed = mirrorServedTotal(node);
+      if (
+        priorServed !== null &&
+        nextServed !== null &&
+        nextServed > priorServed
+      ) {
+        spawnServeFlights(cabinet.position, nextServed - priorServed);
       }
     });
     nodeInfrastructure.forEach((cabinet, id) => {
@@ -12685,6 +12748,46 @@ export function createWorldScene({
     });
   }
 
+  // Serving reads as traffic leaving the rack: each clone or repository page a
+  // node answers launches a small figure for the agent it served, shooting up
+  // out of the cabinet and shrinking away into the sky. Purely cosmetic and
+  // driven only by the node's own served counters in the signed mirror payload
+  // (see updateNetworkNodes), never by an unauthenticated frame.
+  function spawnServeFlights(position, count = 1) {
+    const requested = Math.floor(Number(count));
+    const wanted = Math.min(
+      3,
+      Math.max(1, Number.isFinite(requested) ? requested : 1),
+    );
+    for (let index = 0; index < wanted; index += 1) {
+      // Bound a busy yard's burst to a fixed effect budget.
+      if (serveFlights.length >= 12) return;
+      const figure = createServedVisitorFigure(
+        THREE,
+        index % 2 ? "#8fd8ff" : "#9ef7c6",
+      );
+      figure.position.set(
+        position.x + (Math.random() - 0.5) * 0.7,
+        position.y + 3.3,
+        position.z + (Math.random() - 0.5) * 0.7,
+      );
+      figure.rotation.y = Math.random() * Math.PI * 2;
+      figure.visible = index === 0;
+      world.add(figure);
+      serveFlights.push({
+        group: figure,
+        materials: figure.userData.figureMaterials,
+        // Staggered so a multi-request update reads as a stream rather than
+        // one clump of overlapping figures.
+        startedAt: performance.now() + index * 220,
+        duration: 2400,
+        baseY: figure.position.y,
+        climb: 34 + Math.random() * 12,
+        spin: (Math.random() < 0.5 ? -1 : 1) * (1.2 + Math.random()),
+      });
+    }
+  }
+
   function playRewardEvent(targetHint = "") {
     let targetPylon = null;
     nodeInfrastructure.forEach((pylon) => {
@@ -13908,6 +14011,34 @@ export function createWorldScene({
           child.material?.dispose?.();
         });
         pushSurges.splice(index, 1);
+      }
+    }
+    for (let index = serveFlights.length - 1; index >= 0; index -= 1) {
+      const flight = serveFlights[index];
+      const elapsed = performance.now() - flight.startedAt;
+      // Staggered launches wait on the pad, hidden, until their turn.
+      if (elapsed < 0) {
+        flight.group.visible = false;
+        continue;
+      }
+      flight.group.visible = true;
+      const progress = Math.min(1, elapsed / flight.duration);
+      // Hard off the cabinet, easing out as it climbs away.
+      const eased = 1 - (1 - progress) ** 2.4;
+      flight.group.position.y = flight.baseY + eased * flight.climb;
+      flight.group.rotation.y += flight.spin * delta;
+      flight.group.scale.setScalar(1 - eased * 0.6);
+      const fade = progress < 0.55 ? 1 : 1 - (progress - 0.55) / 0.45;
+      flight.materials.forEach((material) => {
+        material.opacity = Math.max(0, fade);
+      });
+      if (progress >= 1) {
+        world.remove(flight.group);
+        flight.group.traverse((child) => {
+          child.geometry?.dispose?.();
+          child.material?.dispose?.();
+        });
+        serveFlights.splice(index, 1);
       }
     }
     updateCamera(delta);
