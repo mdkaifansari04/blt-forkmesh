@@ -73,6 +73,13 @@ const FORKBOT_GREETING_RANGE = 3.2;
 // If a visitor is out of reach (travelled to another space, moderation walls,
 // …) the greeting still fires from wherever ForkBot got to.
 const FORKBOT_GREETING_TIMEOUT_MS = 12000;
+// A chat mention (exciteForkbot) sends the droid rushing to the speaker at a
+// faster clip than its idle wander. The chest screen echoes the mention alone
+// for a beat before the thinking dots join it, and the wait for a reply is
+// bounded so an unavailable bot doesn't leave the dots running forever.
+const FORKBOT_EXCITED_SPEED = 5.6;
+const FORKBOT_ECHO_MS = 2500;
+const FORKBOT_THINKING_TIMEOUT_MS = 45000;
 // The public World has one shared ground plane plus three regional labels.
 // Deprecated off-world destinations are deliberately not valid spawn spaces.
 const WORLD_SPACE_FLOORS = Object.freeze({
@@ -1674,6 +1681,70 @@ function chatBubbleTexture(THREE, name, text) {
       context.fillText(line, 42, 102 + index * 50, 680);
     });
   });
+}
+
+// Repaints ForkBot's chest screen in place. `state` is null for the idle
+// wordmark, or { message, thinking, dotPhase } while ForkBot is answering a
+// mention: the echoed line renders in quotes and, once thinking starts, a row
+// of pulsing dots runs beneath it until the reply is broadcast.
+function drawForkbotScreen(context, canvas, state) {
+  const width = canvas.width;
+  const height = canvas.height;
+  context.clearRect(0, 0, width, height);
+  roundedRect(context, 3, 3, width - 6, height - 6, 20);
+  context.fillStyle = "#06181d";
+  context.fill();
+  context.strokeStyle = "#4dc8e8";
+  context.lineWidth = 5;
+  context.stroke();
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  if (!state) {
+    context.fillStyle = "#2fa5c4";
+    context.font = '700 44px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("FORKBOT", width / 2, height / 2);
+    return;
+  }
+  context.fillStyle = "#e9fbff";
+  context.font = '600 34px "ForkMesh Favorit", system-ui, sans-serif';
+  const words = `“${state.message}”`.split(/\s+/).filter(Boolean);
+  const lines = [""];
+  for (const word of words) {
+    const current = lines[lines.length - 1];
+    const candidate = current ? `${current} ${word}` : word;
+    if (!current || context.measureText(candidate).width <= width - 56) {
+      lines[lines.length - 1] = candidate;
+    } else if (lines.length < 3) {
+      lines.push(word);
+    } else {
+      lines[2] += "…";
+      break;
+    }
+  }
+  const textCenter = state.thinking ? height / 2 - 26 : height / 2;
+  lines.forEach((line, index) => {
+    context.fillText(
+      line,
+      width / 2,
+      textCenter + (index - (lines.length - 1) / 2) * 40,
+      width - 56,
+    );
+  });
+  if (state.thinking) {
+    for (let dot = 0; dot < 3; dot += 1) {
+      const active = dot === state.dotPhase % 3;
+      context.fillStyle = active ? "#9ef7c6" : "#2c5a66";
+      context.beginPath();
+      context.arc(
+        width / 2 + (dot - 1) * 44,
+        height - 40,
+        active ? 13 : 9,
+        0,
+        Math.PI * 2,
+      );
+      context.fill();
+    }
+  }
 }
 
 function moderationControlTexture(THREE, title, subtitle, color) {
@@ -7066,14 +7137,33 @@ export function createWorldScene({
   forkbot.add(antennaLight);
   forkbot.userData.forkbotAntennaLight = antennaLight;
   forkbot.userData.rollingBall = rollingBall;
+  // The chest screen (adhoc #369): idle it shows the FORKBOT wordmark; when a
+  // mention pulls the droid over it echoes the speaker's line and then runs
+  // the thinking dots (updateForkbot) until the reply lands in the room.
+  const forkbotScreenTexture = canvasTexture(THREE, 512, 224, (context, canvas) =>
+    drawForkbotScreen(context, canvas, null),
+  );
+  const forkbotScreen = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.82, 0.36),
+    new THREE.MeshBasicMaterial({ map: forkbotScreenTexture, toneMapped: false }),
+  );
+  forkbotScreen.position.set(0, 1.02, 0.58);
+  forkbot.add(forkbotScreen);
   forkbot.traverse((child) => {
     if (!child.isMesh) return;
     child.userData.forkbotChat = true;
     interactive.push(child);
   });
   animated.push((time) => {
-    antennaLight.material.emissiveIntensity = 1.2 + (Math.sin(time * 0.006) + 1) * 0.5;
-    eye.material.emissiveIntensity = 1.25 + (Math.sin(time * 0.008) + 1) * 0.75;
+    // An excited ForkBot (someone just mentioned it) flashes its antenna and
+    // eye much faster than the idle glow.
+    const excited = Boolean(forkbotExcitement);
+    antennaLight.material.emissiveIntensity = excited
+      ? 2.2 + (Math.sin(time * 0.022) + 1) * 1.1
+      : 1.2 + (Math.sin(time * 0.006) + 1) * 0.5;
+    eye.material.emissiveIntensity = excited
+      ? 2 + (Math.sin(time * 0.028) + 1) * 0.9
+      : 1.25 + (Math.sin(time * 0.008) + 1) * 0.75;
   });
   world.add(forkbot);
 
@@ -7424,6 +7514,7 @@ export function createWorldScene({
   const forkbotWanderTarget = new THREE.Vector3(...FORKBOT_HOME);
   let forkbotNextWanderAt = 0;
   let forkbotGreeting = null;
+  let forkbotExcitement = null;
   const keys = new Set();
   const touchKeys = new Set();
   const touchMovement = new THREE.Vector2();
@@ -8971,11 +9062,38 @@ export function createWorldScene({
 
   // ForkBot wanders the Town Square on its own; when world.js reports a
   // visitor's first movement or mouse activity (greetForkbot) it walks over
-  // and floats a welcome bubble instead of picking the next wander spot.
+  // and floats a welcome bubble instead of picking the next wander spot. A
+  // chat mention (exciteForkbot) outranks both: the droid rushes to whoever
+  // spoke while its chest screen echoes the line and then thinks out loud.
   function updateForkbot(delta, time) {
     const data = forkbot.userData;
     let target = forkbotWanderTarget;
-    if (forkbotGreeting) {
+    let speed = FORKBOT_SPEED;
+    if (forkbotExcitement) {
+      target = forkbotExcitement.avatar.position;
+      speed = FORKBOT_EXCITED_SPEED;
+      const waited = performance.now() - forkbotExcitement.startedAt;
+      if (!forkbotExcitement.thinking && waited >= FORKBOT_ECHO_MS) {
+        forkbotExcitement.thinking = true;
+      }
+      if (forkbotExcitement.thinking) {
+        const dotPhase = Math.floor(time / 400) % 3;
+        if (dotPhase !== forkbotExcitement.dotPhase) {
+          forkbotExcitement.dotPhase = dotPhase;
+          paintForkbotScreen({
+            message: forkbotExcitement.message,
+            thinking: true,
+            dotPhase,
+          });
+        }
+      }
+      // The reply normally clears this state (showChatBubble); the timeout
+      // only covers an unavailable bot so the dots don't run forever.
+      if (waited >= FORKBOT_THINKING_TIMEOUT_MS) {
+        settleForkbot(time);
+        target = forkbotWanderTarget;
+      }
+    } else if (forkbotGreeting) {
       target = player.position;
       const waited = performance.now() - forkbotGreeting.startedAt;
       const reach = forkbot.position.distanceTo(player.position);
@@ -9011,10 +9129,11 @@ export function createWorldScene({
     const dx = target.x - forkbot.position.x;
     const dz = target.z - forkbot.position.z;
     const distance = Math.hypot(dx, dz);
-    const arrive = forkbotGreeting ? FORKBOT_GREETING_RANGE * 0.8 : 0.4;
+    const arrive =
+      forkbotGreeting || forkbotExcitement ? FORKBOT_GREETING_RANGE * 0.8 : 0.4;
     const walking = distance > arrive;
     if (walking) {
-      const step = Math.min(distance - arrive, FORKBOT_SPEED * delta);
+      const step = Math.min(distance - arrive, speed * delta);
       forkbot.position.x += (dx / distance) * step;
       forkbot.position.z += (dz / distance) * step;
     }
@@ -9025,9 +9144,55 @@ export function createWorldScene({
     headingDelta = Math.atan2(Math.sin(headingDelta), Math.cos(headingDelta));
     forkbot.rotation.y += headingDelta * (1 - Math.pow(0.01, delta));
     if (walking) {
-      data.rollingBall.rotation.x -= FORKBOT_SPEED * delta * 1.8;
+      data.rollingBall.rotation.x -= speed * delta * 1.8;
       data.rollingBall.rotation.z = Math.sin(time * 0.006 + data.phase) * 0.08;
     }
+    // Excited hops so the mention visibly lands even from across the square.
+    forkbot.position.y =
+      forkbotExcitement && !reducedMotion
+        ? FORKBOT_HOME[1] +
+          Math.abs(Math.sin(time * 0.012 + data.phase)) * 0.16
+        : FORKBOT_HOME[1];
+  }
+
+  function paintForkbotScreen(state) {
+    const canvas = forkbotScreenTexture.image;
+    drawForkbotScreen(canvas.getContext("2d"), canvas, state);
+    forkbotScreenTexture.needsUpdate = true;
+  }
+
+  // adhoc #369: any live speaker mentioning ForkBot in chat (world.js
+  // handleWorldChatMessage) pulls the droid over to them. The chest screen
+  // echoes the line straight away; once the echo has had a beat the thinking
+  // dots run (updateForkbot) until the reply is broadcast into the room.
+  function exciteForkbot(peerId, text) {
+    const message = String(text || "").replace(/\s+/g, " ").trim().slice(0, 90);
+    if (!message) return false;
+    const avatar =
+      peerId === identity.id
+        ? player
+        : remotePlayers.get(String(peerId || "")) ||
+          loungeMembers.get(String(peerId || ""));
+    if (!avatar) return false;
+    forkbotGreeting = null;
+    forkbotExcitement = {
+      avatar,
+      message,
+      startedAt: performance.now(),
+      thinking: false,
+      dotPhase: 0,
+    };
+    paintForkbotScreen({ message, thinking: false, dotPhase: 0 });
+    return true;
+  }
+
+  // Back to the idle wordmark, lingering beside the speaker for a moment
+  // before the next wander pick.
+  function settleForkbot(time) {
+    forkbotExcitement = null;
+    paintForkbotScreen(null);
+    forkbotWanderTarget.copy(forkbot.position);
+    forkbotNextWanderAt = time + 9000;
   }
 
   function greetForkbot(text) {
@@ -11802,6 +11967,10 @@ export function createWorldScene({
           : remotePlayers.get(String(peerId || "")) ||
             loungeMembers.get(String(peerId || ""));
     if (!avatar) return false;
+    // ForkBot's own line is the reply the thinking dots were waiting for.
+    if (avatar === forkbot && forkbotExcitement) {
+      settleForkbot(performance.now());
+    }
     // One bubble per speaker: a rapid follow-up message replaces the first
     // instead of stacking on top of it.
     for (let index = emoteSprites.length - 1; index >= 0; index -= 1) {
@@ -13384,6 +13553,7 @@ export function createWorldScene({
     showChatBubble,
     showMemberChatBubble,
     greetForkbot,
+    exciteForkbot,
     updateRewardPool,
     playRewardEvent,
     setPaused,
