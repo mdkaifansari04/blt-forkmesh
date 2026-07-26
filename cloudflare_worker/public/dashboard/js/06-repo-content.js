@@ -17,8 +17,16 @@
     const subject = commitSummaryField(data, "subject", "message", "commitMessage");
     const author = commitSummaryField(data, "author", "committer", "name")
       || String(repo.maintainer || repo.owner || "maintainer");
-    const date = commitSummaryField(data, "date", "committedAt", "updatedAt")
+    const matchingMirror = (state.repoMirrors || []).find((mirror) => {
+      const mirrorCommit = String(mirror?.commit || "").trim().toLowerCase();
+      return hash && mirrorCommit === hash.trim().toLowerCase()
+        && Number(mirror?.lastCommitAt) > 0;
+    });
+    const exactMirrorDate = matchingMirror?.lastCommitAt || "";
+    const date = exactMirrorDate
+      || commitSummaryField(data, "date", "committedAt", "updatedAt")
       || String(repo.updatedAt || repo.lastSync || "");
+    if (commit && typeof commit === "object") state.repoLatestCommit = commit;
     const avatar = summary.querySelector("[data-repo-commit-avatar]");
     const authorNode = summary.querySelector("[data-repo-commit-author]");
     const messageNode = summary.querySelector("[data-repo-commit-message]");

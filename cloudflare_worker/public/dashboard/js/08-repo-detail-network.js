@@ -9,6 +9,7 @@
     state.selectedRepo = repo;
     state.repoCollectionPages = { issues: 1, pulls: 1 };
     state.repoMirrors = [];
+    state.repoLatestCommit = null;
     state.repoServedBy = null;
     state.agentsView = { agents: [], selectedAgentId: null };
     // A search left over from the previously-open repo must not carry into

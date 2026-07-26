@@ -835,7 +835,7 @@
           <i data-lucide="${online ? "radio" : "circle"}" class="mt-0.5 h-4 w-4 ${online ? "text-primary" : "text-muted-foreground"}"></i>
           <span class="min-w-0">
             <span class="flex min-w-0 flex-wrap items-center gap-1.5">
-              <span class="min-w-0 truncate text-foreground font-mono">${escapeHtml(mirror.owner || mirror.node || mirror.name || "mirror")}</span>
+              <span class="min-w-0 truncate text-foreground font-mono">${escapeHtml(mirror.node || mirror.machineName || mirror.name || "mirror")}</span>
               ${isSource ? '<span class="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">source of truth</span>' : ""}
               ${integrityRejected ? '<span class="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">failing integrity pin</span>' : ""}
             </span>
@@ -913,6 +913,12 @@
       updateRepoLiveCounts(repo, { mirrors: mirrorCount });
       setRepoTabCount("mirrors", mirrors.length);
       state.repoMirrors = mirrors;
+      // Older gateways reported commit dates at day precision. When the
+      // signed mirror record names the same commit, its exact commitAt is the
+      // authoritative timestamp for the repository summary.
+      if (state.repoLatestCommit) {
+        updateRepoCommitSummary(state.repoLatestCommit, repo);
+      }
       if (state.repoServedBy) {
         renderRepoServedBy(state.repoServedBy.name, state.repoServedBy.tookMs);
       }

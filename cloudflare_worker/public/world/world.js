@@ -4962,6 +4962,7 @@ class ForkMeshWorld extends HTMLElement {
       mentionResult,
       membersResult,
       visitorsResult,
+      statusResult,
     ] =
       await Promise.allSettled([
         this.fetchJSON("/api/network/overview", { auth: false }),
@@ -5061,6 +5062,11 @@ class ForkMeshWorld extends HTMLElement {
         this.fetchJSON("/api/world/visitors", {
           auth: false,
           timeout: 5000,
+        }),
+        this.fetchJSON("/api/status", {
+          auth: false,
+          timeout: 8000,
+          cache: "no-store",
         }),
       ]);
     this.network = networkResult.status === "fulfilled" ? networkResult.value : {};
@@ -5269,6 +5275,9 @@ class ForkMeshWorld extends HTMLElement {
         : this.visitorStats;
     if (this.visitorStats) {
       this.world?.updateArrivalStats?.(this.visitorStats);
+    }
+    if (statusResult.status === "fulfilled") {
+      this.world?.updateSystemStatusBoard?.(statusResult.value);
     }
     const liveMirrors = liveNodeRecords(this.network, this.mirrorCatalogs);
     const rewardAddress = String(this.rewardState?.address || "").trim();
@@ -7309,7 +7318,10 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.eventsTimer);
     this.rewardTimer = window.setInterval(async () => {
       try {
-        await this.refreshRewardState();
+        await Promise.all([
+          this.refreshRewardState(),
+          this.refreshSystemStatusBoard(),
+        ]);
         if (
           this.$("[data-world-detail]")?.dataset.open === "true" &&
           this.$("#world-detail-title")?.textContent?.includes("reward")
@@ -7318,6 +7330,15 @@ class ForkMeshWorld extends HTMLElement {
         }
       } catch (_) {}
     }, 60000);
+  }
+
+  async refreshSystemStatusBoard() {
+    const payload = await this.fetchJSON("/api/status", {
+      auth: false,
+      timeout: 8000,
+      cache: "no-store",
+    });
+    this.world?.updateSystemStatusBoard?.(payload);
   }
 
   async refreshMirrorCatalogs() {

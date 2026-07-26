@@ -568,6 +568,17 @@ SCHEMA_STATEMENTS = [
         ok INTEGER NOT NULL DEFAULT 1, reason TEXT,
         PRIMARY KEY (minute_ts, system))""",
     "CREATE INDEX IF NOT EXISTS idx_system_status_minute_ts ON system_status_minute(minute_ts)",
+    # Edge repository-render monitor state. One row is enough to deduplicate
+    # outage/recovery mail while the normal status tables retain the public
+    # minute/hour/day history.
+    """CREATE TABLE IF NOT EXISTS repository_monitor_state (
+        monitor_id TEXT PRIMARY KEY,
+        is_up INTEGER NOT NULL DEFAULT 1,
+        changed_at INTEGER NOT NULL,
+        outage_started_at INTEGER NOT NULL DEFAULT 0,
+        checked_at INTEGER NOT NULL,
+        reason TEXT,
+        notified_state TEXT NOT NULL DEFAULT '')""",
     # Founders-outreach team: accounts an admin has authorized to send email
     # from the shared founders address via /outreach. `name` is the public
     # account name in plaintext (like users.username) so the roster is listable

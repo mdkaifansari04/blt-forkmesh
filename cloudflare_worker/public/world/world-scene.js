@@ -6220,6 +6220,31 @@ const TWITTER_BANNER_OPTIONS = Object.freeze({
   },
 });
 
+const STATUS_BANNER_OPTIONS = Object.freeze({
+  id: "status",
+  position: [44, 0, -14],
+  accent: "#49d98a",
+  frameColor: "#17613f",
+  titleColor: "#f2fff8",
+  divider: "rgba(73,217,138,0.5)",
+  title: "SYSTEM STATUS",
+  handle: "forkmesh/forkmesh",
+  host: "forkmesh.com/status",
+  lines: [
+    "CHECKING REPOSITORY PAGE",
+    "README.MD · TREE · MIRRORS",
+    "ONE SAMPLE EVERY MINUTE",
+  ],
+  footer: "OPENS FORKMESH.COM/STATUS",
+  url: "/status",
+  feedHeading: "REPOSITORY AVAILABILITY",
+  staleness: {
+    label: "LAST CHECK",
+    freshMs: 2 * 60 * 1000,
+    staleMs: 5 * 60 * 1000,
+  },
+});
+
 const REDDIT_BANNER_OPTIONS = Object.freeze({
   id: "reddit",
   position: [27.6, 0, -26.6],
@@ -7250,6 +7275,18 @@ export function createWorldScene({
     THREE, interactive, BLOG_BANNER_OPTIONS);
   world.add(blogBanner);
   registerMovableObject("blog-banner", blogBanner);
+  // Same physical display format as the Twitter/X sign, placed on the Office
+  // approach. Its four live rows summarize the minute, hour/day, and 30-day
+  // repository availability windows from /api/status.
+  const statusBanner = createSocialBanner(
+    THREE, interactive, STATUS_BANNER_OPTIONS);
+  world.add(statusBanner);
+  registerMovableObject("status-banner", statusBanner);
+  const statusBannerRecord = {
+    group: statusBanner,
+    options: STATUS_BANNER_OPTIONS,
+    snapshot: null,
+  };
   const socialBanners = [
     { group: twitterBanner, options: TWITTER_BANNER_OPTIONS },
     { group: redditBanner, options: REDDIT_BANNER_OPTIONS },
@@ -7307,6 +7344,70 @@ export function createWorldScene({
           ? { posts: Array.isArray(feed.posts) ? feed.posts : [] }
           : null;
       repaintSocialBanner(record);
+    }
+  }
+
+  function updateSystemStatusBoard(payload) {
+    const systems = Array.isArray(payload?.systems) ? payload.systems : [];
+    const repository = systems.find(
+      (system) => system?.id === "flagship_repository");
+    const minutes = Array.isArray(repository?.minutes)
+      ? repository.minutes.filter(
+          (minute) => ["operational", "down"].includes(minute?.status))
+      : [];
+    const minutePassed = minutes.filter(
+      (minute) => minute.status === "operational").length;
+    const pct = (value) =>
+      Number.isFinite(Number(value))
+        ? `${Number(value).toFixed(2)}% UPTIME`
+        : "AWAITING SAMPLES";
+    const current = String(repository?.status || "unknown").toUpperCase();
+    statusBannerRecord.snapshot = repository
+      ? {
+          posts: [
+            { meta: "NOW", text: current.replace(/_/g, " ") },
+            {
+              meta: "LAST 60 MINUTES",
+              text: minutes.length
+                ? `${minutePassed}/${minutes.length} CHECKS PASSED`
+                : "AWAITING MINUTE SAMPLES",
+            },
+            {
+              meta: "LAST 24 HOURS",
+              text: pct(repository.uptime24hPct),
+            },
+            {
+              meta: "LAST 30 DAYS",
+              text: pct(repository.uptimePct),
+            },
+          ],
+        }
+      : null;
+    repaintSocialBanner(statusBannerRecord);
+
+    const lastCheck = Number(payload?.current?.lastCronSampleTs) || 0;
+    const since = lastCheck > 0 ? Math.max(0, Date.now() - lastCheck) : null;
+    const plate = statusBanner.getObjectByName(
+      "forkmesh-status-banner-lastpost");
+    if (plate?.material) {
+      plate.material.map?.dispose?.();
+      plate.material.map = mastodonLastPostTexture(
+        THREE,
+        since,
+        STATUS_BANNER_OPTIONS.staleness.label,
+        STATUS_BANNER_OPTIONS.staleness.freshMs,
+        STATUS_BANNER_OPTIONS.staleness.staleMs,
+      );
+      plate.material.needsUpdate = true;
+    }
+    const dial = statusBanner.getObjectByName(
+      "forkmesh-status-banner-countdown");
+    if (dial?.material) {
+      const remaining = 60_000 - (Date.now() % 60_000);
+      dial.material.map?.dispose?.();
+      dial.material.map = mastodonCountdownTexture(
+        THREE, remaining, 60_000, false);
+      dial.material.needsUpdate = true;
     }
   }
 
@@ -14754,6 +14855,7 @@ export function createWorldScene({
     updateMastodonCountdown,
     updateSocialBanners,
     updateSocialBannerTimers,
+    updateSystemStatusBoard,
     setOfficeSeatState,
     showOfficeBubble,
     leaveOfficeInterior,

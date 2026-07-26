@@ -1783,6 +1783,7 @@ STATUS_SYSTEMS = [
     ("website", "Website"),
     ("api", "API"),
     ("database", "Database"),
+    ("flagship_repository", "forkmesh/forkmesh repository page"),
     ("git_hosting", "Git hosting network"),
     ("realtime", "Realtime sync (chat & tunnels)"),
     ("durable_objects", "Durable Objects (free-tier duration limit)"),
@@ -1807,6 +1808,11 @@ STATUS_SYSTEM_CHECKS = {
         "Runs a real SELECT round trip against the D1 database once a "
         "minute. Passes when the query returns a row; fails on any query "
         "error."),
+    "flagship_repository": (
+        "Loads https://forkmesh.com/forkmesh/forkmesh once a minute, then "
+        "loads the root repository tree and README.md blob through the same "
+        "public API used by the page. Passes only when the page shell renders, "
+        "the root tree contains README.md, and the README body is readable."),
     "git_hosting": (
         "Checks for at least one account-bound direct HTTPS endpoint with a "
         "signed, integrity-matching ForkMesh repository proof observed within "
@@ -1832,6 +1838,199 @@ STATUS_MINUTES_SHOWN = 60  # width of the per-minute strip on /status
 # Kept a little past what's shown so a slow reader's page load always has a
 # full 60 buckets to render even a few minutes after the newest cron tick.
 STATUS_MINUTE_RETAIN_MS = 90 * 60 * 1000
+FLAGSHIP_REPOSITORY_URL = "https://forkmesh.com/forkmesh/forkmesh"
+FLAGSHIP_MONITOR_ID = "forkmesh/forkmesh"
+
+
+def _flagship_monitor_duration(milliseconds):
+    seconds = max(0, int(milliseconds or 0) // 1000)
+    if seconds < 60:
+        return "%d second%s" % (seconds, "" if seconds == 1 else "s")
+    minutes = seconds // 60
+    if minutes < 60:
+        return "%d minute%s" % (minutes, "" if minutes == 1 else "s")
+    hours = minutes // 60
+    remainder = minutes % 60
+    return "%d hour%s%s" % (
+        hours,
+        "" if hours == 1 else "s",
+        (" %d minute%s" % (
+            remainder, "" if remainder == 1 else "s")) if remainder else "",
+    )
+
+
+async def _flagship_repository_probe(env):
+    """Exercise the same shell and routed node reads the public URL renders."""
+
+    async def bounded_response(response, maximum):
+        status = int(getattr(response, "status", 0) or 0)
+        try:
+            announced = int(response.headers.get("content-length") or 0)
+        except Exception:
+            announced = 0
+        if announced > maximum:
+            return status, ""
+        body = str(await response.text())
+        return (
+            (status, body)
+            if len(body.encode("utf-8")) <= maximum
+            else (status, "")
+        )
+
+    # Scheduled Workers cannot hairpin through their own public hostname
+    # reliably (Cloudflare returns a synthetic 404/52x before the request
+    # reaches the Worker). Read the same static shell from the bound asset
+    # service and invoke the same authenticated mirror router used by the
+    # public tree/blob endpoints. Repository bytes still come from active
+    # nodes; none are substituted from D1 or a Worker-side copy.
+    shell_response = await env.ASSETS.fetch(JsRequest.new(
+        "https://forkmesh.internal/dashboard/repo.html"))
+    tree_request = JsRequest.new(
+        "https://forkmesh.internal/api/repo/forkmesh/forkmesh/tree?path=")
+    blob_request = JsRequest.new(
+        "https://forkmesh.internal/api/repo/forkmesh/forkmesh/"
+        "blob?path=README.md")
+    tree_response, blob_response = await asyncio.gather(
+        _https_mirror_proxy(
+            env, tree_request, "forkmesh", "forkmesh", "tree"),
+        _https_mirror_proxy(
+            env, blob_request, "forkmesh", "forkmesh", "blob"),
+    )
+    shell, tree, readme = await asyncio.gather(
+        bounded_response(shell_response, 512 * 1024),
+        bounded_response(tree_response, 2 * 1024 * 1024),
+        bounded_response(blob_response, 512 * 1024),
+    )
+    shell_status, shell_text = shell
+    tree_status, tree_text = tree
+    blob_status, blob_text = readme
+    if shell_status != 200 or 'data-page="repo"' not in shell_text:
+        return False, "Repository page shell did not load (HTTP %d)" % shell_status
+    try:
+        tree_data = json.loads(tree_text)
+    except Exception:
+        tree_data = {}
+    entries = tree_data.get("entries") if isinstance(tree_data, dict) else []
+    has_readme = any(
+        isinstance(item, dict)
+        and str(item.get("name") or "").lower() == "readme.md"
+        and str(item.get("type") or "").lower() == "blob"
+        for item in (entries if isinstance(entries, list) else [])
+    )
+    if tree_status != 200 or tree_data.get("ok") is not True or not has_readme:
+        return False, "Root repository tree did not contain README.md"
+    try:
+        blob_data = json.loads(blob_text)
+    except Exception:
+        blob_data = {}
+    if (
+        blob_status != 200
+        or not isinstance(blob_data, dict)
+        or blob_data.get("ok") is not True
+        or not str(blob_data.get("content") or "").strip()
+    ):
+        return False, "README.md body did not load"
+    return True, ""
+
+
+async def _repository_monitor_admin_emails(env):
+    recipients = {
+        value.strip().lower()
+        for value in str(
+            getattr(env, "ADMIN_ALERT_EMAILS", "") or ""
+        ).split(",")
+        if "@" in value
+    }
+    rows = await d1_all(
+        env, "SELECT data FROM users WHERE is_admin=1 LIMIT 20")
+    for row in rows or []:
+        try:
+            record = await decrypt_row(env, row.get("data", "")) or {}
+            email = clean_string(record.get("email", ""), 254).strip().lower()
+            if email and "@" in email and record.get("email_verified") is True:
+                recipients.add(email)
+        except Exception:
+            continue
+    return sorted(recipients)
+
+
+async def _record_flagship_monitor_transition(env, is_up, reason, now):
+    """Persist one state transition and send at most one alert per state."""
+    row = await d1_first(
+        env,
+        "SELECT is_up,changed_at,outage_started_at,notified_state "
+        "FROM repository_monitor_state "
+        "WHERE monitor_id=?",
+        FLAGSHIP_MONITOR_ID,
+    )
+    state = "up" if is_up else "down"
+    previous_up = bool(row.get("is_up")) if row else True
+    previous_changed_at = int(row.get("changed_at") or now) if row else int(now)
+    prior_outage_started = int(row.get("outage_started_at") or 0) if row else 0
+    outage_started_at = (
+        prior_outage_started
+        if is_up
+        else int(now)
+        if not row or previous_up
+        else prior_outage_started or previous_changed_at
+    )
+    changed_at = (
+        int(now) if not row or previous_up != bool(is_up)
+        else int(row.get("changed_at") or now)
+    )
+    notified = (
+        ("up" if is_up else "") if not row
+        else "" if previous_up != bool(is_up)
+        else str(row.get("notified_state") or "")
+    )
+    await d1_run(
+        env,
+        """INSERT INTO repository_monitor_state
+             (monitor_id,is_up,changed_at,outage_started_at,checked_at,reason,
+              notified_state)
+             VALUES (?,?,?,?,?,?,?)
+             ON CONFLICT(monitor_id) DO UPDATE SET
+               is_up=excluded.is_up,changed_at=excluded.changed_at,
+               outage_started_at=excluded.outage_started_at,
+               checked_at=excluded.checked_at,reason=excluded.reason,
+               notified_state=excluded.notified_state""",
+        FLAGSHIP_MONITOR_ID, 1 if is_up else 0, changed_at,
+        outage_started_at, int(now),
+        clean_string(reason or "", 240), notified,
+    )
+    if notified == state:
+        return
+    recipients = await _repository_monitor_admin_emails(env)
+    if not recipients:
+        return
+    if is_up:
+        duration = _flagship_monitor_duration(
+            int(now) - (outage_started_at or previous_changed_at))
+        subject = "[ForkMesh recovered] forkmesh/forkmesh is back up"
+        text = (
+            FLAGSHIP_REPOSITORY_URL + " is loading again.\n\n"
+            "The repository page, root tree, and README.md all passed. "
+            "The outage lasted " + duration + "."
+        )
+    else:
+        subject = "[ForkMesh outage] forkmesh/forkmesh is down"
+        text = (
+            FLAGSHIP_REPOSITORY_URL + " failed its one-minute availability "
+            "check.\n\nReason: " + (reason or "Repository did not fully load")
+            + "\n\nA recovery email will be sent when the page and README.md "
+            "both load again."
+        )
+    delivered = True
+    for email in recipients:
+        delivered = bool(await _send_email(
+            env, email, subject, text)) and delivered
+    if delivered:
+        await d1_run(
+            env,
+            "UPDATE repository_monitor_state SET notified_state=? "
+            "WHERE monitor_id=? AND is_up=?",
+            state, FLAGSHIP_MONITOR_ID, 1 if is_up else 0,
+        )
 
 
 def _status_expected_checks_for_hour(hour_ts, now):
@@ -1941,6 +2140,23 @@ async def record_status_sample(env):
     except Exception as exc:
         ok["database"] = False
         reason["database"] = "Database query failed: " + str(exc)[:160]
+
+    try:
+        repository_ok, repository_reason = await _flagship_repository_probe(env)
+        ok["flagship_repository"] = repository_ok
+        if not repository_ok:
+            reason["flagship_repository"] = repository_reason
+        await _record_flagship_monitor_transition(
+            env, repository_ok, repository_reason, now)
+    except Exception as exc:
+        ok["flagship_repository"] = False
+        reason["flagship_repository"] = (
+            "Repository availability probe failed: " + str(exc)[:160])
+        try:
+            await _record_flagship_monitor_transition(
+                env, False, reason["flagship_repository"], now)
+        except Exception:
+            pass
 
     try:
         cutoff = now - HTTPS_MIRROR_STATUS_FRESH_MS

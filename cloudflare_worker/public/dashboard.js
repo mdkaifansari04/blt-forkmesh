@@ -47,6 +47,7 @@
     claimNode: { pendingNodeId: "" },
     linkGrant: null,
     repoMirrors: [],
+    repoLatestCommit: null,
     repoServedBy: null,
     // Owner-only "Agents" tab (adhoc #225): owner verification by node account,
     // no password required. selectedAgentId (adhoc #259) is the id of the agent
@@ -6571,8 +6572,16 @@
     const subject = commitSummaryField(data, "subject", "message", "commitMessage");
     const author = commitSummaryField(data, "author", "committer", "name")
       || String(repo.maintainer || repo.owner || "maintainer");
-    const date = commitSummaryField(data, "date", "committedAt", "updatedAt")
+    const matchingMirror = (state.repoMirrors || []).find((mirror) => {
+      const mirrorCommit = String(mirror?.commit || "").trim().toLowerCase();
+      return hash && mirrorCommit === hash.trim().toLowerCase()
+        && Number(mirror?.lastCommitAt) > 0;
+    });
+    const exactMirrorDate = matchingMirror?.lastCommitAt || "";
+    const date = exactMirrorDate
+      || commitSummaryField(data, "date", "committedAt", "updatedAt")
       || String(repo.updatedAt || repo.lastSync || "");
+    if (commit && typeof commit === "object") state.repoLatestCommit = commit;
     const avatar = summary.querySelector("[data-repo-commit-avatar]");
     const authorNode = summary.querySelector("[data-repo-commit-author]");
     const messageNode = summary.querySelector("[data-repo-commit-message]");
@@ -11421,7 +11430,7 @@
           <i data-lucide="${online ? "radio" : "circle"}" class="mt-0.5 h-4 w-4 ${online ? "text-primary" : "text-muted-foreground"}"></i>
           <span class="min-w-0">
             <span class="flex min-w-0 flex-wrap items-center gap-1.5">
-              <span class="min-w-0 truncate text-foreground font-mono">${escapeHtml(mirror.owner || mirror.node || mirror.name || "mirror")}</span>
+              <span class="min-w-0 truncate text-foreground font-mono">${escapeHtml(mirror.node || mirror.machineName || mirror.name || "mirror")}</span>
               ${isSource ? '<span class="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">source of truth</span>' : ""}
               ${integrityRejected ? '<span class="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">failing integrity pin</span>' : ""}
             </span>
@@ -11499,6 +11508,12 @@
       updateRepoLiveCounts(repo, { mirrors: mirrorCount });
       setRepoTabCount("mirrors", mirrors.length);
       state.repoMirrors = mirrors;
+      // Older gateways reported commit dates at day precision. When the
+      // signed mirror record names the same commit, its exact commitAt is the
+      // authoritative timestamp for the repository summary.
+      if (state.repoLatestCommit) {
+        updateRepoCommitSummary(state.repoLatestCommit, repo);
+      }
       if (state.repoServedBy) {
         renderRepoServedBy(state.repoServedBy.name, state.repoServedBy.tookMs);
       }
@@ -12086,6 +12101,7 @@
     state.selectedRepo = repo;
     state.repoCollectionPages = { issues: 1, pulls: 1 };
     state.repoMirrors = [];
+    state.repoLatestCommit = null;
     state.repoServedBy = null;
     state.agentsView = { agents: [], selectedAgentId: null };
     // A search left over from the previously-open repo must not carry into
