@@ -75,6 +75,13 @@ WORLD_ACCOUNT_STATUS_VALUES = frozenset({
 WORLD_OUTFIT_COLOR_VALUES = frozenset({
     "", "aurora", "ember", "violet", "gold", "slate",
 })
+# A Supporting member perk: pin one of the tailored outfit cuts instead of the
+# cut the visitor's public name seeds. "" means "wear the name-seeded cut".
+# The ids must stay in lockstep with OUTFIT_STYLE_OPTIONS in world-data.js.
+WORLD_OUTFIT_STYLE_VALUES = frozenset({
+    "", "sash", "racer", "chevron", "argyle", "circuit", "pixel",
+    "waves", "starfield", "hex", "bolt", "tartan", "binary",
+})
 WORLD_SPACE_VALUES = frozenset({
     "town-square", "east", "central", "west", "sky-campus",
     "space-station", "code-planet", "organization-region", "planet-atlas",
@@ -120,6 +127,7 @@ WORLD_PUBLIC_FIELDS = (
     "firstSeenMinutes", "joinedAt",
     "accountStatus", "nodeCount", "space",
     "publicDoor", "statusEmoji", "statusNote", "outfitColor",
+    "outfitStyle", "faceImage",
     "x", "y", "z", "yaw", "moving", "updatedAt",
 )
 
@@ -442,6 +450,8 @@ def default_presence(peer_id, now):
         "statusEmoji": "",
         "statusNote": "",
         "outfitColor": "",
+        "outfitStyle": "",
+        "faceImage": False,
         "x": 0.0,
         "y": 0.0,
         "z": 0.0,
@@ -701,6 +711,19 @@ def sanitize_message(payload, current, now, country_source="",
             state["outfitColor"] = (
                 _choice(payload.get("outfitColor"), WORLD_OUTFIT_COLOR_VALUES, "")
                 if state.get("accountStatus") == "Supporting member" else "")
+        # The pinned outfit cut follows the same trust rule as the color.
+        if "outfitStyle" in payload:
+            state["outfitStyle"] = (
+                _choice(payload.get("outfitStyle"), WORLD_OUTFIT_STYLE_VALUES, "")
+                if state.get("accountStatus") == "Supporting member" else "")
+        # Wearing the account's public avatar image as the 3D face is opt-in
+        # and only a boolean travels over presence: peers resolve the actual
+        # image from the already-public /api/accounts/{name} lookup, so no
+        # image bytes ever enter a presence frame.
+        if "faceImage" in payload:
+            state["faceImage"] = (
+                payload.get("faceImage") is True
+                and state.get("accountStatus") == "Supporting member")
         if "space" in payload:
             state["space"] = _choice(
                 payload.get("space"), WORLD_SPACE_VALUES, "town-square")
