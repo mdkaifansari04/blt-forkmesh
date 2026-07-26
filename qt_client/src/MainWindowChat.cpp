@@ -11125,13 +11125,19 @@ void MainWindow::createVultrMirrorFromForm()
     m_vultrProvisionActive = true;
     m_vultrPollCount = 0;
     m_vultrInstallAttempts = 0;
-    // A brand-new instance has nobody mirroring it and there may be no
-    // published release for its platform at all, so a relay download can only
-    // dead-end (adhoc #408). Whenever this app's own binary can run on the
-    // Debian x64 image the flow deploys, upload it straight over the SSH
-    // session from the very first attempt — that needs no prebuilt release.
-    m_vultrInstallUseLocalBinary = forkmesh::control::localBinaryRunsOnVultrMirror(
-        QSysInfo::kernelType(), QSysInfo::currentCpuArchitecture());
+    // A brand-new instance is nobody's mirror yet, so the installer's default
+    // relay-download path has no online node to clone from and dies with "No
+    // online ForkMesh node is currently mirroring 'forkmesh'". Start straight
+    // in direct-upload mode whenever this app's own binary can run on the
+    // instance we are about to create (always x64 Debian) — that needs no
+    // online mirror at all. The failure-driven switch below stays as the
+    // fallback for the platforms an upload cannot serve. An unreadable own
+    // binary would fail every attempt before SSH is even reached, so it also
+    // keeps the download path.
+    m_vultrInstallUseLocalBinary =
+         forkmesh::control::localBinaryRunsOnVultrMirror(
+             QSysInfo::kernelType(), QSysInfo::currentCpuArchitecture()) &&
+         QFileInfo(QCoreApplication::applicationFilePath()).isReadable();
     m_vultrInstallAttemptLog.clear();
     m_vultrDnsHostname.clear();
     m_hostInstallAttemptBanner.clear();
@@ -11417,7 +11423,10 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
     if (m_vultrStatus)
         m_vultrStatus->setText(
             QString::fromUtf8(
-                "Installing ForkMesh (attempt %1 of %2)\xE2\x80\xA6")
+                m_vultrInstallUseLocalBinary
+                    ? "Installing ForkMesh (attempt %1 of %2) \xE2\x80\x94 "
+                      "uploading this app's release directly\xE2\x80\xA6"
+                    : "Installing ForkMesh (attempt %1 of %2)\xE2\x80\xA6")
                 .arg(m_vultrInstallAttempts)
                 .arg(kMaxInstallAttempts));
     // A fresh instance often refuses SSH for a short while after Vultr

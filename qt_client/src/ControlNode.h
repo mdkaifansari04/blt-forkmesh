@@ -370,6 +370,14 @@ QString vultrPlanRegion(const QJsonObject &plan);
 // name; ties break toward the higher os id).
 QJsonObject latestVultrDebianOs(const QJsonArray &osList);
 
+// True when this machine's own ForkMesh binary can run on a freshly created
+// Vultr mirror (always x64 Debian, see latestVultrDebianOs), so the provisioner
+// can upload it straight over the SSH session instead of asking the new host to
+// clone from an online mirror that may not exist yet. Takes QSysInfo's
+// kernelType() ("linux"/"darwin"/"winnt") and currentCpuArchitecture().
+bool localBinaryRunsOnVultrMirror(const QString &kernelType,
+                                  const QString &cpuArch);
+
 // Exact POST /v2/instances body for a ForkMesh mirror: chosen plan/region/OS,
 // the managed SSH key, no backups, no activation email, tagged so the instance
 // is recognizable in the Vultr panel.
