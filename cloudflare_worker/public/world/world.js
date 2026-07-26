@@ -4630,6 +4630,7 @@ class ForkMeshWorld extends HTMLElement {
         onCreateRepository: (options) =>
           this.openRepositoryCreateForm(options),
         onSwingRide: (state) => this.handleSwingRide(state),
+        onCameraMode: (state) => this.handleWorldCameraMode(state),
         onOfficeChairSelect: (chairId) => {
           this.officeMeeting?.requestSeat(chairId);
         },
@@ -12322,14 +12323,13 @@ class ForkMeshWorld extends HTMLElement {
   revealRepositoryScene() {
     this.closeLandmark();
     const active = this.activeRepository;
+    // Visiting a repository sunburst frames it from the orbital camera; the
+    // camera button is the only way into first person.
+    this.world?.setCameraMode?.("third-person");
     const focused =
       active &&
-      this.world?.enterRepositoryFirstPerson?.(
-        active.owner,
-        active.repo,
-      ) === true;
+      this.world?.focusRepositoryPortal?.(active.owner, active.repo) === true;
     if (!focused) {
-      this.world?.setCameraMode?.("third-person");
       this.world?.focusLandmark?.("repositories");
     }
     this.syncWorldCameraModeButton();
@@ -16297,6 +16297,15 @@ class ForkMeshWorld extends HTMLElement {
     }
     if (label) label.textContent = firstPerson ? "Third person" : "First person";
     return firstPerson;
+  }
+
+  handleWorldCameraMode(state) {
+    this.syncWorldCameraModeButton();
+    // Only the scene's own decisions need announcing here; the toggle button
+    // and the repository visit already narrate their own switch.
+    if (state?.reason === "zoom-out") {
+      this.toast("Zoomed all the way out — third-person view restored.");
+    }
   }
 
   toggleWorldCameraMode() {

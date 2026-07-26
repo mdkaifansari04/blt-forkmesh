@@ -1109,7 +1109,9 @@ def test_world_first_person_camera_has_accessible_toggle_and_scene_api():
     ):
         assert contract in sync
 
-    scene_mode_start = SCENE.index("  function setCameraMode(mode) {")
+    scene_mode_start = SCENE.index(
+        '  function setCameraMode(mode, reason = "request") {',
+    )
     scene_mode = SCENE[
         scene_mode_start:
         SCENE.index("\n  function focusRepositoryPortal(", scene_mode_start)
@@ -1119,30 +1121,47 @@ def test_world_first_person_camera_has_accessible_toggle_and_scene_api():
     # meeting, where the local meeting participant is the visible camera target.
     assert 'player.visible = officeSceneMode !== "meeting"' in scene_mode
     assert "if (localParticipant) localParticipant.visible = true" in scene_mode
+    assert "firstPersonZoom = 1;" in scene_mode
     assert "renderer.domElement.dataset.cameraMode = cameraMode" in scene_mode
+    assert "onCameraMode({ mode: cameraMode, reason })" in scene_mode
 
-    repository_entry_start = SCENE.index(
-        "  function enterRepositoryFirstPerson(",
-    )
-    repository_entry = SCENE[
-        repository_entry_start:
-        SCENE.index("\n  function clearFocus()", repository_entry_start)
-    ]
-    assert 'setCameraMode("first-person")' in repository_entry
-    assert "player.position.set(" in repository_entry
-    assert "onMovement({" in repository_entry
-
+    # Visiting a repository sunburst frames it from the orbital camera; only
+    # the camera button puts the visitor inside the avatar's head.
     reveal_start = APP.index("  revealRepositoryScene() {")
     reveal = APP[
         reveal_start:
         APP.index("\n  selectRepositoryPortal(", reveal_start)
     ]
-    assert "this.world?.enterRepositoryFirstPerson?.(" in reveal
+    assert "enterRepositoryFirstPerson" not in APP
+    assert "enterRepositoryFirstPerson" not in SCENE
     assert 'this.world?.setCameraMode?.("third-person")' in reveal
+    assert "this.world?.focusRepositoryPortal?.(" in reveal
     assert "this.syncWorldCameraModeButton();" in reveal
-    assert "enterRepositoryFirstPerson," in SCENE
     assert "setCameraMode," in SCENE
     assert "getCameraState:" in SCENE
+
+
+def test_world_first_person_zoom_out_falls_back_to_third_person():
+    zoom_start = SCENE.index("  function setCameraZoom(value) {")
+    zoom = SCENE[
+        zoom_start:
+        SCENE.index("\n  function touchDistance()", zoom_start)
+    ]
+    assert "next < FIRST_PERSON_ZOOM_MIN" in zoom
+    assert "firstPersonZoom <= FIRST_PERSON_ZOOM_MIN" in zoom
+    assert 'setCameraMode("third-person", "zoom-out")' in zoom
+    assert "pinchStartZoom = cameraZoom;" in zoom
+    assert "const FIRST_PERSON_ZOOM_MIN = 0.25;" in SCENE
+    assert "const FIRST_PERSON_ZOOM_MAX = 5;" in SCENE
+
+    handler_start = APP.index("  handleWorldCameraMode(state) {")
+    handler = APP[
+        handler_start:
+        APP.index("\n  toggleWorldCameraMode()", handler_start)
+    ]
+    assert "this.syncWorldCameraModeButton();" in handler
+    assert 'state?.reason === "zoom-out"' in handler
+    assert "onCameraMode: (state) => this.handleWorldCameraMode(state)" in APP
 
 
 def test_world_autoloads_the_live_catalog_attested_flagship_repository_map():

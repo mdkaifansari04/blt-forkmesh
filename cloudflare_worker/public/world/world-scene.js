@@ -76,6 +76,8 @@ const CAMERA_PITCH_MIN = -Math.PI / 2 + 0.01;
 // player can still look directly into the sky.
 const CAMERA_PITCH_MAX = Math.PI / 2 - 0.01;
 const FIRST_PERSON_EYE_HEIGHT = 2.2;
+const FIRST_PERSON_ZOOM_MIN = 0.25;
+const FIRST_PERSON_ZOOM_MAX = 5;
 const FIRST_PERSON_PITCH_MIN = -Math.PI / 2 + 0.01;
 const FIRST_PERSON_PITCH_MAX = Math.PI / 2 - 0.01;
 const REPOSITORY_FIRST_PERSON_DISTANCE = 5.5;
@@ -7534,6 +7536,7 @@ export function createWorldScene({
   onPlayForkmeshSong = () => {},
   onCreateRepository = () => {},
   onSwingRide = () => {},
+  onCameraMode = () => {},
 }) {
   // Phones frequently expose a high-density screen to a comparatively small
   // GPU.  Use the same scene, but avoid allocating multisample and shadow-map
@@ -11541,12 +11544,13 @@ export function createWorldScene({
     return true;
   }
 
-  function setCameraMode(mode) {
+  function setCameraMode(mode, reason = "request") {
     const wantsFirstPerson =
       mode === true ||
       String(mode || "").trim().toLocaleLowerCase() === "first-person";
     const nextMode = wantsFirstPerson ? "first-person" : "third-person";
-    if (nextMode !== cameraMode) cancelDash();
+    const changed = nextMode !== cameraMode;
+    if (changed) cancelDash();
     cameraMode = nextMode;
     if (cameraMode === "first-person") {
       cameraFocus = null;
@@ -11565,10 +11569,14 @@ export function createWorldScene({
           officeParticipants.get(officeLocalParticipantId);
         if (localParticipant) localParticipant.visible = true;
       }
+      // Leave the eyes at their neutral field of view so the next first-person
+      // visit does not start already pinned against the zoom-out floor.
+      firstPersonZoom = 1;
       camera.fov = 44;
       camera.updateProjectionMatrix();
     }
     renderer.domElement.dataset.cameraMode = cameraMode;
+    if (changed) onCameraMode({ mode: cameraMode, reason });
     return cameraMode;
   }
 
@@ -11590,48 +11598,6 @@ export function createWorldScene({
     cameraYaw = -record.angle - Math.PI / 2;
     cameraPitch = 0.16;
     cameraZoom = Math.min(cameraZoom, 0.55);
-    return true;
-  }
-
-  function enterRepositoryFirstPerson(owner, name) {
-    if (officeSceneMode !== "town") return false;
-    const key = `${String(owner || "").toLocaleLowerCase()}/${String(
-      name || "",
-    ).toLocaleLowerCase()}`;
-    const record = repositoryPortals.get(key);
-    if (!record?.group || !focusRepositoryPortal(owner, name)) return false;
-
-    const portalPosition = new THREE.Vector3();
-    record.group.getWorldPosition(portalPosition);
-    // focusRepositoryPortal points the view from the portal's inward normal
-    // toward its face. Put the actual avatar on that normal so this remains a
-    // true first-person view and multiplayer peers see the same spatial visit.
-    player.position.set(
-      portalPosition.x +
-        Math.sin(cameraYaw) * REPOSITORY_FIRST_PERSON_DISTANCE,
-      currentFloorY,
-      portalPosition.z +
-        Math.cos(cameraYaw) * REPOSITORY_FIRST_PERSON_DISTANCE,
-    );
-    player.rotation.y = cameraYaw;
-    jumpQueued = false;
-    jumpVelocity = 0;
-    keyboardMovementSpeed = baseMoveSpeed();
-    lastPosition.copy(player.position);
-    wasWalking = false;
-    lastMovementEmit = performance.now();
-    firstPersonPitch = REPOSITORY_FIRST_PERSON_PITCH;
-    setCameraMode("first-person");
-    focusedRepositoryKey = key;
-    onMovement({
-      x: Number(player.position.x.toFixed(2)),
-      y: Number(player.position.y.toFixed(2)),
-      z: Number(player.position.z.toFixed(2)),
-      heading: Number(player.rotation.y.toFixed(3)),
-      activity: "exploring a repository graph",
-      space: currentSpace,
-      moving: false,
-    });
     return true;
   }
 
@@ -16093,7 +16059,28 @@ export function createWorldScene({
     const next = Number(value);
     if (!Number.isFinite(next)) return cameraZoom;
     if (cameraMode === "first-person") {
-      firstPersonZoom = clamp(next, 0.25, 5);
+      // Once the eyes are already as wide as they go, another notch backwards
+      // steps out of the avatar's head entirely — that is where the gesture
+      // was heading anyway.
+      if (
+        next < FIRST_PERSON_ZOOM_MIN &&
+        firstPersonZoom <= FIRST_PERSON_ZOOM_MIN
+      ) {
+        setCameraMode("third-person", "zoom-out");
+        if (pinchActive) {
+          // Re-anchor a live pinch, otherwise the orbital camera inherits the
+          // scale the gesture started at inside first person.
+          pinchStartZoom = cameraZoom;
+          const spread = touchDistance();
+          if (spread > 0) pinchStartDistance = spread;
+        }
+        return cameraZoom;
+      }
+      firstPersonZoom = clamp(
+        next,
+        FIRST_PERSON_ZOOM_MIN,
+        FIRST_PERSON_ZOOM_MAX,
+      );
       camera.fov = clamp(44 / firstPersonZoom, 10, 110);
       camera.updateProjectionMatrix();
       return firstPersonZoom;
@@ -17645,7 +17632,6 @@ export function createWorldScene({
     showOfficeBubble,
     leaveOfficeInterior,
     focusRepositoryPortal,
-    enterRepositoryFirstPerson,
     clearFocus,
     setCameraMode,
     setTheme,
@@ -17707,8 +17693,14 @@ export function createWorldScene({
       mode: cameraMode,
       firstPerson: cameraMode === "first-person",
       zoom: cameraMode === "first-person" ? firstPersonZoom : cameraZoom,
-      minZoom: cameraMode === "first-person" ? 0.25 : CAMERA_ZOOM_MIN,
-      maxZoom: cameraMode === "first-person" ? 5 : CAMERA_ZOOM_MAX,
+      minZoom:
+        cameraMode === "first-person"
+          ? FIRST_PERSON_ZOOM_MIN
+          : CAMERA_ZOOM_MIN,
+      maxZoom:
+        cameraMode === "first-person"
+          ? FIRST_PERSON_ZOOM_MAX
+          : CAMERA_ZOOM_MAX,
       yaw: cameraYaw,
       pitch:
         cameraMode === "first-person" ? firstPersonPitch : cameraPitch,

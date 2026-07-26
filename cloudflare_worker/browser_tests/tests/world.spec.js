@@ -5814,34 +5814,81 @@ test("camera toggle enters first-person and restores the local player", async ({
   });
 });
 
-test("visiting the repository sunburst enters first-person and can exit", async ({
+test("visiting the repository sunburst frames it in third-person", async ({
   page,
 }) => {
-  await prepareWorldPage(page, "world-repository-first-person", {
+  await prepareWorldPage(page, "world-repository-third-person", {
     repositoryFixture: {},
   });
   await openWorldRepositoryExplorer(page);
 
   await page.locator("[data-world-repo-scene]").click();
   const toggle = page.locator("[data-world-camera-toggle]");
-  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
   await expect(toggle).toHaveAttribute(
     "aria-label",
-    "Exit first-person view",
+    "Enter first-person view",
   );
+  const framed = await page.locator("forkmesh-world").evaluate((shell) => ({
+    camera: shell.world.getCameraState(),
+    playerVisible: shell.world.player.visible,
+    canvasMode: shell.world.renderer.domElement.dataset.cameraMode,
+  }));
+  expect(framed).toMatchObject({
+    camera: { mode: "third-person", firstPerson: false },
+    playerVisible: true,
+    canvasMode: "third-person",
+  });
+  expect(framed.camera.zoom).toBeLessThanOrEqual(0.55);
+
+  // First person stays available, just never automatic.
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
   expect(
     await page.locator("forkmesh-world").evaluate((shell) => ({
-      camera: shell.world.getCameraState(),
+      mode: shell.world.getCameraState().mode,
       playerVisible: shell.world.player.visible,
-      canvasMode: shell.world.renderer.domElement.dataset.cameraMode,
     })),
-  ).toMatchObject({
-    camera: { mode: "first-person", firstPerson: true },
-    playerVisible: false,
-    canvasMode: "first-person",
-  });
+  ).toEqual({ mode: "first-person", playerVisible: false });
+});
 
+test("zooming first-person all the way back restores third-person", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "world-first-person-zoom-out");
+  await waitForWorld(page);
+
+  const toggle = page.locator("[data-world-camera-toggle]");
   await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+
+  const canvas = page.locator("[data-world-canvas-wrap] canvas");
+  const box = await canvas.boundingBox();
+  expect(box).not.toBeNull();
+  const centre = {
+    x: Math.round(box.x + box.width / 2),
+    y: Math.round(box.y + box.height / 2),
+  };
+  await page.mouse.move(centre.x, centre.y);
+
+  // Widening the eyes stays in first person right up to the zoom-out floor.
+  await page.mouse.wheel(0, 480);
+  await expect
+    .poll(() =>
+      page
+        .locator("forkmesh-world")
+        .evaluate((shell) => shell.world.getCameraState().mode),
+    )
+    .toBe("first-person");
+  await page.mouse.wheel(0, 480);
+  const floored = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.getCameraState(),
+  );
+  expect(floored.mode).toBe("first-person");
+  expect(floored.zoom).toBeCloseTo(floored.minZoom, 5);
+
+  // One more notch back steps out of the avatar's head entirely.
+  await page.mouse.wheel(0, 480);
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
   await expect(toggle).toHaveAttribute(
     "aria-label",
@@ -5851,8 +5898,15 @@ test("visiting the repository sunburst enters first-person and can exit", async 
     await page.locator("forkmesh-world").evaluate((shell) => ({
       mode: shell.world.getCameraState().mode,
       playerVisible: shell.world.player.visible,
+      canvasMode: shell.world.renderer.domElement.dataset.cameraMode,
+      fov: shell.world.camera.fov,
     })),
-  ).toEqual({ mode: "third-person", playerVisible: true });
+  ).toEqual({
+    mode: "third-person",
+    playerVisible: true,
+    canvasMode: "third-person",
+    fov: 44,
+  });
 });
 
 test("pull requests open and become viewed entirely inside the repository World", async ({
