@@ -86,6 +86,10 @@ const MASTODON_REFRESH_MS = 10 * 60 * 1000;
 // built from the thread context of the newest toots that report replies.
 const MASTODON_REPLY_THREADS = 4;
 const MASTODON_REPLY_LIMIT = 12;
+// Twitter and Reddit have no CORS-open public API, so their banners repaint
+// from the Worker's edge-cached proxy on the same ten-minute cadence.
+const SOCIAL_POSTS_URL = "/api/world/social-posts";
+const SOCIAL_REFRESH_MS = 10 * 60 * 1000;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const CHAT_BUBBLE_JOIN_GRACE_MS = 20 * 1000;
 const POSITION_RADIUS = 72;
@@ -3545,6 +3549,9 @@ class ForkMeshWorld extends HTMLElement {
     this.mastodonRequestedAt = 0;
     this.mastodonLoad = null;
     this.mastodonRefreshTimer = 0;
+    this.socialFeedsSnapshot = null;
+    this.socialFeedsLoad = null;
+    this.socialFeedsTimer = 0;
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
     const requestedLandmark = worldQuery.get("landmark") || "";
@@ -4039,6 +4046,10 @@ class ForkMeshWorld extends HTMLElement {
       void this.loadMastodonBoard();
       this.syncMastodonKiosk();
       this.startMastodonRefresh();
+      // Same pattern for the Twitter/Reddit banners: push any cached
+      // snapshot onto the rebuilt scene, then keep the ten-minute cadence.
+      this.syncSocialBanners();
+      this.startSocialBannersRefresh();
       this.syncMemberLounge();
       void this.loadReferralLeaderboard();
       this.syncRepositoryScene();
@@ -7248,6 +7259,90 @@ class ForkMeshWorld extends HTMLElement {
       this.syncMastodonCountdown();
     }, 1000);
     this.syncMastodonCountdown();
+  }
+
+  // The Twitter and Reddit banners repaint from the Worker's proxy snapshot
+  // (/api/world/social-posts). The read is public, credential-free, and
+  // edge-cached for ten minutes, so a scene rebuild can re-request it
+  // cheaply. Remote text is drawn onto a canvas texture, never injected as
+  // markup.
+  loadSocialBanners() {
+    if (this.socialFeedsLoad) return this.socialFeedsLoad;
+    this.socialFeedsLoad = (async () => {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 10000);
+      try {
+        const response = await fetch(SOCIAL_POSTS_URL, {
+          credentials: "omit",
+          headers: { accept: "application/json" },
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error(`social posts returned ${response.status}`);
+        }
+        this.socialFeedsSnapshot = await response.json();
+        this.syncSocialBanners();
+      } catch (_) {
+        // Keep the previous snapshot — or the static signs — on failure.
+      } finally {
+        window.clearTimeout(timeout);
+        this.socialFeedsLoad = null;
+      }
+    })();
+    return this.socialFeedsLoad;
+  }
+
+  startSocialBannersRefresh() {
+    window.clearInterval(this.socialFeedsTimer);
+    this.socialFeedsTimer = window.setInterval(() => {
+      void this.loadSocialBanners();
+    }, SOCIAL_REFRESH_MS);
+    void this.loadSocialBanners();
+  }
+
+  socialPostDate(createdAt) {
+    const stamp = Number(createdAt) || 0;
+    if (!stamp) return "";
+    return new Date(stamp).toLocaleDateString([], {
+      month: "short",
+      day: "numeric",
+    });
+  }
+
+  // Mirror the proxy snapshot onto the in-world banner boards, reduced to the
+  // bounded display strings the canvas painter draws.
+  syncSocialBanners() {
+    const snapshot = this.socialFeedsSnapshot;
+    if (!snapshot) return;
+    const bound = (feed, meta) => ({
+      state: feed?.state === "ready" ? "ready" : "unavailable",
+      posts: (Array.isArray(feed?.posts) ? feed.posts : []).map((post) => ({
+        text: String(post?.text || "").slice(0, 400),
+        meta: meta(post),
+      })),
+    });
+    this.world?.updateSocialBanners?.({
+      twitter: bound(snapshot.twitter, (post) =>
+        [
+          this.socialPostDate(post?.createdAt),
+          `♥ ${formatMastodonCount(post?.likes)}`,
+          `🔁 ${formatMastodonCount(post?.retweets)}`,
+          String(post?.author || ""),
+        ]
+          .filter(Boolean)
+          .join(" · "),
+      ),
+      reddit: bound(snapshot.reddit, (post) =>
+        [
+          this.socialPostDate(post?.createdAt),
+          `▲ ${formatMastodonCount(post?.score)}`,
+          `💬 ${formatMastodonCount(post?.comments)}`,
+          post?.author ? `u/${post.author}` : "",
+        ]
+          .filter(Boolean)
+          .join(" · "),
+      ),
+    });
   }
 
   mastodonRefreshRemaining() {
@@ -16508,6 +16603,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.diagnosticsTimer);
     window.clearInterval(this.updateCheckTimer);
     window.clearInterval(this.mastodonRefreshTimer);
+    window.clearInterval(this.socialFeedsTimer);
     window.clearTimeout(this.rendererRecoveryTimer);
     this.rendererRecoveryTimer = 0;
     this.peerGraceTimer = 0;

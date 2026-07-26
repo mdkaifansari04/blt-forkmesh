@@ -499,6 +499,7 @@ import world_community_api  # noqa: E402
 import world_events_api  # noqa: E402
 # Persisted Code Workshop reports and participant events use the same narrow
 # authenticated/encrypted D1 adapter as the other World collaboration APIs.
+import world_social_feeds  # noqa: E402
 import world_workshops  # noqa: E402
 # Organization-scoped Office marketing tasks use a separate HTTP/D1 subsystem.
 # It never receives platform-admin authorization or an Office Durable Object,
@@ -4177,6 +4178,80 @@ async def world_visitors_handler(env, request):
     payload.update(world_visitor_metrics.unique_visit_summary(register_sets))
     resp = json_response(payload, cache_seconds=WORLD_VISITORS_TTL)
     await edge_cache_put(WORLD_VISITORS_CACHE_KEY, resp)
+    return resp
+
+
+WORLD_SOCIAL_POSTS_CACHE_KEY = (
+    "https://forkmesh.internal/api/world/social-posts")
+# Ten minutes, matching the Mastodon kiosk cadence: every world visitor in a
+# colo shares one Twitter fetch and one Reddit fetch per TTL, so the banners
+# cannot become another 100k-req/day quota pressure.
+WORLD_SOCIAL_POSTS_TTL = 600
+
+
+async def _world_social_fetch_text(url, headers):
+    try:
+        resp = await js_fetch(url, to_js({
+            "method": "GET",
+            "headers": headers,
+            "redirect": "follow",
+        }))
+        if int(getattr(resp, "status", 0)) != 200:
+            return None
+        return str(await resp.text())
+    except Exception:
+        return None
+
+
+async def world_social_posts_handler(env, request):
+    """Public read-only proxy feeding the Twitter and Reddit world banners.
+
+    Both upstreams are best-effort: a network refusal (X retiring the
+    syndication page, Reddit rate-limiting the colo) downgrades that banner
+    to its static sign via state=unavailable instead of failing the read.
+    """
+    if method_name(request) != "GET":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            extra_headers={"allow": "GET"})
+    cached = await edge_cache_match(WORLD_SOCIAL_POSTS_CACHE_KEY)
+    if cached is not None:
+        return cached
+    twitter_posts, twitter_ok = [], False
+    twitter_html = await _world_social_fetch_text(
+        world_social_feeds.TWITTER_SYNDICATION_URL,
+        {"accept": "text/html,application/json"},
+    )
+    if twitter_html is not None:
+        next_data = world_social_feeds.extract_next_data(twitter_html)
+        if next_data is not None:
+            twitter_posts = world_social_feeds.normalize_twitter_timeline(
+                next_data)
+            twitter_ok = True
+    reddit_posts, reddit_ok = [], False
+    reddit_text = await _world_social_fetch_text(
+        world_social_feeds.REDDIT_LISTING_URL,
+        {
+            "accept": "application/json",
+            "user-agent": world_social_feeds.REDDIT_USER_AGENT,
+        },
+    )
+    if reddit_text is not None:
+        try:
+            listing = json.loads(reddit_text)
+        except ValueError:
+            listing = None
+        if listing is not None:
+            reddit_posts = world_social_feeds.normalize_reddit_listing(
+                listing)
+            reddit_ok = True
+    resp = json_response(
+        world_social_feeds.social_posts_payload(
+            int(Date.now()), twitter_posts, reddit_posts,
+            twitter_ok, reddit_ok),
+        cache_seconds=WORLD_SOCIAL_POSTS_TTL,
+    )
+    await edge_cache_put(WORLD_SOCIAL_POSTS_CACHE_KEY, resp)
     return resp
 
 
@@ -32221,6 +32296,10 @@ class Default(WorkerEntrypoint):
 
         if url.path in ("/api/world/visitors", "/api/world/visitors/"):
             return await world_visitors_handler(self.env, request)
+
+        if url.path in (
+                "/api/world/social-posts", "/api/world/social-posts/"):
+            return await world_social_posts_handler(self.env, request)
 
         if url.path in ("/api/world/layout", "/api/world/layout/"):
             return await world_layout_handler(self.env, request)
