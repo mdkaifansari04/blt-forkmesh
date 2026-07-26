@@ -2951,6 +2951,8 @@ function nodeDataKey(node) {
     online: mirrorNodeIsOnline(node),
     healthy: node?.healthy,
     integrity: node?.integrity,
+    activity: node?.activity,
+    activityUpdatedAt: node?.activityUpdatedAt,
     cloneAvailable: node?.cloneAvailable,
     commit: node?.commit,
     branch: node?.branch,
@@ -3071,6 +3073,11 @@ function mirrorCommitSnapshot(node, repo) {
 function serverPanelTexture(THREE, node) {
   const online = mirrorNodeIsOnline(node);
   const integrity = String(node?.integrity || "unknown").toLowerCase();
+  const activity = String(node?.activity || "unknown")
+    .replace(/[^a-z0-9-]/gi, "")
+    .replace(/-/g, " ")
+    .toUpperCase()
+    .slice(0, 24);
   const repo = Array.isArray(node?.repositories) ? node.repositories[0] : null;
   const repositoryLabel =
     repo?.owner && repo?.name
@@ -3133,7 +3140,7 @@ function serverPanelTexture(THREE, node) {
     context.font = '600 21px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#8ca99a";
     context.textAlign = "right";
-    context.fillText(`SYNCED ${mirrorCommitAgeLabel(node?.syncAgeMs)}`, 966, 124);
+    context.fillText(activity || `SYNCED ${mirrorCommitAgeLabel(node?.syncAgeMs)}`, 966, 124);
     context.textAlign = "left";
 
     context.strokeStyle = "#294339";
@@ -3354,10 +3361,13 @@ function createMirrorServerCabinet(THREE, node, id) {
   group.add(rearPanel);
 
   const integrity = String(node?.integrity || "unknown").toLowerCase();
+  const activity = String(node?.activity || "unknown").toLowerCase();
   const statusColor =
     integrity === "rejected" || integrity === "degraded"
       ? "#ff0000"
-      : integrity === "healing" || (online && node?.cloneAvailable !== true)
+      : integrity === "healing" || activity === "syncing" ||
+          activity === "awaiting-verification" ||
+          (online && node?.cloneAvailable !== true)
         ? "#ffcc00"
         : online
           ? "#00cc44"
@@ -5862,6 +5872,13 @@ const SOCIAL_BANNER_WIDTH = 1536;
 const SOCIAL_BANNER_HEIGHT = 2048;
 const SOCIAL_BANNER_POST_TOP = 760;
 const SOCIAL_BANNER_POST_PITCH = 290;
+// A board whose feed carries artwork and preview text (the blog's RSS items)
+// draws taller cards: a 16:9 thumbnail beside the headline and the item's
+// description under it, so fewer of them fit on the same face.
+const SOCIAL_BANNER_ART_VISIBLE_POSTS = 3;
+const SOCIAL_BANNER_ART_POST_PITCH = 372;
+const SOCIAL_BANNER_ART_WIDTH = 400;
+const SOCIAL_BANNER_ART_HEIGHT = 225;
 
 const TWITTER_BANNER_OPTIONS = Object.freeze({
   id: "twitter",
@@ -5911,10 +5928,11 @@ const REDDIT_BANNER_OPTIONS = Object.freeze({
   },
 });
 
-// The blog board continues the same ring past Reddit. Its posts are the
-// static feature articles (no dates), so the staleness plate reads how old
-// the fetched snapshot is: green within a healthy sync window, red once the
-// feed looks stuck.
+// The blog board continues the same ring past Reddit. Its posts come from
+// the blog's own RSS feed (/blog/rss.xml), so each card shows the item's
+// artwork and preview text. The articles carry no dates, so the staleness
+// plate reads how old the fetched snapshot is: green within a healthy sync
+// window, red once the feed looks stuck.
 const BLOG_BANNER_OPTIONS = Object.freeze({
   id: "blog",
   position: [19.8, 0, -32.8],
@@ -5926,12 +5944,13 @@ const BLOG_BANNER_OPTIONS = Object.freeze({
   handle: "forkmesh.com/blog",
   host: "every feature, explained",
   feedHeading: "FROM THE BLOG",
+  postArt: true,
   lines: [
     "FEATURE DEEP DIVES",
     "MIRRORS · AGENTS · CI · CHAT",
-    "NEW POSTS AS FEATURES SHIP",
+    "RSS: FORKMESH.COM/BLOG/RSS.XML",
   ],
-  footer: "OPENS THE BLOG IN A NEW TAB",
+  footer: "RSS FEED AT /BLOG/RSS.XML",
   url: "https://forkmesh.com/blog",
   staleness: {
     label: "SYNCED",
@@ -5940,7 +5959,71 @@ const BLOG_BANNER_OPTIONS = Object.freeze({
   },
 });
 
-function socialBannerTexture(THREE, options, snapshot = null) {
+// One artwork-carrying card on a social board: the post's own image on the
+// left (cover-cropped into a 16:9 tile), then its meta line, headline, and
+// the preview text the feed item's description carries. An image that has
+// not decoded yet — or one a host refuses to serve CORS-clean, which would
+// taint the canvas and break the WebGL upload — keeps the placeholder plate.
+function drawSocialBannerPostCard(context, post, top, resolveImage) {
+  const width = SOCIAL_BANNER_ART_WIDTH;
+  const height = SOCIAL_BANNER_ART_HEIGHT;
+  const textX = 96 + width + 40;
+  const textWidth = 1440 - textX;
+  context.save();
+  roundedRect(context, 96, top, width, height, 18);
+  context.clip();
+  const media =
+    typeof resolveImage === "function" ? resolveImage(post.image) : null;
+  if (media?.naturalWidth > 0 && media?.naturalHeight > 0) {
+    const scale = Math.max(
+      width / media.naturalWidth,
+      height / media.naturalHeight,
+    );
+    context.drawImage(
+      media,
+      96 + (width - media.naturalWidth * scale) / 2,
+      top + (height - media.naturalHeight * scale) / 2,
+      media.naturalWidth * scale,
+      media.naturalHeight * scale,
+    );
+  } else {
+    context.fillStyle = "#232445";
+    context.fillRect(96, top, width, height);
+    context.fillStyle = "#7a7ca8";
+    context.font = '700 28px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("IMAGE", 120, top + height / 2 + 10);
+  }
+  context.restore();
+  context.fillStyle = "#8b9bf4";
+  context.font = '600 34px "ForkMesh Mono", ui-monospace, monospace';
+  context.fillText(
+    clipCanvasText(context, post.meta, textWidth),
+    textX,
+    top + 36,
+  );
+  context.fillStyle = "#e8e9ff";
+  context.font = '500 50px "ForkMesh Favorit", sans-serif';
+  const headlines = wrapCanvasText(
+    context, post.text, textX, top + 104, textWidth, 58, 2);
+  context.fillStyle = "#a9abd4";
+  context.font = '400 36px "ForkMesh Favorit", sans-serif';
+  wrapCanvasText(
+    context,
+    post.detail,
+    textX,
+    top + 120 + headlines * 58,
+    textWidth,
+    44,
+    3,
+  );
+}
+
+function socialBannerTexture(
+  THREE,
+  options,
+  snapshot = null,
+  resolveImage = null,
+) {
   const WIDTH = SOCIAL_BANNER_WIDTH;
   const HEIGHT = SOCIAL_BANNER_HEIGHT;
   return canvasTexture(THREE, WIDTH, HEIGHT, (context) => {
@@ -5977,8 +6060,15 @@ function socialBannerTexture(THREE, options, snapshot = null) {
       context.font = '600 44px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(options.footer, 96, 1900);
     } else {
+      const art = Boolean(options.postArt);
+      const pitch = art
+        ? SOCIAL_BANNER_ART_POST_PITCH
+        : SOCIAL_BANNER_POST_PITCH;
       const posts = (Array.isArray(snapshot.posts) ? snapshot.posts : [])
-        .slice(0, SOCIAL_BANNER_VISIBLE_POSTS);
+        .slice(
+          0,
+          art ? SOCIAL_BANNER_ART_VISIBLE_POSTS : SOCIAL_BANNER_VISIBLE_POSTS,
+        );
       context.fillStyle = "#8b9bf4";
       context.font = '700 48px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(options.feedHeading || "LATEST POSTS", 96, 726);
@@ -5991,19 +6081,27 @@ function socialBannerTexture(THREE, options, snapshot = null) {
         context.fillText("BE THE FIRST OVER THERE", 96, 1000);
       }
       posts.forEach((post, index) => {
-        const top = SOCIAL_BANNER_POST_TOP + index * SOCIAL_BANNER_POST_PITCH;
-        context.fillStyle = "#8b9bf4";
-        context.font = '600 40px "ForkMesh Mono", ui-monospace, monospace';
-        context.fillText(clipCanvasText(context, post.meta, 1344), 96, top);
-        context.fillStyle = "#e8e9ff";
-        context.font = '500 52px "ForkMesh Favorit", sans-serif';
-        wrapCanvasText(context, post.text, 96, top + 76, 1344, 66, 3);
+        const top = SOCIAL_BANNER_POST_TOP + index * pitch;
+        if (art) {
+          drawSocialBannerPostCard(context, post, top, resolveImage);
+        } else {
+          context.fillStyle = "#8b9bf4";
+          context.font = '600 40px "ForkMesh Mono", ui-monospace, monospace';
+          context.fillText(clipCanvasText(context, post.meta, 1344), 96, top);
+          context.fillStyle = "#e8e9ff";
+          context.font = '500 52px "ForkMesh Favorit", sans-serif';
+          wrapCanvasText(context, post.text, 96, top + 76, 1344, 66, 3);
+        }
         if (index < posts.length - 1) {
+          // Art cards run taller than the text-only ones (three lines of
+          // preview text under a two-line headline), so their rule sits
+          // closer to the next card rather than through the last line.
+          const rule = top + pitch - (art ? 20 : 66);
           context.strokeStyle = "rgba(139,155,244,0.25)";
           context.lineWidth = 2;
           context.beginPath();
-          context.moveTo(96, top + SOCIAL_BANNER_POST_PITCH - 66);
-          context.lineTo(1440, top + SOCIAL_BANNER_POST_PITCH - 66);
+          context.moveTo(96, rule);
+          context.lineTo(1440, rule);
           context.stroke();
         }
       });
@@ -6797,24 +6895,57 @@ export function createWorldScene({
     { group: blogBanner, options: BLOG_BANNER_OPTIONS },
   ];
 
+  // Post artwork (the blog feed's item images) is a same-origin /assets URL:
+  // it only reaches the board texture once it decodes CORS-clean, and its
+  // load repaints the boards that draw art. A host that refuses the read
+  // simply leaves the placeholder plate in place.
+  const socialBannerImages = new Map();
+
+  function socialBannerImage(url) {
+    const key = String(url || "");
+    if (!key) return null;
+    const cached = socialBannerImages.get(key);
+    if (cached) return cached.image;
+    const record = { image: null };
+    socialBannerImages.set(key, record);
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.decoding = "async";
+    image.onload = () => {
+      if (disposed) return;
+      record.image = image;
+      for (const banner of socialBanners) {
+        if (banner.options.postArt) repaintSocialBanner(banner);
+      }
+    };
+    image.onerror = () => {};
+    image.src = key;
+    return null;
+  }
+
+  function repaintSocialBanner(record) {
+    const face = record.group.getObjectByName(
+      `forkmesh-${record.options.id}-banner-face`,
+    );
+    if (!face?.material) return false;
+    face.material.map?.dispose?.();
+    face.material.map = socialBannerTexture(
+      THREE, record.options, record.snapshot || null, socialBannerImage);
+    face.material.needsUpdate = true;
+    return true;
+  }
+
   // Repaint the banner faces from the Worker's /api/world/social-posts
   // snapshot. A feed that is missing or unavailable keeps (or returns to)
   // the static sign rather than showing a blank board.
   function updateSocialBanners(payload) {
     for (const record of socialBanners) {
-      const face = record.group.getObjectByName(
-        `forkmesh-${record.options.id}-banner-face`,
-      );
-      if (!face?.material) continue;
       const feed = payload?.[record.options.id];
-      const snapshot =
+      record.snapshot =
         feed && typeof feed === "object" && feed.state === "ready"
           ? { posts: Array.isArray(feed.posts) ? feed.posts : [] }
           : null;
-      face.material.map?.dispose?.();
-      face.material.map = socialBannerTexture(
-        THREE, record.options, snapshot);
-      face.material.needsUpdate = true;
+      repaintSocialBanner(record);
     }
   }
 
@@ -11107,6 +11238,7 @@ export function createWorldScene({
           liveHost: record.liveHost === true,
           isPrivate: record.isPrivate === true,
           source: String(record.source || "").slice(0, 40),
+          mirrorState: String(record.mirrorState || "").slice(0, 24),
           starCount:
             Number.isSafeInteger(rawStarCount) && rawStarCount >= 0
               ? Math.min(rawStarCount, 10_000_000)
@@ -11318,8 +11450,21 @@ export function createWorldScene({
         );
         selectedHalo.name = "repository-selected-halo";
         selectedHalo.scale.setScalar(nodeRadius);
+        selectedHalo.userData.repositoryHaloScale = nodeRadius;
         face.add(selectedHalo);
         usedMaterials.add(materials.selected);
+        const orbitMarker = new THREE.Mesh(
+          new THREE.SphereGeometry(0.105, 12, 8),
+          materials.selected,
+        );
+        orbitMarker.name = "repository-live-orbit-marker";
+        orbitMarker.userData.repositoryOrbitRadius = nodeRadius * 1.38;
+        orbitMarker.position.set(
+          orbitMarker.userData.repositoryOrbitRadius,
+          0,
+          0.08,
+        );
+        face.add(orbitMarker);
       }
       node.add(face);
 
@@ -11337,7 +11482,15 @@ export function createWorldScene({
               : record.mirrorState === "offline"
                 ? "MIRRORS OFFLINE"
                 : "STUB · MIRROR NEEDED",
-        isActive ? "#9ef7c6" : record.isPrivate ? "#d5b6ff" : "#77d9ff",
+        isActive
+          ? "#9ef7c6"
+          : record.isPrivate
+            ? "#d5b6ff"
+            : record.mirrorState === "syncing"
+              ? "#f0c66f"
+              : record.mirrorState === "offline"
+                ? "#91a39a"
+                : "#77d9ff",
       );
       label.name = `repository-portal-label:${record.owner}/${record.name}`;
       label.scale.set(2.8, 0.76, 1);
@@ -13655,6 +13808,22 @@ export function createWorldScene({
       }
     }
     if (!reducedMotion) {
+      repositoryPortals.forEach(({ group }) => {
+        const halo = group.getObjectByName("repository-selected-halo");
+        const marker = group.getObjectByName("repository-live-orbit-marker");
+        if (halo?.userData?.repositoryHaloScale) {
+          const pulse =
+            halo.userData.repositoryHaloScale *
+            (1 + Math.sin(time * 0.0032) * 0.055);
+          halo.scale.setScalar(pulse);
+        }
+        if (marker?.userData?.repositoryOrbitRadius) {
+          const angle = time * 0.0024;
+          const radius = marker.userData.repositoryOrbitRadius;
+          marker.position.x = Math.cos(angle) * radius;
+          marker.position.y = Math.sin(angle) * radius;
+        }
+      });
       // Node beacons hold a steady colour and size — no pulse — so a status
       // reads the same in a screenshot as it does live. Only degraded and
       // healing nodes carry a sweep, and it turns rather than fades, so the

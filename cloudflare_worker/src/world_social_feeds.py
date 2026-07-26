@@ -10,7 +10,8 @@ Cloudflare/Pyodide runtime.
 import json
 import re
 from email.utils import parsedate_to_datetime
-from html import unescape as _unescape
+
+import blog_feed
 
 
 TWITTER_HANDLE = "forkmesh"
@@ -30,10 +31,13 @@ REDDIT_LISTING_URL = (
 # Reddit rejects generic user agents; the documented convention is
 # platform:app-id:version (by /u/owner).
 REDDIT_USER_AGENT = "web:forkmesh-world-banner:v1 (by /u/forkmesh)"
-# The blog is one of our own static assets, so the handler reads the index
-# through env.ASSETS (no external fetch) and this module only parses it.
-BLOG_URL = "https://forkmesh.com/blog"
-BLOG_INDEX_ASSET = "blog.html"
+# The blog board rides the blog's own RSS feed: the Worker builds that
+# document from our static index (no external fetch, see blog_feed) and this
+# module reduces the published items to the banner's post shape, so the board
+# shows exactly what a subscriber sees — preview text and artwork included.
+BLOG_URL = blog_feed.BLOG_URL
+BLOG_FEED_URL = blog_feed.FEED_URL
+BLOG_INDEX_ASSET = blog_feed.BLOG_INDEX_ASSET
 
 SOCIAL_POSTS_LIMIT = 6
 MAX_POST_TEXT = 400
@@ -41,16 +45,6 @@ MAX_POST_AUTHOR = 40
 
 _NEXT_DATA_RE = re.compile(
     r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>',
-    re.DOTALL,
-)
-
-# One feature card on the static blog index (blog.html). The cards are
-# uniform generated markup: anchor, meta line, title, then the blurb.
-_BLOG_CARD_RE = re.compile(
-    r'<a class="blog1-card" href="(?P<href>/blog/[^"]+)"[^>]*>'
-    r'.*?<p class="blog1-card-meta">(?P<meta>.*?)</p>'
-    r'\s*<h3>(?P<title>.*?)</h3>'
-    r'\s*<p>(?P<blurb>.*?)</p>',
     re.DOTALL,
 )
 
@@ -178,25 +172,28 @@ def normalize_twitter_timeline(next_data):
     return posts
 
 
-def normalize_blog_index(html):
-    """Bound the blog index's feature cards to the banner's post shape.
+def normalize_blog_feed(xml):
+    """Bound the blog's published RSS items to the banner's post shape.
 
-    The static cards carry no dates, so createdAt stays 0 and the board's
-    staleness plate reads the snapshot age instead of a last-post age.
+    Feed items carry no publication dates (the feature posts are static), so
+    createdAt stays 0 and the board's staleness plate reads the snapshot age
+    instead of a last-post age. `detail` is the item's description — the
+    preview text the board prints under the headline — and `image` is the
+    item enclosure the board paints as the card's artwork.
     """
     posts = []
-    for match in _BLOG_CARD_RE.finditer(str(html or "")):
-        title = _clean_text(_unescape(match.group("title")), 120)
+    for entry in blog_feed.parse_rss(xml):
+        title = _clean_text(entry.get("title"), 120)
         if not title:
             continue
-        href = match.group("href")
         posts.append({
-            "id": _clean_text(href.strip("/").split("/")[-1], 80),
+            "id": _clean_text(entry.get("slug"), 80),
             "text": title,
-            "detail": _clean_text(_unescape(match.group("blurb"))),
-            "meta": _clean_text(_unescape(match.group("meta")), 80),
+            "detail": _clean_text(entry.get("summary")),
+            "meta": _clean_text(entry.get("category"), 80),
+            "image": _clean_text(entry.get("image"), 300),
             "createdAt": 0,
-            "url": "https://forkmesh.com" + href,
+            "url": _clean_text(entry.get("url"), 300) or BLOG_URL,
         })
         if len(posts) >= SOCIAL_POSTS_LIMIT:
             break
@@ -226,6 +223,7 @@ def social_posts_payload(now, twitter_posts, reddit_posts, blog_posts,
         "blog": {
             "handle": "forkmesh.com/blog",
             "url": BLOG_URL,
+            "feedUrl": BLOG_FEED_URL,
             "state": "ready" if blog_ok else "unavailable",
             "posts": blog_posts if blog_ok else [],
         },

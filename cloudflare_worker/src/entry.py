@@ -517,6 +517,10 @@ from pull_badge import patch_file_stats, pull_badge_png  # noqa: E402
 # another js-free sibling module the test suite imports directly.
 import og_card  # noqa: E402
 
+# The blog's RSS 2.0 feed, derived from the shipped static blog index. Serves
+# /blog/rss.xml and, through world_social_feeds, the world's blog banner.
+import blog_feed  # noqa: E402
+
 # Largest git-req-chunk (push pack fragment) forwarded to the host in one WS
 # message; matches the host's 256 KiB git-chunk ceiling so neither side trips
 # the relay's ~1 MiB message cap.
@@ -4189,6 +4193,73 @@ WORLD_SOCIAL_POSTS_CACHE_KEY = (
 WORLD_SOCIAL_POSTS_TTL = 600
 
 
+BLOG_RSS_CACHE_KEY = "https://forkmesh.internal/blog/rss.xml"
+# The blog index is a build artifact, so the feed only changes on deploy; half
+# an hour at the edge keeps subscriber polling (and the world banner's own
+# ten-minute refresh) off the origin without making a new post wait.
+BLOG_RSS_TTL = 1800
+
+
+async def _blog_feed_document(env, request):
+    """Build the blog's RSS document from our own static index.
+
+    Reads blog.html through env.ASSETS (no external fetch, no D1) and returns
+    "" when the asset is missing or parses to nothing, so callers can fall
+    back instead of publishing an empty feed.
+    """
+    origin = urlparse(request.url)
+    resp = await env.ASSETS.fetch(
+        origin.scheme + "://" + origin.netloc + "/"
+        + blog_feed.BLOG_INDEX_ASSET)
+    if int(getattr(resp, "status", 0)) != 200:
+        return ""
+    return blog_feed.build_feed(str(await resp.text()), int(Date.now()))
+
+
+async def _blog_feed_published_document(env, request):
+    """The feed as published, reusing the edge-cached copy while it is warm.
+
+    The world banner reads the same document subscribers get, so a warm cache
+    spares it the parse-and-render pass entirely.
+    """
+    cached = await edge_cache_match(BLOG_RSS_CACHE_KEY)
+    if cached is not None:
+        try:
+            document = str(await cached.text())
+        except Exception:
+            document = ""
+        if document:
+            return document
+    return await _blog_feed_document(env, request)
+
+
+async def blog_rss_handler(env, request):
+    """GET /blog/rss.xml — the public feed for the blog.
+
+    Worker-owned (see run_worker_first in wrangler.toml) because the assets
+    router would otherwise treat rss.xml as a post slug and redirect it.
+    """
+    if method_name(request) not in ("GET", "HEAD"):
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            extra_headers={"allow": "GET, HEAD"})
+    cached = await edge_cache_match(BLOG_RSS_CACHE_KEY)
+    if cached is not None:
+        return cached
+    try:
+        document = await _blog_feed_document(env, request)
+    except Exception:
+        document = ""
+    if not document:
+        return json_response({"error": "blog_feed_unavailable"}, status=503)
+    resp = Response(document, status=200, headers={
+        "content-type": "application/rss+xml; charset=utf-8",
+        "cache-control": "public, max-age=%d" % BLOG_RSS_TTL,
+    })
+    await edge_cache_put(BLOG_RSS_CACHE_KEY, resp)
+    return resp
+
+
 async def _world_social_fetch_text(url, headers):
     try:
         resp = await js_fetch(url, to_js({
@@ -4210,8 +4281,9 @@ async def world_social_posts_handler(env, request):
     The external upstreams are best-effort: a network refusal (X retiring
     the syndication page, Reddit rate-limiting the colo) downgrades that
     banner to its static sign via state=unavailable instead of failing the
-    read. The blog feed reads our own static blog index through env.ASSETS,
-    so it never leaves the Worker.
+    read. The blog board reads the blog's own RSS document, built here from
+    our static index through env.ASSETS, so it never leaves the Worker and
+    shows exactly what subscribers get.
     """
     if method_name(request) != "GET":
         return json_response(
@@ -4250,13 +4322,9 @@ async def world_social_posts_handler(env, request):
             reddit_ok = True
     blog_posts, blog_ok = [], False
     try:
-        origin = urlparse(request.url)
-        blog_resp = await env.ASSETS.fetch(
-            origin.scheme + "://" + origin.netloc + "/"
-            + world_social_feeds.BLOG_INDEX_ASSET)
-        if int(getattr(blog_resp, "status", 0)) == 200:
-            blog_posts = world_social_feeds.normalize_blog_index(
-                str(await blog_resp.text()))
+        blog_rss = await _blog_feed_published_document(env, request)
+        if blog_rss:
+            blog_posts = world_social_feeds.normalize_blog_feed(blog_rss)
             blog_ok = bool(blog_posts)
     except Exception:
         blog_posts, blog_ok = [], False
@@ -8884,10 +8952,33 @@ async def repo_mirrors_handler(env, request, owner, repo):
             and await privacy_reader(env, owner, repo)):
         return json_response(
             {"error": "not_found"}, status=404, cache_control="no-store")
+    # The router internally rewrites an organization URL to its backing node.
+    # Recover the untouched public identity for response/cache presentation;
+    # backing node identity remains an authorization detail and must not turn
+    # /forkmesh/forkmesh into a user-owned /jett/forkmesh repository in UIs.
+    public_owner = str(owner or "").strip().lower()
+    public_repo = str(repo or "").strip().lower()
+    try:
+        original_match = REPO_API_PREFIX_RE.match(
+            urlparse(str(getattr(request, "url", "") or "")).path)
+        requested_owner = safe_segment(
+            original_match.group(1)) if original_match else ""
+        requested_repo = safe_segment(
+            original_match.group(2)) if original_match else ""
+        if (
+            requested_owner
+            and requested_repo == public_repo
+            and requested_owner != public_owner
+            and await _org_repo_node(
+                env, requested_owner, requested_repo) == public_owner
+        ):
+            public_owner = requested_owner
+    except Exception:
+        pass
     # Public, poll-heavy payload (repo page + desktop mirror panel): serve
     # from the edge for a few seconds so a burst of viewers costs one build.
     cache_key = ("https://forkmesh.internal/api/repo/%s/%s/mirrors"
-                 % (quote(str(owner or "")), quote(str(repo or ""))))
+                 % (quote(public_owner), quote(public_repo)))
     cached = await edge_cache_match(cache_key)
     if cached is not None:
         return cached
@@ -8968,6 +9059,8 @@ async def repo_mirrors_handler(env, request, owner, repo):
     )
     if payload is None:
         return json_response({"error": "not_found"}, status=404)
+    payload["owner"] = public_owner
+    payload["repo"] = public_repo
     # Owner column: a headless mirror's catalog record carries no ownerUser of
     # its own, but the node account may be claim-linked to a user (adhoc #53:
     # the node record's `owner` field names the linked user). Resolve that link
@@ -8989,7 +9082,10 @@ async def repo_mirrors_handler(env, request, owner, repo):
             mirror["ownerUser"] = node_name
         else:
             mirror["ownerUser"] = str(node_rec.get("owner") or "").strip()
-    response = json_response(payload, cache_seconds=10)
+    # Node cabinets and the repository Mirrors panel poll while visible. Keep a
+    # tiny shared edge window to collapse bursts without leaving an integrity
+    # transition or completed sync stuck on screen for ten seconds.
+    response = json_response(payload, cache_seconds=3)
     await edge_cache_put(cache_key, response)
     return response
 
@@ -19249,20 +19345,25 @@ def _ssh_repository_url(env, owner, repo):
 def _ssh_alias_repository_url(env, alias_owner, backing_owner, repo):
     """Return an org-facing SSH URL backed by an allowlisted node repo.
 
-    The SSH gateway's authorization endpoint independently resolves the alias
-    to ``backing_owner`` before every clone/push. This helper therefore checks
-    gateway access against that canonical backing path, but keeps the public
-    organization namespace in the URL shown to users.
+    The organization alias is an explicit read route on a mirror gateway. Its
+    backing user/source identity is checked by the authorization endpoint but
+    is never substituted into the public URL or the node-local repository
+    path. This keeps users, nodes, and public organization repositories as
+    separate identities.
     """
     settings = _ssh_gateway_settings(env)
     if (
         not settings["configured"]
         or not ssh_auth.gateway_repository_access(
-            settings["repositories"], backing_owner, repo)
+            settings["repositories"], alias_owner, repo)
     ):
         return ""
-    host = settings["nodeHosts"].get(
-        str(backing_owner or "").strip().lower())
+    host = (
+        settings["nodeHosts"].get(
+            str(alias_owner or "").strip().lower())
+        or settings["nodeHosts"].get(
+            str(backing_owner or "").strip().lower())
+    )
     return ssh_auth.ssh_repository_url(
         host or settings["host"], settings["port"], alias_owner, repo)
 
@@ -19615,8 +19716,10 @@ async def ssh_gateway_authorize_handler(env, request):
     # node namespace before repository lookup, permission enforcement, and the
     # path returned to the gateway.
     canonical_owner = await _org_repo_node(env, owner, repo) or owner
+    is_org_alias = canonical_owner != owner
+    route_owner = owner if is_org_alias else canonical_owner
     gateway_access = _ssh_gateway_repository_access(
-        env, canonical_owner, repo)
+        env, route_owner, repo)
     repo_bi = await blind_index(env, canonical_owner + "/" + repo)
     repo_row = await d1_first(
         env,
@@ -19687,9 +19790,9 @@ async def ssh_gateway_authorize_handler(env, request):
         "keyId": key_id,
         "requestId": request_id,
         "operation": operation,
-        "owner": canonical_owner,
+        "owner": route_owner,
         "repository": repo,
-        "repositoryRelativePath": canonical_owner + "/" + repo + ".git",
+        "repositoryRelativePath": route_owner + "/" + repo + ".git",
     }, cache_control="no-store")
 
 
@@ -32312,6 +32415,11 @@ class Default(WorkerEntrypoint):
 
         if url.path in BLOCKED_STATIC_HTML_PATHS:
             return await self._serve_not_found_page(url)
+
+        if url.path in (
+                blog_feed.FEED_PATH, "/blog/feed.xml",
+                "/rss.xml", "/feed.xml"):
+            return await blog_rss_handler(self.env, request)
 
         if url.path in ("/health", "/api/mainnode"):
             return json_response(
