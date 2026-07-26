@@ -2884,14 +2884,14 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <p class="world-eyebrow">MEETING FLOOR</p>
               <h2 id="world-office-lobby-title">ForkMesh Office</h2>
             </div>
-            <button type="button" data-world-office-exit aria-label="Leave ForkMesh Office">×</button>
+            <button type="button" data-world-office-lobby-exit aria-label="Leave ForkMesh Office">×</button>
           </header>
           <p class="world-office-panel-intro">Choose an authorized room. Your avatar appears only inside the meeting you join.</p>
           <div class="world-office-room-board" data-world-office-room-board aria-label="Available meeting rooms"></div>
           <p class="world-office-panel-status" data-world-office-lobby-status role="status"></p>
           <footer class="world-office-panel-actions">
             <button type="button" data-world-office-fallback>Open accessible chat fallback</button>
-            <button type="button" data-world-office-exit>Return to Town Square</button>
+            <button type="button" data-world-office-lobby-exit>Return to Town Square</button>
           </footer>
         </section>
 
