@@ -6627,7 +6627,8 @@ QWidget *MainWindow::buildNetworkReposSection()
     header->addWidget(m_networkReposStatus);
 
     // Create a brand-new repository right from the Repos tab. Reuses the shared
-    // New repository dialog (name/description/first prompt/README/location), so
+    // New repository dialog (name/description/first prompt/visibility/README/
+    // location), so
     // the "info needed to create a repo" is shown inline instead of buried in
     // Settings.
     auto *newRepoButton = new QPushButton(QStringLiteral("New repository\xE2\x80\xA6"));
@@ -11941,6 +11942,7 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     m_hostInstallLogCarry.clear();
     m_hostInstallLogFg = -1;
     m_hostInstallLogBold = false;
+    m_hostInstallRawTail.clear();
     m_hostInstallLinkTail.clear();
     m_hostLinkPrompted = false;
     // Echo the command we run (the password lives in the SSHPASS env / stdin, so
@@ -11974,6 +11976,9 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc] {
         const QString chunk = QString::fromUtf8(proc->readAllStandardOutput());
         appendHostInstallLog(chunk);
+        // Bounded tail kept only to classify a connection-level failure below
+        // (e.g. "Connection timed out"); it never needs the full transcript.
+        m_hostInstallRawTail = (m_hostInstallRawTail + chunk).right(4000);
         // The installer prints "FORKMESH LINK CODE: NNNNNN" on the fresh
         // machine (adhoc #53). Watch the stream for it — through a rolling
         // tail so a code split across read chunks still matches — and link the
@@ -12038,6 +12043,11 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
                 } else {
                     appendHostInstallLog(QString::fromUtf8(
                         "\n\xE2\x9C\x98 %1 failed (exit %2).\n").arg(verb).arg(code));
+                    const QString hint = forkmesh::control::sshConnectionFailureHint(
+                        code, m_hostInstallRawTail);
+                    if (!hint.isEmpty())
+                        appendHostInstallLog(
+                            QStringLiteral("\n%1\n").arg(hint));
                     // A caller that still has retries left (the Vultr
                     // auto-provision flow) reports its own "retrying..."
                     // status and only wants the terminal "Install failed"
