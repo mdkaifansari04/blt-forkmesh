@@ -398,8 +398,15 @@ def build_repo_mirrors_payload(
             activity = "awaiting-verification"
         else:
             activity = "serving"
+        node_name = (
+            str(rec.get("machineName") or "").strip()
+            or str(rec.get("owner") or "").strip()
+        )
         mirrors.append({
-            "node": str(rec.get("owner") or "").strip(),
+            # A node is a machine, not the user/account that owns its catalog
+            # row. Older publishers did not advertise machineName, so retain
+            # owner only as a compatibility fallback.
+            "node": node_name,
             "owner": str(rec.get("owner") or "").strip(),
             "ownerUser": str(rec.get("ownerUser") or "").strip(),
             # The publishing machine's advertised node name (may differ from
