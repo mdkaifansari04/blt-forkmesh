@@ -7788,7 +7788,7 @@ void MainWindow::refreshHostsTable()
         auto *cell = new QWidget;
         auto *cellRow = new QHBoxLayout(cell);
         cellRow->setContentsMargins(4, 2, 4, 2);
-        cellRow->setSpacing(0);
+        cellRow->setSpacing(6);
         auto *updateBtn = new QPushButton(QStringLiteral("Update"));
         updateBtn->setCursor(Qt::PointingHandCursor);
         setOcticon(updateBtn, "sync", 12);
@@ -7890,7 +7890,37 @@ void MainWindow::refreshHostsTable()
             });
         });
         cellRow->addWidget(actionsBtn);
+        // Table-row sizing: the default QPushButton padding makes each of these
+        // 35px tall, far more than a text row, so the view squashed the whole
+        // action cell down to the item height and Qt silently dropped every
+        // label — the row read as six anonymous icon pills (adhoc #376). The
+        // "sm" size keeps them inside a table row so the words stay visible.
+        for (QPushButton *b : cell->findChildren<QPushButton *>())
+            b->setProperty("buttonSize", "sm");
         m_hostsTable->setCellWidget(i, 4, cell);
+    }
+    // ...and the rows still have to be tall enough for the buttons, and the
+    // action column wide enough that no label is elided. The view lays a cell
+    // widget out inside the item rect minus #issueTable::item's 6px/8px
+    // padding, so both need that much more than the cell's own hint.
+    if (!hosts.isEmpty()) {
+        // Deferred: makeColumnsResizable() fits the columns on the first
+        // rowsInserted from its own singleShot(0), and would otherwise land
+        // after this and undo it.
+        QTimer::singleShot(0, m_hostsTable, [this] {
+            QWidget *cell = m_hostsTable ? m_hostsTable->cellWidget(0, 4) : nullptr;
+            if (!cell)
+                return;
+            // setColumnWidth() only takes on an Interactive section; that is
+            // also the mode makeColumnsResizable() leaves behind, so this just
+            // gets there whether or not it has run yet.
+            m_hostsTable->horizontalHeader()->setSectionResizeMode(
+                4, QHeaderView::Interactive);
+            m_hostsTable->setColumnWidth(4, cell->sizeHint().width() + 16);
+            const int rowHeight = cell->sizeHint().height() + 12;
+            for (int r = 0; r < m_hostsTable->rowCount(); ++r)
+                m_hostsTable->setRowHeight(r, rowHeight);
+        });
     }
 
     if (m_hostsNavButton)
