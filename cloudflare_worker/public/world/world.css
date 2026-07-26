@@ -1380,6 +1380,11 @@ forkmesh-world {
   overflow-wrap: anywhere;
 }
 
+.world-detail[data-open-landmark="events"] .world-detail-header h2 {
+  font-size: clamp(2.2rem, 5vw, 2.65rem);
+  letter-spacing: -0.04em;
+}
+
 .world-detail-close {
   align-self: start;
   width: 38px;

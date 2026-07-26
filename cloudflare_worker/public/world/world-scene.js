@@ -17,8 +17,11 @@ const OUTFIT_COLOR_HEX = Object.fromEntries(
 );
 const OUTFIT_STYLE_IDS = OUTFIT_STYLE_OPTIONS.map((option) => option.id);
 
-const WORLD_RADIUS = 72;
+const WORLD_RADIUS = 174;
 const WORLD_GROUND_RADIUS = 88;
+const REPOSITORY_ISLAND_CENTER_X = 130;
+const REPOSITORY_ISLAND_RADIUS = 38;
+const REPOSITORY_ISLAND_RING_RADIUS = 31;
 // Base (from-rest) speed. Raised so keyboard movement leaves standstill with
 // more pace by default; multiplied by the per-device move-speed control.
 const PLAYER_SPEED = 6.4;
@@ -7149,6 +7152,51 @@ export function createWorldScene({
   ground.userData.ground = true;
   world.add(ground);
 
+  // Fully hosted imports live on their own repository island. The bridge
+  // overlaps both shorelines, so it is a real, raycastable walking surface
+  // rather than scenery visitors have to teleport across.
+  const repositoryIsland = new THREE.Mesh(
+    new THREE.CircleGeometry(REPOSITORY_ISLAND_RADIUS, 96),
+    makeMaterial(THREE, "#215c42", { roughness: 1 }),
+  );
+  repositoryIsland.name = "hosted-repository-island";
+  repositoryIsland.rotation.x = -Math.PI / 2;
+  repositoryIsland.position.set(REPOSITORY_ISLAND_CENTER_X, 0.01, 0);
+  repositoryIsland.receiveShadow = true;
+  repositoryIsland.userData.ground = true;
+  world.add(repositoryIsland);
+
+  const repositoryBridge = new THREE.Group();
+  repositoryBridge.name = "hosted-repository-bridge";
+  repositoryBridge.position.set(
+    (WORLD_GROUND_RADIUS +
+      REPOSITORY_ISLAND_CENTER_X -
+      REPOSITORY_ISLAND_RADIUS) /
+      2,
+    0,
+    0,
+  );
+  const bridgeDeck = new THREE.Mesh(
+    new THREE.BoxGeometry(12, 0.22, 4.8),
+    makeMaterial(THREE, "#70563b", { roughness: 0.88 }),
+  );
+  bridgeDeck.position.y = 0.1;
+  bridgeDeck.receiveShadow = true;
+  bridgeDeck.userData.ground = true;
+  repositoryBridge.add(bridgeDeck);
+  for (let x = -5.4; x <= 5.4; x += 1.2) {
+    const plank = new THREE.Mesh(
+      new THREE.BoxGeometry(0.92, 0.12, 4.55),
+      makeMaterial(THREE, x % 2.4 ? "#98724b" : "#aa8053", {
+        roughness: 0.92,
+      }),
+    );
+    plank.position.set(x, 0.25, 0);
+    plank.userData.ground = true;
+    repositoryBridge.add(plank);
+  }
+  world.add(repositoryBridge);
+
   // The room still assigns one of 64 ephemeral slots, but the grid itself is
   // no longer drawn: the plaques at the front edge carry the arrival story and
   // the lawn reads as open ground.
@@ -11674,6 +11722,13 @@ export function createWorldScene({
             : 0;
         const rawStarCount = Number(record.starCount);
         const rawFollowerCount = Number(record.fediverseFollowerCount);
+        const rawSizeTree =
+          record.sizeTree &&
+          typeof record.sizeTree === "object" &&
+          Number(record.sizeTree.size) > 0 &&
+          Array.isArray(record.sizeTree.children)
+            ? record.sizeTree
+            : null;
         return {
           owner,
           name,
@@ -11702,6 +11757,7 @@ export function createWorldScene({
           fediverseFollowers: Array.isArray(record.fediverseFollowers)
             ? record.fediverseFollowers.slice(0, REPOSITORY_FOLLOWERS_VISIBLE)
             : [],
+          sizeTree: rawSizeTree,
         };
       })
       .sort((left, right) => left.key.localeCompare(right.key));
@@ -11726,6 +11782,13 @@ export function createWorldScene({
         record.starred,
         record.fediverseFollowerCount,
         record.fediverseFollowerStatus,
+        record.sizeTree
+          ? [
+              String(record.sizeTree.commit || "").slice(0, 64),
+              Number(record.sizeTree.size) || 0,
+              record.sizeTree.children.length,
+            ]
+          : null,
         // Identity only: a follower's avatar/bio arriving does not need a
         // portal rebuild, but a different follower does.
         record.fediverseFollowers.map((follower) => follower?.handle || ""),
@@ -11758,30 +11821,39 @@ export function createWorldScene({
 
     const layer = new THREE.Group();
     layer.name = "repository-perimeter-portals";
-    const guide = new THREE.Mesh(
-      new THREE.TorusGeometry(REPOSITORY_EDGE_RADIUS, 0.045, 6, 256),
-      makeMaterial(THREE, "#77d9ff", {
-        emissive: "#1e637c",
-        emissiveIntensity: 0.45,
-        transparent: true,
-        opacity: 0.38,
-        roughness: 0.5,
-      }),
+    const coreRecords = records.filter(
+      (record) => record.source !== "hosted-import",
     );
-    guide.name = "repository-perimeter-guide";
-    guide.rotation.x = Math.PI / 2;
-    guide.position.y = 0.12;
-    layer.add(guide);
+    const hostedRecords = records.filter(
+      (record) => record.source === "hosted-import",
+    );
+    [
+      ["repository-perimeter-guide", REPOSITORY_EDGE_RADIUS, 0, coreRecords],
+      [
+        "hosted-repository-island-guide",
+        REPOSITORY_ISLAND_RING_RADIUS,
+        REPOSITORY_ISLAND_CENTER_X,
+        hostedRecords,
+      ],
+    ].forEach(([name, radius, centerX, cohort]) => {
+      if (!cohort.length) return;
+      const guide = new THREE.Mesh(
+        new THREE.TorusGeometry(radius, 0.045, 6, 256),
+        makeMaterial(THREE, "#77d9ff", {
+          emissive: "#1e637c",
+          emissiveIntensity: 0.45,
+          transparent: true,
+          opacity: 0.38,
+          roughness: 0.5,
+        }),
+      );
+      guide.name = name;
+      guide.rotation.x = Math.PI / 2;
+      guide.position.set(centerX, 0.12, 0);
+      layer.add(guide);
+    });
 
     const maxBytes = Math.max(0, ...records.map((record) => record.sizeBytes));
-    const portalSpacing =
-      (Math.PI * 2 * REPOSITORY_EDGE_RADIUS) /
-      Math.max(1, records.length);
-    const portalDensityScale = clamp(
-      (portalSpacing - 0.06) / 3.15,
-      0.58,
-      1,
-    );
     const diskGeometry = new THREE.CircleGeometry(1, 36);
     const outlineGeometry = new THREE.TorusGeometry(1.08, 0.065, 8, 40);
     const baseGeometry = new THREE.BoxGeometry(2.35, 0.22, 1.15);
@@ -11830,10 +11902,27 @@ export function createWorldScene({
     };
     const usedMaterials = new Set();
     const portalMeshes = [];
-    records.forEach((record, index) => {
+    const orderedRecords = [...coreRecords, ...hostedRecords];
+    orderedRecords.forEach((record, index) => {
+      const islandRecord = record.source === "hosted-import";
+      const cohort = islandRecord ? hostedRecords : coreRecords;
+      const cohortIndex = cohort.findIndex(
+        (candidate) => candidate.key === record.key,
+      );
+      const ringRadius = islandRecord
+        ? REPOSITORY_ISLAND_RING_RADIUS
+        : REPOSITORY_EDGE_RADIUS;
+      const centerX = islandRecord ? REPOSITORY_ISLAND_CENTER_X : 0;
       const angle =
         Math.PI / 2 +
-        (index / Math.max(1, records.length)) * Math.PI * 2;
+        (cohortIndex / Math.max(1, cohort.length)) * Math.PI * 2;
+      const portalSpacing =
+        (Math.PI * 2 * ringRadius) / Math.max(1, cohort.length);
+      const portalDensityScale = clamp(
+        (portalSpacing - 0.06) / 3.15,
+        0.58,
+        1,
+      );
       const isActive = record.key === activeKey;
       const material = isActive
         ? materials.selected
@@ -11859,20 +11948,20 @@ export function createWorldScene({
       const node = new THREE.Group();
       node.name = `repository-portal:${record.owner}/${record.name}`;
       node.position.set(
-        Math.cos(angle) * REPOSITORY_EDGE_RADIUS,
+        centerX + Math.cos(angle) * ringRadius,
         2.55,
-        Math.sin(angle) * REPOSITORY_EDGE_RADIUS,
+        Math.sin(angle) * ringRadius,
       );
       node.rotation.y = -angle - Math.PI / 2;
       if (
-        record.source === "external-import" &&
+        ["external-import", "hosted-import"].includes(record.source) &&
         !previousPortalKeys.has(record.key)
       ) {
         const importedBefore = records
           .slice(0, index)
           .filter(
             (candidate) =>
-              candidate.source === "external-import" &&
+              ["external-import", "hosted-import"].includes(candidate.source) &&
               !previousPortalKeys.has(candidate.key),
           ).length;
         repositoryPortalBornAt.set(
@@ -11907,6 +11996,7 @@ export function createWorldScene({
         starCount: record.starCount,
         starred: record.starred,
         angle,
+        island: islandRecord,
       };
       for (const mesh of [disk, outline]) {
         mesh.userData.landmark = "repositories";
@@ -11915,6 +12005,41 @@ export function createWorldScene({
         portalMeshes.push(mesh);
       }
       face.add(disk, outline);
+      if (!isActive && record.sizeTree) {
+        const map = repositorySizeMapSegments(record.sizeTree, "");
+        const miniature = new THREE.Group();
+        miniature.name =
+          `repository-mini-size-map:${record.owner}/${record.name}`;
+        miniature.position.z = 0.09;
+        const innerRadius = nodeRadius * 0.18;
+        const outerRadius = nodeRadius * 0.91;
+        const ringWidth =
+          (outerRadius - innerRadius) / Math.max(1, map.ringCount);
+        map.segments.slice(0, 24).forEach((segment) => {
+          const geometry = repositoryWedgeGeometry(
+            THREE,
+            innerRadius + (segment.depth - 1) * ringWidth + 0.006,
+            innerRadius + segment.depth * ringWidth - 0.006,
+            segment.from,
+            segment.to,
+            0.045,
+          );
+          if (!geometry) return;
+          const wedge = new THREE.Mesh(
+            geometry,
+            new THREE.MeshBasicMaterial({
+              color: segment.color,
+              transparent: segment.type === "summary",
+              opacity: segment.type === "summary" ? 0.62 : 0.98,
+              side: THREE.DoubleSide,
+              toneMapped: false,
+            }),
+          );
+          wedge.position.z = segment.depth * 0.006;
+          miniature.add(wedge);
+        });
+        face.add(miniature);
+      }
       if (isActive) {
         const selectedHalo = new THREE.Mesh(
           new THREE.TorusGeometry(1.38, 0.055, 8, 40),

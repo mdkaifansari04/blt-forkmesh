@@ -2279,8 +2279,79 @@ function cleanExternalRepositories(payload) {
           0,
           40,
         ),
+        mirrorOwner: sanitizePresenceText(record.mirror?.owner, "", 40),
+        mirrorName: sanitizePresenceText(record.mirror?.name, "", 60),
       };
     });
+}
+
+function mergeHostedRepositoryImports(repositories, externalRepositories) {
+  const native = Array.isArray(repositories) ? repositories : [];
+  const rawExternal = Array.isArray(externalRepositories)
+    ? externalRepositories
+    : [];
+  const externalByKey = new Map();
+  rawExternal.forEach((record) => {
+    const key = `${String(record?.owner || "").toLowerCase()}/${String(
+      record?.name || "",
+    ).toLowerCase()}`;
+    const previous = externalByKey.get(key);
+    const rank = (candidate) =>
+      (candidate?.importStatus === "actively_mirrored" ? 2 : 0) +
+      (candidate?.archived === true ? 0 : 1);
+    if (
+      !previous ||
+      rank(record) > rank(previous) ||
+      (rank(record) === rank(previous) &&
+        Number(record?.updatedAt || 0) > Number(previous?.updatedAt || 0))
+    ) {
+      externalByKey.set(key, record);
+    }
+  });
+  const external = [...externalByKey.values()];
+  const consumed = new Set();
+  const imports = external.map((record) => {
+    const candidates = native
+      .map((candidate, index) => ({ candidate, index }))
+      .filter(
+        ({ candidate }) =>
+          String(candidate?.name || "").toLowerCase() ===
+            String(record?.name || "").toLowerCase() &&
+          candidate?.isPrivate !== true &&
+          candidate?.source !== "external-import" &&
+          ["mirror2", "mirror3"].includes(
+            String(candidate?.owner || "").toLowerCase(),
+          ),
+      )
+      .sort(
+        (left, right) =>
+          Number(Boolean(right.candidate?.liveHost)) -
+            Number(Boolean(left.candidate?.liveHost)) ||
+          Number(right.candidate?.updatedAt || 0) -
+            Number(left.candidate?.updatedAt || 0),
+      );
+    if (!candidates.length) return record;
+    candidates.forEach(({ index }) => consumed.add(index));
+    const hosted = candidates[0].candidate;
+    return {
+      ...hosted,
+      owner: record.owner,
+      name: record.name,
+      servingOwner: hosted.owner,
+      servingName: hosted.name,
+      importId: record.importId,
+      importStatus: "actively_mirrored",
+      externalUrl: record.externalUrl,
+      provider: record.provider,
+      providerLabel: record.providerLabel,
+      hostedByForkMesh: true,
+      source: "hosted-import",
+    };
+  });
+  return [
+    ...native.filter((_record, index) => !consumed.has(index)),
+    ...imports,
+  ];
 }
 
 function normalizeRepositoryFollowers(value) {
@@ -2890,6 +2961,16 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               title="Capture and annotate a screenshot"
             >
               <span aria-hidden="true">📷</span><span>Capture</span>
+            </button>
+            <button
+              class="world-top-link world-notification-button"
+              type="button"
+              data-world-notifications-open
+              title="Show global and personal notifications"
+              aria-label="Open World notifications"
+            >
+              <span aria-hidden="true">🔔</span><span>Notifications</span>
+              <span data-world-notification-count hidden>0</span>
             </button>
             <button
               class="world-shirt-badge"
@@ -3634,6 +3715,7 @@ class ForkMeshWorld extends HTMLElement {
     this.world = null;
     this.landmarkCapabilities = initialLandmarkCapabilities();
     this.repositories = [];
+    this.nativeRepositories = [];
     this.externalRepositories = [];
     this.repositoryCatalogState = "loading";
     this.network = {};
@@ -3689,6 +3771,8 @@ class ForkMeshWorld extends HTMLElement {
     this.repositoryDirectorySelection = 0;
     this.repositoryManualSelection = "";
     this.repositoryMapLoads = new Map();
+    this.repositorySizeTrees = new Map();
+    this.repositorySizeHydrationActive = false;
     this.repositoryView = "map";
     this.repositoryFile = null;
     this.pullReview = null;
@@ -4506,6 +4590,7 @@ class ForkMeshWorld extends HTMLElement {
       this.syncMemberLounge();
       void this.loadReferralLeaderboard();
       this.syncRepositoryScene();
+      void this.hydrateHostedRepositorySizeMaps();
       // Do not fan out a star request for every perimeter portal at startup.
       // The active repository hydrates its exact count below; inactive portals
       // retain any catalog-provided count until the visitor selects them.
@@ -5014,7 +5099,7 @@ class ForkMeshWorld extends HTMLElement {
     this.renderCommunityPlacement();
     this.renderFediverseActivity();
     if (reposResult.status === "fulfilled") {
-      this.repositories = reconcileRepositoryAliases(
+      this.nativeRepositories = reconcileRepositoryAliases(
         cleanRepositories(reposResult.value),
         this.mirrorCatalogs,
       );
@@ -5022,15 +5107,22 @@ class ForkMeshWorld extends HTMLElement {
         externalReposResult.status === "fulfilled"
           ? cleanExternalRepositories(externalReposResult.value)
           : [];
-      this.repositories.push(...this.externalRepositories);
+      this.repositories = mergeHostedRepositoryImports(
+        this.nativeRepositories,
+        this.externalRepositories,
+      );
       this.repositoryCatalogState = this.repositories.length ? "ready" : "empty";
     } else {
       this.repositories = [];
+      this.nativeRepositories = [];
       this.externalRepositories =
         externalReposResult.status === "fulfilled"
           ? cleanExternalRepositories(externalReposResult.value)
           : [];
-      this.repositories.push(...this.externalRepositories);
+      this.repositories = mergeHostedRepositoryImports(
+        this.nativeRepositories,
+        this.externalRepositories,
+      );
       this.repositoryCatalogState = this.repositories.length
         ? "ready"
         : "unavailable";
@@ -5796,6 +5888,12 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-screenshot]")) {
         this.startScreenshotCapture();
+        return;
+      }
+      if (event.target.closest("[data-world-notifications-open]")) {
+        this.openLandmark("events");
+        void this.refreshCommunityEvents(true);
+        void this.refreshPersonalNotifications(true);
         return;
       }
       const mapToggle = event.target.closest("[data-world-map-toggle]");
@@ -7287,14 +7385,13 @@ class ForkMeshWorld extends HTMLElement {
           .join("|");
         if (before === after) return;
         this.externalRepositories = external;
-        this.repositories = [
-          ...this.repositories.filter(
-            (record) => record.source !== "external-import",
-          ),
-          ...external,
-        ];
+        this.repositories = mergeHostedRepositoryImports(
+          this.nativeRepositories,
+          external,
+        );
         this.repositoryCatalogState = this.repositories.length ? "ready" : "empty";
         this.syncRepositoryScene();
+        void this.hydrateHostedRepositorySizeMaps();
       } catch (_) {
         // Preserve the most recent visible import catalog through a transient
         // provider/relay failure; the next bounded poll retries automatically.
@@ -7429,7 +7526,28 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   openLandmark(id, { returnFocus = null } = {}) {
-    const landmark = landmarkById(id);
+    const landmark =
+      id === "events"
+        ? {
+            id: "events",
+            color: "#77d9ff",
+            eyebrow: "WORLD NOTIFICATIONS",
+            label: "Notifications",
+            summary:
+              "Your private account updates and public World announcements in one place.",
+            status: "LIVE · PERSONAL + GLOBAL",
+            metaphor:
+              "A shared bulletin beside a private inbox that only you can open.",
+            reality:
+              "Personal notifications use your signed-in session. Global announcements are public UTC event records.",
+            bullets: [
+              "Your notifications are account-scoped and never sent through multiplayer presence.",
+              "Global announcements are visible to everyone in the World.",
+            ],
+            primary: null,
+            secondary: null,
+          }
+        : landmarkById(id);
     const capability = this.landmarkCapabilities[landmark.id] || {
       live: false,
       reason: "This integration has not been verified in this session.",
@@ -9737,8 +9855,6 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   updateNotificationBadge() {
-    const badge = this.$("[data-world-notification-count]");
-    if (!badge) return;
     const currentEvents = this.events.filter((item) => {
       const start = Date.parse(item.startsAt);
       const end = Date.parse(item.endsAt);
@@ -9749,17 +9865,20 @@ class ForkMeshWorld extends HTMLElement {
       0,
       Math.min(999, Number(this.notificationUnread || 0) + currentEvents),
     );
-    badge.textContent = count > 99 ? "99+" : String(count);
-    badge.hidden = count === 0;
-    const button = badge.closest("[data-world-landmark='events']");
-    if (button) {
+    this.$$("[data-world-notification-count]").forEach((badge) => {
+      badge.textContent = count > 99 ? "99+" : String(count);
+      badge.hidden = count === 0;
+    });
+    this.$$(
+      "[data-world-notifications-open], [data-world-landmark='events']",
+    ).forEach((button) => {
       button.setAttribute(
         "aria-label",
         count
           ? `Open World notifications, ${count} active`
           : "Open World notifications",
       );
-    }
+    });
   }
 
   announceWorldNotifications() {
@@ -11329,6 +11448,87 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  async hydrateHostedRepositorySizeMaps() {
+    if (this.repositorySizeHydrationActive || this.destroyed) return;
+    const pending = this.repositories.filter((repository) => {
+      if (
+        repository.source !== "hosted-import" ||
+        repository.liveHost !== true ||
+        !immutableGitOid(repository.commit)
+      ) {
+        return false;
+      }
+      const key = this.repositoryStarKey(repository.owner, repository.name);
+      return (
+        key &&
+        String(this.repositorySizeTrees.get(key)?.commit || "").toLowerCase() !==
+          repository.commit.toLowerCase()
+      );
+    });
+    if (!pending.length) return;
+    this.repositorySizeHydrationActive = true;
+    let nextIndex = 0;
+    let changed = false;
+    let hydratedCount = 0;
+    const worker = async () => {
+      while (!this.destroyed && nextIndex < pending.length) {
+        const repository = pending[nextIndex++];
+        const key = this.repositoryStarKey(repository.owner, repository.name);
+        const servingOwner = sanitizePresenceText(
+          repository.servingOwner || repository.owner,
+          "",
+          40,
+        );
+        const servingName = sanitizePresenceText(
+          repository.servingName || repository.name,
+          "",
+          60,
+        );
+        try {
+          const payload = await this.fetchJSON(
+            `/api/repo/${encodeURIComponent(servingOwner)}/${encodeURIComponent(
+              servingName,
+            )}/sizes?ref=${encodeURIComponent(repository.commit)}`,
+            {
+              auth: false,
+              timeout: REPOSITORY_METADATA_TIMEOUT_MS,
+              cache: "no-store",
+            },
+          );
+          if (
+            payload?.ok === false ||
+            String(payload?.commit || "").toLowerCase() !==
+              repository.commit.toLowerCase() ||
+            !(Number(payload?.size) > 0) ||
+            !Array.isArray(payload?.children)
+          ) {
+            continue;
+          }
+          this.repositorySizeTrees.set(key, payload);
+          changed = true;
+          hydratedCount += 1;
+          if (hydratedCount % 8 === 0 && !this.destroyed) {
+            this.syncRepositoryScene();
+          }
+        } catch (_) {
+          // A failed mirror is retried on the next import-catalog poll. The
+          // successfully hydrated maps stay visible in the meantime.
+        }
+      }
+    };
+    try {
+      await Promise.all(
+        Array.from(
+          { length: Math.min(4, pending.length) },
+          () => worker(),
+        ),
+      );
+    } finally {
+      this.repositorySizeHydrationActive = false;
+    }
+    if (changed && !this.destroyed) this.syncRepositoryScene();
+  }
+
   syncRepositoryScene() {
     if (!this.world) return;
     const active =
@@ -11436,9 +11636,11 @@ class ForkMeshWorld extends HTMLElement {
       if (!key) return repository;
       const star = this.repositoryStarStates.get(key);
       const followers = this.repositoryFollowerStates.get(key);
-      if (!star && !followers) return repository;
+      const sizeTree = this.repositorySizeTrees.get(key) || null;
+      if (!star && !followers && !sizeTree) return repository;
       return {
         ...repository,
+        sizeTree,
         starCount: Number.isSafeInteger(star?.count)
           ? star.count
           : repository.starCount,
@@ -11667,9 +11869,25 @@ class ForkMeshWorld extends HTMLElement {
   async fetchRepositoryMapSnapshot(owner, repo, options = {}) {
     const safeOwner = sanitizePresenceText(owner, "", 40);
     const safeRepo = sanitizePresenceText(repo, "", 60);
-    const base = `/api/repo/${encodeURIComponent(safeOwner)}/${encodeURIComponent(
+    const catalogRecord = this.repositories.find(
+      (record) =>
+        record.owner.toLowerCase() === safeOwner.toLowerCase() &&
+        record.name.toLowerCase() === safeRepo.toLowerCase(),
+    );
+    const hostedImport = catalogRecord?.source === "hosted-import";
+    const servingOwner = sanitizePresenceText(
+      (hostedImport ? catalogRecord?.servingOwner : "") || safeOwner,
+      safeOwner,
+      40,
+    );
+    const servingRepo = sanitizePresenceText(
+      (hostedImport ? catalogRecord?.servingName : "") || safeRepo,
       safeRepo,
-    )}`;
+      60,
+    );
+    const base = `/api/repo/${encodeURIComponent(
+      servingOwner,
+    )}/${encodeURIComponent(servingRepo)}`;
     const expectedCommit = immutableGitOid(options.expectedCommit);
     const treeURL = expectedCommit
       ? `${base}/tree?path=&ref=${encodeURIComponent(expectedCommit)}`
@@ -11694,11 +11912,6 @@ class ForkMeshWorld extends HTMLElement {
     const entries = normalizeTreeEntries(tree);
     options.onTree?.({ owner: safeOwner, repo: safeRepo, commit, entries });
     const ref = `?ref=${encodeURIComponent(commit)}`;
-    const catalogRecord = this.repositories.find(
-      (record) =>
-        record.owner.toLowerCase() === safeOwner.toLowerCase() &&
-        record.name.toLowerCase() === safeRepo.toLowerCase(),
-    );
     // Start the short immutable PR chain beside sizes/stats, then inject its
     // result into the entity loader so the browser never repeats
     // branches/tree/blobs. Optional PR metadata must not delay the first map.
