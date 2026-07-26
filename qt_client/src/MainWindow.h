@@ -80,6 +80,7 @@ public:
 class MessageRow;
 class MarkdownEditor;
 class PullBadgeWidget;
+class ActivityRailButton;
 class PacmanProgress;
 class TerminalWidget;
 class ClaudeIdeBridge;
@@ -2083,6 +2084,9 @@ private:
     void showOverviewFiles();
     void showOverviewBranches();
     void showOverviewWorktrees();
+    // Keep the left activity rail's Code/Git checked states in step with what
+    // the repo detail view is showing (adhoc #357).
+    void updateRepoActivityRail();
     void loadRepoFileTree();
     void loadCoveExplorer();
     void refreshCoveExplorerTree();
@@ -4096,6 +4100,12 @@ private:
     int m_repoDetailIndex = -1;
     QButtonGroup *m_issueTabGroup = nullptr; // Issues / Milestones / Labels tabs
     QButtonGroup *m_repoDetailTabs = nullptr;
+    // Thin activity rail down the repo detail page's left edge (adhoc #357):
+    // Code (file browser) and Git (current changes) entries. The Git one carries
+    // the working-tree change-count badge and spins while a sync is in flight;
+    // updateRepoActivityRail keeps their checked state in step with the view.
+    ActivityRailButton *m_railCodeButton = nullptr;
+    ActivityRailButton *m_railGitButton = nullptr;
     QPushButton *m_repoCodeTab = nullptr;
     QString m_repoCodeSizePath; // mirror the displayed "Code (N MB)" was computed for
     QPushButton *m_repoIssuesTab = nullptr;

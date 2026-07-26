@@ -6506,6 +6506,145 @@ inline void setOcticon(QPushButton *button, const QString &name, int size = 16,
     applyStoredOcticon(button);
 }
 
+// One entry in the thin vertical activity rail down the repo detail page's left
+// edge (adhoc #357): an octicon over an optional small label, VS-Code style,
+// with the selected state drawn as a 2px accent line along the item's left
+// edge. The Git entry rides a blue count badge on the icon's corner (the
+// working-tree change count) which a small rotating sync glyph replaces while
+// the repo is publishing/syncing. Fully custom-painted (icon tint follows the
+// live theme on every repaint), so no QSS or stored-octicon re-tinting applies.
+class ActivityRailButton : public QPushButton
+{
+public:
+    explicit ActivityRailButton(const QString &iconName, const QString &label,
+                                QWidget *parent = nullptr)
+        : QPushButton(parent), m_iconName(iconName), m_label(label)
+    {
+        setCheckable(true);
+        setCursor(Qt::PointingHandCursor);
+        setFlat(true);
+        setFixedSize(44, m_label.isEmpty() ? 40 : 48);
+        // The sync spinner's timer only runs while syncing *and* visible (see
+        // show/hideEvent), so an idle or hidden item costs nothing.
+        m_spinTimer = new QTimer(this);
+        m_spinTimer->setInterval(60);
+        connect(m_spinTimer, &QTimer::timeout, this, [this] {
+            m_spinAngle = (m_spinAngle + 30) % 360;
+            update();
+        });
+    }
+
+    // The count riding the icon's corner (0 hides the badge).
+    void setBadgeCount(int count)
+    {
+        if (m_badge == count)
+            return;
+        m_badge = count;
+        update();
+    }
+
+    void setSyncing(bool on)
+    {
+        if (m_syncing == on)
+            return;
+        m_syncing = on;
+        if (m_syncing && isVisible())
+            m_spinTimer->start();
+        else
+            m_spinTimer->stop();
+        update();
+    }
+
+protected:
+    void showEvent(QShowEvent *e) override
+    {
+        if (m_syncing)
+            m_spinTimer->start();
+        QPushButton::showEvent(e);
+    }
+    void hideEvent(QHideEvent *e) override
+    {
+        m_spinTimer->stop();
+        QPushButton::hideEvent(e);
+    }
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        const bool dark = currentThemeIsDark();
+        const bool lit = isChecked() || underMouse();
+        const QColor fg = dark ? QColor(lit ? "#e6edf3" : "#8b949e")
+                               : QColor(lit ? "#1f2328" : "#656d76");
+
+        // Selection line along the left edge — same accent green as the repo
+        // tabs' checked underline.
+        if (isChecked())
+            p.fillRect(QRectF(0, 4, 2, height() - 8), QColor("#2ea043"));
+
+        const int iconPx = 20;
+        const QRect iconRect((width() - iconPx) / 2,
+                             m_label.isEmpty() ? (height() - iconPx) / 2 : 6,
+                             iconPx, iconPx);
+        p.drawPixmap(iconRect.topLeft(),
+                     tintedOcticonPixmap(m_iconName, fg, iconPx));
+
+        if (!m_label.isEmpty()) {
+            QFont f = font();
+            f.setPixelSize(10);
+            f.setWeight(QFont::DemiBold);
+            p.setFont(f);
+            p.setPen(fg);
+            p.drawText(QRect(0, iconRect.bottom() + 2, width(), 14),
+                       Qt::AlignHCenter | Qt::AlignTop, m_label);
+        }
+
+        // Badge / sync spinner overlapping the icon's bottom-right corner.
+        if (m_syncing) {
+            const int s = 14;
+            const QPoint at(iconRect.right() - s / 2 + 4, iconRect.bottom() - s / 2 + 4);
+            // Knock out a disc behind the glyph so it reads over the icon.
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(dark ? "#0d1117" : "#ffffff"));
+            p.drawEllipse(QRect(at, QSize(s, s)).adjusted(-1, -1, 1, 1));
+            p.drawPixmap(at, refreshPixmap(QColor("#58a6ff"), m_spinAngle, s));
+        } else if (m_badge > 0) {
+            const QString text = m_badge > 99 ? QStringLiteral("99+")
+                                              : QString::number(m_badge);
+            QFont f = font();
+            f.setPixelSize(9);
+            f.setBold(true);
+            p.setFont(f);
+            const int h = 14;
+            const int w = qMax(h, QFontMetrics(f).horizontalAdvance(text) + 8);
+            const QRectF badge(iconRect.right() - w + h / 2.0 + 2,
+                               iconRect.bottom() - h / 2.0 + 2, w, h);
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor("#1f6feb"));
+            p.drawRoundedRect(badge, h / 2.0, h / 2.0);
+            p.setPen(QColor("#ffffff"));
+            p.drawText(badge, Qt::AlignCenter, text);
+        }
+    }
+    void enterEvent(QEnterEvent *e) override
+    {
+        update();
+        QPushButton::enterEvent(e);
+    }
+    void leaveEvent(QEvent *e) override
+    {
+        update();
+        QPushButton::leaveEvent(e);
+    }
+
+private:
+    QString m_iconName;
+    QString m_label;
+    int m_badge = 0;
+    bool m_syncing = false;
+    QTimer *m_spinTimer = nullptr;
+    int m_spinAngle = 0;
+};
+
 // ---- voice input (whisper.cpp) helpers --------------------------------------
 // Where whisper.cpp is cloned/built. Defaults to the app's local-data dir; the
 // installer records the chosen dir so detection survives across launches.

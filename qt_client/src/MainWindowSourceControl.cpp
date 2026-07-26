@@ -390,6 +390,8 @@ void MainWindow::refreshSourceControl(bool force)
             m_scmDiff->clear();
         if (m_scmCountLabel)
             m_scmCountLabel->clear();
+        if (m_railGitButton)
+            m_railGitButton->setBadgeCount(0);
         if (m_scmCommitButton)
             m_scmCommitButton->setEnabled(false);
         if (m_scmCommitPushButton)
@@ -569,6 +571,9 @@ void MainWindow::refreshSourceControl(bool force)
     const int total = staged.size() + changes.size();
     if (m_scmCountLabel)
         m_scmCountLabel->setText(total ? QString::number(total) : QString());
+    // Mirror the count onto the activity rail's Git badge (adhoc #357).
+    if (m_railGitButton)
+        m_railGitButton->setBadgeCount(total);
     const bool anything = total > 0;
     if (m_scmCommitButton)
         m_scmCommitButton->setEnabled(anything);
