@@ -1096,9 +1096,14 @@ private:
     // stops+relaunches the daemon — an update straight from source without
     // waiting for a published release (adhoc). A source build never uploads this
     // app's binary, so fromSource forces the direct-upload path off.
+    // suppressFailureStatus is set by callers that will retry a failed attempt
+    // themselves (the Vultr auto-provision flow): it skips the terminal
+    // "Install failed" status/host-list update so a retryable hiccup doesn't
+    // read as a final failure before the caller's own retries are exhausted.
     void runHostInstall(bool forceUploadBinary = false,
                         std::function<void(bool)> onFinished = {},
-                        bool reinstall = false, bool fromSource = false);
+                        bool reinstall = false, bool fromSource = false,
+                        bool suppressFailureStatus = false);
     // SSH into a saved host and run the hosted uninstaller (uninstall.sh),
     // which removes the ForkMesh binary, launcher and ALL of that host's data.
     void runHostUninstall();

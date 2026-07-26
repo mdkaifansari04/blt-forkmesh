@@ -11307,6 +11307,10 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
                 "Installing ForkMesh (attempt %1 of %2)\xE2\x80\xA6")
                 .arg(m_vultrInstallAttempts)
                 .arg(kMaxInstallAttempts));
+    // A fresh instance often refuses SSH for a short while after Vultr
+    // reports it active, so an early attempt failing is expected, not a
+    // real failure — only the last attempt should report "Install failed".
+    const bool isFinalAttempt = m_vultrInstallAttempts >= kMaxInstallAttempts;
     runHostInstall(false, [this, node, ip, identityFile](bool ok) {
         if (!m_vultrProvisionActive)
             return;
@@ -11337,7 +11341,8 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
         QTimer::singleShot(30000, this, [this, node, ip, identityFile] {
             startVultrHostInstall(node, ip, identityFile);
         });
-    });
+    }, /*reinstall=*/false, /*fromSource=*/false,
+    /*suppressFailureStatus=*/!isFinalAttempt);
 }
 
 namespace {
@@ -11856,7 +11861,8 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
 
 void MainWindow::runHostInstall(bool forceUploadBinary,
                                 std::function<void(bool)> onFinished,
-                                bool reinstall, bool fromSource)
+                                bool reinstall, bool fromSource,
+                                bool suppressFailureStatus)
 {
     if ((m_hostInstallProcess &&
          m_hostInstallProcess->state() != QProcess::NotRunning) ||
@@ -12010,7 +12016,8 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
                 "only when using password login) and try again.\n"));
     });
     connect(proc, &QProcess::finished, this,
-            [this, ip, user, node, pass, onFinished, reinstall](int code, QProcess::ExitStatus status) {
+            [this, ip, user, node, pass, onFinished, reinstall,
+             suppressFailureStatus](int code, QProcess::ExitStatus status) {
                 if (m_hostInstallButton)
                     m_hostInstallButton->setEnabled(true);
                 const bool ok = status == QProcess::NormalExit && code == 0;
@@ -12031,11 +12038,18 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
                 } else {
                     appendHostInstallLog(QString::fromUtf8(
                         "\n\xE2\x9C\x98 %1 failed (exit %2).\n").arg(verb).arg(code));
-                    if (m_hostInstallStatus)
-                        m_hostInstallStatus->setText(QString::fromUtf8(
-                            "\xE2\x9C\x98 Install failed \xE2\x80\x94 see the "
-                            "output above."));
-                    rememberHost(node, ip, user, pass, QStringLiteral("install failed"));
+                    // A caller that still has retries left (the Vultr
+                    // auto-provision flow) reports its own "retrying..."
+                    // status and only wants the terminal "Install failed"
+                    // wording once its last attempt is spent.
+                    if (!suppressFailureStatus) {
+                        if (m_hostInstallStatus)
+                            m_hostInstallStatus->setText(QString::fromUtf8(
+                                "\xE2\x9C\x98 Install failed \xE2\x80\x94 see "
+                                "the output above."));
+                        rememberHost(node, ip, user, pass,
+                                     QStringLiteral("install failed"));
+                    }
                 }
                 if (m_hostInstallProcess) {
                     m_hostInstallProcess->deleteLater();
