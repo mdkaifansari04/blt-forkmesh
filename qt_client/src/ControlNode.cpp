@@ -430,6 +430,52 @@ QString savedHostCredentialKey(const QString &nodeName, const QString &host,
         QJsonDocument(identity).toJson(QJsonDocument::Compact));
 }
 
+QString sshConnectionFailureHint(int exitCode, const QString &outputTail)
+{
+    if (exitCode != 255)
+        return {};
+    const QString tail = outputTail.toLower();
+    if (tail.contains(QStringLiteral("connection timed out")) ||
+        tail.contains(QStringLiteral("operation timed out"))) {
+        return QStringLiteral(
+            "The connection to port 22 timed out \xE2\x80\x94 packets are "
+            "being dropped, not rejected. This almost always means a firewall "
+            "or cloud security group between here and the host is blocking "
+            "SSH: check the provider's firewall/security-group rules for this "
+            "instance (and any local network firewall) allow inbound TCP 22 "
+            "from your IP, then confirm the address is correct and the host "
+            "has finished booting.");
+    }
+    if (tail.contains(QStringLiteral("connection refused"))) {
+        return QStringLiteral(
+            "The host actively refused the connection on port 22 \xE2\x80\x94 "
+            "SSH is not listening yet (a freshly booted instance can take a "
+            "minute or two) or a firewall rule is rejecting the port outright. "
+            "Wait a moment and retry; if it persists, check the provider's "
+            "firewall/security-group settings for this instance.");
+    }
+    if (tail.contains(QStringLiteral("no route to host"))) {
+        return QStringLiteral(
+            "There is no network route to this host \xE2\x80\x94 check that "
+            "the address is correct and that a firewall or security group "
+            "is not dropping the traffic.");
+    }
+    if (tail.contains(QStringLiteral("host key verification failed"))) {
+        return QStringLiteral(
+            "The host's SSH key does not match the one ForkMesh already "
+            "trusts for it \xE2\x80\x94 this usually means the instance was "
+            "rebuilt/reinstalled at the same address. Remove the stale entry "
+            "from this app's managed known_hosts file if you intended that, "
+            "then retry.");
+    }
+    if (tail.contains(QStringLiteral("permission denied"))) {
+        return QStringLiteral(
+            "The host rejected the credentials \xE2\x80\x94 double-check the "
+            "SSH user, password, and key for this saved host.");
+    }
+    return {};
+}
+
 QJsonArray loadSavedHosts(QSettings &settings, const QString &settingsKey,
                           QHash<QString, QString> *sessionPasswords)
 {
