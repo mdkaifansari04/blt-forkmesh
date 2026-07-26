@@ -4216,6 +4216,23 @@ async def _blog_feed_document(env, request):
     return blog_feed.build_feed(str(await resp.text()), int(Date.now()))
 
 
+async def _blog_feed_published_document(env, request):
+    """The feed as published, reusing the edge-cached copy while it is warm.
+
+    The world banner reads the same document subscribers get, so a warm cache
+    spares it the parse-and-render pass entirely.
+    """
+    cached = await edge_cache_match(BLOG_RSS_CACHE_KEY)
+    if cached is not None:
+        try:
+            document = str(await cached.text())
+        except Exception:
+            document = ""
+        if document:
+            return document
+    return await _blog_feed_document(env, request)
+
+
 async def blog_rss_handler(env, request):
     """GET /blog/rss.xml — the public feed for the blog.
 
@@ -4305,7 +4322,7 @@ async def world_social_posts_handler(env, request):
             reddit_ok = True
     blog_posts, blog_ok = [], False
     try:
-        blog_rss = await _blog_feed_document(env, request)
+        blog_rss = await _blog_feed_published_document(env, request)
         if blog_rss:
             blog_posts = world_social_feeds.normalize_blog_feed(blog_rss)
             blog_ok = bool(blog_posts)

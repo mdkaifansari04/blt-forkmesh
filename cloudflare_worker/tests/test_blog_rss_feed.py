@@ -154,6 +154,9 @@ def test_worker_owns_the_feed_route_and_serves_it_as_rss():
     assert "edge_cache_put(BLOG_RSS_CACHE_KEY" in handler
     assert '"blog_feed_unavailable"' in handler
     assert 'method_name(request) not in ("GET", "HEAD")' in handler
+    # The world banner reads the published document, not a second render.
+    assert "async def _blog_feed_published_document(env, request):" in entry
+    assert "await _blog_feed_published_document(env, request)" in entry
 
 
 def test_feed_paths_are_worker_first_and_never_fall_into_post_rewrites():
