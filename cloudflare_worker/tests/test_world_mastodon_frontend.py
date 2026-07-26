@@ -109,7 +109,10 @@ def test_kiosk_shows_time_since_last_post_with_cadence_colors():
     assert "const MASTODON_POST_STALE_MS = 72 * 60 * 60 * 1000;" in scene
     assert "function mastodonLastPostTexture(" in scene
     assert '"forkmesh-mastodon-kiosk-lastpost"' in scene
-    assert 'context.fillText("LAST POST", 128, 44);' in scene
+    # The plate label is parameterized so the social banners can reuse the
+    # painter; the kiosk keeps the LAST POST default.
+    assert "context.fillText(label, 128, 44);" in scene
+    assert 'label = "LAST POST",' in scene
 
 
 def test_last_post_clock_and_colors_follow_the_cadence():

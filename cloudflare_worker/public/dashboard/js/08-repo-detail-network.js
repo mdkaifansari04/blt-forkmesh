@@ -1251,7 +1251,10 @@
   }
 
   function initHomePage() {
-    renderHomeChangelog();
+    renderHomeBlogPosts();
+    // The blog card fills in from the edge-cached feed; the baked markup
+    // already shows its loading state.
+    void loadHomeBlogPosts();
     // Feed + top repositories fill in when loadRepositories()/loadNotifications()
     // resolve — both re-render the home containers.
     // Active agent sessions (adhoc #81) need the catalog first so we know which
@@ -1305,7 +1308,17 @@
     // does wait on the shared fetch before rendering the detail body.
     await (repositoriesReady || loadRepositories());
     let repo = requested ? findRepository(requested) : null;
-    if (!repo && requested) {
+    if (
+      repo &&
+      requested &&
+      repoKey(repo).toLowerCase() !== requested.toLowerCase()
+    ) {
+      // A catalog alias normally resolves to its backing source record. Before
+      // accepting that canonical identity, check whether the URL is a durable
+      // organization alias so subsequent tab/tree navigation keeps the public
+      // /org/repo address instead of appearing to redirect to /node/repo.
+      repo = (await findOrganizationRepository(requested)) || repo;
+    } else if (!repo && requested) {
       // Organization URLs are public aliases backed by a node-owned catalog
       // record. The catalog deliberately publishes only the signing node's
       // identity, so resolve the public org link on a direct-page visit and
@@ -1314,6 +1327,7 @@
       repo = await findOrganizationRepository(requested);
     }
     if (repo) {
+      startRepoMirrorPolling();
       // The owner-only Agents tab is only a recognized route when the session
       // can assign agents, which is decided from nodes/isAdmin that only land
       // after hydrateCanonicalProfile resolves. When the refreshed URL points

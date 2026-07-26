@@ -5673,7 +5673,7 @@ void MainWindow::deleteCommit(const QString &hash)
     setRepoDetailNotice(QStringLiteral("Removed commit %1 — gone from history.")
                             .arg(hash.left(8)));
     loadCommits();
-    updateRepoPushButton();
+    refreshRepoSyncIndicators();
 }
 
 // Undo a commit by recording its inverse as a brand-new commit on top of the
@@ -5755,7 +5755,7 @@ void MainWindow::revertCommit(const QString &hash)
         QStringLiteral("Reverted commit %1 — added a commit that undoes it.")
             .arg(hash.left(8)));
     loadCommits();
-    updateRepoPushButton();
+    refreshRepoSyncIndicators();
 }
 
 void MainWindow::showCommitsBanner(const QString &html)
@@ -8142,37 +8142,10 @@ QWidget *MainWindow::buildRepoDetailSection()
     // a caution triangle on the self row/dot in the Mirror nodes panel, whose
     // header carries the "Reset integrity pin" action.
 
-    m_repoPushButton = new QPushButton(this);
-    m_repoPushButton->setObjectName("primaryButton");
-    m_repoPushButton->setCursor(Qt::PointingHandCursor);
-    m_repoPushButton->hide();
-    m_repoPushButton->setStyleSheet(
-        QStringLiteral("QPushButton#primaryButton{padding:3px 10px;font-size:12px;}"));
-    setOcticon(m_repoPushButton, "sync", 14);
-    connect(m_repoPushButton, &QPushButton::clicked, this,
-            &MainWindow::pushCurrentRepoUpstream);
-    // The "Sync" button floats in the band just above the Code tab
-    // (see positionRepoPushButton) rather than living in the tab row: it's an
-    // overlay raised one above the tabs, so showing/hiding it as sync state
-    // changes never reflows the tab content below — that shift is what read as the
-    // whole view "resizing" on small screens, most visibly on Mirror nodes.
-    m_repoPublishBar = nullptr; // no separate row: the button floats over Code
-
-    // Eye icon riding beside the Sync button: a one-click shortcut to the
-    // commits panel while the pending-commits state is already on screen.
-    m_repoPushEyeButton = new QPushButton(this);
-    m_repoPushEyeButton->setObjectName("ghostButton");
-    m_repoPushEyeButton->setProperty("buttonSize", "sm");
-    m_repoPushEyeButton->setCursor(Qt::PointingHandCursor);
-    m_repoPushEyeButton->hide();
-    setOcticon(m_repoPushEyeButton, "eye", 14);
-    m_repoPushEyeButton->setToolTip("View the commit history");
-    connect(m_repoPushEyeButton, &QPushButton::clicked, this, [this] {
-        if (m_historyButton && !m_historyButton->isChecked())
-            m_historyButton->click();
-        else
-            showOverviewCommits();
-    });
+    // No floating "Sync (N) ↑" pill (nor its eye shortcut) above the Code tab:
+    // adhoc #374 removed that overlay. Syncing runs from the Source control
+    // panel's commit-and-sync action and the repo list's Sync entry; the activity
+    // rail's Git glyph still spins while a publish/push is in flight.
 
     // Issue-looper toggle (adhoc #130, moved inline adhoc #354): a compact
     // switch that both shows the loop's state and toggles it. Created here,
@@ -8384,7 +8357,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     // entry (file browser) and a Git entry (current changes), VS-Code style.
     // The Git icon carries a blue badge with the working-tree change count
     // (kept fresh by refreshSourceControl) that flips to a spinner while a
-    // sync/publish is in flight (applyRepoPushButtonState); the selected entry
+    // sync/publish is in flight (refreshRepoSyncIndicators); the selected entry
     // shows a 2px line along its left edge.
     m_railCodeButton = new ActivityRailButton(QStringLiteral("code"),
                                               QStringLiteral("Code"));

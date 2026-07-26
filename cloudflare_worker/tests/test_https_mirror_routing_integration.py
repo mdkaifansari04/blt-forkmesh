@@ -797,6 +797,16 @@ def test_selection_is_public_group_scoped_fresh_integrity_and_abuse_gated():
     assert "ed25519_verify" in proof
 
 
+def test_public_proxy_preserves_verified_org_alias_for_gateway_bytes():
+    proxy = _function_source("_https_mirror_proxy")
+    proof = _function_source("_https_mirror_repository_proof")
+    assert 'context["routeOwner"] = route_owner' in proxy
+    assert "await _org_repo_node(" in proxy
+    assert 'context.get("routeOwner") or context["owner"]' in proxy
+    assert 'route_owner = context.get("routeOwner") or context["owner"]' in proof
+    assert '"&owner=" + quote(route_owner)' in proof
+
+
 def test_clone_round_robin_advances_once_per_two_request_git_clone():
     advance = _function_source("_https_mirror_route_advance")
     assert 'if operation != "git-upload-pack"' in advance

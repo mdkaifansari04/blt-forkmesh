@@ -11,6 +11,8 @@ import json
 import re
 from email.utils import parsedate_to_datetime
 
+import blog_feed
+
 
 TWITTER_HANDLE = "forkmesh"
 TWITTER_PROFILE_URL = "https://x.com/forkmesh"
@@ -29,6 +31,13 @@ REDDIT_LISTING_URL = (
 # Reddit rejects generic user agents; the documented convention is
 # platform:app-id:version (by /u/owner).
 REDDIT_USER_AGENT = "web:forkmesh-world-banner:v1 (by /u/forkmesh)"
+# The blog board rides the blog's own RSS feed: the Worker builds that
+# document from our static index (no external fetch, see blog_feed) and this
+# module reduces the published items to the banner's post shape, so the board
+# shows exactly what a subscriber sees — preview text and artwork included.
+BLOG_URL = blog_feed.BLOG_URL
+BLOG_FEED_URL = blog_feed.FEED_URL
+BLOG_INDEX_ASSET = blog_feed.BLOG_INDEX_ASSET
 
 SOCIAL_POSTS_LIMIT = 6
 MAX_POST_TEXT = 400
@@ -163,10 +172,39 @@ def normalize_twitter_timeline(next_data):
     return posts
 
 
-def social_posts_payload(now, twitter_posts, reddit_posts,
-                         twitter_ok, reddit_ok):
-    """One public payload for both banners; states let a banner keep its
-    static sign when its feed is unreachable while the other stays live."""
+def normalize_blog_feed(xml):
+    """Bound the blog's published RSS items to the banner's post shape.
+
+    Feed items carry no publication dates (the feature posts are static), so
+    createdAt stays 0 and the board's staleness plate reads the snapshot age
+    instead of a last-post age. `detail` is the item's description — the
+    preview text the board prints under the headline — and `image` is the
+    item enclosure the board paints as the card's artwork.
+    """
+    posts = []
+    for entry in blog_feed.parse_rss(xml):
+        title = _clean_text(entry.get("title"), 120)
+        if not title:
+            continue
+        posts.append({
+            "id": _clean_text(entry.get("slug"), 80),
+            "text": title,
+            "detail": _clean_text(entry.get("summary")),
+            "meta": _clean_text(entry.get("category"), 80),
+            "image": _clean_text(entry.get("image"), 300),
+            "createdAt": 0,
+            "url": _clean_text(entry.get("url"), 300) or BLOG_URL,
+        })
+        if len(posts) >= SOCIAL_POSTS_LIMIT:
+            break
+    return posts
+
+
+def social_posts_payload(now, twitter_posts, reddit_posts, blog_posts,
+                         twitter_ok, reddit_ok, blog_ok):
+    """One public payload for all three banners; states let a banner keep
+    its static sign when its feed is unreachable while the others stay
+    live."""
     return {
         "ok": True,
         "now": int(now),
@@ -181,5 +219,12 @@ def social_posts_payload(now, twitter_posts, reddit_posts,
             "url": REDDIT_PROFILE_URL,
             "state": "ready" if reddit_ok else "unavailable",
             "posts": reddit_posts if reddit_ok else [],
+        },
+        "blog": {
+            "handle": "forkmesh.com/blog",
+            "url": BLOG_URL,
+            "feedUrl": BLOG_FEED_URL,
+            "state": "ready" if blog_ok else "unavailable",
+            "posts": blog_posts if blog_ok else [],
         },
     }

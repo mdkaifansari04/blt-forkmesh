@@ -24,6 +24,9 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSemaphore>
+#include <QSet>
+#include <QThread>
+#include <QTimer>
 #include <QPushButton>
 #include <QSettings>
 #include <QStandardPaths>
@@ -1159,25 +1162,12 @@ int main(int argc, char *argv[])
 
     window.resize(480, 420);
     QApplication::processEvents();
-    window.testShowPublishBar(false);
-    QApplication::processEvents();
-    const int topBarHidden = window.testRepoTabContentTop();
-    const int hBarHidden = window.height();
-    window.testShowPublishBar(true);
-    QApplication::processEvents();
-    const int topBarShown = window.testRepoTabContentTop();
-    const int hBarShown = window.height();
-    qInfo("REPRO mirror-nodes @480x420: tab-content top hidden=%d shown=%d ; window h hidden=%d shown=%d",
-          topBarHidden, topBarShown, hBarHidden, hBarShown);
-    // The publish/sync bar reserves its height even when hidden, so toggling it
-    // (as a push then a mirror pickup does) must not shift the tab content beneath
-    // it nor grow the window — what read as the view "resizing" on small screens.
-    check(topBarHidden == topBarShown && hBarShown <= 420 + 8,
-          QString("publish/sync bar toggling does not reflow the page "
-                  "(tab-content top %1 -> %2, window height %3px)")
-              .arg(topBarHidden).arg(topBarShown).arg(hBarShown));
-    if (topBarHidden != topBarShown || hBarShown > 420 + 8)
-        dumpTallMinimums(window);
+    // adhoc #374 removed the floating publish/sync pill that used to hover in the
+    // band above the Code tab (and with it the "toggling it must not reflow the
+    // page" repro): nothing may float there any more.
+    check(!findButtonStartingWith(window, "Sync (") &&
+              !findButtonStartingWith(window, "Syncing"),
+          QStringLiteral("no floating Sync button above the Code tab"));
 
     // issue #272: clicking "Update from main" rebuilds the worktrees panel. The
     // rebuild must keep the same worktree selected so its diff/detail pane stays
@@ -1342,10 +1332,13 @@ int main(int argc, char *argv[])
             check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 1) ==
                       QStringLiteral("alice"),
                   QStringLiteral("Mirror nodes Owner column shows the node owner"));
-            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 12)
+            // Columns: Node, Owner, Latest commit, Message, Author, Synced,
+            // Size, Issues, Commits, Branches, Pulls, Discussions, CPU, RAM,
+            // Disk, Platform, … — Message/Author pushed Disk/Platform to 14/15.
+            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 14)
                       .startsWith(QStringLiteral("Disk:")),
                   QStringLiteral("Mirror nodes Disk column contains disk usage, not platform text"));
-            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 13) ==
+            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 15) ==
                       QStringLiteral("linux"),
                   QStringLiteral("Mirror nodes Platform column stays aligned after Disk"));
             window.testSetMirrorNodesOnlineOnly(false);
@@ -1354,6 +1347,38 @@ int main(int argc, char *argv[])
             check(unfilteredRows.join(QStringLiteral("\n"))
                       .contains(QStringLiteral("offline-node")),
                   QStringLiteral("unchecking Online only shows offline mirror nodes"));
+
+            // adhoc #375: every git read the panel makes (our own advert's
+            // head/counts, the `git show` naming each row's commit) pumps the
+            // event loop on the GUI thread, so a queued rebuild — a roster
+            // heartbeat, a /mirrors reply — can land in the middle of one. The
+            // half-built table must not gain a second set of rows from it:
+            // that listed every node twice, the duplicates carrying only a
+            // name because the rebuild that filled the rest cleared them.
+            QTimer::singleShot(0, &window, [&window, dupRoster]() {
+                window.testSetHomeRosterAndReloadMirrorPanel(dupRoster);
+            });
+            // waitForGit only pumps up front once 100ms have passed since the
+            // last pump, so wait that out: the reload queued above is then
+            // delivered from inside the rebuild below rather than after it.
+            QThread::msleep(150);
+            window.testSetHomeRosterAndReloadMirrorPanel(dupRoster);
+            QApplication::processEvents();
+            const QStringList reentrantRows = window.testMirrorNodeRows();
+            QSet<QString> seenNodeNames;
+            QStringList duplicatedNodes;
+            for (const QString &row : reentrantRows) {
+                const QString name = row.section(QLatin1Char('|'), 0, 0);
+                if (seenNodeNames.contains(name))
+                    duplicatedNodes.append(name);
+                seenNodeNames.insert(name);
+            }
+            check(duplicatedNodes.isEmpty(),
+                  QString("a rebuild delivered while the Mirror nodes panel is "
+                          "building doesn't list nodes twice (adhoc #375, "
+                          "duplicates: %1; rows: %2)")
+                      .arg(duplicatedNodes.join(QStringLiteral(", ")),
+                           reentrantRows.join(QStringLiteral(" ; "))));
         }
 
         // issue #172: the Branches list must also surface the worktree a branch
