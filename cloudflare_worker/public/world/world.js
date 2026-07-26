@@ -2839,7 +2839,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </div>
         </details>
 
-        <details class="world-diagnostics world-chat-terminal" data-world-chat-terminal>
+        <details class="world-diagnostics world-chat-terminal${settings.debugPanel ? "" : " world-chat-terminal--debug-hidden"}" data-world-chat-terminal>
           <summary aria-label="Open World chat in a terminal panel">
             <span class="world-diagnostics-light" data-state="online" aria-hidden="true"></span>
             <strong>CHAT</strong>
@@ -5764,6 +5764,13 @@ class ForkMeshWorld extends HTMLElement {
         this.commitPublicSettings();
         const diagnostics = this.$("[data-world-diagnostics]");
         if (diagnostics) diagnostics.hidden = !debugPanel.checked;
+        const chatTerminal = this.$("[data-world-chat-terminal]");
+        if (chatTerminal) {
+          chatTerminal.classList.toggle(
+            "world-chat-terminal--debug-hidden",
+            !debugPanel.checked,
+          );
+        }
         return;
       }
       const emojiCategory = event.target.closest(
