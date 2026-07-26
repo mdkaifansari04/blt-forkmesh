@@ -92,8 +92,21 @@ QString savedHostCredentialKey(const QString &nodeName, const QString &host,
 // transport problem). OpenSSH exits 255 for any failure before or during the
 // connection (unreachable host, refused/reset port, auth failure, host-key
 // mismatch); a non-255 code is always the remote command's own exit status, so
-// no SSH-side hint applies.
-QString sshConnectionFailureHint(int exitCode, const QString &outputTail);
+// no SSH-side hint applies. When `host` is supplied and it is an address that
+// cannot be routed on the public internet, a timeout is diagnosed as that
+// rather than as a firewall.
+QString sshConnectionFailureHint(int exitCode, const QString &outputTail,
+                                 const QString &host = QString());
+
+// Describe the non-routable IPv4 range `host` falls in (RFC 1918 private,
+// RFC 6598 carrier-grade NAT, link-local, loopback), or an empty string when it
+// is a routable address or not an IPv4 literal at all.
+QString nonRoutableAddressNote(const QString &host);
+
+// One-line record of a failed SSH run — its exit code plus the last output
+// line — short enough to list one per attempt in the install window's attempt
+// history (adhoc #342).
+QString sshFailureSummary(int exitCode, const QString &outputTail);
 
 // Load saved host metadata and atomically migrate legacy plaintext password
 // fields out of QSettings. When supplied, sessionPasswords receives those
