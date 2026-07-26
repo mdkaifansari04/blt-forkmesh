@@ -1531,10 +1531,6 @@ void MainWindow::updateRepoIssueCount()
         m_repoIssuesTab->setText(
             QStringLiteral("Issues (%1)").arg(formatCount(openCount)));
     }
-    // Opening a repo (or reloading its issues) runs here, so it's the reliable
-    // funnel for revealing the looper toggle above the Issues tab even when the
-    // loop is off — updateIssueLooperButton only fires on a state change (#130).
-    positionLooperToggle();
 }
 
 void MainWindow::updateRepoDiscussionCount()
@@ -8178,13 +8174,11 @@ QWidget *MainWindow::buildRepoDetailSection()
             showOverviewCommits();
     });
 
-    // Issue-looper toggle (adhoc #130): a compact switch floating in the band
-    // just above the Issues tab, mirroring how the Sync button floats over
-    // Code. It both shows the loop's state and toggles it, so the loop is
-    // controllable and visible from any tab without an in-page banner. Created
-    // parented to the window; positionLooperToggle reparents it onto the page.
+    // Issue-looper toggle (adhoc #130, moved inline adhoc #354): a compact
+    // switch that both shows the loop's state and toggles it. Created here,
+    // parented to the window, then placed inline in the Issues heading row
+    // (next to "New issue") by buildIssuesSection().
     auto *looperToggle = new LooperToggle(this);
-    looperToggle->hide();
     looperToggle->setOnClick([this] { toggleIssueLooper(); });
     // Clicking the "#N" itself jumps to the agent currently working that issue
     // instead of toggling the loop (adhoc #134).

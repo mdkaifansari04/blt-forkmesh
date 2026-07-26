@@ -4964,12 +4964,12 @@ void MainWindow::looperOnSessionFinished(int sessionId)
 
 void MainWindow::updateIssueLooperButton()
 {
-    // Drive the floating toggle above the Issues tab (adhoc #130): on/off state,
-    // the issue currently being worked, and a neon loop that animates while on.
+    // Drive the inline toggle in the Issues heading row (adhoc #130/#354):
+    // on/off state, the issue currently being worked, and a neon loop that
+    // animates while on.
     if (auto *toggle = static_cast<LooperToggle *>(m_looperToggle)) {
         toggle->setActive(m_looperActive);
         toggle->setIssueNumber(m_looperActive ? m_looperCurrentIssue : 0);
-        positionLooperToggle(); // anchor + reveal over the Issues tab
     }
     persistLooperState();
 }
