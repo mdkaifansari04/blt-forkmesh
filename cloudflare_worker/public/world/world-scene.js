@@ -6012,11 +6012,15 @@ function socialBannerTexture(
           wrapCanvasText(context, post.text, 96, top + 76, 1344, 66, 3);
         }
         if (index < posts.length - 1) {
+          // Art cards run taller than the text-only ones (three lines of
+          // preview text under a two-line headline), so their rule sits
+          // closer to the next card rather than through the last line.
+          const rule = top + pitch - (art ? 20 : 66);
           context.strokeStyle = "rgba(139,155,244,0.25)";
           context.lineWidth = 2;
           context.beginPath();
-          context.moveTo(96, top + pitch - 66);
-          context.lineTo(1440, top + pitch - 66);
+          context.moveTo(96, rule);
+          context.lineTo(1440, rule);
           context.stroke();
         }
       });
