@@ -311,9 +311,15 @@ QByteArray httpsMirrorRegistrationSigningPayload(
 QString validateVultrMirrorRequest(const QString &apiKey,
                                    const QString &nodeName);
 
+// True when a plan ships a routable IPv4 address. Vultr's cheapest tiers are
+// IPv6-only ("...-v6" plan ids): they boot fine but nothing in the mesh (SSH
+// provisioning, the A record, clients cloning) can reach them, so they must
+// never win the cheapest-plan race (adhoc #344).
+bool vultrPlanHasIpv4(const QJsonObject &plan);
+
 // From GET /v2/plans: the cheapest plan that can actually be deployed
-// (monthly_cost > 0 and at least one location). Ties break toward more RAM,
-// then the lexicographically smallest id, so selection is deterministic.
+// (monthly_cost > 0, at least one location, and IPv4). Ties break toward more
+// RAM, then the lexicographically smallest id, so selection is deterministic.
 QJsonObject cheapestVultrPlan(const QJsonArray &plans);
 
 // Deterministic region for a chosen plan: its lexicographically first
@@ -337,6 +343,17 @@ QJsonObject vultrInstanceCreatePayload(const QString &nodeName,
 // (status active, power running, real main_ip); empty while it is still
 // booting or when the object is malformed.
 QString vultrInstanceReadyIp(const QJsonObject &instance);
+
+// True when a booted instance only ever got an IPv6 address (v6_main_ip set,
+// main_ip still unassigned). Polling such an instance can only time out, so the
+// provisioning flow fails fast with an explanation instead (adhoc #344).
+bool vultrInstanceIsIpv6Only(const QJsonObject &instance);
+
+// Default node name for a one-click mirror: the next free "mirrorN" over every
+// name already in use (saved hosts plus the account's linked nodes), so a new
+// instance joins the fleet as mirror5 next to mirror1..mirror4 instead of
+// carrying its hosting provider in its name (adhoc #344).
+QString nextMirrorNodeName(const QStringList &existingNames);
 
 // Resolve a Vultr API key this node already stores as a device-local Actions
 // variable (same contract as cloudflareApiTokenFromVariables).

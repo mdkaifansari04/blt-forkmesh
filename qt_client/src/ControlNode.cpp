@@ -1587,6 +1587,18 @@ QString validateVultrMirrorRequest(const QString &apiKey,
     return {};
 }
 
+bool vultrPlanHasIpv4(const QJsonObject &plan)
+{
+    // Vultr marks its IPv6-only tiers with a "-v6" id suffix ("vc2-1c-0.5gb-v6")
+    // and nothing else in the plan object distinguishes them.
+    const QString id =
+        plan.value(QStringLiteral("id")).toString().trimmed().toLower();
+    if (id.isEmpty())
+        return false;
+    return !id.endsWith(QLatin1String("-v6")) &&
+           !id.contains(QLatin1String("-v6-"));
+}
+
 QJsonObject cheapestVultrPlan(const QJsonArray &plans)
 {
     QJsonObject best;
@@ -1595,6 +1607,7 @@ QJsonObject cheapestVultrPlan(const QJsonArray &plans)
         const double cost = plan.value(QStringLiteral("monthly_cost")).toDouble();
         const QString id = plan.value(QStringLiteral("id")).toString();
         if (id.isEmpty() || !std::isfinite(cost) || cost <= 0.0 ||
+            !vultrPlanHasIpv4(plan) ||
             plan.value(QStringLiteral("locations")).toArray().isEmpty()) {
             continue;
         }
@@ -1677,6 +1690,9 @@ QJsonObject vultrInstanceCreatePayload(const QString &nodeName,
         {QStringLiteral("hostname"), nodeName.trimmed()},
         {QStringLiteral("sshkey_id"), QJsonArray{sshKeyId}},
         {QStringLiteral("backups"), QStringLiteral("disabled")},
+        // The mesh reaches mirrors over IPv4 only: never let Vultr hand back an
+        // instance whose sole address is a v6 one (adhoc #344).
+        {QStringLiteral("enable_ipv6"), false},
         {QStringLiteral("activation_email"), false},
         {QStringLiteral("tags"),
          QJsonArray{QStringLiteral("forkmesh-mirror")}},
@@ -1700,6 +1716,42 @@ QString vultrInstanceReadyIp(const QJsonObject &instance)
         return {};
     }
     return ip;
+}
+
+bool vultrInstanceIsIpv6Only(const QJsonObject &instance)
+{
+    const QString v6 =
+        instance.value(QStringLiteral("v6_main_ip")).toString().trimmed();
+    if (v6.isEmpty() || !v6.contains(QLatin1Char(':')))
+        return false;
+    const QString ip =
+        instance.value(QStringLiteral("main_ip")).toString().trimmed();
+    return ip.isEmpty() || ip == QLatin1String("0.0.0.0");
+}
+
+QString nextMirrorNodeName(const QStringList &existingNames)
+{
+    static const QRegularExpression mirrorPattern(
+        QStringLiteral("^mirror-?(\\d{1,4})$"));
+    QSet<QString> used;
+    int highest = 0;
+    for (const QString &name : existingNames) {
+        const QString normalized = name.trimmed().toLower();
+        if (normalized.isEmpty())
+            continue;
+        used.insert(normalized);
+        const QRegularExpressionMatch match = mirrorPattern.match(normalized);
+        if (match.hasMatch())
+            highest = std::max(highest, match.captured(1).toInt());
+    }
+    // Continue the fleet's own numbering (mirror1..mirror4 -> mirror5) and then
+    // walk forward past any name already taken, so the default never collides.
+    for (int i = std::max(1, highest + 1); i <= 9999; ++i) {
+        const QString candidate = QStringLiteral("mirror%1").arg(i);
+        if (!used.contains(candidate))
+            return candidate;
+    }
+    return {};
 }
 
 QString vultrApiKeyFromVariables(const QMap<QString, QString> &variables)

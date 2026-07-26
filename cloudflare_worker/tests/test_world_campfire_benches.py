@@ -251,3 +251,16 @@ def test_bench_height_is_derived_from_the_seated_pose():
     # The legs grow with the plank so the bench still stands on the ground.
     assert "new THREE.BoxGeometry(0.16, CAMPFIRE_BENCH_LEG_HEIGHT, 0.5)" in ring
     assert "leg.position.set(end, CAMPFIRE_BENCH_LEG_HEIGHT / 2, 0);" in ring
+
+
+def test_member_total_burns_as_a_number_in_the_fire():
+    # adhoc #347: the registered-account total is shown as a number hanging in
+    # the flames, painted from the same count that sizes the bench ring.
+    assert "function campfireMemberCountTexture(THREE, total)" in SCENE
+    assert "campfire.add(memberCountSprite);" in SCENE
+    lounge = SCENE.split("function updateMemberLounge", 1)[1]
+    assert "setCampfireMemberCount(total);" in lounge
+    # Hidden until the roster lands, so the fire never shows a placeholder 0.
+    assert "memberCountSprite.visible = false;" in SCENE
+    # Repainted only when the count moves; the roster refresh is on a timer.
+    assert "if (memberCountShown === count) return;" in SCENE

@@ -779,12 +779,23 @@ int main(int argc, char **argv)
                     {QStringLiteral("ram"), 2048},
                     {QStringLiteral("locations"),
                      QJsonArray{QStringLiteral("syd")}}},
+        // Cheapest of all, but IPv6-only: unreachable for the mesh (adhoc #344).
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("vc2-1c-0.5gb-v6")},
+                    {QStringLiteral("monthly_cost"), 2.5},
+                    {QStringLiteral("ram"), 512},
+                    {QStringLiteral("locations"),
+                     QJsonArray{QStringLiteral("ewr")}}},
     };
     const QJsonObject cheapest =
         forkmesh::control::cheapestVultrPlan(vultrPlans);
     check(cheapest.value(QStringLiteral("id")).toString() ==
               QStringLiteral("vhp-1c-2gb"),
           "cheapest Vultr plan skips undeployable plans and breaks ties on RAM");
+    check(forkmesh::control::vultrPlanHasIpv4(cheapest) &&
+              !forkmesh::control::vultrPlanHasIpv4(
+                  vultrPlans.at(4).toObject()) &&
+              !forkmesh::control::vultrPlanHasIpv4(QJsonObject()),
+          "IPv6-only Vultr plans are never eligible, however cheap");
     check(forkmesh::control::vultrPlanRegion(cheapest) ==
               QStringLiteral("syd") &&
               forkmesh::control::vultrPlanRegion(
@@ -857,6 +868,32 @@ int main(int argc, char **argv)
               forkmesh::control::vultrInstanceReadyIp(readyInstance) ==
                   QStringLiteral("203.0.113.99"),
           "instance readiness requires active+running and a real IPv4");
+    check(instancePayload.value(QStringLiteral("enable_ipv6")).toBool(true) ==
+              false,
+          "the Vultr instance payload never opts into an IPv6-only address");
+
+    QJsonObject ipv6OnlyInstance = readyInstance;
+    ipv6OnlyInstance.insert(QStringLiteral("main_ip"),
+                            QStringLiteral("0.0.0.0"));
+    ipv6OnlyInstance.insert(QStringLiteral("v6_main_ip"),
+                            QStringLiteral("2001:db8::1"));
+    QJsonObject dualStackInstance = readyInstance;
+    dualStackInstance.insert(QStringLiteral("v6_main_ip"),
+                             QStringLiteral("2001:db8::1"));
+    check(forkmesh::control::vultrInstanceIsIpv6Only(ipv6OnlyInstance) &&
+              !forkmesh::control::vultrInstanceIsIpv6Only(dualStackInstance) &&
+              !forkmesh::control::vultrInstanceIsIpv6Only(bootingInstance),
+          "an IPv6-only instance is detected instead of polled to a timeout");
+
+    check(forkmesh::control::nextMirrorNodeName(
+              {QStringLiteral("mirror1"), QStringLiteral("Mirror4"),
+               QStringLiteral("laptop")}) == QStringLiteral("mirror5") &&
+              forkmesh::control::nextMirrorNodeName({}) ==
+                  QStringLiteral("mirror1") &&
+              forkmesh::control::nextMirrorNodeName(
+                  {QStringLiteral("mirror2"), QStringLiteral(" mirror3 ")}) ==
+                  QStringLiteral("mirror4"),
+          "the default mirror name continues the fleet's own numbering");
 
     QMap<QString, QString> vultrVariables;
     vultrVariables.insert(QStringLiteral("vultr_api_key"),
