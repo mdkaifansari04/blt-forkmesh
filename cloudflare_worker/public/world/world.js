@@ -2245,6 +2245,11 @@ function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
         String(mirror?.integrity || "").toLowerCase() === "ok" &&
         mirror?.behind !== true,
     );
+    const reachable = mirrors.filter(
+      (mirror) =>
+        String(mirror?.status || "").toLowerCase() === "online" &&
+        mirror?.cloneAvailable === true,
+    );
     const attestedMirrorCommits = new Map();
     healthy.forEach((mirror) => {
       const node = sanitizePresenceText(
@@ -2341,6 +2346,13 @@ function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
       servingName: preferred.name,
       source: "organization-alias",
       liveHost: healthy.length > 0,
+      mirrorState: healthy.length
+        ? "live"
+        : reachable.length
+          ? "syncing"
+          : mirrors.length
+            ? "offline"
+            : "stub",
       mirrorCount: mirrors.length,
       pullCount,
       commit: commits.size === 1 ? [...commits][0] : "",

@@ -80,6 +80,11 @@ QWidget *MainWindow::buildIssuesSection()
     headingRow->setContentsMargins(0, 0, 0, 0);
     headingRow->addWidget(heading);
     headingRow->addWidget(m_issueListNewButton);
+    // Issue looper toggle (adhoc #130, moved here adhoc #354): sits right after
+    // "New issue" so the one-click "work through the backlog" control is where
+    // the other issue actions are, instead of floating above the tab bar.
+    if (m_looperToggle)
+        headingRow->addWidget(m_looperToggle);
     headingRow->addStretch();
     headingRow->addWidget(issuesTab);
     headingRow->addWidget(boardTab);
@@ -148,8 +153,9 @@ QWidget *MainWindow::buildIssuesSection()
             &MainWindow::reprioritizeBacklog);
 
     // Issue looper (adhoc #92): the one-click "work through the backlog" control
-    // now lives in a compact toggle floating just above the Issues tab (adhoc
-    // #130, see m_looperToggle), so it is no longer a button in this action row.
+    // lives in a compact toggle placed inline in the heading row above, next to
+    // "New issue" (adhoc #130/#354, see m_looperToggle), so it is not a button
+    // in this action row.
 
     // Issue #286: hand the README and the open backlog to the default agent and
     // let it rank the issues. The instruction is editable in Settings -> Agents.

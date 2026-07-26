@@ -10340,6 +10340,12 @@ export function createWorldScene({
         metalness: 0.08,
         roughness: 0.72,
       }),
+      syncing: makeMaterial(THREE, "#f0c66f", {
+        emissive: "#8d641e",
+        emissiveIntensity: 0.62,
+        metalness: 0.12,
+        roughness: 0.52,
+      }),
       outline: makeMaterial(THREE, "#b9edff", {
         emissive: "#3aa1c7",
         emissiveIntensity: 0.78,
@@ -10361,11 +10367,13 @@ export function createWorldScene({
       const isActive = record.key === activeKey;
       const material = isActive
         ? materials.selected
-        : record.isPrivate
-          ? materials.private
-          : record.liveHost
-            ? materials.live
-            : materials.stub;
+          : record.isPrivate
+            ? materials.private
+            : record.liveHost
+              ? materials.live
+              : record.mirrorState === "syncing"
+                ? materials.syncing
+              : materials.stub;
       const outlineMaterial = isActive
         ? materials.selected
         : materials.outline;
@@ -10404,6 +10412,7 @@ export function createWorldScene({
         liveHost: record.liveHost,
         isPrivate: record.isPrivate,
         source: record.source,
+        mirrorState: record.mirrorState,
         starCount: record.starCount,
         starred: record.starred,
         angle,
@@ -10436,7 +10445,11 @@ export function createWorldScene({
             ? record.sizeBytes
               ? `${compactSceneBytes(record.sizeBytes)} HOSTED`
               : "LIVE MIRROR"
-            : "STUB · MIRROR NEEDED",
+            : record.mirrorState === "syncing"
+              ? "MIRRORS SYNCING"
+              : record.mirrorState === "offline"
+                ? "MIRRORS OFFLINE"
+                : "STUB · MIRROR NEEDED",
         isActive ? "#9ef7c6" : record.isPrivate ? "#d5b6ff" : "#77d9ff",
       );
       label.name = `repository-portal-label:${record.owner}/${record.name}`;

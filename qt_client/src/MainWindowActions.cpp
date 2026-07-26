@@ -2248,57 +2248,10 @@ void MainWindow::updateAgentsTabIndicator()
         m_agentsSpinTimer->start(120);
 }
 
-// Anchor the looper toggle in the meta band just above the Issues tab (adhoc
-// #130), mirroring positionRepoPushButton over Code. It stays visible the
-// whole time a repo detail page is open — off (grey switch) or on (green switch
-// + travelling neon loop, naming the live issue). A modest timer keeps it
-// pinned over the tab as the window resizes or the tabs reflow.
-void MainWindow::positionLooperToggle()
-{
-    if (!m_looperToggle || !m_repoIssuesTab)
-        return;
-    // The repo-detail page itself, not m_repoDetailStack->parentWidget(): the
-    // stack now lives inside its own QScrollArea (688850a7), so its parent is
-    // that scroll's viewport. These bars float over the meta band just above the
-    // tab row, so they must be parented to the page — anchoring them to the
-    // viewport pushes them into the scrolled body, away from the tabs.
-    QWidget *page = m_repoDetailSection;
-    if (!page)
-        return;
-    if (m_looperToggle->parentWidget() != page)
-        m_looperToggle->setParent(page); // hides it; shown again just below
-    const int w = m_looperToggle->sizeHint().width();
-    const int h = m_looperToggle->sizeHint().height();
-    const QPoint tl = m_repoIssuesTab->mapTo(page, QPoint(0, 0));
-    int x = tl.x() + (m_repoIssuesTab->width() - w) / 2;
-    int y = tl.y() - h - 1; // the meta band above the tab row
-    if (y < 0)
-        y = 0;
-    if (x + w > page->width())
-        x = qMax(0, page->width() - w);
-    m_looperToggle->setGeometry(x, y, w, h);
-    // Only show it while the repo-detail page is the one on screen; otherwise the
-    // overlay would float over whatever section replaced it.
-    const bool onPage = page->isVisible();
-    m_looperToggle->setVisible(onPage);
-    if (onPage)
-        m_looperToggle->raise();
-    // Keep a single low-rate timer running so the toggle re-anchors as the window
-    // resizes or the tabs reflow, and reappears when the user returns to the
-    // repo-detail page. Started once; the per-tick visibility check above is what
-    // hides/shows it, so it never needs stopping.
-    if (!m_looperToggleTimer) {
-        m_looperToggleTimer = new QTimer(this);
-        connect(m_looperToggleTimer, &QTimer::timeout, this,
-                &MainWindow::positionLooperToggle);
-        m_looperToggleTimer->start(400);
-    }
-}
-
 // Anchor the live mirror-activity dot strip in the meta band just above the
-// Mirror nodes tab (adhoc #197), mirroring positionLooperToggle over Issues. It
-// shows only while a repo-detail page is open and at least one node is active;
-// loadMirrorNodesPanel feeds it the roster, the timer keeps it pinned.
+// Mirror nodes tab (adhoc #197). It shows only while a repo-detail page is
+// open and at least one node is active; loadMirrorNodesPanel feeds it the
+// roster, the timer keeps it pinned.
 void MainWindow::positionMirrorActivityStrip()
 {
     auto *strip = static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip);
