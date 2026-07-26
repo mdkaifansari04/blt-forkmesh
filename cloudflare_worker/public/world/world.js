@@ -3595,6 +3595,7 @@ class ForkMeshWorld extends HTMLElement {
     this.mediaSpaces = [];
     this.mediaRoom = normalizeMediaRoom(null);
     this.activeRepository = null;
+    this.repositoryMapPreview = null;
     this.repositoryStarStates = new Map();
     this.repositoryFollowerStates = new Map();
     this.repositoryMapState = "idle";
@@ -10930,13 +10931,17 @@ class ForkMeshWorld extends HTMLElement {
       this.repositoryMapState === "ready" && this.activeRepository
         ? this.activeRepository
         : null;
+    const preview = active ? null : this.repositoryMapPreview;
     this.world.updateRepositoryCatalog?.(
       this.repositoriesWithLiveSocialState(),
-      active || {},
+      active || preview || {},
     );
     if (!active) {
-      this.world.updateRepositoryGraph?.([], []);
-      this.world.updateRepositorySizeMap?.({}, {});
+      this.world.updateRepositoryGraph?.(preview?.entries || [], []);
+      this.world.updateRepositorySizeMap?.(
+        preview?.sizes || {},
+        preview || {},
+      );
       this.world.updateRepositoryRecordDesk?.({}, {});
       return;
     }
@@ -10963,6 +10968,57 @@ class ForkMeshWorld extends HTMLElement {
         expandedIssue: this.expandedRepositoryIssuePage,
       },
     );
+  }
+
+  repositoryTreeSizePreview(entries = []) {
+    // The first tree response already contains exact blob sizes for root
+    // files. Paint those immediately while the recursive size tree is still
+    // being calculated; directories with an unknown size stay out of this
+    // preview instead of receiving an invented weight.
+    const children = (Array.isArray(entries) ? entries : [])
+      .filter((entry) => entry?.type === "file" && Number(entry?.size) > 0)
+      .slice(0, 80)
+      .map((entry) => ({
+        name: String(entry.name || entry.path || "file").slice(0, 100),
+        path: String(entry.path || entry.name || "").slice(0, 500),
+        type: "file",
+        size: Math.max(0, Number(entry.size) || 0),
+        children: [],
+      }));
+    return {
+      name: "repository",
+      path: "",
+      type: "directory",
+      size: children.reduce((total, child) => total + child.size, 0),
+      children,
+    };
+  }
+
+  previewRepositoryMap(owner, repo, commit, entries, sizes = null) {
+    if (!this.world || this.destroyed) return;
+    const selection = { owner, repo, commit, path: "" };
+    const current =
+      this.repositoryMapPreview?.owner === owner &&
+      this.repositoryMapPreview?.repo === repo &&
+      this.repositoryMapPreview?.commit === commit
+        ? this.repositoryMapPreview
+        : null;
+    const previewSizes =
+      sizes ||
+      current?.sizes ||
+      this.repositoryTreeSizePreview(entries);
+    this.repositoryMapPreview = {
+      ...selection,
+      entries,
+      sizes: previewSizes,
+    };
+    this.world.updateRepositoryCatalog?.(
+      this.repositoriesWithLiveSocialState(),
+      selection,
+    );
+    this.world.updateRepositoryGraph?.(entries, []);
+    this.world.updateRepositorySizeMap?.(previewSizes, selection);
+    this.world.setRepositorySizeLoading?.(true);
   }
 
   repositoriesWithLiveSocialState() {
@@ -11194,7 +11250,7 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
-  async fetchRepositoryMapSnapshot(owner, repo) {
+  async fetchRepositoryMapSnapshot(owner, repo, options = {}) {
     const safeOwner = sanitizePresenceText(owner, "", 40);
     const safeRepo = sanitizePresenceText(repo, "", 60);
     const base = `/api/repo/${encodeURIComponent(safeOwner)}/${encodeURIComponent(
@@ -11217,40 +11273,62 @@ class ForkMeshWorld extends HTMLElement {
     if (!/^[0-9a-f]{40,64}$/.test(commit)) {
       throw new Error("repository tree commit unavailable");
     }
+    const entries = normalizeTreeEntries(tree);
+    options.onTree?.({ owner: safeOwner, repo: safeRepo, commit, entries });
     const ref = `?ref=${encodeURIComponent(commit)}`;
     const catalogRecord = this.repositories.find(
       (record) =>
         record.owner.toLowerCase() === safeOwner.toLowerCase() &&
         record.name.toLowerCase() === safeRepo.toLowerCase(),
     );
-    // Resolve the short immutable PR chain before sizes/stats and issue scans
-    // can contend for a one-vCPU mirror. This result is then injected into the
-    // entity loader, so the browser never repeats branches/tree/blobs.
-    const pullResult =
+    // Start the short immutable PR chain beside sizes/stats, then inject its
+    // result into the entity loader so the browser never repeats
+    // branches/tree/blobs. Optional PR metadata must not delay the first map.
+    const pullResultPromise =
       catalogRecord?.isPrivate === true
-        ? {
+        ? Promise.resolve({
             status: "rejected",
             reason: new Error("private pull metadata is not publicly probed"),
-          }
-        : await this.loadRepositoryPullRecords(base).then(
+          })
+        : this.loadRepositoryPullRecords(base).then(
             (value) => ({ status: "fulfilled", value }),
             (reason) => ({ status: "rejected", reason }),
           );
+    const sizeRequest = this.fetchJSON(`${base}/sizes${ref}`, {
+      timeout: REPOSITORY_METADATA_TIMEOUT_MS,
+      cache: "no-store",
+    });
+    sizeRequest.then(
+      (value) => {
+        if (
+          value?.ok !== false &&
+          String(value?.commit || "").toLowerCase() === commit
+        ) {
+          options.onSizes?.({
+            owner: safeOwner,
+            repo: safeRepo,
+            commit,
+            entries,
+            sizes: value,
+          });
+        }
+      },
+      () => {},
+    );
     const [sizeResult, statsResult, mirrorsResult, entityRecordsResult] =
       await Promise.allSettled([
-        this.fetchJSON(`${base}/sizes${ref}`, {
-          timeout: REPOSITORY_METADATA_TIMEOUT_MS,
-          cache: "no-store",
-        }),
+        sizeRequest,
         this.fetchJSON(`${base}/stats${ref}`, {
           timeout: REPOSITORY_METADATA_TIMEOUT_MS,
           cache: "no-store",
         }),
         this.fetchJSON(`${base}/mirrors`, { auth: false }),
-        this.loadRepositoryEntityRecords(base, commit, {
-          privateRepository: catalogRecord?.isPrivate === true,
-          pullResult,
-        }),
+        pullResultPromise.then((pullResult) =>
+          this.loadRepositoryEntityRecords(base, commit, {
+            privateRepository: catalogRecord?.isPrivate === true,
+            pullResult,
+          }),
+        ),
       ]);
     const sizes =
       sizeResult.status === "fulfilled" &&
@@ -11312,7 +11390,7 @@ class ForkMeshWorld extends HTMLElement {
       path: "",
       commit,
       analysis: tree.analysis || {},
-      entries: normalizeTreeEntries(tree),
+      entries,
       counts: {
         ...(tree?.counts || {}),
         pulls: pullCount,
@@ -11390,14 +11468,39 @@ class ForkMeshWorld extends HTMLElement {
     this.expandedRepositoryIssuePage = 0;
     this.clearPullReviewScrollTracking();
     const selection = ++this.repositoryMapSelection;
+    const expectedCommits =
+      options.expectedCommits instanceof Set
+        ? options.expectedCommits
+        : new Set();
+    const preview = (snapshot) => {
+      if (
+        selection !== this.repositoryMapSelection ||
+        this.destroyed ||
+        (expectedCommits.size &&
+          !expectedCommits.has(String(snapshot.commit).toLowerCase()))
+      ) {
+        return;
+      }
+      this.previewRepositoryMap(
+        snapshot.owner,
+        snapshot.repo,
+        snapshot.commit,
+        snapshot.entries,
+        snapshot.sizes,
+      );
+    };
     this.repositoryMapState = "loading";
+    this.repositoryMapPreview = null;
     this.repositoryMapTarget = `${safeOwner}/${safeRepo}`;
     this.world?.setRepositorySizeLoading?.(true);
     this.renderRepositoryMapStatus();
 
     let request = this.repositoryMapLoads.get(key);
     if (!request) {
-      request = this.fetchRepositoryMapSnapshot(safeOwner, safeRepo);
+      request = this.fetchRepositoryMapSnapshot(safeOwner, safeRepo, {
+        onTree: preview,
+        onSizes: preview,
+      });
       this.repositoryMapLoads.set(key, request);
       request.then(
         () => {
@@ -11421,6 +11524,7 @@ class ForkMeshWorld extends HTMLElement {
         return false;
       }
       this.repositoryMapState = "unavailable";
+      this.repositoryMapPreview = null;
       if (!this.activeRepository) this.world?.updateRepositoryGraph?.([], []);
       if (!this.activeRepository) this.world?.updateRepositorySizeMap?.({}, {});
       this.world?.setRepositorySizeLoading?.(false);
@@ -11431,24 +11535,40 @@ class ForkMeshWorld extends HTMLElement {
       return false;
     }
 
-    const expectedCommits =
-      options.expectedCommits instanceof Set
-        ? options.expectedCommits
-        : new Set();
     if (
       (options.requireComplete === true && !result.complete) ||
       (expectedCommits.size &&
         !expectedCommits.has(String(result.snapshot.commit).toLowerCase()))
     ) {
       this.repositoryMapState = "unavailable";
-      if (!this.activeRepository) this.world?.updateRepositoryGraph?.([], []);
-      if (!this.activeRepository) this.world?.updateRepositorySizeMap?.({}, {});
+      const commitRejected =
+        expectedCommits.size &&
+        !expectedCommits.has(String(result.snapshot.commit).toLowerCase());
+      if (commitRejected) {
+        this.repositoryMapPreview = null;
+        if (!this.activeRepository) this.world?.updateRepositoryGraph?.([], []);
+        if (!this.activeRepository) {
+          this.world?.updateRepositorySizeMap?.({}, {});
+        }
+      } else {
+        // Optional records may be unavailable even though this tree and byte
+        // map are both pinned to the catalog-attested commit. Keep those exact
+        // repository facts visible instead of returning to a blank portal.
+        this.previewRepositoryMap(
+          safeOwner,
+          safeRepo,
+          result.snapshot.commit,
+          result.snapshot.entries,
+          result.snapshot.sizes,
+        );
+      }
       this.world?.setRepositorySizeLoading?.(false);
       this.renderRepositoryMapStatus();
       return false;
     }
 
     this.activeRepository = result.snapshot;
+    this.repositoryMapPreview = null;
     this.repositoryMapState = "ready";
     this.renderRepositoryMapStatus();
     this.syncRepositoryScene();
