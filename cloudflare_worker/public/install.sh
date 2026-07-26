@@ -1108,6 +1108,20 @@ install_prebuilt_release() {
   ensure_mirror_candidates
   local tmp repo sums manifest signature canon hash url bin got attempt attempt_url
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/forkmesh-prebuilt.XXXXXX" 2>/dev/null)" || return 1
+  # Standalone `curl | bash` installs need an independent trust anchor too.
+  # Materialize ForkMesh's release-only public key inside this private staging
+  # directory unless an administrator or authenticated controller supplied a
+  # different trust mechanism. The corresponding private key is never shipped.
+  if [ -z "$FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256" ] &&
+     [ -z "$FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE" ]; then
+    FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE="$tmp/release-publisher.pem"
+    printf '%s\n' \
+      '-----BEGIN PUBLIC KEY-----' \
+      'MCowBQYDK2VwAyEAzpP+ej8bF0ArtCPV6DwSbhqqTeMJ5A0UtHlWE4lnTkc=' \
+      '-----END PUBLIC KEY-----' \
+      >"$FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE" || return 1
+    chmod 0600 "$FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE" 2>/dev/null || true
+  fi
   sums=".forkmesh/releases/${RELEASE_CHANNEL}/SHASUMS256.txt"
   manifest=".forkmesh/releases/${RELEASE_CHANNEL}/release.json"
   signature=".forkmesh/releases/${RELEASE_CHANNEL}/release.json.sig"

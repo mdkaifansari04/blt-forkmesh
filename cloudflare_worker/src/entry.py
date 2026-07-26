@@ -1855,6 +1855,44 @@ FLAGSHIP_MONITOR_ID = "forkmesh/forkmesh"
 INSTALLER_MONITOR_ID = "installer-delivery"
 INSTALLER_CHECK_INTERVAL_MS = 10 * 60 * 1000
 
+STATUS_MONITOR_GUIDANCE = {
+    "website": (
+        "Cloudflare Worker logs and the most recent production deployment",
+        "Check the failing page route in Worker logs, then fix or roll back "
+        "the first deployment that introduced its 5xx response."),
+    "api": (
+        "Cloudflare Worker API logs, especially the path named in the reason",
+        "Replay the failing API request, inspect its D1 or upstream call, and "
+        "fix or roll back the responsible handler."),
+    "database": (
+        "Cloudflare D1 health, bindings, migrations, and query errors",
+        "Confirm the production D1 binding and quota, then repair the failed "
+        "migration or query before retrying the health check."),
+    "flagship_repository": (
+        "the forkmesh/forkmesh mirror endpoints, repository integrity pins, "
+        "and root-tree/README responses",
+        "Verify two signed mirror proofs agree with the source revision, "
+        "publish that integrity transition, and confirm README.md loads."),
+    "installer": (
+        "/api/install-source and the latest signed release manifest, "
+        "signature, checksums, and content-addressed release blob",
+        "Republish the release metadata with the trusted release key, sync "
+        "its blob to a reachable mirror, and rerun the installer probe."),
+    "git_hosting": (
+        "direct mirror HTTPS health proofs, DNS/tunnel reachability, and "
+        "repository integrity pins",
+        "Restore at least one signed, account-bound mirror endpoint and "
+        "confirm its active integrity digest matches the source history."),
+    "realtime": (
+        "Cloudflare Durable Object, WebSocket, room, and smart-HTTP logs",
+        "Inspect the first failing realtime route, restore its Durable Object "
+        "or tunnel, and replay the request."),
+    "durable_objects": (
+        "Cloudflare Durable Object logs and duration-limit usage",
+        "Reduce or split the long-running operation, or move it to an "
+        "execution plan with sufficient duration before retrying."),
+}
+
 
 def _flagship_monitor_duration(milliseconds):
     seconds = max(0, int(milliseconds or 0) // 1000)
@@ -2119,83 +2157,131 @@ async def _repository_monitor_admin_emails(env):
     return sorted(recipients)
 
 
-async def _record_flagship_monitor_transition(env, is_up, reason, now):
-    """Persist one state transition and send at most one alert per state."""
-    row = await d1_first(
+async def _record_status_monitor_transitions(env, ok, reason, now):
+    """Deduplicate outage/recovery mail for every system shown on /status."""
+    rows = await d1_all(
         env,
-        "SELECT is_up,changed_at,outage_started_at,notified_state "
-        "FROM repository_monitor_state "
-        "WHERE monitor_id=?",
-        FLAGSHIP_MONITOR_ID,
+        "SELECT monitor_id,is_up,changed_at,outage_started_at,notified_state "
+        "FROM repository_monitor_state WHERE monitor_id LIKE 'status:%'",
     )
-    state = "up" if is_up else "down"
-    previous_up = bool(row.get("is_up")) if row else True
-    previous_changed_at = int(row.get("changed_at") or now) if row else int(now)
-    prior_outage_started = int(row.get("outage_started_at") or 0) if row else 0
-    outage_started_at = (
-        prior_outage_started
-        if is_up
-        else int(now)
-        if not row or previous_up
-        else prior_outage_started or previous_changed_at
-    )
-    changed_at = (
-        int(now) if not row or previous_up != bool(is_up)
-        else int(row.get("changed_at") or now)
-    )
-    notified = (
-        ("up" if is_up else "") if not row
-        else "" if previous_up != bool(is_up)
-        else str(row.get("notified_state") or "")
-    )
+    prior = {str(row.get("monitor_id") or ""): row for row in (rows or [])}
+    pending = []
+    values = []
+    for system_id, label in STATUS_SYSTEMS:
+        monitor_id = "status:" + system_id
+        is_up = bool(ok.get(system_id, True))
+        state = "up" if is_up else "down"
+        row = prior.get(monitor_id)
+        previous_up = bool(row.get("is_up")) if row else True
+        previous_changed_at = (
+            int(row.get("changed_at") or now) if row else int(now))
+        prior_outage = (
+            int(row.get("outage_started_at") or 0) if row else 0)
+        changed = not row or previous_up != is_up
+        changed_at = int(now) if changed else previous_changed_at
+        outage_started_at = (
+            0 if is_up else int(now) if not row or previous_up
+            else prior_outage or previous_changed_at)
+        notified = (
+            ("up" if is_up else "") if not row else
+            "" if previous_up != is_up else
+            str(row.get("notified_state") or ""))
+        if notified != state:
+            pending.append({
+                "system": system_id, "label": label, "state": state,
+                "is_up": is_up, "reason": clean_string(
+                    reason.get(system_id, "") or "", 240),
+                "outage_started_at": outage_started_at,
+                "previous_changed_at": previous_changed_at,
+            })
+        values.extend([
+            monitor_id, 1 if is_up else 0, changed_at, outage_started_at,
+            int(now), clean_string(reason.get(system_id, "") or "", 240),
+            notified,
+        ])
+
+    n = len(STATUS_SYSTEMS)
     await d1_run(
         env,
-        """INSERT INTO repository_monitor_state
-             (monitor_id,is_up,changed_at,outage_started_at,checked_at,reason,
-              notified_state)
-             VALUES (?,?,?,?,?,?,?)
-             ON CONFLICT(monitor_id) DO UPDATE SET
-               is_up=excluded.is_up,changed_at=excluded.changed_at,
-               outage_started_at=excluded.outage_started_at,
-               checked_at=excluded.checked_at,reason=excluded.reason,
-               notified_state=excluded.notified_state""",
-        FLAGSHIP_MONITOR_ID, 1 if is_up else 0, changed_at,
-        outage_started_at, int(now),
-        clean_string(reason or "", 240), notified,
+        "INSERT INTO repository_monitor_state "
+        "(monitor_id,is_up,changed_at,outage_started_at,checked_at,reason,"
+        "notified_state) VALUES " + ", ".join(["(?,?,?,?,?,?,?)"] * n) + " "
+        "ON CONFLICT(monitor_id) DO UPDATE SET "
+        "is_up=excluded.is_up,changed_at=excluded.changed_at,"
+        "outage_started_at=excluded.outage_started_at,"
+        "checked_at=excluded.checked_at,reason=excluded.reason,"
+        "notified_state=excluded.notified_state",
+        *values,
     )
-    if notified == state:
+    if not pending:
         return
     recipients = await _repository_monitor_admin_emails(env)
     if not recipients:
         return
-    if is_up:
-        duration = _flagship_monitor_duration(
-            int(now) - (outage_started_at or previous_changed_at))
-        subject = "[ForkMesh recovered] forkmesh/forkmesh is back up"
-        text = (
-            FLAGSHIP_REPOSITORY_URL + " is loading again.\n\n"
-            "The repository page, root tree, and README.md all passed. "
-            "The outage lasted " + duration + "."
-        )
-    else:
-        subject = "[ForkMesh outage] forkmesh/forkmesh is down"
-        text = (
-            FLAGSHIP_REPOSITORY_URL + " failed its one-minute availability "
-            "check.\n\nReason: " + (reason or "Repository did not fully load")
-            + "\n\nA recovery email will be sent when the page and README.md "
-            "both load again."
-        )
-    delivered = True
-    for email in recipients:
-        delivered = bool(await _send_email(
-            env, email, subject, text)) and delivered
-    if delivered:
-        await d1_run(
-            env,
-            "UPDATE repository_monitor_state SET notified_state=? "
-            "WHERE monitor_id=? AND is_up=?",
-            state, FLAGSHIP_MONITOR_ID, 1 if is_up else 0,
-        )
+    for alert in pending:
+        system_id = alert["system"]
+        label = alert["label"]
+        where, fix = STATUS_MONITOR_GUIDANCE.get(
+            system_id, ("Cloudflare Worker logs", "Inspect the failing check."))
+        if alert["is_up"]:
+            duration = _flagship_monitor_duration(
+                int(now) - (
+                    alert["outage_started_at"] or
+                    alert["previous_changed_at"]))
+            subject = "[ForkMesh recovered] " + label + " is green"
+            lead = label + " is passing again after " + duration + "."
+            text = (
+                lead + "\n\nThe current /status probe is green.\n\n"
+                "Status: https://forkmesh.com/status")
+            heading = label + " recovered"
+            body = (
+                "<div class=\"fm-item\" style=\"border:1px solid #d4d4d8;"
+                "border-radius:8px;background:#fafafa;padding:14px;"
+                "margin:0 0 18px\"><p class=\"fm-item-title\" style=\"margin:0;"
+                "color:#18181b;font-size:14px;font-weight:800\">Outage "
+                "duration</p><p class=\"fm-item-body\" style=\"margin:6px 0 0;"
+                "color:#3f3f46;font-size:14px\">" +
+                _html_escape(duration) + "</p></div>")
+        else:
+            observed = alert["reason"] or "The current health check failed."
+            subject = "[ForkMesh outage] " + label + " is not green"
+            lead = label + " failed its /status health check."
+            text = (
+                lead + "\n\nObserved: " + observed + "\n\nLook here: " +
+                where + "\n\nSuggested first step: " + fix +
+                "\n\nA recovery email will be sent when this check is green "
+                "again.\n\nStatus: https://forkmesh.com/status")
+            heading = label + " needs attention"
+            body = (
+                "<div class=\"fm-item\" style=\"border:1px solid #d4d4d8;"
+                "border-radius:8px;background:#fafafa;padding:14px;"
+                "margin:0 0 12px\"><p class=\"fm-item-title\" style=\"margin:0;"
+                "color:#18181b;font-size:14px;font-weight:800\">Observed</p>"
+                "<p class=\"fm-item-body\" style=\"margin:6px 0 0;color:#3f3f46;"
+                "font-size:14px\">" + _html_escape(observed) + "</p></div>"
+                "<p class=\"fm-text\" style=\"margin:0 0 8px;color:#3f3f46;"
+                "font-size:14px\"><strong>Look here:</strong> " +
+                _html_escape(where) + "</p><p class=\"fm-text\" style=\"margin:"
+                "0 0 18px;color:#3f3f46;font-size:14px\"><strong>Suggested "
+                "first step:</strong> " + _html_escape(fix) + "</p>")
+        html = _forkmesh_email_card_html(
+            _html_escape(heading), _html_escape(lead), body,
+            "<p class=\"fm-muted\" style=\"margin:20px 0 0;color:#71717a;"
+            "font-size:12px\"><a class=\"fm-link\" style=\"color:#15803d\" "
+            "href=\"https://forkmesh.com/status\">Open ForkMesh status</a>"
+            "</p>")
+        delivered = True
+        for email in recipients:
+            delivered = bool(await _send_email(
+                env, email, subject, text, html)) and delivered
+        if delivered:
+            await d1_run(
+                env,
+                "UPDATE repository_monitor_state SET notified_state=? "
+                "WHERE monitor_id=? AND is_up=?",
+                alert["state"], "status:" + system_id,
+                1 if alert["is_up"] else 0,
+            )
 
 
 def _status_expected_checks_for_hour(hour_ts, now):
@@ -2311,17 +2397,10 @@ async def record_status_sample(env):
         ok["flagship_repository"] = repository_ok
         if not repository_ok:
             reason["flagship_repository"] = repository_reason
-        await _record_flagship_monitor_transition(
-            env, repository_ok, repository_reason, now)
     except Exception as exc:
         ok["flagship_repository"] = False
         reason["flagship_repository"] = (
             "Repository availability probe failed: " + str(exc)[:160])
-        try:
-            await _record_flagship_monitor_transition(
-                env, False, reason["flagship_repository"], now)
-        except Exception:
-            pass
 
     try:
         installer_ok, installer_reason = await _installer_delivery_status(
@@ -2422,6 +2501,13 @@ async def record_status_sample(env):
         # A query hiccup here is not itself evidence of an outage — don't
         # fabricate a false incident from it.
         ok["website"] = ok["api"] = ok["realtime"] = ok["durable_objects"] = True
+
+    try:
+        await _record_status_monitor_transitions(env, ok, reason, now)
+    except Exception as exc:
+        console.warn(
+            "record_status_monitor_transitions failed: " +
+            _safe_error_text(exc))
 
     # One multi-row upsert per table (3 statements total) instead of the old
     # 3-statements-per-system loop (15): the per-minute cron runs in a Pyodide
@@ -24441,32 +24527,33 @@ async def send_general_chat_digests(env):
 
 
 def _forkmesh_email_card_html(heading, intro_html, body_html, footer_html=""):
-    # The card is dark, always. It is painted with inline dark styles AND
-    # declares itself dark-only via <meta name="color-scheme" content="dark">,
-    # so mail clients neither auto-invert it (the way they darken plain light
-    # emails in dark mode) nor repaint it to a light theme. An earlier version
-    # advertised "light dark" with a prefers-color-scheme:light override, but
-    # that override fired in readers whose dark theme doesn't set the OS
-    # prefers-color-scheme (e.g. Gmail's dark theme), leaving ForkMesh mail
-    # glaringly white while every other email showed dark. Forcing dark keeps
-    # the brand card consistent with the rest of a dark inbox.
+    # Inline light colors are the reliable fallback for older mail clients;
+    # clients that honor the native setting apply the dark override below.
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-        "<meta name=\"color-scheme\" content=\"dark\">"
-        "<meta name=\"supported-color-schemes\" content=\"dark\">"
+        "<meta name=\"color-scheme\" content=\"light dark\">"
+        "<meta name=\"supported-color-schemes\" content=\"light dark\">"
+        "<style>:root{color-scheme:light dark;supported-color-schemes:light dark}"
+        "@media (prefers-color-scheme:dark){body,.fm-bg{background:#090909!important;"
+        "color:#f5f5f5!important}.fm-card{background:#141416!important;"
+        "border-color:#313134!important}.fm-h1,.fm-strong,.fm-item-title{"
+        "color:#f5f5f5!important}.fm-text,.fm-item-body{color:#d4d4d8!important}"
+        ".fm-brand,.fm-muted{color:#a3a3a3!important}.fm-item{background:#0f0f11"
+        "!important;border-color:#313134!important}.fm-link{color:#4ade80!important}}"
+        "</style>"
         "</head>"
-        "<body style=\"margin:0;padding:0;background:#090909\">"
-        "<div class=\"fm-bg\" style=\"margin:0;padding:28px 16px;background:#090909;"
+        "<body style=\"margin:0;padding:0;background:#f4f4f5\">"
+        "<div class=\"fm-bg\" style=\"margin:0;padding:28px 16px;background:#f4f4f5;"
         "font-family:'ForkMesh Lato',-apple-system,BlinkMacSystemFont,"
-        "Segoe UI,Helvetica,Arial,sans-serif;color:#f5f5f5;line-height:1.55\">"
-        "<div class=\"fm-card\" style=\"max-width:560px;margin:0 auto;border:1px solid #313134;"
-        "border-radius:8px;background:#141416;padding:24px\">"
-        "<p class=\"fm-brand\" style=\"margin:0 0 22px;color:#a3a3a3;font-size:13px;"
+        "Segoe UI,Helvetica,Arial,sans-serif;color:#18181b;line-height:1.55\">"
+        "<div class=\"fm-card\" style=\"max-width:560px;margin:0 auto;border:1px solid #d4d4d8;"
+        "border-radius:8px;background:#ffffff;padding:24px\">"
+        "<p class=\"fm-brand\" style=\"margin:0 0 22px;color:#52525b;font-size:13px;"
         "letter-spacing:0;font-weight:700\">ForkMesh</p>"
-        "<h1 class=\"fm-h1\" style=\"margin:0 0 14px;color:#f5f5f5;font-size:24px;"
+        "<h1 class=\"fm-h1\" style=\"margin:0 0 14px;color:#18181b;font-size:24px;"
         "line-height:1.25;font-weight:800\">" + heading + "</h1>"
-        "<p class=\"fm-text\" style=\"margin:0 0 18px;color:#d4d4d8;font-size:15px\">" +
+        "<p class=\"fm-text\" style=\"margin:0 0 18px;color:#3f3f46;font-size:15px\">" +
         intro_html + "</p>" + body_html +
         (footer_html if footer_html else "") +
         "</div></div></body></html>")

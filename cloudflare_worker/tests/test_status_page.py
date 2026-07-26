@@ -128,7 +128,7 @@ def _sample_env(now, error_paths, host_online=True, db_ok=True, error_rows=None)
         "d1_all": d1_all,
         "d1_run": d1_run,
         "_flagship_repository_probe": repository_probe,
-        "_record_flagship_monitor_transition": noop,
+        "_record_status_monitor_transitions": noop,
         "_installer_delivery_status": installer_status,
     }
     return extra, inserted, hourly, minutely
@@ -1017,7 +1017,9 @@ def test_flagship_repository_monitor_is_public_and_deduplicates_email_states():
     assert "notified_state" in ENTRY_TEXT
     assert "[ForkMesh outage]" in ENTRY_TEXT
     assert "[ForkMesh recovered]" in ENTRY_TEXT
-    assert "The outage lasted " in ENTRY_TEXT
+    assert "is passing again after " in ENTRY_TEXT
+    assert "Suggested first step" in ENTRY_TEXT
+    assert "WHERE monitor_id LIKE 'status:%'" in ENTRY_TEXT
 
 
 def test_installer_delivery_is_checked_every_ten_minutes_and_public():
