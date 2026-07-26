@@ -320,8 +320,13 @@ def build_repo_mirrors_payload(
             else None
         )
         effective_seen = seen or local_publication_seen
+        effective_stale_ms = (
+            max(stale_ms, 10 * 60 * 1000)
+            if local_publication_seen and not seen
+            else stale_ms
+        )
         online = bool(
-            effective_seen and now - effective_seen <= stale_ms)
+            effective_seen and now - effective_seen <= effective_stale_ms)
         try:
             size_bytes = max(0, int(rec.get("sizeBytes") or 0))
         except (TypeError, ValueError):

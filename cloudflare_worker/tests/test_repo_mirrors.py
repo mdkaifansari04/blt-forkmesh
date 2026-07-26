@@ -201,7 +201,7 @@ def test_payload_keeps_machine_node_and_user_owner_as_distinct_identities():
 def test_fresh_signed_local_publication_is_source_node_liveness():
     now = 1_000_000
     row = _row(
-        "a", "jett", "forkmesh", root="abc", synced="995000",
+        "a", "jett", "forkmesh", root="abc", synced="500000",
         source="local-node",
     )
     row["data"]["machineName"] = "forkmesh"
@@ -211,7 +211,7 @@ def test_fresh_signed_local_publication_is_source_node_liveness():
     source = payload["mirrors"][0]
     assert source["node"] == "forkmesh"
     assert source["status"] == "online"
-    assert source["lastSeen"] == 995_000
+    assert source["lastSeen"] == 500_000
 
 
 def test_identical_signed_ref_states_are_not_behind_only_due_to_sync_time():
