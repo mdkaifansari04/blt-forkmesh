@@ -2936,6 +2936,14 @@ const QString kClaudeCodeCommandSetting = QStringLiteral("agents/claudeCodeComma
 // or the "auto" sentinel (adhoc #91) that routes each task to a model.
 // Surfaced as a chooser in the footer quick-add bar (adhoc #261).
 const QString kClaudeCodeModelSetting = QStringLiteral("agents/claudeCodeModel");
+// Last model picked in the Releases tab's "Generate release notes with agent"
+// row, split by provider family since Claude and GPT model ids don't overlap.
+// Remembered so drafting the next release starts on whatever model generated
+// the previous one instead of resetting to the first item in the list.
+const QString kReleaseNotesClaudeModelSetting =
+    QStringLiteral("agents/releaseNotesClaudeModel");
+const QString kReleaseNotesGptModelSetting =
+    QStringLiteral("agents/releaseNotesGptModel");
 // Disk cache of the last successful /v1/models fetch (see
 // MainWindow::refreshClaudeModelCombo), loaded back into m_liveClaudeModels at
 // startup so a model combo built before this session's first live fetch
