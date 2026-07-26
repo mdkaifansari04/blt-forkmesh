@@ -1007,6 +1007,7 @@ def test_flagship_repository_monitor_is_public_and_deduplicates_email_states():
     assert "FLAGSHIP_REPOSITORY_URL = \"https://forkmesh.com/forkmesh/forkmesh\"" in ENTRY_TEXT
     assert 'str(item.get("name") or "").lower() == "readme.md"' in ENTRY_TEXT
     assert "Repository page shell did not load" in ENTRY_TEXT
+    assert "await org_alias_rewrite(env, request, route_url)" in ENTRY_TEXT
     assert "Root repository tree did not contain README.md" in ENTRY_TEXT
     assert "README.md body did not load" in ENTRY_TEXT
     assert "repository_monitor_state" in ENTRY_TEXT

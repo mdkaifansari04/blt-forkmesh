@@ -1877,6 +1877,20 @@ async def _flagship_repository_probe(env):
             else (status, "")
         )
 
+    async def routed_repository_read(url, operation):
+        request = JsRequest.new(url)
+        route_url = urlparse(request.url)
+        aliased = await org_alias_rewrite(env, request, route_url)
+        if aliased is not None:
+            request, route_url = aliased
+        route = REPO_HOST_RE.match(route_url.path)
+        if not route:
+            return json_response(
+                {"error": "not_found"}, status=404, cache_control="no-store")
+        return await _https_mirror_proxy(
+            env, request, safe_segment(route.group(1)),
+            safe_segment(route.group(2)), operation)
+
     # Scheduled Workers cannot hairpin through their own public hostname
     # reliably (Cloudflare returns a synthetic 404/52x before the request
     # reaches the Worker). Read the same static shell from the bound asset
@@ -1890,10 +1904,9 @@ async def _flagship_repository_probe(env):
     if shell_status != 200 or 'data-page="repo"' not in shell_text:
         return False, "Repository page shell did not load (HTTP %d)" % shell_status
 
-    tree_request = JsRequest.new(
-        "https://forkmesh.internal/api/repo/forkmesh/forkmesh/tree?path=")
-    tree_response = await _https_mirror_proxy(
-        env, tree_request, "forkmesh", "forkmesh", "tree")
+    tree_response = await routed_repository_read(
+        "https://forkmesh.internal/api/repo/forkmesh/forkmesh/tree?path=",
+        "tree")
     tree_status, tree_text = await bounded_response(
         tree_response, 2 * 1024 * 1024)
     try:
@@ -1919,11 +1932,10 @@ async def _flagship_repository_probe(env):
             "Root repository tree did not contain README.md"
             + (": " + names if names else ""))
 
-    blob_request = JsRequest.new(
+    blob_response = await routed_repository_read(
         "https://forkmesh.internal/api/repo/forkmesh/forkmesh/"
-        "blob?path=README.md")
-    blob_response = await _https_mirror_proxy(
-        env, blob_request, "forkmesh", "forkmesh", "blob")
+        "blob?path=README.md",
+        "blob")
     blob_status, blob_text = await bounded_response(
         blob_response, 512 * 1024)
     try:
