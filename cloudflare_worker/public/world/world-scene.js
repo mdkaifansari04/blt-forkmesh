@@ -2951,6 +2951,8 @@ function nodeDataKey(node) {
     online: mirrorNodeIsOnline(node),
     healthy: node?.healthy,
     integrity: node?.integrity,
+    activity: node?.activity,
+    activityUpdatedAt: node?.activityUpdatedAt,
     cloneAvailable: node?.cloneAvailable,
     commit: node?.commit,
     branch: node?.branch,
@@ -3071,6 +3073,11 @@ function mirrorCommitSnapshot(node, repo) {
 function serverPanelTexture(THREE, node) {
   const online = mirrorNodeIsOnline(node);
   const integrity = String(node?.integrity || "unknown").toLowerCase();
+  const activity = String(node?.activity || "unknown")
+    .replace(/[^a-z0-9-]/gi, "")
+    .replace(/-/g, " ")
+    .toUpperCase()
+    .slice(0, 24);
   const repo = Array.isArray(node?.repositories) ? node.repositories[0] : null;
   const repositoryLabel =
     repo?.owner && repo?.name
@@ -3133,7 +3140,7 @@ function serverPanelTexture(THREE, node) {
     context.font = '600 21px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#8ca99a";
     context.textAlign = "right";
-    context.fillText(`SYNCED ${mirrorCommitAgeLabel(node?.syncAgeMs)}`, 966, 124);
+    context.fillText(activity || `SYNCED ${mirrorCommitAgeLabel(node?.syncAgeMs)}`, 966, 124);
     context.textAlign = "left";
 
     context.strokeStyle = "#294339";
@@ -3354,10 +3361,13 @@ function createMirrorServerCabinet(THREE, node, id) {
   group.add(rearPanel);
 
   const integrity = String(node?.integrity || "unknown").toLowerCase();
+  const activity = String(node?.activity || "unknown").toLowerCase();
   const statusColor =
     integrity === "rejected" || integrity === "degraded"
       ? "#ff0000"
-      : integrity === "healing" || (online && node?.cloneAvailable !== true)
+      : integrity === "healing" || activity === "syncing" ||
+          activity === "awaiting-verification" ||
+          (online && node?.cloneAvailable !== true)
         ? "#ffcc00"
         : online
           ? "#00cc44"

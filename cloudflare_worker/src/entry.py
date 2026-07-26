@@ -8989,7 +8989,10 @@ async def repo_mirrors_handler(env, request, owner, repo):
             mirror["ownerUser"] = node_name
         else:
             mirror["ownerUser"] = str(node_rec.get("owner") or "").strip()
-    response = json_response(payload, cache_seconds=10)
+    # Node cabinets and the repository Mirrors panel poll while visible. Keep a
+    # tiny shared edge window to collapse bursts without leaving an integrity
+    # transition or completed sync stuck on screen for ten seconds.
+    response = json_response(payload, cache_seconds=3)
     await edge_cache_put(cache_key, response)
     return response
 

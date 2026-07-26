@@ -772,6 +772,22 @@
     const isSource = Boolean(refMirror && mirror === refMirror);
     const behind = online && commit && refCommit && commit !== refCommit;
     const integrityRejected = mirror.integrity === "rejected";
+    const activity = String(mirror.activity || "").trim().toLowerCase();
+    const activityLabel = {
+      "running-actions": "running actions",
+      syncing: "syncing refs",
+      verifying: "verifying",
+      "integrity-blocked": "integrity blocked",
+      "awaiting-verification": "awaiting verification",
+      serving: "serving",
+      offline: "offline",
+    }[activity] || "";
+    const activityClass =
+      activity === "integrity-blocked"
+        ? "border-destructive/40 bg-destructive/10 text-destructive"
+        : ["syncing", "verifying", "awaiting-verification"].includes(activity)
+          ? "border-amber-500/40 bg-amber-500/10 text-amber-600"
+          : "border-primary/40 bg-primary/10 text-primary";
     const dotColor = !online
       ? "text-muted-foreground"
       : behind
@@ -789,6 +805,7 @@
               ${isSource ? '<span class="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">source of truth</span>' : ""}
               ${behind ? '<span class="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600">out of sync</span>' : ""}
               ${integrityRejected ? '<span class="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">failing integrity pin</span>' : ""}
+              ${activityLabel ? `<span class="shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${activityClass}">${escapeHtml(activityLabel)}</span>` : ""}
               ${version ? `<span class="shrink-0 text-[10px] text-muted-foreground font-mono">${escapeHtml(version)}</span>` : ""}
             </div>
             <span class="flex shrink-0 items-center gap-2 text-xs font-mono ${online ? "text-primary" : "text-muted-foreground"}">
@@ -867,11 +884,11 @@
     window.lucide?.createIcons();
   }
 
-  async function loadRepoMirrors(repo) {
+  async function loadRepoMirrors(repo, { background = false } = {}) {
     const container = $("[data-repo-mirrors]");
     // Owner-only "ask a node to mirror your repo" control (issue #385).
     renderMirrorRequestForm(repo);
-    if (container) container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading mirrors...")}</div>`;
+    if (container && !background) container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading mirrors...")}</div>`;
     try {
       const data = await fetchJson(`${repoApiBase(repo)}/mirrors`);
       const mirrors = Array.isArray(data.mirrors) ? data.mirrors : [];
@@ -905,8 +922,10 @@
       }
       renderRepoMirrorLists(mirrors, state.repoServedBy);
     } catch (_) {
-      if (container) container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Mirror health is unavailable right now.</div>';
-      renderRepoLiveMirrorList([], state.repoServedBy);
+      if (!background) {
+        if (container) container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Mirror health is unavailable right now.</div>';
+        renderRepoLiveMirrorList([], state.repoServedBy);
+      }
     } finally {
       window.lucide?.createIcons();
     }
@@ -919,6 +938,16 @@
   // re-fetch host health so the nodes visibly converge without a manual reload.
   let liveMirrorRefreshTimer = null;
   let liveMirrorConfirmTimer = null;
+  const REPO_MIRROR_POLL_MS = 5 * 1000;
+  window.setInterval(() => {
+    const repo = state.selectedRepo;
+    if (
+      !repo ||
+      document.visibilityState !== "visible" ||
+      !document.querySelector("[data-repo-mirrors]")
+    ) return;
+    void loadRepoMirrors(repo, { background: true });
+  }, REPO_MIRROR_POLL_MS);
   function refreshOpenRepoMirrors() {
     const repo = state.selectedRepo;
     // Only meaningful while the Mirrors panel is actually mounted.
