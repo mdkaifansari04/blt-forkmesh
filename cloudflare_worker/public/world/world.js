@@ -7354,6 +7354,18 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
+  // Milliseconds since the newest fetched toot (boosts included: they keep
+  // the profile timeline alive too), or null before the first successful
+  // fetch. Drives the posting-cadence plate on the kiosk stand.
+  mastodonLastPostAgo() {
+    let latest = 0;
+    for (const status of this.mastodonStatuses || []) {
+      const at = Number(status?.createdAt) || 0;
+      if (at > latest) latest = at;
+    }
+    return latest ? Math.max(0, Date.now() - latest) : null;
+  }
+
   syncMastodonCountdown() {
     const loading = Boolean(this.mastodonLoad);
     const remaining = this.mastodonRefreshRemaining();
@@ -7365,6 +7377,7 @@ class ForkMeshWorld extends HTMLElement {
       remainingMs: loading ? MASTODON_REFRESH_MS : remaining,
       totalMs: MASTODON_REFRESH_MS,
       loading,
+      lastPostAgoMs: this.mastodonLastPostAgo(),
     });
   }
 

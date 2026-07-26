@@ -98,6 +98,53 @@ def test_countdown_clock_formats_mm_ss():
     assert clock == ["00:00", "00:59", "10:00"]
 
 
+def test_kiosk_shows_time_since_last_post_with_cadence_colors():
+    world = _source(WORLD_PATH)
+    scene = _source(SCENE_PATH)
+    # The stand carries a second plate beside NEXT SYNC: how long since the
+    # newest toot, tinted by whether the once-a-day cadence is being kept.
+    assert "mastodonLastPostAgo()" in world
+    assert "lastPostAgoMs: this.mastodonLastPostAgo()," in world
+    assert "const MASTODON_POST_FRESH_MS = 24 * 60 * 60 * 1000;" in scene
+    assert "const MASTODON_POST_STALE_MS = 72 * 60 * 60 * 1000;" in scene
+    assert "function mastodonLastPostTexture(" in scene
+    assert '"forkmesh-mastodon-kiosk-lastpost"' in scene
+    assert 'context.fillText("LAST POST", 128, 44);' in scene
+
+
+def test_last_post_clock_and_colors_follow_the_cadence():
+    scene = _source(SCENE_PATH)
+    clock = scene.split("function mastodonLastPostClock(", 1)[1].split(
+        "\n}\n", 1
+    )[0]
+    color = scene.split("function mastodonLastPostColor(", 1)[1].split(
+        "\n}\n", 1
+    )[0]
+    hour = 60 * 60 * 1000
+    values = _node(
+        "const MASTODON_POST_FRESH_MS = 24 * 60 * 60 * 1000;\n"
+        "const MASTODON_POST_STALE_MS = 72 * 60 * 60 * 1000;\n"
+        "function mastodonLastPostClock(" + clock + "\n}\n"
+        "function mastodonLastPostColor(" + color + "\n}\n"
+        "process.stdout.write(JSON.stringify(["
+        "mastodonLastPostClock(0),"
+        f"mastodonLastPostClock({5 * hour}),"
+        f"mastodonLastPostClock({80 * hour}),"
+        f"mastodonLastPostColor({5 * hour}),"
+        f"mastodonLastPostColor({30 * hour}),"
+        f"mastodonLastPostColor({80 * hour}),"
+        "]));"
+    )
+    assert values == [
+        "0M AGO",
+        "5H AGO",
+        "3D AGO",
+        "#9ef7c6",
+        "#ffb454",
+        "#ff7a7a",
+    ]
+
+
 def test_kiosk_and_mini_app_carry_replies_with_author_icons():
     world = _source(WORLD_PATH)
     scene = _source(SCENE_PATH)

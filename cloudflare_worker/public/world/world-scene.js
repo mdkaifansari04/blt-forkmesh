@@ -5574,6 +5574,51 @@ function mastodonCountdownTexture(
   });
 }
 
+// Posting-cadence thresholds for the last-post plate. Mastodon presence
+// guides settle on roughly one post a day for an account that wants to stay
+// visible: under a day since the newest toot is healthy green, a missed day
+// turns amber ("time to post"), and three silent days reads as an abandoned
+// profile and goes red.
+const MASTODON_POST_FRESH_MS = 24 * 60 * 60 * 1000;
+const MASTODON_POST_STALE_MS = 72 * 60 * 60 * 1000;
+
+// Compact elapsed readout: minutes under an hour, hours under two days,
+// whole days beyond that.
+function mastodonLastPostClock(sinceMs) {
+  const minutes = Math.max(0, Math.floor((Number(sinceMs) || 0) / 60_000));
+  if (minutes < 60) return `${minutes}M AGO`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}H AGO`;
+  return `${Math.floor(hours / 24)}D AGO`;
+}
+
+function mastodonLastPostColor(sinceMs) {
+  const since = Number(sinceMs) || 0;
+  if (since < MASTODON_POST_FRESH_MS) return "#9ef7c6";
+  if (since < MASTODON_POST_STALE_MS) return "#ffb454";
+  return "#ff7a7a";
+}
+
+// The plate beside the sync clock: how long since @forkmesh last posted,
+// tinted green / amber / red by the cadence thresholds above so a glance at
+// the stand says whether it is time to post again. sinceMs of null (nothing
+// fetched yet) renders a neutral placeholder.
+function mastodonLastPostTexture(THREE, sinceMs = null) {
+  const known = Number.isFinite(Number(sinceMs)) && Number(sinceMs) >= 0;
+  return canvasTexture(THREE, 256, 128, (context) => {
+    context.fillStyle = "rgba(15,16,36,0.72)";
+    roundedRect(context, 4, 4, 248, 120, 22);
+    context.fill();
+    context.textAlign = "center";
+    context.fillStyle = "#8b8db8";
+    context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("LAST POST", 128, 44);
+    context.fillStyle = known ? mastodonLastPostColor(sinceMs) : "#8b9bf4";
+    context.font = '800 44px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(known ? mastodonLastPostClock(sinceMs) : "--", 128, 96);
+  });
+}
+
 function createMastodonKiosk(THREE, interactive) {
   const group = new THREE.Group();
   group.name = "forkmesh-mastodon-kiosk";
@@ -5620,7 +5665,19 @@ function createMastodonKiosk(THREE, interactive) {
     }),
   );
   countdown.name = "forkmesh-mastodon-kiosk-countdown";
-  countdown.position.set(0, 1.15, 0.3);
+  countdown.position.set(-0.95, 1.15, 0.3);
+  // Its sibling plate: how long since the last toot, colored by whether we
+  // are keeping up a healthy posting cadence.
+  const lastPost = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.6, 0.8),
+    new THREE.MeshBasicMaterial({
+      map: mastodonLastPostTexture(THREE),
+      transparent: true,
+      toneMapped: false,
+    }),
+  );
+  lastPost.name = "forkmesh-mastodon-kiosk-lastpost";
+  lastPost.position.set(0.95, 1.15, 0.3);
   const makeKioskControl = (label, direction, x, y) => {
     const control = new THREE.Mesh(
       new THREE.PlaneGeometry(0.7, 0.7),
@@ -5688,6 +5745,7 @@ function createMastodonKiosk(THREE, interactive) {
     frame,
     face,
     countdown,
+    lastPost,
     scrollUp,
     scrollDown,
     openProfile,
@@ -6613,6 +6671,8 @@ export function createWorldScene({
     loading: false,
   };
   let mastodonKioskCountdownKey = "";
+  let mastodonKioskLastPostSinceMs = null;
+  let mastodonKioskLastPostKey = "";
   const mastodonKioskImages = new Map();
   const mastodonKioskWheelTargets = [];
   mastodonKiosk.traverse((child) => {
@@ -8285,22 +8345,51 @@ export function createWorldScene({
     return true;
   }
 
+  function repaintMastodonLastPost() {
+    const plate = mastodonKiosk.getObjectByName(
+      "forkmesh-mastodon-kiosk-lastpost",
+    );
+    if (!plate?.material) return false;
+    plate.material.map?.dispose?.();
+    plate.material.map = mastodonLastPostTexture(
+      THREE,
+      mastodonKioskLastPostSinceMs,
+    );
+    plate.material.needsUpdate = true;
+    return true;
+  }
+
   function updateMastodonCountdown({
     remainingMs = MASTODON_KIOSK_REFRESH_MS,
     totalMs = MASTODON_KIOSK_REFRESH_MS,
     loading = false,
+    lastPostAgoMs = null,
   } = {}) {
+    let repainted = false;
+    // The last-post plate only changes on a minute boundary (or when a fresh
+    // snapshot moves the newest toot), so it keys on whole minutes and skips
+    // the second-by-second repaints the sync clock needs.
+    const since =
+      Number.isFinite(Number(lastPostAgoMs)) && Number(lastPostAgoMs) >= 0
+        ? Number(lastPostAgoMs)
+        : null;
+    const sinceKey = since === null ? "-" : String(Math.floor(since / 60_000));
+    if (sinceKey !== mastodonKioskLastPostKey) {
+      mastodonKioskLastPostKey = sinceKey;
+      mastodonKioskLastPostSinceMs = since;
+      repainted = repaintMastodonLastPost() || repainted;
+    }
     const total = Math.max(1000, Number(totalMs) || MASTODON_KIOSK_REFRESH_MS);
     const remaining = clamp(Number(remainingMs) || 0, 0, total);
     const key = `${loading ? 1 : 0}:${Math.ceil(remaining / 1000)}:${total}`;
-    if (key === mastodonKioskCountdownKey) return false;
+    if (key === mastodonKioskCountdownKey) return repainted;
     mastodonKioskCountdownKey = key;
     mastodonKioskCountdown = {
       remainingMs: remaining,
       totalMs: total,
       loading: Boolean(loading),
     };
-    return repaintMastodonCountdown();
+    return repaintMastodonCountdown() || repainted;
   }
 
   function scrollMastodonKiosk(direction) {
