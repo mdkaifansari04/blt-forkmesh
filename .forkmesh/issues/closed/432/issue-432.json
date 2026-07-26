@@ -87,6 +87,18 @@
             "status": "closed",
             "ts": 1784334139965,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "7d274cfc-67f9-49f4-869e-9e562627822f",
+            "sig": "TzH_mv8QXGK1-pDNbCxTYNsEpEX9xJx9T4tiWGR_Ph9i-tH-3bP1mEEx5iWpcRV3vespstAvIebCne5bUXnWCA",
+            "ts": 1785100669937,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -99,6 +111,6 @@
     "startDate": 0,
     "status": "closed",
     "title": "on this solana bounty popup show more info like who is the auhtor and all addresses involved with links to their explorer",
-    "updatedAt": 1784334139965,
+    "updatedAt": 1785100669937,
     "votes": 0
 }
