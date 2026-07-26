@@ -5175,6 +5175,83 @@ function createMastodonKiosk(THREE, interactive) {
   return group;
 }
 
+// Static half-height siblings of the Mastodon kiosk for the networks ForkMesh
+// has no live feed for: same stand, frame, and sign typography, but the whole
+// board is one click target that opens the profile in a new tab.
+function createSocialBanner(THREE, interactive, options) {
+  const group = new THREE.Group();
+  group.name = `forkmesh-${options.id}-banner`;
+  group.position.set(...options.position);
+  group.rotation.y = Math.atan2(-group.position.x, -group.position.z);
+  const base = new THREE.Mesh(
+    new THREE.BoxGeometry(7.6, 0.4, 2.2),
+    makeMaterial(THREE, "#20213a", { metalness: 0.2, roughness: 0.7 }),
+  );
+  base.position.y = 0.2;
+  const post = new THREE.Mesh(
+    new THREE.BoxGeometry(0.5, 2.2, 0.5),
+    makeMaterial(THREE, "#2c2d4d", { metalness: 0.4, roughness: 0.5 }),
+  );
+  post.position.y = 1.3;
+  const frame = new THREE.Mesh(
+    new THREE.BoxGeometry(7.9, 10.0, 0.36),
+    makeMaterial(THREE, options.frameColor, { metalness: 0.35, roughness: 0.45 }),
+  );
+  frame.position.y = 6.75;
+  const WIDTH = 1536;
+  const HEIGHT = 2048;
+  const face = new THREE.Mesh(
+    new THREE.PlaneGeometry(7.2, 9.6),
+    new THREE.MeshBasicMaterial({
+      map: canvasTexture(THREE, WIDTH, HEIGHT, (context) => {
+        context.fillStyle = "#191a2e";
+        context.fillRect(0, 0, WIDTH, HEIGHT);
+        context.fillStyle = options.accent;
+        context.fillRect(12, 12, 1512, 260);
+        context.fillStyle = options.titleColor;
+        context.font = '800 150px "ForkMesh Favorit", sans-serif';
+        context.fillText(options.title, 96, 200);
+        context.fillStyle = "#c8c9ff";
+        context.font = '700 72px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText(options.handle, 96, 470);
+        context.font = '600 56px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText(options.host, 96, 562);
+        context.strokeStyle = options.divider;
+        context.lineWidth = 4;
+        context.beginPath();
+        context.moveTo(96, 656);
+        context.lineTo(1440, 656);
+        context.stroke();
+        context.fillStyle = "#e8e9ff";
+        context.font = '700 60px "ForkMesh Mono", ui-monospace, monospace';
+        options.lines.forEach((line, index) => {
+          context.fillText(line, 96, 810 + index * 136);
+        });
+        context.fillStyle = "#8b9bf4";
+        context.font = '800 68px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("TAP / CLICK TO OPEN", 96, 1760);
+        context.fillStyle = "#7a7ca8";
+        context.font = '600 44px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText(options.footer, 96, 1900);
+        context.strokeStyle = options.accent;
+        context.lineWidth = 16;
+        context.strokeRect(12, 12, 1512, 2024);
+      }),
+      toneMapped: false,
+    }),
+  );
+  face.position.set(0, 6.75, 0.2);
+  group.add(base, post, frame, face);
+  group.traverse((child) => {
+    if (!child.isMesh) return;
+    child.userData.interactive = "social-banner-open";
+    child.userData.href = options.url;
+    interactive.push(child);
+  });
+  setShadows(group);
+  return group;
+}
+
 function createForkMeshOffice(THREE, position, interactive, animated) {
   const group = new THREE.Group();
   const wallThickness = 0.35;
@@ -5864,6 +5941,49 @@ export function createWorldScene({
   const mastodonKiosk = createMastodonKiosk(THREE, interactive);
   world.add(mastodonKiosk);
   registerMovableObject("mastodon-kiosk", mastodonKiosk);
+  // Twitter and Reddit flank the Mastodon kiosk on the same ring toward the
+  // Office, one board-width of clearance on either side so all three read as
+  // one social row on the approach.
+  const twitterBanner = createSocialBanner(THREE, interactive, {
+    id: "twitter",
+    position: [37.2, 0, -9.2],
+    accent: "#1d9bf2",
+    frameColor: "#1b4e73",
+    titleColor: "#f2faff",
+    divider: "rgba(29,155,242,0.5)",
+    title: "TWITTER / X",
+    handle: "@forkmesh",
+    host: "x.com/forkmesh",
+    lines: [
+      "OFFICIAL FORKMESH ACCOUNT",
+      "RELEASES · OUTAGES · NEWS",
+      "REPLIES WELCOME OVER THERE",
+    ],
+    footer: "OPENS X.COM IN A NEW TAB",
+    url: "https://x.com/forkmesh",
+  });
+  world.add(twitterBanner);
+  registerMovableObject("twitter-banner", twitterBanner);
+  const redditBanner = createSocialBanner(THREE, interactive, {
+    id: "reddit",
+    position: [27.6, 0, -26.6],
+    accent: "#ff4500",
+    frameColor: "#7a2d0e",
+    titleColor: "#fff4ee",
+    divider: "rgba(255,69,0,0.5)",
+    title: "REDDIT",
+    handle: "r/forkmesh",
+    host: "reddit.com/r/forkmesh",
+    lines: [
+      "COMMUNITY SUBREDDIT",
+      "QUESTIONS · SHOWCASES · HELP",
+      "MODERATED BY THE CORE TEAM",
+    ],
+    footer: "OPENS REDDIT.COM IN A NEW TAB",
+    url: "https://www.reddit.com/r/forkmesh/",
+  });
+  world.add(redditBanner);
+  registerMovableObject("reddit-banner", redditBanner);
   let mastodonKioskSnapshot = null;
   let mastodonKioskOffset = 0;
   let mastodonKioskCountdown = {
@@ -11410,6 +11530,11 @@ export function createWorldScene({
     }
     if (hit?.object?.userData?.interactive === "mastodon-board") {
       onMastodonBoardSelect();
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "social-banner-open") {
+      const href = String(hit.object.userData.href || "");
+      if (href) onMastodonOpenLink(href);
       return;
     }
     if (hit?.object?.userData?.interactive === "referral-leaderboard") {
