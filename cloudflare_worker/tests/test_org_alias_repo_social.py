@@ -285,10 +285,11 @@ def test_alias_ssh_url_checks_backing_allowlist_but_publishes_org_path():
         SSH_GATEWAY_PORT="22",
         SSH_GATEWAY_TOKEN="t" * 32,
         SSH_GATEWAY_REPOSITORIES="mirror2/forkmesh=read-write",
+        SSH_GATEWAY_NODE_HOSTS="mirror2=ssh-mirror2.forkmesh.com",
     )
     assert functions["_ssh_alias_repository_url"](
         env, "forkmesh", "mirror2", "forkmesh",
-    ) == "ssh://git@ssh.forkmesh.com/forkmesh/forkmesh.git"
+    ) == "ssh://git@ssh-mirror2.forkmesh.com/forkmesh/forkmesh.git"
     assert functions["_ssh_alias_repository_url"](
         env, "forkmesh", "mirror3", "forkmesh",
     ) == ""
