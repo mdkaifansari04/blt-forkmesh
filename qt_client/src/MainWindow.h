@@ -80,7 +80,11 @@ public:
 class MessageRow;
 class MarkdownEditor;
 class PullBadgeWidget;
+// Defined in MainWindowInternal.h, which lives in namespace forkmesh::ui.
+namespace forkmesh::ui {
 class ActivityRailButton;
+}
+using forkmesh::ui::ActivityRailButton;
 class PacmanProgress;
 class TerminalWidget;
 class ClaudeIdeBridge;
