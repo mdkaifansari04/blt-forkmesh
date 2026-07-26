@@ -106,7 +106,23 @@ jobs:
 
           # Configure + build the client (Release, tests off — this is a release
           # artifact build, the CI workflow already runs the test suite).
-          jobs="$( (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) )"
+          # Size -j to the sandbox budget, not the host: inside the Actions
+          # cgroup `nproc` overcounts the CPU quota (compilers thrash and the
+          # build runs into the step deadline) and one g++ per host core can
+          # blow MemoryMax. The runner publishes the real budget; outside it
+          # (plain checkout, macOS/Windows nodes) fall back to the host.
+          jobs="${FORKMESH_ACTIONS_CPUS:-}"
+          if [ -z "$jobs" ]; then
+            jobs="$( (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) )"
+          fi
+          mem_mb="${FORKMESH_ACTIONS_MEMORY_MB:-0}"
+          if [ "$mem_mb" -gt 0 ]; then
+            mem_jobs=$((mem_mb / 1024))  # ~1 GiB per C++ translation unit
+            [ "$mem_jobs" -lt 1 ] && mem_jobs=1
+            [ "$jobs" -gt "$mem_jobs" ] && jobs="$mem_jobs"
+          fi
+          [ "$jobs" -lt 1 ] && jobs=1
+          echo "Building with -j$jobs (memory budget: ${mem_mb}MB)"
           cmake -S qt_client -B qt_client/build-release \
             -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=OFF \
             -DFORKMESH_BUILD_COMMIT_OVERRIDE="$revision" \
