@@ -759,9 +759,13 @@ QWidget *MainWindow::buildNetworkLogDock()
             return;
         }
         if (typed.isEmpty() && m_quickAddImages.isEmpty()) {
-            // Nothing typed and nothing attached: just resume the open session
-            // with the same agent, the same thing the old per-session Continue
-            // button did (adhoc #178).
+            // Nothing typed and nothing attached: just resume the open session,
+            // the same thing the old per-session Continue button did (adhoc
+            // #178) — but honoring the composer's provider/model/mode
+            // dropdowns first, exactly like the follow-up path below, so "add"
+            // continues with the model currently selected instead of whatever
+            // the session last ran with (adhoc #372).
+            applyComposerSelectionToAgentSession(m_selectedAgentSessionId);
             continueSelectedAgentSession();
             return;
         }

@@ -1752,6 +1752,11 @@ private:
     // isn't retried forever; the guard clears once the conflict is gone.
     void maybeAutoFixAgentConflict(const AgentSession &session,
                                    const AgentDiffStat &stat);
+    // Stash the quick-add composer's provider/model/mode dropdowns onto the
+    // given session, so the next resume runs with what the user has selected
+    // right now. Shared by the follow-up path and the bare "add" (continue,
+    // nothing typed) path.
+    void applyComposerSelectionToAgentSession(int sessionId);
     // Steer m_selectedAgentSessionId with a follow-up message. Shared by the
     // agent detail composer's Send button and the footer quick-add's up-arrow
     // ("send to the visible agent") button.
