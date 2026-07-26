@@ -148,6 +148,25 @@ export const OUTFIT_COLOR_OPTIONS = [
   { id: "slate", label: "Slate blue", color: "#3a6ea5" },
 ];
 
+// The tailored outfit cuts world-scene.js can draw. Every visitor's public
+// name seeds one of these deterministically; Supporting members may pin a
+// specific cut that every visitor sees instead. The ids must stay in lockstep
+// with WORLD_OUTFIT_STYLE_VALUES in src/world.py.
+export const OUTFIT_STYLE_OPTIONS = [
+  { id: "sash", label: "Diagonal sash" },
+  { id: "racer", label: "Racing stripes" },
+  { id: "chevron", label: "Chevron stack" },
+  { id: "argyle", label: "Argyle knit" },
+  { id: "circuit", label: "Circuit board" },
+  { id: "pixel", label: "Pixel mosaic" },
+  { id: "waves", label: "Terminal waves" },
+  { id: "starfield", label: "Night deploy" },
+  { id: "hex", label: "Hex grid" },
+  { id: "bolt", label: "Hotfix bolt" },
+  { id: "tartan", label: "Merge tartan" },
+  { id: "binary", label: "Binary rain" },
+];
+
 export const AVAILABILITY_OPTIONS = [
   { id: "online", label: "Online" },
   { id: "away", label: "Away" },

@@ -499,6 +499,7 @@ import world_community_api  # noqa: E402
 import world_events_api  # noqa: E402
 # Persisted Code Workshop reports and participant events use the same narrow
 # authenticated/encrypted D1 adapter as the other World collaboration APIs.
+import world_social_feeds  # noqa: E402
 import world_workshops  # noqa: E402
 # Organization-scoped Office marketing tasks use a separate HTTP/D1 subsystem.
 # It never receives platform-admin authorization or an Office Durable Object,
@@ -4177,6 +4178,80 @@ async def world_visitors_handler(env, request):
     payload.update(world_visitor_metrics.unique_visit_summary(register_sets))
     resp = json_response(payload, cache_seconds=WORLD_VISITORS_TTL)
     await edge_cache_put(WORLD_VISITORS_CACHE_KEY, resp)
+    return resp
+
+
+WORLD_SOCIAL_POSTS_CACHE_KEY = (
+    "https://forkmesh.internal/api/world/social-posts")
+# Ten minutes, matching the Mastodon kiosk cadence: every world visitor in a
+# colo shares one Twitter fetch and one Reddit fetch per TTL, so the banners
+# cannot become another 100k-req/day quota pressure.
+WORLD_SOCIAL_POSTS_TTL = 600
+
+
+async def _world_social_fetch_text(url, headers):
+    try:
+        resp = await js_fetch(url, to_js({
+            "method": "GET",
+            "headers": headers,
+            "redirect": "follow",
+        }))
+        if int(getattr(resp, "status", 0)) != 200:
+            return None
+        return str(await resp.text())
+    except Exception:
+        return None
+
+
+async def world_social_posts_handler(env, request):
+    """Public read-only proxy feeding the Twitter and Reddit world banners.
+
+    Both upstreams are best-effort: a network refusal (X retiring the
+    syndication page, Reddit rate-limiting the colo) downgrades that banner
+    to its static sign via state=unavailable instead of failing the read.
+    """
+    if method_name(request) != "GET":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            extra_headers={"allow": "GET"})
+    cached = await edge_cache_match(WORLD_SOCIAL_POSTS_CACHE_KEY)
+    if cached is not None:
+        return cached
+    twitter_posts, twitter_ok = [], False
+    twitter_html = await _world_social_fetch_text(
+        world_social_feeds.TWITTER_SYNDICATION_URL,
+        {"accept": "text/html,application/json"},
+    )
+    if twitter_html is not None:
+        next_data = world_social_feeds.extract_next_data(twitter_html)
+        if next_data is not None:
+            twitter_posts = world_social_feeds.normalize_twitter_timeline(
+                next_data)
+            twitter_ok = True
+    reddit_posts, reddit_ok = [], False
+    reddit_text = await _world_social_fetch_text(
+        world_social_feeds.REDDIT_LISTING_URL,
+        {
+            "accept": "application/json",
+            "user-agent": world_social_feeds.REDDIT_USER_AGENT,
+        },
+    )
+    if reddit_text is not None:
+        try:
+            listing = json.loads(reddit_text)
+        except ValueError:
+            listing = None
+        if listing is not None:
+            reddit_posts = world_social_feeds.normalize_reddit_listing(
+                listing)
+            reddit_ok = True
+    resp = json_response(
+        world_social_feeds.social_posts_payload(
+            int(Date.now()), twitter_posts, reddit_posts,
+            twitter_ok, reddit_ok),
+        cache_seconds=WORLD_SOCIAL_POSTS_TTL,
+    )
+    await edge_cache_put(WORLD_SOCIAL_POSTS_CACHE_KEY, resp)
     return resp
 
 
@@ -8073,10 +8148,12 @@ async def catalog_handler(env, request):
         prior_row = await d1_first(
             env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
         exists = prior_row is not None
+        prior_commit = ""
         # Reject rollbacks: a replayed older record must not be able to repin an
         # earlier (validly-signed) repo state and downgrade the served refs.
         if exists:
             prior = await decrypt_row(env, prior_row["data"]) or {}
+            prior_commit = clean_string(prior.get("commit", ""), 64)
             try:
                 if int(record["updatedAt"]) < int(prior.get("updatedAt", 0) or 0):
                     return json_response({"error": "stale_update"}, status=409)
@@ -8155,6 +8232,20 @@ async def catalog_handler(env, request):
         # never rolls back an otherwise valid catalog publication.
         await _https_mirror_refresh_catalog_publisher_health(env, record)
         await purge_catalog_related_caches()
+        # A public record whose advertised head moved means freshly pushed code
+        # just landed on this mirror node. Announce it to the live World room —
+        # after the cache purge above, so a viewer's immediate refresh reads
+        # the new head. Best-effort and already bounded by catalog_rate_check:
+        # a World relay hiccup must never fail an authorized publication.
+        new_commit = record.get("commit", "")
+        if (record["visibility"] == "public" and exists
+                and re.fullmatch(r"[0-9a-f]{40,64}", new_commit)
+                and new_commit != prior_commit):
+            try:
+                await _world_broadcast_mirror_push(
+                    env, owner, record["name"], new_commit)
+            except Exception:
+                pass
         payload = {
             "ok": True,
             "repository": record,
@@ -8422,6 +8513,27 @@ async def _repo_about_public(env, request, owner, repo):
     # Public About/branding card + fediverse stats: the repo page's social
     # badge header and Watch button read this. No auth — same visibility as
     # the catalog entry itself.
+    # Organization API paths are internally rewritten to the backing node
+    # before this handler runs. Recover the public owner from the untouched
+    # Request URL, but only when the durable org link still resolves to the
+    # canonical owner passed by the router. Catalog/privacy/settings reads
+    # continue to use the backing owner; the actor identity and public media
+    # URLs must keep the organization name.
+    display_owner = owner
+    try:
+        public_path = urlparse(request.url).path
+        public_match = REPO_ABOUT_RE.match(public_path)
+    except Exception:
+        public_match = None
+    if public_match:
+        candidate_owner = safe_segment(public_match.group(1))
+        candidate_repo = safe_segment(public_match.group(2))
+        if candidate_owner and candidate_repo == repo:
+            if candidate_owner == owner:
+                display_owner = candidate_owner
+            elif await _org_repo_node(
+                    env, candidate_owner, candidate_repo) == owner:
+                display_owner = candidate_owner
     privacy_reader = globals().get("_repo_is_private")
     if callable(privacy_reader) and await privacy_reader(env, owner, repo):
         return json_response({"error": "not_found"}, status=404)
@@ -8432,14 +8544,14 @@ async def _repo_about_public(env, request, owner, repo):
         return json_response({"error": "not_found"}, status=404)
     rec = await decrypt_row(env, repo_row.get("data"))
     origin = _ap_origin(env, request)
-    handle = ap.repo_handle(str(owner).lower(), str(repo).lower())
+    handle = ap.repo_handle(str(display_owner).lower(), str(repo).lower())
     logo_url = ""
     banner_url = ""
     media_rows = await d1_all(
         env, "SELECT kind, updated_at FROM repo_media WHERE repo_bi=?", key_bi)
     for media in media_rows or []:
         media_url = "/api/repo/%s/%s/media/%s.png?v=%d" % (
-            quote(owner), quote(repo), media.get("kind", ""),
+            quote(display_owner), quote(repo), media.get("kind", ""),
             int(media.get("updated_at") or 0))
         if media.get("kind") == "logo":
             logo_url = media_url
@@ -10591,6 +10703,36 @@ async def _world_disconnect_manual_block(
     except Exception:
         return 0
     return max(0, min(64, int(result.get("disconnected") or 0)))
+
+
+def _world_mirror_push_signature(env, node, repo, commit):
+    canonical = (
+        "forkmesh-world-mirror-push-v1\n%s\n%s\n%s"
+        % (node, repo, commit)
+    ).encode()
+    return hmac.new(
+        _account_session_secret(env), canonical, "sha256").hexdigest()
+
+
+async def _world_broadcast_mirror_push(env, node, repo, commit):
+    """Tell the live World room a mirror node's served head just advanced."""
+    world_id = env.FORKMESH_WORLD.idFromName("town-square-v1")
+    world_object = env.FORKMESH_WORLD.get(world_id)
+    payload = {"node": node, "repo": repo, "commit": commit}
+    control_request = JsRequest.new(
+        "https://forkmesh.internal/api/world/mirror-push",
+        to_js({
+            "method": "POST",
+            "headers": {
+                "content-type": "application/json",
+                "x-forkmesh-world-control": _world_mirror_push_signature(
+                    env, node, repo, commit),
+            },
+            "body": json.dumps(payload, separators=(",", ":")),
+        }),
+    )
+    response = await world_object.fetch(control_request)
+    return int(getattr(response, "status", 0) or 0) == 200
 
 
 async def world_moderation_handler(env, request):
@@ -20058,13 +20200,40 @@ async def _ap_repo_is_official_actor(env, owner, repo):
     # Mirror catalog rows are routing replicas, never their own public social
     # identities. Official repositories are locally published records or an
     # organization alias backed by one; remote/external clone records are not.
-    data_owner = await _ap_org_alias_owner(env, owner, repo)
-    key_bi = await blind_index(env, data_owner + "/" + repo)
+    # Do not call _ap_org_alias_owner/_org_repo_node here. Actor inventory
+    # reconciliation runs from ensure_schema(), while _org_repo_node itself
+    # calls ensure_schema(); that recursion makes alias resolution fail closed
+    # during a cold start and used to delete valid org actors plus every
+    # follower row. Read the already-created durable link directly instead.
+    owner_l = str(owner or "").strip().lower()
+    repo_l = str(repo or "").strip().lower()
+    org_bi = await blind_index(env, "org:" + owner_l)
+    alias_row = await d1_first(
+        env,
+        "SELECT node_owner FROM org_repos WHERE org_bi=? AND repo=?",
+        org_bi, repo_l)
+    alias_owner = str(
+        (alias_row or {}).get("node_owner") or "").strip().lower()
+    data_owner = (
+        alias_owner
+        if valid_node_name(alias_owner) and alias_owner != owner_l
+        else owner_l
+    )
+    is_org_alias = (
+        data_owner != owner_l
+    )
+    key_bi = await blind_index(env, data_owner + "/" + repo_l)
     row = await d1_first(
         env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
     if not row:
         return False
     rec = await decrypt_row(env, row.get("data"))
+    # A durable org link promotes its backing repository to the org's one
+    # official public identity even when the backing catalog row is tagged as
+    # a remote clone. That tag describes the hosting node's copy; it must not
+    # cause startup reconciliation to delete the org actor and its followers.
+    if is_org_alias:
+        return _catalog_record_matches_identity(rec, data_owner, repo_l)
     source = str((rec or {}).get("source") or "").strip().lower()
     return source not in ("remote-clone", "external")
 
@@ -32174,6 +32343,10 @@ class Default(WorkerEntrypoint):
         if url.path in ("/api/world/visitors", "/api/world/visitors/"):
             return await world_visitors_handler(self.env, request)
 
+        if url.path in (
+                "/api/world/social-posts", "/api/world/social-posts/"):
+            return await world_social_posts_handler(self.env, request)
+
         if url.path in ("/api/world/layout", "/api/world/layout/"):
             return await world_layout_handler(self.env, request)
 
@@ -33517,6 +33690,8 @@ class ForkMeshWorld(DurableObject):
         path = urlparse(request.url).path
         if path.rstrip("/") == "/api/world/manual-block":
             return await self._manual_block(request)
+        if path.rstrip("/") == "/api/world/mirror-push":
+            return await self._mirror_push(request)
         if path.rstrip("/") != "/api/world/ws":
             return json_response({"error": "not_found"}, status=404)
 
@@ -33622,6 +33797,47 @@ class ForkMeshWorld(DurableObject):
 
         return JsResponse.new(
             None, to_js({"status": 101, "webSocket": client}))
+
+    async def _mirror_push(self, request):
+        """Relay a signed outer-Worker head-advance notice to every visitor.
+
+        Only the outer Worker holds the control HMAC, so browser sockets can
+        never inject or forge this frame. The frame itself carries no facts a
+        client acts on directly — viewers re-read the signed public mirror
+        payload and animate from that verified state.
+        """
+        if method_name(request) != "POST":
+            return json_response({"error": "method_not_allowed"}, status=405)
+        try:
+            data = await bounded_json_request(request)
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+        if not isinstance(data, dict):
+            return json_response({"error": "invalid_json"}, status=400)
+        node = clean_string(data.get("node", ""), MAX_NODE_NAME).strip()
+        repo = clean_string(data.get("repo", ""), 120).strip()
+        commit = str(data.get("commit") or "").strip().lower()
+        try:
+            signature = str(
+                request.headers.get("x-forkmesh-world-control") or "")
+        except Exception:
+            signature = ""
+        expected = _world_mirror_push_signature(self.env, node, repo, commit)
+        if (
+            not node
+            or not re.fullmatch(r"[0-9a-f]{40,64}", commit)
+            or not hmac.compare_digest(signature, expected)
+        ):
+            return json_response({"error": "unauthorized"}, status=401)
+        self._broadcast({
+            "type": "mirror-push",
+            "node": node,
+            "repo": repo,
+            # A short id is plenty for the announcement; the full head comes
+            # from the signed mirror payload each client refreshes.
+            "commit": commit[:12],
+        })
+        return json_response({"ok": True, "delivered": True})
 
     async def _manual_block(self, request):
         """Disconnect sockets selected by a signed outer-Worker command."""
