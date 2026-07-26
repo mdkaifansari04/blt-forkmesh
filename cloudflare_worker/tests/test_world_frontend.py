@@ -1367,6 +1367,66 @@ process.stdout.write(JSON.stringify(report.models.map((model) => ({{
     assert models["Project"] == [{"path": "jobs/project.ts", "count": 1}]
 
 
+def test_reachable_behind_mirrors_are_syncing_not_a_stub():
+    reconcile_start = APP.index("function reconcileRepositoryAliases")
+    reconcile_end = APP.index(
+        "function normalizeCommunityEvents", reconcile_start)
+    reconcile_source = APP[reconcile_start:reconcile_end]
+    script = reconcile_source + r"""
+function sanitizePresenceText(value, fallback = "", limit = 80) {
+  return String(value || fallback).slice(0, limit);
+}
+function immutableGitOid(value) {
+  const oid = String(value || "").toLowerCase();
+  return /^[0-9a-f]{40,64}$/.test(oid) ? oid : "";
+}
+const records = [{
+  owner: "mirror2",
+  name: "forkmesh",
+  isPrivate: false,
+  commit: "a".repeat(40),
+  stateHash: "b".repeat(64),
+  updatedAt: 10,
+}];
+const catalogs = [{
+  requestedOwner: "forkmesh",
+  requestedRepo: "forkmesh",
+  mirrors: [{
+    node: "mirror2",
+    status: "online",
+    cloneAvailable: true,
+    integrity: "ok",
+    behind: true,
+    commit: "a".repeat(40),
+  }],
+}];
+const [alias] = reconcileRepositoryAliases(records, catalogs);
+process.stdout.write(JSON.stringify({
+  owner: alias.owner,
+  liveHost: alias.liveHost,
+  mirrorState: alias.mirrorState,
+  mirrorCount: alias.mirrorCount,
+}));
+"""
+    completed = subprocess.run(
+        ["node", "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(completed.stdout) == {
+        "owner": "forkmesh",
+        "liveHost": False,
+        "mirrorState": "syncing",
+        "mirrorCount": 1,
+    }
+    scene = (
+        ROOT / "public" / "world" / "world-scene.js"
+    ).read_text(encoding="utf-8")
+    assert '"MIRRORS SYNCING"' in scene
+    assert 'record.mirrorState === "syncing"' in scene
+
+
 def test_coverage_workshop_uses_only_commit_matched_per_file_values():
     analysis_start = APP.index("function analyzeWorkshopSnapshot")
     clean_start = APP.index("function cleanRepositories")

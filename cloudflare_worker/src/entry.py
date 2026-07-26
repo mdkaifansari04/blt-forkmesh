@@ -8422,6 +8422,27 @@ async def _repo_about_public(env, request, owner, repo):
     # Public About/branding card + fediverse stats: the repo page's social
     # badge header and Watch button read this. No auth — same visibility as
     # the catalog entry itself.
+    # Organization API paths are internally rewritten to the backing node
+    # before this handler runs. Recover the public owner from the untouched
+    # Request URL, but only when the durable org link still resolves to the
+    # canonical owner passed by the router. Catalog/privacy/settings reads
+    # continue to use the backing owner; the actor identity and public media
+    # URLs must keep the organization name.
+    display_owner = owner
+    try:
+        public_path = urlparse(request.url).path
+        public_match = REPO_ABOUT_RE.match(public_path)
+    except Exception:
+        public_match = None
+    if public_match:
+        candidate_owner = safe_segment(public_match.group(1))
+        candidate_repo = safe_segment(public_match.group(2))
+        if candidate_owner and candidate_repo == repo:
+            if candidate_owner == owner:
+                display_owner = candidate_owner
+            elif await _org_repo_node(
+                    env, candidate_owner, candidate_repo) == owner:
+                display_owner = candidate_owner
     privacy_reader = globals().get("_repo_is_private")
     if callable(privacy_reader) and await privacy_reader(env, owner, repo):
         return json_response({"error": "not_found"}, status=404)
@@ -8432,14 +8453,14 @@ async def _repo_about_public(env, request, owner, repo):
         return json_response({"error": "not_found"}, status=404)
     rec = await decrypt_row(env, repo_row.get("data"))
     origin = _ap_origin(env, request)
-    handle = ap.repo_handle(str(owner).lower(), str(repo).lower())
+    handle = ap.repo_handle(str(display_owner).lower(), str(repo).lower())
     logo_url = ""
     banner_url = ""
     media_rows = await d1_all(
         env, "SELECT kind, updated_at FROM repo_media WHERE repo_bi=?", key_bi)
     for media in media_rows or []:
         media_url = "/api/repo/%s/%s/media/%s.png?v=%d" % (
-            quote(owner), quote(repo), media.get("kind", ""),
+            quote(display_owner), quote(repo), media.get("kind", ""),
             int(media.get("updated_at") or 0))
         if media.get("kind") == "logo":
             logo_url = media_url
@@ -20058,13 +20079,40 @@ async def _ap_repo_is_official_actor(env, owner, repo):
     # Mirror catalog rows are routing replicas, never their own public social
     # identities. Official repositories are locally published records or an
     # organization alias backed by one; remote/external clone records are not.
-    data_owner = await _ap_org_alias_owner(env, owner, repo)
-    key_bi = await blind_index(env, data_owner + "/" + repo)
+    # Do not call _ap_org_alias_owner/_org_repo_node here. Actor inventory
+    # reconciliation runs from ensure_schema(), while _org_repo_node itself
+    # calls ensure_schema(); that recursion makes alias resolution fail closed
+    # during a cold start and used to delete valid org actors plus every
+    # follower row. Read the already-created durable link directly instead.
+    owner_l = str(owner or "").strip().lower()
+    repo_l = str(repo or "").strip().lower()
+    org_bi = await blind_index(env, "org:" + owner_l)
+    alias_row = await d1_first(
+        env,
+        "SELECT node_owner FROM org_repos WHERE org_bi=? AND repo=?",
+        org_bi, repo_l)
+    alias_owner = str(
+        (alias_row or {}).get("node_owner") or "").strip().lower()
+    data_owner = (
+        alias_owner
+        if valid_node_name(alias_owner) and alias_owner != owner_l
+        else owner_l
+    )
+    is_org_alias = (
+        data_owner != owner_l
+    )
+    key_bi = await blind_index(env, data_owner + "/" + repo_l)
     row = await d1_first(
         env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
     if not row:
         return False
     rec = await decrypt_row(env, row.get("data"))
+    # A durable org link promotes its backing repository to the org's one
+    # official public identity even when the backing catalog row is tagged as
+    # a remote clone. That tag describes the hosting node's copy; it must not
+    # cause startup reconciliation to delete the org actor and its followers.
+    if is_org_alias:
+        return _catalog_record_matches_identity(rec, data_owner, repo_l)
     source = str((rec or {}).get("source") or "").strip().lower()
     return source not in ("remote-clone", "external")
 
