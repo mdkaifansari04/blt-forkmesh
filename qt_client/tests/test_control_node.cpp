@@ -997,6 +997,32 @@ int main(int argc, char **argv)
               !persistedAfterMigration.contains("\"pass\""),
           "legacy plaintext host passwords migrate to memory and are deleted from QSettings");
 
+    // --- SSH connection-failure classification (adhoc #335) ----------------
+    check(forkmesh::control::sshConnectionFailureHint(
+              255, QStringLiteral("ssh: connect to host 1.2.3.4 port 22: "
+                                   "Connection timed out"))
+                  .contains(QStringLiteral("firewall"), Qt::CaseInsensitive) &&
+              forkmesh::control::sshConnectionFailureHint(
+                  255, QStringLiteral("ssh: connect to host 1.2.3.4 port 22: "
+                                       "Connection refused"))
+                      .contains(QStringLiteral("firewall"),
+                                Qt::CaseInsensitive) &&
+              forkmesh::control::sshConnectionFailureHint(
+                  255,
+                  QStringLiteral(
+                      "Host key verification failed."))
+                      .contains(QStringLiteral("key"), Qt::CaseInsensitive),
+          "a 255 ssh exit with a known connection-failure signature yields an "
+          "actionable hint");
+    check(forkmesh::control::sshConnectionFailureHint(
+              1, QStringLiteral("ssh: connect to host 1.2.3.4 port 22: "
+                                 "Connection timed out"))
+                  .isEmpty() &&
+              forkmesh::control::sshConnectionFailureHint(
+                  255, QStringLiteral("some unrelated remote error"))
+                      .isEmpty(),
+          "a non-255 exit or unrecognized output yields no ssh hint");
+
     QJsonObject accidentallySecretHost = migratedHost;
     accidentallySecretHost.insert(QStringLiteral("sshPassword"),
                                   legacyPassword);

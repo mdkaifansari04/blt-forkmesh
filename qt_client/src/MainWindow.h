@@ -3679,6 +3679,10 @@ private:
     QString m_hostInstallLogCarry;
     int m_hostInstallLogFg = -1;
     bool m_hostInstallLogBold = false;
+    // Bounded tail of the raw (pre-ANSI-parsing) ssh output for the current
+    // install/uninstall run, used only to classify a failed exit code into an
+    // actionable hint (e.g. a firewall-blocked connection timeout).
+    QString m_hostInstallRawTail;
     QTableWidget *m_hostsTable = nullptr;
     QProcess *m_hostInstallProcess = nullptr; // running ssh install session, if any
     QProcess *m_hostLogProcess = nullptr;     // running ssh log-tail session, if any

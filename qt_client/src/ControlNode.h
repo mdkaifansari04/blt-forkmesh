@@ -84,6 +84,17 @@ HostSshCommand buildHostSshCommand(const QString &host,
 QString savedHostCredentialKey(const QString &nodeName, const QString &host,
                                const QString &sshUser);
 
+// Classify a failed SSH install/uninstall attempt from OpenSSH's own exit code
+// and the tail of its (merged stdout+stderr) output, and return an actionable
+// hint to append after the generic "failed (exit N)" line — or an empty
+// string when the failure does not match a known connection-level pattern
+// (e.g. the remote command itself exited non-zero, which is not an SSH
+// transport problem). OpenSSH exits 255 for any failure before or during the
+// connection (unreachable host, refused/reset port, auth failure, host-key
+// mismatch); a non-255 code is always the remote command's own exit status, so
+// no SSH-side hint applies.
+QString sshConnectionFailureHint(int exitCode, const QString &outputTail);
+
 // Load saved host metadata and atomically migrate legacy plaintext password
 // fields out of QSettings. When supplied, sessionPasswords receives those
 // values in memory so the current app session is not interrupted. saveSavedHosts
