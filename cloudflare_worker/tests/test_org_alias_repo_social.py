@@ -567,3 +567,13 @@ def test_alias_html_stays_out_of_internal_path_rewrite():
     assert "REPO_API_PREFIX_RE.match" in rewrite
     assert not re.search(
         r"(?:REPO_PAGE|DASHBOARD_REPO).*\\.match", rewrite)
+
+
+def test_alias_stars_remain_scoped_to_public_repository_identity():
+    handler = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def repo_star_handler"):
+        ENTRY_TEXT.index("\n\nasync def fedi_comments_handler")
+    ]
+    assert "REPO_STAR_RE.match" in handler
+    assert "await _org_repo_node(" in handler
+    assert 'blind_index(env, public_owner + "/" + repo)' in handler

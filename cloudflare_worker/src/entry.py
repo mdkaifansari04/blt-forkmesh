@@ -22532,7 +22532,29 @@ async def repo_star_handler(env, request, owner, repo):
         return json_response({"error": "method_not_allowed"}, status=405)
     if await _repo_is_private(env, owner, repo):
         return json_response({"error": "not_found"}, status=404)
-    repo_bi = await blind_index(env, owner + "/" + repo)
+    # The router rewrites an organization path to its backing node before this
+    # handler runs. Stars are a public-repository preference, so retain the
+    # untouched verified organization identity instead of silently splitting
+    # forkmesh/forkmesh stars across its backing user's namespace.
+    public_owner = str(owner or "").strip().lower()
+    try:
+        original_match = REPO_STAR_RE.match(
+            urlparse(str(getattr(request, "url", "") or "")).path)
+        requested_owner = safe_segment(
+            original_match.group(1)) if original_match else ""
+        requested_repo = safe_segment(
+            original_match.group(2)) if original_match else ""
+        if (
+            requested_owner
+            and requested_repo == str(repo or "").strip().lower()
+            and requested_owner != public_owner
+            and await _org_repo_node(
+                env, requested_owner, requested_repo) == public_owner
+        ):
+            public_owner = requested_owner
+    except Exception:
+        pass
+    repo_bi = await blind_index(env, public_owner + "/" + repo)
 
     if method == "GET":
         viewer_bi, viewer_rec = await _account_session_record(env, request)
