@@ -175,6 +175,12 @@ def test_provider_url_parser_is_canonical_and_not_an_ssrf_surface():
     assert gitlab["owner"] == "group/subgroup"
     assert gitlab["metadataPath"] == \
         "/projects/group%2Fsubgroup%2Fproject?license=true"
+    codeberg = imports.parse_provider_source(
+        "https://codeberg.org/m33/tootbot-py.git")
+    assert codeberg["provider"] == "codeberg"
+    assert codeberg["owner"] == "m33"
+    assert codeberg["name"] == "tootbot-py"
+    assert codeberg["metadataPath"] == "/repos/m33/tootbot-py"
 
     rejected = (
         "http://github.com/octo/widget",
@@ -189,6 +195,20 @@ def test_provider_url_parser_is_canonical_and_not_an_ssrf_surface():
     for value in rejected:
         with pytest.raises(imports.ProviderSourceError):
             imports.parse_provider_source(value)
+
+
+def test_codeberg_namespace_parser_accepts_only_canonical_profile_urls():
+    assert imports.parse_codeberg_namespace(
+        "https://codeberg.org/m33") == "m33"
+    assert imports.parse_codeberg_namespace("codeberg.org/m33/") == "m33"
+    for value in (
+            "https://codeberg.org/m33/repository",
+            "https://codeberg.org/m33?tab=repositories",
+            "https://user:secret@codeberg.org/m33",
+            "https://github.com/m33",
+            "http://codeberg.org/m33"):
+        with pytest.raises(imports.ProviderSourceError):
+            imports.parse_codeberg_namespace(value)
 
 
 def test_provider_fetch_plan_is_metadata_only():
@@ -983,6 +1003,43 @@ class ServiceHarness:
         raise AssertionError("unexpected d1_all: " + sql)
 
     async def d1_run(self, env, sql, *args):
+        if sql.startswith("DELETE FROM repository_mirror_volunteers"):
+            self.volunteers = {
+                key: row for key, row in self.volunteers.items()
+                if key[0] != args[0]
+            }
+            return
+        if (
+                sql.startswith("DELETE FROM contributor_invitation_provenance")
+                and "WHERE repo_id=?" in sql):
+            self.provenance = {
+                key: row for key, row in self.provenance.items()
+                if row["repo_id"] != args[0]
+            }
+            return
+        if (
+                sql.startswith("DELETE FROM contributor_invitations")
+                and "WHERE repo_id=?" in sql):
+            self.invitations = {
+                key: row for key, row in self.invitations.items()
+                if row["repo_id"] != args[0]
+            }
+            return
+        if sql.startswith("DELETE FROM contributor_invitation_rate"):
+            self.rates = {
+                key: value for key, value in self.rates.items()
+                if key[0] != args[0]
+            }
+            return
+        if sql.startswith("DELETE FROM repository_logo_suggestions WHERE repo_id"):
+            self.logos = {
+                key: row for key, row in self.logos.items()
+                if row["repo_id"] != args[0]
+            }
+            return
+        if sql.startswith("DELETE FROM repository_imports"):
+            self.repository_imports.pop(args[0], None)
+            return
         if sql.startswith("INSERT INTO repository_imports"):
             (
                 repo_id, provider, external_id, owner_bi, is_private, status,
@@ -1272,6 +1329,63 @@ def _provenance_id(harness, basis):
         if row["basis"] == basis and not row["revoked_at"])
 
 
+def test_codeberg_namespace_discovery_paginates_and_filters_provider_urls():
+    harness = ServiceHarness()
+    calls = []
+
+    async def provider_fetch(env, provider, path, token):
+        calls.append((provider, path, token))
+        page = int(path.rsplit("=", 1)[-1])
+        if page == 1:
+            return {
+                "status": 200,
+                "data": [
+                    {
+                        "html_url": f"https://codeberg.org/m33/repo-{index}",
+                        "private": False,
+                    }
+                    for index in range(50)
+                ],
+                "headers": {},
+            }
+        return {
+            "status": 200,
+            "data": [
+                {
+                    "html_url": "https://codeberg.org/m33/final-repo",
+                    "private": False,
+                },
+                {
+                    "html_url": "https://codeberg.org/another/not-m33",
+                    "private": False,
+                },
+                {
+                    "html_url": "https://codeberg.org/m33/private-repo",
+                    "private": True,
+                },
+            ],
+            "headers": {},
+        }
+
+    harness.service.d["provider_fetch"] = provider_fetch
+    response = harness.call(Request(
+        "POST",
+        {
+            "sourceUrl": "https://codeberg.org/m33",
+            "sessionToken": "alice",
+        },
+        actor="alice",
+    ), "/api/repository-imports/discover")
+    assert response["status"] == 200
+    assert response["data"]["count"] == 51
+    assert response["data"]["repositories"][-1] == \
+        "https://codeberg.org/m33/final-repo"
+    assert [call[1] for call in calls] == [
+        "/users/m33/repos?limit=50&page=1",
+        "/users/m33/repos?limit=50&page=2",
+    ]
+
+
 def test_service_creates_truthful_stub_lists_it_and_never_persists_token():
     harness = ServiceHarness()
     response = _create_with(harness, token="ghp_one_request_only")
@@ -1290,6 +1404,24 @@ def test_service_creates_truthful_stub_lists_it_and_never_persists_token():
     listing = harness.call(Request("GET"))
     assert [item["id"] for item in listing["data"]["repositories"]] == [repo["id"]]
     assert listing["data"]["repositories"][0]["statusLabel"] == "Stub only"
+
+
+def test_service_bulk_delete_primitive_requires_owner_and_removes_import():
+    harness = ServiceHarness()
+    created = _create_with(harness, actor="alice")
+    repo_id = created["data"]["repository"]["id"]
+    forbidden = harness.call(Request(
+        "DELETE", {"sessionToken": "bob"}, actor="bob",
+    ), "/api/repository-imports/" + repo_id)
+    assert forbidden["status"] == 403
+    assert repo_id in harness.repository_imports
+    deleted = harness.call(Request(
+        "DELETE", {"sessionToken": "alice"}, actor="alice",
+    ), "/api/repository-imports/" + repo_id)
+    assert deleted["status"] == 200
+    assert deleted["data"]["deleted"] is True
+    assert repo_id not in harness.repository_imports
+    assert harness.audit_events[-1]["action"] == "repository_import.delete"
 
 
 def test_service_private_import_is_not_probeable_by_other_or_anonymous_users():

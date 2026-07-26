@@ -17644,7 +17644,7 @@ def _account_email_activity(rec):
     }
 
 
-# --- External GitHub/GitLab metadata imports --------------------------------
+# --- External GitHub/GitLab/Codeberg metadata imports -----------------------
 #
 # Provider imports live in a separate D1 namespace from the mirror catalog.
 # repository_imports.py owns the provider-neutral policy/service layer; these
@@ -17666,6 +17666,12 @@ async def _repository_provider_fetch(env, provider, path, token=""):
         headers["x-github-api-version"] = "2026-03-10"
         if token:
             headers["authorization"] = "Bearer " + token
+    elif provider == "codeberg":
+        # Codeberg runs Forgejo's Gitea-compatible API. Its access token is
+        # request-scoped exactly like the other provider credentials and is
+        # never persisted or forwarded across a redirect.
+        if token:
+            headers["authorization"] = "token " + token
     elif token:
         # GitLab personal/project access tokens are scoped request credentials.
         # They are never included in a record, log, exception, or D1 write.
@@ -17743,6 +17749,44 @@ async def _repository_import_moderator(env, actor):
             or await _has_role(env, actor, "moderator"))
     except Exception:
         return False
+
+
+async def _repository_import_target_owner(env, actor, target):
+    actor = clean_string(actor, MAX_NODE_NAME).strip().lower()
+    target = clean_string(target, MAX_NODE_NAME).strip().lower() or actor
+    if not actor or not target:
+        return None
+    if target == actor:
+        return {
+            "name": actor,
+            "kind": "user",
+            "ownerBi": await blind_index(env, actor),
+        }
+    org_bi, row = await _org_row(env, target)
+    if not row or await _org_role(env, org_bi, actor) not in (
+            "owner", "admin"):
+        return None
+    return {
+        "name": str(row.get("name") or target).lower(),
+        "kind": "organization",
+        "ownerBi": org_bi,
+    }
+
+
+async def _repository_import_can_manage_owner(env, actor, owner_bi):
+    actor = clean_string(actor, MAX_NODE_NAME).strip().lower()
+    owner_bi = str(owner_bi or "")
+    if not actor or not owner_bi:
+        return False
+    actor_bi = await blind_index(env, actor)
+    if hmac.compare_digest(actor_bi, owner_bi):
+        return True
+    row = await d1_first(
+        env,
+        "SELECT role FROM org_members WHERE org_bi=? AND member_bi=?",
+        owner_bi, actor_bi,
+    )
+    return str((row or {}).get("role") or "") in ("owner", "admin")
 
 
 async def _repository_import_mirror_status(
@@ -17824,6 +17868,8 @@ def _repository_import_service():
         "invitation_token": _repository_invitation_token,
         "operator_eligible": _repository_import_operator_eligible,
         "is_moderator": _repository_import_moderator,
+        "target_owner": _repository_import_target_owner,
+        "can_manage_owner": _repository_import_can_manage_owner,
         "mirror_status": _repository_import_mirror_status,
         "public_origin": _public_base_url,
         "now_ms": lambda: int(Date.now()),

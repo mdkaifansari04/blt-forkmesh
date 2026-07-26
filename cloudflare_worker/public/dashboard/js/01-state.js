@@ -3,6 +3,7 @@
     repositories: [],
     externalRepositories: [],
     externalRepositoriesLoading: false,
+    externalRepositorySelection: new Set(),
     filteredRepositories: [],
     filteredGroups: [],
     repositoriesLoading: true,

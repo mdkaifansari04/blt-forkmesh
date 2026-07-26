@@ -130,6 +130,7 @@ const WORLD_ACTIVITY_CONTINUATION_HEADER = "x-forkmesh-world-activity";
 // player's position, and reloads once — the restored position makes the new
 // build appear in place without the player ever touching refresh.
 const WORLD_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+const REPOSITORY_IMPORT_POLL_MS = 15 * 1000;
 const WORLD_UPDATE_CHECK_MIN_GAP_MS = 60 * 1000;
 const WORLD_UPDATE_RELOAD_DELAY_MS = 1400;
 const WORLD_UPDATE_RELOADED_REV_KEY = "forkmesh.world.updateReloadedRev.v1";
@@ -2231,6 +2232,57 @@ function cleanRepositories(payload) {
     .slice(0, 200);
 }
 
+function cleanExternalRepositories(payload) {
+  const items = Array.isArray(payload?.repositories)
+    ? payload.repositories
+    : [];
+  return items
+    .filter((record) => record && record.id && record.name)
+    .slice(0, 200)
+    .map((record) => {
+      const provider = String(record.provider || "").toLowerCase();
+      const targetOwner = sanitizePresenceText(
+        record.targetOwner || record.listedBy || record.providerOwner,
+        "external",
+        40,
+      );
+      const counts =
+        record.metadata?.counts && typeof record.metadata.counts === "object"
+          ? record.metadata.counts
+          : {};
+      return {
+        owner: targetOwner,
+        name: sanitizePresenceText(record.name, "repository", 60),
+        description: String(record.metadata?.description || "").slice(0, 180),
+        liveHost: false,
+        source: "external-import",
+        provider,
+        providerLabel:
+          provider === "github"
+            ? "GitHub"
+            : provider === "gitlab"
+              ? "GitLab"
+              : provider === "codeberg"
+                ? "Codeberg"
+                : "External",
+        importId: String(record.id || "").slice(0, 64),
+        externalUrl: String(record.originalUrl || "").slice(0, 500),
+        isPrivate: record.isPrivate === true,
+        archived: record.status === "archived",
+        sizeBytes: 0,
+        starCount: Math.max(0, Number(counts.stars) || 0),
+        pullCount: Array.isArray(record.metadata?.pullRequests)
+          ? record.metadata.pullRequests.length
+          : null,
+        updatedAt: Math.max(0, Number(record.updatedAt) || 0),
+        importStatus: String(record.status || "external_repository").slice(
+          0,
+          40,
+        ),
+      };
+    });
+}
+
 function normalizeRepositoryFollowers(value) {
   // Public fediverse accounts following the repository actor, exactly as the
   // relay read them out of ap_followers (joined with the cached remote actor
@@ -3572,6 +3624,7 @@ class ForkMeshWorld extends HTMLElement {
     this.world = null;
     this.landmarkCapabilities = initialLandmarkCapabilities();
     this.repositories = [];
+    this.externalRepositories = [];
     this.repositoryCatalogState = "loading";
     this.network = {};
     this.mirrorCatalogs = [];
@@ -3718,6 +3771,7 @@ class ForkMeshWorld extends HTMLElement {
     this.spawnSelected = false;
     this.rewardTimer = 0;
     this.mirrorTimer = 0;
+    this.repositoryImportTimer = 0;
     this.mirrorPushRefreshTimer = 0;
     this.eventsTimer = 0;
     this.notificationsTimer = 0;
@@ -3967,41 +4021,299 @@ class ForkMeshWorld extends HTMLElement {
     this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
   }
 
-  openRepositoryCreateForm() {
+  openRepositoryCreateForm(options = {}) {
     if (!this.sessionAuthenticated || !validWorldSession()) {
       this.toggleWorldAccount(true, "login");
       this.toast("Sign in to create a repository.");
       return;
     }
     document.querySelector("[data-world-create-repository]")?.remove();
+    const session = validWorldSession();
+    const account = sanitizePresenceText(
+      session?.nodeName || this.identity?.name,
+      "account",
+      40,
+    ).toLowerCase();
+    const ownerOptions = [
+      { name: account, label: `@${account} · user account` },
+      ...this.organizations
+        .filter((organization) =>
+          ["owner", "admin"].includes(
+            String(
+              organization.viewerRole || organization.role || "",
+            ).toLowerCase(),
+          ),
+        )
+        .map((organization) => {
+          const name = sanitizePresenceText(
+            organization.name || organization.org,
+            "",
+            40,
+          ).toLowerCase();
+          return { name, label: `${name} · organization` };
+        })
+        .filter((owner) => owner.name && owner.name !== account),
+    ];
+    const initialProvider = ["github", "gitlab", "codeberg"].includes(
+      String(options.provider || "").toLowerCase(),
+    )
+      ? String(options.provider).toLowerCase()
+      : "codeberg";
     const dialog = document.createElement("dialog");
     dialog.dataset.worldCreateRepository = "true";
-    dialog.style.cssText = "width:min(420px,calc(100vw - 32px));border:1px solid #9ef7c6;border-radius:14px;background:#071611;color:#e9fff2;padding:0;box-shadow:0 24px 80px #000";
-    dialog.innerHTML = `<form method="dialog" style="padding:20px;display:grid;gap:12px"><header><strong style="font-size:18px">Create repository</strong><p style="margin:6px 0 0;color:#9eb6aa;font-size:13px">Import a public GitHub or GitLab repository into ForkMesh.</p></header><label style="display:grid;gap:5px;font-size:12px">Repository URL<input required name="sourceUrl" placeholder="https://github.com/owner/repo" style="padding:10px;border-radius:7px;border:1px solid #3a6655;background:#0d211b;color:inherit" /></label><label style="display:grid;gap:5px;font-size:12px">Optional provider token<input name="providerToken" type="password" placeholder="Only used for this request" style="padding:10px;border-radius:7px;border:1px solid #3a6655;background:#0d211b;color:inherit" /></label><output style="min-height:18px;color:#9ef7c6;font-size:12px"></output><footer style="display:flex;justify-content:flex-end;gap:8px"><button value="cancel">Cancel</button><button value="submit" style="background:#9ef7c6;color:#071611;border:0;border-radius:7px;padding:9px 12px">Create repository</button></footer></form>`;
+    dialog.style.cssText = "width:min(620px,calc(100vw - 28px));border:1px solid #77d9ff;border-radius:18px;background:linear-gradient(155deg,#071611,#0b2525);color:#e9fff2;padding:0;box-shadow:0 28px 110px #000c";
+    dialog.innerHTML = `
+      <form style="padding:22px;display:grid;gap:16px">
+        <header>
+          <strong style="font-size:21px">Import repositories into the World</strong>
+          <p style="margin:6px 0 0;color:#9eb6aa;font-size:13px;line-height:1.5">Paste one repository link per line, or a Codeberg profile such as codeberg.org/m33. ForkMesh reads provider metadata without storing your token, then portals arrive around the perimeter one at a time.</p>
+        </header>
+        <div role="group" aria-label="Import provider" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+          ${[
+            ["github", "GitHub", "#f0f6fc"],
+            ["gitlab", "GitLab", "#fc8d45"],
+            ["codeberg", "Codeberg", "#77d9ff"],
+          ]
+            .map(
+              ([id, label, color]) =>
+                `<button type="button" data-world-import-provider="${id}" aria-pressed="${id === initialProvider}" style="border:1px solid ${color};border-radius:9px;padding:10px;background:${id === initialProvider ? `${color}22` : "#081b18"};color:${color};font-weight:800">${label}</button>`,
+            )
+            .join("")}
+        </div>
+        <input type="hidden" name="provider" value="${initialProvider}" />
+        <label style="display:grid;gap:6px;font-size:12px">Repository links
+          <textarea required name="sourceUrls" rows="4" placeholder="https://${initialProvider === "codeberg" ? "codeberg.org" : `${initialProvider}.com`}/owner/repository" style="resize:vertical;padding:11px;border-radius:9px;border:1px solid #3a6655;background:#071a16;color:inherit;font:12px/1.5 ui-monospace,monospace"></textarea>
+        </label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <label style="display:grid;gap:6px;font-size:12px">Import to
+            <select name="targetOwner" style="padding:10px;border-radius:9px;border:1px solid #3a6655;background:#071a16;color:inherit">
+              ${ownerOptions
+                .map(
+                  (owner) =>
+                    `<option value="${escapeHTML(owner.name)}">${escapeHTML(owner.label)}</option>`,
+                )
+                .join("")}
+            </select>
+          </label>
+          <label style="display:grid;gap:6px;font-size:12px">Optional provider token
+            <input name="providerToken" type="password" autocomplete="off" placeholder="Request only · never stored" style="padding:10px;border-radius:9px;border:1px solid #3a6655;background:#071a16;color:inherit" />
+          </label>
+        </div>
+        <div data-world-import-progress hidden style="border:1px solid #285a50;border-radius:10px;padding:12px;background:#061814">
+          <div style="height:5px;border-radius:4px;background:#153a32;overflow:hidden"><i data-world-import-progress-bar style="display:block;height:100%;width:0;background:linear-gradient(90deg,#77d9ff,#9ef7c6);transition:width .5s ease"></i></div>
+          <ol data-world-import-results style="margin:10px 0 0;padding-left:20px;display:grid;gap:5px;color:#b7d8ca;font-size:12px"></ol>
+        </div>
+        <output style="min-height:18px;color:#9ef7c6;font-size:12px" aria-live="polite"></output>
+        <footer style="display:flex;justify-content:flex-end;gap:8px">
+          <button type="button" data-world-import-cancel style="padding:9px 12px;border-radius:8px;border:1px solid #3a6655;background:#0b211b;color:inherit">Close</button>
+          <button type="submit" style="background:#9ef7c6;color:#071611;border:0;border-radius:8px;padding:9px 14px;font-weight:800">Import into World</button>
+        </footer>
+      </form>`;
     document.body.append(dialog);
     dialog.addEventListener("close", () => dialog.remove());
+    dialog.querySelector("[data-world-import-cancel]")?.addEventListener(
+      "click",
+      () => dialog.close(),
+    );
+    dialog
+      .querySelectorAll("[data-world-import-provider]")
+      .forEach((button) => {
+        button.addEventListener("click", () => {
+          const provider = button.dataset.worldImportProvider;
+          const form = dialog.querySelector("form");
+          form.elements.provider.value = provider;
+          dialog
+            .querySelectorAll("[data-world-import-provider]")
+            .forEach((candidate) => {
+              const selected = candidate === button;
+              candidate.setAttribute("aria-pressed", String(selected));
+              candidate.style.background = selected ? "#77d9ff22" : "#081b18";
+            });
+          const host =
+            provider === "codeberg" ? "codeberg.org" : `${provider}.com`;
+          form.elements.sourceUrls.placeholder =
+            `https://${host}/owner/repository`;
+        });
+      });
     dialog.querySelector("form")?.addEventListener("submit", async (event) => {
       event.preventDefault();
       const form = event.currentTarget;
-      const sourceUrl = String(new FormData(form).get("sourceUrl") || "").trim();
-      const providerToken = String(new FormData(form).get("providerToken") || "").trim();
+      const values = new FormData(form);
+      let urls = String(values.get("sourceUrls") || "")
+        .split(/\r?\n/)
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .slice(0, 200);
+      const provider = String(values.get("provider") || "");
+      const providerToken = String(values.get("providerToken") || "").trim();
+      const targetOwner = String(values.get("targetOwner") || account);
       const output = form.querySelector("output");
-      if (!sourceUrl) return;
-      output.textContent = "Creating repository…";
-      try {
-        await this.postJSON("/api/repository-imports", {
-          sourceUrl,
-          providerToken,
-          mode: "import",
-          sessionToken: validWorldSession()?.sessionToken || "",
-        });
-        output.textContent = "Repository created. Refreshing catalog…";
-        await this.loadWorldData();
-        this.syncRepositoryScene();
-        window.setTimeout(() => dialog.close(), 650);
-      } catch (error) {
-        output.textContent = `Could not create repository: ${error.message}`;
+      if (!urls.length) return;
+      const submit = form.querySelector('[type="submit"]');
+      const progress = form.querySelector("[data-world-import-progress]");
+      const progressBar = form.querySelector("[data-world-import-progress-bar]");
+      const results = form.querySelector("[data-world-import-results]");
+      submit.disabled = true;
+      progress.hidden = false;
+      let completed = 0;
+      let failures = 0;
+      this.world?.setRepositoryImportState?.({
+        active: true,
+        provider,
+        stage: "connecting",
+      });
+      const expandedUrls = [];
+      for (const sourceUrl of urls) {
+        let parsed;
+        try {
+          parsed = new URL(
+            sourceUrl.includes("://") ? sourceUrl : `https://${sourceUrl}`,
+          );
+        } catch (_) {}
+        const isCodebergNamespace =
+          parsed?.protocol === "https:" &&
+          ["codeberg.org", "www.codeberg.org"].includes(
+            parsed.hostname.toLowerCase(),
+          ) &&
+          parsed.pathname.split("/").filter(Boolean).length === 1;
+        if (!isCodebergNamespace) {
+          expandedUrls.push(sourceUrl);
+          continue;
+        }
+        output.textContent = `Discovering repositories in ${parsed.pathname}…`;
+        try {
+          const discovery = await this.postJSON(
+            "/api/repository-imports/discover",
+            {
+              sourceUrl,
+              providerToken,
+              sessionToken: session?.sessionToken || "",
+            },
+            { timeout: 30000 },
+          );
+          const discovered = Array.isArray(discovery.repositories)
+            ? discovery.repositories
+            : [];
+          expandedUrls.push(...discovered);
+          const item = document.createElement("li");
+          item.textContent = `Found ${discovered.length} public repositories in ${sourceUrl}`;
+          item.style.color = "#77d9ff";
+          results.append(item);
+        } catch (error) {
+          failures += 1;
+          const item = document.createElement("li");
+          item.textContent = `× ${sourceUrl} — ${String(
+            error?.message || "discovery failed",
+          )}`;
+          item.style.color = "#ff9eaa";
+          results.append(item);
+        }
       }
+      urls = [...new Set(expandedUrls)].slice(0, 200);
+      if (!urls.length) {
+        output.textContent = "No public repositories were found.";
+        submit.disabled = false;
+        this.world?.setRepositoryImportState?.({
+          active: false,
+          provider,
+          stage: "error",
+          status: "error",
+        });
+        return;
+      }
+      for (const [index, sourceUrl] of urls.entries()) {
+        const item = document.createElement("li");
+        item.textContent = `Connecting to ${sourceUrl}…`;
+        results.append(item);
+        output.textContent =
+          `Reading ${provider} metadata ${index + 1} of ${urls.length}…`;
+        try {
+          const payload = await this.postJSON(
+            "/api/repository-imports",
+            {
+              sourceUrl,
+              providerToken,
+              targetOwner,
+              mode: "import",
+              sessionToken: session?.sessionToken || "",
+            },
+            { timeout: 60000 },
+          );
+          const imported = cleanExternalRepositories({
+            repositories: [payload.repository],
+          })[0];
+          if (!imported) throw new Error("invalid_import_response");
+          this.externalRepositories = [
+            ...this.externalRepositories.filter(
+              (record) => record.importId !== imported.importId,
+            ),
+            imported,
+          ];
+          this.repositories = [
+            ...this.repositories.filter(
+              (record) =>
+                record.source !== "external-import" ||
+                record.importId !== imported.importId,
+            ),
+            imported,
+          ];
+          this.syncRepositoryScene();
+          completed += 1;
+          const metadata = payload.repository?.metadata || {};
+          const detail = [
+            Object.keys(metadata.languages || {}).length
+              ? `${Object.keys(metadata.languages).length} languages`
+              : "",
+            Array.isArray(metadata.branches)
+              ? `${metadata.branches.length} branches`
+              : "",
+            Array.isArray(metadata.commits)
+              ? `${metadata.commits.length} recent commits`
+              : "",
+          ]
+            .filter(Boolean)
+            .join(" · ");
+          item.textContent =
+            `✓ ${targetOwner}/${imported.name} arrived${detail ? ` — ${detail}` : ""}`;
+          item.style.color = "#9ef7c6";
+          this.world?.setRepositoryImportState?.({
+            active: true,
+            provider,
+            stage: "portal-arrived",
+            status: "complete",
+          });
+          // Leave enough room for the portal's overshoot-and-settle animation
+          // before the next repository enters the perimeter.
+          if (index < urls.length - 1) {
+            await new Promise((resolve) => window.setTimeout(resolve, 1150));
+          }
+        } catch (error) {
+          failures += 1;
+          item.textContent = `× ${sourceUrl} — ${String(
+            error?.message || "import failed",
+          )}`;
+          item.style.color = "#ff9eaa";
+          this.world?.setRepositoryImportState?.({
+            active: true,
+            provider,
+            stage: "error",
+            status: "error",
+          });
+        }
+        progressBar.style.width = `${Math.round(
+          ((index + 1) / urls.length) * 100,
+        )}%`;
+      }
+      output.textContent = failures
+        ? `${completed} imported · ${failures} failed. Successful portals are live around the perimeter.`
+        : `${completed} ${completed === 1 ? "repository" : "repositories"} imported into ${targetOwner}.`;
+      submit.disabled = false;
+      this.world?.setRepositoryImportState?.({
+        active: false,
+        provider,
+        stage: "complete",
+        status: failures ? "error" : "complete",
+      });
     });
     dialog.showModal();
   }
@@ -4098,7 +4410,8 @@ class ForkMeshWorld extends HTMLElement {
         onPlayForkmeshSong: () => {
           void this.playForkmeshSong();
         },
-        onCreateRepository: () => this.openRepositoryCreateForm(),
+        onCreateRepository: (options) =>
+          this.openRepositoryCreateForm(options),
         onSwingRide: (state) => this.handleSwingRide(state),
         onOfficeChairSelect: (chairId) => {
           this.officeMeeting?.requestSeat(chairId);
@@ -4217,6 +4530,7 @@ class ForkMeshWorld extends HTMLElement {
       this.startActivityTicker();
       this.startRewardPolling();
       this.startMirrorPolling();
+      this.startRepositoryImportPolling();
       this.startEventPolling();
       this.startNotificationPolling();
       this.startMediaPlaybackPolling();
@@ -4547,6 +4861,7 @@ class ForkMeshWorld extends HTMLElement {
       mirrorResult,
       instancesResult,
       reposResult,
+      externalReposResult,
       versionResult,
       rewardResult,
       orgResult,
@@ -4576,6 +4891,11 @@ class ForkMeshWorld extends HTMLElement {
           cache: "no-store",
         }),
         this.fetchJSON("/api/repositories", { auth: hasSession }),
+        this.fetchJSON("/api/repository-imports", {
+          auth: hasSession,
+          timeout: 12000,
+          cache: "no-store",
+        }),
         this.fetchJSON("/api/version", { auth: false, timeout: 5000 }),
         this.fetchJSON("/api/accounts/central-fund", {
           auth: false,
@@ -4688,10 +5008,22 @@ class ForkMeshWorld extends HTMLElement {
         cleanRepositories(reposResult.value),
         this.mirrorCatalogs,
       );
+      this.externalRepositories =
+        externalReposResult.status === "fulfilled"
+          ? cleanExternalRepositories(externalReposResult.value)
+          : [];
+      this.repositories.push(...this.externalRepositories);
       this.repositoryCatalogState = this.repositories.length ? "ready" : "empty";
     } else {
       this.repositories = [];
-      this.repositoryCatalogState = "unavailable";
+      this.externalRepositories =
+        externalReposResult.status === "fulfilled"
+          ? cleanExternalRepositories(externalReposResult.value)
+          : [];
+      this.repositories.push(...this.externalRepositories);
+      this.repositoryCatalogState = this.repositories.length
+        ? "ready"
+        : "unavailable";
     }
     if (eventsResult.status === "fulfilled") {
       this.events = normalizeCommunityEvents(eventsResult.value);
@@ -6918,6 +7250,42 @@ class ForkMeshWorld extends HTMLElement {
         // Preserve the last verified snapshot during a transient HTTPS failure.
       });
     }, MIRROR_STATUS_POLL_MS);
+  }
+
+  startRepositoryImportPolling() {
+    window.clearInterval(this.repositoryImportTimer);
+    this.repositoryImportTimer = window.setInterval(async () => {
+      if (this.destroyed || document.visibilityState !== "visible") return;
+      try {
+        const payload = await this.fetchJSON("/api/repository-imports", {
+          auth: this.sessionAuthenticated && Boolean(validWorldSession()),
+          timeout: 10000,
+          cache: "no-store",
+        });
+        const external = cleanExternalRepositories(payload);
+        const before = this.externalRepositories
+          .map((record) => `${record.importId}:${record.updatedAt}:${record.importStatus}`)
+          .sort()
+          .join("|");
+        const after = external
+          .map((record) => `${record.importId}:${record.updatedAt}:${record.importStatus}`)
+          .sort()
+          .join("|");
+        if (before === after) return;
+        this.externalRepositories = external;
+        this.repositories = [
+          ...this.repositories.filter(
+            (record) => record.source !== "external-import",
+          ),
+          ...external,
+        ];
+        this.repositoryCatalogState = this.repositories.length ? "ready" : "empty";
+        this.syncRepositoryScene();
+      } catch (_) {
+        // Preserve the most recent visible import catalog through a transient
+        // provider/relay failure; the next bounded poll retries automatically.
+      }
+    }, REPOSITORY_IMPORT_POLL_MS);
   }
 
   updateLocation(label, id) {
@@ -11128,6 +11496,10 @@ class ForkMeshWorld extends HTMLElement {
     const owner = sanitizePresenceText(portal?.owner, "", 40);
     const name = sanitizePresenceText(portal?.name, "", 60);
     if (!owner || !name) return;
+    if (portal?.source === "external-import" && portal?.externalUrl) {
+      this.openRepositoryWebsite(portal);
+      return;
+    }
     this.toast(`Opening ${owner}/${name} at its perimeter portal…`);
     void this.loadRepositoryMap(owner, name, {
       automatic: false,
@@ -11139,7 +11511,13 @@ class ForkMeshWorld extends HTMLElement {
     const owner = sanitizePresenceText(portal?.owner, "", 40);
     const name = sanitizePresenceText(portal?.name, "", 60);
     if (!owner || !name) return;
-    const path = `/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+    const externalURL =
+      portal?.source === "external-import"
+        ? safeHTTPURL(portal.externalUrl)
+        : "";
+    const path =
+      externalURL ||
+      `/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
     // `noopener` intentionally makes window.open return null in some browsers,
     // so do not mistake a safely opened tab for a popup-blocker failure.
     window.open(path, "_blank", "noopener,noreferrer");
@@ -17299,6 +17677,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.pingTimer);
     window.clearInterval(this.rewardTimer);
     window.clearInterval(this.mirrorTimer);
+    window.clearInterval(this.repositoryImportTimer);
     window.clearTimeout(this.mirrorPushRefreshTimer);
     window.clearInterval(this.eventsTimer);
     window.clearInterval(this.notificationsTimer);

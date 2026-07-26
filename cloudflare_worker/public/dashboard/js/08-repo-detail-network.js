@@ -2268,6 +2268,20 @@
     volunteerForExternalMirror(
       button.dataset.externalMirrorVolunteer || "", button);
   });
+  $("[data-external-repo-list]")?.addEventListener("change", (event) => {
+    const checkbox = event.target.closest("[data-external-repo-select]");
+    if (!checkbox) return;
+    const id = String(checkbox.dataset.externalRepoSelect || "");
+    if (checkbox.checked) state.externalRepositorySelection.add(id);
+    else state.externalRepositorySelection.delete(id);
+    syncExternalRepositoryActions();
+  });
+  $("[data-external-repo-select-all]")?.addEventListener("change", (event) => {
+    toggleAllExternalRepositories(Boolean(event.currentTarget.checked));
+  });
+  $("[data-external-repo-delete-selected]")?.addEventListener("click", () => {
+    deleteSelectedExternalRepositories();
+  });
 
   // [data-profile-settings-button] is a real link to /dashboard/settings now,
   // and [data-settings-section-link] clicks are handled by the delegated

@@ -805,11 +805,17 @@
     const original = String(repository?.originalUrl || "");
     const canVolunteer = Boolean(state.session?.sessionToken) &&
       !["actively_mirrored", "archived"].includes(String(repository?.status || ""));
+    const manageable = Boolean(repository?.canManage);
+    const selected = state.externalRepositorySelection.has(String(repository?.id || ""));
     const incomplete = Array.isArray(repository?.metadataIncomplete) && repository.metadataIncomplete.length
       ? `<p class="mt-2 text-[11px] text-amber-300">Some metadata was unavailable or rate-limited during import.</p>`
       : "";
     return `
       <article class="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-start sm:px-5" data-external-repo-id="${escapeHtml(repository?.id || "")}">
+        ${manageable ? `<label class="mt-3 inline-flex shrink-0 items-center" title="Select ${escapeHtml(repository?.fullName || repository?.name || "repository")}">
+          <input data-external-repo-select="${escapeHtml(repository?.id || "")}" type="checkbox" ${selected ? "checked" : ""} class="h-4 w-4 rounded border-border bg-card accent-primary" />
+          <span class="sr-only">Select ${escapeHtml(repository?.fullName || repository?.name || "repository")}</span>
+        </label>` : ""}
         <img src="${escapeHtml(logo)}" alt="" class="h-12 w-12 shrink-0 rounded-xl border border-border bg-secondary object-cover" />
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-center gap-2">
@@ -822,6 +828,7 @@
           ${incomplete}
           <div class="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
             <a href="${escapeHtml(original)}" target="_blank" rel="noopener noreferrer" class="font-medium text-primary hover:underline">Open on ${escapeHtml(provider)}</a>
+            ${repository?.targetOwner ? `<span aria-hidden="true">·</span><span>Listed under ${repository?.targetOwnerType === "organization" ? "organization " : ""}<span class="font-mono text-foreground">${escapeHtml(repository.targetOwner)}</span></span>` : ""}
             <span aria-hidden="true">·</span>
             <span>ForkMesh does not own or control this repository</span>
           </div>
@@ -844,7 +851,70 @@
     list.innerHTML = state.externalRepositories.length
       ? state.externalRepositories.map(externalRepositoryCard).join("")
       : '<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">No external repositories or stubs have been listed yet. Use “New repository” to import one.</div>';
+    syncExternalRepositoryActions();
     window.lucide?.createIcons();
+  }
+
+  function syncExternalRepositoryActions() {
+    const manageable = state.externalRepositories.filter((repository) => repository?.canManage);
+    const manageableIds = new Set(manageable.map((repository) => String(repository.id || "")));
+    for (const id of [...state.externalRepositorySelection]) {
+      if (!manageableIds.has(id)) state.externalRepositorySelection.delete(id);
+    }
+    const actions = $("[data-external-repo-actions]");
+    actions?.classList.toggle("hidden", manageable.length === 0);
+    actions?.classList.toggle("flex", manageable.length > 0);
+    const all = $("[data-external-repo-select-all]");
+    if (all) {
+      all.checked = manageable.length > 0 &&
+        manageable.every((repository) => state.externalRepositorySelection.has(String(repository.id || "")));
+      all.indeterminate = state.externalRepositorySelection.size > 0 && !all.checked;
+    }
+    const button = $("[data-external-repo-delete-selected]");
+    if (button) {
+      const count = state.externalRepositorySelection.size;
+      button.disabled = count === 0;
+      button.lastChild.textContent = count ? ` Delete selected (${count})` : " Delete selected";
+    }
+  }
+
+  function toggleAllExternalRepositories(checked) {
+    state.externalRepositorySelection.clear();
+    if (checked) {
+      state.externalRepositories
+        .filter((repository) => repository?.canManage)
+        .forEach((repository) => state.externalRepositorySelection.add(String(repository.id || "")));
+    }
+    renderExternalRepositories(state.externalRepositories);
+  }
+
+  async function deleteSelectedExternalRepositories() {
+    const ids = [...state.externalRepositorySelection];
+    if (!ids.length || !state.session?.sessionToken) return;
+    if (!window.confirm(`Delete ${ids.length} selected external ${ids.length === 1 ? "repository" : "repositories"}? This removes ForkMesh metadata and does not delete anything from the source provider.`)) return;
+    const button = $("[data-external-repo-delete-selected]");
+    if (button) button.disabled = true;
+    try {
+      for (const id of ids) {
+        const response = await fetch(`/api/repository-imports/${encodeURIComponent(id)}`, {
+          method: "DELETE",
+          body: JSON.stringify({ sessionToken: state.session.sessionToken }),
+          headers: {
+            accept: "application/json",
+            authorization: `Bearer ${state.session.sessionToken}`,
+            "content-type": "application/json",
+          },
+          cache: "no-store",
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        state.externalRepositorySelection.delete(id);
+      }
+      await loadExternalRepositories({ fresh: true });
+    } catch (error) {
+      setNewRepoHint(String(error?.message || "Could not delete selected imports."), "bad");
+      await loadExternalRepositories({ fresh: true });
+    }
   }
 
   async function loadExternalRepositories({ fresh = false } = {}) {
@@ -952,7 +1022,7 @@
       if (value) value.placeholder = "/home/you/code/my-project";
       if (hint) hint.textContent = "The desktop node reads this local repo directly — the path never leaves your machine.";
     } else if (provider) {
-      if (value) value.placeholder = "https://github.com/owner/repo or https://gitlab.com/group/repo";
+      if (value) value.placeholder = "https://github.com/owner/repo, https://gitlab.com/group/repo, or https://codeberg.org/owner/repo";
       if (hint) hint.textContent = "ForkMesh reads bounded metadata from the provider. Importing does not claim ownership or create a mirror.";
     } else {
       if (value) value.placeholder = "https://github.com/owner/repo.git";
@@ -994,11 +1064,11 @@
     const sourceValue = String($("[data-new-repo-source-value]")?.value || "").trim();
     if (source === "provider") {
       if (!state.session?.sessionToken) {
-        setNewRepoHint("Sign in to import a GitHub or GitLab repository.", "bad");
+        setNewRepoHint("Sign in to import a GitHub, GitLab, or Codeberg repository.", "bad");
         return;
       }
       if (!sourceValue) {
-        setNewRepoHint("Enter a GitHub or GitLab repository URL.", "bad");
+        setNewRepoHint("Enter a GitHub, GitLab, or Codeberg repository URL.", "bad");
         $("[data-new-repo-source-value]")?.focus();
         return;
       }
@@ -1031,7 +1101,7 @@
         setNewRepoHint(
           code === "provider_rate_limited" ? "The provider rate limit was reached. Try again after its reset time."
             : code.includes("authorization") ? "The provider rejected access. Private repositories require a valid scoped token."
-            : code === "unsupported_provider" ? "Use a github.com or gitlab.com repository URL."
+            : code === "unsupported_provider" ? "Use a github.com, gitlab.com, or codeberg.org repository URL."
             : "Could not import provider metadata.",
           "bad",
         );

@@ -4786,6 +4786,105 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
   portal.userData.repositoryOrbitLayer = null;
   portal.userData.repositorySizeLayer = null;
   portal.userData.repositorySizeMeshes = [];
+
+  // A physical import kiosk remains at the repository district even though
+  // the old central repository portal is retired. Each provider pad opens the
+  // same secure import flow with that provider preselected.
+  const importKiosk = new THREE.Group();
+  importKiosk.name = "repository-import-kiosk";
+  importKiosk.position.set(0, 0, 5.2);
+  const kioskBase = new THREE.Mesh(
+    new THREE.CylinderGeometry(2.15, 2.35, 0.42, 8),
+    makeMaterial(THREE, "#102a32", {
+      emissive: "#123d49",
+      emissiveIntensity: 0.35,
+      metalness: 0.25,
+      roughness: 0.52,
+    }),
+  );
+  kioskBase.position.y = 0.21;
+  importKiosk.add(kioskBase);
+  const kioskColumn = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.24, 0.34, 2.15, 10),
+    frameMaterial,
+  );
+  kioskColumn.position.y = 1.45;
+  importKiosk.add(kioskColumn);
+  const providerPads = [
+    { id: "github", label: "GITHUB", color: "#f0f6fc" },
+    { id: "gitlab", label: "GITLAB", color: "#fc8d45" },
+    { id: "codeberg", label: "CODEBERG", color: "#77d9ff" },
+  ];
+  providerPads.forEach((provider, index) => {
+    const angle = -0.72 + index * 0.72;
+    const pad = new THREE.Mesh(
+      new THREE.BoxGeometry(1.25, 0.2, 0.88),
+      makeMaterial(THREE, provider.color, {
+        emissive: provider.color,
+        emissiveIntensity: 0.72,
+        metalness: 0.22,
+        roughness: 0.34,
+      }),
+    );
+    pad.name = `repository-import-provider:${provider.id}`;
+    pad.position.set(Math.sin(angle) * 1.45, 0.58, -Math.cos(angle) * 1.45);
+    pad.rotation.y = -angle;
+    pad.userData.landmark = "repositories";
+    pad.userData.createRepository = provider.id;
+    importKiosk.add(pad);
+    const label = makeLabelSprite(
+      THREE,
+      provider.label,
+      "IMPORT FROM",
+      provider.color,
+    );
+    label.scale.set(1.18, 0.4, 1);
+    label.position.copy(pad.position);
+    label.position.y += 0.42;
+    importKiosk.add(label);
+  });
+  const importBeam = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.08, 0.68, 3.5, 18, 1, true),
+    makeMaterial(THREE, "#77d9ff", {
+      emissive: "#39bfe8",
+      emissiveIntensity: 1.1,
+      transparent: true,
+      opacity: 0.14,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    }),
+  );
+  importBeam.name = "repository-import-beam";
+  importBeam.position.y = 2.7;
+  importBeam.visible = false;
+  importKiosk.add(importBeam);
+  const importSpark = new THREE.Mesh(
+    new THREE.IcosahedronGeometry(0.28, 1),
+    makeMaterial(THREE, "#9ef7c6", {
+      emissive: "#42e99a",
+      emissiveIntensity: 1.8,
+      transparent: true,
+      opacity: 0.92,
+    }),
+  );
+  importSpark.name = "repository-import-spark";
+  importSpark.position.y = 3.55;
+  importSpark.visible = false;
+  importKiosk.add(importSpark);
+  const kioskSign = makeLabelSprite(
+    THREE,
+    "IMPORT REPOSITORY",
+    "GITHUB · GITLAB · CODEBERG",
+    "#9ef7c6",
+  );
+  kioskSign.scale.set(2.8, 0.78, 1);
+  kioskSign.position.set(0, 4.35, 0);
+  importKiosk.add(kioskSign);
+  group.add(importKiosk);
+  group.userData.repositoryImportKiosk = importKiosk;
+  importKiosk.userData.importBeam = importBeam;
+  importKiosk.userData.importSpark = importSpark;
+  importKiosk.userData.importing = false;
   group.traverse((child) => {
     if (child.isMesh) {
       child.userData.landmark = "repositories";
@@ -4799,6 +4898,18 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
       : Math.sin(time * 0.00018) * 0.09;
     globe.rotation.y = time * 0.00012;
     globe.rotation.x = Math.sin(time * 0.00009) * 0.12;
+    if (importKiosk.userData.importing) {
+      importBeam.visible = true;
+      importSpark.visible = true;
+      importBeam.rotation.y = time * 0.0018;
+      importBeam.material.opacity = 0.11 + Math.sin(time * 0.006) * 0.045;
+      importSpark.rotation.y = time * 0.003;
+      importSpark.rotation.x = time * 0.0017;
+      importSpark.position.y = 3.45 + Math.sin(time * 0.004) * 0.28;
+    } else {
+      importBeam.visible = false;
+      importSpark.visible = false;
+    }
     if (portal.userData.repositoryOrbitLayer) {
       portal.userData.repositoryOrbitLayer.rotation.z = time * 0.000012;
     }
@@ -8100,6 +8211,7 @@ export function createWorldScene({
   const botAgents = new Map();
   const loungeMembers = new Map();
   const repositoryPortals = new Map();
+  const repositoryPortalBornAt = new Map();
   const emoteSprites = [];
   const rewardFlights = [];
   const pushSurges = [];
@@ -11473,6 +11585,10 @@ export function createWorldScene({
           liveHost: record.liveHost === true,
           isPrivate: record.isPrivate === true,
           source: String(record.source || "").slice(0, 40),
+          provider: String(record.provider || "").slice(0, 20),
+          providerLabel: String(record.providerLabel || "").slice(0, 30),
+          externalUrl: String(record.externalUrl || "").slice(0, 500),
+          importId: String(record.importId || "").slice(0, 64),
           mirrorState: String(record.mirrorState || "").slice(0, 24),
           starCount:
             Number.isSafeInteger(rawStarCount) && rawStarCount >= 0
@@ -11507,6 +11623,8 @@ export function createWorldScene({
         record.liveHost,
         record.isPrivate,
         record.source,
+        record.provider,
+        record.importId,
         record.starCount,
         record.starred,
         record.fediverseFollowerCount,
@@ -11517,6 +11635,7 @@ export function createWorldScene({
       ]),
     ]);
     const previousCatalog = world.userData.repositoryCatalogLayer;
+    const previousPortalKeys = new Set(repositoryPortals.keys());
     if (
       catalogSignature === world.userData.repositoryCatalogSignature &&
       (records.length
@@ -11648,6 +11767,23 @@ export function createWorldScene({
         Math.sin(angle) * REPOSITORY_EDGE_RADIUS,
       );
       node.rotation.y = -angle - Math.PI / 2;
+      if (
+        record.source === "external-import" &&
+        !previousPortalKeys.has(record.key)
+      ) {
+        const importedBefore = records
+          .slice(0, index)
+          .filter(
+            (candidate) =>
+              candidate.source === "external-import" &&
+              !previousPortalKeys.has(candidate.key),
+          ).length;
+        repositoryPortalBornAt.set(
+          record.key,
+          performance.now() + importedBefore * 320,
+        );
+        node.scale.setScalar(reducedMotion ? 1 : 0.015);
+      }
       const face = new THREE.Group();
       face.name = `repository-portal-face:${record.owner}/${record.name}`;
       face.scale.setScalar(portalDensityScale);
@@ -11666,6 +11802,10 @@ export function createWorldScene({
         liveHost: record.liveHost,
         isPrivate: record.isPrivate,
         source: record.source,
+        provider: record.provider,
+        providerLabel: record.providerLabel,
+        externalUrl: record.externalUrl,
+        importId: record.importId,
         mirrorState: record.mirrorState,
         starCount: record.starCount,
         starred: record.starred,
@@ -11712,6 +11852,8 @@ export function createWorldScene({
             ? record.sizeBytes
               ? `${compactSceneBytes(record.sizeBytes)} HOSTED`
               : "LIVE MIRROR"
+            : record.source === "external-import"
+              ? `${record.providerLabel || "EXTERNAL"} IMPORT`
             : record.mirrorState === "syncing"
               ? "MIRRORS SYNCING"
               : record.mirrorState === "offline"
@@ -11914,6 +12056,7 @@ export function createWorldScene({
         owner: record.owner,
         name: record.name,
         angle,
+        key: record.key,
       });
     });
 
@@ -11923,6 +12066,30 @@ export function createWorldScene({
     });
     world.userData.repositoryCatalogLayer = layer;
     world.userData.repositoryPortalMeshes = portalMeshes;
+  }
+
+  function setRepositoryImportState(state = {}) {
+    const district = landmarkObjects.get("repositories");
+    const kiosk = district?.userData?.repositoryImportKiosk;
+    if (!kiosk) return;
+    kiosk.userData.importing = state.active === true;
+    kiosk.userData.importStage = String(state.stage || "").slice(0, 40);
+    kiosk.userData.importProvider = String(state.provider || "").slice(0, 20);
+    const spark = kiosk.userData.importSpark;
+    if (spark?.material?.color) {
+      const color =
+        state.status === "error"
+          ? "#ff7f8f"
+          : state.status === "complete"
+            ? "#9ef7c6"
+            : state.provider === "gitlab"
+              ? "#fc8d45"
+              : state.provider === "codeberg"
+                ? "#77d9ff"
+                : "#f0f6fc";
+      spark.material.color.set(color);
+      spark.material.emissive?.set?.(color);
+    }
   }
 
   function updateRepositorySizeMap(sizeTree = {}, selection = {}) {
@@ -13440,7 +13607,9 @@ export function createWorldScene({
       return;
     }
     if (hit?.object?.userData?.createRepository) {
-      onCreateRepository();
+      onCreateRepository({
+        provider: String(hit.object.userData.createRepository || ""),
+      });
       return;
     }
     if (hit?.object?.userData?.officeKeypadDigit) {
@@ -14099,6 +14268,29 @@ export function createWorldScene({
           marker.position.y = Math.sin(angle) * radius;
         }
       });
+      repositoryPortals.forEach(({ group, key }) => {
+        const bornAt = repositoryPortalBornAt.get(key);
+        if (!bornAt) return;
+        const progress = clamp((time - bornAt) / 1050, 0, 1);
+        if (progress <= 0) {
+          group.scale.setScalar(0.015);
+          return;
+        }
+        // Overshoot once, then settle into the ring like a portal locking
+        // onto its perimeter coordinate.
+        const back = 1.70158;
+        const shifted = progress - 1;
+        const scale =
+          1 + (back + 1) * shifted ** 3 + back * shifted ** 2;
+        group.scale.setScalar(Math.max(0.015, scale));
+        group.rotation.z =
+          Math.sin(progress * Math.PI) * (1 - progress) * 0.24;
+        if (progress >= 1) {
+          group.scale.setScalar(1);
+          group.rotation.z = 0;
+          repositoryPortalBornAt.delete(key);
+        }
+      });
       // Node beacons hold a steady colour and size — no pulse — so a status
       // reads the same in a screenshot as it does live. Only degraded and
       // healing nodes carry a sweep, and it turns rather than fades, so the
@@ -14482,6 +14674,7 @@ export function createWorldScene({
     updateIdentity,
     updateRepositoryCatalog,
     updateRepositoryGraph,
+    setRepositoryImportState,
     updateRepositorySizeMap,
     updateRepositoryRecordDesk,
     setRepositoryIssuePageExpanded,
