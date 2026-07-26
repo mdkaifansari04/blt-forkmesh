@@ -5698,6 +5698,10 @@ private:
     // "owner/name" repos with an SSH mirror push in flight (pushToSshMirrorRemotes),
     // so overlapping sync completions can't stack pushes to the same gateway.
     QSet<QString> m_sshMirrorPushing;
+    // A sync can finish while that asynchronous push is still transferring.
+    // Remember it instead of dropping it: once every gateway attempt finishes,
+    // push the newest served snapshot again so moving refs converge exactly.
+    QSet<QString> m_sshMirrorPushPending;
     // "owner/name" of repos whose @mention scan is running on a worker thread, so
     // a second sync/inbox drain doesn't kick a duplicate scan (and double-notify)
     // while the first is still loading issues/PRs off the UI thread.

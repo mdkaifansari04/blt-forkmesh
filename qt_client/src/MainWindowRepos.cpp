@@ -6102,8 +6102,10 @@ void MainWindow::pushToSshMirrorRemotes(int index)
         repo.mirrorPath.trimmed().isEmpty() || !QDir(repo.mirrorPath).exists())
         return;
     const QString repoKey = repo.owner + "/" + repo.name;
-    if (m_sshMirrorPushing.contains(repoKey))
+    if (m_sshMirrorPushing.contains(repoKey)) {
+        m_sshMirrorPushPending.insert(repoKey);
         return;
+    }
 
     QByteArray remotesOut;
     if (!runGitCapture(repo.localPath,
@@ -6128,6 +6130,24 @@ void MainWindow::pushToSshMirrorRemotes(int index)
 
     m_sshMirrorPushing.insert(repoKey);
     auto remaining = std::make_shared<int>(urls.size());
+    const auto finishPush = [this, repoKey, remaining]() {
+        if (--*remaining > 0)
+            return;
+        m_sshMirrorPushing.remove(repoKey);
+        if (!m_sshMirrorPushPending.remove(repoKey))
+            return;
+        // Repository rows may have moved while the asynchronous processes ran;
+        // resolve by stable owner/name rather than retaining an index.
+        QTimer::singleShot(0, this, [this, repoKey]() {
+            for (int i = 0; i < m_repositories.size(); ++i) {
+                const RepositoryRecord &candidate = m_repositories.at(i);
+                if (candidate.owner + "/" + candidate.name == repoKey) {
+                    pushToSshMirrorRemotes(i);
+                    return;
+                }
+            }
+        });
+    };
     for (const QString &url : urls) {
         auto *process = new QProcess(this);
         // Never let an unreachable/unauthorized gateway hang the push on an
@@ -6140,7 +6160,7 @@ void MainWindow::pushToSshMirrorRemotes(int index)
         process->setProcessEnvironment(env);
         const QString gatewayHost = QUrl(url).host();
         connect(process, &QProcess::finished, this,
-                [this, process, repoKey, remaining, gatewayHost](
+                [this, process, repoKey, finishPush, gatewayHost](
                     int exitCode, QProcess::ExitStatus) {
                     const QString output =
                         QString::fromUtf8(process->readAllStandardOutput());
@@ -6148,8 +6168,7 @@ void MainWindow::pushToSshMirrorRemotes(int index)
                         QString::fromUtf8(process->readAllStandardError())
                             .trimmed();
                     process->deleteLater();
-                    if (--*remaining <= 0)
-                        m_sshMirrorPushing.remove(repoKey);
+                    finishPush();
                     if (exitCode != 0) {
                         logSystem(QStringLiteral(
                                       "Mirror: SSH mirror push of %1 to %2 "
@@ -6175,7 +6194,7 @@ void MainWindow::pushToSshMirrorRemotes(int index)
                                       .arg(repoKey, gatewayHost));
                 });
         connect(process, &QProcess::errorOccurred, this,
-                [this, process, repoKey, remaining,
+                [this, process, repoKey, finishPush,
                  gatewayHost](QProcess::ProcessError error) {
                     // finished still fires for a crash after start; only a
                     // failed start ends the attempt here (avoids double
@@ -6183,8 +6202,7 @@ void MainWindow::pushToSshMirrorRemotes(int index)
                     if (error != QProcess::FailedToStart)
                         return;
                     process->deleteLater();
-                    if (--*remaining <= 0)
-                        m_sshMirrorPushing.remove(repoKey);
+                    finishPush();
                     logSystem(QStringLiteral("Mirror: could not run git to "
                                              "push %1 to SSH mirror %2.")
                                   .arg(repoKey, gatewayHost));
@@ -6203,6 +6221,7 @@ void MainWindow::pushToSshMirrorRemotes(int index)
         process->start(QStringLiteral("git"),
                        {QStringLiteral("-C"), repo.mirrorPath,
                         QStringLiteral("push"), QStringLiteral("--porcelain"),
+                        QStringLiteral("--atomic"),
                         QStringLiteral("--prune"),
                         url, QStringLiteral("+refs/heads/*:refs/heads/*"),
                         QStringLiteral("+refs/tags/*:refs/tags/*")});
