@@ -393,7 +393,6 @@ public:
     void testPublishRepository(int index) { publishRepositoryNow(index, false); }
     void testStartRepoHosts() { startRepoHosts(); }
     void testStopRepoHosts() { stopRepoHosts(); }
-    void testShowPublishBar(bool on);
     int testRepoTabContentTop(); // y of the tab content within the window
     int testRepoTabGapAroundIssues() const;
     int testIssueLooperGapFromNewIssueButton() const;
@@ -827,43 +826,10 @@ private:
     void queryNavSolanaUsdPrice(const QString &addr, qint64 lamports);
     void showRepoMenu();           // dropdown to open repos / add a local repo
     void updateRepoSwitcher();     // refresh top-bar repo label / count
-    void updateRepoPushButton();   // show pending local commits for the open repo
-    // Git-derived inputs to the "Sync" button. Computing them shells several
-    // rev-list/rev-parse subprocesses on the working copy + served mirror, so it runs
-    // off the GUI thread (computeRepoPushState) and the result is painted back on the
-    // main thread (applyRepoPushButtonState) — see updateRepoPushButton.
-    struct RepoPushState {
-        bool valid = false;       // repo has a local working tree (.git)
-        bool relay = false;       // publishes to a served mirror / ForkMesh relay
-        int unpublished = 0;      // commits not yet folded into the served mirror
-        int behind = 0;           // incoming commits to pull (drives the ⇅ arrow)
-        bool hasUpstream = false; // tracks a real upstream remote (non-relay)
-        int ahead = 0;            // commits ahead of that upstream
-        QString upstreamRef;      // the @{upstream} name (for the non-relay tooltip)
-        // Rich-tooltip detail for the pending sync (computed off the GUI thread):
-        // the commits about to go out and the aggregate line-change diffstat, plus a
-        // human-readable name for where they're headed.
-        struct PendingCommit {
-            QString hash;    // short hash
-            QString subject; // first line of the commit message
-            int added = 0;   // lines added by this commit
-            int removed = 0; // lines removed by this commit
-        };
-        QString target;               // sync destination ("origin/main", served mirror)
-        QList<PendingCommit> commits; // pending commits, newest first (capped)
-        int extraCommits = 0;         // pending commits beyond the capped list
-        int added = 0;                // total lines added across the whole range
-        int removed = 0;              // total lines removed across the whole range
-    };
-    // Thread-safe (reads only the passed-in record + free git helpers + QSettings);
-    // never touches m_repositories or a widget, so it is safe to run on a worker.
-    RepoPushState computeRepoPushState(const RepositoryRecord &repo) const;
-    // Fill the rich-tooltip commit list + line diffstat for the pending range that
-    // ends at HEAD and starts just after `base` (empty base = from the root commit).
-    // Static: shells git on the passed-in path only, so it runs on the worker too.
-    static void collectPushDetail(const QString &localPath, const QString &base,
-                                  RepoPushState *st);
-    void applyRepoPushButtonState(int index, const RepoPushState &state);
+    // Keep the open repo's sync-derived indicators in step (adhoc #374 removed the
+    // floating "Sync" pill that used to hover above the Code tab; the activity
+    // rail's Git glyph and the commit list's "waiting to sync" markers remain).
+    void refreshRepoSyncIndicators();
     void pushCurrentRepoUpstream();
     // Launch the async `git push` for a repo whose secret scan has completed and
     // been approved (see pushCurrentRepoUpstream). The repo must already be marked
@@ -2605,7 +2571,6 @@ private:
     // Lazily build the floating strip and place it just above the Actions tab.
     void ensureActionStrip();
     void positionActionStrip();  // size/pin the strip above the Actions tab
-    void positionRepoPushButton(); // float "Sync" just above the Code tab
     void updateActionStrip();    // build/show/hide the boxes for in-flight runs
     // Previous finished run's duration for the same workflow, the estimate each
     // strip box counts down against (0 = no prior run to estimate from).
@@ -3798,9 +3763,6 @@ private:
     bool m_networkEndpointFadeScheduled = false;
     bool m_networkEndpointsUserSorted = false;
     QHBoxLayout *m_repoHeaderLeft = nullptr; // left cluster of the repo header row
-    QPushButton *m_repoPushButton = nullptr; // "Publish N" button shown above the tab bar
-    QPushButton *m_repoPushEyeButton = nullptr; // eye icon beside Sync -> commits panel
-    QWidget *m_repoPublishBar = nullptr;     // row hosting m_repoPushButton, hidden when idle
     int m_repoPinCheckIndex = -1;            // repo index an in-flight pin check belongs to
     // One row per repo of the selected node, shown in the repo dropdown.
     struct RepoMenuEntry {
@@ -4807,7 +4769,6 @@ private:
     QString m_selectedWorkflowFilter;            // workflow path filter, empty = all
     QList<ActionWorkflow> m_repoWorkflows;       // parsed workflows for the open repo
     QTimer *m_actionStripTimer = nullptr;        // grows the Actions strip while running
-    QTimer *m_repoPushTimer = nullptr;           // keeps "Sync" pinned over Code
     // Coalesces push-driven refreshOpenRepoDetail() calls: a burst of pushes
     // (a sync, an agent committing) otherwise re-runs the whole heavyweight
     // refresh — git log, per-PR apply checks, branch reload — once per event,
@@ -5737,13 +5698,10 @@ private:
     // "owner/name" repos with an SSH mirror push in flight (pushToSshMirrorRemotes),
     // so overlapping sync completions can't stack pushes to the same gateway.
     QSet<QString> m_sshMirrorPushing;
-    // Last push state computed for m_pushStateIndex, so updateRepoPushButton can
-    // paint the "Sync" button instantly from cache (e.g. flip to "Syncing
-    // changes…" the moment Sync is clicked) while a worker recomputes off-thread.
-    RepoPushState m_pushState;
-    int m_pushStateIndex = -1;        // repo index m_pushState describes (-1 = none)
-    bool m_pushStateInFlight = false; // a recompute worker is currently running
-    bool m_pushStatePending = false;  // another recompute was requested mid-flight
+    // A sync can finish while that asynchronous push is still transferring.
+    // Remember it instead of dropping it: once every gateway attempt finishes,
+    // push the newest served snapshot again so moving refs converge exactly.
+    QSet<QString> m_sshMirrorPushPending;
     // "owner/name" of repos whose @mention scan is running on a worker thread, so
     // a second sync/inbox drain doesn't kick a duplicate scan (and double-notify)
     // while the first is still loading issues/PRs off the UI thread.

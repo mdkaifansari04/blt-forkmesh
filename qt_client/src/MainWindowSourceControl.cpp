@@ -369,7 +369,7 @@ void MainWindow::refreshSourceControl(bool force)
     // button's count), not just the working-tree file changes, since staging/
     // committing/pulling elsewhere can leave that button stale.
     if (force)
-        updateRepoPushButton();
+        refreshRepoSyncIndicators();
     const QString dir = repoGitDir();
     const bool canWrite = !dir.isEmpty() && repoHasWorkingTree();
     if (m_scmEmptyNote)

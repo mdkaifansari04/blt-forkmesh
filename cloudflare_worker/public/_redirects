@@ -27,6 +27,12 @@
 /docs/:slug/ /docs/:slug/index.html 200
 /blog/ /blog 308
 /blogs /blog 308
+# The RSS feed is Worker-built (run_worker_first owns /blog/rss.xml). These
+# rules are the safety net: if the assets router ever sees one of these paths
+# first, it must not fall into the /blog/:slug post rewrites below.
+/blog/rss.xml /rss.xml 308
+/blog/feed.xml /rss.xml 308
+/feed.xml /rss.xml 308
 # Blog posts are directory indexes, but Workers Static Assets has
 # html_handling="none" so /blog/<slug>/ needs an explicit rewrite.
 /blog/:slug /blog/:slug/ 308
