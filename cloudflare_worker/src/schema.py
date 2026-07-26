@@ -1951,6 +1951,23 @@ SCHEMA_STATEMENTS = [
         last_ts INTEGER NOT NULL DEFAULT 0)""",
     "CREATE INDEX IF NOT EXISTS idx_referral_stats_rank "
     "ON referral_stats(signups DESC, clicks DESC)",
+    # Achievement badges (migration 0084): public recognition marks awarded
+    # once per (badge, account), either automatically at a real platform event
+    # (first 100 signups, an hour in the World, the first successful referral,
+    # becoming a mirror operator) or by a platform administrator. account_bi is
+    # a blind index; name is the plaintext public username (same trust level as
+    # profile_follows / referral_stats.name). granted_by is 'system' for an
+    # automatic award or the granting admin's username. Awards are permanent:
+    # later losing eligibility does not revoke an already-earned badge.
+    """CREATE TABLE IF NOT EXISTS badge_awards (
+        badge_slug TEXT NOT NULL,
+        account_bi TEXT NOT NULL,
+        name TEXT NOT NULL,
+        granted_by TEXT NOT NULL DEFAULT 'system',
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (badge_slug, account_bi))""",
+    "CREATE INDEX IF NOT EXISTS idx_badge_awards_account "
+    "ON badge_awards(account_bi)",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the

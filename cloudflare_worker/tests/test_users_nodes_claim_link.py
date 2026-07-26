@@ -166,8 +166,14 @@ def _harness(accounts):
     def _safe_error_text(error):
         return repr(error)
 
+    async def _award_badge(env, name, name_bi, slug, granted_by="system"):
+        # Badge awarding (adhoc #370) is covered in isolation by
+        # test_badges.py; this harness only needs the call site to resolve.
+        return None
+
     namespace = _load_functions({
         "Date": _DateStub,
+        "_award_badge": _award_badge,
         "clean_string": clean_string,
         "valid_node_name": valid_node_name,
         "json_response": json_response,
