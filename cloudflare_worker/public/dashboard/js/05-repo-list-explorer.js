@@ -232,7 +232,10 @@
 
   function nativeRepositoryLogoDataUrl(value) {
     const url = String(value || "");
-    return /^data:image\/(?:svg\+xml|png|jpeg|webp)(?:;|,)/i.test(url)
+    return (
+      /^data:image\/(?:svg\+xml|png|jpeg|webp)(?:;|,)/i.test(url)
+      || /^\/api\/repo\/[^/?#]+\/[^/?#]+\/raw\?[^#]+$/i.test(url)
+    )
       ? url
       : "";
   }
@@ -598,21 +601,80 @@
     hydrateNativeRepositoryLogos(container);
   }
 
-  function renderHomeChangelog() {
-    const container = $("[data-home-changelog-list]");
+  // Home right-rail "Latest from the blog" (adhoc #381): the newest feature
+  // posts with their artwork, read from the blog's own RSS document. The feed
+  // is derived from the shipped blog index and edge-cached for thirty minutes
+  // (see blog_feed.py), so this is one cheap same-origin read per dashboard
+  // load rather than a second hand-maintained copy of the post list.
+  const HOME_BLOG_POST_LIMIT = 3;
+  const HOME_BLOG_FEED_URL = "/blog/rss.xml";
+
+  // Feed URLs are absolute against forkmesh.com; keep only the path so the
+  // dashboard links and paints artwork from whatever origin it is served on
+  // (and never loads an image from a foreign host).
+  function homeBlogUrl(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    try {
+      const parsed = new URL(raw, window.location.origin);
+      return parsed.pathname + parsed.search;
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function parseHomeBlogFeed(xml) {
+    const doc = new DOMParser().parseFromString(String(xml || ""), "application/xml");
+    if (doc.querySelector("parsererror")) return [];
+    return Array.from(doc.querySelectorAll("item"))
+      .map((item) => ({
+        title: (item.querySelector("title")?.textContent || "").trim(),
+        href: homeBlogUrl(item.querySelector("link")?.textContent),
+        meta: (item.querySelector("category")?.textContent || "").trim(),
+        image: homeBlogUrl(item.querySelector("enclosure")?.getAttribute("url")),
+      }))
+      .filter((post) => post.title && post.href)
+      .slice(0, HOME_BLOG_POST_LIMIT);
+  }
+
+  function homeBlogPostCard(post) {
+    return `
+      <a href="${escapeHtml(post.href)}" class="group block overflow-hidden rounded-md border border-border hover:bg-secondary">
+        ${post.image ? `<img src="${escapeHtml(post.image)}" alt="" loading="lazy" class="block aspect-[16/9] w-full object-cover" />` : ""}
+        <span class="block px-3 py-2.5">
+          ${post.meta ? `<span class="block truncate font-mono text-[10px] uppercase text-muted-foreground">${escapeHtml(post.meta)}</span>` : ""}
+          <span class="mt-1 block text-sm font-semibold leading-5 text-foreground group-hover:text-accent">${escapeHtml(post.title)}</span>
+        </span>
+      </a>
+    `;
+  }
+
+  function renderHomeBlogPosts() {
+    const container = $("[data-home-blog-list]");
     if (!container) return;
-    const items = [
-      { label: "The Living Code City", meta: "v0.7.0 · July 2026", href: "/changelog" },
-      { label: "The Agent Mesh", meta: "v0.5.0 · June 2026", href: "/changelog" },
-      { label: "Autonomous agents", meta: "v0.4.0 · June 2026", href: "/changelog" },
-    ];
-    container.innerHTML = items.map((item) => `
-      <article class="relative">
-        <span class="absolute -left-[1.18rem] top-1.5 h-2 w-2 rounded-full bg-muted-foreground"></span>
-        <p class="text-xs text-muted-foreground">${escapeHtml(item.meta)}</p>
-        <a href="${escapeHtml(item.href)}" class="mt-1 block text-sm font-semibold leading-5 text-foreground hover:text-accent">${escapeHtml(item.label)}</a>
-      </article>
-    `).join("");
+    const posts = state.homeBlogPosts;
+    if (posts === null) {
+      container.innerHTML = '<div class="text-sm text-muted-foreground"><span class="fm-spinner" aria-hidden="true"></span>Loading blog posts...</div>';
+      return;
+    }
+    container.innerHTML = posts.length
+      ? posts.map(homeBlogPostCard).join("")
+      : '<div class="text-sm text-muted-foreground">Blog posts are unavailable right now.</div>';
+  }
+
+  async function loadHomeBlogPosts() {
+    if (!$("[data-home-blog-list]")) return;
+    try {
+      const response = await fetch(HOME_BLOG_FEED_URL, {
+        credentials: "omit",
+        headers: { accept: "application/rss+xml, application/xml" },
+      });
+      if (!response.ok) throw new Error(`blog feed returned ${response.status}`);
+      state.homeBlogPosts = parseHomeBlogFeed(await response.text());
+    } catch (_) {
+      state.homeBlogPosts = [];
+    }
+    renderHomeBlogPosts();
   }
 
   // Home left-rail "Active agent sessions" (adhoc #81). Renders the aggregated
@@ -718,7 +780,7 @@
     renderSidebarRepositories();
     renderHomeRepositories();
     renderHomeFeed();
-    renderHomeChangelog();
+    renderHomeBlogPosts();
     renderHomeAgentSessions();
     renderProfileRepositories();
     renderProfileRepositoryCount();
@@ -741,30 +803,43 @@
 
   function externalRepositoryCard(repository) {
     const logo = String(repository?.logo?.dataUrl || "");
-    const status = String(repository?.statusLabel || "External repository");
+    const hosted = Boolean(repository?.mirrored && repository?.mirror?.owner && repository?.mirror?.name);
+    const status = hosted
+      ? "Fully hosted by ForkMesh"
+      : String(repository?.statusLabel || "External repository");
     const provider = String(repository?.attribution?.provider || repository?.provider || "Provider");
     const original = String(repository?.originalUrl || "");
+    const forkmeshUrl = hosted
+      ? `/${encodeURIComponent(repository.targetOwner)}/${encodeURIComponent(repository.name)}`
+      : original;
     const canVolunteer = Boolean(state.session?.sessionToken) &&
       !["actively_mirrored", "archived"].includes(String(repository?.status || ""));
+    const manageable = Boolean(repository?.canManage);
+    const selected = state.externalRepositorySelection.has(String(repository?.id || ""));
     const incomplete = Array.isArray(repository?.metadataIncomplete) && repository.metadataIncomplete.length
       ? `<p class="mt-2 text-[11px] text-amber-300">Some metadata was unavailable or rate-limited during import.</p>`
       : "";
     return `
       <article class="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-start sm:px-5" data-external-repo-id="${escapeHtml(repository?.id || "")}">
+        ${manageable ? `<label class="mt-3 inline-flex shrink-0 items-center" title="Select ${escapeHtml(repository?.fullName || repository?.name || "repository")}">
+          <input data-external-repo-select="${escapeHtml(repository?.id || "")}" type="checkbox" ${selected ? "checked" : ""} class="h-4 w-4 rounded border-border bg-card accent-primary" />
+          <span class="sr-only">Select ${escapeHtml(repository?.fullName || repository?.name || "repository")}</span>
+        </label>` : ""}
         <img src="${escapeHtml(logo)}" alt="" class="h-12 w-12 shrink-0 rounded-xl border border-border bg-secondary object-cover" />
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-center gap-2">
-            <a href="${escapeHtml(original)}" target="_blank" rel="noopener noreferrer" class="truncate font-mono text-sm font-semibold text-foreground hover:text-primary hover:underline">${escapeHtml(repository?.fullName || repository?.name || "External repository")}</a>
+            <a href="${escapeHtml(forkmeshUrl)}" ${hosted ? "" : 'target="_blank" rel="noopener noreferrer"'} class="truncate font-mono text-sm font-semibold text-foreground hover:text-primary hover:underline">${escapeHtml(repository?.fullName || repository?.name || "External repository")}</a>
             <span class="rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">${escapeHtml(status)}</span>
             ${repository?.isPrivate ? '<span class="rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">Private · owner only</span>' : ""}
           </div>
           <p class="mt-1 text-xs leading-5 text-muted-foreground">${escapeHtml(repository?.metadata?.description || "No provider description.")}</p>
-          <p class="mt-2 text-[11px] leading-4 text-muted-foreground">${escapeHtml(repository?.mirrorNotice || "This external entry is not mirrored by ForkMesh.")}</p>
+          <p class="mt-2 text-[11px] leading-4 text-muted-foreground">${escapeHtml(hosted ? "The complete Git repository is synced, cloneable, and hosted by ForkMesh." : repository?.mirrorNotice || "This external entry is not mirrored by ForkMesh.")}</p>
           ${incomplete}
           <div class="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
             <a href="${escapeHtml(original)}" target="_blank" rel="noopener noreferrer" class="font-medium text-primary hover:underline">Open on ${escapeHtml(provider)}</a>
+            ${repository?.targetOwner ? `<span aria-hidden="true">·</span><span>Listed under ${repository?.targetOwnerType === "organization" ? "organization " : ""}<span class="font-mono text-foreground">${escapeHtml(repository.targetOwner)}</span></span>` : ""}
             <span aria-hidden="true">·</span>
-            <span>ForkMesh does not own or control this repository</span>
+            <span>${hosted ? "Full Git data hosted by ForkMesh" : "ForkMesh does not own or control this repository"}</span>
           </div>
         </div>
         ${canVolunteer ? `
@@ -785,7 +860,70 @@
     list.innerHTML = state.externalRepositories.length
       ? state.externalRepositories.map(externalRepositoryCard).join("")
       : '<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">No external repositories or stubs have been listed yet. Use “New repository” to import one.</div>';
+    syncExternalRepositoryActions();
     window.lucide?.createIcons();
+  }
+
+  function syncExternalRepositoryActions() {
+    const manageable = state.externalRepositories.filter((repository) => repository?.canManage);
+    const manageableIds = new Set(manageable.map((repository) => String(repository.id || "")));
+    for (const id of [...state.externalRepositorySelection]) {
+      if (!manageableIds.has(id)) state.externalRepositorySelection.delete(id);
+    }
+    const actions = $("[data-external-repo-actions]");
+    actions?.classList.toggle("hidden", manageable.length === 0);
+    actions?.classList.toggle("flex", manageable.length > 0);
+    const all = $("[data-external-repo-select-all]");
+    if (all) {
+      all.checked = manageable.length > 0 &&
+        manageable.every((repository) => state.externalRepositorySelection.has(String(repository.id || "")));
+      all.indeterminate = state.externalRepositorySelection.size > 0 && !all.checked;
+    }
+    const button = $("[data-external-repo-delete-selected]");
+    if (button) {
+      const count = state.externalRepositorySelection.size;
+      button.disabled = count === 0;
+      button.lastChild.textContent = count ? ` Delete selected (${count})` : " Delete selected";
+    }
+  }
+
+  function toggleAllExternalRepositories(checked) {
+    state.externalRepositorySelection.clear();
+    if (checked) {
+      state.externalRepositories
+        .filter((repository) => repository?.canManage)
+        .forEach((repository) => state.externalRepositorySelection.add(String(repository.id || "")));
+    }
+    renderExternalRepositories(state.externalRepositories);
+  }
+
+  async function deleteSelectedExternalRepositories() {
+    const ids = [...state.externalRepositorySelection];
+    if (!ids.length || !state.session?.sessionToken) return;
+    if (!window.confirm(`Delete ${ids.length} selected external ${ids.length === 1 ? "repository" : "repositories"}? This removes ForkMesh metadata and does not delete anything from the source provider.`)) return;
+    const button = $("[data-external-repo-delete-selected]");
+    if (button) button.disabled = true;
+    try {
+      for (const id of ids) {
+        const response = await fetch(`/api/repository-imports/${encodeURIComponent(id)}`, {
+          method: "DELETE",
+          body: JSON.stringify({ sessionToken: state.session.sessionToken }),
+          headers: {
+            accept: "application/json",
+            authorization: `Bearer ${state.session.sessionToken}`,
+            "content-type": "application/json",
+          },
+          cache: "no-store",
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        state.externalRepositorySelection.delete(id);
+      }
+      await loadExternalRepositories({ fresh: true });
+    } catch (error) {
+      setNewRepoHint(String(error?.message || "Could not delete selected imports."), "bad");
+      await loadExternalRepositories({ fresh: true });
+    }
   }
 
   async function loadExternalRepositories({ fresh = false } = {}) {
@@ -893,7 +1031,7 @@
       if (value) value.placeholder = "/home/you/code/my-project";
       if (hint) hint.textContent = "The desktop node reads this local repo directly — the path never leaves your machine.";
     } else if (provider) {
-      if (value) value.placeholder = "https://github.com/owner/repo or https://gitlab.com/group/repo";
+      if (value) value.placeholder = "https://github.com/owner/repo, https://gitlab.com/group/repo, or https://codeberg.org/owner/repo";
       if (hint) hint.textContent = "ForkMesh reads bounded metadata from the provider. Importing does not claim ownership or create a mirror.";
     } else {
       if (value) value.placeholder = "https://github.com/owner/repo.git";
@@ -935,11 +1073,11 @@
     const sourceValue = String($("[data-new-repo-source-value]")?.value || "").trim();
     if (source === "provider") {
       if (!state.session?.sessionToken) {
-        setNewRepoHint("Sign in to import a GitHub or GitLab repository.", "bad");
+        setNewRepoHint("Sign in to import a GitHub, GitLab, or Codeberg repository.", "bad");
         return;
       }
       if (!sourceValue) {
-        setNewRepoHint("Enter a GitHub or GitLab repository URL.", "bad");
+        setNewRepoHint("Enter a GitHub, GitLab, or Codeberg repository URL.", "bad");
         $("[data-new-repo-source-value]")?.focus();
         return;
       }
@@ -972,7 +1110,7 @@
         setNewRepoHint(
           code === "provider_rate_limited" ? "The provider rate limit was reached. Try again after its reset time."
             : code.includes("authorization") ? "The provider rejected access. Private repositories require a valid scoped token."
-            : code === "unsupported_provider" ? "Use a github.com or gitlab.com repository URL."
+            : code === "unsupported_provider" ? "Use a github.com, gitlab.com, or codeberg.org repository URL."
             : "Could not import provider metadata.",
           "bad",
         );

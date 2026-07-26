@@ -55,6 +55,17 @@ private key must be an Ed25519 PEM file supplied through `--signing-key` or
 **only that metadata** and publish it — never commit the private key. Run it
 once on a node of each OS to publish all three platform builds.
 
+The **Attach desktop build to release** action runs inside the Actions sandbox,
+which mounts no part of the host filesystem — a key *path* there would name
+nothing. Store the key material itself in the `FORKMESH_RELEASE_SIGNING_KEY_PEM`
+variable (Settings → Actions → Variables / secrets); the job materializes it
+`0600` inside the run, signs with it, and deletes it when the step ends. The
+variables dialog is single-line, so a PEM pasted with literal `\n` escapes is
+accepted as well as raw multi-line PEM (importing the variables JSON keeps the
+newlines). The job verifies the key can produce a 64-byte Ed25519 signature
+**before** starting the build, so a missing or wrong key fails in seconds
+instead of after the whole client has compiled.
+
 ### Refreshing a same-version binary
 
 Do not delete a checksum line or copy a local development executable into the

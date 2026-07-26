@@ -7699,8 +7699,9 @@ QUrlQuery MainWindow::signedInboxQuery(const QString &owner) const
     return query;
 }
 
-// Coalesce an explicit local refresh request into a single /api/sync fetch.
-// Routine repository changes are discovered by the bounded HTTPS sync poll.
+// Coalesce pushed relay event frames (NodeEventSocket) and explicit local
+// refresh requests into a single /api/sync fetch: a burst of web submissions
+// lands as one drain two seconds later, not one request per frame.
 void MainWindow::scheduleRelaySync()
 {
     if (!hasOwnerSigningCapability())

@@ -21,6 +21,12 @@ struct ActionWorkflow {
     QString name;               // display name (defaults to the file name)
     QStringList on;             // trigger events, e.g. {"push", "workflow_dispatch"}
     QMap<QString, QString> env; // workflow-level environment
+    // Node labels this workflow is dedicated to (`runs-on:`, at the top level or
+    // on any job). Empty means "any node that sees the push" — the historic
+    // behaviour. Otherwise only a node carrying one of these labels executes it,
+    // so a mesh can pin tests to one machine, Cloudflare deploys to a mirror,
+    // and an iOS build to a Mac.
+    QStringList runsOn;
     QList<ActionStep> steps;    // steps flattened across all jobs, in order
     bool valid = false;
     QString error;
@@ -39,14 +45,20 @@ struct ActionWorkflow {
     {
         return on.contains(QStringLiteral("workflow_dispatch"));
     }
+    // True when this node may execute the workflow. An undedicated workflow runs
+    // anywhere; a dedicated one needs one of its `runs-on` labels among this
+    // node's labels (case-insensitive). The reserved label "any" matches every
+    // node, so `runs-on: any` is an explicit way to say "wherever".
+    bool runsOnNode(const QStringList &nodeLabels) const;
 };
 
 // Parses a deliberately small YAML subset — enough for the workflow schema:
 //   name: <scalar>
 //   on: push | release | [release, workflow_dispatch] | block list
 //       # release = fires when a release tag is drafted; workflow_dispatch = manual
+//   runs-on: mac1 | [mirror2, linux] | block list   # optional node dedication
 //   env: { KEY: value, ... }
-//   jobs: { <job>: { steps: [ { name, run }, ... ] } }
+//   jobs: { <job>: { runs-on: ..., steps: [ { name, run }, ... ] } }
 //   steps: [ ... ]          # flattened top-level form is also accepted
 // Supports plain/quoted scalars, block and flow sequences, nested maps, and
 // literal block scalars (`run: |`). Full-line `#` comments are ignored.
@@ -57,6 +69,18 @@ public:
 
     // Find and parse every .forkmesh/*.yml|*.yaml under checkoutDir.
     static QList<ActionWorkflow> parseWorkflowsInDir(const QString &checkoutDir);
+
+    // The labels that identify THIS node to `runs-on:`. Always includes the
+    // machine's node name, the mirror-executor node name on a headless node, and
+    // the platform ("linux"/"macos"/"windows"), plus any operator-configured
+    // extras (a free-form comma/space/newline separated list). Deduplicated and
+    // lower-cased, because label matching is case-insensitive.
+    static QStringList nodeLabels(const QString &machineNode,
+                                  const QString &mirrorNode,
+                                  const QString &configured);
+
+    // Normalize one free-form label list into distinct lower-cased labels.
+    static QStringList parseLabelList(const QString &configured);
 
     // Substitute variable references with values from vars. The explicit
     // ${{ vars.NAME }} context form is always expanded (unknown names become

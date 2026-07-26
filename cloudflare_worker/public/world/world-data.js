@@ -24,6 +24,30 @@ export const LANDMARKS = [
     secondary: { label: "Payout eligibility", href: "/mirror-payouts" },
   },
   {
+    id: "campfire",
+    label: "Campfire circle",
+    shortLabel: "Campfire",
+    eyebrow: "COMMUNITY SEATING / 04",
+    icon: "🔥",
+    color: "#ff9a5a",
+    position: [8, 0, 8],
+    summary:
+      "The members' fire, where every registered account owns a named bench. Choosing it walks you back to your own seat.",
+    metaphor:
+      "A ring of wooden benches around a burning log pile, each plank signed with the name of the member it belongs to.",
+    reality:
+      "Bench names come from the same public account directory the chat roster uses. Sitting is a local pose plus the normal presence broadcast; it grants no access and reveals nothing beyond the position you already share.",
+    status: "Public roster seating",
+    statusTone: "live",
+    bullets: [
+      "One named bench per public registered account, kept for the whole session and left visibly empty while its owner is out walking the world.",
+      "Guests, and members the directory has not caught up with, take the open benches the circle always keeps free.",
+      "Private profiles and hidden-name visitors are never given a named bench.",
+      "The seated pose is held until you move, so any movement key stands you back up.",
+    ],
+    primary: { label: "Return to your bench", action: "campfire" },
+  },
+  {
     id: "repositories",
     label: "Repository portals",
     shortLabel: "Repositories",
@@ -122,6 +146,25 @@ export const OUTFIT_COLOR_OPTIONS = [
   { id: "violet", label: "Signal violet", color: "#8b6df2" },
   { id: "gold", label: "Founder's gold", color: "#e0b23e" },
   { id: "slate", label: "Slate blue", color: "#3a6ea5" },
+];
+
+// The tailored outfit cuts world-scene.js can draw. Every visitor's public
+// name seeds one of these deterministically; Supporting members may pin a
+// specific cut that every visitor sees instead. The ids must stay in lockstep
+// with WORLD_OUTFIT_STYLE_VALUES in src/world.py.
+export const OUTFIT_STYLE_OPTIONS = [
+  { id: "sash", label: "Diagonal sash" },
+  { id: "racer", label: "Racing stripes" },
+  { id: "chevron", label: "Chevron stack" },
+  { id: "argyle", label: "Argyle knit" },
+  { id: "circuit", label: "Circuit board" },
+  { id: "pixel", label: "Pixel mosaic" },
+  { id: "waves", label: "Terminal waves" },
+  { id: "starfield", label: "Night deploy" },
+  { id: "hex", label: "Hex grid" },
+  { id: "bolt", label: "Hotfix bolt" },
+  { id: "tartan", label: "Merge tartan" },
+  { id: "binary", label: "Binary rain" },
 ];
 
 export const AVAILABILITY_OPTIONS = [

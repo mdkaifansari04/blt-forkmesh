@@ -69,16 +69,84 @@ struct HostSshCommand {
 
 // Build the common authenticated transport used by install, logs, uninstall,
 // and Actions. The caller owns remoteCommand, which must not contain credentials.
+// identityFile optionally pins authentication to one ForkMesh-managed private
+// key (used for auto-provisioned Vultr mirrors); the path is public metadata,
+// the key material never leaves disk.
 HostSshCommand buildHostSshCommand(const QString &host,
                                    const QString &sshUser,
                                    const QString &sshPassword,
                                    const QString &remoteCommand,
-                                   QString *error = nullptr);
+                                   QString *error = nullptr,
+                                   const QString &identityFile = QString());
 
 // Stable, metadata-only key for a password retained in MainWindow memory for
 // this process lifetime. It is never written to QSettings.
 QString savedHostCredentialKey(const QString &nodeName, const QString &host,
                                const QString &sshUser);
+
+// One child of a browsed remote directory in the host size map. `bytes` is
+// disk usage as `du` reports it (allocated blocks), not apparent file size.
+struct HostDiskEntry {
+    QString name;      // basename, as shown in the size map
+    QString path;      // absolute remote path
+    qint64 bytes = 0;  // disk usage in bytes
+    bool directory = false;
+};
+
+// One measured level of a host's size map.
+struct HostDiskUsage {
+    QString path;
+    qint64 totalBytes = 0;         // disk usage of `path` itself
+    QList<HostDiskEntry> entries;  // children, largest first
+    QString error;                 // non-empty when the host refused the read
+    bool complete = false;         // the end sentinel arrived
+};
+
+// Collapse a browsed remote path to a canonical absolute POSIX path (no "."
+// or ".." components, no duplicate or trailing slashes). Returns an empty
+// string when the input is not usable as a remote path at all.
+QString normalizeRemoteDiskPath(const QString &path);
+
+// Build the bounded, read-only remote shell command that measures one level of
+// a host's disk usage. It only ever runs `du` over a single directory level and
+// frames its answer in base64 sentinel lines, so filenames — including ones
+// holding spaces, quotes or shell metacharacters — can never re-enter the
+// remote shell or this parser as syntax.
+QString buildHostDiskUsageCommand(const QString &path,
+                                  QString *error = nullptr);
+
+// Parse the sentinel-framed listing produced by buildHostDiskUsageCommand().
+// Login banners and other noise around the sentinels are ignored, and entries
+// come back sorted largest first.
+HostDiskUsage parseHostDiskUsage(const QByteArray &output,
+                                 const QString &path);
+
+// Human-readable byte size for the size map ("1.4 GB", "912 KB").
+QString formatDiskSize(qint64 bytes);
+
+// Classify a failed SSH install/uninstall attempt from OpenSSH's own exit code
+// and the tail of its (merged stdout+stderr) output, and return an actionable
+// hint to append after the generic "failed (exit N)" line — or an empty
+// string when the failure does not match a known connection-level pattern
+// (e.g. the remote command itself exited non-zero, which is not an SSH
+// transport problem). OpenSSH exits 255 for any failure before or during the
+// connection (unreachable host, refused/reset port, auth failure, host-key
+// mismatch); a non-255 code is always the remote command's own exit status, so
+// no SSH-side hint applies. When `host` is supplied and it is an address that
+// cannot be routed on the public internet, a timeout is diagnosed as that
+// rather than as a firewall.
+QString sshConnectionFailureHint(int exitCode, const QString &outputTail,
+                                 const QString &host = QString());
+
+// Describe the non-routable IPv4 range `host` falls in (RFC 1918 private,
+// RFC 6598 carrier-grade NAT, link-local, loopback), or an empty string when it
+// is a routable address or not an IPv4 literal at all.
+QString nonRoutableAddressNote(const QString &host);
+
+// One-line record of a failed SSH run — its exit code plus the last output
+// line — short enough to list one per attempt in the install window's attempt
+// history (adhoc #342).
+QString sshFailureSummary(int exitCode, const QString &outputTail);
 
 // Load saved host metadata and atomically migrate legacy plaintext password
 // fields out of QSettings. When supplied, sessionPasswords receives those
@@ -108,7 +176,8 @@ QByteArray buildMirrorActionsConfigurationPayload(
 MirrorActionsSshCommand buildMirrorActionsSshCommand(
     const MirrorActionsConfigurationRequest &request,
     const QString &sshPassword,
-    QString *error = nullptr);
+    QString *error = nullptr,
+    const QString &identityFile = QString());
 
 // Decode the remote helper's single bounded, base64url result sentinel.
 // Success is not inferred from an SSH exit code alone.
@@ -268,5 +337,101 @@ QByteArray httpsMirrorRegistrationSigningPayload(
     const QString &node, const QString &baseUrl,
     const QString &publicKey, qint64 issuedAtMs,
     QString *error = nullptr);
+
+// --- One-click Vultr mirror provisioning (adhoc #315) ----------------------
+// Pure helpers behind the Hosts page's "Create a Vultr mirror" flow. All
+// networking, key generation and polling stay in the UI layer; everything here
+// is deterministic over the raw Vultr v2 JSON so the selection and payload
+// contracts are testable. The API key travels only in the Authorization header
+// of the desktop's HTTPS calls — never in argv, QSettings, or logs.
+
+// Empty string when the key and node name are safe to use, otherwise a
+// user-facing error. The key shape is deliberately loose (alphanumeric,
+// bounded) so future Vultr formats keep working.
+QString validateVultrMirrorRequest(const QString &apiKey,
+                                   const QString &nodeName);
+
+// True when a plan ships a routable IPv4 address. Vultr's cheapest tiers are
+// IPv6-only ("...-v6" plan ids): they boot fine but nothing in the mesh (SSH
+// provisioning, the A record, clients cloning) can reach them, so they must
+// never win the cheapest-plan race (adhoc #344).
+bool vultrPlanHasIpv4(const QJsonObject &plan);
+
+// From GET /v2/plans: the cheapest plan that can actually be deployed
+// (monthly_cost > 0, at least one location, and IPv4). Ties break toward more
+// RAM, then the lexicographically smallest id, so selection is deterministic.
+QJsonObject cheapestVultrPlan(const QJsonArray &plans);
+
+// Deterministic region for a chosen plan: its lexicographically first
+// location. Empty when the plan has none.
+QString vultrPlanRegion(const QJsonObject &plan);
+
+// From GET /v2/os: the newest x64 Debian image (highest version number in the
+// name; ties break toward the higher os id).
+QJsonObject latestVultrDebianOs(const QJsonArray &osList);
+
+// Exact POST /v2/instances body for a ForkMesh mirror: chosen plan/region/OS,
+// the managed SSH key, no backups, no activation email, tagged so the instance
+// is recognizable in the Vultr panel.
+QJsonObject vultrInstanceCreatePayload(const QString &nodeName,
+                                       const QString &planId,
+                                       const QString &regionId,
+                                       int osId,
+                                       const QString &sshKeyId);
+
+// The instance's routable IPv4 once it is ready for SSH provisioning
+// (status active, power running, real main_ip); empty while it is still
+// booting or when the object is malformed.
+QString vultrInstanceReadyIp(const QJsonObject &instance);
+
+// True when a booted instance only ever got an IPv6 address (v6_main_ip set,
+// main_ip still unassigned). Polling such an instance can only time out, so the
+// provisioning flow fails fast with an explanation instead (adhoc #344).
+bool vultrInstanceIsIpv6Only(const QJsonObject &instance);
+
+// Default node name for a one-click mirror: the next free "mirrorN" over every
+// name already in use (saved hosts plus the account's linked nodes), so a new
+// instance joins the fleet as mirror5 next to mirror1..mirror4 instead of
+// carrying its hosting provider in its name (adhoc #344).
+QString nextMirrorNodeName(const QStringList &existingNames);
+
+// Resolve a Vultr API key this node already stores as a device-local Actions
+// variable (same contract as cloudflareApiTokenFromVariables).
+QString vultrApiKeyFromVariables(const QMap<QString, QString> &variables);
+
+// --- Cloudflare DNS for a fresh Vultr mirror (adhoc #331) ------------------
+// A brand-new Vultr instance is only reachable at a raw address, so it never
+// joins the mesh under a stable name the way the hand-provisioned mirrors do.
+// These helpers derive the node's record in the operator's own Cloudflare zone
+// so one-click provisioning ends with "<node>.<zone>" resolving to it. The
+// record is DNS-only: the node answers on SSH and its own ports, and the
+// proxied Tunnel hostname of the direct HTTPS gateway stays a separate record.
+
+// The zone the mesh's mirror records live in, stored as a device-local Actions
+// variable (the Control node page's saved zone wins over this).
+QString cloudflareZoneNameFromVariables(const QMap<QString, QString> &variables);
+
+// "<node>.<zone>" for a mirror node, lowercased. Empty when either half is
+// missing or is not a plain DNS label/zone name, so a malformed pair can never
+// reach the Cloudflare API.
+QString vultrMirrorDnsHostname(const QString &nodeName,
+                               const QString &zoneName);
+
+// Exact DNS record body for the node: a DNS-only A record at automatic TTL,
+// commented so the record is recognizable in the Cloudflare dashboard. Empty
+// when the hostname or IPv4 address is malformed.
+QJsonObject vultrMirrorDnsRecordPayload(const QString &hostname,
+                                        const QString &ip);
+
+// From GET /zones: the id of the requested zone, matched on the exact name.
+// Empty unless exactly one zone matches, so an ambiguous token never writes.
+QString cloudflareZoneId(const QJsonArray &zones, const QString &zoneName);
+
+// From GET /zones/<id>/dns_records: the id of an existing record for this
+// hostname, so repeated deploys of the same node name update in place instead
+// of stacking duplicate answers. Empty when there is no single such record.
+QString cloudflareDnsRecordId(const QJsonArray &records,
+                              const QString &hostname,
+                              const QString &recordType);
 
 } // namespace forkmesh::control

@@ -18,6 +18,13 @@
 namespace forkmesh::control {
 namespace {
 
+// POSIX single-quoting: the only way a value can leave a shell word here.
+QString shellSingleQuote(QString value)
+{
+    value.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+    return QLatin1Char('\'') + value + QLatin1Char('\'');
+}
+
 bool isDnsName(const QString &value)
 {
     if (value.isEmpty() || value.size() > 253 ||
@@ -323,7 +330,8 @@ HostSshCommand buildHostSshCommand(const QString &host,
                                    const QString &sshUser,
                                    const QString &sshPassword,
                                    const QString &remoteCommand,
-                                   QString *error)
+                                   QString *error,
+                                   const QString &identityFile)
 {
     HostSshCommand command;
     if (!isSafeSshEndpoint(host, sshUser)) {
@@ -378,6 +386,22 @@ HostSshCommand buildHostSshCommand(const QString &host,
         QStringLiteral("-o"), QStringLiteral("UpdateHostKeys=yes"),
         QStringLiteral("-o"), QStringLiteral("ConnectTimeout=30"),
     };
+    // Pin authentication to a ForkMesh-managed key when the saved host records
+    // one (auto-provisioned Vultr mirrors). -i is argv-safe for any path;
+    // IdentitiesOnly stops the agent offering unrelated keys first.
+    const QString identity = identityFile.trimmed();
+    if (!identity.isEmpty()) {
+        if (identity.contains(QChar::Null) ||
+            !QFileInfo(identity).isFile()) {
+            if (error)
+                *error = QStringLiteral(
+                    "The managed SSH key for this host is missing.");
+            return command;
+        }
+        arguments << QStringLiteral("-i") << identity
+                  << QStringLiteral("-o")
+                  << QStringLiteral("IdentitiesOnly=yes");
+    }
     command.environment = QProcessEnvironment::systemEnvironment();
     command.environment.remove(QStringLiteral("SSHPASS"));
     if (sshPassword.isEmpty()) {
@@ -411,6 +435,286 @@ QString savedHostCredentialKey(const QString &nodeName, const QString &host,
         nodeName.trimmed(), host.trimmed().toLower(), sshUser.trimmed()};
     return QString::fromUtf8(
         QJsonDocument(identity).toJson(QJsonDocument::Compact));
+}
+
+QString normalizeRemoteDiskPath(const QString &path)
+{
+    QString value = path.trimmed();
+    if (value.isEmpty())
+        value = QStringLiteral("/");
+    if (!value.startsWith(QLatin1Char('/')) || value.contains(QChar::Null) ||
+        value.contains(QLatin1Char('\n')) || value.contains(QLatin1Char('\r')) ||
+        value.size() > 4096) {
+        return {};
+    }
+    QStringList parts;
+    const QStringList raw = value.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    for (const QString &part : raw) {
+        if (part == QStringLiteral("."))
+            continue;
+        if (part == QStringLiteral("..")) {
+            if (!parts.isEmpty())
+                parts.removeLast();
+            continue;
+        }
+        parts.append(part);
+    }
+    if (parts.isEmpty())
+        return QStringLiteral("/");
+    return QLatin1Char('/') + parts.join(QLatin1Char('/'));
+}
+
+QString buildHostDiskUsageCommand(const QString &path, QString *error)
+{
+    const QString target = normalizeRemoteDiskPath(path);
+    if (target.isEmpty()) {
+        if (error) {
+            *error = QStringLiteral(
+                "That is not a valid absolute path on the host.");
+        }
+        return {};
+    }
+    // Both failure messages are encoded here rather than on the host: the
+    // remote side may have no base64 at all, and pre-encoding keeps the
+    // sentinel grammar identical for every outcome.
+    const auto sentinelText = [](const char *message) {
+        return QString::fromLatin1(
+            QByteArray(message).toBase64(QByteArray::Base64Encoding));
+    };
+    const QString unreadable = sentinelText(
+        "ForkMesh could not read that directory on this host.");
+    const QString noBase64 = sentinelText(
+        "This host has no base64 command, so ForkMesh cannot read its size "
+        "map safely.");
+    // Read-only by construction: one `du` over a single directory level, with
+    // every name handed back base64-encoded so it never becomes shell syntax.
+    const QString script =
+        QStringLiteral(
+            "set -u\n"
+            "LC_ALL=C\n"
+            "export LC_ALL\n"
+            "p=%1\n"
+            "if [ ! -d \"$p\" ] || [ ! -r \"$p\" ]; then\n"
+            "  printf 'FORKMESH-DU1-ERROR %2\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            "if ! command -v base64 >/dev/null 2>&1; then\n"
+            "  printf 'FORKMESH-DU1-ERROR %3\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            "tab=$(printf '\\t')\n"
+            "du -x -k -a -d 1 -- \"$p\" 2>/dev/null | "
+            "while IFS=\"$tab\" read -r sz nm; do\n"
+            "  [ -n \"${sz:-}\" ] || continue\n"
+            "  if [ \"$nm\" = \"$p\" ]; then t=T\n"
+            "  elif [ -L \"$nm\" ]; then t=f\n"
+            "  elif [ -d \"$nm\" ]; then t=d\n"
+            "  else t=f\n"
+            "  fi\n"
+            "  printf 'FORKMESH-DU1 %s %s %s\\n' \"$t\" \"$sz\" "
+            "\"$(printf '%s' \"$nm\" | base64 | tr -d '\\n')\"\n"
+            "done\n"
+            "printf 'FORKMESH-DU1-END\\n'\n")
+            .arg(shellSingleQuote(target), unreadable, noBase64);
+    if (error)
+        error->clear();
+    return QStringLiteral("sh -lc ") + shellSingleQuote(script);
+}
+
+HostDiskUsage parseHostDiskUsage(const QByteArray &output, const QString &path)
+{
+    HostDiskUsage usage;
+    usage.path = normalizeRemoteDiskPath(path);
+    const QStringList lines =
+        QString::fromUtf8(output)
+            .split(QRegularExpression(QStringLiteral("[\\r\\n]")),
+                   Qt::SkipEmptyParts);
+    for (const QString &raw : lines) {
+        const QString line = raw.trimmed();
+        if (line == QStringLiteral("FORKMESH-DU1-END")) {
+            usage.complete = true;
+            continue;
+        }
+        if (line.startsWith(QStringLiteral("FORKMESH-DU1-ERROR "))) {
+            const QByteArray decoded = QByteArray::fromBase64(
+                line.mid(19).trimmed().toLatin1());
+            usage.error = decoded.isEmpty()
+                ? QStringLiteral("The host refused the size-map read.")
+                : QString::fromUtf8(decoded);
+            usage.complete = true;
+            continue;
+        }
+        if (!line.startsWith(QStringLiteral("FORKMESH-DU1 ")))
+            continue;
+        const QStringList fields =
+            line.mid(13).split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        if (fields.size() != 3)
+            continue;
+        bool ok = false;
+        const qint64 kib = fields.at(1).toLongLong(&ok);
+        if (!ok || kib < 0)
+            continue;
+        const QString decoded =
+            QString::fromUtf8(QByteArray::fromBase64(fields.at(2).toLatin1()));
+        if (decoded.isEmpty() || decoded.contains(QChar::Null))
+            continue;
+        const qint64 bytes = kib * 1024;
+        if (fields.at(0) == QStringLiteral("T")) {
+            usage.totalBytes = bytes;
+            continue;
+        }
+        HostDiskEntry entry;
+        entry.path = decoded;
+        entry.name = decoded.section(QLatin1Char('/'), -1);
+        if (entry.name.isEmpty())
+            entry.name = decoded;
+        entry.bytes = bytes;
+        entry.directory = fields.at(0) == QStringLiteral("d");
+        usage.entries.append(entry);
+    }
+    std::sort(usage.entries.begin(), usage.entries.end(),
+              [](const HostDiskEntry &a, const HostDiskEntry &b) {
+                  if (a.bytes != b.bytes)
+                      return a.bytes > b.bytes;
+                  return a.name.localeAwareCompare(b.name) < 0;
+              });
+    return usage;
+}
+
+QString formatDiskSize(qint64 bytes)
+{
+    if (bytes < 0)
+        return QStringLiteral("—");
+    if (bytes < 1024)
+        return QStringLiteral("%1 B").arg(bytes);
+    static const char *const units[] = {"KB", "MB", "GB", "TB", "PB"};
+    double value = static_cast<double>(bytes) / 1024.0;
+    int unit = 0;
+    while (value >= 1024.0 && unit < 4) {
+        value /= 1024.0;
+        ++unit;
+    }
+    return QStringLiteral("%1 %2")
+        .arg(value, 0, 'f', value >= 100.0 ? 0 : 1)
+        .arg(QLatin1String(units[unit]));
+}
+
+QString nonRoutableAddressNote(const QString &host)
+{
+    static const QRegularExpression ipv4Pattern(
+        QStringLiteral("^(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})$"));
+    const QRegularExpressionMatch match = ipv4Pattern.match(host.trimmed());
+    if (!match.hasMatch())
+        return {};
+    int octet[4] = {0, 0, 0, 0};
+    for (int i = 0; i < 4; ++i) {
+        octet[i] = match.captured(i + 1).toInt();
+        if (octet[i] > 255)
+            return {};
+    }
+    if (octet[0] == 10)
+        return QStringLiteral("the private range 10.0.0.0/8 (RFC 1918)");
+    if (octet[0] == 172 && octet[1] >= 16 && octet[1] <= 31)
+        return QStringLiteral("the private range 172.16.0.0/12 (RFC 1918)");
+    if (octet[0] == 192 && octet[1] == 168)
+        return QStringLiteral("the private range 192.168.0.0/16 (RFC 1918)");
+    if (octet[0] == 100 && octet[1] >= 64 && octet[1] <= 127)
+        return QStringLiteral(
+            "100.64.0.0/10, the carrier-grade NAT / shared address range "
+            "(RFC 6598) that VPN meshes such as Tailscale also hand out");
+    if (octet[0] == 169 && octet[1] == 254)
+        return QStringLiteral("the link-local range 169.254.0.0/16");
+    if (octet[0] == 127)
+        return QStringLiteral("the loopback range 127.0.0.0/8");
+    return {};
+}
+
+QString sshFailureSummary(int exitCode, const QString &outputTail)
+{
+    QString reason;
+    const QStringList lines =
+        outputTail.split(QRegularExpression(QStringLiteral("[\\r\\n]")),
+                         Qt::SkipEmptyParts);
+    for (int i = lines.size() - 1; i >= 0; --i) {
+        const QString line = lines.at(i).trimmed();
+        if (line.isEmpty())
+            continue;
+        reason = line;
+        break;
+    }
+    if (reason.size() > 160)
+        reason = reason.left(157) + QStringLiteral("...");
+    if (reason.isEmpty())
+        return QStringLiteral("exit %1").arg(exitCode);
+    return QString::fromUtf8("exit %1 \xE2\x80\x94 %2")
+        .arg(QString::number(exitCode), reason);
+}
+
+QString sshConnectionFailureHint(int exitCode, const QString &outputTail,
+                                 const QString &host)
+{
+    if (exitCode != 255)
+        return {};
+    const QString tail = outputTail.toLower();
+    const bool dropped =
+        tail.contains(QStringLiteral("connection timed out")) ||
+        tail.contains(QStringLiteral("operation timed out")) ||
+        tail.contains(QStringLiteral("no route to host"));
+    // Packets vanishing towards an address that is not routable on the public
+    // internet is not a firewall at all — no network between here and there
+    // can carry them (adhoc #342). Say so instead of sending the operator off
+    // to audit security groups that were never involved.
+    if (dropped) {
+        const QString range = nonRoutableAddressNote(host);
+        if (!range.isEmpty())
+            return QString::fromUtf8(
+                       "%1 is in %2, so it is not reachable from the public "
+                       "internet \xE2\x80\x94 the packets are dropped in "
+                       "transit rather than by any firewall. Unless this "
+                       "machine is on that same private network or VPN, use "
+                       "the host's public address here (or connect to the "
+                       "network that owns the range first).")
+                .arg(host.trimmed(), range);
+    }
+    if (tail.contains(QStringLiteral("connection timed out")) ||
+        tail.contains(QStringLiteral("operation timed out"))) {
+        return QStringLiteral(
+            "The connection to port 22 timed out \xE2\x80\x94 packets are "
+            "being dropped, not rejected. This almost always means a firewall "
+            "or cloud security group between here and the host is blocking "
+            "SSH: check the provider's firewall/security-group rules for this "
+            "instance (and any local network firewall) allow inbound TCP 22 "
+            "from your IP, then confirm the address is correct and the host "
+            "has finished booting.");
+    }
+    if (tail.contains(QStringLiteral("connection refused"))) {
+        return QStringLiteral(
+            "The host actively refused the connection on port 22 \xE2\x80\x94 "
+            "SSH is not listening yet (a freshly booted instance can take a "
+            "minute or two) or a firewall rule is rejecting the port outright. "
+            "Wait a moment and retry; if it persists, check the provider's "
+            "firewall/security-group settings for this instance.");
+    }
+    if (tail.contains(QStringLiteral("no route to host"))) {
+        return QStringLiteral(
+            "There is no network route to this host \xE2\x80\x94 check that "
+            "the address is correct and that a firewall or security group "
+            "is not dropping the traffic.");
+    }
+    if (tail.contains(QStringLiteral("host key verification failed"))) {
+        return QStringLiteral(
+            "The host's SSH key does not match the one ForkMesh already "
+            "trusts for it \xE2\x80\x94 this usually means the instance was "
+            "rebuilt/reinstalled at the same address. Remove the stale entry "
+            "from this app's managed known_hosts file if you intended that, "
+            "then retry.");
+    }
+    if (tail.contains(QStringLiteral("permission denied"))) {
+        return QStringLiteral(
+            "The host rejected the credentials \xE2\x80\x94 double-check the "
+            "SSH user, password, and key for this saved host.");
+    }
+    return {};
 }
 
 QJsonArray loadSavedHosts(QSettings &settings, const QString &settingsKey,
@@ -552,7 +856,8 @@ QByteArray buildMirrorActionsConfigurationPayload(
 
 MirrorActionsSshCommand buildMirrorActionsSshCommand(
     const MirrorActionsConfigurationRequest &request,
-    const QString &sshPassword, QString *error)
+    const QString &sshPassword, QString *error,
+    const QString &identityFile)
 {
     MirrorActionsSshCommand command;
     command.standardInput =
@@ -569,7 +874,8 @@ MirrorActionsSshCommand buildMirrorActionsSshCommand(
         "else printf 'ForkMesh Actions helper is not installed.\\n' >&2; "
         "exit 127; fi");
     const HostSshCommand ssh = buildHostSshCommand(
-        request.host, request.sshUser, sshPassword, remoteCommand, error);
+        request.host, request.sshUser, sshPassword, remoteCommand, error,
+        identityFile);
     if (ssh.program.isEmpty()) {
         command.standardInput.fill('\0');
         command.standardInput.clear();
@@ -1428,6 +1734,322 @@ QByteArray mirrorManifestSigningPayload(const QJsonObject &request,
     if (error)
         error->clear();
     return payload;
+}
+
+QString validateVultrMirrorRequest(const QString &apiKey,
+                                   const QString &nodeName)
+{
+    static const QRegularExpression keyPattern(
+        QStringLiteral("^[A-Za-z0-9]{20,128}$"));
+    if (!keyPattern.match(apiKey.trimmed()).hasMatch()) {
+        return QStringLiteral(
+            "Enter your Vultr API key (Account \xE2\x86\x92 API in the Vultr "
+            "panel). It is used from memory only and never saved to disk.");
+    }
+    static const QRegularExpression nodePattern(
+        QStringLiteral("^[a-z][a-z0-9-]{0,62}$"));
+    if (!nodePattern.match(nodeName.trimmed()).hasMatch()) {
+        return QStringLiteral(
+            "The node name must start with a letter and contain only lowercase "
+            "letters, digits, or hyphens (63 characters maximum).");
+    }
+    return {};
+}
+
+bool vultrPlanHasIpv4(const QJsonObject &plan)
+{
+    // Vultr marks its IPv6-only tiers with a "-v6" id suffix ("vc2-1c-0.5gb-v6")
+    // and nothing else in the plan object distinguishes them.
+    const QString id =
+        plan.value(QStringLiteral("id")).toString().trimmed().toLower();
+    if (id.isEmpty())
+        return false;
+    return !id.endsWith(QLatin1String("-v6")) &&
+           !id.contains(QLatin1String("-v6-"));
+}
+
+QJsonObject cheapestVultrPlan(const QJsonArray &plans)
+{
+    QJsonObject best;
+    for (const QJsonValue &value : plans) {
+        const QJsonObject plan = value.toObject();
+        const double cost = plan.value(QStringLiteral("monthly_cost")).toDouble();
+        const QString id = plan.value(QStringLiteral("id")).toString();
+        if (id.isEmpty() || !std::isfinite(cost) || cost <= 0.0 ||
+            !vultrPlanHasIpv4(plan) ||
+            plan.value(QStringLiteral("locations")).toArray().isEmpty()) {
+            continue;
+        }
+        if (best.isEmpty()) {
+            best = plan;
+            continue;
+        }
+        const double bestCost =
+            best.value(QStringLiteral("monthly_cost")).toDouble();
+        if (cost < bestCost) {
+            best = plan;
+            continue;
+        }
+        if (cost > bestCost)
+            continue;
+        const double ram = plan.value(QStringLiteral("ram")).toDouble();
+        const double bestRam = best.value(QStringLiteral("ram")).toDouble();
+        if (ram > bestRam ||
+            (ram == bestRam &&
+             id < best.value(QStringLiteral("id")).toString())) {
+            best = plan;
+        }
+    }
+    return best;
+}
+
+QString vultrPlanRegion(const QJsonObject &plan)
+{
+    QStringList locations;
+    for (const QJsonValue &value :
+         plan.value(QStringLiteral("locations")).toArray()) {
+        const QString region = value.toString().trimmed();
+        if (!region.isEmpty())
+            locations.append(region);
+    }
+    std::sort(locations.begin(), locations.end());
+    return locations.isEmpty() ? QString() : locations.first();
+}
+
+QJsonObject latestVultrDebianOs(const QJsonArray &osList)
+{
+    QJsonObject best;
+    int bestVersion = -1;
+    static const QRegularExpression versionPattern(
+        QStringLiteral("\\b(\\d+)\\b"));
+    for (const QJsonValue &value : osList) {
+        const QJsonObject os = value.toObject();
+        if (os.value(QStringLiteral("family")).toString().toLower() !=
+                QLatin1String("debian") ||
+            os.value(QStringLiteral("arch")).toString().toLower() !=
+                QLatin1String("x64") ||
+            os.value(QStringLiteral("id")).toInt() <= 0) {
+            continue;
+        }
+        const QRegularExpressionMatch match =
+            versionPattern.match(os.value(QStringLiteral("name")).toString());
+        const int version = match.hasMatch() ? match.captured(1).toInt() : 0;
+        if (version > bestVersion ||
+            (version == bestVersion &&
+             os.value(QStringLiteral("id")).toInt() >
+                 best.value(QStringLiteral("id")).toInt())) {
+            best = os;
+            bestVersion = version;
+        }
+    }
+    return best;
+}
+
+QJsonObject vultrInstanceCreatePayload(const QString &nodeName,
+                                       const QString &planId,
+                                       const QString &regionId,
+                                       int osId,
+                                       const QString &sshKeyId)
+{
+    return {
+        {QStringLiteral("region"), regionId},
+        {QStringLiteral("plan"), planId},
+        {QStringLiteral("os_id"), osId},
+        {QStringLiteral("label"), nodeName.trimmed()},
+        {QStringLiteral("hostname"), nodeName.trimmed()},
+        {QStringLiteral("sshkey_id"), QJsonArray{sshKeyId}},
+        {QStringLiteral("backups"), QStringLiteral("disabled")},
+        // The mesh reaches mirrors over IPv4 only: never let Vultr hand back an
+        // instance whose sole address is a v6 one (adhoc #344).
+        {QStringLiteral("enable_ipv6"), false},
+        {QStringLiteral("activation_email"), false},
+        {QStringLiteral("tags"),
+         QJsonArray{QStringLiteral("forkmesh-mirror")}},
+    };
+}
+
+QString vultrInstanceReadyIp(const QJsonObject &instance)
+{
+    if (instance.value(QStringLiteral("status")).toString() !=
+            QLatin1String("active") ||
+        instance.value(QStringLiteral("power_status")).toString() !=
+            QLatin1String("running")) {
+        return {};
+    }
+    const QString ip =
+        instance.value(QStringLiteral("main_ip")).toString().trimmed();
+    static const QRegularExpression ipv4Pattern(
+        QStringLiteral("^(?:\\d{1,3}\\.){3}\\d{1,3}$"));
+    if (ip.isEmpty() || ip == QLatin1String("0.0.0.0") ||
+        !ipv4Pattern.match(ip).hasMatch()) {
+        return {};
+    }
+    return ip;
+}
+
+bool vultrInstanceIsIpv6Only(const QJsonObject &instance)
+{
+    const QString v6 =
+        instance.value(QStringLiteral("v6_main_ip")).toString().trimmed();
+    if (v6.isEmpty() || !v6.contains(QLatin1Char(':')))
+        return false;
+    const QString ip =
+        instance.value(QStringLiteral("main_ip")).toString().trimmed();
+    return ip.isEmpty() || ip == QLatin1String("0.0.0.0");
+}
+
+QString nextMirrorNodeName(const QStringList &existingNames)
+{
+    static const QRegularExpression mirrorPattern(
+        QStringLiteral("^mirror-?(\\d{1,4})$"));
+    QSet<QString> used;
+    int highest = 0;
+    for (const QString &name : existingNames) {
+        const QString normalized = name.trimmed().toLower();
+        if (normalized.isEmpty())
+            continue;
+        used.insert(normalized);
+        const QRegularExpressionMatch match = mirrorPattern.match(normalized);
+        if (match.hasMatch())
+            highest = std::max(highest, match.captured(1).toInt());
+    }
+    // Continue the fleet's own numbering (mirror1..mirror4 -> mirror5) and then
+    // walk forward past any name already taken, so the default never collides.
+    for (int i = std::max(1, highest + 1); i <= 9999; ++i) {
+        const QString candidate = QStringLiteral("mirror%1").arg(i);
+        if (!used.contains(candidate))
+            return candidate;
+    }
+    return {};
+}
+
+QString vultrApiKeyFromVariables(const QMap<QString, QString> &variables)
+{
+    return storedCredential(variables, {
+                                           QStringLiteral("VULTR_API_KEY"),
+                                           QStringLiteral("VULTR_TOKEN"),
+                                           QStringLiteral("VULTR_KEY"),
+                                       });
+}
+
+QString cloudflareZoneNameFromVariables(
+    const QMap<QString, QString> &variables)
+{
+    return storedCredential(variables,
+                            {
+                                QStringLiteral("CLOUDFLARE_ZONE"),
+                                QStringLiteral("CLOUDFLARE_ZONE_NAME"),
+                                QStringLiteral("CF_ZONE"),
+                            });
+}
+
+QString vultrMirrorDnsHostname(const QString &nodeName,
+                               const QString &zoneName)
+{
+    static const QRegularExpression labelPattern(
+        QStringLiteral("^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"));
+    static const QRegularExpression zonePattern(
+        QStringLiteral("^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+                       "(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"));
+    const QString node = nodeName.trimmed().toLower();
+    QString zone = zoneName.trimmed().toLower();
+    while (zone.endsWith(QLatin1Char('.')))
+        zone.chop(1);
+    if (!labelPattern.match(node).hasMatch() ||
+        !zonePattern.match(zone).hasMatch()) {
+        return {};
+    }
+    const QString hostname = node + QLatin1Char('.') + zone;
+    return hostname.size() <= 253 ? hostname : QString();
+}
+
+QJsonObject vultrMirrorDnsRecordPayload(const QString &hostname,
+                                        const QString &ip)
+{
+    const QString name = hostname.trimmed().toLower();
+    const QString address = ip.trimmed();
+    static const QRegularExpression namePattern(
+        QStringLiteral("^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+                       "(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"));
+    if (!namePattern.match(name).hasMatch() || name.size() > 253)
+        return {};
+    const QStringList octets = address.split(QLatin1Char('.'));
+    if (octets.size() != 4 || address == QLatin1String("0.0.0.0"))
+        return {};
+    for (const QString &octet : octets) {
+        bool ok = false;
+        const int value = octet.toInt(&ok);
+        if (!ok || octet.isEmpty() || octet.size() > 3 || value < 0 ||
+            value > 255) {
+            return {};
+        }
+    }
+    return {
+        {QStringLiteral("type"), QStringLiteral("A")},
+        {QStringLiteral("name"), name},
+        {QStringLiteral("content"), address},
+        // DNS-only: the node is reached over SSH and its own listeners, and a
+        // proxied answer would break both. The direct HTTPS mirror endpoint
+        // keeps its own proxied Tunnel record.
+        {QStringLiteral("proxied"), false},
+        {QStringLiteral("ttl"), 1},
+        {QStringLiteral("comment"), QStringLiteral("ForkMesh mirror node")},
+    };
+}
+
+QString cloudflareZoneId(const QJsonArray &zones, const QString &zoneName)
+{
+    QString zone = zoneName.trimmed().toLower();
+    while (zone.endsWith(QLatin1Char('.')))
+        zone.chop(1);
+    if (zone.isEmpty())
+        return {};
+    static const QRegularExpression idPattern(
+        QStringLiteral("^[A-Za-z0-9_-]{1,128}$"));
+    QString found;
+    for (const QJsonValue &value : zones) {
+        const QJsonObject candidate = value.toObject();
+        if (candidate.value(QStringLiteral("name")).toString().trimmed().toLower() !=
+            zone) {
+            continue;
+        }
+        const QString id = candidate.value(QStringLiteral("id")).toString().trimmed();
+        if (!idPattern.match(id).hasMatch())
+            return {};
+        if (!found.isEmpty() && found != id)
+            return {};
+        found = id;
+    }
+    return found;
+}
+
+QString cloudflareDnsRecordId(const QJsonArray &records,
+                              const QString &hostname,
+                              const QString &recordType)
+{
+    const QString name = hostname.trimmed().toLower();
+    const QString type = recordType.trimmed().toUpper();
+    if (name.isEmpty() || type.isEmpty())
+        return {};
+    static const QRegularExpression idPattern(
+        QStringLiteral("^[A-Za-z0-9_-]{1,128}$"));
+    QString found;
+    for (const QJsonValue &value : records) {
+        const QJsonObject record = value.toObject();
+        if (record.value(QStringLiteral("name")).toString().trimmed().toLower() !=
+                name ||
+            record.value(QStringLiteral("type")).toString().trimmed().toUpper() !=
+                type) {
+            continue;
+        }
+        const QString id = record.value(QStringLiteral("id")).toString().trimmed();
+        if (!idPattern.match(id).hasMatch())
+            return {};
+        if (!found.isEmpty() && found != id)
+            return {};
+        found = id;
+    }
+    return found;
 }
 
 } // namespace forkmesh::control

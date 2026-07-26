@@ -148,17 +148,6 @@ SCHEMA_STATEMENTS = [
         os TEXT, arch TEXT, pm TEXT, distro TEXT, version TEXT, detail TEXT)""",
     "CREATE INDEX IF NOT EXISTS idx_install_diag_ts ON install_diag(ts)",
     "CREATE INDEX IF NOT EXISTS idx_install_diag_run ON install_diag(run)",
-    # Opt-in crash/stall telemetry from desktop nodes (issue #354). One row per
-    # reported event. `node` is a client-computed one-way hash of the node's
-    # public key (an anonymized grouping key, NOT the key or any account); no
-    # email/IP is stored. `summary` is the scrubbed crash/stall text — repo names
-    # and filesystem paths are removed client-side before it is ever sent. Purely
-    # operational, like error_log / install_diag.
-    """CREATE TABLE IF NOT EXISTS telemetry (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
-        node TEXT NOT NULL, kind TEXT NOT NULL, version TEXT, os TEXT,
-        summary TEXT)""",
-    "CREATE INDEX IF NOT EXISTS idx_telemetry_ts ON telemetry(ts)",
     # Live host presence: lets /api/network/stats report "hosts online" without
     # probing every repo's tunnel Durable Object on every page view. repo_bi is a
     # blind index (no plaintext repo name), ts is refreshed while a host is active
@@ -917,6 +906,17 @@ SCHEMA_STATEMENTS = [
         rank INTEGER NOT NULL CHECK (rank >= 1 AND rank <= 247),
         PRIMARY KEY (bucket_start, register_id)
     ) WITHOUT ROWID""",
+    # Content-free relay accounting behind the System Capacity platform
+    # (migration 0083). One row per Durable Object binding: how many bytes and
+    # frames that class has relayed. No room key, account, peer id, instance
+    # id, or message content is stored, and each Durable Object folds its
+    # in-memory counters in at most once a minute.
+    """CREATE TABLE IF NOT EXISTS durable_object_traffic (
+        binding TEXT PRIMARY KEY,
+        bytes_in INTEGER NOT NULL DEFAULT 0 CHECK (bytes_in >= 0),
+        bytes_out INTEGER NOT NULL DEFAULT 0 CHECK (bytes_out >= 0),
+        messages INTEGER NOT NULL DEFAULT 0 CHECK (messages >= 0),
+        updated_at INTEGER NOT NULL DEFAULT 0 CHECK (updated_at >= 0))""",
     # Aggregate-only Town Square arrival odometer for the Arrival Grid plaque
     # (migration 0074). Each accepted world join adds one to a coarse
     # 10-minute UTC bucket; rows never carry a visitor id, country, IP, or
@@ -1929,13 +1929,28 @@ SCHEMA_STATEMENTS = [
     "WHERE revoked_at=0",
     # Shared, administrator-curated placement overrides for the fixed Town
     # Square scene objects. One row per scene object id holding only ground
-    # coordinates; no visitor, account, or session data is stored here.
+    # coordinates and a heading offset in radians (migration 0082); no
+    # visitor, account, or session data is stored here.
     """CREATE TABLE IF NOT EXISTS world_object_layout (
         object_id TEXT PRIMARY KEY,
         x REAL NOT NULL,
         z REAL NOT NULL,
+        rotation REAL NOT NULL DEFAULT 0,
         updated_by_bi TEXT NOT NULL,
         updated_at INTEGER NOT NULL)""",
+    # Referral-program counters, one row per referring account. referrer_bi is
+    # the account blind index and name is the plaintext public username (the
+    # same identity already shown on the profile page and leaderboards). Only
+    # aggregate counters are kept — no IP, session, or referred-user identity
+    # is ever stored here.
+    """CREATE TABLE IF NOT EXISTS referral_stats (
+        referrer_bi TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        clicks INTEGER NOT NULL DEFAULT 0,
+        signups INTEGER NOT NULL DEFAULT 0,
+        last_ts INTEGER NOT NULL DEFAULT 0)""",
+    "CREATE INDEX IF NOT EXISTS idx_referral_stats_rank "
+    "ON referral_stats(signups DESC, clicks DESC)",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the

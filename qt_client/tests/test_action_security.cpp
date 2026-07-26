@@ -454,6 +454,30 @@ int main(int argc, char **argv)
                   noisy.log.contains(
                       QStringLiteral("Action output exceeded")),
               "workflow output is bounded and reports truncation");
+
+        // A step cannot read its own cgroup (no /sys in the namespace), so the
+        // runner publishes the CPU and memory budget it enforces. Builds size
+        // -j from it instead of from the host's core count (adhoc #329).
+        const QString budgetWorkflow = QStringLiteral(
+            "name: Build budget\non: push\nsteps:\n"
+            "  - name: sandbox publishes its own cpu and memory budget\n"
+            "    run: |\n"
+            "      set -eu\n"
+            "      [ \"${FORKMESH_ACTIONS_MEMORY_MB:-0}\" = \"512\" ]\n"
+            "      [ \"${FORKMESH_ACTIONS_CPUS:-0}\" -ge 2 ]\n"
+            "      echo \"budget ok\"\n");
+        check(writeFile(workflowPath, budgetWorkflow.toUtf8()),
+              "build-budget workflow fixture is written");
+        const QString budgetCommit =
+            commitAll(repository, QStringLiteral("budget workflow"));
+        const RunResult budget =
+            runWorkflow(repository, budgetCommit, budgetWorkflow,
+                        &store, 105, limits);
+        check(budget.finished && budget.signalOk &&
+                  budget.persisted.status == ActionStatus::Success &&
+                  budget.log.contains(QStringLiteral("budget ok")),
+              "steps see the sandbox CPU and memory budget they must build "
+              "within");
     }
 
     if (failures == 0)

@@ -80,6 +80,11 @@ public:
 class MessageRow;
 class MarkdownEditor;
 class PullBadgeWidget;
+// Defined in MainWindowInternal.h, which lives in namespace forkmesh::ui.
+namespace forkmesh::ui {
+class ActivityRailButton;
+}
+using forkmesh::ui::ActivityRailButton;
 class PacmanProgress;
 class TerminalWidget;
 class ClaudeIdeBridge;
@@ -88,6 +93,7 @@ class CodexAppServerSession;
 class StallWatchdog;
 class ClaudeTranscriptView;
 class RepoHost;
+class NodeEventSocket;
 class WorldSpeechBridge;
 class PrivateMirrorMaterialization;
 class ActionRunner;
@@ -367,10 +373,11 @@ public:
                                                const QString &name,
                                                const QString &description,
                                                const QString &firstPrompt,
-                                               bool addReadme)
+                                               bool addReadme,
+                                               bool isPrivate = false)
     {
         return provisionNewRepository(dest, name, description, firstPrompt,
-                                      addReadme, nullptr);
+                                      addReadme, isPrivate, nullptr);
     }
     int testAddPublishedRepository(const QString &owner, const QString &name,
                                    const QString &mirrorPath);
@@ -386,11 +393,10 @@ public:
     void testPublishRepository(int index) { publishRepositoryNow(index, false); }
     void testStartRepoHosts() { startRepoHosts(); }
     void testStopRepoHosts() { stopRepoHosts(); }
-    void testShowPublishBar(bool on);
     int testRepoTabContentTop(); // y of the tab content within the window
     int testRepoTabGapAroundIssues() const;
-    int testIssueLooperGapAboveIssuesTab() const;
-    int testIssueLooperCenterDelta() const;
+    int testIssueLooperGapFromNewIssueButton() const;
+    bool testIssueLooperRowAligned() const;
     int testTopNavTrailingGap() const;
     QString testRepoGitDir() const { return repoGitDir(); }
     int testRepoHostCount() const { return m_repoHosts.size(); }
@@ -804,6 +810,9 @@ private:
     QString chatDisplayName() const; // user identity used for chat sender names
     QString machineNodeName() const; // THIS machine's node name (never the username)
     void saveMachineNodeName(const QString &name); // persist + re-advertise
+    // Persist the extra Actions `runs-on:` labels this machine answers to,
+    // normalized to distinct lower-cased tags.
+    void saveActionNodeLabels(const QString &labels);
     void updateChatIdentity();     // push user name/avatar into the chat backend
     void updateUserSwitcher();     // refresh top-bar user label/avatar
     void updateNodeSwitcher();     // refresh top-bar node label / count
@@ -817,43 +826,10 @@ private:
     void queryNavSolanaUsdPrice(const QString &addr, qint64 lamports);
     void showRepoMenu();           // dropdown to open repos / add a local repo
     void updateRepoSwitcher();     // refresh top-bar repo label / count
-    void updateRepoPushButton();   // show pending local commits for the open repo
-    // Git-derived inputs to the "Sync" button. Computing them shells several
-    // rev-list/rev-parse subprocesses on the working copy + served mirror, so it runs
-    // off the GUI thread (computeRepoPushState) and the result is painted back on the
-    // main thread (applyRepoPushButtonState) — see updateRepoPushButton.
-    struct RepoPushState {
-        bool valid = false;       // repo has a local working tree (.git)
-        bool relay = false;       // publishes to a served mirror / ForkMesh relay
-        int unpublished = 0;      // commits not yet folded into the served mirror
-        int behind = 0;           // incoming commits to pull (drives the ⇅ arrow)
-        bool hasUpstream = false; // tracks a real upstream remote (non-relay)
-        int ahead = 0;            // commits ahead of that upstream
-        QString upstreamRef;      // the @{upstream} name (for the non-relay tooltip)
-        // Rich-tooltip detail for the pending sync (computed off the GUI thread):
-        // the commits about to go out and the aggregate line-change diffstat, plus a
-        // human-readable name for where they're headed.
-        struct PendingCommit {
-            QString hash;    // short hash
-            QString subject; // first line of the commit message
-            int added = 0;   // lines added by this commit
-            int removed = 0; // lines removed by this commit
-        };
-        QString target;               // sync destination ("origin/main", served mirror)
-        QList<PendingCommit> commits; // pending commits, newest first (capped)
-        int extraCommits = 0;         // pending commits beyond the capped list
-        int added = 0;                // total lines added across the whole range
-        int removed = 0;              // total lines removed across the whole range
-    };
-    // Thread-safe (reads only the passed-in record + free git helpers + QSettings);
-    // never touches m_repositories or a widget, so it is safe to run on a worker.
-    RepoPushState computeRepoPushState(const RepositoryRecord &repo) const;
-    // Fill the rich-tooltip commit list + line diffstat for the pending range that
-    // ends at HEAD and starts just after `base` (empty base = from the root commit).
-    // Static: shells git on the passed-in path only, so it runs on the worker too.
-    static void collectPushDetail(const QString &localPath, const QString &base,
-                                  RepoPushState *st);
-    void applyRepoPushButtonState(int index, const RepoPushState &state);
+    // Keep the open repo's sync-derived indicators in step (adhoc #374 removed the
+    // floating "Sync" pill that used to hover above the Code tab; the activity
+    // rail's Git glyph and the commit list's "waiting to sync" markers remain).
+    void refreshRepoSyncIndicators();
     void pushCurrentRepoUpstream();
     // Launch the async `git push` for a repo whose secret scan has completed and
     // been approved (see pushCurrentRepoUpstream). The repo must already be marked
@@ -930,12 +906,6 @@ private:
     // true if an agent was started. Backs the dialog's "Send to a new agent" button.
     bool sendStallLogToAgent();
     void showDiagnosticsDialog();
-    // Opt-in crash/stall telemetry upload (issue #354). No-op unless the user
-    // enabled kUploadTelemetrySetting. On startup, reads the not-yet-uploaded
-    // tail of ~/.forkmesh/diagnostics/crashes.log and stalls.log, scrubs repo
-    // names / filesystem paths out, and POSTs a size-capped, anonymized payload
-    // (app version, OS, node hash) to /api/telemetry. Best-effort and silent.
-    void maybeUploadDiagnostics();
     // Full-height "Log" section (section 4) showing the whole network log.
     QWidget *buildLogSection();
     void showCloudflareWorkerLogs();
@@ -996,6 +966,9 @@ private:
     // Settings -> Security tab: private vulnerability reporting form.
     QWidget *buildVulnReportTab();
     void submitVulnerabilityReport();
+    // Settings -> Quick Setup tab: provision a fresh instance in one pass —
+    // identity, workflow credentials and world appearance applied together.
+    QWidget *buildQuickSetupTab();
     // Settings -> Data tab: where configuration data is stored, per-directory
     // file/folder breakdown, open/delete, and export/import as a .tar.gz backup.
     QWidget *buildDataSection();
@@ -1095,9 +1068,14 @@ private:
     // stops+relaunches the daemon — an update straight from source without
     // waiting for a published release (adhoc). A source build never uploads this
     // app's binary, so fromSource forces the direct-upload path off.
+    // suppressFailureStatus is set by callers that will retry a failed attempt
+    // themselves (the Vultr auto-provision flow): it skips the terminal
+    // "Install failed" status/host-list update so a retryable hiccup doesn't
+    // read as a final failure before the caller's own retries are exhausted.
     void runHostInstall(bool forceUploadBinary = false,
                         std::function<void(bool)> onFinished = {},
-                        bool reinstall = false, bool fromSource = false);
+                        bool reinstall = false, bool fromSource = false,
+                        bool suppressFailureStatus = false);
     // SSH into a saved host and run the hosted uninstaller (uninstall.sh),
     // which removes the ForkMesh binary, launcher and ALL of that host's data.
     void runHostUninstall();
@@ -1105,6 +1083,12 @@ private:
     void viewHostLogsForSelection(int row);
     void runHostLogSession(const QString &ip, const QString &user,
                           const QString &pass, const QString &node);
+    // Browse a saved host's disk usage over its authenticated SSH channel: one
+    // read-only `du` level per directory, so the biggest consumers of the
+    // host's disk can be drilled into without leaving the app.
+    void browseHostDiskUsageForSelection(int row);
+    void runHostDiskUsageBrowser(const QString &ip, const QString &user,
+                                 const QString &pass, const QString &node);
     // Configure a saved mirror host's Actions executor over its authenticated
     // SSH channel. Secret values are collected in a one-shot dialog and sent
     // only in a bounded JSON stdin payload; they are never saved in QSettings
@@ -1174,11 +1158,60 @@ private:
                                  QString *errorOut);
     // Save non-sensitive host metadata from the form without running the
     // installer. pass is cached only for the current process; it is never
-    // written to QSettings.
+    // written to QSettings. identityFile records the ForkMesh-managed private
+    // key path for auto-provisioned hosts (public metadata, no key material);
+    // when empty, an already-saved path for the same node is preserved.
     void addHostFromForm();
     void rememberHost(const QString &name, const QString &ip, const QString &user,
-                      const QString &pass, const QString &status = QStringLiteral("installed"));
+                      const QString &pass, const QString &status = QStringLiteral("installed"),
+                      const QString &identityFile = QString());
+    // The managed private-key path saved for a host, when the file still
+    // exists; empty otherwise (agent/default keys or password are used).
+    QString savedHostIdentityFile(const QString &name, const QString &ip,
+                                  const QString &user) const;
     void refreshHostsTable();
+    // Drop a saved host from this app's list only \xe2\x80\x94 no SSH session is
+    // opened and nothing is changed on the remote host itself. Use Uninstall
+    // instead to actually remove ForkMesh from the host.
+    void forgetHostAtRow(int row);
+    // --- One-click Vultr mirror (adhoc #315) ---------------------------------
+    // Create a brand-new mirror VPS on the user's Vultr account: pick the
+    // cheapest plan and newest Debian via the Vultr v2 API, create/reuse the
+    // ForkMesh-managed SSH key, boot the instance, then hand off to the normal
+    // runHostInstall flow which installs ForkMesh and auto-links the node to
+    // this account. The API key lives in memory only for the duration of the
+    // run; it is never written to QSettings or argv.
+    void createVultrMirrorFromForm();
+    void vultrApiCall(const QString &apiKey, const QString &path,
+                      const QByteArray &method, const QJsonObject &body,
+                      std::function<void(QJsonObject, QString)> onDone);
+    void ensureVultrManagedKeypair(
+        std::function<void(QString privateKeyPath, QString publicKey,
+                           QString error)> onDone);
+    void resolveVultrSshKeyId(
+        const QString &apiKey, const QString &publicKey,
+        std::function<void(QString keyId, QString error)> onDone);
+    void pollVultrInstance(const QString &apiKey, const QString &instanceId,
+                           const QString &node, const QString &identityFile);
+    void startVultrHostInstall(const QString &node, const QString &ip,
+                               const QString &identityFile);
+    void finishVultrProvision(bool ok, const QString &message);
+    // Print the per-attempt record collected for this provision run into the
+    // install log, so a finished run shows what every attempt did (adhoc #342).
+    void appendVultrAttemptHistory();
+    // Cloudflare API v4 call for the DNS record a fresh Vultr mirror needs
+    // (adhoc #331). Same shape as vultrApiCall: the token travels only in the
+    // Authorization header of this HTTPS request.
+    void cloudflareApiCall(const QString &apiToken, const QString &path,
+                           const QByteArray &method, const QJsonObject &body,
+                           std::function<void(QJsonObject, QString)> onDone);
+    // Point "<node>.<zone>" at a freshly booted Vultr instance so it joins the
+    // mesh under a stable name like the other mirrors. Reports the hostname it
+    // provisioned, or an empty string when no Cloudflare credentials/zone are
+    // configured or the record could not be written — provisioning continues
+    // either way, the node just keeps its raw address.
+    void ensureVultrMirrorDns(const QString &node, const QString &ip,
+                              std::function<void(QString hostname)> onDone);
     // Reload a saved host's server info from the table. A password is restored
     // only when it remains in this process's session cache.
     void loadHostIntoForm(int row, int column);
@@ -1663,13 +1696,12 @@ private:
     // The label the looper assigns to mark a claimed issue: this node's display
     // name, or a public-key prefix when no name is set (adhoc #38).
     QString nodeAssigneeTag() const;
-    // Funnel for every looper state change: refresh the floating toggle above
-    // the Issues tab and persist the running state so the loop resumes after a
-    // restart (adhoc #130, #125).
+    // Funnel for every looper state change: refresh the inline toggle in the
+    // Issues heading row and persist the running state so the loop resumes
+    // after a restart (adhoc #130, #125, #354).
     void updateIssueLooperButton();
-    void positionLooperToggle();
     // Anchor the live mirror-activity dot strip just above the Mirror nodes tab
-    // (adhoc #197), mirroring positionLooperToggle over Issues.
+    // (adhoc #197).
     void positionMirrorActivityStrip();
     // Anchor the current-release pill just above the Releases tab (adhoc #69),
     // mirroring positionMirrorActivityStrip over Mirror nodes.
@@ -1692,6 +1724,11 @@ private:
     // isn't retried forever; the guard clears once the conflict is gone.
     void maybeAutoFixAgentConflict(const AgentSession &session,
                                    const AgentDiffStat &stat);
+    // Stash the quick-add composer's provider/model/mode dropdowns onto the
+    // given session, so the next resume runs with what the user has selected
+    // right now. Shared by the follow-up path and the bare "add" (continue,
+    // nothing typed) path.
+    void applyComposerSelectionToAgentSession(int sessionId);
     // Steer m_selectedAgentSessionId with a follow-up message. Shared by the
     // agent detail composer's Send button and the footer quick-add's up-arrow
     // ("send to the visible agent") button.
@@ -1878,6 +1915,12 @@ private:
     // Start a new coding agent to fix the selected (failed) run, on its own
     // branch/PR like any other ad-hoc agent run (adhoc #114).
     void fixSelectedRunWithAgent(const QString &provider, const QString &model);
+    // adhoc #306: if kAutoFixFailuresSetting is on (the default) and run's
+    // branch still has an agent session attached, send the failure straight
+    // back to that same session instead of waiting for a manual "Fix with
+    // agent" click or starting a brand-new agent. No-op if no session ever
+    // worked on this branch, or that session is still active.
+    void maybeAutoFixFailedRun(const ActionRun &run);
     // Delete every run currently shown in the Runs list (its meta + log on
     // disk); skips any run that's still in flight. Prompts for confirmation.
     void clearActionRuns();
@@ -1904,7 +1947,33 @@ private:
     void writeMirrorActionsSummary();
     void enqueuePushEvent(const QString &owner, const QString &name,
                           const QString &commit, const QString &ref);
+    // The labels this node answers to when a workflow declares `runs-on:` — its
+    // machine node name, its mirror-executor node name, the platform, and any
+    // extra labels the operator typed in Settings. A workflow dedicated to
+    // another node is never queued here, so a mesh can pin tests to one machine,
+    // Cloudflare deploys to a mirror and iOS builds to a Mac.
+    QStringList actionNodeLabels() const;
+    // Human-readable "this workflow belongs to <node>" text for logs and the UI.
+    QString workflowDedicationLabel(const ActionWorkflow &workflow) const;
     void processActionQueue();
+    // An encrypted repository is served out of a temporary materialization whose
+    // directory is recreated by every sealing pass and deleted as soon as the
+    // replacement is installed. A run checks out of, clones from, and lands
+    // release artifacts into that directory for its whole lifetime, so a routine
+    // re-seal (publishing a release triggers one) can delete the mirror out from
+    // under an in-flight build: `git -C <mirror> worktree add` then fails with
+    // "cannot change to '/tmp/ForkMesh-XXXXXX/repository.git'" (adhoc #314).
+    // Returns the live materialization for this repository — writing its current
+    // path into `mirrorPath` when the record lagged behind a re-seal — and keeps
+    // that directory alive for as long as the caller holds the returned handle.
+    // Null for a plain durable mirror, which needs no pinning.
+    std::shared_ptr<void> pinActionMirror(const RepositoryRecord &repo,
+                                          QString *mirrorPath) const;
+    // Drop the pin taken for `runId`, first carrying any release artifacts the
+    // run landed into the mirror that is serving the repository now: a re-seal
+    // during a long build leaves the run writing its binaries into a directory
+    // that is about to be deleted along with the pin.
+    void releaseActionMirrorPin(int runId);
     // The runner currently executing `runId`, or nullptr if no runner is. Used
     // to target stop()/abort at the exact run rather than a single global runner.
     ActionRunner *runnerForRun(int runId) const;
@@ -1995,6 +2064,9 @@ private:
     void showOverviewFiles();
     void showOverviewBranches();
     void showOverviewWorktrees();
+    // Keep the left activity rail's Code/Git checked states in step with what
+    // the repo detail view is showing (adhoc #357).
+    void updateRepoActivityRail();
     void loadRepoFileTree();
     void loadCoveExplorer();
     void refreshCoveExplorerTree();
@@ -2505,7 +2577,6 @@ private:
     // Lazily build the floating strip and place it just above the Actions tab.
     void ensureActionStrip();
     void positionActionStrip();  // size/pin the strip above the Actions tab
-    void positionRepoPushButton(); // float "Sync" just above the Code tab
     void updateActionStrip();    // build/show/hide the boxes for in-flight runs
     // Previous finished run's duration for the same workflow, the estimate each
     // strip box counts down against (0 = no prior run to estimate from).
@@ -3166,6 +3237,12 @@ private:
     // the record at it when the move fails). Returns true when the record was
     // modified and needs saving.
     bool reconcileMirrorPath(RepositoryRecord &repo);
+    // Point a record at the temporary materialization now serving it after a
+    // sealing pass. Release artifact blobs live beside the git data instead of
+    // in it, so they are carried into the replacement directory first —
+    // otherwise every re-seal silently drops the binaries this node hosts.
+    void adoptMaterializedMirror(RepositoryRecord &repo,
+                                 const QString &repositoryPath);
     void saveRepositories() const;
     void refreshRepositoryList();
     // Node handles offered by the @-mention autocomplete in comment editors:
@@ -3185,10 +3262,11 @@ private:
     // .forkmesh/info.json description, initial-committed, registered, published,
     // and (when firstPrompt is non-empty) has its first issue filed. Returns the
     // new repository index, or -1 with a message in *error on failure.
+    // isPrivate keeps the repo out of the public catalog from the start.
     int provisionNewRepository(const QString &dest, const QString &name,
                                const QString &description,
                                const QString &firstPrompt, bool addReadme,
-                               QString *error);
+                               bool isPrivate, QString *error);
     // Clone a remote repo (GitHub/GitLab/any https git URL) into a local working
     // copy, then add it like a local repo. An optional per-host access token
     // (Settings) authenticates the clone to dodge unauthenticated rate limits.
@@ -3281,6 +3359,11 @@ private:
     void updateRepoDetailStatus();
     void startRepoHosts();
     void stopRepoHosts();
+    // Live relay event channel (ForkMeshNodes DO): pushed event frames run
+    // scheduleRelaySync() the moment the relay records a change, so the
+    // m_inboxPollTimer HTTPS poll is only the reconnect-gap safety net.
+    void startNodeEventSocket();
+    void stopNodeEventSocket();
     void onRequestServed(const QString &owner, const QString &name, bool clone);
     void loadRepoStats();
     void saveRepoStats() const;
@@ -3419,6 +3502,7 @@ private:
     bool m_topMessageElided = false;      // current toast was truncated (Expand reveals it inline)
     bool m_topMessageExpanded = false;    // user expanded the truncated toast to its full text
     bool m_repoPinMismatch = false;       // true when the open repo's served refs no longer match the relay's pinned hash (adhoc #65)
+    QHash<QString, qint64> m_repoPinAutoHealAtMs; // owner/name -> last automatic pin re-attest (rate-limits the source-of-truth auto-heal in refreshRepoPinBanner)
 
     // Setup widgets
     QLineEdit *m_nameEdit;
@@ -3585,10 +3669,43 @@ private:
     QString m_hostInstallLogCarry;
     int m_hostInstallLogFg = -1;
     bool m_hostInstallLogBold = false;
+    // Bounded tail of the raw (pre-ANSI-parsing) ssh output for the current
+    // install/uninstall run, used only to classify a failed exit code into an
+    // actionable hint (e.g. a firewall-blocked connection timeout).
+    QString m_hostInstallRawTail;
+    // Set by a caller that drives repeated install attempts (the Vultr
+    // auto-provision retry loop) so the next run appends under this banner
+    // instead of wiping the window's transcript of the earlier attempts
+    // (adhoc #342). Consumed — and cleared — by runHostInstall.
+    QString m_hostInstallAttemptBanner;
+    // One-line summary of the most recent failed install run, so a retry loop
+    // can record why each attempt failed.
+    QString m_hostInstallLastFailure;
     QTableWidget *m_hostsTable = nullptr;
     QProcess *m_hostInstallProcess = nullptr; // running ssh install session, if any
     QProcess *m_hostLogProcess = nullptr;     // running ssh log-tail session, if any
     QProcess *m_hostActionsProcess = nullptr; // one-shot stdin-only Actions config
+    QProcess *m_hostDiskProcess = nullptr;    // running ssh size-map read, if any
+    // One-click Vultr mirror provisioning (adhoc #315). The API key is read
+    // from the field (or a stored VULTR_API_KEY device variable) per run and
+    // deliberately has no persistent member.
+    QLineEdit *m_vultrApiKeyEdit = nullptr;
+    QLineEdit *m_vultrNameEdit = nullptr;
+    QPushButton *m_vultrCreateButton = nullptr;
+    QLabel *m_vultrStatus = nullptr;
+    bool m_vultrProvisionActive = false;
+    int m_vultrPollCount = 0;        // instance boot polls used this run
+    int m_vultrInstallAttempts = 0;  // SSH install attempts used this run
+    // Flipped once an attempt fails because no online node is mirroring the
+    // repo yet (the freshly-created instance has nothing to clone/download
+    // from) — every later attempt this run then uploads this app's own
+    // release binary directly over the SSH session instead, which needs no
+    // mirror at all.
+    bool m_vultrInstallUseLocalBinary = false;
+    QString m_vultrDnsHostname;      // Cloudflare name provisioned this run
+    // "Attempt N of M at HH:mm:ss — outcome" per install attempt this run, so
+    // the window can show what every attempt did instead of only the last one.
+    QStringList m_vultrInstallAttemptLog;
     // Installer link-code detection (adhoc #53): rolling tail of the install
     // output so the "Link code: NNNNNN" line survives chunk splits, and a
     // per-run guard so the link popup opens once.
@@ -3653,9 +3770,6 @@ private:
     bool m_networkEndpointFadeScheduled = false;
     bool m_networkEndpointsUserSorted = false;
     QHBoxLayout *m_repoHeaderLeft = nullptr; // left cluster of the repo header row
-    QPushButton *m_repoPushButton = nullptr; // "Publish N" button shown above the tab bar
-    QPushButton *m_repoPushEyeButton = nullptr; // eye icon beside Sync -> commits panel
-    QWidget *m_repoPublishBar = nullptr;     // row hosting m_repoPushButton, hidden when idle
     int m_repoPinCheckIndex = -1;            // repo index an in-flight pin check belongs to
     // One row per repo of the selected node, shown in the repo dropdown.
     struct RepoMenuEntry {
@@ -3703,6 +3817,7 @@ private:
     // Settings section widgets
     QLineEdit *m_settingsNameEdit = nullptr;        // Username (the account)
     QLineEdit *m_settingsMachineNodeEdit = nullptr; // this machine's node name
+    QLineEdit *m_settingsNodeLabelsEdit = nullptr;  // extra Actions `runs-on:` labels
     QLineEdit *m_settingsSolanaEdit = nullptr; // #66: node Solana address in Settings
     QLabel *m_settingsEmailLabel = nullptr;
     QLabel *m_settingsEmailVerifiedBadge = nullptr;
@@ -3962,6 +4077,12 @@ private:
     int m_repoDetailIndex = -1;
     QButtonGroup *m_issueTabGroup = nullptr; // Issues / Milestones / Labels tabs
     QButtonGroup *m_repoDetailTabs = nullptr;
+    // Thin activity rail down the repo detail page's left edge (adhoc #357):
+    // Code (file browser) and Git (current changes) entries. The Git one carries
+    // the working-tree change-count badge and spins while a sync is in flight;
+    // updateRepoActivityRail keeps their checked state in step with the view.
+    ActivityRailButton *m_railCodeButton = nullptr;
+    ActivityRailButton *m_railGitButton = nullptr;
     QPushButton *m_repoCodeTab = nullptr;
     QString m_repoCodeSizePath; // mirror the displayed "Code (N MB)" was computed for
     QPushButton *m_repoIssuesTab = nullptr;
@@ -4039,6 +4160,11 @@ private:
     QLabel *m_branchScopeLabel = nullptr;
     QTextBrowser *m_branchDiffView = nullptr;
     QString m_branchDiffBranch;
+    // Branch that auto-pull has already been attempted for (see showBranchDiff),
+    // so a declined stash prompt or an aborted merge doesn't re-nag every time the
+    // panel happens to rebuild while the same branch is still selected. Cleared
+    // implicitly by simply differing once a different branch is selected.
+    QString m_branchAutoPullAttempted;
     // Bumped each time a branch is selected / a scope diff is requested so the
     // off-thread git reads that build the scope list and render the diff can drop
     // their result if the user has since switched branch or scope (issue #353 —
@@ -4116,9 +4242,10 @@ private:
     QTimer *m_requestServedFlushTimer = nullptr;
     // Coalesces roster-driven Mirror-nodes panel rebuilds (they shell git).
     QTimer *m_mirrorPanelRosterTimer = nullptr;
-    // Commit hash -> subject, so the Mirror-nodes panel's per-row tooltip lookup
-    // doesn't re-shell `git show` on every roster-driven rebuild.
-    QHash<QString, QString> m_commitSubjectCache;
+    // Commit hash -> subject/author/date, so the Mirror-nodes panel's per-row
+    // lookup doesn't re-shell `git show` on every roster-driven rebuild. Only
+    // used for peers that don't advertise the identity themselves.
+    QHash<QString, CommitIdentity> m_commitIdentityCache;
     // Current-release pill floating just above the Releases tab (adhoc #69):
     // shows the newest tag so the current release is visible from any tab. Its
     // text is set from the tag scan; m_releaseStripTimer keeps it anchored as the
@@ -4630,6 +4757,16 @@ private:
     QFileSystemWatcher *m_actionSpoolWatcher = nullptr;
     QList<ActionRun> m_actionRuns;   // loaded history, newest first
     QList<int> m_actionQueue;        // run ids queued for execution
+    // The encrypted mirror materialization a run is executing out of (see
+    // pinActionMirror). Held until the run finishes so a concurrent re-seal
+    // cannot delete the served mirror mid-build.
+    struct ActionMirrorPin {
+        std::shared_ptr<void> materialization; // keeps the directory alive
+        QString path;                          // mirror the run was handed
+        QString owner;
+        QString name;
+    };
+    QHash<int, ActionMirrorPin> m_actionMirrorPins; // run id -> pinned mirror
     QString m_mirrorActionsConfigGeneration;
     QString m_mirrorActionsRuntimeState;
     qint64 m_mirrorActionsRuntimeStateWrittenAtMs = 0;
@@ -4644,7 +4781,6 @@ private:
     QString m_selectedWorkflowFilter;            // workflow path filter, empty = all
     QList<ActionWorkflow> m_repoWorkflows;       // parsed workflows for the open repo
     QTimer *m_actionStripTimer = nullptr;        // grows the Actions strip while running
-    QTimer *m_repoPushTimer = nullptr;           // keeps "Sync" pinned over Code
     // Coalesces push-driven refreshOpenRepoDetail() calls: a burst of pushes
     // (a sync, an agent committing) otherwise re-runs the whole heavyweight
     // refresh — git log, per-PR apply checks, branch reload — once per event,
@@ -5231,6 +5367,11 @@ private:
     bool m_nodeSwitching = false;      // a node switch's heavy load is running
     bool m_repoDetailLoading = false;  // re-entrancy guard for openRepoDetail
     bool m_branchesPanelLoading = false; // re-entrancy guard for loadBranchesPanel
+    // Re-entrancy guard for loadMirrorNodesPanel: its synchronous git reads pump
+    // the event loop, so a queued roster/mirror callback could start a second
+    // pass that appends its own rows on top of the half-built table — every node
+    // listed twice (adhoc #375).
+    bool m_mirrorNodesPanelLoading = false;
     bool m_agentMergeStateRefreshing = false; // refreshAgentMergeState worker in flight
     // Shared re-entrancy guard for the two heavy periodic refreshes
     // (refreshOpenRepoDetail + refreshRepositoryList): each runs synchronous git
@@ -5321,15 +5462,14 @@ private:
     QString m_looperProvider;
     int m_looperCurrentIssue = 0;
     QString m_looperCurrentTitle;
-    // Compact looper toggle floating just above the Issues tab (adhoc #130): a
-    // switch + "looper #N" label that both shows and controls the loop, with a
-    // neon-green segment circling its border while on. Held as a QWidget* because
-    // the concrete LooperToggle type lives in the .cpp; downcast there.
-    // m_looperToggleTimer keeps it anchored over the tab as the window reflows.
+    // Compact looper toggle inline in the Issues heading row, next to "New
+    // issue" (adhoc #130/#354): a switch + "looper #N" label that both shows
+    // and controls the loop, with a neon-green segment circling its border
+    // while on. Held as a QWidget* because the concrete LooperToggle type
+    // lives in the .cpp; downcast there.
     // m_looperRepoSlug ("owner/name") records which repo the loop is bound to so
     // a restart resumes it on the same repo.
     QWidget *m_looperToggle = nullptr;
-    QTimer *m_looperToggleTimer = nullptr;
     QString m_looperRepoSlug;
     QPushButton *m_issueCopyButton = nullptr;
     QPushButton *m_issueCopyAllButton = nullptr;
@@ -5534,6 +5674,7 @@ private:
     QHash<QString, QString> m_catalogContributionPreparedSnapshotKey;
     QList<RepoHost *> m_repoHosts;
     QSet<QString> m_repoHostKeys; // empty compatibility state; sockets retired
+    NodeEventSocket *m_nodeEventSocket = nullptr; // relay push -> /api/sync
     // Keeps authorized, owner-only private repository materializations alive
     // only for this app process. They are removed recursively on destruction
     // and their paths are never written to settings.
@@ -5574,13 +5715,10 @@ private:
     // "owner/name" repos with an SSH mirror push in flight (pushToSshMirrorRemotes),
     // so overlapping sync completions can't stack pushes to the same gateway.
     QSet<QString> m_sshMirrorPushing;
-    // Last push state computed for m_pushStateIndex, so updateRepoPushButton can
-    // paint the "Sync" button instantly from cache (e.g. flip to "Syncing
-    // changes…" the moment Sync is clicked) while a worker recomputes off-thread.
-    RepoPushState m_pushState;
-    int m_pushStateIndex = -1;        // repo index m_pushState describes (-1 = none)
-    bool m_pushStateInFlight = false; // a recompute worker is currently running
-    bool m_pushStatePending = false;  // another recompute was requested mid-flight
+    // A sync can finish while that asynchronous push is still transferring.
+    // Remember it instead of dropping it: once every gateway attempt finishes,
+    // push the newest served snapshot again so moving refs converge exactly.
+    QSet<QString> m_sshMirrorPushPending;
     // "owner/name" of repos whose @mention scan is running on a worker thread, so
     // a second sync/inbox drain doesn't kick a duplicate scan (and double-notify)
     // while the first is still loading issues/PRs off the UI thread.

@@ -7,6 +7,20 @@
 #include <QString>
 #include <QStringList>
 
+// Who wrote a commit, what it says and when — the human-readable half of a
+// commit hash. Advertised alongside the hash so a peer's row/cabinet can name
+// the latest commit even when we don't hold that commit in our own mirror.
+struct CommitIdentity {
+    QString subject;           // first line of the commit message
+    QString author;            // author name as recorded in the commit
+    qint64 committedAtMs = 0;  // commit time; 0 = unknown/not advertised
+};
+
+// Bounds on the advertised commit identity, applied both when we read it out of
+// git and when we parse a peer's advert, so one node can't flood the roster.
+constexpr int kMaxCommitSubjectChars = 120;
+constexpr int kMaxCommitAuthorChars = 64;
+
 // One repo a node mirrors, with the HEAD that node currently holds. Advertised
 // to peers so the network can show which nodes mirror a given repo and how fresh
 // each one's copy is (a lagging node reveals itself by an older commit/time).
@@ -18,6 +32,10 @@ struct MirrorAdvert {
     QString source;
     QString commit;       // full HEAD commit hash of the node's mirror (may be empty)
     QString branch;       // branch HEAD points to
+    // Subject/author/date of `commit`, so the Mirror nodes view and the World
+    // cabinets can show what the node's latest commit actually is. Empty when
+    // the peer is older than this field or couldn't read it.
+    CommitIdentity commitIdentity;
     qint64 updatedMs = 0; // when the node last synced this repo from its source
     qint64 sizeBytes = 0; // on-disk size of this node's bare mirror (git objects)
     int issueCount = -1;  // issues this node's mirror holds; -1 = not advertised

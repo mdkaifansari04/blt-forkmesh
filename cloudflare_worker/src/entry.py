@@ -48,12 +48,23 @@ ROOM_MSG_MAX_PER_WINDOW = 20
 # and forwarding to it instead of letting ghost peers inflate the roster.
 ROOM_CLIENT_STALE_MS = 3 * 60 * 1000
 # Catalog write throttle per owner, and a hard cap on records an owner may hold.
-CATALOG_WRITE_COOLDOWN_MS = 5 * 1000
-CATALOG_MAX_RECORDS_PER_OWNER = 50
+CATALOG_WRITE_COOLDOWN_MS = 500
+CATALOG_MAX_RECORDS_PER_OWNER = 100
 # Per-repository control-channel request rate limit. Repository bytes use the
 # direct-HTTPS gateway and never consume this socket budget.
 HOST_RATE_WINDOW_MS = 10 * 1000
 HOST_RATE_MAX_PER_WINDOW = 200
+# Per-owner node event channel (ForkMeshNodes). An owner's desktop/headless
+# nodes hold one hibernated WebSocket each; the relay pushes payload-free
+# {"type":"event","topic"} frames so a node runs its signed GET /api/sync the
+# moment the source of truth changes instead of waiting out the fallback poll.
+NODE_EVENT_MAX_SOCKETS = 64
+# App-level keepalive cadence is ~4 min on the client; protocol pings keep the
+# TCP path alive without waking the Durable Object between beats.
+NODE_SOCKET_STALE_MS = 15 * 60 * 1000
+NODE_EVENT_MSG_WINDOW_MS = 10 * 1000
+NODE_EVENT_MSG_MAX_PER_WINDOW = 20
+NODE_EVENT_MAX_FRAME_BYTES = 4 * 1024
 SENTRY_CLIENT = "forkmesh-cloudflare-python/1.0"
 SENTRY_CRON_MONITOR_SLUG = "forkmesh-relay"
 SENTRY_CRON_CHECKIN_MARGIN_MINUTES = 1
@@ -92,16 +103,6 @@ MAX_ERROR_LOG = 500
 # same way as the error log so the unauthenticated POST endpoint can't grow D1.
 MAX_INSTALL_DIAG = 5000
 INSTALL_DIAG_RETAIN_MS = 30 * 24 * 60 * 60 * 1000  # surface a 30-day window
-# Opt-in crash/stall telemetry from desktop nodes (issue #354). Bounded like the
-# install diagnostics so the unauthenticated POST endpoint can't grow D1, with a
-# hard body cap and a per-request event cap so a single POST can never blow up
-# the (small) isolate — this must never become an outage vector.
-MAX_TELEMETRY = 5000
-TELEMETRY_RETAIN_MS = 30 * 24 * 60 * 60 * 1000  # surface a 30-day window
-TELEMETRY_MAX_BODY = 32 * 1024  # reject anything larger than this outright
-TELEMETRY_MAX_EVENTS = 4        # crash + stall (+ headroom) per node per startup
-TELEMETRY_MAX_SUMMARY = 8000    # per-event scrubbed report text
-TELEMETRY_KINDS = frozenset({"crash", "stall"})
 # Private vulnerability reports: bounded so the open endpoint can't grow D1.
 MAX_SECURITY_REPORTS = 1000
 SECURITY_AUDIT_RETAIN_MS = 365 * 24 * 60 * 60 * 1000
@@ -221,6 +222,7 @@ NOTIFICATION_KINDS = frozenset({
     "mirror_request",
     "pending_reward",
     "org_succession",
+    "repository_hosted",
 })
 NOTIFICATION_EMAIL_KINDS = (
     "mention",
@@ -315,6 +317,8 @@ from urls import (  # noqa: E402
     ACCOUNTS_RE,
     ACCOUNT_CONTRIBUTIONS_RE,
     ACCOUNT_FOLLOW_RE,
+    REFERRAL_LINK_RE,
+    REFERRAL_CARD_RE,
     ORGS_RE,
     ORG_RE,
     ORG_MEMBERS_RE,
@@ -496,6 +500,7 @@ import world_community_api  # noqa: E402
 import world_events_api  # noqa: E402
 # Persisted Code Workshop reports and participant events use the same narrow
 # authenticated/encrypted D1 adapter as the other World collaboration APIs.
+import world_social_feeds  # noqa: E402
 import world_workshops  # noqa: E402
 # Organization-scoped Office marketing tasks use a separate HTTP/D1 subsystem.
 # It never receives platform-admin authorization or an Office Durable Object,
@@ -512,6 +517,10 @@ from pull_badge import patch_file_stats, pull_badge_png  # noqa: E402
 # Social-preview (OpenGraph) info-card renderer — pure-stdlib PNG drawing,
 # another js-free sibling module the test suite imports directly.
 import og_card  # noqa: E402
+
+# The blog's RSS 2.0 feed, derived from the shipped static blog index. Serves
+# /blog/rss.xml and, through world_social_feeds, the world's blog banner.
+import blog_feed  # noqa: E402
 
 # Largest git-req-chunk (push pack fragment) forwarded to the host in one WS
 # message; matches the host's 256 KiB git-chunk ceiling so neither side trips
@@ -1129,10 +1138,76 @@ async def repo_live_host_count(env, owner, repo):
         return None
 
 
+def _node_events_do_name(owner):
+    # One Durable Object per OWNER account (not per repo): a node syncs all of
+    # its repos with one GET /api/sync, so one event channel per owner is the
+    # natural granularity and keeps the DO count bounded by accounts, not repos.
+    return "nodes:" + str(owner or "").strip().lower()
+
+
 async def notify_repo_host(env, owner, repo, topic):
-    # Repository control sockets were retired. Clients discover changes with
-    # bounded HTTPS polling; repository bytes always use the mirror gateway.
-    del env, owner, repo, topic
+    # Push a minimal "something changed" event frame to the owner's connected
+    # desktop/headless node(s) through the ForkMeshNodes Durable Object. The
+    # frame carries no payload — just a topic — and the node responds with one
+    # signed GET /api/sync, so the source of truth updates the instant a web
+    # submission lands instead of on the next fallback poll. Best-effort: an
+    # offline node simply picks the change up from its slow fallback sync, so
+    # a failure here must never fail the write that triggered it. (Unlike the
+    # retired ForkMeshHost tunnel, this channel never carries repository bytes
+    # or control commands — a compromised relay can at most make a node run
+    # one extra signed sync.)
+    owner = safe_segment(owner)
+    repo = safe_segment(repo)
+    if not owner or not repo:
+        return
+    try:
+        node_id = env.FORKMESH_NODES.idFromName(_node_events_do_name(owner))
+        node_object = env.FORKMESH_NODES.get(node_id)
+        await asyncio.wait_for(
+            node_object.fetch(
+                "https://forkmesh.internal/api/nodes/notify"
+                "?topic=" + quote(topic or "") +
+                "&repo=" + quote(owner + "/" + repo)
+            ),
+            timeout=HOST_COUNT_TIMEOUT_MS / 1000,
+        )
+    except Exception:
+        pass
+
+
+async def node_events_handler(env, request):
+    # GET /api/nodes/events?owner=&ts=&sig= (WebSocket upgrade only) — a
+    # desktop/headless node's live event channel. Auth reuses the same signed
+    # forkmesh-issues-pull-v1 drain token as GET /api/sync (_authorize_owner),
+    # checked here BEFORE any Durable Object is selected. The socket only ever
+    # receives payload-free {"type":"event","topic"} frames; all data still
+    # flows through the existing signed HTTPS sync, so this adds no new
+    # repository byte or control transport (the retired-tunnel contracts in
+    # test_https_mirror_routing_integration.py are unaffected).
+    upgrade = (request.headers.get("upgrade") or "").lower()
+    if upgrade != "websocket":
+        return json_response({"error": "upgrade_required"}, status=426)
+    params = parse_qs(urlparse(request.url).query)
+    owner = safe_segment(params.get("owner", [""])[0])
+    if not owner or not await _authorize_owner(env, request, owner):
+        return json_response({"error": "unauthorized"}, status=401)
+    node_id = env.FORKMESH_NODES.idFromName(_node_events_do_name(owner))
+    # Same retry-twice guard as the chat room router: a platform abort of the
+    # DO is transient, and the upgrade request carries no body so re-driving
+    # durable_object_request is safe.
+    last_error = None
+    for _attempt in range(2):
+        node_object = env.FORKMESH_NODES.get(node_id)
+        try:
+            return await node_object.fetch(
+                await durable_object_request(request))
+        except Exception as error:
+            last_error = error
+    await log_durable_object_abort(
+        env, request, urlparse(request.url).path, last_error)
+    return json_response(
+        {"error": "unavailable"}, status=503,
+        extra_headers=EXPECTED_DEGRADED_HEADERS)
 
 
 # Per-isolate memo of recent DO live-host probes: key_bi -> {"ts", "hosts"}
@@ -2406,7 +2481,7 @@ async def network_leaderboards(env):
         if size_bytes > 0:
             bytes_by_owner[owner] = bytes_by_owner.get(owner, 0) + size_bytes
         detail = node_details.setdefault(owner.lower(), {
-            "name": owner, "sizeBytes": 0,
+            "name": owner, "machineName": "", "sizeBytes": 0,
             "commit": "", "branch": "", "lastSync": "",
             "platform": "", "version": "", "nodeId": "", "_updatedMs": -1,
             "_recordCount": 0,
@@ -2431,6 +2506,8 @@ async def network_leaderboards(env):
         updated_ms = _catalog_updated_ms(rec)
         if updated_ms > detail["_updatedMs"]:
             detail["_updatedMs"] = updated_ms
+            detail["machineName"] = clean_string(
+                rec.get("machineName", ""), MAX_NODE_NAME)
             detail["commit"] = clean_string(rec.get("commit", ""), 64)
             detail["branch"] = clean_string(rec.get("branch", ""), 120)
             detail["lastSync"] = clean_string(rec.get("lastSync", ""), 32)
@@ -2529,6 +2606,233 @@ async def network_leaderboards(env):
         cache_seconds=NETWORK_STATS_TTL,
     )
     await edge_cache_put(NETWORK_LEADERBOARDS_CACHE_KEY, resp)
+    return resp
+
+
+# --- Referral program ---------------------------------------------------------
+# Every registered user account owns the share link /r/<name>. A click on the
+# link bumps that account's counter and bounces to /signup?ref=<name>; a
+# completed signup carrying that ref bumps the signup counter. Only aggregate
+# per-referrer counters exist (see referral_stats in schema.py) — who followed
+# a link or who signed up through it is never recorded.
+REFERRAL_LEADERBOARD_CACHE_KEY = (
+    "https://forkmesh.internal/api/referrals/leaderboard"
+)
+REFERRAL_LEADERBOARD_TTL = 30  # seconds per colo; counters tolerate the lag
+
+
+# Resolve a raw referral code to (name, blind index) — only active, real user
+# accounts participate, so junk /r/ paths and node accounts count nothing.
+async def _referral_account(env, raw_name):
+    name = clean_string(raw_name or "", MAX_NODE_NAME).strip().lower()
+    if not valid_node_name(name):
+        return "", ""
+    name_bi, rec = await _account_row(env, name)
+    if (not rec or rec.get("status") != "active" or
+            _account_kind(rec) != "user"):
+        return "", ""
+    return name, name_bi
+
+
+async def _referral_bump(env, name, name_bi, column):
+    await d1_run(
+        env,
+        "INSERT INTO referral_stats (referrer_bi, name, %s, last_ts) "
+        "VALUES (?,?,1,?) "
+        "ON CONFLICT(referrer_bi) DO UPDATE SET %s=%s+1, "
+        "name=excluded.name, last_ts=excluded.last_ts"
+        % (column, column, column),
+        name_bi, name, int(Date.now()))
+
+
+async def _referral_counts(env, name_bi):
+    """Live (clicks, signups, last activity ms) for one referrer."""
+    row = await d1_first(
+        env,
+        "SELECT clicks, signups, last_ts FROM referral_stats "
+        "WHERE referrer_bi=?", name_bi)
+    rec = row or {}
+    try:
+        return (int(rec.get("clicks") or 0), int(rec.get("signups") or 0),
+                int(rec.get("last_ts") or 0))
+    except (TypeError, ValueError):
+        return 0, 0, 0
+
+
+# Link-preview crawlers: when a share link is posted to Mastodon, every server
+# that sees the post fetches the URL, and Slack/Discord/Twitter do the same.
+# They get the preview page below instead of the 302 - and they never move the
+# counters, because a boost fanning a post out to 200 servers is not 200
+# clicks. Deliberately coarse: a false positive costs one uncounted click.
+REFERRAL_PREVIEW_AGENTS = (
+    "bot", "crawler", "spider", "preview", "mastodon", "pleroma", "akkoma",
+    "misskey", "friendica", "lemmy", "activitypub", "facebookexternalhit",
+    "whatsapp", "embedly", "iframely", "opengraph", "quora link", "curl/",
+    "wget/",
+)
+
+
+def _is_link_preview_agent(request):
+    try:
+        ua = str(request.headers.get("user-agent") or "").lower()[:512]
+    except Exception:
+        return False
+    return any(marker in ua for marker in REFERRAL_PREVIEW_AGENTS)
+
+
+def _referral_preview_page(origin, name, clicks, signups):
+    # Minimal HTML whose only job is to carry the OpenGraph tags; the card PNG
+    # they point at is rendered per request from the same counters, so the
+    # unfurl shows how far this link has actually travelled instead of the
+    # generic "Create account - ForkMesh" signup preview (adhoc #313). Humans
+    # who trip the crawler heuristic still land on signup via the refresh.
+    target = "/signup?ref=" + quote(name)
+    summary = "%s click%s and %s signup%s so far." % (
+        clicks, "" if clicks == 1 else "s",
+        signups, "" if signups == 1 else "s")
+    title = "Join ForkMesh with @%s" % name
+    description = (
+        "%s invites you to ForkMesh - distributed Git hosting on a mesh of "
+        "desktop nodes. %s" % ("@" + name, summary))
+    card = "%s/api/referrals/%s/card.png" % (origin, quote(name))
+    share = "%s/r/%s" % (origin, quote(name))
+    return (
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width, "
+        "initial-scale=1\">"
+        "<title>%s</title>"
+        "<meta name=\"description\" content=\"%s\">"
+        "<link rel=\"canonical\" href=\"%s\">"
+        "<meta property=\"og:type\" content=\"website\">"
+        "<meta property=\"og:site_name\" content=\"ForkMesh\">"
+        "<meta property=\"og:url\" content=\"%s\">"
+        "<meta property=\"og:title\" content=\"%s\">"
+        "<meta property=\"og:description\" content=\"%s\">"
+        "<meta property=\"og:image\" content=\"%s\">"
+        "<meta property=\"og:image:width\" content=\"%d\">"
+        "<meta property=\"og:image:height\" content=\"%d\">"
+        "<meta property=\"og:image:alt\" content=\"%s\">"
+        "<meta name=\"twitter:card\" content=\"summary_large_image\">"
+        "<meta name=\"twitter:title\" content=\"%s\">"
+        "<meta name=\"twitter:description\" content=\"%s\">"
+        "<meta name=\"twitter:image\" content=\"%s\">"
+        "<meta http-equiv=\"refresh\" content=\"0; url=%s\">"
+        "</head><body><p><a href=\"%s\">%s</a></p><p>%s</p></body></html>"
+        % (_html_escape(title), _html_escape(description), share,
+           share, _html_escape(title), _html_escape(description), card,
+           og_card.CARD_W, og_card.CARD_H,
+           _html_escape("%s: %s" % (title, summary)),
+           _html_escape(title), _html_escape(description), card,
+           _html_escape(target), _html_escape(target), _html_escape(title),
+           _html_escape(summary)))
+
+
+# GET /r/<name>: count the click, then land on signup with the ref attached so
+# the eventual account creation can credit the referrer. Link-preview crawlers
+# get an OpenGraph page carrying this referrer's live counters instead.
+async def referral_click(env, raw_name, request=None):
+    await ensure_schema(env)
+    name = ""
+    try:
+        name, name_bi = await _referral_account(env, raw_name)
+        if name_bi and request is not None and _is_link_preview_agent(request):
+            clicks, signups, _last_ts = await _referral_counts(env, name_bi)
+            return Response(
+                _referral_preview_page(
+                    _ap_origin(env, request), name, clicks, signups),
+                status=200, headers={
+                    "content-type": "text/html; charset=utf-8",
+                    # Counters are live: never let a shared cache freeze the
+                    # numbers a re-crawl is supposed to refresh.
+                    "cache-control": "no-store, max-age=0, must-revalidate",
+                })
+        if name_bi:
+            await _referral_bump(env, name, name_bi, "clicks")
+    except Exception:
+        pass  # a broken counter must never break the signup funnel
+    target = "/signup" + ("?ref=" + quote(name) if name else "")
+    return Response("", status=302, headers={
+        "location": target,
+        "cache-control": "no-store, max-age=0, must-revalidate",
+    })
+
+
+REFERRAL_CARD_TTL = 60  # seconds per colo; short so re-unfurls look live
+
+
+# GET /api/referrals/<name>/card.png: the og:image of the preview page above -
+# the referrer's handle plus their live click/signup counters, rendered the
+# same way as the repo info card (see og_card.py).
+async def referral_card_handler(env, request, raw_name):
+    if method_name(request) not in ("GET", "HEAD"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    await ensure_schema(env)
+    name, name_bi = await _referral_account(env, raw_name)
+    if not name_bi:
+        return json_response({"error": "not_found"}, status=404)
+    origin = _ap_origin(env, request)
+    cache_key = "%s/api/referrals/%s/card.png" % (origin, quote(name))
+    cached = await edge_cache_match_media(cache_key, "image/png")
+    if cached is not None:
+        return cached
+    clicks, signups, last_ts = await _referral_counts(env, name_bi)
+    png = og_card.render_referral_card({
+        "name": name,
+        "host": urlparse(origin).netloc or "forkmesh.com",
+        "clicks": clicks,
+        "signups": signups,
+        "lastTs": last_ts,
+    }, time.time())
+    # Uint8Array.new copies into a JS-owned buffer: a bare _to_js(bytes) view
+    # into WASM memory read off the GIL crashes the isolate (see
+    # repo_card_handler).
+    resp = JsResponse.new(Uint8Array.new(_to_js(bytes(png))), to_js({
+        "status": 200,
+        "headers": {
+            "content-type": "image/png",
+            "cache-control": "public, max-age=%d" % REFERRAL_CARD_TTL,
+        },
+    }))
+    await edge_cache_put(cache_key, resp)
+    return resp
+
+
+# Credit a completed signup to the referrer named in the signup payload.
+# Called after the account is saved; self-referrals count nothing.
+async def _record_referral_signup(env, new_name, raw_ref):
+    try:
+        ref_name, ref_bi = await _referral_account(env, raw_ref)
+        if not ref_bi or ref_name == new_name:
+            return
+        await _referral_bump(env, ref_name, ref_bi, "signups")
+    except Exception:
+        pass  # attribution is best-effort; the account itself already exists
+
+
+REFERRAL_LEADERBOARD_LIMIT = 10
+
+
+async def referral_leaderboard(env):
+    cached = await edge_cache_match(REFERRAL_LEADERBOARD_CACHE_KEY)
+    if cached is not None:
+        return cached
+    await ensure_schema(env)
+    rows = await d1_all(
+        env,
+        "SELECT name, clicks, signups FROM referral_stats "
+        "WHERE clicks > 0 OR signups > 0 "
+        "ORDER BY signups DESC, clicks DESC, name LIMIT ?",
+        REFERRAL_LEADERBOARD_LIMIT)
+    board = [
+        {"name": clean_string(r.get("name", ""), MAX_NODE_NAME) or "user",
+         "clicks": int(r.get("clicks") or 0),
+         "signups": int(r.get("signups") or 0)}
+        for r in rows
+    ]
+    resp = json_response(
+        {"ok": True, "board": board},
+        cache_seconds=REFERRAL_LEADERBOARD_TTL)
+    await edge_cache_put(REFERRAL_LEADERBOARD_CACHE_KEY, resp)
     return resp
 
 
@@ -2722,6 +3026,134 @@ async def durable_object_request(request, target_url=None, include_body=False,
         payload = bytes(await request.bytes()) if body is None else bytes(body)
         init["body"] = Uint8Array.new(_to_js(payload))
     return JsRequest.new(str(target_url or request.url), to_js(init))
+
+
+# A Durable Object binding name as wrangler.toml declares it. The same grammar
+# gates both discovery (which env properties may be reported) and accounting
+# (which binding names may reach D1).
+DURABLE_OBJECT_BINDING_RE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
+# Content-free relay accounting behind the System Capacity card. A Durable
+# Object counts the bytes it relays in the live instance and folds them into
+# one small D1 row per binding: once on the first frame after a wake-up (an
+# idle object may hibernate again immediately, losing in-memory counters),
+# then at most once a minute or once a batch of bytes has gone by. Even a busy
+# room therefore costs a handful of writes an hour.
+DURABLE_OBJECT_TRAFFIC_FLUSH_MS = 60 * 1000
+DURABLE_OBJECT_TRAFFIC_FLUSH_BYTES = 262_144
+DURABLE_OBJECT_TRAFFIC_MAX = 9_007_199_254_740_991
+
+
+def durable_object_bindings(env):
+    """Every Durable Object namespace bound to this Worker, discovered live.
+
+    The System Capacity display must not carry a hand-maintained list: a class
+    bound in wrangler.toml appears here on the next deploy. Namespaces are
+    duck-typed — `idFromName` plus `newUniqueId` is unique to a
+    DurableObjectNamespace among D1, KV, R2, AI, and assets bindings.
+    """
+    try:
+        keys = [str(key) for key in Object.keys(env)]
+    except Exception:
+        return []
+    bindings = []
+    for name in sorted(set(keys)):
+        if not DURABLE_OBJECT_BINDING_RE.fullmatch(name):
+            continue
+        try:
+            namespace = getattr(env, name, None)
+        except Exception:
+            continue
+        if namespace is None:
+            continue
+        if not (
+            hasattr(namespace, "idFromName")
+            and hasattr(namespace, "newUniqueId")
+        ):
+            continue
+        bindings.append(name)
+    return bindings
+
+
+def durable_object_label(binding):
+    """Human display name for an auto-discovered binding (no hardcoding)."""
+    words = [
+        word for word in str(binding or "").split("_")
+        if word and word != "FORKMESH"
+    ]
+    if not words:
+        return str(binding or "")
+    return " ".join(words).capitalize()
+
+
+def durable_object_traffic_note(do, bytes_in=0, bytes_out=0, messages=0):
+    """Record relayed bytes for one frame in this live Durable Object."""
+    state = getattr(do, "_traffic", None)
+    if not isinstance(state, dict):
+        state = {
+            "bytes_in": 0, "bytes_out": 0, "messages": 0, "flushed_at": 0}
+        try:
+            do._traffic = state
+        except Exception:
+            return None
+    try:
+        state["bytes_in"] += max(0, int(bytes_in or 0))
+        state["bytes_out"] += max(0, int(bytes_out or 0))
+        state["messages"] += max(0, int(messages or 0))
+    except (TypeError, ValueError):
+        return state
+    return state
+
+
+async def durable_object_traffic_flush(do, force=False):
+    """Fold the pending byte counts into this binding's single D1 row."""
+    state = getattr(do, "_traffic", None)
+    if not isinstance(state, dict):
+        return False
+    pending = (
+        int(state.get("bytes_in") or 0) + int(state.get("bytes_out") or 0))
+    if pending <= 0 and not int(state.get("messages") or 0):
+        return False
+    binding = str(getattr(do, "traffic_binding", "") or "")
+    if not DURABLE_OBJECT_BINDING_RE.fullmatch(binding):
+        return False
+    now = int(Date.now())
+    if (
+        not force
+        and pending < DURABLE_OBJECT_TRAFFIC_FLUSH_BYTES
+        and now - int(state.get("flushed_at") or 0)
+            < DURABLE_OBJECT_TRAFFIC_FLUSH_MS
+    ):
+        return False
+    bytes_in = int(state.get("bytes_in") or 0)
+    bytes_out = int(state.get("bytes_out") or 0)
+    messages = int(state.get("messages") or 0)
+    state["bytes_in"] = 0
+    state["bytes_out"] = 0
+    state["messages"] = 0
+    state["flushed_at"] = now
+    try:
+        await d1_run(
+            do.env,
+            "INSERT INTO durable_object_traffic "
+            "(binding, bytes_in, bytes_out, messages, updated_at) "
+            "VALUES (?,?,?,?,?) ON CONFLICT(binding) DO UPDATE SET "
+            "bytes_in=MIN("
+            "durable_object_traffic.bytes_in+excluded.bytes_in,?), "
+            "bytes_out=MIN("
+            "durable_object_traffic.bytes_out+excluded.bytes_out,?), "
+            "messages=MIN("
+            "durable_object_traffic.messages+excluded.messages,?), "
+            "updated_at=excluded.updated_at",
+            binding, bytes_in, bytes_out, messages, now,
+            DURABLE_OBJECT_TRAFFIC_MAX,
+            DURABLE_OBJECT_TRAFFIC_MAX,
+            DURABLE_OBJECT_TRAFFIC_MAX,
+        )
+    except Exception:
+        # Capacity counters are optional telemetry. A migrating or overloaded
+        # database must never break a live relay; the window is simply lost.
+        return False
+    return True
 
 
 def world_request_country(request):
@@ -2930,6 +3362,10 @@ WORLD_INACTIVE_DELAY_MS = 15 * 60 * 1000
 # number of sqlite_master rows and the resulting COUNT queries hard-bounded so a
 # ticket refresh cannot turn into an unbounded database-inspection endpoint.
 WORLD_SYSTEM_CAPACITY_MAX_TABLES = 256
+# Durable Object bindings are discovered from the runtime environment rather
+# than listed here, so the card stays truthful as classes are added; the cap
+# keeps an unexpectedly large environment from inflating the ticket.
+WORLD_SYSTEM_CAPACITY_MAX_DURABLE_OBJECTS = 32
 WORLD_SYSTEM_CAPACITY_MAX_SAFE_ROWS = 9_007_199_254_740_991
 WORLD_SYSTEM_CAPACITY_TABLE_RE = re.compile(
     r"[A-Za-z_][A-Za-z0-9_]{0,127}")
@@ -3157,6 +3593,14 @@ async def _world_account_claim(env, request, data=None):
         name, account_status, node_count)
     claim["isAdmin"] = bool(
         await _has_role(env, name, "platform_administrator"))
+    # The account creation timestamp is already public on /api/accounts/{name};
+    # carrying it on the ticket lets the world badge render "joined … ago"
+    # without every avatar firing its own profile lookup.
+    try:
+        joined_at = int(rec.get("created_at") or 0)
+    except (TypeError, ValueError):
+        joined_at = 0
+    claim["joinedAt"] = max(0, joined_at)
     return claim
 
 
@@ -3203,6 +3647,60 @@ async def _world_system_capacity(env):
         ):
             capacity.append({"name": name, "rowCount": row_count})
     return capacity
+
+
+async def _world_durable_objects(env):
+    """Auto-detected Durable Object bindings with their relayed byte totals.
+
+    The binding list comes from the runtime environment, so a newly bound
+    class shows up on the System Capacity platform without a code change here.
+    Totals are content-free: bytes and frame counts relayed per class, with no
+    room key, account, peer id, or payload.
+    """
+    bindings = durable_object_bindings(env)
+    if not bindings:
+        return []
+    totals = {}
+    try:
+        rows = await d1_all(
+            env,
+            "SELECT binding, bytes_in, bytes_out, messages, updated_at "
+            "FROM durable_object_traffic ORDER BY binding LIMIT ?",
+            WORLD_SYSTEM_CAPACITY_MAX_DURABLE_OBJECTS,
+        )
+    except Exception:
+        # The counter table is optional (a rolling migration may not have
+        # created it yet). Bindings are still discovered and reported at zero.
+        rows = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        totals[str(row.get("binding") or "")] = row
+
+    def _count(row, field):
+        try:
+            value = int(row.get(field) or 0)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, min(value, DURABLE_OBJECT_TRAFFIC_MAX))
+
+    objects = []
+    for binding in bindings[:WORLD_SYSTEM_CAPACITY_MAX_DURABLE_OBJECTS]:
+        row = totals.get(binding) or {}
+        bytes_in = _count(row, "bytes_in")
+        bytes_out = _count(row, "bytes_out")
+        objects.append({
+            "id": binding,
+            "binding": binding,
+            "name": durable_object_label(binding),
+            "bytesIn": bytes_in,
+            "bytesOut": bytes_out,
+            "bytesTotal": min(
+                bytes_in + bytes_out, DURABLE_OBJECT_TRAFFIC_MAX),
+            "messages": _count(row, "messages"),
+            "updatedAt": _count(row, "updated_at"),
+        })
+    return objects
 
 
 async def world_ticket_handler(env, request):
@@ -3291,13 +3789,64 @@ async def world_ticket_handler(env, request):
         try:
             response_data["systemCapacity"] = {
                 "tables": await _world_system_capacity(env),
+                "durableObjects": await _world_durable_objects(env),
             }
         except Exception:
             # Capacity telemetry is optional; authentication and multiplayer
             # entry continue to work while D1 is unavailable or migrating.
-            response_data["systemCapacity"] = {"tables": []}
+            response_data["systemCapacity"] = {
+                "tables": [], "durableObjects": []}
     return json_response(
         response_data,
+        cache_control="no-store, max-age=0, must-revalidate",
+        extra_headers={"x-content-type-options": "nosniff"},
+    )
+
+
+async def world_client_profile_handler(env, request):
+    """Store the signed-in visitor's coarse country/browser/OS on the account.
+
+    Every registered account owns a bench around the campfire whether or not
+    it is signed in, and an away member publishes no presence frame — so
+    without a stored copy their figure sat there with no flag and a hidden
+    client badge. The client posts this once per change (a privacy toggle
+    included), so an ordinary session costs no extra write.
+
+    The country is read from the edge, never from the body: the client only
+    says whether it may be shared. Browser and OS are the same coarse
+    families live presence accepts; an unknown or ``hidden`` value stores as
+    "" and simply clears the previous one.
+    """
+    if method_name(request) != "POST":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"allow": "POST"})
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    name_bi, rec = await _account_session_record(env, request, data)
+    if not name_bi or not rec:
+        return json_response(
+            {"error": "invalid_session"}, status=401,
+            cache_control="no-store, max-age=0, must-revalidate")
+    profile = world_protocol.clean_client_profile(
+        world_request_country(request) if data.get("shareCountry") is True
+        else "",
+        data.get("browser"),
+        data.get("os"),
+    )
+    if profile != _account_world_client_fields(rec):
+        rec["world_country"] = profile["countryCode"]
+        rec["world_browser"] = profile["browser"]
+        rec["world_os"] = profile["os"]
+        rec["world_client_at"] = int(Date.now())
+        await _save_account(env, name_bi, rec)
+        # The bench figures are drawn from the edge-cached public directory.
+        await edge_cache_delete(USERS_DIRECTORY_CACHE_KEY)
+    return json_response(
+        {"ok": True, **profile},
         cache_control="no-store, max-age=0, must-revalidate",
         extra_headers={"x-content-type-options": "nosniff"},
     )
@@ -3307,6 +3856,54 @@ def _world_inactive_public_id(account_bi):
     return hashlib.sha256(
         ("forkmesh-world-inactive-v1:" + str(account_bi or "")).encode()
     ).hexdigest()[:20]
+
+
+# Coarse recency ladder for the avatar chest activity light and the wallet
+# QR's transaction ring. Each label reads "within this window"; anything past
+# ten days is "stale". These are buckets, never timestamps: the finest public
+# step is a whole hour, far coarser than a last-seen instant.
+WORLD_ACTIVITY_LIGHT_BUCKETS = (
+    (60 * 60 * 1000, "hour"),
+    (5 * 60 * 60 * 1000, "5h"),
+    (24 * 60 * 60 * 1000, "24h"),
+    (3 * 24 * 60 * 60 * 1000, "3d"),
+    (5 * 24 * 60 * 60 * 1000, "5d"),
+    (10 * 24 * 60 * 60 * 1000, "10d"),
+)
+
+
+def _world_activity_light_bucket(age_ms):
+    try:
+        age = max(0, int(age_ms))
+    except (TypeError, ValueError):
+        return "stale"
+    for limit, bucket in WORLD_ACTIVITY_LIGHT_BUCKETS:
+        if age < limit:
+            return bucket
+    return "stale"
+
+
+async def _world_user_activity_buckets(env):
+    """Map account_bi -> coarse chest-light recency bucket, all accounts.
+
+    Kept as its own query, well apart from the public user-directory payload
+    builder, so that function never sees (or could leak) a raw touch
+    timestamp -- only the bucket label crosses that boundary.
+    """
+    now = int(Date.now())
+    rows = await d1_all(
+        env, "SELECT account_bi,last_touch_at FROM world_user_activity")
+    buckets = {}
+    for row in rows or []:
+        try:
+            touch = int(row.get("last_touch_at") or 0)
+        except (TypeError, ValueError):
+            touch = 0
+        if touch <= 0:
+            continue
+        buckets[row.get("account_bi")] = _world_activity_light_bucket(
+            now - touch)
+    return buckets
 
 
 def _world_inactive_recency(updated_at, now):
@@ -3350,6 +3947,10 @@ async def world_inactive_handler(env, request):
             claim = world_protocol.trusted_presence_claim(
                 rec.get("name", ""), rec.get("accountStatus", "Guest"),
                 rec.get("nodeCount", 0))
+            try:
+                inactive_age = now - int(row.get("updated_at") or 0)
+            except (TypeError, ValueError):
+                inactive_age = None
             people.append({
                 "id": _world_inactive_public_id(row.get("account_bi")),
                 "name": claim["name"] or "Private contributor",
@@ -3358,6 +3959,8 @@ async def world_inactive_handler(env, request):
                 "availability": status,
                 "lastActive": _world_inactive_recency(
                     row.get("updated_at"), now),
+                # Drives the seating card's chest activity light.
+                "activityBucket": _world_activity_light_bucket(inactive_age),
             })
         return json_response(
             {
@@ -3435,6 +4038,59 @@ async def world_inactive_handler(env, request):
     )
 
 
+# Seconds one address's wallet chip (balance + tx-recency bucket) is held in
+# the colo edge cache. The chip is decorative, so staleness is cheap and the
+# cache bounds the RPC cost to one pair of public reads per address per TTL
+# per colo no matter how many avatars wear the same wallet.
+WORLD_WALLET_BADGE_TTL = 600
+WORLD_WALLET_CACHE_PREFIX = "https://forkmesh.internal/api/world/wallet?address="
+
+
+async def world_wallet_badge_handler(env, request):
+    """Public data for an avatar's chest wallet QR chip.
+
+    Read-only on-chain lookups for an address the account holder already chose
+    to publish: the SOL balance plus the same coarse recency bucket the chest
+    activity light uses, keyed to the wallet's newest transaction.
+    """
+    if method_name(request) != "GET":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    params = parse_qs(urlparse(request.url).query)
+    address = str(params.get("address", [""])[0] or "").strip()
+    if not SOLANA_RE.match(address):
+        return json_response({"error": "bad_address"}, status=400)
+    cache_key = WORLD_WALLET_CACHE_PREFIX + address
+    cached = await edge_cache_match(cache_key)
+    if cached is not None:
+        return cached
+    lamports = await _solana_balance_lamports(env, address)
+    tx_bucket = ""
+    signatures = await _solana_rpc(
+        env, "getSignaturesForAddress", [address, {"limit": 1}])
+    result = signatures.get("result") if isinstance(signatures, dict) else None
+    if isinstance(result, list):
+        tx_bucket = "stale"
+        newest = result[0] if result else None
+        block_time = newest.get("blockTime") if isinstance(newest, dict) else None
+        try:
+            tx_bucket = _world_activity_light_bucket(
+                int(Date.now()) - int(block_time) * 1000)
+        except (TypeError, ValueError):
+            tx_bucket = "stale"
+    resp = json_response({
+        "ok": True,
+        "address": address,
+        "lamports": lamports,
+        "sol": (lamports / LAMPORTS_PER_SOL) if lamports is not None else None,
+        "txBucket": tx_bucket,
+    }, cache_seconds=WORLD_WALLET_BADGE_TTL)
+    # Only a successful read is worth pinning for the whole TTL; a dead RPC
+    # window should retry on the next request instead of caching the outage.
+    if lamports is not None or tx_bucket:
+        await edge_cache_put(cache_key, resp)
+    return resp
+
+
 # --- Town Square approximate unique visitor counter -------------------------
 # The public plaque uses fixed-footprint HyperLogLog sketches, not a visitor
 # ledger. Cloudflare's edge-observed address and a deliberately coarse
@@ -3462,6 +4118,10 @@ WORLD_LAYOUT_CACHE_KEY = "https://forkmesh.internal/api/world/layout"
 WORLD_LAYOUT_TTL = 60
 WORLD_LAYOUT_MAX_OBJECTS = 200
 WORLD_LAYOUT_MAX_COORDINATE = 500
+# One full turn in radians. Locked headings are stored wrapped into [0, TURN);
+# anything further from zero than a handful of turns is a broken client.
+WORLD_LAYOUT_TURN = 6.283185307179586
+WORLD_LAYOUT_MAX_ROTATION = 1000
 WORLD_LAYOUT_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,79}")
 
 
@@ -3630,6 +4290,159 @@ async def world_visitors_handler(env, request):
     payload.update(world_visitor_metrics.unique_visit_summary(register_sets))
     resp = json_response(payload, cache_seconds=WORLD_VISITORS_TTL)
     await edge_cache_put(WORLD_VISITORS_CACHE_KEY, resp)
+    return resp
+
+
+WORLD_SOCIAL_POSTS_CACHE_KEY = (
+    "https://forkmesh.internal/api/world/social-posts")
+# Ten minutes, matching the Mastodon kiosk cadence: every world visitor in a
+# colo shares one Twitter fetch and one Reddit fetch per TTL, so the banners
+# cannot become another 100k-req/day quota pressure.
+WORLD_SOCIAL_POSTS_TTL = 600
+
+
+BLOG_RSS_CACHE_KEY = "https://forkmesh.internal/blog/rss.xml"
+# The blog index is a build artifact, so the feed only changes on deploy; half
+# an hour at the edge keeps subscriber polling (and the world banner's own
+# ten-minute refresh) off the origin without making a new post wait.
+BLOG_RSS_TTL = 1800
+
+
+async def _blog_feed_document(env, request):
+    """Build the blog's RSS document from our own static index.
+
+    Reads blog.html through env.ASSETS (no external fetch, no D1) and returns
+    "" when the asset is missing or parses to nothing, so callers can fall
+    back instead of publishing an empty feed.
+    """
+    origin = urlparse(request.url)
+    resp = await env.ASSETS.fetch(
+        origin.scheme + "://" + origin.netloc + "/"
+        + blog_feed.BLOG_INDEX_ASSET)
+    if int(getattr(resp, "status", 0)) != 200:
+        return ""
+    return blog_feed.build_feed(str(await resp.text()), int(Date.now()))
+
+
+async def _blog_feed_published_document(env, request):
+    """The feed as published, reusing the edge-cached copy while it is warm.
+
+    The world banner reads the same document subscribers get, so a warm cache
+    spares it the parse-and-render pass entirely.
+    """
+    cached = await edge_cache_match(BLOG_RSS_CACHE_KEY)
+    if cached is not None:
+        try:
+            document = str(await cached.text())
+        except Exception:
+            document = ""
+        if document:
+            return document
+    return await _blog_feed_document(env, request)
+
+
+async def blog_rss_handler(env, request):
+    """GET /blog/rss.xml — the public feed for the blog.
+
+    Worker-owned (see run_worker_first in wrangler.toml) because the assets
+    router would otherwise treat rss.xml as a post slug and redirect it.
+    """
+    if method_name(request) not in ("GET", "HEAD"):
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            extra_headers={"allow": "GET, HEAD"})
+    cached = await edge_cache_match(BLOG_RSS_CACHE_KEY)
+    if cached is not None:
+        return cached
+    try:
+        document = await _blog_feed_document(env, request)
+    except Exception:
+        document = ""
+    if not document:
+        return json_response({"error": "blog_feed_unavailable"}, status=503)
+    resp = Response(document, status=200, headers={
+        "content-type": "application/rss+xml; charset=utf-8",
+        "cache-control": "public, max-age=%d" % BLOG_RSS_TTL,
+    })
+    await edge_cache_put(BLOG_RSS_CACHE_KEY, resp)
+    return resp
+
+
+async def _world_social_fetch_text(url, headers):
+    try:
+        resp = await js_fetch(url, to_js({
+            "method": "GET",
+            "headers": headers,
+            "redirect": "follow",
+        }))
+        if int(getattr(resp, "status", 0)) != 200:
+            return None
+        return str(await resp.text())
+    except Exception:
+        return None
+
+
+async def world_social_posts_handler(env, request):
+    """Public read-only proxy feeding the Twitter, Reddit, and blog world
+    banners.
+
+    The external upstreams are best-effort: a network refusal (X retiring
+    the syndication page, Reddit rate-limiting the colo) downgrades that
+    banner to its static sign via state=unavailable instead of failing the
+    read. The blog board reads the blog's own RSS document, built here from
+    our static index through env.ASSETS, so it never leaves the Worker and
+    shows exactly what subscribers get.
+    """
+    if method_name(request) != "GET":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            extra_headers={"allow": "GET"})
+    cached = await edge_cache_match(WORLD_SOCIAL_POSTS_CACHE_KEY)
+    if cached is not None:
+        return cached
+    twitter_posts, twitter_ok = [], False
+    twitter_html = await _world_social_fetch_text(
+        world_social_feeds.TWITTER_SYNDICATION_URL,
+        {"accept": "text/html,application/json"},
+    )
+    if twitter_html is not None:
+        next_data = world_social_feeds.extract_next_data(twitter_html)
+        if next_data is not None:
+            twitter_posts = world_social_feeds.normalize_twitter_timeline(
+                next_data)
+            twitter_ok = True
+    reddit_posts, reddit_ok = [], False
+    reddit_text = await _world_social_fetch_text(
+        world_social_feeds.REDDIT_LISTING_URL,
+        {
+            "accept": "application/json",
+            "user-agent": world_social_feeds.REDDIT_USER_AGENT,
+        },
+    )
+    if reddit_text is not None:
+        try:
+            listing = json.loads(reddit_text)
+        except ValueError:
+            listing = None
+        if listing is not None:
+            reddit_posts = world_social_feeds.normalize_reddit_listing(
+                listing)
+            reddit_ok = True
+    blog_posts, blog_ok = [], False
+    try:
+        blog_rss = await _blog_feed_published_document(env, request)
+        if blog_rss:
+            blog_posts = world_social_feeds.normalize_blog_feed(blog_rss)
+            blog_ok = bool(blog_posts)
+    except Exception:
+        blog_posts, blog_ok = [], False
+    resp = json_response(
+        world_social_feeds.social_posts_payload(
+            int(Date.now()), twitter_posts, reddit_posts, blog_posts,
+            twitter_ok, reddit_ok, blog_ok),
+        cache_seconds=WORLD_SOCIAL_POSTS_TTL,
+    )
+    await edge_cache_put(WORLD_SOCIAL_POSTS_CACHE_KEY, resp)
     return resp
 
 
@@ -5657,6 +6470,9 @@ SCHEMA_ALTER_STATEMENTS = [
     # trusting a mutable forkmesh_active boolean.
     """ALTER TABLE mirror_https_endpoints
        ADD COLUMN forkmesh_operations_json TEXT NOT NULL DEFAULT '[]'""",
+    # Heading offset in radians for an administrator-locked scene object
+    # (migration 0082). 0 keeps the object's authored rotation.
+    "ALTER TABLE world_object_layout ADD COLUMN rotation REAL NOT NULL DEFAULT 0",
 ]
 
 # Fingerprint of the DDL this build would apply. Stored in schema_meta after a
@@ -7523,10 +8339,20 @@ async def catalog_handler(env, request):
         prior_row = await d1_first(
             env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
         exists = prior_row is not None
+        prior_commit = ""
+        prior_state_hash = ""
         # Reject rollbacks: a replayed older record must not be able to repin an
         # earlier (validly-signed) repo state and downgrade the served refs.
         if exists:
             prior = await decrypt_row(env, prior_row["data"]) or {}
+            prior_commit = clean_string(prior.get("commit", ""), 64)
+            candidate_prior_state = clean_string(
+                prior.get("stateHash", ""), 64).strip().lower()
+            if (
+                    (prior.get("source") or "local-node") == "local-node"
+                    and re.fullmatch(
+                        r"[0-9a-f]{64}", candidate_prior_state)):
+                prior_state_hash = candidate_prior_state
             try:
                 if int(record["updatedAt"]) < int(prior.get("updatedAt", 0) or 0):
                     return json_response({"error": "stale_update"}, status=409)
@@ -7566,13 +8392,28 @@ async def catalog_handler(env, request):
         # must never fail the publish itself.
         if state_hash and record.get("source") == "local-node":
             try:
-                await d1_run(
-                    env,
-                    "INSERT INTO repo_state_history (key_bi, state_hash, ts) "
-                    "VALUES (?,?,?) ON CONFLICT(key_bi, state_hash) "
-                    "DO UPDATE SET ts=excluded.ts",
-                    key_bi, state_hash.strip().lower(), int(Date.now()),
-                )
+                # Preserve the state being replaced explicitly. Older releases
+                # wrote history best-effort after replacing the catalog row, so
+                # an upgraded repository can otherwise lose its only
+                # last-known-good handoff pin on the first new publication.
+                # The previous record was already owner-signature-verified when
+                # accepted; remote-clone self-pins never enter this path.
+                history_states = [
+                    digest for digest in (
+                        prior_state_hash,
+                        state_hash.strip().lower(),
+                    )
+                    if digest
+                ]
+                for digest in dict.fromkeys(history_states):
+                    await d1_run(
+                        env,
+                        "INSERT INTO repo_state_history "
+                        "(key_bi, state_hash, ts) VALUES (?,?,?) "
+                        "ON CONFLICT(key_bi, state_hash) "
+                        "DO UPDATE SET ts=excluded.ts",
+                        key_bi, digest, int(Date.now()),
+                    )
                 await d1_run(
                     env,
                     "DELETE FROM repo_state_history WHERE key_bi=? "
@@ -7605,6 +8446,30 @@ async def catalog_handler(env, request):
         # never rolls back an otherwise valid catalog publication.
         await _https_mirror_refresh_catalog_publisher_health(env, record)
         await purge_catalog_related_caches()
+        if (
+                record["visibility"] == "public"
+                and record.get("source") == "remote-clone"):
+            try:
+                await _promote_hosted_repository_import(env, record)
+            except Exception:
+                # Import metadata and its notification are useful secondary
+                # effects. The signed native catalog is still authoritative
+                # and must not be rolled back if this bounded linkage fails.
+                pass
+        # A public record whose advertised head moved means freshly pushed code
+        # just landed on this mirror node. Announce it to the live World room —
+        # after the cache purge above, so a viewer's immediate refresh reads
+        # the new head. Best-effort and already bounded by catalog_rate_check:
+        # a World relay hiccup must never fail an authorized publication.
+        new_commit = record.get("commit", "")
+        if (record["visibility"] == "public" and exists
+                and re.fullmatch(r"[0-9a-f]{40,64}", new_commit)
+                and new_commit != prior_commit):
+            try:
+                await _world_broadcast_mirror_push(
+                    env, owner, record["name"], new_commit)
+            except Exception:
+                pass
         payload = {
             "ok": True,
             "repository": record,
@@ -7668,7 +8533,8 @@ async def catalog_handler(env, request):
         canonical = ("forkmesh-catalog-delete-v1\n" + owner + "\n" + name +
                      "\n" + ts).encode()
         try:
-            authorized = await ed25519_verify(owner_pub, sig, canonical)
+            authorized = await _verify_owner_signature(
+                env, owner, sig, canonical)
         except Exception:
             await _audit_sensitive_action(
                 env, owner, "repository.delete", "repository",
@@ -7770,7 +8636,49 @@ def _native_repository_logo_record(record, owner, repo):
         "metadata": metadata,
         # Missing or malformed visibility stays private/fail-closed.
         "isPrivate": source.get("visibility") != "public",
+        "commit": clean_string(source.get("commit", ""), 64).lower(),
     }
+
+
+def _committed_repository_logo_url(record, owner, repo):
+    """Return the immutable raw URL for a conventional root project logo."""
+    source = record if isinstance(record, dict) else {}
+    if source.get("isPrivate", source.get("visibility") != "public"):
+        return ""
+    commit = clean_string(source.get("commit", ""), 64).strip().lower()
+    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit):
+        return ""
+    metadata = source.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = source.get("logoMetadata")
+    file_structure = (
+        metadata.get("fileStructure")
+        if isinstance(metadata, dict) else None
+    )
+    if not isinstance(file_structure, list):
+        return ""
+    files = {
+        str(path or "").strip().lower(): str(path or "").strip()
+        for path in file_structure
+        if (
+            isinstance(path, str)
+            and "/" not in path.strip().rstrip("/")
+        )
+    }
+    path = next(
+        (
+            files[name]
+            for name in ("logo.png", "logo.webp", "logo.jpg", "logo.jpeg")
+            if name in files
+        ),
+        "",
+    )
+    if not path:
+        return ""
+    return (
+        "/api/repo/%s/%s/raw?path=%s&ref=%s"
+        % (quote(owner), quote(repo), quote(path), quote(commit))
+    )
 
 
 async def _native_repository_logo_context(env, request, owner, repo):
@@ -7804,12 +8712,28 @@ async def native_repository_logo_handler(
     if not suggestions:
         if method_name(request) != "GET":
             return json_response({"error": "method_not_allowed"}, status=405)
+        committed_logo_url = _committed_repository_logo_url(
+            record, owner, repo)
         params = parse_qs(urlparse(request.url).query)
         if params.get("image", [""])[0] == "1":
+            if committed_logo_url:
+                return Response("", status=302, headers={
+                    "location": committed_logo_url,
+                    "cache-control": "public, max-age=300",
+                })
             logo = await service._official_logo(env, repository_id)
             logo = logo or repository_import.deterministic_logo(record)
             return _repository_logo_image_response(
                 logo, public=not bool(record.get("isPrivate")))
+        if committed_logo_url:
+            return json_response({
+                "ok": True,
+                "repositoryId": repository_id,
+                "logo": {
+                    "dataUrl": committed_logo_url,
+                    "source": "repository",
+                },
+            }, cache_control="no-store")
         response = await service.logo_for_record(env, repository_id, record)
         return response
 
@@ -7872,6 +8796,27 @@ async def _repo_about_public(env, request, owner, repo):
     # Public About/branding card + fediverse stats: the repo page's social
     # badge header and Watch button read this. No auth — same visibility as
     # the catalog entry itself.
+    # Organization API paths are internally rewritten to the backing node
+    # before this handler runs. Recover the public owner from the untouched
+    # Request URL, but only when the durable org link still resolves to the
+    # canonical owner passed by the router. Catalog/privacy/settings reads
+    # continue to use the backing owner; the actor identity and public media
+    # URLs must keep the organization name.
+    display_owner = owner
+    try:
+        public_path = urlparse(request.url).path
+        public_match = REPO_ABOUT_RE.match(public_path)
+    except Exception:
+        public_match = None
+    if public_match:
+        candidate_owner = safe_segment(public_match.group(1))
+        candidate_repo = safe_segment(public_match.group(2))
+        if candidate_owner and candidate_repo == repo:
+            if candidate_owner == owner:
+                display_owner = candidate_owner
+            elif await _org_repo_node(
+                    env, candidate_owner, candidate_repo) == owner:
+                display_owner = candidate_owner
     privacy_reader = globals().get("_repo_is_private")
     if callable(privacy_reader) and await privacy_reader(env, owner, repo):
         return json_response({"error": "not_found"}, status=404)
@@ -7882,14 +8827,14 @@ async def _repo_about_public(env, request, owner, repo):
         return json_response({"error": "not_found"}, status=404)
     rec = await decrypt_row(env, repo_row.get("data"))
     origin = _ap_origin(env, request)
-    handle = ap.repo_handle(str(owner).lower(), str(repo).lower())
+    handle = ap.repo_handle(str(display_owner).lower(), str(repo).lower())
     logo_url = ""
     banner_url = ""
     media_rows = await d1_all(
         env, "SELECT kind, updated_at FROM repo_media WHERE repo_bi=?", key_bi)
     for media in media_rows or []:
         media_url = "/api/repo/%s/%s/media/%s.png?v=%d" % (
-            quote(owner), quote(repo), media.get("kind", ""),
+            quote(display_owner), quote(repo), media.get("kind", ""),
             int(media.get("updated_at") or 0))
         if media.get("kind") == "logo":
             logo_url = media_url
@@ -7911,7 +8856,12 @@ async def _repo_about_public(env, request, owner, repo):
             logo_record)
         resolved_logo = approved_logo or generated_logo
     if not logo_url:
-        logo_url = str(resolved_logo.get("dataUrl") or "")
+        committed_logo_resolver = globals().get(
+            "_committed_repository_logo_url")
+        logo_url = (
+            committed_logo_resolver(rec, display_owner, repo)
+            if callable(committed_logo_resolver) else ""
+        ) or str(resolved_logo.get("dataUrl") or "")
     followers = 0
     followers_list = []
     fedi_enabled = await _ap_enabled(env)
@@ -8207,10 +9157,33 @@ async def repo_mirrors_handler(env, request, owner, repo):
             and await privacy_reader(env, owner, repo)):
         return json_response(
             {"error": "not_found"}, status=404, cache_control="no-store")
+    # The router internally rewrites an organization URL to its backing node.
+    # Recover the untouched public identity for response/cache presentation;
+    # backing node identity remains an authorization detail and must not turn
+    # /forkmesh/forkmesh into a user-owned /jett/forkmesh repository in UIs.
+    public_owner = str(owner or "").strip().lower()
+    public_repo = str(repo or "").strip().lower()
+    try:
+        original_match = REPO_API_PREFIX_RE.match(
+            urlparse(str(getattr(request, "url", "") or "")).path)
+        requested_owner = safe_segment(
+            original_match.group(1)) if original_match else ""
+        requested_repo = safe_segment(
+            original_match.group(2)) if original_match else ""
+        if (
+            requested_owner
+            and requested_repo == public_repo
+            and requested_owner != public_owner
+            and await _org_repo_node(
+                env, requested_owner, requested_repo) == public_owner
+        ):
+            public_owner = requested_owner
+    except Exception:
+        pass
     # Public, poll-heavy payload (repo page + desktop mirror panel): serve
     # from the edge for a few seconds so a burst of viewers costs one build.
     cache_key = ("https://forkmesh.internal/api/repo/%s/%s/mirrors"
-                 % (quote(str(owner or "")), quote(str(repo or ""))))
+                 % (quote(public_owner), quote(public_repo)))
     cached = await edge_cache_match(cache_key)
     if cached is not None:
         return cached
@@ -8261,12 +9234,13 @@ async def repo_mirrors_handler(env, request, owner, repo):
     history = {}
     group_keys = [str(r.get("key_bi") or "") for r in catalog_rows
                   if r.get("key_bi")]
-    if group_keys:
+    for offset in range(0, len(group_keys), 80):
+        key_batch = group_keys[offset:offset + 80]
         hist_rows = await d1_all(
             env,
             "SELECT key_bi, state_hash FROM repo_state_history"
-            " WHERE key_bi IN (%s)" % ",".join("?" for _ in group_keys),
-            *group_keys)
+            " WHERE key_bi IN (%s)" % ",".join("?" for _ in key_batch),
+            *key_batch)
         for r in hist_rows:
             history.setdefault(str(r.get("key_bi") or ""), []).append(
                 r.get("state_hash"))
@@ -8291,6 +9265,8 @@ async def repo_mirrors_handler(env, request, owner, repo):
     )
     if payload is None:
         return json_response({"error": "not_found"}, status=404)
+    payload["owner"] = public_owner
+    payload["repo"] = public_repo
     # Owner column: a headless mirror's catalog record carries no ownerUser of
     # its own, but the node account may be claim-linked to a user (adhoc #53:
     # the node record's `owner` field names the linked user). Resolve that link
@@ -8312,7 +9288,10 @@ async def repo_mirrors_handler(env, request, owner, repo):
             mirror["ownerUser"] = node_name
         else:
             mirror["ownerUser"] = str(node_rec.get("owner") or "").strip()
-    response = json_response(payload, cache_seconds=10)
+    # Node cabinets and the repository Mirrors panel poll while visible. Keep a
+    # tiny shared edge window to collapse bursts without leaving an integrity
+    # transition or completed sync stuck on screen for ten seconds.
+    response = json_response(payload, cache_seconds=3)
     await edge_cache_put(cache_key, response)
     return response
 
@@ -8684,7 +9663,17 @@ async def _repo_is_private(env, owner, repo):
             "SELECT is_private, data FROM repositories WHERE key_bi=?",
             key_bi,
         )
-        if not row or int(row.get("is_private", 1) or 0) != 0:
+        if not row:
+            hosted_resolver = globals().get(
+                "_hosted_repository_import_route")
+            hosted_route = (
+                await hosted_resolver(env, owner, repo)
+                if callable(hosted_resolver) else None)
+            if hosted_route and tuple(hosted_route) != (owner, repo):
+                return await _repo_is_private(
+                    env, hosted_route[0], hosted_route[1])
+            return True
+        if int(row.get("is_private", 1) or 0) != 0:
             return True
         # Migration 0011 historically defaulted existing rows to public.
         # Validate that the signed encrypted record itself explicitly says
@@ -9587,7 +10576,21 @@ def _world_public_total_active_ms(value):
     ) * WORLD_USER_ACTIVITY_PUBLIC_BUCKET_MS
 
 
-def _account_chat_user_payload(rec, total_active_ms=0):
+def _account_world_client_fields(rec):
+    """The coarse country/browser/OS the account last chose to publish.
+
+    Stored by /api/world/client so an away member's campfire bench figure —
+    which has no live presence frame to read — still shows the same three
+    coarse values their avatar wore while they were here.
+    """
+    return world_protocol.clean_client_profile(
+        (rec or {}).get("world_country", ""),
+        (rec or {}).get("world_browser", ""),
+        (rec or {}).get("world_os", ""),
+    )
+
+
+def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
     name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
     return {
         "name": name,
@@ -9601,6 +10604,11 @@ def _account_chat_user_payload(rec, total_active_ms=0):
         # directory deliberately exposes neither a last-seen timestamp nor the
         # current activity interval used by an authenticated World tab.
         "totalActiveMs": _world_public_total_active_ms(total_active_ms),
+        # The bench figure's chest activity light: a seven-step recency
+        # bucket the caller already derived from the raw touch timestamp, so
+        # this function never sees (or could leak) that timestamp itself.
+        "activityBucket": activity_bucket,
+        **_account_world_client_fields(rec),
     }
 
 
@@ -9624,11 +10632,14 @@ async def _account_users_directory(env, request):
     seen = set()
     rows = await d1_all(
         env,
-        "SELECT u.data,a.total_active_ms FROM users u "
+        "SELECT u.data,u.user_bi,a.total_active_ms FROM users u "
         "LEFT JOIN world_user_activity a ON a.account_bi=u.user_bi "
         "ORDER BY u.username COLLATE NOCASE LIMIT ?",
         1000,
     )
+    # A bucket label only, joined in from its own query so this function
+    # body never handles the raw touch timestamp behind it.
+    activity_buckets = await _world_user_activity_buckets(env)
     for row in rows or []:
         rec = await decrypt_row(env, row.get("data", ""))
         if (not rec or _account_kind(rec) != "user"
@@ -9640,7 +10651,13 @@ async def _account_users_directory(env, request):
             continue
         seen.add(name)
         out.append(_account_chat_user_payload(
-            rec, row.get("total_active_ms", 0)))
+            rec, row.get("total_active_ms", 0),
+            activity_buckets.get(row.get("user_bi"), "")))
+
+    # The campfire seats members in this same array order, one bench per
+    # account for the session — so this is sorted by join date (oldest
+    # first) rather than left in the query's alphabetical fetch order.
+    out.sort(key=lambda user: user.get("createdAt", 0))
 
     resp = json_response({"ok": True, "users": out},
                          cache_seconds=USERS_DIRECTORY_TTL)
@@ -10028,6 +11045,36 @@ async def _world_disconnect_manual_block(
     return max(0, min(64, int(result.get("disconnected") or 0)))
 
 
+def _world_mirror_push_signature(env, node, repo, commit):
+    canonical = (
+        "forkmesh-world-mirror-push-v1\n%s\n%s\n%s"
+        % (node, repo, commit)
+    ).encode()
+    return hmac.new(
+        _account_session_secret(env), canonical, "sha256").hexdigest()
+
+
+async def _world_broadcast_mirror_push(env, node, repo, commit):
+    """Tell the live World room a mirror node's served head just advanced."""
+    world_id = env.FORKMESH_WORLD.idFromName("town-square-v1")
+    world_object = env.FORKMESH_WORLD.get(world_id)
+    payload = {"node": node, "repo": repo, "commit": commit}
+    control_request = JsRequest.new(
+        "https://forkmesh.internal/api/world/mirror-push",
+        to_js({
+            "method": "POST",
+            "headers": {
+                "content-type": "application/json",
+                "x-forkmesh-world-control": _world_mirror_push_signature(
+                    env, node, repo, commit),
+            },
+            "body": json.dumps(payload, separators=(",", ":")),
+        }),
+    )
+    response = await world_object.fetch(control_request)
+    return int(getattr(response, "status", 0) or 0) == 200
+
+
 async def world_moderation_handler(env, request):
     """Create one explicit, temporary World block as a platform admin."""
     if method_name(request) != "POST":
@@ -10148,7 +11195,7 @@ async def _world_layout_objects(env):
     """Project the bounded shared-object placement table for the browser."""
     rows = await d1_all(
         env,
-        "SELECT object_id,x,z,updated_at FROM world_object_layout "
+        "SELECT object_id,x,z,rotation,updated_at FROM world_object_layout "
         "ORDER BY object_id LIMIT ?",
         WORLD_LAYOUT_MAX_OBJECTS,
     )
@@ -10158,6 +11205,7 @@ async def _world_layout_objects(env):
             "id": str(row.get("object_id") or ""),
             "x": float(row.get("x") or 0),
             "z": float(row.get("z") or 0),
+            "rotation": float(row.get("rotation") or 0),
             "updatedAt": int(row.get("updated_at") or 0),
         })
     return objects
@@ -10171,6 +11219,20 @@ def _world_layout_coordinate(value):
     if not (-WORLD_LAYOUT_MAX_COORDINATE <= value <= WORLD_LAYOUT_MAX_COORDINATE):
         return None
     return round(float(value), 2)
+
+
+def _world_layout_rotation(value):
+    """Return a heading offset in radians wrapped to [0, 2π), or None.
+
+    The offset is relative to the object's authored rotation, so an absent or
+    zero value leaves the scene facing the way it was built.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    # Reject non-finite input before the modulo, which propagates NaN.
+    if not (-WORLD_LAYOUT_MAX_ROTATION <= value <= WORLD_LAYOUT_MAX_ROTATION):
+        return None
+    return round(float(value) % WORLD_LAYOUT_TURN, 4)
 
 
 async def world_layout_handler(env, request):
@@ -10228,8 +11290,18 @@ async def world_layout_handler(env, request):
     await ensure_schema(env)
     existing = await d1_first(
         env,
-        "SELECT object_id FROM world_object_layout WHERE object_id=?",
+        "SELECT object_id,rotation FROM world_object_layout WHERE object_id=?",
         object_id)
+    # A client that only drags (and never rotates) omits the heading; keep the
+    # locked one instead of silently snapping the object back to square.
+    if data.get("rotation") is None:
+        rotation = float((existing or {}).get("rotation") or 0.0)
+    else:
+        rotation = _world_layout_rotation(data.get("rotation"))
+        if rotation is None:
+            return json_response(
+                {"error": "invalid_rotation"}, status=400,
+                cache_control="no-store, max-age=0, must-revalidate")
     if not existing:
         count = await d1_first(
             env, "SELECT COUNT(*) AS n FROM world_object_layout")
@@ -10240,15 +11312,17 @@ async def world_layout_handler(env, request):
     await d1_run(
         env,
         "INSERT INTO world_object_layout "
-        "(object_id,x,z,updated_by_bi,updated_at) VALUES (?,?,?,?,?) "
+        "(object_id,x,z,rotation,updated_by_bi,updated_at) "
+        "VALUES (?,?,?,?,?,?) "
         "ON CONFLICT(object_id) DO UPDATE SET x=excluded.x,z=excluded.z,"
+        "rotation=excluded.rotation,"
         "updated_by_bi=excluded.updated_by_bi,updated_at=excluded.updated_at",
-        object_id, x, z, account_bi, now,
+        object_id, x, z, rotation, account_bi, now,
     )
     await edge_cache_delete(WORLD_LAYOUT_CACHE_KEY)
     await _audit_sensitive_action(
         env, actor, "world.layout.move", "world_object", object_id,
-        "success", {"x": x, "z": z})
+        "success", {"x": x, "z": z, "rotation": rotation})
     return json_response(
         {"ok": True, "objects": await _world_layout_objects(env)},
         cache_control="no-store, max-age=0, must-revalidate",
@@ -10325,6 +11399,8 @@ async def _account_signup(env, request):
     # pick up the new account on their next poll instead of a TTL later.
     await edge_cache_delete(USERS_DIRECTORY_CACHE_KEY)
     await edge_cache_delete(CHAT_ACTIVITY_CACHE_KEY)
+    # Credit the referrer named by the /r/<name> share link, if any.
+    await _record_referral_signup(env, name, data.get("ref", ""))
     payload = await _account_public_payload(
         env, rec,
         session_device_label=_account_session_device_label(request))
@@ -11970,6 +13046,28 @@ async def _account_logout(env, request):
     )
 
 
+async def _account_last_seen(env, account_bi, floor_ts=0):
+    """Newest activity stamp across this account's devices and nodes.
+
+    Session stamps are already in hand from the listing read, so they come in as
+    floor_ts; the devices/nodes maxima share one statement to keep the account
+    screen off the multi-query path that overloaded the free plan.
+    """
+    floor_ts = int(floor_ts or 0)
+    row = await d1_first(
+        env,
+        "SELECT MAX(seen) AS seen FROM ("
+        "SELECT COALESCE(MAX(last_seen),0) AS seen FROM account_devices "
+        "WHERE account_bi=? UNION ALL "
+        "SELECT COALESCE(MAX(last_seen),0) FROM nodes WHERE user_bi=?)",
+        account_bi, account_bi,
+    )
+    try:
+        return max(floor_ts, int((row or {}).get("seen") or 0))
+    except (TypeError, ValueError):
+        return floor_ts
+
+
 async def _account_sessions(env, request, target_session_id=""):
     """List or revoke this account's sessions without exposing client details."""
     method = method_name(request)
@@ -12018,6 +13116,15 @@ async def _account_sessions(env, request, target_session_id=""):
             {
                 "ok": True,
                 "sessions": sessions,
+                # Account-level activity for the settings screen: when this
+                # account was last active anywhere (sessions, linked devices,
+                # nodes) and when it was last emailed, with the send outcome.
+                "account": {
+                    "lastSeenAt": await _account_last_seen(
+                        env, account_bi,
+                        max([s["lastSeenAt"] for s in sessions] or [0])),
+                    **_account_email_activity(rec),
+                },
                 "privacyNotice": (
                     "Only a broad device category and session timestamps are "
                     "shown. ForkMesh does not expose IP addresses or raw user "
@@ -16592,7 +17699,61 @@ async def _send_email(env, to_email, subject, text, html=None,
         return False
 
 
-# --- External GitHub/GitLab metadata imports --------------------------------
+# --- Account email activity ---------------------------------------------------
+#
+# Every account-directed send stamps the recipient's own (encrypted) record with
+# when the mail went out, a coarse kind, and whether the provider accepted it,
+# so the account screen can answer "when were they last emailed, and did it
+# land?" without a second log table. Subject and body are never stored here, and
+# the stamp is private to the account: it rides the authenticated sessions read,
+# not the public profile lookup.
+
+ACCOUNT_EMAIL_STATUS_DELIVERED = "delivered"
+ACCOUNT_EMAIL_STATUS_FAILED = "failed"
+
+
+def _stamp_account_email(rec, kind, ok, now=None):
+    """Stamp the last account-directed email onto an already-loaded record."""
+    if not isinstance(rec, dict):
+        return rec
+    rec["last_email_ts"] = int(now if now is not None else Date.now())
+    rec["last_email_kind"] = clean_string(kind or "", 40)
+    rec["last_email_ok"] = bool(ok)
+    return rec
+
+
+async def _record_account_email(env, name, kind, ok):
+    """Load, stamp, and persist the record for a send addressed by node name."""
+    name = clean_string(name or "", MAX_NODE_NAME).strip().lower()
+    if not valid_node_name(name):
+        return
+    try:
+        name_bi, rec = await _account_row(env, name)
+        if not name_bi or not rec:
+            return
+        await _save_account(env, name_bi, _stamp_account_email(rec, kind, ok))
+    except Exception:
+        pass
+
+
+def _account_email_activity(rec):
+    """Public shape of the last-email stamp for the account screen."""
+    try:
+        ts = int((rec or {}).get("last_email_ts") or 0)
+    except (TypeError, ValueError):
+        ts = 0
+    if ts <= 0:
+        return {"lastEmailAt": 0, "lastEmailStatus": "", "lastEmailKind": ""}
+    return {
+        "lastEmailAt": ts,
+        "lastEmailStatus": (
+            ACCOUNT_EMAIL_STATUS_DELIVERED if rec.get("last_email_ok")
+            else ACCOUNT_EMAIL_STATUS_FAILED),
+        "lastEmailKind": clean_string(rec.get("last_email_kind", ""), 40),
+    }
+
+
+# --- External GitHub/GitLab/Codeberg metadata imports -----------------------
 #
 # Provider imports live in a separate D1 namespace from the mirror catalog.
 # repository_imports.py owns the provider-neutral policy/service layer; these
@@ -16614,6 +17775,12 @@ async def _repository_provider_fetch(env, provider, path, token=""):
         headers["x-github-api-version"] = "2026-03-10"
         if token:
             headers["authorization"] = "Bearer " + token
+    elif provider == "codeberg":
+        # Codeberg runs Forgejo's Gitea-compatible API. Its access token is
+        # request-scoped exactly like the other provider credentials and is
+        # never persisted or forwarded across a redirect.
+        if token:
+            headers["authorization"] = "token " + token
     elif token:
         # GitLab personal/project access tokens are scoped request credentials.
         # They are never included in a record, log, exception, or D1 write.
@@ -16691,6 +17858,44 @@ async def _repository_import_moderator(env, actor):
             or await _has_role(env, actor, "moderator"))
     except Exception:
         return False
+
+
+async def _repository_import_target_owner(env, actor, target):
+    actor = clean_string(actor, MAX_NODE_NAME).strip().lower()
+    target = clean_string(target, MAX_NODE_NAME).strip().lower() or actor
+    if not actor or not target:
+        return None
+    if target == actor:
+        return {
+            "name": actor,
+            "kind": "user",
+            "ownerBi": await blind_index(env, actor),
+        }
+    org_bi, row = await _org_row(env, target)
+    if not row or await _org_role(env, org_bi, actor) not in (
+            "owner", "admin"):
+        return None
+    return {
+        "name": str(row.get("name") or target).lower(),
+        "kind": "organization",
+        "ownerBi": org_bi,
+    }
+
+
+async def _repository_import_can_manage_owner(env, actor, owner_bi):
+    actor = clean_string(actor, MAX_NODE_NAME).strip().lower()
+    owner_bi = str(owner_bi or "")
+    if not actor or not owner_bi:
+        return False
+    actor_bi = await blind_index(env, actor)
+    if hmac.compare_digest(actor_bi, owner_bi):
+        return True
+    row = await d1_first(
+        env,
+        "SELECT role FROM org_members WHERE org_bi=? AND member_bi=?",
+        owner_bi, actor_bi,
+    )
+    return str((row or {}).get("role") or "") in ("owner", "admin")
 
 
 async def _repository_import_mirror_status(
@@ -16772,6 +17977,8 @@ def _repository_import_service():
         "invitation_token": _repository_invitation_token,
         "operator_eligible": _repository_import_operator_eligible,
         "is_moderator": _repository_import_moderator,
+        "target_owner": _repository_import_target_owner,
+        "can_manage_owner": _repository_import_can_manage_owner,
         "mirror_status": _repository_import_mirror_status,
         "public_origin": _public_base_url,
         "now_ms": lambda: int(Date.now()),
@@ -16852,7 +18059,9 @@ async def _send_verification_email(env, request, name, email):
         "<p class=\"fm-muted\" style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">If you did "
         "not create this account, you can ignore this email.</p>")
     html = _forkmesh_email_card_html("Welcome to ForkMesh", intro, body_html, footer_html)
-    return await _send_email(env, email, subject, text, html)
+    ok = await _send_email(env, email, subject, text, html)
+    await _record_account_email(env, name, "verification", ok)
+    return ok
 
 
 # --- "How are we doing?" founder feedback email -------------------------------
@@ -16963,6 +18172,9 @@ async def _send_feedback_emails(env):
         ok = await _send_email(env, email, subject, text, html,
                                from_email=FEEDBACK_EMAIL_FROM,
                                from_name=FEEDBACK_EMAIL_FROM_NAME)
+        await _save_account(
+            env, row.get("name_bi"),
+            _stamp_account_email(rec, "feedback", ok, now))
         if ok:
             sent += 1
         else:
@@ -17012,7 +18224,9 @@ async def _send_password_reset_email(env, request, name, email, pass_hash):
         "expires in 1 hour. If you didn't request a reset, you can ignore this email — your "
         "password won't change.</p>")
     html = _forkmesh_email_card_html("Reset your password", intro, body_html, footer_html)
-    return await _send_email(env, email, subject, text, html)
+    ok = await _send_email(env, email, subject, text, html)
+    await _record_account_email(env, name, "password_reset", ok)
+    return ok
 
 
 # --- Founders outreach console (/outreach) -----------------------------------
@@ -18361,6 +19575,8 @@ def _ssh_gateway_settings(env):
         getattr(env, "SSH_GATEWAY_TOKEN", ""))
     repositories = ssh_auth.parse_gateway_repository_allowlist(
         getattr(env, "SSH_GATEWAY_REPOSITORIES", ""))
+    node_hosts = ssh_auth.parse_gateway_node_hosts(
+        getattr(env, "SSH_GATEWAY_NODE_HOSTS", ""))
     try:
         port = int(getattr(env, "SSH_GATEWAY_PORT", 22) or 22)
     except (TypeError, ValueError):
@@ -18371,6 +19587,7 @@ def _ssh_gateway_settings(env):
         "host": host if configured else "",
         "port": port if configured else 0,
         "repositories": repositories if configured else {},
+        "nodeHosts": node_hosts if configured else {},
     }
 
 
@@ -18390,27 +19607,35 @@ def _ssh_repository_url(env, owner, repo):
             settings["repositories"], owner, repo)
     ):
         return ""
+    host = settings["nodeHosts"].get(str(owner or "").strip().lower())
     return ssh_auth.ssh_repository_url(
-        settings["host"], settings["port"], owner, repo)
+        host or settings["host"], settings["port"], owner, repo)
 
 
 def _ssh_alias_repository_url(env, alias_owner, backing_owner, repo):
     """Return an org-facing SSH URL backed by an allowlisted node repo.
 
-    The SSH gateway's authorization endpoint independently resolves the alias
-    to ``backing_owner`` before every clone/push. This helper therefore checks
-    gateway access against that canonical backing path, but keeps the public
-    organization namespace in the URL shown to users.
+    The organization alias is an explicit read route on a mirror gateway. Its
+    backing user/source identity is checked by the authorization endpoint but
+    is never substituted into the public URL or the node-local repository
+    path. This keeps users, nodes, and public organization repositories as
+    separate identities.
     """
     settings = _ssh_gateway_settings(env)
     if (
         not settings["configured"]
         or not ssh_auth.gateway_repository_access(
-            settings["repositories"], backing_owner, repo)
+            settings["repositories"], alias_owner, repo)
     ):
         return ""
+    host = (
+        settings["nodeHosts"].get(
+            str(alias_owner or "").strip().lower())
+        or settings["nodeHosts"].get(
+            str(backing_owner or "").strip().lower())
+    )
     return ssh_auth.ssh_repository_url(
-        settings["host"], settings["port"], alias_owner, repo)
+        host or settings["host"], settings["port"], alias_owner, repo)
 
 
 async def _ssh_json_body(request, max_bytes=32 * 1024):
@@ -18761,8 +19986,10 @@ async def ssh_gateway_authorize_handler(env, request):
     # node namespace before repository lookup, permission enforcement, and the
     # path returned to the gateway.
     canonical_owner = await _org_repo_node(env, owner, repo) or owner
+    is_org_alias = canonical_owner != owner
+    route_owner = owner if is_org_alias else canonical_owner
     gateway_access = _ssh_gateway_repository_access(
-        env, canonical_owner, repo)
+        env, route_owner, repo)
     repo_bi = await blind_index(env, canonical_owner + "/" + repo)
     repo_row = await d1_first(
         env,
@@ -18833,9 +20060,9 @@ async def ssh_gateway_authorize_handler(env, request):
         "keyId": key_id,
         "requestId": request_id,
         "operation": operation,
-        "owner": canonical_owner,
+        "owner": route_owner,
         "repository": repo,
-        "repositoryRelativePath": canonical_owner + "/" + repo + ".git",
+        "repositoryRelativePath": route_owner + "/" + repo + ".git",
     }, cache_control="no-store")
 
 
@@ -19372,13 +20599,40 @@ async def _ap_repo_is_official_actor(env, owner, repo):
     # Mirror catalog rows are routing replicas, never their own public social
     # identities. Official repositories are locally published records or an
     # organization alias backed by one; remote/external clone records are not.
-    data_owner = await _ap_org_alias_owner(env, owner, repo)
-    key_bi = await blind_index(env, data_owner + "/" + repo)
+    # Do not call _ap_org_alias_owner/_org_repo_node here. Actor inventory
+    # reconciliation runs from ensure_schema(), while _org_repo_node itself
+    # calls ensure_schema(); that recursion makes alias resolution fail closed
+    # during a cold start and used to delete valid org actors plus every
+    # follower row. Read the already-created durable link directly instead.
+    owner_l = str(owner or "").strip().lower()
+    repo_l = str(repo or "").strip().lower()
+    org_bi = await blind_index(env, "org:" + owner_l)
+    alias_row = await d1_first(
+        env,
+        "SELECT node_owner FROM org_repos WHERE org_bi=? AND repo=?",
+        org_bi, repo_l)
+    alias_owner = str(
+        (alias_row or {}).get("node_owner") or "").strip().lower()
+    data_owner = (
+        alias_owner
+        if valid_node_name(alias_owner) and alias_owner != owner_l
+        else owner_l
+    )
+    is_org_alias = (
+        data_owner != owner_l
+    )
+    key_bi = await blind_index(env, data_owner + "/" + repo_l)
     row = await d1_first(
         env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
     if not row:
         return False
     rec = await decrypt_row(env, row.get("data"))
+    # A durable org link promotes its backing repository to the org's one
+    # official public identity even when the backing catalog row is tagged as
+    # a remote clone. That tag describes the hosting node's copy; it must not
+    # cause startup reconciliation to delete the org actor and its followers.
+    if is_org_alias:
+        return _catalog_record_matches_identity(rec, data_owner, repo_l)
     source = str((rec or {}).get("source") or "").strip().lower()
     return source not in ("remote-clone", "external")
 
@@ -21433,7 +22687,29 @@ async def repo_star_handler(env, request, owner, repo):
         return json_response({"error": "method_not_allowed"}, status=405)
     if await _repo_is_private(env, owner, repo):
         return json_response({"error": "not_found"}, status=404)
-    repo_bi = await blind_index(env, owner + "/" + repo)
+    # The router rewrites an organization path to its backing node before this
+    # handler runs. Stars are a public-repository preference, so retain the
+    # untouched verified organization identity instead of silently splitting
+    # forkmesh/forkmesh stars across its backing user's namespace.
+    public_owner = str(owner or "").strip().lower()
+    try:
+        original_match = REPO_STAR_RE.match(
+            urlparse(str(getattr(request, "url", "") or "")).path)
+        requested_owner = safe_segment(
+            original_match.group(1)) if original_match else ""
+        requested_repo = safe_segment(
+            original_match.group(2)) if original_match else ""
+        if (
+            requested_owner
+            and requested_repo == str(repo or "").strip().lower()
+            and requested_owner != public_owner
+            and await _org_repo_node(
+                env, requested_owner, requested_repo) == public_owner
+        ):
+            public_owner = requested_owner
+    except Exception:
+        pass
+    repo_bi = await blind_index(env, public_owner + "/" + repo)
 
     if method == "GET":
         viewer_bi, viewer_rec = await _account_session_record(env, request)
@@ -22095,6 +23371,73 @@ async def enqueue_notification(env, recipient, kind, title, body="", repo="",
     return True
 
 
+async def _promote_hosted_repository_import(env, catalog_record):
+    """Link one verified mirror catalog to its public provider import."""
+    mirror_owner = clean_string(
+        catalog_record.get("owner"), MAX_NODE_NAME).lower()
+    repository_name = safe_segment(clean_string(
+        catalog_record.get("name"), MAX_REPO_SEGMENT))
+    if mirror_owner not in ("mirror2", "mirror3") or not repository_name:
+        return False
+    rows = await d1_all(
+        env,
+        "SELECT id, data FROM repository_imports "
+        "WHERE provider='codeberg' AND is_private=0 "
+        "AND status NOT IN ('actively_mirrored','archived') "
+        "ORDER BY updated_at DESC LIMIT ?",
+        repository_import.MAX_PUBLIC_IMPORTS,
+    )
+    for row in rows or []:
+        record = await decrypt_row(env, row.get("data"))
+        if (
+                not isinstance(record, dict)
+                or clean_string(record.get("name"), 100).casefold()
+                != repository_name.casefold()):
+            continue
+        target_owner = clean_string(
+            record.get("targetOwner"), MAX_NODE_NAME).lower()
+        if not valid_node_name(target_owner):
+            continue
+        now = int(Date.now())
+        record["status"] = "actively_mirrored"
+        record["statusLabel"] = "Actively mirrored"
+        record["mirrored"] = True
+        record["sourceCodeFetched"] = True
+        record["mirror"] = {
+            "owner": mirror_owner,
+            "name": repository_name,
+            "live": True,
+        }
+        record["mirrorNotice"] = (
+            "The full Git repository is hosted and served by ForkMesh.")
+        record["updatedAt"] = now
+        await d1_run(
+            env,
+            "UPDATE repository_imports SET status=?, data=?, updated_at=? "
+            "WHERE id=?",
+            "actively_mirrored", await encrypt_row(env, record), now,
+            str(row.get("id") or ""),
+        )
+        await enqueue_notification(
+            env,
+            target_owner,
+            "repository_hosted",
+            repository_name + " is now fully hosted by ForkMesh",
+            body=(
+                "The Codeberg import is synced, cloneable through ForkMesh, "
+                "and available as a size map in the World."),
+            repo=target_owner + "/" + repository_name,
+            href="/" + target_owner + "/" + repository_name,
+            actor=mirror_owner,
+            source="repository_import",
+            dedupe="repository-hosted:" + str(row.get("id") or ""),
+            ts=now,
+            meta={"importId": str(row.get("id") or "")},
+        )
+        return True
+    return False
+
+
 async def notify_mentions(env, owner, repo, actor, title, body, href, source,
                           number=0):
     # number is optional (0 = not a numbered item, e.g. a brand-new PR before
@@ -22622,9 +23965,11 @@ async def send_notification_digests(env):
             continue
         node = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
         subject, text, html = _notification_digest_email(node, items)
-        if await _send_email(env, email, subject, text, html):
+        ok = await _send_email(env, email, subject, text, html)
+        if ok:
             rec["last_digest_ts"] = newest
-            await _save_account(env, recipient_bi, rec)
+        _stamp_account_email(rec, "notifications", ok, now)
+        await _save_account(env, recipient_bi, rec)
     await send_general_chat_digests(env)
 
 
@@ -22680,9 +24025,11 @@ async def send_general_chat_digests(env):
             continue
         name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
         subject, text, html = _general_chat_digest_email(name, count)
-        if await _send_email(env, email, subject, text, html):
+        ok = await _send_email(env, email, subject, text, html)
+        if ok:
             rec["last_general_chat_digest_ts"] = now
-            await _save_account(env, name_bi, rec)
+        _stamp_account_email(rec, "general_chat", ok, now)
+        await _save_account(env, name_bi, rec)
 
 
 def _forkmesh_email_card_html(heading, intro_html, body_html, footer_html=""):
@@ -26577,99 +27924,6 @@ async def install_diag_handler(env, request):
     return json_response({"ok": True}, cache_control="no-store")
 
 
-def _sanitize_node_hash(value):
-    # The client's anonymized node hash is a hex SHA-256; keep only hex chars and
-    # clamp so a crafted value can't smuggle anything into the admin HTML or bloat
-    # a row. Empty (anonymous) is allowed.
-    if not isinstance(value, str):
-        return ""
-    return "".join(c for c in value.lower() if c in "0123456789abcdef")[:64]
-
-
-def _telemetry_rows(payload):
-    """Normalize a posted telemetry payload into rows to insert, or [].
-
-    Pure (no I/O) so it can be unit-tested. Anything malformed yields no rows —
-    the endpoint swallows it rather than 4xx-ing a best-effort background POST.
-    Every field is sanitized and hard-capped; at most TELEMETRY_MAX_EVENTS rows
-    come back, so one POST can never fan out unbounded work in the isolate.
-    Returns a list of (node, kind, version, os, summary) tuples.
-    """
-    if not isinstance(payload, dict):
-        return []
-    events = payload.get("events")
-    if not isinstance(events, list) or not events:
-        return []
-    node = _sanitize_node_hash(payload.get("node"))
-    version = _sanitize_diag_field(payload.get("version"), 48)
-    os_field = _sanitize_diag_field(payload.get("os"), 64)
-    rows = []
-    for event in events[:TELEMETRY_MAX_EVENTS]:
-        if not isinstance(event, dict):
-            continue
-        kind = event.get("kind")
-        if kind not in TELEMETRY_KINDS:
-            continue
-        summary = event.get("summary")
-        if not isinstance(summary, str):
-            continue
-        # Coarse control-character scrub + hard length cap. The client already
-        # removed repo names / paths; this is belt-and-braces so a crafted POST
-        # can't store arbitrarily large or binary junk.
-        summary = "".join(
-            c for c in summary if c == "\n" or c == "\t" or (c >= " " and c != "\x7f")
-        ).strip()[:TELEMETRY_MAX_SUMMARY]
-        if not summary:
-            continue
-        rows.append((node, kind, version, os_field, summary))
-    return rows
-
-
-async def telemetry_handler(env, request):
-    # Opt-in crash/stall telemetry from desktop nodes (issue #354). Unauthenticated
-    # and anonymous (a one-way node hash only, no account/email/IP). Best-effort:
-    # never errors out the caller, since the client fires this fire-and-forget on
-    # startup. The body is hard-capped BEFORE parsing so a huge POST can't blow up
-    # the small isolate — this must never become an outage vector.
-    if method_name(request) != "POST":
-        return json_response({"error": "method_not_allowed"}, status=405)
-    try:
-        raw = await request.text()
-    except Exception:
-        raw = ""
-    if len(raw) > TELEMETRY_MAX_BODY:
-        # Reject oversized payloads outright rather than parsing them.
-        return json_response({"error": "payload_too_large"}, status=413,
-                             cache_control="no-store")
-    try:
-        payload = json.loads(raw) if raw else None
-    except Exception:
-        payload = None
-    rows = _telemetry_rows(payload)
-    if not rows:
-        return json_response({"ok": True}, cache_control="no-store")
-    try:
-        await ensure_schema(env)
-        now = int(Date.now())
-        for node, kind, version, os_field, summary in rows:
-            await d1_run(
-                env,
-                """INSERT INTO telemetry (ts, node, kind, version, os, summary)
-                   VALUES (?,?,?,?,?,?)""",
-                now, node, kind, version, os_field, summary,
-            )
-        # Bound the table so this open endpoint can't grow D1 without limit.
-        await d1_run(
-            env,
-            """DELETE FROM telemetry WHERE id NOT IN
-               (SELECT id FROM telemetry ORDER BY id DESC LIMIT ?)""",
-            MAX_TELEMETRY,
-        )
-    except Exception:
-        pass
-    return json_response({"ok": True}, cache_control="no-store")
-
-
 async def feedback_handler(env, request):
     # Anonymous website feedback from static pages. This is intentionally
     # unauthenticated: the goal is click-level docs usefulness tracking, not user
@@ -27649,43 +28903,6 @@ async def install_diag_summary(env):
     }
 
 
-async def telemetry_summary(env):
-    # Aggregate opt-in crash/stall telemetry (issue #354) for the admin dashboard:
-    # totals by kind, distinct reporting nodes, and coarse version/OS breakdowns,
-    # over the retained window. `node` is already an anonymized one-way hash.
-    await ensure_schema(env)
-    since = int(Date.now()) - TELEMETRY_RETAIN_MS
-    totals = await d1_all(
-        env,
-        """SELECT kind, COUNT(*) AS n, COUNT(DISTINCT node) AS nodes
-             FROM telemetry WHERE ts >= ? GROUP BY kind""",
-        since,
-    )
-    by_kind = {str(r.get("kind", "")): r for r in totals}
-    crashes = int((by_kind.get("crash") or {}).get("n", 0) or 0)
-    stalls = int((by_kind.get("stall") or {}).get("n", 0) or 0)
-    nodes_row = await d1_first(
-        env, "SELECT COUNT(DISTINCT node) AS n FROM telemetry WHERE ts >= ?", since)
-
-    async def _breakdown(col):
-        return await d1_all(
-            env,
-            "SELECT COALESCE(NULLIF(%s,''),'(unknown)') AS k, COUNT(*) AS n "
-            "FROM telemetry WHERE ts >= ? GROUP BY k ORDER BY n DESC LIMIT 20" % col,
-            since,
-        )
-
-    versions = await _breakdown("version")
-    systems = await _breakdown("os")
-    return {
-        "crashes": crashes,
-        "stalls": stalls,
-        "nodes": int((nodes_row or {}).get("n", 0) or 0),
-        "versions": [(str(r.get("k", "")), int(r.get("n", 0) or 0)) for r in versions],
-        "systems": [(str(r.get("k", "")), int(r.get("n", 0) or 0)) for r in systems],
-    }
-
-
 def _admin_csrf_token(env):
     # A deterministic CSRF token derived from at-rest secrets. It is only rendered
     # inside the admin HTML after the requester names an is_admin account, so a
@@ -27947,11 +29164,14 @@ ADMIN_HIDDEN_TABLES = (
 # that hold credentials, encrypted owner data, or audit evidence stay listed so
 # an operator can account for the whole schema, but _render_table_view keeps
 # their contents restricted.
-ADMIN_PURGE_TABLES = frozenset({
-    "error_log",
-    "install_diag",
-    "telemetry",
-})
+#
+# Row selection + bulk delete (the same "tick rows, Delete selected" UI as the
+# error log) is available for every table whose rows are actually rendered —
+# i.e. everything not in ADMIN_HIDDEN_TABLES. Sensitive/identity/custody
+# tables stay fully restricted above, so there is no separate purge allowlist
+# to keep in sync as tables are added.
+def _admin_purge_allowed(table):
+    return table not in ADMIN_HIDDEN_TABLES
 
 
 async def _admin_list_tables(env):
@@ -28169,7 +29389,7 @@ async def _admin_selected_rows_have_wallet_keys(env, table, rowids):
 
 async def _admin_selected_rows_digest(env, table, rowids):
     """Return a content-free audit digest for a bounded operational purge."""
-    if table not in ADMIN_PURGE_TABLES or not rowids:
+    if not _admin_purge_allowed(table) or not rowids:
         return ""
     records = []
     for start in range(0, min(len(rowids), 500), 90):
@@ -28234,33 +29454,6 @@ def _render_install_diag_overview(summary):
     )
 
 
-def _render_telemetry_overview(summary):
-    # Opt-in crash/stall telemetry: totals by kind + distinct reporting nodes,
-    # with coarse version / OS breakdowns. Counts are over a 30-day window and
-    # every node id is an anonymized one-way hash.
-    crashes = summary.get("crashes", 0)
-    stalls = summary.get("stalls", 0)
-    nodes = summary.get("nodes", 0)
-    cards = (
-        '<div class="cards">'
-        '<div class="card%s"><div class="n">%s</div><div class="l">crashes (30d)</div></div>'
-        '<div class="card"><div class="n">%s</div><div class="l">UI stalls (30d)</div></div>'
-        '<div class="card"><div class="n">%s</div><div class="l">reporting nodes</div></div>'
-        "</div>"
-        % (" warn" if crashes else "", _html_escape(crashes),
-           _html_escape(stalls), _html_escape(nodes)))
-    return (
-        '<div class="title">Crash &amp; stall telemetry</div>'
-        '<div class="meta">Opt-in (off by default). Anonymous: each node id is a '
-        'one-way hash of the node key, never tied to an account, email, or IP; '
-        'repo names and file paths are scrubbed client-side. 30-day window.</div>'
-        + cards
-        + '<div class="diaggrid">%s%s</div>'
-        % (_render_diag_breakdown("Version", summary.get("versions", [])),
-           _render_diag_breakdown("OS", summary.get("systems", [])))
-    )
-
-
 async def _render_table_view(env, table, csrf_field="", admin_query=""):
     # Generic "show all rows" view for one D1 table. The encrypted `data` column
     # (users/nodes/repos/inboxes store an AES-GCM blob there) is decrypted in place
@@ -28311,41 +29504,6 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
             '</div>'
         ) % (_admin_href(admin_query, table="users", action="set_password"),
              _admin_href(admin_query, table="users", action="resend_verify"))
-
-    if table == "telemetry":
-        # Purpose-built crash/stall dashboard + recent events, newest first.
-        summary = await telemetry_summary(env)
-        recent = await d1_all(
-            env,
-            "SELECT rowid AS _rowid_, * FROM telemetry ORDER BY id DESC LIMIT 200")
-        body = []
-        for r in recent:
-            kind = str(r.get("kind", ""))
-            cls = "s5" if kind == "crash" else ""
-            body.append(
-                "<tr>"
-                + _admin_row_checkbox(r.get("_rowid_", ""))
-                + '<td data-ts="%s">%s</td>'
-                '<td class="%s">%s</td><td>%s</td><td>%s</td>'
-                "<td>%s</td><td>%s</td></tr>"
-                % (_html_escape(r.get("ts", "")), _html_escape(r.get("ts", "")),
-                   cls, _html_escape(kind),
-                   _html_escape(r.get("version", "")), _html_escape(r.get("os", "")),
-                   _html_escape(str(r.get("node", ""))[:12]),
-                   _html_escape(r.get("summary", "")))
-            )
-        if not body:
-            events = '<div class="empty">No telemetry reported yet.</div>'
-        else:
-            events = (_admin_bulk_form_open(table, csrf_field, admin_query)
-                      + "<table><thead><tr>" + _admin_select_all_th()
-                      + "<th>Time</th><th>Kind</th><th>Version</th><th>OS</th>"
-                      "<th>Node</th><th>Report</th>"
-                      "</tr></thead><tbody>" + "".join(body)
-                      + "</tbody></table></form>")
-        return (_render_telemetry_overview(summary)
-                + '<div class="title">Recent events · %d of %d row(s)</div>'
-                % (len(recent), total) + events)
 
     if table == "install_diag":
         # Purpose-built anonymous install funnel + recent events, newest first.
@@ -28410,7 +29568,7 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
                      + "".join(body) + "</tbody></table></form>")
         return ('<div class="title">Error logs · %d row(s)</div>' % total) + inner
 
-    purge_allowed = table in ADMIN_PURGE_TABLES
+    purge_allowed = _admin_purge_allowed(table)
     add_link = ""
     if not rows:
         return (prefix
@@ -28448,6 +29606,37 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
                     json_cols.append(k)
     json_cols = json_cols[:ADMIN_MAX_JSON_COLS]
 
+    # Surface which columns the admin is looking at plaintext vs. ciphertext:
+    # the `data` blob is AES-GCM encrypted at rest and only decrypted for this
+    # view, so operators should not mistake a successful decrypt for the data
+    # having been stored unencrypted.
+    enc_notice = ""
+    if "data" in columns:
+        encrypted_total = sum(
+            1 for r in rows if isinstance(r.get("data"), str) and r.get("data"))
+        decrypted_ok = sum(
+            1 for _r, decoded in decoded_rows if decoded is not None)
+        plain_cols = [c for c in columns if c != "data"]
+        sentence = (
+            "🔒 <code>data</code> is stored AES-GCM encrypted and decrypted "
+            "here for display (%d/%d row(s) decrypted)"
+            % (decrypted_ok, encrypted_total)
+        )
+        if json_cols:
+            sentence += ", expanded into " + ", ".join(
+                "<code>%s</code>" % _html_escape(c) for c in json_cols)
+        sentence += "."
+        if plain_cols:
+            sentence += " Column(s) " + ", ".join(
+                "<code>%s</code>" % _html_escape(c) for c in plain_cols
+            ) + " are stored as plaintext."
+        enc_notice = '<div class="meta">%s</div>' % sentence
+    else:
+        enc_notice = (
+            '<div class="meta">No encrypted columns in this table; all '
+            'values are stored as plaintext.</div>'
+        )
+
     body = []
     for r, decoded_data in decoded_rows:
         rid = r.get("_rowid_", "")
@@ -28482,6 +29671,7 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
         + '<div class="title">%s · %d row(s)%s%s</div>'
         % (_html_escape(table), total,
            " (showing 500)" if total > 500 else "", add_link)
+        + enc_notice
         + table_markup
     )
 
@@ -29393,6 +30583,65 @@ async def _https_mirror_expected_forkmesh_refs(env):
         return ""
 
 
+async def _https_mirror_accepted_forkmesh_refs(env):
+    """Current and recent source-attested states accepted during convergence.
+
+    The source publication and a mirror refresh cannot commit atomically across
+    independent machines.  Keep the direct-HTTPS lease valid while a healthy
+    mirror still serves a recent state that the source genuinely signed; an
+    unknown state remains rejected by the health challenge.
+    """
+    try:
+        owner = await _org_repo_node(env, "forkmesh", "forkmesh") or "forkmesh"
+        key_bi = await blind_index(env, owner + "/forkmesh")
+        row = await d1_first(
+            env,
+            "SELECT data,is_private FROM repositories WHERE key_bi=?",
+            key_bi,
+        )
+        if not row or int(row.get("is_private", 1) or 0) != 0:
+            return frozenset()
+        record = await decrypt_row(env, row.get("data"))
+        if not record or record.get("visibility") != "public":
+            return frozenset()
+        pins = set()
+        current = clean_string(record.get("stateHash", ""), 64).lower()
+        if re.fullmatch(r"[0-9a-f]{64}", current):
+            pins.add(current)
+        history = await d1_all(
+            env,
+            "SELECT state_hash FROM repo_state_history WHERE key_bi=? "
+            "ORDER BY ts DESC LIMIT ?",
+            key_bi,
+            STATE_PIN_HISTORY,
+        )
+        for item in history or []:
+            digest = clean_string(
+                item.get("state_hash", ""), 64).strip().lower()
+            if re.fullmatch(r"[0-9a-f]{64}", digest):
+                pins.add(digest)
+        return frozenset(pins)
+    except Exception:
+        return frozenset()
+
+
+def _https_mirror_refs_match(refs_digest, accepted_refs):
+    """Compare a proof with a bounded set of exact source-signed ref states."""
+    digest = str(refs_digest or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        return False
+    candidates = (
+        (accepted_refs,)
+        if isinstance(accepted_refs, str)
+        else (accepted_refs or ())
+    )
+    return any(
+        re.fullmatch(r"[0-9a-f]{64}", str(item or "").strip().lower())
+        and hmac.compare_digest(digest, str(item).strip().lower())
+        for item in candidates
+    )
+
+
 async def _https_mirror_refresh_registered_health(env, node):
     """Best-effort activation for one exact registered endpoint.
 
@@ -29413,10 +30662,10 @@ async def _https_mirror_refresh_registered_health(env, node):
         )
         if not row:
             return False
-        expected = await _https_mirror_expected_forkmesh_refs(env)
-        if not expected:
+        accepted = await _https_mirror_accepted_forkmesh_refs(env)
+        if not accepted:
             return False
-        return bool(await _https_mirror_health_one(env, row, expected))
+        return bool(await _https_mirror_health_one(env, row, accepted))
     except Exception:
         # Registration remains safely pending. A transient control-plane fetch
         # failure must not roll back its authenticated endpoint record.
@@ -29472,7 +30721,7 @@ async def _https_mirror_mark_failed(env, row, now):
     )
 
 
-async def _https_mirror_health_one(env, row, expected_forkmesh_refs):
+async def _https_mirror_health_one(env, row, accepted_forkmesh_refs):
     """Verify one fresh node-signed health and forkmesh/forkmesh proof."""
     now = int(Date.now())
     node = clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower()
@@ -29569,8 +30818,8 @@ async def _https_mirror_health_one(env, row, expected_forkmesh_refs):
         general_healthy
         and available
         and proof_integrity == "ok"
-        and expected_forkmesh_refs
-        and hmac.compare_digest(refs_digest, expected_forkmesh_refs)
+        and _https_mirror_refs_match(
+            refs_digest, accepted_forkmesh_refs)
         and HTTPS_MIRROR_REQUIRED_FORKMESH_OPERATIONS.issubset(
             set(operations))
     )
@@ -29624,9 +30873,9 @@ async def https_mirror_health_cron(env):
     )
     if not rows:
         return
-    expected = await _https_mirror_expected_forkmesh_refs(env)
+    accepted = await _https_mirror_accepted_forkmesh_refs(env)
     await asyncio.gather(
-        *[_https_mirror_health_one(env, row, expected) for row in rows],
+        *[_https_mirror_health_one(env, row, accepted) for row in rows],
         return_exceptions=True,
     )
 
@@ -29829,6 +31078,42 @@ async def _https_mirror_private_proxy(env, request, private_record):
         cache_control="no-store")
 
 
+async def _hosted_repository_import_route(env, owner, repo):
+    """Resolve one public logical import name to its physical mirror catalog."""
+    owner_l = clean_string(owner, MAX_NODE_NAME).strip().lower()
+    repo_l = clean_string(repo, MAX_REPO_SEGMENT).strip().lower()
+    if not valid_node_name(owner_l) or not safe_segment(repo_l):
+        return None
+    rows = await d1_all(
+        env,
+        "SELECT data FROM repository_imports "
+        "WHERE is_private=0 AND status='actively_mirrored' "
+        "ORDER BY updated_at DESC LIMIT ?",
+        repository_import.MAX_PUBLIC_IMPORTS,
+    )
+    for row in rows or []:
+        record = await decrypt_row(env, row.get("data"))
+        if not isinstance(record, dict):
+            continue
+        target_owner = clean_string(
+            record.get("targetOwner"), MAX_NODE_NAME).strip().lower()
+        name = clean_string(
+            record.get("name"), MAX_REPO_SEGMENT).strip().lower()
+        if target_owner != owner_l or name != repo_l:
+            continue
+        mirror = record.get("mirror") or {}
+        mirror_owner = clean_string(
+            mirror.get("owner"), MAX_NODE_NAME).strip().lower()
+        mirror_name = clean_string(
+            mirror.get("name"), MAX_REPO_SEGMENT).strip()
+        if (
+                mirror_owner in ("mirror2", "mirror3")
+                and valid_node_name(mirror_owner)
+                and safe_segment(mirror_name)):
+            return mirror_owner, mirror_name
+    return None
+
+
 async def _https_mirror_public_context(env, owner, repo):
     """Return canonical public repo identity and integrity-approved node set."""
     owner_l = clean_string(owner, MAX_NODE_NAME).strip().lower()
@@ -29860,7 +31145,21 @@ async def _https_mirror_public_context(env, owner, repo):
                 target_row = row
                 break
         if not target_row:
-            return None
+            hosted_route = await _hosted_repository_import_route(
+                env, owner_l, repo_l)
+            if hosted_route:
+                hosted_owner, hosted_repo = hosted_route
+                for row in rows:
+                    record = row.get("data") or {}
+                    if (
+                            str(record.get("owner") or "").lower()
+                            == hosted_owner
+                            and str(record.get("name") or "").lower()
+                            == hosted_repo.lower()):
+                        target_row = row
+                        break
+            if not target_row:
+                return None
         target = target_row["data"]
         members = [
             row for row in rows
@@ -29871,13 +31170,14 @@ async def _https_mirror_public_context(env, owner, repo):
             for row in members if row.get("key_bi")
         ]
         history = {}
-        if group_keys:
+        for offset in range(0, len(group_keys), 80):
+            key_batch = group_keys[offset:offset + 80]
             history_rows = await d1_all(
                 env,
                 "SELECT key_bi,state_hash FROM repo_state_history"
                 " WHERE key_bi IN (%s)"
-                % ",".join("?" for _ in group_keys),
-                *group_keys,
+                % ",".join("?" for _ in key_batch),
+                *key_batch,
             )
             for item in history_rows or []:
                 history.setdefault(
@@ -29903,10 +31203,12 @@ async def _https_mirror_public_context(env, owner, repo):
             == "remote-clone"
         ):
             pins = set()
+            current_pins = set()
             target_state = clean_string(
                 target.get("stateHash", ""), 64).lower()
             if re.fullmatch(r"[0-9a-f]{64}", target_state):
                 pins.add(target_state)
+                current_pins.add(target_state)
             for state in history.get(
                     str(target_row.get("key_bi") or ""), []):
                 state = clean_string(state, 64).lower()
@@ -29916,12 +31218,24 @@ async def _https_mirror_public_context(env, owner, repo):
         else:
             pins = clone_state_pins(
                 target, target_row.get("key_bi"), members, history)
+            current_pins = set()
+            for row in members:
+                record = row.get("data") or {}
+                state = clean_string(
+                    record.get("stateHash", ""), 64).lower()
+                if (
+                    str(record.get("source") or "local-node")
+                    == "local-node"
+                    and re.fullmatch(r"[0-9a-f]{64}", state)
+                ):
+                    current_pins.add(state)
         # Direct routing never uses the legacy unpinned fail-open behavior. An
         # owner must publish an authenticated refs digest before a remote
         # endpoint can advertise or resolve that repository.
         if not pins:
             return None
         allowed = set()
+        current_nodes = set()
         source = None
         for row in members:
             record = row.get("data") or {}
@@ -29933,6 +31247,8 @@ async def _https_mirror_public_context(env, owner, repo):
             if pins and state not in pins:
                 continue
             allowed.add(node)
+            if state in current_pins:
+                current_nodes.add(node)
             if (
                 source is None
                 and str(record.get("source") or "local-node")
@@ -29955,8 +31271,13 @@ async def _https_mirror_public_context(env, owner, repo):
             "owner": canonical_owner,
             "repo": canonical_repo,
             "nodes": allowed,
+            # Ordinary reads prefer the newest source generation. Recent
+            # signed generations remain available strictly as failover while
+            # their nodes converge.
+            "currentNodes": current_nodes,
             "pins": set(pins),
-            "repoBi": await blind_index(env, owner_l + "/" + repo_l),
+            "repoBi": await blind_index(
+                env, canonical_owner + "/" + canonical_repo.lower()),
         }
     except Exception:
         return None
@@ -29999,6 +31320,17 @@ async def _https_mirror_candidates(env, context, preferred_region, sticky=""):
         preferred_region=preferred_region,
         cursor=int((cursor_row or {}).get("cursor") or 0),
     )
+    current_nodes = {
+        str(node or "").lower()
+        for node in context.get("currentNodes", set())
+    }
+    if current_nodes:
+        selected.sort(
+            key=lambda item: (
+                0 if str(item.get("node") or "").lower()
+                in current_nodes else 1
+            )
+        )
     sticky = str(sticky or "").lower()
     if sticky:
         selected.sort(key=lambda item: 0 if item["node"] == sticky else 1)
@@ -30077,9 +31409,10 @@ def _https_mirror_request_query(url, operation, release_sha=""):
 async def _https_mirror_repository_proof(env, endpoint, context, operation):
     """Require a fresh signed refs/operation proof for this public repo."""
     now = int(Date.now())
+    route_owner = context.get("routeOwner") or context["owner"]
     pins_key = ",".join(sorted(context["pins"]))
     memo_key = (
-        endpoint["node"], context["owner"], context["repo"], pins_key)
+        endpoint["node"], route_owner, context["repo"], pins_key)
     memo = _HTTPS_MIRROR_REPO_PROOF_MEMO.get(memo_key)
     if memo and now - memo["checkedAt"] <= HTTPS_MIRROR_REPO_PROOF_TTL_MS:
         return operation in memo["operations"]
@@ -30087,7 +31420,7 @@ async def _https_mirror_repository_proof(env, endpoint, context, operation):
     target = (
         endpoint["baseUrl"] + "/health?nonce=" + quote(nonce)
         + "&issuedAt=" + str(now)
-        + "&owner=" + quote(context["owner"])
+        + "&owner=" + quote(route_owner)
         + "&repo=" + quote(context["repo"])
     )
     status, text = await _https_mirror_fetch_text(
@@ -30124,7 +31457,7 @@ async def _https_mirror_repository_proof(env, endpoint, context, operation):
             and data.get("publicKey") == endpoint["publicKey"]
             and data.get("transport") == "direct-https"
             and isinstance(proof, dict)
-            and proof.get("owner") == context["owner"]
+            and proof.get("owner") == route_owner
             and proof.get("repository") == context["repo"]
             and proof.get("available") is True
             and proof.get("integrity") == "ok"
@@ -30837,6 +32170,35 @@ async def _https_mirror_proxy(
     if context is None:
         return json_response(
             {"error": "not_found"}, status=404, cache_control="no-store")
+    # org_alias_rewrite gives access checks and pin selection the canonical
+    # backing node. Repository bytes must still be requested from the gateway
+    # under the untouched public organization identity. The rewrite preserves
+    # request.url, so recover only an alias that D1 verifies maps to that node.
+    try:
+        original_url = urlparse(str(getattr(request, "url", "") or ""))
+        original_match = (
+            GIT_INFO_RE.match(original_url.path)
+            or GIT_PACK_RE.match(original_url.path)
+            or RELEASE_BLOB_RE.match(original_url.path)
+            or REPO_HOST_RE.match(original_url.path)
+        )
+        route_owner = (
+            safe_segment(original_match.group(1)) if original_match else "")
+        route_repo = (
+            safe_segment(original_match.group(2)) if original_match else "")
+        if (
+            route_owner
+            and route_repo == context["repo"]
+            and route_owner != context["owner"]
+            and await _org_repo_node(
+                env, route_owner, route_repo) == context["owner"]
+        ):
+            context = dict(context)
+            context["routeOwner"] = route_owner
+            context["repoBi"] = await blind_index(
+                env, route_owner + "/" + route_repo)
+    except Exception:
+        pass
     method = method_name(request)
     if operation == "git-upload-pack" and method != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
@@ -30887,7 +32249,7 @@ async def _https_mirror_proxy(
             continue
         target = https_routing.masked_target_url(
             endpoint["baseUrl"],
-            context["owner"],
+            context.get("routeOwner") or context["owner"],
             context["repo"],
             operation,
             query,
@@ -31395,7 +32757,7 @@ class Default(WorkerEntrypoint):
                     ids = [int(x) for x in form.get("ids", []) if str(x).isdigit()]
                     if table not in tables:
                         banner = "Delete failed: unknown table."
-                    elif table not in ADMIN_PURGE_TABLES:
+                    elif not _admin_purge_allowed(table):
                         banner = (
                             "Delete blocked: this table is read-only in the "
                             "generic administration browser."
@@ -31585,6 +32947,11 @@ class Default(WorkerEntrypoint):
         if url.path in BLOCKED_STATIC_HTML_PATHS:
             return await self._serve_not_found_page(url)
 
+        if url.path in (
+                blog_feed.FEED_PATH, "/blog/feed.xml",
+                "/rss.xml", "/feed.xml"):
+            return await blog_rss_handler(self.env, request)
+
         if url.path in ("/health", "/api/mainnode"):
             return json_response(
                 {
@@ -31632,11 +32999,21 @@ class Default(WorkerEntrypoint):
         if url.path in ("/api/world/ticket", "/api/world/ticket/"):
             return await world_ticket_handler(self.env, request)
 
+        if url.path in ("/api/world/client", "/api/world/client/"):
+            return await world_client_profile_handler(self.env, request)
+
         if url.path in ("/api/world/inactive", "/api/world/inactive/"):
             return await world_inactive_handler(self.env, request)
 
+        if url.path in ("/api/world/wallet", "/api/world/wallet/"):
+            return await world_wallet_badge_handler(self.env, request)
+
         if url.path in ("/api/world/visitors", "/api/world/visitors/"):
             return await world_visitors_handler(self.env, request)
+
+        if url.path in (
+                "/api/world/social-posts", "/api/world/social-posts/"):
+            return await world_social_posts_handler(self.env, request)
 
         if url.path in ("/api/world/layout", "/api/world/layout/"):
             return await world_layout_handler(self.env, request)
@@ -31800,6 +33177,17 @@ class Default(WorkerEntrypoint):
         if url.path in ("/api/network/leaderboards", "/api/network/leaderboards/"):
             return await network_leaderboards(self.env)
 
+        # Referral-program board (clicks + signups per share link) for the
+        # /referrals page and the World's referral leaderboard sign.
+        if url.path in ("/api/referrals/leaderboard", "/api/referrals/leaderboard/"):
+            return await referral_leaderboard(self.env)
+
+        # Rendered share-link card (og:image of the /r/<name> preview page).
+        referral_card_match = REFERRAL_CARD_RE.match(url.path)
+        if referral_card_match:
+            return await referral_card_handler(
+                self.env, request, unquote(referral_card_match.group(1)))
+
         # 30-day per-system uptime history for the public /status page.
         if url.path in ("/api/status", "/api/status/"):
             return await status_history(self.env)
@@ -31812,11 +33200,6 @@ class Default(WorkerEntrypoint):
         # Anonymous per-step diagnostics posted by install.sh (no auth, no IP).
         if url.path in ("/api/install-diag", "/api/install-diag/"):
             return await install_diag_handler(self.env, request)
-
-        # Opt-in crash/stall telemetry posted by desktop nodes (no auth, no IP;
-        # anonymized node hash only). See telemetry_handler / issue #354.
-        if url.path in ("/api/telemetry", "/api/telemetry/"):
-            return await telemetry_handler(self.env, request)
 
         # Anonymous docs/page feedback: like/dislike clicks with optional text.
         if url.path in ("/api/feedback", "/api/feedback/"):
@@ -31926,6 +33309,12 @@ class Default(WorkerEntrypoint):
         # records and returns a bot reply for the encrypted room.
         if url.path in ("/api/sync", "/api/sync/"):
             return await sync_handler(self.env, request)
+
+        # Live push channel that makes /api/sync event-driven: an owner node
+        # holds one WebSocket here and each web submission triggers an instant
+        # payload-free event frame (see notify_repo_host / ForkMeshNodes).
+        if url.path in ("/api/nodes/events", "/api/nodes/events/"):
+            return await node_events_handler(self.env, request)
 
         if url.path in ("/api/forkbot/chat", "/api/forkbot/chat/"):
             return await forkbot_chat_handler(self.env, request)
@@ -32458,6 +33847,13 @@ class Default(WorkerEntrypoint):
                 {"error": "unavailable"}, status=503,
                 extra_headers=EXPECTED_DEGRADED_HEADERS)
 
+        # Referral share links: count the click, bounce to signup. Matched
+        # before the repo shortcut so /r/<name> never reads as owner/repo.
+        referral_match = REFERRAL_LINK_RE.match(url.path)
+        if referral_match:
+            return await referral_click(
+                self.env, unquote(referral_match.group(1)), request)
+
         # Repo shortcut URLs (/owner/repo and tab/tree/blob deep links) all
         # serve the prebuilt repo-detail page; its JS resolves the path. The
         # per-repo rel="me" head tags are injected at serve time so Mastodon
@@ -32950,14 +34346,20 @@ class ForkMeshWorld(DurableObject):
 
     The object uses the WebSocket Hibernation API, with the current allowlisted
     public state held only in each live socket's attachment. It never opens
-    Durable Object storage, D1, KV, R2, or chat history. Once a socket closes
-    there is no history to read back and its random peer id is gone.
+    Durable Object storage, KV, R2, or chat history, and the only D1 rows it
+    writes are content-free aggregates (moderation blocks and the System
+    Capacity byte counters). Once a socket closes there is no history to read
+    back and its random peer id is gone.
     """
+
+    traffic_binding = "FORKMESH_WORLD"
 
     async def fetch(self, request):
         path = urlparse(request.url).path
         if path.rstrip("/") == "/api/world/manual-block":
             return await self._manual_block(request)
+        if path.rstrip("/") == "/api/world/mirror-push":
+            return await self._mirror_push(request)
         if path.rstrip("/") != "/api/world/ws":
             return json_response({"error": "not_found"}, status=404)
 
@@ -33063,6 +34465,47 @@ class ForkMeshWorld(DurableObject):
 
         return JsResponse.new(
             None, to_js({"status": 101, "webSocket": client}))
+
+    async def _mirror_push(self, request):
+        """Relay a signed outer-Worker head-advance notice to every visitor.
+
+        Only the outer Worker holds the control HMAC, so browser sockets can
+        never inject or forge this frame. The frame itself carries no facts a
+        client acts on directly — viewers re-read the signed public mirror
+        payload and animate from that verified state.
+        """
+        if method_name(request) != "POST":
+            return json_response({"error": "method_not_allowed"}, status=405)
+        try:
+            data = await bounded_json_request(request)
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+        if not isinstance(data, dict):
+            return json_response({"error": "invalid_json"}, status=400)
+        node = clean_string(data.get("node", ""), MAX_NODE_NAME).strip()
+        repo = clean_string(data.get("repo", ""), 120).strip()
+        commit = str(data.get("commit") or "").strip().lower()
+        try:
+            signature = str(
+                request.headers.get("x-forkmesh-world-control") or "")
+        except Exception:
+            signature = ""
+        expected = _world_mirror_push_signature(self.env, node, repo, commit)
+        if (
+            not node
+            or not re.fullmatch(r"[0-9a-f]{40,64}", commit)
+            or not hmac.compare_digest(signature, expected)
+        ):
+            return json_response({"error": "unauthorized"}, status=401)
+        self._broadcast({
+            "type": "mirror-push",
+            "node": node,
+            "repo": repo,
+            # A short id is plenty for the announcement; the full head comes
+            # from the signed mirror payload each client refreshes.
+            "commit": commit[:12],
+        })
+        return json_response({"ok": True, "delivered": True})
 
     async def _manual_block(self, request):
         """Disconnect sockets selected by a signed outer-Worker command."""
@@ -33285,6 +34728,9 @@ class ForkMeshWorld(DurableObject):
         if len(message.encode("utf-8")) > world_protocol.WORLD_MESSAGE_MAX_BYTES:
             self._safe_close(ws, 1009, "message too large")
             return
+        durable_object_traffic_note(
+            self, bytes_in=len(message.encode("utf-8")), messages=1)
+        await durable_object_traffic_flush(self)
 
         state = self._socket_state(ws)
         if not state.get("id"):
@@ -33417,6 +34863,9 @@ class ForkMeshWorld(DurableObject):
 
     async def webSocketClose(self, ws, code, reason, was_clean):
         self._depart(ws, 1000, "")
+        # A closing socket is the last chance to bank this instance's pending
+        # byte counts before the object hibernates.
+        await durable_object_traffic_flush(self, force=True)
 
     async def webSocketError(self, ws, error):
         self._depart(ws, 1011, "socket error")
@@ -33460,10 +34909,14 @@ class ForkMeshWorld(DurableObject):
             self._safe_send(peer, outgoing)
 
     def _safe_send(self, ws, frame):
+        payload = json.dumps(frame, separators=(",", ":"))
         try:
-            ws.send(json.dumps(frame, separators=(",", ":")))
+            ws.send(payload)
         except Exception:
             self._safe_close(ws, 1011, "unavailable")
+            return
+        durable_object_traffic_note(
+            self, bytes_out=len(payload.encode("utf-8")))
 
     def _safe_close(self, ws, code, reason):
         try:
@@ -33474,6 +34927,8 @@ class ForkMeshWorld(DurableObject):
 
 class ForkMeshOfficeRoom(DurableObject):
     """Ephemeral authorized avatar and chair relay for one Office room."""
+
+    traffic_binding = "FORKMESH_OFFICE_ROOM"
 
     async def fetch(self, request):
         path = urlparse(request.url).path
@@ -33909,6 +35364,9 @@ class ForkMeshOfficeRoom(DurableObject):
         if len(message.encode("utf-8")) > world_protocol.OFFICE_MESSAGE_MAX_BYTES:
             self._safe_close(ws, 1009, "message too large")
             return
+        durable_object_traffic_note(
+            self, bytes_in=len(message.encode("utf-8")), messages=1)
+        await durable_object_traffic_flush(self)
         state = self._socket_state(ws)
         if not state.get("id"):
             self._safe_close(ws, 1008, "invalid presence")
@@ -33997,6 +35455,7 @@ class ForkMeshOfficeRoom(DurableObject):
 
     async def webSocketClose(self, ws, code, reason, was_clean):
         self._depart(ws, 1000, "")
+        await durable_object_traffic_flush(self, force=True)
 
     async def webSocketError(self, ws, error):
         self._depart(ws, 1011, "socket error")
@@ -34028,10 +35487,14 @@ class ForkMeshOfficeRoom(DurableObject):
             self._safe_send(peer, frame)
 
     def _safe_send(self, ws, frame):
+        payload = json.dumps(frame, separators=(",", ":"))
         try:
-            ws.send(json.dumps(frame, separators=(",", ":")))
+            ws.send(payload)
         except Exception:
             self._safe_close(ws, 1011, "unavailable")
+            return
+        durable_object_traffic_note(
+            self, bytes_out=len(payload.encode("utf-8")))
 
     def _close_all(self, code, reason):
         try:
@@ -34058,6 +35521,8 @@ class ForkMeshRoom(DurableObject):
     # (ctx.getWebSockets("chat")), never in instance attributes — those would not
     # survive eviction. The read-only "observer" count socket was retired: the
     # live count is now served over HTTP via the cached /api/network/stats.
+    traffic_binding = "FORKMESH_MAINNODE_ROOM"
+
     async def fetch(self, request):
         parsed_url = urlparse(request.url)
         path = parsed_url.path
@@ -34112,8 +35577,12 @@ class ForkMeshRoom(DurableObject):
                         server.send(body)
                     except Exception:
                         pass
+                    else:
+                        durable_object_traffic_note(
+                            self, bytes_out=len(str(body).encode("utf-8")))
             except Exception:
                 pass
+            await durable_object_traffic_flush(self)
 
         return JsResponse.new(None, to_js({"status": 101, "webSocket": client}))
 
@@ -34180,6 +35649,8 @@ class ForkMeshRoom(DurableObject):
         if not await self._private_room_current(ws):
             self._close_all_chat_sockets(1008, "room access revoked")
             return
+        frame_bytes = len(message.encode("utf-8"))
+        durable_object_traffic_note(self, bytes_in=frame_bytes, messages=1)
         sender_id = _ws_attr(ws, "id")
         for peer in self._live_chat_sockets(close_stale=True):
             if _ws_attr(peer, "id") == sender_id:
@@ -34188,6 +35659,9 @@ class ForkMeshRoom(DurableObject):
                 peer.send(message)
             except Exception:
                 pass
+            else:
+                durable_object_traffic_note(self, bytes_out=frame_bytes)
+        await durable_object_traffic_flush(self)
 
         # Retain durable conversation messages (still encrypted) for late joiners.
         await self._maybe_retain(ws, message)
@@ -34322,6 +35796,151 @@ class ForkMeshRoom(DurableObject):
 
     async def webSocketClose(self, ws, code, reason, was_clean):
         self._safe_close(ws, 1000, "")
+        await durable_object_traffic_flush(self, force=True)
+
+    async def webSocketError(self, ws, error):
+        return
+
+    # Hibernation events may be dispatched under either naming convention.
+    web_socket_message = webSocketMessage
+    web_socket_close = webSocketClose
+    web_socket_error = webSocketError
+
+    def _safe_close(self, ws, code, reason):
+        try:
+            ws.close(code, reason)
+        except Exception:
+            pass
+
+
+class ForkMeshNodes(DurableObject):
+    # Per-owner push channel for desktop/headless nodes, on the WebSocket
+    # Hibernation API like ForkMeshRoom: sockets are accepted via
+    # ctx.acceptWebSocket(["node"]) and the live set is read back from
+    # ctx.getWebSockets("node"), so an idle-but-connected fleet bills ~no
+    # duration. Connection state lives only in the runtime/socket attachments
+    # — instance attributes would not survive eviction.
+    #
+    # This DO deliberately carries NOTHING but payload-free
+    # {"type":"event","topic","repo"} frames (relay -> node) and
+    # {"type":"ping"} keepalives (node -> relay). Repository bytes, inbox
+    # items and control commands all stay on their existing signed HTTPS
+    # routes; a pushed frame only tells the node to run the one consolidated
+    # GET /api/sync it would otherwise run on the slow fallback poll.
+    traffic_binding = "FORKMESH_NODES"
+
+    async def fetch(self, request):
+        parsed_url = urlparse(request.url)
+        path = parsed_url.path
+        upgrade = request.headers.get("upgrade")
+        is_websocket = bool(upgrade) and upgrade.lower() == "websocket"
+
+        if not is_websocket:
+            if path.endswith("/notify"):
+                # Internal-only (node_events_handler forwards only WebSocket
+                # upgrades, so this action is unreachable from the public
+                # router): fan one event frame out to every live node socket.
+                query = parse_qs(parsed_url.query)
+                frame = json.dumps({
+                    "type": "event",
+                    "topic": clean_string(query.get("topic", [""])[0], 40),
+                    "repo": clean_string(query.get("repo", [""])[0], 200),
+                })
+                delivered = 0
+                frame_bytes = len(frame.encode("utf-8"))
+                for peer in self._live_node_sockets(close_stale=True):
+                    try:
+                        peer.send(frame)
+                        delivered += 1
+                    except Exception:
+                        pass
+                    else:
+                        durable_object_traffic_note(
+                            self, bytes_out=frame_bytes, messages=1)
+                await durable_object_traffic_flush(self)
+                return json_response({"ok": True, "delivered": delivered})
+            # One-shot snapshot of the live node count (internal diagnostics).
+            return json_response(
+                {"ok": True, "nodes": len(self._live_node_sockets())})
+
+        if len(self._live_node_sockets(close_stale=True)) >= \
+                NODE_EVENT_MAX_SOCKETS:
+            return json_response({"error": "too_many_nodes"}, status=429)
+
+        client, server = WebSocketPair.new().object_values()
+        self.ctx.acceptWebSocket(server, to_js(["node"]))
+        server.serializeAttachment(to_js({
+            "id": new_socket_id(), "last": int(Date.now()),
+        }))
+        return JsResponse.new(None, to_js({"status": 101, "webSocket": client}))
+
+    def _live_node_sockets(self, close_stale=False):
+        now = int(Date.now())
+        sockets = []
+        try:
+            peers = self.ctx.getWebSockets("node")
+        except Exception:
+            return sockets
+        for peer in peers:
+            try:
+                last = int(_ws_attr(peer, "last", 0) or 0)
+            except (TypeError, ValueError):
+                last = 0
+            if not last or now - last > NODE_SOCKET_STALE_MS:
+                if close_stale:
+                    self._safe_close(peer, 1001, "stale")
+                continue
+            sockets.append(peer)
+        return sockets
+
+    async def webSocketMessage(self, ws, message):
+        # Nodes only ever send small {"type":"ping"} keepalives; anything else
+        # is dropped (rate-limited) or the socket is closed. Each accepted
+        # frame refreshes the socket's staleness clock in its attachment.
+        if not isinstance(message, str):
+            self._safe_close(ws, 1003, "text frames only")
+            return
+        if len(message.encode("utf-8")) > NODE_EVENT_MAX_FRAME_BYTES:
+            self._safe_close(ws, 1009, "message too large")
+            return
+        durable_object_traffic_note(
+            self, bytes_in=len(message.encode("utf-8")), messages=1)
+        await durable_object_traffic_flush(self)
+        now = int(Date.now())
+        try:
+            start = int(_ws_attr(ws, "rl_start", 0) or 0)
+            count = int(_ws_attr(ws, "rl_count", 0) or 0)
+        except (TypeError, ValueError):
+            start, count = 0, 0
+        if now - start >= NODE_EVENT_MSG_WINDOW_MS:
+            start, count = now, 0
+        count += 1
+        try:
+            ws.serializeAttachment(to_js({
+                "id": _ws_attr(ws, "id"), "last": now,
+                "rl_start": start, "rl_count": count,
+            }))
+        except Exception:
+            pass
+        if count > NODE_EVENT_MSG_MAX_PER_WINDOW:
+            return
+        try:
+            kind = json.loads(message).get("type")
+        except Exception:
+            return
+        if kind == "ping":
+            pong = json.dumps({"type": "pong"})
+            try:
+                ws.send(pong)
+            except Exception:
+                pass
+            else:
+                durable_object_traffic_note(
+                    self, bytes_out=len(pong.encode("utf-8")))
+
+    async def webSocketClose(self, ws, code, reason, was_clean):
+        self._safe_close(ws, 1000, "")
+        await durable_object_traffic_flush(self, force=True)
 
     async def webSocketError(self, ws, error):
         return

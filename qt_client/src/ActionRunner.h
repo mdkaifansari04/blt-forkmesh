@@ -20,8 +20,11 @@ struct ActionSandboxLimits {
     int maxProcesses = 128;
     int maxOpenFiles = 256;
     int maxCpuSeconds = 20 * 60;
-    int stepTimeoutMs = 30 * 60 * 1000;
-    int jobTimeoutMs = 2 * 60 * 60 * 1000;
+    // A release step compiles the whole desktop client from scratch inside the
+    // sandbox's CPU quota, which took longer than the old 30-minute deadline —
+    // every release since v0.7.0 was SIGTERMed mid-build (adhoc #329).
+    int stepTimeoutMs = 90 * 60 * 1000;
+    int jobTimeoutMs = 4 * 60 * 60 * 1000;
 };
 
 // Executes a single approved workflow run. On Linux, every step runs fail-closed

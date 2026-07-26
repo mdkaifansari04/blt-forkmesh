@@ -712,6 +712,355 @@ int main(int argc, char **argv)
               .program.isEmpty(),
           "generic controller SSH rejects option-shaped hosts");
 
+    // Managed identity keys (adhoc #315): a recorded key file pins
+    // authentication to exactly that key; a missing file fails closed instead
+    // of silently falling back to the user's default keys.
+    QTemporaryDir identityDir;
+    const QString identityPath =
+        identityDir.filePath(QStringLiteral("vultr_mirror_ed25519"));
+    {
+        QFile identity(identityPath);
+        check(identity.open(QIODevice::WriteOnly) &&
+                  identity.write("managed-key-material") > 0,
+              "managed identity fixture is writable");
+    }
+    const auto identityCommand = forkmesh::control::buildHostSshCommand(
+        QStringLiteral("203.0.113.10"), QStringLiteral("root"), QString(),
+        QStringLiteral("true"), &actionsError, identityPath);
+    check(actionsError.isEmpty() &&
+              identityCommand.program == QStringLiteral("ssh") &&
+              identityCommand.arguments.contains(QStringLiteral("-i")) &&
+              identityCommand.arguments.contains(identityPath) &&
+              identityCommand.arguments.contains(
+                  QStringLiteral("IdentitiesOnly=yes")),
+          "a managed identity file is pinned with -i and IdentitiesOnly");
+    check(forkmesh::control::buildHostSshCommand(
+              QStringLiteral("203.0.113.10"), QStringLiteral("root"),
+              QString(), QStringLiteral("true"), &actionsError,
+              identityDir.filePath(QStringLiteral("missing_key")))
+              .program.isEmpty(),
+          "a missing managed identity file fails closed");
+
+    // Host size map (adhoc #390): a read-only `du` browser over the same
+    // authenticated SSH channel.
+    check(forkmesh::control::normalizeRemoteDiskPath(
+              QStringLiteral("/var//lib/./forkmesh/")) ==
+                  QStringLiteral("/var/lib/forkmesh") &&
+              forkmesh::control::normalizeRemoteDiskPath(
+                  QStringLiteral("/var/lib/..")) == QStringLiteral("/var") &&
+              forkmesh::control::normalizeRemoteDiskPath(
+                  QStringLiteral("/../..")) == QStringLiteral("/") &&
+              forkmesh::control::normalizeRemoteDiskPath(QString()) ==
+                  QStringLiteral("/"),
+          "remote size-map paths collapse to canonical absolute paths");
+    check(forkmesh::control::normalizeRemoteDiskPath(
+              QStringLiteral("var/lib")).isEmpty() &&
+              forkmesh::control::normalizeRemoteDiskPath(
+                  QStringLiteral("/var\nrm -rf /")).isEmpty(),
+          "relative and newline-bearing size-map paths are rejected");
+
+    QString diskError;
+    const QString diskCommand = forkmesh::control::buildHostDiskUsageCommand(
+        QStringLiteral("/srv/it's here"), &diskError);
+    check(diskError.isEmpty() &&
+              diskCommand.startsWith(QStringLiteral("sh -lc '")) &&
+              diskCommand.contains(QStringLiteral("du -x -k -a -d 1")) &&
+              diskCommand.contains(QStringLiteral("'\\''")) &&
+              !diskCommand.contains(QStringLiteral("rm ")) &&
+              !diskCommand.contains(QStringLiteral("chmod")),
+          "the size-map command is a single quoted read-only du level");
+    check(forkmesh::control::buildHostDiskUsageCommand(
+              QStringLiteral("relative/path"), &diskError).isEmpty() &&
+              !diskError.isEmpty(),
+          "the size-map command refuses a non-absolute path");
+
+    const QByteArray diskOutput =
+        QByteArray("Welcome to Ubuntu (banner noise)\n") +
+        "FORKMESH-DU1 d 2048 " + QByteArray("/var/log").toBase64() + "\n" +
+        "FORKMESH-DU1 f 4 " + QByteArray("/var/notes 'x'.txt").toBase64() + "\n" +
+        "FORKMESH-DU1 d 8192 " + QByteArray("/var/lib").toBase64() + "\n" +
+        "FORKMESH-DU1 T 10244 " + QByteArray("/var").toBase64() + "\n" +
+        "FORKMESH-DU1-END\n";
+    const auto usage =
+        forkmesh::control::parseHostDiskUsage(diskOutput, QStringLiteral("/var"));
+    check(usage.complete && usage.error.isEmpty() &&
+              usage.totalBytes == 10244LL * 1024 &&
+              usage.entries.size() == 3 &&
+              usage.entries.at(0).path == QStringLiteral("/var/lib") &&
+              usage.entries.at(0).name == QStringLiteral("lib") &&
+              usage.entries.at(0).directory &&
+              usage.entries.at(0).bytes == 8192LL * 1024 &&
+              usage.entries.at(2).name == QStringLiteral("notes 'x'.txt") &&
+              !usage.entries.at(2).directory,
+          "the size map parses banner-wrapped du sentinels largest first");
+    const auto diskFailure = forkmesh::control::parseHostDiskUsage(
+        QByteArray("FORKMESH-DU1-ERROR ") + QByteArray("nope").toBase64() + "\n",
+        QStringLiteral("/root"));
+    check(diskFailure.complete && diskFailure.error == QStringLiteral("nope") &&
+              diskFailure.entries.isEmpty(),
+          "a host-side size-map refusal surfaces as an error, not an empty tree");
+    check(forkmesh::control::parseHostDiskUsage(
+              QByteArray("ssh: connect to host port 22: Connection refused\n"),
+              QStringLiteral("/"))
+              .complete == false,
+          "a transport failure never looks like a complete size map");
+    check(forkmesh::control::formatDiskSize(0) == QStringLiteral("0 B") &&
+              forkmesh::control::formatDiskSize(1536) ==
+                  QStringLiteral("1.5 KB") &&
+              forkmesh::control::formatDiskSize(3LL * 1024 * 1024 * 1024) ==
+                  QStringLiteral("3.0 GB"),
+          "size-map byte formatting is human readable");
+
+    // One-click Vultr provisioning helpers (adhoc #315).
+    check(forkmesh::control::validateVultrMirrorRequest(
+              QStringLiteral("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"),
+              QStringLiteral("vultr-mirror-1"))
+              .isEmpty(),
+          "a plausible Vultr key and node name validate");
+    check(!forkmesh::control::validateVultrMirrorRequest(
+               QStringLiteral("short"), QStringLiteral("vultr-mirror-1"))
+               .isEmpty() &&
+              !forkmesh::control::validateVultrMirrorRequest(
+                   QStringLiteral("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"),
+                   QStringLiteral("Bad Name"))
+                   .isEmpty(),
+          "Vultr validation rejects malformed keys and node names");
+
+    const QJsonArray vultrPlans{
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("vc2-2c-4gb")},
+                    {QStringLiteral("monthly_cost"), 20},
+                    {QStringLiteral("ram"), 4096},
+                    {QStringLiteral("locations"),
+                     QJsonArray{QStringLiteral("ewr")}}},
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("vc2-1c-1gb")},
+                    {QStringLiteral("monthly_cost"), 5},
+                    {QStringLiteral("ram"), 1024},
+                    {QStringLiteral("locations"),
+                     QJsonArray{QStringLiteral("fra"),
+                                QStringLiteral("ams")}}},
+        // Cheaper but sold out everywhere: not deployable, must be skipped.
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("vc2-old")},
+                    {QStringLiteral("monthly_cost"), 3},
+                    {QStringLiteral("ram"), 512},
+                    {QStringLiteral("locations"), QJsonArray{}}},
+        // Same price, more RAM: preferred deterministically.
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("vhp-1c-2gb")},
+                    {QStringLiteral("monthly_cost"), 5},
+                    {QStringLiteral("ram"), 2048},
+                    {QStringLiteral("locations"),
+                     QJsonArray{QStringLiteral("syd")}}},
+        // Cheapest of all, but IPv6-only: unreachable for the mesh (adhoc #344).
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("vc2-1c-0.5gb-v6")},
+                    {QStringLiteral("monthly_cost"), 2.5},
+                    {QStringLiteral("ram"), 512},
+                    {QStringLiteral("locations"),
+                     QJsonArray{QStringLiteral("ewr")}}},
+    };
+    const QJsonObject cheapest =
+        forkmesh::control::cheapestVultrPlan(vultrPlans);
+    check(cheapest.value(QStringLiteral("id")).toString() ==
+              QStringLiteral("vhp-1c-2gb"),
+          "cheapest Vultr plan skips undeployable plans and breaks ties on RAM");
+    check(forkmesh::control::vultrPlanHasIpv4(cheapest) &&
+              !forkmesh::control::vultrPlanHasIpv4(
+                  vultrPlans.at(4).toObject()) &&
+              !forkmesh::control::vultrPlanHasIpv4(QJsonObject()),
+          "IPv6-only Vultr plans are never eligible, however cheap");
+    check(forkmesh::control::vultrPlanRegion(cheapest) ==
+              QStringLiteral("syd") &&
+              forkmesh::control::vultrPlanRegion(
+                  vultrPlans.at(1).toObject()) == QStringLiteral("ams"),
+          "Vultr region selection is the plan's first sorted location");
+    check(forkmesh::control::cheapestVultrPlan(QJsonArray()).isEmpty(),
+          "an empty Vultr plan list yields no selection");
+
+    const QJsonArray vultrOs{
+        QJsonObject{{QStringLiteral("id"), 401},
+                    {QStringLiteral("name"), QStringLiteral("Debian 11 x64")},
+                    {QStringLiteral("arch"), QStringLiteral("x64")},
+                    {QStringLiteral("family"), QStringLiteral("debian")}},
+        QJsonObject{{QStringLiteral("id"), 477},
+                    {QStringLiteral("name"),
+                     QStringLiteral("Debian 12 x64 (bookworm)")},
+                    {QStringLiteral("arch"), QStringLiteral("x64")},
+                    {QStringLiteral("family"), QStringLiteral("debian")}},
+        QJsonObject{{QStringLiteral("id"), 999},
+                    {QStringLiteral("name"),
+                     QStringLiteral("Ubuntu 24.04 LTS x64")},
+                    {QStringLiteral("arch"), QStringLiteral("x64")},
+                    {QStringLiteral("family"), QStringLiteral("ubuntu")}},
+        QJsonObject{{QStringLiteral("id"), 478},
+                    {QStringLiteral("name"),
+                     QStringLiteral("Debian 12 i386")},
+                    {QStringLiteral("arch"), QStringLiteral("i386")},
+                    {QStringLiteral("family"), QStringLiteral("debian")}},
+    };
+    check(forkmesh::control::latestVultrDebianOs(vultrOs)
+                  .value(QStringLiteral("id"))
+                  .toInt() == 477,
+          "latest Vultr Debian selection picks the newest x64 Debian only");
+
+    const QJsonObject instancePayload =
+        forkmesh::control::vultrInstanceCreatePayload(
+            QStringLiteral("vultr-mirror-1"), QStringLiteral("vhp-1c-2gb"),
+            QStringLiteral("syd"), 477, QStringLiteral("key-id-1"));
+    check(instancePayload.value(QStringLiteral("plan")).toString() ==
+                  QStringLiteral("vhp-1c-2gb") &&
+              instancePayload.value(QStringLiteral("region")).toString() ==
+                  QStringLiteral("syd") &&
+              instancePayload.value(QStringLiteral("os_id")).toInt() == 477 &&
+              instancePayload.value(QStringLiteral("sshkey_id")).toArray() ==
+                  QJsonArray{QStringLiteral("key-id-1")} &&
+              instancePayload.value(QStringLiteral("backups")).toString() ==
+                  QStringLiteral("disabled") &&
+              instancePayload.value(QStringLiteral("activation_email"))
+                      .toBool() == false &&
+              instancePayload.value(QStringLiteral("label")).toString() ==
+                  QStringLiteral("vultr-mirror-1"),
+          "the Vultr instance payload pins plan, region, OS, key and no extras");
+
+    const QJsonObject bootingInstance{
+        {QStringLiteral("status"), QStringLiteral("pending")},
+        {QStringLiteral("power_status"), QStringLiteral("running")},
+        {QStringLiteral("main_ip"), QStringLiteral("0.0.0.0")},
+    };
+    const QJsonObject readyInstance{
+        {QStringLiteral("status"), QStringLiteral("active")},
+        {QStringLiteral("power_status"), QStringLiteral("running")},
+        {QStringLiteral("main_ip"), QStringLiteral("203.0.113.99")},
+    };
+    QJsonObject stoppedInstance = readyInstance;
+    stoppedInstance.insert(QStringLiteral("power_status"),
+                           QStringLiteral("stopped"));
+    check(forkmesh::control::vultrInstanceReadyIp(bootingInstance).isEmpty() &&
+              forkmesh::control::vultrInstanceReadyIp(stoppedInstance)
+                  .isEmpty() &&
+              forkmesh::control::vultrInstanceReadyIp(readyInstance) ==
+                  QStringLiteral("203.0.113.99"),
+          "instance readiness requires active+running and a real IPv4");
+    check(instancePayload.value(QStringLiteral("enable_ipv6")).toBool(true) ==
+              false,
+          "the Vultr instance payload never opts into an IPv6-only address");
+
+    QJsonObject ipv6OnlyInstance = readyInstance;
+    ipv6OnlyInstance.insert(QStringLiteral("main_ip"),
+                            QStringLiteral("0.0.0.0"));
+    ipv6OnlyInstance.insert(QStringLiteral("v6_main_ip"),
+                            QStringLiteral("2001:db8::1"));
+    QJsonObject dualStackInstance = readyInstance;
+    dualStackInstance.insert(QStringLiteral("v6_main_ip"),
+                             QStringLiteral("2001:db8::1"));
+    check(forkmesh::control::vultrInstanceIsIpv6Only(ipv6OnlyInstance) &&
+              !forkmesh::control::vultrInstanceIsIpv6Only(dualStackInstance) &&
+              !forkmesh::control::vultrInstanceIsIpv6Only(bootingInstance),
+          "an IPv6-only instance is detected instead of polled to a timeout");
+
+    check(forkmesh::control::nextMirrorNodeName(
+              {QStringLiteral("mirror1"), QStringLiteral("Mirror4"),
+               QStringLiteral("laptop")}) == QStringLiteral("mirror5") &&
+              forkmesh::control::nextMirrorNodeName({}) ==
+                  QStringLiteral("mirror1") &&
+              forkmesh::control::nextMirrorNodeName(
+                  {QStringLiteral("mirror2"), QStringLiteral(" mirror3 ")}) ==
+                  QStringLiteral("mirror4"),
+          "the default mirror name continues the fleet's own numbering");
+
+    QMap<QString, QString> vultrVariables;
+    vultrVariables.insert(QStringLiteral("vultr_api_key"),
+                          QStringLiteral("STOREDVULTRKEY01234567890"));
+    vultrVariables.insert(QStringLiteral("OTHER"),
+                          QStringLiteral("unrelated"));
+    check(forkmesh::control::vultrApiKeyFromVariables(vultrVariables) ==
+                  QStringLiteral("STOREDVULTRKEY01234567890") &&
+              forkmesh::control::vultrApiKeyFromVariables({}).isEmpty(),
+          "the stored VULTR_API_KEY device variable is resolved case-insensitively");
+
+    // --- Cloudflare DNS for a fresh Vultr mirror (adhoc #331) --------------
+    QMap<QString, QString> zoneVariables;
+    zoneVariables.insert(QStringLiteral("cloudflare_zone"),
+                         QStringLiteral("Example.Com"));
+    check(forkmesh::control::cloudflareZoneNameFromVariables(zoneVariables) ==
+                  QStringLiteral("Example.Com") &&
+              forkmesh::control::cloudflareZoneNameFromVariables({}).isEmpty(),
+          "the stored CLOUDFLARE_ZONE device variable is resolved");
+
+    check(forkmesh::control::vultrMirrorDnsHostname(
+              QStringLiteral("vultr-mirror-1"),
+              QStringLiteral(" Example.COM. ")) ==
+                  QStringLiteral("vultr-mirror-1.example.com") &&
+              forkmesh::control::vultrMirrorDnsHostname(
+                  QStringLiteral("vultr-mirror-1"), QStringLiteral("example"))
+                  .isEmpty() &&
+              forkmesh::control::vultrMirrorDnsHostname(
+                  QStringLiteral("bad node"), QStringLiteral("example.com"))
+                  .isEmpty() &&
+              forkmesh::control::vultrMirrorDnsHostname(
+                  QString(), QStringLiteral("example.com")).isEmpty(),
+          "the mirror DNS hostname is <node>.<zone> and rejects bad halves");
+
+    const QJsonObject dnsPayload =
+        forkmesh::control::vultrMirrorDnsRecordPayload(
+            QStringLiteral("vultr-mirror-1.example.com"),
+            QStringLiteral("203.0.113.99"));
+    check(dnsPayload.value(QStringLiteral("type")).toString() ==
+                  QStringLiteral("A") &&
+              dnsPayload.value(QStringLiteral("name")).toString() ==
+                  QStringLiteral("vultr-mirror-1.example.com") &&
+              dnsPayload.value(QStringLiteral("content")).toString() ==
+                  QStringLiteral("203.0.113.99") &&
+              dnsPayload.value(QStringLiteral("proxied")).toBool() == false &&
+              dnsPayload.value(QStringLiteral("ttl")).toInt() == 1,
+          "the mirror DNS record is a DNS-only A answer at automatic TTL");
+    check(forkmesh::control::vultrMirrorDnsRecordPayload(
+              QStringLiteral("vultr-mirror-1.example.com"),
+              QStringLiteral("0.0.0.0")).isEmpty() &&
+              forkmesh::control::vultrMirrorDnsRecordPayload(
+                  QStringLiteral("vultr-mirror-1.example.com"),
+                  QStringLiteral("203.0.113.999")).isEmpty() &&
+              forkmesh::control::vultrMirrorDnsRecordPayload(
+                  QStringLiteral("vultr-mirror-1"),
+                  QStringLiteral("203.0.113.99")).isEmpty(),
+          "malformed addresses or single-label names never reach Cloudflare");
+
+    const QJsonArray zones{
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("zone-other")},
+                    {QStringLiteral("name"), QStringLiteral("other.test")}},
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("zone-example")},
+                    {QStringLiteral("name"), QStringLiteral("example.com")}},
+    };
+    QJsonArray ambiguousZones = zones;
+    ambiguousZones.append(
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("zone-duplicate")},
+                    {QStringLiteral("name"), QStringLiteral("example.com")}});
+    check(forkmesh::control::cloudflareZoneId(
+              zones, QStringLiteral("Example.com.")) ==
+                  QStringLiteral("zone-example") &&
+              forkmesh::control::cloudflareZoneId(
+                  zones, QStringLiteral("missing.test")).isEmpty() &&
+              forkmesh::control::cloudflareZoneId(
+                  ambiguousZones, QStringLiteral("example.com")).isEmpty(),
+          "the zone id resolves only on an unambiguous exact name match");
+
+    const QJsonArray dnsRecords{
+        QJsonObject{
+            {QStringLiteral("id"), QStringLiteral("record-cname")},
+            {QStringLiteral("name"),
+             QStringLiteral("vultr-mirror-1.example.com")},
+            {QStringLiteral("type"), QStringLiteral("CNAME")}},
+        QJsonObject{
+            {QStringLiteral("id"), QStringLiteral("record-a")},
+            {QStringLiteral("name"),
+             QStringLiteral("vultr-mirror-1.example.com")},
+            {QStringLiteral("type"), QStringLiteral("A")}},
+    };
+    check(forkmesh::control::cloudflareDnsRecordId(
+              dnsRecords, QStringLiteral("vultr-mirror-1.example.com"),
+              QStringLiteral("A")) == QStringLiteral("record-a") &&
+              forkmesh::control::cloudflareDnsRecordId(
+                  dnsRecords, QStringLiteral("vultr-mirror-2.example.com"),
+                  QStringLiteral("A")).isEmpty(),
+          "an existing A record is reused so repeat deploys update in place");
+
     QTemporaryDir hostSettingsDir;
     const QString hostSettingsPath =
         hostSettingsDir.filePath(QStringLiteral("controller.ini"));
@@ -754,6 +1103,80 @@ int main(int argc, char **argv)
                   legacyPassword.toUtf8()) &&
               !persistedAfterMigration.contains("\"pass\""),
           "legacy plaintext host passwords migrate to memory and are deleted from QSettings");
+
+    // --- SSH connection-failure classification (adhoc #335) ----------------
+    check(forkmesh::control::sshConnectionFailureHint(
+              255, QStringLiteral("ssh: connect to host 1.2.3.4 port 22: "
+                                   "Connection timed out"))
+                  .contains(QStringLiteral("firewall"), Qt::CaseInsensitive) &&
+              forkmesh::control::sshConnectionFailureHint(
+                  255, QStringLiteral("ssh: connect to host 1.2.3.4 port 22: "
+                                       "Connection refused"))
+                      .contains(QStringLiteral("firewall"),
+                                Qt::CaseInsensitive) &&
+              forkmesh::control::sshConnectionFailureHint(
+                  255,
+                  QStringLiteral(
+                      "Host key verification failed."))
+                      .contains(QStringLiteral("key"), Qt::CaseInsensitive),
+          "a 255 ssh exit with a known connection-failure signature yields an "
+          "actionable hint");
+    // --- Non-routable target diagnosis + attempt summaries (adhoc #342) ----
+    const QString cgnatHint = forkmesh::control::sshConnectionFailureHint(
+        255,
+        QStringLiteral("ssh: connect to host 100.68.82.54 port 22: "
+                       "Connection timed out"),
+        QStringLiteral("100.68.82.54"));
+    check(cgnatHint.contains(QStringLiteral("100.64.0.0/10")) &&
+              !cgnatHint.contains(QStringLiteral("security group")) &&
+              forkmesh::control::sshConnectionFailureHint(
+                  255,
+                  QStringLiteral("ssh: connect to host 10.0.0.9 port 22: "
+                                 "No route to host"),
+                  QStringLiteral("10.0.0.9"))
+                  .contains(QStringLiteral("10.0.0.0/8")) &&
+              forkmesh::control::sshConnectionFailureHint(
+                  255,
+                  QStringLiteral("ssh: connect to host 1.2.3.4 port 22: "
+                                 "Connection timed out"),
+                  QStringLiteral("1.2.3.4"))
+                  .contains(QStringLiteral("firewall"), Qt::CaseInsensitive),
+          "a timeout against a non-routable address is diagnosed as the "
+          "address, not as a firewall");
+    check(forkmesh::control::nonRoutableAddressNote(
+              QStringLiteral("192.168.1.10")).contains(
+              QStringLiteral("192.168.0.0/16")) &&
+              forkmesh::control::nonRoutableAddressNote(
+                  QStringLiteral("172.16.4.1")).contains(
+                  QStringLiteral("172.16.0.0/12")) &&
+              forkmesh::control::nonRoutableAddressNote(
+                  QStringLiteral("172.32.4.1")).isEmpty() &&
+              forkmesh::control::nonRoutableAddressNote(
+                  QStringLiteral("100.128.0.1")).isEmpty() &&
+              forkmesh::control::nonRoutableAddressNote(
+                  QStringLiteral("45.32.1.9")).isEmpty() &&
+              forkmesh::control::nonRoutableAddressNote(
+                  QStringLiteral("mirror5.example.test")).isEmpty(),
+          "only genuinely non-routable IPv4 literals are flagged");
+    check(forkmesh::control::sshFailureSummary(
+              255,
+              QStringLiteral("Warming up\nssh: connect to host 1.2.3.4 port "
+                             "22: Connection timed out\n"))
+                  .contains(QStringLiteral("Connection timed out")) &&
+              forkmesh::control::sshFailureSummary(255, QStringLiteral(""))
+                      == QStringLiteral("exit 255") &&
+              forkmesh::control::sshFailureSummary(
+                  1, QStringLiteral("x").repeated(400)).size() < 200,
+          "each attempt gets a bounded one-line failure summary");
+
+    check(forkmesh::control::sshConnectionFailureHint(
+              1, QStringLiteral("ssh: connect to host 1.2.3.4 port 22: "
+                                 "Connection timed out"))
+                  .isEmpty() &&
+              forkmesh::control::sshConnectionFailureHint(
+                  255, QStringLiteral("some unrelated remote error"))
+                      .isEmpty(),
+          "a non-255 exit or unrecognized output yields no ssh hint");
 
     QJsonObject accidentallySecretHost = migratedHost;
     accidentallySecretHost.insert(QStringLiteral("sshPassword"),

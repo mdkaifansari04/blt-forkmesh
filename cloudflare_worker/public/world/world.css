@@ -218,6 +218,18 @@ forkmesh-world {
 
 .fm-world {
   --accent: var(--world-mint);
+  /* Detail panel geometry. The grip on the panel's left edge writes
+     --world-detail-user-width; the per-panel base width is the floor, so a
+     dragged-narrow panel never shrinks a naturally wider one. */
+  --world-detail-base-width: 420px;
+  --world-detail-user-width: 0px;
+  --world-detail-max-width: calc(
+    100vw - var(--safe-left) - var(--safe-right) - 28px
+  );
+  --world-detail-width: min(
+    max(var(--world-detail-user-width), var(--world-detail-base-width)),
+    var(--world-detail-max-width)
+  );
   position: relative;
   width: 100%;
   height: 100vh;
@@ -904,7 +916,6 @@ forkmesh-world {
 .world-shirt-badge {
   position: relative;
   display: grid;
-  grid-template-rows: 1fr auto auto;
   place-items: center;
   width: 50px;
   height: 50px;
@@ -934,23 +945,8 @@ forkmesh-world {
 }
 
 .world-shirt-flag {
-  font-size: 1.15rem;
+  font-size: 1.6rem;
   line-height: 1;
-}
-
-.world-shirt-tech {
-  font-family: "ForkMesh Mono", monospace;
-  font-size: 0.38rem;
-  letter-spacing: -0.02em;
-}
-
-.world-shirt-name {
-  max-width: 42px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: "ForkMesh Mono", monospace;
-  font-size: 0.42rem;
 }
 
 .world-diagnostics {
@@ -1144,6 +1140,11 @@ forkmesh-world {
   border-top: 1px solid var(--world-line);
 }
 
+/* No DEBUG strip reserved below chat, so it can sit flush at the bottom. */
+.world-chat-terminal.world-chat-terminal--debug-hidden {
+  bottom: 0;
+}
+
 .world-chat-terminal[open] > summary {
   min-height: 24px;
   padding-block: 2px;
@@ -1188,6 +1189,59 @@ forkmesh-world {
   visibility: visible;
 }
 
+.world-swing-panel {
+  position: absolute;
+  z-index: 30;
+  left: 50%;
+  bottom: calc(var(--safe-bottom) + 132px);
+  transform: translateX(-50%);
+  display: grid;
+  gap: 8px;
+  width: min(300px, calc(100vw - 28px));
+  border: 1px solid var(--world-line-strong);
+  background: var(--world-panel-solid);
+  padding: 10px 14px;
+  color: var(--world-muted);
+  font-size: 0.7rem;
+}
+
+.world-swing-panel[hidden] {
+  display: none;
+}
+
+.world-swing-panel > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.world-swing-panel strong,
+.world-swing-panel output {
+  color: var(--world-copy);
+  font-family: "ForkMesh Mono", monospace;
+}
+
+.world-swing-panel input {
+  width: 100%;
+  accent-color: var(--world-mint-deep);
+  cursor: pointer;
+}
+
+.world-swing-dismount {
+  justify-self: end;
+  border: 1px solid var(--world-line-strong);
+  background: transparent;
+  color: var(--world-copy);
+  font: inherit;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+
+.world-swing-dismount:hover {
+  border-color: var(--world-mint-deep);
+}
+
 .world-hud .world-detail-backdrop {
   position: absolute;
   z-index: 19;
@@ -1217,10 +1271,7 @@ forkmesh-world {
   bottom: calc(var(--safe-bottom) + var(--world-diagnostics-height) + 12px);
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  width: min(
-    420px,
-    calc(100vw - var(--safe-left) - var(--safe-right) - 28px)
-  );
+  width: var(--world-detail-width);
   overflow: hidden;
   border: 1px solid var(--world-line-strong);
   background: #081511;
@@ -1243,17 +1294,66 @@ forkmesh-world {
   pointer-events: auto;
 }
 
-.world-detail[data-repository-review="true"] {
-  width: min(
-    1040px,
-    calc(100vw - var(--safe-left) - var(--safe-right) - 28px)
-  );
+.fm-world:has(.world-detail[data-repository-review="true"]) {
+  --world-detail-base-width: 1040px;
+}
+
+/* Drag grip on the panel's left edge. It lives outside the panel because
+   every detail renderer replaces the panel's innerHTML wholesale. */
+.world-detail-resize {
+  position: absolute;
+  z-index: 21;
+  top: calc(var(--safe-top) + 58px);
+  right: calc(var(--safe-right) + var(--world-detail-width) - 7px);
+  bottom: calc(var(--safe-bottom) + var(--world-diagnostics-height) + 12px);
+  width: 14px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 180ms ease, visibility 180ms ease;
+  cursor: ew-resize;
+  touch-action: none;
+  pointer-events: none;
+}
+
+.world-detail[data-open="true"] ~ .world-detail-resize {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.world-detail-resize::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 44px;
+  transform: translate(-50%, -50%);
+  background: var(--world-line-strong);
+}
+
+.world-detail-resize:hover::after,
+.world-detail-resize:focus-visible::after,
+.world-detail-resize[data-dragging="true"]::after {
+  background: var(--world-mint);
+  box-shadow: 0 0 18px var(--world-mint);
+}
+
+.world-detail-resize:focus-visible {
+  outline: 1px solid var(--world-mint);
+  outline-offset: 2px;
 }
 
 .world-detail-header {
   position: relative;
   display: grid;
-  grid-template-columns: 1fr auto;
+  /* minmax(0, …) so a long unbreakable title cannot widen the header past the
+     panel: an overflowing header pushes the close button out of view, and
+     focusing it scrolls the whole panel sideways into blank space. */
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 18px;
   border-bottom: 1px solid var(--world-line);
   padding: max(24px, var(--safe-top)) 24px 22px;
@@ -1276,6 +1376,13 @@ forkmesh-world {
   font-size: clamp(2.2rem, 7vw, 3.75rem);
   line-height: 0.9;
   letter-spacing: -0.055em;
+  /* Table and repository names are single unbreakable tokens. */
+  overflow-wrap: anywhere;
+}
+
+.world-detail[data-open-landmark="events"] .world-detail-header h2 {
+  font-size: clamp(2.2rem, 5vw, 2.65rem);
+  letter-spacing: -0.04em;
 }
 
 .world-detail-close {
@@ -1385,7 +1492,7 @@ forkmesh-world {
    toots underneath, matching the kiosk beside the ForkMesh Office. */
 .world-mastodon-app {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   min-height: 0;
   overflow: hidden;
 }
@@ -1619,6 +1726,74 @@ forkmesh-world {
 .world-mastodon-toot footer a {
   margin-left: auto;
   color: var(--detail-color);
+}
+
+.world-mastodon-replies {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  border-top: 1px solid var(--world-line);
+}
+
+.world-mastodon-replies h3 {
+  margin: 0;
+  padding: 14px 24px 10px;
+  font-size: 0.78rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--world-muted);
+}
+
+.world-mastodon-reply-list {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  max-height: 34vh;
+  padding: 0 24px max(28px, var(--safe-bottom));
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.world-mastodon-reply {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  border: 1px solid var(--world-line);
+  padding: 10px 12px;
+}
+
+.world-mastodon-reply img,
+.world-mastodon-reply-icon {
+  width: 34px;
+  height: 34px;
+  object-fit: cover;
+  border: 1px solid var(--world-line);
+  display: grid;
+  place-items: center;
+  color: var(--world-muted);
+}
+
+.world-mastodon-reply header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.world-mastodon-reply header strong {
+  font-size: 0.86rem;
+}
+
+.world-mastodon-reply header span,
+.world-mastodon-reply time {
+  color: var(--world-muted);
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+.world-mastodon-reply a {
+  color: var(--detail-color);
+  font-size: 0.76rem;
 }
 
 .world-mastodon-status {
@@ -5753,6 +5928,12 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     transform: translateY(102%);
   }
 
+  /* The panel is a full-width bottom sheet here, so there is no left edge to
+     drag. */
+  .world-detail-resize {
+    display: none;
+  }
+
   .world-detail-backdrop[data-open="true"] {
     background: rgb(0 0 0 / 0.42);
     opacity: 1;
@@ -5872,7 +6053,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     height: 82px;
   }
 
-  .world-detail {
+  .world-detail,
+  .world-detail-resize {
     height: calc(
       var(--world-viewport-height, 100dvh) - var(--safe-top)
     );

@@ -56,6 +56,9 @@ RESERVED_ROUTE_PREFIXES = frozenset({
     "privacy",
     "terms",
     "status",
+    "referrals",
+    # Referral share links (/r/<name>) are worker-owned counters.
+    "r",
 })
 
 # Clean page URL -> the built per-page document that serves it. The Worker
@@ -124,6 +127,7 @@ BLOCKED_STATIC_HTML_PATHS = frozenset({
     "/forgot-password.html",
     "/reset-password.html",
     "/mirror-payouts.html",
+    "/referrals.html",
     "/outreach.html",
     "/security-report.html",
     "/docs.html",

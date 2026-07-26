@@ -14,6 +14,7 @@
 
 #include <QClipboard>
 #include <QColor>
+#include <QColorDialog>
 #include <QPixmap>
 #include <QTextDocument>
 #include <QDialog>
@@ -66,6 +67,32 @@ QWidget *MainWindow::buildSettingsSection()
         saveMachineNodeName(m_settingsMachineNodeEdit->text());
         // Reflect the sanitized (or defaulted) value back into the field.
         m_settingsMachineNodeEdit->setText(machineNodeName());
+    });
+
+    // Capability tags for Actions: a workflow with `runs-on: ios` only runs on a
+    // node carrying that label, so a mesh can dedicate one machine to iOS builds
+    // and another to Cloudflare deploys. The node name and platform are always
+    // labels; this field only adds to them.
+    m_settingsNodeLabelsEdit = new QLineEdit;
+    m_settingsNodeLabelsEdit->setMaxLength(200);
+    m_settingsNodeLabelsEdit->setPlaceholderText(
+        "Extra Actions labels, e.g. ios, xcode, deploy");
+    m_settingsNodeLabelsEdit->setToolTip(
+        "Extra labels this machine answers to when a workflow declares "
+        "\"runs-on:\". Its node name (%1) and platform already count as labels; "
+        "add capability tags here to dedicate this node to certain workflows.");
+    m_settingsNodeLabelsEdit->setToolTip(
+        m_settingsNodeLabelsEdit->toolTip().arg(machineNodeName()));
+    m_settingsNodeLabelsEdit->setText(
+        QSettings()
+            .value(QString::fromLatin1(kActionNodeLabelsSetting))
+            .toString());
+    connect(m_settingsNodeLabelsEdit, &QLineEdit::editingFinished, this, [this] {
+        saveActionNodeLabels(m_settingsNodeLabelsEdit->text());
+        m_settingsNodeLabelsEdit->setText(
+            QSettings()
+                .value(QString::fromLatin1(kActionNodeLabelsSetting))
+                .toString());
     });
 
     m_settingsAvatarPreview = new QLabel("No\navatar");
@@ -138,6 +165,7 @@ QWidget *MainWindow::buildSettingsSection()
     form->setSpacing(8);
     form->addRow("Username", m_settingsNameEdit);
     form->addRow("Node name", m_settingsMachineNodeEdit);
+    form->addRow("Node labels", m_settingsNodeLabelsEdit);
     form->addRow("Solana", m_settingsSolanaEdit);
     m_settingsEmailLabel = new QLabel("Email");
     m_settingsEmailVerifiedBadge = new QLabel;
@@ -913,24 +941,6 @@ QWidget *MainWindow::buildSettingsSection()
         nodeStatChecks.append(check);
     }
 
-    // Opt-in crash/stall telemetry (issue #354). OFF by default: when on, the
-    // previous session's crash summary and UI-stall records are uploaded to the
-    // mainnode on startup so bugs reach a triage queue instead of dying in a
-    // local log. Only the app version, OS, and an anonymized node hash are sent;
-    // repo names and filesystem paths are scrubbed out client-side first.
-    auto *telemetryCheck =
-        new QCheckBox("Upload crash & UI-stall reports to help fix bugs");
-    telemetryCheck->setChecked(
-        QSettings().value(kUploadTelemetrySetting, false).toBool());
-    telemetryCheck->setToolTip(
-        "On startup, send the previous session's crash summary and UI-stall "
-        "records to the mainnode so they reach a triage queue. Only the app "
-        "version, OS, and an anonymized node hash go with them; repo names and "
-        "file paths are scrubbed out first. Off by default.");
-    connect(telemetryCheck, &QCheckBox::toggled, this, [](bool enabled) {
-        QSettings().setValue(kUploadTelemetrySetting, enabled);
-    });
-
     auto *agentsLabel = new QLabel("AGENTS");
     agentsLabel->setObjectName("sectionLabel");
     auto *agentsHint = new QLabel(
@@ -996,16 +1006,17 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAutoFixAgentConflictsSetting, enabled);
     });
 
-    // When a repo's tests or build fail, automatically start an agent to fix
-    // the failure instead of waiting for a manual dispatch. On by default.
+    // When a repo's tests or build fail, automatically send the failure back
+    // to the agent that last worked on that branch instead of waiting for a
+    // manual dispatch. On by default.
     auto *autoFixFailuresCheck =
         new QCheckBox("Auto-fix test and build failures");
     autoFixFailuresCheck->setChecked(
         QSettings().value(kAutoFixFailuresSetting, true).toBool());
     autoFixFailuresCheck->setToolTip(
-        "When a repo's tests or build fail, automatically start an agent to "
-        "fix the failure instead of waiting for a manual dispatch. "
-        "On by default.");
+        "When a repo's tests or build fail, automatically send the failure "
+        "back to the agent session that last worked on that branch to fix, "
+        "instead of waiting for a manual dispatch. On by default.");
     connect(autoFixFailuresCheck, &QCheckBox::toggled, this, [](bool enabled) {
         QSettings().setValue(kAutoFixFailuresSetting, enabled);
     });
@@ -1476,7 +1487,9 @@ QWidget *MainWindow::buildSettingsSection()
     varsLabel->setObjectName("sectionLabel");
     auto *varsHint = new QLabel(
         "Injected into every action run's environment and redacted from logs. "
-        "Add CLOUDFLARE_API_TOKEN here to let the deploy workflow authenticate.");
+        "Add CLOUDFLARE_API_TOKEN here to let the deploy workflow authenticate, "
+        "and FORKMESH_RELEASE_SIGNING_KEY_PEM (the Ed25519 private key itself) "
+        "to let the release workflow sign published builds.");
     varsHint->setObjectName("statusLine");
     varsHint->setWordWrap(true);
 
@@ -1653,6 +1666,10 @@ QWidget *MainWindow::buildSettingsSection()
     connect(tabs, &QTabWidget::currentChanged, this,
             [this](int) { syncSettingsProfileTab(); });
 
+    // Quick Setup: everything a brand-new instance needs, on one page with a
+    // single Apply button (adhoc #318).
+    addTab(buildQuickSetupTab(), "Quick Setup");
+
     // General: identity, appearance and launch behaviour.
     auto *generalTab = new QWidget;
     auto *generalCol = new QVBoxLayout(generalTab);
@@ -1679,7 +1696,6 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addWidget(nodeStatsHint);
     for (QCheckBox *check : std::as_const(nodeStatChecks))
         generalCol->addWidget(check);
-    generalCol->addWidget(telemetryCheck);
     generalCol->addSpacing(6);
     generalCol->addWidget(startupLabel);
     generalCol->addWidget(m_autostartCheck);
@@ -1832,6 +1848,356 @@ QWidget *MainWindow::buildSettingsSection()
     reloadVariablesTable();
     setSettingsAvatar(QByteArray()); // show the current/generated avatar
     return page;
+}
+
+// ------------------------------------------------------------- quick setup
+
+namespace {
+
+// Resolve a stored action variable by exact (case-insensitive) name, with the
+// same hygiene as the Cloudflare credential helpers: blank or multi-line
+// values are ignored so a pasted credential file can never smuggle extra
+// lines into a child environment.
+QString quickSetupStoredVariable(const QMap<QString, QString> &vars,
+                                 const QString &name)
+{
+    for (auto it = vars.constBegin(); it != vars.constEnd(); ++it) {
+        const QString value = it.value().trimmed();
+        if (it.key().compare(name, Qt::CaseInsensitive) == 0 &&
+            !value.isEmpty() && !value.contains(QLatin1Char('\n')))
+            return value;
+    }
+    return QString();
+}
+
+// The world themes the /world frontend ships (THEME_OPTIONS in world-data.js).
+const struct { const char *id; const char *label; } kQuickSetupWorldThemes[] = {
+    {"world", "Full daylight"},
+    {"rain", "Daylight + rain"},
+    {"snow", "Daylight + snow"},
+    {"winter", "Daylight + winter"},
+    {"cyberpunk", "Local cyberpunk"},
+    {"low-light", "Local low light"},
+};
+
+} // namespace
+
+// Quick Setup: one page that takes a brand-new instance from zero to
+// configured. It gathers the identity fields, the provisioning credentials
+// action workflows need (Cloudflare for deploys and tunnels, Vultr for
+// creating mirror nodes) and the world's look and naming, then applies them
+// all with one button. Credentials land in the shared Variables / Secrets
+// store — the one injected into every action run's environment and redacted
+// from logs — so the deploy and mirror-provisioning workflows pick them up
+// unchanged. Blank or unchanged fields are skipped on apply, so re-applying
+// this page never wipes a value that is already set.
+QWidget *MainWindow::buildQuickSetupTab()
+{
+    auto *body = new QWidget;
+    auto *col = new QVBoxLayout(body);
+    col->setContentsMargins(2, 14, 2, 14);
+    col->setSpacing(10);
+
+    auto *headLabel = new QLabel("QUICK SETUP");
+    headLabel->setObjectName("sectionLabel");
+    auto *hint = new QLabel(
+        "Set up this ForkMesh instance from scratch in one pass: who you are, "
+        "the credentials workflows use to provision infrastructure, and how "
+        "your world looks and is named. Blank fields keep their current "
+        "value, so you can apply this page as often as you like.");
+    hint->setObjectName("statusLine");
+    hint->setWordWrap(true);
+
+    // Prefill every field from the store it ultimately writes to, so the page
+    // doubles as a review of what is already configured.
+    const QMap<QString, QString> storedVars = ActionStore::variables();
+
+    auto *identityLabel = new QLabel("IDENTITY");
+    identityLabel->setObjectName("sectionLabel");
+
+    auto *userEdit = new QLineEdit;
+    userEdit->setMaxLength(32);
+    userEdit->setPlaceholderText("Username");
+    userEdit->setToolTip(
+        "Your ForkMesh user account. One user account can own many nodes; "
+        "changing this changes who you are, not this machine's node name.");
+    userEdit->setText(settingsAccountName());
+
+    auto *nodeEdit = new QLineEdit;
+    nodeEdit->setMaxLength(63);
+    nodeEdit->setPlaceholderText("Node name (this machine)");
+    nodeEdit->setToolTip(
+        "This machine's node name on the mesh \xE2\x80\x94 how it appears in "
+        "rosters and node lists. Not your username.");
+    nodeEdit->setText(machineNodeName());
+
+    auto *identityForm = new QFormLayout;
+    identityForm->setLabelAlignment(Qt::AlignLeft);
+    identityForm->setSpacing(8);
+    identityForm->addRow("Username", userEdit);
+    identityForm->addRow("Node name", nodeEdit);
+
+    auto *credsLabel = new QLabel("PROVISIONING CREDENTIALS");
+    credsLabel->setObjectName("sectionLabel");
+    auto *credsHint = new QLabel(
+        "Stored locally in Variables / Secrets, injected into every action "
+        "run's environment and redacted from logs. The Cloudflare token "
+        "authenticates the deploy workflow and tunnel bootstrap; the Vultr "
+        "token lets provisioning workflows create mirror nodes.");
+    credsHint->setObjectName("statusLine");
+    credsHint->setWordWrap(true);
+
+    auto *cfTokenEdit = new QLineEdit;
+    cfTokenEdit->setEchoMode(QLineEdit::Password);
+    cfTokenEdit->setPlaceholderText("Cloudflare API token");
+    cfTokenEdit->setToolTip(
+        "Saved as the CLOUDFLARE_API_TOKEN variable for the deploy workflow "
+        "and the one-click tunnel bootstrap.");
+    cfTokenEdit->setText(
+        forkmesh::control::cloudflareApiTokenFromVariables(storedVars));
+
+    auto *cfAccountEdit = new QLineEdit;
+    cfAccountEdit->setPlaceholderText("Cloudflare account ID (optional)");
+    cfAccountEdit->setToolTip(
+        "Saved as the CLOUDFLARE_ACCOUNT_ID variable. Needed when the API "
+        "token can reach more than one Cloudflare account.");
+    cfAccountEdit->setText(
+        forkmesh::control::cloudflareAccountIdFromVariables(storedVars));
+
+    auto *vultrTokenEdit = new QLineEdit;
+    vultrTokenEdit->setEchoMode(QLineEdit::Password);
+    vultrTokenEdit->setPlaceholderText("Vultr API token");
+    vultrTokenEdit->setToolTip(
+        "Saved as the VULTR_API_TOKEN variable so provisioning workflows can "
+        "create mirror-node servers on Vultr.");
+    vultrTokenEdit->setText(
+        quickSetupStoredVariable(storedVars, QStringLiteral("VULTR_API_TOKEN")));
+
+    auto *credsForm = new QFormLayout;
+    credsForm->setLabelAlignment(Qt::AlignLeft);
+    credsForm->setSpacing(8);
+    credsForm->addRow("Cloudflare API token", cfTokenEdit);
+    credsForm->addRow("Cloudflare account ID", cfAccountEdit);
+    credsForm->addRow("Vultr API token", vultrTokenEdit);
+
+    auto *worldLabel = new QLabel("WORLD & APPEARANCE");
+    worldLabel->setObjectName("sectionLabel");
+    auto *worldHint = new QLabel(
+        "How the desktop app and your public world look. World values are "
+        "saved as the WORLD_THEME, WORLD_ACCENT_COLOR and WORLD_NAME "
+        "variables so deploy workflows can stamp them into the published "
+        "world.");
+    worldHint->setObjectName("statusLine");
+    worldHint->setWordWrap(true);
+
+    auto *appThemeCombo = new QComboBox;
+    appThemeCombo->addItem("Follow system", "system");
+    appThemeCombo->addItem("Dark", "dark");
+    appThemeCombo->addItem("Light", "light");
+    appThemeCombo->setToolTip(
+        "The desktop app's color theme, or follow the OS setting.");
+    {
+        const int idx = appThemeCombo->findData(
+            QSettings().value(kThemeSetting, "system").toString());
+        appThemeCombo->setCurrentIndex(idx < 0 ? 0 : idx);
+    }
+
+    auto *worldThemeCombo = new QComboBox;
+    for (const auto &theme : kQuickSetupWorldThemes)
+        worldThemeCombo->addItem(QLatin1String(theme.label),
+                                 QLatin1String(theme.id));
+    worldThemeCombo->setToolTip(
+        "The default weather / lighting theme for your public world page.");
+    {
+        const int idx = worldThemeCombo->findData(quickSetupStoredVariable(
+            storedVars, QStringLiteral("WORLD_THEME")));
+        worldThemeCombo->setCurrentIndex(idx < 0 ? 0 : idx);
+    }
+
+    auto *accentEdit = new QLineEdit;
+    accentEdit->setMaxLength(32);
+    accentEdit->setPlaceholderText("#58a6ff");
+    accentEdit->setToolTip(
+        "Accent color for your public world, as a hex value like #ff7847.");
+    accentEdit->setText(quickSetupStoredVariable(
+        storedVars, QStringLiteral("WORLD_ACCENT_COLOR")));
+    auto *accentPickButton = new QPushButton("Pick\xE2\x80\xA6");
+    accentPickButton->setObjectName("ghostButton");
+    accentPickButton->setCursor(Qt::PointingHandCursor);
+    connect(accentPickButton, &QPushButton::clicked, this, [this, accentEdit] {
+        const QColor initial(accentEdit->text().trimmed());
+        const QColor picked = QColorDialog::getColor(
+            initial.isValid() ? initial : QColor(QStringLiteral("#58a6ff")),
+            this, QStringLiteral("World accent color"));
+        if (picked.isValid())
+            accentEdit->setText(picked.name());
+    });
+    auto *accentRow = new QHBoxLayout;
+    accentRow->setContentsMargins(0, 0, 0, 0);
+    accentRow->setSpacing(8);
+    accentRow->addWidget(accentEdit, 1);
+    accentRow->addWidget(accentPickButton);
+
+    auto *worldNameEdit = new QLineEdit;
+    worldNameEdit->setMaxLength(80);
+    worldNameEdit->setPlaceholderText("World name, e.g. ForkMesh City");
+    worldNameEdit->setToolTip("The display name of your public world.");
+    worldNameEdit->setText(
+        quickSetupStoredVariable(storedVars, QStringLiteral("WORLD_NAME")));
+
+    auto *worldForm = new QFormLayout;
+    worldForm->setLabelAlignment(Qt::AlignLeft);
+    worldForm->setSpacing(8);
+    worldForm->addRow("App theme", appThemeCombo);
+    worldForm->addRow("World theme", worldThemeCombo);
+    worldForm->addRow("World accent color", accentRow);
+    worldForm->addRow("World name", worldNameEdit);
+
+    auto *applyButton = new QPushButton("Apply quick setup");
+    applyButton->setObjectName("primaryButton");
+    applyButton->setCursor(Qt::PointingHandCursor);
+    applyButton->setToolTip(
+        "Save every filled-in field to its store in one pass.");
+    setOcticon(applyButton, "rocket", 16);
+
+    auto *statusLabel = new QLabel;
+    statusLabel->setObjectName("modeHint");
+    statusLabel->setWordWrap(true);
+    statusLabel->hide();
+
+    connect(applyButton, &QPushButton::clicked, this,
+            [this, userEdit, nodeEdit, cfTokenEdit, cfAccountEdit,
+             vultrTokenEdit, appThemeCombo, worldThemeCombo, accentEdit,
+             worldNameEdit, statusLabel] {
+        auto setStatus = [statusLabel](const QString &msg, bool bad) {
+            statusLabel->setText(msg);
+            statusLabel->setProperty("bad", bad);
+            statusLabel->style()->unpolish(statusLabel);
+            statusLabel->style()->polish(statusLabel);
+            statusLabel->show();
+        };
+
+        // Validate up front so a bad field never half-applies the page.
+        const QString accent = accentEdit->text().trimmed();
+        if (!accent.isEmpty() && !QColor(accent).isValid()) {
+            setStatus("World accent color must be a color like #ff7847.", true);
+            return;
+        }
+
+        QStringList applied;
+
+        const QString wantedUser = userEdit->text().trimmed();
+        if (!wantedUser.isEmpty() &&
+            wantedUser.compare(settingsAccountName(),
+                               Qt::CaseInsensitive) != 0) {
+            onProfileNameChanged(wantedUser);
+            applied << QStringLiteral("username");
+        }
+        userEdit->setText(settingsAccountName());
+
+        const QString wantedNode = nodeEdit->text().trimmed();
+        if (!wantedNode.isEmpty() && wantedNode != machineNodeName()) {
+            saveMachineNodeName(wantedNode);
+            if (m_settingsMachineNodeEdit)
+                m_settingsMachineNodeEdit->setText(machineNodeName());
+            applied << QStringLiteral("node name");
+        }
+        // Reflect the sanitized (or defaulted) value back into the field.
+        nodeEdit->setText(machineNodeName());
+
+        const QString wantedTheme = appThemeCombo->currentData().toString();
+        if (wantedTheme !=
+            QSettings().value(kThemeSetting, "system").toString()) {
+            QSettings().setValue(kThemeSetting, wantedTheme);
+            applyTheme();
+            if (m_themeCombo) {
+                const QSignalBlocker blocker(m_themeCombo);
+                const int idx = m_themeCombo->findData(wantedTheme);
+                if (idx >= 0)
+                    m_themeCombo->setCurrentIndex(idx);
+            }
+            applied << QStringLiteral("app theme");
+        }
+
+        // Credentials and world variables all land in one store update.
+        QMap<QString, QString> vars = ActionStore::variables();
+        bool varsChanged = false;
+        auto putVariable = [&vars, &varsChanged, &applied](
+                               const QString &name, const QString &value,
+                               const QString &current, const QString &label) {
+            if (value.isEmpty() || value == current)
+                return;
+            vars.insert(name, value);
+            varsChanged = true;
+            applied << label;
+        };
+        putVariable(QStringLiteral("CLOUDFLARE_API_TOKEN"),
+                    cfTokenEdit->text().trimmed(),
+                    forkmesh::control::cloudflareApiTokenFromVariables(vars),
+                    QStringLiteral("Cloudflare API token"));
+        putVariable(QStringLiteral("CLOUDFLARE_ACCOUNT_ID"),
+                    cfAccountEdit->text().trimmed(),
+                    forkmesh::control::cloudflareAccountIdFromVariables(vars),
+                    QStringLiteral("Cloudflare account ID"));
+        putVariable(QStringLiteral("VULTR_API_TOKEN"),
+                    vultrTokenEdit->text().trimmed(),
+                    quickSetupStoredVariable(
+                        vars, QStringLiteral("VULTR_API_TOKEN")),
+                    QStringLiteral("Vultr API token"));
+        putVariable(QStringLiteral("WORLD_THEME"),
+                    worldThemeCombo->currentData().toString(),
+                    quickSetupStoredVariable(
+                        vars, QStringLiteral("WORLD_THEME")),
+                    QStringLiteral("world theme"));
+        putVariable(QStringLiteral("WORLD_ACCENT_COLOR"),
+                    accent.isEmpty() ? QString() : QColor(accent).name(),
+                    quickSetupStoredVariable(
+                        vars, QStringLiteral("WORLD_ACCENT_COLOR")),
+                    QStringLiteral("world accent color"));
+        putVariable(QStringLiteral("WORLD_NAME"),
+                    worldNameEdit->text().trimmed(),
+                    quickSetupStoredVariable(
+                        vars, QStringLiteral("WORLD_NAME")),
+                    QStringLiteral("world name"));
+        if (varsChanged) {
+            ActionStore::setVariables(vars);
+            reloadVariablesTable();
+        }
+
+        if (applied.isEmpty()) {
+            setStatus("Nothing to apply \xE2\x80\x94 every field already "
+                      "matches the stored setup.",
+                      false);
+            return;
+        }
+        setStatus(QStringLiteral("Saved: %1.").arg(applied.join(", ")), false);
+        logSystem(QStringLiteral("Quick setup applied: %1.")
+                      .arg(applied.join(", ")));
+    });
+
+    auto *applyRow = new QHBoxLayout;
+    applyRow->setContentsMargins(0, 0, 0, 0);
+    applyRow->addWidget(applyButton);
+    applyRow->addStretch();
+
+    col->addWidget(headLabel);
+    col->addWidget(hint);
+    col->addSpacing(4);
+    col->addWidget(identityLabel);
+    col->addLayout(identityForm);
+    col->addSpacing(6);
+    col->addWidget(credsLabel);
+    col->addWidget(credsHint);
+    col->addLayout(credsForm);
+    col->addSpacing(6);
+    col->addWidget(worldLabel);
+    col->addWidget(worldHint);
+    col->addLayout(worldForm);
+    col->addSpacing(6);
+    col->addLayout(applyRow);
+    col->addWidget(statusLabel);
+    col->addStretch();
+    return body;
 }
 
 void MainWindow::refreshIdentityBackupNag()
@@ -2323,6 +2689,8 @@ void MainWindow::rebuildAndRelaunch()
         saveProfileName(m_settingsNameEdit->text());
     if (m_settingsMachineNodeEdit)
         saveMachineNodeName(m_settingsMachineNodeEdit->text());
+    if (m_settingsNodeLabelsEdit)
+        saveActionNodeLabels(m_settingsNodeLabelsEdit->text());
     m_buildButton = m_rebuildButton;
     m_buildStatusLabel = m_rebuildStatus;
     m_rebuildButton->setEnabled(false);

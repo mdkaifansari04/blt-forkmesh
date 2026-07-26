@@ -211,6 +211,64 @@ def test_card_handler_is_public_get_and_edge_cached():
     assert "render_repo_card" in handler
 
 
+# --- Referral share-link card (adhoc #313) -------------------------------------
+
+REFERRAL_SAMPLE = {
+    "name": "jett",
+    "host": "forkmesh.com",
+    "clicks": 1284,
+    "signups": 37,
+    "lastTs": str((NOW_S - 2 * 3600) * 1000),
+}
+
+
+def test_referral_card_is_a_valid_og_sized_png():
+    png = og_card.render_referral_card(REFERRAL_SAMPLE, NOW_S)
+    w, h, _ = decode_png_rgb(png)
+    assert (w, h) == (og_card.CARD_W, og_card.CARD_H)
+
+
+def test_referral_card_pixels_change_with_the_live_counters():
+    base = og_card.render_referral_card(REFERRAL_SAMPLE, NOW_S)
+    more_clicks = og_card.render_referral_card(
+        dict(REFERRAL_SAMPLE, clicks=1285), NOW_S)
+    more_signups = og_card.render_referral_card(
+        dict(REFERRAL_SAMPLE, signups=38), NOW_S)
+    assert base != more_clicks != more_signups
+    assert base != more_signups
+
+
+def test_format_exact_keeps_every_referral_digit():
+    assert og_card.format_exact(0) == "0"
+    assert og_card.format_exact("37") == "37"
+    assert og_card.format_exact(1284) == "1,284"
+    assert og_card.format_exact(1285) == "1,285"
+    assert og_card.format_exact(None) == "0"
+    assert og_card.format_exact("garbage") == "0"
+
+
+def test_referral_card_survives_missing_counters():
+    png = og_card.render_referral_card({"name": "jett"}, NOW_S)
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_referral_card_route_and_handler_are_wired():
+    import re
+    match = re.search(r"REFERRAL_CARD_RE = re\.compile\(r\"(.+?)\"\)", URLS_SRC)
+    assert match, "REFERRAL_CARD_RE missing from urls.py"
+    card_re = re.compile(match.group(1))
+    assert card_re.match("/api/referrals/jett/card.png")
+    assert not card_re.match("/api/referrals/leaderboard")
+    assert "REFERRAL_CARD_RE.match(url.path)" in ENTRY_SRC
+    handler = ENTRY_SRC.split("async def referral_card_handler", 1)[1]
+    handler = handler.split("async def ", 1)[0]
+    # Unknown/inactive referrers render nothing; live counters, edge-cached.
+    assert "_referral_account" in handler and "not_found" in handler
+    assert "_referral_counts" in handler
+    assert "render_referral_card" in handler
+    assert "edge_cache_match_media" in handler and "edge_cache_put" in handler
+
+
 def test_binary_response_bodies_are_copied_into_js_owned_buffers():
     # A bare _to_js(bytes) is a VIEW into Python's WASM memory. A binary
     # Response body is streamed to the client (and read by edge-cache put)

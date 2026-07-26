@@ -759,9 +759,13 @@ QWidget *MainWindow::buildNetworkLogDock()
             return;
         }
         if (typed.isEmpty() && m_quickAddImages.isEmpty()) {
-            // Nothing typed and nothing attached: just resume the open session
-            // with the same agent, the same thing the old per-session Continue
-            // button did (adhoc #178).
+            // Nothing typed and nothing attached: just resume the open session,
+            // the same thing the old per-session Continue button did (adhoc
+            // #178) — but honoring the composer's provider/model/mode
+            // dropdowns first, exactly like the follow-up path below, so "add"
+            // continues with the model currently selected instead of whatever
+            // the session last ran with (adhoc #372).
+            applyComposerSelectionToAgentSession(m_selectedAgentSessionId);
             continueSelectedAgentSession();
             return;
         }
@@ -2665,134 +2669,6 @@ void MainWindow::clearStallLog()
     updateFooterDiagnostics();
 }
 
-namespace {
-
-// Cap per field so a chatty crash/stall log can never inflate the telemetry
-// POST — the worker's isolate is small and this must never become an outage
-// vector (issue #354). Whole payload stays well under the worker's hard cap.
-constexpr int kTelemetryFieldCap = 8000;
-
-// Read the not-yet-uploaded tail of a diagnostics log, given how many bytes were
-// already sent. Returns the new tail and, via *newSize, the file's current size
-// so the caller can advance the stored offset only after a successful upload. If
-// the file shrank (rotated/cleared) since last time, the offset resets to 0.
-QString readDiagnosticsTail(const QString &path, qint64 offset, qint64 *newSize)
-{
-    QFile f(path);
-    *newSize = 0;
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
-        return QString();
-    const qint64 size = f.size();
-    *newSize = size;
-    qint64 from = offset;
-    if (from < 0 || from > size)
-        from = 0; // rotated or cleared: start over
-    if (from >= size)
-        return QString();
-    f.seek(from);
-    return QString::fromUtf8(f.readAll());
-}
-
-// Strip repo names and filesystem paths from a diagnostics blob before it leaves
-// the machine (privacy requirement, issue #354). Home directories carry the
-// username and every local repo checkout, so collapse them to "~"; other
-// absolute paths are reduced to their basename so a backtrace still names the
-// source file without leaking where it lives.
-QString scrubDiagnostics(QString text)
-{
-    if (text.isEmpty())
-        return text;
-    const QString home = QDir::homePath();
-    if (!home.isEmpty())
-        text.replace(home, QStringLiteral("~"));
-    // Any remaining /home/<user>/ or /Users/<user>/ (e.g. from another account's
-    // path recorded in a shared log) → ~/.
-    static const QRegularExpression userHome(
-        QStringLiteral("/(?:home|Users)/[^/\\s:]+"));
-    text.replace(userHome, QStringLiteral("~"));
-    // Absolute paths (a build/source dir, an object path in a frame) → basename,
-    // so "/opt/build/src/MainWindow.cpp:42" becomes "MainWindow.cpp:42".
-    static const QRegularExpression absPath(
-        QStringLiteral("/(?:[^/\\s():]+/)+([^/\\s():]+)"));
-    text.replace(absPath, QStringLiteral("\\1"));
-    if (text.size() > kTelemetryFieldCap)
-        text = text.right(kTelemetryFieldCap);
-    return text;
-}
-
-} // namespace
-
-// Opt-in crash/stall telemetry (issue #354). Off unless the user turned on
-// kUploadTelemetrySetting in Settings. Uploads only the tail of each diagnostics
-// log that hasn't been sent before (tracked by a byte offset), scrubbed of repo
-// names and paths, tagged with just the app version, OS, and an anonymized
-// one-way node hash. Fire-and-forget: never blocks startup, never surfaces UI.
-void MainWindow::maybeUploadDiagnostics()
-{
-    if (!QSettings().value(kUploadTelemetrySetting, false).toBool())
-        return;
-    if (!m_networkAccess)
-        return;
-
-    QSettings settings;
-    const QString diagDir = QDir::homePath() + QStringLiteral("/.forkmesh/diagnostics/");
-    const QString stallPath = m_stallLogPath.isEmpty()
-                                  ? diagDir + QStringLiteral("stalls.log")
-                                  : m_stallLogPath;
-
-    qint64 stallSize = 0;
-    const QString stalls = scrubDiagnostics(readDiagnosticsTail(
-        stallPath, settings.value(kTelemetryStallOffsetSetting, 0).toLongLong(),
-        &stallSize));
-
-    QJsonArray events;
-    if (!stalls.trimmed().isEmpty())
-        events.append(QJsonObject{{"kind", "stall"}, {"summary", stalls}});
-    if (events.isEmpty()) {
-        // Nothing new to report; still advance the offset so a later append
-        // doesn't re-scan the whole (unchanged) file.
-        settings.setValue(kTelemetryStallOffsetSetting, stallSize);
-        return;
-    }
-
-    // Anonymized node hash: a one-way SHA-256 of our public key, so reports from
-    // the same node group together for triage without revealing the identity.
-    QString node;
-    if (m_profileIdentity.isValid() || m_profileIdentity.load())
-        node = QString::fromLatin1(
-            QCryptographicHash::hash(m_profileIdentity.publicKey().toUtf8(),
-                                     QCryptographicHash::Sha256)
-                .toHex());
-
-    QJsonObject body{
-        {"node", node},
-        {"version", QStringLiteral(FORKMESH_VERSION)},
-        {"os", QSysInfo::prettyProductName() + QLatin1Char(' ') +
-                   QSysInfo::currentCpuArchitecture()},
-        {"events", events},
-    };
-
-    QUrl url = catalogApiUrl();
-    url.setPath(QStringLiteral("/api/telemetry"));
-    url.setQuery(QString());
-    QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::ContentTypeHeader,
-                      QStringLiteral("application/json"));
-    QNetworkReply *reply = m_networkAccess->post(
-        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, stallSize] {
-        const int status =
-            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        reply->deleteLater();
-        // Only advance the uploaded offset once the mainnode has accepted the
-        // batch, so a transient failure re-sends the same records next startup.
-        if (status >= 200 && status < 300) {
-            QSettings().setValue(kTelemetryStallOffsetSetting, stallSize);
-            logSystem(QStringLiteral("Uploaded opt-in stall telemetry."));
-        }
-    });
-}
-
 // "Send to a new agent" button on the diagnostics dialog: hand the whole batch
 // of recorded stalls to one coding agent so the freezes get fixed. Mirrors the
 // auto-file prompt but bundles every entry (the auto-file path only ever fires
@@ -3459,11 +3335,6 @@ QWidget *MainWindow::buildBreadcrumb()
         showSection(kNetworkReposSectionIndex);
     });
 
-    // m_repoPushButton ("Publish N") is created in buildRepoDetailSection where
-    // its row lives, so it is parented before it can ever be shown. (Building it
-    // in a section constructed later left it parentless and it popped up as its
-    // own floating window.)
-
     m_breadcrumb = new QLabel;
     m_breadcrumb->setObjectName("breadcrumb");
     m_breadcrumb->setTextFormat(Qt::RichText);
@@ -3989,8 +3860,6 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addSpacing(10);
     mainRow->addWidget(m_repoLabel);
     mainRow->addWidget(m_repoMenuButton);
-    // m_repoPushButton ("Publish N") now lives in its own row above the repo tab
-    // bar (see buildRepoDetail), not in the top navigation row.
     mainRow->addSpacing(12);
     mainRow->addWidget(m_breadcrumb);
     mainRow->addStretch();
@@ -4119,7 +3988,7 @@ QWidget *MainWindow::buildBreadcrumb()
     updateNotificationButton();
     updateChatButton();
     updateNavSolanaBalance();
-    updateRepoPushButton();
+    refreshRepoSyncIndicators();
     updateNavRebuildButton();
     updateNodeOnlineControls();
     return bar;
@@ -4369,7 +4238,7 @@ void MainWindow::updateBreadcrumb()
 {
     // The active relay (favicon + domain) now lives in the relay switcher.
     updateRelaySwitcher();
-    updateRepoPushButton();
+    refreshRepoSyncIndicators();
     if (!m_breadcrumb)
         return;
     // The relay / node / repo switchers and the always-visible section nav (with
@@ -5070,7 +4939,13 @@ void MainWindow::showNodesWindow()
             delete item;
         }
 
-        QList<MemberInfo> nodes = m_homeRoster;
+        // Temporary world-chat visitors are chat users, not network nodes —
+        // keep them out of this window too (adhoc #308).
+        QList<MemberInfo> nodes;
+        for (const MemberInfo &m : std::as_const(m_homeRoster)) {
+            if (!isTemporaryChatGuest(m))
+                nodes.append(m);
+        }
         std::sort(nodes.begin(), nodes.end(), [](const MemberInfo &a,
                                                  const MemberInfo &b) {
             if (a.self != b.self)
@@ -5319,393 +5194,24 @@ bool MainWindow::relayPublishRepo(const RepositoryRecord &repo,
     return true;
 }
 
-// Gather the rich-tooltip detail for a pending sync: the pending commits (subject
-// + per-commit line diffstat, newest first, capped) and the aggregate +/- line
-// counts over the whole range. `base` is the ref the pending commits are ahead of
-// (a served-mirror commit, or @{upstream}); empty means "from the root commit".
-// Shells git on the given path only, so it's safe on the worker thread.
-void MainWindow::collectPushDetail(const QString &localPath, const QString &base,
-                                   RepoPushState *st)
+// Keep the open repo's sync-derived indicators in step after anything that may
+// have changed the push state (a new local commit, a completed publish/sync).
+// The floating "Sync (N)" pill this used to paint above the Code tab is gone
+// (adhoc #374), and with it the off-thread ahead/behind walks that fed only its
+// label and tooltip — what's left is the activity rail's spinning Git glyph and
+// the commit list's "waiting to sync" markers.
+void MainWindow::refreshRepoSyncIndicators()
 {
-    if (!st || localPath.isEmpty())
-        return;
-    constexpr int kMax = 8; // cap the list so a big backlog can't blow up the tooltip
-    const QString logRange =
-        base.isEmpty() ? QStringLiteral("HEAD") : base + QStringLiteral("..HEAD");
-
-    // One `git log --numstat` pass gives every pending commit's subject and its
-    // added/removed lines. Records are split on RS (0x1e); within a record the
-    // header line is "<hash>\x1f<subject>", followed by numstat rows.
-    QByteArray logOut;
-    if (runGitCapture(localPath,
-                      {QStringLiteral("log"), logRange,
-                       QStringLiteral("--max-count=%1").arg(kMax + 1),
-                       QStringLiteral("--numstat"),
-                       QStringLiteral("--format=%x1e%h%x1f%s")},
-                      &logOut, nullptr)) {
-        const QList<QByteArray> records = logOut.split('\x1e');
-        for (const QByteArray &record : records) {
-            if (record.trimmed().isEmpty())
-                continue;
-            if (st->commits.size() >= kMax) {
-                st->extraCommits++;
-                continue;
-            }
-            const int nl = record.indexOf('\n');
-            const QByteArray head = nl >= 0 ? record.left(nl) : record;
-            const int us = head.indexOf('\x1f');
-            RepoPushState::PendingCommit c;
-            c.hash = QString::fromUtf8(us >= 0 ? head.left(us) : head).trimmed();
-            c.subject = QString::fromUtf8(us >= 0 ? head.mid(us + 1) : QByteArray());
-            if (nl >= 0) {
-                const QList<QByteArray> rows = record.mid(nl + 1).split('\n');
-                for (const QByteArray &row : rows) {
-                    const QList<QByteArray> cols = row.split('\t');
-                    if (cols.size() < 2)
-                        continue; // blank line, or a binary file's "-\t-\t"
-                    bool okA = false, okR = false;
-                    const int a = QString::fromUtf8(cols[0]).toInt(&okA);
-                    const int r = QString::fromUtf8(cols[1]).toInt(&okR);
-                    if (okA) c.added += a;
-                    if (okR) c.removed += r;
-                }
-            }
-            st->commits << c;
-        }
-    }
-
-    // Aggregate +/- over the FULL range (including commits past the cap) so the
-    // headline totals stay honest. `git diff --numstat A HEAD` collapses the whole
-    // span; from the root, diff against the empty tree.
-    static const QString kEmptyTree =
-        QStringLiteral("4b825dc642cb6eb9a060e54bf8d69288fbee4904");
-    QByteArray diffOut;
-    if (runGitCapture(localPath,
-                      {QStringLiteral("diff"), QStringLiteral("--numstat"),
-                       base.isEmpty() ? kEmptyTree : base, QStringLiteral("HEAD")},
-                      &diffOut, nullptr)) {
-        const QList<QByteArray> rows = diffOut.split('\n');
-        for (const QByteArray &row : rows) {
-            const QList<QByteArray> cols = row.split('\t');
-            if (cols.size() < 2)
-                continue;
-            bool okA = false, okR = false;
-            const int a = QString::fromUtf8(cols[0]).toInt(&okA);
-            const int r = QString::fromUtf8(cols[1]).toInt(&okR);
-            if (okA) st->added += a;
-            if (okR) st->removed += r;
-        }
-    }
-}
-
-// Resolve every git-derived count the "Sync" button needs — the relay /
-// upstream classification, unpublished/ahead/behind walks. Each is a rev-list /
-// rev-parse subprocess on the working copy + served mirror, so this is the part
-// that used to freeze the window on every commit/sync; it runs on a worker thread
-// (see updateRepoPushButton). It reads only the passed-in record and free git
-// helpers, never m_repositories or a widget, so it is safe off the GUI thread.
-MainWindow::RepoPushState
-MainWindow::computeRepoPushState(const RepositoryRecord &repo) const
-{
-    RepoPushState st;
-    if (repo.localPath.isEmpty() || !QDir(repo.localPath).exists(".git"))
-        return st; // st.valid stays false
-    st.valid = true;
-
-    // Commits we're behind by (incoming, to pull) — from the served mirror for a
-    // relay repo, else the configured upstream. Used to flag a two-way sync.
-    auto behindCount = [](const RepositoryRecord &r) -> int {
-        QString ref;
-        if (!r.mirrorPath.isEmpty())
-            ref = mirrorBranchCommit(r.mirrorPath, mirrorHeadBranch(r.mirrorPath));
-        else {
-            QByteArray u;
-            if (runGitCapture(r.localPath,
-                              {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
-                               QStringLiteral("--symbolic-full-name"),
-                               QStringLiteral("@{upstream}")},
-                              &u, nullptr))
-                ref = QString::fromUtf8(u).trimmed();
-        }
-        if (ref.isEmpty())
-            return 0;
-        QByteArray b;
-        if (!runGitCapture(r.localPath,
-                           {QStringLiteral("rev-list"), QStringLiteral("--count"),
-                            QStringLiteral("HEAD..%1").arg(ref)},
-                           &b, nullptr))
-            return 0;
-        return QString::fromUtf8(b).trimmed().toInt();
-    };
-
-    // ForkMesh relay-backed repo: the relay has no git-receive-pack, so publish
-    // local commits by syncing the served mirror from this working copy.
-    QString relayBranch;
-    int unpublished = 0;
-    if (relayPublishRepo(repo, &relayBranch, &unpublished)) {
-        st.relay = true;
-        st.unpublished = unpublished;
-        st.behind = behindCount(repo);
-        st.target = QStringLiteral("your served mirror");
-        if (unpublished > 0)
-            collectPushDetail(repo.localPath,
-                              mirrorBranchCommit(repo.mirrorPath,
-                                                 mirrorHeadBranch(repo.mirrorPath)),
-                              &st);
-        return st;
-    }
-
-    QByteArray upstreamOut;
-    if (!runGitCapture(repo.localPath,
-                       {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
-                        QStringLiteral("--symbolic-full-name"),
-                        QStringLiteral("@{upstream}")},
-                       &upstreamOut, nullptr))
-        return st;
-    const QString upstream = QString::fromUtf8(upstreamOut).trimmed();
-    if (upstream.isEmpty())
-        return st;
-    st.hasUpstream = true;
-    st.upstreamRef = upstream;
-
-    QByteArray countOut;
-    if (!runGitCapture(repo.localPath,
-                       {QStringLiteral("rev-list"), QStringLiteral("--count"),
-                        QStringLiteral("@{upstream}..HEAD")},
-                       &countOut, nullptr))
-        return st;
-    st.ahead = QString::fromUtf8(countOut).trimmed().toInt();
-    st.behind = behindCount(repo);
-    st.target = upstream;
-    if (st.ahead > 0)
-        collectPushDetail(repo.localPath, upstream, &st);
-    return st;
-}
-
-// Paint the "Sync" button from an already-computed RepoPushState (no git).
-// Runs on the GUI thread, reads the live m_pushingRepos/m_syncingRepos membership
-// so a Sync click flips it to "Syncing…" the instant the click marks the
-// repo, and hides the button whenever there's nothing pending.
-void MainWindow::applyRepoPushButtonState(int index, const RepoPushState &state)
-{
-    if (!m_repoPushButton)
-        return;
-    auto hideButton = [this] {
-        m_repoPushButton->hide();
-        m_repoPushButton->setEnabled(false);
-        if (m_repoPushEyeButton)
-            m_repoPushEyeButton->hide();
-        if (m_repoPushTimer)
-            m_repoPushTimer->stop(); // hidden: no need to keep repositioning it
-        if (m_repoPublishBar)
-            m_repoPublishBar->hide();
-    };
-    // Reveal the floating sync button positioned just above the Code tab. As an
-    // overlay (not a laid-out widget) it never reflows the page underneath — even
-    // while a mirror picks up a push on the Mirror nodes screen. A modest timer
-    // keeps it pinned over the tab as the window resizes or tabs reflow.
-    auto reveal = [this] {
-        positionRepoPushButton(); // reparents to the page + anchors over Code
-        m_repoPushButton->show();
-        m_repoPushButton->raise();
-        if (m_repoPushEyeButton) {
-            m_repoPushEyeButton->show();
-            m_repoPushEyeButton->raise();
-        }
-        if (m_repoPublishBar)
-            m_repoPublishBar->show();
-        if (!m_repoPushTimer) {
-            m_repoPushTimer = new QTimer(this);
-            connect(m_repoPushTimer, &QTimer::timeout, this,
-                    &MainWindow::positionRepoPushButton);
-        }
-        if (!m_repoPushTimer->isActive())
-            m_repoPushTimer->start(300);
-    };
-    // Outgoing (↑), incoming (↓), or both at once (⇅). The double-headed arrow is
-    // how the button shows it's syncing both ways.
-    auto arrow = [](int out, int in) -> QString {
-        if (out > 0 && in > 0) return QString::fromUtf8(" \xE2\x87\x85"); // ⇅
-        if (in > 0) return QString::fromUtf8(" \xE2\x86\x93");            // ↓
-        return QString::fromUtf8(" \xE2\x86\x91");                        // ↑
-    };
-    // A rich (HTML) tooltip that answers "what am I about to sync, and where to?":
-    // a one-line summary (count + destination + aggregate ± lines), then the pending
-    // commits with their per-commit line-change markers. `count` is the true pending
-    // total; state.commits is the capped, detail-bearing subset.
-    auto minus = QString::fromUtf8("\xE2\x88\x92"); // U+2212 minus (matches diff UI)
-    auto detailTip = [&minus](int count, const QString &fromRepo,
-                              const RepoPushState &s) -> QString {
-        const QString headline =
-            QStringLiteral("Sync <b>%1</b> commit%2 from %3 to <b>%4</b>")
-                .arg(count)
-                .arg(count == 1 ? QString() : QStringLiteral("s"),
-                     fromRepo.toHtmlEscaped(),
-                     (s.target.isEmpty() ? QStringLiteral("your served mirror")
-                                         : s.target).toHtmlEscaped());
-        QString html = QStringLiteral("<div style='white-space:nowrap'>%1")
-                           .arg(headline);
-        if (s.behind > 0)
-            html += QStringLiteral(
-                        " <span style='color:#8b949e'>(and pull %1 incoming)</span>")
-                        .arg(s.behind);
-        if (s.added > 0 || s.removed > 0)
-            html += QStringLiteral(
-                        " &nbsp;<span style='color:#3fb950'>+%1</span> "
-                        "<span style='color:#f85149'>%2%3</span>")
-                        .arg(s.added).arg(minus).arg(s.removed);
-        html += QStringLiteral("</div>");
-        if (!s.commits.isEmpty()) {
-            html += QStringLiteral("<table cellspacing='0' cellpadding='0' "
-                                   "style='margin-top:4px'>");
-            for (const RepoPushState::PendingCommit &c : s.commits)
-                html += QStringLiteral(
-                            "<tr>"
-                            "<td style='color:#8b949e;padding-right:8px'><code>%1</code></td>"
-                            "<td style='color:#3fb950;padding-right:4px'>+%2</td>"
-                            "<td style='color:#f85149;padding-right:8px'>%3%4</td>"
-                            "<td style='white-space:nowrap'>%5</td>"
-                            "</tr>")
-                            .arg(c.hash.toHtmlEscaped())
-                            .arg(c.added)
-                            .arg(minus).arg(c.removed)
-                            .arg(c.subject.toHtmlEscaped());
-            html += QStringLiteral("</table>");
-            if (s.extraCommits > 0)
-                html += QStringLiteral(
-                            "<div style='color:#8b949e;margin-top:2px'>"
-                            "+%1 more commit%2</div>")
-                            .arg(s.extraCommits)
-                            .arg(s.extraCommits == 1 ? QString() : QStringLiteral("s"));
-        }
-        return html;
-    };
-
-    if (index < 0 || index >= m_repositories.size() || !state.valid) {
-        hideButton();
-        return;
-    }
-    const RepositoryRecord &repo = m_repositories.at(index);
-    const int behind = state.behind;
-
-    if (m_pushingRepos.contains(index)) {
-        setOcticon(m_repoPushButton, "sync", 14);
-        m_repoPushButton->setText(QString::fromUtf8("Syncing")
-                                  + arrow(1, behind) + QString::fromUtf8("\xE2\x80\xA6"));
-        m_repoPushButton->setToolTip(
-            behind > 0
-                ? QStringLiteral("Syncing both ways: pushing local commits and "
-                                 "pulling %1 incoming").arg(behind)
-                : QStringLiteral("Syncing local commits upstream"));
-        reveal();
-        return;
-    }
-
-    if (state.relay) {
-        const int unpublished = state.unpublished;
-        if (m_syncingRepos.contains(index)) {
-            setOcticon(m_repoPushButton, "sync", 14);
-            m_repoPushButton->setText(QString::fromUtf8("Syncing")
-                                      + arrow(qMax(unpublished, 1), behind)
-                                      + QString::fromUtf8("\xE2\x80\xA6"));
-            m_repoPushButton->setToolTip(
-                behind > 0
-                    ? QStringLiteral("Syncing both ways: publishing to your served "
-                                     "mirror and pulling %1 incoming").arg(behind)
-                    : QStringLiteral("Publishing local commits to your served mirror"));
-            reveal();
-            return;
-        }
-        if (unpublished <= 0) {
-            hideButton();
-            return;
-        }
-        setOcticon(m_repoPushButton, "sync", 14);
-        // Surface the pending count right on the button — a small number above the
-        // Commits tab — instead of hiding it in the tooltip (issue #208).
-        m_repoPushButton->setText(QStringLiteral("Sync (%1)").arg(unpublished)
-                                  + arrow(unpublished, behind));
-        m_repoPushButton->setToolTip(detailTip(
-            unpublished, QStringLiteral("%1/%2").arg(repo.owner, repo.name), state));
-        m_repoPushButton->setEnabled(true);
-        reveal();
-        return;
-    }
-
-    if (!state.hasUpstream || state.ahead <= 0) {
-        hideButton();
-        return;
-    }
-    const int ahead = state.ahead;
-
-    // A repo with a real upstream remote (origin/main, …). "Sync" with a
-    // direction arrow — ⇅ when there's also incoming to pull. The count and target
-    // move to the tooltip; pushCurrentRepoUpstream still does the push.
-    setOcticon(m_repoPushButton, "sync", 14);
-    // Show the pending commit count on the button itself (issue #208).
-    m_repoPushButton->setText(QStringLiteral("Sync (%1)").arg(ahead)
-                              + arrow(ahead, behind));
-    m_repoPushButton->setToolTip(detailTip(
-        ahead, QStringLiteral("%1/%2").arg(repo.owner, repo.name), state));
-    m_repoPushButton->setEnabled(true);
-    reveal();
-}
-
-void MainWindow::updateRepoPushButton()
-{
-    if (!m_repoPushButton)
-        return;
-    // This runs whenever the push state may have changed (a new local commit, a
-    // completed publish/sync). If the commit list is on screen, keep its "waiting
-    // to sync" markers in step so they appear/clear without a manual refresh.
+    // Only while the commit list is on screen; a cheap no-op otherwise.
     refreshCommitMarkersIfStale();
 
+    // The activity rail's Git icon spins while the open repo is pushing or
+    // publishing (adhoc #357).
     const int index = m_repoDetailIndex;
-    // Paint immediately from the last computed state so a Sync/Syncing click flips
-    // the button without waiting on git; applyRepoPushButtonState reads the live
-    // m_pushingRepos/m_syncingRepos membership. A stale cache is corrected the
-    // moment the worker below finishes.
-    applyRepoPushButtonState(index,
-                             m_pushStateIndex == index ? m_pushState : RepoPushState{});
-
-    if (index < 0 || index >= m_repositories.size())
-        return;
-    const RepositoryRecord &repo = m_repositories.at(index);
-    if (repo.localPath.isEmpty() || !QDir(repo.localPath).exists(".git"))
-        return;
-
-    // Recompute the git-derived counts off the GUI thread. These shell several
-    // rev-list/rev-parse subprocesses on the working copy + served mirror, and this
-    // is called after every commit (issue/comment), every sync start/finish, and on
-    // the 60s home-stats timer — running them here froze the window each time. The
-    // worker only reads path strings (computeRepoPushState touches no member state);
-    // the result is applied back on the main thread. Coalesce while one is in flight
-    // so a burst of calls runs at most one extra recompute.
-    if (m_pushStateInFlight) {
-        m_pushStatePending = true;
-        return;
-    }
-    m_pushStateInFlight = true;
-    const RepositoryRecord repoCopy = repo;
-    auto result = std::make_shared<RepoPushState>();
-    QThread *worker = QThread::create(
-        [this, repoCopy, result] { *result = computeRepoPushState(repoCopy); });
-    connect(worker, &QThread::finished, this, [this, worker, index, result] {
-        worker->deleteLater();
-        m_pushStateInFlight = false;
-        m_pushState = *result;
-        m_pushStateIndex = index;
-        // Repaint only if the open repo is still the one we computed for.
-        if (index == m_repoDetailIndex)
-            applyRepoPushButtonState(index, *result);
-        // A request that arrived mid-flight (e.g. the sync we kicked has since
-        // finished) gets one fresh recompute now.
-        if (m_pushStatePending) {
-            m_pushStatePending = false;
-            updateRepoPushButton();
-        }
-    });
-    worker->start();
+    if (m_railGitButton)
+        m_railGitButton->setSyncing(index >= 0 &&
+                                    (m_pushingRepos.contains(index) ||
+                                     m_syncingRepos.contains(index)));
 }
 
 // Canonicalize and hash the stdout of `git for-each-ref
@@ -5741,10 +5247,19 @@ QString MainWindow::mirrorStateHash(const QString &mirrorPath) const
 // warning only surfaces there — as a caution triangle on the self row/dot in the
 // Mirror nodes panel (m_repoPinMismatch, see loadMirrorNodesPanel), not a
 // top-bar toast; the "Reset integrity pin" action lives in that panel's header.
+//
+// And because the gates below only let the check run on the node that CAN fix
+// the pin (owner key + working copy — the source of truth), a detected mismatch
+// also re-attests immediately instead of leaving clones rejected until the
+// 15-minute reattestStalePins tick or a manual "Reset integrity pin" click: the
+// source of truth defines the correct state, so it should never sit failing its
+// own pin. Rate-limited per repo so a re-publish the relay keeps refusing can't
+// loop into a write storm.
 void MainWindow::refreshRepoPinBanner()
 {
     if (!m_topMessage)
         return;
+    const bool wasFlagged = m_repoPinMismatch;
     m_repoPinMismatch = false;
     m_repoPinCheckIndex = -1;
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
@@ -5788,7 +5303,8 @@ void MainWindow::refreshRepoPinBanner()
                     m_repoPinCheckIndex = -1;
             });
     connect(git, &QProcess::finished, this,
-            [this, git, index, owner, name](int code, QProcess::ExitStatus status) {
+            [this, git, index, owner, name,
+             wasFlagged](int code, QProcess::ExitStatus status) {
                 git->deleteLater();
                 // The user may have switched repos while git was running.
                 if (!m_topMessage || m_repoPinCheckIndex != index ||
@@ -5804,7 +5320,7 @@ void MainWindow::refreshRepoPinBanner()
                 QNetworkReply *reply =
                     m_networkAccess->get(QNetworkRequest(catalogListUrl()));
                 connect(reply, &QNetworkReply::finished, this,
-                        [this, reply, index, owner, name, localHash] {
+                        [this, reply, index, owner, name, localHash, wasFlagged] {
                             reply->deleteLater();
                             // The user may have switched repos in flight.
                             if (!m_topMessage || m_repoPinCheckIndex != index ||
@@ -5836,6 +5352,44 @@ void MainWindow::refreshRepoPinBanner()
                                     " are being rejected — the relay's pinned hash no "
                                     "longer matches the refs this machine serves.");
                                 loadMirrorNodesPanel(); // paint the caution triangle now
+                                // This node holds the working copy and the owner
+                                // key (the gates at the top of this function), so
+                                // it is the source of truth — re-sign the refs it
+                                // actually serves right now rather than waiting
+                                // for reattestStalePins or a manual reset.
+                                const QString healKey = owner + "/" + name;
+                                const qint64 nowMs =
+                                    QDateTime::currentMSecsSinceEpoch();
+                                if (index >= 0 && index < m_repositories.size() &&
+                                    nowMs - m_repoPinAutoHealAtMs.value(healKey) >=
+                                        30000) {
+                                    m_repoPinAutoHealAtMs.insert(healKey, nowMs);
+                                    logSystem(
+                                        "Integrity pin: this node is the source of "
+                                        "truth for " + owner + "/" + name +
+                                        " — re-attesting its current refs "
+                                        "automatically.");
+                                    // The RELAY's record is what drifted, so the
+                                    // local publish fingerprint may still read
+                                    // "unchanged" — drop it so the unchanged-skip
+                                    // gate can't swallow this corrective write
+                                    // (same as reattestStalePins).
+                                    m_catalogPublishedFingerprint.remove(
+                                        catalogPublishKey(
+                                            m_repositories.at(index)));
+                                    publishRepository(index, false);
+                                    // Re-check once the signed write has had a
+                                    // moment to land; a match clears the triangle.
+                                    QTimer::singleShot(1500, this, [this, index] {
+                                        if (m_repoDetailIndex == index)
+                                            refreshRepoPinBanner();
+                                    });
+                                }
+                            } else if (wasFlagged) {
+                                // The pin healed (re-attest landed, or the relay
+                                // caught up); repaint so the caution triangle
+                                // doesn't linger until the next panel rebuild.
+                                loadMirrorNodesPanel();
                             }
                         });
             });
@@ -6029,7 +5583,7 @@ void MainWindow::pushCurrentRepoUpstream()
             flashMessage(QStringLiteral("No upstream branch is configured for %1/%2.")
                              .arg(repo.owner, repo.name),
                          true);
-            updateRepoPushButton();
+            refreshRepoSyncIndicators();
             return;
         }
         upstream = QString::fromUtf8(upstreamOut).trimmed();
@@ -6042,7 +5596,7 @@ void MainWindow::pushCurrentRepoUpstream()
     // (possibly modal) result. Mark the repo "pushing" now so the button flips to
     // its busy state and the entry guard blocks a second click during the scan.
     m_pushingRepos.insert(index);
-    updateRepoPushButton();
+    refreshRepoSyncIndicators();
 
     struct PushScan {
         QList<RepoSecurityFinding> findings;
@@ -6071,7 +5625,7 @@ void MainWindow::pushCurrentRepoUpstream()
             if (index < 0 || index >= m_repositories.size() ||
                 m_repositories.at(index).localPath != repo.localPath) {
                 m_pushingRepos.remove(index);
-                updateRepoPushButton();
+                refreshRepoSyncIndicators();
                 return;
             }
             if (!scan.findings.isEmpty()) {
@@ -6106,7 +5660,7 @@ void MainWindow::pushCurrentRepoUpstream()
                 box.exec();
                 if (box.clickedButton() != bypassBtn) {
                     m_pushingRepos.remove(index);
-                    updateRepoPushButton();
+                    refreshRepoSyncIndicators();
                     return;
                 }
                 logSystem(
@@ -6123,7 +5677,7 @@ void MainWindow::pushCurrentRepoUpstream()
                                          "the served mirror.")
                               .arg(repo.owner, repo.name));
                 syncRepository(index, /*quiet=*/false);
-                updateRepoPushButton();
+                refreshRepoSyncIndicators();
                 return;
             }
             startRepoPush(index, repo, upstream, scan.ahead);
@@ -6137,7 +5691,7 @@ void MainWindow::pushCurrentRepoUpstream()
 void MainWindow::startRepoPush(int index, const RepositoryRecord &repo,
                                const QString &upstream, int ahead)
 {
-    updateRepoPushButton();
+    refreshRepoSyncIndicators();
     logSystem(QStringLiteral("Git: pushing %1/%2 to %3.")
                   .arg(repo.owner, repo.name, upstream));
 
@@ -6178,7 +5732,7 @@ void MainWindow::startRepoPush(int index, const RepositoryRecord &repo,
                                      .arg(repo.owner, repo.name, detail.left(160)),
                                  true);
                 }
-                updateRepoPushButton();
+                refreshRepoSyncIndicators();
             });
     connect(process, &QProcess::errorOccurred, this,
             [this, process, index, repo](QProcess::ProcessError) {
@@ -6192,7 +5746,7 @@ void MainWindow::startRepoPush(int index, const RepositoryRecord &repo,
                 flashMessage(QStringLiteral("Could not run git push for %1/%2.")
                                  .arg(repo.owner, repo.name),
                              true);
-                updateRepoPushButton();
+                refreshRepoSyncIndicators();
             });
     process->start(QStringLiteral("git"),
                    {QStringLiteral("-C"), repo.localPath, QStringLiteral("push")});
@@ -6701,7 +6255,8 @@ QWidget *MainWindow::buildNetworkReposSection()
     header->addWidget(m_networkReposStatus);
 
     // Create a brand-new repository right from the Repos tab. Reuses the shared
-    // New repository dialog (name/description/first prompt/README/location), so
+    // New repository dialog (name/description/first prompt/visibility/README/
+    // location), so
     // the "info needed to create a repo" is shown inline instead of buried in
     // Settings.
     auto *newRepoButton = new QPushButton(QStringLiteral("New repository\xE2\x80\xA6"));
@@ -7496,8 +7051,11 @@ QWidget *MainWindow::buildHostsSection()
 {
     auto *page = new QWidget;
     auto *outer = new QVBoxLayout(page);
-    outer->setContentsMargins(24, 20, 24, 24);
-    outer->setSpacing(12);
+    // Compact page chrome (adhoc #315): tighter margins/spacing everywhere so
+    // all areas — install form, Vultr provisioning, live output and the host
+    // list — fit on screen together, while every hint keeps its full text.
+    outer->setContentsMargins(16, 12, 16, 14);
+    outer->setSpacing(8);
 
     auto *titleRow = new QHBoxLayout;
     titleRow->setContentsMargins(0, 0, 0, 0);
@@ -7568,7 +7126,8 @@ QWidget *MainWindow::buildHostsSection()
         "(binary) on one saved host uploads this app's own binary. Install from "
         "binary (all hosts) instead makes every host download and checksum-verify "
         "the current published release, then confirms the installed version and "
-        "exact source commit."));
+        "exact source commit. No server yet? Create a Vultr mirror below "
+        "provisions a brand-new VPS from just an API key."));
     subtitle->setObjectName("mutedLabel");
     subtitle->setWordWrap(true);
     outer->addWidget(subtitle);
@@ -7580,19 +7139,19 @@ QWidget *MainWindow::buildHostsSection()
     auto *body = new QWidget;
     auto *bodyCol = new QVBoxLayout(body);
     bodyCol->setContentsMargins(0, 0, 0, 0);
-    bodyCol->setSpacing(16);
+    bodyCol->setSpacing(10);
 
     // --- Install form ------------------------------------------------------
     auto *formCard = new QFrame;
     formCard->setObjectName("leaderboardCard");
     formCard->setFrameShape(QFrame::StyledPanel);
     auto *formCol = new QVBoxLayout(formCard);
-    formCol->setContentsMargins(16, 14, 16, 14);
-    formCol->setSpacing(10);
+    formCol->setContentsMargins(12, 10, 12, 10);
+    formCol->setSpacing(6);
 
     auto *form = new QFormLayout;
     form->setLabelAlignment(Qt::AlignRight);
-    form->setSpacing(8);
+    form->setSpacing(6);
 
     m_hostIpEdit = new QLineEdit;
     m_hostIpEdit->setPlaceholderText(QStringLiteral("203.0.113.10"));
@@ -7658,6 +7217,79 @@ QWidget *MainWindow::buildHostsSection()
     formCol->addLayout(runRow);
     bodyCol->addWidget(formCard);
 
+    // --- Create a Vultr mirror (adhoc #315) --------------------------------
+    // Fully automated alternative to the manual form above: given only a Vultr
+    // API key, deploy a brand-new VPS (cheapest plan, newest Debian), with the
+    // SSH key created and managed by ForkMesh, then run the same hosted
+    // installer over SSH so the node auto-links to this account and starts
+    // mirroring/syncing on its own.
+    auto *vultrCard = new QFrame;
+    vultrCard->setObjectName("leaderboardCard");
+    vultrCard->setFrameShape(QFrame::StyledPanel);
+    auto *vultrCol = new QVBoxLayout(vultrCard);
+    vultrCol->setContentsMargins(12, 10, 12, 10);
+    vultrCol->setSpacing(6);
+
+    auto *vultrTitle = new QLabel(QStringLiteral("Create a Vultr mirror"));
+    QFont vtf = vultrTitle->font();
+    vtf.setBold(true);
+    vultrTitle->setFont(vtf);
+    vultrCol->addWidget(vultrTitle);
+
+    auto *vultrHint = new QLabel(QString::fromUtf8(
+        "One click deploys a brand-new cloud mirror on your Vultr account: "
+        "ForkMesh picks the cheapest available IPv4 plan (Vultr's IPv6-only "
+        "tiers are unreachable for the mesh) running the latest Debian, "
+        "creates and manages the SSH key for it automatically, boots the "
+        "instance, installs ForkMesh over SSH and links the new node to your "
+        "account so it starts mirroring and syncing right away. The API key "
+        "(Vultr panel \xE2\x86\x92 Account \xE2\x86\x92 API) is used from "
+        "memory only and never saved to disk \xE2\x80\x94 store it as a "
+        "VULTR_API_KEY device variable to prefill it. When a "
+        "CLOUDFLARE_API_TOKEN device variable and a Cloudflare zone are "
+        "configured, the new node also gets a <node>.<zone> DNS record so it "
+        "joins the mesh under a stable name like your other mirrors. The "
+        "instance is billed by Vultr to your account until you destroy it "
+        "there."));
+    vultrHint->setObjectName("mutedLabel");
+    vultrHint->setWordWrap(true);
+    vultrCol->addWidget(vultrHint);
+
+    auto *vultrForm = new QFormLayout;
+    vultrForm->setLabelAlignment(Qt::AlignRight);
+    vultrForm->setSpacing(6);
+    m_vultrApiKeyEdit = new QLineEdit;
+    m_vultrApiKeyEdit->setEchoMode(QLineEdit::Password);
+    m_vultrApiKeyEdit->setPlaceholderText(
+        QStringLiteral("Vultr API key — kept in memory only"));
+    vultrForm->addRow(QStringLiteral("Vultr API key"), m_vultrApiKeyEdit);
+    m_vultrNameEdit = new QLineEdit;
+    m_vultrNameEdit->setPlaceholderText(QString::fromUtf8(
+        "Optional \xE2\x80\x94 defaults to the next free mirrorN "
+        "(mirror5, mirror6, \xE2\x80\xA6)"));
+    vultrForm->addRow(QStringLiteral("Node name"), m_vultrNameEdit);
+    vultrCol->addLayout(vultrForm);
+
+    auto *vultrRow = new QHBoxLayout;
+    vultrRow->setContentsMargins(0, 0, 0, 0);
+    m_vultrCreateButton = new QPushButton(QStringLiteral("Create Vultr mirror"));
+    m_vultrCreateButton->setObjectName("primaryButton");
+    m_vultrCreateButton->setCursor(Qt::PointingHandCursor);
+    m_vultrCreateButton->setToolTip(QStringLiteral(
+        "Deploy the cheapest Debian instance on your Vultr account, install "
+        "ForkMesh v" FORKMESH_VERSION " on it and link it to your account. "
+        "Progress streams into Live output below."));
+    setOcticon(m_vultrCreateButton, "rocket", 14);
+    connect(m_vultrCreateButton, &QPushButton::clicked, this,
+            &MainWindow::createVultrMirrorFromForm);
+    vultrRow->addWidget(m_vultrCreateButton);
+    m_vultrStatus = new QLabel;
+    m_vultrStatus->setObjectName("mutedLabel");
+    m_vultrStatus->setWordWrap(true);
+    vultrRow->addWidget(m_vultrStatus, 1);
+    vultrCol->addLayout(vultrRow);
+    bodyCol->addWidget(vultrCard);
+
     // --- Live session / install output ------------------------------------
     auto *logLabel = new QLabel(QStringLiteral("Live output"));
     QFont llf = logLabel->font();
@@ -7669,7 +7301,7 @@ QWidget *MainWindow::buildHostsSection()
     m_hostInstallLog->setObjectName("actionLog");
     m_hostInstallLog->setReadOnly(true);
     m_hostInstallLog->setLineWrapMode(QPlainTextEdit::NoWrap);
-    m_hostInstallLog->setMinimumHeight(220);
+    m_hostInstallLog->setMinimumHeight(170);
     QFont mono(QStringLiteral("monospace"));
     mono.setStyleHint(QFont::Monospace);
     m_hostInstallLog->setFont(mono);
@@ -7710,7 +7342,9 @@ QWidget *MainWindow::buildHostsSection()
         "that host. Click Actions to enable its executor and optionally replace "
         "its device-local variables through a one-shot SSH stdin request; secret "
         "values are never saved by this controller. Click Logs to open a live "
-        "SSH tail for that host. "
+        "SSH tail for that host, or Size map to browse what is filling that "
+        "host's disk. Click Remove to drop a host from this list "
+        "without touching it \xE2\x80\x94 no SSH session is opened. "
         "Double-click a host instead to reload it into the form "
         "above for editing."));
     hostsHint->setObjectName("mutedLabel");
@@ -7772,7 +7406,7 @@ void MainWindow::refreshHostsTable()
         auto *cell = new QWidget;
         auto *cellRow = new QHBoxLayout(cell);
         cellRow->setContentsMargins(4, 2, 4, 2);
-        cellRow->setSpacing(0);
+        cellRow->setSpacing(6);
         auto *updateBtn = new QPushButton(QStringLiteral("Update"));
         updateBtn->setCursor(Qt::PointingHandCursor);
         setOcticon(updateBtn, "sync", 12);
@@ -7828,6 +7462,30 @@ void MainWindow::refreshHostsTable()
             });
         });
         cellRow->addWidget(uninstallBtn);
+
+        // Per-row Remove button: drop this host from the saved list only. Unlike
+        // Uninstall, this opens no SSH session and changes nothing on the remote
+        // host \xe2\x80\x94 it just stops the app tracking it here (e.g. to clean
+        // up a host that was already reformatted/decommissioned elsewhere).
+        auto *removeBtn = new QPushButton(QStringLiteral("Remove"));
+        removeBtn->setCursor(Qt::PointingHandCursor);
+        setOcticon(removeBtn, "x", 12);
+        connect(removeBtn, &QPushButton::clicked, this, [this, i] {
+            const QString name =
+                m_hostsTable->item(i, 0) ? m_hostsTable->item(i, 0)->text() : QString();
+            const auto reply = QMessageBox::question(
+                this, QStringLiteral("Remove saved host"),
+                QString::fromUtf8(
+                    "Remove \"%1\" from this list? This only forgets it here "
+                    "\xE2\x80\x94 ForkMesh is NOT uninstalled from that host.")
+                    .arg(name),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+            if (reply != QMessageBox::Yes)
+                return;
+            QTimer::singleShot(0, this, [this, i] { forgetHostAtRow(i); });
+        });
+        cellRow->addWidget(removeBtn);
+
         auto *viewLogsBtn = new QPushButton(QStringLiteral("Logs"));
         viewLogsBtn->setCursor(Qt::PointingHandCursor);
         setOcticon(viewLogsBtn, "terminal", 12);
@@ -7837,6 +7495,24 @@ void MainWindow::refreshHostsTable()
             });
         });
         cellRow->addWidget(viewLogsBtn);
+
+        // Per-row Size map button: browse that host's disk usage over the same
+        // authenticated SSH channel, one read-only `du` level at a time, so a
+        // host that is filling up can be diagnosed from here.
+        auto *diskBtn = new QPushButton(QStringLiteral("Size map"));
+        diskBtn->setObjectName(QStringLiteral("hostDiskUsageButton"));
+        diskBtn->setCursor(Qt::PointingHandCursor);
+        diskBtn->setToolTip(QStringLiteral(
+            "Browse what is using disk space on this host over SSH. Read-only: "
+            "it only runs du, one directory level at a time."));
+        setOcticon(diskBtn, "pie-chart", 12);
+        connect(diskBtn, &QPushButton::clicked, this, [this, i] {
+            QTimer::singleShot(0, this, [this, i] {
+                browseHostDiskUsageForSelection(i);
+            });
+        });
+        cellRow->addWidget(diskBtn);
+
         auto *actionsBtn = new QPushButton(QStringLiteral("Actions"));
         actionsBtn->setObjectName(QStringLiteral("hostActionsButton"));
         actionsBtn->setCursor(Qt::PointingHandCursor);
@@ -7850,7 +7526,37 @@ void MainWindow::refreshHostsTable()
             });
         });
         cellRow->addWidget(actionsBtn);
+        // Table-row sizing: the default QPushButton padding makes each of these
+        // 35px tall, far more than a text row, so the view squashed the whole
+        // action cell down to the item height and Qt silently dropped every
+        // label — the row read as six anonymous icon pills (adhoc #376). The
+        // "sm" size keeps them inside a table row so the words stay visible.
+        for (QPushButton *b : cell->findChildren<QPushButton *>())
+            b->setProperty("buttonSize", "sm");
         m_hostsTable->setCellWidget(i, 4, cell);
+    }
+    // ...and the rows still have to be tall enough for the buttons, and the
+    // action column wide enough that no label is elided. The view lays a cell
+    // widget out inside the item rect minus #issueTable::item's 6px/8px
+    // padding, so both need that much more than the cell's own hint.
+    if (!hosts.isEmpty()) {
+        // Deferred: makeColumnsResizable() fits the columns on the first
+        // rowsInserted from its own singleShot(0), and would otherwise land
+        // after this and undo it.
+        QTimer::singleShot(0, m_hostsTable, [this] {
+            QWidget *cell = m_hostsTable ? m_hostsTable->cellWidget(0, 4) : nullptr;
+            if (!cell)
+                return;
+            // setColumnWidth() only takes on an Interactive section; that is
+            // also the mode makeColumnsResizable() leaves behind, so this just
+            // gets there whether or not it has run yet.
+            m_hostsTable->horizontalHeader()->setSectionResizeMode(
+                4, QHeaderView::Interactive);
+            m_hostsTable->setColumnWidth(4, cell->sizeHint().width() + 16);
+            const int rowHeight = cell->sizeHint().height() + 12;
+            for (int r = 0; r < m_hostsTable->rowCount(); ++r)
+                m_hostsTable->setRowHeight(r, rowHeight);
+        });
     }
 
     if (m_hostsNavButton)
@@ -8055,7 +7761,9 @@ void MainWindow::runHostActionsConfiguration(
     QString error;
     forkmesh::control::MirrorActionsSshCommand command =
         forkmesh::control::buildMirrorActionsSshCommand(
-            request, sshPassword, &error);
+            request, sshPassword, &error,
+            savedHostIdentityFile(request.nodeName, request.host,
+                                  request.sshUser));
     if (command.program.isEmpty()) {
         for (QString &value : request.variables)
             value.fill(QChar::Null);
@@ -8274,11 +7982,13 @@ enum NodeCol {
     kNodeColStatus,
     kNodeColOwner,
     kNodeColVersion,
+    kNodeColPlatform,
     kNodeColRepos,
     kNodeColMirrors,
     kNodeColCpu,
     kNodeColRam,
     kNodeColDisk,
+    kNodeColId,
     kNodeColCount,
 };
 } // namespace
@@ -8335,8 +8045,10 @@ QWidget *MainWindow::buildNodesSection()
     m_nodesTable->setHorizontalHeaderLabels(
         {QStringLiteral("Node"), QStringLiteral("Status"),
          QStringLiteral("Owner"), QStringLiteral("Version"),
-         QStringLiteral("Repos"), QStringLiteral("Mirrors"),
-         QStringLiteral("CPU"), QStringLiteral("RAM"), QStringLiteral("Disk")});
+         QStringLiteral("Platform"), QStringLiteral("Repos"),
+         QStringLiteral("Mirrors"), QStringLiteral("CPU"),
+         QStringLiteral("RAM"), QStringLiteral("Disk"),
+         QStringLiteral("Node id")});
     m_nodesTable->verticalHeader()->setVisible(false);
     m_nodesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_nodesTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -8494,6 +8206,11 @@ void MainWindow::refreshNodesTable()
         const MemberInfo mi = rosterInfo(e.name);
         if (mi.accountKind == QLatin1String("user"))
             continue;
+        // Temporary world-chat visitors are filtered before they become menu
+        // entries (refreshRepositoryList); re-check here so one can never show
+        // as a node even if it slips in by another path (adhoc #308).
+        if (isTemporaryChatGuest(mi))
+            continue;
         if (e.self && selfIsUserAccount)
             continue;
         visible.append(e);
@@ -8556,6 +8273,14 @@ void MainWindow::refreshNodesTable()
         m_nodesTable->setItem(i, kNodeColVersion, new QTableWidgetItem(
             version.isEmpty() ? dash : version));
 
+        // Platform / node id as text columns too, matching the repo detail's
+        // Mirror nodes table (the badge on the name only hints the platform).
+        QString platformText = e.platform.trimmed();
+        if (platformText.isEmpty())
+            platformText = mi.platform.trimmed();
+        m_nodesTable->setItem(i, kNodeColPlatform, new QTableWidgetItem(
+            platformText.isEmpty() ? dash : platformText));
+
         auto *repoItem = new QTableWidgetItem;
         repoItem->setData(Qt::DisplayRole, e.repoCount); // int -> numeric sort
         repoItem->setTextAlignment(Qt::AlignCenter);
@@ -8575,6 +8300,19 @@ void MainWindow::refreshNodesTable()
         m_nodesTable->setItem(i, kNodeColDisk,
             makeByteUsageCell(QStringLiteral("Disk"), mi.diskUsedBytes,
                               mi.diskTotalBytes));
+
+        // Stable node id (public key), shortened like the Mirror nodes table;
+        // the full key stays readable via the tooltip.
+        const QString nodeId = mi.id.trimmed();
+        auto *idItem = new QTableWidgetItem(
+            nodeId.isEmpty()
+                ? dash
+                : nodeId.left(12) + (nodeId.size() > 12
+                                         ? QString::fromUtf8("\xE2\x80\xA6")
+                                         : QString()));
+        if (!nodeId.isEmpty())
+            idItem->setToolTip(nodeId);
+        m_nodesTable->setItem(i, kNodeColId, idItem);
     }
     m_nodesTable->setSortingEnabled(true);
 
@@ -8820,6 +8558,20 @@ void MainWindow::showNodeDetailForRow(int row)
         if (advert.updatedMs > 0)
             line += QStringLiteral(" \xC2\xB7 synced %1 ago")
                         .arg(formatShortRelativeTime(advert.updatedMs / 1000));
+        // The same per-mirror tallies the repo detail's Mirror nodes table
+        // shows, when the node advertised them (-1 = older peer / unknown).
+        auto appendCount = [&line](int value, const char *noun) {
+            if (value >= 0)
+                line += QString::fromUtf8(" \xC2\xB7 %1 %2")
+                            .arg(value)
+                            .arg(QLatin1String(noun));
+        };
+        appendCount(advert.commitCount, "commits");
+        appendCount(advert.branchCount, "branches");
+        appendCount(advert.issueCount, "issues");
+        appendCount(advert.pullCount, "pulls");
+        appendCount(advert.discussionCount, "discussions");
+        appendCount(advert.artifactCount, "artifacts");
         auto *m = new QLabel(line);
         m->setTextFormat(Qt::RichText);
         m->setWordWrap(true);
@@ -10424,7 +10176,8 @@ void MainWindow::runHostLogSession(const QString &ip, const QString &user,
     QString sshError;
     const forkmesh::control::HostSshCommand ssh =
         forkmesh::control::buildHostSshCommand(
-            ip, user, pass, remoteCmd, &sshError);
+            ip, user, pass, remoteCmd, &sshError,
+            savedHostIdentityFile(node, ip, user));
     if (ssh.program.isEmpty()) {
         appendLog(QStringLiteral("[error] %1\n").arg(sshError));
         status->setText(sshError);
@@ -10478,6 +10231,325 @@ void MainWindow::runHostLogSession(const QString &ip, const QString &user,
     dialog->exec();
 }
 
+void MainWindow::browseHostDiskUsageForSelection(int row)
+{
+    if (m_hostDiskProcess &&
+        m_hostDiskProcess->state() != QProcess::NotRunning) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("A host size map is already loading."));
+        return;
+    }
+    if (!m_hostsTable || row < 0 || row >= m_hostsTable->rowCount())
+        return;
+    // Read the row directly instead of loading it into the install form: this
+    // is a read-only inspection and must not disturb whatever the form holds.
+    const auto cellText = [this, row](int column) {
+        const QTableWidgetItem *item = m_hostsTable->item(row, column);
+        return item ? item->text().trimmed() : QString();
+    };
+    const QString node = cellText(0);
+    const QString ip = cellText(1);
+    const QString user = cellText(2);
+    if (ip.isEmpty() || user.isEmpty() || node.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(QStringLiteral(
+                "Select a saved host row first, then click Size map."));
+        return;
+    }
+    const QString pass = m_hostSessionPasswords.value(
+        forkmesh::control::savedHostCredentialKey(node, ip, user));
+    runHostDiskUsageBrowser(ip, user, pass, node);
+}
+
+void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
+                                         const QString &pass,
+                                         const QString &node)
+{
+    if (ip.isEmpty() || user.isEmpty() || node.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("Enter host IP, SSH username and node name."));
+        return;
+    }
+
+    auto *dialog = new QDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setObjectName(QStringLiteral("hostDiskUsageDialog"));
+    dialog->setWindowTitle(QStringLiteral("Size map: %1").arg(node));
+    dialog->setMinimumSize(820, 560);
+    auto *layout = new QVBoxLayout(dialog);
+
+    auto *hint = new QLabel(QString::fromUtf8(
+        "ForkMesh measures one directory level at a time with <b>du</b> over "
+        "the same authenticated SSH channel the installer uses \xE2\x80\x94 "
+        "nothing is written on the host. Double-click a folder to drill into "
+        "the space it uses."));
+    hint->setObjectName("mutedLabel");
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
+
+    auto *nav = new QHBoxLayout;
+    auto *upButton = new QPushButton(QStringLiteral("Up"));
+    upButton->setObjectName(QStringLiteral("hostDiskUpButton"));
+    upButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(upButton, "arrow-left", 12);
+    nav->addWidget(upButton);
+    auto *pathEdit = new QLineEdit(QStringLiteral("/"));
+    pathEdit->setObjectName(QStringLiteral("hostDiskPathEdit"));
+    pathEdit->setPlaceholderText(
+        QStringLiteral("Absolute path on the host, e.g. /var/lib"));
+    nav->addWidget(pathEdit, 1);
+    auto *openButton = new QPushButton(QStringLiteral("Open"));
+    openButton->setObjectName(QStringLiteral("hostDiskOpenButton"));
+    openButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(openButton, "file-directory", 12);
+    nav->addWidget(openButton);
+    auto *refreshButton = new QPushButton(QStringLiteral("Refresh"));
+    refreshButton->setObjectName(QStringLiteral("hostDiskRefreshButton"));
+    refreshButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(refreshButton, "sync", 12);
+    nav->addWidget(refreshButton);
+    layout->addLayout(nav);
+
+    auto *totalLabel = new QLabel;
+    totalLabel->setObjectName(QStringLiteral("hostDiskTotalLabel"));
+    QFont totalFont = totalLabel->font();
+    totalFont.setBold(true);
+    totalLabel->setFont(totalFont);
+    layout->addWidget(totalLabel);
+
+    auto *table = new QTableWidget(0, 4);
+    table->setObjectName("issueTable");
+    table->setHorizontalHeaderLabels(
+        {QStringLiteral("Name"), QStringLiteral("Size"),
+         QStringLiteral("Share of this folder"), QStringLiteral("Type")});
+    table->verticalHeader()->setVisible(false);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setShowGrid(false);
+    table->horizontalHeader()->setStretchLastSection(false);
+    table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    table->horizontalHeader()->setSectionResizeMode(
+        1, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(
+        2, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(
+        3, QHeaderView::ResizeToContents);
+    layout->addWidget(table, 1);
+
+    auto *status = new QLabel(QString::fromUtf8(
+        "Measuring the host root \xE2\x80\xA6"));
+    status->setObjectName("mutedLabel");
+    status->setWordWrap(true);
+    layout->addWidget(status);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    if (auto *closeBtn = buttons->button(QDialogButtonBox::Close))
+        closeBtn->setDefault(true);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+
+    auto currentPath = std::make_shared<QString>(QStringLiteral("/"));
+    auto loadPath = std::make_shared<std::function<void(const QString &)>>();
+    *loadPath = [this, dialog, table, pathEdit, status, totalLabel, upButton,
+                 openButton, refreshButton, currentPath, ip, user, pass,
+                 node](const QString &requested) {
+        if (m_hostDiskProcess &&
+            m_hostDiskProcess->state() != QProcess::NotRunning) {
+            status->setText(QStringLiteral(
+                "Still measuring the previous folder on this host."));
+            return;
+        }
+        const QString path =
+            forkmesh::control::normalizeRemoteDiskPath(requested);
+        QString commandError;
+        const QString remoteCommand =
+            forkmesh::control::buildHostDiskUsageCommand(path, &commandError);
+        if (remoteCommand.isEmpty()) {
+            status->setText(commandError);
+            pathEdit->setText(*currentPath);
+            return;
+        }
+        QString sshError;
+        const forkmesh::control::HostSshCommand ssh =
+            forkmesh::control::buildHostSshCommand(
+                ip, user, pass, remoteCommand, &sshError,
+                savedHostIdentityFile(node, ip, user));
+        if (ssh.program.isEmpty()) {
+            status->setText(sshError);
+            return;
+        }
+
+        *currentPath = path;
+        pathEdit->setText(path);
+        table->setRowCount(0);
+        totalLabel->setText(QString());
+        status->setText(
+            QString::fromUtf8("Measuring %1 on %2@%3 \xE2\x80\xA6 a large "
+                              "directory tree can take a minute.")
+                .arg(path, user, ip));
+
+        const QList<QWidget *> navWidgets{upButton, openButton, refreshButton,
+                                          pathEdit};
+        for (QWidget *w : navWidgets)
+            w->setEnabled(false);
+
+        auto *proc = new QProcess(dialog);
+        m_hostDiskProcess = proc;
+        auto output = std::make_shared<QByteArray>();
+        proc->setProcessChannelMode(QProcess::MergedChannels);
+        proc->setProcessEnvironment(ssh.environment);
+        connect(proc, &QProcess::readyReadStandardOutput, dialog,
+                [proc, output] { output->append(proc->readAllStandardOutput()); });
+        connect(proc, &QProcess::finished, dialog,
+                [this, proc, output, table, status, totalLabel, navWidgets,
+                 path, ip, user](int code, QProcess::ExitStatus exitStatus) {
+                    if (m_hostDiskProcess == proc)
+                        m_hostDiskProcess = nullptr;
+                    for (QWidget *w : navWidgets)
+                        w->setEnabled(true);
+                    const forkmesh::control::HostDiskUsage usage =
+                        forkmesh::control::parseHostDiskUsage(*output, path);
+                    proc->deleteLater();
+                    if (!usage.error.isEmpty()) {
+                        status->setText(usage.error);
+                        return;
+                    }
+                    if (!usage.complete) {
+                        const QString tail = forkmesh::control::redactProcessOutput(
+                            QString::fromUtf8(output->right(2048)));
+                        QString message =
+                            QString::fromUtf8(
+                                "Could not read the size map for %1 (exit %2).")
+                                .arg(path)
+                                .arg(exitStatus == QProcess::NormalExit ? code
+                                                                        : 255);
+                        const QString sshHint =
+                            forkmesh::control::sshConnectionFailureHint(
+                                exitStatus == QProcess::NormalExit ? code : 255,
+                                tail, ip);
+                        if (!sshHint.isEmpty())
+                            message += QLatin1Char(' ') + sshHint;
+                        status->setText(message);
+                        return;
+                    }
+
+                    totalLabel->setText(
+                        QString::fromUtf8("%1 \xE2\x80\x94 %2 total, %3 entries")
+                            .arg(path,
+                                 forkmesh::control::formatDiskSize(
+                                     usage.totalBytes))
+                            .arg(usage.entries.size()));
+                    table->setRowCount(usage.entries.size());
+                    for (int i = 0; i < usage.entries.size(); ++i) {
+                        const forkmesh::control::HostDiskEntry &entry =
+                            usage.entries.at(i);
+                        auto *nameItem = new QTableWidgetItem(entry.name);
+                        nameItem->setIcon(themedOcticon(
+                            entry.directory ? QStringLiteral("file-directory")
+                                            : QStringLiteral("file"),
+                            QColor("#8b949e"), 13));
+                        nameItem->setToolTip(entry.path);
+                        nameItem->setData(Qt::UserRole, entry.path);
+                        nameItem->setData(Qt::UserRole + 1, entry.directory);
+                        table->setItem(i, 0, nameItem);
+                        table->setItem(
+                            i, 1,
+                            new QTableWidgetItem(
+                                forkmesh::control::formatDiskSize(entry.bytes)));
+                        // A share bar drawn in text: cell widgets would be one
+                        // extra widget per row on directories that hold
+                        // thousands of entries.
+                        const double share =
+                            usage.totalBytes > 0
+                                ? static_cast<double>(entry.bytes) /
+                                      static_cast<double>(usage.totalBytes)
+                                : 0.0;
+                        const int filled = qBound(
+                            0, static_cast<int>(std::lround(share * 20.0)), 20);
+                        table->setItem(
+                            i, 2,
+                            new QTableWidgetItem(
+                                QStringLiteral("%1 %2%")
+                                    .arg(QString(filled, QChar(0x2588)) +
+                                         QString(20 - filled, QChar(0x2591)))
+                                    .arg(share * 100.0, 0, 'f', 1)));
+                        table->setItem(
+                            i, 3,
+                            new QTableWidgetItem(entry.directory
+                                                     ? QStringLiteral("Folder")
+                                                     : QStringLiteral("File")));
+                    }
+                    status->setText(
+                        usage.entries.isEmpty()
+                            ? QString::fromUtf8(
+                                  "%1 holds nothing this SSH user can read.")
+                                  .arg(path)
+                            : QString::fromUtf8(
+                                  "Largest first. Double-click a folder to "
+                                  "drill in, or Up to go back."));
+                });
+        connect(proc, &QProcess::errorOccurred, dialog,
+                [this, proc, status, navWidgets](QProcess::ProcessError e) {
+                    if (e != QProcess::FailedToStart)
+                        return;
+                    if (m_hostDiskProcess == proc)
+                        m_hostDiskProcess = nullptr;
+                    for (QWidget *w : navWidgets)
+                        w->setEnabled(true);
+                    status->setText(QString::fromUtf8(
+                        "Could not start SSH. Install OpenSSH (and sshpass only "
+                        "when using password login) and try again."));
+                });
+        proc->start(ssh.program, ssh.arguments);
+    };
+
+    connect(upButton, &QPushButton::clicked, dialog, [currentPath, loadPath] {
+        (*loadPath)(*currentPath + QStringLiteral("/.."));
+    });
+    connect(refreshButton, &QPushButton::clicked, dialog,
+            [currentPath, loadPath] { (*loadPath)(*currentPath); });
+    connect(openButton, &QPushButton::clicked, dialog,
+            [pathEdit, loadPath] { (*loadPath)(pathEdit->text()); });
+    connect(pathEdit, &QLineEdit::returnPressed, dialog,
+            [pathEdit, loadPath] { (*loadPath)(pathEdit->text()); });
+    connect(table, &QTableWidget::cellDoubleClicked, dialog,
+            [table, status, loadPath](int row, int) {
+                const QTableWidgetItem *item = table->item(row, 0);
+                if (!item)
+                    return;
+                const QString path = item->data(Qt::UserRole).toString();
+                if (!item->data(Qt::UserRole + 1).toBool()) {
+                    status->setText(
+                        QStringLiteral("%1 is a file, not a folder.").arg(path));
+                    return;
+                }
+                (*loadPath)(path);
+            });
+
+    // A running measurement outlives its dialog otherwise: `du` over a big
+    // tree keeps the SSH session open long after the window is gone.
+    connect(dialog, &QDialog::finished, this, [this](int) {
+        if (!m_hostDiskProcess)
+            return;
+        if (m_hostDiskProcess->state() != QProcess::NotRunning) {
+            m_hostDiskProcess->terminate();
+            if (!m_hostDiskProcess->waitForFinished(250))
+                m_hostDiskProcess->kill();
+        }
+        m_hostDiskProcess = nullptr;
+    });
+
+    if (m_hostInstallStatus) {
+        m_hostInstallStatus->setText(
+            QString::fromUtf8("Opening the size map for %1@%2 (%3)...")
+                .arg(user, ip, node));
+    }
+    (*loadPath)(QStringLiteral("/"));
+    dialog->exec();
+}
+
 void MainWindow::addHostFromForm()
 {
     const QString ip = m_hostIpEdit ? m_hostIpEdit->text().trimmed() : QString();
@@ -10499,7 +10571,8 @@ void MainWindow::addHostFromForm()
 }
 
 void MainWindow::rememberHost(const QString &name, const QString &ip,
-                              const QString &user, const QString &pass, const QString &status)
+                              const QString &user, const QString &pass, const QString &status,
+                              const QString &identityFile)
 {
     QSettings settings;
     QJsonArray hosts = forkmesh::control::loadSavedHosts(
@@ -10510,10 +10583,19 @@ void MainWindow::rememberHost(const QString &name, const QString &ip,
     entry.insert(QStringLiteral("ip"), ip);
     entry.insert(QStringLiteral("user"), user);
     entry.insert(QStringLiteral("status"), status);
+    if (!identityFile.trimmed().isEmpty())
+        entry.insert(QStringLiteral("identityFile"), identityFile.trimmed());
     bool replaced = false;
     for (int i = 0; i < hosts.size(); ++i) {
         if (hosts.at(i).toObject().value("name").toString() == name) {
             const QJsonObject old = hosts.at(i).toObject();
+            // A saved managed-key path survives status updates that do not
+            // explicitly change it (every install/uninstall re-remember).
+            if (!entry.contains(QStringLiteral("identityFile")) &&
+                old.contains(QStringLiteral("identityFile"))) {
+                entry.insert(QStringLiteral("identityFile"),
+                             old.value(QStringLiteral("identityFile")));
+            }
             const QString oldCredentialKey =
                 forkmesh::control::savedHostCredentialKey(
                     old.value(QStringLiteral("name")).toString(),
@@ -10545,6 +10627,862 @@ void MainWindow::rememberHost(const QString &name, const QString &ip,
     }
     forkmesh::control::saveSavedHosts(settings, kHostsSetting, hosts);
     refreshHostsTable();
+}
+
+void MainWindow::forgetHostAtRow(int row)
+{
+    if (!m_hostsTable || row < 0 || row >= m_hostsTable->rowCount())
+        return;
+    QSettings settings;
+    QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
+    if (row >= hosts.size())
+        return;
+    const QJsonObject removed = hosts.at(row).toObject();
+    hosts.removeAt(row);
+    const QString credentialKey = forkmesh::control::savedHostCredentialKey(
+        removed.value(QStringLiteral("name")).toString(),
+        removed.value(QStringLiteral("ip")).toString(),
+        removed.value(QStringLiteral("user")).toString());
+    QString oldPassword = m_hostSessionPasswords.take(credentialKey);
+    oldPassword.fill(QChar::Null);
+    forkmesh::control::saveSavedHosts(settings, kHostsSetting, hosts);
+    refreshHostsTable();
+    if (m_hostInstallStatus) {
+        m_hostInstallStatus->setText(QString::fromUtf8(
+            "Removed \"%1\" from the saved hosts list.")
+                .arg(removed.value(QStringLiteral("name")).toString()));
+    }
+}
+
+QString MainWindow::savedHostIdentityFile(const QString &name, const QString &ip,
+                                          const QString &user) const
+{
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, nullptr);
+    for (const QJsonValue &value : hosts) {
+        const QJsonObject host = value.toObject();
+        if (host.value(QStringLiteral("name")).toString() != name ||
+            host.value(QStringLiteral("ip")).toString() != ip ||
+            host.value(QStringLiteral("user")).toString() != user) {
+            continue;
+        }
+        const QString identity =
+            host.value(QStringLiteral("identityFile")).toString().trimmed();
+        if (!identity.isEmpty() && QFileInfo(identity).isFile())
+            return identity;
+        return {};
+    }
+    return {};
+}
+
+// --- One-click Vultr mirror provisioning (adhoc #315) -----------------------
+//
+// createVultrMirrorFromForm drives an async chain over the Vultr v2 API:
+// managed keypair → SSH-key registration → cheapest plan → newest Debian →
+// instance create → boot poll → the normal runHostInstall handoff, which
+// installs ForkMesh over SSH and auto-links the fresh node to this account so
+// it starts mirroring and syncing on its own. Every step streams into the
+// shared Live output pane. The API key is captured by value through the chain
+// and lives only in these closures and the Authorization headers.
+
+void MainWindow::finishVultrProvision(bool ok, const QString &message)
+{
+    m_vultrProvisionActive = false;
+    if (m_vultrCreateButton)
+        m_vultrCreateButton->setEnabled(true);
+    if (m_vultrStatus)
+        m_vultrStatus->setText(
+            (ok ? QString::fromUtf8("\xE2\x9C\x94 ")
+                : QString::fromUtf8("\xE2\x9C\x98 ")) + message);
+    if (!message.isEmpty())
+        appendHostInstallLog(
+            (ok ? QString::fromUtf8("\n\xE2\x9C\x94 ")
+                : QString::fromUtf8("\n\xE2\x9C\x98 ")) +
+            message + QStringLiteral("\n"));
+}
+
+void MainWindow::vultrApiCall(const QString &apiKey, const QString &path,
+                              const QByteArray &method, const QJsonObject &body,
+                              std::function<void(QJsonObject, QString)> onDone)
+{
+    QNetworkRequest request(
+        QUrl(QStringLiteral("https://api.vultr.com") + path));
+    request.setRawHeader(QByteArrayLiteral("Authorization"),
+                         QByteArrayLiteral("Bearer ") + apiKey.toUtf8());
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    QNetworkReply *reply =
+        method == QByteArrayLiteral("POST")
+            ? m_networkAccess->post(
+                  request,
+                  QJsonDocument(body).toJson(QJsonDocument::Compact))
+            : m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this, [reply, onDone] {
+        reply->deleteLater();
+        const int status =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                .toInt();
+        const QJsonObject object =
+            QJsonDocument::fromJson(reply->read(1024 * 1024)).object();
+        if (reply->error() != QNetworkReply::NoError || status < 200 ||
+            status >= 300) {
+            QString detail =
+                object.value(QStringLiteral("error")).toString();
+            if (detail.isEmpty())
+                detail = reply->errorString();
+            onDone({}, QStringLiteral("Vultr API error (HTTP %1): %2")
+                           .arg(status)
+                           .arg(detail));
+            return;
+        }
+        onDone(object, QString());
+    });
+}
+
+void MainWindow::cloudflareApiCall(const QString &apiToken, const QString &path,
+                                   const QByteArray &method,
+                                   const QJsonObject &body,
+                                   std::function<void(QJsonObject, QString)> onDone)
+{
+    QNetworkRequest request(
+        QUrl(QStringLiteral("https://api.cloudflare.com/client/v4") + path));
+    request.setRawHeader(QByteArrayLiteral("Authorization"),
+                         QByteArrayLiteral("Bearer ") + apiToken.toUtf8());
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    const QByteArray payload =
+        QJsonDocument(body).toJson(QJsonDocument::Compact);
+    QNetworkReply *reply =
+        method == QByteArrayLiteral("GET")
+            ? m_networkAccess->get(request)
+            : m_networkAccess->sendCustomRequest(request, method, payload);
+    connect(reply, &QNetworkReply::finished, this, [reply, onDone] {
+        reply->deleteLater();
+        const int status =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                .toInt();
+        const QJsonObject object =
+            QJsonDocument::fromJson(reply->read(1024 * 1024)).object();
+        const bool succeeded =
+            object.value(QStringLiteral("success")).toBool();
+        if (reply->error() != QNetworkReply::NoError || status < 200 ||
+            status >= 300 || !succeeded) {
+            QString detail = object.value(QStringLiteral("errors"))
+                                 .toArray()
+                                 .first()
+                                 .toObject()
+                                 .value(QStringLiteral("message"))
+                                 .toString();
+            if (detail.isEmpty())
+                detail = reply->errorString();
+            onDone({}, QStringLiteral("Cloudflare API error (HTTP %1): %2")
+                           .arg(status)
+                           .arg(detail));
+            return;
+        }
+        onDone(object, QString());
+    });
+}
+
+// A brand-new Vultr instance only has a raw address, so it never lines up with
+// the hand-provisioned mirrors that answer under the mesh's own zone. Resolve
+// the zone, then create or update one DNS-only A record for "<node>.<zone>"
+// (adhoc #331). Every failure here is soft: the mirror is already booting and
+// links to the account over the relay regardless, so the DNS record is a
+// convenience that must never abort provisioning.
+void MainWindow::ensureVultrMirrorDns(const QString &node, const QString &ip,
+                                      std::function<void(QString)> onDone)
+{
+    auto skip = [this, onDone](const QString &reason) {
+        appendHostInstallLog(
+            QStringLiteral("Skipping the Cloudflare DNS record: %1\n")
+                .arg(reason));
+        onDone(QString());
+    };
+    if (!m_networkAccess) {
+        skip(QStringLiteral("network access is unavailable"));
+        return;
+    }
+    const QMap<QString, QString> variables = ActionStore::variables();
+    const QString apiToken =
+        forkmesh::control::cloudflareApiTokenFromVariables(variables);
+    if (apiToken.isEmpty()) {
+        skip(QStringLiteral(
+            "store a CLOUDFLARE_API_TOKEN device variable with DNS edit "
+            "permission to name mirrors automatically"));
+        return;
+    }
+    QSettings settings;
+    QString zone = settings.value(QStringLiteral("control/cloudflareZone"))
+                       .toString()
+                       .trimmed();
+    if (zone.isEmpty())
+        zone = forkmesh::control::cloudflareZoneNameFromVariables(variables);
+    const QString hostname =
+        forkmesh::control::vultrMirrorDnsHostname(node, zone);
+    if (hostname.isEmpty()) {
+        skip(zone.isEmpty()
+                 ? QStringLiteral("set the Cloudflare zone on the Control "
+                                  "node page first")
+                 : QStringLiteral("\"%1\" and \"%2\" do not form a valid "
+                                  "hostname")
+                       .arg(node, zone));
+        return;
+    }
+    const QJsonObject payload =
+        forkmesh::control::vultrMirrorDnsRecordPayload(hostname, ip);
+    if (payload.isEmpty()) {
+        skip(QStringLiteral("the instance address %1 is not a usable IPv4 "
+                            "answer").arg(ip));
+        return;
+    }
+    appendHostInstallLog(
+        QStringLiteral("Pointing %1 at %2 in Cloudflare\xE2\x80\xA6\n")
+            .arg(hostname, ip));
+    cloudflareApiCall(
+        apiToken,
+        QStringLiteral("/zones?name=%1")
+            .arg(QString::fromLatin1(QUrl::toPercentEncoding(zone))),
+        QByteArrayLiteral("GET"), {},
+        [this, apiToken, zone, hostname, payload, skip, onDone](
+            QJsonObject result, QString error) {
+            if (!error.isEmpty()) {
+                skip(error);
+                return;
+            }
+            const QString zoneId = forkmesh::control::cloudflareZoneId(
+                result.value(QStringLiteral("result")).toArray(), zone);
+            if (zoneId.isEmpty()) {
+                skip(QStringLiteral(
+                         "this API token does not see exactly one \"%1\" zone")
+                         .arg(zone));
+                return;
+            }
+            cloudflareApiCall(
+                apiToken,
+                QStringLiteral("/zones/%1/dns_records?type=A&name=%2")
+                    .arg(zoneId,
+                         QString::fromLatin1(
+                             QUrl::toPercentEncoding(hostname))),
+                QByteArrayLiteral("GET"), {},
+                [this, apiToken, zoneId, hostname, payload, skip, onDone](
+                    QJsonObject existing, QString listError) {
+                    if (!listError.isEmpty()) {
+                        skip(listError);
+                        return;
+                    }
+                    const QString recordId =
+                        forkmesh::control::cloudflareDnsRecordId(
+                            existing.value(QStringLiteral("result")).toArray(),
+                            hostname, QStringLiteral("A"));
+                    const QString path =
+                        recordId.isEmpty()
+                            ? QStringLiteral("/zones/%1/dns_records")
+                                  .arg(zoneId)
+                            : QStringLiteral("/zones/%1/dns_records/%2")
+                                  .arg(zoneId, recordId);
+                    cloudflareApiCall(
+                        apiToken, path,
+                        recordId.isEmpty() ? QByteArrayLiteral("POST")
+                                           : QByteArrayLiteral("PUT"),
+                        payload,
+                        [this, hostname, recordId, skip, onDone](
+                            QJsonObject, QString writeError) {
+                            if (!writeError.isEmpty()) {
+                                skip(writeError);
+                                return;
+                            }
+                            appendHostInstallLog(
+                                QStringLiteral("Cloudflare DNS record %1 "
+                                               "for %2.\n")
+                                    .arg(recordId.isEmpty()
+                                             ? QStringLiteral("created")
+                                             : QStringLiteral("updated"),
+                                         hostname));
+                            onDone(hostname);
+                        });
+                });
+        });
+}
+
+void MainWindow::ensureVultrManagedKeypair(
+    std::function<void(QString, QString, QString)> onDone)
+{
+    const QString appDataDir =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    const QString sshDir = QDir(appDataDir).filePath(QStringLiteral("ssh"));
+    if (appDataDir.isEmpty() || !QDir().mkpath(sshDir)) {
+        onDone({}, {}, QStringLiteral(
+            "ForkMesh could not create its managed SSH key directory."));
+        return;
+    }
+    QFile::setPermissions(sshDir,
+                          QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                              QFileDevice::ExeOwner);
+    const QString keyPath =
+        QDir(sshDir).filePath(QStringLiteral("vultr_mirror_ed25519"));
+    const QString pubPath = keyPath + QStringLiteral(".pub");
+    const auto readPublicKey = [pubPath]() {
+        QFile pub(pubPath);
+        if (!pub.open(QIODevice::ReadOnly))
+            return QString();
+        return QString::fromUtf8(pub.read(64 * 1024)).trimmed();
+    };
+    if (QFileInfo(keyPath).isFile()) {
+        const QString publicKey = readPublicKey();
+        if (!publicKey.isEmpty()) {
+            onDone(keyPath, publicKey, {});
+            return;
+        }
+    }
+    appendHostInstallLog(QString::fromUtf8(
+        "Generating the managed SSH key for Vultr mirrors\xE2\x80\xA6\n"));
+    auto *keygen = new QProcess(this);
+    keygen->setProcessChannelMode(QProcess::MergedChannels);
+    connect(keygen, &QProcess::errorOccurred, this,
+            [keygen, onDone](QProcess::ProcessError processError) {
+                if (processError != QProcess::FailedToStart)
+                    return;
+                keygen->deleteLater();
+                onDone({}, {}, QStringLiteral(
+                    "Could not start ssh-keygen. Install OpenSSH and try "
+                    "again."));
+            });
+    connect(keygen, &QProcess::finished, this,
+            [keygen, keyPath, readPublicKey, onDone](
+                int code, QProcess::ExitStatus exitStatus) {
+                keygen->deleteLater();
+                if (exitStatus != QProcess::NormalExit || code != 0 ||
+                    !QFileInfo(keyPath).isFile()) {
+                    onDone({}, {}, QStringLiteral(
+                        "ssh-keygen could not create the managed key "
+                        "(exit %1).").arg(code));
+                    return;
+                }
+                QFile::setPermissions(
+                    keyPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+                const QString publicKey = readPublicKey();
+                if (publicKey.isEmpty()) {
+                    onDone({}, {}, QStringLiteral(
+                        "The managed key was created but its public half "
+                        "could not be read."));
+                    return;
+                }
+                onDone(keyPath, publicKey, {});
+            });
+    keygen->start(QStringLiteral("ssh-keygen"),
+                  {QStringLiteral("-q"), QStringLiteral("-t"),
+                   QStringLiteral("ed25519"), QStringLiteral("-N"),
+                   QString(), QStringLiteral("-C"),
+                   QStringLiteral("forkmesh-vultr-mirror"),
+                   QStringLiteral("-f"), keyPath});
+}
+
+void MainWindow::resolveVultrSshKeyId(
+    const QString &apiKey, const QString &publicKey,
+    std::function<void(QString, QString)> onDone)
+{
+    // Match on the key blob (type + base64) so the managed key is found even
+    // if it was renamed in the Vultr panel; register it once otherwise.
+    const QStringList parts =
+        publicKey.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    const QString blob = parts.size() >= 2
+                             ? parts.at(0) + QLatin1Char(' ') + parts.at(1)
+                             : publicKey;
+    vultrApiCall(
+        apiKey, QStringLiteral("/v2/ssh-keys?per_page=500"),
+        QByteArrayLiteral("GET"), {},
+        [this, apiKey, publicKey, blob, onDone](QJsonObject result,
+                                                QString error) {
+            if (!error.isEmpty()) {
+                onDone({}, error);
+                return;
+            }
+            for (const QJsonValue &value :
+                 result.value(QStringLiteral("ssh_keys")).toArray()) {
+                const QJsonObject key = value.toObject();
+                const QString id =
+                    key.value(QStringLiteral("id")).toString();
+                if (!id.isEmpty() &&
+                    key.value(QStringLiteral("ssh_key"))
+                        .toString()
+                        .trimmed()
+                        .startsWith(blob)) {
+                    onDone(id, {});
+                    return;
+                }
+            }
+            const QJsonObject body{
+                {QStringLiteral("name"),
+                 QStringLiteral("forkmesh-mirror-controller")},
+                {QStringLiteral("ssh_key"), publicKey},
+            };
+            vultrApiCall(
+                apiKey, QStringLiteral("/v2/ssh-keys"),
+                QByteArrayLiteral("POST"), body,
+                [onDone](QJsonObject created, QString postError) {
+                    if (!postError.isEmpty()) {
+                        onDone({}, postError);
+                        return;
+                    }
+                    const QString id =
+                        created.value(QStringLiteral("ssh_key"))
+                            .toObject()
+                            .value(QStringLiteral("id"))
+                            .toString();
+                    if (id.isEmpty()) {
+                        onDone({}, QStringLiteral(
+                            "Vultr did not return an SSH key id."));
+                        return;
+                    }
+                    onDone(id, {});
+                });
+        });
+}
+
+void MainWindow::createVultrMirrorFromForm()
+{
+    if (m_vultrProvisionActive) {
+        if (m_vultrStatus)
+            m_vultrStatus->setText(
+                QStringLiteral("A Vultr mirror is already being created."));
+        return;
+    }
+    if ((m_hostInstallProcess &&
+         m_hostInstallProcess->state() != QProcess::NotRunning) ||
+        m_hostDeployRemaining > 0) {
+        if (m_vultrStatus)
+            m_vultrStatus->setText(QStringLiteral(
+                "Wait for the running install to finish first."));
+        return;
+    }
+    QString apiKey =
+        m_vultrApiKeyEdit ? m_vultrApiKeyEdit->text().trimmed() : QString();
+    bool storedKey = false;
+    if (apiKey.isEmpty()) {
+        // Same convenience as the Cloudflare tooling: reuse a credential this
+        // node already stores as a device-local Actions variable.
+        apiKey = forkmesh::control::vultrApiKeyFromVariables(
+            ActionStore::variables());
+        storedKey = !apiKey.isEmpty();
+    }
+    QString node =
+        m_vultrNameEdit ? m_vultrNameEdit->text().trimmed() : QString();
+    // Saved host node names already in use, so repeated one-click deploys
+    // (and manually typed names) never collide with an existing mirror.
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
+    QSet<QString> used;
+    QStringList knownNames;
+    for (const QJsonValue &value : hosts) {
+        const QString name = value.toObject()
+                                 .value(QStringLiteral("name"))
+                                 .toString()
+                                 .toLower();
+        used.insert(name);
+        knownNames.append(name);
+    }
+    if (node.isEmpty()) {
+        // Continue the fleet's mirrorN numbering rather than naming the node
+        // after its hosting provider: the account's linked nodes carry the
+        // mirrors this device never saved as hosts (adhoc #344).
+        knownNames += m_profileLinkedNodes;
+        node = forkmesh::control::nextMirrorNodeName(knownNames);
+        if (node.isEmpty()) {
+            if (m_vultrStatus)
+                m_vultrStatus->setText(QStringLiteral(
+                    "Could not pick a free mirror name — enter one."));
+            return;
+        }
+    } else if (used.contains(node.toLower())) {
+        if (m_vultrStatus)
+            m_vultrStatus->setText(QStringLiteral(
+                "A saved host named \"%1\" already exists — choose a "
+                "different node name.").arg(node));
+        return;
+    }
+    const QString invalid =
+        forkmesh::control::validateVultrMirrorRequest(apiKey, node);
+    if (!invalid.isEmpty()) {
+        if (m_vultrStatus)
+            m_vultrStatus->setText(invalid);
+        return;
+    }
+
+    m_vultrProvisionActive = true;
+    m_vultrPollCount = 0;
+    m_vultrInstallAttempts = 0;
+    m_vultrInstallUseLocalBinary = false;
+    m_vultrInstallAttemptLog.clear();
+    m_vultrDnsHostname.clear();
+    m_hostInstallAttemptBanner.clear();
+    if (m_vultrCreateButton)
+        m_vultrCreateButton->setEnabled(false);
+    if (m_hostInstallLog) {
+        m_hostInstallLog->clear();
+        m_hostInstallLogCarry.clear();
+        m_hostInstallLogFg = -1;
+        m_hostInstallLogBold = false;
+    }
+    appendHostInstallLog(QString::fromUtf8(
+        "Creating Vultr mirror \"%1\" \xE2\x80\x94 cheapest plan, latest "
+        "Debian, managed SSH key\xE2\x80\xA6\n").arg(node));
+    if (storedKey)
+        appendHostInstallLog(QStringLiteral(
+            "Using the VULTR_API_KEY stored as a device variable.\n"));
+    if (m_vultrStatus)
+        m_vultrStatus->setText(
+            QString::fromUtf8("Preparing the managed SSH key\xE2\x80\xA6"));
+
+    ensureVultrManagedKeypair([this, apiKey, node](
+                                  QString keyPath, QString publicKey,
+                                  QString keyError) {
+        if (!keyError.isEmpty()) {
+            finishVultrProvision(false, keyError);
+            return;
+        }
+        appendHostInstallLog(
+            QStringLiteral("Managed SSH key: %1\n").arg(keyPath));
+        if (m_vultrStatus)
+            m_vultrStatus->setText(QString::fromUtf8(
+                "Registering the SSH key with Vultr\xE2\x80\xA6"));
+        resolveVultrSshKeyId(apiKey, publicKey, [this, apiKey, node, keyPath](
+                                                    QString sshKeyId,
+                                                    QString sshError) {
+            if (!sshError.isEmpty()) {
+                finishVultrProvision(false, sshError);
+                return;
+            }
+            if (m_vultrStatus)
+                m_vultrStatus->setText(QString::fromUtf8(
+                    "Choosing the cheapest plan\xE2\x80\xA6"));
+            vultrApiCall(
+                apiKey, QStringLiteral("/v2/plans?per_page=500"),
+                QByteArrayLiteral("GET"), {},
+                [this, apiKey, node, keyPath, sshKeyId](
+                    QJsonObject plansResult, QString planError) {
+                    if (!planError.isEmpty()) {
+                        finishVultrProvision(false, planError);
+                        return;
+                    }
+                    const QJsonObject plan =
+                        forkmesh::control::cheapestVultrPlan(
+                            plansResult.value(QStringLiteral("plans"))
+                                .toArray());
+                    const QString region =
+                        forkmesh::control::vultrPlanRegion(plan);
+                    if (plan.isEmpty() || region.isEmpty()) {
+                        finishVultrProvision(false, QStringLiteral(
+                            "No deployable plan is available on this Vultr "
+                            "account."));
+                        return;
+                    }
+                    appendHostInstallLog(
+                        QStringLiteral(
+                            "Cheapest plan: %1 ($%2/month, %3 MB RAM, %4 GB "
+                            "disk) in region %5\n")
+                            .arg(plan.value(QStringLiteral("id")).toString())
+                            .arg(plan.value(QStringLiteral("monthly_cost"))
+                                     .toDouble())
+                            .arg(plan.value(QStringLiteral("ram")).toInt())
+                            .arg(plan.value(QStringLiteral("disk")).toInt())
+                            .arg(region));
+                    vultrApiCall(
+                        apiKey, QStringLiteral("/v2/os?per_page=500"),
+                        QByteArrayLiteral("GET"), {},
+                        [this, apiKey, node, keyPath, sshKeyId, plan, region](
+                            QJsonObject osResult, QString osError) {
+                            if (!osError.isEmpty()) {
+                                finishVultrProvision(false, osError);
+                                return;
+                            }
+                            const QJsonObject debian =
+                                forkmesh::control::latestVultrDebianOs(
+                                    osResult.value(QStringLiteral("os"))
+                                        .toArray());
+                            if (debian.isEmpty()) {
+                                finishVultrProvision(false, QStringLiteral(
+                                    "Vultr offers no Debian x64 image right "
+                                    "now."));
+                                return;
+                            }
+                            appendHostInstallLog(
+                                QStringLiteral("Operating system: %1\n")
+                                    .arg(debian.value(QStringLiteral("name"))
+                                             .toString()));
+                            if (m_vultrStatus)
+                                m_vultrStatus->setText(QString::fromUtf8(
+                                    "Creating the instance\xE2\x80\xA6"));
+                            const QJsonObject payload =
+                                forkmesh::control::vultrInstanceCreatePayload(
+                                    node,
+                                    plan.value(QStringLiteral("id"))
+                                        .toString(),
+                                    region,
+                                    debian.value(QStringLiteral("id"))
+                                        .toInt(),
+                                    sshKeyId);
+                            vultrApiCall(
+                                apiKey, QStringLiteral("/v2/instances"),
+                                QByteArrayLiteral("POST"), payload,
+                                [this, apiKey, node, keyPath](
+                                    QJsonObject createResult,
+                                    QString createError) {
+                                    if (!createError.isEmpty()) {
+                                        finishVultrProvision(false,
+                                                             createError);
+                                        return;
+                                    }
+                                    const QString instanceId =
+                                        createResult
+                                            .value(QStringLiteral("instance"))
+                                            .toObject()
+                                            .value(QStringLiteral("id"))
+                                            .toString();
+                                    if (instanceId.isEmpty()) {
+                                        finishVultrProvision(
+                                            false,
+                                            QStringLiteral(
+                                                "Vultr did not return an "
+                                                "instance id."));
+                                        return;
+                                    }
+                                    appendHostInstallLog(QString::fromUtf8(
+                                        "Instance %1 created \xE2\x80\x94 "
+                                        "waiting for it to boot\xE2\x80\xA6\n")
+                                        .arg(instanceId));
+                                    if (m_vultrStatus)
+                                        m_vultrStatus->setText(
+                                            QString::fromUtf8(
+                                                "Waiting for the instance to "
+                                                "boot\xE2\x80\xA6"));
+                                    pollVultrInstance(apiKey, instanceId,
+                                                      node, keyPath);
+                                });
+                        });
+                });
+        });
+    });
+}
+
+void MainWindow::pollVultrInstance(const QString &apiKey,
+                                   const QString &instanceId,
+                                   const QString &node,
+                                   const QString &identityFile)
+{
+    constexpr int kMaxPolls = 60; // ~10 minutes at one poll every 10 s
+    if (!m_vultrProvisionActive)
+        return;
+    vultrApiCall(
+        apiKey, QStringLiteral("/v2/instances/") + instanceId,
+        QByteArrayLiteral("GET"), {},
+        [this, apiKey, instanceId, node, identityFile](QJsonObject result,
+                                                       QString error) {
+            if (!m_vultrProvisionActive)
+                return;
+            if (!error.isEmpty()) {
+                finishVultrProvision(false, error);
+                return;
+            }
+            const QJsonObject instance =
+                result.value(QStringLiteral("instance")).toObject();
+            const QString ip =
+                forkmesh::control::vultrInstanceReadyIp(instance);
+            if (ip.isEmpty()) {
+                if (forkmesh::control::vultrInstanceIsIpv6Only(instance)) {
+                    // Nothing in the mesh can reach a v6-only host, and waiting
+                    // out the poll budget would never change that (adhoc #344).
+                    finishVultrProvision(false, QStringLiteral(
+                        "Vultr gave this instance an IPv6 address only, which "
+                        "the mesh cannot reach. Destroy instance %1 in the "
+                        "Vultr panel and retry — ForkMesh only deploys IPv4 "
+                        "plans.").arg(instanceId));
+                    return;
+                }
+                if (++m_vultrPollCount >= kMaxPolls) {
+                    finishVultrProvision(false, QStringLiteral(
+                        "The instance did not become ready in time. Check "
+                        "it in the Vultr panel, then Add host + Install "
+                        "ForkMesh manually once it is up."));
+                    return;
+                }
+                if (m_vultrStatus)
+                    m_vultrStatus->setText(
+                        QString::fromUtf8(
+                            "Waiting for the instance to boot "
+                            "(status: %1)\xE2\x80\xA6")
+                            .arg(instance.value(QStringLiteral("status"))
+                                     .toString()));
+                QTimer::singleShot(
+                    10000, this,
+                    [this, apiKey, instanceId, node, identityFile] {
+                        pollVultrInstance(apiKey, instanceId, node,
+                                          identityFile);
+                    });
+                return;
+            }
+            appendHostInstallLog(
+                QStringLiteral("Instance is up at %1.\n").arg(ip));
+            // Persist the host with its managed key path before the install
+            // so every later SSH action (install, logs, uninstall, Actions)
+            // authenticates with that key. Vultr Debian images boot as root.
+            rememberHost(node, ip, QStringLiteral("root"), QString(),
+                         QStringLiteral("vultr booting"), identityFile);
+            // Name the node in the operator's Cloudflare zone while SSH is
+            // still coming up, so it joins the mesh the way the other mirrors
+            // do rather than as a bare address (adhoc #331).
+            if (m_vultrStatus)
+                m_vultrStatus->setText(QString::fromUtf8(
+                    "Adding the Cloudflare DNS record\xE2\x80\xA6"));
+            ensureVultrMirrorDns(
+                node, ip, [this, node, ip, identityFile](QString hostname) {
+                    if (!m_vultrProvisionActive)
+                        return;
+                    m_vultrDnsHostname = hostname;
+                    if (m_vultrStatus)
+                        m_vultrStatus->setText(QString::fromUtf8(
+                            "Giving SSH a moment to come up\xE2\x80\xA6"));
+                    QTimer::singleShot(
+                        15000, this, [this, node, ip, identityFile] {
+                            startVultrHostInstall(node, ip, identityFile);
+                        });
+                });
+        });
+}
+
+void MainWindow::appendVultrAttemptHistory()
+{
+    if (m_vultrInstallAttemptLog.isEmpty())
+        return;
+    QString block = QString::fromUtf8("\nInstall attempts this run:\n");
+    for (const QString &entry : std::as_const(m_vultrInstallAttemptLog))
+        block += QString::fromUtf8("  \xE2\x80\xA2 %1\n").arg(entry);
+    appendHostInstallLog(block);
+}
+
+void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
+                                       const QString &identityFile)
+{
+    constexpr int kMaxInstallAttempts = 6;
+    if (!m_vultrProvisionActive)
+        return;
+    // Hand off to the shared install path through the form it reads; the
+    // managed key is picked up from the saved host's identityFile.
+    if (m_hostIpEdit)
+        m_hostIpEdit->setText(ip);
+    if (m_hostUserEdit)
+        m_hostUserEdit->setText(QStringLiteral("root"));
+    if (m_hostPassEdit)
+        m_hostPassEdit->clear();
+    if (m_hostNameEdit)
+        m_hostNameEdit->setText(node);
+    if (m_hostUploadBinaryCheck)
+        m_hostUploadBinaryCheck->setChecked(false);
+    ++m_vultrInstallAttempts;
+    const QString attemptLabel =
+        QStringLiteral("Attempt %1 of %2 at %3")
+            .arg(QString::number(m_vultrInstallAttempts),
+                 QString::number(kMaxInstallAttempts),
+                 QDateTime::currentDateTime().toString(
+                     QStringLiteral("hh:mm:ss")));
+    // Keep every attempt's output in the window rather than clearing the log
+    // on each retry (adhoc #342) — a run that fails six times is exactly when
+    // the earlier transcripts matter.
+    // The banner is set for the first attempt too, so the provisioning
+    // preamble above it (instance id, address, DNS record) survives as well.
+    m_hostInstallAttemptBanner = attemptLabel;
+    if (m_vultrStatus)
+        m_vultrStatus->setText(
+            QString::fromUtf8(
+                "Installing ForkMesh (attempt %1 of %2)\xE2\x80\xA6")
+                .arg(m_vultrInstallAttempts)
+                .arg(kMaxInstallAttempts));
+    // A fresh instance often refuses SSH for a short while after Vultr
+    // reports it active, so an early attempt failing is expected, not a
+    // real failure — only the last attempt should report "Install failed".
+    const bool isFinalAttempt = m_vultrInstallAttempts >= kMaxInstallAttempts;
+    runHostInstall(m_vultrInstallUseLocalBinary, [this, node, ip, identityFile,
+                           attemptLabel, isFinalAttempt](bool ok) {
+        if (!m_vultrProvisionActive)
+            return;
+        m_vultrInstallAttemptLog.append(
+            QString::fromUtf8("%1 \xE2\x80\x94 %2")
+                .arg(attemptLabel,
+                     ok ? QStringLiteral("installed")
+                        : (m_hostInstallLastFailure.isEmpty()
+                               ? QStringLiteral("failed")
+                               : m_hostInstallLastFailure)));
+        if (ok) {
+            appendVultrAttemptHistory();
+            const QString address =
+                m_vultrDnsHostname.isEmpty()
+                    ? ip
+                    : QStringLiteral("%1, %2").arg(m_vultrDnsHostname, ip);
+            finishVultrProvision(true, QString::fromUtf8(
+                "Vultr mirror \"%1\" (%2) is installed and linking to your "
+                "account \xE2\x80\x94 it will start mirroring and syncing "
+                "shortly.").arg(node, address));
+            return;
+        }
+        // An address outside the routable internet will never answer, however
+        // long we wait — stop burning attempts and say what is actually wrong
+        // (adhoc #342).
+        const QString unroutable = forkmesh::control::nonRoutableAddressNote(ip);
+        if (!unroutable.isEmpty()) {
+            appendVultrAttemptHistory();
+            finishVultrProvision(false, QString::fromUtf8(
+                "%1 is in %2, so SSH from this machine can never reach it. "
+                "Give the instance a public address (or run the install from "
+                "the network that owns that range); it is saved under Hosts "
+                "\xE2\x80\x94 fix the address there and click Update.")
+                .arg(ip, unroutable));
+            return;
+        }
+        // A brand-new instance has nobody mirroring it yet, so a relay
+        // download/clone (the default path) can never succeed no matter how
+        // many times it is retried the same way. Switch this and every later
+        // attempt this run to uploading this app's own release binary
+        // directly over the SSH session instead — that needs no online
+        // mirror at all — and retry right away rather than waiting out the
+        // "host not reachable yet" backoff below, since SSH clearly worked.
+        if (!m_vultrInstallUseLocalBinary && !isFinalAttempt &&
+            m_hostInstallRawTail.contains(
+                QStringLiteral("No online ForkMesh node"))) {
+            m_vultrInstallUseLocalBinary = true;
+            if (m_vultrStatus)
+                m_vultrStatus->setText(QString::fromUtf8(
+                    "No online mirror to install from yet \xE2\x80\x94 "
+                    "retrying with this app's own release uploaded "
+                    "directly\xE2\x80\xA6"));
+            QTimer::singleShot(2000, this, [this, node, ip, identityFile] {
+                startVultrHostInstall(node, ip, identityFile);
+            });
+            return;
+        }
+        if (m_vultrInstallAttempts >= kMaxInstallAttempts) {
+            appendVultrAttemptHistory();
+            finishVultrProvision(false, QString::fromUtf8(
+                "Install did not succeed after %1 attempts. The instance is "
+                "saved under Hosts \xE2\x80\x94 click Update there to retry.")
+                .arg(kMaxInstallAttempts));
+            return;
+        }
+        // A fresh instance often refuses SSH for a short while after it
+        // reports active; back off and retry.
+        if (m_vultrStatus)
+            m_vultrStatus->setText(QString::fromUtf8(
+                "Attempt %1 of %2 failed \xE2\x80\x94 host not reachable yet, "
+                "retrying in 30 seconds\xE2\x80\xA6")
+                .arg(m_vultrInstallAttempts)
+                .arg(kMaxInstallAttempts));
+        QTimer::singleShot(30000, this, [this, node, ip, identityFile] {
+            startVultrHostInstall(node, ip, identityFile);
+        });
+    }, /*reinstall=*/false, /*fromSource=*/false,
+    /*suppressFailureStatus=*/!isFinalAttempt);
 }
 
 namespace {
@@ -11063,8 +12001,14 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
 
 void MainWindow::runHostInstall(bool forceUploadBinary,
                                 std::function<void(bool)> onFinished,
-                                bool reinstall, bool fromSource)
+                                bool reinstall, bool fromSource,
+                                bool suppressFailureStatus)
 {
+    // A retry loop hands us a banner so its earlier attempts stay in the
+    // window (adhoc #342); a plain one-shot install starts from a clean log.
+    // Consumed once per call so it can never leak into a later manual run.
+    const QString attemptBanner = m_hostInstallAttemptBanner;
+    m_hostInstallAttemptBanner.clear();
     if ((m_hostInstallProcess &&
          m_hostInstallProcess->state() != QProcess::NotRunning) ||
         m_hostDeployRemaining > 0) {
@@ -11124,7 +12068,8 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     QString sshError;
     const forkmesh::control::HostSshCommand ssh =
         forkmesh::control::buildHostSshCommand(
-            ip, user, pass, remoteCmd, &sshError);
+            ip, user, pass, remoteCmd, &sshError,
+            savedHostIdentityFile(node, ip, user));
     if (ssh.program.isEmpty()) {
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(sshError);
@@ -11137,10 +12082,19 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     // fails partway through; a successful run flips the status to "installed".
     rememberHost(node, ip, user, pass, QStringLiteral("installing"));
 
-    m_hostInstallLog->clear();
+    if (attemptBanner.isEmpty())
+        m_hostInstallLog->clear();
     m_hostInstallLogCarry.clear();
     m_hostInstallLogFg = -1;
     m_hostInstallLogBold = false;
+    if (!attemptBanner.isEmpty())
+        appendHostInstallLog(
+            QString::fromUtf8("\n\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94"
+                              "\x80 %1 \xE2\x94\x80\xE2\x94\x80\xE2\x94\x80"
+                              "\xE2\x94\x80\n")
+                .arg(attemptBanner));
+    m_hostInstallRawTail.clear();
+    m_hostInstallLastFailure.clear();
     m_hostInstallLinkTail.clear();
     m_hostLinkPrompted = false;
     // Echo the command we run (the password lives in the SSHPASS env / stdin, so
@@ -11174,6 +12128,9 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc] {
         const QString chunk = QString::fromUtf8(proc->readAllStandardOutput());
         appendHostInstallLog(chunk);
+        // Bounded tail kept only to classify a connection-level failure below
+        // (e.g. "Connection timed out"); it never needs the full transcript.
+        m_hostInstallRawTail = (m_hostInstallRawTail + chunk).right(4000);
         // The installer prints "FORKMESH LINK CODE: NNNNNN" on the fresh
         // machine (adhoc #53). Watch the stream for it — through a rolling
         // tail so a code split across read chunks still matches — and link the
@@ -11216,7 +12173,8 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
                 "only when using password login) and try again.\n"));
     });
     connect(proc, &QProcess::finished, this,
-            [this, ip, user, node, pass, onFinished, reinstall](int code, QProcess::ExitStatus status) {
+            [this, ip, user, node, pass, onFinished, reinstall,
+             suppressFailureStatus](int code, QProcess::ExitStatus status) {
                 if (m_hostInstallButton)
                     m_hostInstallButton->setEnabled(true);
                 const bool ok = status == QProcess::NormalExit && code == 0;
@@ -11237,11 +12195,26 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
                 } else {
                     appendHostInstallLog(QString::fromUtf8(
                         "\n\xE2\x9C\x98 %1 failed (exit %2).\n").arg(verb).arg(code));
-                    if (m_hostInstallStatus)
-                        m_hostInstallStatus->setText(QString::fromUtf8(
-                            "\xE2\x9C\x98 Install failed \xE2\x80\x94 see the "
-                            "output above."));
-                    rememberHost(node, ip, user, pass, QStringLiteral("install failed"));
+                    m_hostInstallLastFailure =
+                        forkmesh::control::sshFailureSummary(
+                            code, m_hostInstallRawTail);
+                    const QString hint = forkmesh::control::sshConnectionFailureHint(
+                        code, m_hostInstallRawTail, ip);
+                    if (!hint.isEmpty())
+                        appendHostInstallLog(
+                            QStringLiteral("\n%1\n").arg(hint));
+                    // A caller that still has retries left (the Vultr
+                    // auto-provision flow) reports its own "retrying..."
+                    // status and only wants the terminal "Install failed"
+                    // wording once its last attempt is spent.
+                    if (!suppressFailureStatus) {
+                        if (m_hostInstallStatus)
+                            m_hostInstallStatus->setText(QString::fromUtf8(
+                                "\xE2\x9C\x98 Install failed \xE2\x80\x94 see "
+                                "the output above."));
+                        rememberHost(node, ip, user, pass,
+                                     QStringLiteral("install failed"));
+                    }
                 }
                 if (m_hostInstallProcess) {
                     m_hostInstallProcess->deleteLater();
@@ -11550,7 +12523,8 @@ void MainWindow::startHostDeploySession(HostDeploySession *session,
     QString sshError;
     const forkmesh::control::HostSshCommand ssh =
         forkmesh::control::buildHostSshCommand(
-            session->ip, session->user, session->pass, remoteCmd, &sshError);
+            session->ip, session->user, session->pass, remoteCmd, &sshError,
+            savedHostIdentityFile(session->node, session->ip, session->user));
     if (ssh.program.isEmpty()) {
         appendHostDeployLog(
             session, QString::fromUtf8("\n\xE2\x9C\x98 %1\n").arg(sshError));
@@ -11758,7 +12732,8 @@ void MainWindow::runHostUninstall()
     QString sshError;
     const forkmesh::control::HostSshCommand ssh =
         forkmesh::control::buildHostSshCommand(
-            ip, user, pass, remoteCmd, &sshError);
+            ip, user, pass, remoteCmd, &sshError,
+            savedHostIdentityFile(node, ip, user));
     if (ssh.program.isEmpty()) {
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(sshError);

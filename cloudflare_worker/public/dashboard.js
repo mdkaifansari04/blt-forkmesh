@@ -3,6 +3,7 @@
     repositories: [],
     externalRepositories: [],
     externalRepositoriesLoading: false,
+    externalRepositorySelection: new Set(),
     filteredRepositories: [],
     filteredGroups: [],
     repositoriesLoading: true,
@@ -57,6 +58,10 @@
     // to. null until the first cross-repo fetch resolves so the panel can tell
     // "loading" apart from "no active sessions".
     homeAgentSessions: null,
+    // Home right-rail "Latest from the blog" (adhoc #381): the newest posts
+    // parsed from /blog/rss.xml. null until the feed read resolves so the card
+    // can tell "loading" apart from "feed unavailable".
+    homeBlogPosts: null,
     longDiffOverrides: {},
     repoCommitDetail: null,
     repoRecordDetail: null,
@@ -1514,6 +1519,45 @@
       </article>`).join("");
   }
 
+  // Coarse kinds only — the Worker stores when an account was emailed and
+  // whether the provider accepted it, never the subject or body.
+  const ACCOUNT_EMAIL_KIND_LABELS = {
+    verification: "Email verification",
+    password_reset: "Password reset",
+    feedback: "Founder feedback",
+    notifications: "Notification digest",
+    general_chat: "#general digest",
+  };
+
+  function renderAccountActivity(data) {
+    const account = data?.account || {};
+    const lastSeen = $("[data-account-last-seen]");
+    if (lastSeen) {
+      const seenAt = Number(account.lastSeenAt || 0);
+      lastSeen.textContent = seenAt ? formatTimeAgo(seenAt) : "Never";
+      lastSeen.title = seenAt ? formatDate(seenAt) : "";
+    }
+    const emailedAt = Number(account.lastEmailAt || 0);
+    const lastEmail = $("[data-account-last-email]");
+    if (lastEmail) {
+      lastEmail.textContent = emailedAt ? formatTimeAgo(emailedAt) : "Never emailed";
+      lastEmail.title = emailedAt ? formatDate(emailedAt) : "";
+    }
+    const detail = $("[data-account-last-email-detail]");
+    if (detail) {
+      const status = String(account.lastEmailStatus || "");
+      const kind = ACCOUNT_EMAIL_KIND_LABELS[String(account.lastEmailKind || "")] || "Email";
+      detail.textContent = !emailedAt ? "" : kind + " · " + (
+        status === "delivered" ? "Delivered to the mail provider"
+          : status === "failed" ? "The mail provider rejected it"
+            : "Delivery status unknown");
+      detail.className = "mt-1 text-xs " + (
+        status === "delivered" && emailedAt ? "text-emerald-400"
+          : status === "failed" && emailedAt ? "text-red-400"
+            : "text-muted-foreground");
+    }
+  }
+
   function bindAccountSessionControls() {
     const list = $("[data-account-session-list]");
     if (list && list.dataset.controlsBound !== "true") {
@@ -1542,6 +1586,7 @@
       try {
         const data = await accountSessionApi("GET");
         renderAccountSessions(data);
+        renderAccountActivity(data);
         accountSessionsLoaded = true;
         setAccountSessionStatus(data.privacyNotice || "");
       } catch (error) {
@@ -3669,6 +3714,228 @@
     updateRenameButton();
     renderClaimNodePanel(session);
     renderProfileContributionGraph();
+    renderProfileFediverse(session);
+  }
+
+  // ---- Fediverse presence ------------------------------------------------
+  // A profile with a linked Mastodon handle surfaces that account here: the
+  // account's header image becomes a banner across the overview page and the
+  // newest public posts fill a sidebar card. The browser talks straight to
+  // the user's home instance (public CORS API, credentials omitted) so none
+  // of this spends the worker's request quota, and a 10-minute localStorage
+  // snapshot keeps repeat visits from hammering small instances.
+  const PROFILE_FEDIVERSE_CACHE_PREFIX = "forkmesh.profileFediverse:v1:";
+  const PROFILE_FEDIVERSE_CACHE_TTL_MS = 10 * 60 * 1000;
+  const PROFILE_FEDIVERSE_POST_LIMIT = 3;
+  const profileFediverseLoading = new Set();
+
+  function parseMastodonHandle(raw) {
+    const match = /^@?([\w.-]{1,80})@([a-z0-9-]+(?:\.[a-z0-9-]+)+)$/i
+      .exec(String(raw || "").trim());
+    return match ? { user: match[1], domain: match[2].toLowerCase() } : null;
+  }
+
+  function fediverseHttpsUrl(value) {
+    try {
+      const url = new URL(String(value || "").trim());
+      return url.protocol === "https:" && !url.username && !url.password
+        ? url.href : "";
+    } catch {
+      return "";
+    }
+  }
+
+  // Mastodon serves statuses and notes as sanitized HTML; the card renders
+  // plain text only. A detached textarea decodes entities without ever
+  // constructing elements from the remote markup.
+  function fediversePlainText(value, limit = 280) {
+    const stripped = String(value ?? "")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/(?:p|div|blockquote|li)>/gi, "\n")
+      .replace(/<[^>]*>/g, "");
+    const decoder = document.createElement("textarea");
+    decoder.innerHTML = stripped;
+    const text = decoder.value
+      .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, " ")
+      .replace(/[ \t]+/g, " ")
+      .replace(/ ?\n ?/g, "\n")
+      .replace(/\n{2,}/g, "\n")
+      .trim();
+    return text.length > limit ? text.slice(0, limit - 1).trimEnd() + "…" : text;
+  }
+
+  function profileFediverseCacheKey(handle) {
+    return PROFILE_FEDIVERSE_CACHE_PREFIX + handle;
+  }
+
+  function readProfileFediverseCache(handle) {
+    try {
+      const data = JSON.parse(localStorage.getItem(profileFediverseCacheKey(handle)) || "");
+      return data && typeof data === "object" && Array.isArray(data.posts) ? data : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function writeProfileFediverseCache(handle, data) {
+    try {
+      localStorage.setItem(profileFediverseCacheKey(handle), JSON.stringify(data));
+    } catch {}
+  }
+
+  async function fetchFediverseJson(url) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    try {
+      const response = await fetch(url, {
+        credentials: "omit",
+        headers: { Accept: "application/json" },
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error("fediverse HTTP " + response.status);
+      return await response.json();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function loadProfileFediverse(parsed) {
+    const base = "https://" + parsed.domain;
+    const account = await fetchFediverseJson(
+      base + "/api/v1/accounts/lookup?acct=" + encodeURIComponent(parsed.user));
+    const id = String(account?.id || "").trim().slice(0, 64);
+    if (!id || account?.suspended) return null;
+    let statuses = [];
+    try {
+      statuses = await fetchFediverseJson(
+        base + "/api/v1/accounts/" + encodeURIComponent(id) +
+        "/statuses?limit=10&exclude_replies=true");
+    } catch {
+      // The account still renders; the posts list just stays empty.
+    }
+    const posts = (Array.isArray(statuses) ? statuses : [])
+      .map((status) => {
+        const boost = status?.reblog && typeof status.reblog === "object"
+          ? status.reblog : null;
+        const source = boost || status || {};
+        const imageCount = (Array.isArray(source.media_attachments)
+          ? source.media_attachments : [])
+          .filter((media) => String(media?.type || "") === "image").length;
+        return {
+          url: fediverseHttpsUrl(source.url || status?.url),
+          text: fediversePlainText(source.content),
+          imageCount,
+          boosted: Boolean(boost),
+          createdAt: String(source.created_at || status?.created_at || ""),
+        };
+      })
+      .filter((post) => post.url && (post.text || post.imageCount))
+      .slice(0, PROFILE_FEDIVERSE_POST_LIMIT);
+    // Instances answer with a placeholder "missing.png" header when the
+    // account never uploaded one — that is not a banner worth showing.
+    const header = fediverseHttpsUrl(account.header_static || account.header);
+    return {
+      at: Date.now(),
+      url: fediverseHttpsUrl(account.url) || base + "/@" + parsed.user,
+      acct: String(account.acct || parsed.user).slice(0, 120),
+      banner: /\/missing\.png$/i.test(header) ? "" : header,
+      posts,
+    };
+  }
+
+  function renderProfileFediverseData(handle, data) {
+    const stamp = handle + ":" + String(data?.at || 0);
+    const banner = $("[data-profile-fediverse-banner]");
+    if (banner) {
+      if (data?.banner) {
+        banner.style.backgroundImage = 'url("' + data.banner + '")';
+        banner.href = data.url;
+        banner.hidden = false;
+      } else {
+        banner.hidden = true;
+      }
+    }
+    $$("[data-profile-fediverse]").forEach((card) => {
+      if (!data) {
+        card.hidden = true;
+        return;
+      }
+      if (card.dataset.fediverseStamp === stamp) {
+        card.hidden = false;
+        return;
+      }
+      card.dataset.fediverseStamp = stamp;
+      const link = card.querySelector("[data-profile-fediverse-link]");
+      if (link) {
+        link.textContent = "@" + data.acct;
+        link.href = data.url;
+      }
+      // Pops the feed out into its own window so it can sit beside the
+      // dashboard instead of replacing the tab.
+      const popout = card.querySelector("[data-profile-fediverse-popout]");
+      if (popout) {
+        popout.onclick = () => {
+          window.open(
+            data.url, "forkmesh-fediverse-feed",
+            "noopener,width=520,height=860");
+        };
+      }
+      const list = card.querySelector("[data-profile-fediverse-posts]");
+      if (list) {
+        list.textContent = "";
+        data.posts.forEach((post, index) => {
+          const item = document.createElement("a");
+          item.href = post.url;
+          item.target = "_blank";
+          item.rel = "noopener noreferrer";
+          item.className = "block px-3 py-2 hover:bg-secondary" +
+            (index ? " border-t border-border" : "");
+          const text = document.createElement("p");
+          text.className = "whitespace-pre-wrap break-words leading-5 text-foreground";
+          text.textContent = post.text ||
+            (post.imageCount === 1 ? "Shared an image." : "Shared " + post.imageCount + " images.");
+          const meta = document.createElement("p");
+          meta.className = "mt-1 text-xs text-muted-foreground";
+          meta.textContent = (post.boosted ? "Boosted · " : "") + formatTimeAgo(post.createdAt);
+          item.append(text, meta);
+          list.append(item);
+        });
+        if (!data.posts.length) {
+          const empty = document.createElement("p");
+          empty.className = "px-3 py-2 text-muted-foreground";
+          empty.textContent = "No public posts yet.";
+          list.append(empty);
+        }
+      }
+      card.hidden = false;
+      window.lucide?.createIcons();
+    });
+  }
+
+  function renderProfileFediverse(session) {
+    if (profileMarkupOwnedByPublicProfile(session)) return;
+    const parsed = parseMastodonHandle(session?.mastodon);
+    if (!parsed) {
+      renderProfileFediverseData("", null);
+      return;
+    }
+    const handle = parsed.user + "@" + parsed.domain;
+    const cached = readProfileFediverseCache(handle);
+    if (cached) renderProfileFediverseData(handle, cached);
+    const fresh = cached && Date.now() - Number(cached.at || 0) < PROFILE_FEDIVERSE_CACHE_TTL_MS;
+    if (fresh || profileFediverseLoading.has(handle)) return;
+    profileFediverseLoading.add(handle);
+    loadProfileFediverse(parsed)
+      .then((data) => {
+        if (!data) return;
+        writeProfileFediverseCache(handle, data);
+        renderProfileFediverseData(handle, data);
+      })
+      .catch(() => {
+        // Instance unreachable (CORS, rate limit, downtime): keep whatever
+        // the stale snapshot already painted instead of flashing it away.
+      })
+      .finally(() => profileFediverseLoading.delete(handle));
   }
 
   function renderProfileLinksEditor(session = state.session) {
@@ -4482,7 +4749,10 @@
 
   function nativeRepositoryLogoDataUrl(value) {
     const url = String(value || "");
-    return /^data:image\/(?:svg\+xml|png|jpeg|webp)(?:;|,)/i.test(url)
+    return (
+      /^data:image\/(?:svg\+xml|png|jpeg|webp)(?:;|,)/i.test(url)
+      || /^\/api\/repo\/[^/?#]+\/[^/?#]+\/raw\?[^#]+$/i.test(url)
+    )
       ? url
       : "";
   }
@@ -4848,21 +5118,80 @@
     hydrateNativeRepositoryLogos(container);
   }
 
-  function renderHomeChangelog() {
-    const container = $("[data-home-changelog-list]");
+  // Home right-rail "Latest from the blog" (adhoc #381): the newest feature
+  // posts with their artwork, read from the blog's own RSS document. The feed
+  // is derived from the shipped blog index and edge-cached for thirty minutes
+  // (see blog_feed.py), so this is one cheap same-origin read per dashboard
+  // load rather than a second hand-maintained copy of the post list.
+  const HOME_BLOG_POST_LIMIT = 3;
+  const HOME_BLOG_FEED_URL = "/blog/rss.xml";
+
+  // Feed URLs are absolute against forkmesh.com; keep only the path so the
+  // dashboard links and paints artwork from whatever origin it is served on
+  // (and never loads an image from a foreign host).
+  function homeBlogUrl(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    try {
+      const parsed = new URL(raw, window.location.origin);
+      return parsed.pathname + parsed.search;
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function parseHomeBlogFeed(xml) {
+    const doc = new DOMParser().parseFromString(String(xml || ""), "application/xml");
+    if (doc.querySelector("parsererror")) return [];
+    return Array.from(doc.querySelectorAll("item"))
+      .map((item) => ({
+        title: (item.querySelector("title")?.textContent || "").trim(),
+        href: homeBlogUrl(item.querySelector("link")?.textContent),
+        meta: (item.querySelector("category")?.textContent || "").trim(),
+        image: homeBlogUrl(item.querySelector("enclosure")?.getAttribute("url")),
+      }))
+      .filter((post) => post.title && post.href)
+      .slice(0, HOME_BLOG_POST_LIMIT);
+  }
+
+  function homeBlogPostCard(post) {
+    return `
+      <a href="${escapeHtml(post.href)}" class="group block overflow-hidden rounded-md border border-border hover:bg-secondary">
+        ${post.image ? `<img src="${escapeHtml(post.image)}" alt="" loading="lazy" class="block aspect-[16/9] w-full object-cover" />` : ""}
+        <span class="block px-3 py-2.5">
+          ${post.meta ? `<span class="block truncate font-mono text-[10px] uppercase text-muted-foreground">${escapeHtml(post.meta)}</span>` : ""}
+          <span class="mt-1 block text-sm font-semibold leading-5 text-foreground group-hover:text-accent">${escapeHtml(post.title)}</span>
+        </span>
+      </a>
+    `;
+  }
+
+  function renderHomeBlogPosts() {
+    const container = $("[data-home-blog-list]");
     if (!container) return;
-    const items = [
-      { label: "The Living Code City", meta: "v0.7.0 · July 2026", href: "/changelog" },
-      { label: "The Agent Mesh", meta: "v0.5.0 · June 2026", href: "/changelog" },
-      { label: "Autonomous agents", meta: "v0.4.0 · June 2026", href: "/changelog" },
-    ];
-    container.innerHTML = items.map((item) => `
-      <article class="relative">
-        <span class="absolute -left-[1.18rem] top-1.5 h-2 w-2 rounded-full bg-muted-foreground"></span>
-        <p class="text-xs text-muted-foreground">${escapeHtml(item.meta)}</p>
-        <a href="${escapeHtml(item.href)}" class="mt-1 block text-sm font-semibold leading-5 text-foreground hover:text-accent">${escapeHtml(item.label)}</a>
-      </article>
-    `).join("");
+    const posts = state.homeBlogPosts;
+    if (posts === null) {
+      container.innerHTML = '<div class="text-sm text-muted-foreground"><span class="fm-spinner" aria-hidden="true"></span>Loading blog posts...</div>';
+      return;
+    }
+    container.innerHTML = posts.length
+      ? posts.map(homeBlogPostCard).join("")
+      : '<div class="text-sm text-muted-foreground">Blog posts are unavailable right now.</div>';
+  }
+
+  async function loadHomeBlogPosts() {
+    if (!$("[data-home-blog-list]")) return;
+    try {
+      const response = await fetch(HOME_BLOG_FEED_URL, {
+        credentials: "omit",
+        headers: { accept: "application/rss+xml, application/xml" },
+      });
+      if (!response.ok) throw new Error(`blog feed returned ${response.status}`);
+      state.homeBlogPosts = parseHomeBlogFeed(await response.text());
+    } catch (_) {
+      state.homeBlogPosts = [];
+    }
+    renderHomeBlogPosts();
   }
 
   // Home left-rail "Active agent sessions" (adhoc #81). Renders the aggregated
@@ -4968,7 +5297,7 @@
     renderSidebarRepositories();
     renderHomeRepositories();
     renderHomeFeed();
-    renderHomeChangelog();
+    renderHomeBlogPosts();
     renderHomeAgentSessions();
     renderProfileRepositories();
     renderProfileRepositoryCount();
@@ -4991,30 +5320,43 @@
 
   function externalRepositoryCard(repository) {
     const logo = String(repository?.logo?.dataUrl || "");
-    const status = String(repository?.statusLabel || "External repository");
+    const hosted = Boolean(repository?.mirrored && repository?.mirror?.owner && repository?.mirror?.name);
+    const status = hosted
+      ? "Fully hosted by ForkMesh"
+      : String(repository?.statusLabel || "External repository");
     const provider = String(repository?.attribution?.provider || repository?.provider || "Provider");
     const original = String(repository?.originalUrl || "");
+    const forkmeshUrl = hosted
+      ? `/${encodeURIComponent(repository.targetOwner)}/${encodeURIComponent(repository.name)}`
+      : original;
     const canVolunteer = Boolean(state.session?.sessionToken) &&
       !["actively_mirrored", "archived"].includes(String(repository?.status || ""));
+    const manageable = Boolean(repository?.canManage);
+    const selected = state.externalRepositorySelection.has(String(repository?.id || ""));
     const incomplete = Array.isArray(repository?.metadataIncomplete) && repository.metadataIncomplete.length
       ? `<p class="mt-2 text-[11px] text-amber-300">Some metadata was unavailable or rate-limited during import.</p>`
       : "";
     return `
       <article class="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-start sm:px-5" data-external-repo-id="${escapeHtml(repository?.id || "")}">
+        ${manageable ? `<label class="mt-3 inline-flex shrink-0 items-center" title="Select ${escapeHtml(repository?.fullName || repository?.name || "repository")}">
+          <input data-external-repo-select="${escapeHtml(repository?.id || "")}" type="checkbox" ${selected ? "checked" : ""} class="h-4 w-4 rounded border-border bg-card accent-primary" />
+          <span class="sr-only">Select ${escapeHtml(repository?.fullName || repository?.name || "repository")}</span>
+        </label>` : ""}
         <img src="${escapeHtml(logo)}" alt="" class="h-12 w-12 shrink-0 rounded-xl border border-border bg-secondary object-cover" />
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-center gap-2">
-            <a href="${escapeHtml(original)}" target="_blank" rel="noopener noreferrer" class="truncate font-mono text-sm font-semibold text-foreground hover:text-primary hover:underline">${escapeHtml(repository?.fullName || repository?.name || "External repository")}</a>
+            <a href="${escapeHtml(forkmeshUrl)}" ${hosted ? "" : 'target="_blank" rel="noopener noreferrer"'} class="truncate font-mono text-sm font-semibold text-foreground hover:text-primary hover:underline">${escapeHtml(repository?.fullName || repository?.name || "External repository")}</a>
             <span class="rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">${escapeHtml(status)}</span>
             ${repository?.isPrivate ? '<span class="rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">Private · owner only</span>' : ""}
           </div>
           <p class="mt-1 text-xs leading-5 text-muted-foreground">${escapeHtml(repository?.metadata?.description || "No provider description.")}</p>
-          <p class="mt-2 text-[11px] leading-4 text-muted-foreground">${escapeHtml(repository?.mirrorNotice || "This external entry is not mirrored by ForkMesh.")}</p>
+          <p class="mt-2 text-[11px] leading-4 text-muted-foreground">${escapeHtml(hosted ? "The complete Git repository is synced, cloneable, and hosted by ForkMesh." : repository?.mirrorNotice || "This external entry is not mirrored by ForkMesh.")}</p>
           ${incomplete}
           <div class="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
             <a href="${escapeHtml(original)}" target="_blank" rel="noopener noreferrer" class="font-medium text-primary hover:underline">Open on ${escapeHtml(provider)}</a>
+            ${repository?.targetOwner ? `<span aria-hidden="true">·</span><span>Listed under ${repository?.targetOwnerType === "organization" ? "organization " : ""}<span class="font-mono text-foreground">${escapeHtml(repository.targetOwner)}</span></span>` : ""}
             <span aria-hidden="true">·</span>
-            <span>ForkMesh does not own or control this repository</span>
+            <span>${hosted ? "Full Git data hosted by ForkMesh" : "ForkMesh does not own or control this repository"}</span>
           </div>
         </div>
         ${canVolunteer ? `
@@ -5035,7 +5377,70 @@
     list.innerHTML = state.externalRepositories.length
       ? state.externalRepositories.map(externalRepositoryCard).join("")
       : '<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">No external repositories or stubs have been listed yet. Use “New repository” to import one.</div>';
+    syncExternalRepositoryActions();
     window.lucide?.createIcons();
+  }
+
+  function syncExternalRepositoryActions() {
+    const manageable = state.externalRepositories.filter((repository) => repository?.canManage);
+    const manageableIds = new Set(manageable.map((repository) => String(repository.id || "")));
+    for (const id of [...state.externalRepositorySelection]) {
+      if (!manageableIds.has(id)) state.externalRepositorySelection.delete(id);
+    }
+    const actions = $("[data-external-repo-actions]");
+    actions?.classList.toggle("hidden", manageable.length === 0);
+    actions?.classList.toggle("flex", manageable.length > 0);
+    const all = $("[data-external-repo-select-all]");
+    if (all) {
+      all.checked = manageable.length > 0 &&
+        manageable.every((repository) => state.externalRepositorySelection.has(String(repository.id || "")));
+      all.indeterminate = state.externalRepositorySelection.size > 0 && !all.checked;
+    }
+    const button = $("[data-external-repo-delete-selected]");
+    if (button) {
+      const count = state.externalRepositorySelection.size;
+      button.disabled = count === 0;
+      button.lastChild.textContent = count ? ` Delete selected (${count})` : " Delete selected";
+    }
+  }
+
+  function toggleAllExternalRepositories(checked) {
+    state.externalRepositorySelection.clear();
+    if (checked) {
+      state.externalRepositories
+        .filter((repository) => repository?.canManage)
+        .forEach((repository) => state.externalRepositorySelection.add(String(repository.id || "")));
+    }
+    renderExternalRepositories(state.externalRepositories);
+  }
+
+  async function deleteSelectedExternalRepositories() {
+    const ids = [...state.externalRepositorySelection];
+    if (!ids.length || !state.session?.sessionToken) return;
+    if (!window.confirm(`Delete ${ids.length} selected external ${ids.length === 1 ? "repository" : "repositories"}? This removes ForkMesh metadata and does not delete anything from the source provider.`)) return;
+    const button = $("[data-external-repo-delete-selected]");
+    if (button) button.disabled = true;
+    try {
+      for (const id of ids) {
+        const response = await fetch(`/api/repository-imports/${encodeURIComponent(id)}`, {
+          method: "DELETE",
+          body: JSON.stringify({ sessionToken: state.session.sessionToken }),
+          headers: {
+            accept: "application/json",
+            authorization: `Bearer ${state.session.sessionToken}`,
+            "content-type": "application/json",
+          },
+          cache: "no-store",
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        state.externalRepositorySelection.delete(id);
+      }
+      await loadExternalRepositories({ fresh: true });
+    } catch (error) {
+      setNewRepoHint(String(error?.message || "Could not delete selected imports."), "bad");
+      await loadExternalRepositories({ fresh: true });
+    }
   }
 
   async function loadExternalRepositories({ fresh = false } = {}) {
@@ -5143,7 +5548,7 @@
       if (value) value.placeholder = "/home/you/code/my-project";
       if (hint) hint.textContent = "The desktop node reads this local repo directly — the path never leaves your machine.";
     } else if (provider) {
-      if (value) value.placeholder = "https://github.com/owner/repo or https://gitlab.com/group/repo";
+      if (value) value.placeholder = "https://github.com/owner/repo, https://gitlab.com/group/repo, or https://codeberg.org/owner/repo";
       if (hint) hint.textContent = "ForkMesh reads bounded metadata from the provider. Importing does not claim ownership or create a mirror.";
     } else {
       if (value) value.placeholder = "https://github.com/owner/repo.git";
@@ -5185,11 +5590,11 @@
     const sourceValue = String($("[data-new-repo-source-value]")?.value || "").trim();
     if (source === "provider") {
       if (!state.session?.sessionToken) {
-        setNewRepoHint("Sign in to import a GitHub or GitLab repository.", "bad");
+        setNewRepoHint("Sign in to import a GitHub, GitLab, or Codeberg repository.", "bad");
         return;
       }
       if (!sourceValue) {
-        setNewRepoHint("Enter a GitHub or GitLab repository URL.", "bad");
+        setNewRepoHint("Enter a GitHub, GitLab, or Codeberg repository URL.", "bad");
         $("[data-new-repo-source-value]")?.focus();
         return;
       }
@@ -5222,7 +5627,7 @@
         setNewRepoHint(
           code === "provider_rate_limited" ? "The provider rate limit was reached. Try again after its reset time."
             : code.includes("authorization") ? "The provider rejected access. Private repositories require a valid scoped token."
-            : code === "unsupported_provider" ? "Use a github.com or gitlab.com repository URL."
+            : code === "unsupported_provider" ? "Use a github.com, gitlab.com, or codeberg.org repository URL."
             : "Could not import provider metadata.",
           "bad",
         );
@@ -10953,6 +11358,22 @@
     const isSource = Boolean(refMirror && mirror === refMirror);
     const behind = online && commit && refCommit && commit !== refCommit;
     const integrityRejected = mirror.integrity === "rejected";
+    const activity = String(mirror.activity || "").trim().toLowerCase();
+    const activityLabel = {
+      "running-actions": "running actions",
+      syncing: "syncing refs",
+      verifying: "verifying",
+      "integrity-blocked": "integrity blocked",
+      "awaiting-verification": "awaiting verification",
+      serving: "serving",
+      offline: "offline",
+    }[activity] || "";
+    const activityClass =
+      activity === "integrity-blocked"
+        ? "border-destructive/40 bg-destructive/10 text-destructive"
+        : ["syncing", "verifying", "awaiting-verification"].includes(activity)
+          ? "border-amber-500/40 bg-amber-500/10 text-amber-600"
+          : "border-primary/40 bg-primary/10 text-primary";
     const dotColor = !online
       ? "text-muted-foreground"
       : behind
@@ -10970,6 +11391,7 @@
               ${isSource ? '<span class="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">source of truth</span>' : ""}
               ${behind ? '<span class="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600">out of sync</span>' : ""}
               ${integrityRejected ? '<span class="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">failing integrity pin</span>' : ""}
+              ${activityLabel ? `<span class="shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${activityClass}">${escapeHtml(activityLabel)}</span>` : ""}
               ${version ? `<span class="shrink-0 text-[10px] text-muted-foreground font-mono">${escapeHtml(version)}</span>` : ""}
             </div>
             <span class="flex shrink-0 items-center gap-2 text-xs font-mono ${online ? "text-primary" : "text-muted-foreground"}">
@@ -10981,7 +11403,7 @@
         </div>`;
   }
 
-  function renderMirrorRow(mirror, servedBy) {
+  function renderMirrorRow(mirror, servedBy, refMirror) {
     const online = mirror.status === "online";
     const isServing = online && mirrorRowIsServing(mirror, servedBy);
     const rowClass = isServing
@@ -10992,11 +11414,17 @@
     const version = rawVersion
       ? (rawVersion[0].toLowerCase() === "v" ? rawVersion : `v${rawVersion}`)
       : "";
+    const isSource = Boolean(refMirror && mirror === refMirror);
+    const integrityRejected = mirror.integrity === "rejected";
     return `
         <div class="${rowClass}">
           <i data-lucide="${online ? "radio" : "circle"}" class="mt-0.5 h-4 w-4 ${online ? "text-primary" : "text-muted-foreground"}"></i>
           <span class="min-w-0">
-            <span class="block min-w-0 truncate text-foreground font-mono">${escapeHtml(mirror.owner || mirror.node || mirror.name || "mirror")}</span>
+            <span class="flex min-w-0 flex-wrap items-center gap-1.5">
+              <span class="min-w-0 truncate text-foreground font-mono">${escapeHtml(mirror.owner || mirror.node || mirror.name || "mirror")}</span>
+              ${isSource ? '<span class="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">source of truth</span>' : ""}
+              ${integrityRejected ? '<span class="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">failing integrity pin</span>' : ""}
+            </span>
             ${version ? `<span class="mt-0.5 block min-w-0 truncate text-[10px] text-muted-foreground font-mono">${escapeHtml(version)}</span>` : ""}
           </span>
           <span class="flex shrink-0 items-center gap-2 text-xs font-mono ${online ? "text-primary" : "text-muted-foreground"}">
@@ -11008,13 +11436,16 @@
 
   // The "Live mirror" summary in the About aside gets its own compact list of
   // every mirror currently online for this repo (the full tab-level list
-  // lives under the Mirrors tab and includes offline ones too).
+  // lives under the Mirrors tab and includes offline ones too). It shares the
+  // same source-of-truth / integrity-pin badges as the Mirrors tab so the
+  // canonical node and any signature failure are visible without switching tabs.
   function renderRepoLiveMirrorList(mirrors, servedBy) {
     const container = $("[data-repo-live-mirror-list]");
     if (!container) return;
     const online = mirrors.filter((mirror) => mirror.status === "online");
+    const refMirror = pickReferenceMirror(mirrors);
     container.innerHTML = online.length
-      ? online.map((mirror) => renderMirrorRow(mirror, servedBy)).join("")
+      ? online.map((mirror) => renderMirrorRow(mirror, servedBy, refMirror)).join("")
       : '<div class="border-t border-border px-3 py-2 text-xs text-muted-foreground">No mirrors online right now.</div>';
   }
 
@@ -11040,10 +11471,11 @@
   }
 
   async function loadRepoMirrors(repo) {
+    const background = arguments[1]?.background === true;
     const container = $("[data-repo-mirrors]");
     // Owner-only "ask a node to mirror your repo" control (issue #385).
     renderMirrorRequestForm(repo);
-    if (container) container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading mirrors...")}</div>`;
+    if (container && !background) container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading mirrors...")}</div>`;
     try {
       const data = await fetchJson(`${repoApiBase(repo)}/mirrors`);
       const mirrors = Array.isArray(data.mirrors) ? data.mirrors : [];
@@ -11077,8 +11509,10 @@
       }
       renderRepoMirrorLists(mirrors, state.repoServedBy);
     } catch (_) {
-      if (container) container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Mirror health is unavailable right now.</div>';
-      renderRepoLiveMirrorList([], state.repoServedBy);
+      if (!background) {
+        if (container) container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Mirror health is unavailable right now.</div>';
+        renderRepoLiveMirrorList([], state.repoServedBy);
+      }
     } finally {
       window.lucide?.createIcons();
     }
@@ -11091,6 +11525,20 @@
   // re-fetch host health so the nodes visibly converge without a manual reload.
   let liveMirrorRefreshTimer = null;
   let liveMirrorConfirmTimer = null;
+  const REPO_MIRROR_POLL_MS = 5 * 1000;
+  let repoMirrorPollTimer = null;
+  function startRepoMirrorPolling() {
+    if (repoMirrorPollTimer) return;
+    repoMirrorPollTimer = window.setInterval(() => {
+      const repo = state.selectedRepo;
+      if (
+        !repo ||
+        document.visibilityState !== "visible" ||
+        !document.querySelector("[data-repo-mirrors]")
+      ) return;
+      void loadRepoMirrors(repo, { background: true });
+    }, REPO_MIRROR_POLL_MS);
+  }
   function refreshOpenRepoMirrors() {
     const repo = state.selectedRepo;
     // Only meaningful while the Mirrors panel is actually mounted.
@@ -12880,7 +13328,10 @@
   }
 
   function initHomePage() {
-    renderHomeChangelog();
+    renderHomeBlogPosts();
+    // The blog card fills in from the edge-cached feed; the baked markup
+    // already shows its loading state.
+    void loadHomeBlogPosts();
     // Feed + top repositories fill in when loadRepositories()/loadNotifications()
     // resolve — both re-render the home containers.
     // Active agent sessions (adhoc #81) need the catalog first so we know which
@@ -12934,7 +13385,17 @@
     // does wait on the shared fetch before rendering the detail body.
     await (repositoriesReady || loadRepositories());
     let repo = requested ? findRepository(requested) : null;
-    if (!repo && requested) {
+    if (
+      repo &&
+      requested &&
+      repoKey(repo).toLowerCase() !== requested.toLowerCase()
+    ) {
+      // A catalog alias normally resolves to its backing source record. Before
+      // accepting that canonical identity, check whether the URL is a durable
+      // organization alias so subsequent tab/tree navigation keeps the public
+      // /org/repo address instead of appearing to redirect to /node/repo.
+      repo = (await findOrganizationRepository(requested)) || repo;
+    } else if (!repo && requested) {
       // Organization URLs are public aliases backed by a node-owned catalog
       // record. The catalog deliberately publishes only the signing node's
       // identity, so resolve the public org link on a direct-page visit and
@@ -12943,6 +13404,7 @@
       repo = await findOrganizationRepository(requested);
     }
     if (repo) {
+      startRepoMirrorPolling();
       // The owner-only Agents tab is only a recognized route when the session
       // can assign agents, which is decided from nodes/isAdmin that only land
       // after hydrateCanonicalProfile resolves. When the refreshed URL points
@@ -13882,6 +14344,20 @@
     if (!button) return;
     volunteerForExternalMirror(
       button.dataset.externalMirrorVolunteer || "", button);
+  });
+  $("[data-external-repo-list]")?.addEventListener("change", (event) => {
+    const checkbox = event.target.closest("[data-external-repo-select]");
+    if (!checkbox) return;
+    const id = String(checkbox.dataset.externalRepoSelect || "");
+    if (checkbox.checked) state.externalRepositorySelection.add(id);
+    else state.externalRepositorySelection.delete(id);
+    syncExternalRepositoryActions();
+  });
+  $("[data-external-repo-select-all]")?.addEventListener("change", (event) => {
+    toggleAllExternalRepositories(Boolean(event.currentTarget.checked));
+  });
+  $("[data-external-repo-delete-selected]")?.addEventListener("click", () => {
+    deleteSelectedExternalRepositories();
   });
 
   // [data-profile-settings-button] is a real link to /dashboard/settings now,

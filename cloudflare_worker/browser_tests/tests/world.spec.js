@@ -822,12 +822,16 @@ ${longContext}
           }
         }
       } else if (url.pathname === "/api/repositories") {
-        const repositoryOwners = repositoryFixture.staleOfflineAlias
+        const repositoryOwners =
+          repositoryFixture.staleOfflineAlias ||
+          repositoryFixture.sourceUserOwner
           ? ["jett", "mirror2", "mirror3"]
           : ["mirror2", "mirror3"];
         body = {
           repositories: repositoryOwners.map((owner) => {
-            const stale = owner === "jett";
+            const stale =
+              repositoryFixture.staleOfflineAlias && owner === "jett";
+            const source = owner === "jett";
             const conflicting =
               repositoryFixture.conflictingHealthyAlias &&
               owner === "mirror3";
@@ -837,7 +841,11 @@ ${longContext}
             return {
               owner,
               name: "forkmesh",
-              source: stale ? "local-node" : "remote-clone",
+              source: source ? "local-node" : "remote-clone",
+              nodeId:
+                repositoryFixture.sourceUserOwner && source
+                  ? "source-node-id"
+                  : owner,
               liveHost: !stale,
               commit: stale || conflicting ? "d".repeat(40) : codeOid,
               stateHash: missingStateHash
@@ -853,6 +861,7 @@ ${longContext}
       } else if (url.pathname === `${repoBase}/mirrors`) {
         const mirrorNodes = ["mirror2", "mirror3"];
         if (repositoryFixture.staleOfflineAlias) mirrorNodes.push("jett");
+        if (repositoryFixture.sourceUserOwner) mirrorNodes.unshift("forkmesh");
         body = {
           ok: true,
           owner: "forkmesh",
@@ -864,6 +873,7 @@ ${longContext}
               node === "mirror3";
             return {
               node,
+              id: node === "forkmesh" ? "source-node-id" : node,
               status: stale ? "offline" : "online",
               integrity: stale ? "healing" : "ok",
               cloneAvailable: !stale,
@@ -3625,6 +3635,39 @@ test("a stale offline alias cannot erase the live mirrors' flagship pin", async 
   });
 });
 
+test("the flagship pin keeps user ownership separate from source node identity", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  await prepareWorldPage(page, "world-source-user-node-identity", {
+    repositoryFixture: { sourceUserOwner: true },
+  });
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.repositoryMapState === "ready";
+  });
+
+  const snapshot = await page.locator("forkmesh-world").evaluate((shell) => {
+    const alias = shell.repositories.find(
+      (record) =>
+        record.owner === "forkmesh" &&
+        record.name === "forkmesh" &&
+        record.source === "organization-alias",
+    );
+    return {
+      aliasCommit: alias?.commit || "",
+      servingOwner: alias?.servingOwner || "",
+      activeCommit: shell.activeRepository?.commit || "",
+    };
+  });
+  expect(snapshot).toEqual({
+    aliasCommit: "a".repeat(40),
+    servingOwner: "jett",
+    activeCommit: "a".repeat(40),
+  });
+});
+
 test("repository portals and the 3D size sunburst use the verified catalog tree", async ({
   page,
 }) => {
@@ -4864,114 +4907,6 @@ test("live mirror cabinets expose a readable truthful technical panel", async ({
   await expect(detail).toContainText(
     "operator-reported, bounded values signed into the public catalog",
   );
-});
-
-test("the member lounge plaque carries the count and one account button", async ({
-  page,
-}) => {
-  await prepareWorldPage(page, "lounge-plaque");
-  await waitForWorld(page);
-  const logoutRequests = [];
-  await page.route("**/api/accounts/logout", async (route) => {
-    logoutRequests.push(route.request().method());
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ ok: true }),
-    });
-  });
-
-  // No floating count card hovers over the lounge any more: the total and the
-  // account button live on the one ground plaque.
-  const lounge = await page.locator("forkmesh-world").evaluate((shell) => {
-    const group = shell.world.scene.getObjectByName("registered-user-lounge");
-    shell.world.updateMemberLounge([{ name: "ada", nodes: [] }], 9);
-    return {
-      sprites: group.children.filter((child) => child.isSprite).length,
-      plaque: Boolean(
-        group.getObjectByName("forkmesh-member-lounge-plaque"),
-      ),
-      countOnPlaque:
-        group.userData.memberCountSign ===
-        group.getObjectByName("forkmesh-member-lounge-plaque").userData.face,
-      action: group.userData.authButton.userData.worldAuthAction,
-    };
-  });
-  expect(lounge).toEqual({
-    sprites: 0,
-    plaque: true,
-    countOnPlaque: true,
-    action: "login",
-  });
-
-  // Park the camera on the plaque and pause so the button projects to a stable
-  // point, then tap it exactly like a visitor walking up to the lounge.
-  await page.locator("forkmesh-world").evaluate((shell) => {
-    shell.closeLandmark();
-    const plaque = shell.world.scene.getObjectByName(
-      "forkmesh-member-lounge-plaque",
-    );
-    const plaquePosition = plaque.getWorldPosition(plaque.position.clone());
-    const inward = plaquePosition
-      .clone()
-      .setY(0)
-      .multiplyScalar(-1)
-      .normalize();
-    shell.world.setSpawn({
-      x: plaquePosition.x + inward.x * 5.2,
-      y: 0.38,
-      z: plaquePosition.z + inward.z * 5.2,
-      heading: 0,
-      space: "town-square",
-    });
-    shell.world.setCameraZoom(0.42);
-  });
-  await page.waitForTimeout(1800);
-  await page.locator("forkmesh-world").evaluate((shell) =>
-    shell.world.setPaused(true),
-  );
-  const buttonPoint = async () =>
-    page.locator("forkmesh-world").evaluate((shell) => {
-      const button = shell.world.scene
-        .getObjectByName("registered-user-lounge")
-        .userData.authButton;
-      const target = button.getWorldPosition(button.position.clone());
-      target.project(shell.world.camera);
-      const rect = shell.world.renderer.domElement.getBoundingClientRect();
-      return {
-        x: rect.left + (target.x * 0.5 + 0.5) * rect.width,
-        y: rect.top + (-target.y * 0.5 + 0.5) * rect.height,
-      };
-    });
-  const guestPoint = await buttonPoint();
-  await page.mouse.click(guestPoint.x, guestPoint.y);
-  await expect(page.locator("[data-world-account]")).toHaveAttribute(
-    "data-open",
-    "true",
-  );
-  expect(logoutRequests).toEqual([]);
-
-  // Signed in, the same tiny button becomes the log-out control.
-  await page
-    .locator("[data-world-account] [data-world-account-close]")
-    .click();
-  const signedIn = await page.locator("forkmesh-world").evaluate((shell) => {
-    shell.world.updateIdentity({ accountStatus: "Registered", name: "ada" });
-    return shell.world.scene.getObjectByName("registered-user-lounge").userData
-      .authButton.userData.worldAuthAction;
-  });
-  expect(signedIn).toBe("logout");
-  // The dismissed backdrop stays hit-testable until its visibility transition
-  // finishes, so wait for it to stop covering the plaque.
-  await page.waitForFunction(() => {
-    const backdrop = document
-      .querySelector("forkmesh-world")
-      .querySelector(".world-account-backdrop");
-    return getComputedStyle(backdrop).visibility === "hidden";
-  });
-  const memberPoint = await buttonPoint();
-  await page.mouse.click(memberPoint.x, memberPoint.y);
-  await expect.poll(() => logoutRequests).toEqual(["POST"]);
 });
 
 test("the authenticated member appears immediately and active time advances locally", async ({

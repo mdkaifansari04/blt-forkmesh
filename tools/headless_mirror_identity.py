@@ -114,6 +114,9 @@ PUBLIC_CATALOG_INPUT_FIELDS = frozenset(
         "source",
         "commit",
         "branch",
+        "commitSubject",
+        "commitAuthorName",
+        "commitAt",
         "issueCount",
         "issueMaxNumber",
         "commitCount",
@@ -1918,6 +1921,18 @@ def _normalized_public_catalog(
     if disk_total is not None:
         record["diskUsedBytes"] = disk_used
         record["diskTotalBytes"] = disk_total
+    # Subject / author / date of the published head commit. Optional extension
+    # fields, kept absent (never empty) exactly as the Worker normalizes them,
+    # so an older publisher's catalog-v2 signature still verifies.
+    commit_subject = _clean_string(source.get("commitSubject", ""), 120)
+    if commit_subject:
+        record["commitSubject"] = commit_subject
+    commit_author_name = _clean_string(source.get("commitAuthorName", ""), 64)
+    if commit_author_name:
+        record["commitAuthorName"] = commit_author_name
+    commit_at = _clean_string(source.get("commitAt", ""), 16)
+    if commit_at:
+        record["commitAt"] = commit_at
     return record
 
 
@@ -1960,6 +1975,54 @@ def sign_catalog_v2(
     record["catalogSigVersion"] = 2
     record["catalogSig"] = _b64url_encode(key.sign(catalog_payload))
     return record
+
+
+def sign_repository_delete(
+    state_dir: Path,
+    request: Mapping[str, Any],
+    *,
+    clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
+) -> dict[str, Any]:
+    _require_protocol(
+        request,
+        "forkmesh.repository-delete-signing",
+        {"owner", "name", "timestamp"},
+    )
+    owner = _clean_string(request.get("owner", ""), 80).lower()
+    name = _clean_string(request.get("name", ""), 100)
+    timestamp = request.get("timestamp")
+    if isinstance(timestamp, bool):
+        raise HelperError("repository deletion request is invalid")
+    try:
+        timestamp_ms = int(timestamp)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise HelperError("repository deletion request is invalid") from exc
+    segment_re = re.compile(r"^[A-Za-z0-9._:-]+$")
+    if (
+        not owner
+        or not name
+        or not segment_re.fullmatch(owner)
+        or not segment_re.fullmatch(name)
+        or abs(clock_ms() - timestamp_ms) > 5 * 60 * 1000
+    ):
+        raise HelperError("repository deletion request is invalid")
+    state, key = _load_signing_identity(state_dir)
+    canonical = (
+        "forkmesh-catalog-delete-v1\n"
+        + owner
+        + "\n"
+        + name
+        + "\n"
+        + str(timestamp_ms)
+    ).encode("utf-8")
+    return {
+        "ok": True,
+        "owner": owner,
+        "name": name,
+        "timestamp": timestamp_ms,
+        "maintainer": state.node_public_key,
+        "signature": _b64url_encode(key.sign(canonical)),
+    }
 
 
 def _assert_public_response(value: Any) -> None:
@@ -2011,6 +2074,7 @@ def build_parser() -> argparse.ArgumentParser:
             "sign-reclaim",
             "sign-endpoint-registration",
             "sign-catalog-v2",
+            "sign-repository-delete",
         ),
     )
     return parser
@@ -2035,6 +2099,7 @@ def main(argv: list[str] | None = None) -> int:
                 "sign-reclaim": sign_account_reclaim,
                 "sign-endpoint-registration": sign_endpoint_registration,
                 "sign-catalog-v2": sign_catalog_v2,
+                "sign-repository-delete": sign_repository_delete,
             }
             response = handlers[args.mode](state_dir, request)
         _write_response(response)

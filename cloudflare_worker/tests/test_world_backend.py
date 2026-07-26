@@ -426,6 +426,60 @@ def test_coarse_activity_metadata_is_bounded_and_privacy_gated():
     assert hidden["firstVisitAge"] == "hidden"
 
 
+def test_exact_first_seen_and_joined_ages_stay_bounded_and_gated():
+    now = 1700000000000
+    current = world.default_presence("peer", now)
+    assert current["firstSeenMinutes"] == 0
+    assert current["joinedAt"] == 0
+    assert "firstSeenMinutes" in world.public_presence(current)
+    assert "joinedAt" in world.public_presence(current)
+
+    account = dict(current, accountStatus="Registered")
+    _, shared = world.sanitize_message({
+        "type": "presence",
+        "activityCategory": "viewing-repository",
+        "firstSeenMinutes": 137,
+        "joinedAt": now - 90 * 24 * 60 * 60 * 1000,
+    }, account, now)
+    assert shared["firstSeenMinutes"] == 137
+    assert shared["joinedAt"] == now - 90 * 24 * 60 * 60 * 1000
+
+    _, bounded = world.sanitize_message({
+        "type": "presence",
+        "activityCategory": "viewing-repository",
+        "firstSeenMinutes": 99999999,
+        # A "joined tomorrow" claim, and every pre-2020 or non-integer value,
+        # collapses to no joined date rather than a nonsense badge line.
+        "joinedAt": now + 60000,
+    }, account, now)
+    assert bounded["firstSeenMinutes"] == world.WORLD_FIRST_SEEN_MAX_MINUTES
+    assert bounded["joinedAt"] == 0
+
+    _, rejected = world.sanitize_message({
+        "type": "presence",
+        "activityCategory": "viewing-repository",
+        "firstSeenMinutes": "137",
+        "joinedAt": "2020-01-01",
+    }, account, now)
+    assert rejected["firstSeenMinutes"] == 0
+    assert rejected["joinedAt"] == 0
+
+    _, hidden = world.sanitize_message({
+        "type": "presence",
+        "activityCategory": "hidden",
+        "firstSeenMinutes": 137,
+    }, shared, now)
+    assert hidden["firstSeenMinutes"] == 0
+
+    # A connection the routing Worker never authenticated has no joined date.
+    _, guest = world.sanitize_message({
+        "type": "presence",
+        "activityCategory": "viewing-repository",
+        "joinedAt": now - 90 * 24 * 60 * 60 * 1000,
+    }, current, now)
+    assert guest["joinedAt"] == 0
+
+
 def test_arrival_slots_fill_unique_forward_facing_rows_of_ten():
     positions = [world.arrival_position(slot) for slot in range(21)]
     assert len({(item["x"], item["z"]) for item in positions}) == 21
@@ -515,13 +569,34 @@ def _world_fetch_runtime(now=50_000):
         "JsResponse": SimpleNamespace(
             new=lambda *args, **kwargs: SimpleNamespace(status=101)),
     }
-    for name in ("_ws_attachment", "_ws_attr", "ForkMeshWorld"):
+    traffic_writes = []
+
+    async def d1_run(_env, sql, *args):
+        traffic_writes.append((sql, args))
+        return None
+
+    namespace.update({
+        "DURABLE_OBJECT_BINDING_RE": re.compile(r"[A-Z][A-Z0-9_]{0,63}"),
+        "DURABLE_OBJECT_TRAFFIC_FLUSH_MS": 60_000,
+        "DURABLE_OBJECT_TRAFFIC_FLUSH_BYTES": 262_144,
+        "DURABLE_OBJECT_TRAFFIC_MAX": 9_007_199_254_740_991,
+        "d1_run": d1_run,
+    })
+    for name in (
+        "durable_object_traffic_note",
+        "durable_object_traffic_flush",
+        "_ws_attachment",
+        "_ws_attr",
+        "ForkMeshWorld",
+    ):
         node = _top_level_node(name)
         module = ast.fix_missing_locations(
             ast.Module(body=[node], type_ignores=[]))
         exec(compile(module, str(ENTRY), "exec"), namespace)
     instance = namespace["ForkMeshWorld"]()
     instance.ctx = _Ctx()
+    instance.env = object()
+    instance.traffic_writes = traffic_writes
     return instance, clock
 
 
@@ -810,6 +885,12 @@ def _world_socket_runtime(now=50_000):
     def ws_attr(socket, key, default=None):
         return getattr(socket.attachment, key, default)
 
+    traffic_writes = []
+
+    async def d1_run(_env, sql, *args):
+        traffic_writes.append((sql, args))
+        return None
+
     namespace = {
         "DurableObject": DurableObject,
         "Date": SimpleNamespace(now=lambda: now),
@@ -819,12 +900,24 @@ def _world_socket_runtime(now=50_000):
         "to_js": lambda value: value,
         "json": json,
         "re": re,
+        "DURABLE_OBJECT_BINDING_RE": re.compile(r"[A-Z][A-Z0-9_]{0,63}"),
+        "DURABLE_OBJECT_TRAFFIC_FLUSH_MS": 60_000,
+        "DURABLE_OBJECT_TRAFFIC_FLUSH_BYTES": 262_144,
+        "DURABLE_OBJECT_TRAFFIC_MAX": 9_007_199_254_740_991,
+        "d1_run": d1_run,
     }
-    node = _top_level_node("ForkMeshWorld")
-    module = ast.fix_missing_locations(
-        ast.Module(body=[node], type_ignores=[]))
-    exec(compile(module, str(ENTRY), "exec"), namespace)
+    for name in (
+        "durable_object_traffic_note",
+        "durable_object_traffic_flush",
+        "ForkMeshWorld",
+    ):
+        node = _top_level_node(name)
+        module = ast.fix_missing_locations(
+            ast.Module(body=[node], type_ignores=[]))
+        exec(compile(module, str(ENTRY), "exec"), namespace)
     instance = namespace["ForkMeshWorld"]()
+    instance.env = object()
+    instance.traffic_writes = traffic_writes
     broadcasts = []
     instance._live_sockets = lambda cleanup=False: []
     instance._broadcast = (
@@ -1007,12 +1100,14 @@ def test_world_route_binding_and_migration_are_registered():
         item["name"]: item["class_name"]
         for item in config["durable_objects"]["bindings"]
     }
-    # Multiplayer chat and world presence remain; the repository transport DO
-    # is deleted and must never return as a production binding.
+    # Multiplayer chat, world presence, and the per-owner node event channel
+    # remain; the repository transport DO (ForkMeshHost, which carried git
+    # bytes) is deleted and must never return as a production binding.
     assert bindings == {
         "FORKMESH_MAINNODE_ROOM": "ForkMeshRoom",
         "FORKMESH_WORLD": "ForkMeshWorld",
         "FORKMESH_OFFICE_ROOM": "ForkMeshOfficeRoom",
+        "FORKMESH_NODES": "ForkMeshNodes",
     }
     dev_bindings = {
         item["name"]: item["class_name"]
@@ -1022,12 +1117,14 @@ def test_world_route_binding_and_migration_are_registered():
         "FORKMESH_MAINNODE_ROOM": "ForkMeshRoom",
         "FORKMESH_WORLD": "ForkMeshWorld",
         "FORKMESH_OFFICE_ROOM": "ForkMeshOfficeRoom",
+        "FORKMESH_NODES": "ForkMeshNodes",
     }
     migrations = {item["tag"]: item for item in config["migrations"]}
     assert migrations["v9"]["new_sqlite_classes"] == ["ForkMeshWorld"]
     assert migrations["v10"]["deleted_classes"] == ["ForkMeshHost"]
     assert migrations["v11"]["new_sqlite_classes"] == [
         "ForkMeshOfficeRoom"]
+    assert migrations["v12"]["new_sqlite_classes"] == ["ForkMeshNodes"]
 
 
 def test_world_static_route_is_reserved_and_asset_first():
@@ -1194,6 +1291,19 @@ def test_world_ticket_capacity_is_queried_and_returned_only_for_admins():
             capacity_calls.append(True)
             return [{"name": "repositories", "rowCount": 12}]
 
+        async def durable_objects(_env):
+            capacity_calls.append("durable")
+            return [{
+                "id": "FORKMESH_WORLD",
+                "binding": "FORKMESH_WORLD",
+                "name": "World",
+                "bytesIn": 30,
+                "bytesOut": 70,
+                "bytesTotal": 100,
+                "messages": 4,
+                "updatedAt": 50_000,
+            }]
+
         def json_response(data, **kwargs):
             return {"data": data, **kwargs}
 
@@ -1209,6 +1319,7 @@ def test_world_ticket_capacity_is_queried_and_returned_only_for_admins():
             "WORLD_TICKET_TTL_MS": 60_000,
             "_world_ticket_encode": lambda _env, _claim: "signed-ticket",
             "_world_system_capacity": system_capacity,
+            "_world_durable_objects": durable_objects,
         }
         node = _top_level_node("world_ticket_handler")
         module = ast.fix_missing_locations(
@@ -1239,8 +1350,18 @@ def test_world_ticket_capacity_is_queried_and_returned_only_for_admins():
     }))
     assert admin_data["systemCapacity"] == {
         "tables": [{"name": "repositories", "rowCount": 12}],
+        "durableObjects": [{
+            "id": "FORKMESH_WORLD",
+            "binding": "FORKMESH_WORLD",
+            "name": "World",
+            "bytesIn": 30,
+            "bytesOut": 70,
+            "bytesTotal": 100,
+            "messages": 4,
+            "updatedAt": 50_000,
+        }],
     }
-    assert admin_calls == [True]
+    assert admin_calls == [True, "durable"]
 
 
 def test_arrival_counter_keeps_only_fixed_size_unique_sketches():

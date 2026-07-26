@@ -10,6 +10,8 @@
 #include "KebabHeaderView.h"
 #include "MirrorActionsConfiguration.h"
 #include "MirrorActionsSummary.h"
+#include "PrivateMirrorRuntime.h"
+#include "PublicMirrorRuntime.h"
 
 #include <QCryptographicHash>
 #include <QSaveFile>
@@ -846,6 +848,17 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
                           .arg(wf.name, owner, name));
             continue;
         }
+        // A workflow dedicated to other nodes isn't ours to run: the node it
+        // names sees the same push and picks it up there. Nothing is queued
+        // here, so the run history stays on the node that actually executes it.
+        if (!wf.runsOnNode(actionNodeLabels())) {
+            logSystem(QString::fromUtf8(
+                          "Actions: \xE2\x80\x9C%1\xE2\x80\x9D is dedicated to "
+                          "%2 \xE2\x80\x94 this node (%3) is skipping it.")
+                          .arg(wf.name, workflowDedicationLabel(wf),
+                               actionNodeLabels().join(QStringLiteral(", "))));
+            continue;
+        }
 
         ActionRun run;
         run.owner = owner;
@@ -970,7 +983,7 @@ void MainWindow::refreshOpenRepoDetail()
     updateRepoDetailStatus();
     updateRepoActionMenus();
     updateRepoCodeSize();
-    updateRepoPushButton();
+    refreshRepoSyncIndicators();
     refreshRepoPinBanner(); // a sync may have advanced refs past the pinned hash
     m_treeLoadedForIndex = -1; // force the explorer tree to rebuild on next use
     if (m_filesStack && m_filesStack->currentIndex() == 2)
@@ -985,6 +998,83 @@ void MainWindow::refreshOpenRepoDetail()
     if (typingFocus && typingFocus->isVisibleTo(this) &&
         typingFocus->isEnabled() && QApplication::focusWidget() != typingFocus)
         typingFocus->setFocus(Qt::OtherFocusReason);
+}
+
+QStringList MainWindow::actionNodeLabels() const
+{
+    QSettings settings;
+    return ActionFile::nodeLabels(
+        machineNodeName(),
+        settings
+            .value(QString::fromLatin1(
+                forkmesh::mirror_actions::kNodeSetting))
+            .toString(),
+        settings.value(QString::fromLatin1(kActionNodeLabelsSetting))
+            .toString());
+}
+
+QString MainWindow::workflowDedicationLabel(const ActionWorkflow &workflow) const
+{
+    return workflow.runsOn.join(QStringLiteral(", "));
+}
+
+void MainWindow::saveActionNodeLabels(const QString &labels)
+{
+    const QStringList clean = ActionFile::parseLabelList(labels);
+    QSettings settings;
+    if (clean.isEmpty())
+        settings.remove(QString::fromLatin1(kActionNodeLabelsSetting));
+    else
+        settings.setValue(QString::fromLatin1(kActionNodeLabelsSetting),
+                          clean.join(QStringLiteral(", ")));
+    logSystem(QStringLiteral("Actions: this node answers to %1.")
+                  .arg(actionNodeLabels().join(QStringLiteral(", "))));
+    // A workflow may have just become (un)runnable here.
+    if (m_actionWorkflowList)
+        refreshRepoActions();
+}
+
+std::shared_ptr<void> MainWindow::pinActionMirror(const RepositoryRecord &repo,
+                                                  QString *mirrorPath) const
+{
+    const auto publicPin =
+        m_publicMirrorMaterializations.value(repo.publicArchiveId);
+    if (publicPin && publicPin->isValid()) {
+        if (mirrorPath)
+            *mirrorPath = publicPin->repositoryPath();
+        return publicPin;
+    }
+    const auto privatePin =
+        m_privateMirrorMaterializations.value(repo.privateReplicaId);
+    if (privatePin && privatePin->isValid()) {
+        if (mirrorPath)
+            *mirrorPath = privatePin->repositoryPath();
+        return privatePin;
+    }
+    return {};
+}
+
+void MainWindow::releaseActionMirrorPin(int runId)
+{
+    const ActionMirrorPin pin = m_actionMirrorPins.take(runId);
+    if (!pin.materialization)
+        return;
+    // A release run stages its binaries into <mirror>/forkmesh-releases. If the
+    // repository was re-sealed while the build ran, that mirror is the retired
+    // one this pin was keeping alive, so hand the blobs to the live mirror
+    // before the directory goes away with the pin.
+    const int index = repoIndexFor(pin.owner, pin.name);
+    if (index < 0)
+        return;
+    const int carried =
+        carryMirrorReleaseCas(pin.path, m_repositories.at(index).mirrorPath);
+    if (carried > 0)
+        logSystem(QStringLiteral(
+                      "Actions: moved %1 release artifact blob(s) from run #%2 "
+                      "into the mirror now serving %3/%4.")
+                      .arg(carried)
+                      .arg(runId)
+                      .arg(pin.owner, pin.name));
 }
 
 void MainWindow::processActionQueue()
@@ -1014,8 +1104,15 @@ void MainWindow::processActionQueue()
             scheduleMirrorActionsSummary(0);
             continue;
         }
-        const QString mirror = m_repositories.at(repoIndex).mirrorPath;
+        QString mirror = m_repositories.at(repoIndex).mirrorPath;
         const QString workTree = m_repositories.at(repoIndex).localPath;
+        // Encrypted mirrors live in a temporary materialization that every
+        // sealing pass replaces and deletes. Resolve the one that is live right
+        // now and hold it open for the whole run, so a re-seal (publishing a
+        // release kicks one off) cannot pull the checkout source out from under
+        // an in-flight build.
+        const std::shared_ptr<void> mirrorPin =
+            pinActionMirror(m_repositories.at(repoIndex), &mirror);
         ActionRun verified = *run;
         QString snapshotError;
         const QString repositoryWorkflow =
@@ -1054,9 +1151,26 @@ void MainWindow::processActionQueue()
             scheduleMirrorActionsSummary(0);
             continue;
         }
+        // The dedication is re-checked immediately before execution, not just
+        // when the run was queued: this node's labels (or the workflow's
+        // `runs-on`) may have changed while the run sat in the queue.
+        if (!wf.runsOnNode(actionNodeLabels())) {
+            run->status = ActionStatus::Skipped;
+            m_actionStore->saveRun(*run);
+            scheduleMirrorActionsSummary(0);
+            logSystem(QString::fromUtf8(
+                          "Actions: skipped \xE2\x80\x9C%1\xE2\x80\x9D for "
+                          "%2/%3 \xE2\x80\x94 it is dedicated to %4.")
+                          .arg(run->workflowName, run->owner, run->name,
+                               workflowDedicationLabel(wf)));
+            continue;
+        }
         // start() emits statusChanged synchronously (which reloads m_actionRuns),
         // so copy the run out first and don't touch the pointer afterwards.
         const ActionRun snapshot = *run;
+        if (mirrorPin)
+            m_actionMirrorPins.insert(
+                runId, {mirrorPin, mirror, snapshot.owner, snapshot.name});
         idle->start(snapshot, wf, mirror, workTree, ActionStore::variables());
     }
 }
@@ -1166,6 +1280,10 @@ void MainWindow::onRunStatusChanged(int runId, const QString &status)
 
 void MainWindow::onRunFinished(int runId, bool ok)
 {
+    // The run is done with the mirror (the runner has already detached its
+    // worktree and landed any release artifacts), so stop holding the
+    // materialization open — a superseded one is deleted here.
+    releaseActionMirrorPin(runId);
     m_actionRuns = m_actionStore->loadAllRuns();
     scheduleMirrorActionsSummary(0);
     refreshActionsTable();
@@ -1188,6 +1306,8 @@ void MainWindow::onRunFinished(int runId, bool ok)
                           QString::fromUtf8("%1 \xC2\xB7 %2/%3")
                               .arg(run->workflowName, run->owner, run->name),
                           !ok && !cancelled);
+        if (!ok && !cancelled)
+            maybeAutoFixFailedRun(*run);
     }
     if (runId == m_selectedRunId)
         showRun(runId); // finished: reload the complete log from disk
@@ -1218,7 +1338,7 @@ void MainWindow::onReleaseMetadataLanded(int runId)
         m_repoDetailStack &&
         m_repoDetailStack->currentIndex() == m_releasesTabIndex)
         loadReleasesPanel();
-    updateRepoPushButton();
+    refreshRepoSyncIndicators();
 }
 
 // After action-run state changes, keep an open PR's Checks tab and the inline
@@ -2047,50 +2167,6 @@ void MainWindow::positionActionStrip()
     m_actionStrip->raise();
 }
 
-// Float the "Sync" button in the band just above the Code tab, raised
-// one above the tab bar. As an overlay it occupies no layout space, so toggling
-// it never shifts the tabs or page content.
-void MainWindow::positionRepoPushButton()
-{
-    if (!m_repoPushButton || !m_repoCodeTab)
-        return;
-    // The repo-detail page itself, not m_repoDetailStack->parentWidget(): the
-    // stack now lives inside its own QScrollArea (688850a7), so its parent is
-    // that scroll's viewport. These bars float over the meta band just above the
-    // tab row, so they must be parented to the page — anchoring them to the
-    // viewport pushes them into the scrolled body, away from the tabs.
-    QWidget *page = m_repoDetailSection;
-    if (!page)
-        return;
-    if (m_repoPushButton->parentWidget() != page)
-        m_repoPushButton->setParent(page); // hides it; reveal() re-shows
-    const int w = m_repoPushButton->sizeHint().width();
-    const int h = m_repoPushButton->sizeHint().height();
-    const QPoint tl = m_repoCodeTab->mapTo(page, QPoint(0, 0));
-    int x = tl.x();
-    int y = tl.y() - h - 1; // the meta band above the tab row
-    if (y < 0)
-        y = 0;
-    if (x + w > page->width())
-        x = qMax(0, page->width() - w);
-    m_repoPushButton->setGeometry(x, y, w, h);
-    m_repoPushButton->raise();
-
-    // The eye icon rides just to the right of Sync, same row, same reveal.
-    if (m_repoPushEyeButton) {
-        if (m_repoPushEyeButton->parentWidget() != page)
-            m_repoPushEyeButton->setParent(page);
-        const int ew = m_repoPushEyeButton->sizeHint().width();
-        const int eh = m_repoPushEyeButton->sizeHint().height();
-        int ex = x + w + 4;
-        int ey = y + (h - eh) / 2;
-        if (ex + ew > page->width())
-            ex = qMax(0, page->width() - ew);
-        m_repoPushEyeButton->setGeometry(ex, ey, ew, eh);
-        m_repoPushEyeButton->raise();
-    }
-}
-
 void MainWindow::updateAgentsTabIndicator()
 {
     // adhoc #178 removed the repo-detail Agents tab and its floating spinner
@@ -2128,57 +2204,10 @@ void MainWindow::updateAgentsTabIndicator()
         m_agentsSpinTimer->start(120);
 }
 
-// Anchor the looper toggle in the meta band just above the Issues tab (adhoc
-// #130), mirroring positionRepoPushButton over Code. It stays visible the
-// whole time a repo detail page is open — off (grey switch) or on (green switch
-// + travelling neon loop, naming the live issue). A modest timer keeps it
-// pinned over the tab as the window resizes or the tabs reflow.
-void MainWindow::positionLooperToggle()
-{
-    if (!m_looperToggle || !m_repoIssuesTab)
-        return;
-    // The repo-detail page itself, not m_repoDetailStack->parentWidget(): the
-    // stack now lives inside its own QScrollArea (688850a7), so its parent is
-    // that scroll's viewport. These bars float over the meta band just above the
-    // tab row, so they must be parented to the page — anchoring them to the
-    // viewport pushes them into the scrolled body, away from the tabs.
-    QWidget *page = m_repoDetailSection;
-    if (!page)
-        return;
-    if (m_looperToggle->parentWidget() != page)
-        m_looperToggle->setParent(page); // hides it; shown again just below
-    const int w = m_looperToggle->sizeHint().width();
-    const int h = m_looperToggle->sizeHint().height();
-    const QPoint tl = m_repoIssuesTab->mapTo(page, QPoint(0, 0));
-    int x = tl.x() + (m_repoIssuesTab->width() - w) / 2;
-    int y = tl.y() - h - 1; // the meta band above the tab row
-    if (y < 0)
-        y = 0;
-    if (x + w > page->width())
-        x = qMax(0, page->width() - w);
-    m_looperToggle->setGeometry(x, y, w, h);
-    // Only show it while the repo-detail page is the one on screen; otherwise the
-    // overlay would float over whatever section replaced it.
-    const bool onPage = page->isVisible();
-    m_looperToggle->setVisible(onPage);
-    if (onPage)
-        m_looperToggle->raise();
-    // Keep a single low-rate timer running so the toggle re-anchors as the window
-    // resizes or the tabs reflow, and reappears when the user returns to the
-    // repo-detail page. Started once; the per-tick visibility check above is what
-    // hides/shows it, so it never needs stopping.
-    if (!m_looperToggleTimer) {
-        m_looperToggleTimer = new QTimer(this);
-        connect(m_looperToggleTimer, &QTimer::timeout, this,
-                &MainWindow::positionLooperToggle);
-        m_looperToggleTimer->start(400);
-    }
-}
-
 // Anchor the live mirror-activity dot strip in the meta band just above the
-// Mirror nodes tab (adhoc #197), mirroring positionLooperToggle over Issues. It
-// shows only while a repo-detail page is open and at least one node is active;
-// loadMirrorNodesPanel feeds it the roster, the timer keeps it pinned.
+// Mirror nodes tab (adhoc #197). It shows only while a repo-detail page is
+// open and at least one node is active; loadMirrorNodesPanel feeds it the
+// roster, the timer keeps it pinned.
 void MainWindow::positionMirrorActivityStrip()
 {
     auto *strip = static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip);
@@ -2382,6 +2411,18 @@ void MainWindow::refreshRepoActions()
             triggers << QStringLiteral("on: release");
         if (wf.allowsManualRun())
             triggers << QStringLiteral("manual");
+        // Dedicated workflows say where they run, and grey out here when that
+        // node isn't this one — this node will never queue them.
+        if (!wf.runsOn.isEmpty()) {
+            triggers << QStringLiteral("runs-on: ") +
+                            workflowDedicationLabel(wf);
+            if (!wf.runsOnNode(actionNodeLabels())) {
+                item->setText(wf.name + QString::fromUtf8("  \xC2\xB7  ") +
+                              workflowDedicationLabel(wf));
+                item->setForeground(palette().color(QPalette::Disabled,
+                                                    QPalette::Text));
+            }
+        }
         // Valid workflows get a checkbox so the owner can switch each one off
         // individually; unchecking skips it on push and hides its manual-run bar.
         if (wf.valid) {
@@ -2437,6 +2478,15 @@ void MainWindow::updateManualRunBar()
         return;
     m_actionManualRunButton->setText(
         QString::fromUtf8("Run \xE2\x80\x9C%1\xE2\x80\x9D").arg(wf->name));
+    // A workflow dedicated to another node can't start here, so say so on the
+    // button instead of failing after the click.
+    const bool ours = wf->runsOnNode(actionNodeLabels());
+    m_actionManualRunButton->setEnabled(ours);
+    m_actionManualRunButton->setToolTip(
+        ours ? QString()
+             : QString::fromUtf8("Dedicated to %1 \xE2\x80\x94 start this "
+                                 "workflow from that node.")
+                   .arg(workflowDedicationLabel(*wf)));
 
     // Populate the branch list from the repo's mirror, keeping the user's choice
     // (or defaulting to main) selected.
@@ -2522,6 +2572,15 @@ void MainWindow::runSelectedWorkflowManually()
     const ActionWorkflow wf = ActionFile::parse(path, content);
     if (!wf.valid) {
         flashMessage(QStringLiteral("Workflow is invalid: %1").arg(wf.error));
+        return;
+    }
+    // Manual runs honour the dedication too: pushing "Run" here would otherwise
+    // execute an iOS build or a Cloudflare deploy on the wrong machine.
+    if (!wf.runsOnNode(actionNodeLabels())) {
+        flashMessage(QString::fromUtf8(
+                         "\xE2\x80\x9C%1\xE2\x80\x9D runs on %2 \xE2\x80\x94 "
+                         "start it from that node.")
+                         .arg(wf.name, workflowDedicationLabel(wf)));
         return;
     }
 
@@ -2805,6 +2864,16 @@ void MainWindow::rerunSelectedRun()
     const int repoIndex = repoIndexFor(run.owner, run.name);
     if (repoIndex < 0)
         return;
+    const ActionWorkflow rerunWorkflow =
+        ActionFile::parse(run.workflowPath, run.workflowContent);
+    if (!rerunWorkflow.runsOnNode(actionNodeLabels())) {
+        flashMessage(QString::fromUtf8(
+                         "\xE2\x80\x9C%1\xE2\x80\x9D runs on %2 \xE2\x80\x94 "
+                         "rerun it from that node.")
+                         .arg(run.workflowName,
+                              workflowDedicationLabel(rerunWorkflow)));
+        return;
+    }
     QString snapshotError;
     if (workflowContentAt(m_repositories.at(repoIndex).mirrorPath,
                           run.commit, run.workflowPath) !=
@@ -2934,6 +3003,68 @@ void MainWindow::fixSelectedRunWithAgent(const QString &provider, const QString 
     if (sessionId > 0)
         flashMessage(QStringLiteral("Started a %1 agent to fix \"%2\".")
                          .arg(agentProviderName(provider), run->workflowName));
+}
+
+// adhoc #306: with kAutoFixFailuresSetting on (the default), a failed run whose
+// branch still has an agent session attached is sent straight back to that
+// session — the same steer-and-resume treatment fixAgentConflictsWithAgent()
+// gives a conflicted branch — instead of waiting for a human to notice and
+// click "Fix with agent". Only the most recently attached, non-external
+// session for this exact owner/name/branch is used ("the agent that was last
+// working on it"); if none ever ran on this branch, or it's already active,
+// this is a no-op — a currently-running session will see the failure on its
+// own next pass, and there's no "last agent" to hand a brand-new branch to.
+void MainWindow::maybeAutoFixFailedRun(const ActionRun &run)
+{
+    if (!QSettings().value(kAutoFixFailuresSetting, true).toBool())
+        return;
+    const QString branch = run.ref.startsWith(QLatin1String("refs/heads/"))
+                               ? run.ref.mid(11)
+                               : run.ref;
+    if (branch.isEmpty())
+        return;
+    int sessionId = 0;
+    QString sessionProvider;
+    for (const AgentSession &s : std::as_const(m_agentSessions)) {
+        if (s.owner == run.owner && s.name == run.name &&
+            s.branchName == branch && !isExternalSession(s.id)) {
+            sessionId = s.id; // sessions are stored oldest-first; keep the last match
+            sessionProvider = s.provider;
+        }
+    }
+    if (sessionId <= 0)
+        return;
+    const AgentSession *session = findAgentSession(sessionId);
+    if (!session || session->status == AgentStatus::Running ||
+        session->status == AgentStatus::Queued ||
+        session->status == AgentStatus::Waiting)
+        return;
+
+    const QString log = m_actionStore ? m_actionStore->readLog(run) : QString();
+    constexpr int kMaxLogChars = 12000;
+    const QString logTail =
+        log.size() <= kMaxLogChars
+            ? log
+            : QStringLiteral("...(log truncated; showing the tail)...\n") +
+                  log.right(kMaxLogChars);
+    const QString prompt =
+        QStringLiteral(
+            "The \"%1\" CI workflow failed for %2/%3 (commit %4, ref %5). Find "
+            "what broke and fix it so the workflow succeeds. Full run log:\n\n%6")
+            .arg(run.workflowName, run.owner, run.name, run.commit.left(8),
+                 run.ref, logTail);
+    const QString workflowName = run.workflowName;
+
+    m_pendingSteerMessage.insert(sessionId, prompt);
+    if (sessionProvider == QLatin1String("claude-code") ||
+        agentIsCodexProvider(sessionProvider))
+        applyTranscriptEvent(
+            sessionId,
+            QJsonObject{{QStringLiteral("type"), QStringLiteral("_local_user")},
+                        {QStringLiteral("text"), prompt}});
+    continueAgentSession(sessionId);
+    flashMessage(QStringLiteral("Sent \"%1\"'s failure back to its agent.")
+                     .arg(workflowName));
 }
 
 void MainWindow::clearActionRuns()

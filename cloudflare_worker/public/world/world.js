@@ -4,6 +4,7 @@ import {
   FOCUS_MUSIC_TRACKS,
   LANDMARKS,
   OUTFIT_COLOR_OPTIONS,
+  OUTFIT_STYLE_OPTIONS,
   RADIO_STATIONS,
   THEME_OPTIONS,
   TOUR_STEPS,
@@ -41,7 +42,11 @@ import { buildRepositoryGraphEntities } from "./world-repository-graph.js";
 import { createWorldOfficeController } from "./world-office.js";
 import { createWorldOfficeMeeting } from "./world-office-meeting.js";
 import { createWorldOfficeTasksController } from "./world-office-tasks.js";
-import { createWorldScene } from "./world-scene.js";
+import {
+  CAMPFIRE_SEATED_ACTIVITY,
+  SWING_RIDING_ACTIVITY,
+  createWorldScene,
+} from "./world-scene.js";
 
 const THREE_MODULE_URL =
   "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.min.js";
@@ -55,14 +60,47 @@ THREE_MODULE.catch(() => {});
 const SETTINGS_KEY = "forkmesh.world.settings.v1";
 const GUEST_ID_KEY = "forkmesh.world.guestId.v1";
 const FIRST_VISIT_KEY = "forkmesh.world.firstVisitAt.v1";
+// The edge-derived country is remembered locally so a signed-out visitor keeps
+// their flag across reloads, and while /api/world/context is slow or offline.
+const COUNTRY_KEY = "forkmesh.world.countryCode.v1";
+// Fingerprint of the country/browser/OS last saved on the account, so the
+// server write happens once per change instead of once per visit.
+const CLIENT_PROFILE_KEY = "forkmesh.world.clientProfile.v1";
 const VISIT_COUNT_KEY = "forkmesh.world.publicVisitCount.v1";
+// Mirrors WORLD_FIRST_SEEN_MAX_MINUTES / WORLD_JOINED_AT_MIN_MS in world.py.
+const FIRST_SEEN_MAX_MINUTES = 10 * 365 * 24 * 60;
+const JOINED_AT_MIN_MS = 1577836800000;
 const FORKBOT_GREETED_KEY = "forkmesh.world.forkbotGreeted.v1";
+// Mirrors FORKBOT_MENTION_RE in chat.js / dashboard-chat.js (the clients that
+// actually forward the mention to /api/forkbot/chat), so the in-world droid
+// gets excited for exactly the messages the bot will answer.
+const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
 const POSITION_KEY_PREFIX = "forkmesh.world.position.v1.";
+const DETAIL_WIDTH_KEY = "forkmesh.world.detailWidth.v1";
+const DETAIL_WIDTH_MIN = 320;
+const DETAIL_WIDTH_STEP = 48;
 const REFRESH_POSITION_KEY = "forkmesh.world.refresh-position.v1";
 const RENDERER_RECOVERY_KEY = "forkmesh.world.renderer-recovery.v1";
 const RENDERER_RECOVERY_DELAY_MS = 1500;
 const RENDERER_RECOVERY_WINDOW_MS = 30 * 1000;
 const POSITION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+// The Mastodon kiosk refetches the public profile on this cadence; the MM:SS
+// timer on the billboard counts the same window down.
+const MASTODON_REFRESH_MS = 10 * 60 * 1000;
+// Mastodon has no "replies to my account" endpoint, so the replies section is
+// built from the thread context of the newest toots that report replies.
+const MASTODON_REPLY_THREADS = 4;
+const MASTODON_REPLY_LIMIT = 12;
+// Twitter and Reddit have no CORS-open public API, so their banners repaint
+// from the Worker's edge-cached proxy on the same ten-minute cadence. The
+// blog board rides the same snapshot: the Worker reads its own static blog
+// index and folds the feature cards into the payload.
+const SOCIAL_POSTS_URL = "/api/world/social-posts";
+const SOCIAL_REFRESH_MS = 10 * 60 * 1000;
+// Placements this browser locked in, kept only long enough to outlive a stale
+// read of the shared layout document. See rememberWorldLayout.
+const WORLD_LAYOUT_ECHO_KEY = "forkmesh.world.layout.echo.v1";
+const WORLD_LAYOUT_ECHO_TTL_MS = 10 * 60 * 1000;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const CHAT_BUBBLE_JOIN_GRACE_MS = 20 * 1000;
 const POSITION_RADIUS = 72;
@@ -92,11 +130,12 @@ const WORLD_ACTIVITY_CONTINUATION_HEADER = "x-forkmesh-world-activity";
 // player's position, and reloads once — the restored position makes the new
 // build appear in place without the player ever touching refresh.
 const WORLD_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+const REPOSITORY_IMPORT_POLL_MS = 15 * 1000;
 const WORLD_UPDATE_CHECK_MIN_GAP_MS = 60 * 1000;
 const WORLD_UPDATE_RELOAD_DELAY_MS = 1400;
 const WORLD_UPDATE_RELOADED_REV_KEY = "forkmesh.world.updateReloadedRev.v1";
 const WORLD_NOTIFICATION_POLL_MS = 30 * 1000;
-const MIRROR_STATUS_POLL_MS = 30 * 1000;
+const MIRROR_STATUS_POLL_MS = 5 * 1000;
 const WORLD_MANUAL_BLOCK_DURATION_MS = 60 * 60 * 1000;
 const WORLD_SCORE_LOOP_MS = 4 * 60 * 60 * 1000;
 const DEFAULT_FOCUS_MUSIC_TRACK_ID = FOCUS_MUSIC_TRACKS[0].id;
@@ -108,6 +147,11 @@ const WORLD_LIGHT_LEVEL_DEFAULT = 100;
 const WORLD_MOVE_SPEED_MIN = 50;
 const WORLD_MOVE_SPEED_MAX = 300;
 const WORLD_MOVE_SPEED_DEFAULT = 100;
+// Swing-ride pumping strength; session-only because the control is only on
+// screen while actually riding one of the town swings.
+const WORLD_SWING_SPEED_MIN = 10;
+const WORLD_SWING_SPEED_MAX = 100;
+const WORLD_SWING_SPEED_DEFAULT = 55;
 const WORLD_MOVE_ACCEL_MIN = 25;
 // The top slider position is the "instant" sentinel — it maps to infinite
 // acceleration so the player reaches top speed the moment a key is pressed.
@@ -146,6 +190,7 @@ const ACCOUNT_STATUS_ICONS = Object.freeze({
   "Verified bot": "⌘",
 });
 const OUTFIT_COLOR_VALUES = new Set(OUTFIT_COLOR_OPTIONS.map((option) => option.id));
+const OUTFIT_STYLE_VALUES = new Set(OUTFIT_STYLE_OPTIONS.map((option) => option.id));
 const PATREON_URL = "https://www.patreon.com/16434219/join";
 const WORLD_SPACE_IDS = new Set([
   "town-square",
@@ -276,6 +321,28 @@ function firstVisitTimestamp(now = Date.now()) {
   return now;
 }
 
+// The last coarse country the edge reported for this browser. Only a plain
+// two-letter code is ever stored; nothing narrower than a country is kept.
+function rememberedCountryCode() {
+  try {
+    const stored = String(localStorage.getItem(COUNTRY_KEY) || "")
+      .trim()
+      .toUpperCase();
+    return /^[A-Z]{2}$/.test(stored) ? stored : "";
+  } catch (_) {
+    return "";
+  }
+}
+
+function rememberCountryCode(code) {
+  const clean = String(code || "").trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(clean)) return "";
+  try {
+    localStorage.setItem(COUNTRY_KEY, clean);
+  } catch (_) {}
+  return clean;
+}
+
 function firstVisitAge(timestamp, now = Date.now()) {
   const age = Math.max(0, now - Number(timestamp || now));
   if (age < 10 * 60 * 1000) return "this-session";
@@ -284,6 +351,22 @@ function firstVisitAge(timestamp, now = Date.now()) {
   if (age < 31 * 24 * 60 * 60 * 1000) return "this-month";
   if (age < 366 * 24 * 60 * 60 * 1000) return "this-year";
   return "over-a-year";
+}
+
+// The coarse bucket above still drives the privacy-safe fallback label; this
+// is the exact "first seen 12 minutes ago" reading the chest badge prefers.
+function firstSeenMinutes(timestamp, now = Date.now()) {
+  const age = Math.max(0, now - Number(timestamp || now));
+  return Math.max(0, Math.min(FIRST_SEEN_MAX_MINUTES, Math.floor(age / 60000)));
+}
+
+function boundedJoinedAt(value, now = Date.now()) {
+  const timestamp = Number(value);
+  return Number.isSafeInteger(timestamp) &&
+    timestamp >= JOINED_AT_MIN_MS &&
+    timestamp <= now
+    ? timestamp
+    : 0;
 }
 
 function sessionVisitCount(increment = false) {
@@ -440,7 +523,15 @@ function accountIdentity(session) {
     inputActive: false,
     visitCount: 0,
     firstVisitAge: "this-session",
+    firstSeenMinutes: 0,
+    // Filled in from the server-signed world ticket; guests never have one.
+    joinedAt: 0,
     activityCategory: "exploring-town-square",
+    // The published payout address worn as the chest wallet QR; balance and
+    // transaction recency are filled in by applyWalletBadges.
+    solana: sessionSolanaAddress(session),
+    walletSol: null,
+    walletTxBucket: "",
   };
 }
 
@@ -462,10 +553,11 @@ function defaultSettings() {
     availability: "online",
     activityCategory: "automatic",
     publicDoor: "knock",
-    displayName: "",
     statusEmoji: "",
     statusNote: "",
     outfitColor: "",
+    outfitStyle: "",
+    faceImage: false,
     privacy: {
       name: true,
       country: true,
@@ -478,6 +570,7 @@ function defaultSettings() {
     },
     labels: true,
     reducedData: false,
+    debugPanel: false,
   };
 }
 
@@ -540,11 +633,16 @@ function mergeSettings(stored) {
       ),
     ),
     focusMusicMuted: stored?.focusMusicMuted === true,
+    debugPanel: stored?.debugPanel === true,
     statusEmoji: publicStatus.emoji,
     statusNote: publicStatus.note,
     outfitColor: OUTFIT_COLOR_VALUES.has(String(stored?.outfitColor || ""))
       ? String(stored.outfitColor)
       : defaults.outfitColor,
+    outfitStyle: OUTFIT_STYLE_VALUES.has(String(stored?.outfitStyle || ""))
+      ? String(stored.outfitStyle)
+      : defaults.outfitStyle,
+    faceImage: stored?.faceImage === true,
     privacy: {
       ...defaults.privacy,
       ...(stored?.privacy || {}),
@@ -553,11 +651,7 @@ function mergeSettings(stored) {
 }
 
 function publicIdentity(identity, settings) {
-  const chosenName = sanitizePresenceText(
-    identity.accountStatus === "Guest" ? settings.displayName : identity.name,
-    identity.name,
-    24,
-  );
+  const chosenName = sanitizePresenceText(identity.name, identity.name, 24);
   const publicStatus = normalizeWorldStatus(
     settings.statusEmoji,
     settings.statusNote,
@@ -608,6 +702,10 @@ function publicIdentity(identity, settings) {
     firstVisitAge: settings.privacy.activity
       ? String(identity.firstVisitAge || "this-session")
       : "hidden",
+    firstSeenMinutes: settings.privacy.activity
+      ? Math.max(0, Number(identity.firstSeenMinutes) || 0)
+      : 0,
+    joinedAt: boundedJoinedAt(identity.joinedAt),
     statusEmoji: publicStatus.emoji,
     statusNote: publicStatus.note,
     outfitColor:
@@ -615,6 +713,24 @@ function publicIdentity(identity, settings) {
       OUTFIT_COLOR_VALUES.has(settings.outfitColor)
         ? settings.outfitColor
         : "",
+    outfitStyle:
+      identity.accountStatus === "Supporting member" &&
+      OUTFIT_STYLE_VALUES.has(settings.outfitStyle)
+        ? settings.outfitStyle
+        : "",
+    faceImage:
+      identity.accountStatus === "Supporting member" &&
+      settings.faceImage === true,
+    // The wallet chip is public by construction: an address its owner saved
+    // to publish, plus on-chain balance/recency the app fetched for it.
+    solana: WORLD_SOLANA_ADDRESS_RE.test(String(identity.solana || ""))
+      ? String(identity.solana)
+      : "",
+    walletSol: identity.walletSol ?? null,
+    walletTxBucket: activityLightBucket(identity.walletTxBucket),
+    // A visitor at this keyboard is by definition active within the hour;
+    // the light itself stays dark until the account is authenticated.
+    activityBucket: "hour",
   };
 }
 
@@ -671,6 +787,37 @@ function presenceActivity(settings, automatic = "exploring-town-square") {
   return ACTIVITY_OPTIONS.some((option) => option.id === chosen)
     ? chosen
     : "exploring-town-square";
+}
+
+// The server's coarse "active within …" recency ladder for the avatar chest
+// light and the wallet QR's transaction ring; "stale" is past ten days.
+const ACTIVITY_LIGHT_BUCKET_VALUES = new Set([
+  "hour",
+  "5h",
+  "24h",
+  "3d",
+  "5d",
+  "10d",
+  "stale",
+]);
+
+function activityLightBucket(value) {
+  return ACTIVITY_LIGHT_BUCKET_VALUES.has(String(value || ""))
+    ? String(value)
+    : "";
+}
+
+const WORLD_SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+// The chip is decorative and the worker edge-caches per address, so one
+// balance refresh every ten minutes per address is plenty.
+const WALLET_BADGE_TTL_MS = 10 * 60 * 1000;
+
+// The chest wallet QR wears the Solana payout address the account holder
+// saved on their profile to publish; anything else stays off the avatar.
+function sessionSolanaAddress(session) {
+  const address = String(session?.solana || "").trim();
+  return WORLD_SOLANA_ADDRESS_RE.test(address) ? address : "";
 }
 
 function boundedPresenceNumber(value) {
@@ -743,6 +890,10 @@ function remotePlayer(peer) {
     outfitColor: OUTFIT_COLOR_VALUES.has(String(peer.outfitColor || ""))
       ? String(peer.outfitColor)
       : "",
+    outfitStyle: OUTFIT_STYLE_VALUES.has(String(peer.outfitStyle || ""))
+      ? String(peer.outfitStyle)
+      : "",
+    faceImage: peer.faceImage === true,
     nodes: Array.from(
       { length: Math.max(0, Math.min(6, Number(peer.nodeCount) || 0)) },
       () => "node",
@@ -769,11 +920,48 @@ function remotePlayer(peer) {
     ].includes(String(peer.firstVisitAge || ""))
       ? String(peer.firstVisitAge)
       : "hidden",
+    firstSeenMinutes: Math.max(
+      0,
+      Math.min(FIRST_SEEN_MAX_MINUTES, Number(peer.firstSeenMinutes) || 0),
+    ),
+    joinedAt: boundedJoinedAt(peer.joinedAt),
     statusEmoji: publicStatus.emoji,
     statusNote: publicStatus.note,
     moderationHandles,
     updatedAt: Math.max(0, Number(peer.updatedAt) || 0),
+    solana: WORLD_SOLANA_ADDRESS_RE.test(String(peer.solana || ""))
+      ? String(peer.solana)
+      : "",
+    // A live presence frame is by definition activity within the hour.
+    activityBucket: "hour",
   };
+}
+
+// The public contribution feed doubles as the account's ForkMesh fediverse
+// timeline: these are exactly the events the relay federates as Notes.
+function worldFediverseFeedLines(recentActivity) {
+  const kinds = {
+    commits: "COMMITS",
+    issues: "ISSUES",
+    pulls: "PULL REQUESTS",
+    discussions: "DISCUSSIONS",
+    releases: "RELEASES",
+    reviews: "REVIEWS",
+  };
+  return (Array.isArray(recentActivity) ? recentActivity : [])
+    .slice(0, 6)
+    .map((entry) => {
+      const count = Math.max(0, Math.min(999, Number(entry?.count) || 0));
+      const kind = kinds[String(entry?.kind || "")] || "ACTIVITY";
+      const owner = sanitizePresenceText(entry?.repository?.owner, "", 20);
+      const name = sanitizePresenceText(entry?.repository?.name, "", 20);
+      const date = /^\d{4}-\d{2}-\d{2}$/.test(String(entry?.date || ""))
+        ? String(entry.date).slice(5)
+        : "";
+      const repository = owner && name ? `${owner}/${name}` : "";
+      return [date, `${count} ${kind}`, repository].filter(Boolean).join(" · ");
+    })
+    .filter(Boolean);
 }
 
 function compactNumber(value) {
@@ -1212,6 +1400,35 @@ function normalizeMediaSpaces(value) {
     .map((space) => normalizeMediaRoom(space))
     .filter((space) => space.id)
     .slice(0, 50);
+}
+
+// Public chat roster directory (user profiles only) doubles as the
+// campfire-circle population: every public registered account gets a bench
+// around the fire, and the roster length sizes the circle.
+function normalizeMemberDirectory(value) {
+  return (Array.isArray(value?.users) ? value.users : [])
+    .map((user) => ({
+      name: sanitizePresenceText(user?.name, "", 32),
+      createdAt: Number.isFinite(Number(user?.createdAt))
+        ? Math.max(0, Number(user.createdAt))
+        : 0,
+      nodes: Array.isArray(user?.nodes) ? user.nodes.slice(0, 6) : [],
+      totalActiveMs: Number.isFinite(Number(user?.totalActiveMs))
+        ? Math.max(0, Number(user.totalActiveMs))
+        : Number.isFinite(Number(user?.activeMs))
+          ? Math.max(0, Number(user.activeMs))
+          : null,
+      avatar: sanitizePresenceText(user?.avatar, "", 240),
+      countryCode: sanitizePresenceText(user?.countryCode, "", 2),
+      // The coarse client the account last published, saved server-side so an
+      // away member's bench figure keeps their flag shirt and client badge.
+      browser: presenceLabel(user?.browser, "Hidden", "Hidden"),
+      os: presenceLabel(user?.os, "Hidden", "Hidden"),
+      status: sanitizePresenceText(user?.status, "", 80),
+      // Coarse recency bucket for the bench figure's chest activity light.
+      activityBucket: activityLightBucket(user?.activityBucket),
+    }))
+    .filter((user) => user.name);
 }
 
 function normalizeFederatedInstances(value) {
@@ -1971,6 +2188,11 @@ function cleanRepositories(payload) {
         commit: /^[0-9a-f]{40,64}$/.test(commit) ? commit : "",
         stateHash: /^[0-9a-f]{64}$/.test(stateHash) ? stateHash : "",
         rootCommit: immutableGitOid(repo.rootCommit),
+        // A repository owner is a user/org identity; nodeId is the machine
+        // identity that signed and serves this particular catalog record.
+        // Keep both so organization alias attestation never compares a user
+        // name (for example jett) with a node name (for example forkmesh).
+        nodeId: sanitizePresenceText(repo.nodeId, "", 96),
         pullCount:
           Number.isSafeInteger(pullCount) &&
           pullCount >= 0 &&
@@ -2008,6 +2230,128 @@ function cleanRepositories(payload) {
       };
     })
     .slice(0, 200);
+}
+
+function cleanExternalRepositories(payload) {
+  const items = Array.isArray(payload?.repositories)
+    ? payload.repositories
+    : [];
+  return items
+    .filter((record) => record && record.id && record.name)
+    .slice(0, 200)
+    .map((record) => {
+      const provider = String(record.provider || "").toLowerCase();
+      const targetOwner = sanitizePresenceText(
+        record.targetOwner || record.listedBy || record.providerOwner,
+        "external",
+        40,
+      );
+      const counts =
+        record.metadata?.counts && typeof record.metadata.counts === "object"
+          ? record.metadata.counts
+          : {};
+      return {
+        owner: targetOwner,
+        name: sanitizePresenceText(record.name, "repository", 60),
+        description: String(record.metadata?.description || "").slice(0, 180),
+        liveHost: false,
+        source: "external-import",
+        provider,
+        providerLabel:
+          provider === "github"
+            ? "GitHub"
+            : provider === "gitlab"
+              ? "GitLab"
+              : provider === "codeberg"
+                ? "Codeberg"
+                : "External",
+        importId: String(record.id || "").slice(0, 64),
+        externalUrl: String(record.originalUrl || "").slice(0, 500),
+        isPrivate: record.isPrivate === true,
+        archived: record.status === "archived",
+        sizeBytes: 0,
+        starCount: Math.max(0, Number(counts.stars) || 0),
+        pullCount: Array.isArray(record.metadata?.pullRequests)
+          ? record.metadata.pullRequests.length
+          : null,
+        updatedAt: Math.max(0, Number(record.updatedAt) || 0),
+        importStatus: String(record.status || "external_repository").slice(
+          0,
+          40,
+        ),
+        mirrorOwner: sanitizePresenceText(record.mirror?.owner, "", 40),
+        mirrorName: sanitizePresenceText(record.mirror?.name, "", 60),
+      };
+    });
+}
+
+function mergeHostedRepositoryImports(repositories, externalRepositories) {
+  const native = Array.isArray(repositories) ? repositories : [];
+  const rawExternal = Array.isArray(externalRepositories)
+    ? externalRepositories
+    : [];
+  const externalByKey = new Map();
+  rawExternal.forEach((record) => {
+    const key = `${String(record?.owner || "").toLowerCase()}/${String(
+      record?.name || "",
+    ).toLowerCase()}`;
+    const previous = externalByKey.get(key);
+    const rank = (candidate) =>
+      (candidate?.importStatus === "actively_mirrored" ? 2 : 0) +
+      (candidate?.archived === true ? 0 : 1);
+    if (
+      !previous ||
+      rank(record) > rank(previous) ||
+      (rank(record) === rank(previous) &&
+        Number(record?.updatedAt || 0) > Number(previous?.updatedAt || 0))
+    ) {
+      externalByKey.set(key, record);
+    }
+  });
+  const external = [...externalByKey.values()];
+  const consumed = new Set();
+  const imports = external.map((record) => {
+    const candidates = native
+      .map((candidate, index) => ({ candidate, index }))
+      .filter(
+        ({ candidate }) =>
+          String(candidate?.name || "").toLowerCase() ===
+            String(record?.name || "").toLowerCase() &&
+          candidate?.isPrivate !== true &&
+          candidate?.source !== "external-import" &&
+          ["mirror2", "mirror3"].includes(
+            String(candidate?.owner || "").toLowerCase(),
+          ),
+      )
+      .sort(
+        (left, right) =>
+          Number(Boolean(right.candidate?.liveHost)) -
+            Number(Boolean(left.candidate?.liveHost)) ||
+          Number(right.candidate?.updatedAt || 0) -
+            Number(left.candidate?.updatedAt || 0),
+      );
+    if (!candidates.length) return record;
+    candidates.forEach(({ index }) => consumed.add(index));
+    const hosted = candidates[0].candidate;
+    return {
+      ...hosted,
+      owner: record.owner,
+      name: record.name,
+      servingOwner: hosted.owner,
+      servingName: hosted.name,
+      importId: record.importId,
+      importStatus: "actively_mirrored",
+      externalUrl: record.externalUrl,
+      provider: record.provider,
+      providerLabel: record.providerLabel,
+      hostedByForkMesh: true,
+      source: "hosted-import",
+    };
+  });
+  return [
+    ...native.filter((_record, index) => !consumed.has(index)),
+    ...imports,
+  ];
 }
 
 function normalizeRepositoryFollowers(value) {
@@ -2085,13 +2429,30 @@ function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
         )
         .filter(Boolean),
     );
+    const mirrorNodeById = new Map();
+    mirrors.forEach((mirror) => {
+      const node = sanitizePresenceText(
+        mirror?.node || mirror?.owner,
+        "",
+        40,
+      ).toLowerCase();
+      const id = sanitizePresenceText(mirror?.id, "", 96);
+      if (node && id && !mirrorNodeById.has(id)) {
+        mirrorNodeById.set(id, node);
+      }
+    });
+    const servingNodeFor = (record) => {
+      const owner = String(record?.owner || "").toLowerCase();
+      if (nodes.has(owner)) return owner;
+      return mirrorNodeById.get(String(record?.nodeId || "")) || "";
+    };
     const candidates = source
       .map((record, index) => ({ record, index }))
       .filter(
         ({ record }) =>
           !record.isPrivate &&
           record.name.toLowerCase() === repo.toLowerCase() &&
-          nodes.has(record.owner.toLowerCase()),
+          Boolean(servingNodeFor(record)),
       );
     if (!candidates.length) return;
     candidates.forEach(({ index }) => consumed.add(index));
@@ -2101,6 +2462,11 @@ function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
         mirror?.cloneAvailable === true &&
         String(mirror?.integrity || "").toLowerCase() === "ok" &&
         mirror?.behind !== true,
+    );
+    const reachable = mirrors.filter(
+      (mirror) =>
+        String(mirror?.status || "").toLowerCase() === "online" &&
+        mirror?.cloneAvailable === true,
     );
     const attestedMirrorCommits = new Map();
     healthy.forEach((mirror) => {
@@ -2123,7 +2489,7 @@ function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
     const attestedCandidatesByNode = new Map();
     candidates.forEach((candidate) => {
       const { record } = candidate;
-      const node = record.owner.toLowerCase();
+      const node = servingNodeFor(record);
       const reportedCommits = attestedMirrorCommits.get(
         node,
       );
@@ -2153,7 +2519,7 @@ function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
     const preferredNode = String(healthy[0]?.node || "").toLowerCase();
     const preferred =
       attestedCandidates.find(
-        ({ record }) => record.owner.toLowerCase() === preferredNode,
+        ({ record }) => servingNodeFor(record) === preferredNode,
       )?.record ||
       attestedCandidates
         .map(({ record }) => record)
@@ -2198,6 +2564,13 @@ function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
       servingName: preferred.name,
       source: "organization-alias",
       liveHost: healthy.length > 0,
+      mirrorState: healthy.length
+        ? "live"
+        : reachable.length
+          ? "syncing"
+          : mirrors.length
+            ? "offline"
+            : "stub",
       mirrorCount: mirrors.length,
       pullCount,
       commit: commits.size === 1 ? [...commits][0] : "",
@@ -2282,6 +2655,7 @@ function liveNodeRecords(network, mirrorCatalogs = []) {
 }
 
 const LOCAL_LIVE_LANDMARKS = new Set([
+  "campfire",
   "neighborhood",
   "broadcast",
 ]);
@@ -2437,6 +2811,16 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         ${isSupportingMember ? "" : "disabled"}
       >${escapeHTML(outfit.label)}</button>`,
   ).join("");
+  const outfitStyleSwatches = OUTFIT_STYLE_OPTIONS.map(
+    (style) => `
+      <button
+        type="button"
+        class="world-outfit-option"
+        data-world-outfit-style="${escapeHTML(style.id)}"
+        aria-pressed="${String(settings.outfitStyle === style.id)}"
+        ${isSupportingMember ? "" : "disabled"}
+      >${escapeHTML(style.label)}</button>`,
+  ).join("");
 
   const privacyOptions = [
     ["name", "Show chosen display name"],
@@ -2468,12 +2852,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
       }>${escapeHTML(option.label)}</option>`,
   ).join("");
 
-  const activityOptions = ACTIVITY_OPTIONS.map(
-    (option) => `
-      <option value="${escapeHTML(option.id)}" ${
-        settings.activityCategory === option.id ? "selected" : ""
-      }>${escapeHTML(option.label)}</option>`,
-  ).join("");
   const publicStatus = normalizeWorldStatus(
     settings.statusEmoji,
     settings.statusNote,
@@ -2575,6 +2953,16 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <span aria-hidden="true">📷</span><span>Capture</span>
             </button>
             <button
+              class="world-top-link world-notification-button"
+              type="button"
+              data-world-notifications-open
+              title="Show global and personal notifications"
+              aria-label="Open World notifications"
+            >
+              <span aria-hidden="true">🔔</span><span>Notifications</span>
+              <span data-world-notification-count hidden>0</span>
+            </button>
+            <button
               class="world-shirt-badge"
               type="button"
               data-world-shirt-badge
@@ -2588,8 +2976,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               )}">${escapeHTML(
                 ACCOUNT_STATUS_ICONS[identity.accountStatus] || "○",
               )}</span>
-              <span class="world-shirt-tech" data-world-shirt-tech>${escapeHTML(identity.browser)} · ${escapeHTML(identity.os)}</span>
-              <span class="world-shirt-name" data-world-shirt-name>${escapeHTML(identity.name)}</span>
             </button>
           </nav>
         </header>
@@ -2640,7 +3026,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </button>
         </div>
 
-        <details class="world-diagnostics" data-world-diagnostics>
+        <details class="world-diagnostics" data-world-diagnostics ${settings.debugPanel ? "" : "hidden"}>
           <summary aria-label="Open local World performance and connection details">
             <span class="world-diagnostics-light" data-world-diagnostics-light data-state="connecting" aria-hidden="true"></span>
             <strong>DEBUG</strong>
@@ -2677,7 +3063,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </div>
         </details>
 
-        <details class="world-diagnostics world-chat-terminal" data-world-chat-terminal>
+        <details class="world-diagnostics world-chat-terminal${settings.debugPanel ? "" : " world-chat-terminal--debug-hidden"}" data-world-chat-terminal>
           <summary aria-label="Open World chat in a terminal panel">
             <span class="world-diagnostics-light" data-state="online" aria-hidden="true"></span>
             <strong>CHAT</strong>
@@ -2695,6 +3081,28 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         </details>
 
         <div class="world-toast" data-world-toast role="status"></div>
+        <div class="world-swing-panel" data-world-swing-panel hidden>
+          <span>
+            <strong>Swing speed</strong>
+            <output data-world-swing-speed-output>${WORLD_SWING_SPEED_DEFAULT}%</output>
+          </span>
+          <input
+            type="range"
+            min="${WORLD_SWING_SPEED_MIN}"
+            max="${WORLD_SWING_SPEED_MAX}"
+            step="5"
+            value="${WORLD_SWING_SPEED_DEFAULT}"
+            data-world-swing-speed
+            aria-label="Swing speed"
+          />
+          <button
+            type="button"
+            class="world-swing-dismount"
+            data-world-swing-dismount
+          >
+            Hop off
+          </button>
+        </div>
         <button
           class="world-detail-backdrop"
           type="button"
@@ -2711,6 +3119,14 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           aria-labelledby="world-detail-title"
           aria-hidden="true"
         ></aside>
+        <div
+          class="world-detail-resize"
+          data-world-detail-resize
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize the details panel"
+          tabindex="0"
+        ></div>
 
         <section
           class="world-office-prompt"
@@ -2783,14 +3199,14 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <p class="world-eyebrow">MEETING FLOOR</p>
               <h2 id="world-office-lobby-title">ForkMesh Office</h2>
             </div>
-            <button type="button" data-world-office-exit aria-label="Leave ForkMesh Office">×</button>
+            <button type="button" data-world-office-lobby-exit aria-label="Leave ForkMesh Office">×</button>
           </header>
           <p class="world-office-panel-intro">Choose an authorized room. Your avatar appears only inside the meeting you join.</p>
           <div class="world-office-room-board" data-world-office-room-board aria-label="Available meeting rooms"></div>
           <p class="world-office-panel-status" data-world-office-lobby-status role="status"></p>
           <footer class="world-office-panel-actions">
             <button type="button" data-world-office-fallback>Open accessible chat fallback</button>
-            <button type="button" data-world-office-exit>Return to Town Square</button>
+            <button type="button" data-world-office-lobby-exit>Return to Town Square</button>
           </footer>
         </section>
 
@@ -3104,6 +3520,14 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               />
               <small>Full daylight is the default. This adjustment stays on this device and never changes the shared world.</small>
             </label>
+            <label class="world-privacy-option">
+              <span>Show debug panel</span>
+              <input
+                type="checkbox"
+                data-world-debug-panel
+                ${settings.debugPanel ? "checked" : ""}
+              />
+            </label>
           </fieldset>
 
           <fieldset class="world-setting-group">
@@ -3149,21 +3573,8 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           <fieldset class="world-setting-group">
             <legend>Public avatar badge</legend>
             <label class="world-field">
-              <span>Display name</span>
-              <input
-                type="text"
-                maxlength="24"
-                value="${escapeHTML(settings.displayName || identity.name)}"
-                data-world-display-name
-              />
-            </label>
-            <label class="world-field">
               <span>Availability</span>
               <select data-world-availability>${availabilityOptions}</select>
-            </label>
-            <label class="world-field">
-              <span>Generalized public activity</span>
-              <select data-world-activity-category>${activityOptions}</select>
             </label>
             <div class="world-status-editor">
               <div class="world-status-fields">
@@ -3235,13 +3646,28 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </fieldset>
 
           <fieldset class="world-setting-group">
-            <legend>Outfit color · Supporting member perk</legend>
+            <legend>Outfit &amp; face · Supporting member perks</legend>
+            <p class="world-setting-note">
+              Every coder already wears a unique outfit tailored from their
+              public name — cut, colourway, trims, and monogram. Supporting
+              members can pin their favourite cut and colourway instead.
+            </p>
+            <div class="world-outfit-grid">${outfitStyleSwatches}</div>
             <div class="world-outfit-grid">${outfitSwatches}</div>
+            <label class="world-privacy-option">
+              <span>Wear my account avatar photo as my face</span>
+              <input
+                type="checkbox"
+                data-world-face-image
+                ${settings.faceImage ? "checked" : ""}
+                ${isSupportingMember ? "" : "disabled"}
+              />
+            </label>
             <small>
               ${
                 isSupportingMember
-                  ? "Your outfit color replaces the default flag shirt and is visible to every visitor."
-                  : `<a href="${escapeHTML(PATREON_URL)}" target="_blank" rel="noreferrer">Become a Supporting member on Patreon</a> to unlock a custom outfit color everyone in the World can see.`
+                  ? "Your pinned cut, colourway, and face photo are visible to every visitor. The face photo is the avatar image already published on your account profile; upload or change it from your dashboard profile settings."
+                  : `<a href="${escapeHTML(PATREON_URL)}" target="_blank" rel="noreferrer">Become a Supporting member on Patreon</a> to pin an outfit cut and colourway — and wear your account avatar photo as your face — for everyone in the World to see.`
               }
             </small>
           </fieldset>
@@ -3249,7 +3675,10 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           <p class="world-setting-note">
             Browser and OS are detected locally. Country comes from a country-only
             edge hint; ForkMesh World does not receive or
-            display your raw IP. Movement is coarse, ephemeral, and never includes
+            display your raw IP. Whatever these three toggles share is saved on
+            your account so your campfire bench still shows it while you are
+            away — switch one off and the saved copy is cleared. Movement is
+            coarse, ephemeral, and never includes
             URLs, search terms, form contents, repository names, or wallet data.
           </p>
         </section>
@@ -3276,6 +3705,8 @@ class ForkMeshWorld extends HTMLElement {
     this.world = null;
     this.landmarkCapabilities = initialLandmarkCapabilities();
     this.repositories = [];
+    this.nativeRepositories = [];
+    this.externalRepositories = [];
     this.repositoryCatalogState = "loading";
     this.network = {};
     this.mirrorCatalogs = [];
@@ -3308,6 +3739,7 @@ class ForkMeshWorld extends HTMLElement {
     this.botDirectory = [];
     this.worldLimits = null;
     this.systemCapacityTables = [];
+    this.systemCapacityDurableObjects = [];
     this.systemCapacityFocus = "";
     this.systemCapacitySort = { key: "rowCount", direction: "desc" };
     this.detailReturnFocus = null;
@@ -3320,6 +3752,7 @@ class ForkMeshWorld extends HTMLElement {
     this.mediaSpaces = [];
     this.mediaRoom = normalizeMediaRoom(null);
     this.activeRepository = null;
+    this.repositoryMapPreview = null;
     this.repositoryStarStates = new Map();
     this.repositoryFollowerStates = new Map();
     this.repositoryMapState = "idle";
@@ -3328,6 +3761,8 @@ class ForkMeshWorld extends HTMLElement {
     this.repositoryDirectorySelection = 0;
     this.repositoryManualSelection = "";
     this.repositoryMapLoads = new Map();
+    this.repositorySizeTrees = new Map();
+    this.repositorySizeHydrationActive = false;
     this.repositoryView = "map";
     this.repositoryFile = null;
     this.pullReview = null;
@@ -3339,7 +3774,11 @@ class ForkMeshWorld extends HTMLElement {
     this.remotePlayers = new Map();
     this.localPeers = new Map();
     this.inactivePlayers = [];
+    // address → {sol, txBucket, fetchedAt, pending} for the chest wallet QR.
+    this.walletBadges = new Map();
     this.memberDirectory = [];
+    this.memberDirectoryFetchedAt = 0;
+    this.worldClientProfileKey = "";
     this.pendingKnocks = new Map();
     this.serverPeerId = "";
     this.sessionAuthenticated = false;
@@ -3357,9 +3796,17 @@ class ForkMeshWorld extends HTMLElement {
     this.officeTasks = null;
     this.mastodonProfile = null;
     this.mastodonStatuses = [];
+    this.mastodonReplies = [];
     this.mastodonState = "idle";
     this.mastodonFetchedAt = 0;
+    this.mastodonRequestedAt = 0;
     this.mastodonLoad = null;
+    this.mastodonRefreshTimer = 0;
+    this.socialFeedsSnapshot = null;
+    this.socialFeedsLoad = null;
+    this.socialFeedsTimer = 0;
+    this.socialFeedsRequestedAt = 0;
+    this.socialFeedsFetchedAt = 0;
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
     const requestedLandmark = worldQuery.get("landmark") || "";
@@ -3408,6 +3855,8 @@ class ForkMeshWorld extends HTMLElement {
     this.spawnSelected = false;
     this.rewardTimer = 0;
     this.mirrorTimer = 0;
+    this.repositoryImportTimer = 0;
+    this.mirrorPushRefreshTimer = 0;
     this.eventsTimer = 0;
     this.notificationsTimer = 0;
     this.mediaTimer = 0;
@@ -3450,6 +3899,7 @@ class ForkMeshWorld extends HTMLElement {
     if (this.mode === "public") document.body.classList.add("world-active");
     this.identity = accountIdentity(readSession());
     this.identity.firstVisitAge = firstVisitAge(this.firstVisitAt);
+    this.identity.firstSeenMinutes = firstSeenMinutes(this.firstVisitAt);
     this.identity.visitCount = this.publicVisitCount;
     this.identity.activityCategory = this.currentActivityCategory;
     this.settings = mergeSettings(readJSON(localStorage, SETTINGS_KEY, null));
@@ -3587,6 +4037,11 @@ class ForkMeshWorld extends HTMLElement {
     if (Date.now() < this.chatBubblesEnabledAt) return;
     if (data.self === true) {
       this.world?.showChatBubble?.(this.identity?.id, text, true);
+      // Mentioning ForkBot sends the excited droid over to the speaker; its
+      // chest screen echoes the line and thinks until the reply broadcasts.
+      if (FORKBOT_MENTION_RE.test(text)) {
+        this.world?.exciteForkbot?.(this.identity?.id, text);
+      }
       return;
     }
     const senderName = sender.toLowerCase();
@@ -3607,9 +4062,16 @@ class ForkMeshWorld extends HTMLElement {
       ) {
         if (Date.now() < Number(peer.chatBubblesEnabledAt || 0)) return;
         this.world?.showChatBubble?.(id, text);
+        if (FORKBOT_MENTION_RE.test(text)) {
+          this.world?.exciteForkbot?.(id, text);
+        }
         return;
       }
     }
+    // No live peer with that name: a member talking from the website while
+    // their avatar sits on its campfire bench gets the bubble over the
+    // seated figure instead (world-scene showMemberChatBubble).
+    this.world?.showMemberChatBubble?.(sender, text);
   };
 
   // ForkBot walks over and welcomes a visitor the first time this browser
@@ -3643,41 +4105,299 @@ class ForkMeshWorld extends HTMLElement {
     this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
   }
 
-  openRepositoryCreateForm() {
+  openRepositoryCreateForm(options = {}) {
     if (!this.sessionAuthenticated || !validWorldSession()) {
       this.toggleWorldAccount(true, "login");
       this.toast("Sign in to create a repository.");
       return;
     }
     document.querySelector("[data-world-create-repository]")?.remove();
+    const session = validWorldSession();
+    const account = sanitizePresenceText(
+      session?.nodeName || this.identity?.name,
+      "account",
+      40,
+    ).toLowerCase();
+    const ownerOptions = [
+      { name: account, label: `@${account} · user account` },
+      ...this.organizations
+        .filter((organization) =>
+          ["owner", "admin"].includes(
+            String(
+              organization.viewerRole || organization.role || "",
+            ).toLowerCase(),
+          ),
+        )
+        .map((organization) => {
+          const name = sanitizePresenceText(
+            organization.name || organization.org,
+            "",
+            40,
+          ).toLowerCase();
+          return { name, label: `${name} · organization` };
+        })
+        .filter((owner) => owner.name && owner.name !== account),
+    ];
+    const initialProvider = ["github", "gitlab", "codeberg"].includes(
+      String(options.provider || "").toLowerCase(),
+    )
+      ? String(options.provider).toLowerCase()
+      : "codeberg";
     const dialog = document.createElement("dialog");
     dialog.dataset.worldCreateRepository = "true";
-    dialog.style.cssText = "width:min(420px,calc(100vw - 32px));border:1px solid #9ef7c6;border-radius:14px;background:#071611;color:#e9fff2;padding:0;box-shadow:0 24px 80px #000";
-    dialog.innerHTML = `<form method="dialog" style="padding:20px;display:grid;gap:12px"><header><strong style="font-size:18px">Create repository</strong><p style="margin:6px 0 0;color:#9eb6aa;font-size:13px">Import a public GitHub or GitLab repository into ForkMesh.</p></header><label style="display:grid;gap:5px;font-size:12px">Repository URL<input required name="sourceUrl" placeholder="https://github.com/owner/repo" style="padding:10px;border-radius:7px;border:1px solid #3a6655;background:#0d211b;color:inherit" /></label><label style="display:grid;gap:5px;font-size:12px">Optional provider token<input name="providerToken" type="password" placeholder="Only used for this request" style="padding:10px;border-radius:7px;border:1px solid #3a6655;background:#0d211b;color:inherit" /></label><output style="min-height:18px;color:#9ef7c6;font-size:12px"></output><footer style="display:flex;justify-content:flex-end;gap:8px"><button value="cancel">Cancel</button><button value="submit" style="background:#9ef7c6;color:#071611;border:0;border-radius:7px;padding:9px 12px">Create repository</button></footer></form>`;
+    dialog.style.cssText = "width:min(620px,calc(100vw - 28px));border:1px solid #77d9ff;border-radius:18px;background:linear-gradient(155deg,#071611,#0b2525);color:#e9fff2;padding:0;box-shadow:0 28px 110px #000c";
+    dialog.innerHTML = `
+      <form style="padding:22px;display:grid;gap:16px">
+        <header>
+          <strong style="font-size:21px">Import repositories into the World</strong>
+          <p style="margin:6px 0 0;color:#9eb6aa;font-size:13px;line-height:1.5">Paste one repository link per line, or a Codeberg profile such as codeberg.org/m33. ForkMesh reads provider metadata without storing your token, then portals arrive around the perimeter one at a time.</p>
+        </header>
+        <div role="group" aria-label="Import provider" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+          ${[
+            ["github", "GitHub", "#f0f6fc"],
+            ["gitlab", "GitLab", "#fc8d45"],
+            ["codeberg", "Codeberg", "#77d9ff"],
+          ]
+            .map(
+              ([id, label, color]) =>
+                `<button type="button" data-world-import-provider="${id}" aria-pressed="${id === initialProvider}" style="border:1px solid ${color};border-radius:9px;padding:10px;background:${id === initialProvider ? `${color}22` : "#081b18"};color:${color};font-weight:800">${label}</button>`,
+            )
+            .join("")}
+        </div>
+        <input type="hidden" name="provider" value="${initialProvider}" />
+        <label style="display:grid;gap:6px;font-size:12px">Repository links
+          <textarea required name="sourceUrls" rows="4" placeholder="https://${initialProvider === "codeberg" ? "codeberg.org" : `${initialProvider}.com`}/owner/repository" style="resize:vertical;padding:11px;border-radius:9px;border:1px solid #3a6655;background:#071a16;color:inherit;font:12px/1.5 ui-monospace,monospace"></textarea>
+        </label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <label style="display:grid;gap:6px;font-size:12px">Import to
+            <select name="targetOwner" style="padding:10px;border-radius:9px;border:1px solid #3a6655;background:#071a16;color:inherit">
+              ${ownerOptions
+                .map(
+                  (owner) =>
+                    `<option value="${escapeHTML(owner.name)}">${escapeHTML(owner.label)}</option>`,
+                )
+                .join("")}
+            </select>
+          </label>
+          <label style="display:grid;gap:6px;font-size:12px">Optional provider token
+            <input name="providerToken" type="password" autocomplete="off" placeholder="Request only · never stored" style="padding:10px;border-radius:9px;border:1px solid #3a6655;background:#071a16;color:inherit" />
+          </label>
+        </div>
+        <div data-world-import-progress hidden style="border:1px solid #285a50;border-radius:10px;padding:12px;background:#061814">
+          <div style="height:5px;border-radius:4px;background:#153a32;overflow:hidden"><i data-world-import-progress-bar style="display:block;height:100%;width:0;background:linear-gradient(90deg,#77d9ff,#9ef7c6);transition:width .5s ease"></i></div>
+          <ol data-world-import-results style="margin:10px 0 0;padding-left:20px;display:grid;gap:5px;color:#b7d8ca;font-size:12px"></ol>
+        </div>
+        <output style="min-height:18px;color:#9ef7c6;font-size:12px" aria-live="polite"></output>
+        <footer style="display:flex;justify-content:flex-end;gap:8px">
+          <button type="button" data-world-import-cancel style="padding:9px 12px;border-radius:8px;border:1px solid #3a6655;background:#0b211b;color:inherit">Close</button>
+          <button type="submit" style="background:#9ef7c6;color:#071611;border:0;border-radius:8px;padding:9px 14px;font-weight:800">Import into World</button>
+        </footer>
+      </form>`;
     document.body.append(dialog);
     dialog.addEventListener("close", () => dialog.remove());
+    dialog.querySelector("[data-world-import-cancel]")?.addEventListener(
+      "click",
+      () => dialog.close(),
+    );
+    dialog
+      .querySelectorAll("[data-world-import-provider]")
+      .forEach((button) => {
+        button.addEventListener("click", () => {
+          const provider = button.dataset.worldImportProvider;
+          const form = dialog.querySelector("form");
+          form.elements.provider.value = provider;
+          dialog
+            .querySelectorAll("[data-world-import-provider]")
+            .forEach((candidate) => {
+              const selected = candidate === button;
+              candidate.setAttribute("aria-pressed", String(selected));
+              candidate.style.background = selected ? "#77d9ff22" : "#081b18";
+            });
+          const host =
+            provider === "codeberg" ? "codeberg.org" : `${provider}.com`;
+          form.elements.sourceUrls.placeholder =
+            `https://${host}/owner/repository`;
+        });
+      });
     dialog.querySelector("form")?.addEventListener("submit", async (event) => {
       event.preventDefault();
       const form = event.currentTarget;
-      const sourceUrl = String(new FormData(form).get("sourceUrl") || "").trim();
-      const providerToken = String(new FormData(form).get("providerToken") || "").trim();
+      const values = new FormData(form);
+      let urls = String(values.get("sourceUrls") || "")
+        .split(/\r?\n/)
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .slice(0, 200);
+      const provider = String(values.get("provider") || "");
+      const providerToken = String(values.get("providerToken") || "").trim();
+      const targetOwner = String(values.get("targetOwner") || account);
       const output = form.querySelector("output");
-      if (!sourceUrl) return;
-      output.textContent = "Creating repository…";
-      try {
-        await this.postJSON("/api/repository-imports", {
-          sourceUrl,
-          providerToken,
-          mode: "import",
-          sessionToken: validWorldSession()?.sessionToken || "",
-        });
-        output.textContent = "Repository created. Refreshing catalog…";
-        await this.loadWorldData();
-        this.syncRepositoryScene();
-        window.setTimeout(() => dialog.close(), 650);
-      } catch (error) {
-        output.textContent = `Could not create repository: ${error.message}`;
+      if (!urls.length) return;
+      const submit = form.querySelector('[type="submit"]');
+      const progress = form.querySelector("[data-world-import-progress]");
+      const progressBar = form.querySelector("[data-world-import-progress-bar]");
+      const results = form.querySelector("[data-world-import-results]");
+      submit.disabled = true;
+      progress.hidden = false;
+      let completed = 0;
+      let failures = 0;
+      this.world?.setRepositoryImportState?.({
+        active: true,
+        provider,
+        stage: "connecting",
+      });
+      const expandedUrls = [];
+      for (const sourceUrl of urls) {
+        let parsed;
+        try {
+          parsed = new URL(
+            sourceUrl.includes("://") ? sourceUrl : `https://${sourceUrl}`,
+          );
+        } catch (_) {}
+        const isCodebergNamespace =
+          parsed?.protocol === "https:" &&
+          ["codeberg.org", "www.codeberg.org"].includes(
+            parsed.hostname.toLowerCase(),
+          ) &&
+          parsed.pathname.split("/").filter(Boolean).length === 1;
+        if (!isCodebergNamespace) {
+          expandedUrls.push(sourceUrl);
+          continue;
+        }
+        output.textContent = `Discovering repositories in ${parsed.pathname}…`;
+        try {
+          const discovery = await this.postJSON(
+            "/api/repository-imports/discover",
+            {
+              sourceUrl,
+              providerToken,
+              sessionToken: session?.sessionToken || "",
+            },
+            { timeout: 30000 },
+          );
+          const discovered = Array.isArray(discovery.repositories)
+            ? discovery.repositories
+            : [];
+          expandedUrls.push(...discovered);
+          const item = document.createElement("li");
+          item.textContent = `Found ${discovered.length} public repositories in ${sourceUrl}`;
+          item.style.color = "#77d9ff";
+          results.append(item);
+        } catch (error) {
+          failures += 1;
+          const item = document.createElement("li");
+          item.textContent = `× ${sourceUrl} — ${String(
+            error?.message || "discovery failed",
+          )}`;
+          item.style.color = "#ff9eaa";
+          results.append(item);
+        }
       }
+      urls = [...new Set(expandedUrls)].slice(0, 200);
+      if (!urls.length) {
+        output.textContent = "No public repositories were found.";
+        submit.disabled = false;
+        this.world?.setRepositoryImportState?.({
+          active: false,
+          provider,
+          stage: "error",
+          status: "error",
+        });
+        return;
+      }
+      for (const [index, sourceUrl] of urls.entries()) {
+        const item = document.createElement("li");
+        item.textContent = `Connecting to ${sourceUrl}…`;
+        results.append(item);
+        output.textContent =
+          `Reading ${provider} metadata ${index + 1} of ${urls.length}…`;
+        try {
+          const payload = await this.postJSON(
+            "/api/repository-imports",
+            {
+              sourceUrl,
+              providerToken,
+              targetOwner,
+              mode: "import",
+              sessionToken: session?.sessionToken || "",
+            },
+            { timeout: 60000 },
+          );
+          const imported = cleanExternalRepositories({
+            repositories: [payload.repository],
+          })[0];
+          if (!imported) throw new Error("invalid_import_response");
+          this.externalRepositories = [
+            ...this.externalRepositories.filter(
+              (record) => record.importId !== imported.importId,
+            ),
+            imported,
+          ];
+          this.repositories = [
+            ...this.repositories.filter(
+              (record) =>
+                record.source !== "external-import" ||
+                record.importId !== imported.importId,
+            ),
+            imported,
+          ];
+          this.syncRepositoryScene();
+          completed += 1;
+          const metadata = payload.repository?.metadata || {};
+          const detail = [
+            Object.keys(metadata.languages || {}).length
+              ? `${Object.keys(metadata.languages).length} languages`
+              : "",
+            Array.isArray(metadata.branches)
+              ? `${metadata.branches.length} branches`
+              : "",
+            Array.isArray(metadata.commits)
+              ? `${metadata.commits.length} recent commits`
+              : "",
+          ]
+            .filter(Boolean)
+            .join(" · ");
+          item.textContent =
+            `✓ ${targetOwner}/${imported.name} arrived${detail ? ` — ${detail}` : ""}`;
+          item.style.color = "#9ef7c6";
+          this.world?.setRepositoryImportState?.({
+            active: true,
+            provider,
+            stage: "portal-arrived",
+            status: "complete",
+          });
+          // Leave enough room for the portal's overshoot-and-settle animation
+          // before the next repository enters the perimeter.
+          if (index < urls.length - 1) {
+            await new Promise((resolve) => window.setTimeout(resolve, 1150));
+          }
+        } catch (error) {
+          failures += 1;
+          item.textContent = `× ${sourceUrl} — ${String(
+            error?.message || "import failed",
+          )}`;
+          item.style.color = "#ff9eaa";
+          this.world?.setRepositoryImportState?.({
+            active: true,
+            provider,
+            stage: "error",
+            status: "error",
+          });
+        }
+        progressBar.style.width = `${Math.round(
+          ((index + 1) / urls.length) * 100,
+        )}%`;
+      }
+      output.textContent = failures
+        ? `${completed} imported · ${failures} failed. Successful portals are live around the perimeter.`
+        : `${completed} ${completed === 1 ? "repository" : "repositories"} imported into ${targetOwner}.`;
+      submit.disabled = false;
+      this.world?.setRepositoryImportState?.({
+        active: false,
+        provider,
+        stage: "complete",
+        status: failures ? "error" : "complete",
+      });
     });
     dialog.showModal();
   }
@@ -3688,10 +4408,7 @@ class ForkMeshWorld extends HTMLElement {
       // The shared object layout is a tiny, edge-cached public document.
       // Request it immediately so administrator-locked placements are already
       // available by the time the scene finishes constructing.
-      const layoutPromise = this.fetchJSON("/api/world/layout", {
-        auth: false,
-        timeout: 5000,
-      }).catch(() => null);
+      const layoutPromise = this.fetchWorldLayout();
       // Validate the optional persisted account session before issuing any
       // private World reads. This prevents an expired local token from
       // fanning out into a page full of avoidable 401/403 requests.
@@ -3762,18 +4479,24 @@ class ForkMeshWorld extends HTMLElement {
         },
         onWorldBulletinSelect: () => this.openLandmark("events"),
         onMastodonBoardSelect: () => this.openMastodonBoard(),
+        onMastodonOpenLink: (url) => {
+          if (url) window.open(url, "_blank", "noopener,noreferrer");
+        },
+        onReferralBoardSelect: () => void this.copyReferralLink(),
         onSystemCapacityTableSelect: (table) =>
           this.openSystemCapacityTables(table),
         onRendererStateChange: (state) => {
           this.handleRendererStateChange(state);
         },
         onForkbotChat: () => {
-          this.openWorldChat("/dashboard/chat", this.$("[data-world-chat-open]"));
+          this.openChatTerminal("@forkbot ");
         },
         onPlayForkmeshSong: () => {
           void this.playForkmeshSong();
         },
-        onCreateRepository: () => this.openRepositoryCreateForm(),
+        onCreateRepository: (options) =>
+          this.openRepositoryCreateForm(options),
+        onSwingRide: (state) => this.handleSwingRide(state),
         onOfficeChairSelect: (chairId) => {
           this.officeMeeting?.requestSeat(chairId);
         },
@@ -3784,15 +4507,12 @@ class ForkMeshWorld extends HTMLElement {
         onRegionChange: (region) => this.updateRegion(region),
         onMovement: (movement) => this.handleMovement(movement),
         onModeration: (action) => this.moderateWorldPeer(action),
+        onFediverseProfile: (target) =>
+          void this.loadWorldFediverseProfile(target),
+        onFediverseFollow: (target) =>
+          void this.toggleWorldFediverseFollow(target),
         onLayoutObjectMoved: (move) => {
           void this.lockWorldObjectPlacement(move);
-        },
-        onAccountAction: (action) => {
-          if (action === "logout") {
-            void this.logoutFromWorld();
-            return;
-          }
-          this.toggleWorldAccount(true, "login");
         },
       });
       this.syncWorldCameraModeButton();
@@ -3824,16 +4544,15 @@ class ForkMeshWorld extends HTMLElement {
         tasks: this.officeTasks,
       });
       this.world.setTheme(this.settings.theme);
-      this.world.setMemberLoungeLoading?.(true);
       this.world.setLightLevel(this.settings.lightLevel);
       this.world.setMovementTuning?.(this.movementTuning());
       void layoutPromise.then((layout) => {
         if (this.destroyed) return;
-        this.world?.applyWorldLayout?.(layout?.objects);
+        this.world?.applyWorldLayout?.(this.mergedWorldLayout(layout?.objects));
       });
       await Promise.allSettled([contextPromise, dataPromise]);
       this.world.updateIdentity(publicIdentity(this.identity, this.settings));
-      this.world.setLayoutEditor?.(this.identity.isAdmin === true);
+      this.applyWorldLayoutEditor();
       this.world.updateNetworkNodes(
         liveNodeRecords(this.network, this.mirrorCatalogs),
       );
@@ -3841,13 +4560,27 @@ class ForkMeshWorld extends HTMLElement {
       if (this.visitorStats) {
         this.world.updateArrivalStats?.(this.visitorStats);
       }
+      this.world.updateRewardPool?.(this.rewardState);
       this.world.updateBots(this.botDirectory);
       this.world.updateFediverseDirectory(this.fediverseDirectory);
       this.world.updateMediaSpaces?.(this.mediaSpaces, this.mediaRoom);
       this.world.updateWorldBulletin?.(this.events);
+      // Populate the Mastodon kiosk billboard on entry; the fetch is public,
+      // credential-free, and cached for ten minutes. When a fresh snapshot
+      // is already cached the load resolves without refetching, so push the
+      // cached profile onto the rebuilt scene explicitly.
+      void this.loadMastodonBoard();
+      this.syncMastodonKiosk();
+      this.startMastodonRefresh();
+      // Same pattern for the Twitter/Reddit/blog banners: push any cached
+      // snapshot onto the rebuilt scene, then keep the ten-minute cadence
+      // (whose one-second tick also drives the stand clocks).
+      this.syncSocialBanners();
+      this.startSocialBannersRefresh();
       this.syncMemberLounge();
-      this.world.setMemberLoungeLoading?.(false);
+      void this.loadReferralLeaderboard();
       this.syncRepositoryScene();
+      void this.hydrateHostedRepositorySizeMaps();
       // Do not fan out a star request for every perimeter portal at startup.
       // The active repository hydrates its exact count below; inactive portals
       // retain any catalog-provided count until the visitor selects them.
@@ -3882,6 +4615,7 @@ class ForkMeshWorld extends HTMLElement {
       this.startActivityTicker();
       this.startRewardPolling();
       this.startMirrorPolling();
+      this.startRepositoryImportPolling();
       this.startEventPolling();
       this.startNotificationPolling();
       this.startMediaPlaybackPolling();
@@ -4130,8 +4864,14 @@ class ForkMeshWorld extends HTMLElement {
       .trim()
       .toUpperCase()
       .slice(0, 2);
-    this.identity.countryCode = /^[A-Z]{2}$/.test(country) ? country : "";
+    // A guest owns no account record, so the coarse country is remembered in
+    // this browser: the flag survives a reload and an unreachable edge context
+    // instead of silently dropping back to "no country".
+    this.identity.countryCode = /^[A-Z]{2}$/.test(country)
+      ? rememberCountryCode(country)
+      : rememberedCountryCode();
     this.identity.flag = flagEmoji(this.identity.countryCode);
+    void this.syncWorldClientProfile();
     const worldConnections = Number(context?.worldConnections);
     const worldMessagesPerSecond = Number(context?.worldMessagesPerSecond);
     const chatConnections = Number(context?.chatConnections);
@@ -4164,9 +4904,37 @@ class ForkMeshWorld extends HTMLElement {
           .filter(Boolean)
           .slice(0, 128)
       : [];
+    // Bindings are discovered by the Worker from its own environment, so a
+    // newly bound Durable Object class appears here without a client change.
+    this.systemCapacityDurableObjects = Array.isArray(
+      ticket?.systemCapacity?.durableObjects,
+    )
+      ? ticket.systemCapacity.durableObjects
+          .map((record) => {
+            const binding = String(record?.binding || record?.id || "").trim();
+            const bytesTotal = Number(record?.bytesTotal);
+            const messages = Number(record?.messages);
+            return /^[A-Z][A-Z0-9_]{0,63}$/.test(binding)
+              ? {
+                  binding,
+                  name: String(record?.name || binding).slice(0, 36),
+                  bytesTotal:
+                    Number.isSafeInteger(bytesTotal) && bytesTotal > 0
+                      ? bytesTotal
+                      : 0,
+                  messages:
+                    Number.isSafeInteger(messages) && messages > 0
+                      ? messages
+                      : 0,
+                }
+              : null;
+          })
+          .filter(Boolean)
+          .slice(0, 32)
+      : [];
     this.updateIdentityUI();
     this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
-    this.world?.setLayoutEditor?.(this.identity.isAdmin === true);
+    this.applyWorldLayoutEditor();
     this.updateSystemCapacityMetrics();
   }
 
@@ -4178,6 +4946,7 @@ class ForkMeshWorld extends HTMLElement {
       mirrorResult,
       instancesResult,
       reposResult,
+      externalReposResult,
       versionResult,
       rewardResult,
       orgResult,
@@ -4207,6 +4976,11 @@ class ForkMeshWorld extends HTMLElement {
           cache: "no-store",
         }),
         this.fetchJSON("/api/repositories", { auth: hasSession }),
+        this.fetchJSON("/api/repository-imports", {
+          auth: hasSession,
+          timeout: 12000,
+          cache: "no-store",
+        }),
         this.fetchJSON("/api/version", { auth: false, timeout: 5000 }),
         this.fetchJSON("/api/accounts/central-fund", {
           auth: false,
@@ -4315,14 +5089,33 @@ class ForkMeshWorld extends HTMLElement {
     this.renderCommunityPlacement();
     this.renderFediverseActivity();
     if (reposResult.status === "fulfilled") {
-      this.repositories = reconcileRepositoryAliases(
+      this.nativeRepositories = reconcileRepositoryAliases(
         cleanRepositories(reposResult.value),
         this.mirrorCatalogs,
+      );
+      this.externalRepositories =
+        externalReposResult.status === "fulfilled"
+          ? cleanExternalRepositories(externalReposResult.value)
+          : [];
+      this.repositories = mergeHostedRepositoryImports(
+        this.nativeRepositories,
+        this.externalRepositories,
       );
       this.repositoryCatalogState = this.repositories.length ? "ready" : "empty";
     } else {
       this.repositories = [];
-      this.repositoryCatalogState = "unavailable";
+      this.nativeRepositories = [];
+      this.externalRepositories =
+        externalReposResult.status === "fulfilled"
+          ? cleanExternalRepositories(externalReposResult.value)
+          : [];
+      this.repositories = mergeHostedRepositoryImports(
+        this.nativeRepositories,
+        this.externalRepositories,
+      );
+      this.repositoryCatalogState = this.repositories.length
+        ? "ready"
+        : "unavailable";
     }
     if (eventsResult.status === "fulfilled") {
       this.events = normalizeCommunityEvents(eventsResult.value);
@@ -4361,6 +5154,7 @@ class ForkMeshWorld extends HTMLElement {
     this.renderDiagnostics();
     this.rewardState =
       rewardResult.status === "fulfilled" ? rewardResult.value || {} : {};
+    this.world?.updateRewardPool?.(this.rewardState);
     this.pendingRewards =
       pendingRewardsResult.status === "fulfilled" &&
       Array.isArray(pendingRewardsResult.value?.rewards)
@@ -4451,6 +5245,7 @@ class ForkMeshWorld extends HTMLElement {
             activity: "idle",
             availability: String(person.availability || "inactive"),
             lastActive: String(person.lastActive || "Last active recently"),
+            activityBucket: activityLightBucket(person.activityBucket),
             publicDoor: "closed",
             space: "town-square",
             x: 0,
@@ -4460,27 +5255,13 @@ class ForkMeshWorld extends HTMLElement {
             persistedInactive: true,
           }))
         : [];
-    // Public chat roster directory (user profiles only) doubles as the Member
-    // Lounge population: every public registered account gets a seat, and the
-    // roster length feeds the total-members sign at the lounge front.
-        this.memberDirectory =
-      membersResult.status === "fulfilled" &&
-      Array.isArray(membersResult.value?.users)
-        ? membersResult.value.users
-            .map((user) => ({
-              name: sanitizePresenceText(user?.name, "", 32),
-              nodes: Array.isArray(user?.nodes) ? user.nodes.slice(0, 6) : [],
-              totalActiveMs: Number.isFinite(Number(user?.totalActiveMs))
-                ? Math.max(0, Number(user.totalActiveMs))
-                : Number.isFinite(Number(user?.activeMs))
-                  ? Math.max(0, Number(user.activeMs))
-                  : null,
-              avatar: sanitizePresenceText(user?.avatar, "", 240),
-              countryCode: sanitizePresenceText(user?.countryCode, "", 2),
-              status: sanitizePresenceText(user?.status, "", 80),
-            }))
-            .filter((user) => user.name)
+    this.memberDirectory =
+      membersResult.status === "fulfilled"
+        ? normalizeMemberDirectory(membersResult.value)
         : [];
+    this.memberDirectoryFetchedAt = Date.now();
+    // Refresh the local avatar's wallet chip alongside the world data poll.
+    this.applyWalletBadges();
     this.visitorStats =
       visitorsResult.status === "fulfilled" &&
       visitorsResult.value?.ok === true
@@ -5087,8 +5868,18 @@ class ForkMeshWorld extends HTMLElement {
         this.toggleWorldCameraMode();
         return;
       }
+      if (event.target.closest("[data-world-swing-dismount]")) {
+        this.world?.dismountSwing?.();
+        return;
+      }
       if (event.target.closest("[data-world-screenshot]")) {
         this.startScreenshotCapture();
+        return;
+      }
+      if (event.target.closest("[data-world-notifications-open]")) {
+        this.openLandmark("events");
+        void this.refreshCommunityEvents(true);
+        void this.refreshPersonalNotifications(true);
         return;
       }
       const mapToggle = event.target.closest("[data-world-map-toggle]");
@@ -5108,6 +5899,12 @@ class ForkMeshWorld extends HTMLElement {
         if (id === "office") {
           this.closeLandmark();
           this.officeController?.focusOffice(landmarkButton);
+          return;
+        }
+        // The campfire spot is a destination rather than a reading panel:
+        // choosing it walks you straight back to your own bench.
+        if (id === "campfire") {
+          this.returnToCampfireBench();
           return;
         }
         // Map, alert, and navigation controls open a readable overlay without
@@ -5212,6 +6009,13 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-mastodon-retry]")) {
         void this.loadMastodonBoard(true);
+        return;
+      }
+      const outfitStyleButton = event.target.closest(
+        "[data-world-outfit-style]",
+      );
+      if (outfitStyleButton) {
+        this.setOutfitStyle(outfitStyleButton.dataset.worldOutfitStyle);
         return;
       }
       const outfitButton = event.target.closest("[data-world-outfit]");
@@ -5503,6 +6307,11 @@ class ForkMeshWorld extends HTMLElement {
         this.commitPublicSettings();
         return;
       }
+      const faceImage = event.target.closest("[data-world-face-image]");
+      if (faceImage) {
+        this.setFaceImage(faceImage.checked);
+        return;
+      }
       const availability = event.target.closest("[data-world-availability]");
       if (availability) {
         if (AVAILABILITY_OPTIONS.some((option) => option.id === availability.value)) {
@@ -5511,11 +6320,18 @@ class ForkMeshWorld extends HTMLElement {
         }
         return;
       }
-      const activity = event.target.closest("[data-world-activity-category]");
-      if (activity) {
-        if (ACTIVITY_OPTIONS.some((option) => option.id === activity.value)) {
-          this.settings.activityCategory = activity.value;
-          this.commitPublicSettings();
+      const debugPanel = event.target.closest("[data-world-debug-panel]");
+      if (debugPanel) {
+        this.settings.debugPanel = debugPanel.checked;
+        this.commitPublicSettings();
+        const diagnostics = this.$("[data-world-diagnostics]");
+        if (diagnostics) diagnostics.hidden = !debugPanel.checked;
+        const chatTerminal = this.$("[data-world-chat-terminal]");
+        if (chatTerminal) {
+          chatTerminal.classList.toggle(
+            "world-chat-terminal--debug-hidden",
+            !debugPanel.checked,
+          );
         }
         return;
       }
@@ -5565,16 +6381,6 @@ class ForkMeshWorld extends HTMLElement {
         this.loadMediaSpace(mediaSpace.value, true);
         return;
       }
-      const name = event.target.closest("[data-world-display-name]");
-      if (name) {
-        this.settings.displayName = sanitizePresenceText(
-          name.value,
-          this.identity.name,
-          24,
-        );
-        name.value = this.settings.displayName;
-        this.commitPublicSettings();
-      }
     });
 
     this.addEventListener("input", (event) => {
@@ -5596,6 +6402,11 @@ class ForkMeshWorld extends HTMLElement {
       const moveAccel = event.target.closest("[data-world-move-accel]");
       if (moveAccel) {
         this.setMoveAccel(moveAccel.value);
+        return;
+      }
+      const swingSpeed = event.target.closest("[data-world-swing-speed]");
+      if (swingSpeed) {
+        this.setSwingSpeed(swingSpeed.value);
         return;
       }
       if (event.target.closest("[data-world-repo-filter='directory']")) {
@@ -5684,6 +6495,8 @@ class ForkMeshWorld extends HTMLElement {
       });
     }
 
+    this.bindDetailResize();
+
     this.addEventListener("keydown", (event) => {
       if (event.code !== "Escape") return;
       if (this.$("[data-world-chat]")?.dataset.open === "true") {
@@ -5697,6 +6510,120 @@ class ForkMeshWorld extends HTMLElement {
       } else if (this.tourIndex >= 0) {
         this.stopTour();
       }
+    });
+  }
+
+  // Detail panels dock to the right edge, so widening one means dragging its
+  // left border outward. The chosen width is a device-local preference and the
+  // per-panel base width stays the floor.
+  detailPanelWidth() {
+    const detail = this.$("[data-world-detail]");
+    const rendered = Math.round(detail?.getBoundingClientRect().width || 0);
+    return rendered || this.detailWidth || DETAIL_WIDTH_MIN;
+  }
+
+  detailWidthLimit() {
+    const host =
+      this.$("[data-world-root]")?.clientWidth ||
+      this.clientWidth ||
+      window.innerWidth ||
+      0;
+    return Math.max(DETAIL_WIDTH_MIN, Math.round(host - 28));
+  }
+
+  setDetailWidth(width, { persist = true } = {}) {
+    const next = Math.round(
+      Math.min(
+        Math.max(Number(width) || 0, DETAIL_WIDTH_MIN),
+        this.detailWidthLimit(),
+      ),
+    );
+    this.detailWidth = next;
+    // .fm-world declares the fallback, so the override has to land there and
+    // not on the host element it would otherwise inherit from.
+    this.$("[data-world-root]")?.style.setProperty(
+      "--world-detail-user-width",
+      `${next}px`,
+    );
+    if (persist) {
+      try {
+        localStorage.setItem(DETAIL_WIDTH_KEY, String(next));
+      } catch (_) {}
+    }
+    this.syncDetailResizeState();
+  }
+
+  resetDetailWidth() {
+    this.detailWidth = 0;
+    this.$("[data-world-root]")?.style.removeProperty(
+      "--world-detail-user-width",
+    );
+    try {
+      localStorage.removeItem(DETAIL_WIDTH_KEY);
+    } catch (_) {}
+    this.syncDetailResizeState();
+  }
+
+  syncDetailResizeState() {
+    const grip = this.$("[data-world-detail-resize]");
+    if (!grip) return;
+    grip.setAttribute("aria-valuemin", String(DETAIL_WIDTH_MIN));
+    grip.setAttribute("aria-valuemax", String(this.detailWidthLimit()));
+    grip.setAttribute("aria-valuenow", String(this.detailPanelWidth()));
+  }
+
+  bindDetailResize() {
+    const grip = this.$("[data-world-detail-resize]");
+    const detail = this.$("[data-world-detail]");
+    if (!grip || !detail) return;
+    let stored = 0;
+    try {
+      stored = Number(localStorage.getItem(DETAIL_WIDTH_KEY) || 0);
+    } catch (_) {}
+    if (Number.isFinite(stored) && stored >= DETAIL_WIDTH_MIN) {
+      this.setDetailWidth(stored, { persist: false });
+    } else {
+      this.syncDetailResizeState();
+    }
+    let activePointerId = null;
+    let anchorRight = 0;
+    grip.addEventListener("pointerdown", (event) => {
+      if (activePointerId !== null || event.button > 0) return;
+      event.preventDefault();
+      activePointerId = event.pointerId;
+      anchorRight = detail.getBoundingClientRect().right;
+      grip.dataset.dragging = "true";
+      grip.setPointerCapture?.(event.pointerId);
+    });
+    grip.addEventListener("pointermove", (event) => {
+      if (event.pointerId !== activePointerId) return;
+      event.preventDefault();
+      this.setDetailWidth(anchorRight - event.clientX);
+    });
+    const stopResize = (event) => {
+      if (event.pointerId !== activePointerId) return;
+      activePointerId = null;
+      delete grip.dataset.dragging;
+      try {
+        grip.releasePointerCapture?.(event.pointerId);
+      } catch (_) {}
+    };
+    grip.addEventListener("pointerup", stopResize);
+    grip.addEventListener("pointercancel", stopResize);
+    grip.addEventListener("lostpointercapture", stopResize);
+    grip.addEventListener("dblclick", () => this.resetDetailWidth());
+    grip.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowLeft") {
+        this.setDetailWidth(this.detailPanelWidth() + DETAIL_WIDTH_STEP);
+      } else if (event.key === "ArrowRight") {
+        this.setDetailWidth(this.detailPanelWidth() - DETAIL_WIDTH_STEP);
+      } else if (event.key === "Home" || event.key === "End") {
+        this.resetDetailWidth();
+      } else {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
     });
   }
 
@@ -5880,8 +6807,6 @@ class ForkMeshWorld extends HTMLElement {
     const visible = publicIdentity(this.identity, this.settings);
     const flag = this.$("[data-world-shirt-flag]");
     const account = this.$("[data-world-shirt-account]");
-    const tech = this.$("[data-world-shirt-tech]");
-    const shirtName = this.$("[data-world-shirt-name]");
     const badge = this.$("[data-world-shirt-badge]");
     if (flag) flag.textContent = visible.flag;
     if (account) {
@@ -5889,8 +6814,6 @@ class ForkMeshWorld extends HTMLElement {
         ACCOUNT_STATUS_ICONS[visible.accountStatus] || "○";
       account.title = visible.accountStatus || "Guest";
     }
-    if (tech) tech.textContent = `${visible.browser} · ${visible.os}`;
-    if (shirtName) shirtName.textContent = visible.name;
     if (badge) {
       // The badge is the settings entry point; keep the name/status copy that
       // used to sit beside it reachable as its tooltip and accessible name.
@@ -5911,38 +6834,56 @@ class ForkMeshWorld extends HTMLElement {
     this.renderSystemCapacityTables();
     if (!this.world?.updateSystemCapacity) return;
     const limits = this.worldLimits;
-    if (!limits && !this.systemCapacityTables.length) {
+    const detected = this.systemCapacityDurableObjects;
+    if (!limits && !this.systemCapacityTables.length && !detected.length) {
       this.world.updateSystemCapacity([]);
       return;
     }
+    const live = this.systemCapacityLiveConnections();
+    // The auto-detected binding list is authoritative when the Worker sent
+    // one; the two locally observable services stand in for it otherwise.
+    const objects = detected.length
+      ? detected.map((record) => ({
+          id: record.binding,
+          name: record.name,
+          bytesTotal: record.bytesTotal,
+          messages: record.messages,
+          ...(live.get(record.binding) || {}),
+        }))
+      : [...live.entries()].map(([binding, record]) => ({
+          id: binding,
+          ...record,
+        }));
+    this.world.updateSystemCapacity({
+      objects,
+      tables: this.systemCapacityTables,
+    });
+  }
+
+  systemCapacityLiveConnections() {
+    // Connection counts the browser can observe for itself, keyed by the
+    // Durable Object binding that serves them.
+    const live = new Map();
+    const limits = this.worldLimits;
+    if (!limits) return live;
     const worldSocketOnline =
       this.socket?.readyState === WebSocket.OPEN && Boolean(this.serverPeerId);
     const chatConnected = Number(this.network?.stats?.clients);
-    const objects = [];
-    if (limits && worldSocketOnline) {
-      objects.push({
-        id: "forkmesh-world",
+    if (worldSocketOnline) {
+      live.set("FORKMESH_WORLD", {
         name: "Town Square presence",
         usage: { connections: 1 + this.remotePlayers.size },
         limits: { connections: limits.worldConnections },
       });
     }
-    if (
-      limits &&
-      Number.isFinite(chatConnected) &&
-      chatConnected >= 0
-    ) {
-      objects.push({
-        id: "forkmesh-general-chat",
+    if (Number.isFinite(chatConnected) && chatConnected >= 0) {
+      live.set("FORKMESH_MAINNODE_ROOM", {
         name: "#general chat · cached live count",
         usage: { connections: chatConnected },
         limits: { connections: limits.chatConnections },
       });
     }
-    this.world.updateSystemCapacity({
-      objects,
-      tables: this.systemCapacityTables,
-    });
+    return live;
   }
 
   async moderateWorldPeer(action) {
@@ -5987,27 +6928,222 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  // The chest's second tab. Everything shown is public profile data the
+  // account already publishes at /@name and to the fediverse; it is fetched
+  // only when a visitor actually opens the tab, never polled.
+  async loadWorldFediverseProfile(target = {}) {
+    const peerId = String(target.peerId || "");
+    const account = String(target.name || "").trim().toLowerCase();
+    if (
+      !WORLD_ACCOUNT_NAME_RE.test(account) ||
+      String(target.accountStatus || "Guest") === "Guest"
+    ) {
+      this.world?.setAvatarFediverseProfile?.(peerId, {
+        state: "unavailable",
+        handle: account ? `@${account}` : "",
+      });
+      return;
+    }
+    const viewer = validWorldSession()?.nodeName || "";
+    const query = viewer ? `?viewer=${encodeURIComponent(viewer)}` : "";
+    try {
+      const profile = await this.fetchJSON(
+        `/api/accounts/${encodeURIComponent(account)}${query}`,
+      );
+      if (this.destroyed) return;
+      if (profile?.exists !== true || profile?.profilePrivate === true) {
+        this.world?.setAvatarFediverseProfile?.(peerId, {
+          state: "unavailable",
+          handle: `@${account}`,
+        });
+        return;
+      }
+      const card = {
+        state: "ready",
+        account,
+        handle: `@${account}`,
+        // ForkMesh federates repository actors, not accounts, so the fediverse
+        // address is whichever handle the account published on its profile.
+        fediverse: sanitizePresenceText(profile.mastodon || "", "", 30),
+        bio: sanitizePresenceText(profile.profileBio || "", "", 60),
+        followers: Math.max(0, Number(profile.followers) || 0),
+        following: Math.max(0, Number(profile.following) || 0),
+        isFollowing: profile.isFollowing === true,
+        self: Boolean(viewer) && viewer === account,
+        canFollow: Boolean(viewer) && viewer !== account,
+        posts: [],
+      };
+      this.world?.setAvatarFediverseProfile?.(peerId, card);
+      const feed = await this.fetchJSON(
+        `/api/accounts/${encodeURIComponent(account)}/contributions`,
+      ).catch(() => null);
+      if (this.destroyed || !feed) return;
+      this.world?.setAvatarFediverseProfile?.(peerId, {
+        ...card,
+        posts: worldFediverseFeedLines(feed.recentActivity),
+      });
+    } catch (_) {
+      if (this.destroyed) return;
+      this.world?.setAvatarFediverseProfile?.(peerId, {
+        state: "unavailable",
+        handle: `@${account}`,
+      });
+    }
+  }
+
+  async toggleWorldFediverseFollow(target = {}) {
+    const peerId = String(target.peerId || "");
+    const account = String(target.name || "").trim().toLowerCase();
+    const following = target.following === true;
+    if (!WORLD_ACCOUNT_NAME_RE.test(account)) return;
+    if (!validWorldSession()) {
+      this.toast("Sign in to follow accounts from the World.");
+      await this.loadWorldFediverseProfile({
+        ...target,
+        accountStatus: "Registered",
+      });
+      return;
+    }
+    try {
+      await this.postJSON(
+        `/api/accounts/${encodeURIComponent(account)}/follow`,
+        {},
+        { method: following ? "DELETE" : "POST" },
+      );
+      this.toast(
+        following ? `Unfollowed @${account}.` : `Following @${account}.`,
+      );
+    } catch (error) {
+      this.toast(`Follow was not applied: ${error.message}`);
+    }
+    if (this.destroyed) return;
+    await this.loadWorldFediverseProfile({
+      peerId,
+      name: account,
+      accountStatus: "Registered",
+    });
+  }
+
+  applyWorldLayoutEditor() {
+    const enabled = this.identity?.isAdmin === true;
+    this.world?.setLayoutEditor?.(enabled);
+    if (!enabled || this.layoutEditorAnnounced) return;
+    // The move handles are deliberately tiny, and nothing else on screen says
+    // the R key turns things, so say it once per session.
+    this.layoutEditorAnnounced = true;
+    this.toast(
+      "Layout editing on: drag an object's handle to move it; roll the " +
+        "mouse wheel while dragging (or press R, Shift+R to reverse) to " +
+        "rotate it.",
+    );
+  }
+
+  // Read the locked placement document. Every read goes through here so a
+  // reload lands on the placements the square was actually left in:
+  //
+  //   * the five-second budget is spent while the scene is still building
+  //     itself and the abort timer shares that busy main thread, so a read
+  //     dropped on a slow machine used to be swallowed for the whole session,
+  //     rebuilding the square from its authored coordinates. Retry instead.
+  //   * the response is public and cacheable for a minute, so skip the HTTP
+  //     cache: someone stepping back into the World must not be handed a copy
+  //     from before the last move. The Worker's own edge cache still absorbs
+  //     the read.
+  async fetchWorldLayout(attempts = 3) {
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      if (this.destroyed) return null;
+      try {
+        return await this.fetchJSON("/api/world/layout", {
+          auth: false,
+          timeout: 5000,
+          cache: "no-store",
+        });
+      } catch (_) {
+        if (attempt === attempts) return null;
+        await new Promise((resolve) =>
+          window.setTimeout(resolve, 400 * attempt),
+        );
+      }
+    }
+    return null;
+  }
+
+  // The layout document is held in the Worker's edge cache for a minute and a
+  // write only purges the colo that took it, so the read an administrator
+  // makes seconds later — the reload they do to check the save — can still be
+  // answered with the placements from before their move. Keep what the save
+  // returned and let it stand in until the served document catches up.
+  rememberWorldLayout(objects) {
+    if (!Array.isArray(objects) || !objects.length) return;
+    try {
+      window.localStorage.setItem(
+        WORLD_LAYOUT_ECHO_KEY,
+        JSON.stringify({ savedAt: Date.now(), objects }),
+      );
+    } catch (_) {}
+  }
+
+  rememberedWorldLayout() {
+    try {
+      const stored = JSON.parse(
+        window.localStorage.getItem(WORLD_LAYOUT_ECHO_KEY) || "null",
+      );
+      if (!Array.isArray(stored?.objects)) return [];
+      const age = Date.now() - Number(stored.savedAt || 0);
+      if (!(age >= 0 && age < WORLD_LAYOUT_ECHO_TTL_MS)) {
+        window.localStorage.removeItem(WORLD_LAYOUT_ECHO_KEY);
+        return [];
+      }
+      return stored.objects;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  // The served document wins per object; a placement this browser locked in
+  // more recently than the copy that came back fills the gap until it does.
+  // Both stamps are the Worker's own, so a skewed local clock cannot reorder
+  // them.
+  mergedWorldLayout(objects) {
+    const merged = new Map();
+    for (const entry of Array.isArray(objects) ? objects : []) {
+      const id = String(entry?.id || "");
+      if (id) merged.set(id, entry);
+    }
+    for (const entry of this.rememberedWorldLayout()) {
+      const id = String(entry?.id || "");
+      if (!id) continue;
+      const served = merged.get(id);
+      if (Number(entry?.updatedAt || 0) > Number(served?.updatedAt || 0)) {
+        merged.set(id, entry);
+      }
+    }
+    return [...merged.values()];
+  }
+
   async lockWorldObjectPlacement(move) {
     if (!this.identity?.isAdmin) return;
     const id = String(move?.id || "");
     const x = Number(move?.x);
     const z = Number(move?.z);
     if (!id || !Number.isFinite(x) || !Number.isFinite(z)) return;
+    const rotation = Number(move?.rotation);
     try {
-      const result = await this.postJSON("/api/world/layout", { id, x, z });
+      const result = await this.postJSON("/api/world/layout", {
+        id,
+        x,
+        z,
+        rotation: Number.isFinite(rotation) ? rotation : 0,
+      });
+      this.rememberWorldLayout(result?.objects);
       this.world?.applyWorldLayout?.(result?.objects);
-      this.toast("Object position locked in for every visitor.");
+      this.toast("Object placement locked in for every visitor.");
     } catch (error) {
-      this.toast(`The new object position was not saved: ${error.message}`);
+      this.toast(`The new object placement was not saved: ${error.message}`);
       // Re-apply the persisted layout so this scene matches what everyone
       // else still sees.
-      try {
-        const layout = await this.fetchJSON("/api/world/layout", {
-          auth: false,
-          timeout: 5000,
-        });
-        this.world?.applyWorldLayout?.(layout?.objects);
-      } catch (_) {}
+      const layout = await this.fetchWorldLayout();
+      this.world?.applyWorldLayout?.(this.mergedWorldLayout(layout?.objects));
     }
   }
 
@@ -6064,6 +7200,7 @@ class ForkMeshWorld extends HTMLElement {
     ]);
     if (pool.status === "fulfilled") {
       this.rewardState = pool.value || {};
+      this.world?.updateRewardPool?.(this.rewardState);
       this.captureRewardEvents(true);
     }
     this.setLandmarkCapability(
@@ -6213,6 +7350,41 @@ class ForkMeshWorld extends HTMLElement {
     }, MIRROR_STATUS_POLL_MS);
   }
 
+  startRepositoryImportPolling() {
+    window.clearInterval(this.repositoryImportTimer);
+    this.repositoryImportTimer = window.setInterval(async () => {
+      if (this.destroyed || document.visibilityState !== "visible") return;
+      try {
+        const payload = await this.fetchJSON("/api/repository-imports", {
+          auth: this.sessionAuthenticated && Boolean(validWorldSession()),
+          timeout: 10000,
+          cache: "no-store",
+        });
+        const external = cleanExternalRepositories(payload);
+        const before = this.externalRepositories
+          .map((record) => `${record.importId}:${record.updatedAt}:${record.importStatus}`)
+          .sort()
+          .join("|");
+        const after = external
+          .map((record) => `${record.importId}:${record.updatedAt}:${record.importStatus}`)
+          .sort()
+          .join("|");
+        if (before === after) return;
+        this.externalRepositories = external;
+        this.repositories = mergeHostedRepositoryImports(
+          this.nativeRepositories,
+          external,
+        );
+        this.repositoryCatalogState = this.repositories.length ? "ready" : "empty";
+        this.syncRepositoryScene();
+        void this.hydrateHostedRepositorySizeMaps();
+      } catch (_) {
+        // Preserve the most recent visible import catalog through a transient
+        // provider/relay failure; the next bounded poll retries automatically.
+      }
+    }, REPOSITORY_IMPORT_POLL_MS);
+  }
+
   updateLocation(label, id) {
     const location = this.$("[data-world-location]");
     const code = this.$("[data-world-location-code]");
@@ -6225,11 +7397,18 @@ class ForkMeshWorld extends HTMLElement {
       );
     });
     this.recordPublicVisit(id || "town-square");
-    if (this.settings.privacy.activity) {
+    if (!this.settings.privacy.activity) {
+      this.lastMovement.activity = "online";
+    } else if (
+      this.lastMovement.activity !== CAMPFIRE_SEATED_ACTIVITY &&
+      this.lastMovement.activity !== SWING_RIDING_ACTIVITY
+    ) {
+      // Sitting down lands inside the campfire's own label radius, and the
+      // swing set sits inside the Town Square's. The seated and riding
+      // activities are what other visitors render the pose from, so proximity
+      // must not relabel them as merely visiting the area.
       this.lastMovement.activity =
         label === "Town Square" ? "exploring the Town Square" : `visiting ${label}`;
-    } else {
-      this.lastMovement.activity = "online";
     }
     this.currentActivityCategory = {
       repositories: "viewing-repository",
@@ -6318,14 +7497,43 @@ class ForkMeshWorld extends HTMLElement {
     detail.setAttribute("aria-hidden", "false");
     backdrop.dataset.open = "true";
     backdrop.setAttribute("aria-hidden", "false");
+    // The panel clips its overflow but is still scrollable programmatically:
+    // any focus()/scrollIntoView() inside it could shove the whole panel
+    // sideways or upward, which reads as clipped text and blank space.
+    detail.scrollLeft = 0;
+    detail.scrollTop = 0;
+    this.syncDetailResizeState();
     window.setTimeout(() => {
       if (detail.dataset.open !== "true") return;
-      detail.querySelector("[data-world-detail-close]")?.focus();
+      detail
+        .querySelector("[data-world-detail-close]")
+        ?.focus({ preventScroll: true });
     }, focusDelay);
   }
 
   openLandmark(id, { returnFocus = null } = {}) {
-    const landmark = landmarkById(id);
+    const landmark =
+      id === "events"
+        ? {
+            id: "events",
+            color: "#77d9ff",
+            eyebrow: "WORLD NOTIFICATIONS",
+            label: "Notifications",
+            summary:
+              "Your private account updates and public World announcements in one place.",
+            status: "LIVE · PERSONAL + GLOBAL",
+            metaphor:
+              "A shared bulletin beside a private inbox that only you can open.",
+            reality:
+              "Personal notifications use your signed-in session. Global announcements are public UTC event records.",
+            bullets: [
+              "Your notifications are account-scoped and never sent through multiplayer presence.",
+              "Global announcements are visible to everyone in the World.",
+            ],
+            primary: null,
+            secondary: null,
+          }
+        : landmarkById(id);
     const capability = this.landmarkCapabilities[landmark.id] || {
       live: false,
       reason: "This integration has not been verified in this session.",
@@ -6541,7 +7749,12 @@ class ForkMeshWorld extends HTMLElement {
           <span>Online presence, signed repository publication, content integrity, and route eligibility are separate checks. An online node is not automatically trustworthy.</span>
         </div>
         <dl class="world-technical-list">
-          <div><dt>Node</dt><dd>${escapeHTML(node?.name || "Not reported")}</dd></div>
+          <div><dt>Node</dt><dd>${escapeHTML(
+            node?.machineName || node?.name || "Not reported",
+          )}</dd></div>
+          <div><dt>Operator account</dt><dd>${escapeHTML(
+            node?.name || "Not reported",
+          )}</dd></div>
           <div><dt>Node id</dt><dd class="world-break">${escapeHTML(
             node?.nodeId || "Not reported",
           )}</dd></div>
@@ -6633,7 +7846,7 @@ class ForkMeshWorld extends HTMLElement {
         <div>
           <p class="world-eyebrow">MIRROR SERVER / LIVE PUBLIC STATUS</p>
           <h2 id="world-detail-title">${escapeHTML(
-            node.name || "Mirror node",
+            node.machineName || node.name || "Mirror node",
           )}</h2>
         </div>
         <button class="world-detail-close" type="button" data-world-detail-close aria-label="Close mirror server details">×</button>
@@ -6668,9 +7881,12 @@ class ForkMeshWorld extends HTMLElement {
     if (this.mastodonLoad) return this.mastodonLoad;
     const fresh =
       this.mastodonProfile &&
-      Date.now() - this.mastodonFetchedAt < 5 * 60 * 1000;
+      Date.now() - this.mastodonFetchedAt < MASTODON_REFRESH_MS;
     if (fresh && !force) return Promise.resolve();
     this.mastodonState = "loading";
+    // The countdown runs from the attempt, not the last success, so a failed
+    // fetch waits out the full window instead of retrying every tick.
+    this.mastodonRequestedAt = Date.now();
     this.renderMastodonBoard();
     this.mastodonLoad = (async () => {
       try {
@@ -6690,15 +7906,362 @@ class ForkMeshWorld extends HTMLElement {
           .slice(0, MASTODON_STATUS_LIMIT);
         this.mastodonFetchedAt = Date.now();
         this.mastodonState = "ready";
+        // Threads are walked one per toot, so paint the profile and toots
+        // first and let the replies section fill in behind them.
+        this.renderMastodonBoard();
+        this.syncMastodonKiosk();
+        this.mastodonReplies = await this.fetchMastodonReplies(
+          account,
+          this.mastodonStatuses,
+        );
       } catch (_) {
         // Keep any previously fetched snapshot on a refresh failure.
         this.mastodonState = this.mastodonProfile ? "ready" : "error";
       } finally {
         this.mastodonLoad = null;
         this.renderMastodonBoard();
+        this.syncMastodonKiosk();
+        this.syncMastodonCountdown();
       }
     })();
+    this.syncMastodonCountdown();
     return this.mastodonLoad;
+  }
+
+  // Public replies other accounts left on the newest toots. Mastodon exposes
+  // them only per-thread, so this walks the context of a bounded number of
+  // toots that report replies and keeps the descendants that are not ours. A
+  // thread that fails to load is skipped rather than blanking the section.
+  async fetchMastodonReplies(account, statuses) {
+    const threads = statuses
+      .filter((status) => status.id && status.repliesCount > 0)
+      .slice(0, MASTODON_REPLY_THREADS);
+    const seen = new Set();
+    const replies = [];
+    for (const thread of threads) {
+      let context = null;
+      try {
+        context = await this.fetchMastodonJSON(
+          `https://mastodon.social/api/v1/statuses/${encodeURIComponent(
+            thread.id,
+          )}/context`,
+        );
+      } catch (_) {
+        continue;
+      }
+      const descendants = Array.isArray(context?.descendants)
+        ? context.descendants.slice(0, MASTODON_STATUS_LIMIT)
+        : [];
+      for (const entry of descendants) {
+        const reply = normalizeMastodonStatus(entry);
+        if (!reply?.id || !reply.text) continue;
+        // Our own posts further down a thread are not "replies from users".
+        if (reply.authorAcct === account.acct) continue;
+        if (seen.has(reply.id)) continue;
+        seen.add(reply.id);
+        replies.push(reply);
+      }
+    }
+    return replies
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+      .slice(0, MASTODON_REPLY_LIMIT);
+  }
+
+  // The kiosk billboard reloads on a fixed ten-minute cadence, and the MM:SS
+  // timer on the board is repainted every second so visitors can see when the
+  // next fetch lands. The tick, not a ten-minute interval, drives the refresh
+  // so a manual "Refresh" from the mini-app restarts the same window.
+  startMastodonRefresh() {
+    window.clearInterval(this.mastodonRefreshTimer);
+    this.mastodonRefreshTimer = window.setInterval(() => {
+      this.syncMastodonCountdown();
+    }, 1000);
+    this.syncMastodonCountdown();
+  }
+
+  // The Twitter and Reddit banners repaint from the Worker's proxy snapshot
+  // (/api/world/social-posts). The read is public, credential-free, and
+  // edge-cached for ten minutes, so a scene rebuild can re-request it
+  // cheaply. Remote text is drawn onto a canvas texture, never injected as
+  // markup.
+  loadSocialBanners() {
+    if (this.socialFeedsLoad) return this.socialFeedsLoad;
+    this.socialFeedsRequestedAt = Date.now();
+    this.socialFeedsLoad = (async () => {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 10000);
+      try {
+        const response = await fetch(SOCIAL_POSTS_URL, {
+          credentials: "omit",
+          headers: { accept: "application/json" },
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error(`social posts returned ${response.status}`);
+        }
+        this.socialFeedsSnapshot = await response.json();
+        this.socialFeedsFetchedAt = Date.now();
+        this.syncSocialBanners();
+      } catch (_) {
+        // Keep the previous snapshot — or the static signs — on failure.
+      } finally {
+        window.clearTimeout(timeout);
+        this.socialFeedsLoad = null;
+        this.syncSocialBannerTimers();
+      }
+    })();
+    this.syncSocialBannerTimers();
+    return this.socialFeedsLoad;
+  }
+
+  // Like the Mastodon kiosk, a one-second tick drives both the stand clocks
+  // and the ten-minute reload: when the countdown reaches zero the next tick
+  // starts the fetch, so a repaint from a fresh snapshot restarts the same
+  // window the boards were counting down.
+  startSocialBannersRefresh() {
+    window.clearInterval(this.socialFeedsTimer);
+    this.socialFeedsTimer = window.setInterval(() => {
+      this.syncSocialBannerTimers();
+    }, 1000);
+    void this.loadSocialBanners();
+  }
+
+  socialRefreshRemaining() {
+    if (!this.socialFeedsRequestedAt) return 0;
+    return Math.max(
+      0,
+      this.socialFeedsRequestedAt + SOCIAL_REFRESH_MS - Date.now(),
+    );
+  }
+
+  // Milliseconds since the newest post in a proxied feed, or null when the
+  // feed has no dated posts (unfetched, unavailable, or the blog's undated
+  // feature articles).
+  socialNewestPostAgo(feed) {
+    let latest = 0;
+    for (const post of Array.isArray(feed?.posts) ? feed.posts : []) {
+      const at = Number(post?.createdAt) || 0;
+      if (at > latest) latest = at;
+    }
+    return latest ? Math.max(0, Date.now() - latest) : null;
+  }
+
+  // Age of the snapshot itself: the server stamps `now` when it builds the
+  // payload, so an edge-cached read still reports how old the data really
+  // is. Feeds the blog board's SYNCED plate.
+  socialSnapshotAge() {
+    const stamp =
+      Number(this.socialFeedsSnapshot?.now) || this.socialFeedsFetchedAt;
+    return stamp ? Math.max(0, Date.now() - stamp) : null;
+  }
+
+  syncSocialBannerTimers() {
+    const loading = Boolean(this.socialFeedsLoad);
+    const remaining = this.socialRefreshRemaining();
+    if (!loading && remaining <= 0) {
+      void this.loadSocialBanners();
+      return;
+    }
+    const snapshot = this.socialFeedsSnapshot;
+    const timers = (sinceMs) => ({
+      remainingMs: loading ? SOCIAL_REFRESH_MS : remaining,
+      totalMs: SOCIAL_REFRESH_MS,
+      loading,
+      sinceMs,
+    });
+    this.world?.updateSocialBannerTimers?.({
+      twitter: timers(this.socialNewestPostAgo(snapshot?.twitter)),
+      reddit: timers(this.socialNewestPostAgo(snapshot?.reddit)),
+      blog: timers(this.socialSnapshotAge()),
+    });
+  }
+
+  // Feed item images are published as absolute forkmesh.com URLs. The board
+  // draws them onto a canvas texture, so they must load same-origin: keep
+  // only the /assets path and let this page's own origin serve it. Anything
+  // else (an off-site image, a data: URL) is dropped and the card keeps its
+  // placeholder plate.
+  socialPostImage(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    try {
+      const url = new URL(raw, window.location.origin);
+      return url.pathname.startsWith("/assets/") ? url.pathname : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  socialPostDate(createdAt) {
+    const stamp = Number(createdAt) || 0;
+    if (!stamp) return "";
+    return new Date(stamp).toLocaleDateString([], {
+      month: "short",
+      day: "numeric",
+    });
+  }
+
+  // Mirror the proxy snapshot onto the in-world banner boards, reduced to the
+  // bounded display strings the canvas painter draws.
+  syncSocialBanners() {
+    const snapshot = this.socialFeedsSnapshot;
+    if (!snapshot) return;
+    const bound = (
+      feed,
+      meta,
+      text = (post) => String(post?.text || ""),
+      extra = () => ({}),
+    ) => ({
+      state: feed?.state === "ready" ? "ready" : "unavailable",
+      posts: (Array.isArray(feed?.posts) ? feed.posts : []).map((post) => ({
+        text: text(post).slice(0, 400),
+        meta: meta(post),
+        ...extra(post),
+      })),
+    });
+    this.world?.updateSocialBanners?.({
+      twitter: bound(snapshot.twitter, (post) =>
+        [
+          this.socialPostDate(post?.createdAt),
+          `♥ ${formatMastodonCount(post?.likes)}`,
+          `🔁 ${formatMastodonCount(post?.retweets)}`,
+          String(post?.author || ""),
+        ]
+          .filter(Boolean)
+          .join(" · "),
+      ),
+      reddit: bound(snapshot.reddit, (post) =>
+        [
+          this.socialPostDate(post?.createdAt),
+          `▲ ${formatMastodonCount(post?.score)}`,
+          `💬 ${formatMastodonCount(post?.comments)}`,
+          post?.author ? `u/${post.author}` : "",
+        ]
+          .filter(Boolean)
+          .join(" · "),
+      ),
+      // Blog items have no dates or counts: the meta line is the section +
+      // feature number the RSS category carries, the headline is the item
+      // title, and the board prints the item's description as preview text
+      // under its artwork.
+      blog: bound(
+        snapshot.blog,
+        (post) => String(post?.meta || ""),
+        (post) => String(post?.text || ""),
+        (post) => ({
+          detail: String(post?.detail || "").slice(0, 260),
+          image: this.socialPostImage(post?.image),
+        }),
+      ),
+    });
+  }
+
+  mastodonRefreshRemaining() {
+    if (!this.mastodonRequestedAt) return 0;
+    return Math.max(
+      0,
+      this.mastodonRequestedAt + MASTODON_REFRESH_MS - Date.now(),
+    );
+  }
+
+  // Milliseconds since the newest fetched toot (boosts included: they keep
+  // the profile timeline alive too), or null before the first successful
+  // fetch. Drives the posting-cadence plate on the kiosk stand.
+  mastodonLastPostAgo() {
+    let latest = 0;
+    for (const status of this.mastodonStatuses || []) {
+      const at = Number(status?.createdAt) || 0;
+      if (at > latest) latest = at;
+    }
+    return latest ? Math.max(0, Date.now() - latest) : null;
+  }
+
+  syncMastodonCountdown() {
+    const loading = Boolean(this.mastodonLoad);
+    const remaining = this.mastodonRefreshRemaining();
+    if (!loading && remaining <= 0) {
+      void this.loadMastodonBoard(true);
+      return;
+    }
+    this.world?.updateMastodonCountdown?.({
+      remainingMs: loading ? MASTODON_REFRESH_MS : remaining,
+      totalMs: MASTODON_REFRESH_MS,
+      loading,
+      lastPostAgoMs: this.mastodonLastPostAgo(),
+    });
+  }
+
+  // Mirror the mini-app's live profile onto the in-world kiosk billboard so
+  // the header, avatar, counts, and latest toots are visible without opening
+  // the panel. All strings are bounded by normalizeMastodonAccount/Status.
+  syncMastodonKiosk() {
+    const account = this.mastodonProfile;
+    if (!account) return;
+    this.world?.updateMastodonKiosk?.({
+      displayName: account.displayName,
+      acct: `@${account.acct}@mastodon.social`,
+      profileURL: account.url || MASTODON_PROFILE_URL,
+      headerURL: account.header,
+      avatarURL: account.avatar,
+      followers: formatMastodonCount(account.followersCount),
+      following: formatMastodonCount(account.followingCount),
+      posts: formatMastodonCount(account.statusesCount),
+      joined: account.createdAt
+        ? new Date(account.createdAt).toLocaleDateString([], {
+            month: "short",
+            day: "2-digit",
+          })
+        : "—",
+      note: account.note,
+      fields: account.fields.map((field) => ({
+        name: field.name,
+        value: field.value,
+        verified: field.verified,
+      })),
+      toots: this.mastodonStatuses.map((status) => {
+        const marker = [
+          status.pinned ? "📌 PINNED" : "",
+          status.boostedFrom ? `🔁 BOOSTED FROM @${status.boostedFrom}` : "",
+          status.spoiler ? `⚠ ${status.spoiler}` : "",
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        const body =
+          status.text ||
+          (status.images.length ? "(image attachment)" : "Open toot");
+        return {
+          author: status.authorName,
+          acct: status.authorAcct ? `@${status.authorAcct}` : "",
+          url: status.url,
+          date: status.createdAt
+            ? new Date(status.createdAt).toLocaleDateString([], {
+                year: "numeric",
+                month: "short",
+                day: "numeric",
+              })
+            : "",
+          marker,
+          text: body,
+          images: status.images.map((media) => media.url).filter(Boolean),
+          replies: formatMastodonCount(status.repliesCount),
+          boosts: formatMastodonCount(status.reblogsCount),
+          stars: formatMastodonCount(status.favouritesCount),
+        };
+      }),
+      replies: this.mastodonReplies.map((reply) => ({
+        author: reply.authorName,
+        acct: reply.authorAcct ? `@${reply.authorAcct}` : "",
+        avatar: reply.authorAvatar,
+        url: reply.url,
+        date: reply.createdAt
+          ? new Date(reply.createdAt).toLocaleDateString([], {
+              month: "short",
+              day: "numeric",
+            })
+          : "",
+        text: reply.text || "(image reply)",
+      })),
+    });
   }
 
   openSystemCapacityTables(table = null, { returnFocus = null } = {}) {
@@ -6800,9 +8363,20 @@ class ForkMeshWorld extends HTMLElement {
       </div>`;
     if (focus) {
       window.requestAnimationFrame(() => {
-        detail
-          .querySelector("[data-current='true']")
-          ?.scrollIntoView({ block: "center" });
+        // Scroll the table's own viewport rather than calling scrollIntoView,
+        // which would also scroll the clipped panel around the highlighted row.
+        const scroller = detail.querySelector(".world-capacity-scroll");
+        const row = detail.querySelector("[data-current='true']");
+        if (!scroller || !row) return;
+        const rowBox = row.getBoundingClientRect();
+        const offset =
+          rowBox.top -
+          scroller.getBoundingClientRect().top +
+          scroller.scrollTop;
+        scroller.scrollTop = Math.max(
+          0,
+          offset - (scroller.clientHeight - rowBox.height) / 2,
+        );
       });
     }
   }
@@ -6832,6 +8406,7 @@ class ForkMeshWorld extends HTMLElement {
       <div class="world-mastodon-app">
         ${this.mastodonProfileHTML()}
         ${this.mastodonTootsHTML()}
+        ${this.mastodonRepliesHTML()}
       </div>`;
   }
 
@@ -7025,6 +8600,61 @@ class ForkMeshWorld extends HTMLElement {
       <section class="world-mastodon-toots" aria-label="Latest public toots">
         <h3>Latest toots</h3>
         <div class="world-mastodon-toot-list" data-world-mastodon-toots tabindex="0">
+          ${body}
+        </div>
+      </section>`;
+  }
+
+  // Who replied, with their avatar — the same data the kiosk's REPLIES strip
+  // renders, in full here.
+  mastodonRepliesHTML() {
+    const replies = this.mastodonReplies;
+    const body = replies.length
+      ? replies
+          .map((reply) => {
+            const date = reply.createdAt
+              ? new Date(reply.createdAt).toLocaleDateString([], {
+                  year: "numeric",
+                  month: "short",
+                  day: "numeric",
+                })
+              : "";
+            return `
+              <article class="world-mastodon-reply">
+                ${
+                  reply.authorAvatar
+                    ? `<img src="${escapeHTML(
+                        reply.authorAvatar,
+                      )}" alt="" loading="lazy" />`
+                    : '<span class="world-mastodon-reply-icon" aria-hidden="true">@</span>'
+                }
+                <div>
+                  <header>
+                    <strong>${escapeHTML(reply.authorName)}</strong>
+                    <span>@${escapeHTML(reply.authorAcct)}</span>
+                    <time>${escapeHTML(date)}</time>
+                  </header>
+                  <p class="world-mastodon-text">${escapeHTML(reply.text)}</p>
+                  ${
+                    reply.url
+                      ? `<a href="${escapeHTML(
+                          reply.url,
+                        )}" target="_blank" rel="noopener noreferrer">Open reply</a>`
+                      : ""
+                  }
+                </div>
+              </article>`;
+          })
+          .join("")
+      : `<p class="world-mastodon-status" role="status">${
+          this.mastodonState === "loading" || this.mastodonLoad
+            ? "Loading replies from the fediverse…"
+            : "No public replies on the latest toots yet."
+        }</p>`;
+    return `
+      <section class="world-mastodon-replies" aria-label="Replies from the fediverse">
+        <h3>Replies</h3>
+        <div class="world-mastodon-reply-list" data-world-mastodon-replies tabindex="0">
           ${body}
         </div>
       </section>`;
@@ -8187,7 +9817,12 @@ class ForkMeshWorld extends HTMLElement {
   startEventPolling() {
     window.clearInterval(this.eventsTimer);
     this.eventsTimer = window.setInterval(() => {
+      if (document.hidden) return;
       this.refreshCommunityEvents(this.isEventsPanelOpen());
+      // Rides the same tick so accounts that signed up while this tab has
+      // been open get their bench at the fire without a reload. The endpoint
+      // is edge-cached, and a signup purges that cache.
+      void this.refreshMemberDirectory();
     }, 60000);
   }
 
@@ -8206,8 +9841,6 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   updateNotificationBadge() {
-    const badge = this.$("[data-world-notification-count]");
-    if (!badge) return;
     const currentEvents = this.events.filter((item) => {
       const start = Date.parse(item.startsAt);
       const end = Date.parse(item.endsAt);
@@ -8218,17 +9851,20 @@ class ForkMeshWorld extends HTMLElement {
       0,
       Math.min(999, Number(this.notificationUnread || 0) + currentEvents),
     );
-    badge.textContent = count > 99 ? "99+" : String(count);
-    badge.hidden = count === 0;
-    const button = badge.closest("[data-world-landmark='events']");
-    if (button) {
+    this.$$("[data-world-notification-count]").forEach((badge) => {
+      badge.textContent = count > 99 ? "99+" : String(count);
+      badge.hidden = count === 0;
+    });
+    this.$$(
+      "[data-world-notifications-open], [data-world-landmark='events']",
+    ).forEach((button) => {
       button.setAttribute(
         "aria-label",
         count
           ? `Open World notifications, ${count} active`
           : "Open World notifications",
       );
-    }
+    });
   }
 
   announceWorldNotifications() {
@@ -8469,6 +10105,22 @@ class ForkMeshWorld extends HTMLElement {
         ? `${owner.name || "The owner"} accepted your knock. You entered their visual front yard; normal collaboration permissions still apply.`
         : `Entered ${owner.name || "the owner"}’s public front yard. Normal collaboration permissions still apply.`,
     );
+  }
+
+  // The Campfire map spot seats you on the bench that carries your own name;
+  // guests, and members the roster has not seated yet, land on one of the
+  // benches the circle keeps open.
+  returnToCampfireBench() {
+    if (!this.world?.returnToCampfireBench?.(this.identity?.name || "")) {
+      this.toast(
+        this.officeController?.active
+          ? "Walk out through the Office door first, then head back to the fire."
+          : "The campfire benches are still being seated. Try again in a moment.",
+      );
+      return;
+    }
+    this.closeLandmark();
+    this.toast("Back on your bench around the campfire. Move to stand up.");
   }
 
   focusMusicPanelHTML() {
@@ -9782,19 +11434,104 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  async hydrateHostedRepositorySizeMaps() {
+    if (this.repositorySizeHydrationActive || this.destroyed) return;
+    const pending = this.repositories.filter((repository) => {
+      if (
+        repository.source !== "hosted-import" ||
+        repository.liveHost !== true ||
+        !immutableGitOid(repository.commit)
+      ) {
+        return false;
+      }
+      const key = this.repositoryStarKey(repository.owner, repository.name);
+      return (
+        key &&
+        String(this.repositorySizeTrees.get(key)?.commit || "").toLowerCase() !==
+          repository.commit.toLowerCase()
+      );
+    });
+    if (!pending.length) return;
+    this.repositorySizeHydrationActive = true;
+    let nextIndex = 0;
+    let changed = false;
+    let hydratedCount = 0;
+    const worker = async () => {
+      while (!this.destroyed && nextIndex < pending.length) {
+        const repository = pending[nextIndex++];
+        const key = this.repositoryStarKey(repository.owner, repository.name);
+        const servingOwner = sanitizePresenceText(
+          repository.servingOwner || repository.owner,
+          "",
+          40,
+        );
+        const servingName = sanitizePresenceText(
+          repository.servingName || repository.name,
+          "",
+          60,
+        );
+        try {
+          const payload = await this.fetchJSON(
+            `/api/repo/${encodeURIComponent(servingOwner)}/${encodeURIComponent(
+              servingName,
+            )}/sizes?ref=${encodeURIComponent(repository.commit)}`,
+            {
+              auth: false,
+              timeout: REPOSITORY_METADATA_TIMEOUT_MS,
+              cache: "no-store",
+            },
+          );
+          if (
+            payload?.ok === false ||
+            String(payload?.commit || "").toLowerCase() !==
+              repository.commit.toLowerCase() ||
+            !(Number(payload?.size) > 0) ||
+            !Array.isArray(payload?.children)
+          ) {
+            continue;
+          }
+          this.repositorySizeTrees.set(key, payload);
+          changed = true;
+          hydratedCount += 1;
+          if (hydratedCount % 8 === 0 && !this.destroyed) {
+            this.syncRepositoryScene();
+          }
+        } catch (_) {
+          // A failed mirror is retried on the next import-catalog poll. The
+          // successfully hydrated maps stay visible in the meantime.
+        }
+      }
+    };
+    try {
+      await Promise.all(
+        Array.from(
+          { length: Math.min(4, pending.length) },
+          () => worker(),
+        ),
+      );
+    } finally {
+      this.repositorySizeHydrationActive = false;
+    }
+    if (changed && !this.destroyed) this.syncRepositoryScene();
+  }
+
   syncRepositoryScene() {
     if (!this.world) return;
     const active =
       this.repositoryMapState === "ready" && this.activeRepository
         ? this.activeRepository
         : null;
+    const preview = active ? null : this.repositoryMapPreview;
     this.world.updateRepositoryCatalog?.(
       this.repositoriesWithLiveSocialState(),
-      active || {},
+      active || preview || {},
     );
     if (!active) {
-      this.world.updateRepositoryGraph?.([], []);
-      this.world.updateRepositorySizeMap?.({}, {});
+      this.world.updateRepositoryGraph?.(preview?.entries || [], []);
+      this.world.updateRepositorySizeMap?.(
+        preview?.sizes || {},
+        preview || {},
+      );
       this.world.updateRepositoryRecordDesk?.({}, {});
       return;
     }
@@ -9823,6 +11560,57 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
+  repositoryTreeSizePreview(entries = []) {
+    // The first tree response already contains exact blob sizes for root
+    // files. Paint those immediately while the recursive size tree is still
+    // being calculated; directories with an unknown size stay out of this
+    // preview instead of receiving an invented weight.
+    const children = (Array.isArray(entries) ? entries : [])
+      .filter((entry) => entry?.type === "file" && Number(entry?.size) > 0)
+      .slice(0, 80)
+      .map((entry) => ({
+        name: String(entry.name || entry.path || "file").slice(0, 100),
+        path: String(entry.path || entry.name || "").slice(0, 500),
+        type: "file",
+        size: Math.max(0, Number(entry.size) || 0),
+        children: [],
+      }));
+    return {
+      name: "repository",
+      path: "",
+      type: "directory",
+      size: children.reduce((total, child) => total + child.size, 0),
+      children,
+    };
+  }
+
+  previewRepositoryMap(owner, repo, commit, entries, sizes = null) {
+    if (!this.world || this.destroyed) return;
+    const selection = { owner, repo, commit, path: "" };
+    const current =
+      this.repositoryMapPreview?.owner === owner &&
+      this.repositoryMapPreview?.repo === repo &&
+      this.repositoryMapPreview?.commit === commit
+        ? this.repositoryMapPreview
+        : null;
+    const previewSizes =
+      sizes ||
+      current?.sizes ||
+      this.repositoryTreeSizePreview(entries);
+    this.repositoryMapPreview = {
+      ...selection,
+      entries,
+      sizes: previewSizes,
+    };
+    this.world.updateRepositoryCatalog?.(
+      this.repositoriesWithLiveSocialState(),
+      selection,
+    );
+    this.world.updateRepositoryGraph?.(entries, []);
+    this.world.updateRepositorySizeMap?.(previewSizes, selection);
+    this.world.setRepositorySizeLoading?.(true);
+  }
+
   repositoriesWithLiveSocialState() {
     // The catalog payload carries no star or follower totals, and a periodic
     // catalog refresh replaces every record object — so the scene is handed the
@@ -9834,9 +11622,11 @@ class ForkMeshWorld extends HTMLElement {
       if (!key) return repository;
       const star = this.repositoryStarStates.get(key);
       const followers = this.repositoryFollowerStates.get(key);
-      if (!star && !followers) return repository;
+      const sizeTree = this.repositorySizeTrees.get(key) || null;
+      if (!star && !followers && !sizeTree) return repository;
       return {
         ...repository,
+        sizeTree,
         starCount: Number.isSafeInteger(star?.count)
           ? star.count
           : repository.starCount,
@@ -9908,6 +11698,10 @@ class ForkMeshWorld extends HTMLElement {
     const owner = sanitizePresenceText(portal?.owner, "", 40);
     const name = sanitizePresenceText(portal?.name, "", 60);
     if (!owner || !name) return;
+    if (portal?.source === "external-import" && portal?.externalUrl) {
+      this.openRepositoryWebsite(portal);
+      return;
+    }
     this.toast(`Opening ${owner}/${name} at its perimeter portal…`);
     void this.loadRepositoryMap(owner, name, {
       automatic: false,
@@ -9919,7 +11713,13 @@ class ForkMeshWorld extends HTMLElement {
     const owner = sanitizePresenceText(portal?.owner, "", 40);
     const name = sanitizePresenceText(portal?.name, "", 60);
     if (!owner || !name) return;
-    const path = `/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+    const externalURL =
+      portal?.source === "external-import"
+        ? safeHTTPURL(portal.externalUrl)
+        : "";
+    const path =
+      externalURL ||
+      `/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
     // `noopener` intentionally makes window.open return null in some browsers,
     // so do not mistake a safely opened tab for a popup-blocker failure.
     window.open(path, "_blank", "noopener,noreferrer");
@@ -10052,13 +11852,33 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
-  async fetchRepositoryMapSnapshot(owner, repo) {
+  async fetchRepositoryMapSnapshot(owner, repo, options = {}) {
     const safeOwner = sanitizePresenceText(owner, "", 40);
     const safeRepo = sanitizePresenceText(repo, "", 60);
-    const base = `/api/repo/${encodeURIComponent(safeOwner)}/${encodeURIComponent(
+    const catalogRecord = this.repositories.find(
+      (record) =>
+        record.owner.toLowerCase() === safeOwner.toLowerCase() &&
+        record.name.toLowerCase() === safeRepo.toLowerCase(),
+    );
+    const hostedImport = catalogRecord?.source === "hosted-import";
+    const servingOwner = sanitizePresenceText(
+      (hostedImport ? catalogRecord?.servingOwner : "") || safeOwner,
+      safeOwner,
+      40,
+    );
+    const servingRepo = sanitizePresenceText(
+      (hostedImport ? catalogRecord?.servingName : "") || safeRepo,
       safeRepo,
-    )}`;
-    const tree = await this.fetchJSON(`${base}/tree?path=`, {
+      60,
+    );
+    const base = `/api/repo/${encodeURIComponent(
+      servingOwner,
+    )}/${encodeURIComponent(servingRepo)}`;
+    const expectedCommit = immutableGitOid(options.expectedCommit);
+    const treeURL = expectedCommit
+      ? `${base}/tree?path=&ref=${encodeURIComponent(expectedCommit)}`
+      : `${base}/tree?path=`;
+    const tree = await this.fetchJSON(treeURL, {
       timeout: REPOSITORY_METADATA_TIMEOUT_MS,
       cache: "no-store",
     });
@@ -10075,40 +11895,57 @@ class ForkMeshWorld extends HTMLElement {
     if (!/^[0-9a-f]{40,64}$/.test(commit)) {
       throw new Error("repository tree commit unavailable");
     }
+    const entries = normalizeTreeEntries(tree);
+    options.onTree?.({ owner: safeOwner, repo: safeRepo, commit, entries });
     const ref = `?ref=${encodeURIComponent(commit)}`;
-    const catalogRecord = this.repositories.find(
-      (record) =>
-        record.owner.toLowerCase() === safeOwner.toLowerCase() &&
-        record.name.toLowerCase() === safeRepo.toLowerCase(),
-    );
-    // Resolve the short immutable PR chain before sizes/stats and issue scans
-    // can contend for a one-vCPU mirror. This result is then injected into the
-    // entity loader, so the browser never repeats branches/tree/blobs.
-    const pullResult =
+    // Start the short immutable PR chain beside sizes/stats, then inject its
+    // result into the entity loader so the browser never repeats
+    // branches/tree/blobs. Optional PR metadata must not delay the first map.
+    const pullResultPromise =
       catalogRecord?.isPrivate === true
-        ? {
+        ? Promise.resolve({
             status: "rejected",
             reason: new Error("private pull metadata is not publicly probed"),
-          }
-        : await this.loadRepositoryPullRecords(base).then(
+          })
+        : this.loadRepositoryPullRecords(base).then(
             (value) => ({ status: "fulfilled", value }),
             (reason) => ({ status: "rejected", reason }),
           );
+    const sizeRequest = this.fetchJSON(`${base}/sizes${ref}`, {
+      timeout: REPOSITORY_METADATA_TIMEOUT_MS,
+      cache: "no-store",
+    });
+    sizeRequest.then(
+      (value) => {
+        if (
+          value?.ok !== false &&
+          String(value?.commit || "").toLowerCase() === commit
+        ) {
+          options.onSizes?.({
+            owner: safeOwner,
+            repo: safeRepo,
+            commit,
+            entries,
+            sizes: value,
+          });
+        }
+      },
+      () => {},
+    );
     const [sizeResult, statsResult, mirrorsResult, entityRecordsResult] =
       await Promise.allSettled([
-        this.fetchJSON(`${base}/sizes${ref}`, {
-          timeout: REPOSITORY_METADATA_TIMEOUT_MS,
-          cache: "no-store",
-        }),
+        sizeRequest,
         this.fetchJSON(`${base}/stats${ref}`, {
           timeout: REPOSITORY_METADATA_TIMEOUT_MS,
           cache: "no-store",
         }),
         this.fetchJSON(`${base}/mirrors`, { auth: false }),
-        this.loadRepositoryEntityRecords(base, commit, {
-          privateRepository: catalogRecord?.isPrivate === true,
-          pullResult,
-        }),
+        pullResultPromise.then((pullResult) =>
+          this.loadRepositoryEntityRecords(base, commit, {
+            privateRepository: catalogRecord?.isPrivate === true,
+            pullResult,
+          }),
+        ),
       ]);
     const sizes =
       sizeResult.status === "fulfilled" &&
@@ -10170,7 +12007,7 @@ class ForkMeshWorld extends HTMLElement {
       path: "",
       commit,
       analysis: tree.analysis || {},
-      entries: normalizeTreeEntries(tree),
+      entries,
       counts: {
         ...(tree?.counts || {}),
         pulls: pullCount,
@@ -10248,14 +12085,41 @@ class ForkMeshWorld extends HTMLElement {
     this.expandedRepositoryIssuePage = 0;
     this.clearPullReviewScrollTracking();
     const selection = ++this.repositoryMapSelection;
+    const expectedCommits =
+      options.expectedCommits instanceof Set
+        ? options.expectedCommits
+        : new Set();
+    const preview = (snapshot) => {
+      if (
+        selection !== this.repositoryMapSelection ||
+        this.destroyed ||
+        (expectedCommits.size &&
+          !expectedCommits.has(String(snapshot.commit).toLowerCase()))
+      ) {
+        return;
+      }
+      this.previewRepositoryMap(
+        snapshot.owner,
+        snapshot.repo,
+        snapshot.commit,
+        snapshot.entries,
+        snapshot.sizes,
+      );
+    };
     this.repositoryMapState = "loading";
+    this.repositoryMapPreview = null;
     this.repositoryMapTarget = `${safeOwner}/${safeRepo}`;
     this.world?.setRepositorySizeLoading?.(true);
     this.renderRepositoryMapStatus();
 
     let request = this.repositoryMapLoads.get(key);
     if (!request) {
-      request = this.fetchRepositoryMapSnapshot(safeOwner, safeRepo);
+      request = this.fetchRepositoryMapSnapshot(safeOwner, safeRepo, {
+        expectedCommit:
+          expectedCommits.size === 1 ? [...expectedCommits][0] : "",
+        onTree: preview,
+        onSizes: preview,
+      });
       this.repositoryMapLoads.set(key, request);
       request.then(
         () => {
@@ -10279,6 +12143,7 @@ class ForkMeshWorld extends HTMLElement {
         return false;
       }
       this.repositoryMapState = "unavailable";
+      this.repositoryMapPreview = null;
       if (!this.activeRepository) this.world?.updateRepositoryGraph?.([], []);
       if (!this.activeRepository) this.world?.updateRepositorySizeMap?.({}, {});
       this.world?.setRepositorySizeLoading?.(false);
@@ -10289,24 +12154,40 @@ class ForkMeshWorld extends HTMLElement {
       return false;
     }
 
-    const expectedCommits =
-      options.expectedCommits instanceof Set
-        ? options.expectedCommits
-        : new Set();
     if (
       (options.requireComplete === true && !result.complete) ||
       (expectedCommits.size &&
         !expectedCommits.has(String(result.snapshot.commit).toLowerCase()))
     ) {
       this.repositoryMapState = "unavailable";
-      if (!this.activeRepository) this.world?.updateRepositoryGraph?.([], []);
-      if (!this.activeRepository) this.world?.updateRepositorySizeMap?.({}, {});
+      const commitRejected =
+        expectedCommits.size &&
+        !expectedCommits.has(String(result.snapshot.commit).toLowerCase());
+      if (commitRejected) {
+        this.repositoryMapPreview = null;
+        if (!this.activeRepository) this.world?.updateRepositoryGraph?.([], []);
+        if (!this.activeRepository) {
+          this.world?.updateRepositorySizeMap?.({}, {});
+        }
+      } else {
+        // Optional records may be unavailable even though this tree and byte
+        // map are both pinned to the catalog-attested commit. Keep those exact
+        // repository facts visible instead of returning to a blank portal.
+        this.previewRepositoryMap(
+          safeOwner,
+          safeRepo,
+          result.snapshot.commit,
+          result.snapshot.entries,
+          result.snapshot.sizes,
+        );
+      }
       this.world?.setRepositorySizeLoading?.(false);
       this.renderRepositoryMapStatus();
       return false;
     }
 
     this.activeRepository = result.snapshot;
+    this.repositoryMapPreview = null;
     this.repositoryMapState = "ready";
     this.renderRepositoryMapStatus();
     this.syncRepositoryScene();
@@ -12976,6 +14857,10 @@ class ForkMeshWorld extends HTMLElement {
       this.officeController?.focusOffice();
       return;
     }
+    if (action === "campfire") {
+      this.returnToCampfireBench();
+      return;
+    }
     const messages = {
       reward:
         "Contributions are direct wallet-to-public-pool transfers. Reward plans are signed only in the instance owner’s local Qt client and shown as complete only after on-chain finality.",
@@ -13290,6 +15175,34 @@ class ForkMeshWorld extends HTMLElement {
     frame.src = frameURL;
   }
 
+  // Open the collapsed bottom-right CHAT bar (not the full chat overlay) and
+  // hand the composer a starting message so a visitor talking to ForkBot can
+  // start typing immediately. Uses postMessage rather than a query param
+  // because the terminal iframe is loaded once and kept alive across clicks.
+  openChatTerminal(prefillText = "") {
+    const details = this.$("[data-world-chat-terminal]");
+    const frame = this.$("[data-world-chat-terminal-frame]");
+    if (!details || !frame) return;
+    this.closeLandmark();
+    this.toggleSettings(false);
+    if (this.tourIndex >= 0) this.stopTour();
+    this.closeWorldChat();
+    const alreadyLoaded = Boolean(frame.dataset.worldChatUrl);
+    this.loadChatTerminalFrame();
+    details.open = true;
+    const sendPrefill = () => {
+      frame.contentWindow?.postMessage(
+        { type: "forkmesh:chat-prefill", text: prefillText },
+        location.origin,
+      );
+    };
+    if (alreadyLoaded) {
+      window.setTimeout(sendPrefill, 80);
+    } else {
+      frame.addEventListener("load", sendPrefill, { once: true });
+    }
+  }
+
   // Mirror the newest live chat line into the collapsed CHAT bar so the
   // bottom strip shows the latest message without opening the panel.
   setChatTerminalLastMessage(sender, text) {
@@ -13346,8 +15259,122 @@ class ForkMeshWorld extends HTMLElement {
     this.toast(
       label
         ? `${label} outfit is now visible to every visitor.`
-        : "Outfit reset to the default flag shirt.",
+        : "Outfit colourway back to the one your name tailors.",
     );
+  }
+
+  setOutfitStyle(style) {
+    if (this.identity.accountStatus !== "Supporting member") {
+      this.toast("Become a Supporting member on Patreon to pin an outfit cut.");
+      return;
+    }
+    if (!OUTFIT_STYLE_OPTIONS.some((option) => option.id === style)) return;
+    this.settings.outfitStyle =
+      this.settings.outfitStyle === style ? "" : style;
+    this.saveSettings();
+    this.$$("[data-world-outfit-style]").forEach((button) => {
+      button.setAttribute(
+        "aria-pressed",
+        String(button.dataset.worldOutfitStyle === this.settings.outfitStyle),
+      );
+    });
+    this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
+    this.sendPresence({ type: "presence" });
+    const label = OUTFIT_STYLE_OPTIONS.find(
+      (option) => option.id === this.settings.outfitStyle,
+    )?.label;
+    this.toast(
+      label
+        ? `${label} cut is now visible to every visitor.`
+        : "Outfit cut back to the one your name tailors.",
+    );
+  }
+
+  setFaceImage(enabled) {
+    if (this.identity.accountStatus !== "Supporting member") {
+      const input = this.$("[data-world-face-image]");
+      if (input) input.checked = false;
+      this.toast(
+        "Become a Supporting member on Patreon to wear your account avatar photo.",
+      );
+      return;
+    }
+    this.settings.faceImage = enabled === true;
+    this.saveSettings();
+    this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
+    this.sendPresence({ type: "presence" });
+    if (this.settings.faceImage) {
+      this.syncWorldFaceImages([]);
+      this.toast(
+        "Your account avatar photo is now your face. Manage the photo from your dashboard profile.",
+      );
+    } else {
+      this.toast("Back to the emoji face.");
+    }
+  }
+
+  // Resolve the already-public account avatar for every Supporting member who
+  // opted in to wearing it, then dress their 3D face with it. Only the opt-in
+  // boolean travels over presence; the image comes from the edge-cached
+  // /api/accounts/{name} lookup and is cached here per account for the session.
+  syncWorldFaceImages(players) {
+    const wearers = (Array.isArray(players) ? players : [])
+      .filter(
+        (peer) =>
+          peer?.faceImage === true &&
+          String(peer.accountStatus || "") === "Supporting member",
+      )
+      .map((peer) => ({
+        peerId: String(peer.id || ""),
+        name: String(peer.name || ""),
+      }));
+    if (
+      this.settings?.faceImage === true &&
+      this.identity?.accountStatus === "Supporting member"
+    ) {
+      wearers.push({
+        peerId: String(this.identity.id || ""),
+        name: String(this.identity.name || ""),
+      });
+    }
+    if (!wearers.length) return;
+    if (!this.worldFaceImages) this.worldFaceImages = new Map();
+    wearers.forEach(({ peerId, name }) => {
+      const account = name.trim().toLowerCase();
+      if (!peerId || !WORLD_ACCOUNT_NAME_RE.test(account)) return;
+      const dress = (url) => {
+        if (url && !this.destroyed) {
+          this.world?.setAvatarFaceImage?.(peerId, url);
+        }
+      };
+      const cached = this.worldFaceImages.get(account);
+      if (typeof cached === "string") {
+        dress(cached);
+        return;
+      }
+      if (cached) {
+        cached.then(dress);
+        return;
+      }
+      const pending = this.fetchJSON(
+        `/api/accounts/${encodeURIComponent(account)}`,
+      )
+        .then((profile) => {
+          const png = String(profile?.avatarPng || "");
+          const url =
+            png && /^[A-Za-z0-9+/=]+$/.test(png)
+              ? `data:image/png;base64,${png}`
+              : "";
+          this.worldFaceImages.set(account, url);
+          return url;
+        })
+        .catch(() => {
+          this.worldFaceImages.set(account, "");
+          return "";
+        });
+      this.worldFaceImages.set(account, pending);
+      pending.then(dress);
+    });
   }
 
   setLightLevel(value) {
@@ -13419,6 +15446,39 @@ class ForkMeshWorld extends HTMLElement {
       output.textContent = next >= WORLD_MOVE_ACCEL_MAX ? "∞" : `${next}%`;
     }
     return next;
+  }
+
+  setSwingSpeed(value) {
+    const numeric = Number(value);
+    const next = Math.min(
+      WORLD_SWING_SPEED_MAX,
+      Math.max(
+        WORLD_SWING_SPEED_MIN,
+        Number.isFinite(numeric) ? numeric : WORLD_SWING_SPEED_DEFAULT,
+      ),
+    );
+    this.swingSpeed = next;
+    this.world?.setSwingSpeed?.(next);
+    const input = this.$("[data-world-swing-speed]");
+    const output = this.$("[data-world-swing-speed-output]");
+    if (input && Number(input.value) !== next) input.value = String(next);
+    if (output) output.textContent = `${next}%`;
+    return next;
+  }
+
+  handleSwingRide({ riding = false, denied = false } = {}) {
+    if (denied) {
+      this.toast("That swing is taken — grab a free one.");
+      return;
+    }
+    const panel = this.$("[data-world-swing-panel]");
+    if (panel) panel.hidden = !riding;
+    if (riding) {
+      this.setSwingSpeed(this.swingSpeed ?? WORLD_SWING_SPEED_DEFAULT);
+      this.toast(
+        "Swinging! Drag the swing-speed slider to pump harder, click the swing again to hop off, and try the camera button for a first-person ride.",
+      );
+    }
   }
 
   syncWorldCameraModeButton() {
@@ -13544,7 +15604,7 @@ class ForkMeshWorld extends HTMLElement {
       marquee.style.width = `${rect.width}px`;
       marquee.style.height = `${rect.height}px`;
     });
-    overlay.addEventListener("pointerup", (event) => {
+    overlay.addEventListener("pointerup", async (event) => {
       if (!origin) return;
       const rect = selectionRect(event);
       origin = null;
@@ -13553,7 +15613,7 @@ class ForkMeshWorld extends HTMLElement {
         this.toast("Drag a larger area to capture a screenshot.");
         return;
       }
-      const shot = this.captureWorldRegion(rect);
+      const shot = await this.captureWorldRegion(rect);
       if (!shot) {
         this.toast("That area is outside the 3D world view.");
         return;
@@ -13567,7 +15627,7 @@ class ForkMeshWorld extends HTMLElement {
     this.appendChild(overlay);
   }
 
-  captureWorldRegion(rect) {
+  async captureWorldRegion(rect) {
     const world = this.world;
     const canvas = world?.renderer?.domElement;
     if (!canvas) return null;
@@ -13578,31 +15638,143 @@ class ForkMeshWorld extends HTMLElement {
     } catch (_) {
       return null;
     }
-    const bounds = canvas.getBoundingClientRect();
+    const root = this.$("[data-world-root]");
+    const canvasBounds = canvas.getBoundingClientRect();
+    // The HUD is DOM painted over the canvas, so the crop is clamped to the
+    // world root — everything the player sees, chrome included.
+    const bounds = root ? root.getBoundingClientRect() : canvasBounds;
     const left = Math.max(rect.left, bounds.left);
     const top = Math.max(rect.top, bounds.top);
     const right = Math.min(rect.left + rect.width, bounds.right);
     const bottom = Math.min(rect.top + rect.height, bounds.bottom);
     if (right - left < 4 || bottom - top < 4) return null;
-    const scaleX = canvas.width / Math.max(1, bounds.width);
-    const scaleY = canvas.height / Math.max(1, bounds.height);
+    const scaleX = canvas.width / Math.max(1, canvasBounds.width);
+    const scaleY = canvas.height / Math.max(1, canvasBounds.height);
     const shot = document.createElement("canvas");
     shot.width = Math.max(1, Math.round((right - left) * scaleX));
     shot.height = Math.max(1, Math.round((bottom - top) * scaleY));
     const context = shot.getContext("2d");
     if (!context) return null;
+    // Read the WebGL buffer back before anything awaits — the next paint
+    // clears it.
     context.drawImage(
       canvas,
-      (left - bounds.left) * scaleX,
-      (top - bounds.top) * scaleY,
-      (right - left) * scaleX,
-      (bottom - top) * scaleY,
       0,
       0,
-      shot.width,
-      shot.height,
+      canvas.width,
+      canvas.height,
+      (canvasBounds.left - left) * scaleX,
+      (canvasBounds.top - top) * scaleY,
+      canvasBounds.width * scaleX,
+      canvasBounds.height * scaleY,
     );
+    if (root) {
+      const hud = await this.renderHudImage(root, bounds);
+      if (hud) {
+        context.drawImage(
+          hud,
+          (bounds.left - left) * scaleX,
+          (bounds.top - top) * scaleY,
+          bounds.width * scaleX,
+          bounds.height * scaleY,
+        );
+      }
+    }
     return shot;
+  }
+
+  // Rasterizes the HUD layers (top bar, rails, labels, panels) so a capture
+  // shows the interface the player is looking at and not a bare 3D frame.
+  // Anything that fails to serialize degrades to a canvas-only screenshot.
+  async renderHudImage(root, bounds) {
+    const width = Math.max(1, Math.round(bounds.width));
+    const height = Math.max(1, Math.round(bounds.height));
+    let markup = "";
+    try {
+      const clone = root.cloneNode(true);
+      clone.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
+      // The 3D canvas is drawn from the live renderer, and the capture
+      // overlay/annotator are capture chrome — neither belongs in the clone.
+      clone
+        .querySelectorAll(
+          "canvas, [data-world-canvas-wrap], .world-shot-overlay, .world-shot-annotator, script",
+        )
+        .forEach((node) => node.remove());
+      clone.style.width = `${width}px`;
+      clone.style.height = `${height}px`;
+      clone.style.margin = "0";
+      await this.inlineHudImages(root, clone);
+      markup = new XMLSerializer().serializeToString(clone);
+    } catch (_) {
+      return null;
+    }
+    const styles = this.hudStylesheetText();
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><foreignObject x="0" y="0" width="100%" height="100%"><style xmlns="http://www.w3.org/1999/xhtml">/*<![CDATA[*/${styles}/*]]>*/</style>${markup}</foreignObject></svg>`;
+    try {
+      return await new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error("HUD layer did not rasterize."));
+        image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+      });
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // Foreign-object rasterization never fetches subresources, so same-origin
+  // HUD artwork (the brand mark, avatars) is inlined as data URLs first.
+  async inlineHudImages(root, clone) {
+    this.hudImageCache = this.hudImageCache || new Map();
+    const live = Array.from(root.querySelectorAll("img"));
+    const copies = Array.from(clone.querySelectorAll("img"));
+    await Promise.all(
+      copies.map(async (image, index) => {
+        const source = live[index]?.currentSrc || image.getAttribute("src") || "";
+        if (!source || source.startsWith("data:")) return;
+        if (!this.hudImageCache.has(source)) {
+          this.hudImageCache.set(
+            source,
+            (async () => {
+              try {
+                const response = await fetch(source, { cache: "force-cache" });
+                if (!response.ok) return "";
+                const blob = await response.blob();
+                return await new Promise((resolve) => {
+                  const reader = new FileReader();
+                  reader.onload = () => resolve(String(reader.result || ""));
+                  reader.onerror = () => resolve("");
+                  reader.readAsDataURL(blob);
+                });
+              } catch (_) {
+                return "";
+              }
+            })(),
+          );
+        }
+        const encoded = await this.hudImageCache.get(source);
+        if (encoded) image.setAttribute("src", encoded);
+        else image.remove();
+      }),
+    );
+  }
+
+  // Same-origin rules only; a cross-origin sheet throws on cssRules and is
+  // simply skipped.
+  hudStylesheetText() {
+    if (typeof this.hudStyleText === "string") return this.hudStyleText;
+    const parts = [];
+    for (const sheet of Array.from(document.styleSheets || [])) {
+      let rules = null;
+      try {
+        rules = sheet.cssRules;
+      } catch (_) {
+        continue;
+      }
+      for (const rule of Array.from(rules || [])) parts.push(rule.cssText);
+    }
+    this.hudStyleText = parts.join("\n");
+    return this.hudStyleText;
   }
 
   openScreenshotAnnotator(shot) {
@@ -13980,6 +16152,48 @@ class ForkMeshWorld extends HTMLElement {
 
   saveSettings() {
     writeJSON(localStorage, SETTINGS_KEY, this.settings);
+    // The privacy toggles live here, so a member hiding (or restoring) their
+    // country, browser, or OS updates their away bench figure right away.
+    void this.syncWorldClientProfile();
+  }
+
+  // Save the coarse country/browser/OS on the signed-in account. A member who
+  // is not in the world publishes no presence frame, so without this their
+  // campfire bench figure would sit there with no flag and a hidden client
+  // badge. Written only when the value actually changes.
+  async syncWorldClientProfile() {
+    if (this.destroyed) return;
+    if (!this.identity || this.identity.accountStatus === "Guest") return;
+    if (!readSession()?.sessionToken && !this.sessionAuthenticated) return;
+    const shareCountry = Boolean(this.settings.privacy.country);
+    const body = {
+      shareCountry,
+      browser: presenceBrowser(
+        this.identity.browser,
+        this.settings.privacy.browser,
+      ),
+      os: presenceOS(this.identity.os, this.settings.privacy.os),
+    };
+    const fingerprint = [
+      this.identity.id,
+      shareCountry ? this.identity.countryCode || "" : "",
+      body.browser,
+      body.os,
+    ].join("|");
+    if (fingerprint === this.worldClientProfileKey) return;
+    let stored = "";
+    try {
+      stored = localStorage.getItem(CLIENT_PROFILE_KEY) || "";
+    } catch (_) {}
+    this.worldClientProfileKey = fingerprint;
+    if (fingerprint === stored) return;
+    try {
+      await this.postJSON("/api/world/client", body, { timeout: 5000 });
+      localStorage.setItem(CLIENT_PROFILE_KEY, fingerprint);
+    } catch (_) {
+      // Retry on the next ticket refresh or settings change.
+      this.worldClientProfileKey = "";
+    }
   }
 
   toast(message) {
@@ -14685,6 +16899,7 @@ class ForkMeshWorld extends HTMLElement {
     );
     this.identity.accountStatus = String(ticket.accountStatus);
     this.identity.isAdmin = ticket.isAdmin === true;
+    this.identity.joinedAt = boundedJoinedAt(ticket.joinedAt);
     this.identity.nodes = Array.from(
       {
         length: Math.max(
@@ -14704,6 +16919,7 @@ class ForkMeshWorld extends HTMLElement {
     if (this.identity) {
       this.identity.accountStatus = "Guest";
       this.identity.isAdmin = false;
+      this.identity.joinedAt = 0;
       this.identity.nodes = [];
     }
     this.worldTicket = "";
@@ -14847,6 +17063,9 @@ class ForkMeshWorld extends HTMLElement {
       const previousStatus = this.identity?.accountStatus;
       if (this.applyWorldTicketIdentity(ticket)) {
         this.applyWorldActivityTicket(ticket);
+        // A visitor who only became authenticated here (or whose earlier save
+        // failed) still gets their client profile stored for the bench figure.
+        void this.syncWorldClientProfile();
         // A ticket that failed (or timed out) during bootstrap leaves a
         // signed-in visitor stranded under the placeholder guest name. Repair
         // the presence the moment a later ticket arrives, and republish it so
@@ -15082,6 +17301,7 @@ class ForkMeshWorld extends HTMLElement {
     let safe;
     if (message.type === "presence") {
       this.identity.firstVisitAge = firstVisitAge(this.firstVisitAt);
+      this.identity.firstSeenMinutes = firstSeenMinutes(this.firstVisitAt);
       this.identity.visitCount = this.publicVisitCount;
       this.identity.activityCategory = presenceActivity(
         this.settings,
@@ -15114,6 +17334,10 @@ class ForkMeshWorld extends HTMLElement {
         firstVisitAge: this.settings.privacy.activity
           ? this.identity.firstVisitAge
           : "hidden",
+        firstSeenMinutes: this.settings.privacy.activity
+          ? firstSeenMinutes(this.firstVisitAt)
+          : 0,
+        joinedAt: boundedJoinedAt(this.identity.joinedAt),
         publicDoor: ["closed", "knock", "open"].includes(
           this.settings.publicDoor,
         )
@@ -15129,6 +17353,19 @@ class ForkMeshWorld extends HTMLElement {
           OUTFIT_COLOR_VALUES.has(this.settings.outfitColor)
             ? this.settings.outfitColor
             : "",
+        outfitStyle:
+          this.identity.accountStatus === "Supporting member" &&
+          OUTFIT_STYLE_VALUES.has(this.settings.outfitStyle)
+            ? this.settings.outfitStyle
+            : "",
+        faceImage:
+          this.identity.accountStatus === "Supporting member" &&
+          this.settings.faceImage === true,
+        solana: WORLD_SOLANA_ADDRESS_RE.test(
+          String(this.identity.solana || ""),
+        )
+          ? String(this.identity.solana)
+          : "",
       };
     } else if (message.type === "move") {
       safe = {
@@ -15299,11 +17536,45 @@ class ForkMeshWorld extends HTMLElement {
       message.from
     ) {
       this.world?.playEmote?.(String(message.from), message.emote);
+    } else if (message.type === "mirror-push") {
+      this.handleMirrorPush(message);
     }
     // Pongs and targeted interactions do not change the public roster. Avoid
     // re-walking every avatar and rebuilding unrelated scene metrics for those
     // high-frequency frames.
     if (peersChanged) this.renderPeers();
+  }
+
+  handleMirrorPush(message) {
+    // The relay announces that a mirror node's signed catalog record advanced
+    // to a new head — code was just pushed onto that node. The frame itself is
+    // only a doorbell: the cabinet's displayed state, and the push surge the
+    // scene plays when a cabinet's commit visibly changes, both come from the
+    // re-fetched signed mirror payload, never from unauthenticated frame data.
+    const node = sanitizePresenceText(message?.node, "", 40);
+    const repo = sanitizePresenceText(message?.repo, "", 60);
+    if (!node || !repo) return;
+    // The publisher can be a user-backed source or a mirror node. Neither is
+    // the public repository owner. Keep that internal routing identity out of
+    // visitor-facing copy; the flagship organization remains forkmesh.
+    const publicOwner =
+      repo.toLowerCase() === FLAGSHIP_REPOSITORY.repo
+        ? FLAGSHIP_REPOSITORY.owner
+        : sanitizePresenceText(message?.repositoryOwner, "", 40);
+    this.toast(
+      `Fresh code landed on “${publicOwner ? `${publicOwner}/` : ""}${repo}”.`,
+    );
+    // One coalesced refresh replaces waiting out the 30-second mirror poll, so
+    // the yard updates near-instantly without adding steady-state traffic.
+    window.clearTimeout(this.mirrorPushRefreshTimer);
+    this.mirrorPushRefreshTimer = window.setTimeout(() => {
+      this.mirrorPushRefreshTimer = 0;
+      if (this.destroyed) return;
+      void this.refreshMirrorCatalogs().catch(() => {
+        // Preserve the last verified snapshot during a transient HTTPS
+        // failure; the regular poll retries on its own cadence.
+      });
+    }, 600);
   }
 
   setupBroadcastChannel() {
@@ -15379,31 +17650,203 @@ class ForkMeshWorld extends HTMLElement {
         });
       });
     }
-    this.world?.setRemotePlayers([...combined.values()]);
+    const players = [...combined.values()].map((player) => {
+      if (!player?.solana) return player;
+      const wallet = this.walletBadgeFor(player.solana);
+      return {
+        ...player,
+        walletSol: wallet?.sol ?? null,
+        walletTxBucket: wallet?.txBucket || "",
+      };
+    });
+    this.world?.setRemotePlayers(players);
+    this.syncWorldFaceImages(players);
     this.syncMemberLounge();
     this.updateSystemCapacityMetrics();
   }
 
+  // Public balance and transaction-recency bucket for one published wallet
+  // address, refreshed from the edge-cached worker endpoint at most once per
+  // TTL. Returns the cached entry immediately (possibly still pending).
+  walletBadgeFor(address) {
+    if (!WORLD_SOLANA_ADDRESS_RE.test(String(address || ""))) return null;
+    let entry = this.walletBadges.get(address);
+    const fresh = entry && Date.now() - entry.fetchedAt < WALLET_BADGE_TTL_MS;
+    if (!fresh && !entry?.pending) {
+      if (!entry) {
+        entry = { sol: null, txBucket: "", fetchedAt: 0, pending: false };
+        this.walletBadges.set(address, entry);
+      }
+      entry.pending = true;
+      this.fetchJSON(
+        `/api/world/wallet?address=${encodeURIComponent(address)}`,
+        { auth: false, timeout: 5000 },
+      )
+        .then((body) => {
+          entry.sol = Number.isFinite(Number(body?.sol))
+            ? Number(body.sol)
+            : null;
+          entry.txBucket = activityLightBucket(body?.txBucket);
+        })
+        .catch(() => {})
+        .finally(() => {
+          entry.pending = false;
+          entry.fetchedAt = Date.now();
+          this.applyWalletBadges();
+        });
+    }
+    return entry;
+  }
+
+  // Pushes the freshest wallet data onto the local avatar and every rendered
+  // peer; called whenever a wallet lookup settles.
+  applyWalletBadges() {
+    if (this.destroyed) return;
+    if (this.identity?.solana && this.settings) {
+      const wallet = this.walletBadgeFor(this.identity.solana);
+      this.identity.walletSol = wallet?.sol ?? null;
+      this.identity.walletTxBucket = wallet?.txBucket || "";
+      this.world?.updateIdentity(
+        publicIdentity(this.identity, this.settings),
+      );
+    }
+    this.renderPeers();
+  }
+
+  // The viewer's shareable referral link — only real user accounts (never
+  // node sessions) own one, matching the website's session acceptance rule.
+  referralLink() {
+    const session = readSession();
+    if (!session?.nodeName || session.kind === "node") return "";
+    if (session.kind !== "user" && !session.email) return "";
+    return `${location.origin}/r/${encodeURIComponent(
+      String(session.nodeName).toLowerCase(),
+    )}`;
+  }
+
+  // One fetch at boot (and after each board tap) keeps the sign fresh without
+  // adding another polling loop; the endpoint is edge-cached server-side.
+  async loadReferralLeaderboard() {
+    if (!this.world?.updateReferralLeaderboard) return;
+    try {
+      const data = await this.fetchJSON("/api/referrals/leaderboard", {
+        auth: false,
+        timeout: 5000,
+      });
+      this.referralBoard = Array.isArray(data?.board) ? data.board : [];
+    } catch (_) {
+      this.referralBoard = Array.isArray(this.referralBoard)
+        ? this.referralBoard
+        : [];
+    }
+    this.world.updateReferralLeaderboard(this.referralBoard, this.referralLink());
+  }
+
+  async copyReferralLink() {
+    const link = this.referralLink();
+    if (!link) {
+      this.toast("Sign in to get your referral link.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(link);
+      this.toast("Referral link copied — share it to climb the board.");
+    } catch (_) {
+      this.toast(`Your referral link: ${link}`);
+    }
+    void this.loadReferralLeaderboard();
+  }
+
+  // An account created after this tab loaded is missing from the directory
+  // snapshot, so its owner would have no bench until the next refresh. Seat
+  // them from their own presence frame instead, and pull a fresh directory in
+  // the background to fill in their joined date and node count.
+  noteDirectoryMembers(names) {
+    const known = new Set(
+      this.memberDirectory.map((member) => member.name.toLowerCase()),
+    );
+    const added = [];
+    names.forEach((name) => {
+      const key = name.toLowerCase();
+      if (!name || known.has(key)) return;
+      known.add(key);
+      added.push({
+        name,
+        createdAt: 0,
+        nodes: [],
+        totalActiveMs: null,
+        avatar: "",
+        countryCode: "",
+        status: "",
+      });
+    });
+    if (!added.length) return false;
+    this.memberDirectory = [...this.memberDirectory, ...added];
+    void this.refreshMemberDirectory();
+    return true;
+  }
+
+  // Shares the edge-cached directory endpoint the chat roster uses. Throttled
+  // to its server-side TTL so a burst of arrivals still costs one request.
+  async refreshMemberDirectory() {
+    const now = Date.now();
+    if (now - (this.memberDirectoryFetchedAt || 0) < 30000) return;
+    this.memberDirectoryFetchedAt = now;
+    try {
+      const data = await this.fetchJSON("/api/accounts/users", {
+        auth: false,
+        timeout: 5000,
+      });
+      const directory = normalizeMemberDirectory(data);
+      if (!directory.length || this.destroyed) return;
+      this.memberDirectory = directory;
+      this.syncMemberLounge();
+    } catch (_) {}
+  }
+
   syncMemberLounge() {
     if (!this.world?.updateMemberLounge) return;
-    // Seat every public registered account in the Member Lounge, except the
-    // ones already rendered as live or opted-in idle avatars — those keep
-    // their richer presence avatar instead of a duplicate directory figure.
-    const present = new Set([
-      String(this.identity?.name || "").trim().toLowerCase(),
-    ]);
+    // Seat every public registered account in the circle around the campfire.
+    // Members already rendered as live or opted-in idle avatars keep their
+    // richer presence avatar instead of a duplicate directory figure, leaving
+    // their own named bench visibly empty while they are out and about.
+    const present = new Set();
+    const registered = [];
+    let guests = 0;
+    const note = (name, accountStatus) => {
+      const clean = String(name || "").trim();
+      if (!clean) return;
+      present.add(clean.toLowerCase());
+      const status = String(accountStatus || "Guest");
+      // A member who hides their name broadcasts the "Private visitor"
+      // sentinel, and the public directory omits private profiles entirely —
+      // neither owns a named bench.
+      if (
+        ACCOUNT_STATUS_VALUES.has(status) &&
+        status !== "Guest" &&
+        clean !== "Private visitor"
+      ) {
+        registered.push(clean.slice(0, 32));
+      } else {
+        guests += 1;
+      }
+    };
+    note(this.identity?.name, this.identity?.accountStatus);
     this.remotePlayers.forEach((player) =>
-      present.add(String(player?.name || "").trim().toLowerCase()),
+      note(player?.name, player?.accountStatus),
     );
     this.inactivePlayers.forEach((player) =>
-      present.add(String(player?.name || "").trim().toLowerCase()),
+      note(player?.name, player?.accountStatus),
     );
+    this.noteDirectoryMembers(registered);
     this.world.updateMemberLounge(
-      this.memberDirectory.filter(
-        (member) => !present.has(member.name.toLowerCase()),
-      ),
+      this.memberDirectory.map((member) => ({
+        ...member,
+        away: present.has(member.name.toLowerCase()),
+      })),
       this.memberDirectory.length,
       this.leaderboardMembers(),
+      guests,
     );
   }
 
@@ -15447,6 +17890,8 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.pingTimer);
     window.clearInterval(this.rewardTimer);
     window.clearInterval(this.mirrorTimer);
+    window.clearInterval(this.repositoryImportTimer);
+    window.clearTimeout(this.mirrorPushRefreshTimer);
     window.clearInterval(this.eventsTimer);
     window.clearInterval(this.notificationsTimer);
     window.clearInterval(this.mediaTimer);
@@ -15454,6 +17899,8 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.worldTicketTimer);
     window.clearInterval(this.diagnosticsTimer);
     window.clearInterval(this.updateCheckTimer);
+    window.clearInterval(this.mastodonRefreshTimer);
+    window.clearInterval(this.socialFeedsTimer);
     window.clearTimeout(this.rendererRecoveryTimer);
     this.rendererRecoveryTimer = 0;
     this.peerGraceTimer = 0;
