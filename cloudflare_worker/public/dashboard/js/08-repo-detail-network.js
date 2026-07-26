@@ -1251,7 +1251,10 @@
   }
 
   function initHomePage() {
-    renderHomeChangelog();
+    renderHomeBlogPosts();
+    // The blog card fills in from the edge-cached feed; the baked markup
+    // already shows its loading state.
+    void loadHomeBlogPosts();
     // Feed + top repositories fill in when loadRepositories()/loadNotifications()
     // resolve — both re-render the home containers.
     // Active agent sessions (adhoc #81) need the catalog first so we know which
@@ -2264,6 +2267,20 @@
     if (!button) return;
     volunteerForExternalMirror(
       button.dataset.externalMirrorVolunteer || "", button);
+  });
+  $("[data-external-repo-list]")?.addEventListener("change", (event) => {
+    const checkbox = event.target.closest("[data-external-repo-select]");
+    if (!checkbox) return;
+    const id = String(checkbox.dataset.externalRepoSelect || "");
+    if (checkbox.checked) state.externalRepositorySelection.add(id);
+    else state.externalRepositorySelection.delete(id);
+    syncExternalRepositoryActions();
+  });
+  $("[data-external-repo-select-all]")?.addEventListener("change", (event) => {
+    toggleAllExternalRepositories(Boolean(event.currentTarget.checked));
+  });
+  $("[data-external-repo-delete-selected]")?.addEventListener("click", () => {
+    deleteSelectedExternalRepositories();
   });
 
   // [data-profile-settings-button] is a real link to /dashboard/settings now,

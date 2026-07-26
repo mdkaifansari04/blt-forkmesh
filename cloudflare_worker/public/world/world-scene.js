@@ -688,8 +688,9 @@ function createAvatarChestTabs(THREE) {
       }),
     );
     button.name = `world-chest-tab-${spec.tab}`;
-    // Avatar fronts face -Z, matching the badge just above these tabs.
-    button.position.set(spec.x, 1.7, -0.318);
+    // Avatar fronts face -Z, matching the badge just above these tabs. The
+    // tabs sit flush under the badge so the wallet chip fits beneath them.
+    button.position.set(spec.x, 1.79, -0.318);
     button.rotation.y = Math.PI;
     button.userData.chestTab = spec.tab;
     button.renderOrder = 3;
@@ -2377,6 +2378,23 @@ const ANTENNA_STALK_COLOR = "#1aa856";
 const ANTENNA_BLINK_MIN_HZ = 0.9;
 const ANTENNA_BLINK_MAX_HZ = 5.4;
 
+// Chest activity light: one colour per coarse account-recency bucket from the
+// server ("active within …"). The freshest bucket breathes softly in
+// animateAvatarActivity; every older bucket holds a steady colour, stepping
+// bright green → dim green → green-orange → green-red → orange → red → grey.
+const ACTIVITY_LIGHT_COLORS = Object.freeze({
+  hour: "#3ce97f",
+  "5h": "#2e8054",
+  "24h": "#94b23a",
+  "3d": "#b1892f",
+  "5d": "#e0762c",
+  "10d": "#d63b30",
+  stale: "#767c85",
+});
+const ACTIVITY_LIGHT_BREATH_HZ = 0.33;
+
+const AVATAR_SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
 // The flag-coloured shirt cloth is mapped onto every face of the torso and
 // arm boxes. The upward-facing tops are the ones read from across the square,
 // so those four UVs are turned a half turn to keep the sash running the same
@@ -2677,6 +2695,20 @@ function createAvatar(THREE, identity, options = {}) {
   antenna.visible = identity.inputActive === true;
   group.add(antenna);
 
+  // Account activity light: a small lamp pinned high on the chest whose
+  // colour steps through ACTIVITY_LIGHT_COLORS as the account's coarse
+  // recency bucket ages. syncAvatarActivity keeps it current and it stays
+  // dark on anonymous guests.
+  const activityLight = new THREE.Mesh(
+    new THREE.SphereGeometry(0.055, 14, 12),
+    new THREE.MeshBasicMaterial({ color: ACTIVITY_LIGHT_COLORS.hour }),
+  );
+  activityLight.name = "account-activity-light";
+  // Avatar fronts face -Z; half-sunk into the torso above the badge corner.
+  activityLight.position.set(-0.4, 2.82, -0.31);
+  activityLight.visible = false;
+  group.add(activityLight);
+
   // Each leg is a hip pivot carrying a thigh, and a knee pivot carrying the
   // shin plus that leg's shoe. Standing (every pitch at zero) the two segments
   // stack into the same block the single-box leg used to be, but the joints let
@@ -2724,6 +2756,22 @@ function createAvatar(THREE, identity, options = {}) {
   const chestTabs = createAvatarChestTabs(THREE);
   group.add(chestTabs);
 
+  // Wallet chip: a small QR of the account's published Solana address worn
+  // on the lower chest under the tabs. Hidden until the identity carries an
+  // address; syncAvatarWallet paints the QR, balance, and recency ring.
+  const walletChip = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.28, 0.28),
+    new THREE.MeshBasicMaterial({ transparent: true }),
+  );
+  walletChip.name = "wallet-chip";
+  // Slightly proud of the torso (and any operator belt) so nothing occludes
+  // the QR; avatar fronts face -Z like the badge above it.
+  walletChip.position.set(0, 1.54, -0.345);
+  walletChip.rotation.y = Math.PI;
+  walletChip.renderOrder = 3;
+  walletChip.visible = false;
+  group.add(walletChip);
+
   group.scale.setScalar(scale);
   group.userData = {
     id: identity.id,
@@ -2746,6 +2794,10 @@ function createAvatar(THREE, identity, options = {}) {
     skin,
     antenna,
     antennaBulb,
+    activityLight,
+    activityBucket: "",
+    walletChip,
+    walletKey: "",
     inputEnergy: 0,
     phase: (seed % 100) / 10,
     targetPosition: new THREE.Vector3(),
@@ -2766,6 +2818,8 @@ function createAvatar(THREE, identity, options = {}) {
   };
   syncOperatorBelt(THREE, group, identity.nodes?.length || 0);
   syncAvatarStatus(THREE, group, identity);
+  syncAvatarActivity(group, identity);
+  syncAvatarWallet(THREE, group, identity);
   setShadows(group, true, true);
   return group;
 }
@@ -2808,6 +2862,22 @@ function syncAvatarActivity(avatar, identity) {
   avatar.userData.inputActive = active;
   avatar.userData.accountStatus = identity.accountStatus || "Guest";
   if (avatar.userData.antenna) avatar.userData.antenna.visible = active;
+  const light = avatar.userData.activityLight;
+  if (light) {
+    const bucket = ACTIVITY_LIGHT_COLORS[identity.activityBucket]
+      ? String(identity.activityBucket)
+      : "";
+    avatar.userData.activityBucket = bucket;
+    // The light reads account recency, so it stays dark on anonymous guests.
+    light.visible =
+      Boolean(bucket) && avatar.userData.accountStatus !== "Guest";
+    if (light.visible) {
+      // The "hour" breath overrides colour and scale every frame; older
+      // buckets hold their steady step here.
+      light.material.color.set(ACTIVITY_LIGHT_COLORS[bucket]);
+      light.scale.setScalar(1);
+    }
+  }
 }
 
 function renderAvatarBadge(THREE, avatar, remote = false) {
@@ -2844,6 +2914,7 @@ function updateAvatarBadge(THREE, avatar, identity, remote = false) {
     applyAvatarFaceImage(THREE, avatar, "");
   }
   syncAvatarActivity(avatar, identity);
+  syncAvatarWallet(THREE, avatar, identity);
   syncAvatarStatus(THREE, avatar, identity);
 }
 
@@ -2861,6 +2932,23 @@ function animateAvatarActivity(avatar, time, delta, reducedMotion) {
     const cycle = (time * 0.001 * hz + avatar.userData.phase) % 1;
     const lit = reducedMotion || cycle < 0.5;
     bulb.material.color.set(lit ? ANTENNA_LIT_COLOR : ANTENNA_DARK_COLOR);
+  }
+  const light = avatar.userData.activityLight;
+  if (light?.visible && avatar.userData.activityBucket === "hour") {
+    // Accounts active within the hour breathe: a slow sine swell rather than
+    // the antenna's hard blink, easing between dimmed and full green.
+    const breath = reducedMotion
+      ? 1
+      : 0.5 +
+        0.5 *
+          Math.sin(
+            time * 0.001 * ACTIVITY_LIGHT_BREATH_HZ * Math.PI * 2 +
+              avatar.userData.phase,
+          );
+    light.material.color
+      .set(ACTIVITY_LIGHT_COLORS.hour)
+      .multiplyScalar(0.55 + 0.45 * breath);
+    light.scale.setScalar(0.92 + 0.16 * breath);
   }
   const inactiveFor = avatar.userData.inactiveSince
     ? Math.max(0, time - avatar.userData.inactiveSince)
@@ -2912,6 +3000,17 @@ function mirrorMetric(value, maximum = Number.MAX_SAFE_INTEGER) {
   return Number.isFinite(number) && number >= 0 && number <= maximum
     ? number
     : null;
+}
+
+// The two ways a node answers for the repository — a git clone and a served
+// repository web request — counted together, so either kind of visit reads as
+// one "this cabinet just served somebody" event. Null when the node reports
+// neither counter; unreported values are never estimated.
+function mirrorServedTotal(node) {
+  const clones = mirrorMetric(node?.clonesServed, 1_000_000_000);
+  const website = mirrorMetric(node?.websiteServed, 1_000_000_000);
+  if (clones === null && website === null) return null;
+  return (clones || 0) + (website || 0);
 }
 
 function compactMirrorCount(value) {
@@ -3297,6 +3396,46 @@ function serverPanelTexture(THREE, node) {
   });
 }
 
+// A pocket-sized stand-in for the agent a node just answered: the little
+// figure that shoots up out of a cabinet when it serves a clone or a
+// repository page. Unlit and self-owning — every launch builds its own
+// materials so it can fade out and dispose without touching shared palettes.
+function createServedVisitorFigure(THREE, accent = "#9ef7c6") {
+  const group = new THREE.Group();
+  group.name = "served-visitor";
+  const skin = new THREE.MeshBasicMaterial({
+    color: AVATAR_EMOJI_SKIN_COLOR,
+    transparent: true,
+    toneMapped: false,
+    depthWrite: false,
+  });
+  const suit = new THREE.MeshBasicMaterial({
+    color: accent,
+    transparent: true,
+    toneMapped: false,
+    depthWrite: false,
+  });
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.19, 12, 10), skin);
+  head.position.y = 1.16;
+  group.add(head);
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.5, 0.22), suit);
+  torso.position.y = 0.7;
+  group.add(torso);
+  // Arms swept overhead and legs trailing straight below: the silhouette still
+  // reads as a launched visitor at the size it shrinks to high in the sky.
+  for (const side of [-1, 1]) {
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.44, 0.1), suit);
+    arm.position.set(side * 0.25, 0.86, 0);
+    arm.rotation.z = side * 0.5;
+    group.add(arm);
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.44, 0.11), suit);
+    leg.position.set(side * 0.1, 0.22, 0);
+    group.add(leg);
+  }
+  group.userData.figureMaterials = [skin, suit];
+  return group;
+}
+
 function createMirrorServerCabinet(THREE, node, id) {
   const group = new THREE.Group();
   group.name = `mirror-server-cabinet:${id}`;
@@ -3679,6 +3818,69 @@ function drawQrModules(context, text, x, y, size) {
     }
   }
   return true;
+}
+
+// The chest wallet chip: the account's published Solana address as a QR,
+// ringed with the transaction-recency colour and captioned with the public
+// balance the app layer fetched.
+function walletChipTexture(THREE, wallet) {
+  const ring =
+    ACTIVITY_LIGHT_COLORS[wallet.txBucket] || ACTIVITY_LIGHT_COLORS.stale;
+  return canvasTexture(THREE, 256, 256, (context) => {
+    context.clearRect(0, 0, 256, 256);
+    roundedRect(context, 6, 6, 244, 244, 24);
+    context.fillStyle = "rgba(7, 18, 14, 0.94)";
+    context.fill();
+    // The ring wears the same colour ladder as the chest activity light,
+    // keyed to how recently the wallet last saw a transaction.
+    roundedRect(context, 40, 12, 176, 176, 14);
+    context.strokeStyle = ring;
+    context.lineWidth = 10;
+    context.stroke();
+    const drawn = drawQrModules(context, wallet.address, 53, 25, 150);
+    if (!drawn) {
+      context.fillStyle = "rgba(158, 247, 198, 0.14)";
+      context.fillRect(53, 25, 150, 150);
+    }
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = '700 30px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#f7c96b";
+    const sol = Number(wallet.sol);
+    context.fillText(
+      Number.isFinite(sol)
+        ? `◎ ${sol.toLocaleString("en-US", { maximumFractionDigits: 4 })}`
+        : "◎ …",
+      128,
+      222,
+    );
+  });
+}
+
+function syncAvatarWallet(THREE, avatar, identity) {
+  const chip = avatar?.userData?.walletChip;
+  if (!chip?.material) return;
+  const address = AVATAR_SOLANA_ADDRESS_RE.test(String(identity?.solana || ""))
+    ? String(identity.solana)
+    : "";
+  const wallet = {
+    address,
+    sol: Number.isFinite(Number(identity?.walletSol))
+      ? Number(identity.walletSol)
+      : null,
+    txBucket: ACTIVITY_LIGHT_COLORS[identity?.walletTxBucket]
+      ? String(identity.walletTxBucket)
+      : "",
+  };
+  const key = `${wallet.address} ${wallet.sol} ${wallet.txBucket}`;
+  if (avatar.userData.walletKey === key) return;
+  avatar.userData.walletKey = key;
+  chip.visible = Boolean(wallet.address);
+  if (!wallet.address) return;
+  const old = chip.material.map;
+  chip.material.map = walletChipTexture(THREE, wallet);
+  chip.material.needsUpdate = true;
+  old?.dispose?.();
 }
 
 function rewardTreasuryState(state = {}) {
@@ -4584,6 +4786,105 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
   portal.userData.repositoryOrbitLayer = null;
   portal.userData.repositorySizeLayer = null;
   portal.userData.repositorySizeMeshes = [];
+
+  // A physical import kiosk remains at the repository district even though
+  // the old central repository portal is retired. Each provider pad opens the
+  // same secure import flow with that provider preselected.
+  const importKiosk = new THREE.Group();
+  importKiosk.name = "repository-import-kiosk";
+  importKiosk.position.set(0, 0, 5.2);
+  const kioskBase = new THREE.Mesh(
+    new THREE.CylinderGeometry(2.15, 2.35, 0.42, 8),
+    makeMaterial(THREE, "#102a32", {
+      emissive: "#123d49",
+      emissiveIntensity: 0.35,
+      metalness: 0.25,
+      roughness: 0.52,
+    }),
+  );
+  kioskBase.position.y = 0.21;
+  importKiosk.add(kioskBase);
+  const kioskColumn = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.24, 0.34, 2.15, 10),
+    frameMaterial,
+  );
+  kioskColumn.position.y = 1.45;
+  importKiosk.add(kioskColumn);
+  const providerPads = [
+    { id: "github", label: "GITHUB", color: "#f0f6fc" },
+    { id: "gitlab", label: "GITLAB", color: "#fc8d45" },
+    { id: "codeberg", label: "CODEBERG", color: "#77d9ff" },
+  ];
+  providerPads.forEach((provider, index) => {
+    const angle = -0.72 + index * 0.72;
+    const pad = new THREE.Mesh(
+      new THREE.BoxGeometry(1.25, 0.2, 0.88),
+      makeMaterial(THREE, provider.color, {
+        emissive: provider.color,
+        emissiveIntensity: 0.72,
+        metalness: 0.22,
+        roughness: 0.34,
+      }),
+    );
+    pad.name = `repository-import-provider:${provider.id}`;
+    pad.position.set(Math.sin(angle) * 1.45, 0.58, -Math.cos(angle) * 1.45);
+    pad.rotation.y = -angle;
+    pad.userData.landmark = "repositories";
+    pad.userData.createRepository = provider.id;
+    importKiosk.add(pad);
+    const label = makeLabelSprite(
+      THREE,
+      provider.label,
+      "IMPORT FROM",
+      provider.color,
+    );
+    label.scale.set(1.18, 0.4, 1);
+    label.position.copy(pad.position);
+    label.position.y += 0.42;
+    importKiosk.add(label);
+  });
+  const importBeam = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.08, 0.68, 3.5, 18, 1, true),
+    makeMaterial(THREE, "#77d9ff", {
+      emissive: "#39bfe8",
+      emissiveIntensity: 1.1,
+      transparent: true,
+      opacity: 0.14,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    }),
+  );
+  importBeam.name = "repository-import-beam";
+  importBeam.position.y = 2.7;
+  importBeam.visible = false;
+  importKiosk.add(importBeam);
+  const importSpark = new THREE.Mesh(
+    new THREE.IcosahedronGeometry(0.28, 1),
+    makeMaterial(THREE, "#9ef7c6", {
+      emissive: "#42e99a",
+      emissiveIntensity: 1.8,
+      transparent: true,
+      opacity: 0.92,
+    }),
+  );
+  importSpark.name = "repository-import-spark";
+  importSpark.position.y = 3.55;
+  importSpark.visible = false;
+  importKiosk.add(importSpark);
+  const kioskSign = makeLabelSprite(
+    THREE,
+    "IMPORT REPOSITORY",
+    "GITHUB · GITLAB · CODEBERG",
+    "#9ef7c6",
+  );
+  kioskSign.scale.set(2.8, 0.78, 1);
+  kioskSign.position.set(0, 4.35, 0);
+  importKiosk.add(kioskSign);
+  group.add(importKiosk);
+  group.userData.repositoryImportKiosk = importKiosk;
+  importKiosk.userData.importBeam = importBeam;
+  importKiosk.userData.importSpark = importSpark;
+  importKiosk.userData.importing = false;
   group.traverse((child) => {
     if (child.isMesh) {
       child.userData.landmark = "repositories";
@@ -4597,6 +4898,18 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
       : Math.sin(time * 0.00018) * 0.09;
     globe.rotation.y = time * 0.00012;
     globe.rotation.x = Math.sin(time * 0.00009) * 0.12;
+    if (importKiosk.userData.importing) {
+      importBeam.visible = true;
+      importSpark.visible = true;
+      importBeam.rotation.y = time * 0.0018;
+      importBeam.material.opacity = 0.11 + Math.sin(time * 0.006) * 0.045;
+      importSpark.rotation.y = time * 0.003;
+      importSpark.rotation.x = time * 0.0017;
+      importSpark.position.y = 3.45 + Math.sin(time * 0.004) * 0.28;
+    } else {
+      importBeam.visible = false;
+      importSpark.visible = false;
+    }
     if (portal.userData.repositoryOrbitLayer) {
       portal.userData.repositoryOrbitLayer.rotation.z = time * 0.000012;
     }
@@ -7898,9 +8211,11 @@ export function createWorldScene({
   const botAgents = new Map();
   const loungeMembers = new Map();
   const repositoryPortals = new Map();
+  const repositoryPortalBornAt = new Map();
   const emoteSprites = [];
   const rewardFlights = [];
   const pushSurges = [];
+  const serveFlights = [];
   const forkbotWanderTarget = new THREE.Vector3(...FORKBOT_HOME);
   let forkbotNextWanderAt = 0;
   let forkbotGreeting = null;
@@ -9330,6 +9645,10 @@ export function createWorldScene({
       seatedAvatarY(seatTop.y + SWING_SEAT_HALF_THICKNESS, player.scale.x),
       seatTop.z,
     );
+    // Yaw first, then pitch in the yawed frame: with the default XYZ order the
+    // lean below would be a world-X pitch, which on a swing set that faces the
+    // fountain at an angle reads as the rider rocking side to side.
+    player.rotation.order = "YXZ";
     player.rotation.y = swingSet.rotation.y;
     // Lean with the ropes so the body traces the arc instead of staying bolt
     // upright at the peaks.
@@ -9589,6 +9908,9 @@ export function createWorldScene({
           seatedAvatarY(seatTop.y + SWING_SEAT_HALF_THICKNESS, avatar.scale.x),
           seatTop.z,
         );
+        // Same yaw-then-pitch order as the local rider so the lean stays
+        // front-to-back along the ropes instead of rolling sideways.
+        avatar.rotation.order = "YXZ";
         avatar.rotation.y = swingSet.rotation.y;
         avatar.rotation.x = swing.pivot.rotation.x;
         avatar.userData.leftArm.rotation.x = SWING_ARM_HOLD_PITCH;
@@ -10049,6 +10371,10 @@ export function createWorldScene({
         outfitColor: remote.outfitColor || "",
         outfitStyle: remote.outfitStyle || "",
         faceImage: remote.faceImage === true,
+        activityBucket: remote.activityBucket || "",
+        solana: remote.solana || "",
+        walletSol: remote.walletSol ?? null,
+        walletTxBucket: remote.walletTxBucket || "",
       };
       const badgeKey = JSON.stringify(badgeIdentity);
       if (!avatar) {
@@ -10356,6 +10682,9 @@ export function createWorldScene({
                 : [],
               statusEmoji: "",
               statusNote: "",
+              // The directory's coarse recency bucket drives the bench
+              // figure's chest activity light.
+              activityBucket: member.activityBucket || "",
             },
             { remote: true, scale: 0.88 },
           );
@@ -10365,6 +10694,13 @@ export function createWorldScene({
           // same way a live peer's do.
           registerAvatarChestControls(figure, id);
         }
+        // The 30s directory refresh can age a seated member's recency bucket
+        // without recreating the figure, so re-sync the chest light in place.
+        syncAvatarActivity(figure, {
+          inputActive: false,
+          accountStatus: "Registered",
+          activityBucket: member.activityBucket || "",
+        });
         const seat = seats[index % Math.max(1, seats.length)];
         figure.position.copy(campfire.position);
         if (seat) figure.position.add(seat);
@@ -10470,6 +10806,9 @@ export function createWorldScene({
       const priorCommit = String(
         cabinet?.userData?.nodeRecord?.commit || "",
       );
+      // Same idea for "this node just answered somebody": the served counters
+      // shown before this update, captured ahead of any rebuild.
+      const priorServed = mirrorServedTotal(cabinet?.userData?.nodeRecord);
       if (
         cabinet &&
         cabinet.userData.dataKey !== dataKey
@@ -10514,6 +10853,14 @@ export function createWorldScene({
       const nextCommit = String(node?.commit || "");
       if (priorCommit && nextCommit && nextCommit !== priorCommit) {
         spawnPushSurge(cabinet.position);
+      }
+      const nextServed = mirrorServedTotal(node);
+      if (
+        priorServed !== null &&
+        nextServed !== null &&
+        nextServed > priorServed
+      ) {
+        spawnServeFlights(cabinet.position, nextServed - priorServed);
       }
     });
     nodeInfrastructure.forEach((cabinet, id) => {
@@ -11238,6 +11585,10 @@ export function createWorldScene({
           liveHost: record.liveHost === true,
           isPrivate: record.isPrivate === true,
           source: String(record.source || "").slice(0, 40),
+          provider: String(record.provider || "").slice(0, 20),
+          providerLabel: String(record.providerLabel || "").slice(0, 30),
+          externalUrl: String(record.externalUrl || "").slice(0, 500),
+          importId: String(record.importId || "").slice(0, 64),
           mirrorState: String(record.mirrorState || "").slice(0, 24),
           starCount:
             Number.isSafeInteger(rawStarCount) && rawStarCount >= 0
@@ -11272,6 +11623,8 @@ export function createWorldScene({
         record.liveHost,
         record.isPrivate,
         record.source,
+        record.provider,
+        record.importId,
         record.starCount,
         record.starred,
         record.fediverseFollowerCount,
@@ -11282,6 +11635,7 @@ export function createWorldScene({
       ]),
     ]);
     const previousCatalog = world.userData.repositoryCatalogLayer;
+    const previousPortalKeys = new Set(repositoryPortals.keys());
     if (
       catalogSignature === world.userData.repositoryCatalogSignature &&
       (records.length
@@ -11413,6 +11767,23 @@ export function createWorldScene({
         Math.sin(angle) * REPOSITORY_EDGE_RADIUS,
       );
       node.rotation.y = -angle - Math.PI / 2;
+      if (
+        record.source === "external-import" &&
+        !previousPortalKeys.has(record.key)
+      ) {
+        const importedBefore = records
+          .slice(0, index)
+          .filter(
+            (candidate) =>
+              candidate.source === "external-import" &&
+              !previousPortalKeys.has(candidate.key),
+          ).length;
+        repositoryPortalBornAt.set(
+          record.key,
+          performance.now() + importedBefore * 320,
+        );
+        node.scale.setScalar(reducedMotion ? 1 : 0.015);
+      }
       const face = new THREE.Group();
       face.name = `repository-portal-face:${record.owner}/${record.name}`;
       face.scale.setScalar(portalDensityScale);
@@ -11431,6 +11802,10 @@ export function createWorldScene({
         liveHost: record.liveHost,
         isPrivate: record.isPrivate,
         source: record.source,
+        provider: record.provider,
+        providerLabel: record.providerLabel,
+        externalUrl: record.externalUrl,
+        importId: record.importId,
         mirrorState: record.mirrorState,
         starCount: record.starCount,
         starred: record.starred,
@@ -11477,6 +11852,8 @@ export function createWorldScene({
             ? record.sizeBytes
               ? `${compactSceneBytes(record.sizeBytes)} HOSTED`
               : "LIVE MIRROR"
+            : record.source === "external-import"
+              ? `${record.providerLabel || "EXTERNAL"} IMPORT`
             : record.mirrorState === "syncing"
               ? "MIRRORS SYNCING"
               : record.mirrorState === "offline"
@@ -11679,6 +12056,7 @@ export function createWorldScene({
         owner: record.owner,
         name: record.name,
         angle,
+        key: record.key,
       });
     });
 
@@ -11688,6 +12066,30 @@ export function createWorldScene({
     });
     world.userData.repositoryCatalogLayer = layer;
     world.userData.repositoryPortalMeshes = portalMeshes;
+  }
+
+  function setRepositoryImportState(state = {}) {
+    const district = landmarkObjects.get("repositories");
+    const kiosk = district?.userData?.repositoryImportKiosk;
+    if (!kiosk) return;
+    kiosk.userData.importing = state.active === true;
+    kiosk.userData.importStage = String(state.stage || "").slice(0, 40);
+    kiosk.userData.importProvider = String(state.provider || "").slice(0, 20);
+    const spark = kiosk.userData.importSpark;
+    if (spark?.material?.color) {
+      const color =
+        state.status === "error"
+          ? "#ff7f8f"
+          : state.status === "complete"
+            ? "#9ef7c6"
+            : state.provider === "gitlab"
+              ? "#fc8d45"
+              : state.provider === "codeberg"
+                ? "#77d9ff"
+                : "#f0f6fc";
+      spark.material.color.set(color);
+      spark.material.emissive?.set?.(color);
+    }
   }
 
   function updateRepositorySizeMap(sizeTree = {}, selection = {}) {
@@ -12678,6 +13080,46 @@ export function createWorldScene({
     });
   }
 
+  // Serving reads as traffic leaving the rack: each clone or repository page a
+  // node answers launches a small figure for the agent it served, shooting up
+  // out of the cabinet and shrinking away into the sky. Purely cosmetic and
+  // driven only by the node's own served counters in the signed mirror payload
+  // (see updateNetworkNodes), never by an unauthenticated frame.
+  function spawnServeFlights(position, count = 1) {
+    const requested = Math.floor(Number(count));
+    const wanted = Math.min(
+      3,
+      Math.max(1, Number.isFinite(requested) ? requested : 1),
+    );
+    for (let index = 0; index < wanted; index += 1) {
+      // Bound a busy yard's burst to a fixed effect budget.
+      if (serveFlights.length >= 12) return;
+      const figure = createServedVisitorFigure(
+        THREE,
+        index % 2 ? "#8fd8ff" : "#9ef7c6",
+      );
+      figure.position.set(
+        position.x + (Math.random() - 0.5) * 0.7,
+        position.y + 3.3,
+        position.z + (Math.random() - 0.5) * 0.7,
+      );
+      figure.rotation.y = Math.random() * Math.PI * 2;
+      figure.visible = index === 0;
+      world.add(figure);
+      serveFlights.push({
+        group: figure,
+        materials: figure.userData.figureMaterials,
+        // Staggered so a multi-request update reads as a stream rather than
+        // one clump of overlapping figures.
+        startedAt: performance.now() + index * 220,
+        duration: 2400,
+        baseY: figure.position.y,
+        climb: 34 + Math.random() * 12,
+        spin: (Math.random() < 0.5 ? -1 : 1) * (1.2 + Math.random()),
+      });
+    }
+  }
+
   function playRewardEvent(targetHint = "") {
     let targetPylon = null;
     nodeInfrastructure.forEach((pylon) => {
@@ -13165,7 +13607,9 @@ export function createWorldScene({
       return;
     }
     if (hit?.object?.userData?.createRepository) {
-      onCreateRepository();
+      onCreateRepository({
+        provider: String(hit.object.userData.createRepository || ""),
+      });
       return;
     }
     if (hit?.object?.userData?.officeKeypadDigit) {
@@ -13824,6 +14268,29 @@ export function createWorldScene({
           marker.position.y = Math.sin(angle) * radius;
         }
       });
+      repositoryPortals.forEach(({ group, key }) => {
+        const bornAt = repositoryPortalBornAt.get(key);
+        if (!bornAt) return;
+        const progress = clamp((time - bornAt) / 1050, 0, 1);
+        if (progress <= 0) {
+          group.scale.setScalar(0.015);
+          return;
+        }
+        // Overshoot once, then settle into the ring like a portal locking
+        // onto its perimeter coordinate.
+        const back = 1.70158;
+        const shifted = progress - 1;
+        const scale =
+          1 + (back + 1) * shifted ** 3 + back * shifted ** 2;
+        group.scale.setScalar(Math.max(0.015, scale));
+        group.rotation.z =
+          Math.sin(progress * Math.PI) * (1 - progress) * 0.24;
+        if (progress >= 1) {
+          group.scale.setScalar(1);
+          group.rotation.z = 0;
+          repositoryPortalBornAt.delete(key);
+        }
+      });
       // Node beacons hold a steady colour and size — no pulse — so a status
       // reads the same in a screenshot as it does live. Only degraded and
       // healing nodes carry a sweep, and it turns rather than fades, so the
@@ -13901,6 +14368,34 @@ export function createWorldScene({
           child.material?.dispose?.();
         });
         pushSurges.splice(index, 1);
+      }
+    }
+    for (let index = serveFlights.length - 1; index >= 0; index -= 1) {
+      const flight = serveFlights[index];
+      const elapsed = performance.now() - flight.startedAt;
+      // Staggered launches wait on the pad, hidden, until their turn.
+      if (elapsed < 0) {
+        flight.group.visible = false;
+        continue;
+      }
+      flight.group.visible = true;
+      const progress = Math.min(1, elapsed / flight.duration);
+      // Hard off the cabinet, easing out as it climbs away.
+      const eased = 1 - (1 - progress) ** 2.4;
+      flight.group.position.y = flight.baseY + eased * flight.climb;
+      flight.group.rotation.y += flight.spin * delta;
+      flight.group.scale.setScalar(1 - eased * 0.6);
+      const fade = progress < 0.55 ? 1 : 1 - (progress - 0.55) / 0.45;
+      flight.materials.forEach((material) => {
+        material.opacity = Math.max(0, fade);
+      });
+      if (progress >= 1) {
+        world.remove(flight.group);
+        flight.group.traverse((child) => {
+          child.geometry?.dispose?.();
+          child.material?.dispose?.();
+        });
+        serveFlights.splice(index, 1);
       }
     }
     updateCamera(delta);
@@ -14179,6 +14674,7 @@ export function createWorldScene({
     updateIdentity,
     updateRepositoryCatalog,
     updateRepositoryGraph,
+    setRepositoryImportState,
     updateRepositorySizeMap,
     updateRepositoryRecordDesk,
     setRepositoryIssuePageExpanded,

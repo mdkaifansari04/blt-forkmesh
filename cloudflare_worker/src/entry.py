@@ -3857,6 +3857,54 @@ def _world_inactive_public_id(account_bi):
     ).hexdigest()[:20]
 
 
+# Coarse recency ladder for the avatar chest activity light and the wallet
+# QR's transaction ring. Each label reads "within this window"; anything past
+# ten days is "stale". These are buckets, never timestamps: the finest public
+# step is a whole hour, far coarser than a last-seen instant.
+WORLD_ACTIVITY_LIGHT_BUCKETS = (
+    (60 * 60 * 1000, "hour"),
+    (5 * 60 * 60 * 1000, "5h"),
+    (24 * 60 * 60 * 1000, "24h"),
+    (3 * 24 * 60 * 60 * 1000, "3d"),
+    (5 * 24 * 60 * 60 * 1000, "5d"),
+    (10 * 24 * 60 * 60 * 1000, "10d"),
+)
+
+
+def _world_activity_light_bucket(age_ms):
+    try:
+        age = max(0, int(age_ms))
+    except (TypeError, ValueError):
+        return "stale"
+    for limit, bucket in WORLD_ACTIVITY_LIGHT_BUCKETS:
+        if age < limit:
+            return bucket
+    return "stale"
+
+
+async def _world_user_activity_buckets(env):
+    """Map account_bi -> coarse chest-light recency bucket, all accounts.
+
+    Kept as its own query, well apart from the public user-directory payload
+    builder, so that function never sees (or could leak) a raw touch
+    timestamp -- only the bucket label crosses that boundary.
+    """
+    now = int(Date.now())
+    rows = await d1_all(
+        env, "SELECT account_bi,last_touch_at FROM world_user_activity")
+    buckets = {}
+    for row in rows or []:
+        try:
+            touch = int(row.get("last_touch_at") or 0)
+        except (TypeError, ValueError):
+            touch = 0
+        if touch <= 0:
+            continue
+        buckets[row.get("account_bi")] = _world_activity_light_bucket(
+            now - touch)
+    return buckets
+
+
 def _world_inactive_recency(updated_at, now):
     try:
         age = max(0, int(now) - int(updated_at or 0))
@@ -3898,6 +3946,10 @@ async def world_inactive_handler(env, request):
             claim = world_protocol.trusted_presence_claim(
                 rec.get("name", ""), rec.get("accountStatus", "Guest"),
                 rec.get("nodeCount", 0))
+            try:
+                inactive_age = now - int(row.get("updated_at") or 0)
+            except (TypeError, ValueError):
+                inactive_age = None
             people.append({
                 "id": _world_inactive_public_id(row.get("account_bi")),
                 "name": claim["name"] or "Private contributor",
@@ -3906,6 +3958,8 @@ async def world_inactive_handler(env, request):
                 "availability": status,
                 "lastActive": _world_inactive_recency(
                     row.get("updated_at"), now),
+                # Drives the seating card's chest activity light.
+                "activityBucket": _world_activity_light_bucket(inactive_age),
             })
         return json_response(
             {
@@ -3981,6 +4035,59 @@ async def world_inactive_handler(env, request):
         },
         cache_control="no-store, max-age=0, must-revalidate",
     )
+
+
+# Seconds one address's wallet chip (balance + tx-recency bucket) is held in
+# the colo edge cache. The chip is decorative, so staleness is cheap and the
+# cache bounds the RPC cost to one pair of public reads per address per TTL
+# per colo no matter how many avatars wear the same wallet.
+WORLD_WALLET_BADGE_TTL = 600
+WORLD_WALLET_CACHE_PREFIX = "https://forkmesh.internal/api/world/wallet?address="
+
+
+async def world_wallet_badge_handler(env, request):
+    """Public data for an avatar's chest wallet QR chip.
+
+    Read-only on-chain lookups for an address the account holder already chose
+    to publish: the SOL balance plus the same coarse recency bucket the chest
+    activity light uses, keyed to the wallet's newest transaction.
+    """
+    if method_name(request) != "GET":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    params = parse_qs(urlparse(request.url).query)
+    address = str(params.get("address", [""])[0] or "").strip()
+    if not SOLANA_RE.match(address):
+        return json_response({"error": "bad_address"}, status=400)
+    cache_key = WORLD_WALLET_CACHE_PREFIX + address
+    cached = await edge_cache_match(cache_key)
+    if cached is not None:
+        return cached
+    lamports = await _solana_balance_lamports(env, address)
+    tx_bucket = ""
+    signatures = await _solana_rpc(
+        env, "getSignaturesForAddress", [address, {"limit": 1}])
+    result = signatures.get("result") if isinstance(signatures, dict) else None
+    if isinstance(result, list):
+        tx_bucket = "stale"
+        newest = result[0] if result else None
+        block_time = newest.get("blockTime") if isinstance(newest, dict) else None
+        try:
+            tx_bucket = _world_activity_light_bucket(
+                int(Date.now()) - int(block_time) * 1000)
+        except (TypeError, ValueError):
+            tx_bucket = "stale"
+    resp = json_response({
+        "ok": True,
+        "address": address,
+        "lamports": lamports,
+        "sol": (lamports / LAMPORTS_PER_SOL) if lamports is not None else None,
+        "txBucket": tx_bucket,
+    }, cache_seconds=WORLD_WALLET_BADGE_TTL)
+    # Only a successful read is worth pinning for the whole TTL; a dead RPC
+    # window should retry on the next request instead of caching the outage.
+    if lamports is not None or tx_bucket:
+        await edge_cache_put(cache_key, resp)
+    return resp
 
 
 # --- Town Square approximate unique visitor counter -------------------------
@@ -10374,7 +10481,7 @@ def _account_world_client_fields(rec):
     )
 
 
-def _account_chat_user_payload(rec, total_active_ms=0):
+def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
     name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
     return {
         "name": name,
@@ -10388,6 +10495,10 @@ def _account_chat_user_payload(rec, total_active_ms=0):
         # directory deliberately exposes neither a last-seen timestamp nor the
         # current activity interval used by an authenticated World tab.
         "totalActiveMs": _world_public_total_active_ms(total_active_ms),
+        # The bench figure's chest activity light: a seven-step recency
+        # bucket the caller already derived from the raw touch timestamp, so
+        # this function never sees (or could leak) that timestamp itself.
+        "activityBucket": activity_bucket,
         **_account_world_client_fields(rec),
     }
 
@@ -10412,11 +10523,14 @@ async def _account_users_directory(env, request):
     seen = set()
     rows = await d1_all(
         env,
-        "SELECT u.data,a.total_active_ms FROM users u "
+        "SELECT u.data,u.user_bi,a.total_active_ms FROM users u "
         "LEFT JOIN world_user_activity a ON a.account_bi=u.user_bi "
         "ORDER BY u.username COLLATE NOCASE LIMIT ?",
         1000,
     )
+    # A bucket label only, joined in from its own query so this function
+    # body never handles the raw touch timestamp behind it.
+    activity_buckets = await _world_user_activity_buckets(env)
     for row in rows or []:
         rec = await decrypt_row(env, row.get("data", ""))
         if (not rec or _account_kind(rec) != "user"
@@ -10428,7 +10542,8 @@ async def _account_users_directory(env, request):
             continue
         seen.add(name)
         out.append(_account_chat_user_payload(
-            rec, row.get("total_active_ms", 0)))
+            rec, row.get("total_active_ms", 0),
+            activity_buckets.get(row.get("user_bi"), "")))
 
     # The campfire seats members in this same array order, one bench per
     # account for the session — so this is sorted by join date (oldest
@@ -17529,7 +17644,7 @@ def _account_email_activity(rec):
     }
 
 
-# --- External GitHub/GitLab metadata imports --------------------------------
+# --- External GitHub/GitLab/Codeberg metadata imports -----------------------
 #
 # Provider imports live in a separate D1 namespace from the mirror catalog.
 # repository_imports.py owns the provider-neutral policy/service layer; these
@@ -17551,6 +17666,12 @@ async def _repository_provider_fetch(env, provider, path, token=""):
         headers["x-github-api-version"] = "2026-03-10"
         if token:
             headers["authorization"] = "Bearer " + token
+    elif provider == "codeberg":
+        # Codeberg runs Forgejo's Gitea-compatible API. Its access token is
+        # request-scoped exactly like the other provider credentials and is
+        # never persisted or forwarded across a redirect.
+        if token:
+            headers["authorization"] = "token " + token
     elif token:
         # GitLab personal/project access tokens are scoped request credentials.
         # They are never included in a record, log, exception, or D1 write.
@@ -17628,6 +17749,44 @@ async def _repository_import_moderator(env, actor):
             or await _has_role(env, actor, "moderator"))
     except Exception:
         return False
+
+
+async def _repository_import_target_owner(env, actor, target):
+    actor = clean_string(actor, MAX_NODE_NAME).strip().lower()
+    target = clean_string(target, MAX_NODE_NAME).strip().lower() or actor
+    if not actor or not target:
+        return None
+    if target == actor:
+        return {
+            "name": actor,
+            "kind": "user",
+            "ownerBi": await blind_index(env, actor),
+        }
+    org_bi, row = await _org_row(env, target)
+    if not row or await _org_role(env, org_bi, actor) not in (
+            "owner", "admin"):
+        return None
+    return {
+        "name": str(row.get("name") or target).lower(),
+        "kind": "organization",
+        "ownerBi": org_bi,
+    }
+
+
+async def _repository_import_can_manage_owner(env, actor, owner_bi):
+    actor = clean_string(actor, MAX_NODE_NAME).strip().lower()
+    owner_bi = str(owner_bi or "")
+    if not actor or not owner_bi:
+        return False
+    actor_bi = await blind_index(env, actor)
+    if hmac.compare_digest(actor_bi, owner_bi):
+        return True
+    row = await d1_first(
+        env,
+        "SELECT role FROM org_members WHERE org_bi=? AND member_bi=?",
+        owner_bi, actor_bi,
+    )
+    return str((row or {}).get("role") or "") in ("owner", "admin")
 
 
 async def _repository_import_mirror_status(
@@ -17709,6 +17868,8 @@ def _repository_import_service():
         "invitation_token": _repository_invitation_token,
         "operator_eligible": _repository_import_operator_eligible,
         "is_moderator": _repository_import_moderator,
+        "target_owner": _repository_import_target_owner,
+        "can_manage_owner": _repository_import_can_manage_owner,
         "mirror_status": _repository_import_mirror_status,
         "public_origin": _public_base_url,
         "now_ms": lambda: int(Date.now()),
@@ -22417,7 +22578,29 @@ async def repo_star_handler(env, request, owner, repo):
         return json_response({"error": "method_not_allowed"}, status=405)
     if await _repo_is_private(env, owner, repo):
         return json_response({"error": "not_found"}, status=404)
-    repo_bi = await blind_index(env, owner + "/" + repo)
+    # The router rewrites an organization path to its backing node before this
+    # handler runs. Stars are a public-repository preference, so retain the
+    # untouched verified organization identity instead of silently splitting
+    # forkmesh/forkmesh stars across its backing user's namespace.
+    public_owner = str(owner or "").strip().lower()
+    try:
+        original_match = REPO_STAR_RE.match(
+            urlparse(str(getattr(request, "url", "") or "")).path)
+        requested_owner = safe_segment(
+            original_match.group(1)) if original_match else ""
+        requested_repo = safe_segment(
+            original_match.group(2)) if original_match else ""
+        if (
+            requested_owner
+            and requested_repo == str(repo or "").strip().lower()
+            and requested_owner != public_owner
+            and await _org_repo_node(
+                env, requested_owner, requested_repo) == public_owner
+        ):
+            public_owner = requested_owner
+    except Exception:
+        pass
+    repo_bi = await blind_index(env, public_owner + "/" + repo)
 
     if method == "GET":
         viewer_bi, viewer_rec = await _account_session_record(env, request)
@@ -30908,9 +31091,10 @@ def _https_mirror_request_query(url, operation, release_sha=""):
 async def _https_mirror_repository_proof(env, endpoint, context, operation):
     """Require a fresh signed refs/operation proof for this public repo."""
     now = int(Date.now())
+    route_owner = context.get("routeOwner") or context["owner"]
     pins_key = ",".join(sorted(context["pins"]))
     memo_key = (
-        endpoint["node"], context["owner"], context["repo"], pins_key)
+        endpoint["node"], route_owner, context["repo"], pins_key)
     memo = _HTTPS_MIRROR_REPO_PROOF_MEMO.get(memo_key)
     if memo and now - memo["checkedAt"] <= HTTPS_MIRROR_REPO_PROOF_TTL_MS:
         return operation in memo["operations"]
@@ -30918,7 +31102,7 @@ async def _https_mirror_repository_proof(env, endpoint, context, operation):
     target = (
         endpoint["baseUrl"] + "/health?nonce=" + quote(nonce)
         + "&issuedAt=" + str(now)
-        + "&owner=" + quote(context["owner"])
+        + "&owner=" + quote(route_owner)
         + "&repo=" + quote(context["repo"])
     )
     status, text = await _https_mirror_fetch_text(
@@ -30955,7 +31139,7 @@ async def _https_mirror_repository_proof(env, endpoint, context, operation):
             and data.get("publicKey") == endpoint["publicKey"]
             and data.get("transport") == "direct-https"
             and isinstance(proof, dict)
-            and proof.get("owner") == context["owner"]
+            and proof.get("owner") == route_owner
             and proof.get("repository") == context["repo"]
             and proof.get("available") is True
             and proof.get("integrity") == "ok"
@@ -31668,6 +31852,35 @@ async def _https_mirror_proxy(
     if context is None:
         return json_response(
             {"error": "not_found"}, status=404, cache_control="no-store")
+    # org_alias_rewrite gives access checks and pin selection the canonical
+    # backing node. Repository bytes must still be requested from the gateway
+    # under the untouched public organization identity. The rewrite preserves
+    # request.url, so recover only an alias that D1 verifies maps to that node.
+    try:
+        original_url = urlparse(str(getattr(request, "url", "") or ""))
+        original_match = (
+            GIT_INFO_RE.match(original_url.path)
+            or GIT_PACK_RE.match(original_url.path)
+            or RELEASE_BLOB_RE.match(original_url.path)
+            or REPO_HOST_RE.match(original_url.path)
+        )
+        route_owner = (
+            safe_segment(original_match.group(1)) if original_match else "")
+        route_repo = (
+            safe_segment(original_match.group(2)) if original_match else "")
+        if (
+            route_owner
+            and route_repo == context["repo"]
+            and route_owner != context["owner"]
+            and await _org_repo_node(
+                env, route_owner, route_repo) == context["owner"]
+        ):
+            context = dict(context)
+            context["routeOwner"] = route_owner
+            context["repoBi"] = await blind_index(
+                env, route_owner + "/" + route_repo)
+    except Exception:
+        pass
     method = method_name(request)
     if operation == "git-upload-pack" and method != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
@@ -31718,7 +31931,7 @@ async def _https_mirror_proxy(
             continue
         target = https_routing.masked_target_url(
             endpoint["baseUrl"],
-            context["owner"],
+            context.get("routeOwner") or context["owner"],
             context["repo"],
             operation,
             query,
@@ -32473,6 +32686,9 @@ class Default(WorkerEntrypoint):
 
         if url.path in ("/api/world/inactive", "/api/world/inactive/"):
             return await world_inactive_handler(self.env, request)
+
+        if url.path in ("/api/world/wallet", "/api/world/wallet/"):
+            return await world_wallet_badge_handler(self.env, request)
 
         if url.path in ("/api/world/visitors", "/api/world/visitors/"):
             return await world_visitors_handler(self.env, request)

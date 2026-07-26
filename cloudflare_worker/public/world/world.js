@@ -97,6 +97,10 @@ const MASTODON_REPLY_LIMIT = 12;
 // index and folds the feature cards into the payload.
 const SOCIAL_POSTS_URL = "/api/world/social-posts";
 const SOCIAL_REFRESH_MS = 10 * 60 * 1000;
+// Placements this browser locked in, kept only long enough to outlive a stale
+// read of the shared layout document. See rememberWorldLayout.
+const WORLD_LAYOUT_ECHO_KEY = "forkmesh.world.layout.echo.v1";
+const WORLD_LAYOUT_ECHO_TTL_MS = 10 * 60 * 1000;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const CHAT_BUBBLE_JOIN_GRACE_MS = 20 * 1000;
 const POSITION_RADIUS = 72;
@@ -126,6 +130,7 @@ const WORLD_ACTIVITY_CONTINUATION_HEADER = "x-forkmesh-world-activity";
 // player's position, and reloads once — the restored position makes the new
 // build appear in place without the player ever touching refresh.
 const WORLD_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+const REPOSITORY_IMPORT_POLL_MS = 15 * 1000;
 const WORLD_UPDATE_CHECK_MIN_GAP_MS = 60 * 1000;
 const WORLD_UPDATE_RELOAD_DELAY_MS = 1400;
 const WORLD_UPDATE_RELOADED_REV_KEY = "forkmesh.world.updateReloadedRev.v1";
@@ -522,6 +527,11 @@ function accountIdentity(session) {
     // Filled in from the server-signed world ticket; guests never have one.
     joinedAt: 0,
     activityCategory: "exploring-town-square",
+    // The published payout address worn as the chest wallet QR; balance and
+    // transaction recency are filled in by applyWalletBadges.
+    solana: sessionSolanaAddress(session),
+    walletSol: null,
+    walletTxBucket: "",
   };
 }
 
@@ -711,6 +721,16 @@ function publicIdentity(identity, settings) {
     faceImage:
       identity.accountStatus === "Supporting member" &&
       settings.faceImage === true,
+    // The wallet chip is public by construction: an address its owner saved
+    // to publish, plus on-chain balance/recency the app fetched for it.
+    solana: WORLD_SOLANA_ADDRESS_RE.test(String(identity.solana || ""))
+      ? String(identity.solana)
+      : "",
+    walletSol: identity.walletSol ?? null,
+    walletTxBucket: activityLightBucket(identity.walletTxBucket),
+    // A visitor at this keyboard is by definition active within the hour;
+    // the light itself stays dark until the account is authenticated.
+    activityBucket: "hour",
   };
 }
 
@@ -767,6 +787,37 @@ function presenceActivity(settings, automatic = "exploring-town-square") {
   return ACTIVITY_OPTIONS.some((option) => option.id === chosen)
     ? chosen
     : "exploring-town-square";
+}
+
+// The server's coarse "active within …" recency ladder for the avatar chest
+// light and the wallet QR's transaction ring; "stale" is past ten days.
+const ACTIVITY_LIGHT_BUCKET_VALUES = new Set([
+  "hour",
+  "5h",
+  "24h",
+  "3d",
+  "5d",
+  "10d",
+  "stale",
+]);
+
+function activityLightBucket(value) {
+  return ACTIVITY_LIGHT_BUCKET_VALUES.has(String(value || ""))
+    ? String(value)
+    : "";
+}
+
+const WORLD_SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+// The chip is decorative and the worker edge-caches per address, so one
+// balance refresh every ten minutes per address is plenty.
+const WALLET_BADGE_TTL_MS = 10 * 60 * 1000;
+
+// The chest wallet QR wears the Solana payout address the account holder
+// saved on their profile to publish; anything else stays off the avatar.
+function sessionSolanaAddress(session) {
+  const address = String(session?.solana || "").trim();
+  return WORLD_SOLANA_ADDRESS_RE.test(address) ? address : "";
 }
 
 function boundedPresenceNumber(value) {
@@ -878,6 +929,11 @@ function remotePlayer(peer) {
     statusNote: publicStatus.note,
     moderationHandles,
     updatedAt: Math.max(0, Number(peer.updatedAt) || 0),
+    solana: WORLD_SOLANA_ADDRESS_RE.test(String(peer.solana || ""))
+      ? String(peer.solana)
+      : "",
+    // A live presence frame is by definition activity within the hour.
+    activityBucket: "hour",
   };
 }
 
@@ -1369,6 +1425,8 @@ function normalizeMemberDirectory(value) {
       browser: presenceLabel(user?.browser, "Hidden", "Hidden"),
       os: presenceLabel(user?.os, "Hidden", "Hidden"),
       status: sanitizePresenceText(user?.status, "", 80),
+      // Coarse recency bucket for the bench figure's chest activity light.
+      activityBucket: activityLightBucket(user?.activityBucket),
     }))
     .filter((user) => user.name);
 }
@@ -2130,6 +2188,11 @@ function cleanRepositories(payload) {
         commit: /^[0-9a-f]{40,64}$/.test(commit) ? commit : "",
         stateHash: /^[0-9a-f]{64}$/.test(stateHash) ? stateHash : "",
         rootCommit: immutableGitOid(repo.rootCommit),
+        // A repository owner is a user/org identity; nodeId is the machine
+        // identity that signed and serves this particular catalog record.
+        // Keep both so organization alias attestation never compares a user
+        // name (for example jett) with a node name (for example forkmesh).
+        nodeId: sanitizePresenceText(repo.nodeId, "", 96),
         pullCount:
           Number.isSafeInteger(pullCount) &&
           pullCount >= 0 &&
@@ -2167,6 +2230,57 @@ function cleanRepositories(payload) {
       };
     })
     .slice(0, 200);
+}
+
+function cleanExternalRepositories(payload) {
+  const items = Array.isArray(payload?.repositories)
+    ? payload.repositories
+    : [];
+  return items
+    .filter((record) => record && record.id && record.name)
+    .slice(0, 200)
+    .map((record) => {
+      const provider = String(record.provider || "").toLowerCase();
+      const targetOwner = sanitizePresenceText(
+        record.targetOwner || record.listedBy || record.providerOwner,
+        "external",
+        40,
+      );
+      const counts =
+        record.metadata?.counts && typeof record.metadata.counts === "object"
+          ? record.metadata.counts
+          : {};
+      return {
+        owner: targetOwner,
+        name: sanitizePresenceText(record.name, "repository", 60),
+        description: String(record.metadata?.description || "").slice(0, 180),
+        liveHost: false,
+        source: "external-import",
+        provider,
+        providerLabel:
+          provider === "github"
+            ? "GitHub"
+            : provider === "gitlab"
+              ? "GitLab"
+              : provider === "codeberg"
+                ? "Codeberg"
+                : "External",
+        importId: String(record.id || "").slice(0, 64),
+        externalUrl: String(record.originalUrl || "").slice(0, 500),
+        isPrivate: record.isPrivate === true,
+        archived: record.status === "archived",
+        sizeBytes: 0,
+        starCount: Math.max(0, Number(counts.stars) || 0),
+        pullCount: Array.isArray(record.metadata?.pullRequests)
+          ? record.metadata.pullRequests.length
+          : null,
+        updatedAt: Math.max(0, Number(record.updatedAt) || 0),
+        importStatus: String(record.status || "external_repository").slice(
+          0,
+          40,
+        ),
+      };
+    });
 }
 
 function normalizeRepositoryFollowers(value) {
@@ -2244,13 +2358,30 @@ function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
         )
         .filter(Boolean),
     );
+    const mirrorNodeById = new Map();
+    mirrors.forEach((mirror) => {
+      const node = sanitizePresenceText(
+        mirror?.node || mirror?.owner,
+        "",
+        40,
+      ).toLowerCase();
+      const id = sanitizePresenceText(mirror?.id, "", 96);
+      if (node && id && !mirrorNodeById.has(id)) {
+        mirrorNodeById.set(id, node);
+      }
+    });
+    const servingNodeFor = (record) => {
+      const owner = String(record?.owner || "").toLowerCase();
+      if (nodes.has(owner)) return owner;
+      return mirrorNodeById.get(String(record?.nodeId || "")) || "";
+    };
     const candidates = source
       .map((record, index) => ({ record, index }))
       .filter(
         ({ record }) =>
           !record.isPrivate &&
           record.name.toLowerCase() === repo.toLowerCase() &&
-          nodes.has(record.owner.toLowerCase()),
+          Boolean(servingNodeFor(record)),
       );
     if (!candidates.length) return;
     candidates.forEach(({ index }) => consumed.add(index));
@@ -2287,7 +2418,7 @@ function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
     const attestedCandidatesByNode = new Map();
     candidates.forEach((candidate) => {
       const { record } = candidate;
-      const node = record.owner.toLowerCase();
+      const node = servingNodeFor(record);
       const reportedCommits = attestedMirrorCommits.get(
         node,
       );
@@ -2317,7 +2448,7 @@ function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
     const preferredNode = String(healthy[0]?.node || "").toLowerCase();
     const preferred =
       attestedCandidates.find(
-        ({ record }) => record.owner.toLowerCase() === preferredNode,
+        ({ record }) => servingNodeFor(record) === preferredNode,
       )?.record ||
       attestedCandidates
         .map(({ record }) => record)
@@ -3493,6 +3624,7 @@ class ForkMeshWorld extends HTMLElement {
     this.world = null;
     this.landmarkCapabilities = initialLandmarkCapabilities();
     this.repositories = [];
+    this.externalRepositories = [];
     this.repositoryCatalogState = "loading";
     this.network = {};
     this.mirrorCatalogs = [];
@@ -3538,6 +3670,7 @@ class ForkMeshWorld extends HTMLElement {
     this.mediaSpaces = [];
     this.mediaRoom = normalizeMediaRoom(null);
     this.activeRepository = null;
+    this.repositoryMapPreview = null;
     this.repositoryStarStates = new Map();
     this.repositoryFollowerStates = new Map();
     this.repositoryMapState = "idle";
@@ -3557,6 +3690,8 @@ class ForkMeshWorld extends HTMLElement {
     this.remotePlayers = new Map();
     this.localPeers = new Map();
     this.inactivePlayers = [];
+    // address → {sol, txBucket, fetchedAt, pending} for the chest wallet QR.
+    this.walletBadges = new Map();
     this.memberDirectory = [];
     this.memberDirectoryFetchedAt = 0;
     this.worldClientProfileKey = "";
@@ -3636,6 +3771,7 @@ class ForkMeshWorld extends HTMLElement {
     this.spawnSelected = false;
     this.rewardTimer = 0;
     this.mirrorTimer = 0;
+    this.repositoryImportTimer = 0;
     this.mirrorPushRefreshTimer = 0;
     this.eventsTimer = 0;
     this.notificationsTimer = 0;
@@ -3885,41 +4021,299 @@ class ForkMeshWorld extends HTMLElement {
     this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
   }
 
-  openRepositoryCreateForm() {
+  openRepositoryCreateForm(options = {}) {
     if (!this.sessionAuthenticated || !validWorldSession()) {
       this.toggleWorldAccount(true, "login");
       this.toast("Sign in to create a repository.");
       return;
     }
     document.querySelector("[data-world-create-repository]")?.remove();
+    const session = validWorldSession();
+    const account = sanitizePresenceText(
+      session?.nodeName || this.identity?.name,
+      "account",
+      40,
+    ).toLowerCase();
+    const ownerOptions = [
+      { name: account, label: `@${account} · user account` },
+      ...this.organizations
+        .filter((organization) =>
+          ["owner", "admin"].includes(
+            String(
+              organization.viewerRole || organization.role || "",
+            ).toLowerCase(),
+          ),
+        )
+        .map((organization) => {
+          const name = sanitizePresenceText(
+            organization.name || organization.org,
+            "",
+            40,
+          ).toLowerCase();
+          return { name, label: `${name} · organization` };
+        })
+        .filter((owner) => owner.name && owner.name !== account),
+    ];
+    const initialProvider = ["github", "gitlab", "codeberg"].includes(
+      String(options.provider || "").toLowerCase(),
+    )
+      ? String(options.provider).toLowerCase()
+      : "codeberg";
     const dialog = document.createElement("dialog");
     dialog.dataset.worldCreateRepository = "true";
-    dialog.style.cssText = "width:min(420px,calc(100vw - 32px));border:1px solid #9ef7c6;border-radius:14px;background:#071611;color:#e9fff2;padding:0;box-shadow:0 24px 80px #000";
-    dialog.innerHTML = `<form method="dialog" style="padding:20px;display:grid;gap:12px"><header><strong style="font-size:18px">Create repository</strong><p style="margin:6px 0 0;color:#9eb6aa;font-size:13px">Import a public GitHub or GitLab repository into ForkMesh.</p></header><label style="display:grid;gap:5px;font-size:12px">Repository URL<input required name="sourceUrl" placeholder="https://github.com/owner/repo" style="padding:10px;border-radius:7px;border:1px solid #3a6655;background:#0d211b;color:inherit" /></label><label style="display:grid;gap:5px;font-size:12px">Optional provider token<input name="providerToken" type="password" placeholder="Only used for this request" style="padding:10px;border-radius:7px;border:1px solid #3a6655;background:#0d211b;color:inherit" /></label><output style="min-height:18px;color:#9ef7c6;font-size:12px"></output><footer style="display:flex;justify-content:flex-end;gap:8px"><button value="cancel">Cancel</button><button value="submit" style="background:#9ef7c6;color:#071611;border:0;border-radius:7px;padding:9px 12px">Create repository</button></footer></form>`;
+    dialog.style.cssText = "width:min(620px,calc(100vw - 28px));border:1px solid #77d9ff;border-radius:18px;background:linear-gradient(155deg,#071611,#0b2525);color:#e9fff2;padding:0;box-shadow:0 28px 110px #000c";
+    dialog.innerHTML = `
+      <form style="padding:22px;display:grid;gap:16px">
+        <header>
+          <strong style="font-size:21px">Import repositories into the World</strong>
+          <p style="margin:6px 0 0;color:#9eb6aa;font-size:13px;line-height:1.5">Paste one repository link per line, or a Codeberg profile such as codeberg.org/m33. ForkMesh reads provider metadata without storing your token, then portals arrive around the perimeter one at a time.</p>
+        </header>
+        <div role="group" aria-label="Import provider" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+          ${[
+            ["github", "GitHub", "#f0f6fc"],
+            ["gitlab", "GitLab", "#fc8d45"],
+            ["codeberg", "Codeberg", "#77d9ff"],
+          ]
+            .map(
+              ([id, label, color]) =>
+                `<button type="button" data-world-import-provider="${id}" aria-pressed="${id === initialProvider}" style="border:1px solid ${color};border-radius:9px;padding:10px;background:${id === initialProvider ? `${color}22` : "#081b18"};color:${color};font-weight:800">${label}</button>`,
+            )
+            .join("")}
+        </div>
+        <input type="hidden" name="provider" value="${initialProvider}" />
+        <label style="display:grid;gap:6px;font-size:12px">Repository links
+          <textarea required name="sourceUrls" rows="4" placeholder="https://${initialProvider === "codeberg" ? "codeberg.org" : `${initialProvider}.com`}/owner/repository" style="resize:vertical;padding:11px;border-radius:9px;border:1px solid #3a6655;background:#071a16;color:inherit;font:12px/1.5 ui-monospace,monospace"></textarea>
+        </label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <label style="display:grid;gap:6px;font-size:12px">Import to
+            <select name="targetOwner" style="padding:10px;border-radius:9px;border:1px solid #3a6655;background:#071a16;color:inherit">
+              ${ownerOptions
+                .map(
+                  (owner) =>
+                    `<option value="${escapeHTML(owner.name)}">${escapeHTML(owner.label)}</option>`,
+                )
+                .join("")}
+            </select>
+          </label>
+          <label style="display:grid;gap:6px;font-size:12px">Optional provider token
+            <input name="providerToken" type="password" autocomplete="off" placeholder="Request only · never stored" style="padding:10px;border-radius:9px;border:1px solid #3a6655;background:#071a16;color:inherit" />
+          </label>
+        </div>
+        <div data-world-import-progress hidden style="border:1px solid #285a50;border-radius:10px;padding:12px;background:#061814">
+          <div style="height:5px;border-radius:4px;background:#153a32;overflow:hidden"><i data-world-import-progress-bar style="display:block;height:100%;width:0;background:linear-gradient(90deg,#77d9ff,#9ef7c6);transition:width .5s ease"></i></div>
+          <ol data-world-import-results style="margin:10px 0 0;padding-left:20px;display:grid;gap:5px;color:#b7d8ca;font-size:12px"></ol>
+        </div>
+        <output style="min-height:18px;color:#9ef7c6;font-size:12px" aria-live="polite"></output>
+        <footer style="display:flex;justify-content:flex-end;gap:8px">
+          <button type="button" data-world-import-cancel style="padding:9px 12px;border-radius:8px;border:1px solid #3a6655;background:#0b211b;color:inherit">Close</button>
+          <button type="submit" style="background:#9ef7c6;color:#071611;border:0;border-radius:8px;padding:9px 14px;font-weight:800">Import into World</button>
+        </footer>
+      </form>`;
     document.body.append(dialog);
     dialog.addEventListener("close", () => dialog.remove());
+    dialog.querySelector("[data-world-import-cancel]")?.addEventListener(
+      "click",
+      () => dialog.close(),
+    );
+    dialog
+      .querySelectorAll("[data-world-import-provider]")
+      .forEach((button) => {
+        button.addEventListener("click", () => {
+          const provider = button.dataset.worldImportProvider;
+          const form = dialog.querySelector("form");
+          form.elements.provider.value = provider;
+          dialog
+            .querySelectorAll("[data-world-import-provider]")
+            .forEach((candidate) => {
+              const selected = candidate === button;
+              candidate.setAttribute("aria-pressed", String(selected));
+              candidate.style.background = selected ? "#77d9ff22" : "#081b18";
+            });
+          const host =
+            provider === "codeberg" ? "codeberg.org" : `${provider}.com`;
+          form.elements.sourceUrls.placeholder =
+            `https://${host}/owner/repository`;
+        });
+      });
     dialog.querySelector("form")?.addEventListener("submit", async (event) => {
       event.preventDefault();
       const form = event.currentTarget;
-      const sourceUrl = String(new FormData(form).get("sourceUrl") || "").trim();
-      const providerToken = String(new FormData(form).get("providerToken") || "").trim();
+      const values = new FormData(form);
+      let urls = String(values.get("sourceUrls") || "")
+        .split(/\r?\n/)
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .slice(0, 200);
+      const provider = String(values.get("provider") || "");
+      const providerToken = String(values.get("providerToken") || "").trim();
+      const targetOwner = String(values.get("targetOwner") || account);
       const output = form.querySelector("output");
-      if (!sourceUrl) return;
-      output.textContent = "Creating repository…";
-      try {
-        await this.postJSON("/api/repository-imports", {
-          sourceUrl,
-          providerToken,
-          mode: "import",
-          sessionToken: validWorldSession()?.sessionToken || "",
-        });
-        output.textContent = "Repository created. Refreshing catalog…";
-        await this.loadWorldData();
-        this.syncRepositoryScene();
-        window.setTimeout(() => dialog.close(), 650);
-      } catch (error) {
-        output.textContent = `Could not create repository: ${error.message}`;
+      if (!urls.length) return;
+      const submit = form.querySelector('[type="submit"]');
+      const progress = form.querySelector("[data-world-import-progress]");
+      const progressBar = form.querySelector("[data-world-import-progress-bar]");
+      const results = form.querySelector("[data-world-import-results]");
+      submit.disabled = true;
+      progress.hidden = false;
+      let completed = 0;
+      let failures = 0;
+      this.world?.setRepositoryImportState?.({
+        active: true,
+        provider,
+        stage: "connecting",
+      });
+      const expandedUrls = [];
+      for (const sourceUrl of urls) {
+        let parsed;
+        try {
+          parsed = new URL(
+            sourceUrl.includes("://") ? sourceUrl : `https://${sourceUrl}`,
+          );
+        } catch (_) {}
+        const isCodebergNamespace =
+          parsed?.protocol === "https:" &&
+          ["codeberg.org", "www.codeberg.org"].includes(
+            parsed.hostname.toLowerCase(),
+          ) &&
+          parsed.pathname.split("/").filter(Boolean).length === 1;
+        if (!isCodebergNamespace) {
+          expandedUrls.push(sourceUrl);
+          continue;
+        }
+        output.textContent = `Discovering repositories in ${parsed.pathname}…`;
+        try {
+          const discovery = await this.postJSON(
+            "/api/repository-imports/discover",
+            {
+              sourceUrl,
+              providerToken,
+              sessionToken: session?.sessionToken || "",
+            },
+            { timeout: 30000 },
+          );
+          const discovered = Array.isArray(discovery.repositories)
+            ? discovery.repositories
+            : [];
+          expandedUrls.push(...discovered);
+          const item = document.createElement("li");
+          item.textContent = `Found ${discovered.length} public repositories in ${sourceUrl}`;
+          item.style.color = "#77d9ff";
+          results.append(item);
+        } catch (error) {
+          failures += 1;
+          const item = document.createElement("li");
+          item.textContent = `× ${sourceUrl} — ${String(
+            error?.message || "discovery failed",
+          )}`;
+          item.style.color = "#ff9eaa";
+          results.append(item);
+        }
       }
+      urls = [...new Set(expandedUrls)].slice(0, 200);
+      if (!urls.length) {
+        output.textContent = "No public repositories were found.";
+        submit.disabled = false;
+        this.world?.setRepositoryImportState?.({
+          active: false,
+          provider,
+          stage: "error",
+          status: "error",
+        });
+        return;
+      }
+      for (const [index, sourceUrl] of urls.entries()) {
+        const item = document.createElement("li");
+        item.textContent = `Connecting to ${sourceUrl}…`;
+        results.append(item);
+        output.textContent =
+          `Reading ${provider} metadata ${index + 1} of ${urls.length}…`;
+        try {
+          const payload = await this.postJSON(
+            "/api/repository-imports",
+            {
+              sourceUrl,
+              providerToken,
+              targetOwner,
+              mode: "import",
+              sessionToken: session?.sessionToken || "",
+            },
+            { timeout: 60000 },
+          );
+          const imported = cleanExternalRepositories({
+            repositories: [payload.repository],
+          })[0];
+          if (!imported) throw new Error("invalid_import_response");
+          this.externalRepositories = [
+            ...this.externalRepositories.filter(
+              (record) => record.importId !== imported.importId,
+            ),
+            imported,
+          ];
+          this.repositories = [
+            ...this.repositories.filter(
+              (record) =>
+                record.source !== "external-import" ||
+                record.importId !== imported.importId,
+            ),
+            imported,
+          ];
+          this.syncRepositoryScene();
+          completed += 1;
+          const metadata = payload.repository?.metadata || {};
+          const detail = [
+            Object.keys(metadata.languages || {}).length
+              ? `${Object.keys(metadata.languages).length} languages`
+              : "",
+            Array.isArray(metadata.branches)
+              ? `${metadata.branches.length} branches`
+              : "",
+            Array.isArray(metadata.commits)
+              ? `${metadata.commits.length} recent commits`
+              : "",
+          ]
+            .filter(Boolean)
+            .join(" · ");
+          item.textContent =
+            `✓ ${targetOwner}/${imported.name} arrived${detail ? ` — ${detail}` : ""}`;
+          item.style.color = "#9ef7c6";
+          this.world?.setRepositoryImportState?.({
+            active: true,
+            provider,
+            stage: "portal-arrived",
+            status: "complete",
+          });
+          // Leave enough room for the portal's overshoot-and-settle animation
+          // before the next repository enters the perimeter.
+          if (index < urls.length - 1) {
+            await new Promise((resolve) => window.setTimeout(resolve, 1150));
+          }
+        } catch (error) {
+          failures += 1;
+          item.textContent = `× ${sourceUrl} — ${String(
+            error?.message || "import failed",
+          )}`;
+          item.style.color = "#ff9eaa";
+          this.world?.setRepositoryImportState?.({
+            active: true,
+            provider,
+            stage: "error",
+            status: "error",
+          });
+        }
+        progressBar.style.width = `${Math.round(
+          ((index + 1) / urls.length) * 100,
+        )}%`;
+      }
+      output.textContent = failures
+        ? `${completed} imported · ${failures} failed. Successful portals are live around the perimeter.`
+        : `${completed} ${completed === 1 ? "repository" : "repositories"} imported into ${targetOwner}.`;
+      submit.disabled = false;
+      this.world?.setRepositoryImportState?.({
+        active: false,
+        provider,
+        stage: "complete",
+        status: failures ? "error" : "complete",
+      });
     });
     dialog.showModal();
   }
@@ -3930,10 +4324,7 @@ class ForkMeshWorld extends HTMLElement {
       // The shared object layout is a tiny, edge-cached public document.
       // Request it immediately so administrator-locked placements are already
       // available by the time the scene finishes constructing.
-      const layoutPromise = this.fetchJSON("/api/world/layout", {
-        auth: false,
-        timeout: 5000,
-      }).catch(() => null);
+      const layoutPromise = this.fetchWorldLayout();
       // Validate the optional persisted account session before issuing any
       // private World reads. This prevents an expired local token from
       // fanning out into a page full of avoidable 401/403 requests.
@@ -4019,7 +4410,8 @@ class ForkMeshWorld extends HTMLElement {
         onPlayForkmeshSong: () => {
           void this.playForkmeshSong();
         },
-        onCreateRepository: () => this.openRepositoryCreateForm(),
+        onCreateRepository: (options) =>
+          this.openRepositoryCreateForm(options),
         onSwingRide: (state) => this.handleSwingRide(state),
         onOfficeChairSelect: (chairId) => {
           this.officeMeeting?.requestSeat(chairId);
@@ -4072,7 +4464,7 @@ class ForkMeshWorld extends HTMLElement {
       this.world.setMovementTuning?.(this.movementTuning());
       void layoutPromise.then((layout) => {
         if (this.destroyed) return;
-        this.world?.applyWorldLayout?.(layout?.objects);
+        this.world?.applyWorldLayout?.(this.mergedWorldLayout(layout?.objects));
       });
       await Promise.allSettled([contextPromise, dataPromise]);
       this.world.updateIdentity(publicIdentity(this.identity, this.settings));
@@ -4138,6 +4530,7 @@ class ForkMeshWorld extends HTMLElement {
       this.startActivityTicker();
       this.startRewardPolling();
       this.startMirrorPolling();
+      this.startRepositoryImportPolling();
       this.startEventPolling();
       this.startNotificationPolling();
       this.startMediaPlaybackPolling();
@@ -4468,6 +4861,7 @@ class ForkMeshWorld extends HTMLElement {
       mirrorResult,
       instancesResult,
       reposResult,
+      externalReposResult,
       versionResult,
       rewardResult,
       orgResult,
@@ -4497,6 +4891,11 @@ class ForkMeshWorld extends HTMLElement {
           cache: "no-store",
         }),
         this.fetchJSON("/api/repositories", { auth: hasSession }),
+        this.fetchJSON("/api/repository-imports", {
+          auth: hasSession,
+          timeout: 12000,
+          cache: "no-store",
+        }),
         this.fetchJSON("/api/version", { auth: false, timeout: 5000 }),
         this.fetchJSON("/api/accounts/central-fund", {
           auth: false,
@@ -4609,10 +5008,22 @@ class ForkMeshWorld extends HTMLElement {
         cleanRepositories(reposResult.value),
         this.mirrorCatalogs,
       );
+      this.externalRepositories =
+        externalReposResult.status === "fulfilled"
+          ? cleanExternalRepositories(externalReposResult.value)
+          : [];
+      this.repositories.push(...this.externalRepositories);
       this.repositoryCatalogState = this.repositories.length ? "ready" : "empty";
     } else {
       this.repositories = [];
-      this.repositoryCatalogState = "unavailable";
+      this.externalRepositories =
+        externalReposResult.status === "fulfilled"
+          ? cleanExternalRepositories(externalReposResult.value)
+          : [];
+      this.repositories.push(...this.externalRepositories);
+      this.repositoryCatalogState = this.repositories.length
+        ? "ready"
+        : "unavailable";
     }
     if (eventsResult.status === "fulfilled") {
       this.events = normalizeCommunityEvents(eventsResult.value);
@@ -4742,6 +5153,7 @@ class ForkMeshWorld extends HTMLElement {
             activity: "idle",
             availability: String(person.availability || "inactive"),
             lastActive: String(person.lastActive || "Last active recently"),
+            activityBucket: activityLightBucket(person.activityBucket),
             publicDoor: "closed",
             space: "town-square",
             x: 0,
@@ -4756,6 +5168,8 @@ class ForkMeshWorld extends HTMLElement {
         ? normalizeMemberDirectory(membersResult.value)
         : [];
     this.memberDirectoryFetchedAt = Date.now();
+    // Refresh the local avatar's wallet chip alongside the world data poll.
+    this.applyWalletBadges();
     this.visitorStats =
       visitorsResult.status === "fulfilled" &&
       visitorsResult.value?.ok === true
@@ -6526,6 +6940,89 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
+  // Read the locked placement document. Every read goes through here so a
+  // reload lands on the placements the square was actually left in:
+  //
+  //   * the five-second budget is spent while the scene is still building
+  //     itself and the abort timer shares that busy main thread, so a read
+  //     dropped on a slow machine used to be swallowed for the whole session,
+  //     rebuilding the square from its authored coordinates. Retry instead.
+  //   * the response is public and cacheable for a minute, so skip the HTTP
+  //     cache: someone stepping back into the World must not be handed a copy
+  //     from before the last move. The Worker's own edge cache still absorbs
+  //     the read.
+  async fetchWorldLayout(attempts = 3) {
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      if (this.destroyed) return null;
+      try {
+        return await this.fetchJSON("/api/world/layout", {
+          auth: false,
+          timeout: 5000,
+          cache: "no-store",
+        });
+      } catch (_) {
+        if (attempt === attempts) return null;
+        await new Promise((resolve) =>
+          window.setTimeout(resolve, 400 * attempt),
+        );
+      }
+    }
+    return null;
+  }
+
+  // The layout document is held in the Worker's edge cache for a minute and a
+  // write only purges the colo that took it, so the read an administrator
+  // makes seconds later — the reload they do to check the save — can still be
+  // answered with the placements from before their move. Keep what the save
+  // returned and let it stand in until the served document catches up.
+  rememberWorldLayout(objects) {
+    if (!Array.isArray(objects) || !objects.length) return;
+    try {
+      window.localStorage.setItem(
+        WORLD_LAYOUT_ECHO_KEY,
+        JSON.stringify({ savedAt: Date.now(), objects }),
+      );
+    } catch (_) {}
+  }
+
+  rememberedWorldLayout() {
+    try {
+      const stored = JSON.parse(
+        window.localStorage.getItem(WORLD_LAYOUT_ECHO_KEY) || "null",
+      );
+      if (!Array.isArray(stored?.objects)) return [];
+      const age = Date.now() - Number(stored.savedAt || 0);
+      if (!(age >= 0 && age < WORLD_LAYOUT_ECHO_TTL_MS)) {
+        window.localStorage.removeItem(WORLD_LAYOUT_ECHO_KEY);
+        return [];
+      }
+      return stored.objects;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  // The served document wins per object; a placement this browser locked in
+  // more recently than the copy that came back fills the gap until it does.
+  // Both stamps are the Worker's own, so a skewed local clock cannot reorder
+  // them.
+  mergedWorldLayout(objects) {
+    const merged = new Map();
+    for (const entry of Array.isArray(objects) ? objects : []) {
+      const id = String(entry?.id || "");
+      if (id) merged.set(id, entry);
+    }
+    for (const entry of this.rememberedWorldLayout()) {
+      const id = String(entry?.id || "");
+      if (!id) continue;
+      const served = merged.get(id);
+      if (Number(entry?.updatedAt || 0) > Number(served?.updatedAt || 0)) {
+        merged.set(id, entry);
+      }
+    }
+    return [...merged.values()];
+  }
+
   async lockWorldObjectPlacement(move) {
     if (!this.identity?.isAdmin) return;
     const id = String(move?.id || "");
@@ -6540,19 +7037,15 @@ class ForkMeshWorld extends HTMLElement {
         z,
         rotation: Number.isFinite(rotation) ? rotation : 0,
       });
+      this.rememberWorldLayout(result?.objects);
       this.world?.applyWorldLayout?.(result?.objects);
       this.toast("Object placement locked in for every visitor.");
     } catch (error) {
       this.toast(`The new object placement was not saved: ${error.message}`);
       // Re-apply the persisted layout so this scene matches what everyone
       // else still sees.
-      try {
-        const layout = await this.fetchJSON("/api/world/layout", {
-          auth: false,
-          timeout: 5000,
-        });
-        this.world?.applyWorldLayout?.(layout?.objects);
-      } catch (_) {}
+      const layout = await this.fetchWorldLayout();
+      this.world?.applyWorldLayout?.(this.mergedWorldLayout(layout?.objects));
     }
   }
 
@@ -6757,6 +7250,42 @@ class ForkMeshWorld extends HTMLElement {
         // Preserve the last verified snapshot during a transient HTTPS failure.
       });
     }, MIRROR_STATUS_POLL_MS);
+  }
+
+  startRepositoryImportPolling() {
+    window.clearInterval(this.repositoryImportTimer);
+    this.repositoryImportTimer = window.setInterval(async () => {
+      if (this.destroyed || document.visibilityState !== "visible") return;
+      try {
+        const payload = await this.fetchJSON("/api/repository-imports", {
+          auth: this.sessionAuthenticated && Boolean(validWorldSession()),
+          timeout: 10000,
+          cache: "no-store",
+        });
+        const external = cleanExternalRepositories(payload);
+        const before = this.externalRepositories
+          .map((record) => `${record.importId}:${record.updatedAt}:${record.importStatus}`)
+          .sort()
+          .join("|");
+        const after = external
+          .map((record) => `${record.importId}:${record.updatedAt}:${record.importStatus}`)
+          .sort()
+          .join("|");
+        if (before === after) return;
+        this.externalRepositories = external;
+        this.repositories = [
+          ...this.repositories.filter(
+            (record) => record.source !== "external-import",
+          ),
+          ...external,
+        ];
+        this.repositoryCatalogState = this.repositories.length ? "ready" : "empty";
+        this.syncRepositoryScene();
+      } catch (_) {
+        // Preserve the most recent visible import catalog through a transient
+        // provider/relay failure; the next bounded poll retries automatically.
+      }
+    }, REPOSITORY_IMPORT_POLL_MS);
   }
 
   updateLocation(label, id) {
@@ -10792,13 +11321,17 @@ class ForkMeshWorld extends HTMLElement {
       this.repositoryMapState === "ready" && this.activeRepository
         ? this.activeRepository
         : null;
+    const preview = active ? null : this.repositoryMapPreview;
     this.world.updateRepositoryCatalog?.(
       this.repositoriesWithLiveSocialState(),
-      active || {},
+      active || preview || {},
     );
     if (!active) {
-      this.world.updateRepositoryGraph?.([], []);
-      this.world.updateRepositorySizeMap?.({}, {});
+      this.world.updateRepositoryGraph?.(preview?.entries || [], []);
+      this.world.updateRepositorySizeMap?.(
+        preview?.sizes || {},
+        preview || {},
+      );
       this.world.updateRepositoryRecordDesk?.({}, {});
       return;
     }
@@ -10825,6 +11358,57 @@ class ForkMeshWorld extends HTMLElement {
         expandedIssue: this.expandedRepositoryIssuePage,
       },
     );
+  }
+
+  repositoryTreeSizePreview(entries = []) {
+    // The first tree response already contains exact blob sizes for root
+    // files. Paint those immediately while the recursive size tree is still
+    // being calculated; directories with an unknown size stay out of this
+    // preview instead of receiving an invented weight.
+    const children = (Array.isArray(entries) ? entries : [])
+      .filter((entry) => entry?.type === "file" && Number(entry?.size) > 0)
+      .slice(0, 80)
+      .map((entry) => ({
+        name: String(entry.name || entry.path || "file").slice(0, 100),
+        path: String(entry.path || entry.name || "").slice(0, 500),
+        type: "file",
+        size: Math.max(0, Number(entry.size) || 0),
+        children: [],
+      }));
+    return {
+      name: "repository",
+      path: "",
+      type: "directory",
+      size: children.reduce((total, child) => total + child.size, 0),
+      children,
+    };
+  }
+
+  previewRepositoryMap(owner, repo, commit, entries, sizes = null) {
+    if (!this.world || this.destroyed) return;
+    const selection = { owner, repo, commit, path: "" };
+    const current =
+      this.repositoryMapPreview?.owner === owner &&
+      this.repositoryMapPreview?.repo === repo &&
+      this.repositoryMapPreview?.commit === commit
+        ? this.repositoryMapPreview
+        : null;
+    const previewSizes =
+      sizes ||
+      current?.sizes ||
+      this.repositoryTreeSizePreview(entries);
+    this.repositoryMapPreview = {
+      ...selection,
+      entries,
+      sizes: previewSizes,
+    };
+    this.world.updateRepositoryCatalog?.(
+      this.repositoriesWithLiveSocialState(),
+      selection,
+    );
+    this.world.updateRepositoryGraph?.(entries, []);
+    this.world.updateRepositorySizeMap?.(previewSizes, selection);
+    this.world.setRepositorySizeLoading?.(true);
   }
 
   repositoriesWithLiveSocialState() {
@@ -10912,6 +11496,10 @@ class ForkMeshWorld extends HTMLElement {
     const owner = sanitizePresenceText(portal?.owner, "", 40);
     const name = sanitizePresenceText(portal?.name, "", 60);
     if (!owner || !name) return;
+    if (portal?.source === "external-import" && portal?.externalUrl) {
+      this.openRepositoryWebsite(portal);
+      return;
+    }
     this.toast(`Opening ${owner}/${name} at its perimeter portal…`);
     void this.loadRepositoryMap(owner, name, {
       automatic: false,
@@ -10923,7 +11511,13 @@ class ForkMeshWorld extends HTMLElement {
     const owner = sanitizePresenceText(portal?.owner, "", 40);
     const name = sanitizePresenceText(portal?.name, "", 60);
     if (!owner || !name) return;
-    const path = `/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+    const externalURL =
+      portal?.source === "external-import"
+        ? safeHTTPURL(portal.externalUrl)
+        : "";
+    const path =
+      externalURL ||
+      `/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
     // `noopener` intentionally makes window.open return null in some browsers,
     // so do not mistake a safely opened tab for a popup-blocker failure.
     window.open(path, "_blank", "noopener,noreferrer");
@@ -11056,13 +11650,17 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
-  async fetchRepositoryMapSnapshot(owner, repo) {
+  async fetchRepositoryMapSnapshot(owner, repo, options = {}) {
     const safeOwner = sanitizePresenceText(owner, "", 40);
     const safeRepo = sanitizePresenceText(repo, "", 60);
     const base = `/api/repo/${encodeURIComponent(safeOwner)}/${encodeURIComponent(
       safeRepo,
     )}`;
-    const tree = await this.fetchJSON(`${base}/tree?path=`, {
+    const expectedCommit = immutableGitOid(options.expectedCommit);
+    const treeURL = expectedCommit
+      ? `${base}/tree?path=&ref=${encodeURIComponent(expectedCommit)}`
+      : `${base}/tree?path=`;
+    const tree = await this.fetchJSON(treeURL, {
       timeout: REPOSITORY_METADATA_TIMEOUT_MS,
       cache: "no-store",
     });
@@ -11079,40 +11677,62 @@ class ForkMeshWorld extends HTMLElement {
     if (!/^[0-9a-f]{40,64}$/.test(commit)) {
       throw new Error("repository tree commit unavailable");
     }
+    const entries = normalizeTreeEntries(tree);
+    options.onTree?.({ owner: safeOwner, repo: safeRepo, commit, entries });
     const ref = `?ref=${encodeURIComponent(commit)}`;
     const catalogRecord = this.repositories.find(
       (record) =>
         record.owner.toLowerCase() === safeOwner.toLowerCase() &&
         record.name.toLowerCase() === safeRepo.toLowerCase(),
     );
-    // Resolve the short immutable PR chain before sizes/stats and issue scans
-    // can contend for a one-vCPU mirror. This result is then injected into the
-    // entity loader, so the browser never repeats branches/tree/blobs.
-    const pullResult =
+    // Start the short immutable PR chain beside sizes/stats, then inject its
+    // result into the entity loader so the browser never repeats
+    // branches/tree/blobs. Optional PR metadata must not delay the first map.
+    const pullResultPromise =
       catalogRecord?.isPrivate === true
-        ? {
+        ? Promise.resolve({
             status: "rejected",
             reason: new Error("private pull metadata is not publicly probed"),
-          }
-        : await this.loadRepositoryPullRecords(base).then(
+          })
+        : this.loadRepositoryPullRecords(base).then(
             (value) => ({ status: "fulfilled", value }),
             (reason) => ({ status: "rejected", reason }),
           );
+    const sizeRequest = this.fetchJSON(`${base}/sizes${ref}`, {
+      timeout: REPOSITORY_METADATA_TIMEOUT_MS,
+      cache: "no-store",
+    });
+    sizeRequest.then(
+      (value) => {
+        if (
+          value?.ok !== false &&
+          String(value?.commit || "").toLowerCase() === commit
+        ) {
+          options.onSizes?.({
+            owner: safeOwner,
+            repo: safeRepo,
+            commit,
+            entries,
+            sizes: value,
+          });
+        }
+      },
+      () => {},
+    );
     const [sizeResult, statsResult, mirrorsResult, entityRecordsResult] =
       await Promise.allSettled([
-        this.fetchJSON(`${base}/sizes${ref}`, {
-          timeout: REPOSITORY_METADATA_TIMEOUT_MS,
-          cache: "no-store",
-        }),
+        sizeRequest,
         this.fetchJSON(`${base}/stats${ref}`, {
           timeout: REPOSITORY_METADATA_TIMEOUT_MS,
           cache: "no-store",
         }),
         this.fetchJSON(`${base}/mirrors`, { auth: false }),
-        this.loadRepositoryEntityRecords(base, commit, {
-          privateRepository: catalogRecord?.isPrivate === true,
-          pullResult,
-        }),
+        pullResultPromise.then((pullResult) =>
+          this.loadRepositoryEntityRecords(base, commit, {
+            privateRepository: catalogRecord?.isPrivate === true,
+            pullResult,
+          }),
+        ),
       ]);
     const sizes =
       sizeResult.status === "fulfilled" &&
@@ -11174,7 +11794,7 @@ class ForkMeshWorld extends HTMLElement {
       path: "",
       commit,
       analysis: tree.analysis || {},
-      entries: normalizeTreeEntries(tree),
+      entries,
       counts: {
         ...(tree?.counts || {}),
         pulls: pullCount,
@@ -11252,14 +11872,41 @@ class ForkMeshWorld extends HTMLElement {
     this.expandedRepositoryIssuePage = 0;
     this.clearPullReviewScrollTracking();
     const selection = ++this.repositoryMapSelection;
+    const expectedCommits =
+      options.expectedCommits instanceof Set
+        ? options.expectedCommits
+        : new Set();
+    const preview = (snapshot) => {
+      if (
+        selection !== this.repositoryMapSelection ||
+        this.destroyed ||
+        (expectedCommits.size &&
+          !expectedCommits.has(String(snapshot.commit).toLowerCase()))
+      ) {
+        return;
+      }
+      this.previewRepositoryMap(
+        snapshot.owner,
+        snapshot.repo,
+        snapshot.commit,
+        snapshot.entries,
+        snapshot.sizes,
+      );
+    };
     this.repositoryMapState = "loading";
+    this.repositoryMapPreview = null;
     this.repositoryMapTarget = `${safeOwner}/${safeRepo}`;
     this.world?.setRepositorySizeLoading?.(true);
     this.renderRepositoryMapStatus();
 
     let request = this.repositoryMapLoads.get(key);
     if (!request) {
-      request = this.fetchRepositoryMapSnapshot(safeOwner, safeRepo);
+      request = this.fetchRepositoryMapSnapshot(safeOwner, safeRepo, {
+        expectedCommit:
+          expectedCommits.size === 1 ? [...expectedCommits][0] : "",
+        onTree: preview,
+        onSizes: preview,
+      });
       this.repositoryMapLoads.set(key, request);
       request.then(
         () => {
@@ -11283,6 +11930,7 @@ class ForkMeshWorld extends HTMLElement {
         return false;
       }
       this.repositoryMapState = "unavailable";
+      this.repositoryMapPreview = null;
       if (!this.activeRepository) this.world?.updateRepositoryGraph?.([], []);
       if (!this.activeRepository) this.world?.updateRepositorySizeMap?.({}, {});
       this.world?.setRepositorySizeLoading?.(false);
@@ -11293,24 +11941,40 @@ class ForkMeshWorld extends HTMLElement {
       return false;
     }
 
-    const expectedCommits =
-      options.expectedCommits instanceof Set
-        ? options.expectedCommits
-        : new Set();
     if (
       (options.requireComplete === true && !result.complete) ||
       (expectedCommits.size &&
         !expectedCommits.has(String(result.snapshot.commit).toLowerCase()))
     ) {
       this.repositoryMapState = "unavailable";
-      if (!this.activeRepository) this.world?.updateRepositoryGraph?.([], []);
-      if (!this.activeRepository) this.world?.updateRepositorySizeMap?.({}, {});
+      const commitRejected =
+        expectedCommits.size &&
+        !expectedCommits.has(String(result.snapshot.commit).toLowerCase());
+      if (commitRejected) {
+        this.repositoryMapPreview = null;
+        if (!this.activeRepository) this.world?.updateRepositoryGraph?.([], []);
+        if (!this.activeRepository) {
+          this.world?.updateRepositorySizeMap?.({}, {});
+        }
+      } else {
+        // Optional records may be unavailable even though this tree and byte
+        // map are both pinned to the catalog-attested commit. Keep those exact
+        // repository facts visible instead of returning to a blank portal.
+        this.previewRepositoryMap(
+          safeOwner,
+          safeRepo,
+          result.snapshot.commit,
+          result.snapshot.entries,
+          result.snapshot.sizes,
+        );
+      }
       this.world?.setRepositorySizeLoading?.(false);
       this.renderRepositoryMapStatus();
       return false;
     }
 
     this.activeRepository = result.snapshot;
+    this.repositoryMapPreview = null;
     this.repositoryMapState = "ready";
     this.renderRepositoryMapStatus();
     this.syncRepositoryScene();
@@ -16484,6 +17148,11 @@ class ForkMeshWorld extends HTMLElement {
         faceImage:
           this.identity.accountStatus === "Supporting member" &&
           this.settings.faceImage === true,
+        solana: WORLD_SOLANA_ADDRESS_RE.test(
+          String(this.identity.solana || ""),
+        )
+          ? String(this.identity.solana)
+          : "",
       };
     } else if (message.type === "move") {
       safe = {
@@ -16768,10 +17437,67 @@ class ForkMeshWorld extends HTMLElement {
         });
       });
     }
-    this.world?.setRemotePlayers([...combined.values()]);
-    this.syncWorldFaceImages([...combined.values()]);
+    const players = [...combined.values()].map((player) => {
+      if (!player?.solana) return player;
+      const wallet = this.walletBadgeFor(player.solana);
+      return {
+        ...player,
+        walletSol: wallet?.sol ?? null,
+        walletTxBucket: wallet?.txBucket || "",
+      };
+    });
+    this.world?.setRemotePlayers(players);
+    this.syncWorldFaceImages(players);
     this.syncMemberLounge();
     this.updateSystemCapacityMetrics();
+  }
+
+  // Public balance and transaction-recency bucket for one published wallet
+  // address, refreshed from the edge-cached worker endpoint at most once per
+  // TTL. Returns the cached entry immediately (possibly still pending).
+  walletBadgeFor(address) {
+    if (!WORLD_SOLANA_ADDRESS_RE.test(String(address || ""))) return null;
+    let entry = this.walletBadges.get(address);
+    const fresh = entry && Date.now() - entry.fetchedAt < WALLET_BADGE_TTL_MS;
+    if (!fresh && !entry?.pending) {
+      if (!entry) {
+        entry = { sol: null, txBucket: "", fetchedAt: 0, pending: false };
+        this.walletBadges.set(address, entry);
+      }
+      entry.pending = true;
+      this.fetchJSON(
+        `/api/world/wallet?address=${encodeURIComponent(address)}`,
+        { auth: false, timeout: 5000 },
+      )
+        .then((body) => {
+          entry.sol = Number.isFinite(Number(body?.sol))
+            ? Number(body.sol)
+            : null;
+          entry.txBucket = activityLightBucket(body?.txBucket);
+        })
+        .catch(() => {})
+        .finally(() => {
+          entry.pending = false;
+          entry.fetchedAt = Date.now();
+          this.applyWalletBadges();
+        });
+    }
+    return entry;
+  }
+
+  // Pushes the freshest wallet data onto the local avatar and every rendered
+  // peer; called whenever a wallet lookup settles.
+  applyWalletBadges() {
+    if (this.destroyed) return;
+    if (this.identity?.solana && this.settings) {
+      const wallet = this.walletBadgeFor(this.identity.solana);
+      this.identity.walletSol = wallet?.sol ?? null;
+      this.identity.walletTxBucket = wallet?.txBucket || "";
+      this.world?.updateIdentity(
+        publicIdentity(this.identity, this.settings),
+      );
+    }
+    this.renderPeers();
   }
 
   // The viewer's shareable referral link — only real user accounts (never
@@ -16951,6 +17677,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.pingTimer);
     window.clearInterval(this.rewardTimer);
     window.clearInterval(this.mirrorTimer);
+    window.clearInterval(this.repositoryImportTimer);
     window.clearTimeout(this.mirrorPushRefreshTimer);
     window.clearInterval(this.eventsTimer);
     window.clearInterval(this.notificationsTimer);

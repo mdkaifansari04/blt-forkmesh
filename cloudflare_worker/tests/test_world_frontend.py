@@ -1160,10 +1160,20 @@ def test_flagship_graph_requires_commit_matched_tree_sizes_stats_and_entities():
     assert "this.loadRepositoryEntityRecords(base, commit, {" in fetch_map
     assert "privateRepository: catalogRecord?.isPrivate === true" in fetch_map
     assert "pullResult," in fetch_map
+    # Pull metadata is optional enrichment. It starts alongside the immutable
+    # size/stats requests so it cannot hold the first repository frame blank.
+    assert "const pullResultPromise =" in fetch_map
+    assert "const sizeRequest = this.fetchJSON(`${base}/sizes${ref}`" in fetch_map
     assert (
-        fetch_map.index("await this.loadRepositoryPullRecords(base)")
+        fetch_map.index("const pullResultPromise =")
         < fetch_map.index("await Promise.allSettled([")
     )
+    assert (
+        fetch_map.index("const sizeRequest =")
+        < fetch_map.index("await Promise.allSettled([")
+    )
+    assert "options.onTree?.(" in fetch_map
+    assert "options.onSizes?.(" in fetch_map
     assert "const REPOSITORY_METADATA_TIMEOUT_MS = 45 * 1000;" in APP
     assert fetch_map.count(
         'String(sizeResult.value?.commit || "").toLowerCase() === commit'
@@ -1196,6 +1206,7 @@ def test_flagship_graph_requires_commit_matched_tree_sizes_stats_and_entities():
     assert 'this.repositoryMapState = "unavailable"' in gate
     assert "updateRepositoryGraph?.([], [])" in gate
     assert "this.activeRepository = result.snapshot;" not in gate
+    assert "this.previewRepositoryMap(" in gate
 
 
 def test_repository_map_autoload_is_deduplicated_and_never_overrides_manual_choice():

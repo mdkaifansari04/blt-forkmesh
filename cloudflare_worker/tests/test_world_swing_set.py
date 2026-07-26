@@ -76,6 +76,22 @@ def test_swing_animation_is_a_continuous_pendulum():
     assert "swing.pivot.rotation.x = swing.amplitude * Math.sin(swing.phase);" in build
 
 
+def test_riders_lean_front_to_back_only():
+    # The swing set faces the fountain at an angle, so a rider pitched about
+    # the default XYZ order's world X axis reads as rocking side to side. Yaw
+    # has to be applied before the pitch for the lean to follow the ropes.
+    pose = SCENE.split("function applySwingRidePose", 1)[1].split(
+        "function dismountSwing", 1
+    )[0]
+    assert "player.rotation.order = \"YXZ\";" in pose
+    assert pose.index("rotation.order") < pose.index("player.rotation.x =")
+    remote = SCENE.split("function updateRemotePlayers", 1)[1].split(
+        "function updateForkbot", 1
+    )[0]
+    assert "avatar.rotation.order = \"YXZ\";" in remote
+    assert remote.index("rotation.order") < remote.index("avatar.rotation.x =")
+
+
 def test_remote_visitors_render_riding_their_claimed_swings():
     remote = SCENE.split("function updateRemotePlayers", 1)[1].split(
         "function updateForkbot", 1

@@ -71,6 +71,9 @@ _SOLANA_READ_ONLY_METHODS = frozenset({
     "getBalance",
     "getGenesisHash",
     "getLatestBlockhash",
+    # Newest-first signature listing; the wallet chest chip reads only the
+    # most recent entry's blockTime to bucket transaction recency.
+    "getSignaturesForAddress",
     "getSignatureStatuses",
     "getTransaction",
 })

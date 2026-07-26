@@ -3,6 +3,7 @@
     repositories: [],
     externalRepositories: [],
     externalRepositoriesLoading: false,
+    externalRepositorySelection: new Set(),
     filteredRepositories: [],
     filteredGroups: [],
     repositoriesLoading: true,
@@ -57,6 +58,10 @@
     // to. null until the first cross-repo fetch resolves so the panel can tell
     // "loading" apart from "no active sessions".
     homeAgentSessions: null,
+    // Home right-rail "Latest from the blog" (adhoc #381): the newest posts
+    // parsed from /blog/rss.xml. null until the feed read resolves so the card
+    // can tell "loading" apart from "feed unavailable".
+    homeBlogPosts: null,
     longDiffOverrides: {},
     repoCommitDetail: null,
     repoRecordDetail: null,
