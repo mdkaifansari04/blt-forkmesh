@@ -3062,6 +3062,11 @@ function serverPanelTexture(THREE, node) {
       58,
       124,
     );
+    context.font = '600 21px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#8ca99a";
+    context.textAlign = "right";
+    context.fillText(`SYNCED ${mirrorCommitAgeLabel(node?.syncAgeMs)}`, 966, 124);
+    context.textAlign = "left";
 
     context.strokeStyle = "#294339";
     context.lineWidth = 3;
