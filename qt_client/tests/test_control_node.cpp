@@ -868,6 +868,92 @@ int main(int argc, char **argv)
               forkmesh::control::vultrApiKeyFromVariables({}).isEmpty(),
           "the stored VULTR_API_KEY device variable is resolved case-insensitively");
 
+    // --- Cloudflare DNS for a fresh Vultr mirror (adhoc #331) --------------
+    QMap<QString, QString> zoneVariables;
+    zoneVariables.insert(QStringLiteral("cloudflare_zone"),
+                         QStringLiteral("Example.Com"));
+    check(forkmesh::control::cloudflareZoneNameFromVariables(zoneVariables) ==
+                  QStringLiteral("Example.Com") &&
+              forkmesh::control::cloudflareZoneNameFromVariables({}).isEmpty(),
+          "the stored CLOUDFLARE_ZONE device variable is resolved");
+
+    check(forkmesh::control::vultrMirrorDnsHostname(
+              QStringLiteral("vultr-mirror-1"),
+              QStringLiteral(" Example.COM. ")) ==
+                  QStringLiteral("vultr-mirror-1.example.com") &&
+              forkmesh::control::vultrMirrorDnsHostname(
+                  QStringLiteral("vultr-mirror-1"), QStringLiteral("example"))
+                  .isEmpty() &&
+              forkmesh::control::vultrMirrorDnsHostname(
+                  QStringLiteral("bad node"), QStringLiteral("example.com"))
+                  .isEmpty() &&
+              forkmesh::control::vultrMirrorDnsHostname(
+                  QString(), QStringLiteral("example.com")).isEmpty(),
+          "the mirror DNS hostname is <node>.<zone> and rejects bad halves");
+
+    const QJsonObject dnsPayload =
+        forkmesh::control::vultrMirrorDnsRecordPayload(
+            QStringLiteral("vultr-mirror-1.example.com"),
+            QStringLiteral("203.0.113.99"));
+    check(dnsPayload.value(QStringLiteral("type")).toString() ==
+                  QStringLiteral("A") &&
+              dnsPayload.value(QStringLiteral("name")).toString() ==
+                  QStringLiteral("vultr-mirror-1.example.com") &&
+              dnsPayload.value(QStringLiteral("content")).toString() ==
+                  QStringLiteral("203.0.113.99") &&
+              dnsPayload.value(QStringLiteral("proxied")).toBool() == false &&
+              dnsPayload.value(QStringLiteral("ttl")).toInt() == 1,
+          "the mirror DNS record is a DNS-only A answer at automatic TTL");
+    check(forkmesh::control::vultrMirrorDnsRecordPayload(
+              QStringLiteral("vultr-mirror-1.example.com"),
+              QStringLiteral("0.0.0.0")).isEmpty() &&
+              forkmesh::control::vultrMirrorDnsRecordPayload(
+                  QStringLiteral("vultr-mirror-1.example.com"),
+                  QStringLiteral("203.0.113.999")).isEmpty() &&
+              forkmesh::control::vultrMirrorDnsRecordPayload(
+                  QStringLiteral("vultr-mirror-1"),
+                  QStringLiteral("203.0.113.99")).isEmpty(),
+          "malformed addresses or single-label names never reach Cloudflare");
+
+    const QJsonArray zones{
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("zone-other")},
+                    {QStringLiteral("name"), QStringLiteral("other.test")}},
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("zone-example")},
+                    {QStringLiteral("name"), QStringLiteral("example.com")}},
+    };
+    QJsonArray ambiguousZones = zones;
+    ambiguousZones.append(
+        QJsonObject{{QStringLiteral("id"), QStringLiteral("zone-duplicate")},
+                    {QStringLiteral("name"), QStringLiteral("example.com")}});
+    check(forkmesh::control::cloudflareZoneId(
+              zones, QStringLiteral("Example.com.")) ==
+                  QStringLiteral("zone-example") &&
+              forkmesh::control::cloudflareZoneId(
+                  zones, QStringLiteral("missing.test")).isEmpty() &&
+              forkmesh::control::cloudflareZoneId(
+                  ambiguousZones, QStringLiteral("example.com")).isEmpty(),
+          "the zone id resolves only on an unambiguous exact name match");
+
+    const QJsonArray dnsRecords{
+        QJsonObject{
+            {QStringLiteral("id"), QStringLiteral("record-cname")},
+            {QStringLiteral("name"),
+             QStringLiteral("vultr-mirror-1.example.com")},
+            {QStringLiteral("type"), QStringLiteral("CNAME")}},
+        QJsonObject{
+            {QStringLiteral("id"), QStringLiteral("record-a")},
+            {QStringLiteral("name"),
+             QStringLiteral("vultr-mirror-1.example.com")},
+            {QStringLiteral("type"), QStringLiteral("A")}},
+    };
+    check(forkmesh::control::cloudflareDnsRecordId(
+              dnsRecords, QStringLiteral("vultr-mirror-1.example.com"),
+              QStringLiteral("A")) == QStringLiteral("record-a") &&
+              forkmesh::control::cloudflareDnsRecordId(
+                  dnsRecords, QStringLiteral("vultr-mirror-2.example.com"),
+                  QStringLiteral("A")).isEmpty(),
+          "an existing A record is reused so repeat deploys update in place");
+
     QTemporaryDir hostSettingsDir;
     const QString hostSettingsPath =
         hostSettingsDir.filePath(QStringLiteral("controller.ini"));

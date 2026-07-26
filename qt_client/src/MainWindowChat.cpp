@@ -7615,8 +7615,12 @@ QWidget *MainWindow::buildHostsSection()
         "account so it starts mirroring and syncing right away. The API key "
         "(Vultr panel \xE2\x86\x92 Account \xE2\x86\x92 API) is used from "
         "memory only and never saved to disk \xE2\x80\x94 store it as a "
-        "VULTR_API_KEY device variable to prefill it. The instance is billed "
-        "by Vultr to your account until you destroy it there."));
+        "VULTR_API_KEY device variable to prefill it. When a "
+        "CLOUDFLARE_API_TOKEN device variable and a Cloudflare zone are "
+        "configured, the new node also gets a <node>.<zone> DNS record so it "
+        "joins the mesh under a stable name like your other mirrors. The "
+        "instance is billed by Vultr to your account until you destroy it "
+        "there."));
     vultrHint->setObjectName("mutedLabel");
     vultrHint->setWordWrap(true);
     vultrCol->addWidget(vultrHint);
@@ -10687,6 +10691,172 @@ void MainWindow::vultrApiCall(const QString &apiKey, const QString &path,
     });
 }
 
+void MainWindow::cloudflareApiCall(const QString &apiToken, const QString &path,
+                                   const QByteArray &method,
+                                   const QJsonObject &body,
+                                   std::function<void(QJsonObject, QString)> onDone)
+{
+    QNetworkRequest request(
+        QUrl(QStringLiteral("https://api.cloudflare.com/client/v4") + path));
+    request.setRawHeader(QByteArrayLiteral("Authorization"),
+                         QByteArrayLiteral("Bearer ") + apiToken.toUtf8());
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    const QByteArray payload =
+        QJsonDocument(body).toJson(QJsonDocument::Compact);
+    QNetworkReply *reply =
+        method == QByteArrayLiteral("GET")
+            ? m_networkAccess->get(request)
+            : m_networkAccess->sendCustomRequest(request, method, payload);
+    connect(reply, &QNetworkReply::finished, this, [reply, onDone] {
+        reply->deleteLater();
+        const int status =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                .toInt();
+        const QJsonObject object =
+            QJsonDocument::fromJson(reply->read(1024 * 1024)).object();
+        const bool succeeded =
+            object.value(QStringLiteral("success")).toBool();
+        if (reply->error() != QNetworkReply::NoError || status < 200 ||
+            status >= 300 || !succeeded) {
+            QString detail = object.value(QStringLiteral("errors"))
+                                 .toArray()
+                                 .first()
+                                 .toObject()
+                                 .value(QStringLiteral("message"))
+                                 .toString();
+            if (detail.isEmpty())
+                detail = reply->errorString();
+            onDone({}, QStringLiteral("Cloudflare API error (HTTP %1): %2")
+                           .arg(status)
+                           .arg(detail));
+            return;
+        }
+        onDone(object, QString());
+    });
+}
+
+// A brand-new Vultr instance only has a raw address, so it never lines up with
+// the hand-provisioned mirrors that answer under the mesh's own zone. Resolve
+// the zone, then create or update one DNS-only A record for "<node>.<zone>"
+// (adhoc #331). Every failure here is soft: the mirror is already booting and
+// links to the account over the relay regardless, so the DNS record is a
+// convenience that must never abort provisioning.
+void MainWindow::ensureVultrMirrorDns(const QString &node, const QString &ip,
+                                      std::function<void(QString)> onDone)
+{
+    auto skip = [this, onDone](const QString &reason) {
+        appendHostInstallLog(
+            QStringLiteral("Skipping the Cloudflare DNS record: %1\n")
+                .arg(reason));
+        onDone(QString());
+    };
+    if (!m_networkAccess) {
+        skip(QStringLiteral("network access is unavailable"));
+        return;
+    }
+    const QMap<QString, QString> variables = ActionStore::variables();
+    const QString apiToken =
+        forkmesh::control::cloudflareApiTokenFromVariables(variables);
+    if (apiToken.isEmpty()) {
+        skip(QStringLiteral(
+            "store a CLOUDFLARE_API_TOKEN device variable with DNS edit "
+            "permission to name mirrors automatically"));
+        return;
+    }
+    QSettings settings;
+    QString zone = settings.value(QStringLiteral("control/cloudflareZone"))
+                       .toString()
+                       .trimmed();
+    if (zone.isEmpty())
+        zone = forkmesh::control::cloudflareZoneNameFromVariables(variables);
+    const QString hostname =
+        forkmesh::control::vultrMirrorDnsHostname(node, zone);
+    if (hostname.isEmpty()) {
+        skip(zone.isEmpty()
+                 ? QStringLiteral("set the Cloudflare zone on the Control "
+                                  "node page first")
+                 : QStringLiteral("\"%1\" and \"%2\" do not form a valid "
+                                  "hostname")
+                       .arg(node, zone));
+        return;
+    }
+    const QJsonObject payload =
+        forkmesh::control::vultrMirrorDnsRecordPayload(hostname, ip);
+    if (payload.isEmpty()) {
+        skip(QStringLiteral("the instance address %1 is not a usable IPv4 "
+                            "answer").arg(ip));
+        return;
+    }
+    appendHostInstallLog(
+        QStringLiteral("Pointing %1 at %2 in Cloudflare\xE2\x80\xA6\n")
+            .arg(hostname, ip));
+    cloudflareApiCall(
+        apiToken,
+        QStringLiteral("/zones?name=%1")
+            .arg(QString::fromLatin1(QUrl::toPercentEncoding(zone))),
+        QByteArrayLiteral("GET"), {},
+        [this, apiToken, zone, hostname, payload, skip, onDone](
+            QJsonObject result, QString error) {
+            if (!error.isEmpty()) {
+                skip(error);
+                return;
+            }
+            const QString zoneId = forkmesh::control::cloudflareZoneId(
+                result.value(QStringLiteral("result")).toArray(), zone);
+            if (zoneId.isEmpty()) {
+                skip(QStringLiteral(
+                         "this API token does not see exactly one \"%1\" zone")
+                         .arg(zone));
+                return;
+            }
+            cloudflareApiCall(
+                apiToken,
+                QStringLiteral("/zones/%1/dns_records?type=A&name=%2")
+                    .arg(zoneId,
+                         QString::fromLatin1(
+                             QUrl::toPercentEncoding(hostname))),
+                QByteArrayLiteral("GET"), {},
+                [this, apiToken, zoneId, hostname, payload, skip, onDone](
+                    QJsonObject existing, QString listError) {
+                    if (!listError.isEmpty()) {
+                        skip(listError);
+                        return;
+                    }
+                    const QString recordId =
+                        forkmesh::control::cloudflareDnsRecordId(
+                            existing.value(QStringLiteral("result")).toArray(),
+                            hostname, QStringLiteral("A"));
+                    const QString path =
+                        recordId.isEmpty()
+                            ? QStringLiteral("/zones/%1/dns_records")
+                                  .arg(zoneId)
+                            : QStringLiteral("/zones/%1/dns_records/%2")
+                                  .arg(zoneId, recordId);
+                    cloudflareApiCall(
+                        apiToken, path,
+                        recordId.isEmpty() ? QByteArrayLiteral("POST")
+                                           : QByteArrayLiteral("PUT"),
+                        payload,
+                        [this, hostname, recordId, skip, onDone](
+                            QJsonObject, QString writeError) {
+                            if (!writeError.isEmpty()) {
+                                skip(writeError);
+                                return;
+                            }
+                            appendHostInstallLog(
+                                QStringLiteral("Cloudflare DNS record %1 "
+                                               "for %2.\n")
+                                    .arg(recordId.isEmpty()
+                                             ? QStringLiteral("created")
+                                             : QStringLiteral("updated"),
+                                         hostname));
+                            onDone(hostname);
+                        });
+                });
+        });
+}
+
 void MainWindow::ensureVultrManagedKeypair(
     std::function<void(QString, QString, QString)> onDone)
 {
@@ -10879,6 +11049,7 @@ void MainWindow::createVultrMirrorFromForm()
     m_vultrProvisionActive = true;
     m_vultrPollCount = 0;
     m_vultrInstallAttempts = 0;
+    m_vultrDnsHostname.clear();
     if (m_vultrCreateButton)
         m_vultrCreateButton->setEnabled(false);
     if (m_hostInstallLog) {
@@ -11081,12 +11252,25 @@ void MainWindow::pollVultrInstance(const QString &apiKey,
             // authenticates with that key. Vultr Debian images boot as root.
             rememberHost(node, ip, QStringLiteral("root"), QString(),
                          QStringLiteral("vultr booting"), identityFile);
+            // Name the node in the operator's Cloudflare zone while SSH is
+            // still coming up, so it joins the mesh the way the other mirrors
+            // do rather than as a bare address (adhoc #331).
             if (m_vultrStatus)
                 m_vultrStatus->setText(QString::fromUtf8(
-                    "Giving SSH a moment to come up\xE2\x80\xA6"));
-            QTimer::singleShot(15000, this, [this, node, ip, identityFile] {
-                startVultrHostInstall(node, ip, identityFile);
-            });
+                    "Adding the Cloudflare DNS record\xE2\x80\xA6"));
+            ensureVultrMirrorDns(
+                node, ip, [this, node, ip, identityFile](QString hostname) {
+                    if (!m_vultrProvisionActive)
+                        return;
+                    m_vultrDnsHostname = hostname;
+                    if (m_vultrStatus)
+                        m_vultrStatus->setText(QString::fromUtf8(
+                            "Giving SSH a moment to come up\xE2\x80\xA6"));
+                    QTimer::singleShot(
+                        15000, this, [this, node, ip, identityFile] {
+                            startVultrHostInstall(node, ip, identityFile);
+                        });
+                });
         });
 }
 
@@ -11119,10 +11303,14 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
         if (!m_vultrProvisionActive)
             return;
         if (ok) {
+            const QString address =
+                m_vultrDnsHostname.isEmpty()
+                    ? ip
+                    : QStringLiteral("%1, %2").arg(m_vultrDnsHostname, ip);
             finishVultrProvision(true, QString::fromUtf8(
                 "Vultr mirror \"%1\" (%2) is installed and linking to your "
                 "account \xE2\x80\x94 it will start mirroring and syncing "
-                "shortly.").arg(node, ip));
+                "shortly.").arg(node, address));
             return;
         }
         if (m_vultrInstallAttempts >= kMaxInstallAttempts) {
