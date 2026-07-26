@@ -1569,9 +1569,9 @@ void MainWindow::createNewRepository()
 {
     // A single "new repository" screen: name + description + an optional first
     // prompt + public/private visibility + a README choice + where on disk to
-    // create it. Everything past the
-    // dialog (git init, seeding, mirror + publish) lives in
-    // provisionNewRepository so it can be exercised without the UI.
+    // create it. Everything past the dialog (git init, seeding, mirror +
+    // publish) lives in provisionNewRepository so it can be exercised without
+    // the UI.
     QDialog dialog(this);
     dialog.setWindowTitle(QStringLiteral("New repository"));
 
