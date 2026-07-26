@@ -5175,9 +5175,140 @@ function createMastodonKiosk(THREE, interactive) {
   return group;
 }
 
-// Static half-height siblings of the Mastodon kiosk for the networks ForkMesh
-// has no live feed for: same stand, frame, and sign typography, but the whole
-// board is one click target that opens the profile in a new tab.
+// Half-height siblings of the Mastodon kiosk for Twitter/X and Reddit: same
+// stand, frame, and sign typography, but the whole board is one click target
+// that opens the profile in a new tab. Neither network allows the browser to
+// fetch its feed directly (no CORS, unlike mastodon.social), so the Worker
+// proxies one edge-cached read via /api/world/social-posts and the board
+// repaints from that snapshot; without one it keeps the static sign.
+const SOCIAL_BANNER_VISIBLE_POSTS = 4;
+const SOCIAL_BANNER_WIDTH = 1536;
+const SOCIAL_BANNER_HEIGHT = 2048;
+const SOCIAL_BANNER_POST_TOP = 760;
+const SOCIAL_BANNER_POST_PITCH = 290;
+
+const TWITTER_BANNER_OPTIONS = Object.freeze({
+  id: "twitter",
+  position: [37.2, 0, -9.2],
+  accent: "#1d9bf2",
+  frameColor: "#1b4e73",
+  titleColor: "#f2faff",
+  divider: "rgba(29,155,242,0.5)",
+  title: "TWITTER / X",
+  handle: "@forkmesh",
+  host: "x.com/forkmesh",
+  lines: [
+    "OFFICIAL FORKMESH ACCOUNT",
+    "RELEASES · OUTAGES · NEWS",
+    "REPLIES WELCOME OVER THERE",
+  ],
+  footer: "OPENS X.COM IN A NEW TAB",
+  url: "https://x.com/forkmesh",
+});
+
+const REDDIT_BANNER_OPTIONS = Object.freeze({
+  id: "reddit",
+  position: [27.6, 0, -26.6],
+  accent: "#ff4500",
+  frameColor: "#7a2d0e",
+  titleColor: "#fff4ee",
+  divider: "rgba(255,69,0,0.5)",
+  title: "REDDIT",
+  handle: "r/forkmesh",
+  host: "reddit.com/r/forkmesh",
+  lines: [
+    "COMMUNITY SUBREDDIT",
+    "QUESTIONS · SHOWCASES · HELP",
+    "MODERATED BY THE CORE TEAM",
+  ],
+  footer: "OPENS REDDIT.COM IN A NEW TAB",
+  url: "https://www.reddit.com/r/forkmesh/",
+});
+
+function socialBannerTexture(THREE, options, snapshot = null) {
+  const WIDTH = SOCIAL_BANNER_WIDTH;
+  const HEIGHT = SOCIAL_BANNER_HEIGHT;
+  return canvasTexture(THREE, WIDTH, HEIGHT, (context) => {
+    context.fillStyle = "#191a2e";
+    context.fillRect(0, 0, WIDTH, HEIGHT);
+    context.fillStyle = options.accent;
+    context.fillRect(12, 12, 1512, 260);
+    context.fillStyle = options.titleColor;
+    context.font = '800 150px "ForkMesh Favorit", sans-serif';
+    context.fillText(options.title, 96, 200);
+    context.fillStyle = "#c8c9ff";
+    context.font = '700 72px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(options.handle, 96, 470);
+    context.font = '600 56px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(options.host, 96, 562);
+    context.strokeStyle = options.divider;
+    context.lineWidth = 4;
+    context.beginPath();
+    context.moveTo(96, 656);
+    context.lineTo(1440, 656);
+    context.stroke();
+    if (!snapshot) {
+      // No proxy snapshot (still fetching, or the feed is unreachable):
+      // fall back to the static sign describing the board.
+      context.fillStyle = "#e8e9ff";
+      context.font = '700 60px "ForkMesh Mono", ui-monospace, monospace';
+      options.lines.forEach((line, index) => {
+        context.fillText(line, 96, 810 + index * 136);
+      });
+      context.fillStyle = "#8b9bf4";
+      context.font = '800 68px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("TAP / CLICK TO OPEN", 96, 1760);
+      context.fillStyle = "#7a7ca8";
+      context.font = '600 44px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(options.footer, 96, 1900);
+    } else {
+      const posts = (Array.isArray(snapshot.posts) ? snapshot.posts : [])
+        .slice(0, SOCIAL_BANNER_VISIBLE_POSTS);
+      context.fillStyle = "#8b9bf4";
+      context.font = '700 48px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("LATEST POSTS", 96, 726);
+      if (!posts.length) {
+        context.fillStyle = "#e8e9ff";
+        context.font = '700 60px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("NO POSTS YET", 96, 900);
+        context.fillStyle = "#7a7ca8";
+        context.font = '600 48px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("BE THE FIRST OVER THERE", 96, 1000);
+      }
+      posts.forEach((post, index) => {
+        const top = SOCIAL_BANNER_POST_TOP + index * SOCIAL_BANNER_POST_PITCH;
+        context.fillStyle = "#8b9bf4";
+        context.font = '600 40px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText(clipCanvasText(context, post.meta, 1344), 96, top);
+        context.fillStyle = "#e8e9ff";
+        context.font = '500 52px "ForkMesh Favorit", sans-serif';
+        wrapCanvasText(context, post.text, 96, top + 76, 1344, 66, 3);
+        if (index < posts.length - 1) {
+          context.strokeStyle = "rgba(139,155,244,0.25)";
+          context.lineWidth = 2;
+          context.beginPath();
+          context.moveTo(96, top + SOCIAL_BANNER_POST_PITCH - 66);
+          context.lineTo(1440, top + SOCIAL_BANNER_POST_PITCH - 66);
+          context.stroke();
+        }
+      });
+      context.fillStyle = "#8b9bf4";
+      context.font = '800 68px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("TAP / CLICK TO OPEN", 96, 1920);
+      context.fillStyle = "#7a7ca8";
+      context.font = '600 44px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        "LIVE · REFRESHED EVERY 10 MINUTES · " + options.footer,
+        96,
+        2000,
+      );
+    }
+    context.strokeStyle = options.accent;
+    context.lineWidth = 16;
+    context.strokeRect(12, 12, 1512, 2024);
+  });
+}
+
 function createSocialBanner(THREE, interactive, options) {
   const group = new THREE.Group();
   group.name = `forkmesh-${options.id}-banner`;
@@ -5198,48 +5329,14 @@ function createSocialBanner(THREE, interactive, options) {
     makeMaterial(THREE, options.frameColor, { metalness: 0.35, roughness: 0.45 }),
   );
   frame.position.y = 6.75;
-  const WIDTH = 1536;
-  const HEIGHT = 2048;
   const face = new THREE.Mesh(
     new THREE.PlaneGeometry(7.2, 9.6),
     new THREE.MeshBasicMaterial({
-      map: canvasTexture(THREE, WIDTH, HEIGHT, (context) => {
-        context.fillStyle = "#191a2e";
-        context.fillRect(0, 0, WIDTH, HEIGHT);
-        context.fillStyle = options.accent;
-        context.fillRect(12, 12, 1512, 260);
-        context.fillStyle = options.titleColor;
-        context.font = '800 150px "ForkMesh Favorit", sans-serif';
-        context.fillText(options.title, 96, 200);
-        context.fillStyle = "#c8c9ff";
-        context.font = '700 72px "ForkMesh Mono", ui-monospace, monospace';
-        context.fillText(options.handle, 96, 470);
-        context.font = '600 56px "ForkMesh Mono", ui-monospace, monospace';
-        context.fillText(options.host, 96, 562);
-        context.strokeStyle = options.divider;
-        context.lineWidth = 4;
-        context.beginPath();
-        context.moveTo(96, 656);
-        context.lineTo(1440, 656);
-        context.stroke();
-        context.fillStyle = "#e8e9ff";
-        context.font = '700 60px "ForkMesh Mono", ui-monospace, monospace';
-        options.lines.forEach((line, index) => {
-          context.fillText(line, 96, 810 + index * 136);
-        });
-        context.fillStyle = "#8b9bf4";
-        context.font = '800 68px "ForkMesh Mono", ui-monospace, monospace';
-        context.fillText("TAP / CLICK TO OPEN", 96, 1760);
-        context.fillStyle = "#7a7ca8";
-        context.font = '600 44px "ForkMesh Mono", ui-monospace, monospace';
-        context.fillText(options.footer, 96, 1900);
-        context.strokeStyle = options.accent;
-        context.lineWidth = 16;
-        context.strokeRect(12, 12, 1512, 2024);
-      }),
+      map: socialBannerTexture(THREE, options),
       toneMapped: false,
     }),
   );
+  face.name = `forkmesh-${options.id}-banner-face`;
   face.position.set(0, 6.75, 0.2);
   group.add(base, post, frame, face);
   group.traverse((child) => {
@@ -5944,46 +6041,39 @@ export function createWorldScene({
   // Twitter and Reddit flank the Mastodon kiosk on the same ring toward the
   // Office, one board-width of clearance on either side so all three read as
   // one social row on the approach.
-  const twitterBanner = createSocialBanner(THREE, interactive, {
-    id: "twitter",
-    position: [37.2, 0, -9.2],
-    accent: "#1d9bf2",
-    frameColor: "#1b4e73",
-    titleColor: "#f2faff",
-    divider: "rgba(29,155,242,0.5)",
-    title: "TWITTER / X",
-    handle: "@forkmesh",
-    host: "x.com/forkmesh",
-    lines: [
-      "OFFICIAL FORKMESH ACCOUNT",
-      "RELEASES · OUTAGES · NEWS",
-      "REPLIES WELCOME OVER THERE",
-    ],
-    footer: "OPENS X.COM IN A NEW TAB",
-    url: "https://x.com/forkmesh",
-  });
+  const twitterBanner = createSocialBanner(
+    THREE, interactive, TWITTER_BANNER_OPTIONS);
   world.add(twitterBanner);
   registerMovableObject("twitter-banner", twitterBanner);
-  const redditBanner = createSocialBanner(THREE, interactive, {
-    id: "reddit",
-    position: [27.6, 0, -26.6],
-    accent: "#ff4500",
-    frameColor: "#7a2d0e",
-    titleColor: "#fff4ee",
-    divider: "rgba(255,69,0,0.5)",
-    title: "REDDIT",
-    handle: "r/forkmesh",
-    host: "reddit.com/r/forkmesh",
-    lines: [
-      "COMMUNITY SUBREDDIT",
-      "QUESTIONS · SHOWCASES · HELP",
-      "MODERATED BY THE CORE TEAM",
-    ],
-    footer: "OPENS REDDIT.COM IN A NEW TAB",
-    url: "https://www.reddit.com/r/forkmesh/",
-  });
+  const redditBanner = createSocialBanner(
+    THREE, interactive, REDDIT_BANNER_OPTIONS);
   world.add(redditBanner);
   registerMovableObject("reddit-banner", redditBanner);
+  const socialBanners = [
+    { group: twitterBanner, options: TWITTER_BANNER_OPTIONS },
+    { group: redditBanner, options: REDDIT_BANNER_OPTIONS },
+  ];
+
+  // Repaint both banner faces from the Worker's /api/world/social-posts
+  // snapshot. A feed that is missing or unavailable keeps (or returns to)
+  // the static sign rather than showing a blank board.
+  function updateSocialBanners(payload) {
+    for (const record of socialBanners) {
+      const face = record.group.getObjectByName(
+        `forkmesh-${record.options.id}-banner-face`,
+      );
+      if (!face?.material) continue;
+      const feed = payload?.[record.options.id];
+      const snapshot =
+        feed && typeof feed === "object" && feed.state === "ready"
+          ? { posts: Array.isArray(feed.posts) ? feed.posts : [] }
+          : null;
+      face.material.map?.dispose?.();
+      face.material.map = socialBannerTexture(
+        THREE, record.options, snapshot);
+      face.material.needsUpdate = true;
+    }
+  }
   let mastodonKioskSnapshot = null;
   let mastodonKioskOffset = 0;
   let mastodonKioskCountdown = {
@@ -12522,6 +12612,7 @@ export function createWorldScene({
     updateWorldBulletin,
     updateMastodonKiosk,
     updateMastodonCountdown,
+    updateSocialBanners,
     setOfficeSeatState,
     showOfficeBubble,
     leaveOfficeInterior,
