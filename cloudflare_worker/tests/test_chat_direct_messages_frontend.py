@@ -72,7 +72,7 @@ def test_starting_a_direct_message_reuses_the_server_conversation():
 
 def test_people_keep_profile_links_and_add_separate_message_actions():
     source = _function_source("renderPeople")
-    assert 'document.createElement("a")' in source
+    assert 'document.createElement(hasProfile ? "a" : "div")' in source
     assert "mentionProfilePath(person.name)" in source
     assert 'message.className = "chat-person-message"' in source
     assert "startDirectMessage(person.name)" in source

@@ -1719,9 +1719,7 @@ function renderPeople() {
       // (relative URL — a self-hosted relay links to its own pages). ForkBot
       // isn't an account, so its row stays a plain div.
       const hasProfile = person.kind === "user";
-      let row;
-      if (hasProfile) row = document.createElement("a");
-      else row = document.createElement("div");
+      const row = document.createElement(hasProfile ? "a" : "div");
       const online = personIsOnline(person);
       row.className = "chat-person" + (online ? "" : " is-offline");
       row.title = person.name + (online ? " · online" : " · offline");
