@@ -391,8 +391,8 @@ public:
     void testShowPublishBar(bool on);
     int testRepoTabContentTop(); // y of the tab content within the window
     int testRepoTabGapAroundIssues() const;
-    int testIssueLooperGapAboveIssuesTab() const;
-    int testIssueLooperCenterDelta() const;
+    int testIssueLooperGapFromNewIssueButton() const;
+    bool testIssueLooperRowAligned() const;
     int testTopNavTrailingGap() const;
     QString testRepoGitDir() const { return repoGitDir(); }
     int testRepoHostCount() const { return m_repoHosts.size(); }
@@ -1719,13 +1719,12 @@ private:
     // The label the looper assigns to mark a claimed issue: this node's display
     // name, or a public-key prefix when no name is set (adhoc #38).
     QString nodeAssigneeTag() const;
-    // Funnel for every looper state change: refresh the floating toggle above
-    // the Issues tab and persist the running state so the loop resumes after a
-    // restart (adhoc #130, #125).
+    // Funnel for every looper state change: refresh the inline toggle in the
+    // Issues heading row and persist the running state so the loop resumes
+    // after a restart (adhoc #130, #125, #354).
     void updateIssueLooperButton();
-    void positionLooperToggle();
     // Anchor the live mirror-activity dot strip just above the Mirror nodes tab
-    // (adhoc #197), mirroring positionLooperToggle over Issues.
+    // (adhoc #197).
     void positionMirrorActivityStrip();
     // Anchor the current-release pill just above the Releases tab (adhoc #69),
     // mirroring positionMirrorActivityStrip over Mirror nodes.
@@ -5466,15 +5465,14 @@ private:
     QString m_looperProvider;
     int m_looperCurrentIssue = 0;
     QString m_looperCurrentTitle;
-    // Compact looper toggle floating just above the Issues tab (adhoc #130): a
-    // switch + "looper #N" label that both shows and controls the loop, with a
-    // neon-green segment circling its border while on. Held as a QWidget* because
-    // the concrete LooperToggle type lives in the .cpp; downcast there.
-    // m_looperToggleTimer keeps it anchored over the tab as the window reflows.
+    // Compact looper toggle inline in the Issues heading row, next to "New
+    // issue" (adhoc #130/#354): a switch + "looper #N" label that both shows
+    // and controls the loop, with a neon-green segment circling its border
+    // while on. Held as a QWidget* because the concrete LooperToggle type
+    // lives in the .cpp; downcast there.
     // m_looperRepoSlug ("owner/name") records which repo the loop is bound to so
     // a restart resumes it on the same repo.
     QWidget *m_looperToggle = nullptr;
-    QTimer *m_looperToggleTimer = nullptr;
     QString m_looperRepoSlug;
     QPushButton *m_issueCopyButton = nullptr;
     QPushButton *m_issueCopyAllButton = nullptr;

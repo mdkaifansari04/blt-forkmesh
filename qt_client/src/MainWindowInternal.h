@@ -5980,14 +5980,14 @@ private:
     int m_angle = 0;
 };
 
-// Compact "issue looper" toggle that floats just above the Issues tab (adhoc
-// #130). It is both the control and the indicator: a small on/off switch and
-// the open issue currently being worked ("#124") — clicking that "#N" jumps to
-// its agent (adhoc #134), while clicking elsewhere toggles the loop. While on,
-// a single neon-green segment travels slowly around the rounded-rect border — a
-// bright loop circling "the whole thing" so the running loop reads from any
-// tab. Replaces the old in-page "working the backlog" banner and the tiny
-// Issues-tab braille snake.
+// Compact "issue looper" toggle placed inline in the Issues heading row, next
+// to "New issue" (adhoc #130, moved from floating over the tab in #354). It is
+// both the control and the indicator: a small on/off switch and the open issue
+// currently being worked ("#124") — clicking that "#N" jumps to its agent
+// (adhoc #134), while clicking elsewhere toggles the loop. While on, a single
+// neon-green segment travels slowly around the rounded-rect border. Replaces
+// the old in-page "working the backlog" banner and the tiny Issues-tab braille
+// snake.
 class LooperToggle : public QWidget
 {
 public:
