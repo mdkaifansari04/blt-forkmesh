@@ -12500,6 +12500,28 @@ async def _account_logout(env, request):
     )
 
 
+async def _account_last_seen(env, account_bi, floor_ts=0):
+    """Newest activity stamp across this account's devices and nodes.
+
+    Session stamps are already in hand from the listing read, so they come in as
+    floor_ts; the devices/nodes maxima share one statement to keep the account
+    screen off the multi-query path that overloaded the free plan.
+    """
+    floor_ts = int(floor_ts or 0)
+    row = await d1_first(
+        env,
+        "SELECT MAX(seen) AS seen FROM ("
+        "SELECT COALESCE(MAX(last_seen),0) AS seen FROM account_devices "
+        "WHERE account_bi=? UNION ALL "
+        "SELECT COALESCE(MAX(last_seen),0) FROM nodes WHERE user_bi=?)",
+        account_bi, account_bi,
+    )
+    try:
+        return max(floor_ts, int((row or {}).get("seen") or 0))
+    except (TypeError, ValueError):
+        return floor_ts
+
+
 async def _account_sessions(env, request, target_session_id=""):
     """List or revoke this account's sessions without exposing client details."""
     method = method_name(request)
@@ -12548,6 +12570,15 @@ async def _account_sessions(env, request, target_session_id=""):
             {
                 "ok": True,
                 "sessions": sessions,
+                # Account-level activity for the settings screen: when this
+                # account was last active anywhere (sessions, linked devices,
+                # nodes) and when it was last emailed, with the send outcome.
+                "account": {
+                    "lastSeenAt": await _account_last_seen(
+                        env, account_bi,
+                        max([s["lastSeenAt"] for s in sessions] or [0])),
+                    **_account_email_activity(rec),
+                },
                 "privacyNotice": (
                     "Only a broad device category and session timestamps are "
                     "shown. ForkMesh does not expose IP addresses or raw user "
@@ -17122,6 +17153,60 @@ async def _send_email(env, to_email, subject, text, html=None,
         return False
 
 
+# --- Account email activity ---------------------------------------------------
+#
+# Every account-directed send stamps the recipient's own (encrypted) record with
+# when the mail went out, a coarse kind, and whether the provider accepted it,
+# so the account screen can answer "when were they last emailed, and did it
+# land?" without a second log table. Subject and body are never stored here, and
+# the stamp is private to the account: it rides the authenticated sessions read,
+# not the public profile lookup.
+
+ACCOUNT_EMAIL_STATUS_DELIVERED = "delivered"
+ACCOUNT_EMAIL_STATUS_FAILED = "failed"
+
+
+def _stamp_account_email(rec, kind, ok, now=None):
+    """Stamp the last account-directed email onto an already-loaded record."""
+    if not isinstance(rec, dict):
+        return rec
+    rec["last_email_ts"] = int(now if now is not None else Date.now())
+    rec["last_email_kind"] = clean_string(kind or "", 40)
+    rec["last_email_ok"] = bool(ok)
+    return rec
+
+
+async def _record_account_email(env, name, kind, ok):
+    """Load, stamp, and persist the record for a send addressed by node name."""
+    name = clean_string(name or "", MAX_NODE_NAME).strip().lower()
+    if not valid_node_name(name):
+        return
+    try:
+        name_bi, rec = await _account_row(env, name)
+        if not name_bi or not rec:
+            return
+        await _save_account(env, name_bi, _stamp_account_email(rec, kind, ok))
+    except Exception:
+        pass
+
+
+def _account_email_activity(rec):
+    """Public shape of the last-email stamp for the account screen."""
+    try:
+        ts = int((rec or {}).get("last_email_ts") or 0)
+    except (TypeError, ValueError):
+        ts = 0
+    if ts <= 0:
+        return {"lastEmailAt": 0, "lastEmailStatus": "", "lastEmailKind": ""}
+    return {
+        "lastEmailAt": ts,
+        "lastEmailStatus": (
+            ACCOUNT_EMAIL_STATUS_DELIVERED if rec.get("last_email_ok")
+            else ACCOUNT_EMAIL_STATUS_FAILED),
+        "lastEmailKind": clean_string(rec.get("last_email_kind", ""), 40),
+    }
+
+
 # --- External GitHub/GitLab metadata imports --------------------------------
 #
 # Provider imports live in a separate D1 namespace from the mirror catalog.
@@ -17382,7 +17467,9 @@ async def _send_verification_email(env, request, name, email):
         "<p class=\"fm-muted\" style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">If you did "
         "not create this account, you can ignore this email.</p>")
     html = _forkmesh_email_card_html("Welcome to ForkMesh", intro, body_html, footer_html)
-    return await _send_email(env, email, subject, text, html)
+    ok = await _send_email(env, email, subject, text, html)
+    await _record_account_email(env, name, "verification", ok)
+    return ok
 
 
 # --- "How are we doing?" founder feedback email -------------------------------
@@ -17493,6 +17580,9 @@ async def _send_feedback_emails(env):
         ok = await _send_email(env, email, subject, text, html,
                                from_email=FEEDBACK_EMAIL_FROM,
                                from_name=FEEDBACK_EMAIL_FROM_NAME)
+        await _save_account(
+            env, row.get("name_bi"),
+            _stamp_account_email(rec, "feedback", ok, now))
         if ok:
             sent += 1
         else:
@@ -17542,7 +17632,9 @@ async def _send_password_reset_email(env, request, name, email, pass_hash):
         "expires in 1 hour. If you didn't request a reset, you can ignore this email — your "
         "password won't change.</p>")
     html = _forkmesh_email_card_html("Reset your password", intro, body_html, footer_html)
-    return await _send_email(env, email, subject, text, html)
+    ok = await _send_email(env, email, subject, text, html)
+    await _record_account_email(env, name, "password_reset", ok)
+    return ok
 
 
 # --- Founders outreach console (/outreach) -----------------------------------
@@ -23152,9 +23244,11 @@ async def send_notification_digests(env):
             continue
         node = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
         subject, text, html = _notification_digest_email(node, items)
-        if await _send_email(env, email, subject, text, html):
+        ok = await _send_email(env, email, subject, text, html)
+        if ok:
             rec["last_digest_ts"] = newest
-            await _save_account(env, recipient_bi, rec)
+        _stamp_account_email(rec, "notifications", ok, now)
+        await _save_account(env, recipient_bi, rec)
     await send_general_chat_digests(env)
 
 
@@ -23210,9 +23304,11 @@ async def send_general_chat_digests(env):
             continue
         name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
         subject, text, html = _general_chat_digest_email(name, count)
-        if await _send_email(env, email, subject, text, html):
+        ok = await _send_email(env, email, subject, text, html)
+        if ok:
             rec["last_general_chat_digest_ts"] = now
-            await _save_account(env, name_bi, rec)
+        _stamp_account_email(rec, "general_chat", ok, now)
+        await _save_account(env, name_bi, rec)
 
 
 def _forkmesh_email_card_html(heading, intro_html, body_html, footer_html=""):
