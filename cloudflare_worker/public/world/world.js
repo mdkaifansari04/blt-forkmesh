@@ -58,6 +58,12 @@ THREE_MODULE.catch(() => {});
 const SETTINGS_KEY = "forkmesh.world.settings.v1";
 const GUEST_ID_KEY = "forkmesh.world.guestId.v1";
 const FIRST_VISIT_KEY = "forkmesh.world.firstVisitAt.v1";
+// The edge-derived country is remembered locally so a signed-out visitor keeps
+// their flag across reloads, and while /api/world/context is slow or offline.
+const COUNTRY_KEY = "forkmesh.world.countryCode.v1";
+// Fingerprint of the country/browser/OS last saved on the account, so the
+// server write happens once per change instead of once per visit.
+const CLIENT_PROFILE_KEY = "forkmesh.world.clientProfile.v1";
 const VISIT_COUNT_KEY = "forkmesh.world.publicVisitCount.v1";
 // Mirrors WORLD_FIRST_SEEN_MAX_MINUTES / WORLD_JOINED_AT_MIN_MS in world.py.
 const FIRST_SEEN_MAX_MINUTES = 10 * 365 * 24 * 60;
@@ -290,6 +296,28 @@ function firstVisitTimestamp(now = Date.now()) {
     localStorage.setItem(FIRST_VISIT_KEY, String(now));
   } catch (_) {}
   return now;
+}
+
+// The last coarse country the edge reported for this browser. Only a plain
+// two-letter code is ever stored; nothing narrower than a country is kept.
+function rememberedCountryCode() {
+  try {
+    const stored = String(localStorage.getItem(COUNTRY_KEY) || "")
+      .trim()
+      .toUpperCase();
+    return /^[A-Z]{2}$/.test(stored) ? stored : "";
+  } catch (_) {
+    return "";
+  }
+}
+
+function rememberCountryCode(code) {
+  const clean = String(code || "").trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(clean)) return "";
+  try {
+    localStorage.setItem(COUNTRY_KEY, clean);
+  } catch (_) {}
+  return clean;
 }
 
 function firstVisitAge(timestamp, now = Date.now()) {
@@ -1300,6 +1328,10 @@ function normalizeMemberDirectory(value) {
           : null,
       avatar: sanitizePresenceText(user?.avatar, "", 240),
       countryCode: sanitizePresenceText(user?.countryCode, "", 2),
+      // The coarse client the account last published, saved server-side so an
+      // away member's bench figure keeps their flag shirt and client badge.
+      browser: presenceLabel(user?.browser, "Hidden", "Hidden"),
+      os: presenceLabel(user?.os, "Hidden", "Hidden"),
       status: sanitizePresenceText(user?.status, "", 80),
     }))
     .filter((user) => user.name);
@@ -3336,7 +3368,10 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           <p class="world-setting-note">
             Browser and OS are detected locally. Country comes from a country-only
             edge hint; ForkMesh World does not receive or
-            display your raw IP. Movement is coarse, ephemeral, and never includes
+            display your raw IP. Whatever these three toggles share is saved on
+            your account so your campfire bench still shows it while you are
+            away — switch one off and the saved copy is cleared. Movement is
+            coarse, ephemeral, and never includes
             URLs, search terms, form contents, repository names, or wallet data.
           </p>
         </section>
@@ -3429,6 +3464,7 @@ class ForkMeshWorld extends HTMLElement {
     this.inactivePlayers = [];
     this.memberDirectory = [];
     this.memberDirectoryFetchedAt = 0;
+    this.worldClientProfileKey = "";
     this.pendingKnocks = new Map();
     this.serverPeerId = "";
     this.sessionAuthenticated = false;
@@ -4231,8 +4267,14 @@ class ForkMeshWorld extends HTMLElement {
       .trim()
       .toUpperCase()
       .slice(0, 2);
-    this.identity.countryCode = /^[A-Z]{2}$/.test(country) ? country : "";
+    // A guest owns no account record, so the coarse country is remembered in
+    // this browser: the flag survives a reload and an unreachable edge context
+    // instead of silently dropping back to "no country".
+    this.identity.countryCode = /^[A-Z]{2}$/.test(country)
+      ? rememberCountryCode(country)
+      : rememberedCountryCode();
     this.identity.flag = flagEmoji(this.identity.countryCode);
+    void this.syncWorldClientProfile();
     const worldConnections = Number(context?.worldConnections);
     const worldMessagesPerSecond = Number(context?.worldMessagesPerSecond);
     const chatConnections = Number(context?.chatConnections);
@@ -14633,6 +14675,48 @@ class ForkMeshWorld extends HTMLElement {
 
   saveSettings() {
     writeJSON(localStorage, SETTINGS_KEY, this.settings);
+    // The privacy toggles live here, so a member hiding (or restoring) their
+    // country, browser, or OS updates their away bench figure right away.
+    void this.syncWorldClientProfile();
+  }
+
+  // Save the coarse country/browser/OS on the signed-in account. A member who
+  // is not in the world publishes no presence frame, so without this their
+  // campfire bench figure would sit there with no flag and a hidden client
+  // badge. Written only when the value actually changes.
+  async syncWorldClientProfile() {
+    if (this.destroyed) return;
+    if (!this.identity || this.identity.accountStatus === "Guest") return;
+    if (!readSession()?.sessionToken && !this.sessionAuthenticated) return;
+    const shareCountry = Boolean(this.settings.privacy.country);
+    const body = {
+      shareCountry,
+      browser: presenceBrowser(
+        this.identity.browser,
+        this.settings.privacy.browser,
+      ),
+      os: presenceOS(this.identity.os, this.settings.privacy.os),
+    };
+    const fingerprint = [
+      this.identity.id,
+      shareCountry ? this.identity.countryCode || "" : "",
+      body.browser,
+      body.os,
+    ].join("|");
+    if (fingerprint === this.worldClientProfileKey) return;
+    let stored = "";
+    try {
+      stored = localStorage.getItem(CLIENT_PROFILE_KEY) || "";
+    } catch (_) {}
+    this.worldClientProfileKey = fingerprint;
+    if (fingerprint === stored) return;
+    try {
+      await this.postJSON("/api/world/client", body, { timeout: 5000 });
+      localStorage.setItem(CLIENT_PROFILE_KEY, fingerprint);
+    } catch (_) {
+      // Retry on the next ticket refresh or settings change.
+      this.worldClientProfileKey = "";
+    }
   }
 
   toast(message) {
@@ -15502,6 +15586,9 @@ class ForkMeshWorld extends HTMLElement {
       const previousStatus = this.identity?.accountStatus;
       if (this.applyWorldTicketIdentity(ticket)) {
         this.applyWorldActivityTicket(ticket);
+        // A visitor who only became authenticated here (or whose earlier save
+        // failed) still gets their client profile stored for the bench figure.
+        void this.syncWorldClientProfile();
         // A ticket that failed (or timed out) during bootstrap leaves a
         // signed-in visitor stranded under the placeholder guest name. Repair
         // the presence the moment a later ticket arrives, and republish it so

@@ -142,6 +142,27 @@ def approximate_country_code(value):
     return code
 
 
+def clean_client_profile(country="", browser="", operating_system=""):
+    """Normalize the coarse client profile stored on an account record.
+
+    An account keeps the same three coarse values a live presence frame
+    publishes — approximate country, browser family, operating-system family —
+    so the member's campfire bench figure still wears their flag and client
+    badge while they are away and have no live presence.  Nothing finer ever
+    enters the record: no address, user-agent string, or version.  ``hidden``
+    (the privacy sentinel of a live frame) and any unknown value store as "".
+    """
+    browser = str(browser or "").strip().lower()
+    operating_system = str(operating_system or "").strip().lower()
+    return {
+        "countryCode": approximate_country_code(country),
+        "browser": browser if browser in WORLD_BROWSER_VALUES
+                   and browser != "hidden" else "",
+        "os": operating_system if operating_system in WORLD_OS_VALUES
+              and operating_system != "hidden" else "",
+    }
+
+
 def clean_display_name(value, fallback="Guest"):
     """Bound a public display name and remove markup/control punctuation."""
     raw = str(value or "")[:128]

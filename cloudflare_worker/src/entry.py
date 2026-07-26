@@ -3797,6 +3797,55 @@ async def world_ticket_handler(env, request):
     )
 
 
+async def world_client_profile_handler(env, request):
+    """Store the signed-in visitor's coarse country/browser/OS on the account.
+
+    Every registered account owns a bench around the campfire whether or not
+    it is signed in, and an away member publishes no presence frame — so
+    without a stored copy their figure sat there with no flag and a hidden
+    client badge. The client posts this once per change (a privacy toggle
+    included), so an ordinary session costs no extra write.
+
+    The country is read from the edge, never from the body: the client only
+    says whether it may be shared. Browser and OS are the same coarse
+    families live presence accepts; an unknown or ``hidden`` value stores as
+    "" and simply clears the previous one.
+    """
+    if method_name(request) != "POST":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"allow": "POST"})
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    name_bi, rec = await _account_session_record(env, request, data)
+    if not name_bi or not rec:
+        return json_response(
+            {"error": "invalid_session"}, status=401,
+            cache_control="no-store, max-age=0, must-revalidate")
+    profile = world_protocol.clean_client_profile(
+        world_request_country(request) if data.get("shareCountry") is True
+        else "",
+        data.get("browser"),
+        data.get("os"),
+    )
+    if profile != _account_world_client_fields(rec):
+        rec["world_country"] = profile["countryCode"]
+        rec["world_browser"] = profile["browser"]
+        rec["world_os"] = profile["os"]
+        rec["world_client_at"] = int(Date.now())
+        await _save_account(env, name_bi, rec)
+        # The bench figures are drawn from the edge-cached public directory.
+        await edge_cache_delete(USERS_DIRECTORY_CACHE_KEY)
+    return json_response(
+        {"ok": True, **profile},
+        cache_control="no-store, max-age=0, must-revalidate",
+        extra_headers={"x-content-type-options": "nosniff"},
+    )
+
+
 def _world_inactive_public_id(account_bi):
     return hashlib.sha256(
         ("forkmesh-world-inactive-v1:" + str(account_bi or "")).encode()
@@ -10088,6 +10137,20 @@ def _world_public_total_active_ms(value):
     ) * WORLD_USER_ACTIVITY_PUBLIC_BUCKET_MS
 
 
+def _account_world_client_fields(rec):
+    """The coarse country/browser/OS the account last chose to publish.
+
+    Stored by /api/world/client so an away member's campfire bench figure —
+    which has no live presence frame to read — still shows the same three
+    coarse values their avatar wore while they were here.
+    """
+    return world_protocol.clean_client_profile(
+        (rec or {}).get("world_country", ""),
+        (rec or {}).get("world_browser", ""),
+        (rec or {}).get("world_os", ""),
+    )
+
+
 def _account_chat_user_payload(rec, total_active_ms=0):
     name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
     return {
@@ -10102,6 +10165,7 @@ def _account_chat_user_payload(rec, total_active_ms=0):
         # directory deliberately exposes neither a last-seen timestamp nor the
         # current activity interval used by an authenticated World tab.
         "totalActiveMs": _world_public_total_active_ms(total_active_ms),
+        **_account_world_client_fields(rec),
     }
 
 
@@ -32100,6 +32164,9 @@ class Default(WorkerEntrypoint):
 
         if url.path in ("/api/world/ticket", "/api/world/ticket/"):
             return await world_ticket_handler(self.env, request)
+
+        if url.path in ("/api/world/client", "/api/world/client/"):
+            return await world_client_profile_handler(self.env, request)
 
         if url.path in ("/api/world/inactive", "/api/world/inactive/"):
             return await world_inactive_handler(self.env, request)
