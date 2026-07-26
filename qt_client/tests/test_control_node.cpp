@@ -1014,6 +1014,54 @@ int main(int argc, char **argv)
                       .contains(QStringLiteral("key"), Qt::CaseInsensitive),
           "a 255 ssh exit with a known connection-failure signature yields an "
           "actionable hint");
+    // --- Non-routable target diagnosis + attempt summaries (adhoc #342) ----
+    const QString cgnatHint = forkmesh::control::sshConnectionFailureHint(
+        255,
+        QStringLiteral("ssh: connect to host 100.68.82.54 port 22: "
+                       "Connection timed out"),
+        QStringLiteral("100.68.82.54"));
+    check(cgnatHint.contains(QStringLiteral("100.64.0.0/10")) &&
+              !cgnatHint.contains(QStringLiteral("security group")) &&
+              forkmesh::control::sshConnectionFailureHint(
+                  255,
+                  QStringLiteral("ssh: connect to host 10.0.0.9 port 22: "
+                                 "No route to host"),
+                  QStringLiteral("10.0.0.9"))
+                  .contains(QStringLiteral("10.0.0.0/8")) &&
+              forkmesh::control::sshConnectionFailureHint(
+                  255,
+                  QStringLiteral("ssh: connect to host 1.2.3.4 port 22: "
+                                 "Connection timed out"),
+                  QStringLiteral("1.2.3.4"))
+                  .contains(QStringLiteral("firewall"), Qt::CaseInsensitive),
+          "a timeout against a non-routable address is diagnosed as the "
+          "address, not as a firewall");
+    check(forkmesh::control::nonRoutableAddressNote(
+              QStringLiteral("192.168.1.10")).contains(
+              QStringLiteral("192.168.0.0/16")) &&
+              forkmesh::control::nonRoutableAddressNote(
+                  QStringLiteral("172.16.4.1")).contains(
+                  QStringLiteral("172.16.0.0/12")) &&
+              forkmesh::control::nonRoutableAddressNote(
+                  QStringLiteral("172.32.4.1")).isEmpty() &&
+              forkmesh::control::nonRoutableAddressNote(
+                  QStringLiteral("100.128.0.1")).isEmpty() &&
+              forkmesh::control::nonRoutableAddressNote(
+                  QStringLiteral("45.32.1.9")).isEmpty() &&
+              forkmesh::control::nonRoutableAddressNote(
+                  QStringLiteral("mirror5.example.test")).isEmpty(),
+          "only genuinely non-routable IPv4 literals are flagged");
+    check(forkmesh::control::sshFailureSummary(
+              255,
+              QStringLiteral("Warming up\nssh: connect to host 1.2.3.4 port "
+                             "22: Connection timed out\n"))
+                  .contains(QStringLiteral("Connection timed out")) &&
+              forkmesh::control::sshFailureSummary(255, QStringLiteral(""))
+                      == QStringLiteral("exit 255") &&
+              forkmesh::control::sshFailureSummary(
+                  1, QStringLiteral("x").repeated(400)).size() < 200,
+          "each attempt gets a bounded one-line failure summary");
+
     check(forkmesh::control::sshConnectionFailureHint(
               1, QStringLiteral("ssh: connect to host 1.2.3.4 port 22: "
                                  "Connection timed out"))

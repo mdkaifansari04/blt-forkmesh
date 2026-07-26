@@ -430,11 +430,83 @@ QString savedHostCredentialKey(const QString &nodeName, const QString &host,
         QJsonDocument(identity).toJson(QJsonDocument::Compact));
 }
 
-QString sshConnectionFailureHint(int exitCode, const QString &outputTail)
+QString nonRoutableAddressNote(const QString &host)
+{
+    static const QRegularExpression ipv4Pattern(
+        QStringLiteral("^(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})$"));
+    const QRegularExpressionMatch match = ipv4Pattern.match(host.trimmed());
+    if (!match.hasMatch())
+        return {};
+    int octet[4] = {0, 0, 0, 0};
+    for (int i = 0; i < 4; ++i) {
+        octet[i] = match.captured(i + 1).toInt();
+        if (octet[i] > 255)
+            return {};
+    }
+    if (octet[0] == 10)
+        return QStringLiteral("the private range 10.0.0.0/8 (RFC 1918)");
+    if (octet[0] == 172 && octet[1] >= 16 && octet[1] <= 31)
+        return QStringLiteral("the private range 172.16.0.0/12 (RFC 1918)");
+    if (octet[0] == 192 && octet[1] == 168)
+        return QStringLiteral("the private range 192.168.0.0/16 (RFC 1918)");
+    if (octet[0] == 100 && octet[1] >= 64 && octet[1] <= 127)
+        return QStringLiteral(
+            "100.64.0.0/10, the carrier-grade NAT / shared address range "
+            "(RFC 6598) that VPN meshes such as Tailscale also hand out");
+    if (octet[0] == 169 && octet[1] == 254)
+        return QStringLiteral("the link-local range 169.254.0.0/16");
+    if (octet[0] == 127)
+        return QStringLiteral("the loopback range 127.0.0.0/8");
+    return {};
+}
+
+QString sshFailureSummary(int exitCode, const QString &outputTail)
+{
+    QString reason;
+    const QStringList lines =
+        outputTail.split(QRegularExpression(QStringLiteral("[\\r\\n]")),
+                         Qt::SkipEmptyParts);
+    for (int i = lines.size() - 1; i >= 0; --i) {
+        const QString line = lines.at(i).trimmed();
+        if (line.isEmpty())
+            continue;
+        reason = line;
+        break;
+    }
+    if (reason.size() > 160)
+        reason = reason.left(157) + QStringLiteral("...");
+    if (reason.isEmpty())
+        return QStringLiteral("exit %1").arg(exitCode);
+    return QString::fromUtf8("exit %1 \xE2\x80\x94 %2")
+        .arg(QString::number(exitCode), reason);
+}
+
+QString sshConnectionFailureHint(int exitCode, const QString &outputTail,
+                                 const QString &host)
 {
     if (exitCode != 255)
         return {};
     const QString tail = outputTail.toLower();
+    const bool dropped =
+        tail.contains(QStringLiteral("connection timed out")) ||
+        tail.contains(QStringLiteral("operation timed out")) ||
+        tail.contains(QStringLiteral("no route to host"));
+    // Packets vanishing towards an address that is not routable on the public
+    // internet is not a firewall at all — no network between here and there
+    // can carry them (adhoc #342). Say so instead of sending the operator off
+    // to audit security groups that were never involved.
+    if (dropped) {
+        const QString range = nonRoutableAddressNote(host);
+        if (!range.isEmpty())
+            return QString::fromUtf8(
+                       "%1 is in %2, so it is not reachable from the public "
+                       "internet \xE2\x80\x94 the packets are dropped in "
+                       "transit rather than by any firewall. Unless this "
+                       "machine is on that same private network or VPN, use "
+                       "the host's public address here (or connect to the "
+                       "network that owns the range first).")
+                .arg(host.trimmed(), range);
+    }
     if (tail.contains(QStringLiteral("connection timed out")) ||
         tail.contains(QStringLiteral("operation timed out"))) {
         return QStringLiteral(

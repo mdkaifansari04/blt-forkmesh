@@ -1219,6 +1219,9 @@ private:
     void startVultrHostInstall(const QString &node, const QString &ip,
                                const QString &identityFile);
     void finishVultrProvision(bool ok, const QString &message);
+    // Print the per-attempt record collected for this provision run into the
+    // install log, so a finished run shows what every attempt did (adhoc #342).
+    void appendVultrAttemptHistory();
     // Cloudflare API v4 call for the DNS record a fresh Vultr mirror needs
     // (adhoc #331). Same shape as vultrApiCall: the token travels only in the
     // Authorization header of this HTTPS request.
@@ -3687,6 +3690,14 @@ private:
     // install/uninstall run, used only to classify a failed exit code into an
     // actionable hint (e.g. a firewall-blocked connection timeout).
     QString m_hostInstallRawTail;
+    // Set by a caller that drives repeated install attempts (the Vultr
+    // auto-provision retry loop) so the next run appends under this banner
+    // instead of wiping the window's transcript of the earlier attempts
+    // (adhoc #342). Consumed — and cleared — by runHostInstall.
+    QString m_hostInstallAttemptBanner;
+    // One-line summary of the most recent failed install run, so a retry loop
+    // can record why each attempt failed.
+    QString m_hostInstallLastFailure;
     QTableWidget *m_hostsTable = nullptr;
     QProcess *m_hostInstallProcess = nullptr; // running ssh install session, if any
     QProcess *m_hostLogProcess = nullptr;     // running ssh log-tail session, if any
@@ -3702,6 +3713,9 @@ private:
     int m_vultrPollCount = 0;        // instance boot polls used this run
     int m_vultrInstallAttempts = 0;  // SSH install attempts used this run
     QString m_vultrDnsHostname;      // Cloudflare name provisioned this run
+    // "Attempt N of M at HH:mm:ss — outcome" per install attempt this run, so
+    // the window can show what every attempt did instead of only the last one.
+    QStringList m_vultrInstallAttemptLog;
     // Installer link-code detection (adhoc #53): rolling tail of the install
     // output so the "Link code: NNNNNN" line survives chunk splits, and a
     // per-run guard so the link popup opens once.

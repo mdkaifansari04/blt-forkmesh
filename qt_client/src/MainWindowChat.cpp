@@ -11109,7 +11109,9 @@ void MainWindow::createVultrMirrorFromForm()
     m_vultrProvisionActive = true;
     m_vultrPollCount = 0;
     m_vultrInstallAttempts = 0;
+    m_vultrInstallAttemptLog.clear();
     m_vultrDnsHostname.clear();
+    m_hostInstallAttemptBanner.clear();
     if (m_vultrCreateButton)
         m_vultrCreateButton->setEnabled(false);
     if (m_hostInstallLog) {
@@ -11334,6 +11336,16 @@ void MainWindow::pollVultrInstance(const QString &apiKey,
         });
 }
 
+void MainWindow::appendVultrAttemptHistory()
+{
+    if (m_vultrInstallAttemptLog.isEmpty())
+        return;
+    QString block = QString::fromUtf8("\nInstall attempts this run:\n");
+    for (const QString &entry : std::as_const(m_vultrInstallAttemptLog))
+        block += QString::fromUtf8("  \xE2\x80\xA2 %1\n").arg(entry);
+    appendHostInstallLog(block);
+}
+
 void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
                                        const QString &identityFile)
 {
@@ -11353,6 +11365,18 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
     if (m_hostUploadBinaryCheck)
         m_hostUploadBinaryCheck->setChecked(false);
     ++m_vultrInstallAttempts;
+    const QString attemptLabel =
+        QStringLiteral("Attempt %1 of %2 at %3")
+            .arg(QString::number(m_vultrInstallAttempts),
+                 QString::number(kMaxInstallAttempts),
+                 QDateTime::currentDateTime().toString(
+                     QStringLiteral("hh:mm:ss")));
+    // Keep every attempt's output in the window rather than clearing the log
+    // on each retry (adhoc #342) — a run that fails six times is exactly when
+    // the earlier transcripts matter.
+    // The banner is set for the first attempt too, so the provisioning
+    // preamble above it (instance id, address, DNS record) survives as well.
+    m_hostInstallAttemptBanner = attemptLabel;
     if (m_vultrStatus)
         m_vultrStatus->setText(
             QString::fromUtf8(
@@ -11363,10 +11387,19 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
     // reports it active, so an early attempt failing is expected, not a
     // real failure — only the last attempt should report "Install failed".
     const bool isFinalAttempt = m_vultrInstallAttempts >= kMaxInstallAttempts;
-    runHostInstall(false, [this, node, ip, identityFile](bool ok) {
+    runHostInstall(false, [this, node, ip, identityFile,
+                           attemptLabel](bool ok) {
         if (!m_vultrProvisionActive)
             return;
+        m_vultrInstallAttemptLog.append(
+            QString::fromUtf8("%1 \xE2\x80\x94 %2")
+                .arg(attemptLabel,
+                     ok ? QStringLiteral("installed")
+                        : (m_hostInstallLastFailure.isEmpty()
+                               ? QStringLiteral("failed")
+                               : m_hostInstallLastFailure)));
         if (ok) {
+            appendVultrAttemptHistory();
             const QString address =
                 m_vultrDnsHostname.isEmpty()
                     ? ip
@@ -11377,7 +11410,22 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
                 "shortly.").arg(node, address));
             return;
         }
+        // An address outside the routable internet will never answer, however
+        // long we wait — stop burning attempts and say what is actually wrong
+        // (adhoc #342).
+        const QString unroutable = forkmesh::control::nonRoutableAddressNote(ip);
+        if (!unroutable.isEmpty()) {
+            appendVultrAttemptHistory();
+            finishVultrProvision(false, QString::fromUtf8(
+                "%1 is in %2, so SSH from this machine can never reach it. "
+                "Give the instance a public address (or run the install from "
+                "the network that owns that range); it is saved under Hosts "
+                "\xE2\x80\x94 fix the address there and click Update.")
+                .arg(ip, unroutable));
+            return;
+        }
         if (m_vultrInstallAttempts >= kMaxInstallAttempts) {
+            appendVultrAttemptHistory();
             finishVultrProvision(false, QString::fromUtf8(
                 "Install did not succeed after %1 attempts. The instance is "
                 "saved under Hosts \xE2\x80\x94 click Update there to retry.")
@@ -11388,8 +11436,10 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
         // reports active; back off and retry.
         if (m_vultrStatus)
             m_vultrStatus->setText(QString::fromUtf8(
-                "Host not reachable yet \xE2\x80\x94 retrying in 30 "
-                "seconds\xE2\x80\xA6"));
+                "Attempt %1 of %2 failed \xE2\x80\x94 host not reachable yet, "
+                "retrying in 30 seconds\xE2\x80\xA6")
+                .arg(m_vultrInstallAttempts)
+                .arg(kMaxInstallAttempts));
         QTimer::singleShot(30000, this, [this, node, ip, identityFile] {
             startVultrHostInstall(node, ip, identityFile);
         });
@@ -11916,6 +11966,11 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
                                 bool reinstall, bool fromSource,
                                 bool suppressFailureStatus)
 {
+    // A retry loop hands us a banner so its earlier attempts stay in the
+    // window (adhoc #342); a plain one-shot install starts from a clean log.
+    // Consumed once per call so it can never leak into a later manual run.
+    const QString attemptBanner = m_hostInstallAttemptBanner;
+    m_hostInstallAttemptBanner.clear();
     if ((m_hostInstallProcess &&
          m_hostInstallProcess->state() != QProcess::NotRunning) ||
         m_hostDeployRemaining > 0) {
@@ -11989,11 +12044,19 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     // fails partway through; a successful run flips the status to "installed".
     rememberHost(node, ip, user, pass, QStringLiteral("installing"));
 
-    m_hostInstallLog->clear();
+    if (attemptBanner.isEmpty())
+        m_hostInstallLog->clear();
     m_hostInstallLogCarry.clear();
     m_hostInstallLogFg = -1;
     m_hostInstallLogBold = false;
+    if (!attemptBanner.isEmpty())
+        appendHostInstallLog(
+            QString::fromUtf8("\n\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94"
+                              "\x80 %1 \xE2\x94\x80\xE2\x94\x80\xE2\x94\x80"
+                              "\xE2\x94\x80\n")
+                .arg(attemptBanner));
     m_hostInstallRawTail.clear();
+    m_hostInstallLastFailure.clear();
     m_hostInstallLinkTail.clear();
     m_hostLinkPrompted = false;
     // Echo the command we run (the password lives in the SSHPASS env / stdin, so
@@ -12094,8 +12157,11 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
                 } else {
                     appendHostInstallLog(QString::fromUtf8(
                         "\n\xE2\x9C\x98 %1 failed (exit %2).\n").arg(verb).arg(code));
+                    m_hostInstallLastFailure =
+                        forkmesh::control::sshFailureSummary(
+                            code, m_hostInstallRawTail);
                     const QString hint = forkmesh::control::sshConnectionFailureHint(
-                        code, m_hostInstallRawTail);
+                        code, m_hostInstallRawTail, ip);
                     if (!hint.isEmpty())
                         appendHostInstallLog(
                             QStringLiteral("\n%1\n").arg(hint));
