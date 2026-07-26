@@ -11020,23 +11020,31 @@ void MainWindow::createVultrMirrorFromForm()
     }
     QString node =
         m_vultrNameEdit ? m_vultrNameEdit->text().trimmed() : QString();
+    // Saved host node names already in use, so repeated one-click deploys
+    // (and manually typed names) never collide with an existing mirror.
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
+    QSet<QString> used;
+    for (const QJsonValue &value : hosts)
+        used.insert(value.toObject()
+                        .value(QStringLiteral("name"))
+                        .toString()
+                        .toLower());
     if (node.isEmpty()) {
-        // First unused vultr-mirror-N so repeated one-click deploys never
-        // collide with a saved host.
-        QSettings settings;
-        const QJsonArray hosts = forkmesh::control::loadSavedHosts(
-            settings, kHostsSetting, &m_hostSessionPasswords);
-        QSet<QString> used;
-        for (const QJsonValue &value : hosts)
-            used.insert(value.toObject()
-                            .value(QStringLiteral("name"))
-                            .toString());
+        // First unused vultr-mirror-N.
         for (int i = 1; i <= 999 && node.isEmpty(); ++i) {
             const QString candidate =
                 QStringLiteral("vultr-mirror-%1").arg(i);
             if (!used.contains(candidate))
                 node = candidate;
         }
+    } else if (used.contains(node.toLower())) {
+        if (m_vultrStatus)
+            m_vultrStatus->setText(QStringLiteral(
+                "A saved host named \"%1\" already exists — choose a "
+                "different node name.").arg(node));
+        return;
     }
     const QString invalid =
         forkmesh::control::validateVultrMirrorRequest(apiKey, node);
