@@ -7363,6 +7363,7 @@ export function createWorldScene({
   const repositoryPortals = new Map();
   const emoteSprites = [];
   const rewardFlights = [];
+  const pushSurges = [];
   const forkbotWanderTarget = new THREE.Vector3(...FORKBOT_HOME);
   let forkbotNextWanderAt = 0;
   let forkbotGreeting = null;
@@ -9666,6 +9667,13 @@ export function createWorldScene({
       const dataKey = nodeDataKey({ ...node, name: nodeName });
       seen.add(id);
       let cabinet = nodeInfrastructure.get(id);
+      // The commit shown before this update, captured ahead of any rebuild.
+      // Comparing it against the fresh signed record is what detects "code
+      // was just pushed onto this node" — for both the instant socket-driven
+      // refresh and the regular poll — without trusting any relay frame.
+      const priorCommit = String(
+        cabinet?.userData?.nodeRecord?.commit || "",
+      );
       if (
         cabinet &&
         cabinet.userData.dataKey !== dataKey
@@ -9706,6 +9714,10 @@ export function createWorldScene({
         takenLayoutIds.add(layoutId);
         cabinet.userData.layoutBaseRotation = cabinet.rotation.y;
         registerMovableObject(layoutId, cabinet);
+      }
+      const nextCommit = String(node?.commit || "");
+      if (priorCommit && nextCommit && nextCommit !== priorCommit) {
+        spawnPushSurge(cabinet.position);
       }
     });
     nodeInfrastructure.forEach((cabinet, id) => {
@@ -11773,6 +11785,56 @@ export function createWorldScene({
     applyRewardTreasury(THREE, sign, state);
   }
 
+  // Freshly pushed code announces itself: a tall light column rises from the
+  // cabinet and a ground shockwave ring expands far past the server yard, so
+  // the arrival reads from anywhere in the town — not just beside the rack.
+  // Purely cosmetic and driven only by a verified commit change in the signed
+  // mirror payload (see updateNetworkNodes), never by an unauthenticated frame.
+  function spawnPushSurge(position) {
+    // Bound a burst of simultaneous publishes to a fixed effect budget.
+    if (pushSurges.length >= 8) return;
+    const group = new THREE.Group();
+    group.name = "mirror-push-surge";
+    const beam = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.55, 0.9, 56, 18, 1, true),
+      new THREE.MeshBasicMaterial({
+        color: "#7dffb8",
+        toneMapped: false,
+        transparent: true,
+        opacity: 0.85,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      }),
+    );
+    beam.position.y = 28;
+    group.add(beam);
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.9, 1, 48),
+      new THREE.MeshBasicMaterial({
+        color: "#9ef7c6",
+        toneMapped: false,
+        transparent: true,
+        opacity: 0.8,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      }),
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.07;
+    group.add(ring);
+    group.position.set(position.x, 0, position.z);
+    world.add(group);
+    pushSurges.push({
+      group,
+      beam,
+      ring,
+      startedAt: performance.now(),
+      duration: 4200,
+    });
+  }
+
   function playRewardEvent(targetHint = "") {
     let targetPylon = null;
     nodeInfrastructure.forEach((pylon) => {
@@ -12941,6 +13003,28 @@ export function createWorldScene({
           child.material?.dispose?.();
         });
         rewardFlights.splice(index, 1);
+      }
+    }
+    for (let index = pushSurges.length - 1; index >= 0; index -= 1) {
+      const surge = pushSurges[index];
+      const progress = Math.min(
+        1,
+        (performance.now() - surge.startedAt) / surge.duration,
+      );
+      const fade = 1 - progress;
+      // The ring races out to roughly yard scale while the column burns down.
+      surge.ring.scale.setScalar(1 + progress * 34);
+      surge.ring.material.opacity = 0.8 * fade;
+      surge.beam.scale.x = 1 + progress * 0.7;
+      surge.beam.scale.z = surge.beam.scale.x;
+      surge.beam.material.opacity = 0.85 * fade * fade;
+      if (progress >= 1) {
+        world.remove(surge.group);
+        surge.group.traverse((child) => {
+          child.geometry?.dispose?.();
+          child.material?.dispose?.();
+        });
+        pushSurges.splice(index, 1);
       }
     }
     updateCamera(delta);

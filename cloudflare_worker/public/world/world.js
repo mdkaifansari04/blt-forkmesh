@@ -3600,6 +3600,7 @@ class ForkMeshWorld extends HTMLElement {
     this.spawnSelected = false;
     this.rewardTimer = 0;
     this.mirrorTimer = 0;
+    this.mirrorPushRefreshTimer = 0;
     this.eventsTimer = 0;
     this.notificationsTimer = 0;
     this.mediaTimer = 0;
@@ -16332,11 +16333,35 @@ class ForkMeshWorld extends HTMLElement {
       message.from
     ) {
       this.world?.playEmote?.(String(message.from), message.emote);
+    } else if (message.type === "mirror-push") {
+      this.handleMirrorPush(message);
     }
     // Pongs and targeted interactions do not change the public roster. Avoid
     // re-walking every avatar and rebuilding unrelated scene metrics for those
     // high-frequency frames.
     if (peersChanged) this.renderPeers();
+  }
+
+  handleMirrorPush(message) {
+    // The relay announces that a mirror node's signed catalog record advanced
+    // to a new head — code was just pushed onto that node. The frame itself is
+    // only a doorbell: the cabinet's displayed state, and the push surge the
+    // scene plays when a cabinet's commit visibly changes, both come from the
+    // re-fetched signed mirror payload, never from unauthenticated frame data.
+    const node = sanitizePresenceText(message?.node, "", 40);
+    if (!node) return;
+    this.toast(`Fresh code just landed on mirror node “${node}”.`);
+    // One coalesced refresh replaces waiting out the 30-second mirror poll, so
+    // the yard updates near-instantly without adding steady-state traffic.
+    window.clearTimeout(this.mirrorPushRefreshTimer);
+    this.mirrorPushRefreshTimer = window.setTimeout(() => {
+      this.mirrorPushRefreshTimer = 0;
+      if (this.destroyed) return;
+      void this.refreshMirrorCatalogs().catch(() => {
+        // Preserve the last verified snapshot during a transient HTTPS
+        // failure; the regular poll retries on its own cadence.
+      });
+    }, 600);
   }
 
   setupBroadcastChannel() {
@@ -16595,6 +16620,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.pingTimer);
     window.clearInterval(this.rewardTimer);
     window.clearInterval(this.mirrorTimer);
+    window.clearTimeout(this.mirrorPushRefreshTimer);
     window.clearInterval(this.eventsTimer);
     window.clearInterval(this.notificationsTimer);
     window.clearInterval(this.mediaTimer);
