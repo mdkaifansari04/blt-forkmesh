@@ -1345,19 +1345,16 @@ QWidget *MainWindow::buildAgentsTab()
     return page;
 }
 
-// Steer the currently-selected agent session (m_selectedAgentSessionId) with a
-// follow-up message. Shared by the agent detail page's "Send" composer and the
-// footer quick-add's up-arrow ("send to the visible agent") button.
-void MainWindow::sendPromptToSelectedAgent(const QString &prompt)
+// The composer's model dropdown is the user's live choice for what runs
+// next; without this the session kept coasting on whatever model it
+// happened to launch with, so switching the dropdown before following up
+// on an idle/stopped agent silently did nothing. Only a restart (the
+// no-live-process branch in sendPromptToAgentSession below) actually picks
+// the new model up — a still-running process can't be retargeted mid-turn
+// — but stashing it on the session now means the very next resume honors it.
+void MainWindow::applyComposerSelectionToAgentSession(int sessionId)
 {
-    // The composer's model dropdown is the user's live choice for what runs
-    // next; without this the session kept coasting on whatever model it
-    // happened to launch with, so switching the dropdown before following up
-    // on an idle/stopped agent silently did nothing. Only a restart (the
-    // no-live-process branch in sendPromptToAgentSession below) actually picks
-    // the new model up — a still-running process can't be retargeted mid-turn
-    // — but stashing it on the session now means the very next resume honors it.
-    if (AgentSession *session = findAgentSession(m_selectedAgentSessionId);
+    if (AgentSession *session = findAgentSession(sessionId);
         session && (session->provider == QLatin1String("claude-code") ||
                     agentIsCodexProvider(session->provider))) {
         bool changed = false;
@@ -1401,6 +1398,14 @@ void MainWindow::sendPromptToSelectedAgent(const QString &prompt)
         if (changed && m_agentStore)
             m_agentStore->saveSession(*session);
     }
+}
+
+// Steer the currently-selected agent session (m_selectedAgentSessionId) with a
+// follow-up message. Shared by the agent detail page's "Send" composer and the
+// footer quick-add's up-arrow ("send to the visible agent") button.
+void MainWindow::sendPromptToSelectedAgent(const QString &prompt)
+{
+    applyComposerSelectionToAgentSession(m_selectedAgentSessionId);
     sendPromptToAgentSession(m_selectedAgentSessionId, prompt);
 }
 
