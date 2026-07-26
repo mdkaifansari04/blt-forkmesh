@@ -118,6 +118,12 @@ QJsonValue redactProviderCredentials(
 // AgentBranchButtonDelegate (below) can paint the row's branch button and route
 // the click without looking the session back up (adhoc #377).
 constexpr int kAgentBranchRole = Qt::UserRole + 33;
+// Companion roles the same chip reads (adhoc #403): files the session's patch
+// touched, how many entries `git status` reports in its worktree, and whether a
+// dedicated worktree is still checked out. -1 means "not known" for the counts.
+constexpr int kAgentBranchFilesRole = Qt::UserRole + 34;
+constexpr int kAgentBranchDirtyRole = Qt::UserRole + 35;
+constexpr int kAgentBranchWorktreeRole = Qt::UserRole + 36;
 
 // The base branch an agent session landed in, defaulting to "main" when the
 // session never recorded one (issue #291).
@@ -132,7 +138,8 @@ QString agentMergeBase(const AgentSession &s)
 // and time so the note is visible straight from the list. The Claude run summary
 // ("N turns · Ms") that used to be appended here now lives in the agent
 // detail-page header's Stats line (adhoc #42).
-void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s)
+void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
+                          const AgentDiffStat &stat = AgentDiffStat())
 {
     cell->setText(s.merged ? QStringLiteral("merged") : agentStatusText(s.status));
     cell->setForeground(s.merged ? QColor("#a371f7") : agentStatusColor(s.status));
@@ -159,6 +166,11 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s)
     // Delegate paints it and opens the branch on click, so a session without one
     // simply gets no button.
     cell->setData(kAgentBranchRole, s.branchName);
+    // …and the chip's at-a-glance badges (adhoc #403): files changed, dirty-work
+    // dot, and whether the session still has a worktree on disk.
+    cell->setData(kAgentBranchFilesRole, stat.files);
+    cell->setData(kAgentBranchDirtyRole, stat.dirty);
+    cell->setData(kAgentBranchWorktreeRole, stat.worktree);
     QStringList tip;
     if (s.merged)
         tip << QStringLiteral("Worktree/PR merged into %1%2")
@@ -168,8 +180,23 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s)
                                   QDateTime::fromMSecsSinceEpoch(s.mergedAtMs)
                                       .toString(QStringLiteral("MMM d  hh:mm")))
                             : QString());
-    if (!s.branchName.isEmpty())
+    if (!s.branchName.isEmpty()) {
         tip << QStringLiteral("Click the branch button to open %1").arg(s.branchName);
+        if (stat.files >= 0)
+            tip << QStringLiteral("%1 file%2 changed")
+                       .arg(stat.files)
+                       .arg(stat.files == 1 ? QString() : QStringLiteral("s"));
+        if (stat.worktree.isEmpty())
+            tip << QStringLiteral("No worktree checked out");
+        else
+            tip << QStringLiteral("Worktree: %1").arg(stat.worktree);
+        if (stat.dirty > 0)
+            tip << QStringLiteral("%1 uncommitted change%2 in the worktree")
+                       .arg(stat.dirty)
+                       .arg(stat.dirty == 1 ? QString() : QStringLiteral("s"));
+        else if (stat.dirty == 0)
+            tip << QStringLiteral("Worktree is clean");
+    }
     cell->setToolTip(tip.join(QLatin1Char('\n')));
 }
 
@@ -300,13 +327,13 @@ public:
     {
     }
 
-    // Reserve the button's slot in the column's width so ResizeToContents never
+    // Reserve the chip's slot in the column's width so ResizeToContents never
     // sizes the column so tight that the glyph sits on top of the status text.
     QSize sizeHint(const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
     {
         QSize s = SelectionBorderRowDelegate::sizeHint(opt, idx);
         if (!idx.data(kAgentBranchRole).toString().isEmpty())
-            s.rwidth() += kButtonSize + 2 * kButtonMargin;
+            s.rwidth() += chipWidth(opt, idx) + 2 * kButtonMargin;
         return s;
     }
 
@@ -316,24 +343,62 @@ public:
         SelectionBorderRowDelegate::paint(painter, option, index);
         if (index.data(kAgentBranchRole).toString().isEmpty())
             return;
-        const QRect r = buttonRect(option.rect);
+        const QRect r = buttonRect(option, index);
         if (r.width() <= 0)
             return;
-        // Hovering the cell lifts the button out of the row so it reads as
+        // Hovering the cell lifts the chip out of the row so it reads as
         // clickable; at rest it's a quiet chip like the detail header's chips.
         const bool hot = option.state & QStyle::State_MouseOver;
+        // Accent outline while the session still has its own checkout on disk,
+        // neutral once the worktree has been cleaned up (adhoc #403) — so
+        // "worktree there or not" reads straight off the row.
+        const bool live = !index.data(kAgentBranchWorktreeRole).toString().isEmpty();
+        const bool dark = currentThemeIsDark();
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing, true);
-        painter->setPen(Qt::NoPen);
-        painter->setBrush(QColor(hot ? "#30363d" : "#21262d"));
-        painter->drawRoundedRect(r, 4, 4);
-        painter->restore();
-        // Centre the glyph at its native size rather than letting QIcon::paint
+        // Soft vertical gradient behind a 1px border: reads as a raised chip
+        // rather than the flat block it used to be.
+        QLinearGradient fill(r.topLeft(), r.bottomLeft());
+        if (dark) {
+            fill.setColorAt(0.0, QColor(hot ? "#3b424c" : "#2b313a"));
+            fill.setColorAt(1.0, QColor(hot ? "#2c323b" : "#1f242b"));
+        } else {
+            fill.setColorAt(0.0, QColor("#ffffff"));
+            fill.setColorAt(1.0, QColor(hot ? "#e8ebef" : "#f0f2f5"));
+        }
+        painter->setBrush(fill);
+        const QColor border =
+            live ? QColor(dark ? (hot ? "#58a6ff" : "#3d6ea8") : "#0969da")
+                 : QColor(dark ? (hot ? "#484f58" : "#30363d")
+                               : (hot ? "#afb8c1" : "#d0d7de"));
+        painter->setPen(QPen(border, 1));
+        painter->drawRoundedRect(QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5), 5, 5);
+        // Draw the glyph at its native size rather than letting QIcon::paint
         // upscale the 12px pixmap to fill the chip.
-        QRect glyph(0, 0, kGlyphSize, kGlyphSize);
-        glyph.moveCenter(r.center());
-        themedOcticon("git-branch", QColor(hot ? "#c9d1d9" : "#8b949e"), kGlyphSize)
-            .paint(painter, glyph);
+        const QColor ink(dark ? (hot ? "#c9d1d9" : "#8b949e")
+                              : (hot ? "#1f2328" : "#656d76"));
+        QRect glyph(r.left() + kChipPadding, r.center().y() - kGlyphSize / 2,
+                    kGlyphSize, kGlyphSize);
+        themedOcticon("git-branch", ink, kGlyphSize).paint(painter, glyph);
+        // Files the session's patch touched, in small type beside the glyph.
+        const QString files = filesText(index);
+        if (!files.isEmpty()) {
+            const int textLeft = glyph.right() + 1 + kChipGap;
+            painter->setPen(ink);
+            painter->setFont(chipFont(option));
+            painter->drawText(QRect(textLeft, r.top(),
+                                    r.right() - kChipPadding - textLeft + 1,
+                                    r.height()),
+                              Qt::AlignVCenter | Qt::AlignLeft, files);
+        }
+        // Uncommitted work in that worktree: an amber pip on the chip's corner,
+        // ringed in the list background so it stays legible over the border.
+        if (branchDirty(index) > 0) {
+            painter->setPen(QPen(QColor(dark ? "#0d1117" : "#ffffff"), 1.5));
+            painter->setBrush(QColor(dark ? "#d29922" : "#bf8700"));
+            painter->drawEllipse(QPointF(r.right() - 0.5, r.top() + 1.5), 3.0, 3.0);
+        }
+        painter->restore();
     }
 
     // Clicks land here before the view starts an edit, so a press+release inside
@@ -347,7 +412,7 @@ public:
             auto *me = static_cast<QMouseEvent *>(event);
             const QString branch = index.data(kAgentBranchRole).toString();
             if (!branch.isEmpty() && me->button() == Qt::LeftButton &&
-                buttonRect(option.rect).contains(me->pos())) {
+                buttonRect(option, index).contains(me->pos())) {
                 m_onClick(branch);
                 return true;
             }
@@ -356,15 +421,58 @@ public:
     }
 
 private:
-    static constexpr int kButtonSize = 18;
-    static constexpr int kButtonMargin = 4;
+    static constexpr int kButtonSize = 18;   // chip height
+    static constexpr int kButtonMargin = 4;  // gap to the cell's right edge
     static constexpr int kGlyphSize = 12;
+    static constexpr int kChipPadding = 4;   // chip edge -> glyph / count text
+    static constexpr int kChipGap = 3;       // glyph -> count text
 
-    static QRect buttonRect(const QRect &cell)
+    // The count rides at a smaller, slightly heavier size than the row text so it
+    // stays a badge rather than competing with the status word next to it.
+    static QFont chipFont(const QStyleOptionViewItem &opt)
     {
-        const int size = qMin(kButtonSize, cell.height() - 2);
-        return QRect(cell.right() - kButtonMargin - size,
-                     cell.center().y() - size / 2 + 1, size, size);
+        QFont f = opt.font;
+        if (f.pixelSize() > 0)
+            f.setPixelSize(qMax(9, f.pixelSize() - 3));
+        else
+            f.setPointSizeF(qMax(7.0, f.pointSizeF() - 2.0));
+        f.setWeight(QFont::DemiBold);
+        return f;
+    }
+
+    // Files the session's patch touched, capped so a huge run can't stretch the
+    // column; empty when the count isn't known yet (no patch captured).
+    static QString filesText(const QModelIndex &idx)
+    {
+        const int files = idx.data(kAgentBranchFilesRole).toInt();
+        if (files < 0)
+            return QString();
+        return files > 99 ? QStringLiteral("99+") : QString::number(files);
+    }
+
+    static int branchDirty(const QModelIndex &idx)
+    {
+        const QVariant v = idx.data(kAgentBranchDirtyRole);
+        return v.isValid() ? v.toInt() : -1;
+    }
+
+    static int chipWidth(const QStyleOptionViewItem &opt, const QModelIndex &idx)
+    {
+        int w = 2 * kChipPadding + kGlyphSize;
+        const QString files = filesText(idx);
+        if (!files.isEmpty())
+            w += kChipGap + QFontMetrics(chipFont(opt)).horizontalAdvance(files);
+        return w;
+    }
+
+    static QRect buttonRect(const QStyleOptionViewItem &opt, const QModelIndex &idx)
+    {
+        const QRect cell = opt.rect;
+        const int h = qMin(kButtonSize, cell.height() - 2);
+        const int w =
+            qMin(chipWidth(opt, idx), qMax(0, cell.width() - 2 * kButtonMargin));
+        return QRect(cell.right() - kButtonMargin - w + 1,
+                     cell.center().y() - h / 2 + 1, w, h);
     }
 
     std::function<void(const QString &)> m_onClick;
@@ -3592,8 +3700,11 @@ void MainWindow::applyAgentRowCells(int row, const AgentSession &session,
     plain(2)->setText(agentProviderName(session.provider));
     // Model column: the LLM model selected for this session.
     applyAgentModelCell(plain(3), session);
+    // Diff figures, memoised — feed both the Status cell's branch chip (files /
+    // dirty / worktree badges, adhoc #403) and the Diff column below.
+    const AgentDiffStat diffStat = agentDiffStat(session, agentGitDir, agentBase);
     // Status column: text + coloured glyph (issue #108).
-    applyAgentStatusCell(plain(4), session);
+    applyAgentStatusCell(plain(4), session, diffStat);
     // Turns/Time/Cost/Tokens now live in the detail-page header (adhoc #42); the
     // table keeps only Speed as the at-a-glance throughput. The token total still
     // feeds the Speed figure and is refreshed in place while the session streams
@@ -3617,8 +3728,7 @@ void MainWindow::applyAgentRowCells(int row, const AgentSession &session,
                                   QStringLiteral("yyyy-MM-dd HH:mm:ss"))
                             : QString());
     // Diff column (issue #170): files changed + branch ahead/behind, memoised.
-    applyAgentDiffCell(sortable(7),
-                       agentDiffStat(session, agentGitDir, agentBase), agentBase);
+    applyAgentDiffCell(sortable(7), diffStat, agentBase);
     // Night-rider light: a custom-painted scanner that sweeps while this session
     // streams raw output. AgentScannerDelegate looks the animation state up by the
     // sessionId stashed here in Qt::UserRole.
@@ -3650,6 +3760,25 @@ QString MainWindow::testAgentStatusCellText(int sessionId) const
             applyAgentStatusCell(&item, s);
             return item.text();
         }
+    }
+    return QString();
+}
+
+// adhoc #403: read the branch chip's badges back off the Status cell —
+// AgentBranchButtonDelegate paints straight from these roles, so proving they
+// carry the session's diff stat proves the chip shows the right counts.
+QString MainWindow::testAgentStatusCellBadges(int sessionId,
+                                              const AgentDiffStat &stat) const
+{
+    for (const AgentSession &s : m_agentSessions) {
+        if (s.id != sessionId)
+            continue;
+        QTableWidgetItem item;
+        applyAgentStatusCell(&item, s, stat);
+        return QStringLiteral("%1|%2|%3")
+            .arg(item.data(kAgentBranchFilesRole).toInt())
+            .arg(item.data(kAgentBranchDirtyRole).toInt())
+            .arg(item.data(kAgentBranchWorktreeRole).toString());
     }
     return QString();
 }
@@ -3806,6 +3935,23 @@ AgentDiffStat MainWindow::agentDiffStat(const AgentSession &session,
                            {"merge-tree", "--write-tree", session.branchName, base},
                            nullptr, nullptr))
             stat.conflicted = true;
+    }
+    // Worktree + uncommitted-work state behind the Status cell's branch chip
+    // (adhoc #403). cachedSessionWorktree() memoises the `git worktree list`
+    // probe, and `git status` only runs when a dedicated checkout is still on
+    // disk — a cleaned-up session (the common case for finished runs) costs no
+    // extra git at all.
+    if (!gitDir.isEmpty() && !session.branchName.isEmpty()) {
+        const QString wt = cachedSessionWorktree(session.id, gitDir, session.branchName);
+        if (!wt.isEmpty() && QDir(wt).exists()) {
+            stat.worktree = wt;
+            QByteArray dirtyOut;
+            if (runGitCapture(wt, {"status", "--porcelain"}, &dirtyOut, nullptr)) {
+                const QString lines = QString::fromUtf8(dirtyOut).trimmed();
+                stat.dirty =
+                    lines.isEmpty() ? 0 : lines.count(QLatin1Char('\n')) + 1;
+            }
+        }
     }
     m_agentDiffStats.insert(session.id, stat);
     return stat;
@@ -7760,7 +7906,10 @@ void MainWindow::updateAgentStatusCell(int sessionId)
             cell = new QTableWidgetItem;
             m_agentTable->setItem(r, 4, cell);
         }
-        applyAgentStatusCell(cell, *s);
+        // Reuse the memoised diff stat so the branch chip keeps its files/dirty/
+        // worktree badges across a bare status flip without re-shelling git here
+        // (an absent entry simply leaves the badges off until the next refresh).
+        applyAgentStatusCell(cell, *s, m_agentDiffStats.value(sessionId));
         break;
     }
     // Keep the footer "Agents:" strip's per-session dot (the ones above the

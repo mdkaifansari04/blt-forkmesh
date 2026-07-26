@@ -45,6 +45,13 @@ struct AgentDiffStat {
     // True when re-merging the base branch into this session's branch would
     // conflict (adhoc #229) — surfaced as a conflict marker in the agents list.
     bool conflicted = false;
+    // Working-copy state of the session's own worktree (adhoc #403), surfaced on
+    // the Status cell's branch chip: `worktree` is the dedicated checkout's path
+    // ("" when the session has none left), and `dirty` counts the entries
+    // `git status --porcelain` reports there (-1 when there was no worktree to
+    // ask, 0 when it is clean).
+    QString worktree;
+    int dirty = -1;
 };
 
 #include <QElapsedTimer>
@@ -516,6 +523,10 @@ public:
         return markAgentSessionsMerged(0, branch);
     }
     QString testAgentStatusCellText(int sessionId) const;
+    // adhoc #403: the badge data the Status cell hands its branch chip, read back
+    // as "files|dirty|worktree", so a test can prove the chip's files-changed /
+    // uncommitted / worktree-present markers are fed from the session's diff stat.
+    QString testAgentStatusCellBadges(int sessionId, const AgentDiffStat &stat) const;
     bool testAgentSessionMerged(int sessionId) const;
 #endif
 

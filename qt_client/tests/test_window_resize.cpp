@@ -1960,6 +1960,27 @@ int main(int argc, char *argv[])
                       "(issue #291, cell = %1)")
                   .arg(window.testAgentStatusCellText(2910)));
 
+        // adhoc #403: the Status cell's branch chip also carries the session's
+        // files-changed count, its worktree's uncommitted-entry count and the
+        // worktree path (empty once the checkout is gone) — the three badges
+        // AgentBranchButtonDelegate paints beside the branch glyph.
+        AgentDiffStat chip;
+        chip.files = 7;
+        chip.dirty = 2;
+        chip.worktree = QStringLiteral("/tmp/wt-291");
+        check(window.testAgentStatusCellBadges(2910, chip) ==
+                  QStringLiteral("7|2|/tmp/wt-291"),
+              QString("the branch chip carries files/dirty/worktree badges "
+                      "(adhoc #403, got %1)")
+                  .arg(window.testAgentStatusCellBadges(2910, chip)));
+        // A cleaned-up session with no patch yet leaves every badge unknown, so
+        // the chip falls back to the plain branch button.
+        check(window.testAgentStatusCellBadges(2910, AgentDiffStat()) ==
+                  QStringLiteral("-1|-1|"),
+              QString("a session with no patch/worktree paints a bare branch chip "
+                      "(adhoc #403, got %1)")
+                  .arg(window.testAgentStatusCellBadges(2910, AgentDiffStat())));
+
         // A branch with no attached session must not be flagged.
         check(!window.testMarkAgentBranchMerged(
                   QStringLiteral("agent/issue-291-unrelated")),
