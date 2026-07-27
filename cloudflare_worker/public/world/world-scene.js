@@ -16346,6 +16346,16 @@ export function createWorldScene({
         layoutCommitTimer = 0;
       }
       commitLayoutObject(movedObject);
+      if (
+        ["fountain", "campfire", "swing-set"].includes(
+          String(movedObject.userData.layoutId || "").replace(
+            /^landmark-/,
+            "",
+          ),
+        )
+      ) {
+        relayoutNetworkNodes();
+      }
       lastGestureDragged = true;
       pointerGestureMoved = false;
       return;
@@ -16726,6 +16736,10 @@ export function createWorldScene({
       const object = movableWorldObjects.get(id);
       if (object) applyLockedPlacement(id, object);
     });
+    // Layout and catalog reads race independently. Re-anchor after the full
+    // document is applied so a late pool placement cannot strand the cabinet
+    // ring at the pool's authored coordinates.
+    relayoutNetworkNodes();
   }
 
   function commitLayoutObject(object) {

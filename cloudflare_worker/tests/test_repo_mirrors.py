@@ -596,7 +596,9 @@ def test_payload_uses_explicit_org_backing_node_as_integrity_anchor():
     } == {
         "mirror2": "ok",
         "mirror3": "ok",
-        "jett": "rejected",
+        # The appointed backing endpoint is live, so an out-of-pin local
+        # publisher is visibly auto-healing instead of permanently rejected.
+        "jett": "healing",
     }
 
 
