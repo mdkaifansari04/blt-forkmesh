@@ -10786,8 +10786,11 @@ export function createWorldScene({
     );
   }
 
-  function enterOffice() {
-    if (officeZoneState !== "nearby") return false;
+  function enterOffice({ source = "" } = {}) {
+    // A doorway callback is emitted only after the town collider verifies the
+    // avatar crossed the real opening. Trust that physical proof even when a
+    // fast dash reaches it one frame before nearestLandmark updates proximity.
+    if (source !== "doorway" && officeZoneState !== "nearby") return false;
     selectedLandmark = "office";
     officeExitPending = false;
     officeDoorwayEntryPending = false;
