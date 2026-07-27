@@ -356,6 +356,72 @@ QWidget *MainWindow::buildSourceControlPanel()
     return panel;
 }
 
+// Rows the changes panel shows for a `git status --porcelain=v1 -z` dump: one
+// per staged entry plus one per unstaged/untracked entry, so a file that is
+// both staged and further modified counts twice — exactly as it appears twice
+// in the tree. Must stay in step with the parse in refreshSourceControl()
+// below; this is the same total without building any rows, for the activity
+// rail's badge.
+static int scmChangeCount(const QByteArray &porcelain)
+{
+    int count = 0;
+    const QList<QByteArray> fields = porcelain.split('\0');
+    for (int i = 0; i < fields.size(); ++i) {
+        const QByteArray f = fields.at(i);
+        if (f.size() < 3)
+            continue; // "XY <path>"
+        const char x = f.at(0), y = f.at(1);
+        // Renames/copies carry the original path in the following NUL field.
+        if (x == 'R' || x == 'C')
+            ++i;
+        if (x == '?' && y == '?') {
+            ++count;
+            continue;
+        }
+        if (x != ' ')
+            ++count;
+        if (y != ' ')
+            ++count;
+    }
+    return count;
+}
+
+// Keep the activity rail's Git badge honest whichever repo tab is on screen.
+// refreshSourceControl() only runs when the changes panel is opened or the
+// window is re-activated with it already visible, so sitting on the Code tab —
+// or simply opening a repo — left the badge blank (or still showing the repo
+// we came from) while files sat uncommitted. This probe's only job is that
+// count, so it runs detached and is cheap enough for the poll in the
+// constructor to drive it while an agent edits the working tree underneath us.
+void MainWindow::refreshRepoChangeBadge()
+{
+    if (!m_railGitButton)
+        return;
+    const QString dir = repoGitDir();
+    if (dir.isEmpty() || !repoHasWorkingTree()) {
+        m_railGitButton->setBadgeCount(0);
+        return;
+    }
+    const int forIndex = m_repoDetailIndex;
+    runGitDetached(dir,
+                   {QStringLiteral("status"), QStringLiteral("--porcelain=v1"),
+                    QStringLiteral("-z")},
+                   [this, forIndex](bool ok, const QByteArray &out) {
+                       // The user can switch repos while git runs; a late reply
+                       // must not stamp the wrong repo's count on the badge.
+                       if (!ok || !m_railGitButton ||
+                           m_repoDetailIndex != forIndex)
+                           return;
+                       m_railGitButton->setBadgeCount(scmChangeCount(out));
+                       // Rebuild the panel only when it's on screen *and* the
+                       // tree actually moved: the rebuild drops the open diff
+                       // and the selection, so it must never run speculatively.
+                       if (out != m_scmStatusCache && m_scmTree &&
+                           m_scmTree->isVisible())
+                           refreshSourceControl();
+                   });
+}
+
 void MainWindow::refreshSourceControl()
 {
     refreshSourceControl(/*force=*/false);

@@ -352,6 +352,20 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
             &MainWindow::refreshRepositoryList);
     m_homeStatsTimer->start(60000);
 
+    // The activity rail's Git badge has to be right whichever repo tab is on
+    // screen — the working tree moves under us constantly here (an agent
+    // session, an external editor, a sync), and the changes panel is usually
+    // not the visible view when it does. Poll it while the rail is showing;
+    // refreshRepoChangeBadge() is one detached `git status`, so this costs the
+    // GUI thread nothing, and the guard makes it a no-op everywhere but a repo
+    // page (isVisible() is false for a stacked page that isn't current).
+    m_repoChangeBadgeTimer = new QTimer(this);
+    connect(m_repoChangeBadgeTimer, &QTimer::timeout, this, [this] {
+        if (m_railGitButton && m_railGitButton->isVisible())
+            refreshRepoChangeBadge();
+    });
+    m_repoChangeBadgeTimer->start(10000);
+
     // Footer diagnostics + UI-stall watchdog. Deferred one event-loop turn so the
     // heartbeat starts measuring a real, interactive loop (not constructor work).
     QTimer::singleShot(0, this, [this] { startDiagnostics(); });
@@ -648,6 +662,12 @@ void MainWindow::changeEvent(QEvent *event)
         refreshSourceControl();
         refreshCommitMarkersIfStale();
     }
+    // The rail's change badge is on screen for every repo tab, not just the
+    // changes panel, so it gets its own (detached) rescan on focus — otherwise
+    // a repo opened on Code shows a stale count until the panel is opened.
+    if (event->type() == QEvent::ActivationChange && isActiveWindow() &&
+        m_railGitButton && m_railGitButton->isVisible())
+        refreshRepoChangeBadge();
     // Regaining focus while already parked on the open conversation counts as
     // reading it too — messages that arrived while the window was in the
     // background otherwise leave the unread badge stuck until the user

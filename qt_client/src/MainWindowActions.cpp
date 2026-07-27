@@ -984,6 +984,7 @@ void MainWindow::refreshOpenRepoDetail()
     updateRepoActionMenus();
     updateRepoCodeSize();
     refreshRepoSyncIndicators();
+    refreshRepoChangeBadge(); // a sync/merge/commit moves the working tree too
     refreshRepoPinBanner(); // a sync may have advanced refs past the pinned hash
     m_treeLoadedForIndex = -1; // force the explorer tree to rebuild on next use
     if (m_filesStack && m_filesStack->currentIndex() == 2)

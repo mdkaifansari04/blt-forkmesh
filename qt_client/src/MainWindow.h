@@ -2528,6 +2528,10 @@ private:
     QWidget *buildSourceControlPanel();
     void refreshSourceControl();             // re-scan `git status` into the tree
     void refreshSourceControl(bool force);   // force refresh path bypassing cache short-circuit
+    // Detached `git status` that only updates the activity rail's Git badge, so
+    // the uncommitted-file count is right on every repo tab (and right after a
+    // repo opens), not just while the changes panel is the visible view.
+    void refreshRepoChangeBadge();
     void scmStagePath(const QString &path);
     void scmUnstagePath(const QString &path);
     void scmDiscardPath(const QString &path, bool untracked);
@@ -5804,6 +5808,9 @@ private:
     QString m_typingConversation;
     QTimer *m_typingStopTimer;
     QTimer *m_homeStatsTimer = nullptr;
+    // Polls the open repo's uncommitted-file count into the activity rail badge
+    // (see refreshRepoChangeBadge).
+    QTimer *m_repoChangeBadgeTimer = nullptr;
     qint64 m_connectedAtMs = 0;
     qint64 m_totalConnectionMs = 0;
     // Until this moment, "node connected" alerts are suppressed: the roster
