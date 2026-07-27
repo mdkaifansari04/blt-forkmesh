@@ -2105,11 +2105,13 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
       shell.world.camera.position.clone().set(-18, 7.5, -2)
     );
     shell.world.setPaused(true);
+    shell.world.camera.fov = 70;
+    shell.world.camera.updateProjectionMatrix();
     shell.world.camera.position.copy(cameraPosition);
     shell.world.camera.lookAt(target);
     shell.world.renderer.render(shell.world.scene, shell.world.camera);
   });
-  await page.screenshot({
+  await page.locator("canvas.world-canvas").screenshot({
     path: "/tmp/forkmesh-office-logo.png",
     animations: "disabled",
   });
