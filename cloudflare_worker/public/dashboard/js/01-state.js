@@ -63,7 +63,6 @@
     // parsed from /blog/rss.xml. null until the feed read resolves so the card
     // can tell "loading" apart from "feed unavailable".
     homeBlogPosts: null,
-    longDiffOverrides: {},
     repoCommitDetail: null,
     repoRecordDetail: null,
     profileContributions: {
@@ -91,5 +90,3 @@
   const MAX_REPO_FILE_FINDER_SECONDS = 6;
   const REPO_COLLECTION_PAGE_SIZE = 25;
   const DASHBOARD_THEME_KEY = "forkmesh.dashboard.theme";
-  const DASHBOARD_LONG_DIFFS_KEY = "forkmesh.dashboard.longDiffs";
-  const DASHBOARD_DIFF_AUTO_RENDER_MAX_CHARS = 250000;

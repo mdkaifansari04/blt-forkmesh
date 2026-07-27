@@ -40,29 +40,6 @@ static QString branchConflictKey(const QString &dir, const QString &baseSha,
         return QString();
     return dir + QLatin1Char('\n') + baseSha + QLatin1Char('\n') + branchSha;
 }
-
-// Split rendered diff HTML into its self-contained per-file blocks. Each file's
-// block begins with its `<a name="file-N"></a>` anchor (see diffFileHeaderHtml)
-// and ends before the next one, so these chunks can be streamed into the view a
-// few at a time instead of laid out in one blocking pass (adhoc #51). Any
-// preamble before the first anchor rides along with the first block.
-static QStringList splitDiffFileBlocks(const QString &html)
-{
-    static const QString marker = QStringLiteral("<a name=\"file-");
-    int pos = html.indexOf(marker);
-    if (pos < 0)
-        return {html}; // no per-file anchors (e.g. an empty/notice body)
-    QStringList blocks;
-    if (pos > 0)
-        blocks.append(html.left(pos)); // preamble before the first file (if any)
-    while (pos >= 0) {
-        const int next = html.indexOf(marker, pos + marker.size());
-        blocks.append(html.mid(pos, next < 0 ? -1 : next - pos));
-        pos = next;
-    }
-    return blocks;
-}
-
 // Worktrees tab (next to Branches): lists this repo's git worktrees — the main
 // checkout plus each agent's isolated worktree+branch — with open/remove/prune.
 QWidget *MainWindow::buildWorktreesTab()
@@ -157,8 +134,11 @@ QWidget *MainWindow::buildWorktreesTab()
     m_worktreeFileList->setMinimumWidth(170);
     connect(m_worktreeFileList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {
-                if (item && m_worktreeDiffView)
+                if (item && m_worktreeDiffView) {
+                    // The file may still be queued behind the visible window.
+                    flushDiffStream(m_worktreeDiffView);
                     m_worktreeDiffView->scrollToAnchor(item->data(Qt::UserRole).toString());
+                }
             });
     auto *filesPane = new QWidget;
     auto *filesLayout = new QVBoxLayout(filesPane);
@@ -1792,9 +1772,12 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchFileList->setMinimumWidth(180);
     connect(m_branchFileList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {
-                if (item && m_branchDiffView)
+                if (item && m_branchDiffView) {
+                    // The file may still be queued behind the visible window.
+                    flushDiffStream(m_branchDiffView);
                     m_branchDiffView->scrollToAnchor(
                         item->data(Qt::UserRole).toString());
+                }
             });
     auto *filesPane = new QWidget;
     auto *filesLayout = new QVBoxLayout(filesPane);
@@ -3397,9 +3380,6 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
         return;
     m_branchDiffViewedContext = viewedContext;
     m_branchDiffFileSpans.clear();
-    // Supersede any progressive render still streaming in from a prior scope.
-    ++m_branchDiffRenderGen;
-    m_branchDiffPendingBlocks.clear();
     if (m_branchFileList) {
         QSignalBlocker block(m_branchFileList);
         m_branchFileList->clear();
@@ -3416,34 +3396,14 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
 
     // Handing an enormous diff to QTextEdit::setHtml() in one go parses, styles
     // and lays it all out on the GUI thread at once, freezing the window for
-    // seconds (issue #187). Rather than refuse to render a large commit, split it
-    // into per-file blocks and stream them in: paint enough to fill the viewport
-    // now (so the commit shows immediately), then append the rest a batch at a
-    // time off the event loop, keeping the window responsive while it fills in
-    // (adhoc #51).
-    constexpr int kStreamDiffHtmlChars = 1'000'000;  // stream, don't block, above this
-    constexpr int kFirstPaintChars = 250'000;        // fill the viewport synchronously
-    if (html.isEmpty()) {
-        setDiffHtml(m_branchDiffView,
-            QStringLiteral("<p style='color:#8b949e'>%1</p>")
-                .arg(emptyMessage.toHtmlEscaped()));
-    } else if (html.size() > kStreamDiffHtmlChars && longDiffsPref()) {
-        QStringList blocks = splitDiffFileBlocks(html);
-        QString firstChunk;
-        while (!blocks.isEmpty() &&
-               (firstChunk.isEmpty() || firstChunk.size() < kFirstPaintChars))
-            firstChunk += blocks.takeFirst();
-        // A streamed diff is assembled incrementally; don't let a
-        // Ctrl+wheel zoom re-render a partial copy (issue #254).
-        m_branchDiffView->setProperty("fm_diffSource", QString());
-        m_branchDiffView->document()->setDefaultStyleSheet(
-            diffStyleSheet(m_diffFontPt));
-        m_branchDiffView->setHtml(firstChunk);
-        m_branchDiffPendingBlocks = blocks;
-        appendBranchDiffBlocks(m_branchDiffRenderGen);
-    } else {
-        setDiffHtml(m_branchDiffView, html);
-    }
+    // seconds (issue #187). setDiffHtml renders progressively for exactly that
+    // reason: the visible window now, the rest a batch at a time off the event
+    // loop (adhoc #51/#421).
+    setDiffHtml(m_branchDiffView,
+                html.isEmpty()
+                    ? QStringLiteral("<p style='color:#8b949e'>%1</p>")
+                          .arg(emptyMessage.toHtmlEscaped())
+                    : html);
 
     // Changed-files list: a status-coloured row per file; click to scroll the
     // diff to it (mirrors the commit/PR diff viewers).
@@ -3478,39 +3438,11 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
         fitFileListToWidestEntry(m_branchFileList);
     }
 
-    // Map each file header to its document position for the sticky bar. When the
-    // diff is being streamed in (above), only the first blocks are in the document
-    // now; appendBranchDiffBlocks() rebuilds the full map once the last batch
-    // lands. Either way this covers whatever is currently shown.
+    // Map each file header to its document position for the sticky bar. While the
+    // diff is still streaming in only the first blocks are in the document now;
+    // the stream-finished hook (onDiffStreamFinished) rebuilds the full map once
+    // the last batch lands. Either way this covers whatever is currently shown.
     rebuildBranchDiffSpans();
-}
-
-// Stream the next queued batch of per-file diff blocks into the branch diff view,
-// then reschedule until the queue drains (see renderBranchDiffPatch). A batch
-// from a superseded scope selection (m_branchDiffRenderGen bumped) bails.
-void MainWindow::appendBranchDiffBlocks(int gen)
-{
-    if (gen != m_branchDiffRenderGen || !m_branchDiffView)
-        return;
-    if (m_branchDiffPendingBlocks.isEmpty()) {
-        rebuildBranchDiffSpans(); // every file is in the document now
-        return;
-    }
-    QTimer::singleShot(0, this, [this, gen] {
-        if (gen != m_branchDiffRenderGen || !m_branchDiffView)
-            return;
-        constexpr int kAppendBatchChars = 400'000;
-        QString batch;
-        while (!m_branchDiffPendingBlocks.isEmpty() &&
-               (batch.isEmpty() || batch.size() < kAppendBatchChars))
-            batch += m_branchDiffPendingBlocks.takeFirst();
-        // Append at the document's end via a private cursor so the user's current
-        // scroll position is left untouched as the rest fills in below.
-        QTextCursor cur(m_branchDiffView->document());
-        cur.movePosition(QTextCursor::End);
-        cur.insertHtml(batch);
-        appendBranchDiffBlocks(gen);
-    });
 }
 
 // Rebuild the sticky-bar file-span map from whatever is currently in the branch

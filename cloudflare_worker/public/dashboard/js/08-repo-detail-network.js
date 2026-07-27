@@ -1485,29 +1485,6 @@
       return;
     }
 
-    const longDiffToggle = event.target.closest("[data-long-diff-toggle]");
-    if (longDiffToggle) {
-      saveDashboardLongDiffs(Boolean(longDiffToggle.checked));
-      return;
-    }
-
-    const showFullDiff = event.target.closest("[data-show-full-diff]");
-    if (showFullDiff) {
-      const key = showFullDiff.dataset.showFullDiff || "";
-      if (key) state.longDiffOverrides[key] = true;
-      if (key.startsWith("commit:") && state.repoCommitDetail) {
-        const { repo, data } = state.repoCommitDetail;
-        const container = $("[data-repo-commits]");
-        if (container) container.innerHTML = renderRepoCommitDetail(repo, data);
-      } else if (key.startsWith("pull:") && state.repoRecordDetail) {
-        const { repo, kind, number, parsed } = state.repoRecordDetail;
-        const container = $(`[data-repo-${kind}]`);
-        if (container) container.innerHTML = renderRepoRecordDetail(repo, kind, number, parsed);
-      }
-      window.lucide?.createIcons();
-      return;
-    }
-
     if (event.target.closest("[data-profile-modal-close], [data-profile-modal-backdrop]")) {
       setProfileModalOpen(false);
       return;

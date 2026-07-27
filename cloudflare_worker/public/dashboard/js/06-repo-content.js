@@ -1124,9 +1124,22 @@
     return `<div class="grid gap-3 border-b border-border bg-background p-3 sm:grid-cols-2">${frame("Before", image.old)}${frame("After", image.new)}</div>`;
   }
 
+  // Large diffs used to be replaced by a "Diff hidden for speed" notice because
+  // laying out every changed file at once is what made a big PR page crawl. Each
+  // file block instead opts into `content-visibility: auto`, so the browser lays
+  // out and paints only the files inside (or near) the visible window and skips
+  // the rest until they scroll in — the whole diff is present for find-in-page
+  // and anchors, and nothing offscreen costs layout (adhoc #421). The intrinsic
+  // size keeps the scrollbar honest: ~1.25rem per rendered row, capped at the
+  // block's own max height so the estimate never runs away on a huge file.
+  function diffFileBlockIntrinsicSize(file) {
+    const rows = file.binary ? 6 : Math.max(1, (file.rows || []).length);
+    return `${Math.min(36, 2.5 + rows * 1.25).toFixed(2)}rem`;
+  }
+
   function renderDiffFileBlock(file, image) {
     return `
-      <div class="overflow-hidden rounded-lg border border-border">
+      <div class="overflow-hidden rounded-lg border border-border" style="content-visibility:auto;contain-intrinsic-size:auto ${diffFileBlockIntrinsicSize(file)}">
         <div class="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-secondary/50 px-3 py-2">
           <span class="inline-flex min-w-0 items-center truncate font-mono text-xs font-medium text-foreground">${diffFileHeaderPath(file)}${diffFileStatusBadge(file)}</span>
           <span class="shrink-0 font-mono text-[10px]"><span class="text-primary">+${formatCount(file.adds)}</span><span class="ml-1 text-destructive">-${formatCount(file.dels)}</span></span>
@@ -1148,9 +1161,8 @@
     return `<div class="grid gap-3 p-3">${files.map((file) => renderDiffFileBlock(file, images.get(file.newPath) || images.get(file.oldPath))).join("")}</div>`;
   }
 
-  function renderRepoPullPatch(patch, key = "") {
+  function renderRepoPullPatch(patch) {
     if (!String(patch || "").trim()) return '<div class="px-4 py-3 text-sm text-muted-foreground">No textual patch is committed for this pull request. Branch-backed PRs are reconstructed by the desktop client.</div>';
-    if (!shouldRenderLongDiff(patch, key)) return renderLongDiffNotice("pull request patch", key, patch);
     return `<div data-repo-pull-patch>${renderDiffFiles(parseDiffFiles(patch))}</div>`;
   }
 
@@ -1595,7 +1607,7 @@
         </section>
         <section class="overflow-hidden rounded-lg border border-border" data-repo-record-patch-panel>
           <div class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="git-compare-arrows" class="h-3.5 w-3.5 text-primary"></i>Patch</div>
-          ${renderRepoPullPatch(pullPatch.patch, `pull:${repoKey(repo)}:${number}`)}
+          ${renderRepoPullPatch(pullPatch.patch)}
         </section>` : "";
     const discussionConversation = parsed.discussionConversation || [];
     const discussionConversationSection = isDiscussions ? `

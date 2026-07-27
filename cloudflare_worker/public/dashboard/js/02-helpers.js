@@ -60,57 +60,6 @@
     applyDashboardTheme(nextTheme);
   }
 
-  function readDashboardLongDiffs() {
-    try {
-      return localStorage.getItem(DASHBOARD_LONG_DIFFS_KEY) === "1";
-    } catch (_) {
-      return false;
-    }
-  }
-
-  function renderLongDiffPreference(on = readDashboardLongDiffs()) {
-    $$("[data-long-diff-toggle]").forEach((input) => {
-      input.checked = Boolean(on);
-    });
-    const status = $("[data-long-diff-status]");
-    if (status) {
-      status.textContent = on
-        ? "Large diffs render automatically on this device."
-        : "Large diffs stay collapsed until you open them.";
-    }
-  }
-
-  function saveDashboardLongDiffs(on) {
-    try {
-      if (on) localStorage.setItem(DASHBOARD_LONG_DIFFS_KEY, "1");
-      else localStorage.removeItem(DASHBOARD_LONG_DIFFS_KEY);
-    } catch (_) {}
-    renderLongDiffPreference(Boolean(on));
-  }
-
-  function diffOverrideEnabled(key) {
-    return Boolean(key && state.longDiffOverrides?.[key]);
-  }
-
-  function shouldRenderLongDiff(diff, key) {
-    return readDashboardLongDiffs() ||
-      diffOverrideEnabled(key) ||
-      String(diff || "").length <= DASHBOARD_DIFF_AUTO_RENDER_MAX_CHARS;
-  }
-
-  function renderLongDiffNotice(label, key, diff) {
-    const chars = String(diff || "").length;
-    return `
-      <div class="grid gap-2 px-4 py-4 text-sm text-muted-foreground">
-        <div class="font-medium text-amber-300">Diff hidden for speed</div>
-        <p>This ${escapeHtml(label)} is ${formatCount(chars)} characters. Enable long diffs in Profile settings to render these automatically.</p>
-        <button type="button" data-show-full-diff="${escapeHtml(key || "")}" class="inline-flex h-8 w-fit items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary transition-colors">
-          <i data-lucide="file-diff" class="h-3.5 w-3.5"></i>
-          Show full diff
-        </button>
-      </div>`;
-  }
-
   function writeSession(nextSession) {
     const storedSession = nextSession && typeof nextSession === "object"
       ? {

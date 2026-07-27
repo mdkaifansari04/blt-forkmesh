@@ -300,6 +300,181 @@ void logRestart(const QString &phase)
 // Declarations (and the DiffFileEntry/DiffFileNavigator types) live in
 // MainWindowInternal.h; these were lifted out of MainWindowIssues/Ide/Agents.
 
+namespace {
+
+// Progressive diff rendering (adhoc #421), see the declarations in
+// MainWindowInternal.h. Above this many chars of HTML a diff is laid out one
+// batch at a time instead of in a single blocking pass; the first batch covers
+// well over a screenful, so the visible window is complete on arrival.
+constexpr qsizetype kDiffFirstPaintChars = 150'000;
+// Chars of HTML per streamed batch. Each batch is a separate GUI-thread layout,
+// so this trades how fast the rest lands against how long any one turn blocks.
+constexpr qsizetype kDiffStreamBatchChars = 250'000;
+
+// Split rendered diff HTML into its self-contained per-file blocks. Each file's
+// block begins with its `<a name="file-N"></a>` anchor (see diffFileHeaderHtml)
+// and ends before the next one, so these chunks can be streamed into the view a
+// few at a time instead of laid out in one blocking pass. Any preamble before
+// the first anchor rides along with the first block.
+QStringList splitDiffFileBlocks(const QString &html)
+{
+    static const QString marker = QStringLiteral("<a name=\"file-");
+    int pos = html.indexOf(marker);
+    if (pos < 0)
+        return {html}; // no per-file anchors (e.g. an empty/notice body)
+    QStringList blocks;
+    if (pos > 0)
+        blocks.append(html.left(pos)); // preamble before the first file (if any)
+    while (pos >= 0) {
+        const int next = html.indexOf(marker, pos + marker.size());
+        blocks.append(html.mid(pos, next < 0 ? -1 : next - pos));
+        pos = next;
+    }
+    return blocks;
+}
+
+struct DiffStreamState {
+    QStringList pending;
+    // Bumped on every render (and by a flush) so a batch queued for a diff that
+    // has since been replaced bails instead of writing into the new document.
+    int gen = 0;
+    QList<std::function<void()>> finishedHooks;
+};
+
+// Per-view stream state. Keyed by pointer and dropped when the view dies; all of
+// this runs on the GUI thread.
+QHash<QTextEdit *, DiffStreamState> &diffStreams()
+{
+    static QHash<QTextEdit *, DiffStreamState> streams;
+    return streams;
+}
+
+DiffStreamState &diffStreamState(QTextEdit *view)
+{
+    auto &streams = diffStreams();
+    auto it = streams.find(view);
+    if (it != streams.end())
+        return *it;
+    QObject::connect(view, &QObject::destroyed, qApp,
+                     [view] { diffStreams().remove(view); });
+    return streams[view];
+}
+
+// Run the "document is complete" hooks for a view. Hooks are copied first: one
+// may re-render this very view (a font change, a re-render on new data).
+void finishDiffStream(QTextEdit *view)
+{
+    auto it = diffStreams().find(view);
+    if (it == diffStreams().end())
+        return;
+    const QList<std::function<void()>> hooks = it->finishedHooks;
+    for (const std::function<void()> &hook : hooks)
+        hook();
+}
+
+void appendDiffStreamBatch(QTextEdit *view, const QString &batch)
+{
+    if (batch.isEmpty())
+        return;
+    // Rich-text parse + layout runs synchronously on the GUI thread and is the
+    // slow half of showing a diff; name it so a stall report points here instead
+    // of an anonymous harfbuzz/QTextDocumentLayout backtrace.
+    BlockingCallScope crumb(QStringLiteral("diff html append (%1 chars, %2)")
+                                .arg(batch.size())
+                                .arg(view->objectName().isEmpty()
+                                         ? QStringLiteral("unnamed view")
+                                         : view->objectName()));
+    // Append at the document's end via a private cursor so the user's current
+    // scroll position is left untouched as the rest fills in below.
+    QTextCursor cur(view->document());
+    cur.movePosition(QTextCursor::End);
+    cur.insertHtml(batch);
+}
+
+void scheduleDiffStreamBatch(QTextEdit *view, int gen)
+{
+    QPointer<QTextEdit> guard(view);
+    QTimer::singleShot(0, view, [guard, gen] {
+        if (!guard)
+            return;
+        auto it = diffStreams().find(guard.data());
+        if (it == diffStreams().end() || it->gen != gen || it->pending.isEmpty())
+            return;
+        QString batch;
+        while (!it->pending.isEmpty() &&
+               (batch.isEmpty() || batch.size() < kDiffStreamBatchChars))
+            batch += it->pending.takeFirst();
+        const bool done = it->pending.isEmpty();
+        appendDiffStreamBatch(guard, batch);
+        if (!guard)
+            return;
+        if (done)
+            finishDiffStream(guard);
+        else
+            scheduleDiffStreamBatch(guard, gen);
+    });
+}
+
+} // namespace
+
+void renderDiffStreamed(QTextEdit *view, const QString &html,
+                        const QString &styleSheet)
+{
+    if (!view)
+        return;
+    DiffStreamState &state = diffStreamState(view);
+    ++state.gen; // supersede any batches still queued from a previous render
+    state.pending.clear();
+    const int gen = state.gen;
+
+    QString first = html;
+    if (html.size() > kDiffFirstPaintChars) {
+        QStringList blocks = splitDiffFileBlocks(html);
+        if (blocks.size() > 1) {
+            first.clear();
+            while (!blocks.isEmpty() &&
+                   (first.isEmpty() || first.size() < kDiffFirstPaintChars))
+                first += blocks.takeFirst();
+            state.pending = blocks;
+        }
+    }
+    const bool streaming = !state.pending.isEmpty();
+    {
+        BlockingCallScope crumb(QStringLiteral("diff html layout (%1 chars, %2)")
+                                    .arg(first.size())
+                                    .arg(view->objectName().isEmpty()
+                                             ? QStringLiteral("unnamed view")
+                                             : view->objectName()));
+        view->document()->setDefaultStyleSheet(styleSheet);
+        view->setHtml(first);
+    }
+    if (streaming)
+        scheduleDiffStreamBatch(view, gen);
+    else
+        finishDiffStream(view);
+}
+
+void flushDiffStream(QTextEdit *view)
+{
+    if (!view)
+        return;
+    auto it = diffStreams().find(view);
+    if (it == diffStreams().end() || it->pending.isEmpty())
+        return;
+    ++it->gen; // the queued batch bails; the whole remainder lands here instead
+    const QString rest = it->pending.join(QString());
+    it->pending.clear();
+    appendDiffStreamBatch(view, rest);
+    finishDiffStream(view);
+}
+
+void addDiffStreamFinishedHook(QTextEdit *view, std::function<void()> hook)
+{
+    if (!view || !hook)
+        return;
+    diffStreamState(view).finishedHooks.append(std::move(hook));
+}
+
 // Format an estimated agent task cost as a short USD string, e.g. "$0.01".
 QString agentCostText(double usd)
 {
@@ -1319,18 +1494,6 @@ bool diffSplitPref()
 void setDiffSplitPref(bool split)
 {
     QSettings().setValue(QStringLiteral("view/diffSplit"), split);
-}
-
-// User preference (persisted): render very large diffs automatically.
-// Defaults off so opening a huge PR/commit does not immediately lay out a large
-// QTextDocument on the GUI thread. Individual notices still offer "Show full diff".
-bool longDiffsPref()
-{
-    return QSettings().value(QStringLiteral("view/longDiffs"), false).toBool();
-}
-void setLongDiffsPref(bool on)
-{
-    QSettings().setValue(QStringLiteral("view/longDiffs"), on);
 }
 
 // User preference (persisted): automatically mark a pull request's files as

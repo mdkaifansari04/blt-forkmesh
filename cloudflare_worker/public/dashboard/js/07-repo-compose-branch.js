@@ -606,9 +606,8 @@
       </div>`).join("");
   }
 
-  function renderRepoCommitDiff(diff, imageDiffs, key = "") {
+  function renderRepoCommitDiff(diff, imageDiffs) {
     if (!String(diff || "").trim()) return '<div class="px-4 py-3 text-sm text-muted-foreground">No textual diff is available for this commit.</div>';
-    if (!shouldRenderLongDiff(diff, key)) return renderLongDiffNotice("commit diff", key, diff);
     return `<div data-repo-commit-diff>${renderDiffFiles(parseDiffFiles(diff), imageDiffs)}</div>`;
   }
 
@@ -641,7 +640,7 @@
         </section>
         <section class="overflow-hidden rounded-lg border border-border">
           <div class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="git-compare-arrows" class="h-3.5 w-3.5 text-primary"></i>Diff</div>
-          ${renderRepoCommitDiff(data.diff, data.imageDiffs, `commit:${repoKey(repo)}:${hash}`)}
+          ${renderRepoCommitDiff(data.diff, data.imageDiffs)}
         </section>
       </article>`;
   }

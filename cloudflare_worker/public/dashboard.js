@@ -63,7 +63,6 @@
     // parsed from /blog/rss.xml. null until the feed read resolves so the card
     // can tell "loading" apart from "feed unavailable".
     homeBlogPosts: null,
-    longDiffOverrides: {},
     repoCommitDetail: null,
     repoRecordDetail: null,
     profileContributions: {
@@ -91,8 +90,6 @@
   const MAX_REPO_FILE_FINDER_SECONDS = 6;
   const REPO_COLLECTION_PAGE_SIZE = 25;
   const DASHBOARD_THEME_KEY = "forkmesh.dashboard.theme";
-  const DASHBOARD_LONG_DIFFS_KEY = "forkmesh.dashboard.longDiffs";
-  const DASHBOARD_DIFF_AUTO_RENDER_MAX_CHARS = 250000;
   function readSession() {
     try {
       return JSON.parse(localStorage.getItem("forkmesh.session") || "null");
@@ -153,57 +150,6 @@
       localStorage.setItem("forkmesh.theme", nextTheme);
     } catch (_) {}
     applyDashboardTheme(nextTheme);
-  }
-
-  function readDashboardLongDiffs() {
-    try {
-      return localStorage.getItem(DASHBOARD_LONG_DIFFS_KEY) === "1";
-    } catch (_) {
-      return false;
-    }
-  }
-
-  function renderLongDiffPreference(on = readDashboardLongDiffs()) {
-    $$("[data-long-diff-toggle]").forEach((input) => {
-      input.checked = Boolean(on);
-    });
-    const status = $("[data-long-diff-status]");
-    if (status) {
-      status.textContent = on
-        ? "Large diffs render automatically on this device."
-        : "Large diffs stay collapsed until you open them.";
-    }
-  }
-
-  function saveDashboardLongDiffs(on) {
-    try {
-      if (on) localStorage.setItem(DASHBOARD_LONG_DIFFS_KEY, "1");
-      else localStorage.removeItem(DASHBOARD_LONG_DIFFS_KEY);
-    } catch (_) {}
-    renderLongDiffPreference(Boolean(on));
-  }
-
-  function diffOverrideEnabled(key) {
-    return Boolean(key && state.longDiffOverrides?.[key]);
-  }
-
-  function shouldRenderLongDiff(diff, key) {
-    return readDashboardLongDiffs() ||
-      diffOverrideEnabled(key) ||
-      String(diff || "").length <= DASHBOARD_DIFF_AUTO_RENDER_MAX_CHARS;
-  }
-
-  function renderLongDiffNotice(label, key, diff) {
-    const chars = String(diff || "").length;
-    return `
-      <div class="grid gap-2 px-4 py-4 text-sm text-muted-foreground">
-        <div class="font-medium text-amber-300">Diff hidden for speed</div>
-        <p>This ${escapeHtml(label)} is ${formatCount(chars)} characters. Enable long diffs in Profile settings to render these automatically.</p>
-        <button type="button" data-show-full-diff="${escapeHtml(key || "")}" class="inline-flex h-8 w-fit items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary transition-colors">
-          <i data-lucide="file-diff" class="h-3.5 w-3.5"></i>
-          Show full diff
-        </button>
-      </div>`;
   }
 
   function writeSession(nextSession) {
@@ -7776,9 +7722,22 @@
     return `<div class="grid gap-3 border-b border-border bg-background p-3 sm:grid-cols-2">${frame("Before", image.old)}${frame("After", image.new)}</div>`;
   }
 
+  // Large diffs used to be replaced by a "Diff hidden for speed" notice because
+  // laying out every changed file at once is what made a big PR page crawl. Each
+  // file block instead opts into `content-visibility: auto`, so the browser lays
+  // out and paints only the files inside (or near) the visible window and skips
+  // the rest until they scroll in — the whole diff is present for find-in-page
+  // and anchors, and nothing offscreen costs layout (adhoc #421). The intrinsic
+  // size keeps the scrollbar honest: ~1.25rem per rendered row, capped at the
+  // block's own max height so the estimate never runs away on a huge file.
+  function diffFileBlockIntrinsicSize(file) {
+    const rows = file.binary ? 6 : Math.max(1, (file.rows || []).length);
+    return `${Math.min(36, 2.5 + rows * 1.25).toFixed(2)}rem`;
+  }
+
   function renderDiffFileBlock(file, image) {
     return `
-      <div class="overflow-hidden rounded-lg border border-border">
+      <div class="overflow-hidden rounded-lg border border-border" style="content-visibility:auto;contain-intrinsic-size:auto ${diffFileBlockIntrinsicSize(file)}">
         <div class="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-secondary/50 px-3 py-2">
           <span class="inline-flex min-w-0 items-center truncate font-mono text-xs font-medium text-foreground">${diffFileHeaderPath(file)}${diffFileStatusBadge(file)}</span>
           <span class="shrink-0 font-mono text-[10px]"><span class="text-primary">+${formatCount(file.adds)}</span><span class="ml-1 text-destructive">-${formatCount(file.dels)}</span></span>
@@ -7800,9 +7759,8 @@
     return `<div class="grid gap-3 p-3">${files.map((file) => renderDiffFileBlock(file, images.get(file.newPath) || images.get(file.oldPath))).join("")}</div>`;
   }
 
-  function renderRepoPullPatch(patch, key = "") {
+  function renderRepoPullPatch(patch) {
     if (!String(patch || "").trim()) return '<div class="px-4 py-3 text-sm text-muted-foreground">No textual patch is committed for this pull request. Branch-backed PRs are reconstructed by the desktop client.</div>';
-    if (!shouldRenderLongDiff(patch, key)) return renderLongDiffNotice("pull request patch", key, patch);
     return `<div data-repo-pull-patch>${renderDiffFiles(parseDiffFiles(patch))}</div>`;
   }
 
@@ -8247,7 +8205,7 @@
         </section>
         <section class="overflow-hidden rounded-lg border border-border" data-repo-record-patch-panel>
           <div class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="git-compare-arrows" class="h-3.5 w-3.5 text-primary"></i>Patch</div>
-          ${renderRepoPullPatch(pullPatch.patch, `pull:${repoKey(repo)}:${number}`)}
+          ${renderRepoPullPatch(pullPatch.patch)}
         </section>` : "";
     const discussionConversation = parsed.discussionConversation || [];
     const discussionConversationSection = isDiscussions ? `
@@ -11345,9 +11303,8 @@
       </div>`).join("");
   }
 
-  function renderRepoCommitDiff(diff, imageDiffs, key = "") {
+  function renderRepoCommitDiff(diff, imageDiffs) {
     if (!String(diff || "").trim()) return '<div class="px-4 py-3 text-sm text-muted-foreground">No textual diff is available for this commit.</div>';
-    if (!shouldRenderLongDiff(diff, key)) return renderLongDiffNotice("commit diff", key, diff);
     return `<div data-repo-commit-diff>${renderDiffFiles(parseDiffFiles(diff), imageDiffs)}</div>`;
   }
 
@@ -11380,7 +11337,7 @@
         </section>
         <section class="overflow-hidden rounded-lg border border-border">
           <div class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="git-compare-arrows" class="h-3.5 w-3.5 text-primary"></i>Diff</div>
-          ${renderRepoCommitDiff(data.diff, data.imageDiffs, `commit:${repoKey(repo)}:${hash}`)}
+          ${renderRepoCommitDiff(data.diff, data.imageDiffs)}
         </section>
       </article>`;
   }
@@ -13746,29 +13703,6 @@
       return;
     }
 
-    const longDiffToggle = event.target.closest("[data-long-diff-toggle]");
-    if (longDiffToggle) {
-      saveDashboardLongDiffs(Boolean(longDiffToggle.checked));
-      return;
-    }
-
-    const showFullDiff = event.target.closest("[data-show-full-diff]");
-    if (showFullDiff) {
-      const key = showFullDiff.dataset.showFullDiff || "";
-      if (key) state.longDiffOverrides[key] = true;
-      if (key.startsWith("commit:") && state.repoCommitDetail) {
-        const { repo, data } = state.repoCommitDetail;
-        const container = $("[data-repo-commits]");
-        if (container) container.innerHTML = renderRepoCommitDetail(repo, data);
-      } else if (key.startsWith("pull:") && state.repoRecordDetail) {
-        const { repo, kind, number, parsed } = state.repoRecordDetail;
-        const container = $(`[data-repo-${kind}]`);
-        if (container) container.innerHTML = renderRepoRecordDetail(repo, kind, number, parsed);
-      }
-      window.lucide?.createIcons();
-      return;
-    }
-
     if (event.target.closest("[data-profile-modal-close], [data-profile-modal-backdrop]")) {
       setProfileModalOpen(false);
       return;
@@ -14727,7 +14661,6 @@
   };
 
   applyDashboardTheme(readDashboardTheme());
-  renderLongDiffPreference();
   if (initSharedChrome()) {
     (PAGE_INITS[currentPage()] || initHomePage)();
     initPageHistory();

@@ -1545,16 +1545,14 @@ def test_dashboard_pull_detail_reads_committed_patch_for_files_changed():
         'async function loadRepoPullPatch(repo, number, metadataCommit = "")',
         "function parsePatchStats(patch)",
         "function renderRepoPullFiles(files)",
-        "function renderRepoPullPatch(patch, key = \"\")",
+        "function renderRepoPullPatch(patch)",
         "data-repo-pull-files",
         "data-repo-pull-patch",
         "pulls/${number}/changes.patch",
         "ref: commit,",
         "? await loadRepoPullPatch(repo, number, pullMetadataCommit)",
         "renderRepoPullFiles(pullPatch.files)",
-        "renderRepoPullPatch(pullPatch.patch, `pull:${repoKey(repo)}:${number}`)",
-        "data-show-full-diff",
-        "DASHBOARD_LONG_DIFFS_KEY",
+        "renderRepoPullPatch(pullPatch.patch)",
     ):
         assert marker in dashboard_js
 
@@ -1611,16 +1609,14 @@ def test_dashboard_commit_history_opens_live_commit_detail_not_inbox_route():
     for marker in (
         "async function loadRepoCommitDetail(repo, hash)",
         "function renderRepoCommitDetail(repo, data)",
-        "function renderRepoCommitDiff(diff, imageDiffs, key = \"\")",
+        "function renderRepoCommitDiff(diff, imageDiffs)",
         "function renderRepoCommitFiles(files)",
         "fetchRepoJson(repoLiveUrl(repo, \"commit\", { path: hash }))",
         "data-repo-commit-detail",
         "data-repo-commit-back",
         "data-repo-commit-files",
         "data-repo-commit-diff",
-        "renderRepoCommitDiff(data.diff, data.imageDiffs, `commit:${repoKey(repo)}:${hash}`)",
-        "Diff hidden for speed",
-        "data-long-diff-toggle",
+        "renderRepoCommitDiff(data.diff, data.imageDiffs)",
         "loadRepoCommitDetail(state.selectedRepo, commitButton.dataset.dashboardCommitHash || \"\")",
     ):
         assert marker in dashboard_js

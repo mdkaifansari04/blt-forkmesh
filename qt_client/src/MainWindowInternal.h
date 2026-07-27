@@ -275,8 +275,24 @@ void setDiffSplitPref(bool split);
 // overlay (adhoc #56). Unlike diffFileHeaderHtml this carries no Viewed toggle
 // or table layout — it renders inline in a QLabel.
 QString diffStickyLabelHtml(const DiffFileEntry &f);
-bool longDiffsPref();
-void setLongDiffsPref(bool on);
+// Progressive diff rendering (adhoc #421). QTextEdit::setHtml() parses, styles
+// and lays out the whole document synchronously on the GUI thread, so handing it
+// a multi-megabyte diff froze the window — which is why large diffs used to be
+// replaced by a "hidden for speed" notice. Instead of hiding them, these split
+// the rendered HTML into its per-file blocks and lay out only what the visible
+// window needs up front, streaming the rest in a batch at a time off the event
+// loop. Every diff renders in full, and the first screenful is on screen fast.
+void renderDiffStreamed(QTextEdit *view, const QString &html,
+                        const QString &styleSheet);
+// Force everything still queued for `view` into its document now. Call before an
+// operation that needs the whole document (an anchor jump, a document-wide
+// search, a file-position scan) rather than only what is on screen.
+void flushDiffStream(QTextEdit *view);
+// Register a callback run every time `view`'s diff finishes streaming (and
+// immediately at the end of a render that needed no streaming), for state that
+// is derived from the complete document. Hooks are additive: register once per
+// owner, at construction.
+void addDiffStreamFinishedHook(QTextEdit *view, std::function<void()> hook);
 bool autoMarkViewedOnScrollPref();
 void setAutoMarkViewedOnScrollPref(bool on);
 QString diffStickyStyleSheet(int fontPt);
@@ -314,11 +330,17 @@ public:
                                  return;
                              // Jump the diff to the file's header, aligned to the top.
                              // Suppress the scroll that fires so it can't re-select.
+                             // The target file may still be queued behind the
+                             // visible window, so land the whole diff first.
                              m_ignoreScroll = true;
+                             flushDiffStream(m_diff);
                              m_diff->scrollToAnchor(anchor);
                              m_ignoreScroll = false;
                              refresh(/*syncSelection=*/false);
                          });
+        // A streamed diff only holds the visible window's files right after a
+        // render; recompute the spans once the rest has landed (adhoc #421).
+        addDiffStreamFinishedHook(m_diff, [this] { rebuildSpans(); });
     }
 
     // Recompute the file-header positions after the diff HTML was (re)rendered.
@@ -326,20 +348,9 @@ public:
     // a span back to its row.
     void rebuild(const QList<DiffFileEntry> &files, int fontPt)
     {
+        m_files = files;
         m_sticky->setStyleSheet(diffStickyStyleSheet(fontPt));
-        m_spans.clear();
-        QTextDocument *doc = m_diff->document();
-        int idx = 0;
-        for (QTextBlock b = doc->begin(); b.isValid() && idx < files.size();
-             b = b.next()) {
-            const int at = b.text().indexOf(files.at(idx).path);
-            if (at >= 0) {
-                m_spans.append({b.position() + at, files.at(idx).path,
-                                files.at(idx).anchor});
-                ++idx;
-            }
-        }
-        refresh(/*syncSelection=*/false);
+        rebuildSpans();
     }
 
 private:
@@ -348,6 +359,26 @@ private:
         QString path;
         QString anchor;
     };
+
+    // Walk the document's blocks (cheap and layout-free) for each file's header
+    // position. Covers whatever is currently in the document: re-run from the
+    // stream-finished hook once a streamed diff is complete.
+    void rebuildSpans()
+    {
+        m_spans.clear();
+        QTextDocument *doc = m_diff->document();
+        int idx = 0;
+        for (QTextBlock b = doc->begin(); b.isValid() && idx < m_files.size();
+             b = b.next()) {
+            const int at = b.text().indexOf(m_files.at(idx).path);
+            if (at >= 0) {
+                m_spans.append({b.position() + at, m_files.at(idx).path,
+                                m_files.at(idx).anchor});
+                ++idx;
+            }
+        }
+        refresh(/*syncSelection=*/false);
+    }
 
     void refresh(bool syncSelection)
     {
@@ -394,6 +425,7 @@ private:
     QLabel *m_sticky = nullptr;
     int m_anchorRole = Qt::UserRole;
     bool m_ignoreScroll = false;
+    QList<DiffFileEntry> m_files;
     QList<Span> m_spans;
 };
 // Models offered for inline commit-message / X-post generation, with per-million

@@ -6398,6 +6398,8 @@ void MainWindow::renderCommitDetail(const QString &dir, const QString &hash,
     if (m_commitDiffView && !m_pendingCommitFileScroll.isEmpty()) {
         for (const DiffFileEntry &f : files) {
             if (f.path == m_pendingCommitFileScroll) {
+                // The file may still be queued behind the visible window.
+                flushDiffStream(m_commitDiffView);
                 m_commitDiffView->scrollToAnchor(f.anchor);
                 break;
             }
