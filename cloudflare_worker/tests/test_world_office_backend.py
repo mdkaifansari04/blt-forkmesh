@@ -322,6 +322,7 @@ def test_floor_projection_grants_defaults_plus_server_derived_team_floors():
         "trust-safety",
         "unmapped-team",
     ]
+    # An account on no marketing team is not admitted to the Marketing floor.
     assert admitted["data"]["allowedFloorIds"] == [
         "lobby",
         "rooftop",
@@ -468,6 +469,22 @@ def test_floor_projection_rejects_other_org_aliases_and_orphan_grants():
         "rooftop",
     ]
     database.close()
+
+
+def test_marketing_floor_is_granted_only_to_the_marketing_team():
+    handler, state = _floor_access_handler()
+    request = SimpleNamespace(method="GET")
+    state["account_bi"] = "c" * 64
+    state["account"] = {"name": "Mallory", "status": "active", "kind": "user"}
+
+    state["rows"] = [{"team": "Community"}]
+    outsider = asyncio.run(handler(_Env(), request))
+    assert "marketing" not in outsider["data"]["allowedFloorIds"]
+
+    for team in ("Marketing", "growth", "Brand"):
+        state["rows"] = [{"team": team}]
+        member = asyncio.run(handler(_Env(), request))
+        assert "marketing" in member["data"]["allowedFloorIds"]
 
 
 def _general_access_handler():

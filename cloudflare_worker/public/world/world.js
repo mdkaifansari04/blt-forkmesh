@@ -18478,24 +18478,29 @@ class ForkMeshWorld extends HTMLElement {
         ownPresence?.id === this.serverPeerId &&
         (!this.spawnSelected || spawnBlocked)
       ) {
-        this.currentSpace = ownPresence.space;
-        this.lastMovement = {
-          ...this.lastMovement,
-          x: ownPresence.x,
-          y: ownPresence.y,
-          z: ownPresence.z,
-          heading: ownPresence.heading,
-          space: ownPresence.space,
-        };
-        this.world?.setSpawn?.({
+        // A reconnect hands out a fresh outdoor arrival cell. The scene
+        // declines it while this visitor is inside the Office tower, and the
+        // stored position must not drift to a spot the avatar never took.
+        const relocated = this.world?.setSpawn?.({
           x: ownPresence.x,
           y: ownPresence.y,
           z: ownPresence.z,
           heading: ownPresence.heading,
           space: ownPresence.space,
         });
-        this.spawnSelected = true;
-        this.rememberWorldPosition(this.lastMovement, true);
+        if (relocated !== false) {
+          this.currentSpace = ownPresence.space;
+          this.lastMovement = {
+            ...this.lastMovement,
+            x: ownPresence.x,
+            y: ownPresence.y,
+            z: ownPresence.z,
+            heading: ownPresence.heading,
+            space: ownPresence.space,
+          };
+          this.spawnSelected = true;
+          this.rememberWorldPosition(this.lastMovement, true);
+        }
       }
       window.clearTimeout(this.peerGraceTimer);
       this.peerGraceTimer = 0;

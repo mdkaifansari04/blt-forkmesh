@@ -74,15 +74,18 @@ def test_tower_has_ten_floors_and_is_about_ten_times_the_old_width():
     public_floors = {
         floor["id"] for floor in result["floors"] if floor["publicForMembers"]
     }
+    # Marketing is a department storey, not a common floor: only the lobby and
+    # the rooftop patio are shared by every signed-in member.
     assert public_floors == {"lobby", "rooftop"}
     restricted = [
         floor for floor in result["floors"] if not floor["publicForMembers"]
     ]
     assert len(restricted) == 8
     assert all(floor["team"] for floor in restricted)
+    assert "marketing" in {floor["id"] for floor in restricted}
 
 
-def test_authenticated_members_get_public_floors_but_team_floors_stay_restricted():
+def test_authenticated_members_get_two_common_floors_but_team_floors_stay_restricted():
     result = run_tower_script(
         """
         const guest = tower.normalizeOfficeFloorAccess({
@@ -96,13 +99,19 @@ def test_authenticated_members_get_public_floors_but_team_floors_stay_restricted
         const teamHintOnly = tower.normalizeOfficeFloorAccess({
           authenticated: true,
           account: "Alice",
-          teams: ["engineering"],
+          teams: ["engineering", "marketing"],
         });
         const serverAuthorized = tower.normalizeOfficeFloorAccess({
           authenticated: true,
           account: "Alice",
           teams: ["engineering"],
           allowedFloorIds: ["engineering"],
+        });
+        const marketingMember = tower.normalizeOfficeFloorAccess({
+          authenticated: true,
+          account: "Mallory",
+          teams: ["marketing"],
+          allowedFloorIds: ["marketing"],
         });
         process.stdout.write(JSON.stringify({
           guestCanLobby: tower.canAccessOfficeFloor(guest, "lobby"),
@@ -113,8 +122,14 @@ def test_authenticated_members_get_public_floors_but_team_floors_stay_restricted
             .map((floor) => floor.id),
           teamHintCanEngineering:
             tower.canAccessOfficeFloor(teamHintOnly, "engineering"),
+          teamHintCanMarketing:
+            tower.canAccessOfficeFloor(teamHintOnly, "marketing"),
           authorizedCanEngineering:
             tower.canAccessOfficeFloor(serverAuthorized, "engineering"),
+          authorizedCannotMarketing:
+            tower.canAccessOfficeFloor(serverAuthorized, "marketing"),
+          marketingMemberCanMarketing:
+            tower.canAccessOfficeFloor(marketingMember, "marketing"),
           authorizedStillCannotSecurity:
             tower.canAccessOfficeFloor(serverAuthorized, "security"),
           unknownFloor: tower.canAccessOfficeFloor(serverAuthorized, "unknown"),
@@ -125,11 +140,16 @@ def test_authenticated_members_get_public_floors_but_team_floors_stay_restricted
 
     assert result["guestCanLobby"] is False
     assert result["guestCanEngineering"] is False
+    # Signing in is not a Marketing badge: only the lobby and the rooftop are
+    # granted without a server-issued team floor.
     assert set(result["defaults"]) == {"lobby", "rooftop"}
     # Team names are display/context data. Only the server-provided floor
     # allowlist may unlock a restricted elevator button.
     assert result["teamHintCanEngineering"] is False
+    assert result["teamHintCanMarketing"] is False
     assert result["authorizedCanEngineering"] is True
+    assert result["authorizedCannotMarketing"] is False
+    assert result["marketingMemberCanMarketing"] is True
     assert result["authorizedStillCannotSecurity"] is False
     assert result["unknownFloor"] is False
     assert result["account"] == "alice"

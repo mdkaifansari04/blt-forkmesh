@@ -11432,6 +11432,10 @@ export function createWorldScene({
     participants = [],
     participantId = "",
   } = {}) {
+    // The meeting table stands on the Marketing floor, so joining a room is
+    // another way onto that storey: it stays closed to everyone the server
+    // did not put on the team.
+    if (!canAccessOfficeFloor(officeFloorAccess, "marketing")) return false;
     enterOfficeLobby({ floorId: "marketing" });
     officeSceneMode = "meeting";
     officeCurrentFloorId = "marketing";
@@ -12648,6 +12652,11 @@ export function createWorldScene({
   }
 
   function setSpawn(spawn = {}) {
+    // An arrival cell is always a ground-level outdoor spot. Applying one to a
+    // visitor who is standing inside the tower would drop them from their
+    // current story onto the lobby slab, so the correction is declined until
+    // they walk back out of the Office.
+    if (officeSceneMode !== "town") return false;
     const requestedSpace = String(spawn.space || "");
     const space = Object.hasOwn(WORLD_SPACE_FLOORS, requestedSpace)
       ? requestedSpace
@@ -12676,6 +12685,7 @@ export function createWorldScene({
         .join(" ");
       onLocationChange(currentLocation, "");
     }
+    return true;
   }
 
   // The chest is clickable on the local player and on live peers: the two
@@ -16496,9 +16506,13 @@ export function createWorldScene({
       return;
     }
     if (
-      officeSceneMode !== "town" &&
-      hit?.object?.userData?.interactive === "office-meeting-board"
+      hit?.object?.userData?.interactive === "office-meeting-board" &&
+      (officeSceneMode === "meeting" ||
+        (officeSceneMode === "lobby" &&
+          officeCurrentFloorId === "marketing"))
     ) {
+      // The board hangs on the Marketing floor. Clicking it through the glass
+      // from another storey must not hand a visitor a seat at that table.
       onOfficeMeetingBoardSelect();
       return;
     }

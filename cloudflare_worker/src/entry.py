@@ -6322,7 +6322,8 @@ async def office_general_entry_handler(env, request):
 
 OFFICE_FLOOR_TEAM_ALIASES = {
     "marketing": {
-        "marketing", "growth", "communications", "comms",
+        "marketing", "marketing-team", "growth", "brand", "comms",
+        "communications",
     },
     "engineering": {
         "engineering", "engineers", "development", "developers",
@@ -6425,6 +6426,9 @@ async def office_floor_access_handler(env, request):
         if slug
     })
     team_set = set(teams)
+    # Only the lobby and the rooftop patio are common floors. Marketing is a
+    # department story like every other one: it is granted below solely when
+    # this account actually belongs to that team.
     allowed = ["lobby", "rooftop"]
     for floor_id, aliases in OFFICE_FLOOR_TEAM_ALIASES.items():
         if team_set.intersection(aliases):

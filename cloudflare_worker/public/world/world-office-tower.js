@@ -201,8 +201,9 @@ export function normalizeOfficeFloorAccess(payload = {}) {
       : [],
   );
   if (authenticated) {
-    // These are the member-visible floors required by the physical
-    // design. Restricted floor data remains server-authorized separately.
+    // The lobby and the rooftop patio are the two common floors every member
+    // shares. Every department story — Marketing included — is a team floor:
+    // it only unlocks through the server-issued allowlist above.
     supplied.add("lobby");
     supplied.add("rooftop");
   }

@@ -321,7 +321,8 @@ export function createWorldOfficeMeeting({
     // centered room chooser closed preserves the uninterrupted World view.
     setOpen(lobby, false);
     setLobbyStatus(
-      "Take the elevator to Marketing and select the meeting board.",
+      "Ride the glass elevator to a floor your team is on. " +
+        "The meeting board stands on Marketing.",
     );
     onActivity("visiting-office");
     renderRoomBoard();
