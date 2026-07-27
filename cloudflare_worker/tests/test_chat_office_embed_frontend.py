@@ -6,13 +6,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HTML = (ROOT / "public" / "chat.html").read_text(encoding="utf-8")
+CSS = (ROOT / "public" / "chat.css").read_text(encoding="utf-8")
 CHAT = (ROOT / "public" / "chat.js").read_text(encoding="utf-8")
 
 
 def test_office_embed_is_selected_before_first_paint():
     assert 'dataset.chatEmbed = "office"' in HTML
     assert 'chatQuery.get("embed") === "office"' in CHAT
-    assert 'html[data-chat-embed="office"]' in HTML
+    assert 'html[data-chat-embed="office"]' in CSS
 
 
 def test_office_embed_keeps_chat_tools_and_hides_full_page_chrome():
@@ -23,7 +24,7 @@ def test_office_embed_keeps_chat_tools_and_hides_full_page_chrome():
         ".chat-admin-action",
         "#chat-channel-dialog",
     ):
-        assert f'html[data-chat-embed="office"] {selector}' in HTML
+        assert f'html[data-chat-embed="office"] {selector}' in CSS
     for required in (
         'class="chat-rooms-pane"',
         'class="chat-main-pane"',

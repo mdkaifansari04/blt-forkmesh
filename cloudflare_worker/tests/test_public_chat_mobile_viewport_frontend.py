@@ -14,12 +14,12 @@ from pathlib import Path
 
 
 PUBLIC = Path(__file__).resolve().parents[1] / "public"
-CHAT_HTML = (PUBLIC / "chat.html").read_text(encoding="utf-8")
+CHAT_CSS = (PUBLIC / "chat.css").read_text(encoding="utf-8")
 
 
 def _chat_shell_block():
-    start = CHAT_HTML.index(".chat-shell {")
-    return CHAT_HTML[start : CHAT_HTML.index("}", start)]
+    start = CHAT_CSS.index(".chat-shell {")
+    return CHAT_CSS[start : CHAT_CSS.index("}", start)]
 
 
 def test_chat_shell_declares_both_viewport_heights():

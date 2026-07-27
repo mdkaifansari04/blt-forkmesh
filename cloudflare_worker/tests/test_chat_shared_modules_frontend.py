@@ -11,6 +11,8 @@ PUBLIC = ROOT / "public"
 CRYPTO = PUBLIC / "chat-crypto.js"
 ATTACHMENTS = PUBLIC / "chat-attachments.js"
 TRANSPORT = PUBLIC / "chat-room-transport.js"
+RICH_TEXT = PUBLIC / "chat-rich-text.js"
+THREAD_MODEL = PUBLIC / "chat-thread-model.js"
 CHAT = PUBLIC / "chat.js"
 HTML = PUBLIC / "chat.html"
 
@@ -34,7 +36,87 @@ def test_shared_chat_modules_exist_and_full_chat_imports_them():
     assert 'from "./chat-crypto.js"' in chat
     assert 'from "./chat-attachments.js"' in chat
     assert 'from "./chat-room-transport.js"' in chat
+    assert 'from "./chat-rich-text.js"' in chat
+    assert 'from "./chat-thread-model.js"' in chat
     assert '<script type="module" src="/chat.js"></script>' in html
+    assert '<link rel="stylesheet" href="/chat.css?v=' in html
+    assert '<link rel="stylesheet" href="/site-header.css" />' in html
+    assert 'src="/site-header.js?v=f72e1bf39d6f"' in html
+    assert '<div data-forkmesh-header="simple"></div>' in html
+
+
+def test_rich_text_renderer_rejects_active_links_and_never_parses_html():
+    script = f"""
+      class FakeNode {{
+        constructor(tag = "#text", text = "") {{
+          this.tagName = tag;
+          this.text = text;
+          this.childNodes = [];
+          this.href = "";
+        }}
+        append(...children) {{ this.childNodes.push(...children); }}
+        replaceChildren(...children) {{ this.childNodes = [...children]; }}
+      }}
+      globalThis.Node = FakeNode;
+      globalThis.window = {{ location: {{ href: "https://forkmesh.com/chat" }} }};
+      globalThis.document = {{
+        createElement: (tag) => new FakeNode(tag),
+        createTextNode: (text) => new FakeNode("#text", String(text)),
+      }};
+      const {{ normalizeRichText, renderRichText }} =
+        await import({json.dumps(RICH_TEXT.as_uri())});
+      const root = new FakeNode("root");
+      renderRichText(root, {{
+        richText: {{
+          v: 1,
+          source: "[bad](javascript:alert(1)) [ok](https://example.com/x) " +
+            "<img src=x onerror=alert(1)>",
+        }},
+      }});
+      const flat = [];
+      const walk = (node) => {{
+        flat.push({{ tag: node.tagName, text: node.text, href: node.href }});
+        for (const child of node.childNodes) walk(child);
+      }};
+      walk(root);
+      process.stdout.write(JSON.stringify({{
+        flat,
+        bounded: normalizeRichText("x".repeat(20000)).source.length,
+      }}));
+    """
+    result = _run_module(script)
+    links = [entry["href"] for entry in result["flat"] if entry["tag"] == "a"]
+    text = "".join(
+        entry["text"] for entry in result["flat"] if entry["tag"] == "#text"
+    )
+    assert links == ["https://example.com/x"]
+    assert "<img src=x onerror=alert(1)>" in text
+    assert "javascript:" not in links
+    assert result["bounded"] == 16000
+
+
+def test_thread_model_deduplicates_replies_and_tombstones_roots_with_replies():
+    script = f"""
+      import {{ createThreadStore }} from {json.dumps(THREAD_MODEL.as_uri())};
+      const store = createThreadStore();
+      store.registerRoot({{ id: "root", text: "hello", channel: "#general" }});
+      store.addReply({{ id: "reply", rootId: "root", sender: "alice", ts: 2 }});
+      store.addReply({{ id: "reply", rootId: "root", sender: "mallory", ts: 1 }});
+      const deleted = store.deleteTarget("root");
+      process.stdout.write(JSON.stringify({{
+        deleted,
+        root: store.root("root"),
+        replies: store.replies("root"),
+        summary: store.summary("root"),
+      }}));
+    """
+    result = _run_module(script)
+    assert result["deleted"] is True
+    assert result["root"]["deleted"] is True
+    assert result["root"]["text"] == ""
+    assert len(result["replies"]) == 1
+    assert result["replies"][0]["sender"] == "alice"
+    assert result["summary"]["count"] == 1
 
 
 def test_room_transport_authorizes_encrypts_replays_and_suspends_cleanly():

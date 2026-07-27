@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CHAT = (ROOT / "public" / "chat.js").read_text(encoding="utf-8")
 HTML = (ROOT / "public" / "chat.html").read_text(encoding="utf-8")
+CSS = (ROOT / "public" / "chat.css").read_text(encoding="utf-8")
 PROTOCOL = (
     ROOT / "public" / "docs" / "protocol" / "index.html"
 ).read_text(encoding="utf-8")
@@ -58,8 +59,8 @@ def test_admin_channel_controls_are_accessible_and_hidden_by_default():
     assert 'id="chat-channel-manage"' in HTML
     assert 'id="chat-channel-members"' in HTML
     assert 'id="chat-channel-error"' in HTML
-    assert "[hidden] { display: none !important; }" in HTML
-    assert "margin: auto;" in HTML
+    assert "[hidden] { display: none !important; }" in CSS
+    assert "margin: auto;" in CSS
     assert "session?.isAdmin" in CHAT
 
 
