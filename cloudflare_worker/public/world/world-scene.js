@@ -9979,11 +9979,15 @@ export function createWorldScene({
     if (logoReflectionDirty && time >= logoReflectionEligibleAt) {
       const cubeWasVisible = chromeCube.visible;
       const playerWasVisible = player.visible;
+      const selfWorkBadge = player.userData?.selfWorkBadge;
+      const selfWorkBadgeWasVisible = selfWorkBadge?.visible;
       chromeCube.visible = false;
       // First-person mode normally hides the local body from the main camera.
       // The reflection camera is independent, so reveal it for this capture
-      // and restore the exact prior state immediately afterwards.
+      // while excluding its owner-only task plate. Restore both exact prior
+      // visibility states immediately afterwards.
       player.visible = true;
+      if (selfWorkBadge) selfWorkBadge.visible = false;
       // Movement and camera updates happen earlier in this frame. Commit the
       // avatar's latest pose before the six cube faces render so its mirror
       // image never trails one settled position behind.
@@ -9992,6 +9996,9 @@ export function createWorldScene({
       try {
         reflectionCamera.update(renderer, scene);
       } finally {
+        if (selfWorkBadge) {
+          selfWorkBadge.visible = selfWorkBadgeWasVisible;
+        }
         player.visible = playerWasVisible;
         chromeCube.visible = cubeWasVisible;
       }

@@ -627,6 +627,33 @@ def test_lobby_has_one_noah_attendance_and_the_reflective_logo_fountain():
         assert contract in scene
 
 
+def test_logo_reflection_excludes_private_work_badge_but_keeps_avatar():
+    capture = function_body(
+        source(SCENE_PATH),
+        "updateOfficeLogoReflection",
+    )
+
+    for contract in (
+        "const selfWorkBadge = player.userData?.selfWorkBadge",
+        "const selfWorkBadgeWasVisible = selfWorkBadge?.visible",
+        "player.visible = true",
+        "if (selfWorkBadge) selfWorkBadge.visible = false",
+        "reflectionCamera.update(renderer, scene)",
+        "selfWorkBadge.visible = selfWorkBadgeWasVisible",
+        "player.visible = playerWasVisible",
+    ):
+        assert contract in capture
+
+    hidden_at = capture.index(
+        "if (selfWorkBadge) selfWorkBadge.visible = false",
+    )
+    reflected_at = capture.index("reflectionCamera.update(renderer, scene)")
+    restored_at = capture.index(
+        "selfWorkBadge.visible = selfWorkBadgeWasVisible",
+    )
+    assert hidden_at < reflected_at < restored_at
+
+
 def test_noah_reuses_local_chat_bubbles_with_hysteresis_and_no_frame_spam():
     scene = source(SCENE_PATH)
     guide = function_body(scene, "updateOfficeReceptionGuide")
