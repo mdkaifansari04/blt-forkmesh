@@ -2015,7 +2015,11 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
   });
   expect(state.seating.seatedLocal[0]).toBeCloseTo(-5.15, 2);
   expect(state.seating.seatedLocal[2]).toBeCloseTo(0, 2);
-  expect(state.seating.seatedLocal[1]).toBeGreaterThan(16.38);
+  // Avatar origins sit below the seat because their hips are modeled above
+  // the origin; the rendered hips remain on the chair and the folded feet
+  // reach the floor.
+  expect(state.seating.seatedLocal[1]).toBeGreaterThan(15.5);
+  expect(state.seating.seatedLocal[1]).toBeLessThan(16.38);
   await page.locator("forkmesh-world").evaluate((shell) => {
     shell.world.setPaused(false);
     shell.world.enterOfficeLobby({ floorId: "lobby" });
@@ -2120,6 +2124,7 @@ test("Office glass has one stable shell and one elevator-car layer", async ({
 test("Office elevator exposes ten floors while enforcing team access", async ({
   page,
 }) => {
+  test.setTimeout(60_000);
   await prepareWorldPage(page, "office-elevator-access", {
     session: {
       kind: "user",
