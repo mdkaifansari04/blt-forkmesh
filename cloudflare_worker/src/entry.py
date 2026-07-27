@@ -302,6 +302,7 @@ from urls import (  # noqa: E402
     CHAT_CHANNELS_RE,
     CHAT_CHANNEL_MEMBERS_RE,
     CHAT_CHANNEL_ROOM_ACCESS_RE,
+    CHAT_CHANNEL_HISTORY_RE,
     CHAT_CHANNEL_WS_RE,
     REPO_ISSUES_RE,
     REPO_PULLS_RE,
@@ -7096,6 +7097,15 @@ class _OfficeMarketingTasksRuntime:
 
 
 class _ChatChannelsRuntime(_WorldCommunityRuntime):
+    async def session(self, data=None):
+        account_bi, record = await super().session(data)
+        if account_bi and record:
+            return account_bi, record
+        # Desktop clients authenticate with their account key, not a session
+        # token, so the World office's channel rooms can also be read from the
+        # Qt app (see _chat_channel_signed_session for the read-only bound).
+        return await _chat_channel_signed_session(self.env, self.request)
+
     async def room_access(self, channel_id, key_version, account_bi, actor):
         room = (
             "chat-channel:" + str(channel_id) + ":v" + str(int(key_version))
@@ -7124,6 +7134,17 @@ class _ChatChannelsRuntime(_WorldCommunityRuntime):
             self.env, channel_id, key_version)
         await _revoke_office_channel_room(
             self.env, channel_id, key_version)
+
+    async def channel_passphrase(self, channel_id, key_version):
+        return await _chat_channel_passphrase(
+            self.env, channel_id, key_version)
+
+    async def history(self, channel_id, key_version, since_ts=0):
+        return await chat_history_since(
+            self.env,
+            "chat-channel:" + str(channel_id) + ":v" + str(int(key_version)),
+            since_ts,
+        )
 
 
 async def world_fediverse_directory_handler(env, request, path):
@@ -7943,6 +7964,56 @@ async def _room_key_requester(env, request, owner, repo):
         if await ed25519_verify(pubkey, sig, legacy):
             return node
     return ""
+
+
+# Canonical prefixes a desktop client signs with its account's Ed25519 key to
+# read the chat-channel API without a browser session token (the Qt app holds
+# keys, not sessions). Each proof names the exact resource it opens.
+CHAT_CHANNEL_LIST_PROOF = "forkmesh-chat-channels-v1"
+CHAT_CHANNEL_ACCESS_PROOF = "forkmesh-chat-channel-access-v1"
+CHAT_CHANNEL_HISTORY_PROOF = "forkmesh-chat-channel-history-v1"
+
+
+async def _chat_channel_signed_session(env, request):
+    # Resolve the account behind a key-signed chat-channel read. Reads only: a
+    # signature never creates, joins, or moderates a channel. The account must
+    # still be an active user, and every channel-scoped authorization
+    # (membership/visibility/admin) is applied by the API exactly as it is for
+    # a session-token caller.
+    if method_name(request) != "GET":
+        return "", None
+    url = urlparse(request.url)
+    params = parse_qs(url.query)
+    node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    ts = clean_string(params.get("ts", [""])[0], 20)
+    sig = clean_string(params.get("sig", [""])[0], 200)
+    if not node or not sig or not _ts_ok(ts):
+        return "", None
+    access = CHAT_CHANNEL_ROOM_ACCESS_RE.match(url.path)
+    history = CHAT_CHANNEL_HISTORY_RE.match(url.path)
+    if access or history:
+        canonical = (
+            (CHAT_CHANNEL_ACCESS_PROOF if access else CHAT_CHANNEL_HISTORY_PROOF)
+            + "\n" + node + "\n" + (access or history).group(1) + "\n" + str(ts)
+        ).encode()
+    elif CHAT_CHANNELS_RE.match(url.path):
+        canonical = (
+            CHAT_CHANNEL_LIST_PROOF + "\n" + node + "\n" + str(ts)
+        ).encode()
+    else:
+        return "", None
+    pubkey = await _owner_pubkey(env, node)
+    if not pubkey or not await ed25519_verify(pubkey, sig, canonical):
+        return "", None
+    account_bi, record = await _account_row(env, node)
+    if (
+        not account_bi
+        or not record
+        or record.get("status") != "active"
+        or _account_kind(record) != "user"
+    ):
+        return "", None
+    return account_bi, record
 
 
 async def _room_key_authorized(env, request):
@@ -34929,6 +35000,7 @@ class Default(WorkerEntrypoint):
             CHAT_CHANNELS_RE.match(url.path)
             or CHAT_CHANNEL_MEMBERS_RE.match(url.path)
             or CHAT_CHANNEL_ROOM_ACCESS_RE.match(url.path)
+            or CHAT_CHANNEL_HISTORY_RE.match(url.path)
         ):
             return await chat_channels_api.handle(
                 _ChatChannelsRuntime(self.env, request), url.path)
@@ -35926,6 +35998,28 @@ async def chat_history_recent(env, room_key):
         room_key, cutoff, CHAT_HISTORY_MAX_PER_ROOM,
     )
     return [str(r["body"]) for r in rows]
+
+
+async def chat_history_since(env, room_key, since_ts=0):
+    # The same retained (encrypted) frames chat_history_recent replays to a
+    # joining socket, but stamped with their store time and filtered to what
+    # landed after `since_ts`, so an HTTP client can poll a room incrementally.
+    await ensure_schema(env)
+    try:
+        since = int(since_ts or 0)
+    except (TypeError, ValueError):
+        since = 0
+    cutoff = max(since, int(Date.now()) - CHAT_HISTORY_RETAIN_MS)
+    rows = await d1_all(
+        env,
+        "SELECT ts,body FROM chat_history WHERE room_key=? AND ts>? "
+        "ORDER BY ts ASC, msg_id ASC LIMIT ?",
+        room_key, cutoff, CHAT_HISTORY_MAX_PER_ROOM,
+    )
+    return [
+        {"ts": int(r["ts"]), "body": str(r["body"])}
+        for r in rows
+    ]
 
 
 async def chat_history_store(env, room_key, msg_id, ts, body):

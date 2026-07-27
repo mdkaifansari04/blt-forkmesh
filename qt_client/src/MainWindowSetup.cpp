@@ -9,6 +9,7 @@
 #include "ForkMeshVersion.h"
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "OfficeChannelMirror.h"
 #include "PrivateMirrorStore.h"
 
 #include <QFutureWatcher>
@@ -1447,6 +1448,9 @@ void MainWindow::sendNodeHeartbeat()
         // Fetch the shared room-chat key once the account identity is available,
         // so it's cached before the user opens chat (no-op once fetched).
         fetchRoomPassphrase();
+        // Bring the World virtual office's channel conversations into the chat
+        // sidebar (adhoc #412). Idempotent, so the heartbeat can just call it.
+        startOfficeChannelMirror();
         if (m_isAdmin) {
             if (!m_adminPollTimer) {
                 m_adminPollTimer = new QTimer(this);
@@ -1757,6 +1761,34 @@ void MainWindow::fetchRoomPassphrase()
                 m_backend->setRoomPassphrase(pass);
         }
     });
+}
+
+void MainWindow::startOfficeChannelMirror()
+{
+    // Same gate as fetchRoomPassphrase: the relay hands the office rooms only
+    // to an account that can sign for itself with this node's identity key.
+    const QString node = accountOwner();
+    if (node.isEmpty() || !hasOwnerSigningCapability(node) ||
+        !m_profileIdentity.isValid())
+        return;
+    if (!m_officeChannelMirror) {
+        m_officeChannelMirror = new OfficeChannelMirror(m_networkAccess, this);
+        m_officeChannelMirror->setSigner([this](const QByteArray &canonical) {
+            return m_profileIdentity.signData(canonical);
+        });
+        connect(m_officeChannelMirror, &OfficeChannelMirror::messageArrived,
+                this, &MainWindow::onMessage);
+        connect(m_officeChannelMirror, &OfficeChannelMirror::conversationsChanged,
+                this, [this](const QStringList &conversations) {
+                    m_officeConversations = conversations;
+                    // setChannels() rebuilds the sidebar from the mesh rooms
+                    // plus these mirrors, so re-entering it merges them in.
+                    setChannels(m_channels);
+                });
+    }
+    m_officeChannelMirror->setApiBase(catalogApiUrl());
+    m_officeChannelMirror->setIdentity(node, m_profileIdentity.publicKey());
+    m_officeChannelMirror->start(); // no-op once polling
 }
 
 void MainWindow::showAdminVerifyDialog()

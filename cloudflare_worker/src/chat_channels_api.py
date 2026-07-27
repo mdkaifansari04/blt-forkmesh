@@ -14,6 +14,9 @@ MEMBERS_RE = re.compile(
     r"^/api/chat/channels/([0-9a-f]{32})/members/?$")
 ROOM_ACCESS_RE = re.compile(
     r"^/api/chat/channels/([0-9a-f]{32})/room-access/?$")
+HISTORY_RE = re.compile(
+    r"^/api/chat/channels/([0-9a-f]{32})/history/?$")
+HISTORY_MAX_MESSAGES = 200
 
 
 def _response(runtime, data, status=200, allow=""):
@@ -348,21 +351,65 @@ async def _remove_member(runtime, actor, channel_id, data):
     )
 
 
-async def _room_access(runtime, account_bi, actor, channel_id, is_admin):
+async def _readable_channel(runtime, account_bi, channel_id, is_admin):
+    """The channel row/record this account may read, or (None, None)."""
     row, record = await _channel(runtime, channel_id)
     if not row:
+        return None, None
+    if not is_admin and _visibility(record) != "public":
+        membership = await runtime.d1_first(
+            "SELECT 1 AS one FROM chat_channel_members "
+            "WHERE channel_id=? AND member_bi=?",
+            channel_id,
+            account_bi,
+        )
+        if not membership:
+            return None, None
+    return row, record
+
+
+async def _history(runtime, account_bi, channel_id, is_admin):
+    # Read-only replay of one channel room for clients that hold no WebSocket
+    # into it (the desktop app mirroring the World office's rooms). Bodies stay
+    # exactly as the room retained them — AES-GCM envelopes only the room key
+    # opens — so this endpoint hands out no plaintext; the caller decrypts with
+    # the passphrase returned alongside, which the same authorization gates.
+    row, record = await _readable_channel(
+        runtime, account_bi, channel_id, is_admin)
+    if not row:
         return _response(runtime, {"error": "not_found"}, status=404)
-    if not is_admin:
-        if _visibility(record) != "public":
-            membership = await runtime.d1_first(
-                "SELECT 1 AS one FROM chat_channel_members "
-                "WHERE channel_id=? AND member_bi=?",
-                channel_id,
-                account_bi,
-            )
-            if not membership:
-                return _response(
-                    runtime, {"error": "not_found"}, status=404)
+    key_version = int(row.get("key_version") or 1)
+    try:
+        since = int(str(runtime.query_params().get("since", "0")) or 0)
+    except (TypeError, ValueError):
+        since = 0
+    entries = await runtime.history(channel_id, key_version, max(0, since))
+    messages = [
+        {"ts": int(entry.get("ts") or 0), "body": str(entry.get("body") or "")}
+        for entry in (entries or [])[-HISTORY_MAX_MESSAGES:]
+    ]
+    return _response(
+        runtime,
+        {
+            "channel": _channel_payload(row, record, is_admin),
+            "room": (
+                "chat-channel:" + str(channel_id) + ":v" + str(key_version)
+            ),
+            "keyVersion": key_version,
+            "passphrase": await runtime.channel_passphrase(
+                channel_id, key_version),
+            "messages": messages,
+            "latestTs": max(
+                [int(message["ts"]) for message in messages] + [since]),
+        },
+    )
+
+
+async def _room_access(runtime, account_bi, actor, channel_id, is_admin):
+    row, record = await _readable_channel(
+        runtime, account_bi, channel_id, is_admin)
+    if not row:
+        return _response(runtime, {"error": "not_found"}, status=404)
     access = await runtime.room_access(
         channel_id,
         int(row.get("key_version") or 1),
@@ -381,7 +428,8 @@ async def handle(runtime, path):
     collection = COLLECTION_RE.fullmatch(normalized_path)
     members = MEMBERS_RE.fullmatch(normalized_path)
     room_access = ROOM_ACCESS_RE.fullmatch(normalized_path)
-    if not (collection or members or room_access):
+    history = HISTORY_RE.fullmatch(normalized_path)
+    if not (collection or members or room_access or history):
         return _response(runtime, {"error": "not_found"}, status=404)
     method = runtime.method()
     body_required = method in {"POST", "DELETE"}
@@ -406,7 +454,7 @@ async def handle(runtime, path):
             return denied
         return await _create_channel(runtime, account_bi, actor, data)
 
-    channel_id = (members or room_access).group(1)
+    channel_id = (members or room_access or history).group(1)
     if members and method in {"GET", "POST", "DELETE"}:
         action = {
             "GET": "chat.channel.member.list",
@@ -426,6 +474,9 @@ async def handle(runtime, path):
     if room_access and method == "GET":
         return await _room_access(
             runtime, account_bi, actor, channel_id, is_admin)
+
+    if history and method == "GET":
+        return await _history(runtime, account_bi, channel_id, is_admin)
 
     allow = "GET, POST" if collection else (
         "GET, POST, DELETE" if members else "GET")

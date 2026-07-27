@@ -25,6 +25,11 @@ CHAT_CHANNEL_MEMBERS_RE = re.compile(
     r"^/api/chat/channels/([0-9a-f]{32})/members/?$")
 CHAT_CHANNEL_ROOM_ACCESS_RE = re.compile(
     r"^/api/chat/channels/([0-9a-f]{32})/room-access/?$")
+# Retained (still-encrypted) backlog of one channel room. Desktop clients hold
+# no WebSocket into these rooms, so they replay the World office's channel chat
+# over this read-only poll instead.
+CHAT_CHANNEL_HISTORY_RE = re.compile(
+    r"^/api/chat/channels/([0-9a-f]{32})/history/?$")
 CHAT_CHANNEL_WS_RE = re.compile(
     r"^/api/chat/channels/([0-9a-f]{32})/ws/?$")
 # Issue inbox: signed submissions from people without write access to the repo.

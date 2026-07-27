@@ -102,6 +102,7 @@ class ClaudeTranscriptView;
 class RepoHost;
 class NodeEventSocket;
 class WorldSpeechBridge;
+class OfficeChannelMirror;
 class PrivateMirrorMaterialization;
 class ActionRunner;
 class QButtonGroup;
@@ -746,6 +747,13 @@ private:
     // longer a public constant baked into the client. Cached in m_roomPassphrase
     // and passed to ServerNode; empty falls back to the legacy app key.
     void fetchRoomPassphrase();
+    // Start (once the account identity is known) the read-only poll that brings
+    // the World virtual office's channel conversations into the chat sidebar.
+    // The office's #general room needs nothing here: it is the same mainnode
+    // room this client already joins, so it lands in #general.
+    void startOfficeChannelMirror();
+    // True for a conversation this client can read but never publish into.
+    bool isReadOnlyConversation(const QString &conversation) const;
     void showAdminVerifyDialog();
     bool adminVerifyEmail(const QString &target);
     void verifyWallet();
@@ -4098,6 +4106,7 @@ private:
     // existing local Whisper/Parakeet pipeline feed transcript text back without
     // adding any browser audio transport.
     WorldSpeechBridge *m_worldSpeechBridge = nullptr;
+    OfficeChannelMirror *m_officeChannelMirror = nullptr;
     QLineEdit *m_worldSpeechOriginEdit = nullptr;
     QLineEdit *m_worldSpeechPairCodeEdit = nullptr;
     QLabel *m_worldSpeechStatusLabel = nullptr;
@@ -5767,6 +5776,9 @@ private:
     QString m_profileSolanaValue;
 
     QStringList m_channels;
+    // Read-only mirrors of the World virtual office's channel rooms, merged
+    // into the sidebar beside the mesh rooms (adhoc #412).
+    QStringList m_officeConversations;
     // Invite-only rooms this node owns or was invited to. Badged in the sidebar
     // and persisted so they reappear after a reconnect (the backend clears its
     // channel set each session). See promptAddPrivateChannel / inviteToChannel.
