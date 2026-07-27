@@ -12,6 +12,7 @@
 
 #include "ActionFile.h"
 #include "ActionRunner.h"
+#include "BackgroundActivity.h"
 #include "BackoffNetworkAccessManager.h"
 #include "ClaudeAgentScript.h"
 #include "ClaudeIdeBridge.h"
@@ -7153,6 +7154,14 @@ inline QString gitBlockingCrumb(const QProcess &process)
 // branch lists, run-status handlers …), so every GUI-thread wait now pumps.
 inline bool waitForGit(QProcess &process, QString *err)
 {
+    // Announce the wait to the footer's background strip (adhoc #421). This is
+    // the one chokepoint every git subprocess passes through, on the GUI thread
+    // and off it, so a single ticket here is what makes "git" appear while a
+    // slow fetch/clone/log runs. Fast reads never reach the strip's show delay,
+    // so the hot path pays only an atomic increment.
+    const forkmesh::BackgroundScope gitActivity(QStringLiteral("git"),
+                                                gitBlockingCrumb(process));
+
     // Breadcrumb for the stall watchdog: if this synchronous wait freezes the GUI
     // thread, the stall report can name the git command instead of leaving only a
     // raw backtrace. Only the main thread is watched, so leave the breadcrumb alone
@@ -7193,6 +7202,30 @@ inline bool waitForGit(QProcess &process, QString *err)
         pumpKeepAlive();
     }
     return true;
+}
+
+// Give an *asynchronous* subprocess a background-strip ticket (adhoc #421):
+// waitForGit only covers the blocking waits, so long-lived children started with
+// start() and a finished() handler announce themselves here instead. The ticket
+// is retired on finished() or on the QProcess's destruction, whichever comes
+// first, so a killed or abandoned child can't strand a spinner.
+inline void trackProcessActivity(QProcess *process, const QString &kind,
+                                 const QString &detail = QString())
+{
+    if (!process)
+        return;
+    const quint64 id = forkmesh::BackgroundActivity::begin(kind, detail);
+    auto retired = std::make_shared<bool>(false);
+    auto retire = [id, retired] {
+        if (*retired)
+            return;
+        *retired = true;
+        forkmesh::BackgroundActivity::end(id);
+    };
+    QObject::connect(process, &QProcess::finished, process,
+                     [retire](int, QProcess::ExitStatus) { retire(); });
+    QObject::connect(process, &QObject::destroyed, process,
+                     [retire](QObject *) { retire(); });
 }
 
 // RAII: marks the run of synchronous git reads in an interactive load (a node

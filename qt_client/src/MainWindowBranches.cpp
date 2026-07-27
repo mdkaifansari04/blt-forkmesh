@@ -304,6 +304,8 @@ void MainWindow::runGitDetached(const QString &dir, const QStringList &args,
             });
     connect(git, &QProcess::errorOccurred, this,
             [finish](QProcess::ProcessError) { finish(false); });
+    trackProcessActivity(git, QStringLiteral("git"),
+                         QStringLiteral("git ") + args.join(QLatin1Char(' ')));
     git->start(QStringLiteral("git"), args);
 }
 
@@ -1428,6 +1430,7 @@ void MainWindow::deleteWorktreeBranchAndAgentInBackground(
                   .arg(agentIds.size()));
 
     const quint64 taskId = beginBackgroundTask(
+        QStringLiteral("cleanup"),
         QStringLiteral("Deleting %1 worktree and branch").arg(branch));
     const QString base = repoDefaultBranch(repoBranches());
     const bool deleteBranch = !branch.isEmpty() && branch != base;

@@ -1237,6 +1237,8 @@ void MainWindow::forkCurrentRepo()
                 checkout->start(QStringLiteral("git"),
                                 {QStringLiteral("clone"), mirrorPath, targetDir});
             });
+    trackProcessActivity(process, QStringLiteral("fork"),
+                         QStringLiteral("Forking %1/%2").arg(owner, name));
     process->start(QStringLiteral("git"),
                    {QStringLiteral("clone"), QStringLiteral("--mirror"), source,
                     fork.mirrorPath});
