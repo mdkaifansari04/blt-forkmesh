@@ -844,28 +844,12 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
             true);
         return;
     }
-    // A merge with no worktree to prune and no agent to tear down (e.g. the
-    // Branches view's "Merge to main") only adds a merge commit to the base branch
-    // — it deletes nothing — so, like the sibling "Update from main" action, it runs
-    // straight from the deliberate button click without a modal dialog popping up
-    // over the view. adhoc #130: "just do the merge in the background, don't jump
-    // around." Destructive merges (that remove a worktree/branch or delete the
-    // agent) still confirm first, since those can discard work.
-    const bool destructive = !worktreePath.isEmpty() || deleteAgent;
-    if (destructive &&
-        QMessageBox::question(
-            this, QStringLiteral("Merge into %1").arg(base),
-            deleteAgent
-                ? (worktreePath.isEmpty()
-                       ? QStringLiteral("Merge branch %1 into %2, then delete its "
-                                        "branch and agent session?").arg(branch, base)
-                       : QStringLiteral("Merge branch %1 into %2, then delete its "
-                                        "worktree, branch and agent session?")
-                             .arg(branch, base))
-                : QStringLiteral("Merge branch %1 into %2, then delete its worktree "
-                                 "and branch?").arg(branch, base))
-        != QMessageBox::Yes)
-        return;
+    // No confirmation dialog on any merge path (adhoc #441, extending #130's "just
+    // do the merge in the background, don't jump around"): every entry point here is
+    // an explicit click on a button that spells out what it deletes, so a modal over
+    // the view only adds a keystroke. The cleanup stays safe without it — a worktree
+    // with uncommitted changes bails out below, and a merge that conflicts keeps the
+    // worktree and branch instead of deleting them.
 
     // The merge checks out files, then removeWorktree recursively deletes the
     // worktree folder (slow when it holds build artifacts), then two panels reload
@@ -1945,8 +1929,8 @@ QWidget *MainWindow::buildBranchesTab()
     // Same merge, but nothing of the branch survives it: its worktree, the branch
     // itself and any agent session that produced it all go once the work is in the
     // base branch (adhoc #428). The one-click end of a finished agent run, without
-    // hopping to the Agents/Worktrees tabs to clean up by hand. Destructive, so
-    // mergeWorktreeIntoMain confirms first.
+    // hopping to the Agents/Worktrees tabs to clean up by hand. Runs straight from
+    // the click — mergeWorktreeIntoMain no longer confirms (adhoc #441).
     m_branchMergeDeleteButton = new QPushButton("Merge & delete all");
     m_branchMergeDeleteButton->setObjectName("primaryButton");
     m_branchMergeDeleteButton->setProperty("buttonSize", "sm");
