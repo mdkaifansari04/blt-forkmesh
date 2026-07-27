@@ -40,6 +40,7 @@ def _load(*names, extra_globals=None):
         "STATUS_HISTORY_RETAIN_MS", "STATUS_SAMPLE_WINDOW_MS",
         "STATUS_HOUR_MS", "STATUS_DAY_MS",
         "STATUS_MINUTES_SHOWN", "STATUS_MINUTE_RETAIN_MS",
+        "STATUS_MIRROR_PREFIX", "STATUS_MIRROR_MAX",
     }
     helper_names = {
         "_status_expected_checks_for_hour", "_status_effective_hour",
@@ -77,7 +78,9 @@ class _Clock:
         return cls.value
 
 
-def _sample_env(now, error_paths, host_online=True, db_ok=True, error_rows=None):
+def _sample_env(
+        now, error_paths, host_online=True, db_ok=True, error_rows=None,
+        mirror_rows=None):
     """Stub error rows plus the signed direct-HTTPS mirror health count."""
     inserted = []
     hourly = []
@@ -97,6 +100,8 @@ def _sample_env(now, error_paths, host_online=True, db_ok=True, error_rows=None)
             if error_rows is not None:
                 return error_rows
             return [{"path": p} for p in error_paths]
+        if "mirror_https_endpoints" in sql:
+            return list(mirror_rows or [])
         return []
 
     async def d1_run(_env, sql, *args):
@@ -134,9 +139,12 @@ def _sample_env(now, error_paths, host_online=True, db_ok=True, error_rows=None)
     return extra, inserted, hourly, minutely
 
 
-def _run_sample(error_paths=(), host_online=True, db_ok=True, error_rows=None):
+def _run_sample(
+        error_paths=(), host_online=True, db_ok=True, error_rows=None,
+        mirror_rows=None):
     extra, inserted, hourly, minutely = _sample_env(
-        _Clock.value, error_paths, host_online, db_ok, error_rows=error_rows,
+        _Clock.value, error_paths, host_online, db_ok,
+        error_rows=error_rows, mirror_rows=mirror_rows,
     )
     g = _load("record_status_sample", extra_globals=extra)
     asyncio.run(g["record_status_sample"](object()))
@@ -174,6 +182,41 @@ def test_no_healthy_https_mirror_fails_only_git_hosting():
     assert results["website"] == 0
     assert results["api"] == 0
     assert "no healthy direct https mirror" in reasons["git_hosting"].lower()
+
+
+def test_signed_mirror_endpoints_get_independent_status_samples():
+    fresh = _Clock.value - 30_000
+    rows = [
+        {"node_name": "mirror2", "checked_at": fresh, "healthy": 1,
+         "integrity": "ok", "forkmesh_active": 1,
+         "forkmesh_verified_at": fresh},
+        {"node_name": "mirror3", "checked_at": fresh, "healthy": 0,
+         "integrity": "ok", "forkmesh_active": 1,
+         "forkmesh_verified_at": fresh},
+        # Invalid registry text can never become a public node/system ID.
+        {"node_name": "Jett user", "checked_at": fresh, "healthy": 1,
+         "integrity": "ok", "forkmesh_active": 1,
+         "forkmesh_verified_at": fresh},
+    ]
+    results, reasons, minutes = _run_sample(mirror_rows=rows)
+    assert results["mirror:mirror2"] == 0
+    assert minutes["mirror:mirror2"] == (1, None)
+    assert results["mirror:mirror3"] == 1
+    assert minutes["mirror:mirror3"][0] == 0
+    assert "failed its signed HTTPS health check" in reasons["mirror:mirror3"]
+    assert all("jett" not in system for system in results)
+
+
+def test_stale_signed_mirror_stays_visible_as_down():
+    stale = _Clock.value - 11 * 60_000
+    rows = [
+        {"node_name": "mirror2", "checked_at": stale, "healthy": 1,
+         "integrity": "ok", "forkmesh_active": 1,
+         "forkmesh_verified_at": stale},
+    ]
+    results, reasons, _minutes = _run_sample(mirror_rows=rows)
+    assert results["mirror:mirror2"] == 1
+    assert "within the last 10 minutes" in reasons["mirror:mirror2"]
 
 
 def test_api_error_does_not_fail_website():
@@ -483,18 +526,54 @@ def _run_history(rows, hour_rows=(), minute_rows=()):
     return captured
 
 
-def test_no_data_is_unknown_not_fabricated_downtime():
-    # A missing sample means the sampling cron didn't run (monitoring gap) —
-    # it is NOT evidence of an outage. Counting gaps as downtime is what used
-    # to show every system with the same fabricated ~50% uptime while the
-    # site was actually up, so with no data at all the honest answer is
-    # "unknown" with no uptime number, not 0%.
+def test_no_data_is_a_red_monitoring_failure_without_fabricated_uptime():
+    # Missing expected samples mean the monitoring system failed. Render that
+    # state red/down, while keeping the uptime value unset because no service
+    # probe actually ran.
     out = _run_history([])
     by_id = {s["id"]: s for s in out["systems"]}
-    assert by_id["website"]["status"] == "unknown"
+    assert by_id["website"]["status"] == "down"
     assert by_id["website"]["uptimePct"] is None
     assert by_id["website"]["uptime24hPct"] is None
     assert len(by_id["website"]["days"]) == 30
+
+
+def test_world_status_projection_keeps_visual_windows_without_nested_history():
+    cur_day = (_Clock.value // DAY_MS) * DAY_MS
+    cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
+    hour_rows = [
+        {
+            "hour_ts": cur_hour,
+            "system": "website",
+            "checks": 60,
+            "failures": 1,
+            "reason": "one failed check",
+        },
+    ]
+    minute_rows = [
+        {
+            "minute_ts": (_Clock.value // 60000) * 60000,
+            "system": "website",
+            "ok": 1,
+            "reason": None,
+        },
+    ]
+    extra, captured = _history_env(
+        [{"day_ts": cur_day, "system": "website", "checks": 60, "failures": 1}],
+        hour_rows,
+        minute_rows,
+    )
+    g = _load("status_history", extra_globals=extra)
+    asyncio.run(g["status_history"](object(), "world"))
+
+    website = next(
+        system for system in captured["systems"] if system["id"] == "website")
+    assert len(website["days"]) == 30
+    assert all("hours" not in day for day in website["days"])
+    assert website["days"][-1]["status"] == "degraded"
+    assert len(website["hours"]) == 24
+    assert len(website["minutes"]) == 60
+    assert "checkDescription" not in website
 
 
 def test_all_checks_passing_today_is_operational():
@@ -633,16 +712,15 @@ def test_hours_breakdown_present_for_today_with_reason_on_degraded_hour():
     assert this_hour["reason"] == "500 on /api/x: boom"
 
 
-def test_hour_with_no_checks_is_unknown_and_explains_the_monitoring_gap():
+def test_hour_with_no_checks_is_down_and_explains_monitoring_failure():
     cur_day = (_Clock.value // DAY_MS) * DAY_MS
     out = _run_history([], hour_rows=())
     by_id = {s["id"]: s for s in out["systems"]}
     today = next(d for d in by_id["website"]["days"] if d["dayTs"] == cur_day)
     elapsed = [h for h in today["hours"] if h["expectedChecks"]]
     assert elapsed
-    assert all(h["status"] == "unknown" for h in elapsed)
-    assert all("monitoring gap" in h["reason"] for h in elapsed)
-    assert all("not evidence of an outage" in h["reason"] for h in elapsed)
+    assert all(h["status"] == "down" for h in elapsed)
+    assert all("Monitoring failed" in h["reason"] for h in elapsed)
     assert all(h["missingChecks"] == h["expectedChecks"] for h in elapsed)
 
 
@@ -668,10 +746,7 @@ def test_uptime_counts_only_recorded_samples_and_reports_coverage():
     assert api["coverage24hPct"] < 100.0
 
 
-def test_stale_samples_flip_the_badge_to_unknown_not_a_stale_status():
-    # The newest recorded sample is hours old: claiming "operational" (or
-    # "down") from stale data would be false info — the badge must say the
-    # current state is unknown and why.
+def test_stale_samples_flip_the_badge_to_monitoring_failure():
     cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
     stale_hour = cur_hour - 5 * HOUR_MS
     hour_rows = [
@@ -681,8 +756,8 @@ def test_stale_samples_flip_the_badge_to_unknown_not_a_stale_status():
     out = _run_history([], hour_rows)
     by_id = {s["id"]: s for s in out["systems"]}
     website = by_id["website"]
-    assert website["status"] == "unknown"
-    assert "monitoring gap" in website["reason"]
+    assert website["status"] == "down"
+    assert "Monitoring failed" in website["reason"]
     assert website["reasonTs"] == stale_hour
     # The stale-but-recorded samples still count toward uptime honestly.
     assert website["uptime24hPct"] == 100.0
@@ -766,10 +841,10 @@ def test_minute_with_no_row_is_future_only_for_the_current_bucket():
     # The newest bucket (this minute) simply hasn't been sampled by the cron
     # yet — that's not evidence of an outage.
     assert minutes[-1]["status"] == "future"
-    # Every older bucket with no row is a monitoring gap (the sampling cron
-    # didn't run), shown as "unknown" — never fabricated into downtime.
-    assert all(m["status"] == "unknown" for m in minutes[:-1])
-    assert all("monitoring gap" in m["reason"] for m in minutes[:-1])
+    # Every older bucket was expected to have data and is therefore a red
+    # monitoring failure.
+    assert all(m["status"] == "down" for m in minutes[:-1])
+    assert all("Monitoring failed" in m["reason"] for m in minutes[:-1])
 
 
 def test_minute_row_reflects_ok_and_carries_its_failure_reason():
@@ -789,6 +864,81 @@ def test_minute_row_reflects_ok_and_carries_its_failure_reason():
     # time), so it reflects that sample rather than reading as "future".
     assert minutes[cur_minute]["status"] == "operational"
     assert minutes[cur_minute]["reason"] is None
+
+
+def test_recorded_signed_mirror_appears_as_a_full_status_system():
+    cur_minute = (_Clock.value // MINUTE_MS) * MINUTE_MS
+    minute_rows = [
+        {"minute_ts": cur_minute, "system": "mirror:mirror2",
+         "ok": 1, "reason": None},
+    ]
+    out = _run_history([], minute_rows=minute_rows)
+    system = next(s for s in out["systems"] if s["id"] == "mirror:mirror2")
+    assert system["label"] == "Mirror node — mirror2"
+    assert system["status"] == "operational"
+    assert len(system["days"]) == 30
+    assert len(system["minutes"]) == 60
+    assert "account-bound direct HTTPS endpoint" in system["checkDescription"]
+    assert all(s["id"] != "mirror:jett" for s in out["systems"])
+
+
+def test_latest_passing_minute_clears_failure_from_hourly_rollup():
+    cur_day = (_Clock.value // DAY_MS) * DAY_MS
+    cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
+    cur_minute = (_Clock.value // MINUTE_MS) * MINUTE_MS
+    rows = [{"day_ts": cur_day, "system": "flagship_repository",
+             "checks": 20, "failures": 5}]
+    hour_rows = [
+        {"hour_ts": cur_hour, "system": "flagship_repository",
+         "checks": 20, "failures": 5,
+         "reason": "README.md body did not load"},
+    ]
+    minute_rows = [
+        {"minute_ts": cur_minute, "system": "flagship_repository",
+         "ok": 1, "reason": None},
+    ]
+    out = _run_history(rows, hour_rows, minute_rows)
+    system = next(
+        s for s in out["systems"] if s["id"] == "flagship_repository")
+    # The aggregate remains below 100% and preserves the historical amber
+    # dots, but the current badge follows the completed reachability probe.
+    assert system["uptime24hPct"] < 100.0
+    assert system["status"] == "operational"
+    assert system["reason"] is None
+    assert system["reasonTs"] is None
+
+
+def test_latest_failing_minute_is_down_even_if_hour_is_mostly_green():
+    cur_day = (_Clock.value // DAY_MS) * DAY_MS
+    cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
+    cur_minute = (_Clock.value // MINUTE_MS) * MINUTE_MS
+    rows = [{"day_ts": cur_day, "system": "installer",
+             "checks": 59, "failures": 1}]
+    hour_rows = [
+        {"hour_ts": cur_hour, "system": "installer",
+         "checks": 59, "failures": 1, "reason": "installer unreachable"},
+    ]
+    minute_rows = [
+        {"minute_ts": cur_minute, "system": "installer",
+         "ok": 0, "reason": "installer unreachable"},
+    ]
+    out = _run_history(rows, hour_rows, minute_rows)
+    system = next(s for s in out["systems"] if s["id"] == "installer")
+    assert system["status"] == "down"
+    assert system["reason"] == "installer unreachable"
+    assert system["reasonTs"] == cur_minute
+
+
+def test_stale_latest_minute_reports_monitoring_failure_not_online():
+    cur_minute = (_Clock.value // MINUTE_MS) * MINUTE_MS
+    minute_rows = [
+        {"minute_ts": cur_minute - 3 * MINUTE_MS, "system": "git_hosting",
+         "ok": 1, "reason": None},
+    ]
+    out = _run_history([], minute_rows=minute_rows)
+    system = next(s for s in out["systems"] if s["id"] == "git_hosting")
+    assert system["status"] == "down"
+    assert "last two minutes" in system["reason"]
 
 
 # --- current-state snapshot (issue #356) ------------------------------------

@@ -69,14 +69,29 @@ def test_repository_status_board_reuses_the_social_sign_format_near_the_office()
     assert 'title: "SYSTEM STATUS"' in scene
     assert 'host: "forkmesh.com/status"' in scene
     assert 'url: "/status"' in scene
-    assert '"flagship_repository"' in scene
-    assert '"LAST 60 MINUTES"' in scene
-    assert '"LAST 24 HOURS"' in scene
-    assert '"LAST 30 DAYS"' in scene
+    assert "function systemStatusBannerTexture(" in scene
+    assert "payload?.systems" in scene
+    assert "system.days" in scene
+    assert "system.minutes" in scene
+    assert "systemStatusColor(hour?.status)" in scene
+    assert "systemStatusColor(minute?.status)" in scene
+    assert "1640 / systems.length" in scene
+    assert "systems.forEach((system, index)" in scene
+    assert "systems.slice(0, 8)" not in scene
+    assert "last 24 hours" in scene
+    assert "last 60 one-minute checks" in scene
     assert 'registerMovableObject("status-banner", statusBanner);' in scene
     assert "updateSystemStatusBoard," in scene
-    assert 'this.fetchJSON("/api/status"' in world
+    assert 'this.fetchJSON("/api/status?view=world"' in world
     assert "this.world?.updateSystemStatusBoard?.(payload)" in world
+
+
+def test_world_notification_tick_uses_a_digest_before_the_full_list():
+    world = _source(WORLD_PATH)
+    assert "this.notificationToken" in world
+    assert "`/api/poll?node=${encodeURIComponent(account)}`" in world
+    assert "nextToken === this.notificationToken" in world
+    assert "refreshPersonalNotifications(false, { digestOnly: true })" in world
 
 
 def test_world_fetches_the_proxy_without_credentials_on_a_timer():

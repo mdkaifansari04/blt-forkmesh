@@ -13,6 +13,7 @@ OFFICE = PUBLIC / "world-office.js"
 SCENE = PUBLIC / "world-scene.js"
 WORLD = PUBLIC / "world.js"
 CSS = PUBLIC / "world.css"
+WORLD_PROTOCOL = ROOT / "src" / "world.py"
 
 
 def source(path):
@@ -65,7 +66,10 @@ def test_office_scene_has_a_bounded_interactive_marketing_task_board():
         'officeMarketingTaskBoard.name = "forkmesh-office-marketing-task-board"',
         '"forkmesh-office-marketing-task-board-frame"',
         '"forkmesh-office-marketing-task-board-face"',
-        'officeMarketingTaskBoard.position.set(-8.02, 3.55, -0.55)',
+        "officeMarketingTaskBoard.position.set(",
+        "-OFFICE_WIDTH / 2 + 3.2,",
+        'officeFloorY("marketing") + 3.55,',
+        "-0.55,",
         'officeMarketingTaskBoard.rotation.y = Math.PI / 2',
         "officeMarketingTaskBoardFrame.userData.interactive =",
         "officeMarketingTaskBoardFace.userData.interactive =",
@@ -187,17 +191,17 @@ def test_general_meeting_access_uses_only_the_short_lived_memory_ticket_header()
 def test_native_office_entry_ticket_is_wired_before_the_lobby_opens():
     office = source(OFFICE)
     world = source(WORLD)
-    assert "meeting.setEntryTicket?.(entryTicket, expiresAt)" in office
+    ticket_wiring = (
+        "meeting.setEntryTicket?.(officeEntryTicket, officeEntryExpiresAt)"
+    )
+    assert ticket_wiring in office
     assert office.index(
-        "meeting.setEntryTicket?.(entryTicket, expiresAt)"
+        ticket_wiring
     ) < office.index("meeting.openLobby()")
-    for contract in (
-        "data-world-office-keypad",
-        "data-world-office-keypad-status",
-        "data-world-office-keypad-submit",
-        'aria-label="Four-digit Office code"',
-    ):
-        assert contract in world
+    assert 'const OFFICE_ENTRY_PATH = "/api/world/office/general/entry"' in office
+    assert "if (!activeSession) return greetGuest()" in office
+    assert "world-office-keypad" not in world.lower()
+    assert "four-digit office code" not in world.lower()
 
 
 def test_office_movement_queue_is_latest_wins_bounded_and_backpressure_safe():
@@ -311,3 +315,14 @@ def test_office_movement_queue_does_not_throttle_presence_or_ping_frames():
     ]
     assert "movementQueue.queue({" in movement
     assert "sendMeeting({" not in movement
+
+
+def test_idle_meeting_keepalive_halves_durable_object_wakeups_with_stale_margin():
+    meeting = source(MEETING)
+    protocol = source(WORLD_PROTOCOL)
+    assert "const OFFICE_PING_MS = 40000" in meeting
+    assert "OFFICE_CLIENT_STALE_MS = 90 * 1000" in protocol
+    assert (
+        "window.setInterval(() => sendMeeting({ type: \"ping\" }), "
+        "OFFICE_PING_MS)"
+    ) in meeting
