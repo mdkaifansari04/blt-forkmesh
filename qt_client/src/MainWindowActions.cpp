@@ -1077,10 +1077,43 @@ void MainWindow::releaseActionMirrorPin(int runId)
                       .arg(pin.owner, pin.name));
 }
 
+ActionNeeds::State MainWindow::actionRunNeedsState(int runId, QString *detail)
+{
+    const ActionRun *run = findRun(runId);
+    if (!run)
+        return ActionNeeds::State::Ready; // vanished; the queue drops it
+    const ActionWorkflow wf =
+        ActionFile::parse(run->workflowPath, run->workflowContent);
+    if (wf.needs.isEmpty())
+        return ActionNeeds::State::Ready;
+    return ActionNeeds::resolve(*run, wf.needs, m_actionRuns, detail);
+}
+
+void MainWindow::noteActionRunWaiting(int runId, const QString &detail)
+{
+    if (m_actionWaitingRuns.contains(runId))
+        return; // already announced; the queue is swept every few seconds
+    m_actionWaitingRuns.insert(runId);
+    const ActionRun *run = findRun(runId);
+    if (!run)
+        return;
+    logSystem(QString::fromUtf8(
+                  "Actions: \xE2\x80\x9C%1\xE2\x80\x9D for %2/%3 @ %4 is "
+                  "waiting \xE2\x80\x94 %5.")
+                  .arg(run->workflowName, run->owner, run->name,
+                       run->commit.left(8), detail));
+}
+
 void MainWindow::processActionQueue()
 {
     if (m_actionRunners.isEmpty())
         return;
+    // Forget bookkeeping for runs that have left the queue (started, cancelled,
+    // or superseded), so a later re-run announces its wait again.
+    if (!m_actionWaitingRuns.isEmpty()) {
+        const QSet<int> queued(m_actionQueue.cbegin(), m_actionQueue.cend());
+        m_actionWaitingRuns.intersect(queued);
+    }
     // Fill every idle runner from the queue so independent workflows overlap.
     // Each finished() re-enters here to top the pool back up.
     while (!m_actionQueue.isEmpty()) {
@@ -1093,10 +1126,45 @@ void MainWindow::processActionQueue()
         }
         if (!idle)
             return; // pool saturated; a finishing run will resume the queue
-        const int runId = m_actionQueue.takeFirst();
+        // Take the first entry that isn't still waiting on a `needs:` workflow.
+        // A waiting run stays queued (its dependency may be further down the
+        // queue, or already running), so the pool keeps flowing around it. The
+        // index is never held across the start() below, which can re-enter here.
+        int queueIndex = -1;
+        ActionNeeds::State needsState = ActionNeeds::State::Ready;
+        QString needsDetail;
+        for (int i = 0; i < m_actionQueue.size(); ++i) {
+            QString detail;
+            const ActionNeeds::State state =
+                actionRunNeedsState(m_actionQueue.at(i), &detail);
+            if (state == ActionNeeds::State::Waiting) {
+                noteActionRunWaiting(m_actionQueue.at(i), detail);
+                continue;
+            }
+            queueIndex = i;
+            needsState = state;
+            needsDetail = detail;
+            break;
+        }
+        if (queueIndex < 0)
+            return; // everything queued is waiting on another workflow
+        const int runId = m_actionQueue.takeAt(queueIndex);
+        m_actionWaitingRuns.remove(runId);
         ActionRun *run = findRun(runId);
         if (!run || run->status != ActionStatus::Queued)
             continue;
+        if (needsState == ActionNeeds::State::Blocked) {
+            run->status = ActionStatus::Skipped;
+            run->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+            m_actionStore->saveRun(*run);
+            scheduleMirrorActionsSummary(0);
+            logSystem(QString::fromUtf8(
+                          "Actions: skipped \xE2\x80\x9C%1\xE2\x80\x9D for "
+                          "%2/%3 @ %4 \xE2\x80\x94 it needs %5.")
+                          .arg(run->workflowName, run->owner, run->name,
+                               run->commit.left(8), needsDetail));
+            continue;
+        }
         const int repoIndex = repoIndexFor(run->owner, run->name);
         if (repoIndex < 0) {
             run->status = ActionStatus::Failed;

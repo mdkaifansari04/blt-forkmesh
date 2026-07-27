@@ -3,17 +3,59 @@ on: [push]
 jobs:
   test:
     steps:
-      - name: Cloudflare Worker test suite
+      # A run executes its steps one after another, so the three independent
+      # suites are launched together inside this one step instead: wall-clock is
+      # now the slowest suite rather than their sum. Each writes to its own log
+      # and is reported in a fixed order once it finishes, so the output stays
+      # readable instead of interleaving three builds. The step fails if any
+      # suite fails — the exit status of every one of them is checked.
+      - name: Test suites (in parallel)
         run: |
-          python3 -m venv .forkmesh-pytest-venv
-          .forkmesh-pytest-venv/bin/python -m pip install pytest cryptography
-          .forkmesh-pytest-venv/bin/python -m pytest -q cloudflare_worker/tests
-      - name: Worker syntax + config
-        run: |
-          python3 -c "import ast; ast.parse(open('cloudflare_worker/src/entry.py').read()); print('entry.py OK')"
-          python3 -c "import tomllib; tomllib.load(open('cloudflare_worker/wrangler.toml','rb')); print('wrangler.toml OK')"
-      - name: Build and run Qt client tests
-        run: |
-          cmake -S qt_client -B qt_client/build-ci -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=ON
-          cmake --build qt_client/build-ci -j --target forkmesh-tests
-          ./qt_client/build-ci/forkmesh-tests
+          set -u
+          logs="${TMPDIR:-/tmp}/forkmesh-ci-logs"
+          rm -rf "$logs"
+          mkdir -p "$logs"
+
+          worker_suite() {
+            python3 -m venv .forkmesh-pytest-venv
+            # The mirror-identity / SSH post-receive tests sign fixtures with
+            # Ed25519 keys, so the suite needs `cryptography` alongside pytest.
+            .forkmesh-pytest-venv/bin/python -m pip install pytest cryptography
+            .forkmesh-pytest-venv/bin/python -m pytest -q cloudflare_worker/tests
+          }
+          worker_static() {
+            python3 -c "import ast; ast.parse(open('cloudflare_worker/src/entry.py').read()); print('entry.py OK')"
+            python3 -c "import tomllib; tomllib.load(open('cloudflare_worker/wrangler.toml','rb')); print('wrangler.toml OK')"
+          }
+          qt_suite() {
+            cmake -S qt_client -B qt_client/build-ci -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=ON
+            # Size the build from the sandbox's published CPU budget, not the
+            # host's core count: the step cannot read its own cgroup, and it is
+            # now sharing the machine with the Worker suite.
+            cmake --build qt_client/build-ci -j "${FORKMESH_ACTIONS_CPUS:-2}" --target forkmesh-tests
+            ./qt_client/build-ci/forkmesh-tests
+          }
+
+          worker_suite > "$logs/worker.log" 2>&1 &
+          worker_pid=$!
+          worker_static > "$logs/static.log" 2>&1 &
+          static_pid=$!
+          qt_suite > "$logs/qt.log" 2>&1 &
+          qt_pid=$!
+
+          status=0
+          report() {
+            if wait "$2"; then
+              result="PASSED"
+            else
+              result="FAILED"
+              status=1
+            fi
+            echo "==== $1: $result ===="
+            cat "$3"
+            echo
+          }
+          report "Cloudflare Worker test suite" "$worker_pid" "$logs/worker.log"
+          report "Worker syntax + config" "$static_pid" "$logs/static.log"
+          report "Qt client tests" "$qt_pid" "$logs/qt.log"
+          exit "$status"

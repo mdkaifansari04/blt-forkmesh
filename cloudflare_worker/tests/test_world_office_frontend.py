@@ -168,6 +168,18 @@ def test_entrance_uses_two_proximity_sliding_panels_without_a_hinged_door():
         "THREE.MathUtils.lerp(",
     ):
         assert contract in scene
+    door_material = scene[
+        scene.index('const doorMaterial = makeMaterial(THREE, "#c9fff3"'):
+        scene.index("const elevatorFacadeMinX")
+    ]
+    for contract in (
+        "transparent: true",
+        "opacity: 0.3",
+        "metalness: 0",
+        "roughness: 0.38",
+        "depthWrite: false",
+    ):
+        assert contract in door_material
     assert "forkmesh-office-door-pivot" not in scene
     assert "officeInteriorDoorPivot" not in scene
 
@@ -453,16 +465,17 @@ def test_office_third_person_camera_distance_is_bounded_by_local_geometry():
     assert "return requested;" in limiter[rooftop_bypass:]
 
 
-def test_lobby_has_two_greeters_attendance_and_the_reflective_logo_fountain():
+def test_lobby_has_one_noah_attendance_and_the_reflective_logo_fountain():
     scene = source(SCENE_PATH)
     for contract in (
         'officeReception.name = "forkmesh-office-reception"',
-        'id: "office-greeter-maya"',
         'id: "office-greeter-noah"',
         'receptionDesk.name = "forkmesh-office-reception-desk"',
         "receptionDesk.position.set(0, 1.05, -36.5)",
-        "avatar.position.set(staff.x, 0.38, -40)",
-        "avatar.rotation.y = Math.PI",
+        "officeReceptionNoah.position.set(0, 0.38, -40)",
+        "officeReceptionNoah.rotation.y = Math.PI",
+        'noahNameplate.name = "forkmesh-office-reception-nameplate-noah"',
+        "Walk up to Noah for World and repository tips",
         "WELCOME · WALK RIGHT IN",
         "officeGreetingBoard.position.set(0, 6.25, -OFFICE_FRONT_Z + 0.5)",
         'officeAttendanceBoard.name = "forkmesh-office-attendance"',
@@ -490,9 +503,11 @@ def test_lobby_has_two_greeters_attendance_and_the_reflective_logo_fountain():
         "reflectionCamera.update(renderer, scene)",
     ):
         assert contract in scene
+    assert "office-greeter-maya" not in scene.lower()
+    assert "maya and noah" not in scene.lower()
     logo = scene[
         scene.index('chromeCube.name = "forkmesh-reflective-fm-cube"'):
-        scene.index("let lastLogoReflectionAt")
+        scene.index("let officeLobbyPlayerMoving")
     ]
     assert "const cubeBody" not in logo
     assert "new THREE.BoxGeometry(5.6, 5.6, 5.6" not in logo
@@ -511,11 +526,159 @@ def test_lobby_has_two_greeters_attendance_and_the_reflective_logo_fountain():
     assert "metalness: 1" in chrome_material
     assert "envMap: reflectionTarget.texture" in chrome_material
     animation = scene[
-        scene.index("const logoReflectionIntervalMs"):
+        scene.index("const logoReflectionSettleMs"):
         scene.index("// One physical selector rides inside")
     ]
     assert "chromeMark.rotation" not in animation
     assert "chromeMark.quaternion" not in animation
+    assert "logoReflectionIntervalMs" not in animation
+    for contract in (
+        'reflectionCamera.userData.logoCapturePolicy = "dirty-idle-once"',
+        "logoReflectionDirty && time >= logoReflectionEligibleAt",
+        "logoReflectionEligibleAt = time + logoReflectionSettleMs",
+        "player.visible = true",
+        "player.visible = playerWasVisible",
+        "reflectionCamera.userData.logoCaptureCount += 1",
+    ):
+        assert contract in scene
+
+
+def test_noah_reuses_local_chat_bubbles_with_hysteresis_and_no_frame_spam():
+    scene = source(SCENE_PATH)
+    guide = function_body(scene, "updateOfficeReceptionGuide")
+    bubble = function_body(scene, "showAvatarChatBubble")
+    animate = function_body(scene, "animate")
+
+    for contract in (
+        'officeSceneMode === "lobby"',
+        'officeCurrentFloorId === "lobby"',
+        "officeReceptionDeskDistance(",
+        "OFFICE_RECEPTION_RESET_RANGE",
+        "OFFICE_RECEPTION_TALK_RANGE",
+        "officeReceptionWasNear",
+        "OFFICE_RECEPTION_TALK_COOLDOWN_MS",
+        "officeFloorAccess.authenticated === true",
+        "OFFICE_RECEPTION_GUEST_TIPS",
+        "OFFICE_RECEPTION_MEMBER_TIPS",
+        "showAvatarChatBubble(",
+        "{ officeReception: true }",
+    ):
+        assert contract in guide
+    assert "updateOfficeReceptionGuide(time)" in animate
+    assert "sprite.userData.officeReceptionGreeting" in bubble
+    assert "world.add(sprite)" in bubble
+    # This stays entirely scene-local; approaching a desk never emits presence,
+    # analytics, attendance, or room messages.
+    for forbidden in (
+        "fetch(",
+        "onMovement(",
+        "onOfficeMovement(",
+        "onWorldEvent",
+        "onOfficeEnter(",
+    ):
+        assert forbidden not in guide
+    guest_tips = scene[
+        scene.index("const OFFICE_RECEPTION_GUEST_TIPS"):
+        scene.index("const OFFICE_RECEPTION_MEMBER_TIPS")
+    ].lower()
+    assert "log in" in guest_tips
+    assert "restricted team floors" in guest_tips
+    assert "lobby is open to everyone" in guest_tips
+
+    # Noah is nested under officeInterior. Shared bubble animation must resolve
+    # the speaker's world transform rather than copying that local position.
+    emote_loop = scene[
+        scene.index("for (let index = emoteSprites.length - 1"):
+        scene.index("for (let index = rewardFlights.length - 1")
+    ]
+    assert "flight.avatar.getWorldPosition(flight.sprite.position)" in emote_loop
+    assert "flight.sprite.position.copy(flight.avatar.position)" not in emote_loop
+
+
+def test_rooftop_furniture_seating_and_real_source_laptop_are_complete():
+    scene = source(SCENE_PATH)
+    world = source(WORLD_PATH)
+    rooftop = scene[
+        scene.index('const rooftop = officeFloorGroups.get("rooftop")'):
+        scene.index("addOfficeFunFloorProps();")
+    ]
+    for contract in (
+        "forkmesh-office-rooftop-table-",
+        "forkmesh-office-rooftop-tabletop-",
+        "forkmesh-office-rooftop-table-${tableIndex + 1}-leg-",
+        "rooftop-chair-",
+        "forkmesh-office-${chairId}-seat",
+        "forkmesh-office-${chairId}-back",
+        "forkmesh-office-${chairId}-leg-",
+        'chair.userData.officeFloorId = "rooftop"',
+        "chair.userData.officeSeatTopY = seatTopY",
+        'child.userData.interactive = "office-chair"',
+        'rooftopLaptop.name = "forkmesh-office-rooftop-laptop"',
+        'child.userData.interactive = "office-rooftop-laptop"',
+        "CLICK TO OPEN REAL REPOSITORY",
+    ):
+        assert contract in rooftop
+    assert "const telescopeTube" not in rooftop
+    assert "new THREE.BoxGeometry(2.2, 0.34, 2.2)" not in rooftop
+
+    sit = function_body(scene, "sitOnOfficeChair")
+    pose = function_body(scene, "applyOfficeChairSeatPose")
+    assert "chair.userData.officeFloorId" in sit
+    assert "officeCurrentFloorId" in sit
+    assert "officeFloorY(floorId) + seatTopY" in pose
+
+    callback = world[
+        world.index("onOfficeRooftopLaptopSelect:"):
+        world.index("onWorldBulletinSelect:", world.index(
+            "onOfficeRooftopLaptopSelect:"
+        ))
+    ]
+    assert (
+        '"/forkmesh/forkmesh/blob/cloudflare_worker/public/world/'
+        'world-scene.js"' in callback
+    )
+    assert '"_blank"' in callback
+    assert '"noopener,noreferrer"' in callback
+    assert "desktop app or IDE extension" in callback
+    assert "/api/" not in callback
+    assert "POST" not in callback
+
+
+def test_rooftop_camera_and_pointer_travel_stay_on_the_active_floor():
+    scene = source(SCENE_PATH)
+    camera = function_body(scene, "updateCamera")
+    floor_filter = function_body(scene, "officeObjectMatchesCurrentFloor")
+    ground = function_body(scene, "groundPointAt")
+    double_click = function_body(scene, "handleDoubleClick")
+    lobby_walk = function_body(scene, "walkOfficeLobbyPlayer")
+    pointer = function_body(scene, "finishPointer")
+
+    assert 'officeCurrentFloorId === "rooftop"' in camera
+    assert 'officeFloorY("rooftop") + 0.55' in camera
+    assert camera.count("localCamera.y = Math.max(") >= 1
+    assert camera.index("camera.position.lerp(") < camera.rindex(
+        "localCamera.y = Math.max("
+    )
+    assert "localDesired.y = Math.max(" in camera
+    # Only Y is redirected above the slab, preserving the full outward X/Z
+    # zoom that officeCameraDistanceLimit grants on the patio.
+    rooftop_guard = camera[
+        camera.index("if (rooftopPatioCamera)"):
+        camera.index("if (reducedMotion)")
+    ]
+    assert "localDesired.x" not in rooftop_guard
+    assert "localDesired.z" not in rooftop_guard
+
+    assert "floorId === officeCurrentFloorId" in floor_filter
+    assert 'object.userData?.interactive === "office-elevator-floor"' in (
+        floor_filter
+    )
+    assert "officeObjectMatchesCurrentFloor(object)" in pointer
+    assert "officeObjectMatchesCurrentFloor(object)" in double_click
+    assert "officeInteriorPointIsWalkable(" in ground
+    assert "officeCurrentFloorId" in ground
+    assert "dashTarget" in lobby_walk
+    assert "constrainOfficeInteriorWalls(" in lobby_walk
 
 
 def test_elevator_animates_between_floors_and_emits_departure_and_arrival_audio():
@@ -541,7 +704,7 @@ def test_elevator_has_one_stable_car_glass_layer_and_idle_lobby_reflections():
         scene.index("const elevatorPanelGeometry")
     ]
     reflection = scene[
-        scene.index("const logoReflectionIntervalMs"):
+        scene.index("let logoReflectionDirty"):
         scene.index("// One physical selector rides inside")
     ]
     assert "const elevatorCarGlass = makeMaterial" in elevator
@@ -562,11 +725,15 @@ def test_elevator_has_one_stable_car_glass_layer_and_idle_lobby_reflections():
         'officeSceneMode === "lobby"',
         'officeCurrentFloorId === "lobby"',
         "!officeElevatorRide",
-        "!officeLobbyPlayerMoving",
-        "primaryPointerId === null",
-        "!pinchActive",
+        "officeLobbyPlayerMoving ||",
+        "primaryPointerId !== null",
+        "pinchActive",
+        "logoReflectionDirty = true",
+        "logoReflectionWasBusy = true",
+        "logoReflectionDirty = false",
     ):
         assert contract in reflection
+    assert "logoReflectionIntervalMs" not in reflection
 
 
 def test_rooftop_has_glass_safety_barriers_and_office_jumping_is_disabled():

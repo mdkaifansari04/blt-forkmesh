@@ -3031,6 +3031,23 @@ inline int agentJailMemoryMb()
                     .value(kAgentJailMemoryMbSetting, kDefaultAgentJailMemoryMb)
                     .toInt());
 }
+// How many agent sessions may run at the same time (adhoc #433). Anything
+// started beyond the cap stays Queued and launches as a slot frees up, so a
+// batch of assignments can't spawn a dozen CLIs at once. Adjustable in
+// Settings -> Agents & IDE.
+const QString kMaxRunningAgentsSetting = QStringLiteral("agents/maxRunning");
+constexpr int kDefaultMaxRunningAgents = 5;
+constexpr int kMinMaxRunningAgents = 1;
+
+// The configured concurrency cap, clamped to at least one slot so a zero or a
+// typo can't wedge the queue with nothing ever starting.
+inline int maxRunningAgents()
+{
+    return qMax(kMinMaxRunningAgents,
+                QSettings()
+                    .value(kMaxRunningAgentsSetting, kDefaultMaxRunningAgents)
+                    .toInt());
+}
 // Footer quick-add "Auto-send" toggle (adhoc #45): true => submit the prompt as
 // soon as a voice dictation finishes transcribing, without pressing Enter/Send.
 const QString kVoiceAutoSubmitSetting = QStringLiteral("agents/voiceAutoSubmit");
