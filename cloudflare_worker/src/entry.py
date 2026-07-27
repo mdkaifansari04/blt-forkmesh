@@ -36696,6 +36696,27 @@ class ForkMeshOfficeRoom(DurableObject):
                 for peer in peers):
             return json_response({"error": "ticket_replayed"}, status=409)
 
+        # One account is one person in the room, exactly as in the Town Square
+        # (see ForkMeshWorld). A member who opens this meeting on a second
+        # device replaces their earlier socket instead of occupying two chairs
+        # and two rows of "In this room". The fold key is the account binding
+        # the room ticket was minted against, never a typed name.
+        account_bi = str(claim.get("account_bi") or "")
+        if re.fullmatch(r"[0-9a-f]{64}", account_bi):
+            replaced = [
+                peer for peer in peers
+                if hmac.compare_digest(
+                    str(_ws_attr(peer, "account_bi", "") or ""), account_bi)
+            ]
+            for peer in replaced:
+                self._depart(
+                    peer, WORLD_ACCOUNT_TAKEOVER_CODE,
+                    "moved to your newest device")
+            if replaced:
+                # The retired sockets release their seats and drop out of the
+                # newcomer's participant snapshot.
+                peers = self._live_sockets()
+
         live_ids = {
             str(_ws_attr(peer, "id", "") or "") for peer in peers
         }

@@ -21,6 +21,10 @@ const GENERAL_ROOM = Object.freeze({
 // 40-second keepalive leaves ten seconds beyond one missed tick while cutting
 // idle Durable Object wakeups and their authorization reads in half.
 const OFFICE_PING_MS = 40000;
+// The room retired this socket because the same account joined the meeting
+// from another device. One account keeps one seat, so this is a handover to
+// report rather than a meeting that ended.
+const OFFICE_ACCOUNT_TAKEOVER_CODE = 4009;
 const OFFICE_MOVEMENT_SEND_INTERVAL_MS = 1000;
 const OFFICE_MOVEMENT_RETRY_MS = 250;
 const OFFICE_SOCKET_BUFFER_HIGH_WATER_BYTES = 64 * 1024;
@@ -785,7 +789,7 @@ export function createWorldOfficeMeeting({
       window.clearInterval(pingTimer);
       pingTimer = window.setInterval(() => sendMeeting({ type: "ping" }), OFFICE_PING_MS);
     });
-    meetingSocket.addEventListener("close", () => {
+    meetingSocket.addEventListener("close", (event) => {
       if (socket !== meetingSocket) return;
       movementQueue.reset();
       socket = null;
@@ -805,7 +809,10 @@ export function createWorldOfficeMeeting({
       setAttachmentFeedback("");
       if (!leaving) {
         setLobbyStatus(
-          "The meeting ended. Select the Marketing meeting board to rejoin.",
+          event?.code === OFFICE_ACCOUNT_TAKEOVER_CODE
+            ? "You joined this meeting on another device. Select the " +
+              "Marketing meeting board to bring it back here."
+            : "The meeting ended. Select the Marketing meeting board to rejoin.",
         );
         setOpen(roomPanel, false);
         setOpen(lobby, false);
