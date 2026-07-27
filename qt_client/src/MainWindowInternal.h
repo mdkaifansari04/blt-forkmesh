@@ -1445,7 +1445,8 @@ protected:
             p.setPen(Qt::NoPen);
             p.setBrush(col);
             if (b.integrityFailing) {
-                // Amber caution triangle, matching MirrorActivityStrip.
+                // Amber caution triangle, matching the Mirror nodes table's
+                // error light.
                 const qreal s = 3.2;
                 p.drawPolygon(QPolygonF({QPointF(pos.x(), pos.y() - s),
                                          QPointF(pos.x() + s, pos.y() + s),
@@ -1528,252 +1529,25 @@ protected:
     }
 };
 
-// A compact strip of activity dots shown atop the Mirror nodes tab: one dot per
-// active node mirroring this repo. A dot flashes green when its node serves a
-// clone (git-upload-pack) and orange when it serves codebase browsing/fetches;
-// idle dots sit at a steady online green. Only this node generates live serve
-// events, so its own dot is the one that blinks in practice, but the strip is
-// keyed by node id so any node's activity can be surfaced as the mesh grows.
-// A node the relay's integrity gate is rejecting draws as a green triangle
-// instead of a circle, and is kept in the strip even while offline, so the
-// warning stays visible instead of the node just disappearing (adhoc #196).
-class MirrorActivityStrip : public QWidget
+// One mirror node's live state, as fed to the relay radar's blips (adhoc #122).
+// This was the dot model for the activity strip that floated above the Mirror
+// nodes tab (adhoc #197); the strip is gone (adhoc #420) but the radar still
+// draws the same per-node dots, so loadMirrorNodesPanel keeps building them.
+// A node the relay's integrity gate is rejecting is kept in the list even while
+// offline, so the warning stays visible instead of the node just disappearing
+// (adhoc #196).
+struct MirrorNodeDot
 {
-public:
-    struct Dot
-    {
-        QString id;
-        QString name;
-        bool online = false;
-        bool self = false;
-        // Online node serving a commit behind the source of truth: its steady
-        // dot draws amber instead of green until it catches up at its next
-        // heartbeat, so an out-of-sync mirror is visible at a glance.
-        bool behind = false;
-        // Relay's integrity gate is rejecting this node's clones (adhoc #196).
-        // Normally only online nodes get a dot at all, so an offline node
-        // failing the check would otherwise vanish from the strip entirely;
-        // it's kept and drawn as a triangle instead of a circle so the warning
-        // stays visible even while the node is offline.
-        bool integrityFailing = false;
-    };
-
-    explicit MirrorActivityStrip(QWidget *parent = nullptr) : QWidget(parent)
-    {
-        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        setFixedHeight(18);
-        // Drives the fade while any dot is mid-blink; idle when nothing pulses.
-        m_anim = new QTimer(this);
-        m_anim->setInterval(40);
-        connect(m_anim, &QTimer::timeout, this, [this] {
-            if (!stepPulses())
-                m_anim->stop();
-            update();
-        });
-    }
-
-    void setNodes(const QVector<Dot> &dots)
-    {
-        m_dots = dots;
-        // Drop pulses for nodes no longer present; keep the rest so a roster
-        // refresh doesn't reset a blink already in flight.
-        QSet<QString> ids;
-        for (const Dot &d : dots)
-            ids.insert(d.id);
-        for (auto it = m_pulse.begin(); it != m_pulse.end();) {
-            if (ids.contains(it.key()))
-                ++it;
-            else
-                it = m_pulse.erase(it);
-        }
-        update();
-    }
-
-    // Flash the dot for `nodeId`: green for a served clone, orange for browsing.
-    void pulse(const QString &nodeId, bool clone)
-    {
-        bool known = false;
-        for (const Dot &d : m_dots)
-            if (d.id == nodeId) {
-                known = true;
-                break;
-            }
-        if (!known)
-            return;
-        m_pulse.insert(nodeId, Pulse{1.0, clone});
-        if (!m_anim->isActive())
-            m_anim->start();
-        update();
-    }
-
-    bool isEmpty() const { return m_dots.isEmpty(); }
-
-    // Width needed to show the dots, used to size the floating overlay above the
-    // Mirror nodes tab. At most kMaxDots dots are drawn; any beyond collapse into
-    // a "+N" tally, whose label width is added here. Capped so a large mesh can't
-    // stretch the band; paintEvent already stops drawing once it runs out of room.
-    int preferredWidth() const
-    {
-        if (m_dots.isEmpty())
-            return 0;
-        const int shown = qMin<qsizetype>(m_dots.size(), kMaxDots);
-        const qreal last = kLeftInset + (shown - 1) * kSpacing;
-        qreal w = last + kRadius + 4.0;
-        if (m_dots.size() > shown)
-            w += fontMetrics().horizontalAdvance(
-                     QStringLiteral("+%1").arg(m_dots.size() - shown)) +
-                 6.0;
-        return qMin(240, int(w));
-    }
-
-protected:
-    QSize sizeHint() const override { return QSize(160, 18); }
-
-    bool event(QEvent *e) override
-    {
-        if (e->type() == QEvent::ToolTip) {
-            auto *he = static_cast<QHelpEvent *>(e);
-            if (const Dot *d = dotAt(he->pos())) {
-                QToolTip::showText(
-                    he->globalPos(),
-                    QStringLiteral("%1%2 \xC2\xB7 %3%4")
-                        .arg(d->name,
-                             d->self ? QStringLiteral(" (you)") : QString(),
-                             d->online ? (d->behind
-                                              ? QStringLiteral("online \xC2\xB7 out of sync")
-                                              : QStringLiteral("online"))
-                                       : QStringLiteral("offline"),
-                             d->integrityFailing
-                                 ? QStringLiteral(" \xC2\xB7 failing integrity pin")
-                                 : QString()),
-                    this);
-            } else {
-                QToolTip::hideText();
-            }
-            return true;
-        }
-        return QWidget::event(e);
-    }
-
-    void paintEvent(QPaintEvent *) override
-    {
-        QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing, true);
-        const qreal cy = height() / 2.0;
-        qreal x = kLeftInset;
-        const int shown = qMin<qsizetype>(m_dots.size(), kMaxDots);
-        int drawn = 0;
-        for (int i = 0; i < shown; ++i) {
-            const Dot &d = m_dots.at(i);
-            const QColor base =
-                d.online ? QColor(d.behind ? "#d29922" : "#3fb950")
-                         : QColor("#484f58");
-            QColor col = base;
-            const Pulse ph = m_pulse.value(d.id, Pulse{});
-            if (ph.level > 0.0) {
-                const QColor flash =
-                    ph.clone ? QColor("#3fb950") : QColor("#d29922");
-                col = blend(base, flash, ph.level);
-                QColor halo = flash;
-                halo.setAlphaF(0.40 * ph.level);
-                p.setPen(Qt::NoPen);
-                p.setBrush(halo);
-                const qreal hr = kRadius + 4.0 * ph.level;
-                p.drawEllipse(QPointF(x, cy), hr, hr);
-            }
-            p.setPen(Qt::NoPen);
-            if (d.integrityFailing) {
-                // Swap the dot for an amber caution triangle instead of a red
-                // top-bar error toast (adhoc #65): it stays inline with every
-                // other node's status and doesn't vanish when the node goes
-                // offline (an offline-but-failing node would otherwise be an
-                // invisible gap in the strip).
-                p.setBrush(QColor("#d29922"));
-                const QPolygonF triangle({QPointF(x, cy - kRadius - 1.0),
-                                          QPointF(x + kRadius + 1.0, cy + kRadius - 1.0),
-                                          QPointF(x - kRadius - 1.0, cy + kRadius - 1.0)});
-                p.drawPolygon(triangle);
-            } else {
-                p.setBrush(col);
-                p.drawEllipse(QPointF(x, cy), kRadius, kRadius);
-            }
-            ++drawn;
-            x += kSpacing;
-            if (x > width() - kRadius)
-                break; // ran out of room; the table still lists every node
-        }
-        // Beyond kMaxDots, collapse the remaining nodes into a "+N" tally rather
-        // than drawing a dot each — a 100-node mesh otherwise paints a wall of
-        // dots (issue #306). The table below still lists every node.
-        const int hidden = m_dots.size() - drawn;
-        if (hidden > 0) {
-            p.setPen(QColor("#8b949e"));
-            p.drawText(
-                QRectF(x - kRadius + 2.0, 0, width() - (x - kRadius), height()),
-                Qt::AlignLeft | Qt::AlignVCenter,
-                QStringLiteral("+%1").arg(hidden));
-        }
-    }
-
-private:
-    struct Pulse
-    {
-        double level = 0.0; // remaining brightness, fades 1 -> 0
-        bool clone = false; // green (clone) vs orange (browse)
-    };
-
-    static constexpr qreal kRadius = 5.0;
-    static constexpr qreal kSpacing = 15.0;
-    static constexpr int kMaxDots = 10; // most-recent dots; rest become "+N"
-    // Centre x of the first dot. The strip floats just above the Mirror nodes
-    // tab, anchored at that tab's left edge, so inset the dots to line the
-    // leftmost one up over the tab's icon: #repoTab has 10px left padding and a
-    // 16px octicon, putting the icon centre at 10 + 8 = 18 (adhoc #21).
-    static constexpr qreal kLeftInset = 18.0;
-
-    const Dot *dotAt(const QPoint &pos) const
-    {
-        const qreal cy = height() / 2.0;
-        qreal x = kLeftInset;
-        const int shown = qMin<qsizetype>(m_dots.size(), kMaxDots);
-        for (int i = 0; i < shown; ++i) {
-            const Dot &d = m_dots.at(i);
-            const qreal dx = pos.x() - x;
-            const qreal dy = pos.y() - cy;
-            if (dx * dx + dy * dy <= (kRadius + 3.0) * (kRadius + 3.0))
-                return &d;
-            x += kSpacing;
-        }
-        return nullptr;
-    }
-
-    // Advance every pulse one frame; true while any remain active.
-    bool stepPulses()
-    {
-        bool any = false;
-        for (auto it = m_pulse.begin(); it != m_pulse.end();) {
-            it.value().level -= 0.06; // ~0.7s flash
-            if (it.value().level <= 0.0) {
-                it = m_pulse.erase(it);
-            } else {
-                any = true;
-                ++it;
-            }
-        }
-        return any;
-    }
-
-    static QColor blend(const QColor &a, const QColor &b, double t)
-    {
-        t = qBound(0.0, t, 1.0);
-        return QColor::fromRgbF(a.redF() + (b.redF() - a.redF()) * t,
-                                a.greenF() + (b.greenF() - a.greenF()) * t,
-                                a.blueF() + (b.blueF() - a.blueF()) * t);
-    }
-
-    QVector<Dot> m_dots;
-    QHash<QString, Pulse> m_pulse; // nodeId -> in-flight flash
-    QTimer *m_anim = nullptr;
+    QString id;
+    QString name;
+    bool online = false;
+    bool self = false;
+    // Online node serving a commit behind the source of truth: drawn amber
+    // instead of green until it catches up at its next heartbeat, so an
+    // out-of-sync mirror is visible at a glance.
+    bool behind = false;
+    // Relay's integrity gate is rejecting this node's clones (adhoc #196).
+    bool integrityFailing = false;
 };
 
 // Paints a light-green highlight across the FULL row under the mouse. Qt's
@@ -2208,114 +1982,6 @@ public:
                          value.isValid() ? value.toInt() : -1,
                          option.fontMetrics);
     }
-};
-
-// One row shown in the floating strip above the Actions tab for each queued or
-// running workflow (adhoc #95, adhoc #105, adhoc #112). Each action gets a single
-// green line whose brightness travels along it like an activity wave, so the
-// strip reads as "busy" even when nothing else about the row is changing. The
-// line shrinks from the right as the run advances toward its estimated duration
-// (the previous run of the same workflow), so its remaining length is a rough
-// "time left" gauge. Queued runs (no estimate to count down against, or not
-// started) keep a full line and skip the name label — with no clock running yet
-// there's nothing to name, so only the wave shows. Rows share one bordered box
-// (owned by the strip itself, see ensureActionStrip) rather than drawing their
-// own border, so several queued/running actions read as one box with multiple
-// lines. The strip is sized by the owner to span the Actions tab exactly, so the
-// lines never bleed over the neighbouring Security tab. Pure QWidget (no moc);
-// the owner ticks it via update() and reads the run id back off the
-// "actionRunId" dynamic property in its event filter.
-class ActionEstimateBox : public QWidget
-{
-public:
-    explicit ActionEstimateBox(QWidget *parent = nullptr) : QWidget(parent)
-    {
-        // A single-line row; width is set by the owner to match the tab.
-        setFixedHeight(24);
-        setCursor(Qt::PointingHandCursor);
-    }
-
-    // startedAtMs: when the run's clock began (0 = queued/not started, so the line
-    // stays full). estimateMs: expected duration from the previous run of the same
-    // workflow (0 = unknown, so the line stays full as there's nothing to count
-    // down against).
-    void configure(const QString &name, qint64 startedAtMs, qint64 estimateMs)
-    {
-        m_name = name;
-        m_started = startedAtMs;
-        m_estimate = estimateMs;
-        update();
-    }
-
-protected:
-    void paintEvent(QPaintEvent *) override
-    {
-        QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing, true);
-        const QRectF box = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
-
-        // Fraction of the estimate still remaining (1 = just started/queued, 0 =
-        // at/over estimate). Without a started clock or an estimate we can't count
-        // down, so stay full.
-        double remaining = 1.0;
-        if (m_estimate > 0 && m_started > 0) {
-            const qint64 elapsed =
-                QDateTime::currentMSecsSinceEpoch() - m_started;
-            remaining =
-                qBound(0.0, 1.0 - double(elapsed) / double(m_estimate), 1.0);
-        }
-
-        // One horizontal green line, shrinking from the right as time elapses. A
-        // brighter band travels along it on a loop (independent of the drain) so
-        // the row reads as an active "wave" rather than a static bar; a queued run
-        // (no clock yet) is still full-length but the wave keeps it visibly alive.
-        const double x0 = box.left() + 4;
-        const double x1 = box.right() - 4;
-        const double y = box.center().y();
-        const double x1lit = x0 + (x1 - x0) * remaining;
-        if (x1lit > x0) {
-            static const QColor kBase(35, 134, 54);    // #238636
-            static const QColor kBright(86, 211, 100); // #56d364
-            const qint64 kPeriodMs = 1400;
-            const double phase =
-                double(QDateTime::currentMSecsSinceEpoch() % kPeriodMs) /
-                double(kPeriodMs);
-            QLinearGradient grad(x0, y, x1, y);
-            const int kStops = 24;
-            for (int i = 0; i <= kStops; ++i) {
-                const double t = double(i) / kStops;
-                double dist = qAbs(t - phase);
-                dist = qMin(dist, 1.0 - dist); // wrap the wave across the ends
-                const double blend = qMax(0.0, 1.0 - dist / 0.2);
-                grad.setColorAt(t,
-                                QColor(kBase.red() + int((kBright.red() - kBase.red()) * blend),
-                                       kBase.green() + int((kBright.green() - kBase.green()) * blend),
-                                       kBase.blue() + int((kBright.blue() - kBase.blue()) * blend)));
-            }
-            p.setPen(QPen(QBrush(grad), 4, Qt::SolidLine, Qt::RoundCap));
-            p.drawLine(QPointF(x0, y), QPointF(x1lit, y));
-        }
-
-        // A queued run has no clock running yet, so there's nothing to name — just
-        // the wave. Once running, the workflow name sits on top of the line.
-        if (m_started > 0) {
-            QFont f = font();
-            f.setBold(true);
-            p.setFont(f);
-            // Black on the light "main bar", light on the dark one (adhoc #118).
-            p.setPen(currentThemeIsDark() ? QColor(230, 237, 243)
-                                          : QColor(0, 0, 0));
-            const QString elided = p.fontMetrics().elidedText(
-                m_name, Qt::ElideRight, int(box.width()) - 12);
-            p.drawText(box.adjusted(6, 0, -6, 0),
-                       Qt::AlignVCenter | Qt::AlignLeft, elided);
-        }
-    }
-
-private:
-    QString m_name;
-    qint64 m_started = 0;
-    qint64 m_estimate = 0;
 };
 
 // A draggable version of the progress bar for the issue detail panel: click or

@@ -3334,20 +3334,12 @@ void MainWindow::onRequestServed(const QString &owner, const QString &name, bool
     stats.first += 1; // served through the mainnode
     if (clone)
         stats.second += 1; // git clone
-    // Only the activity-strip pulse is per-event; everything else below is
-    // coalesced. A clone/browse burst fires this slot dozens of times a second,
-    // and re-running the full repository-list rebuild (per-repo git reads) plus a
-    // QSettings write for each one stalled the GUI for seconds (stall log:
-    // refreshRepositoryList <- onRequestServed).
-    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
-        const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
-        // Flash our own dot on the Mirror nodes activity strip: green when we
-        // just served a clone, orange when we served codebase browsing/fetches.
-        if (m_mirrorActivityStrip && catalogOwner(repo) == owner &&
-            repo.name == name)
-            static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip)
-                ->pulse(m_profileIdentity.publicKey(), clone);
-    }
+    // Everything below is coalesced. A clone/browse burst fires this slot dozens
+    // of times a second, and re-running the full repository-list rebuild
+    // (per-repo git reads) plus a QSettings write for each one stalled the GUI
+    // for seconds (stall log: refreshRepositoryList <- onRequestServed). The one
+    // per-event step used to be flashing our own dot on the activity strip above
+    // the Mirror nodes tab; that strip is gone (adhoc #420).
     if (!m_requestServedFlushTimer) {
         m_requestServedFlushTimer = new QTimer(this);
         m_requestServedFlushTimer->setSingleShot(true);

@@ -1733,12 +1733,6 @@ private:
     // Issues heading row and persist the running state so the loop resumes
     // after a restart (adhoc #130, #125, #354).
     void updateIssueLooperButton();
-    // Anchor the live mirror-activity dot strip just above the Mirror nodes tab
-    // (adhoc #197).
-    void positionMirrorActivityStrip();
-    // Anchor the current-release pill just above the Releases tab (adhoc #69),
-    // mirroring positionMirrorActivityStrip over Mirror nodes.
-    void positionReleaseStrip();
     void persistLooperState();
     void maybeRestoreIssueLooper();
     void continueSelectedAgentSession();
@@ -2660,12 +2654,8 @@ private:
     void refreshCommitTableStatusGlyphs();
     // Spin the Actions tab label while a run for the open repo is active.
     void updateActionsTabIndicator();
-    // Lazily build the floating strip and place it just above the Actions tab.
-    void ensureActionStrip();
-    void positionActionStrip();  // size/pin the strip above the Actions tab
-    void updateActionStrip();    // build/show/hide the boxes for in-flight runs
-    // Previous finished run's duration for the same workflow, the estimate each
-    // strip box counts down against (0 = no prior run to estimate from).
+    // Previous finished run's duration for the same workflow, shown beside a
+    // queued/running run (0 = no prior run to estimate from).
     qint64 estimatedRunDurationMs(const ActionRun &run) const;
     // Keep the running-session spinner timer alive/dead for the Agents table
     // (adhoc #178 removed the Agents tab and its floating spinner overlay, but
@@ -4178,12 +4168,6 @@ private:
     QPushButton *m_repoPullsTab = nullptr;
     QPushButton *m_repoDiscussionsTab = nullptr;
     QPushButton *m_repoActionsTab = nullptr;
-    // Floating strip of thin bars above the Actions tab — one per in-flight run,
-    // each labelled with the workflow name and growing to the right the longer
-    // its run has been going. Hidden when nothing is running.
-    QWidget *m_actionStrip = nullptr;
-    QVBoxLayout *m_actionStripCol = nullptr;
-    QList<int> m_actionStripIds; // running run ids currently shown (skip rebuilds)
     QPushButton *m_repoMirrorsTab = nullptr; // handle for the Mirror nodes (N) badge
     QPushButton *m_repoReleasesTab = nullptr; // handle for the Releases (N) badge
     QPushButton *m_repoBranchesTab = nullptr; // handle for the Branches (N) badge
@@ -4331,13 +4315,6 @@ private:
     QTableWidget *m_mirrorNodesTable = nullptr;
     QLabel *m_mirrorNodesSummary = nullptr;
     QCheckBox *m_mirrorNodesOnlineOnlyCheck = nullptr;
-    // Live activity strip floating just above the Mirror nodes tab: a dot per
-    // active node that flashes green when it serves a clone, orange when it
-    // serves browsing. Held as a QWidget* (concrete MirrorActivityStrip is
-    // private to MainWindow.cpp). m_mirrorActivityStripTimer keeps it anchored
-    // over the tab as the window reflows (mirrors the looper toggle, adhoc #197).
-    QWidget *m_mirrorActivityStrip = nullptr;
-    QTimer *m_mirrorActivityStripTimer = nullptr;
     // Animates the spinning caution/error status lights in the Mirror nodes
     // table (adhoc #230); only ticks while at least one row's light spins.
     QTimer *m_nodeLightTimer = nullptr;
@@ -4352,12 +4329,6 @@ private:
     // lookup doesn't re-shell `git show` on every roster-driven rebuild. Only
     // used for peers that don't advertise the identity themselves.
     QHash<QString, CommitIdentity> m_commitIdentityCache;
-    // Current-release pill floating just above the Releases tab (adhoc #69):
-    // shows the newest tag so the current release is visible from any tab. Its
-    // text is set from the tag scan; m_releaseStripTimer keeps it anchored as the
-    // window reflows (mirrors the mirror-activity strip).
-    QLabel *m_releaseStrip = nullptr;
-    QTimer *m_releaseStripTimer = nullptr;
     // "Reset integrity pin" action, shown in the Mirror nodes header only when
     // this node is the source of truth (the owner holding the working copy).
     QPushButton *m_mirrorResetPinButton = nullptr;
@@ -4909,7 +4880,6 @@ private:
     QListWidget *m_actionWorkflowList = nullptr; // available actions (left column)
     QString m_selectedWorkflowFilter;            // workflow path filter, empty = all
     QList<ActionWorkflow> m_repoWorkflows;       // parsed workflows for the open repo
-    QTimer *m_actionStripTimer = nullptr;        // grows the Actions strip while running
     // Coalesces push-driven refreshOpenRepoDetail() calls: a burst of pushes
     // (a sync, an agent committing) otherwise re-runs the whole heavyweight
     // refresh — git log, per-PR apply checks, branch reload — once per event,

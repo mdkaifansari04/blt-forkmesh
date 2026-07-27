@@ -1843,8 +1843,8 @@ void MainWindow::refreshActionsTable()
                                                 : rel + QStringLiteral(" ago");
         }
         // For a run that's still queued or running, tack on how long the same
-        // workflow took last time it ran, so the "When" column shows the target
-        // the shrinking line above the tab is counting down against (adhoc #105).
+        // workflow took last time it ran, so the "When" column says roughly how
+        // long this one has to go (adhoc #105).
         if (run.status == ActionStatus::Queued ||
             run.status == ActionStatus::Running) {
             const qint64 last = estimatedRunDurationMs(run);
@@ -2027,157 +2027,18 @@ void MainWindow::updateActionsTabIndicator()
     if (!tab)
         return;
 
-    // The tab label just carries the workflow count; the live activity readout is
-    // now the floating strip of growing bars above the tab (updateActionStrip()).
+    // The tab label just carries the workflow count. The live activity readout
+    // used to be a floating strip of draining bars above the tab (adhoc #105),
+    // removed along with the rest of that band (adhoc #420); the Actions tab
+    // itself lists queued and running runs.
     const int workflows =
         m_actionWorkflowList ? qMax(0, m_actionWorkflowList->count() - 1) : 0;
     tab->setText(QStringLiteral("Actions (%1)").arg(formatCount(workflows)));
-    updateActionStrip();
 }
 
-void MainWindow::ensureActionStrip()
-{
-    if (m_actionStrip || !m_repoActionsTab)
-        return;
-    // The repo-detail page itself, not m_repoDetailStack->parentWidget(): the
-    // stack now lives inside its own QScrollArea (688850a7), so its parent is
-    // that scroll's viewport. These bars float over the meta band just above the
-    // tab row, so they must be parented to the page — anchoring them to the
-    // viewport pushes them into the scrolled body, away from the tabs.
-    QWidget *page = m_repoDetailSection;
-    if (!page)
-        return;
-    // Parented to the repo-detail page so the bars can float over the meta band
-    // just above the Actions tab without being clipped to the tab-bar scroll
-    // area's viewport.
-    m_actionStrip = new QWidget(page);
-    m_actionStrip->setObjectName("actionStrip");
-    // The strip and its rows must stay hit-testable: Qt skips a
-    // WA_TransparentForMouseEvents widget *and its whole subtree* when picking a
-    // click receiver, which would swallow the clicks the per-run boxes rely on
-    // (see updateActionStrip). One border drawn here (rather than one per row,
-    // adhoc #112) makes several queued/running actions read as a single box
-    // holding multiple lines instead of a stack of separate boxes.
-    m_actionStrip->setAttribute(Qt::WA_StyledBackground, true);
-    // One thin-bordered "main bar" that holds the stacked run lines; colours
-    // follow the active theme so the strip sits flush with the light UI instead
-    // of showing as a dark box with unreadable white text (adhoc #118).
-    const bool dark = currentThemeIsDark();
-    m_actionStrip->setStyleSheet(
-        QStringLiteral("#actionStrip { background-color: %1; "
-                        "border: 1px solid %2; border-radius: 8px; }")
-            .arg(dark ? "#161b22" : "#ffffff", dark ? "#30363d" : "#d0d7de"));
-    auto *col = new QVBoxLayout(m_actionStrip);
-    col->setContentsMargins(8, 6, 8, 6);
-    col->setSpacing(4);
-    m_actionStripCol = col;
-    m_actionStrip->hide();
-}
-
-void MainWindow::updateActionStrip()
-{
-    ensureActionStrip();
-    if (!m_actionStrip || !m_actionStripCol)
-        return;
-
-    // This repo's runs that are queued or running: one line each (adhoc #105).
-    // Queued runs haven't started their clock, so their line stays full until the
-    // runner picks them up and they begin counting down.
-    QList<const ActionRun *> live;
-    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
-        const QString owner = m_repositories.at(m_repoDetailIndex).owner;
-        const QString name = m_repositories.at(m_repoDetailIndex).name;
-        for (const ActionRun &run : m_actionRuns)
-            if (run.owner == owner && run.name == name &&
-                (run.status == ActionStatus::Running ||
-                 run.status == ActionStatus::Queued))
-                live.append(&run);
-    }
-
-    const bool active = !live.isEmpty() && m_repoActionsTab->isVisible();
-    if (!active) {
-        if (m_actionStripTimer)
-            m_actionStripTimer->stop();
-        m_actionStripIds.clear();
-        m_actionStrip->hide();
-        return;
-    }
-
-    // Rebuild the boxes only when the set of running runs changes, so an existing
-    // box keeps draining smoothly instead of snapping back to full each tick.
-    QList<int> ids;
-    for (const ActionRun *r : std::as_const(live))
-        ids.append(r->id);
-    if (ids != m_actionStripIds) {
-        m_actionStripIds = ids;
-        while (QLayoutItem *item = m_actionStripCol->takeAt(0)) {
-            if (QWidget *w = item->widget())
-                w->deleteLater();
-            delete item;
-        }
-        for (const ActionRun *r : std::as_const(live)) {
-            // Each run is one fixed box whose coloured lines drain down toward the
-            // estimated duration (see ActionEstimateBox). startedAtMs is set once
-            // the runner picks the run up; fall back to createdAtMs.
-            // Only a running run counts down; a queued one keeps a full line.
-            const qint64 started =
-                r->status != ActionStatus::Running ? 0
-                : r->startedAtMs > 0               ? r->startedAtMs
-                                                   : r->createdAtMs;
-            auto *box = new ActionEstimateBox;
-            box->configure(r->workflowName.trimmed().isEmpty()
-                               ? QStringLiteral("workflow")
-                               : r->workflowName.trimmed(),
-                           started, estimatedRunDurationMs(*r));
-            // The box is a live link: clicking it jumps to this run's output. It
-            // tags itself with the run id for MainWindow's event filter.
-            box->setProperty("actionRunId", r->id);
-            box->setToolTip(QStringLiteral("View this run's live output"));
-            box->installEventFilter(this);
-            m_actionStripCol->addWidget(box);
-        }
-    } else {
-        // Same runs: refresh each box's estimate (a run may have just finished
-        // and set a fresh baseline) and repaint the drain level.
-        int i = 0;
-        for (const ActionRun *r : std::as_const(live)) {
-            // Only ActionEstimateBox widgets populate this layout, and the box is
-            // a plain QWidget (no Q_OBJECT), so a static_cast is safe here.
-            auto *box = static_cast<ActionEstimateBox *>(
-                m_actionStripCol->itemAt(i++)->widget());
-            if (!box)
-                continue;
-            // Only a running run counts down; a queued one keeps a full line.
-            const qint64 started =
-                r->status != ActionStatus::Running ? 0
-                : r->startedAtMs > 0               ? r->startedAtMs
-                                                   : r->createdAtMs;
-            box->configure(r->workflowName.trimmed().isEmpty()
-                               ? QStringLiteral("workflow")
-                               : r->workflowName.trimmed(),
-                           started, estimatedRunDurationMs(*r));
-        }
-    }
-
-    positionActionStrip();
-    m_actionStrip->show();
-    m_actionStrip->raise();
-
-    // A modest tick both drains the boxes (refreshing their estimate and
-    // repainting) and keeps the strip pinned above the tab as the window moves or
-    // the tab bar reflows.
-    if (!m_actionStripTimer) {
-        m_actionStripTimer = new QTimer(this);
-        connect(m_actionStripTimer, &QTimer::timeout, this,
-                &MainWindow::updateActionStrip);
-    }
-    if (!m_actionStripTimer->isActive())
-        m_actionStripTimer->start(250);
-}
-
-// Duration of the previous finished run of the same workflow, used as the
-// estimate the strip box counts down against. 0 when there's no prior run to go
-// on (a fresh workflow, or none has completed yet), which leaves the box full.
+// Duration of the previous finished run of the same workflow, shown as the
+// "last Ns" estimate beside a queued/running run. 0 when there's no prior run to
+// go on (a fresh workflow, or none has completed yet).
 qint64 MainWindow::estimatedRunDurationMs(const ActionRun &run) const
 {
     qint64 best = 0;
@@ -2194,46 +2055,6 @@ qint64 MainWindow::estimatedRunDurationMs(const ActionRun &run) const
         }
     }
     return best;
-}
-
-void MainWindow::positionActionStrip()
-{
-    if (!m_actionStrip || !m_actionStripCol || !m_repoActionsTab)
-        return;
-    QWidget *page = m_actionStrip->parentWidget();
-    if (!page)
-        return;
-
-    // Span the Actions tab exactly so the box never bleeds over the neighbouring
-    // Security tab (adhoc #105): the outer box is fixed to the tab's width, and
-    // each line is inset by the box's own margins (adhoc #112) rather than
-    // stretched edge-to-edge.
-    const int tabWidth = qMax(1, m_repoActionsTab->width());
-    const QMargins cm = m_actionStripCol->contentsMargins();
-    const int rowWidth = qMax(1, tabWidth - cm.left() - cm.right());
-    const int rows = m_actionStripCol->count();
-    int h = cm.top() + cm.bottom();
-    for (int i = 0; i < rows; ++i) {
-        auto *box = m_actionStripCol->itemAt(i)->widget();
-        if (!box)
-            continue;
-        box->setFixedWidth(rowWidth);
-        h += box->height() + (i > 0 ? m_actionStripCol->spacing() : 0);
-    }
-    if (rows <= 0)
-        return;
-
-    m_actionStrip->resize(tabWidth, h);
-
-    const QPoint tl = m_repoActionsTab->mapTo(page, QPoint(0, 0));
-    int x = tl.x();
-    int y = tl.y() - h - 1;
-    if (y < 0)
-        y = 0;
-    if (x + tabWidth > page->width())
-        x = qMax(0, page->width() - tabWidth);
-    m_actionStrip->move(x, y);
-    m_actionStrip->raise();
 }
 
 void MainWindow::updateAgentsTabIndicator()
@@ -2273,94 +2094,10 @@ void MainWindow::updateAgentsTabIndicator()
         m_agentsSpinTimer->start(120);
 }
 
-// Anchor the live mirror-activity dot strip in the meta band just above the
-// Mirror nodes tab (adhoc #197). It shows only while a repo-detail page is
-// open and at least one node is active; loadMirrorNodesPanel feeds it the
-// roster, the timer keeps it pinned.
-void MainWindow::positionMirrorActivityStrip()
-{
-    auto *strip = static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip);
-    if (!strip || !m_repoMirrorsTab)
-        return;
-    // The repo-detail page itself, not m_repoDetailStack->parentWidget(): the
-    // stack now lives inside its own QScrollArea (688850a7), so its parent is
-    // that scroll's viewport. These bars float over the meta band just above the
-    // tab row, so they must be parented to the page — anchoring them to the
-    // viewport pushes them into the scrolled body, away from the tabs.
-    QWidget *page = m_repoDetailSection;
-    if (!page)
-        return;
-    if (strip->parentWidget() != page)
-        strip->setParent(page); // hides it; shown again just below
-    const int w = strip->preferredWidth();
-    const int h = strip->minimumHeight(); // its fixed strip height
-    const QPoint tl = m_repoMirrorsTab->mapTo(page, QPoint(0, 0));
-    int x = tl.x();
-    int y = tl.y() - h - 1; // the meta band above the tab row
-    if (y < 0)
-        y = 0;
-    if (x + w > page->width())
-        x = qMax(0, page->width() - w);
-    strip->setGeometry(x, y, w, h);
-    // Visible only on the repo-detail page and when there's at least one active
-    // node — an empty strip would just be a gap floating over the tab.
-    const bool onPage = page->isVisible() && !strip->isEmpty();
-    strip->setVisible(onPage);
-    if (onPage)
-        strip->raise();
-    // One low-rate timer re-anchors the strip as the window resizes or the tabs
-    // reflow, and reapplies the visibility check above; never needs stopping.
-    if (!m_mirrorActivityStripTimer) {
-        m_mirrorActivityStripTimer = new QTimer(this);
-        connect(m_mirrorActivityStripTimer, &QTimer::timeout, this,
-                &MainWindow::positionMirrorActivityStrip);
-        m_mirrorActivityStripTimer->start(400);
-    }
-}
-
-// Anchor the current-release pill in the meta band just above the Releases tab
-// (adhoc #69), mirroring positionMirrorActivityStrip over Mirror nodes. It shows
-// only while a repo-detail page is open and there is a release to name; the tag
-// scan feeds its text, the timer keeps it pinned as the window reflows.
-void MainWindow::positionReleaseStrip()
-{
-    if (!m_releaseStrip || !m_repoReleasesTab)
-        return;
-    // The repo-detail page itself, not m_repoDetailStack->parentWidget(): the
-    // stack now lives inside its own QScrollArea (688850a7), so its parent is
-    // that scroll's viewport. These bars float over the meta band just above the
-    // tab row, so they must be parented to the page — anchoring them to the
-    // viewport pushes them into the scrolled body, away from the tabs.
-    QWidget *page = m_repoDetailSection;
-    if (!page)
-        return;
-    if (m_releaseStrip->parentWidget() != page)
-        m_releaseStrip->setParent(page); // hides it; shown again just below
-    const int w = m_releaseStrip->sizeHint().width();
-    const int h = m_releaseStrip->sizeHint().height();
-    const QPoint tl = m_repoReleasesTab->mapTo(page, QPoint(0, 0));
-    int x = tl.x();
-    int y = tl.y() - h - 1; // the meta band above the tab row
-    if (y < 0)
-        y = 0;
-    if (x + w > page->width())
-        x = qMax(0, page->width() - w);
-    m_releaseStrip->setGeometry(x, y, w, h);
-    // Visible only on the repo-detail page and when there's a release to name —
-    // an empty pill would just be a floating box over the tab.
-    const bool onPage = page->isVisible() && !m_releaseStrip->text().isEmpty();
-    m_releaseStrip->setVisible(onPage);
-    if (onPage)
-        m_releaseStrip->raise();
-    // One low-rate timer re-anchors the pill as the window resizes or the tabs
-    // reflow, and reapplies the visibility check above; never needs stopping.
-    if (!m_releaseStripTimer) {
-        m_releaseStripTimer = new QTimer(this);
-        connect(m_releaseStripTimer, &QTimer::timeout, this,
-                &MainWindow::positionReleaseStrip);
-        m_releaseStripTimer->start(400);
-    }
-}
+// The mirror-activity dot strip (adhoc #197) and the current-release pill
+// (adhoc #69) used to float in the meta band just above their tabs, each pinned
+// there by its own low-rate timer. Both were removed with the rest of that band
+// (adhoc #420); their readouts live in the Mirror nodes and Releases panels.
 
 // Persist the looper's running state so a restart resumes the loop on the same
 // repo with the same provider (adhoc #125). Called from updateIssueLooperButton,

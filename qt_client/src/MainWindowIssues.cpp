@@ -4706,17 +4706,6 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         cycleNavSolanaCurrency();
         return true;
     }
-    // Click a growing action-strip box (or its timer) to jump straight to that
-    // run's live output. The labels carry the run id as a dynamic property.
-    if (event->type() == QEvent::MouseButtonRelease) {
-        if (auto *w = qobject_cast<QWidget *>(obj)) {
-            const QVariant runId = w->property("actionRunId");
-            if (runId.isValid()) {
-                openActionRunFromNotification(runId.toInt());
-                return true;
-            }
-        }
-    }
     // Click a row (or effort dot) in the footer slash-actions popup (adhoc
     // #116): every activatable widget in that popup carries a "slashKind"
     // dynamic property, dispatched generically in activateSlashActionRow.

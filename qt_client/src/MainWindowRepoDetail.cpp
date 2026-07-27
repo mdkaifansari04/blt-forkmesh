@@ -7852,38 +7852,25 @@ void MainWindow::loadBranchesAndTags()
         m_branchButton->setMenu(menu);
     }
 
-    // Tags: count them and note the newest (the current release). The count
-    // feeds both the "Tags N" pill and the Releases (N) tab badge eagerly (so it
-    // shows without opening the panel, like Branches); the newest tag names the
-    // current-release pill floating just above the Releases tab (adhoc #69).
+    // Tags: count them. The count feeds both the "Tags N" pill and the Releases
+    // (N) tab badge eagerly, so it shows without opening the panel (like
+    // Branches). The newest tag is no longer read here: the label that named it
+    // above the tab row is gone (adhoc #420), and the Releases panel's own header
+    // still spells out the current release.
     {
         QByteArray out;
         int count = 0;
-        QString currentTag;
         if (!dir.isEmpty() && runGitCapture(dir, {"tag", "--sort=-creatordate"}, &out,
                                             nullptr)) {
-            for (const QString &line : QString::fromUtf8(out).split('\n')) {
-                const QString tag = line.trimmed();
-                if (tag.isEmpty())
-                    continue;
-                if (currentTag.isEmpty())
-                    currentTag = tag; // sorted newest-first
-                ++count;
-            }
+            for (const QString &line : QString::fromUtf8(out).split('\n'))
+                if (!line.trimmed().isEmpty())
+                    ++count;
         }
         if (m_tagsButton)
             m_tagsButton->setText(QStringLiteral("Tags %1").arg(formatCount(count)));
         if (m_repoReleasesTab)
             m_repoReleasesTab->setText(
                 QStringLiteral("Releases (%1)").arg(formatCount(count)));
-        if (m_releaseStrip) {
-            m_releaseStrip->setText(currentTag);
-            m_releaseStrip->setToolTip(
-                currentTag.isEmpty()
-                    ? QString()
-                    : QStringLiteral("Current release: %1").arg(currentTag));
-            positionReleaseStrip(); // anchor + reveal (or hide) over the Releases tab
-        }
     }
 
     // Only refresh the Branches / Releases panels if one is actually on screen.
@@ -8186,32 +8173,14 @@ QWidget *MainWindow::buildRepoDetailSection()
     });
     m_looperToggle = looperToggle;
 
-    // Live mirror-activity dots floating just above the Mirror nodes tab (adhoc
-    // #197): one dot per active node, flashing green for a served clone and
-    // orange for codebase browsing. Like the looper toggle over Issues it's an
-    // overlay, so it shows from any tab and never reflows the page; the old
-    // in-page "Live ›" row was dropped in its favour. Created parented to the
-    // window; positionMirrorActivityStrip reparents it onto the page.
-    auto *mirrorStrip = new MirrorActivityStrip(this);
-    mirrorStrip->setToolTip(QStringLiteral(
-        "Active nodes mirroring this repo. A dot flashes green when its node "
-        "serves a clone, orange when it serves codebase browsing."));
-    mirrorStrip->hide();
-    m_mirrorActivityStrip = mirrorStrip;
-
-    // Current-release label floating just above the Releases tab (adhoc #69),
-    // mirroring the mirror-activity strip over Mirror nodes: it names the newest
-    // release so it's visible from any tab. Rendered as plain text (no pill
-    // chrome) at a comfortably readable size; the colour is left to the theme
-    // foreground. Created parented to the window; positionReleaseStrip reparents
-    // it onto the page and the tag scan (loadBranchesAndTags / loadReleasesPanel)
-    // fills in its text.
-    m_releaseStrip = new QLabel(this);
-    m_releaseStrip->setObjectName("releaseStrip");
-    m_releaseStrip->setStyleSheet(
-        QStringLiteral("#releaseStrip{background:transparent;border:none;"
-                       "padding:0px;font-size:15px;}"));
-    m_releaseStrip->hide();
+    // Nothing floats in the band above the tab row anymore (adhoc #420): the
+    // mirror-activity dots (adhoc #197), the current-release label (adhoc #69)
+    // and the in-flight Actions bars (adhoc #105) were all removed. The Releases
+    // button moved into the Code toolbar (adhoc #180), which left its release
+    // label stranded mid-page, and the overlays generally read as stray marks
+    // over the tabs. Each readout still lives in its own panel: the Mirror nodes
+    // table shows per-node activity, the Releases panel names the current tag and
+    // the Actions tab lists in-flight runs.
 
     // --- Inner stack: one page per tab.
     m_repoDetailStack = new CurrentPageStack;
