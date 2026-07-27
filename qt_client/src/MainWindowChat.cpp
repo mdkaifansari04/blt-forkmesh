@@ -277,8 +277,19 @@ void MainWindow::fetchFaviconForHost(const QString &host)
 void MainWindow::fetchFaviconFromUrl(const QString &host, const QUrl &url)
 {
     if (host.isEmpty() || m_faviconCache.contains(host) ||
-        m_faviconFetching.contains(host))
+        m_faviconFetching.contains(host) || m_faviconMissing.contains(host))
         return;
+
+    // Hosts with a hardcoded mark (api.anthropic.com and friends) never hit the
+    // network: they answer 404 for /favicon.ico, which showed up in the log as
+    // an error line per request (adhoc #436).
+    const QPixmap builtin = builtinFavicon(host);
+    if (!builtin.isNull()) {
+        m_faviconCache.insert(host, builtin);
+        updateBreadcrumb();
+        refreshLogFavicon(host);
+        return;
+    }
 
     // Reuse a previously downloaded icon on disk before hitting the network,
     // so a host seen in a past session doesn't re-fetch on every launch.
@@ -298,11 +309,17 @@ void MainWindow::fetchFaviconFromUrl(const QString &host, const QUrl &url)
     connect(reply, &QNetworkReply::finished, this, [this, reply, host] {
         reply->deleteLater();
         m_faviconFetching.remove(host);
-        if (reply->error() != QNetworkReply::NoError)
+        // Remember hosts that have no usable favicon so the next log line from
+        // the same host doesn't fire another doomed request.
+        if (reply->error() != QNetworkReply::NoError) {
+            m_faviconMissing.insert(host);
             return;
+        }
         QPixmap pix;
-        if (!pix.loadFromData(reply->readAll()) || pix.isNull())
+        if (!pix.loadFromData(reply->readAll()) || pix.isNull()) {
+            m_faviconMissing.insert(host);
             return;
+        }
         if (pix.width() > 64)
             pix = pix.scaled(64, 64, Qt::KeepAspectRatio, Qt::SmoothTransformation);
         m_faviconCache.insert(host, pix);
@@ -400,11 +417,10 @@ QWidget *MainWindow::buildChatPage()
     return page;
 }
 
-// How many lines of prior history to seed the always-on footer log with on
-// startup. Bounded well below kNetworkLogLimit so the corner widget (unlike the
+// kFooterLogSeedLines (MainWindowInternal.h) bounds both the startup seed and
+// the live buffer: well below kNetworkLogLimit so the corner widget (unlike the
 // full Log tab, which defers its own render until first visit) stays cheap to
 // populate on every launch while still giving a real scrollback to search.
-constexpr int kFooterLogSeedLines = 300;
 
 QWidget *MainWindow::buildNetworkLogDock()
 {
@@ -987,15 +1003,18 @@ QWidget *MainWindow::buildNetworkLogDock()
     // beside it) and streams every network/update line, oldest at top, newest
     // at bottom — the scrollbar lets you scroll back through history to search
     // it instead of only ever seeing the latest line (adhoc #211).
-    m_footerUpdateLog = new QPlainTextEdit;
+    m_footerUpdateLog = new QTextEdit;
     m_footerUpdateLog->setObjectName("footerUpdateLog");
     m_footerUpdateLog->setReadOnly(true);
     m_footerUpdateLog->setFrameShape(QFrame::NoFrame);
+    // Tight paragraph metrics so the rich-text strip still reads as a dense log
+    // tail rather than a spaced-out document.
+    m_footerUpdateLog->document()->setDocumentMargin(0);
     // Don't wrap (adhoc #133): a long line clips at the right edge instead of
     // reflowing onto extra rows, so every entry stays one row tall and the strip
     // reads like a dense log tail. The full text is still reachable — hovering a
     // line shows it in a tooltip and clicking opens the full Log view at it.
-    m_footerUpdateLog->setLineWrapMode(QPlainTextEdit::NoWrap);
+    m_footerUpdateLog->setLineWrapMode(QTextEdit::NoWrap);
     m_footerUpdateLog->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_footerUpdateLog->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_footerUpdateLog->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -1010,19 +1029,36 @@ QWidget *MainWindow::buildNetworkLogDock()
     // would otherwise flip the cursor back to an I-beam over the text.
     m_footerUpdateLog->viewport()->setCursor(Qt::PointingHandCursor);
     m_footerUpdateLog->viewport()->installEventFilter(this);
-    // Bound the live buffer the same way the seed below is bounded, so it can't
-    // grow without limit over a long-running session.
-    m_footerUpdateLog->setMaximumBlockCount(kFooterLogSeedLines);
+    // The live buffer is bounded the same way the seed below is, so it can't
+    // grow without limit over a long-running session. QTextEdit has no
+    // setMaximumBlockCount, so setFooterUpdateLine() drops the oldest block
+    // itself once the strip is full.
     styleFooterUpdateLog();
     // Seed the always-on strip with recent history (or a ready placeholder) so
     // it's already scrollable on first paint; logSystem() then streams every new
     // event onto it. Keep the full dated lines so timestamps show.
     if (!m_networkLog.isEmpty()) {
         const int from = qMax(0, m_networkLog.size() - kFooterLogSeedLines);
-        // Render each seed line through setFooterUpdateLine() so history gets the
-        // same colored badges as live lines instead of raw plain text (adhoc #19).
-        for (int i = from; i < m_networkLog.size(); ++i)
-            setFooterUpdateLine(m_networkLog.at(i));
+        // Render seed history with the same colored badges (and favicons) as live
+        // lines instead of raw plain text (adhoc #19), but as a single setHtml()
+        // pass — 300 individual appends would re-lay out the document each time,
+        // on the startup path.
+        QString seedHtml;
+        QStringList seedLines; // the raw lines, one per rendered block
+        for (int i = from; i < m_networkLog.size(); ++i) {
+            const QString clean = m_networkLog.at(i).trimmed();
+            if (clean.isEmpty())
+                continue;
+            seedHtml += QStringLiteral("<div>%1</div>").arg(footerLogLineHtml(clean));
+            seedLines << clean;
+        }
+        m_footerUpdateLog->setHtml(seedHtml);
+        // Stamp each block with its raw line so hover tooltips and click-to-open
+        // work on seeded history exactly as they do on live lines.
+        int seedIndex = 0;
+        for (QTextBlock b = m_footerUpdateLog->document()->firstBlock();
+             b.isValid() && seedIndex < seedLines.size(); b = b.next(), ++seedIndex)
+            b.setUserData(new FooterLogLineData(seedLines.at(seedIndex)));
         m_footerUpdateLog->verticalScrollBar()->setValue(
             m_footerUpdateLog->verticalScrollBar()->maximum());
     } else {

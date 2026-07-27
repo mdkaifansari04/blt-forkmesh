@@ -802,6 +802,10 @@ private:
     // Mirror the newest update/rebuild log line onto the footer one-liner so the
     // live progress is visible at the bottom of the app without the full window.
     void setFooterUpdateLine(const QString &line);
+    // The rendered HTML for one footer-strip line (favicon, time, badge, body).
+    // Shared by the live append and the startup seed, which builds its whole
+    // block of lines in one pass.
+    QString footerLogLineHtml(const QString &clean);
     // (Re)apply the always-on footer log line's inline stylesheet for the active
     // theme, tinting the text by the current line's tone. Called on theme switch.
     void styleFooterUpdateLog();
@@ -957,8 +961,10 @@ private:
     void fetchFaviconFromUrl(const QString &host, const QUrl &url);
     QPixmap faviconFor(const ServerConfig &server) const;
     // Network-log favicons (adhoc #190): show each request's site icon inline.
-    QString logFaviconTag(const QString &message);
-    void registerLogFaviconResource(const QString &host);
+    // Both log views (the full Log tab and the footer strip) render the tag, so
+    // the icon resource is registered per target document (adhoc #436).
+    QString logFaviconTag(const QString &message, QTextEdit *view);
+    void registerLogFaviconResource(const QString &host, QTextEdit *view);
     void refreshLogFavicon(const QString &host);
     QWidget *buildHomeSection();
     // Node profile: full-page centered section (index 10 in m_sectionStack).
@@ -3488,6 +3494,7 @@ private:
     int m_activeServer = 0;
     QHash<QString, QPixmap> m_faviconCache; // host -> favicon
     QSet<QString> m_faviconFetching;        // hosts with an in-flight favicon GET
+    QSet<QString> m_faviconMissing;         // hosts whose favicon GET failed once
 
     // Optional public payout-address banner (hidden outside explicit settings).
     QWidget *m_solanaBanner = nullptr;
@@ -3603,8 +3610,10 @@ private:
     // Scrollable live log pinned to the bottom of the window: shows as many recent
     // lines as fit tall, with a scrollbar so earlier history can be scrolled back
     // to. Streams every logSystem()/appendUpdateLog() line, including the
-    // session-start/session-end/rebuild markers.
-    QPlainTextEdit *m_footerUpdateLog = nullptr;
+    // session-start/session-end/rebuild markers. A QTextEdit (not the plain
+    // variant) so each line can lead with the site favicon <img> the full Log
+    // view uses — QPlainTextEdit drops images (adhoc #436).
+    QTextEdit *m_footerUpdateLog = nullptr;
     // Set while a root-launched "Update, rebuild & restart" is running so build
     // steps and the relaunch run as this non-root user. Empty = run in-process.
     QString m_updateAsUser;

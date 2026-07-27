@@ -2744,6 +2744,9 @@ constexpr int kNetworkLogLimit = 20000;
 // How many matching lines to render per "page" of the network log: the initial
 // view, and each older batch loaded when the user scrolls to the top.
 constexpr int kNetworkLogSegmentSize = 300;
+// How many lines the always-on footer strip seeds with on startup, and the cap
+// on its live buffer (setFooterUpdateLine drops the oldest block past it).
+constexpr int kFooterLogSeedLines = 300;
 
 const QString kCodexProvider = QStringLiteral("codex");
 
@@ -8167,6 +8170,53 @@ inline QPixmap letterFavicon(const QString &host)
     painter.setFont(font);
     painter.setPen(QColor("#0f172a"));
     painter.drawText(pixmap.rect(), Qt::AlignCenter, QString(letter));
+    return pixmap;
+}
+
+// Hosts that get a hardcoded, locally drawn icon instead of a /favicon.ico
+// fetch. api.anthropic.com serves no favicon, so every Claude request in the
+// network log used to spit out a red "GET ERR 404 .../favicon.ico" line of its
+// own (adhoc #436). Returns an empty string for hosts with no builtin mark.
+inline QString builtinFaviconKey(const QString &host)
+{
+    const QString h = host.toLower();
+    if (h == QStringLiteral("anthropic.com") || h.endsWith(".anthropic.com") ||
+        h == QStringLiteral("claude.ai") || h.endsWith(".claude.ai"))
+        return QStringLiteral("anthropic");
+    return {};
+}
+
+inline bool hasBuiltinFavicon(const QString &host)
+{
+    return !builtinFaviconKey(host).isEmpty();
+}
+
+// The hardcoded mark for a builtin host, drawn at `side` px as the same rounded
+// rect the fetched favicons are clipped to. Null pixmap when the host has none.
+inline QPixmap builtinFavicon(const QString &host, int side = 36)
+{
+    const QString key = builtinFaviconKey(host);
+    if (key.isEmpty() || side <= 0)
+        return {};
+    QPixmap pixmap(side, side);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor("#d97757")); // Anthropic clay
+    painter.drawRoundedRect(QRectF(0, 0, side, side), side / 4.0, side / 4.0);
+    // Burst mark: rounded strokes radiating from the centre.
+    QPen stroke(QColor("#ffffff"));
+    stroke.setWidthF(qMax(1.0, side * 0.09));
+    stroke.setCapStyle(Qt::RoundCap);
+    painter.setPen(stroke);
+    const QPointF center(side / 2.0, side / 2.0);
+    const qreal radius = side * 0.28;
+    for (int i = 0; i < 6; ++i) {
+        const qreal angle = qDegreesToRadians(qreal(i) * 30.0);
+        const QPointF arm(radius * std::cos(angle), radius * std::sin(angle));
+        painter.drawLine(center - arm, center + arm);
+    }
     return pixmap;
 }
 

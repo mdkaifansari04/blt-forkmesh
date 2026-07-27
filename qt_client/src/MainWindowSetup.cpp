@@ -3249,9 +3249,38 @@ void MainWindow::styleFooterUpdateLog()
     // comes from the HTML badge that setFooterUpdateLine() renders; the base text
     // stays black so plain messages don't wash out on white.
     m_footerUpdateLog->setStyleSheet(
-        QStringLiteral("QPlainTextEdit#footerUpdateLog{color:#1f2328;border:none;"
+        QStringLiteral("QTextEdit#footerUpdateLog{color:#1f2328;border:none;"
                        "border-right:1px solid #d0d7de;background:#ffffff;"
                        "font-family:monospace;font-size:11px;padding:3px 12px;}"));
+}
+
+// Render the same colored category badge the Log view uses so the always-on
+// strip reads at a glance instead of as a wall of grey text (adhoc #19). The
+// canvas is forced white with black body text by styleFooterUpdateLog(); only
+// the badge carries colour. Lines from logSystem() arrive fully dated
+// ("yyyy-MM-dd HH:mm:ss  message"); other callers pass a bare message.
+QString MainWindow::footerLogLineHtml(const QString &clean)
+{
+    QString time, message = clean;
+    if (clean.size() >= 21 && clean.at(10) == QLatin1Char(' ')) {
+        time = clean.mid(11, 8);
+        message = clean.mid(21);
+    }
+    const QString badge = logBadgeFor(clean);
+    const QString accent = logAccentFor(clean);
+    QString html;
+    // Same leading site icon the full Log view uses (adhoc #436), registered on
+    // this document too so the <img> resolves here.
+    html += logFaviconTag(message, m_footerUpdateLog);
+    if (!time.isEmpty())
+        html += QStringLiteral("<span style='color:#656d76'>%1</span>&nbsp;&nbsp;")
+                    .arg(time);
+    html += QStringLiteral(
+                "<span style='color:%1; font-weight:700'>%2</span>&nbsp;&nbsp;"
+                "<span style='color:#1f2328'>%3</span>")
+                .arg(accent, badge.leftJustified(7).toHtmlEscaped(),
+                     message.toHtmlEscaped());
+    return html;
 }
 
 void MainWindow::setFooterUpdateLine(const QString &line)
@@ -3261,33 +3290,22 @@ void MainWindow::setFooterUpdateLine(const QString &line)
     const QString clean = line.trimmed();
     if (clean.isEmpty())
         return;
-    // Render the same colored category badge the Log view uses so the always-on
-    // strip reads at a glance instead of as a wall of grey text (adhoc #19). The
-    // canvas is forced white with black body text by styleFooterUpdateLog(); only
-    // the badge carries colour. Lines from logSystem() arrive fully dated
-    // ("yyyy-MM-dd HH:mm:ss  message"); other callers pass a bare message.
-    QString time, message = clean;
-    if (clean.size() >= 21 && clean.at(10) == QLatin1Char(' ')) {
-        time = clean.mid(11, 8);
-        message = clean.mid(21);
-    }
-    const QString badge = logBadgeFor(clean);
-    const QString accent = logAccentFor(clean);
-    QString html;
-    if (!time.isEmpty())
-        html += QStringLiteral("<span style='color:#656d76'>%1</span>&nbsp;&nbsp;")
-                    .arg(time);
-    html += QStringLiteral(
-                "<span style='color:%1; font-weight:700'>%2</span>&nbsp;&nbsp;"
-                "<span style='color:#1f2328'>%3</span>")
-                .arg(accent, badge.leftJustified(7).toHtmlEscaped(),
-                     message.toHtmlEscaped());
+    const QString html = footerLogLineHtml(clean);
     // Only auto-scroll to the new line if the view was already at (or very near)
     // the bottom — otherwise a user who scrolled up to search back through
     // history would get yanked back down by every new event.
     QScrollBar *bar = m_footerUpdateLog->verticalScrollBar();
     const bool wasAtBottom = !bar || bar->value() >= bar->maximum() - 2;
-    m_footerUpdateLog->appendHtml(html);
+    m_footerUpdateLog->append(html);
+    // QTextEdit has no setMaximumBlockCount: trim the oldest lines by hand so a
+    // long-running session can't grow the strip without bound.
+    QTextDocument *doc = m_footerUpdateLog->document();
+    while (doc->blockCount() > kFooterLogSeedLines) {
+        QTextCursor trim(doc->firstBlock());
+        trim.select(QTextCursor::BlockUnderCursor);
+        trim.removeSelectedText();
+        trim.deleteChar(); // the block separator left behind by the selection
+    }
     // Remember the full, untruncated line on the block just appended so the
     // no-wrap strip can still show it on hover and open the full Log at it on
     // click (adhoc #133), even though the visible text is clipped at the edge.
