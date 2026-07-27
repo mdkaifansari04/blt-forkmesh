@@ -3642,11 +3642,13 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
 
           <p class="world-setting-note">
             Browser and OS are detected locally. Country comes from a country-only
-            edge hint; ForkMesh World does not receive or
-            display your raw IP. Whatever these three toggles share is saved on
-            your account so your campfire bench still shows it while you are
-            away — switch one off and the saved copy is cleared. Movement is
-            coarse, ephemeral, and never includes
+            edge hint. Your own avatar may show you the edge-observed IP and
+            User-Agent on a private back plate for session awareness; other
+            visitors cannot see it, it is not stored or sent through World
+            sockets, and built-in screenshots hide it. Whatever the three
+            public identity toggles share is saved on your account so your
+            campfire bench still shows it while you are away — switch one off
+            and the saved copy is cleared. Movement is coarse, ephemeral, and never includes
             URLs, search terms, form contents, repository names, or wallet data.
           </p>
         </section>
@@ -4521,6 +4523,7 @@ class ForkMeshWorld extends HTMLElement {
       });
       await Promise.allSettled([contextPromise, dataPromise]);
       this.world.updateIdentity(publicIdentity(this.identity, this.settings));
+      this.world.setSelfSecurityDetails?.(this.selfSecurityDetails);
       this.applyWorldLayoutEditor();
       this.world.updateNetworkNodes(
         liveNodeRecords(this.network, this.mirrorCatalogs),
@@ -4923,7 +4926,9 @@ class ForkMeshWorld extends HTMLElement {
         : {};
     this.selfSecurityDetails = {
       ip: String(securityDetails.ip || "").trim().slice(0, 64),
-      userAgent: String(securityDetails.userAgent || "")
+      userAgent: String(
+        securityDetails.userAgent || securityDetails.agent || "",
+      )
         .replace(/\s+/g, " ")
         .trim()
         .slice(0, 256),
@@ -15814,56 +15819,64 @@ class ForkMeshWorld extends HTMLElement {
     const world = this.world;
     const canvas = world?.renderer?.domElement;
     if (!canvas) return null;
+    // Raw IP/User-Agent details are self-only and intentionally omitted from
+    // built-in captures so sharing a normal World screenshot cannot leak them.
+    const securityBadgeWasVisible =
+      world.setSelfSecurityBadgeVisibility?.(false);
     try {
       // The renderer runs without preserveDrawingBuffer, so paint a fresh
       // frame and read it back synchronously before the buffer is cleared.
       world.renderer.render(world.scene, world.camera);
+      const root = this.$("[data-world-root]");
+      const canvasBounds = canvas.getBoundingClientRect();
+      // The HUD is DOM painted over the canvas, so the crop is clamped to the
+      // world root — everything the player sees, chrome included.
+      const bounds = root ? root.getBoundingClientRect() : canvasBounds;
+      const left = Math.max(rect.left, bounds.left);
+      const top = Math.max(rect.top, bounds.top);
+      const right = Math.min(rect.left + rect.width, bounds.right);
+      const bottom = Math.min(rect.top + rect.height, bounds.bottom);
+      if (right - left < 4 || bottom - top < 4) return null;
+      const scaleX = canvas.width / Math.max(1, canvasBounds.width);
+      const scaleY = canvas.height / Math.max(1, canvasBounds.height);
+      const shot = document.createElement("canvas");
+      shot.width = Math.max(1, Math.round((right - left) * scaleX));
+      shot.height = Math.max(1, Math.round((bottom - top) * scaleY));
+      const context = shot.getContext("2d");
+      if (!context) return null;
+      // Read the WebGL buffer back before anything awaits — the next paint
+      // clears it.
+      context.drawImage(
+        canvas,
+        0,
+        0,
+        canvas.width,
+        canvas.height,
+        (canvasBounds.left - left) * scaleX,
+        (canvasBounds.top - top) * scaleY,
+        canvasBounds.width * scaleX,
+        canvasBounds.height * scaleY,
+      );
+      if (root) {
+        const hud = await this.renderHudImage(root, bounds);
+        if (hud) {
+          context.drawImage(
+            hud,
+            (bounds.left - left) * scaleX,
+            (bounds.top - top) * scaleY,
+            bounds.width * scaleX,
+            bounds.height * scaleY,
+          );
+        }
+      }
+      return shot;
     } catch (_) {
       return null;
+    } finally {
+      world.setSelfSecurityBadgeVisibility?.(
+        securityBadgeWasVisible !== false,
+      );
     }
-    const root = this.$("[data-world-root]");
-    const canvasBounds = canvas.getBoundingClientRect();
-    // The HUD is DOM painted over the canvas, so the crop is clamped to the
-    // world root — everything the player sees, chrome included.
-    const bounds = root ? root.getBoundingClientRect() : canvasBounds;
-    const left = Math.max(rect.left, bounds.left);
-    const top = Math.max(rect.top, bounds.top);
-    const right = Math.min(rect.left + rect.width, bounds.right);
-    const bottom = Math.min(rect.top + rect.height, bounds.bottom);
-    if (right - left < 4 || bottom - top < 4) return null;
-    const scaleX = canvas.width / Math.max(1, canvasBounds.width);
-    const scaleY = canvas.height / Math.max(1, canvasBounds.height);
-    const shot = document.createElement("canvas");
-    shot.width = Math.max(1, Math.round((right - left) * scaleX));
-    shot.height = Math.max(1, Math.round((bottom - top) * scaleY));
-    const context = shot.getContext("2d");
-    if (!context) return null;
-    // Read the WebGL buffer back before anything awaits — the next paint
-    // clears it.
-    context.drawImage(
-      canvas,
-      0,
-      0,
-      canvas.width,
-      canvas.height,
-      (canvasBounds.left - left) * scaleX,
-      (canvasBounds.top - top) * scaleY,
-      canvasBounds.width * scaleX,
-      canvasBounds.height * scaleY,
-    );
-    if (root) {
-      const hud = await this.renderHudImage(root, bounds);
-      if (hud) {
-        context.drawImage(
-          hud,
-          (bounds.left - left) * scaleX,
-          (bounds.top - top) * scaleY,
-          bounds.width * scaleX,
-          bounds.height * scaleY,
-        );
-      }
-    }
-    return shot;
   }
 
   // Rasterizes the HUD layers (top bar, rails, labels, panels) so a capture

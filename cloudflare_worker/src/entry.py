@@ -5786,6 +5786,152 @@ async def _chat_channel_socket_handler(env, request, channel_id):
         extra_headers=EXPECTED_DEGRADED_HEADERS)
 
 
+def _office_attendance_visit(row):
+    """Project one D1 attendance row into a bounded public lobby record."""
+    if not isinstance(row, dict):
+        return None
+    visit_id = str(row.get("visit_id") or "")
+    if not re.fullmatch(r"[0-9a-f]{32}", visit_id):
+        return None
+    account = world_protocol.clean_display_name(
+        row.get("account_name"), "Contributor")
+    try:
+        in_at = int(row.get("in_at") or 0)
+        raw_out_at = row.get("out_at")
+        out_at = None if raw_out_at is None else int(raw_out_at)
+    except (TypeError, ValueError):
+        return None
+    max_safe_integer = 9007199254740991
+    if in_at <= 0 or in_at > max_safe_integer:
+        return None
+    if (
+        out_at is not None
+        and (out_at < in_at or out_at > max_safe_integer)
+    ):
+        return None
+    return {
+        "id": visit_id,
+        "account": account,
+        "inAt": in_at,
+        "outAt": out_at,
+    }
+
+
+async def _office_attendance_recent(env):
+    rows = await d1_all(
+        env,
+        "SELECT visit_id, account_name, in_at, out_at "
+        "FROM world_office_attendance "
+        "ORDER BY in_at DESC, visit_id DESC LIMIT 20",
+    )
+    visits = []
+    for row in rows or []:
+        visit = _office_attendance_visit(row)
+        if visit is not None:
+            visits.append(visit)
+    return visits
+
+
+async def office_attendance_handler(env, request):
+    """Read the shared lobby board or punch an authenticated visit IN/OUT."""
+    method = method_name(request)
+    if method not in ("GET", "POST"):
+        return json_response(
+            {"error": "method_not_allowed"},
+            status=405,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={
+                "allow": "GET, POST",
+                "x-content-type-options": "nosniff",
+            },
+        )
+    if method == "GET":
+        await ensure_schema(env)
+        return json_response(
+            {"ok": True, "visits": await _office_attendance_recent(env)},
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"x-content-type-options": "nosniff"},
+        )
+
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        return json_response(
+            {"error": "invalid_json"},
+            status=400,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"x-content-type-options": "nosniff"},
+        )
+    if not isinstance(data, dict):
+        return json_response(
+            {"error": "invalid_json"},
+            status=400,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"x-content-type-options": "nosniff"},
+        )
+    try:
+        account_bi, account = await _account_session_record(
+            env, request, data)
+    except Exception:
+        account_bi, account = "", None
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", str(account_bi or ""))
+        or not account
+        or account.get("status") != "active"
+        or _account_kind(account) != "user"
+    ):
+        return json_response(
+            {"error": "login_required"},
+            status=401,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"x-content-type-options": "nosniff"},
+        )
+    action = str(data.get("action") or "").strip().lower()
+    if action not in ("in", "out"):
+        return json_response(
+            {"error": "invalid_action"},
+            status=400,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"x-content-type-options": "nosniff"},
+        )
+
+    await ensure_schema(env)
+    now = int(Date.now())
+    if action == "in":
+        # The partial unique index on open visits makes repeated/concurrent
+        # background authorization requests converge on the same visit.
+        await d1_run(
+            env,
+            "INSERT OR IGNORE INTO world_office_attendance "
+            "(visit_id, account_bi, account_name, in_at, out_at) "
+            "VALUES (?, ?, ?, ?, NULL)",
+            new_world_peer_id(),
+            str(account_bi),
+            world_protocol.clean_display_name(
+                account.get("name"), "Contributor"),
+            now,
+        )
+    else:
+        # Close, in place, only this account's newest open visit. Repeated OUT
+        # requests are harmless because the row no longer matches out_at NULL.
+        await d1_run(
+            env,
+            "UPDATE world_office_attendance SET out_at=? "
+            "WHERE visit_id=("
+            "SELECT visit_id FROM world_office_attendance "
+            "WHERE account_bi=? AND out_at IS NULL "
+            "ORDER BY in_at DESC, visit_id DESC LIMIT 1"
+            ") AND out_at IS NULL",
+            now,
+            str(account_bi),
+        )
+    return json_response(
+        {"ok": True, "visits": await _office_attendance_recent(env)},
+        cache_control="no-store, max-age=0, must-revalidate",
+        extra_headers={"x-content-type-options": "nosniff"},
+    )
+
+
 async def office_general_status_handler(env, request):
     """Return the login-gate state; the retired coordination code is gone."""
     if method_name(request) != "GET":
@@ -33881,6 +34027,11 @@ class Default(WorkerEntrypoint):
                 self.env, request, url.path)
 
         if url.path in (
+                "/api/world/office/attendance",
+                "/api/world/office/attendance/"):
+            return await office_attendance_handler(self.env, request)
+
+        if url.path in (
                 "/api/world/office/general/status",
                 "/api/world/office/general/status/"):
             return await office_general_status_handler(self.env, request)
@@ -36141,17 +36292,58 @@ class ForkMeshOfficeRoom(DurableObject):
         self._broadcast_count = count
         return allowed
 
-    async def _access_current(self, ws):
+    def _access_recheck_due(self, ws, now):
+        try:
+            checked_at = int(_ws_attr(ws, "auth_checked_at", 0) or 0)
+            now = int(now)
+        except (TypeError, ValueError):
+            return True
+        return (
+            checked_at <= 0
+            or now < checked_at
+            or now - checked_at >= OFFICE_ACCESS_RECHECK_MS
+        )
+
+    async def _access_current_if_due(
+            self, ws, state, now, rate_start, rate_count):
+        """Revalidate once per bounded interval and persist the check time."""
+        if not self._access_recheck_due(ws, now):
+            return True
+        if not await self._access_current(ws, now):
+            self._depart(ws, 1008, "room access revoked")
+            return False
+        self._save_socket(
+            ws,
+            state,
+            last=_ws_attr(ws, "last", 0),
+            rate_start=rate_start,
+            rate_count=rate_count,
+            departed=bool(_ws_attr(ws, "departed", False)),
+            auth_checked_at=now,
+        )
+        return True
+
+    async def _access_current(self, ws, now=None):
         account_bi = str(_ws_attr(ws, "account_bi", "") or "")
+        session_id = str(_ws_attr(ws, "session_id", "") or "")
         scope = str(_ws_attr(ws, "scope", "") or "")
         version = int(_ws_attr(ws, "version", 0) or 0)
-        if not account_bi:
+        now = int(Date.now()) if now is None else int(now)
+        if (
+            not re.fullmatch(r"[0-9a-f]{64}", account_bi)
+            or not re.fullmatch(r"[A-Za-z0-9_-]{24,64}", session_id)
+        ):
             return False
         try:
             account = await d1_first(
                 self.env,
-                "SELECT data,is_admin FROM users WHERE user_bi=?",
+                "SELECT u.data,u.is_admin FROM account_sessions s "
+                "JOIN users u ON u.user_bi=s.account_bi "
+                "WHERE s.session_id=? AND s.account_bi=? "
+                "AND s.revoked_at=0 AND s.expires_at>?",
+                session_id,
                 account_bi,
+                now,
             )
             if not account:
                 return False
@@ -36220,8 +36412,8 @@ class ForkMeshOfficeRoom(DurableObject):
         if not allowed:
             self._safe_close(ws, 1008, "rate limit")
             return
-        if not await self._access_current(ws):
-            self._depart(ws, 1008, "room access revoked")
+        if not await self._access_current_if_due(
+                ws, state, now, rate_start, rate_count):
             return
         self._live_sockets(cleanup=True)
         try:

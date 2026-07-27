@@ -2926,6 +2926,108 @@ function createAvatar(THREE, identity, options = {}) {
   return group;
 }
 
+function avatarSecurityBadgeTexture(THREE, details = {}) {
+  const ip = String(details.ip || "").trim().slice(0, 64);
+  const userAgent = String(details.userAgent || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 256);
+  const wrap = (text, width, rows) => {
+    const words = String(text || "").split(" ").filter(Boolean);
+    const lines = [];
+    let line = "";
+    words.forEach((word) => {
+      const chunks = [];
+      for (let at = 0; at < word.length; at += width) {
+        chunks.push(word.slice(at, at + width));
+      }
+      chunks.forEach((chunk) => {
+        const candidate = line ? `${line} ${chunk}` : chunk;
+        if (candidate.length > width && line) {
+          lines.push(line);
+          line = chunk;
+        } else {
+          line = candidate;
+        }
+      });
+    });
+    if (line) lines.push(line);
+    return lines.slice(0, rows);
+  };
+  return canvasTexture(THREE, 768, 960, (context) => {
+    context.fillStyle = "#071714";
+    context.fillRect(0, 0, 768, 960);
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 16;
+    context.strokeRect(10, 10, 748, 940);
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    context.fillStyle = "#9ef7c6";
+    context.font = '900 58px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("YOUR SESSION", 44, 78);
+    context.fillStyle = "#7fb9a5";
+    context.font = '800 34px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("PRIVATE · SELF ONLY", 44, 132);
+
+    context.fillStyle = "#f7c96b";
+    context.font = '900 38px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("EDGE IP", 44, 214);
+    context.fillStyle = "#ffffff";
+    context.font = '700 36px "ForkMesh Mono", ui-monospace, monospace';
+    wrap(ip || "UNAVAILABLE", 30, 3).forEach((line, index) => {
+      context.fillText(line, 44, 272 + index * 48);
+    });
+
+    context.fillStyle = "#77d9ff";
+    context.font = '900 38px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("USER AGENT", 44, 432);
+    context.fillStyle = "#e9fff6";
+    context.font = '650 31px "ForkMesh Mono", ui-monospace, monospace';
+    wrap(userAgent || "UNAVAILABLE", 39, 8).forEach((line, index) => {
+      context.fillText(line, 44, 486 + index * 43);
+    });
+
+    context.fillStyle = "#7fb9a5";
+    context.font = '700 25px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("HIDDEN FROM PEERS + SCREENSHOTS", 44, 912);
+  });
+}
+
+function setAvatarSecurityBadge(THREE, avatar, details, visible = true) {
+  if (!avatar?.userData) return null;
+  const ip = String(details?.ip || "").trim().slice(0, 64);
+  const userAgent = String(details?.userAgent || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 256);
+  let badge = avatar.userData.selfSecurityBadge;
+  if (!ip && !userAgent) {
+    if (badge) badge.visible = false;
+    return badge || null;
+  }
+  if (!badge) {
+    badge = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.06, 1.32),
+      new THREE.MeshBasicMaterial({ toneMapped: false }),
+    );
+    badge.name = "forkmesh-self-security-back-badge";
+    // Avatar fronts face -Z, so the owner-only security card sits on +Z.
+    badge.position.set(0, 2.22, 0.318);
+    badge.renderOrder = 4;
+    avatar.add(badge);
+    avatar.userData.selfSecurityBadge = badge;
+  }
+  const previous = badge.material.map;
+  badge.material.map = avatarSecurityBadgeTexture(THREE, {
+    ip,
+    userAgent,
+  });
+  badge.material.needsUpdate = true;
+  badge.visible = visible === true;
+  previous?.dispose?.();
+  return badge;
+}
+
 function applyOutfit(THREE, shirt, identity) {
   // Every public field the tailor reads is folded into one key so a presence
   // frame that changes none of them never redraws the cloth.
@@ -9110,19 +9212,21 @@ export function createWorldScene({
   });
   const chromeCube = new THREE.Group();
   chromeCube.name = "forkmesh-reflective-fm-cube";
-  // The mark is an open sculpture, not a chrome box: paired F and M glyphs
-  // define four sides while the branch graph repeats across the top/bottom.
-  // The empty center stays visible as it slowly turns.
-  const logoHalfSize = 2.8;
+  // Only this outer mount animates. Its Y rotation is the single vertical
+  // spindle through the fountain; the inner edge-balanced tilt never changes.
+  const chromeMark = new THREE.Group();
+  chromeMark.name = "forkmesh-reflective-fm-cube-fixed-tilt";
+  chromeCube.add(chromeMark);
+  const logoHalfSize = 2.92;
   const logoSupportTopY = 2.4;
-  // Align a body diagonal with world-up. This gives the open cube one precise
-  // lowest vertex instead of resting it across an entire edge.
-  chromeCube.position.y = logoSupportTopY + logoHalfSize * Math.sqrt(3);
-  chromeCube.rotation.set(
-    Math.atan(1 / Math.sqrt(2)),
-    0,
-    Math.PI / 4,
+  // Align one body diagonal with world-up. The selected lower corner therefore
+  // remains exactly over the single support even while the outer mount spins.
+  const logoLowerCorner = new THREE.Vector3(-1, -1, -1).normalize();
+  chromeMark.quaternion.setFromUnitVectors(
+    logoLowerCorner,
+    new THREE.Vector3(0, -1, 0),
   );
+  chromeCube.position.y = logoSupportTopY + logoHalfSize * Math.sqrt(3);
   const logoPiece = (
     parent,
     width,
@@ -9149,13 +9253,13 @@ export function createWorldScene({
       `forkmesh-reflective-f-face-${z > 0 ? "front" : "back"}`;
     face.position.z = z;
     face.rotation.y = rotationY;
-    logoPiece(face, 0.72, 4.55, 0.5, -1.32, -0.08, 0);
-    logoPiece(face, 3.45, 0.72, 0.5, 0.04, 1.84, 0);
-    logoPiece(face, 2.75, 0.72, 0.5, -0.31, 0.18, 0);
-    chromeCube.add(face);
+    logoPiece(face, 0.82, 4.9, 0.48, -1.64, -0.04, 0);
+    logoPiece(face, 4.35, 0.82, 0.48, 0.12, 2.0, 0);
+    logoPiece(face, 3.45, 0.82, 0.48, -0.33, 0.22, 0);
+    chromeMark.add(face);
   };
-  addFLogoFace(2.8, 0);
-  addFLogoFace(-2.8, Math.PI);
+  addFLogoFace(2.68, 0);
+  addFLogoFace(-2.68, Math.PI);
 
   const addMLogoFace = (x, rotationY) => {
     const face = new THREE.Group();
@@ -9163,30 +9267,77 @@ export function createWorldScene({
       `forkmesh-reflective-m-face-${x > 0 ? "right" : "left"}`;
     face.position.x = x;
     face.rotation.y = rotationY;
-    logoPiece(face, 0.72, 4.55, 0.5, -1.5, -0.08, 0);
-    logoPiece(face, 0.72, 4.55, 0.5, 1.5, -0.08, 0);
+    logoPiece(face, 0.82, 4.9, 0.48, -1.72, -0.04, 0);
+    logoPiece(face, 0.82, 4.9, 0.48, 1.72, -0.04, 0);
     const addDiagonal = (fromX, fromY, toX, toY) => {
       const dx = toX - fromX;
       const dy = toY - fromY;
       logoPiece(
         face,
-        0.72,
+        0.82,
         Math.hypot(dx, dy),
-        0.5,
+        0.48,
         (fromX + toX) / 2,
         (fromY + toY) / 2,
         0,
         Math.atan2(-dx, dy),
       );
     };
-    addDiagonal(-1.5, 1.88, 0, 0.12);
-    addDiagonal(0, 0.12, 1.5, 1.88);
-    chromeCube.add(face);
+    addDiagonal(-1.72, 2.0, 0, 0.08);
+    addDiagonal(0, 0.08, 1.72, 2.0);
+    chromeMark.add(face);
   };
-  addMLogoFace(2.8, Math.PI / 2);
-  addMLogoFace(-2.8, -Math.PI / 2);
+  addMLogoFace(2.68, Math.PI / 2);
+  addMLogoFace(-2.68, -Math.PI / 2);
 
-  // Git-style branch networks form matching open top and bottom faces.
+  // Rounded mirrored top and bottom plates match the supplied cube silhouette.
+  // Dark inset branch graphs read like the reference's black cut-outs while
+  // the middle remains completely hollow between the four letter faces.
+  const logoPanelShape = new THREE.Shape();
+  const panelSize = 5.72;
+  const panelHalf = panelSize / 2;
+  const panelRadius = 0.34;
+  logoPanelShape.moveTo(-panelHalf + panelRadius, -panelHalf);
+  logoPanelShape.lineTo(panelHalf - panelRadius, -panelHalf);
+  logoPanelShape.quadraticCurveTo(
+    panelHalf,
+    -panelHalf,
+    panelHalf,
+    -panelHalf + panelRadius,
+  );
+  logoPanelShape.lineTo(panelHalf, panelHalf - panelRadius);
+  logoPanelShape.quadraticCurveTo(
+    panelHalf,
+    panelHalf,
+    panelHalf - panelRadius,
+    panelHalf,
+  );
+  logoPanelShape.lineTo(-panelHalf + panelRadius, panelHalf);
+  logoPanelShape.quadraticCurveTo(
+    -panelHalf,
+    panelHalf,
+    -panelHalf,
+    panelHalf - panelRadius,
+  );
+  logoPanelShape.lineTo(-panelHalf, -panelHalf + panelRadius);
+  logoPanelShape.quadraticCurveTo(
+    -panelHalf,
+    -panelHalf,
+    -panelHalf + panelRadius,
+    -panelHalf,
+  );
+  logoPanelShape.closePath();
+  const logoPanelGeometry = new THREE.ExtrudeGeometry(logoPanelShape, {
+    depth: 0.36,
+    steps: 1,
+    curveSegments: 16,
+    bevelEnabled: true,
+    bevelSegments: 2,
+    bevelSize: 0.08,
+    bevelThickness: 0.08,
+  });
+  logoPanelGeometry.translate(0, 0, -0.18);
+  logoPanelGeometry.rotateX(Math.PI / 2);
   const topNodes = [
     [-1.8, -1.3],
     [0, -1.8],
@@ -9198,26 +9349,47 @@ export function createWorldScene({
     [[0, -1.8], [1.7, -0.4]],
     [[0, -1.8], [0.2, 1.7]],
   ];
-  for (const faceY of [-2.8, 2.8]) {
+  for (const faceY of [-2.68, 2.68]) {
+    const outward = Math.sign(faceY);
+    const panel = new THREE.Mesh(logoPanelGeometry, chrome);
+    panel.name =
+      `forkmesh-reflective-fm-panel-${outward > 0 ? "top" : "bottom"}`;
+    panel.position.y = faceY;
+    chromeMark.add(panel);
     topNodes.forEach(([x, z]) => {
       const node = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.46, 0.46, 0.34, 24),
-        chrome,
+        new THREE.CylinderGeometry(0.48, 0.48, 0.08, 32),
+        darkChrome,
       );
-      node.position.set(x, faceY, z);
-      chromeCube.add(node);
+      node.position.set(x, faceY + outward * 0.25, z);
+      chromeMark.add(node);
     });
     topBranches.forEach(([[x1, z1], [x2, z2]]) => {
       const length = Math.hypot(x2 - x1, z2 - z1);
       const branch = new THREE.Mesh(
-        new THREE.BoxGeometry(0.3, 0.3, length),
-        chrome,
+        new THREE.BoxGeometry(0.3, 0.08, length),
+        darkChrome,
       );
-      branch.position.set((x1 + x2) / 2, faceY, (z1 + z2) / 2);
+      branch.position.set(
+        (x1 + x2) / 2,
+        faceY + outward * 0.25,
+        (z1 + z2) / 2,
+      );
       branch.rotation.y = Math.atan2(x2 - x1, z2 - z1);
-      chromeCube.add(branch);
+      chromeMark.add(branch);
     });
   }
+  const logoContactPoint = new THREE.Mesh(
+    new THREE.OctahedronGeometry(0.2, 0),
+    chrome,
+  );
+  logoContactPoint.name = "forkmesh-reflective-fm-cube-contact-point";
+  logoContactPoint.position.set(
+    -logoHalfSize,
+    -logoHalfSize,
+    -logoHalfSize,
+  );
+  chromeMark.add(logoContactPoint);
   const logoSupport = new THREE.Mesh(
     new THREE.CylinderGeometry(0.2, 0.28, 1.28, 20),
     darkChrome,
@@ -9514,7 +9686,9 @@ export function createWorldScene({
   let officeFloorAccess = normalizeOfficeFloorAccess();
   let officeFloorHandler = null;
   let officeElevatorRide = null;
-  let officeAttendance = { inAt: 0, outAt: 0, account: "" };
+  let officeAttendance = { visits: [] };
+  let selfSecurityDetails = { ip: "", userAgent: "" };
+  let selfSecurityBadgeVisible = true;
   // main dropped its own selectedLandmark when the floating landmark labels went
   // away (adhoc #243); the Office still tracks it to frame the camera on entry.
   let selectedLandmark = "";
@@ -9722,22 +9896,76 @@ export function createWorldScene({
     return { ...officeFloorAccess };
   }
 
-  function setOfficeAttendance(event = {}) {
-    const type = event?.type === "out" ? "out" : "in";
-    const timestamp = Math.max(0, Number(event?.at) || Date.now());
-    officeAttendance = {
-      ...officeAttendance,
-      account: String(
-        event?.account || officeAttendance.account || "",
-      ).slice(0, 64),
-      [type === "in" ? "inAt" : "outAt"]: timestamp,
+  function setSelfSecurityDetails(details = {}) {
+    selfSecurityDetails = {
+      ip: String(details?.ip || "").trim().slice(0, 64),
+      userAgent: String(details?.userAgent || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 256),
     };
+    setAvatarSecurityBadge(
+      THREE,
+      player,
+      selfSecurityDetails,
+      selfSecurityBadgeVisible,
+    );
+    setAvatarSecurityBadge(
+      THREE,
+      officeLobbyPlayer,
+      selfSecurityDetails,
+      selfSecurityBadgeVisible,
+    );
+    const localParticipant =
+      officeParticipants.get(officeLocalParticipantId);
+    if (localParticipant) {
+      setAvatarSecurityBadge(
+        THREE,
+        localParticipant,
+        selfSecurityDetails,
+        selfSecurityBadgeVisible,
+      );
+    }
+    return { ...selfSecurityDetails };
+  }
+
+  function setSelfSecurityBadgeVisibility(visible = true) {
+    const previous = selfSecurityBadgeVisible;
+    selfSecurityBadgeVisible = visible === true;
+    [
+      player,
+      officeLobbyPlayer,
+      officeParticipants.get(officeLocalParticipantId),
+    ].forEach((avatar) => {
+      if (avatar?.userData?.selfSecurityBadge) {
+        avatar.userData.selfSecurityBadge.visible =
+          selfSecurityBadgeVisible;
+      }
+    });
+    return previous;
+  }
+
+  function setOfficeAttendance(event = {}) {
+    const visits = Array.isArray(event?.visits)
+      ? event.visits.slice(0, 20).map((visit) => ({
+          id: String(visit?.id || "").slice(0, 32),
+          account: String(visit?.account || "Contributor")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 32),
+          inAt: Math.max(0, Number(visit?.inAt) || 0),
+          outAt: Math.max(0, Number(visit?.outAt) || 0),
+        }))
+      : [];
+    officeAttendance = { visits };
     const previous = officeAttendanceBoard.material.map;
     officeAttendanceBoard.material.map =
       officeAttendanceTexture(officeAttendance);
     officeAttendanceBoard.material.needsUpdate = true;
     previous?.dispose?.();
-    return { ...officeAttendance };
+    return {
+      visits: officeAttendance.visits.map((visit) => ({ ...visit })),
+    };
   }
 
   function travelToOfficeFloor(floorId) {

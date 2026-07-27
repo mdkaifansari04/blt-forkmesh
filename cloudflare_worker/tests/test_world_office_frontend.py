@@ -429,7 +429,9 @@ def test_lobby_has_two_greeters_attendance_and_the_reflective_logo_fountain():
         "function setOfficeAttendance(event = {})",
         'logoFountain.name = "forkmesh-office-logo-fountain"',
         'chromeCube.name = "forkmesh-reflective-fm-cube"',
-        "chromeCube.rotation.z = Math.PI / 4",
+        "chromeCube.rotation.set(",
+        "Math.atan(1 / Math.sqrt(2))",
+        "Math.PI / 4",
         "addFLogoFace(2.8, 0)",
         "addFLogoFace(-2.8, Math.PI)",
         "addMLogoFace(2.8, Math.PI / 2)",
@@ -479,8 +481,17 @@ def test_elevator_has_one_stable_car_glass_layer_and_idle_lobby_reflections():
     assert "const elevatorCarGlass = makeMaterial" in elevator
     assert "elevatorShaftGlass" not in elevator
     assert "new THREE.BoxGeometry(0.12, OFFICE_TOWER_HEIGHT" not in elevator
-    assert elevator.count("depthWrite: false") == 2
-    assert elevator.count("metalness: 0") == 2
+    car_glass = elevator[
+        elevator.index("const elevatorCarGlass = makeMaterial"):
+        elevator.index("for (const [x, z] of")
+    ]
+    door_glass = elevator[
+        elevator.index('makeMaterial(THREE, "#d8fff6"'):
+        elevator.index("door.position.set")
+    ]
+    for material in (car_glass, door_glass):
+        assert "depthWrite: false" in material
+        assert "metalness: 0," in material
     for contract in (
         'officeSceneMode === "lobby"',
         'officeCurrentFloorId === "lobby"',
