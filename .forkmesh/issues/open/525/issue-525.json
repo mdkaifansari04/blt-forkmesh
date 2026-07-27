@@ -32,6 +32,15 @@
             "sig": "f1sYmbqiq8qxR_Q0MMBkhthSOJcZn2fu6mi11gCRwutJIQbBKA4iMGihOdQYmAm_tyzzAgwr7sh_uq0L6vqsBA",
             "ts": 1785129590608,
             "type": "agent"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "eb995042-f222-4c0e-917a-f6629082c374",
+            "sig": "CpA1vE-0yPgKwAMJSrElO3pGcyLPavTNT_gCrYOCJmo04FxZQbudy6nS9mxqm6eoRWjUTsiFLeziywNQX1t9Dw",
+            "target": "self",
+            "ts": 1785141448409,
+            "type": "delete"
         }
     ],
     "labels": [
@@ -44,6 +53,6 @@
     "startDate": 0,
     "status": "open",
     "title": "make it so that if you login as the same user you are combined and all device…",
-    "updatedAt": 1785129590608,
+    "updatedAt": 1785141448409,
     "votes": 0
 }
