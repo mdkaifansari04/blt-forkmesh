@@ -7847,6 +7847,7 @@ export function createWorldScene({
       roughness: 0.35,
     }),
   );
+  officeBridgeDeck.name = "forkmesh-office-bridge-deck";
   officeBridgeDeck.position.y = OFFICE_LOBBY_SURFACE_Y - 0.15;
   officeBridgeDeck.receiveShadow = true;
   officeBridgeDeck.userData.ground = true;
@@ -7891,6 +7892,7 @@ export function createWorldScene({
       roughness: 0.62,
     }),
   );
+  approachDeck.name = "forkmesh-office-island-approach-deck";
   // The bridge, approach, and lobby slab all terminate at the same plane.
   // Computing the approach directly to the facade removes the old 0.75-unit
   // void and matching its top to the slab removes the visible doorway step.

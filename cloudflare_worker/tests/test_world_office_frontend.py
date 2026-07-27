@@ -494,6 +494,10 @@ def test_office_walkway_meets_the_lobby_without_a_gap_or_step():
     assert "(OFFICE_BRIDGE_END_Z + officeEntranceZ) / 2" in scene
     assert "officeBridgeDeck.position.y = OFFICE_LOBBY_SURFACE_Y - 0.15" in scene
     assert "approachDeck.position.y = OFFICE_LOBBY_SURFACE_Y - 0.09" in scene
+    assert 'officeBridgeDeck.name = "forkmesh-office-bridge-deck"' in scene
+    assert (
+        'approachDeck.name = "forkmesh-office-island-approach-deck"' in scene
+    )
     floor_surface = function_body(scene, "addOfficeFloorSurface")
     assert "OFFICE_LOBBY_SURFACE_Y / 2" in floor_surface
 

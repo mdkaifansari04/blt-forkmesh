@@ -1825,6 +1825,46 @@ test("Office entrance doors slide apart on approach and close after departure", 
   }).toBeLessThan(0.08);
 });
 
+test("Office bridge, approach, and lobby meet on one continuous plane", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-level-threshold");
+  await waitForWorld(page);
+  const surfaces = await page.locator("forkmesh-world").evaluate((shell) => {
+    const bounds = (name) => {
+      const object = shell.world.scene.getObjectByName(name);
+      object.geometry.computeBoundingBox();
+      const box = object.geometry.boundingBox;
+      const corners = [];
+      for (const x of [box.min.x, box.max.x]) {
+        for (const y of [box.min.y, box.max.y]) {
+          for (const z of [box.min.z, box.max.z]) {
+            corners.push(
+              object.localToWorld(object.position.clone().set(x, y, z)),
+            );
+          }
+        }
+      }
+      return {
+        top: Math.max(...corners.map((point) => point.y)),
+        minZ: Math.min(...corners.map((point) => point.z)),
+        maxZ: Math.max(...corners.map((point) => point.z)),
+      };
+    };
+    return {
+      bridge: bounds("forkmesh-office-bridge-deck"),
+      approach: bounds("forkmesh-office-island-approach-deck"),
+      lobby: bounds("forkmesh-office-floor-slab-lobby-2"),
+    };
+  });
+
+  expect(surfaces.bridge.top).toBeCloseTo(0.38, 6);
+  expect(surfaces.approach.top).toBeCloseTo(0.38, 6);
+  expect(surfaces.lobby.top).toBeCloseTo(0.38, 6);
+  expect(surfaces.approach.minZ).toBeCloseTo(surfaces.lobby.maxZ, 6);
+  expect(surfaces.bridge.minZ).toBeLessThan(surfaces.approach.maxZ);
+});
+
 test("a first-frame doorway crossing enters before proximity catches up", async ({
   page,
 }) => {
@@ -6808,7 +6848,7 @@ test("tracked public replies open a separate read-only fediverse thread", async 
     .toHaveAttribute("referrerpolicy", "no-referrer");
 });
 
-test("four-hour procedural soundtrack starts only after consent and stops locally", async ({
+test("sound button is the master switch for local playback", async ({
   page,
 }) => {
   const mediaRequests = [];
@@ -6862,10 +6902,12 @@ test("four-hour procedural soundtrack starts only after consent and stops locall
     await page.locator("forkmesh-world").evaluate((shell) => shell.activeAudio),
   ).toBeNull();
 
-  await page.locator("forkmesh-world").evaluate((shell) =>
-    shell.openLandmark("broadcast"),
-  );
-  await page.locator("[data-world-radio='forkmesh-focus']").click();
+  await page.locator("forkmesh-world").evaluate(async (shell) => {
+    const now = document.createElement("div");
+    now.dataset.worldMediaNow = "";
+    shell.append(now);
+    await shell.playRadio("forkmesh-focus");
+  });
   await expect(page.locator("[data-world-media-now]")).toContainText(
     "Use the Sound button",
   );
@@ -6877,7 +6919,9 @@ test("four-hour procedural soundtrack starts only after consent and stops locall
     "aria-pressed",
     "true",
   );
-  await page.locator("[data-world-radio='forkmesh-focus']").click();
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.playRadio("forkmesh-focus"),
+  );
   const playback = await page.locator("forkmesh-world").evaluate((shell) => ({
     durationMs: shell.activeAudio?.durationMs,
     scoreOffsetMs: shell.activeAudio?.scoreOffsetMs,
@@ -6892,10 +6936,32 @@ test("four-hour procedural soundtrack starts only after consent and stops locall
   );
   expect(mediaRequests).toEqual([]);
 
-  await page.locator("[data-world-radio-stop]").click();
+  await page.locator("[data-world-sound-toggle]").click();
+  await expect(page.locator("[data-world-sound-toggle]")).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  await expect(page.locator("[data-world-media-now]")).toContainText(
+    "Nothing is playing",
+  );
   expect(
-    await page.locator("forkmesh-world").evaluate((shell) => shell.activeAudio),
-  ).toBeNull();
+    await page.locator("forkmesh-world").evaluate((shell) => ({
+      soundEnabled: shell.soundEnabled,
+      activeAudio: shell.activeAudio,
+      soundContext: shell.soundContext,
+    })),
+  ).toEqual({
+    soundEnabled: false,
+    activeAudio: null,
+    soundContext: null,
+  });
+
+  // The same button can turn audio consent back on after a full shutdown.
+  await page.locator("[data-world-sound-toggle]").click();
+  await expect(page.locator("[data-world-sound-toggle]")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
 });
 
 test("the ForkMesh song button plays the first-party track only on request", async ({
