@@ -343,6 +343,22 @@ def test_every_floor_has_collidable_obstacles_and_reachable_open_space():
             23,
             19.5,
           ),
+          rooftopTableBlocked: tower.officePointHitsObstacle(
+            "rooftop",
+            0,
+            8,
+          ),
+          rooftopChairCentersWalkable: [-40, 0, 40].every((tableX) =>
+            [0, Math.PI / 2, Math.PI, Math.PI * 1.5].every((angle) =>
+              tower.officeInteriorPointIsWalkable(
+                "rooftop",
+                tableX + Math.cos(angle) * 5,
+                8 + Math.sin(angle) * 5,
+              )
+            )
+          ),
+          formerStrayTelescopeSpaceWalkable:
+            tower.officeInteriorPointIsWalkable("rooftop", 58, -24),
         }));
         """
     )
@@ -356,3 +372,6 @@ def test_every_floor_has_collidable_obstacles_and_reachable_open_space():
     assert result["formerMarketingFenceOpen"] is True
     assert result["receptionDeskBlocked"] is True
     assert result["formerReceptionFenceOpen"] is True
+    assert result["rooftopTableBlocked"] is True
+    assert result["rooftopChairCentersWalkable"] is True
+    assert result["formerStrayTelescopeSpaceWalkable"] is True

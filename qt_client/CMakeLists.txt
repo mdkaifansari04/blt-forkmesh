@@ -132,6 +132,7 @@ set(FORKMESH_APP_SOURCES
     src/CoveStore.h
     src/CoveStore.cpp
     src/ChatHistoryLimits.h
+    src/ChatVisitorPresence.h
     src/ServerNode.h
     src/ServerNode.cpp
     src/NodeEventSocket.h
@@ -495,6 +496,7 @@ if(FORKMESH_BUILD_TESTS)
         src/RepoSecurity.cpp
         src/ReferenceLinks.h
         src/ChatHistoryLimits.h
+        src/ChatVisitorPresence.h
     )
     target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network OpenSSL::Crypto)
     if(APPLE)

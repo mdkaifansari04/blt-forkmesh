@@ -76,6 +76,16 @@ SENTRY_CRON_MAX_RUNTIME_MINUTES = 5
 CRON_WATCHDOG_GRACE_MS = 3 * 60 * 1000
 CRON_WATCHDOG_RETRY_MS = 5 * 60 * 1000
 CRON_WATCHDOG_NAME = "scheduled-completion-v1"
+# The Cron Trigger only seeds this singleton. Its Durable Object alarm owns the
+# minute loop and re-arms itself before doing any work, so a killed Python
+# scheduled wrapper cannot leave maintenance stopped until the next deploy.
+CRON_RUNNER_NAME = "scheduled-runner-v1"
+CRON_RUNNER_INTERVAL_MS = 60 * 1000
+CRON_RUNNER_KICK_DELAY_MS = 1000
+CRON_RUNNER_ALARM_OFFSET_MS = 1500
+# Native AbortSignal timeouts do not create nested Pyodide asyncio tasks. Keep
+# every cron-reachable control-plane request well inside a minute.
+CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS = 12
 # Retained chat history (encrypted) so late-joining nodes see some backlog.
 CHAT_HISTORY_RETAIN_MS = 7 * 24 * 60 * 60 * 1000  # keep the last 7 days
 CHAT_HISTORY_MAX_PER_ROOM = 500  # hard cap on retained messages per room
@@ -2310,6 +2320,16 @@ async def _cron_watchdog_completion(env):
         "https://forkmesh.internal/cron-watchdog/completed")
     if int(getattr(response, "status", 0) or 0) != 200:
         raise RuntimeError("cron watchdog rejected completion heartbeat")
+
+
+async def _cron_runner_kick(env):
+    """Seed/reconcile the independent alarm-backed minute runner."""
+    runner_id = env.FORKMESH_CRON_RUNNER.idFromName(CRON_RUNNER_NAME)
+    runner = env.FORKMESH_CRON_RUNNER.get(runner_id)
+    response = await runner.fetch(
+        "https://forkmesh.internal/cron-runner/kick")
+    if int(getattr(response, "status", 0) or 0) != 200:
+        raise RuntimeError("cron runner rejected trigger kick")
 
 
 async def _record_status_monitor_transitions(
@@ -5817,7 +5837,7 @@ async def _chat_channel_socket_handler(env, request, channel_id):
         extra_headers=EXPECTED_DEGRADED_HEADERS)
 
 
-def _office_attendance_visit(row):
+def _office_attendance_visit(row, observed_at=None):
     """Project one D1 attendance row into a bounded public lobby record."""
     if not isinstance(row, dict):
         return None
@@ -5840,15 +5860,29 @@ def _office_attendance_visit(row):
         and (out_at < in_at or out_at > max_safe_integer)
     ):
         return None
+    try:
+        observed_at = int(
+            Date.now() if observed_at is None else observed_at)
+    except (TypeError, ValueError):
+        observed_at = in_at
+    if observed_at <= 0 or observed_at > max_safe_integer:
+        observed_at = in_at
+    duration_end = out_at if out_at is not None else max(in_at, observed_at)
     return {
         "id": visit_id,
         "account": account,
         "inAt": in_at,
         "outAt": out_at,
+        "durationMs": duration_end - in_at,
     }
 
 
-async def _office_attendance_recent(env):
+async def _office_attendance_recent(env, observed_at=None):
+    try:
+        observed_at = int(
+            Date.now() if observed_at is None else observed_at)
+    except (TypeError, ValueError):
+        observed_at = 0
     rows = await d1_all(
         env,
         "SELECT visit_id, account_name, in_at, out_at "
@@ -5857,7 +5891,7 @@ async def _office_attendance_recent(env):
     )
     visits = []
     for row in rows or []:
-        visit = _office_attendance_visit(row)
+        visit = _office_attendance_visit(row, observed_at)
         if visit is not None:
             visits.append(visit)
     return visits
@@ -5878,8 +5912,13 @@ async def office_attendance_handler(env, request):
         )
     if method == "GET":
         await ensure_schema(env)
+        observed_at = int(Date.now())
         return json_response(
-            {"ok": True, "visits": await _office_attendance_recent(env)},
+            {
+                "ok": True,
+                "asOfAt": observed_at,
+                "visits": await _office_attendance_recent(env, observed_at),
+            },
             cache_control="no-store, max-age=0, must-revalidate",
             extra_headers={"x-content-type-options": "nosniff"},
         )
@@ -5957,7 +5996,11 @@ async def office_attendance_handler(env, request):
             str(account_bi),
         )
     return json_response(
-        {"ok": True, "visits": await _office_attendance_recent(env)},
+        {
+            "ok": True,
+            "asOfAt": now,
+            "visits": await _office_attendance_recent(env, now),
+        },
         cache_control="no-store, max-age=0, must-revalidate",
         extra_headers={"x-content-type-options": "nosniff"},
     )
@@ -11467,6 +11510,32 @@ def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
 
 USERS_DIRECTORY_CACHE_KEY = "https://forkmesh.internal/api/accounts/users"
 USERS_DIRECTORY_TTL = 30
+# The World campfire paints its member total straight from this body, so a
+# browser-held copy leaves the fire showing an old count until a hard refresh.
+# The edge copy still collapses the origin decrypt work; the bytes handed to
+# the client are never stored, so a plain reload always repaints the real
+# roster. Every caller already throttles its own polling well past the edge
+# TTL, so dropping the browser copy adds no extra polling.
+USERS_DIRECTORY_CLIENT_CACHE_CONTROL = "no-store, max-age=0, must-revalidate"
+
+
+async def _users_directory_cache_get():
+    # Return the edge-held roster as a fresh no-store response, the same
+    # rebuild git_advert_cache_get does: the stored copy carries a public
+    # max-age so the Cache API will keep it, which must not reach the browser.
+    try:
+        hit = await js_caches.default.match(USERS_DIRECTORY_CACHE_KEY)
+    except Exception:
+        hit = None
+    if hit is None:
+        return None
+    return JsResponse.new(hit.body, to_js({
+        "status": 200,
+        "headers": {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": USERS_DIRECTORY_CLIENT_CACHE_CONTROL,
+        },
+    }))
 
 
 async def _account_users_directory(env, request):
@@ -11476,9 +11545,10 @@ async def _account_users_directory(env, request):
     # Edge-cached: the chat page polls this to surface new signups, and each
     # origin hit decrypts up to 1000 rows — collapse the polls per colo per TTL.
     # A signup deletes the cached copy so the new account shows without waiting
-    # out the TTL.
+    # out the TTL. Edge-only: the response is no-store, so no browser ever
+    # holds a roster of its own (adhoc #434).
     del request
-    cached = await edge_cache_match(USERS_DIRECTORY_CACHE_KEY)
+    cached = await _users_directory_cache_get()
     if cached is not None:
         return cached
     out = []
@@ -11512,10 +11582,15 @@ async def _account_users_directory(env, request):
     # first) rather than left in the query's alphabetical fetch order.
     out.sort(key=lambda user: user.get("createdAt", 0))
 
-    resp = json_response({"ok": True, "users": out},
-                         cache_seconds=USERS_DIRECTORY_TTL)
-    await edge_cache_put(USERS_DIRECTORY_CACHE_KEY, resp)
-    return resp
+    payload = {"ok": True, "users": out}
+    # Two bodies on purpose: the stored one carries the public max-age the
+    # Cache API needs to keep it, the returned one carries no-store.
+    await edge_cache_put(
+        USERS_DIRECTORY_CACHE_KEY,
+        json_response(payload, cache_seconds=USERS_DIRECTORY_TTL),
+    )
+    return json_response(
+        payload, cache_control=USERS_DIRECTORY_CLIENT_CACHE_CONTROL)
 
 
 def _donation_expiry_fields(rec, now):
@@ -18688,7 +18763,6 @@ MAILTRAP_SEND_URL = "https://send.api.mailtrap.io/api/send"
 
 async def _send_email(env, to_email, subject, text, html=None,
                       from_email=None, from_name=None):
-    from js import fetch as js_fetch
     token = (getattr(env, "MAILTRAP_API_TOKEN", "") or "").strip()
     if not token or not to_email:
         return False
@@ -18706,12 +18780,18 @@ async def _send_email(env, to_email, subject, text, html=None,
     if html:
         payload["html"] = html
     try:
-        resp = await js_fetch(url, to_js({
-            "method": "POST",
-            "headers": {"content-type": "application/json",
-                        "authorization": "Bearer " + token},
-            "body": json.dumps(payload),
-        }))
+        resp = await js_fetch_with_timeout(
+            url,
+            {
+                "method": "POST",
+                "headers": {
+                    "content-type": "application/json",
+                    "authorization": "Bearer " + token,
+                },
+                "body": json.dumps(payload),
+            },
+            CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS,
+        )
         return 200 <= int(getattr(resp, "status", 0)) < 300
     except Exception:
         return False
@@ -19748,7 +19828,6 @@ async def _relay_sign_headers(env, body_str):
 
 
 async def _call_main_relay(env, path, body_dict):
-    from js import fetch as js_fetch
     base = _main_relay_url(env)
     if not base:
         return None
@@ -19759,8 +19838,11 @@ async def _call_main_relay(env, path, body_dict):
 
     async def _post(target_path):
         try:
-            resp = await js_fetch(base + target_path, to_js(
-                {"method": "POST", "headers": headers, "body": body_str}))
+            resp = await js_fetch_with_timeout(
+                base + target_path,
+                {"method": "POST", "headers": headers, "body": body_str},
+                CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS,
+            )
             text = await resp.text()
             data = json.loads(text) if text else {}
             if not isinstance(data, dict):
@@ -22573,7 +22655,6 @@ async def _ap_signed_request(key_id, priv_b64, method, url, body_str=None,
                              accept="application/activity+json"):
     # One signed outbound HTTP request (draft-cavage). GETs sign
     # (request-target) host date accept; POSTs add digest + content-type.
-    from js import fetch as js_fetch
     parts = urlparse(url)
     if parts.scheme != "https" or not parts.netloc:
         return None
@@ -22601,7 +22682,8 @@ async def _ap_signed_request(key_id, priv_b64, method, url, body_str=None,
         send_headers["content-type"] = headers["content-type"]
         init["body"] = body_str
     try:
-        return await js_fetch(url, to_js(init))
+        return await js_fetch_with_timeout(
+            url, init, CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS)
     except Exception:
         return None
 
@@ -28333,15 +28415,18 @@ async def capture_sentry_error(env, status, method, path, message, ray="",
             "\n" + json.dumps({"type": "event"}) +
             "\n" + json.dumps(event) + "\n"
         )
-        from js import fetch as js_fetch
-        resp = await js_fetch(parts["endpoint"], to_js({
-            "method": "POST",
-            "headers": {
-                "content-type": "application/x-sentry-envelope",
-                "x-sentry-auth": parts["auth"],
+        resp = await js_fetch_with_timeout(
+            parts["endpoint"],
+            {
+                "method": "POST",
+                "headers": {
+                    "content-type": "application/x-sentry-envelope",
+                    "x-sentry-auth": parts["auth"],
+                },
+                "body": envelope,
             },
-            "body": envelope,
-        }))
+            CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS,
+        )
         return 200 <= int(getattr(resp, "status", 0)) < 300
     except Exception:
         return False
@@ -28439,15 +28524,18 @@ async def capture_sentry_cron_check_in(env, status, check_in_id="",
             "\n" + json.dumps({"type": "check_in"}) +
             "\n" + json.dumps(payload) + "\n"
         )
-        from js import fetch as js_fetch
-        resp = await js_fetch(parts["endpoint"], to_js({
-            "method": "POST",
-            "headers": {
-                "content-type": "application/x-sentry-envelope",
-                "x-sentry-auth": parts["auth"],
+        resp = await js_fetch_with_timeout(
+            parts["endpoint"],
+            {
+                "method": "POST",
+                "headers": {
+                    "content-type": "application/x-sentry-envelope",
+                    "x-sentry-auth": parts["auth"],
+                },
+                "body": envelope,
             },
-            "body": envelope,
-        }))
+            CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS,
+        )
         return 200 <= int(getattr(resp, "status", 0)) < 300
     except Exception:
         return False
@@ -30947,8 +31035,12 @@ async def _admin_disburse(env):
 HTTPS_MIRROR_ENDPOINT_PATH = "/api/mirrors/https"
 HTTPS_MIRROR_PRIVATE_ROUTE_PATH = "/api/mirrors/private"
 HTTPS_MIRROR_MANIFEST_MAX_BYTES = 128 * 1024
-HTTPS_MIRROR_HEALTH_BATCH = 8
+# Two oldest endpoints per minute supports twenty mirrors inside the ten-minute
+# routing freshness window while keeping a fully timed-out alarm comfortably
+# below its next wake-up.
+HTTPS_MIRROR_HEALTH_BATCH = 2
 HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS = 20
+HTTPS_MIRROR_CONTROL_FETCH_TIMEOUT_SECONDS = 6
 HTTPS_MIRROR_BODY_MAX_BYTES = 8 * 1024 * 1024
 HTTPS_MIRROR_MERGE_BODY_MAX_BYTES = 8 * 1024
 HTTPS_MIRROR_MERGE_RESULT_MAX_BYTES = 16 * 1024
@@ -31019,21 +31111,18 @@ def _https_mirror_registration_payload(data):
 async def _https_mirror_fetch_text(
         url, max_bytes, timeout_seconds, accept="application/json"):
     """Fetch a bounded control document without forwarding caller metadata."""
-    from js import fetch as js_fetch
     try:
-        response = await asyncio.wait_for(
-            js_fetch(
-                url,
-                to_js({
-                    "method": "GET",
-                    "headers": {
-                        "accept": accept,
-                        "user-agent": "ForkMesh-HTTPS-router/1.0",
-                    },
-                    "redirect": "manual",
-                }),
-            ),
-            timeout=timeout_seconds,
+        response = await js_fetch_with_timeout(
+            url,
+            {
+                "method": "GET",
+                "headers": {
+                    "accept": accept,
+                    "user-agent": "ForkMesh-HTTPS-router/1.0",
+                },
+                "redirect": "manual",
+            },
+            timeout_seconds,
         )
         status = int(getattr(response, "status", 0) or 0)
         try:
@@ -31072,7 +31161,7 @@ async def _cloudflare_edge_range_documents():
             "https://www.cloudflare.com/ips-v4",
             "https://www.cloudflare.com/ips-v6"):
         status, text = await _https_mirror_fetch_text(
-            url, 16 * 1024, HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS)
+            url, 16 * 1024, HTTPS_MIRROR_CONTROL_FETCH_TIMEOUT_SECONDS)
         if status != 200 or not text:
             return ()
         fetched.append(text)
@@ -31125,7 +31214,7 @@ async def _https_mirror_cloudflare_dns_ok(base_url):
         status, text = await _https_mirror_fetch_text(
             target,
             HTTPS_MIRROR_MANIFEST_MAX_BYTES,
-            HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+            HTTPS_MIRROR_CONTROL_FETCH_TIMEOUT_SECONDS,
             "application/dns-json",
         )
         if status != 200 or not text:
@@ -31147,7 +31236,7 @@ async def _https_mirror_manifest_ok(registration):
     status, text = await _https_mirror_fetch_text(
         registration["baseUrl"] + "/forkmesh-mirror.json",
         HTTPS_MIRROR_MANIFEST_MAX_BYTES,
-        HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+        HTTPS_MIRROR_CONTROL_FETCH_TIMEOUT_SECONDS,
     )
     if status != 200 or not text:
         return False
@@ -31808,7 +31897,7 @@ async def _https_mirror_health_one(env, row, accepted_forkmesh_refs):
     status, text = await _https_mirror_fetch_text(
         target,
         HTTPS_MIRROR_MANIFEST_MAX_BYTES,
-        HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+        HTTPS_MIRROR_CONTROL_FETCH_TIMEOUT_SECONDS,
     )
     latency = max(0, min(60_000, int(Date.now()) - started))
     try:
@@ -31936,10 +32025,15 @@ async def https_mirror_health_cron(env):
     if not rows:
         return
     accepted = await _https_mirror_accepted_forkmesh_refs(env)
-    await asyncio.gather(
-        *[_https_mirror_health_one(env, row, accepted) for row in rows],
-        return_exceptions=True,
-    )
+    # Keep the alarm runner on one Python task. Python fan-out/timeout wrappers
+    # create nested Pyodide tasks which can poison a later scheduled wrapper
+    # with "Cannot enter into task" after the invocation has already ended.
+    # Oldest-first ordering plus the bounded batch still rotates every endpoint.
+    for row in rows:
+        try:
+            await _https_mirror_health_one(env, row, accepted)
+        except BaseException:
+            continue
 
 
 async def _https_mirror_private_candidates(
@@ -32488,7 +32582,7 @@ async def _https_mirror_repository_proof(env, endpoint, context, operation):
     status, text = await _https_mirror_fetch_text(
         target,
         HTTPS_MIRROR_MANIFEST_MAX_BYTES,
-        HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+        HTTPS_MIRROR_CONTROL_FETCH_TIMEOUT_SECONDS,
     )
     try:
         data = json.loads(text) if text else {}
@@ -33422,6 +33516,13 @@ async def _https_mirror_proxy(
 
 class Default(WorkerEntrypoint):
     async def scheduled(self, controller, env, ctx):
+        # Keep the platform Cron Trigger deliberately tiny. It starts (and then
+        # once a minute reconciles) a singleton Durable Object alarm. The alarm
+        # re-arms itself before work, so a stateless Python wrapper poisoned by
+        # another request or a killed maintenance batch cannot stop the runner.
+        await _cron_runner_kick(self.env)
+
+    async def _run_scheduled_jobs(self, controller=None, env=None, ctx=None):
         # Cron trigger (every minute, see [triggers] in wrangler.toml).
         #
         # Only the two once-a-minute samples run on every tick; everything else
@@ -35560,6 +35661,70 @@ class ForkMeshCronWatchdog(DurableObject):
         # Retry an unavailable email provider/admin-recipient lookup without
         # depending on the still-missing Cron Trigger.
         self.ctx.storage.setAlarm(now + CRON_WATCHDOG_RETRY_MS)
+
+
+class _CronJobEntrypoint:
+    """Minimal receiver for Default._run_scheduled_jobs' self.env contract."""
+
+    def __init__(self, env):
+        self.env = env
+
+
+class ForkMeshCronRunner(DurableObject):
+    """Alarm-backed, self-rearming owner of the scheduled maintenance loop.
+
+    The stateless Cron Trigger is only a seed and liveness reconciliation path.
+    The alarm is persisted for the next minute before the current batch starts.
+    A platform kill therefore loses at most the current idempotent/bounded slot;
+    it cannot erase the next wake-up. Duplicate alarm delivery is suppressed
+    after a slot completes. A catchable failure records bounded diagnostics and
+    advances to the already-armed next minute instead of creating a retry storm.
+    """
+
+    traffic_binding = "FORKMESH_CRON_RUNNER"
+
+    async def fetch(self, request):
+        if urlparse(request.url).path != "/cron-runner/kick":
+            return json_response({"error": "not_found"}, status=404)
+        now = int(Date.now())
+        await self.ctx.storage.put("last_trigger_kick_at", now)
+        self.ctx.storage.setAlarm(now + CRON_RUNNER_KICK_DELAY_MS)
+        return json_response({"ok": True})
+
+    async def alarm(self, alarm_info=None):
+        now = int(Date.now())
+        minute_slot = now // CRON_RUNNER_INTERVAL_MS
+        next_alarm = (
+            (minute_slot + 1) * CRON_RUNNER_INTERVAL_MS
+            + CRON_RUNNER_ALARM_OFFSET_MS
+        )
+        # Persist the successor before any D1, asset, network, or Python task
+        # work. Even an uncatchable runtime/resource-limit kill leaves it armed.
+        self.ctx.storage.setAlarm(next_alarm)
+
+        completed_slot = int(
+            await self.ctx.storage.get("last_completed_slot") or -1)
+        if completed_slot >= minute_slot:
+            return
+        await self.ctx.storage.put("last_started_slot", minute_slot)
+        await self.ctx.storage.put("last_started_at", now)
+        try:
+            await Default._run_scheduled_jobs(
+                _CronJobEntrypoint(self.env))
+        except BaseException as error:
+            await self.ctx.storage.put(
+                "last_failure",
+                _safe_error_text(error)[:1000],
+            )
+            await self.ctx.storage.put("last_failure_at", int(Date.now()))
+            try:
+                print("cron runner alarm failed: " + _safe_error_text(error))
+            except BaseException:
+                pass
+            return
+        await self.ctx.storage.put("last_completed_slot", minute_slot)
+        await self.ctx.storage.put("last_completed_at", int(Date.now()))
+        await self.ctx.storage.put("last_failure", "")
 
 
 class ForkMeshWorld(DurableObject):
