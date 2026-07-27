@@ -2038,7 +2038,7 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
   expect(state.boards.task).toEqual([-24, 22.4, -44.45]);
   expect(state.boards.guide).toEqual([24, 22.65, -44.44]);
   expect(state.boards.title[2]).toBeLessThan(-44);
-  expect(state.placards.length).toBeGreaterThanOrEqual(12);
+  expect(state.placards.length).toBeGreaterThanOrEqual(11);
   expect(state.placards.every((placard) => placard.mesh && !placard.sprite))
     .toBe(true);
   expect(state.reception.desk).toEqual([0, 1.05, -36.5]);
@@ -2099,16 +2099,16 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
       "forkmesh-office-interior"
     );
     const cameraPosition = interior.localToWorld(
-      shell.world.camera.position.clone().set(-9, 11, 9)
+      shell.world.camera.position.clone().set(-15, 15, 1)
     );
     const target = interior.localToWorld(
-      shell.world.camera.position.clone().set(-18, 7.2, -2)
+      shell.world.camera.position.clone().set(-18, 7.5, -2)
     );
     shell.world.scene.getObjectByName(
       "forkmesh-reflective-fm-cube"
-    ).rotation.y = Math.PI;
+    ).rotation.y = 0;
     shell.world.setPaused(true);
-    shell.world.camera.fov = 50;
+    shell.world.camera.fov = 65;
     shell.world.camera.updateProjectionMatrix();
     shell.world.camera.position.copy(cameraPosition);
     shell.world.camera.lookAt(target);

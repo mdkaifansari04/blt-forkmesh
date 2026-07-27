@@ -8814,37 +8814,153 @@ export function createWorldScene({
       );
       rooftop.add(barrier);
     }
-    for (const x of [-40, 0, 40]) {
-      const patioTable = new THREE.Mesh(
+    const patioWood = makeMaterial(THREE, "#8b6848", {
+      roughness: 0.7,
+    });
+    const patioFrame = makeMaterial(THREE, "#213b36", {
+      metalness: 0.45,
+      roughness: 0.44,
+    });
+    const patioSeat = makeMaterial(THREE, "#3f8369", {
+      roughness: 0.68,
+    });
+    for (const [tableIndex, x] of [-40, 0, 40].entries()) {
+      const patioTable = new THREE.Group();
+      patioTable.name = `forkmesh-office-rooftop-table-${tableIndex + 1}`;
+      patioTable.position.set(x, 0, 8);
+      const tabletop = new THREE.Mesh(
         new THREE.CylinderGeometry(3.1, 3.1, 0.34, 24),
-        makeMaterial(THREE, "#8b6848", { roughness: 0.7 }),
+        patioWood,
       );
-      patioTable.position.set(x, 1.45, 8);
+      tabletop.name =
+        `forkmesh-office-rooftop-tabletop-${tableIndex + 1}`;
+      tabletop.position.y = 2.68;
+      patioTable.add(tabletop);
+      for (const [legIndex, [legX, legZ]] of [
+        [-1.8, -1.8],
+        [-1.8, 1.8],
+        [1.8, -1.8],
+        [1.8, 1.8],
+      ].entries()) {
+        const leg = new THREE.Mesh(
+          new THREE.BoxGeometry(0.28, 2.5, 0.28),
+          patioFrame,
+        );
+        leg.name =
+          `forkmesh-office-rooftop-table-${tableIndex + 1}-leg-${legIndex + 1}`;
+        leg.position.set(legX, 1.25, legZ);
+        patioTable.add(leg);
+      }
       rooftop.add(patioTable);
       for (let index = 0; index < 4; index += 1) {
         const angle = index * Math.PI / 2;
+        const chairId = `rooftop-chair-${tableIndex * 4 + index + 1}`;
+        const chair = new THREE.Group();
+        chair.name = `forkmesh-office-${chairId}`;
+        const seatTopY = 1.42;
         const seat = new THREE.Mesh(
-          new THREE.BoxGeometry(2.2, 0.34, 2.2),
-          makeMaterial(THREE, "#3f8369", { roughness: 0.68 }),
+          new THREE.BoxGeometry(2.1, 0.22, 1.8),
+          patioSeat,
         );
-        seat.position.set(
+        seat.name = `forkmesh-office-${chairId}-seat`;
+        seat.position.y = seatTopY - 0.11;
+        chair.add(seat);
+        for (const [legIndex, [legX, legZ]] of [
+          [-0.78, -0.62],
+          [-0.78, 0.62],
+          [0.78, -0.62],
+          [0.78, 0.62],
+        ].entries()) {
+          const leg = new THREE.Mesh(
+            new THREE.BoxGeometry(0.2, 1.2, 0.2),
+            patioFrame,
+          );
+          leg.name =
+            `forkmesh-office-${chairId}-leg-${legIndex + 1}`;
+          leg.position.set(legX, 0.6, legZ);
+          chair.add(leg);
+        }
+        const back = new THREE.Mesh(
+          new THREE.BoxGeometry(2.1, 1.65, 0.2),
+          patioSeat,
+        );
+        back.name = `forkmesh-office-${chairId}-back`;
+        back.position.set(0, 2.08, -0.8);
+        chair.add(back);
+        chair.position.set(
           x + Math.cos(angle) * 5,
-          0.8,
+          0,
           8 + Math.sin(angle) * 5,
         );
-        rooftop.add(seat);
+        chair.rotation.y = Math.atan2(
+          -Math.cos(angle) * 5,
+          -Math.sin(angle) * 5,
+        );
+        chair.userData.officeChairId = chairId;
+        chair.userData.officeFloorId = "rooftop";
+        chair.userData.officeSeatTopY = seatTopY;
+        chair.traverse((child) => {
+          if (!child.isMesh) return;
+          child.userData.officeChairId = chairId;
+          child.userData.officeFloorId = "rooftop";
+          child.userData.interactive = "office-chair";
+          interactive.push(child);
+        });
+        officeChairs.set(chairId, chair);
+        rooftop.add(chair);
       }
     }
-    const telescope = new THREE.Group();
-    const telescopeTube = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.65, 0.9, 7, 18),
-      metal,
+
+    // This is a launcher for the real repository source surface, not a mock
+    // editor. The shell owns the fixed same-origin action and explains that
+    // write-capable source work remains in ForkMesh desktop / IDE integration.
+    const rooftopLaptop = new THREE.Group();
+    rooftopLaptop.name = "forkmesh-office-rooftop-laptop";
+    rooftopLaptop.position.set(0, 2.9, 8);
+    rooftopLaptop.userData.officeFloorId = "rooftop";
+    const laptopBase = new THREE.Mesh(
+      new THREE.BoxGeometry(2.8, 0.12, 1.8),
+      makeMaterial(THREE, "#151c24", {
+        metalness: 0.72,
+        roughness: 0.24,
+      }),
     );
-    telescopeTube.rotation.z = Math.PI / 2.7;
-    telescopeTube.position.y = 4.8;
-    telescope.add(telescopeTube);
-    telescope.position.set(58, 0, -24);
-    rooftop.add(telescope);
+    laptopBase.name = "forkmesh-office-rooftop-laptop-base";
+    laptopBase.position.z = -0.15;
+    rooftopLaptop.add(laptopBase);
+    const laptopScreen = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.52, 1.48),
+      new THREE.MeshBasicMaterial({
+        map: canvasTexture(THREE, 756, 444, (context) => {
+          context.fillStyle = "#071714";
+          context.fillRect(0, 0, 756, 444);
+          context.strokeStyle = "#9ef7c6";
+          context.lineWidth = 18;
+          context.strokeRect(12, 12, 732, 420);
+          context.fillStyle = "#eafff6";
+          context.font =
+            '800 48px "ForkMesh Mono", ui-monospace, monospace';
+          context.textAlign = "center";
+          context.fillText("FORKMESH SOURCE", 378, 190);
+          context.fillStyle = "#8ecdb6";
+          context.font =
+            '600 29px "ForkMesh Mono", ui-monospace, monospace';
+          context.fillText("CLICK TO OPEN REAL REPOSITORY", 378, 260);
+        }),
+        toneMapped: false,
+      }),
+    );
+    laptopScreen.name = "forkmesh-office-rooftop-laptop-screen";
+    laptopScreen.position.set(0, 0.86, 0.72);
+    laptopScreen.rotation.x = -0.16;
+    rooftopLaptop.add(laptopScreen);
+    rooftopLaptop.traverse((child) => {
+      if (!child.isMesh) return;
+      child.userData.officeFloorId = "rooftop";
+      child.userData.interactive = "office-rooftop-laptop";
+      interactive.push(child);
+    });
+    rooftop.add(rooftopLaptop);
   }
   addOfficeFunFloorProps();
   // The exterior tower already owns the curtain wall. A second interior shell
@@ -8889,6 +9005,69 @@ export function createWorldScene({
         );
     });
   }
+
+  function officeReceptionDeskDistance(localPosition) {
+    const x = Number(localPosition?.x) || 0;
+    const z = Number(localPosition?.z) || 0;
+    const distanceX = Math.max(0, Math.abs(x) - 15);
+    const distanceZ = Math.max(0, Math.abs(z + 36.5) - 2.5);
+    return Math.hypot(distanceX, distanceZ);
+  }
+
+  function updateOfficeReceptionGuide(time = performance.now()) {
+    const active =
+      officeSceneMode === "lobby" &&
+      officeCurrentFloorId === "lobby" &&
+      !officeElevatorRide;
+    if (!active) {
+      officeReceptionWasNear = false;
+      return false;
+    }
+    const distance = officeReceptionDeskDistance(
+      officeAvatarLocalPosition(player, new THREE.Vector3()),
+    );
+    if (distance > OFFICE_RECEPTION_RESET_RANGE) {
+      officeReceptionWasNear = false;
+      return false;
+    }
+    if (
+      distance > OFFICE_RECEPTION_TALK_RANGE ||
+      officeReceptionWasNear
+    ) {
+      return false;
+    }
+    officeReceptionWasNear = true;
+    const now = Number.isFinite(Number(time))
+      ? Number(time)
+      : performance.now();
+    if (
+      now - officeReceptionLastTipAt <
+      OFFICE_RECEPTION_TALK_COOLDOWN_MS
+    ) {
+      return false;
+    }
+    const authenticated = officeFloorAccess.authenticated === true;
+    const tips = authenticated
+      ? OFFICE_RECEPTION_MEMBER_TIPS
+      : OFFICE_RECEPTION_GUEST_TIPS;
+    const index = authenticated
+      ? officeReceptionMemberTipIndex
+      : officeReceptionGuestTipIndex;
+    const message = tips[index % tips.length];
+    if (authenticated) {
+      officeReceptionMemberTipIndex = (index + 1) % tips.length;
+    } else {
+      officeReceptionGuestTipIndex = (index + 1) % tips.length;
+    }
+    const shown = showAvatarChatBubble(
+      officeReceptionNoah,
+      message,
+      { officeReception: true },
+    );
+    if (shown) officeReceptionLastTipAt = now;
+    return shown;
+  }
+
   const officeTable = new THREE.Mesh(
     new THREE.BoxGeometry(7.4, 0.34, 3.6),
     makeMaterial(THREE, "#715238", { roughness: 0.66 }),
@@ -9044,8 +9223,8 @@ export function createWorldScene({
   officeLobbyPlayer.visible = false;
   officeInterior.add(officeLobbyPlayer);
 
-  // Staffed reception: the figures are deliberately scene-native avatars so
-  // guests meet people at a desk instead of a modal login wall.
+  // Staffed reception: Noah is a scene-native avatar, so visitors meet one
+  // person at the far-wall desk instead of a modal login wall.
   const officeReception = new THREE.Group();
   officeReception.name = "forkmesh-office-reception";
   const receptionDesk = new THREE.Mesh(
@@ -9058,64 +9237,42 @@ export function createWorldScene({
   receptionDesk.name = "forkmesh-office-reception-desk";
   receptionDesk.position.set(0, 1.05, -36.5);
   officeReception.add(receptionDesk);
-  const receptionStaff = [
-    {
-      id: "office-greeter-maya",
-      name: "Maya · Welcome desk",
-      outfitColor: "aurora",
-      x: -7,
-    },
+  const officeReceptionNoah = createAvatar(
+    THREE,
     {
       id: "office-greeter-noah",
       name: "Noah · Welcome desk",
+      flag: "◌",
+      browser: "Office",
+      os: "Welcome desk",
+      status: "available",
+      accountStatus: "Supporting member",
+      nodes: [],
       outfitColor: "ocean",
-      x: 7,
     },
-  ];
-  receptionStaff.forEach((staff, index) => {
-    const avatar = createAvatar(
-      THREE,
-      {
-        id: staff.id,
-        name: staff.name,
-        flag: "◌",
-        browser: "Office",
-        os: "Welcome desk",
-        status: "available",
-        accountStatus: "Supporting member",
-        nodes: [],
-        outfitColor: staff.outfitColor,
-      },
-      { remote: true, scale: 0.94 },
-    );
-    avatar.position.set(staff.x, 0.38, -40);
-    avatar.rotation.y = Math.PI;
-    // Two distinct, low-poly hairstyles make the requested woman/man desk
-    // pairing legible without relying on private profile imagery.
-    const hair = new THREE.Mesh(
-      index === 0
-        ? new THREE.SphereGeometry(0.62, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.72)
-        : new THREE.BoxGeometry(1.05, 0.24, 0.86),
-      makeMaterial(THREE, index === 0 ? "#3a2118" : "#211b17", {
-        roughness: 0.82,
-      }),
-    );
-    hair.position.set(0, 3.88, index === 0 ? 0.02 : -0.08);
-    avatar.add(hair);
-    officeReception.add(avatar);
-    const label = makeOfficeWallPlacard(
-      THREE,
-      index === 0 ? "MAYA" : "NOAH",
-      index === 0 ? "WELCOME · ACCOUNT HELP" : "WELCOME · ELEVATOR HELP",
-      "#9ef7c6",
-      8.4,
-      1.35,
-    );
-    label.name = `forkmesh-office-reception-nameplate-${index + 1}`;
-    // Nameplates sit on the desk's front face instead of hovering over staff.
-    label.position.set(staff.x, 1.2, -33.94);
-    officeReception.add(label);
-  });
+    { remote: true, scale: 0.94 },
+  );
+  officeReceptionNoah.position.set(0, 0.38, -40);
+  officeReceptionNoah.rotation.y = Math.PI;
+  const noahHair = new THREE.Mesh(
+    new THREE.BoxGeometry(1.05, 0.24, 0.86),
+    makeMaterial(THREE, "#211b17", { roughness: 0.82 }),
+  );
+  noahHair.position.set(0, 3.88, -0.08);
+  officeReceptionNoah.add(noahHair);
+  officeReception.add(officeReceptionNoah);
+  const noahNameplate = makeOfficeWallPlacard(
+    THREE,
+    "NOAH",
+    "WELCOME · WORLD & REPOSITORY HELP",
+    "#9ef7c6",
+    11.2,
+    1.35,
+  );
+  noahNameplate.name = "forkmesh-office-reception-nameplate-noah";
+  // The nameplate sits on the desk's front face instead of hovering over Noah.
+  noahNameplate.position.set(0, 1.2, -33.94);
+  officeReception.add(noahNameplate);
   officeInterior.add(officeReception);
   for (const [x, z] of [
     [-52, 7],
@@ -9148,7 +9305,7 @@ export function createWorldScene({
         context.fillText("WELCOME · WALK RIGHT IN", 600, 92);
         context.fillStyle = "#8ecdb6";
         context.font = '600 30px "ForkMesh Mono", ui-monospace, monospace';
-        context.fillText("Maya and Noah are here to help", 600, 145);
+        context.fillText("Walk up to Noah for World and repository tips", 600, 145);
       }),
       toneMapped: false,
     }),
@@ -9824,6 +9981,10 @@ export function createWorldScene({
   let officeFloorHandler = null;
   let officeElevatorRide = null;
   let officeAttendance = { visits: [] };
+  let officeReceptionWasNear = false;
+  let officeReceptionLastTipAt = -Infinity;
+  let officeReceptionGuestTipIndex = 0;
+  let officeReceptionMemberTipIndex = 0;
   let selfSecurityDetails = { ip: "", userAgent: "" };
   let selfSecurityBadgeVisible = true;
   // main dropped its own selectedLandmark when the floating landmark labels went
@@ -14970,21 +15131,9 @@ export function createWorldScene({
     });
   }
 
-  function showChatBubble(peerId, text, local = false) {
+  function showAvatarChatBubble(avatar, text, options = {}) {
     const message = String(text || "").replace(/\s+/g, " ").trim().slice(0, 140);
-    if (!message) return false;
-    const avatar =
-      local || peerId === identity.id
-        ? player
-        : peerId === FORKBOT_PEER_ID
-          ? forkbot
-          : remotePlayers.get(String(peerId || "")) ||
-            loungeMembers.get(String(peerId || ""));
-    if (!avatar) return false;
-    // ForkBot's own line is the reply the thinking dots were waiting for.
-    if (avatar === forkbot && forkbotExcitement) {
-      settleForkbot(performance.now());
-    }
+    if (!avatar || !message) return false;
     // One bubble per speaker: a rapid follow-up message replaces the first
     // instead of stacking on top of it.
     for (let index = emoteSprites.length - 1; index >= 0; index -= 1) {
@@ -15010,6 +15159,9 @@ export function createWorldScene({
     );
     sprite.renderOrder = 11;
     sprite.scale.set(6.6, 2.2, 1);
+    sprite.userData.message = message;
+    sprite.userData.officeReceptionGreeting =
+      options.officeReception === true;
     world.add(sprite);
     emoteSprites.push({
       sprite,
@@ -15023,6 +15175,22 @@ export function createWorldScene({
       fadeStart: 0.75,
     });
     return true;
+  }
+
+  function showChatBubble(peerId, text, local = false) {
+    const avatar =
+      local || peerId === identity.id
+        ? player
+        : peerId === FORKBOT_PEER_ID
+          ? forkbot
+          : remotePlayers.get(String(peerId || "")) ||
+            loungeMembers.get(String(peerId || ""));
+    if (!avatar) return false;
+    // ForkBot's own line is the reply the thinking dots were waiting for.
+    if (avatar === forkbot && forkbotExcitement) {
+      settleForkbot(performance.now());
+    }
+    return showAvatarChatBubble(avatar, text);
   }
 
   // A registered member who is not in the world as a live peer still sits on
@@ -16327,7 +16495,10 @@ export function createWorldScene({
         (performance.now() - flight.startedAt) / flight.duration,
       );
       const fadeStart = flight.fadeStart ?? 0.65;
-      flight.sprite.position.copy(flight.avatar.position);
+      // Most speakers are direct World children, while Noah is nested inside
+      // the translated Office reception group. World coordinates keep the
+      // shared talk-bubble UX attached correctly in both cases.
+      flight.avatar.getWorldPosition(flight.sprite.position);
       flight.sprite.position.y +=
         (flight.baseHeight ?? 4.7) + progress * (flight.rise ?? 1.1);
       flight.sprite.material.opacity =
