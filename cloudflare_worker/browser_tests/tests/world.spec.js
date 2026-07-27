@@ -5477,6 +5477,54 @@ test("disagreeing eligible mirrors leave the automatic flagship map unpinned", a
   ).toHaveLength(0);
 });
 
+test("the flagship portal opens once mid-sync mirrors converge after entry", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const repositoryFixture = { conflictingHealthyAlias: true };
+  await prepareWorldPage(page, "world-late-flagship-pin", {
+    repositoryFixture,
+  });
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.repositoryMapState === "unavailable";
+  });
+
+  // The lagging mirror finishes syncing: both eligible nodes now publish the
+  // same commit, so the alias becomes pinned. The portal must open from the
+  // bounded retry, without the visitor reloading or picking the repository.
+  repositoryFixture.conflictingHealthyAlias = false;
+
+  await page.waitForFunction(
+    () => {
+      const shell = document.querySelector("forkmesh-world");
+      return shell?.repositoryMapState === "ready";
+    },
+    undefined,
+    { timeout: 90_000 },
+  );
+
+  const opened = await page.locator("forkmesh-world").evaluate((shell) => {
+    const sizeLayer = shell.world.scene.getObjectByName(
+      "repository-3d-size-map",
+    );
+    return {
+      active: `${shell.activeRepository?.owner}/${shell.activeRepository?.repo}`,
+      manualSelection: shell.repositoryManualSelection,
+      mount: sizeLayer?.parent?.name || "",
+      faceHidden:
+        sizeLayer?.parent?.userData?.repositoryFace?.visible === false,
+    };
+  });
+  expect(opened).toEqual({
+    active: "forkmesh/forkmesh",
+    manualSelection: "",
+    mount: "repository-portal:forkmesh/forkmesh",
+    faceHidden: true,
+  });
+});
+
 test("an incomplete healthy-mirror state attestation cannot auto-load the flagship map", async ({
   page,
 }) => {

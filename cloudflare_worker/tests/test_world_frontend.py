@@ -1200,6 +1200,49 @@ def test_world_autoloads_the_live_catalog_attested_flagship_repository_map():
     assert "record?.stateHash" in catalog
 
 
+def test_flagship_portal_retries_until_the_default_repository_is_open():
+    # The alias pin needs the repository catalog and the mirror snapshot to
+    # agree. Both are re-read after entry, so the automatic load is retried
+    # from the freshest pair instead of only the boot snapshot.
+    reconcile = APP[
+        APP.index("  reconcileRepositoryAliasCatalog() {"):
+        APP.index(
+            "\n  async retryFlagshipPortal() {",
+            APP.index("  reconcileRepositoryAliasCatalog() {"),
+        )
+    ]
+    assert "reconcileRepositoryAliases(\n      this.rawNativeRepositories," in reconcile
+    assert "this.mirrorCatalogs," in reconcile
+    assert "if (signature === this.repositoryAliasSignature) return false;" in reconcile
+
+    retry = APP[
+        APP.index("  async retryFlagshipPortal() {"):
+        APP.index(
+            "\n  syncRepositoryScene() {",
+            APP.index("  async retryFlagshipPortal() {"),
+        )
+    ]
+    # Never override a visitor's own choice, and never poll without a bound.
+    assert "this.repositoryManualSelection ||" in retry
+    assert "this.activeRepository ||" in retry
+    assert "this.flagshipPortalRetries >= FLAGSHIP_PORTAL_RETRY_LIMIT" in retry
+    assert 'this.fetchJSON("/api/repositories"' in retry
+    assert "if (records.length) this.rawNativeRepositories = records;" in retry
+    assert "void this.autoLoadFlagshipRepositoryMap();" in retry
+    assert "const FLAGSHIP_PORTAL_RETRY_LIMIT = 20;" in APP
+
+    # The retry rides the existing import poll rather than adding a timer.
+    poll = APP[
+        APP.index("  startRepositoryImportPolling() {"):
+        APP.index(
+            "\n  updateLocation(",
+            APP.index("  startRepositoryImportPolling() {"),
+        )
+    ]
+    assert "await this.retryFlagshipPortal();" in poll
+    assert "REPOSITORY_IMPORT_POLL_MS" in poll
+
+
 def test_login_and_signup_stay_inside_the_world_and_out_of_presence():
     assert "data-world-account-open" in APP
     assert "data-world-login-form" in APP

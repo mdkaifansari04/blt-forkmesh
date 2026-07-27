@@ -155,6 +155,12 @@ const WORLD_ACTIVITY_CONTINUATION_HEADER = "x-forkmesh-world-activity";
 // build appear in place without the player ever touching refresh.
 const WORLD_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const REPOSITORY_IMPORT_POLL_MS = 2 * 60 * 1000;
+// forkmesh/forkmesh opens by default, but its commit pin needs the repository
+// catalog and the mirror snapshot to agree. Mirrors that are mid-sync when the
+// World opens converge moments later, so the automatic load is re-attempted
+// alongside the existing import poll for a bounded window instead of only once
+// at boot. Retries stop the moment a repository is open.
+const FLAGSHIP_PORTAL_RETRY_LIMIT = 20;
 const WORLD_UPDATE_CHECK_MIN_GAP_MS = 60 * 1000;
 const WORLD_UPDATE_RELOAD_DELAY_MS = 1400;
 const WORLD_UPDATE_RELOADED_REV_KEY = "forkmesh.world.updateReloadedRev.v1";
@@ -3820,8 +3826,14 @@ class ForkMeshWorld extends HTMLElement {
     this.landmarkCapabilities = initialLandmarkCapabilities();
     this.repositories = [];
     this.nativeRepositories = [];
+    // The unreconciled /api/repositories records. The organization alias is
+    // derived from these plus the mirror snapshot, so both halves have to be
+    // kept to re-derive the flagship pin from a fresher mirror report.
+    this.rawNativeRepositories = [];
+    this.repositoryAliasSignature = null;
     this.externalRepositories = [];
     this.repositoryCatalogState = "loading";
+    this.flagshipPortalRetries = 0;
     this.network = {};
     this.mirrorCatalogs = [];
     this.federatedInstances = [];
@@ -5366,31 +5378,18 @@ class ForkMeshWorld extends HTMLElement {
         : [];
     this.renderCommunityPlacement();
     this.renderFediverseActivity();
+    this.externalRepositories =
+      externalReposResult.status === "fulfilled"
+        ? cleanExternalRepositories(externalReposResult.value)
+        : [];
+    this.rawNativeRepositories =
+      reposResult.status === "fulfilled"
+        ? cleanRepositories(reposResult.value)
+        : [];
+    this.reconcileRepositoryAliasCatalog();
     if (reposResult.status === "fulfilled") {
-      this.nativeRepositories = reconcileRepositoryAliases(
-        cleanRepositories(reposResult.value),
-        this.mirrorCatalogs,
-      );
-      this.externalRepositories =
-        externalReposResult.status === "fulfilled"
-          ? cleanExternalRepositories(externalReposResult.value)
-          : [];
-      this.repositories = mergeHostedRepositoryImports(
-        this.nativeRepositories,
-        this.externalRepositories,
-      );
       this.repositoryCatalogState = this.repositories.length ? "ready" : "empty";
     } else {
-      this.repositories = [];
-      this.nativeRepositories = [];
-      this.externalRepositories =
-        externalReposResult.status === "fulfilled"
-          ? cleanExternalRepositories(externalReposResult.value)
-          : [];
-      this.repositories = mergeHostedRepositoryImports(
-        this.nativeRepositories,
-        this.externalRepositories,
-      );
       this.repositoryCatalogState = this.repositories.length
         ? "ready"
         : "unavailable";
@@ -7932,26 +7931,30 @@ class ForkMeshWorld extends HTMLElement {
           .map((record) => `${record.id}:${record.updatedAt}:${record.status}`)
           .sort()
           .join("|");
-        if (before === after) return;
-        const payload = await this.fetchJSON("/api/repository-imports", {
-          auth: this.sessionAuthenticated && Boolean(validWorldSession()),
-          timeout: 10000,
-          backoff: true,
-          staleIfError: true,
-        });
-        const external = cleanExternalRepositories(payload);
-        this.externalRepositories = external;
-        this.repositories = mergeHostedRepositoryImports(
-          this.nativeRepositories,
-          external,
-        );
-        this.repositoryCatalogState = this.repositories.length ? "ready" : "empty";
-        this.syncRepositoryScene();
-        void this.hydrateHostedRepositorySizeMaps();
+        if (before !== after) {
+          const payload = await this.fetchJSON("/api/repository-imports", {
+            auth: this.sessionAuthenticated && Boolean(validWorldSession()),
+            timeout: 10000,
+            backoff: true,
+            staleIfError: true,
+          });
+          const external = cleanExternalRepositories(payload);
+          this.externalRepositories = external;
+          this.repositories = mergeHostedRepositoryImports(
+            this.nativeRepositories,
+            external,
+          );
+          this.repositoryCatalogState = this.repositories.length
+            ? "ready"
+            : "empty";
+          this.syncRepositoryScene();
+          void this.hydrateHostedRepositorySizeMaps();
+        }
       } catch (_) {
         // Preserve the most recent visible import catalog through a transient
         // provider/relay failure; the next bounded poll retries automatically.
       }
+      await this.retryFlagshipPortal();
     }, REPOSITORY_IMPORT_POLL_MS);
   }
 
@@ -12155,6 +12158,71 @@ class ForkMeshWorld extends HTMLElement {
       this.repositorySizeHydrationActive = false;
     }
     if (changed && !this.destroyed) this.syncRepositoryScene();
+  }
+
+  // The organization alias is derived from two independently refreshed reads:
+  // the repository catalog and the mirror snapshot. Re-derive it whenever
+  // either one arrives so a flagship pin that was ambiguous at boot — mirrors
+  // still mid-sync, so no single healthy commit was attested — can complete
+  // later in the session. Returns whether the derived catalog actually moved,
+  // so a stable poll costs nothing.
+  reconcileRepositoryAliasCatalog() {
+    const natives = reconcileRepositoryAliases(
+      this.rawNativeRepositories,
+      this.mirrorCatalogs,
+    );
+    const signature = natives
+      .map((record) =>
+        [
+          record.owner,
+          record.name,
+          record.source,
+          record.commit,
+          record.stateHash,
+          record.liveHost,
+          record.mirrorState,
+        ].join(":"),
+      )
+      .join("|");
+    if (signature === this.repositoryAliasSignature) return false;
+    this.repositoryAliasSignature = signature;
+    this.nativeRepositories = natives;
+    this.repositories = mergeHostedRepositoryImports(
+      natives,
+      this.externalRepositories,
+    );
+    return true;
+  }
+
+  // Keep working toward the default open portal after entry. The catalog read
+  // is the same public, thirty-second cacheable document the boot path used, so
+  // most of these ticks are served from cache, and the attempt count is bounded
+  // so a mesh that never converges cannot turn this into an endless fan-out.
+  async retryFlagshipPortal() {
+    if (
+      this.destroyed ||
+      this.repositoryManualSelection ||
+      this.activeRepository ||
+      this.flagshipPortalRetries >= FLAGSHIP_PORTAL_RETRY_LIMIT
+    ) {
+      return;
+    }
+    this.flagshipPortalRetries += 1;
+    try {
+      const records = cleanRepositories(
+        await this.fetchJSON("/api/repositories", {
+          auth: this.sessionAuthenticated && Boolean(validWorldSession()),
+        }),
+      );
+      // An empty or failed answer must not retire the portals the scene is
+      // already showing; the alias is still re-derived from the freshest
+      // mirror snapshot below.
+      if (records.length) this.rawNativeRepositories = records;
+    } catch (_) {}
+    if (this.destroyed || !this.reconcileRepositoryAliasCatalog()) return;
+    if (this.repositories.length) this.repositoryCatalogState = "ready";
+    this.syncRepositoryScene();
+    void this.autoLoadFlagshipRepositoryMap();
   }
 
   syncRepositoryScene() {
