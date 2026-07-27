@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Contracts for the unified, authenticated ForkMesh Office campus."""
+"""Contracts for the unified ForkMesh Office campus."""
 
 import json
 from pathlib import Path
@@ -128,7 +128,7 @@ def test_reentry_reloads_a_fallback_frame_suspended_during_the_grace_period():
     assert "frameSuspended = true" in office
 
 
-def test_entry_is_login_only_and_the_retired_keypad_protocol_is_absent():
+def test_entry_is_walk_through_for_everyone_and_the_keypad_protocol_is_absent():
     office = source(OFFICE_PATH)
     world = source(WORLD_PATH)
     scene = source(SCENE_PATH)
@@ -136,13 +136,16 @@ def test_entry_is_login_only_and_the_retired_keypad_protocol_is_absent():
         'const OFFICE_ENTRY_PATH = "/api/world/office/general/entry"',
         'const OFFICE_FLOORS_PATH = "/api/world/office/floors"',
         "function authenticatedSession()",
-        "if (!activeSession) return greetGuest()",
-        "root.postJSON(",
-        "OFFICE_ENTRY_PATH,\n        {},",
-        "await loadFloorAccess(activeSession)",
-        "world.greetOfficeGuest?.(LOGIN_REQUIRED_MESSAGE)",
+        "const entered = completeOfficeEntry()",
+        "void refreshOfficeAuthorization(",
+        "async function authorizeMeeting()",
+        "meeting.openLobby()",
     ):
         assert contract in office
+    assert "data-world-office-prompt" not in world
+    assert "data-world-office-enter" not in world
+    assert "greetGuest" not in office
+    assert "LOGIN_REQUIRED_MESSAGE" not in office
     for body in (office, world, scene):
         lowered = body.lower()
         assert "office/general/code" not in lowered
@@ -159,9 +162,10 @@ def test_floor_access_is_loaded_once_and_only_server_grants_unlock_buttons():
     scene = source(SCENE_PATH)
     for contract in (
         "async function loadFloorAccess(activeSession)",
-        "payload = await root.fetchJSON(OFFICE_FLOORS_PATH",
-        'allowedFloorIds: ["lobby", "marketing", "rooftop"]',
+        "const payload = await root.fetchJSON(OFFICE_FLOORS_PATH",
+        "officeAccess = floorResult.value",
         "world.setOfficeAccess?.(officeAccess)",
+        "generation !== authorizationGeneration",
         "canAccessOfficeFloor(officeAccess, floorId)",
         "world.setOfficeFloorHandler?.(travelToOfficeFloor)",
     ):
@@ -371,6 +375,12 @@ def test_office_third_person_camera_distance_is_bounded_by_local_geometry():
     assert "OFFICE_DEPTH" in limiter or "OFFICE_FRONT_Z" in limiter
     assert re.search(r"elevator", limiter, re.IGNORECASE)
     assert "Math.min" in limiter or "clamp(" in limiter
+    cabin_detection = limiter.index("const ridingElevator")
+    rooftop_bypass = limiter.index(
+        'officeCurrentFloorId === "rooftop" && !ridingElevator'
+    )
+    assert cabin_detection < rooftop_bypass
+    assert "return requested;" in limiter[rooftop_bypass:]
 
 
 def test_lobby_has_two_greeters_attendance_and_the_reflective_logo_fountain():
@@ -379,7 +389,7 @@ def test_lobby_has_two_greeters_attendance_and_the_reflective_logo_fountain():
         'officeReception.name = "forkmesh-office-reception"',
         'id: "office-greeter-maya"',
         'id: "office-greeter-noah"',
-        "WELCOME · SIGN IN TO VISIT THE OFFICES",
+        "WELCOME · WALK RIGHT IN",
         'officeAttendanceBoard.name = "forkmesh-office-attendance"',
         "function setOfficeAttendance(event = {})",
         'logoFountain.name = "forkmesh-office-logo-fountain"',
@@ -440,7 +450,7 @@ def test_walk_surfaces_and_every_floor_use_real_collision_constraints():
         assert contract in scene
 
 
-def test_walking_through_the_doorway_requests_authenticated_admission_once():
+def test_walking_through_the_doorway_enters_immediately_and_hydrates_access():
     office = source(OFFICE_PATH)
     scene = source(SCENE_PATH)
     for contract in (
@@ -461,7 +471,9 @@ def test_walking_through_the_doorway_requests_authenticated_admission_once():
         office.index("function completeOfficeExit()")
     ]
     assert 'entry?.source === "doorway"' in entry
-    assert "return await requestOfficeEntry()" in entry
+    assert "const entered = completeOfficeEntry()" in entry
+    assert "void refreshOfficeAuthorization(" in entry
+    assert "requestOfficeEntry" not in entry
     assert "world.setOfficeDoorwayEntryPending?.(false)" in entry
 
 
@@ -473,7 +485,6 @@ def test_scene_returns_the_new_office_control_surface():
         "setOfficeDoorwayEntryPending",
         "setOfficeFloorHandler",
         "setOfficeAccess",
-        "greetOfficeGuest",
         "setOfficeAttendance",
         "travelToOfficeFloor",
         "enterOfficeLobby",

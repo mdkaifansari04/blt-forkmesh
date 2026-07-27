@@ -188,18 +188,24 @@ def test_general_meeting_access_uses_only_the_short_lived_memory_ticket_header()
     assert "sessionStorage" not in meeting
 
 
-def test_native_office_entry_ticket_is_wired_before_the_lobby_opens():
+def test_native_office_entry_ticket_is_minted_lazily_for_meetings():
     office = source(OFFICE)
+    meeting = source(MEETING)
     world = source(WORLD)
     ticket_wiring = (
         "meeting.setEntryTicket?.(officeEntryTicket, officeEntryExpiresAt)"
     )
     assert ticket_wiring in office
-    assert office.index(
-        ticket_wiring
-    ) < office.index("meeting.openLobby()")
+    assert "async function authorizeMeeting()" in office
+    assert "const entered = completeOfficeEntry()" in office
+    assert "setEntryTicketProvider" in world
+    assert "let entryTicketProvider = null" in meeting
+    assert "await entryTicketProvider()" in meeting
+    assert meeting.index("await entryTicketProvider()") < meeting.index(
+        "meetingBinding = await createMeetingBinding()"
+    )
     assert 'const OFFICE_ENTRY_PATH = "/api/world/office/general/entry"' in office
-    assert "if (!activeSession) return greetGuest()" in office
+    assert "if (!activeSession) return greetGuest()" not in office
     assert "world-office-keypad" not in world.lower()
     assert "four-digit office code" not in world.lower()
 
