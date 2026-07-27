@@ -84,6 +84,46 @@ HostSshCommand buildHostSshCommand(const QString &host,
 QString savedHostCredentialKey(const QString &nodeName, const QString &host,
                                const QString &sshUser);
 
+// One child of a browsed remote directory in the host size map. `bytes` is
+// disk usage as `du` reports it (allocated blocks), not apparent file size.
+struct HostDiskEntry {
+    QString name;      // basename, as shown in the size map
+    QString path;      // absolute remote path
+    qint64 bytes = 0;  // disk usage in bytes
+    bool directory = false;
+};
+
+// One measured level of a host's size map.
+struct HostDiskUsage {
+    QString path;
+    qint64 totalBytes = 0;         // disk usage of `path` itself
+    QList<HostDiskEntry> entries;  // children, largest first
+    QString error;                 // non-empty when the host refused the read
+    bool complete = false;         // the end sentinel arrived
+};
+
+// Collapse a browsed remote path to a canonical absolute POSIX path (no "."
+// or ".." components, no duplicate or trailing slashes). Returns an empty
+// string when the input is not usable as a remote path at all.
+QString normalizeRemoteDiskPath(const QString &path);
+
+// Build the bounded, read-only remote shell command that measures one level of
+// a host's disk usage. It only ever runs `du` over a single directory level and
+// frames its answer in base64 sentinel lines, so filenames — including ones
+// holding spaces, quotes or shell metacharacters — can never re-enter the
+// remote shell or this parser as syntax.
+QString buildHostDiskUsageCommand(const QString &path,
+                                  QString *error = nullptr);
+
+// Parse the sentinel-framed listing produced by buildHostDiskUsageCommand().
+// Login banners and other noise around the sentinels are ignored, and entries
+// come back sorted largest first.
+HostDiskUsage parseHostDiskUsage(const QByteArray &output,
+                                 const QString &path);
+
+// Human-readable byte size for the size map ("1.4 GB", "912 KB").
+QString formatDiskSize(qint64 bytes);
+
 // Classify a failed SSH install/uninstall attempt from OpenSSH's own exit code
 // and the tail of its (merged stdout+stderr) output, and return an actionable
 // hint to append after the generic "failed (exit N)" line — or an empty
@@ -358,6 +398,23 @@ QString nextMirrorNodeName(const QStringList &existingNames);
 // Resolve a Vultr API key this node already stores as a device-local Actions
 // variable (same contract as cloudflareApiTokenFromVariables).
 QString vultrApiKeyFromVariables(const QMap<QString, QString> &variables);
+
+// True when this app's own binary can run on the instance the flow deploys —
+// always a Debian x64 image (latestVultrDebianOs), so a linux/x86_64 controller
+// qualifies and nothing else does. A fresh instance has no mirror serving it and
+// a published release may not exist for its platform at all, so when this holds
+// the install uploads this binary straight over the SSH session instead of
+// asking the new host to fetch a prebuilt release (adhoc #408). Takes
+// QSysInfo::kernelType() / QSysInfo::currentCpuArchitecture().
+bool localBinaryRunsOnVultrMirror(const QString &kernelType,
+                                  const QString &cpuArchitecture);
+
+// True when a failed install's output shows the host could not obtain ForkMesh
+// from the mesh at all — no online node to clone from, or no prebuilt release
+// published for its platform. Retrying the same relay download can never fix
+// either, so the provisioning flow switches to uploading this app's own binary
+// (adhoc #408).
+bool vultrInstallNeedsLocalBinary(const QString &installOutput);
 
 // --- Cloudflare DNS for a fresh Vultr mirror (adhoc #331) ------------------
 // A brand-new Vultr instance is only reachable at a raw address, so it never

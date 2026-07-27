@@ -37,9 +37,8 @@
             Live status for the website, API, database, git hosting network, and
             realtime sync — each with a 30-day history sampled once a minute.
             Uptime is computed only from samples that were actually recorded;
-            minutes where the sampler itself didn't run are shown grey as
-            monitoring gaps and excluded, so the numbers reflect observed
-            health rather than fabricated downtime. Click a system to see
+            minutes where the sampler itself didn't run are shown red as a
+            monitoring failure. Click a system to see
             exactly what its check tests. We are still tuning monitoring and
             optimizing traffic usage for bots. On an upgraded instance, the
             API and scheduled checks fail closed rather than report operational
@@ -100,7 +99,7 @@
             <span class="status-legend-item"><span class="status-dot is-operational"></span>Operational</span>
             <span class="status-legend-item"><span class="status-dot is-degraded"></span>Degraded</span>
             <span class="status-legend-item"><span class="status-dot is-down"></span>Down</span>
-            <span class="status-legend-item"><span class="status-dot is-unknown"></span>No data (monitoring gap — excluded from uptime)</span>
+            <span class="status-legend-item"><span class="status-dot is-unknown"></span>Monitoring failed (expected data missing)</span>
             <span class="status-legend-item"><span class="status-day-hour-swatch is-future"></span>Later today (not elapsed)</span>
           </div>
         </div>
@@ -154,14 +153,14 @@
           operational: "Operational",
           degraded: "Degraded",
           down: "Down",
-          unknown: "No data (monitoring gap)",
+          unknown: "Monitoring failed (expected data missing)",
           future: "Not yet elapsed",
         };
 
         const MINUTE_STATUS_LABEL = {
           operational: "Operational",
           down: "Down",
-          unknown: "No data (monitoring gap)",
+          unknown: "Monitoring failed (expected data missing)",
           future: "Not yet sampled",
         };
 
@@ -302,7 +301,8 @@
             banner.classList.add("is-down");
             bannerText.textContent = "Partial outage";
           } else {
-            bannerText.textContent = "Current state unknown — no recent health samples (monitoring gap)";
+            banner.classList.add("is-down");
+            bannerText.textContent = "Monitoring failure — expected health data is missing";
           }
           bannerSub.textContent = data.now
             ? "Last checked " + new Date(data.now).toLocaleTimeString()
@@ -316,8 +316,7 @@
             if (behindMins >= 3) {
               bannerSub.textContent +=
                 " · last health sample " + behindMins + "m ago — the " +
-                "sampling cron is behind; grey squares since then are " +
-                "monitoring gaps, not a confirmed outage";
+                "sampling cron is behind; missing samples are shown red";
             }
           }
 
@@ -553,7 +552,7 @@
             days.className = "status-days";
             const detail = document.createElement("div");
             detail.className = "status-hour-detail";
-            const defaultDetail = "Hover a square for details. Grey squares are monitoring gaps (no sample recorded) — excluded from uptime, not counted as downtime.";
+            const defaultDetail = "Hover a square for details. Red squares without a recorded sample mean monitoring failed.";
             detail.textContent = defaultDetail;
             const setDetail = (text, marker) => {
               if (marker) marker.classList.add("is-hovered");

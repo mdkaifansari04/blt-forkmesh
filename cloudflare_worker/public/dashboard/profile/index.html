@@ -683,7 +683,7 @@
         background-clip: padding-box;
       }
     </style>
-    <script src="/dashboard.js?v=127fe3d58bc5" defer></script>
+    <script src="/dashboard.js?v=23bf76821ff8" defer></script>
     <script src="/dashboard-chat.js?v=ba55a8f051a4" defer></script>
   </head>
   <body class="bg-background text-foreground" data-page="profile">
@@ -1281,7 +1281,7 @@
             <div data-new-repo-source-toggle class="flex items-center rounded-md border border-border overflow-hidden text-xs">
               <button data-new-repo-source="remote" type="button" aria-pressed="true" class="flex-1 bg-secondary text-foreground px-3 py-2 transition-colors">Remote clone URL</button>
               <button data-new-repo-source="local" type="button" aria-pressed="false" class="flex-1 text-muted-foreground hover:text-foreground px-3 py-2 border-l border-border transition-colors">Local repository</button>
-              <button data-new-repo-source="provider" type="button" aria-pressed="false" class="flex-1 text-muted-foreground hover:text-foreground px-3 py-2 border-l border-border transition-colors">GitHub / GitLab</button>
+              <button data-new-repo-source="provider" type="button" aria-pressed="false" class="flex-1 text-muted-foreground hover:text-foreground px-3 py-2 border-l border-border transition-colors">GitHub / GitLab / Codeberg</button>
             </div>
             <input data-new-repo-source-value type="text" autocomplete="off" spellcheck="false" placeholder="https://github.com/owner/repo.git" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
             <span data-new-repo-source-hint class="text-[11px] leading-4 text-muted-foreground">ForkMesh clones this URL into a bare mirror. Local paths never leave your machine.</span>
@@ -1297,7 +1297,7 @@
             </label>
             <label class="grid gap-1.5 text-xs text-muted-foreground">
               Provider access token <span class="text-[11px] font-normal">(required for private repositories; optional for public)</span>
-              <input data-new-repo-provider-token type="password" autocomplete="off" spellcheck="false" placeholder="One-request GitHub or GitLab token" class="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+              <input data-new-repo-provider-token type="password" autocomplete="off" spellcheck="false" placeholder="One-request GitHub, GitLab, or Codeberg token" class="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
             </label>
             <p class="text-[11px] leading-4 text-muted-foreground">The token passes through ForkMesh’s Worker only for this request and is forwarded to the provider; it is not persisted. Only metadata endpoints are read; source files are not fetched or sent to an external model.</p>
           </div>

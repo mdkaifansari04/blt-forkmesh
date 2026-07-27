@@ -856,8 +856,12 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
         QMessageBox::question(
             this, QStringLiteral("Merge into %1").arg(base),
             deleteAgent
-                ? QStringLiteral("Merge branch %1 into %2, then delete its worktree, "
-                                 "branch and agent session?").arg(branch, base)
+                ? (worktreePath.isEmpty()
+                       ? QStringLiteral("Merge branch %1 into %2, then delete its "
+                                        "branch and agent session?").arg(branch, base)
+                       : QStringLiteral("Merge branch %1 into %2, then delete its "
+                                        "worktree, branch and agent session?")
+                             .arg(branch, base))
                 : QStringLiteral("Merge branch %1 into %2, then delete its worktree "
                                  "and branch?").arg(branch, base))
         != QMessageBox::Yes)
@@ -912,6 +916,10 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
         }
     }
 
+    // Set when the branch itself is gone by the end of the merge (via removeWorktree
+    // or the no-worktree teardown below) — the selection handling at the bottom needs
+    // to know it can't re-select it.
+    bool branchDeleted = false;
     QString err;
     const bool merged =
         runGitCapture(dir,
@@ -985,6 +993,13 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
             removeWorktree(worktreePath, branch, /*confirm=*/false,
                            /*alsoDeleteBranch=*/true);
             removed = !QDir(worktreePath).exists();
+            branchDeleted = removed && !localBranchExists(dir, branch);
+        } else if (deleteAgent && localBranchExists(dir, branch)) {
+            // "Merge & delete all" on a branch with no worktree of its own (adhoc
+            // #428): removeWorktree is what normally drops the branch, so delete it
+            // here instead. Safe by the branchInBase gate above — the commits are in
+            // the base branch, so -D discards nothing.
+            branchDeleted = runGitCapture(dir, {"branch", "-D", branch}, nullptr, nullptr);
         }
         const QString agentNote =
             deletedAgents.isEmpty()
@@ -997,7 +1012,10 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
             (removed ? QStringLiteral("Merged %1 into %2, removed its worktree and "
                                       "deleted its branch")
                            .arg(branch, base)
-                     : QStringLiteral("Merged %1 into %2").arg(branch, base))
+                     : branchDeleted
+                           ? QStringLiteral("Merged %1 into %2 and deleted its branch")
+                                 .arg(branch, base)
+                           : QStringLiteral("Merged %1 into %2").arg(branch, base))
                 + agentNote + QStringLiteral("."),
             false);
         if (deletedAgents.isEmpty()) {
@@ -1036,10 +1054,11 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
     // "re-select the previously-viewed branch" logic (which reads m_branchDiffBranch)
     // at the neighbour, exactly like the post-delete flow does (adhoc #256). Compute
     // the neighbour now, while the table still holds the pre-refresh row order. Only
-    // for the non-destructive Branches-view button — the Worktrees/Agents merge flows
-    // delete the branch and keep their own selection handling.
-    if (merged && !hasConflicts && branchInBase && worktreePath.isEmpty()
-        && !deleteAgent) {
+    // for the Branches-view buttons (no worktree path passed) — the Worktrees/Agents
+    // merge flows delete the branch and keep their own selection handling. "Merge &
+    // delete all" lands here too when the branch had no worktree: the branch is gone,
+    // so there's even less to re-select (adhoc #428).
+    if (merged && !hasConflicts && branchInBase && worktreePath.isEmpty()) {
         const QString next = neighbourBranchInList(branch);
         if (!next.isEmpty())
             m_branchDiffBranch = next;
@@ -1923,6 +1942,28 @@ QWidget *MainWindow::buildBranchesTab()
             mergeWorktreeIntoMain(m_branchDiffBranch, QString());
     });
 
+    // Same merge, but nothing of the branch survives it: its worktree, the branch
+    // itself and any agent session that produced it all go once the work is in the
+    // base branch (adhoc #428). The one-click end of a finished agent run, without
+    // hopping to the Agents/Worktrees tabs to clean up by hand. Destructive, so
+    // mergeWorktreeIntoMain confirms first.
+    m_branchMergeDeleteButton = new QPushButton("Merge & delete all");
+    m_branchMergeDeleteButton->setObjectName("primaryButton");
+    m_branchMergeDeleteButton->setProperty("buttonSize", "sm");
+    m_branchMergeDeleteButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_branchMergeDeleteButton, "check-circle", 14);
+    m_branchMergeDeleteButton->setEnabled(false);
+    connect(m_branchMergeDeleteButton, &QPushButton::clicked, this, [this] {
+        if (m_branchDiffBranch.isEmpty())
+            return;
+        const QString repoPath = repoGitDir();
+        // An empty path is fine — it just means the branch has no worktree of its
+        // own, so there's nothing to prune beyond the branch and its agent.
+        mergeWorktreeIntoMain(m_branchDiffBranch,
+                              worktreePathForBranch(repoPath, m_branchDiffBranch),
+                              /*deleteAgent=*/true);
+    });
+
     auto *detailBar = new QHBoxLayout;
     detailBar->setContentsMargins(0, 0, 0, 0);
     detailBar->addWidget(m_branchDetailLabel);
@@ -1935,6 +1976,7 @@ QWidget *MainWindow::buildBranchesTab()
     detailBar->addWidget(m_branchFixModelCombo);
     detailBar->addWidget(m_branchPrButton);
     detailBar->addWidget(m_branchMergeButton);
+    detailBar->addWidget(m_branchMergeDeleteButton);
     auto *diffPane = new QWidget;
     auto *diffPaneLayout = new QVBoxLayout(diffPane);
     diffPaneLayout->setContentsMargins(0, 0, 0, 0);
@@ -2934,6 +2976,19 @@ void MainWindow::updateBranchDetailActions(const QString &branch)
         canMerge ? QStringLiteral("Merge %1 into %2").arg(branch, base)
                  : (isBase ? QStringLiteral("Select a branch other than %1").arg(base)
                            : "Read-only mirror \xE2\x80\x94 nothing to merge into here"));
+
+    // Merge, then delete everything the branch owned. Same availability as the plain
+    // merge — the teardown only runs once the work is provably in base.
+    if (m_branchMergeDeleteButton) {
+        m_branchMergeDeleteButton->setEnabled(canMerge);
+        m_branchMergeDeleteButton->setToolTip(
+            canMerge
+                ? QStringLiteral("Merge %1 into %2, then delete its agent session, "
+                                 "branch and worktree")
+                      .arg(branch, base)
+                : (isBase ? QStringLiteral("Select a branch other than %1").arg(base)
+                          : "Read-only mirror \xE2\x80\x94 nothing to merge into here"));
+    }
 }
 
 void MainWindow::openBranchInCodium(const QString &branch)
@@ -3005,6 +3060,33 @@ void MainWindow::showBranchDiff(const QString &branch)
         return;
     m_branchDiffBranch = branch;
     updateBranchDetailActions(branch);
+
+    // Auto-pull: as soon as the branch's detail view is behind base with no
+    // conflict, try the same update "Pull main" would do by hand, spinning that
+    // button while it runs, so landing on a branch is enough to bring it current
+    // without an extra click. Skipped when there's a conflict (the "Fix with
+    // agent" / "Merge editor" buttons own that case) and attempted at most once
+    // per branch so a declined stash prompt can't nag on every incidental
+    // rebuild of this panel while the branch stays selected. Deferred a tick so
+    // it runs after this call's own render rather than recursing into it (the
+    // pull re-renders itself via showBranchDiff() once it succeeds).
+    if (m_branchPullButton && m_branchPullButton->isEnabled() &&
+        (!m_branchFixButton || !m_branchFixButton->isVisible()) &&
+        m_branchAutoPullAttempted != branch) {
+        m_branchAutoPullAttempted = branch;
+        startButtonSpin(m_branchPullButton);
+        QTimer::singleShot(0, this, [this, branch] {
+            QPushButton *const spinButton = m_branchPullButton;
+            const auto spinGuard = qScopeGuard([this, spinButton] {
+                stopButtonSpin(spinButton);
+            });
+            if (m_branchDiffBranch != branch)
+                return;
+            GitKeepAlive keepAlive;
+            updateBranchFromBase(branch);
+        });
+    }
+
     m_branchDiffFileSpans.clear();
     m_branchDiffViewedContext.clear();
     // A new branch's diff hasn't been fetched yet; drop the cached patch so the

@@ -1083,6 +1083,12 @@ private:
     void viewHostLogsForSelection(int row);
     void runHostLogSession(const QString &ip, const QString &user,
                           const QString &pass, const QString &node);
+    // Browse a saved host's disk usage over its authenticated SSH channel: one
+    // read-only `du` level per directory, so the biggest consumers of the
+    // host's disk can be drilled into without leaving the app.
+    void browseHostDiskUsageForSelection(int row);
+    void runHostDiskUsageBrowser(const QString &ip, const QString &user,
+                                 const QString &pass, const QString &node);
     // Configure a saved mirror host's Actions executor over its authenticated
     // SSH channel. Secret values are collected in a one-shot dialog and sent
     // only in a bounded JSON stdin payload; they are never saved in QSettings
@@ -3679,6 +3685,7 @@ private:
     QProcess *m_hostInstallProcess = nullptr; // running ssh install session, if any
     QProcess *m_hostLogProcess = nullptr;     // running ssh log-tail session, if any
     QProcess *m_hostActionsProcess = nullptr; // one-shot stdin-only Actions config
+    QProcess *m_hostDiskProcess = nullptr;    // running ssh size-map read, if any
     // One-click Vultr mirror provisioning (adhoc #315). The API key is read
     // from the field (or a stored VULTR_API_KEY device variable) per run and
     // deliberately has no persistent member.
@@ -4153,6 +4160,11 @@ private:
     QLabel *m_branchScopeLabel = nullptr;
     QTextBrowser *m_branchDiffView = nullptr;
     QString m_branchDiffBranch;
+    // Branch that auto-pull has already been attempted for (see showBranchDiff),
+    // so a declined stash prompt or an aborted merge doesn't re-nag every time the
+    // panel happens to rebuild while the same branch is still selected. Cleared
+    // implicitly by simply differing once a different branch is selected.
+    QString m_branchAutoPullAttempted;
     // Bumped each time a branch is selected / a scope diff is requested so the
     // off-thread git reads that build the scope list and render the diff can drop
     // their result if the user has since switched branch or scope (issue #353 —
@@ -4200,6 +4212,9 @@ private:
     QComboBox *m_branchFixModelCombo = nullptr;
     QPushButton *m_branchPrButton = nullptr;    // "Create PR" from the branch
     QPushButton *m_branchMergeButton = nullptr; // "Merge to main"
+    // "Merge & delete all": the same merge, then tears down everything the branch
+    // owned — its agent session(s), the branch itself and its worktree (adhoc #428).
+    QPushButton *m_branchMergeDeleteButton = nullptr;
     QTableWidget *m_releasesTable = nullptr;
     QLabel *m_releasesSummary = nullptr;
     QTableWidget *m_artifactsTable = nullptr;

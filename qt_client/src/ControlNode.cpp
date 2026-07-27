@@ -18,6 +18,13 @@
 namespace forkmesh::control {
 namespace {
 
+// POSIX single-quoting: the only way a value can leave a shell word here.
+QString shellSingleQuote(QString value)
+{
+    value.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+    return QLatin1Char('\'') + value + QLatin1Char('\'');
+}
+
 bool isDnsName(const QString &value)
 {
     if (value.isEmpty() || value.size() > 253 ||
@@ -428,6 +435,168 @@ QString savedHostCredentialKey(const QString &nodeName, const QString &host,
         nodeName.trimmed(), host.trimmed().toLower(), sshUser.trimmed()};
     return QString::fromUtf8(
         QJsonDocument(identity).toJson(QJsonDocument::Compact));
+}
+
+QString normalizeRemoteDiskPath(const QString &path)
+{
+    QString value = path.trimmed();
+    if (value.isEmpty())
+        value = QStringLiteral("/");
+    if (!value.startsWith(QLatin1Char('/')) || value.contains(QChar::Null) ||
+        value.contains(QLatin1Char('\n')) || value.contains(QLatin1Char('\r')) ||
+        value.size() > 4096) {
+        return {};
+    }
+    QStringList parts;
+    const QStringList raw = value.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    for (const QString &part : raw) {
+        if (part == QStringLiteral("."))
+            continue;
+        if (part == QStringLiteral("..")) {
+            if (!parts.isEmpty())
+                parts.removeLast();
+            continue;
+        }
+        parts.append(part);
+    }
+    if (parts.isEmpty())
+        return QStringLiteral("/");
+    return QLatin1Char('/') + parts.join(QLatin1Char('/'));
+}
+
+QString buildHostDiskUsageCommand(const QString &path, QString *error)
+{
+    const QString target = normalizeRemoteDiskPath(path);
+    if (target.isEmpty()) {
+        if (error) {
+            *error = QStringLiteral(
+                "That is not a valid absolute path on the host.");
+        }
+        return {};
+    }
+    // Both failure messages are encoded here rather than on the host: the
+    // remote side may have no base64 at all, and pre-encoding keeps the
+    // sentinel grammar identical for every outcome.
+    const auto sentinelText = [](const char *message) {
+        return QString::fromLatin1(
+            QByteArray(message).toBase64(QByteArray::Base64Encoding));
+    };
+    const QString unreadable = sentinelText(
+        "ForkMesh could not read that directory on this host.");
+    const QString noBase64 = sentinelText(
+        "This host has no base64 command, so ForkMesh cannot read its size "
+        "map safely.");
+    // Read-only by construction: one `du` over a single directory level, with
+    // every name handed back base64-encoded so it never becomes shell syntax.
+    const QString script =
+        QStringLiteral(
+            "set -u\n"
+            "LC_ALL=C\n"
+            "export LC_ALL\n"
+            "p=%1\n"
+            "if [ ! -d \"$p\" ] || [ ! -r \"$p\" ]; then\n"
+            "  printf 'FORKMESH-DU1-ERROR %2\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            "if ! command -v base64 >/dev/null 2>&1; then\n"
+            "  printf 'FORKMESH-DU1-ERROR %3\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            "tab=$(printf '\\t')\n"
+            "du -x -k -a -d 1 -- \"$p\" 2>/dev/null | "
+            "while IFS=\"$tab\" read -r sz nm; do\n"
+            "  [ -n \"${sz:-}\" ] || continue\n"
+            "  if [ \"$nm\" = \"$p\" ]; then t=T\n"
+            "  elif [ -L \"$nm\" ]; then t=f\n"
+            "  elif [ -d \"$nm\" ]; then t=d\n"
+            "  else t=f\n"
+            "  fi\n"
+            "  printf 'FORKMESH-DU1 %s %s %s\\n' \"$t\" \"$sz\" "
+            "\"$(printf '%s' \"$nm\" | base64 | tr -d '\\n')\"\n"
+            "done\n"
+            "printf 'FORKMESH-DU1-END\\n'\n")
+            .arg(shellSingleQuote(target), unreadable, noBase64);
+    if (error)
+        error->clear();
+    return QStringLiteral("sh -lc ") + shellSingleQuote(script);
+}
+
+HostDiskUsage parseHostDiskUsage(const QByteArray &output, const QString &path)
+{
+    HostDiskUsage usage;
+    usage.path = normalizeRemoteDiskPath(path);
+    const QStringList lines =
+        QString::fromUtf8(output)
+            .split(QRegularExpression(QStringLiteral("[\\r\\n]")),
+                   Qt::SkipEmptyParts);
+    for (const QString &raw : lines) {
+        const QString line = raw.trimmed();
+        if (line == QStringLiteral("FORKMESH-DU1-END")) {
+            usage.complete = true;
+            continue;
+        }
+        if (line.startsWith(QStringLiteral("FORKMESH-DU1-ERROR "))) {
+            const QByteArray decoded = QByteArray::fromBase64(
+                line.mid(19).trimmed().toLatin1());
+            usage.error = decoded.isEmpty()
+                ? QStringLiteral("The host refused the size-map read.")
+                : QString::fromUtf8(decoded);
+            usage.complete = true;
+            continue;
+        }
+        if (!line.startsWith(QStringLiteral("FORKMESH-DU1 ")))
+            continue;
+        const QStringList fields =
+            line.mid(13).split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        if (fields.size() != 3)
+            continue;
+        bool ok = false;
+        const qint64 kib = fields.at(1).toLongLong(&ok);
+        if (!ok || kib < 0)
+            continue;
+        const QString decoded =
+            QString::fromUtf8(QByteArray::fromBase64(fields.at(2).toLatin1()));
+        if (decoded.isEmpty() || decoded.contains(QChar::Null))
+            continue;
+        const qint64 bytes = kib * 1024;
+        if (fields.at(0) == QStringLiteral("T")) {
+            usage.totalBytes = bytes;
+            continue;
+        }
+        HostDiskEntry entry;
+        entry.path = decoded;
+        entry.name = decoded.section(QLatin1Char('/'), -1);
+        if (entry.name.isEmpty())
+            entry.name = decoded;
+        entry.bytes = bytes;
+        entry.directory = fields.at(0) == QStringLiteral("d");
+        usage.entries.append(entry);
+    }
+    std::sort(usage.entries.begin(), usage.entries.end(),
+              [](const HostDiskEntry &a, const HostDiskEntry &b) {
+                  if (a.bytes != b.bytes)
+                      return a.bytes > b.bytes;
+                  return a.name.localeAwareCompare(b.name) < 0;
+              });
+    return usage;
+}
+
+QString formatDiskSize(qint64 bytes)
+{
+    if (bytes < 0)
+        return QStringLiteral("—");
+    if (bytes < 1024)
+        return QStringLiteral("%1 B").arg(bytes);
+    static const char *const units[] = {"KB", "MB", "GB", "TB", "PB"};
+    double value = static_cast<double>(bytes) / 1024.0;
+    int unit = 0;
+    while (value >= 1024.0 && unit < 4) {
+        value /= 1024.0;
+        ++unit;
+    }
+    return QStringLiteral("%1 %2")
+        .arg(value, 0, 'f', value >= 100.0 ? 0 : 1)
+        .arg(QLatin1String(units[unit]));
 }
 
 QString nonRoutableAddressNote(const QString &host)
@@ -1761,6 +1930,34 @@ QString vultrApiKeyFromVariables(const QMap<QString, QString> &variables)
                                            QStringLiteral("VULTR_TOKEN"),
                                            QStringLiteral("VULTR_KEY"),
                                        });
+}
+
+bool localBinaryRunsOnVultrMirror(const QString &kernelType,
+                                  const QString &cpuArchitecture)
+{
+    if (kernelType.trimmed().toLower() != QLatin1String("linux"))
+        return false;
+    const QString arch = cpuArchitecture.trimmed().toLower();
+    return arch == QLatin1String("x86_64") || arch == QLatin1String("amd64") ||
+           arch == QLatin1String("x64");
+}
+
+bool vultrInstallNeedsLocalBinary(const QString &installOutput)
+{
+    // Matched on the installer's own wording for the two dead ends a retry
+    // cannot clear: nothing in the mesh is serving the repo, and no prebuilt
+    // release exists (or authenticates) for the instance's platform.
+    static const QStringList markers = {
+        QStringLiteral("No online ForkMesh node"),
+        QStringLiteral("No prebuilt ForkMesh binary is published"),
+        QStringLiteral("No prebuilt ForkMesh release passed"),
+        QStringLiteral("falling back to a source build is disabled"),
+    };
+    for (const QString &marker : markers) {
+        if (installOutput.contains(marker))
+            return true;
+    }
+    return false;
 }
 
 QString cloudflareZoneNameFromVariables(

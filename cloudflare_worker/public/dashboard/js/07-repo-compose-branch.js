@@ -589,7 +589,7 @@
         </div>`;
       }).join("");
     } catch (_) {
-      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Commit history is unavailable until a live desktop host serves this repository.</div>';
+      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Commit history is unavailable until a reachable mirror host serves this repository.</div>';
     } finally {
       window.lucide?.createIcons();
     }
@@ -655,7 +655,7 @@
       state.repoCommitDetail = { repo, data };
       container.innerHTML = renderRepoCommitDetail(repo, data);
     } catch (_) {
-      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Commit detail is unavailable until a live desktop host serves this commit.</div>';
+      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Commit detail is unavailable until a reachable mirror host serves this commit.</div>';
     } finally {
       window.lucide?.createIcons();
     }
@@ -835,7 +835,7 @@
           <i data-lucide="${online ? "radio" : "circle"}" class="mt-0.5 h-4 w-4 ${online ? "text-primary" : "text-muted-foreground"}"></i>
           <span class="min-w-0">
             <span class="flex min-w-0 flex-wrap items-center gap-1.5">
-              <span class="min-w-0 truncate text-foreground font-mono">${escapeHtml(mirror.owner || mirror.node || mirror.name || "mirror")}</span>
+              <span class="min-w-0 truncate text-foreground font-mono">${escapeHtml(mirror.node || mirror.machineName || mirror.name || "mirror")}</span>
               ${isSource ? '<span class="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">source of truth</span>' : ""}
               ${integrityRejected ? '<span class="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">failing integrity pin</span>' : ""}
             </span>
@@ -904,7 +904,7 @@
         const availability = $("[data-repo-availability-status]");
         if (availability) {
           availability.textContent = repo.liveHost
-            ? "host online"
+            ? "mirror online"
             : "served by mirror";
           availability.classList.remove("text-muted-foreground");
           availability.classList.add("text-primary");
@@ -913,6 +913,12 @@
       updateRepoLiveCounts(repo, { mirrors: mirrorCount });
       setRepoTabCount("mirrors", mirrors.length);
       state.repoMirrors = mirrors;
+      // Older gateways reported commit dates at day precision. When the
+      // signed mirror record names the same commit, its exact commitAt is the
+      // authoritative timestamp for the repository summary.
+      if (state.repoLatestCommit) {
+        updateRepoCommitSummary(state.repoLatestCommit, repo);
+      }
       if (state.repoServedBy) {
         renderRepoServedBy(state.repoServedBy.name, state.repoServedBy.tookMs);
       }
@@ -939,7 +945,9 @@
   // re-fetch host health so the nodes visibly converge without a manual reload.
   let liveMirrorRefreshTimer = null;
   let liveMirrorConfirmTimer = null;
-  const REPO_MIRROR_POLL_MS = 5 * 1000;
+  // Socket mirror signals refresh immediately. This is only a quiet fallback
+  // for dropped frames, so a five-second Worker request loop is unnecessary.
+  const REPO_MIRROR_POLL_MS = 30 * 1000;
   let repoMirrorPollTimer = null;
   function startRepoMirrorPolling() {
     if (repoMirrorPollTimer) return;
@@ -1097,7 +1105,7 @@
       releases.sort((a, b) => (Number(b.created_at) || 0) - (Number(a.created_at) || 0));
       container.innerHTML = releases.map((release) => renderRepoRelease(repo, release, downloads)).join("");
     } catch (_) {
-      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Releases are unavailable until a live desktop host serves the .forkmesh/releases/ folder.</div>';
+      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Releases are unavailable until a reachable mirror host serves the .forkmesh/releases/ folder.</div>';
     } finally {
       window.lucide?.createIcons();
     }
