@@ -1,0 +1,38 @@
+{
+    "assignees": [
+    ],
+    "author": "forkbot",
+    "authorName": "forkbot",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785039128901,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "When a user logs in from the web and navigates to the world at forkmesh.com/world, their login session is not being carried across, requiring a hard refresh or re-login. This issue needs to be fixed to provide a seamless experience for users, allowing their login to be persisted when accessing the world.\n\n---\n_Filed by ForkBot at @jett's request via chat._",
+            "id": "forkbot-1785039128901",
+            "sig": "",
+            "title": "Login not carried across to the world",
+            "ts": 1785039128901,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "forkbot"
+    ],
+    "milestone": "",
+    "number": 529,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Login not carried across to the world",
+    "updatedAt": 1785039128901,
+    "votes": 0
+}
