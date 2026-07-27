@@ -4686,6 +4686,10 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (event->type() == QEvent::Resize && m_pullDiff &&
         obj == m_pullDiff->viewport())
         layoutPullStickyHeader();
+    // Same for the working-tree changes diff's sticky header (adhoc #399).
+    if (event->type() == QEvent::Resize && m_scmDiff &&
+        obj == m_scmDiff->viewport())
+        layoutScmStickyHeader();
     // Keep the floating "Log" button pinned to the live-log strip's bottom-right
     // corner as the strip resizes (adhoc #137). Don't consume — the strip still
     // needs the resize.
