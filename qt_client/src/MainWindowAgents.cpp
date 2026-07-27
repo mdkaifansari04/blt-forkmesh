@@ -7240,6 +7240,10 @@ QList<int> MainWindow::stoppableAgentSessionIds() const
 // leaving the queue in place would just start the next one behind it, so the
 // user would be clicking Stop forever. External (watch-only) rows belong to
 // another process and are left alone.
+//
+// Deliberately unconfirmed: it's the panic button for a runaway fleet, and each
+// stopped session keeps its work and can be continued later, so a dialog only
+// stands between the user and the thing they already asked for.
 void MainWindow::stopAllRunningAgents()
 {
     // Snapshot the ids up front: each stop below reloads m_agentSessions.
@@ -7248,16 +7252,6 @@ void MainWindow::stopAllRunningAgents()
         flashMessage(QStringLiteral("No agents are running."));
         return;
     }
-    if (QMessageBox::question(
-            this, QStringLiteral("Stop all agents"),
-            QStringLiteral("Stop %1 agent session%2 (running and queued, across "
-                           "every repository)?\n\nTheir work so far is kept — "
-                           "each session can be continued later.")
-                .arg(ids.size())
-                .arg(ids.size() == 1 ? QString() : QStringLiteral("s")),
-            QMessageBox::Yes | QMessageBox::No,
-            QMessageBox::No) != QMessageBox::Yes)
-        return;
     m_agentQueue.clear();
     for (const int sessionId : std::as_const(ids)) {
         if (AgentRunner *runner = runnerForSession(sessionId))
