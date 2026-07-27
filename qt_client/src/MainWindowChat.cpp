@@ -283,10 +283,12 @@ void MainWindow::fetchFaviconFromUrl(const QString &host, const QUrl &url)
     // Hosts with a hardcoded mark (api.anthropic.com and friends) never hit the
     // network: they answer 404 for /favicon.ico, which showed up in the log as
     // an error line per request (adhoc #436).
+    // Cached like a downloaded icon (but never written to the disk cache) so the
+    // breadcrumb rail and both log views pick it up the same way; no breadcrumb
+    // rebuild from here, since this runs while a log line is being rendered.
     const QPixmap builtin = builtinFavicon(host);
     if (!builtin.isNull()) {
         m_faviconCache.insert(host, builtin);
-        updateBreadcrumb();
         refreshLogFavicon(host);
         return;
     }
