@@ -7915,6 +7915,18 @@ SCHEMA_PRE_CREATE_ALTER_STATEMENTS = [
          'active', 'edited', 'tombstoned', 'moderated',
          'awaiting-redelivery'
        ))""",
+    # Direct-message lazy upgrades must precede SCHEMA_STATEMENTS: that list
+    # creates indexes/triggers over these columns, and CREATE TABLE IF NOT
+    # EXISTS cannot add them to a database that predates migration 0084.
+    """ALTER TABLE chat_direct_conversations
+       ADD COLUMN message_count INTEGER NOT NULL DEFAULT 0
+       CHECK (message_count >= 0)""",
+    """ALTER TABLE chat_direct_participants
+       ADD COLUMN last_read_count INTEGER NOT NULL DEFAULT 0
+       CHECK (last_read_count >= 0)""",
+    """ALTER TABLE chat_direct_participants
+       ADD COLUMN initiated INTEGER NOT NULL DEFAULT 0
+       CHECK (initiated IN (0, 1))""",
 ]
 
 # Post-CREATE column additions for tables that predate them. Idempotent: a

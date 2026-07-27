@@ -13,6 +13,8 @@ if str(SRC) not in sys.path:
 import schema  # noqa: E402
 import urls  # noqa: E402
 
+ENTRY = (SRC / "entry.py").read_text(encoding="utf-8")
+
 
 def test_direct_message_migration_and_lazy_schema_match():
     create_migration = (
@@ -37,6 +39,14 @@ def test_direct_message_migration_and_lazy_schema_match():
     ):
         assert marker in sql
         assert marker in joined
+
+
+def test_lazy_upgrade_adds_direct_message_columns_before_dependent_indexes():
+    start = ENTRY.index("SCHEMA_PRE_CREATE_ALTER_STATEMENTS = [")
+    end = ENTRY.index("\n]\n\n# Post-CREATE", start)
+    pre_create = ENTRY[start:end]
+    for column in ("message_count", "last_read_count", "initiated"):
+        assert f"ADD COLUMN {column}" in pre_create
 
 
 def test_direct_message_schema_enforces_one_pair_and_two_unique_participants():
