@@ -5819,7 +5819,7 @@ async def _chat_channel_socket_handler(env, request, channel_id):
         extra_headers=EXPECTED_DEGRADED_HEADERS)
 
 
-def _office_attendance_visit(row):
+def _office_attendance_visit(row, observed_at=None):
     """Project one D1 attendance row into a bounded public lobby record."""
     if not isinstance(row, dict):
         return None
@@ -5842,15 +5842,29 @@ def _office_attendance_visit(row):
         and (out_at < in_at or out_at > max_safe_integer)
     ):
         return None
+    try:
+        observed_at = int(
+            Date.now() if observed_at is None else observed_at)
+    except (TypeError, ValueError):
+        observed_at = in_at
+    if observed_at <= 0 or observed_at > max_safe_integer:
+        observed_at = in_at
+    duration_end = out_at if out_at is not None else max(in_at, observed_at)
     return {
         "id": visit_id,
         "account": account,
         "inAt": in_at,
         "outAt": out_at,
+        "durationMs": duration_end - in_at,
     }
 
 
-async def _office_attendance_recent(env):
+async def _office_attendance_recent(env, observed_at=None):
+    try:
+        observed_at = int(
+            Date.now() if observed_at is None else observed_at)
+    except (TypeError, ValueError):
+        observed_at = 0
     rows = await d1_all(
         env,
         "SELECT visit_id, account_name, in_at, out_at "
@@ -5859,7 +5873,7 @@ async def _office_attendance_recent(env):
     )
     visits = []
     for row in rows or []:
-        visit = _office_attendance_visit(row)
+        visit = _office_attendance_visit(row, observed_at)
         if visit is not None:
             visits.append(visit)
     return visits
@@ -5880,8 +5894,13 @@ async def office_attendance_handler(env, request):
         )
     if method == "GET":
         await ensure_schema(env)
+        observed_at = int(Date.now())
         return json_response(
-            {"ok": True, "visits": await _office_attendance_recent(env)},
+            {
+                "ok": True,
+                "asOfAt": observed_at,
+                "visits": await _office_attendance_recent(env, observed_at),
+            },
             cache_control="no-store, max-age=0, must-revalidate",
             extra_headers={"x-content-type-options": "nosniff"},
         )
@@ -5959,7 +5978,11 @@ async def office_attendance_handler(env, request):
             str(account_bi),
         )
     return json_response(
-        {"ok": True, "visits": await _office_attendance_recent(env)},
+        {
+            "ok": True,
+            "asOfAt": now,
+            "visits": await _office_attendance_recent(env, now),
+        },
         cache_control="no-store, max-age=0, must-revalidate",
         extra_headers={"x-content-type-options": "nosniff"},
     )

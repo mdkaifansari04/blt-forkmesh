@@ -197,7 +197,11 @@ export function createWorldOfficeController({
     const visits = Array.isArray(payload?.visits)
       ? payload.visits.slice(0, 20)
       : [];
-    world.setOfficeAttendance?.({ visits });
+    const asOfAt = Number(payload?.asOfAt);
+    world.setOfficeAttendance?.({
+      visits,
+      ...(Number.isFinite(asOfAt) && asOfAt > 0 ? { asOfAt } : {}),
+    });
     return visits;
   }
 

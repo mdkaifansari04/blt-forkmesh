@@ -9338,10 +9338,26 @@ export function createWorldScene({
   officeAttendanceBoard.rotation.y = Math.PI / 2;
   officeInterior.add(officeAttendanceBoard);
 
-  function officeAttendanceTexture(snapshot = {}) {
+  function officeAttendanceDurationLabel(value) {
+    if (value === null || value === undefined || value === "") return "—";
+    const milliseconds = Number(value);
+    if (!Number.isFinite(milliseconds) || milliseconds < 0) return "—";
+    const totalMinutes = Math.floor(milliseconds / 60_000);
+    if (totalMinutes < 60) return `${totalMinutes}m`;
+    const totalHours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    if (totalHours < 24) {
+      return `${totalHours}h ${String(minutes).padStart(2, "0")}m`;
+    }
+    const days = Math.floor(totalHours / 24);
+    return `${days}d ${String(totalHours % 24).padStart(2, "0")}h`;
+  }
+
+  function officeAttendanceTexture(snapshot = {}, openElapsedMs = 0) {
     const visits = Array.isArray(snapshot?.visits)
       ? snapshot.visits.slice(0, 20)
       : [];
+    const liveElapsedMs = Math.max(0, Number(openElapsedMs) || 0);
     return canvasTexture(THREE, 1600, 800, (context) => {
       const format = (value) => {
         const timestamp = Number(value);
@@ -9365,8 +9381,9 @@ export function createWorldScene({
       context.fillStyle = "#79a996";
       context.font = '800 27px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText("USER", 42, 112);
-      context.fillText("IN", 570, 112);
-      context.fillText("OUT", 1080, 112);
+      context.fillText("IN", 500, 112);
+      context.fillText("OUT", 900, 112);
+      context.fillText("TOTAL", 1350, 112);
       context.strokeStyle = "rgba(121,239,181,0.28)";
       context.lineWidth = 2;
       context.beginPath();
@@ -9382,16 +9399,27 @@ export function createWorldScene({
         }
         context.fillStyle = "#e9fff6";
         context.fillText(
-          String(visit?.account || "Contributor").slice(0, 25),
+          String(visit?.account || "Contributor").slice(0, 22),
           42,
           y,
         );
         context.fillStyle = "#a9d7c4";
-        context.fillText(format(visit?.inAt), 570, y);
+        context.fillText(format(visit?.inAt), 500, y);
         context.fillStyle = visit?.outAt ? "#a9d7c4" : "#f7c96b";
         context.fillText(
           visit?.outAt ? format(visit.outAt) : "IN BUILDING",
-          1080,
+          900,
+          y,
+        );
+        const durationMs =
+          visit?.durationMs === null || visit?.durationMs === undefined
+            ? null
+            : Number(visit.durationMs) +
+              (visit?.inAt && !visit?.outAt ? liveElapsedMs : 0);
+        context.fillStyle = visit?.outAt ? "#a9d7c4" : "#f7c96b";
+        context.fillText(
+          officeAttendanceDurationLabel(durationMs),
+          1350,
           y,
         );
       });
@@ -10065,6 +10093,8 @@ export function createWorldScene({
   let officeFloorHandler = null;
   let officeElevatorRide = null;
   let officeAttendance = { visits: [] };
+  let officeAttendanceObservedAt = performance.now();
+  let officeAttendanceRenderedBucket = 0;
   let officeReceptionWasNear = false;
   let officeReceptionLastTipAt = -Infinity;
   let officeReceptionGuestTipIndex = 0;
@@ -10317,18 +10347,41 @@ export function createWorldScene({
   }
 
   function setOfficeAttendance(event = {}) {
+    const receivedAt = performance.now();
+    const rawAsOfAt = Number(event?.asOfAt);
+    const asOfAt =
+      Number.isFinite(rawAsOfAt) && rawAsOfAt > 0
+        ? rawAsOfAt
+        : Date.now();
     const visits = Array.isArray(event?.visits)
-      ? event.visits.slice(0, 20).map((visit) => ({
-          id: String(visit?.id || "").slice(0, 32),
-          account: String(visit?.account || "Contributor")
-            .replace(/\s+/g, " ")
-            .trim()
-            .slice(0, 32),
-          inAt: Math.max(0, Number(visit?.inAt) || 0),
-          outAt: Math.max(0, Number(visit?.outAt) || 0),
-        }))
+      ? event.visits.slice(0, 20).map((visit) => {
+          const inAt = Math.max(0, Number(visit?.inAt) || 0);
+          const rawOutAt = Math.max(0, Number(visit?.outAt) || 0);
+          const outAt = inAt > 0 && rawOutAt >= inAt ? rawOutAt : 0;
+          const suppliedDuration = Number(visit?.durationMs);
+          const durationMs =
+            inAt <= 0
+              ? null
+              : Number.isFinite(suppliedDuration) && suppliedDuration >= 0
+                ? suppliedDuration
+                : outAt
+                  ? outAt - inAt
+                  : Math.max(0, asOfAt - inAt);
+          return {
+            id: String(visit?.id || "").slice(0, 32),
+            account: String(visit?.account || "Contributor")
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, 32),
+            inAt,
+            outAt,
+            durationMs,
+          };
+        })
       : [];
-    officeAttendance = { visits };
+    officeAttendance = { visits, asOfAt };
+    officeAttendanceObservedAt = receivedAt;
+    officeAttendanceRenderedBucket = 0;
     const previous = officeAttendanceBoard.material.map;
     officeAttendanceBoard.material.map =
       officeAttendanceTexture(officeAttendance);
@@ -10337,6 +10390,26 @@ export function createWorldScene({
     return {
       visits: officeAttendance.visits.map((visit) => ({ ...visit })),
     };
+  }
+
+  function updateOfficeAttendanceClock(time) {
+    if (
+      officeSceneMode !== "lobby" ||
+      !officeAttendance.visits.some(
+        (visit) => visit.inAt > 0 && !visit.outAt,
+      )
+    ) {
+      return;
+    }
+    const elapsedMs = Math.max(0, time - officeAttendanceObservedAt);
+    const bucket = Math.floor(elapsedMs / 30_000);
+    if (bucket === officeAttendanceRenderedBucket) return;
+    officeAttendanceRenderedBucket = bucket;
+    const previous = officeAttendanceBoard.material.map;
+    officeAttendanceBoard.material.map =
+      officeAttendanceTexture(officeAttendance, elapsedMs);
+    officeAttendanceBoard.material.needsUpdate = true;
+    previous?.dispose?.();
   }
 
   function travelToOfficeFloor(floorId) {
@@ -16656,6 +16729,7 @@ export function createWorldScene({
       walkOfficeParticipant(delta, time);
     }
     updateOfficeReceptionGuide(time);
+    updateOfficeAttendanceClock(time);
     // The Office is part of the same live World. Neighbours and ForkBot keep
     // animating while the local visitor is in the tower instead of freezing
     // the landscape visible through its glass walls.
