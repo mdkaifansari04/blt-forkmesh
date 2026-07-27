@@ -11,8 +11,6 @@ const OFFICE_CHAT_PATH = "/chat?embed=office";
 const OFFICE_UNLOAD_DELAY_MS = 2000;
 const OFFICE_ENTRY_PATH = "/api/world/office/general/entry";
 const OFFICE_FLOORS_PATH = "/api/world/office/floors";
-const LOGIN_REQUIRED_MESSAGE =
-  "Maya and Noah: please log in to visit the ForkMesh offices.";
 
 export function nextOfficeZoneState(currentState, distance) {
   const threshold =
@@ -24,20 +22,6 @@ export function nextOfficeZoneState(currentState, distance) {
     : "distant";
 }
 
-function isTypingTarget(target) {
-  if (!(target instanceof Element)) return false;
-  return Boolean(
-    target.closest("input, textarea, select, button, [contenteditable='true']"),
-  );
-}
-
-function isAuthenticationError(error) {
-  const status = Number(error?.status || error?.response?.status || 0);
-  if (status === 401) return true;
-  return /(?:^|\D)401(?:\D|$)|invalid_session|login_required|registered_user_required/i
-    .test(String(error?.message || error || ""));
-}
-
 export function createWorldOfficeController({
   root,
   world,
@@ -46,10 +30,6 @@ export function createWorldOfficeController({
   chatPath = OFFICE_CHAT_PATH,
   getSession = () => null,
 }) {
-  const prompt = root.querySelector("[data-world-office-prompt]");
-  const promptLight = root.querySelector("[data-world-office-prompt-light]");
-  const promptStatus = root.querySelector("[data-world-office-prompt-status]");
-  const enterButton = root.querySelector("[data-world-office-enter]");
   const fallbackButton = root.querySelector("[data-world-office-fallback]");
   const panel = root.querySelector("[data-world-office-chat]");
   const heading = root.querySelector("#world-office-chat-title");
@@ -63,7 +43,9 @@ export function createWorldOfficeController({
   let unloadTimer = null;
   let frameSuspended = false;
   let entryPending = false;
+  let meetingAuthorizationPromise = null;
   let exitPending = false;
+  let authorizationGeneration = 0;
   let officeEntryTicket = "";
   let officeEntryExpiresAt = 0;
   let officeAccess = normalizeOfficeFloorAccess({});
@@ -93,48 +75,14 @@ export function createWorldOfficeController({
     return String(value?.sessionToken || "") ? value : null;
   }
 
-  function greetGuest() {
-    world.greetOfficeGuest?.(LOGIN_REQUIRED_MESSAGE);
-    root.toast?.(LOGIN_REQUIRED_MESSAGE);
-    root.toggleWorldAccount?.(true, "login", enterButton);
-    return false;
-  }
-
   function clearUnloadTimer() {
     if (!unloadTimer) return;
     window.clearTimeout(unloadTimer);
     unloadTimer = null;
   }
 
-  function renderPrompt() {
-    if (!prompt) return;
-    const signedIn = Boolean(authenticatedSession());
-    prompt.hidden = proximity !== "nearby" || active;
-    prompt.dataset.available = "true";
-    if (promptStatus) {
-      promptStatus.textContent = signedIn
-        ? "Office entrance ready · signed-in members only"
-        : "Please log in to visit the offices";
-    }
-    if (promptLight) {
-      promptLight.setAttribute(
-        "aria-label",
-        signedIn ? "Office entrance ready" : "Login required",
-      );
-    }
-    if (enterButton) {
-      enterButton.disabled = entryPending;
-      if (enterButton.firstChild) {
-        enterButton.firstChild.textContent = signedIn
-          ? "Enter ForkMesh Office "
-          : "Log in to enter Office ";
-      }
-    }
-  }
-
   function setEntryPending(pending) {
     entryPending = pending === true;
-    renderPrompt();
   }
 
   function closeFallback({ restoreFocus = true } = {}) {
@@ -186,7 +134,6 @@ export function createWorldOfficeController({
 
   function setProximity(nextState) {
     proximity = nextState === "nearby" ? "nearby" : "distant";
-    renderPrompt();
   }
 
   function focusOffice(trigger = null) {
@@ -195,24 +142,10 @@ export function createWorldOfficeController({
   }
 
   async function loadFloorAccess(activeSession) {
-    let payload;
-    try {
-      payload = await root.fetchJSON(OFFICE_FLOORS_PATH, {
-        timeout: 8000,
-        cache: "no-store",
-      });
-    } catch (error) {
-      if (isAuthenticationError(error)) throw error;
-      // The three shared member floors are safe to expose after the entry
-      // endpoint has authenticated this session. Team floors remain locked
-      // until the authoritative floor projection is available.
-      payload = {
-        authenticated: true,
-        account: String(activeSession?.nodeName || ""),
-        allowedFloorIds: ["lobby", "marketing", "rooftop"],
-        teams: [],
-      };
-    }
+    const payload = await root.fetchJSON(OFFICE_FLOORS_PATH, {
+      timeout: 8000,
+      cache: "no-store",
+    });
     const normalized = normalizeOfficeFloorAccess({
       ...(payload && typeof payload === "object" ? payload : {}),
       account:
@@ -224,13 +157,10 @@ export function createWorldOfficeController({
       error.status = 401;
       throw error;
     }
-    officeAccess = {
+    return {
       ...(payload && typeof payload === "object" ? payload : {}),
       ...normalized,
     };
-    attendanceAccount = normalized.account;
-    world.setOfficeAccess?.(officeAccess);
-    return officeAccess;
   }
 
   function requestedFloorId(value) {
@@ -257,10 +187,12 @@ export function createWorldOfficeController({
       root.toast?.(`${floor.label} is temporarily unavailable.`);
       return false;
     }
+    tasks?.setActive?.(floor.id === "marketing");
     return travelled !== undefined ? travelled : true;
   }
 
   function recordAttendance(direction) {
+    if (!attendanceAccount) return;
     world.setOfficeAttendance?.({
       type: direction === "out" ? "out" : "in",
       at: Date.now(),
@@ -268,62 +200,124 @@ export function createWorldOfficeController({
     });
   }
 
-  async function completeOfficeEntry(payload, activeSession) {
-    await loadFloorAccess(activeSession);
+  function initialOfficeAccess() {
+    // The lobby is physically public, but elevator grants remain fail-closed
+    // until the server validates a signed-in account in the background.
+    return normalizeOfficeFloorAccess({});
+  }
+
+  function completeOfficeEntry() {
     if (!world.enterOffice()) return false;
-    officeEntryTicket = String(payload?.entryTicket || "").slice(0, 2048);
-    officeEntryExpiresAt = Number(payload?.expiresAt) || 0;
-    meeting.setEntryTicket?.(officeEntryTicket, officeEntryExpiresAt);
-    if (!returnFocus) returnFocus = enterButton;
+    authorizationGeneration += 1;
+    setEntryPending(false);
+    officeAccess = initialOfficeAccess();
+    attendanceAccount = "";
+    world.setOfficeAccess?.(officeAccess);
+    officeEntryTicket = "";
+    officeEntryExpiresAt = 0;
+    meeting.setEntryTicket?.("", 0);
     active = true;
     exitPending = false;
-    recordAttendance("in");
     meeting.openLobby();
-    tasks?.setActive?.(true);
-    renderPrompt();
+    tasks?.setActive?.(false);
     return true;
   }
 
-  async function requestOfficeEntry() {
-    if (entryPending || active) return false;
-    const activeSession = authenticatedSession();
-    if (!activeSession) return greetGuest();
+  async function refreshOfficeAuthorization(
+    activeSession,
+    generation = authorizationGeneration,
+  ) {
     if (
-      typeof root.postJSON !== "function" ||
-      typeof root.fetchJSON !== "function"
+      !activeSession ||
+      entryPending ||
+      !active ||
+      generation !== authorizationGeneration
     ) {
-      root.toast?.("Office entry is temporarily unavailable.");
+      return false;
+    }
+    if (typeof root.fetchJSON !== "function") {
       return false;
     }
     setEntryPending(true);
     try {
-      const payload = await root.postJSON(
-        OFFICE_ENTRY_PATH,
-        {},
-        { timeout: 8000 },
-      );
-      if (
-        payload?.ok !== true ||
-        !String(payload?.entryTicket || "") ||
-        !Number.isFinite(Number(payload?.expiresAt))
-      ) {
-        throw new Error(String(payload?.error || "office_entry_unavailable"));
-      }
-      return await completeOfficeEntry(payload, activeSession);
-    } catch (error) {
-      if (isAuthenticationError(error)) return greetGuest();
-      root.toast?.("Office entry is temporarily unavailable.");
+      const floorAccess = await loadFloorAccess(activeSession);
+      if (!active || generation !== authorizationGeneration) return false;
+      officeAccess = floorAccess;
+      attendanceAccount = officeAccess.account;
+      world.setOfficeAccess?.(officeAccess);
+      recordAttendance("in");
+      return true;
+    } catch (_) {
       return false;
     } finally {
-      setEntryPending(false);
+      if (generation === authorizationGeneration) setEntryPending(false);
     }
+  }
+
+  async function authorizeMeeting() {
+    if (!active) return false;
+    if (
+      officeEntryTicket &&
+      officeEntryExpiresAt > Date.now() + 5000
+    ) {
+      return true;
+    }
+    if (meetingAuthorizationPromise) return meetingAuthorizationPromise;
+    const activeSession = authenticatedSession();
+    if (!activeSession) {
+      root.toast?.("Sign in to join an Office meeting.");
+      root.toggleWorldAccount?.(true, "login");
+      return false;
+    }
+    if (typeof root.postJSON !== "function") return false;
+    const generation = authorizationGeneration;
+    meetingAuthorizationPromise = (async () => {
+      try {
+        const payload = await root.postJSON(
+          OFFICE_ENTRY_PATH,
+          {},
+          { timeout: 8000 },
+        );
+        if (
+          !active ||
+          generation !== authorizationGeneration ||
+          payload?.ok !== true ||
+          !String(payload?.entryTicket || "") ||
+          !Number.isFinite(Number(payload?.expiresAt))
+        ) {
+          return false;
+        }
+        officeEntryTicket = String(payload.entryTicket).slice(0, 2048);
+        officeEntryExpiresAt = Number(payload.expiresAt) || 0;
+        meeting.setEntryTicket?.(officeEntryTicket, officeEntryExpiresAt);
+        return officeEntryExpiresAt > Date.now() + 5000;
+      } catch (_) {
+        root.toast?.("Sign in again to join this Office meeting.");
+        return false;
+      } finally {
+        if (generation === authorizationGeneration) {
+          meetingAuthorizationPromise = null;
+        }
+      }
+    })();
+    return meetingAuthorizationPromise;
   }
 
   async function enterOffice(entry = {}) {
     const doorwayEntry = entry?.source === "doorway";
     try {
       if (proximity !== "nearby" || active) return false;
-      return await requestOfficeEntry();
+      const activeSession = authenticatedSession();
+      const entered = completeOfficeEntry();
+      if (entered && activeSession) {
+        // Physical admission never waits on the network. Signed-in visitors
+        // receive team-floor and meeting permissions in the background.
+        void refreshOfficeAuthorization(
+          activeSession,
+          authorizationGeneration,
+        );
+      }
+      return entered;
     } finally {
       if (doorwayEntry) world.setOfficeDoorwayEntryPending?.(false);
     }
@@ -338,13 +332,15 @@ export function createWorldOfficeController({
     meeting.setEntryTicket?.("", 0);
     officeEntryTicket = "";
     officeEntryExpiresAt = 0;
+    meetingAuthorizationPromise = null;
     officeAccess = normalizeOfficeFloorAccess({});
     attendanceAccount = "";
     world.setOfficeAccess?.(officeAccess);
+    authorizationGeneration += 1;
+    setEntryPending(false);
     active = false;
     exitPending = false;
-    renderPrompt();
-    const focusTarget = returnFocus?.isConnected ? returnFocus : enterButton;
+    const focusTarget = returnFocus?.isConnected ? returnFocus : null;
     window.requestAnimationFrame(() => focusTarget?.focus());
     return true;
   }
@@ -367,13 +363,6 @@ export function createWorldOfficeController({
     if (focusControl) {
       event.preventDefault();
       focusOffice(focusControl);
-      return;
-    }
-    const enterControl = event.target.closest("[data-world-office-enter]");
-    if (enterControl) {
-      event.preventDefault();
-      returnFocus = enterControl;
-      void enterOffice({ source: "prompt" });
       return;
     }
     const fallbackControl = event.target.closest("[data-world-office-fallback]");
@@ -410,17 +399,6 @@ export function createWorldOfficeController({
       else collapse();
       return;
     }
-    if (
-      event.key.toLowerCase() === "e" &&
-      proximity === "nearby" &&
-      !active &&
-      !event.repeat &&
-      !isTypingTarget(event.target)
-    ) {
-      event.preventDefault();
-      returnFocus = enterButton;
-      void enterOffice({ source: "keyboard" });
-    }
   }
 
   function onMessage(event) {
@@ -445,7 +423,10 @@ export function createWorldOfficeController({
     meeting.setEntryTicket?.("", 0);
     officeEntryTicket = "";
     officeEntryExpiresAt = 0;
+    meetingAuthorizationPromise = null;
     officeAccess = normalizeOfficeFloorAccess({});
+    authorizationGeneration += 1;
+    setEntryPending(false);
     world.setOfficeAccess?.(officeAccess);
     closeFallback({ restoreFocus: false });
     frame?.removeAttribute("src");
@@ -456,12 +437,12 @@ export function createWorldOfficeController({
   world.setOfficeFloorHandler?.(travelToOfficeFloor);
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("message", onMessage);
-  renderPrompt();
 
   return {
     setProximity,
     focusOffice,
     enterOffice,
+    authorizeMeeting,
     openFallback,
     collapse,
     destroy,

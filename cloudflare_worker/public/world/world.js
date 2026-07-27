@@ -3161,20 +3161,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           tabindex="0"
         ></div>
 
-        <section
-          class="world-office-prompt"
-          data-world-office-prompt
-          aria-label="ForkMesh Office entrance"
-          hidden
-        >
-          <p>
-            <span data-world-office-prompt-light aria-hidden="true">●</span>
-            <span data-world-office-prompt-status>Checking your Office access…</span>
-          </p>
-          <button type="button" data-world-office-enter>
-            Enter ForkMesh Office <kbd>E</kbd>
-          </button>
-        </section>
         <section class="world-office-lobby" data-world-office-lobby aria-labelledby="world-office-lobby-title" aria-hidden="true">
           <header class="world-office-panel-heading">
             <div>
@@ -4539,6 +4525,9 @@ class ForkMeshWorld extends HTMLElement {
         tasks: this.officeTasks,
         getSession: readSession,
       });
+      this.officeMeeting.setEntryTicketProvider?.(
+        () => this.officeController?.authorizeMeeting?.() || false,
+      );
       this.world.setTheme(this.settings.theme);
       this.world.setLightLevel(this.settings.lightLevel);
       this.world.setMovementTuning?.(this.movementTuning());

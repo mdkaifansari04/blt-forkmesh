@@ -206,6 +206,7 @@ export function createWorldOfficeMeeting({
   let leaving = false;
   let entryTicket = "";
   let entryTicketExpiresAt = 0;
+  let entryTicketProvider = null;
   const movementQueue = createOfficeMovementQueue({
     send: (frame) => sendMeeting(frame),
     isReady: () => Boolean(socket && socket.readyState === WebSocket.OPEN),
@@ -320,7 +321,6 @@ export function createWorldOfficeMeeting({
     );
     onActivity("visiting-office");
     renderRoomBoard();
-    fetchRooms();
     return true;
   }
 
@@ -719,6 +719,27 @@ export function createWorldOfficeMeeting({
     chatReady = false;
     syncComposer();
     setLobbyStatus(`Opening #${room.name}...`);
+    if (
+      room.kind === "general" &&
+      (
+        !entryTicket ||
+        entryTicketExpiresAt <= Date.now() + 5000
+      )
+    ) {
+      const authorized =
+        typeof entryTicketProvider === "function"
+          ? await entryTicketProvider()
+          : false;
+      if (
+        !authorized ||
+        !entryTicket ||
+        entryTicketExpiresAt <= Date.now() + 5000
+      ) {
+        setLobbyStatus("Sign in to join this meeting.");
+        activeRoom = null;
+        return false;
+      }
+    }
     try {
       meetingBinding = await createMeetingBinding();
     } catch (_) {
@@ -942,6 +963,7 @@ export function createWorldOfficeMeeting({
     socket = null;
     entryTicket = "";
     entryTicketExpiresAt = 0;
+    entryTicketProvider = null;
     clearTranscript();
     participants.clear();
     scene.leaveOfficeInterior();
@@ -966,6 +988,11 @@ export function createWorldOfficeMeeting({
           : "";
       entryTicketExpiresAt = entryTicket ? expiry : 0;
       return Boolean(entryTicket);
+    },
+    setEntryTicketProvider(provider) {
+      entryTicketProvider =
+        typeof provider === "function" ? provider : null;
+      return Boolean(entryTicketProvider);
     },
     openLobby,
     joinRoom,

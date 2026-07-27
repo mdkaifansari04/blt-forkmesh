@@ -9008,10 +9008,10 @@ export function createWorldScene({
         context.fillStyle = "#eafff6";
         context.font = '800 54px "ForkMesh Mono", ui-monospace, monospace';
         context.textAlign = "center";
-        context.fillText("WELCOME · SIGN IN TO VISIT THE OFFICES", 600, 92);
+        context.fillText("WELCOME · WALK RIGHT IN", 600, 92);
         context.fillStyle = "#8ecdb6";
         context.font = '600 30px "ForkMesh Mono", ui-monospace, monospace';
-        context.fillText("Maya and Noah can help at the desk", 600, 145);
+        context.fillText("Maya and Noah are here to help", 600, 145);
       }),
       toneMapped: false,
     }),
@@ -9696,38 +9696,6 @@ export function createWorldScene({
     return { ...officeFloorAccess };
   }
 
-  function greetOfficeGuest(message = "") {
-    const text = String(
-      message || "Please sign in to visit the ForkMesh offices.",
-    )
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 96);
-    const previous = officeGreetingBoard.material.map;
-    officeGreetingBoard.material.map = canvasTexture(
-      THREE,
-      1200,
-      200,
-      (context) => {
-        context.fillStyle = "#071714";
-        context.fillRect(0, 0, 1200, 200);
-        context.strokeStyle = "#f7c96b";
-        context.lineWidth = 10;
-        context.strokeRect(6, 6, 1188, 188);
-        context.fillStyle = "#fff5cf";
-        context.font = '800 48px "ForkMesh Mono", ui-monospace, monospace';
-        context.textAlign = "center";
-        context.fillText("MAYA + NOAH · WELCOME DESK", 600, 78);
-        context.fillStyle = "#f1d890";
-        context.font = '600 28px "ForkMesh Mono", ui-monospace, monospace';
-        context.fillText(text, 600, 137, 1110);
-      },
-    );
-    officeGreetingBoard.material.needsUpdate = true;
-    previous?.dispose?.();
-    return text;
-  }
-
   function setOfficeAttendance(event = {}) {
     const type = event?.type === "out" ? "out" : "in";
     const timestamp = Math.max(0, Number(event?.at) || Date.now());
@@ -9812,9 +9780,9 @@ export function createWorldScene({
       Math.abs(localX) <= doorClearance &&
       previousZ >= doorwayThreshold &&
       localZ < doorwayThreshold;
-    // The player physically crosses the threshold first, but remains outside
-    // until the server admission promise resolves. The armed/pending pair
-    // prevents a held movement key from posting once per animation frame.
+    // Crossing the threshold switches into the continuous lobby immediately.
+    // The armed/pending pair prevents a held movement key from firing the
+    // controller more than once before that scene-mode handoff completes.
     if (
       Math.abs(localX) <= doorClearance &&
       previousZ >= OFFICE_FRONT_Z
@@ -11467,6 +11435,9 @@ export function createWorldScene({
         localTarget.z,
         0.08,
       );
+    if (officeCurrentFloorId === "rooftop" && !ridingElevator) {
+      return requested;
+    }
     const floorBase = ridingElevator
       ? officeElevatorCar.position.y
       : officeFloorY(officeCurrentFloorId);
@@ -16134,7 +16105,6 @@ export function createWorldScene({
     setOfficeDoorwayEntryPending,
     setOfficeFloorHandler,
     setOfficeAccess,
-    greetOfficeGuest,
     setOfficeAttendance,
     travelToOfficeFloor,
     setOfficeParticipants,
