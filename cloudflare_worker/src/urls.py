@@ -146,6 +146,12 @@ ACCOUNT_CONTRIBUTIONS_RE = re.compile(
 )
 # Follow/unfollow a public profile: /api/accounts/{name}/follow
 ACCOUNT_FOLLOW_RE = re.compile(r"^/api/accounts/([^/]+)/follow$")
+# Referral short link: /r/{name} counts a click and bounces to /signup.
+REFERRAL_LINK_RE = re.compile(r"^/r/([^/]+)$")
+# Rendered social-preview card for one share link: the og:image the /r/{name}
+# preview page points at, so a Mastodon/Slack unfurl shows that referrer's
+# live click + signup counters.
+REFERRAL_CARD_RE = re.compile(r"^/api/referrals/([^/]+)/card\.png$")
 # --- ActivityPub federation ---------------------------------------------------
 # User actor document + its inbox/outbox/followers/following collections.
 AP_USER_RE = re.compile(r"^/ap/users/([^/]+)$")

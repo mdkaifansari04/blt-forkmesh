@@ -59,19 +59,15 @@ def test_installer_uses_selected_online_node():
 
 
 def test_installer_uses_first_of_ranked_node_list():
-    # Newer mainnode returns a ranked "nodes" list; the installer clones from the
-    # best (first) and keeps the rest as ordered fallback candidates.
+    # Newer mainnode returns ranked nodes for display; cloning uses the stable
+    # flagship route, whose Worker router applies that live endpoint failover.
     result = _run_with_response(
         '{"ok":true,"node":"alpha","nodes":["alpha","bravo","charlie"],'
         '"repo":"forkmesh","totalMinutes":500}'
     )
     assert result.returncode == 0, result.stderr
-    assert "REPO=https://forkmesh.com/alpha/forkmesh" in result.stdout
-    assert (
-        "CANDIDATES=https://forkmesh.com/alpha/forkmesh "
-        "https://forkmesh.com/bravo/forkmesh "
-        "https://forkmesh.com/charlie/forkmesh"
-    ) in result.stdout
+    assert "REPO=https://forkmesh.com/forkmesh/forkmesh" in result.stdout
+    assert "CANDIDATES=https://forkmesh.com/forkmesh/forkmesh" in result.stdout
 
 
 def test_installer_drops_malformed_and_duplicate_nodes():
@@ -82,10 +78,7 @@ def test_installer_drops_malformed_and_duplicate_nodes():
         '"repo":"forkmesh","totalMinutes":1}'
     )
     assert result.returncode == 0, result.stderr
-    assert (
-        "CANDIDATES=https://forkmesh.com/alpha/forkmesh "
-        "https://forkmesh.com/bravo/forkmesh"
-    ) in result.stdout
+    assert "CANDIDATES=https://forkmesh.com/forkmesh/forkmesh" in result.stdout
 
 
 def test_installer_falls_back_to_single_node_field():
@@ -95,8 +88,8 @@ def test_installer_falls_back_to_single_node_field():
         '{"ok":true,"node":"solo","repo":"forkmesh","totalMinutes":7}'
     )
     assert result.returncode == 0, result.stderr
-    assert "REPO=https://forkmesh.com/solo/forkmesh" in result.stdout
-    assert "CANDIDATES=https://forkmesh.com/solo/forkmesh" in result.stdout
+    assert "REPO=https://forkmesh.com/forkmesh/forkmesh" in result.stdout
+    assert "CANDIDATES=https://forkmesh.com/forkmesh/forkmesh" in result.stdout
 
 
 def _run_prefix(response, extra_env):
@@ -279,8 +272,11 @@ printf '%s\\n' "$FORKMESH_TEST_RESPONSE"
         assert "REPO=\n" in result.stdout
         assert "CANDIDATES=\n" in result.stdout
         # ... but resolves once something actually needs a mirror.
-        assert "REPO2=https://forkmesh.com/fallback-node/forkmesh" in result.stdout
-        assert "CANDIDATES2=https://forkmesh.com/fallback-node/forkmesh" in result.stdout
+        assert "REPO2=https://forkmesh.com/forkmesh/forkmesh" in result.stdout
+        assert (
+            "CANDIDATES2=https://forkmesh.com/forkmesh/forkmesh"
+            in result.stdout
+        )
 
 
 def _clone_functions():

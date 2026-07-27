@@ -14,6 +14,7 @@
 #include <QSaveFile>
 #include <QSet>
 #include <QStandardPaths>
+#include <QThread>
 #include <QTimer>
 
 #include <functional>
@@ -35,6 +36,18 @@ constexpr qsizetype kActionProcessLogMaxLineChars = 4096;
 constexpr qsizetype kActionCrashOutputTailBytes = 12 * 1024;
 constexpr qsizetype kActionCrashContextMaxChars = 12000;
 constexpr qint64 kMaxLandedArtifactBytes = 1024LL * 1024 * 1024;
+
+// CPU share a sandboxed step may use, as a systemd CPUQuota percentage. A
+// hard-wired 200% starved the heaviest workflow this repository has — a
+// from-scratch release build of the desktop client — into the step deadline
+// (adhoc #329). Leave one core to the node itself and never take the whole
+// machine; CPUWeight (set alongside the quota) keeps the interactive app ahead
+// of a step whenever they do compete.
+int actionCpuQuotaPercent()
+{
+    const int cores = qMax(1, QThread::idealThreadCount());
+    return qBound(200, (cores - 1) * 100, 800);
+}
 
 bool truthy(const QString &value)
 {
@@ -129,6 +142,9 @@ ActionRunner::ActionRunner(ActionStore *store, QObject *parent)
 {
     m_stepTimer = new QTimer(this);
     m_stepTimer->setSingleShot(true);
+    // Coarse timers may fire up to 5% late — 4.5 minutes on the step deadline —
+    // which would let the sandbox scope's own RuntimeMaxSec kill land first.
+    m_stepTimer->setTimerType(Qt::PreciseTimer);
     connect(m_stepTimer, &QTimer::timeout, this,
             [this] { terminateCurrentProcess(true); });
     m_jobTimer = new QTimer(this);
@@ -247,6 +263,20 @@ void ActionRunner::start(const ActionRun &run, const ActionWorkflow &workflow,
                 .arg(m_run.commit.left(12), m_run.ref));
     emitLog(QString::fromUtf8(
         "==> \xF0\x9F\x8C\xBF Checking out into a temporary worktree\xE2\x80\xA6")); // 🌿 …
+
+    // An encrypted repository is served out of a temporary materialization, so
+    // say plainly that the mirror went away rather than leaving a bare "fatal:
+    // cannot change to '/tmp/ForkMesh-XXXXXX/repository.git'" behind a generic
+    // "Checkout failed." (adhoc #314).
+    if (m_mirror.trimmed().isEmpty() || !QDir(m_mirror).exists()) {
+        complete(false,
+                 QStringLiteral("The served mirror for %1/%2 is no longer "
+                                "available at %3.")
+                     .arg(m_run.owner, m_run.name,
+                          m_mirror.isEmpty() ? QStringLiteral("(unset)")
+                                             : m_mirror));
+        return;
+    }
 
     QString sandboxReason;
     if (!sandboxAvailable(&sandboxReason)) {
@@ -420,6 +450,16 @@ void ActionRunner::launch(Phase phase, const QString &program,
                    QStringLiteral("/home/forkmesh/.local/share"));
         env.insert(QStringLiteral("XDG_STATE_HOME"),
                    QStringLiteral("/home/forkmesh/.local/state"));
+        // The sandbox's cgroup is not visible inside the mount namespace, so a
+        // step cannot read its own budget: `nproc` reports the host's cores and
+        // /proc/meminfo the host's RAM. Publish both explicitly — a build that
+        // sizes -j from them neither starves on the CPU quota nor gets OOM
+        // killed by MemoryMax.
+        env.insert(QStringLiteral("FORKMESH_ACTIONS_CPUS"),
+                   QString::number(qMax(1, actionCpuQuotaPercent() / 100)));
+        env.insert(QStringLiteral("FORKMESH_ACTIONS_MEMORY_MB"),
+                   QString::number(
+                       qMax<qint64>(64, m_limits.maxMemoryBytes / (1024 * 1024))));
         for (auto it = m_exposedVariables.constBegin();
              it != m_exposedVariables.constEnd(); ++it)
             env.insert(it.key(), it.value());
@@ -611,8 +651,12 @@ void ActionRunner::launchSandboxedStep(const QString &command)
             .arg(qMax<qint64>(64 * 1024 * 1024,
                               m_limits.maxMemoryBytes)),
         QStringLiteral("--property=MemorySwapMax=0"),
-        QStringLiteral("--property=CPUQuota=200%"),
-        QStringLiteral("--property=RuntimeMaxSec=%1").arg(runtimeSeconds),
+        QStringLiteral("--property=CPUQuota=%1%").arg(actionCpuQuotaPercent()),
+        QStringLiteral("--property=CPUWeight=20"),
+        // Grace on top of the in-app deadline so the runner's own timer always
+        // wins the race and reports "exceeded the process time limit" instead
+        // of the scope's opaque SIGTERM ("Process crashed", exit code 15).
+        QStringLiteral("--property=RuntimeMaxSec=%1").arg(runtimeSeconds + 60),
         QStringLiteral("--"),
         bwrap,
     };

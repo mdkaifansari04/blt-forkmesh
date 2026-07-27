@@ -1,0 +1,37 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "ForkMesh Deploy",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785050681298,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "ForkMesh Deploy",
+            "body": "Evaluate direct push remotes or an authenticated SSH-tunnel fanout so a local source-of-truth desktop node behind a firewall can update mirror2 and mirror3 immediately after a push. Keep this in the security backlog until the design covers least-privilege deploy keys per repository/node, host-key pinning, no shared user credentials, forced commands, branch/ref authorization, replay resistance, auditable delivery receipts, retry/backpressure behavior, key rotation/revocation, and integrity-pin verification against the source attestation. Do not enable automatic tunnel access until a threat model and rollback plan are reviewed. The public organization identity must remain forkmesh; mirror2 and mirror3 are nodes, not users.",
+            "id": "open-524",
+            "sig": "BXxnOOUeI9NrS_4jvvT_7Ofpk3qdIJ3M0EmEVivVNLjqJ5c5nvWsgYs96KNbNlNzwBqWga5EDBB9Y_A9FxGvCg",
+            "title": "Secure instant source-to-mirror push over SSH tunnels",
+            "ts": 1785050681298,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "security",
+        "enhancement"
+    ],
+    "milestone": "",
+    "number": 524,
+    "priority": 2,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Secure instant source-to-mirror push over SSH tunnels",
+    "updatedAt": 1785050681298,
+    "votes": 0
+}

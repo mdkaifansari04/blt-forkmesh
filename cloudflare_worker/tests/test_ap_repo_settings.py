@@ -229,7 +229,13 @@ def test_about_get_returns_followers_list_and_settings():
         return True
 
     async def _ap_actor_bi(env, kind, handle):
+        assert handle == "forkmesh.proj"
         return "actor:" + handle
+
+    async def _org_repo_node(env, owner, repo):
+        if (owner, repo) == ("forkmesh", "proj"):
+            return "mirror2"
+        return ""
 
     ns = _load("_repo_about_public", "_ap_repo_settings_get",
                "_ap_repo_settings_bi",
@@ -243,6 +249,7 @@ def test_about_get_returns_followers_list_and_settings():
                    "_ap_org_alias_owner": _passthrough_alias,
                    "_ap_enabled": _ap_enabled,
                    "_ap_actor_bi": _ap_actor_bi,
+                   "_org_repo_node": _org_repo_node,
                    "_ap_origin": lambda env, request=None:
                        "https://forkmesh.com",
                    "_ap_domain_of": lambda origin: "forkmesh.com",
@@ -256,14 +263,20 @@ def test_about_get_returns_followers_list_and_settings():
                            activitypub_threads.sanitize_remote_content)),
                    "clean_string": lambda value, cap: str(value or "")[:cap],
                    "quote": lambda value: value,
+                   "safe_segment": lambda value: value,
                    "urlparse": urlparse,
+                   "REPO_ABOUT_RE": re.compile(
+                       r"^/api/repo/([^/]+)/([^/]+)/about/?$"),
                    "json": json,
                    "AP_ACTOR_REPO": "repo",
                    "AP_AVATAR_PATH": "/assets/fediverse-avatar.png",
                    "AP_BANNER_PATH": "/assets/fediverse-banner.png",
                    "AP_REPO_SETTING_DEFAULTS": AP_REPO_SETTING_DEFAULTS,
                })
-    resp = _run(ns["_repo_about_public"](None, None, "alice", "proj"))
+    request = SimpleNamespace(
+        url="https://forkmesh.com/api/repo/forkmesh/proj/about")
+    resp = _run(ns["_repo_about_public"](
+        None, request, "mirror2", "proj"))
     assert resp["status"] == 200
     fediverse = resp["data"]["fediverse"]
     assert fediverse["followers"] == 2

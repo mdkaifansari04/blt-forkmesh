@@ -305,3 +305,87 @@ def test_release_workflow_requires_committed_version_and_verifies_binary():
     assert '--tag "${FORKMESH_TAG:-}"' not in workflow
     assert "Sync the version header to the release tag" not in workflow
     assert "sed -i.bak" not in workflow
+
+
+def test_release_workflow_resolves_the_signing_key_before_building():
+    """A missing key must fail in seconds, not after the whole client compiles.
+
+    The Actions sandbox mounts no host filesystem, so a secret holding a key
+    *path* names nothing inside the run: the key material itself arrives through
+    the variables channel and is materialized 0600 in the sandbox.
+    """
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    # Bare reference — that is what exposes the variable to the sandbox.
+    assert 'signing_key_pem="$FORKMESH_RELEASE_SIGNING_KEY_PEM"' in workflow
+    assert "(umask 077; printf '%b\\n' \"$signing_key_pem\"" in workflow
+    assert "openssl pkeyutl -sign -rawin -inkey \"$signing_key\"" in workflow
+    assert '--signing-key "$signing_key"' in workflow
+    assert "FORKMESH_RELEASE_SIGNING_KEY must point to" not in workflow
+    assert workflow.index('signing_key="${FORKMESH_RELEASE_SIGNING_KEY:-}"') < (
+        workflow.index("cmake -S qt_client -B qt_client/build-release")
+    )
+
+
+def test_release_signing_preflight_accepts_only_a_usable_ed25519_key(tmp_path):
+    """Run the workflow's own preflight snippet against real keys."""
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    body = workflow.split("run: |\n", 1)[1]
+    body = "\n".join(
+        line[10:] if line.startswith(" " * 10) else line
+        for line in body.split("\n")
+    )
+    start = body.index("# Resolve the release signing key")
+    snippet = "set -e\n" + body[start : body.index("# Map this host")]
+
+    def run(env: dict) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", "-c", snippet],
+            cwd=tmp_path,
+            env={"PATH": "/usr/bin:/bin", "TMPDIR": str(tmp_path), **env},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    key = _release_signing_key(tmp_path)
+    pem = key.read_text(encoding="utf-8")
+
+    assert run({"FORKMESH_RELEASE_SIGNING_KEY": str(key)}).returncode == 0
+    assert run({"FORKMESH_RELEASE_SIGNING_KEY_PEM": pem}).returncode == 0
+    # The variables dialog is single-line: \n-escaped PEM must work too.
+    escaped = run({"FORKMESH_RELEASE_SIGNING_KEY_PEM": pem.replace("\n", "\\n")})
+    assert escaped.returncode == 0, escaped.stderr
+
+    missing = run({})
+    assert missing.returncode != 0
+    assert "no Ed25519 release signing key is configured" in missing.stderr
+
+    rsa = tmp_path / "rsa.pem"
+    subprocess.run(
+        ["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt",
+         "rsa_keygen_bits:2048", "-out", str(rsa)],
+        check=True,
+        capture_output=True,
+    )
+    wrong = run({"FORKMESH_RELEASE_SIGNING_KEY": str(rsa)})
+    assert wrong.returncode != 0
+    assert "not a usable Ed25519 private key" in wrong.stderr
+
+
+def test_release_build_parallelism_follows_the_sandbox_budget():
+    """The Actions cgroup, not the host, decides how many compilers fit.
+
+    `nproc` inside the sandbox reports every host core: oversubscribing the CPU
+    quota ran the build into the step deadline (every release after v0.7.0 was
+    SIGTERMed mid-compile), and one g++ per host core can exceed MemoryMax.
+    """
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert 'jobs="${FORKMESH_ACTIONS_CPUS:-}"' in workflow
+    assert 'mem_mb="${FORKMESH_ACTIONS_MEMORY_MB:-0}"' in workflow
+    assert "mem_jobs=$((mem_mb / 1024))" in workflow
+    assert '[ "$jobs" -gt "$mem_jobs" ] && jobs="$mem_jobs"' in workflow
+    assert workflow.index('jobs="${FORKMESH_ACTIONS_CPUS:-}"') < workflow.index(
+        'cmake --build qt_client/build-release -j"$jobs"'
+    )

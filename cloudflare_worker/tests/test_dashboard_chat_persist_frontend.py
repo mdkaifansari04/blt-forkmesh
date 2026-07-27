@@ -147,6 +147,27 @@ def test_web_chat_mentions_link_to_public_profiles_with_hover_cards():
     assert "sideEntry.text = plain.text || \"\"" in CHAT
 
 
+def test_dashboard_chat_composer_offers_mention_autocomplete():
+    # Typing "@partial" in the dashboard composer pops a suggestion list built
+    # from people seen in the room plus the registered-user directory; Tab (or
+    # Enter / click) accepts, arrows navigate, Escape dismisses. The token
+    # charset matches CHAT_MENTION_RE so an accepted mention renders linked.
+    assert "function mentionTokenAtCaret(" in CHAT
+    assert "function mentionCandidates(" in CHAT
+    assert "function acceptMentionSuggest(" in CHAT
+    assert "function rememberMentionPerson(" in CHAT
+    assert 'const MENTION_DIRECTORY_ENDPOINT = "/api/accounts/users"' in CHAT
+    assert 'event.key === "Tab" || event.key === "Enter"' in CHAT
+    assert "acceptMentionSuggest()" in CHAT
+    assert 'inputEl.addEventListener("input", () => updateMentionSuggest(inputEl))' in CHAT
+    # ForkBot answers a "@forkbot" mention, so it is always suggestable.
+    assert "byName.set(FORKBOT_SENDER_ID" in CHAT
+    # The mention list owns Enter while it is open, so accepting a name must not
+    # also send the half-typed message.
+    wire = CHAT[CHAT.index("function wireInput("):CHAT.index("async function initChat(")]
+    assert wire.index("acceptMentionSuggest()") < wire.index("sendFrom(inputEl);\n      }")
+
+
 def test_chat_mention_styles_are_available_on_all_chat_surfaces():
     for source in (DASHBOARD_HTML, PUBLIC_CHAT_HTML, STYLES):
         assert ".chat-mention {" in source

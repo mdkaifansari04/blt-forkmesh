@@ -273,6 +273,9 @@ QPushButton#repoAction {
 QPushButton#repoAction:hover { background-color: #30363d; }
 QPushButton#repoAction::menu-indicator { width: 0; }
 #repoTabBar { border-bottom: 1px solid #30363d; }
+/* Thin activity rail down the repo detail page's left edge (adhoc #357); its
+   Code/Git items paint themselves (ActivityRailButton). */
+#repoActivityRail { background-color: #010409; border-right: 1px solid #30363d; }
 #commitsList {
     background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
 }
@@ -366,9 +369,14 @@ QPushButton#windowChromeCloseButton:hover {
 QPushButton#relayOpenButton {
     background: transparent; border: none; border-radius: 8px; color: #8b949e;
 }
-QPushButton#relayMenuButton,
 QPushButton#nodeMenuButton, QPushButton#repoMenuButton {
     background: transparent; border: 1px solid #30363d; border-radius: 8px;
+    color: #e6edf3; font-size: 15px; font-weight: 700; padding: 5px 12px;
+}
+/* The relay switcher rides the window-chrome line and reads as a title, so it
+   carries no outline of its own (adhoc #407). */
+QPushButton#relayMenuButton {
+    background: transparent; border: none; border-radius: 8px;
     color: #e6edf3; font-size: 15px; font-weight: 700; padding: 5px 12px;
 }
 QPushButton#relayOpenButton:hover,
@@ -1462,6 +1470,8 @@ QPushButton#repoAction {
 QPushButton#repoAction:hover { background-color: #f3f4f6; }
 QPushButton#repoAction::menu-indicator { width: 0; }
 #repoTabBar { border-bottom: 1px solid #d0d7de; }
+/* Thin activity rail down the repo detail page's left edge (adhoc #357). */
+#repoActivityRail { background-color: #f6f8fa; border-right: 1px solid #d0d7de; }
 #commitsList {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
 }
@@ -1572,9 +1582,14 @@ QPushButton#floatingLogButton:hover { background-color: #f3f4f6; color: #1f2328;
 QPushButton#relayOpenButton {
     background: transparent; border: none; border-radius: 8px; color: #656d76;
 }
-QPushButton#relayMenuButton,
 QPushButton#nodeMenuButton, QPushButton#repoMenuButton {
     background: transparent; border: 1px solid #d0d7de; border-radius: 8px;
+    color: #1f2328; font-size: 15px; font-weight: 700; padding: 5px 12px;
+}
+/* The relay switcher rides the window-chrome line and reads as a title, so it
+   carries no outline of its own (adhoc #407). */
+QPushButton#relayMenuButton {
+    background: transparent; border: none; border-radius: 8px;
     color: #1f2328; font-size: 15px; font-weight: 700; padding: 5px 12px;
 }
 QPushButton#relayOpenButton:hover,

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.7.0 LANGUAGES CXX)
+project(ForkMesh VERSION 0.7.4 LANGUAGES CXX)
 
 # The version stamped into the binary. It tracks the project() version above on
 # every configure, so bumping that line (e.g. cutting a release) immediately
@@ -134,6 +134,8 @@ set(FORKMESH_APP_SOURCES
     src/ChatHistoryLimits.h
     src/ServerNode.h
     src/ServerNode.cpp
+    src/NodeEventSocket.h
+    src/NodeEventSocket.cpp
     src/NetworkBackoff.h
     src/BackoffNetworkAccessManager.h
     src/BackoffNetworkAccessManager.cpp
@@ -284,6 +286,7 @@ qt_wrap_cpp(FORKMESH_MOC_SOURCES
     src/MarkdownEditor.h
     src/MarkupCanvas.h
     src/MessageRow.h
+    src/NodeEventSocket.h
     src/RepoHost.h
     src/ScreenCaptureOverlay.h
     src/ScreenDrawOverlay.h
@@ -346,6 +349,7 @@ set_source_files_properties(
     src/MarkdownEditor.h
     src/MarkupCanvas.h
     src/MessageRow.h
+    src/NodeEventSocket.h
     src/RepoHost.h
     src/ScreenCaptureOverlay.h
     src/ScreenDrawOverlay.h

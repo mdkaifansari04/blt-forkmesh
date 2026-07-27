@@ -111,6 +111,45 @@
       </article>`).join("");
   }
 
+  // Coarse kinds only — the Worker stores when an account was emailed and
+  // whether the provider accepted it, never the subject or body.
+  const ACCOUNT_EMAIL_KIND_LABELS = {
+    verification: "Email verification",
+    password_reset: "Password reset",
+    feedback: "Founder feedback",
+    notifications: "Notification digest",
+    general_chat: "#general digest",
+  };
+
+  function renderAccountActivity(data) {
+    const account = data?.account || {};
+    const lastSeen = $("[data-account-last-seen]");
+    if (lastSeen) {
+      const seenAt = Number(account.lastSeenAt || 0);
+      lastSeen.textContent = seenAt ? formatTimeAgo(seenAt) : "Never";
+      lastSeen.title = seenAt ? formatDate(seenAt) : "";
+    }
+    const emailedAt = Number(account.lastEmailAt || 0);
+    const lastEmail = $("[data-account-last-email]");
+    if (lastEmail) {
+      lastEmail.textContent = emailedAt ? formatTimeAgo(emailedAt) : "Never emailed";
+      lastEmail.title = emailedAt ? formatDate(emailedAt) : "";
+    }
+    const detail = $("[data-account-last-email-detail]");
+    if (detail) {
+      const status = String(account.lastEmailStatus || "");
+      const kind = ACCOUNT_EMAIL_KIND_LABELS[String(account.lastEmailKind || "")] || "Email";
+      detail.textContent = !emailedAt ? "" : kind + " · " + (
+        status === "delivered" ? "Delivered to the mail provider"
+          : status === "failed" ? "The mail provider rejected it"
+            : "Delivery status unknown");
+      detail.className = "mt-1 text-xs " + (
+        status === "delivered" && emailedAt ? "text-emerald-400"
+          : status === "failed" && emailedAt ? "text-red-400"
+            : "text-muted-foreground");
+    }
+  }
+
   function bindAccountSessionControls() {
     const list = $("[data-account-session-list]");
     if (list && list.dataset.controlsBound !== "true") {
@@ -139,6 +178,7 @@
       try {
         const data = await accountSessionApi("GET");
         renderAccountSessions(data);
+        renderAccountActivity(data);
         accountSessionsLoaded = true;
         setAccountSessionStatus(data.privacyNotice || "");
       } catch (error) {
@@ -2266,6 +2306,228 @@
     updateRenameButton();
     renderClaimNodePanel(session);
     renderProfileContributionGraph();
+    renderProfileFediverse(session);
+  }
+
+  // ---- Fediverse presence ------------------------------------------------
+  // A profile with a linked Mastodon handle surfaces that account here: the
+  // account's header image becomes a banner across the overview page and the
+  // newest public posts fill a sidebar card. The browser talks straight to
+  // the user's home instance (public CORS API, credentials omitted) so none
+  // of this spends the worker's request quota, and a 10-minute localStorage
+  // snapshot keeps repeat visits from hammering small instances.
+  const PROFILE_FEDIVERSE_CACHE_PREFIX = "forkmesh.profileFediverse:v1:";
+  const PROFILE_FEDIVERSE_CACHE_TTL_MS = 10 * 60 * 1000;
+  const PROFILE_FEDIVERSE_POST_LIMIT = 3;
+  const profileFediverseLoading = new Set();
+
+  function parseMastodonHandle(raw) {
+    const match = /^@?([\w.-]{1,80})@([a-z0-9-]+(?:\.[a-z0-9-]+)+)$/i
+      .exec(String(raw || "").trim());
+    return match ? { user: match[1], domain: match[2].toLowerCase() } : null;
+  }
+
+  function fediverseHttpsUrl(value) {
+    try {
+      const url = new URL(String(value || "").trim());
+      return url.protocol === "https:" && !url.username && !url.password
+        ? url.href : "";
+    } catch {
+      return "";
+    }
+  }
+
+  // Mastodon serves statuses and notes as sanitized HTML; the card renders
+  // plain text only. A detached textarea decodes entities without ever
+  // constructing elements from the remote markup.
+  function fediversePlainText(value, limit = 280) {
+    const stripped = String(value ?? "")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/(?:p|div|blockquote|li)>/gi, "\n")
+      .replace(/<[^>]*>/g, "");
+    const decoder = document.createElement("textarea");
+    decoder.innerHTML = stripped;
+    const text = decoder.value
+      .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, " ")
+      .replace(/[ \t]+/g, " ")
+      .replace(/ ?\n ?/g, "\n")
+      .replace(/\n{2,}/g, "\n")
+      .trim();
+    return text.length > limit ? text.slice(0, limit - 1).trimEnd() + "…" : text;
+  }
+
+  function profileFediverseCacheKey(handle) {
+    return PROFILE_FEDIVERSE_CACHE_PREFIX + handle;
+  }
+
+  function readProfileFediverseCache(handle) {
+    try {
+      const data = JSON.parse(localStorage.getItem(profileFediverseCacheKey(handle)) || "");
+      return data && typeof data === "object" && Array.isArray(data.posts) ? data : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function writeProfileFediverseCache(handle, data) {
+    try {
+      localStorage.setItem(profileFediverseCacheKey(handle), JSON.stringify(data));
+    } catch {}
+  }
+
+  async function fetchFediverseJson(url) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    try {
+      const response = await fetch(url, {
+        credentials: "omit",
+        headers: { Accept: "application/json" },
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error("fediverse HTTP " + response.status);
+      return await response.json();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function loadProfileFediverse(parsed) {
+    const base = "https://" + parsed.domain;
+    const account = await fetchFediverseJson(
+      base + "/api/v1/accounts/lookup?acct=" + encodeURIComponent(parsed.user));
+    const id = String(account?.id || "").trim().slice(0, 64);
+    if (!id || account?.suspended) return null;
+    let statuses = [];
+    try {
+      statuses = await fetchFediverseJson(
+        base + "/api/v1/accounts/" + encodeURIComponent(id) +
+        "/statuses?limit=10&exclude_replies=true");
+    } catch {
+      // The account still renders; the posts list just stays empty.
+    }
+    const posts = (Array.isArray(statuses) ? statuses : [])
+      .map((status) => {
+        const boost = status?.reblog && typeof status.reblog === "object"
+          ? status.reblog : null;
+        const source = boost || status || {};
+        const imageCount = (Array.isArray(source.media_attachments)
+          ? source.media_attachments : [])
+          .filter((media) => String(media?.type || "") === "image").length;
+        return {
+          url: fediverseHttpsUrl(source.url || status?.url),
+          text: fediversePlainText(source.content),
+          imageCount,
+          boosted: Boolean(boost),
+          createdAt: String(source.created_at || status?.created_at || ""),
+        };
+      })
+      .filter((post) => post.url && (post.text || post.imageCount))
+      .slice(0, PROFILE_FEDIVERSE_POST_LIMIT);
+    // Instances answer with a placeholder "missing.png" header when the
+    // account never uploaded one — that is not a banner worth showing.
+    const header = fediverseHttpsUrl(account.header_static || account.header);
+    return {
+      at: Date.now(),
+      url: fediverseHttpsUrl(account.url) || base + "/@" + parsed.user,
+      acct: String(account.acct || parsed.user).slice(0, 120),
+      banner: /\/missing\.png$/i.test(header) ? "" : header,
+      posts,
+    };
+  }
+
+  function renderProfileFediverseData(handle, data) {
+    const stamp = handle + ":" + String(data?.at || 0);
+    const banner = $("[data-profile-fediverse-banner]");
+    if (banner) {
+      if (data?.banner) {
+        banner.style.backgroundImage = 'url("' + data.banner + '")';
+        banner.href = data.url;
+        banner.hidden = false;
+      } else {
+        banner.hidden = true;
+      }
+    }
+    $$("[data-profile-fediverse]").forEach((card) => {
+      if (!data) {
+        card.hidden = true;
+        return;
+      }
+      if (card.dataset.fediverseStamp === stamp) {
+        card.hidden = false;
+        return;
+      }
+      card.dataset.fediverseStamp = stamp;
+      const link = card.querySelector("[data-profile-fediverse-link]");
+      if (link) {
+        link.textContent = "@" + data.acct;
+        link.href = data.url;
+      }
+      // Pops the feed out into its own window so it can sit beside the
+      // dashboard instead of replacing the tab.
+      const popout = card.querySelector("[data-profile-fediverse-popout]");
+      if (popout) {
+        popout.onclick = () => {
+          window.open(
+            data.url, "forkmesh-fediverse-feed",
+            "noopener,width=520,height=860");
+        };
+      }
+      const list = card.querySelector("[data-profile-fediverse-posts]");
+      if (list) {
+        list.textContent = "";
+        data.posts.forEach((post, index) => {
+          const item = document.createElement("a");
+          item.href = post.url;
+          item.target = "_blank";
+          item.rel = "noopener noreferrer";
+          item.className = "block px-3 py-2 hover:bg-secondary" +
+            (index ? " border-t border-border" : "");
+          const text = document.createElement("p");
+          text.className = "whitespace-pre-wrap break-words leading-5 text-foreground";
+          text.textContent = post.text ||
+            (post.imageCount === 1 ? "Shared an image." : "Shared " + post.imageCount + " images.");
+          const meta = document.createElement("p");
+          meta.className = "mt-1 text-xs text-muted-foreground";
+          meta.textContent = (post.boosted ? "Boosted · " : "") + formatTimeAgo(post.createdAt);
+          item.append(text, meta);
+          list.append(item);
+        });
+        if (!data.posts.length) {
+          const empty = document.createElement("p");
+          empty.className = "px-3 py-2 text-muted-foreground";
+          empty.textContent = "No public posts yet.";
+          list.append(empty);
+        }
+      }
+      card.hidden = false;
+      window.lucide?.createIcons();
+    });
+  }
+
+  function renderProfileFediverse(session) {
+    if (profileMarkupOwnedByPublicProfile(session)) return;
+    const parsed = parseMastodonHandle(session?.mastodon);
+    if (!parsed) {
+      renderProfileFediverseData("", null);
+      return;
+    }
+    const handle = parsed.user + "@" + parsed.domain;
+    const cached = readProfileFediverseCache(handle);
+    if (cached) renderProfileFediverseData(handle, cached);
+    const fresh = cached && Date.now() - Number(cached.at || 0) < PROFILE_FEDIVERSE_CACHE_TTL_MS;
+    if (fresh || profileFediverseLoading.has(handle)) return;
+    profileFediverseLoading.add(handle);
+    loadProfileFediverse(parsed)
+      .then((data) => {
+        if (!data) return;
+        writeProfileFediverseCache(handle, data);
+        renderProfileFediverseData(handle, data);
+      })
+      .catch(() => {
+        // Instance unreachable (CORS, rate limit, downtime): keep whatever
+        // the stale snapshot already painted instead of flashing it away.
+      })
+      .finally(() => profileFediverseLoading.delete(handle));
   }
 
   function renderProfileLinksEditor(session = state.session) {

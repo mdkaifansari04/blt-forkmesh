@@ -76,12 +76,17 @@ ACTIONS_CONFIGURATION_TYPE = "forkmesh.mirror-actions-catalog-configuration"
 ACTIONS_STATE_TYPE = "forkmesh.mirror-actions-state"
 ACTIONS_STATE_FILE = "actions-state.json"
 ACTIONS_SUMMARY_FILE = "actions-summary.json"
+HOSTED_REPOSITORIES_FILE = "hosted-repositories.json"
+HOSTED_REPOSITORIES_TYPE = "forkmesh.hosted-repositories"
+HOSTED_REPOSITORIES_ROOT = Path("/srv/forkmesh-git/imports")
+MAX_HOSTED_REPOSITORIES = 100
 SYSTEM_ACTIONS_STATE_PATH = Path(
     "/var/lib/forkmesh-mirror/gateway/actions-state.json"
 )
 NODE_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+ARCHIVE_NAME_RE = re.compile(r"^archive-[0-9a-f]{64}\.age$")
 GIT_OBJECT_ID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 BASE64URL_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 MERGE_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{12,80}$")
@@ -1075,9 +1080,17 @@ def _fsck_source(config: RefreshConfig) -> None:
     )
 
 
-def _source_refs_sha256(config: RefreshConfig) -> str:
+def _repository_refs_sha256(
+    config: RefreshConfig,
+    repository: Path,
+) -> str:
     raw = _run_bounded(
-        _git_prefix(config)
+        [
+            str(config.git_program),
+            "--no-pager",
+            "--git-dir",
+            str(repository),
+        ]
         + [
             "for-each-ref",
             "--sort=refname",
@@ -1096,6 +1109,10 @@ def _source_refs_sha256(config: RefreshConfig) -> str:
     if len(canonical.encode("utf-8")) > 16 * 1024 * 1024:
         raise RefreshError("source repository has too many public refs")
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _source_refs_sha256(config: RefreshConfig) -> str:
+    return _repository_refs_sha256(config, config.source_repository)
 
 
 def _source_branch_commit(config: RefreshConfig) -> str:
@@ -1122,6 +1139,56 @@ def _source_branch_commit(config: RefreshConfig) -> str:
     if not GIT_OBJECT_ID_RE.fullmatch(commit):
         raise RefreshError("source repository commit is invalid")
     return commit
+
+
+def _source_commit_identity(config: RefreshConfig) -> dict[str, str]:
+    """Subject, author and date of the published head commit.
+
+    Repository content is untrusted: the subject and author are bounded, and any
+    control character (a crafted commit could carry newlines or an ANSI escape)
+    is dropped before the values reach the signed catalog record. A commit that
+    can't be read leaves every field absent rather than publishing a blank.
+    """
+    try:
+        raw = _run_bounded(
+            _git_prefix(config)
+            + [
+                "show",
+                "-s",
+                "--format=%s%n%an%n%ct",
+                _source_revision(config),
+                "--",
+            ],
+            maximum_output=8 * 1024,
+            timeout=60,
+        )
+        lines = raw.decode("utf-8", "replace").split("\n")
+    except (RefreshError, UnicodeDecodeError):
+        return {}
+    if len(lines) < 3:
+        return {}
+
+    def sanitized(value: str, maximum: int) -> str:
+        text = "".join(
+            " " if character < " " or character == "\x7f" else character
+            for character in value
+        )
+        return " ".join(text.split())[:maximum]
+
+    result: dict[str, str] = {}
+    subject = sanitized(lines[0], 120)
+    if subject:
+        result["commitSubject"] = subject
+    author = sanitized(lines[1], 64)
+    if author:
+        result["commitAuthorName"] = author
+    try:
+        committed_at = int(lines[2].strip())
+    except (TypeError, ValueError):
+        committed_at = 0
+    if 0 < committed_at < 1 << 34:
+        result["commitAt"] = str(committed_at * 1000)
+    return result
 
 
 def _source_revision(config: RefreshConfig) -> str:
@@ -1536,6 +1603,12 @@ def _sample_repository_statistics(
     sample("pullCount", lambda: _source_pull_count(config))
     sample("discussionCount", lambda: _source_discussion_count(config))
     sample("artifactCount", lambda: _source_artifact_count(config))
+    try:
+        result.update(_source_commit_identity(config))
+    except Exception:
+        # Same independence rule as the counts above: an unreadable commit
+        # message must not cost the mirror its lease renewal.
+        pass
     return result
 
 
@@ -1622,6 +1695,105 @@ def _validate_archive(
         os.close(descriptor)
 
 
+def _hosted_gateway_repositories(
+    config: RefreshConfig,
+) -> list[dict[str, Any]]:
+    path = config.gateway_config_path.parent / HOSTED_REPOSITORIES_FILE
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return []
+    source = _read_secure_json(
+        path,
+        label="hosted repositories",
+        maximum=MAX_CONFIG_BYTES,
+        owner_only=True,
+    )
+    _expect_fields(
+        source,
+        {"schemaVersion", "type", "repositories"},
+        label="hosted repositories",
+    )
+    items = source.get("repositories")
+    if (
+        source.get("schemaVersion") != SCHEMA_VERSION
+        or source.get("type") != HOSTED_REPOSITORIES_TYPE
+        or not isinstance(items, list)
+        or len(items) > MAX_HOSTED_REPOSITORIES
+    ):
+        raise RefreshError("hosted repositories configuration is invalid")
+    imports_root = HOSTED_REPOSITORIES_ROOT.resolve()
+    operations = [
+        operation
+        for operation in config.operations
+        if operation not in {"merge-pull", "actions-status", "release-blob"}
+    ]
+    output: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            raise RefreshError("hosted repository entry is invalid")
+        _expect_fields(
+            item,
+            {
+                "owner",
+                "name",
+                "sourceRepository",
+                "sourceUrl",
+                "importId",
+                "description",
+                "branch",
+                "createdAt",
+                "publishedStateHash",
+            },
+            label="hosted repository entry",
+        )
+        owner = str(item.get("owner") or "").strip().lower()
+        name = str(item.get("name") or "").strip()
+        identity = (owner, name.lower())
+        if (
+            owner != config.node_owner
+            or not REPOSITORY_RE.fullmatch(name)
+            or identity in seen
+        ):
+            raise RefreshError("hosted repository identity is invalid")
+        seen.add(identity)
+        repository = _absolute_path(
+            item.get("sourceRepository"),
+            "hosted source repository",
+        )
+        _reject_symlink_components(repository, "hosted source repository")
+        try:
+            info = repository.lstat()
+            resolved = repository.resolve()
+        except OSError as exc:
+            raise RefreshError("hosted source repository is unavailable") from exc
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or imports_root not in resolved.parents
+        ):
+            raise RefreshError("hosted source repository is unsafe")
+        output.append(
+            {
+                "owner": owner,
+                "name": name,
+                "visibility": "public",
+                "enabled": True,
+                "gitDir": str(repository),
+                "integrity": {
+                    "expectedRefsSha256": _repository_refs_sha256(
+                        config,
+                        repository,
+                    ),
+                },
+                "operations": operations,
+            }
+        )
+    return output
+
+
 def _render_gateway_config(
     config: RefreshConfig,
     identity: PublicIdentity,
@@ -1657,6 +1829,7 @@ def _render_gateway_config(
         if config.release_store is not None:
             repository["releaseStore"] = str(config.release_store)
         repositories.append(repository)
+    repositories.extend(_hosted_gateway_repositories(config))
     return {
         "schemaVersion": 1,
         "node": {
@@ -1886,6 +2059,45 @@ def _install_content_addressed_archive(
     return final
 
 
+def _prune_superseded_archives(
+    config: RefreshConfig,
+    *,
+    keep: frozenset[Path],
+) -> None:
+    """Remove refresh-managed generations that cannot be active anymore."""
+    retained = {path.resolve() for path in keep}
+    changed = False
+    try:
+        candidates = tuple(config.archive_directory.iterdir())
+    except OSError as exc:
+        raise RefreshError("encrypted archive directory cannot be listed") from exc
+    for path in candidates:
+        if not ARCHIVE_NAME_RE.fullmatch(path.name):
+            continue
+        try:
+            info = path.lstat()
+            resolved = path.resolve()
+        except OSError as exc:
+            raise RefreshError("superseded archive cannot be inspected") from exc
+        if resolved in retained:
+            continue
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or resolved.parent != config.archive_directory.resolve()
+        ):
+            raise RefreshError("superseded archive is unsafe")
+        try:
+            path.unlink()
+        except OSError as exc:
+            raise RefreshError("superseded archive cleanup failed") from exc
+        changed = True
+    if changed:
+        _fsync_directory(config.archive_directory)
+
+
 def _invoke_gateway_check(config: RefreshConfig, gateway_config: Path) -> None:
     raw = _run_bounded(config.gateway_check_command(gateway_config))
     result = _parse_json(
@@ -1989,6 +2201,60 @@ def refresh(config: RefreshConfig) -> dict[str, Any]:
         identity = _load_public_identity(config)
         _fsck_source(config)
         before_refs = _source_refs_sha256(config)
+        active: tuple[SealMetadata, Path] | None = None
+        try:
+            config.gateway_config_path.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            try:
+                active = _active_metadata(config, identity)
+            except RefreshError:
+                # A refresh is also the recovery path for a damaged or stale
+                # active generation. Preserve unknown files until the newly
+                # sealed replacement has passed every validation step.
+                active = None
+        _prune_superseded_archives(
+            config,
+            keep=frozenset({active[1]}) if active is not None else frozenset(),
+        )
+        if active is not None and secrets.compare_digest(
+            before_refs,
+            active[0].expected_refs_sha256,
+        ):
+            # The encrypted flagship generation is unchanged, but adjacent
+            # hosted-import records may have changed. Rebuild and validate the
+            # lightweight gateway configuration without resealing repository
+            # bytes so additions/deletions become routable immediately.
+            staged_gateway = _write_staged_json(
+                config.gateway_config_path.parent,
+                config.gateway_config_path.name,
+                _render_gateway_config(
+                    config,
+                    identity,
+                    active[0],
+                    active[1],
+                ),
+            )
+            try:
+                _invoke_gateway_check(config, staged_gateway)
+                os.replace(staged_gateway, config.gateway_config_path)
+                staged_gateway = None
+                try:
+                    _fsync_directory(config.gateway_config_path.parent)
+                except RefreshError:
+                    pass
+            finally:
+                if staged_gateway is not None:
+                    try:
+                        staged_gateway.unlink()
+                    except FileNotFoundError:
+                        pass
+            return {
+                "ok": True,
+                "event": "refresh_complete",
+                "aliasCount": len(config.owner_aliases),
+            }
         staged_archive = config.archive_directory / (
             ".refresh-" + secrets.token_hex(16) + ".age"
         )
@@ -2056,6 +2322,20 @@ def refresh(config: RefreshConfig) -> dict[str, Any]:
                 # The atomic rename has already committed a complete,
                 # validated generation.  Reporting failure here would be
                 # misleading and could prompt an unsafe retry/rollback.
+                pass
+            # The running gateway has already materialized the previous
+            # generation, while every future start now reads the new config.
+            # Keeping randomized age ciphertext for superseded refs only makes
+            # storage grow by one full repository per push.
+            try:
+                _prune_superseded_archives(
+                    config,
+                    keep=frozenset({archive_path}),
+                )
+            except RefreshError:
+                # Publication already committed atomically. Do not turn a
+                # best-effort post-commit reclamation failure into another
+                # full reseal; the next refresh prunes it before writing.
                 pass
             return {
                 "ok": True,

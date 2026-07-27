@@ -42,6 +42,7 @@
       links: [
         { href: "/status", label: "System status" },
         { href: "/chat", label: "Community chat" },
+        { href: "/referrals", label: "Referral program" },
         {
           href: "https://reddit.com/r/forkmesh",
           label: "Reddit",
