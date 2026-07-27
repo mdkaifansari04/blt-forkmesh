@@ -297,9 +297,9 @@ def test_member_total_tracks_arrivals_without_waiting_for_the_poll():
     # adhoc #393: the count is repainted from every presence frame, so a new
     # account is counted the moment it joins instead of at the next 60s tick.
     note = APP.split("noteDirectoryMembers(names) {", 1)[1].split("\n  }", 1)[0]
-    assert "void this.refreshMemberDirectory(true);" in note
-    assert "this.pendingDirectoryMembers.add(member.name.toLowerCase())" in note
-    refresh = APP.split("async refreshMemberDirectory(force = false) {", 1)[1]
+    assert "void this.refreshMemberDirectory(true, missing);" in note
+    refresh = APP.split(
+        "async refreshMemberDirectory(force = false, probed = []) {", 1)[1]
     refresh = refresh.split("\n  }", 1)[0]
     # The forced fetch bypasses the idle throttle and the client-side copy,
     # but never fires inside the endpoint's own edge-cache TTL.
@@ -307,13 +307,30 @@ def test_member_total_tracks_arrivals_without_waiting_for_the_poll():
     assert ": WORLD_MEMBER_DIRECTORY_POLL_MS;" in refresh
     assert "maxAge: force ? 0 : WORLD_MEMBER_DIRECTORY_POLL_MS," in refresh
     assert "const USERS_DIRECTORY_TTL_MS = 30 * 1000;" in APP
-    # A stale edge-cached snapshot must not drop members already seated from a
-    # presence frame, or the total would count back down.
-    assert "this.memberDirectory = [...directory, ...pending];" in refresh
-    assert "this.pendingDirectoryMembers.has(key) && !listed.has(key)" in refresh
     # A tab coming back from hidden is up to a full tick behind.
     visibility = APP.split("handleVisibility = () => {", 1)[1].split("\n  };", 1)[0]
     assert "void this.refreshMemberDirectory();" in visibility
+
+
+def test_only_users_table_accounts_are_counted_at_the_fire():
+    # adhoc #427: a presence frame is not a membership. Guests, bots and
+    # private profiles broadcast names too, so a name is only ever a reason to
+    # re-read /api/accounts/users — the count and the benches come from that
+    # snapshot alone, and a name it does not list is never seated locally.
+    note = APP.split("noteDirectoryMembers(names) {", 1)[1].split("\n  }", 1)[0]
+    assert "this.memberDirectory = [" not in note
+    assert "this.unlistedDirectoryNames.has(key)" in note
+    refresh = APP.split(
+        "async refreshMemberDirectory(force = false, probed = []) {", 1)[1]
+    refresh = refresh.split("\n  }", 1)[0]
+    assert "this.memberDirectory = directory;" in refresh
+    # A name the directory came back without must not force a fetch again.
+    assert "if (!listed.has(key)) this.unlistedDirectoryNames.add(key);" in refresh
+    # Everyone present without a users-table row takes a spare seat instead of
+    # a named bench, so the ring still fits the crowd.
+    lounge = APP.split("syncMemberLounge() {", 1)[1].split("\n  }", 1)[0]
+    assert "if (!listed.has(key)) guests += 1;" in lounge
+    assert "this.memberDirectory.length," in lounge
 
 
 def test_seated_members_get_a_chat_bubble_over_their_bench():
