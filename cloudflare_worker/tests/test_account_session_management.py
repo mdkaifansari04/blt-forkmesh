@@ -95,22 +95,25 @@ def _runtime(
     return namespace["_account_sessions"], calls, audits, lookups
 
 
-def test_session_list_is_account_scoped_and_contains_no_network_identity():
+def test_session_list_is_account_scoped_and_shows_only_owner_visible_detail():
     sessions, calls, _audits, lookups = _runtime(rows=[{
         "session_id": "c" * 32,
         "created_at": 1_000_000,
         "last_seen_at": 1_500_000,
         "expires_at": 3_000_000,
         "device_label": "Mobile browser",
-        "ip": "203.0.113.9",
+        "client_ip": "203.0.113.9",
         "user_agent": "sensitive raw agent",
     }])
     response = asyncio.run(sessions(
         object(), SimpleNamespace(method="GET", headers={})))
     assert response["status"] == 200
+    # The sign-in address is returned so the owner can recognize a device they
+    # do not own before revoking it. The raw user agent still never leaves D1.
     assert response["body"]["sessions"] == [{
         "id": "c" * 32,
         "deviceLabel": "Mobile browser",
+        "ipAddress": "203.0.113.9",
         "createdAt": 1_000_000,
         "lastSeenAt": 1_500_000,
         "expiresAt": 3_000_000,
@@ -125,7 +128,6 @@ def test_session_list_is_account_scoped_and_contains_no_network_identity():
         "lastEmailKind": "",
     }
     encoded = json.dumps(response)
-    assert "203.0.113.9" not in encoded
     assert "sensitive raw agent" not in encoded
     query = next(call for call in calls if call[0] == "all")
     assert "WHERE account_bi=?" in query[1]
@@ -206,6 +208,24 @@ def test_all_other_sessions_preserves_current_session():
     assert audits[0][-1] == {"scope": "others"}
 
 
+def test_log_out_everywhere_drops_the_calling_device_too():
+    sessions, calls, audits, _lookups = _runtime()
+    response = asyncio.run(sessions(
+        object(), SimpleNamespace(method="DELETE", headers={}), "all"))
+    assert response["status"] == 200
+    assert response["body"]["currentRevoked"] is True
+    assert response["extra_headers"]["Set-Cookie"] == "cleared"
+    # An account-wide revoke, not a per-session one: no session id is passed.
+    assert ("revoke", "account-bi", "") in calls
+    assert audits[0][1:6] == (
+        "account.session_revoke",
+        "account_session",
+        "all-devices",
+        "success",
+        {"scope": "all"},
+    )
+
+
 def test_cookie_delete_requires_exact_origin():
     sessions, calls, audits, lookups = _runtime(
         cookie_auth=True, same_origin=False)
@@ -249,7 +269,8 @@ def test_frontend_exposes_remote_session_controls_and_privacy_copy():
     assert 'accountSessionApi("DELETE", "/others")' in fragment
     assert "data-account-session-revoke" in fragment
     assert "data-account-session-list" in settings
-    assert "IP addresses or raw browser details" in settings
+    assert "the address the sign-in came from" in settings
+    assert "session.ipAddress" in fragment
 
 
 def test_session_routes_are_bounded_to_get_and_delete():

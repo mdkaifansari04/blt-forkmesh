@@ -3,7 +3,7 @@
 
 An organization owner or administrator sees one extra plaque on the back of
 every avatar belonging to a member of an organization they manage. Opening it
-shows a multi-select of that organization's teams; saving writes the same
+shows accessible checkboxes for that organization's teams; saving writes the same
 /api/orgs/<org>/teams/<team>/members grants the settings page makes, and team
 permission is what opens the organization's repository floors and offices.
 
@@ -18,8 +18,9 @@ These tests pin:
     moderation plaques;
   * the plaque texture carries names and counts only — never a session token;
   * the app layer builds the plaque only for organizations whose viewerRole is
-    owner or admin, and the dialog is a real multi-select whose save diffs into
-    POST/DELETE team-member writes and re-reads the roster afterwards.
+    owner or admin, and the dialog uses real checkboxes whose save diffs into
+    POST/DELETE team-member writes, re-reads the roster, and refreshes the
+    signed-in viewer's server-authoritative elevator grants once.
 
 Run: python3 -m pytest cloudflare_worker/tests/test_world_org_team_plaque.py
 """
@@ -242,7 +243,7 @@ def test_team_plaque_texture_carries_no_secret():
         assert secret not in texture.lower(), secret
 
 
-# --- The multi-select the plaque opens ---------------------------------------
+# --- The team checkboxes the plaque opens ------------------------------------
 
 def test_only_org_owners_and_admins_build_the_plaque():
     managed = APP[
@@ -263,15 +264,19 @@ def test_only_org_owners_and_admins_build_the_plaque():
         in APP
 
 
-def test_assignment_dialog_is_a_multi_select_that_diffs_into_team_writes():
+def test_assignment_dialog_uses_checkboxes_and_diffs_into_team_writes():
     dialog = APP[
         APP.index("  openOrgTeamAssignment(target = {}) {"):
         APP.index("  bindUI() {")
     ]
     assert "this.managedOrganization(org)" in dialog
     assert "Organization administrator access is required." in dialog
-    assert '<select name="teams" multiple' in dialog
-    assert "form.elements.teams.selectedOptions" in dialog
+    assert "<fieldset" in dialog
+    assert "<legend" in dialog and ">Teams</legend>" in dialog
+    assert 'type="checkbox" name="teams"' in dialog
+    assert "form.querySelectorAll('input[name=\"teams\"]:checked')" in dialog
+    assert '<select name="teams" multiple' not in dialog
+    assert "selectedOptions" not in dialog
     assert "const added = [...selected].filter((team) => !current.has(team))" \
         in dialog
     assert "const removed = [...current].filter((team) => !selected.has(team))" \
@@ -279,8 +284,23 @@ def test_assignment_dialog_is_a_multi_select_that_diffs_into_team_writes():
     assert '`${root}/${encodeURIComponent(team)}/members`' in dialog
     assert 'grant ? {} : { method: "DELETE" }' in dialog
     assert "await this.refreshOrganizationTeams(org)" in dialog
-    # The plaque explains what a team grant actually opens in the World.
-    assert "repository floors" in dialog
+    # The plaque names the one website setting behind both views and explains
+    # the Office elevator effect without making the client authoritative.
+    assert "same organization teams" in dialog
+    assert "website organization settings" in dialog
+    assert "officeFloorsForTeam(team?.team)" in dialog
+    assert "Unlocks Office elevator" in dialog
+    assert "No additional Office elevator floor" in dialog
+
+    # Saving a different user's grants does not touch this browser's elevator.
+    # Saving the signed-in viewer performs exactly one deliberate refresh;
+    # the controller re-reads the authoritative allowlist without polling.
+    assert "let savedChanges = 0" in dialog
+    assert "savedChanges += 1" in dialog
+    assert "savedChanges > 0" in dialog
+    assert 'member === String(validWorldSession()?.nodeName || "").toLowerCase()' \
+        in dialog
+    assert "await this.officeController?.refreshAuthorization?.()" in dialog
 
     refresh = APP[
         APP.index("  async refreshOrganizationTeams(name) {"):

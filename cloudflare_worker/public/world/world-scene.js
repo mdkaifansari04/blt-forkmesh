@@ -3049,33 +3049,37 @@ function createAvatar(THREE, identity, options = {}) {
   return group;
 }
 
-function avatarSecurityBadgeTexture(THREE, details = {}) {
-  const ip = String(details.ip || "").trim().slice(0, 64);
-  const userAgent = String(details.userAgent || "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 256);
-  const wrap = (text, width, rows) => {
-    const words = String(text || "").split(" ").filter(Boolean);
-    const lines = [];
-    let line = "";
-    words.forEach((word) => {
-      const chunks = [];
-      for (let at = 0; at < word.length; at += width) {
-        chunks.push(word.slice(at, at + width));
-      }
-      chunks.forEach((chunk) => {
-        const candidate = line ? `${line} ${chunk}` : chunk;
-        if (candidate.length > width && line) {
-          lines.push(line);
-          line = chunk;
-        } else {
-          line = candidate;
-        }
-      });
-    });
-    if (line) lines.push(line);
-    return lines.slice(0, rows);
+const WORK_BADGE_ROWS = 6;
+
+function normalizeSelfWorkBoard(board = {}) {
+  const state = ["locked", "loading", "ready"].includes(board?.state)
+    ? board.state
+    : "locked";
+  const items = Array.isArray(board?.items) ? board.items : [];
+  return {
+    state,
+    message: String(board?.message || "").replace(/\s+/g, " ").trim().slice(0, 64),
+    tracked: String(board?.tracked || "").trim().slice(0, 16),
+    items: items.slice(0, WORK_BADGE_ROWS).map((item) => ({
+      kind: item?.kind === "issue" ? "issue" : "task",
+      title: String(item?.title || "").replace(/\s+/g, " ").trim().slice(0, 64),
+      status: item?.status === "active" ? "active" : "idle",
+      elapsed: String(item?.elapsed || "").trim().slice(0, 12),
+      checkin: String(item?.checkin || "").trim().slice(0, 24),
+    })).filter((item) => item.title),
+    total: Math.max(0, Math.min(999, Number(board?.total) || 0)),
+    active: Math.max(0, Math.min(999, Number(board?.active) || 0)),
+  };
+}
+
+function avatarWorkBadgeTexture(THREE, board = {}) {
+  const snapshot = normalizeSelfWorkBoard(board);
+  const clip = (context, text, width) => {
+    let value = String(text || "");
+    while (value.length > 1 && context.measureText(value).width > width) {
+      value = value.slice(0, -1);
+    }
+    return value === String(text || "") ? value : value.slice(0, -1) + "\u2026";
   };
   return canvasTexture(THREE, 768, 960, (context) => {
     context.fillStyle = "#071714";
@@ -3086,28 +3090,93 @@ function avatarSecurityBadgeTexture(THREE, details = {}) {
     context.textAlign = "left";
     context.textBaseline = "middle";
     context.fillStyle = "#9ef7c6";
-    context.font = '900 58px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("YOUR SESSION", 44, 78);
+    context.font = '900 56px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("MY WORK", 44, 78);
     context.fillStyle = "#7fb9a5";
     context.font = '800 34px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("PRIVATE · SELF ONLY", 44, 132);
+    context.fillText("PRIVATE \u00b7 SELF ONLY", 44, 132);
 
+    if (snapshot.state !== "ready") {
+      context.fillStyle = snapshot.state === "loading" ? "#9ef7c6" : "#f7c96b";
+      context.font = '900 42px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        snapshot.state === "loading" ? "SYNCING\u2026" : "SIGN IN",
+        44,
+        260,
+      );
+      context.fillStyle = "#e9fff6";
+      context.font = '650 30px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        clip(context, snapshot.message || "No assigned work loaded.", 660),
+        44,
+        320,
+      );
+      context.fillStyle = "#7fb9a5";
+      context.font = '700 25px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("HIDDEN FROM PEERS + SCREENSHOTS", 44, 912);
+      return;
+    }
+
+    // Stats first: the plate is read at a glance while walking past a mirror,
+    // so the counters stay above the per-task rows.
     context.fillStyle = "#f7c96b";
     context.font = '900 38px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("EDGE IP", 44, 214);
+    context.fillText("ASSIGNED", 44, 214);
+    context.fillText("RUNNING", 300, 214);
+    context.fillText("TRACKED", 540, 214);
     context.fillStyle = "#ffffff";
-    context.font = '700 36px "ForkMesh Mono", ui-monospace, monospace';
-    wrap(ip || "UNAVAILABLE", 30, 3).forEach((line, index) => {
-      context.fillText(line, 44, 272 + index * 48);
-    });
+    context.font = '900 52px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(String(snapshot.total), 44, 274);
+    context.fillText(String(snapshot.active), 300, 274);
+    context.font = '900 40px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(snapshot.tracked || "0:00", 540, 274);
 
-    context.fillStyle = "#77d9ff";
-    context.font = '900 38px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("USER AGENT", 44, 432);
-    context.fillStyle = "#e9fff6";
-    context.font = '650 31px "ForkMesh Mono", ui-monospace, monospace';
-    wrap(userAgent || "UNAVAILABLE", 39, 8).forEach((line, index) => {
-      context.fillText(line, 44, 486 + index * 43);
+    context.strokeStyle = "rgba(158,247,198,0.3)";
+    context.lineWidth = 3;
+    context.beginPath();
+    context.moveTo(44, 322);
+    context.lineTo(724, 322);
+    context.stroke();
+
+    if (!snapshot.items.length) {
+      context.fillStyle = "#e9fff6";
+      context.font = '650 31px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("NOTHING ASSIGNED TO YOU YET", 44, 392);
+    }
+    snapshot.items.forEach((item, index) => {
+      const top = 386 + index * 92;
+      context.fillStyle =
+        item.kind === "issue"
+          ? "#77d9ff"
+          : item.status === "active"
+            ? "#1f9c6a"
+            : "#3a4b45";
+      context.beginPath();
+      context.arc(60, top, 13, 0, Math.PI * 2);
+      context.fill();
+      context.fillStyle = "#ffffff";
+      context.font = '700 32px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(clip(context, item.title, 500), 92, top - 12);
+      context.fillStyle =
+        item.kind === "issue"
+          ? "#77d9ff"
+          : item.status === "active"
+            ? "#9ef7c6"
+            : "#7fb9a5";
+      context.font = '650 26px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        clip(
+          context,
+          item.kind === "issue"
+            ? `ISSUE${item.checkin ? ` \u00b7 ${item.checkin}` : ""}`
+            : `${item.status === "active" ? "RUNNING" : "TO DO"} \u00b7 ${
+                item.elapsed || "0:00"
+              }${item.checkin ? ` \u00b7 ${item.checkin}` : ""}`,
+          580,
+        ),
+        92,
+        top + 24,
+      );
     });
 
     context.fillStyle = "#7fb9a5";
@@ -3116,15 +3185,11 @@ function avatarSecurityBadgeTexture(THREE, details = {}) {
   });
 }
 
-function setAvatarSecurityBadge(THREE, avatar, details, visible = true) {
+function setAvatarWorkBadge(THREE, avatar, board, visible = true) {
   if (!avatar?.userData) return null;
-  const ip = String(details?.ip || "").trim().slice(0, 64);
-  const userAgent = String(details?.userAgent || "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 256);
-  let badge = avatar.userData.selfSecurityBadge;
-  if (!ip && !userAgent) {
+  const snapshot = normalizeSelfWorkBoard(board);
+  let badge = avatar.userData.selfWorkBadge;
+  if (snapshot.state === "locked" && !snapshot.items.length) {
     if (badge) badge.visible = false;
     return badge || null;
   }
@@ -3133,18 +3198,15 @@ function setAvatarSecurityBadge(THREE, avatar, details, visible = true) {
       new THREE.PlaneGeometry(1.06, 1.32),
       new THREE.MeshBasicMaterial({ toneMapped: false }),
     );
-    badge.name = "forkmesh-self-security-back-badge";
-    // Avatar fronts face -Z, so the owner-only security card sits on +Z.
+    badge.name = "forkmesh-self-work-back-badge";
+    // Avatar fronts face -Z, so the owner-only work board sits on +Z.
     badge.position.set(0, 2.22, 0.318);
     badge.renderOrder = 4;
     avatar.add(badge);
-    avatar.userData.selfSecurityBadge = badge;
+    avatar.userData.selfWorkBadge = badge;
   }
   const previous = badge.material.map;
-  badge.material.map = avatarSecurityBadgeTexture(THREE, {
-    ip,
-    userAgent,
-  });
+  badge.material.map = avatarWorkBadgeTexture(THREE, snapshot);
   badge.material.needsUpdate = true;
   badge.visible = visible === true;
   previous?.dispose?.();
@@ -9931,11 +9993,15 @@ export function createWorldScene({
     if (logoReflectionDirty && time >= logoReflectionEligibleAt) {
       const cubeWasVisible = chromeCube.visible;
       const playerWasVisible = player.visible;
+      const selfWorkBadge = player.userData?.selfWorkBadge;
+      const selfWorkBadgeWasVisible = selfWorkBadge?.visible;
       chromeCube.visible = false;
       // First-person mode normally hides the local body from the main camera.
       // The reflection camera is independent, so reveal it for this capture
-      // and restore the exact prior state immediately afterwards.
+      // while excluding its owner-only task plate. Restore both exact prior
+      // visibility states immediately afterwards.
       player.visible = true;
+      if (selfWorkBadge) selfWorkBadge.visible = false;
       // Movement and camera updates happen earlier in this frame. Commit the
       // avatar's latest pose before the six cube faces render so its mirror
       // image never trails one settled position behind.
@@ -9944,6 +10010,9 @@ export function createWorldScene({
       try {
         reflectionCamera.update(renderer, scene);
       } finally {
+        if (selfWorkBadge) {
+          selfWorkBadge.visible = selfWorkBadgeWasVisible;
+        }
         player.visible = playerWasVisible;
         chromeCube.visible = cubeWasVisible;
       }
@@ -10242,8 +10311,8 @@ export function createWorldScene({
   let officeReceptionLastTipAt = -Infinity;
   let officeReceptionGuestTipIndex = 0;
   let officeReceptionMemberTipIndex = 0;
-  let selfSecurityDetails = { ip: "", userAgent: "" };
-  let selfSecurityBadgeVisible = true;
+  let selfWorkBoard = normalizeSelfWorkBoard({});
+  let selfWorkBadgeVisible = true;
   // main dropped its own selectedLandmark when the floating landmark labels went
   // away (adhoc #243); the Office still tracks it to frame the camera on entry.
   let selectedLandmark = "";
@@ -10440,50 +10509,30 @@ export function createWorldScene({
     return { ...officeFloorAccess };
   }
 
-  function setSelfSecurityDetails(details = {}) {
-    selfSecurityDetails = {
-      ip: String(details?.ip || "").trim().slice(0, 64),
-      userAgent: String(details?.userAgent || "")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 256),
-    };
-    setAvatarSecurityBadge(
-      THREE,
-      player,
-      selfSecurityDetails,
-      selfSecurityBadgeVisible,
-    );
-    setAvatarSecurityBadge(
-      THREE,
-      officeLobbyPlayer,
-      selfSecurityDetails,
-      selfSecurityBadgeVisible,
-    );
-    const localParticipant =
-      officeParticipants.get(officeLocalParticipantId);
-    if (localParticipant) {
-      setAvatarSecurityBadge(
-        THREE,
-        localParticipant,
-        selfSecurityDetails,
-        selfSecurityBadgeVisible,
-      );
-    }
-    return { ...selfSecurityDetails };
-  }
-
-  function setSelfSecurityBadgeVisibility(visible = true) {
-    const previous = selfSecurityBadgeVisible;
-    selfSecurityBadgeVisible = visible === true;
+  function setSelfWorkBoard(board = {}) {
+    selfWorkBoard = normalizeSelfWorkBoard(board);
     [
       player,
       officeLobbyPlayer,
       officeParticipants.get(officeLocalParticipantId),
     ].forEach((avatar) => {
-      if (avatar?.userData?.selfSecurityBadge) {
-        avatar.userData.selfSecurityBadge.visible =
-          selfSecurityBadgeVisible;
+      if (avatar) {
+        setAvatarWorkBadge(THREE, avatar, selfWorkBoard, selfWorkBadgeVisible);
+      }
+    });
+    return { ...selfWorkBoard };
+  }
+
+  function setSelfWorkBadgeVisibility(visible = true) {
+    const previous = selfWorkBadgeVisible;
+    selfWorkBadgeVisible = visible === true;
+    [
+      player,
+      officeLobbyPlayer,
+      officeParticipants.get(officeLocalParticipantId),
+    ].forEach((avatar) => {
+      if (avatar?.userData?.selfWorkBadge) {
+        avatar.userData.selfWorkBadge.visible = selfWorkBadgeVisible;
       }
     });
     return previous;
@@ -11111,11 +11160,11 @@ export function createWorldScene({
         officeParticipantLabels.get(id).textContent = participantIdentity.name;
       }
       if (id === officeLocalParticipantId) {
-        setAvatarSecurityBadge(
+        setAvatarWorkBadge(
           THREE,
           avatar,
-          selfSecurityDetails,
-          selfSecurityBadgeVisible,
+          selfWorkBoard,
+          selfWorkBadgeVisible,
         );
       }
       applyOfficeParticipantPose(avatar, participant);
@@ -17431,8 +17480,8 @@ export function createWorldScene({
     setOfficeFloorHandler,
     setOfficeAccess,
     setOfficeAttendance,
-    setSelfSecurityDetails,
-    setSelfSecurityBadgeVisibility,
+    setSelfWorkBoard,
+    setSelfWorkBadgeVisibility,
     travelToOfficeFloor,
     sitOnOfficeChair,
     setOfficeParticipants,

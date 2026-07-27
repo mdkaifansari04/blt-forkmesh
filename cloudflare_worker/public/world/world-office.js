@@ -47,6 +47,7 @@ export function createWorldOfficeController({
   let meetingAuthorizationPromise = null;
   let exitPending = false;
   let authorizationGeneration = 0;
+  let floorAuthorizationPromise = null;
   let officeEntryTicket = "";
   let officeEntryExpiresAt = 0;
   let officeAccess = normalizeOfficeFloorAccess({});
@@ -291,6 +292,10 @@ export function createWorldOfficeController({
   async function refreshOfficeAuthorization(
     activeSession,
     generation = authorizationGeneration,
+    {
+      recordEntry = true,
+      loadPublicFallback = true,
+    } = {},
   ) {
     if (
       !activeSession ||
@@ -304,28 +309,66 @@ export function createWorldOfficeController({
       return false;
     }
     setEntryPending(true);
-    try {
-      const floorAccess = await loadFloorAccess(activeSession);
-      if (!active || generation !== authorizationGeneration) return false;
-      officeAccess = floorAccess;
-      attendanceAccount = officeAccess.account;
-      world.setOfficeAccess?.(officeAccess);
-      void recordAttendance("in", {
-        loadPublicFallback: true,
-        generation,
-      });
-      return true;
-    } catch (_) {
-      // A stale/invalid signed session remains a public-lobby visit. Load its
-      // read-only ledger only after authorization fails, avoiding the normal
-      // signed-entry GET/POST race and duplicate texture redraw.
-      if (active && generation === authorizationGeneration) {
-        void loadAttendance();
+    const refresh = (async () => {
+      try {
+        const floorAccess = await loadFloorAccess(activeSession);
+        if (!active || generation !== authorizationGeneration) return false;
+        officeAccess = floorAccess;
+        attendanceAccount = officeAccess.account;
+        world.setOfficeAccess?.(officeAccess);
+        if (recordEntry) {
+          void recordAttendance("in", {
+            loadPublicFallback,
+            generation,
+          });
+        }
+        return true;
+      } catch (_) {
+        // A stale/invalid signed session remains a public-lobby visit. Load
+        // its read-only ledger only for the initial entry path; an explicit
+        // post-membership refresh must not add unrelated network traffic.
+        if (
+          loadPublicFallback &&
+          active &&
+          generation === authorizationGeneration
+        ) {
+          void loadAttendance();
+        }
+        return false;
+      } finally {
+        if (generation === authorizationGeneration) setEntryPending(false);
       }
-      return false;
+    })();
+    floorAuthorizationPromise = refresh;
+    try {
+      return await refresh;
     } finally {
-      if (generation === authorizationGeneration) setEntryPending(false);
+      if (floorAuthorizationPromise === refresh) {
+        floorAuthorizationPromise = null;
+      }
     }
+  }
+
+  // One explicit, server-authoritative refresh after the signed-in viewer's
+  // own organization-team membership changes. It waits for entry hydration
+  // rather than racing it, never records another attendance punch, and owns no
+  // interval/polling loop.
+  async function refreshAuthorization() {
+    const pending = floorAuthorizationPromise;
+    if (pending) {
+      try {
+        await pending;
+      } catch (_) {}
+    }
+    const activeSession = authenticatedSession();
+    const generation = authorizationGeneration;
+    if (!active || !activeSession || generation !== authorizationGeneration) {
+      return false;
+    }
+    return refreshOfficeAuthorization(activeSession, generation, {
+      recordEntry: false,
+      loadPublicFallback: false,
+    });
   }
 
   async function authorizeMeeting() {
@@ -413,6 +456,7 @@ export function createWorldOfficeController({
     officeEntryTicket = "";
     officeEntryExpiresAt = 0;
     meetingAuthorizationPromise = null;
+    floorAuthorizationPromise = null;
     officeAccess = normalizeOfficeFloorAccess({});
     attendanceAccount = "";
     world.setOfficeAccess?.(officeAccess);
@@ -504,6 +548,7 @@ export function createWorldOfficeController({
     officeEntryTicket = "";
     officeEntryExpiresAt = 0;
     meetingAuthorizationPromise = null;
+    floorAuthorizationPromise = null;
     officeAccess = normalizeOfficeFloorAccess({});
     authorizationGeneration += 1;
     setEntryPending(false);
@@ -522,6 +567,7 @@ export function createWorldOfficeController({
     setProximity,
     focusOffice,
     enterOffice,
+    refreshAuthorization,
     authorizeMeeting,
     openFallback,
     collapse,

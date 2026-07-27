@@ -195,7 +195,7 @@ def test_attendance_is_one_shared_last_twenty_row_ledger():
         "visits.slice(0, 20)",
         "if (loadPublicAttendance) void loadAttendance()",
         "loadPublicAttendance: !activeSession",
-        "loadPublicFallback: true",
+        "loadPublicFallback = true",
         "generation === authorizationGeneration",
         'const action = direction === "out" ? "out" : "in"',
         "attendanceWrite = attendanceWrite",
@@ -266,6 +266,123 @@ def test_floor_access_is_loaded_once_and_only_server_grants_unlock_buttons():
         "floorId: hit.object.userData.officeFloorId",
     ):
         assert contract in scene
+
+
+def test_explicit_floor_refresh_updates_access_without_attendance_or_polling():
+    script = f"""
+      globalThis.HTMLElement = class {{}};
+      globalThis.window = {{
+        location: {{ origin: "https://forkmesh.test" }},
+        setTimeout,
+        clearTimeout,
+        requestAnimationFrame(callback) {{ callback(); }},
+        addEventListener() {{}},
+        removeEventListener() {{}},
+      }};
+
+      const {{ createWorldOfficeController }} = await import({
+          json.dumps(OFFICE_PATH.as_uri())
+      });
+      let session = null;
+      const gets = [];
+      const posts = [];
+      const applied = [];
+      const root = {{
+        querySelector() {{ return null; }},
+        addEventListener() {{}},
+        removeEventListener() {{}},
+        async fetchJSON(path) {{
+          gets.push(path);
+          if (path === "/api/world/office/floors") {{
+            return {{
+              authenticated: true,
+              account: "alice",
+              allowedFloorIds: ["engineering"],
+              teams: ["engineering"],
+            }};
+          }}
+          if (path === "/api/world/office/attendance") return {{ visits: [] }};
+          throw new Error(`unexpected GET ${{path}}`);
+        }},
+        async postJSON(path, payload, options) {{
+          posts.push({{ path, payload, options }});
+          return {{}};
+        }},
+        toast() {{}},
+      }};
+      const world = {{
+        enterOffice() {{ return true; }},
+        setOfficeAccess(access) {{
+          applied.push({{
+            authenticated: access.authenticated,
+            account: access.account,
+            allowedFloorIds: [...access.allowedFloorIds],
+          }});
+        }},
+        setOfficeExitHandler() {{}},
+        setOfficeMeetingHandler() {{}},
+        setOfficeDoorwayEntryPending() {{}},
+      }};
+      const meeting = {{
+        inRoom: false,
+        openLobby() {{}},
+        leaveOffice() {{}},
+        setEntryTicket() {{}},
+        destroy() {{}},
+      }};
+      const controller = createWorldOfficeController({{
+        root,
+        world,
+        meeting,
+        getSession: () => session,
+      }});
+
+      const entered = await controller.enterOffice({{ source: "doorway" }});
+      session = {{ nodeName: "alice", sessionToken: "signed-token" }};
+      const refreshed = await controller.refreshAuthorization();
+      controller.destroy();
+      process.stdout.write(JSON.stringify({{
+        entered,
+        refreshed,
+        floorGets: gets.filter(
+          (path) => path === "/api/world/office/floors",
+        ).length,
+        attendanceGets: gets.filter(
+          (path) => path === "/api/world/office/attendance",
+        ).length,
+        postCount: posts.length,
+        finalAccess: applied.at(-2),
+      }}));
+    """
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    payload = json.loads(result.stdout)
+    assert payload["entered"] is True
+    assert payload["refreshed"] is True
+    assert payload["floorGets"] == 1
+    # The guest entry may read the public ledger once. The explicit
+    # authorization refresh adds no attendance read or write.
+    assert payload["attendanceGets"] == 1
+    assert payload["postCount"] == 0
+    assert payload["finalAccess"] == {
+        "authenticated": True,
+        "account": "alice",
+        "allowedFloorIds": [
+            "engineering",
+            "lobby",
+            "marketing",
+            "rooftop",
+        ],
+    }
+
+    office = source(OFFICE_PATH)
+    refresh = function_body(office, "refreshAuthorization")
+    assert "setInterval" not in refresh
+    assert "recordAttendance" not in refresh
 
 
 def test_office_is_a_remote_island_reached_by_a_glass_bridge():
@@ -625,6 +742,33 @@ def test_lobby_has_one_noah_attendance_and_the_reflective_logo_fountain():
         "reflectionCamera.userData.logoCapturedPlayerId",
     ):
         assert contract in scene
+
+
+def test_logo_reflection_excludes_private_work_badge_but_keeps_avatar():
+    capture = function_body(
+        source(SCENE_PATH),
+        "updateOfficeLogoReflection",
+    )
+
+    for contract in (
+        "const selfWorkBadge = player.userData?.selfWorkBadge",
+        "const selfWorkBadgeWasVisible = selfWorkBadge?.visible",
+        "player.visible = true",
+        "if (selfWorkBadge) selfWorkBadge.visible = false",
+        "reflectionCamera.update(renderer, scene)",
+        "selfWorkBadge.visible = selfWorkBadgeWasVisible",
+        "player.visible = playerWasVisible",
+    ):
+        assert contract in capture
+
+    hidden_at = capture.index(
+        "if (selfWorkBadge) selfWorkBadge.visible = false",
+    )
+    reflected_at = capture.index("reflectionCamera.update(renderer, scene)")
+    restored_at = capture.index(
+        "selfWorkBadge.visible = selfWorkBadgeWasVisible",
+    )
+    assert hidden_at < reflected_at < restored_at
 
 
 def test_noah_reuses_local_chat_bubbles_with_hysteresis_and_no_frame_spam():
