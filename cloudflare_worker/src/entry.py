@@ -11449,6 +11449,32 @@ def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
 
 USERS_DIRECTORY_CACHE_KEY = "https://forkmesh.internal/api/accounts/users"
 USERS_DIRECTORY_TTL = 30
+# The World campfire paints its member total straight from this body, so a
+# browser-held copy leaves the fire showing an old count until a hard refresh.
+# The edge copy still collapses the origin decrypt work; the bytes handed to
+# the client are never stored, so a plain reload always repaints the real
+# roster. Every caller already throttles its own polling well past the edge
+# TTL, so dropping the browser copy adds no extra polling.
+USERS_DIRECTORY_CLIENT_CACHE_CONTROL = "no-store, max-age=0, must-revalidate"
+
+
+async def _users_directory_cache_get():
+    # Return the edge-held roster as a fresh no-store response, the same
+    # rebuild git_advert_cache_get does: the stored copy carries a public
+    # max-age so the Cache API will keep it, which must not reach the browser.
+    try:
+        hit = await js_caches.default.match(USERS_DIRECTORY_CACHE_KEY)
+    except Exception:
+        hit = None
+    if hit is None:
+        return None
+    return JsResponse.new(hit.body, to_js({
+        "status": 200,
+        "headers": {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": USERS_DIRECTORY_CLIENT_CACHE_CONTROL,
+        },
+    }))
 
 
 async def _account_users_directory(env, request):
@@ -11458,9 +11484,10 @@ async def _account_users_directory(env, request):
     # Edge-cached: the chat page polls this to surface new signups, and each
     # origin hit decrypts up to 1000 rows — collapse the polls per colo per TTL.
     # A signup deletes the cached copy so the new account shows without waiting
-    # out the TTL.
+    # out the TTL. Edge-only: the response is no-store, so no browser ever
+    # holds a roster of its own (adhoc #434).
     del request
-    cached = await edge_cache_match(USERS_DIRECTORY_CACHE_KEY)
+    cached = await _users_directory_cache_get()
     if cached is not None:
         return cached
     out = []
@@ -11494,10 +11521,15 @@ async def _account_users_directory(env, request):
     # first) rather than left in the query's alphabetical fetch order.
     out.sort(key=lambda user: user.get("createdAt", 0))
 
-    resp = json_response({"ok": True, "users": out},
-                         cache_seconds=USERS_DIRECTORY_TTL)
-    await edge_cache_put(USERS_DIRECTORY_CACHE_KEY, resp)
-    return resp
+    payload = {"ok": True, "users": out}
+    # Two bodies on purpose: the stored one carries the public max-age the
+    # Cache API needs to keep it, the returned one carries no-store.
+    await edge_cache_put(
+        USERS_DIRECTORY_CACHE_KEY,
+        json_response(payload, cache_seconds=USERS_DIRECTORY_TTL),
+    )
+    return json_response(
+        payload, cache_control=USERS_DIRECTORY_CLIENT_CACHE_CONTROL)
 
 
 def _donation_expiry_fields(rec, now):
