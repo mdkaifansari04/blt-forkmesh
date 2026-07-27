@@ -4640,7 +4640,7 @@ int main(int argc, char *argv[])
         PullStore pulls(tmp.path(), QString(), &identity, "tester");
         const int pn = pulls.createPull(
             "A change", "Body", "main", "feature",
-            "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+hi\n",
+            "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n---flag\n+hi\n",
             QString(), /*branchBacked=*/false, &err);
         check(pn == 1, "createPull returns the first PR number");
         check(pulls.addComment(pn, "first comment", &err), "PR addComment succeeds");
@@ -4694,6 +4694,9 @@ int main(int argc, char *argv[])
         check(!loadedPulls.isEmpty() &&
                   loadedPulls.first().reviewSummary() == "approved",
               "PR review summary folds to approved");
+        check(!loadedPulls.isEmpty() && loadedPulls.first().additions == 1 &&
+                  loadedPulls.first().deletions == 1,
+              "PR stats count removed content beginning with two hyphens");
 
         // A browser-created pull carries portable, signed change bytes rather
         // than only mutable branch names. Exercise the exact Worker -> Qt wire
@@ -5220,7 +5223,71 @@ int main(int argc, char *argv[])
             check(patched.patch.contains("+v3"),
                   "the patch-backed PR's diff picks up the agent's edit");
 
+            // Conflict fixing uses the same isolation guarantee. Build a PR
+            // whose branch and current base changed the same line, then leave
+            // both tracked and untracked work in the user's checkout.
+            check(writeTestFile(tmp.path() + "/agent-conflict.txt",
+                                QByteArray("shared\n")),
+                  "write the conflict-agent base fixture");
+            git({"add", "agent-conflict.txt"});
+            git({"commit", "-q", "-m", "add conflict-agent fixture"});
+            git({"checkout", "-q", "-b", "feat-agent-conflict"});
+            check(writeTestFile(tmp.path() + "/agent-conflict.txt",
+                                QByteArray("from pull\n")),
+                  "write the conflict-agent pull side");
+            git({"add", "agent-conflict.txt"});
+            git({"commit", "-q", "-m", "change conflict-agent fixture in pull"});
+            git({"checkout", "-q", baseBranch});
+            check(writeTestFile(tmp.path() + "/agent-conflict.txt",
+                                QByteArray("from base\n")),
+                  "write the conflict-agent base side");
+            git({"add", "agent-conflict.txt"});
+            git({"commit", "-q", "-m", "change conflict-agent fixture on base"});
+            const int cn = pulls.createPull(
+                "Agent conflict", "body", baseBranch, "feat-agent-conflict",
+                QString(), QString(), /*branchBacked=*/true, &err);
+            check(cn > 0, "createPull stores the conflict-agent PR");
+            check(writeTestFile(tmp.path() + "/ap1.txt",
+                                QByteArray("uncommitted local edit\n")),
+                  "leave a tracked user edit before conflict-agent work");
+            QStringList conflictFiles;
+            bool conflictClean = false;
+            check(pulls.startConflictAgentEdit(
+                      cn, &conflictFiles, &conflictClean, &err),
+                  "conflict agent starts while the user's tree is dirty");
+            const QString conflictDir = pulls.agentEditWorkTree();
+            check(!conflictClean && !conflictDir.isEmpty() &&
+                      conflictFiles.contains("agent-conflict.txt"),
+                  "the agent receives conflict markers in its scratch worktree");
+            QFile localDirty(tmp.path() + "/ap1.txt");
+            check(localDirty.open(QIODevice::ReadOnly) &&
+                      localDirty.readAll() == QByteArray("uncommitted local edit\n"),
+                  "starting conflict resolution leaves tracked local work untouched");
+            localDirty.close();
+            check(writeTestFile(conflictDir + "/agent-conflict.txt",
+                                QByteArray("resolved by agent\n")),
+                  "resolve the conflict inside the scratch worktree");
+            check(pulls.finishConflictMerge(cn, &err),
+                  "finishConflictMerge commits the isolated agent resolution");
+            check(pulls.agentEditWorkTree().isEmpty() &&
+                      !QFile::exists(conflictDir),
+                  "finishing conflict resolution removes its scratch worktree");
+            check(localDirty.open(QIODevice::ReadOnly) &&
+                      localDirty.readAll() == QByteArray("uncommitted local edit\n"),
+                  "finishing conflict resolution leaves tracked local work untouched");
+            localDirty.close();
+            PullRequest conflictResolved;
+            for (const PullRequest &p : pulls.loadAll())
+                if (p.number == cn)
+                    conflictResolved = p;
+            check(conflictResolved.status == "open" &&
+                      conflictResolved.head ==
+                          QStringLiteral("pull/%1-agent-fix").arg(cn) &&
+                      conflictResolved.patch.contains("resolved by agent"),
+                  "the resolved PR stays open on its isolated agent-fix branch");
+
             // Leave the tree clean again for the tests that follow.
+            git({"checkout", "--", "ap1.txt"});
             QFile::remove(tmp.path() + "/local-wip.txt");
         }
 

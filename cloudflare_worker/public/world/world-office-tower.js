@@ -16,9 +16,10 @@ export const OFFICE_TOWER_HEIGHT = OFFICE_FLOOR_HEIGHT * OFFICE_FLOOR_COUNT;
 export const OFFICE_FRONT_Z = OFFICE_DEPTH / 2;
 export const OFFICE_DOOR_WIDTH = 10;
 export const OFFICE_AVATAR_RADIUS = 0.46;
-// The panoramic lift straddles the front curtain wall: its doors open back
-// into each floor while the outward half gives riders a live view of Town.
-export const OFFICE_ELEVATOR_CENTER_X = 70;
+// The panoramic lift straddles the first front curtain-wall bay immediately
+// right of the centered Office entrance. Keeping the complete shaft close to
+// the door makes every floor reachable without a long lobby crossing.
+export const OFFICE_ELEVATOR_CENTER_X = 18;
 export const OFFICE_ELEVATOR_CENTER_Z = OFFICE_FRONT_Z;
 
 export const OFFICE_FLOORS = Object.freeze([

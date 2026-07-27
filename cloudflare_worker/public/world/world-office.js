@@ -12,6 +12,7 @@ const OFFICE_UNLOAD_DELAY_MS = 2000;
 const OFFICE_ENTRY_PATH = "/api/world/office/general/entry";
 const OFFICE_FLOORS_PATH = "/api/world/office/floors";
 const OFFICE_ATTENDANCE_PATH = "/api/world/office/attendance";
+const OFFICE_ATTENDANCE_HEARTBEAT_MS = 30_000;
 
 export function nextOfficeZoneState(currentState, distance) {
   const threshold =
@@ -53,6 +54,8 @@ export function createWorldOfficeController({
   let officeAccess = normalizeOfficeFloorAccess({});
   let attendanceAccount = "";
   let attendanceWrite = Promise.resolve();
+  let attendanceFloorId = "lobby";
+  let attendanceHeartbeat = null;
 
   const resolvedChatURL = new URL(chatPath, window.location.origin);
   if (
@@ -191,6 +194,8 @@ export function createWorldOfficeController({
       return false;
     }
     tasks?.setActive?.(floor.id === "marketing");
+    attendanceFloorId = floor.id;
+    void recordAttendance("heartbeat");
     return travelled !== undefined ? travelled : true;
   }
 
@@ -231,7 +236,12 @@ export function createWorldOfficeController({
     if (!account || typeof root.postJSON !== "function") {
       return attendanceWrite;
     }
-    const action = direction === "out" ? "out" : "in";
+    const action =
+      direction === "out"
+        ? "out"
+        : direction === "heartbeat"
+          ? "heartbeat"
+          : "in";
     // Keep IN and OUT ordered if someone walks straight through the lobby.
     // One compact POST per transition replaces browser-local clock state.
     attendanceWrite = attendanceWrite
@@ -239,7 +249,7 @@ export function createWorldOfficeController({
       .then(async () => {
         const payload = await root.postJSON(
           OFFICE_ATTENDANCE_PATH,
-          { action },
+          { action, floor: attendanceFloorId },
           { timeout: 6000 },
         );
         applyAttendance(payload);
@@ -262,6 +272,20 @@ export function createWorldOfficeController({
     return attendanceWrite;
   }
 
+  function stopAttendanceHeartbeat() {
+    if (!attendanceHeartbeat) return;
+    window.clearInterval(attendanceHeartbeat);
+    attendanceHeartbeat = null;
+  }
+
+  function startAttendanceHeartbeat() {
+    stopAttendanceHeartbeat();
+    attendanceHeartbeat = window.setInterval(() => {
+      if (!active || document.hidden || !attendanceAccount) return;
+      void recordAttendance("heartbeat");
+    }, OFFICE_ATTENDANCE_HEARTBEAT_MS);
+  }
+
   function initialOfficeAccess() {
     // The lobby is physically public, but elevator grants remain fail-closed
     // until the server validates a signed-in account in the background.
@@ -277,6 +301,8 @@ export function createWorldOfficeController({
     setEntryPending(false);
     officeAccess = initialOfficeAccess();
     attendanceAccount = "";
+    attendanceFloorId = "lobby";
+    stopAttendanceHeartbeat();
     world.setOfficeAccess?.(officeAccess);
     officeEntryTicket = "";
     officeEntryExpiresAt = 0;
@@ -317,12 +343,14 @@ export function createWorldOfficeController({
         if (!active || generation !== authorizationGeneration) return false;
         officeAccess = floorAccess;
         attendanceAccount = officeAccess.account;
+        attendanceFloorId = "lobby";
         world.setOfficeAccess?.(officeAccess);
         if (recordEntry) {
           void recordAttendance("in", {
             loadPublicFallback,
             generation,
           });
+          startAttendanceHeartbeat();
         }
         authorized = true;
         return true;
@@ -455,11 +483,61 @@ export function createWorldOfficeController({
     }
   }
 
+  async function restoreSavedView(view = {}) {
+    const wantsOffice = view?.office === true;
+    if (!wantsOffice) {
+      if (active) {
+        world.leaveOfficeInterior?.();
+        completeOfficeExit();
+      }
+      return world.restoreSavedViewState?.(view) === true;
+    }
+
+    const wasActive = active;
+    if (!active) {
+      const activeSession = authenticatedSession();
+      const entered = completeOfficeEntry({
+        loadPublicAttendance: !activeSession,
+        source: "saved-view",
+      });
+      if (!entered) return false;
+      if (activeSession) {
+        await refreshOfficeAuthorization(
+          activeSession,
+          authorizationGeneration,
+          { recordEntry: true },
+        );
+      } else {
+        world.setOfficeDoorStatus?.("open");
+      }
+    } else if (
+      String(view.floorId || "lobby") !== "lobby" &&
+      authenticatedSession()
+    ) {
+      await refreshOfficeAuthorization(
+        authenticatedSession(),
+        authorizationGeneration,
+        { recordEntry: false, loadPublicFallback: false },
+      );
+    }
+
+    const restored = world.restoreSavedViewState?.(view) === true;
+    if (!restored && !wasActive) {
+      // Admission happened through the same attendance path as the door. If
+      // the target floor is unauthorized, return to town and close that visit
+      // instead of leaving a hidden lobby check-in behind.
+      world.leaveOfficeInterior?.();
+      completeOfficeExit();
+    }
+    return restored;
+  }
+
   function completeOfficeExit() {
     if (!active) return false;
     closeFallback({ restoreFocus: false });
     tasks?.setActive?.(false);
     void recordAttendance("out");
+    stopAttendanceHeartbeat();
     meeting.leaveOffice();
     meeting.setEntryTicket?.("", 0);
     officeEntryTicket = "";
@@ -468,6 +546,7 @@ export function createWorldOfficeController({
     floorAuthorizationPromise = null;
     officeAccess = normalizeOfficeFloorAccess({});
     attendanceAccount = "";
+    attendanceFloorId = "lobby";
     world.setOfficeAccess?.(officeAccess);
     world.setOfficeDoorStatus?.("open");
     authorizationGeneration += 1;
@@ -547,6 +626,7 @@ export function createWorldOfficeController({
 
   function destroy() {
     clearUnloadTimer();
+    stopAttendanceHeartbeat();
     tasks?.setActive?.(false);
     world.setOfficeExitHandler?.(null);
     world.setOfficeDoorwayEntryPending?.(false);
@@ -578,6 +658,7 @@ export function createWorldOfficeController({
     setProximity,
     focusOffice,
     enterOffice,
+    restoreSavedView,
     refreshAuthorization,
     authorizeMeeting,
     openFallback,

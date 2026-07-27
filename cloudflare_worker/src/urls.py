@@ -102,6 +102,17 @@ REPO_AGENTS_PROMPT_RE = re.compile(
 # device holding the hybrid private key can decrypt it.
 REPO_AGENTS_TRANSCRIPT_RE = re.compile(
     r"^/api/repo/([^/]+)/([^/]+)/agents/([^/]+)/transcript$")
+# Organization-member coding bots. The organization routes retain the public
+# org alias for membership checks; mirror jobs use the selected node namespace
+# and owner signatures.
+ORG_AGENT_BOTS_RE = re.compile(
+    r"^/api/orgs/([^/]+)/repos/([^/]+)/agent-bots$")
+ORG_AGENT_BOT_RE = re.compile(
+    r"^/api/orgs/([^/]+)/repos/([^/]+)/agent-bots/([^/]+)$")
+REPO_ORG_AGENT_JOBS_RE = re.compile(
+    r"^/api/repo/([^/]+)/([^/]+)/org-agent-jobs$")
+REPO_ORG_AGENT_JOB_RESULT_RE = re.compile(
+    r"^/api/repo/([^/]+)/([^/]+)/org-agent-jobs/([1-9][0-9]{0,18})/result$")
 # Owner-only encryption policy and recipient-key registration for private
 # repository/agent data. The relay stores public bundles and opaque envelopes,
 # never recipient private keys.

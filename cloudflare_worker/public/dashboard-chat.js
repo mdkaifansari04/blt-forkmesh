@@ -74,6 +74,10 @@
   const FORKBOT_ENDPOINT = "/api/forkbot/chat";
   const FORKBOT_SENDER_ID = "forkbot";
   const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
+  const CLAUDE_SENDER_ID = "claude";
+  const CODEX_SENDER_ID = "codex";
+  const CLAUDE_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@claude\b/i;
+  const CODEX_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@codex\b/i;
   // Mainnode base host for the room WebSocket. Defaults to the origin that
   // served the dashboard, so a self-hosted mainnode talks to itself. Override
   // with window.FORKMESH_RELAY_HOST to target a different relay (see
@@ -135,6 +139,11 @@
   let connecting = false;
   let openCallbacks = [];
   let cachedUserSession = null;
+  // Agent conversations are not ordinary room traffic. Access is resolved
+  // against the server-authorized Engineering team before history renders or
+  // the composer offers Claude/Codex mentions. Fail closed on every error.
+  let orgAgentEngineeringAccess = false;
+  let orgAgentAccessLoaded = false;
   const seen = new Set();
   const rows = new Map();
   const sideEntries = [];
@@ -446,6 +455,13 @@
     return PUBLIC_WORLD_GENERAL || Boolean(userSession());
   }
 
+  function orgAgentIdentity(sender, senderId = "") {
+    const names = [sender, senderId].map((value) =>
+      String(value || "").trim().toLowerCase());
+    return names.some((name) =>
+      name === CLAUDE_SENDER_ID || name === CODEX_SENDER_ID);
+  }
+
   function chatAccountKind() {
     return PUBLIC_WORLD_GENERAL && !userSession() ? "guest" : "user";
   }
@@ -724,6 +740,18 @@
       kind: "bot",
       lastSeenMs: Date.now(),
     });
+    if (orgAgentEngineeringAccess) {
+      for (const name of [CLAUDE_SENDER_ID, CODEX_SENDER_ID]) {
+        byName.set(name, {
+          name,
+          kind: "bot",
+          lastSeenMs: Date.now(),
+        });
+      }
+    } else {
+      byName.delete(CLAUDE_SENDER_ID);
+      byName.delete(CODEX_SENDER_ID);
+    }
     byName.delete(self);
     const matches = [...byName.values()].filter(
       (person) => !partial || person.name.includes(partial));
@@ -1118,6 +1146,7 @@
   }
 
   function appendMessage(kind, who, text, id, senderId, tsMs, attachment = null) {
+    if (orgAgentIdentity(who, senderId) && !orgAgentEngineeringAccess) return;
     appendFullMessage(kind, who, text, id, senderId, tsMs, attachment);
     appendSideMessage(kind, who, text, id, senderId, tsMs, attachment);
     rememberContext(who, text);
@@ -1179,6 +1208,7 @@
 
   function emitWorldChatBubble(sender, senderId, text, history = false) {
     if (!WORLD_EMBED_BUBBLES) return;
+    if (orgAgentIdentity(sender, senderId) && !orgAgentEngineeringAccess) return;
     const line = String(text || "").trim().slice(0, 200);
     if (!line) return;
     try {
@@ -1224,6 +1254,12 @@
   function renderChatEntry(entry, kind, live = false) {
     if (!entry || !allowedChatAccountKind(entry.accountKind)) return;
     entry = normalizedPublicWorldFrame(entry);
+    if (
+      orgAgentIdentity(entry.sender, entry.senderId) &&
+      !orgAgentEngineeringAccess
+    ) {
+      return;
+    }
     if (!once(entry.id)) return;
     const who = String(entry.sender || "peer").slice(0, MAX_NAME);
     const text = entry.text || "";
@@ -1455,24 +1491,28 @@
     connect();
   }
 
-  function makeForkbotPlain(text) {
+  function makeBotPlain(text, sender = FORKBOT_SENDER_ID) {
+    const botName = [FORKBOT_SENDER_ID, CLAUDE_SENDER_ID, CODEX_SENDER_ID]
+      .includes(sender) ? sender : FORKBOT_SENDER_ID;
     return makePlain("chat", {
       channel: CHANNEL,
       text: String(text || "").slice(0, MAX_TEXT),
-      sender: "forkbot",
-      senderId: FORKBOT_SENDER_ID,
+      sender: botName,
+      senderId: botName,
       accountKind: "user",
     });
   }
 
-  function broadcastForkbotMessage(text) {
-    const plain = makeForkbotPlain(text);
-    send(plain);
+  function broadcastBotMessage(text, sender = FORKBOT_SENDER_ID) {
+    const plain = makeBotPlain(text, sender);
+    // Claude/Codex prompts and replies are intentionally absent from the
+    // shared room. The Engineering-only session endpoint remains the durable
+    // transcript; this local line is merely immediate feedback to its author.
+    if (!orgAgentIdentity(plain.sender, plain.senderId)) send(plain);
     seen.add(plain.id);
     appendMessage("peer", plain.sender, plain.text, plain.id, plain.senderId, plain.ts);
     // The asking client appends directly (not via renderChatEntry), so mirror
-    // the reply to the World embed here too — it floats over the ForkBot
-    // avatar walking the Town Square.
+    // the reply to the World embed here too.
     emitWorldChatBubble(plain.sender, plain.senderId, plain.text);
   }
 
@@ -1501,9 +1541,119 @@
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data || !data.botMessage) return;
-      runWhenConnected(() => broadcastForkbotMessage(data.botMessage));
+      runWhenConnected(() => broadcastBotMessage(data.botMessage));
     } catch (_) {
       appendSystem("forkbot is unavailable");
+    }
+  }
+
+  function orgAgentScope() {
+    if (scopedWorkshop) {
+      return { organization: ROOM_OWNER, owner: ROOM_OWNER, repo: ROOM_REPO };
+    }
+    const organization = requestedOrganization || "forkmesh";
+    return { organization, owner: organization, repo: "forkmesh" };
+  }
+
+  async function loadOrgAgentChatAccess() {
+    orgAgentEngineeringAccess = false;
+    orgAgentAccessLoaded = false;
+    const session = userSession();
+    if (!session) {
+      orgAgentAccessLoaded = true;
+      return false;
+    }
+    const scope = orgAgentScope();
+    const endpoint =
+      `/api/orgs/${encodeURIComponent(scope.organization)}` +
+      `/repos/${encodeURIComponent(scope.repo)}/agent-bots`;
+    const token = String(session.sessionToken || "");
+    const headers = { accept: "application/json" };
+    if (token && token !== "cookie") headers.authorization = `Bearer ${token}`;
+    try {
+      const response = await fetch(endpoint, {
+        cache: "no-store",
+        credentials: "same-origin",
+        headers,
+      });
+      const data = await response.json().catch(() => ({}));
+      orgAgentEngineeringAccess =
+        response.ok && data?.engineeringAccess === true;
+    } catch (_) {
+      orgAgentEngineeringAccess = false;
+    }
+    orgAgentAccessLoaded = true;
+    return orgAgentEngineeringAccess;
+  }
+
+  async function maybeAskOrgAgent(text) {
+    const provider = CLAUDE_MENTION_RE.test(text || "")
+      ? "claude-code"
+      : CODEX_MENTION_RE.test(text || "")
+        ? "codex"
+        : "";
+    if (!provider) return;
+    const session = userSession();
+    if (!session || !orgAgentAccessLoaded || !orgAgentEngineeringAccess) {
+      appendSystem(
+        `Only Engineering team members can use @${provider === "codex" ? "codex" : "claude"}.`,
+      );
+      return;
+    }
+    const botName = provider === "codex" ? CODEX_SENDER_ID : CLAUDE_SENDER_ID;
+    const prompt = String(text || "")
+      .replace(provider === "codex" ? CODEX_MENTION_RE : CLAUDE_MENTION_RE, " ")
+      .trim();
+    if (!prompt) {
+      appendSystem(`Add a task after @${botName}.`);
+      return;
+    }
+    const scope = orgAgentScope();
+    const taskKeyMatch = prompt.match(
+      /\[(task:[a-z0-9-]{1,48}|issue:[a-z0-9-]{1,40}\/[a-z0-9._-]{1,60}#[1-9][0-9]{0,8})\]/i,
+    );
+    const endpoint =
+      `/api/orgs/${encodeURIComponent(scope.organization)}` +
+      `/repos/${encodeURIComponent(scope.repo)}/agent-bots`;
+    const token = String(session.sessionToken || "");
+    const headers = {
+      "content-type": "application/json",
+      accept: "application/json",
+    };
+    if (token && token !== "cookie") headers.authorization = `Bearer ${token}`;
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "same-origin",
+        headers,
+        body: JSON.stringify({
+          provider,
+          prompt: prompt.slice(0, 8000),
+          ...(taskKeyMatch ? { taskKey: taskKeyMatch[1].toLowerCase() } : {}),
+          ...(token && token !== "cookie" ? { sessionToken: token } : {}),
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) {
+        throw new Error(String(data.error || `HTTP ${response.status}`));
+      }
+      const target = String(data.session?.targetNode || "an eligible mirror");
+      broadcastBotMessage(
+        `Queued on ${target}. Claude Haiku is checking the prompt before I start.`,
+        botName,
+      );
+    } catch (error) {
+      const reason = error.message === "no_eligible_headless_mirror"
+        ? "No eligible headless mirror is online."
+        : [
+            "engineering_team_required",
+            "org_member_required",
+            "forbidden",
+          ].includes(error.message)
+          ? "Only Engineering team members can start this agent."
+          : "I could not queue that task.";
+      broadcastBotMessage(reason, botName);
     }
   }
 
@@ -1699,6 +1849,27 @@
     closeMentionSuggest();
     if (text) {
       if (inputEl) inputEl.value = "";
+      const isOrgAgentPrompt =
+        CLAUDE_MENTION_RE.test(text) || CODEX_MENTION_RE.test(text);
+      if (isOrgAgentPrompt) {
+        if (!orgAgentAccessLoaded || !orgAgentEngineeringAccess) {
+          appendSystem("Claude and Codex chat is available only to the Engineering team.");
+          return;
+        }
+        if (attachmentControl?.draft.length) {
+          showAttachmentFeedback(
+            attachmentControl,
+            "Agent chat attachments are not sent to the shared room. Add the relevant path in your prompt.",
+          );
+        }
+        const clipped = text.slice(0, MAX_TEXT);
+        const plain = makePlain("chat", { channel: CHANNEL, text: clipped });
+        seen.add(plain.id);
+        appendMessage("self", plain.sender, plain.text, plain.id, plain.senderId, plain.ts);
+        emitWorldChatBubble(plain.sender, plain.senderId, plain.text);
+        void maybeAskOrgAgent(clipped);
+        return;
+      }
       runWhenConnected(() => {
         const clipped = text.slice(0, MAX_TEXT);
         const plain = makePlain("chat", { channel: CHANNEL, text: clipped });
@@ -1706,7 +1877,7 @@
         seen.add(plain.id);
         appendMessage("self", plain.sender, plain.text, plain.id, plain.senderId, plain.ts);
         emitWorldChatBubble(plain.sender, plain.senderId, plain.text);
-        maybeAskForkbot(clipped);
+        void maybeAskForkbot(clipped);
       });
     }
     void sendDashboardDraft(attachmentControl);
@@ -1792,6 +1963,7 @@
         });
     }
     await hydrateUserSession();
+    await loadOrgAgentChatAccess();
     ensureEmptyState();
     mountPrivateChannelsLink();
     wireInput(fullInput, fullSend);

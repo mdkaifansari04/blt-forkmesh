@@ -3041,6 +3041,22 @@ private:
     // node's agent sessions.
     void drainAgentPrompts();
     void drainAgentPromptsFor(RepositoryRecord repo);
+    // Organization-member Claude/Codex jobs are a distinct, encrypted-at-rest
+    // channel. This mirror runs a tool-free Haiku preflight and executes only
+    // an exact ALLOW verdict; owner-only E2EE prompts above remain unchanged.
+    void drainOrgAgentJobsFor(RepositoryRecord repo);
+    void applyOrgAgentJobsPayload(const RepositoryRecord &repo,
+                                  const QJsonArray &jobs);
+    void runOrgAgentSafetyCheck(const RepositoryRecord &repo,
+                                const QJsonObject &job);
+    void reportOrgAgentJob(const RepositoryRecord &repo,
+                           const QJsonObject &job,
+                           const QString &securityVerdict,
+                           const QString &status,
+                           int localAgentId = 0,
+                           const QString &reason = QString(),
+                           const QString &result = QString());
+    void reportCompletedOrgAgentJobs();
     // Deliver one queued website prompt to the matching session via
     // sendPromptToAgentSession (steers it live, or resumes it if stopped), or
     // log + drop it if no local session with that id exists.
@@ -3095,11 +3111,12 @@ private:
                                const QStringList &attachmentPlaceholders = {},
                                std::function<void(bool ok, const QString &error)> onDone = {});
     void syncIssuesInbox();
-    // Drain one repo's issue/pull inbox (owner-only). `interactive` shows inline
-    // notices/dialogs (manual "Sync inbox"); when false it's a silent background
-    // poll that only speaks up (notification + list refresh) when something new
-    // arrives. Repo is taken by value so the async reply can't dangle.
+    // Drain one repo's issue inbox. Owners consume their queue; eligible public
+    // mirrors materialize it without consuming the source-of-truth delivery.
+    // `interactive` shows inline notices for a manual "Sync inbox". Repo is
+    // taken by value so the async reply can't dangle.
     void drainIssuesInboxFor(RepositoryRecord repo, bool interactive);
+    void pollMirrorIssueInboxes();
     void drainPullsInboxFor(RepositoryRecord repo, bool interactive);
     // Notify the local user when they're @mentioned in one of this repo's issues
     // or pull requests. Each node scans its own synced copy, so the mentioned
@@ -3126,7 +3143,8 @@ private:
     // reply) into the local stores, ack the inbox, and raise notifications.
     // Shared by the drain* fetchers and the /api/sync dispatcher.
     void applyIssuesInboxPayload(const RepositoryRecord &repo,
-                                 const QJsonArray &pending, bool interactive);
+                                 const QJsonArray &pending, bool interactive,
+                                 bool mirrorIntake = false);
     void applyPullsInboxPayload(const RepositoryRecord &repo,
                                 const QJsonArray &pending, bool interactive);
     void applyDiscussionsInboxPayload(const RepositoryRecord &repo,
@@ -3982,6 +4000,7 @@ private:
     // legacy per-topic polling until the app talks to an upgraded relay again.
     bool m_relaySyncSupported = true;
     bool m_relaySyncInFlight = false;
+    QSet<QString> m_mirrorIssueIntakeInFlight;
     QTimer *m_autoUpdateTimer = nullptr; // periodic check for maybeAutoUpdate()
     bool m_autoUpdateChecking = false;   // a background "git fetch" check is in flight
 
@@ -4784,6 +4803,7 @@ private:
     QFrame *m_pullStickyHeader = nullptr;
     QLabel *m_pullStickyPath = nullptr;
     PacmanProgress *m_pullStickyPacman = nullptr;
+    QLabel *m_pullStickyPercent = nullptr;
     QPushButton *m_pullStickyViewed = nullptr;
     QString m_pullStickyFile; // file path currently shown in the sticky header
     // path -> compact rich-text label (icon + dir/name + +/-) for that header.
@@ -5186,6 +5206,10 @@ private:
     // an idempotent key/policy registration before retrying.
     QSet<QString> m_agentE2EEReady;
     QSet<QString> m_agentE2EEInFlight;
+    QSet<QString> m_orgAgentJobsInFlight;
+    // local AgentSession id -> start-job transport needed to publish terminal
+    // status through the same authenticated lease after the run finishes.
+    QHash<int, QJsonObject> m_orgAgentBindings;
     // Each running CLI session has its own worktree, transport, and buffered
     // events, so output never leaks across providers or sessions.
     QHash<int, ClaudeStreamSession *> m_streamSessions;

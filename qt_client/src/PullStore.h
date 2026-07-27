@@ -159,6 +159,12 @@ public:
     // and drop the throwaway branch.
     bool startConflictMerge(int number, QStringList *conflicted,
                             bool *resolvedClean, QString *error = nullptr);
+    // Agent-driven conflict resolution always runs in a detached scratch
+    // worktree. Unlike the interactive flow above, this never asks the user to
+    // commit or stash unrelated work and never falls back to their checkout.
+    bool startConflictAgentEdit(int number, QStringList *conflicted,
+                                bool *resolvedClean,
+                                QString *error = nullptr);
     bool finishConflictMerge(int number, QString *error = nullptr);
     // Tears down any in-progress PR-branch operation (resolve or edit): aborts a
     // pending `git am`, returns to the original branch, and drops the work branch.
@@ -279,6 +285,8 @@ private:
     // simply could not provide a worktree — the caller then falls back to the
     // in-tree replay.
     bool beginPullEditWorkTree(int number, QString *error);
+    bool beginPullConflictWorkTree(int number, QStringList *conflicted,
+                                   bool *cleanApply, QString *error);
     void discardPullEditWorkTree();
     // Land the scratch worktree's (detached) commit on the PR's branch.
     bool moveBranchToEditTip(QString *error);

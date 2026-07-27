@@ -103,6 +103,31 @@ export function parsePullFrontMatter(markdown, fallbackNumber = 0) {
   )
     ? String(values.status).toLowerCase()
     : "unknown";
+  const draft = ["1", "true", "yes"].includes(
+    String(values.draft || "").toLowerCase(),
+  );
+  const mergeableValue = String(values.mergeable || "").toLowerCase();
+  const mergeable = ["1", "true", "yes"].includes(mergeableValue)
+    ? true
+    : ["0", "false", "no"].includes(mergeableValue)
+      ? false
+      : undefined;
+  const reviewStatus = boundedText(
+    values.reviewStatus ||
+      values.review_status ||
+      values.mergeStatus ||
+      values.merge_status ||
+      "",
+    24,
+  ).toLowerCase();
+  const checksStatus = boundedText(
+    values.checksStatus ||
+      values.checks_status ||
+      values.ciStatus ||
+      values.ci_status ||
+      "",
+    24,
+  ).toLowerCase();
   return {
     number,
     schema: boundedText(values.schema || "", 64).trim(),
@@ -111,6 +136,10 @@ export function parsePullFrontMatter(markdown, fallbackNumber = 0) {
       240,
     ).trim(),
     status,
+    draft,
+    mergeable,
+    reviewStatus,
+    checksStatus,
     author: boundedText(values.authorName || values.author || "Unknown", 100).trim(),
     base: boundedText(values.base || "main", 160).trim(),
     head: boundedText(values.head || "", 160).trim(),

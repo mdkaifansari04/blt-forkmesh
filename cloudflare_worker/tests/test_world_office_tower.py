@@ -340,7 +340,7 @@ def test_front_elevator_cabin_and_approach_are_walkable_but_glass_sides_are_soli
         """
     )
 
-    assert result["centerX"] == 70
+    assert result["centerX"] == 18
     # Centering the eight-unit-deep cabin on the facade leaves half of it
     # outdoors while its rear door opens onto the office floor.
     assert result["centerZ"] >= result["frontZ"] - 0.5

@@ -44,7 +44,7 @@
       @media (max-width:1100px) { .blog1-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .blog1-hero { grid-template-columns:1fr; } .blog1-hero h1 { font-size:76px; } .blog1-featured-copy h2 { font-size:48px; } .blog1-section h2 { font-size:40px; } .blog1-search-panel h2 { font-size:42px; } } @media (max-width:760px) { body { background:var(--blog1-bg); } .blog1-shell { border:0; } .blog1-topbar { height:72px; padding:0 20px; } .blog1-topbar .brand { font-size:22px; } .blog1-hero { padding:70px 20px 34px; } .blog1-hero h1 { font-size:48px; } .blog1-main { padding:32px 20px 0; } .blog1-featured-copy h2 { font-size:34px; } .blog1-section h2 { font-size:30px; } .blog1-search-panel h2 { font-size:34px; } .blog1-grid { grid-template-columns:1fr; gap:22px; } .blog1-section-head { display:block; } .blog1-footer { padding:30px 20px; display:block; } }
     </style>
     <link rel="stylesheet" href="/site-header.css" />
-    <script src="/site-header.js?v=f72e1bf39d6f" defer></script>
+    <script src="/site-header.js?v=5b600387dab6" defer></script>
   </head>
   <body>
     <div class="blog1-shell">
@@ -59,17 +59,33 @@
         <button class="blog1-search-trigger" type="button" aria-haspopup="dialog" aria-controls="blog-search-modal" data-blog-search-open><span class="blog1-search-icon" aria-hidden="true">⌕</span><span>Search every feature post</span><span class="blog1-search-key" aria-hidden="true">/</span></button>
       </section>
       <main class="blog1-main">
-        <a class="blog1-featured" href="/blog/desktop-node-mirrors/">
-          <div class="blog1-featured-image blog1-has-art"><img class="blog1-cover-img" src="/assets/blog/features/desktop-node-mirrors.webp" alt=""></div>
+        <a class="blog1-featured" href="/blog/building-forkmesh-in-the-open/">
+          <div class="blog1-featured-image blog1-has-art"><img class="blog1-cover-img" src="/assets/blog/features/building-forkmesh-in-the-open.webp" alt=""></div>
           <div class="blog1-featured-copy">
-            <div class="blog1-meta"><span class="blog1-tag">Featured</span><span>Feature 01</span><span class="blog1-dot"></span><span>Distributed hosting</span></div>
-            <h2>Desktop-node mirrors</h2>
-            <p>Actively mirrored repositories live on independent nodes and refresh while configured synchronization is healthy; external stubs stay labeled.</p>
+            <div class="blog1-meta"><span class="blog1-tag">Featured</span><span>July 27, 2026</span><span class="blog1-dot"></span><span>Product update</span></div>
+            <h2>Building ForkMesh in the open</h2>
+            <p>A field report from the current build round: a smoother World and Office, stronger mirror workflows, clearer pull-request review, and coding agents that work with the team.</p>
             <span class="blog1-button">Read the post</span>
           </div>
         </a>
         <div class="blog1-divider"></div>
-        <nav class="blog1-filter" aria-label="Feature post categories"><a href="#feature-mesh">Distributed hosting</a><a href="#feature-signed">Signed collaboration</a><a href="#feature-issues">Issues &amp; planning</a><a href="#feature-pulls">Pull requests &amp; review</a><a href="#feature-agents">AI agents</a><a href="#feature-ci">CI, releases &amp; distribution</a><a href="#feature-chat">Chat &amp; private sharing</a><a href="#feature-desktop">Desktop app</a><a href="#feature-money">Accounts &amp; rewards</a><a href="#feature-everywhere">Mobile, web &amp; IDE</a></nav>
+        <nav class="blog1-filter" aria-label="Feature post categories"><a href="#product-updates">Product updates</a><a href="#feature-mesh">Distributed hosting</a><a href="#feature-signed">Signed collaboration</a><a href="#feature-issues">Issues &amp; planning</a><a href="#feature-pulls">Pull requests &amp; review</a><a href="#feature-agents">AI agents</a><a href="#feature-ci">CI, releases &amp; distribution</a><a href="#feature-chat">Chat &amp; private sharing</a><a href="#feature-desktop">Desktop app</a><a href="#feature-money">Accounts &amp; rewards</a><a href="#feature-everywhere">Mobile, web &amp; IDE</a></nav>
+        <section class="blog1-section" id="product-updates">
+          <div class="blog1-section-head">
+            <p class="blog1-eyebrow">Product updates</p>
+            <h2>What we're building now</h2>
+          </div>
+          <div class="blog1-grid">
+          <a class="blog1-card" href="/blog/building-forkmesh-in-the-open/" data-published="2026-07-27" data-section="updates">
+            <img class="blog1-post-image blog1-has-art" src="/assets/blog/features/building-forkmesh-in-the-open.webp" alt="ForkMesh Office, task board, mirror node, and coding agents in a moonlit forest">
+            <div class="blog1-card-copy">
+              <p class="blog1-card-meta">Product update · July 27, 2026</p>
+              <h3>Building ForkMesh in the open</h3>
+              <p>A field report from the current build round: a smoother World and Office, stronger mirror workflows, clearer pull-request review, and coding agents that work with the team.</p>
+            </div>
+          </a>
+          </div>
+        </section>
         <section class="blog1-section" id="feature-mesh">
           <div class="blog1-section-head">
             <p class="blog1-eyebrow">Distributed hosting</p>
@@ -738,6 +754,11 @@
           <div class="blog1-search-panel-head"><div><p class="blog1-eyebrow">Search</p><h2 id="blog-search-title">Find a ForkMesh article</h2></div><button class="blog1-search-close" type="button" data-blog-search-close>Close</button></div>
           <label class="blog1-search-field" for="blog-search-input"><span class="blog1-search-icon" aria-hidden="true">⌕</span><input id="blog-search-input" type="search" autocomplete="off" placeholder="Search mirrors, AI, bounties, chat..."><span class="blog1-search-hint" aria-hidden="true">Esc to close</span></label>
           <div class="blog1-search-results" aria-live="polite">
+            <a class="blog1-search-result" href="/blog/building-forkmesh-in-the-open/" data-blog-search-result data-blog-search-text="building forkmesh in the open product update world office mirrors pull request review claude codex coding agents headless nodes">
+              <span class="blog1-search-result-meta">Product update · July 27, 2026</span>
+              <span class="blog1-search-result-title">Building ForkMesh in the open</span>
+              <span class="blog1-search-result-copy">A field report from the current build round: a smoother World and Office, stronger mirror workflows, clearer pull-request review, and coding agents that work with the team.</span>
+            </a>
             <a class="blog1-search-result" href="/blog/desktop-node-mirrors/" data-blog-search-result data-blog-search-text="desktop-node mirrors independently operated nodes external stubs clearly labeled private encrypted replicas distributed hosting &amp; preservation">
               <span class="blog1-search-result-meta">Distributed hosting · Feature 01</span>
               <span class="blog1-search-result-title">Desktop-node mirrors</span>

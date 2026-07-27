@@ -86,7 +86,9 @@ SCHEMA_STATEMENTS = [
         id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
         data TEXT NOT NULL, submitter_bi TEXT,
         claimed_by_bi TEXT NOT NULL DEFAULT '',
-        claim_expires_at INTEGER NOT NULL DEFAULT 0)""",
+        claim_expires_at INTEGER NOT NULL DEFAULT 0,
+        mirrored_by_bi TEXT NOT NULL DEFAULT '',
+        mirrored_at INTEGER NOT NULL DEFAULT 0)""",
     "CREATE INDEX IF NOT EXISTS idx_issue_inbox_repo ON issue_inbox(repo_bi)",
     """CREATE TABLE IF NOT EXISTS pull_inbox (
         id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
@@ -923,6 +925,39 @@ SCHEMA_STATEMENTS = [
         created_at INTEGER NOT NULL,
         PRIMARY KEY (org_bi, repo))""",
     "CREATE INDEX IF NOT EXISTS idx_org_repos_node ON org_repos(node_owner, repo)",
+    # Organization-scoped coding bots are intentionally separate from the
+    # owner-only repo_agents/agent_prompts E2EE channel. Members see only
+    # sessions for an org they currently belong to; every prompt is encrypted
+    # at rest and remains pending until the selected mirror reports an exact
+    # tool-free Haiku safety verdict.
+    """CREATE TABLE IF NOT EXISTS org_agent_sessions (
+        session_id TEXT PRIMARY KEY,
+        org_bi TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        target_node TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'security_pending',
+        created_by_bi TEXT NOT NULL,
+        data TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        completed_at INTEGER NOT NULL DEFAULT 0)""",
+    "CREATE INDEX IF NOT EXISTS idx_org_agent_sessions_scope "
+    "ON org_agent_sessions(org_bi, repo, updated_at DESC)",
+    """CREATE TABLE IF NOT EXISTS org_agent_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        org_bi TEXT NOT NULL,
+        target_node TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'queued',
+        lease_id TEXT NOT NULL DEFAULT '',
+        data TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_org_agent_jobs_drain "
+    "ON org_agent_jobs(target_node, repo, status, id)",
     # A user may explicitly opt into the Town Square's recently-inactive
     # seating area. The account key is a blind index and the generalized public
     # card is encrypted; exact paths, activity history, IP data, and location
@@ -1608,7 +1643,9 @@ SCHEMA_STATEMENTS = [
         elapsed_ms INTEGER NOT NULL DEFAULT 0 CHECK (elapsed_ms >= 0),
         started_at INTEGER NOT NULL DEFAULT 0 CHECK (started_at >= 0),
         next_checkin_at INTEGER NOT NULL DEFAULT 0
-            CHECK (next_checkin_at >= 0))""",
+            CHECK (next_checkin_at >= 0),
+        completed_at INTEGER NOT NULL DEFAULT 0
+            CHECK (completed_at >= 0))""",
     "CREATE INDEX IF NOT EXISTS idx_world_office_marketing_tasks_org "
     "ON world_office_marketing_tasks(org_bi, updated_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_world_office_marketing_tasks_assignee "
@@ -1662,12 +1699,16 @@ SCHEMA_STATEMENTS = [
             length(account_name) BETWEEN 1 AND 32
         ),
         in_at INTEGER NOT NULL CHECK (in_at > 0),
-        out_at INTEGER CHECK (out_at IS NULL OR out_at >= in_at))""",
+        out_at INTEGER CHECK (out_at IS NULL OR out_at >= in_at),
+        last_seen_at INTEGER NOT NULL DEFAULT 0 CHECK (last_seen_at >= 0),
+        floor_id TEXT NOT NULL DEFAULT '' CHECK (length(floor_id) <= 32))""",
     """CREATE UNIQUE INDEX IF NOT EXISTS idx_world_office_attendance_open
         ON world_office_attendance(account_bi)
         WHERE out_at IS NULL""",
     """CREATE INDEX IF NOT EXISTS idx_world_office_attendance_recent
         ON world_office_attendance(in_at DESC, visit_id DESC)""",
+    """CREATE INDEX IF NOT EXISTS idx_world_office_attendance_live
+        ON world_office_attendance(out_at, last_seen_at DESC)""",
     # Evidence-reviewed contextual placements. The accounting table is
     # deliberately isolated from every wallet/reward ledger.
     """CREATE TABLE IF NOT EXISTS community_ad_instance_policy (
@@ -2074,17 +2115,56 @@ SCHEMA_STATEMENTS = [
         PRIMARY KEY (badge_slug, account_bi))""",
     "CREATE INDEX IF NOT EXISTS idx_badge_awards_account "
     "ON badge_awards(account_bi)",
-    # Inbound website referrals: one row per referring hostname, counting the
-    # http(s) sites that link visitors to this instance (migration 0084). The
-    # host is the only thing kept — never the referring URL's path or query,
-    # the landing path, an IP, a user agent, or any visitor identity.
+    # Inbound website referrals: one aggregate row per referring hostname.
+    # last_url is the latest bounded public referring URL, with credentials,
+    # fragments, and sensitive query values removed (migration 0095).
     """CREATE TABLE IF NOT EXISTS site_referrers (
         host TEXT PRIMARY KEY,
         visits INTEGER NOT NULL DEFAULT 0,
         first_ts INTEGER NOT NULL DEFAULT 0,
-        last_ts INTEGER NOT NULL DEFAULT 0)""",
+        last_ts INTEGER NOT NULL DEFAULT 0,
+        last_url TEXT NOT NULL DEFAULT '')""",
     "CREATE INDEX IF NOT EXISTS idx_site_referrers_rank "
     "ON site_referrers(visits DESC, last_ts DESC)",
+    # Aggregate-only reach for public blog posts (migration 0094). Unique
+    # counts use a fixed 64-register HLL per slug; no visitor identifier or
+    # digest is stored. Referrers retain only the normalized external host.
+    """CREATE TABLE IF NOT EXISTS blog_post_metrics (
+        slug TEXT PRIMARY KEY,
+        views INTEGER NOT NULL DEFAULT 0 CHECK (views >= 0),
+        updated_at INTEGER NOT NULL DEFAULT 0 CHECK (updated_at >= 0))""",
+    """CREATE TABLE IF NOT EXISTS blog_post_unique_hll (
+        slug TEXT NOT NULL,
+        register_id INTEGER NOT NULL
+            CHECK (register_id >= 0 AND register_id < 64),
+        rank INTEGER NOT NULL CHECK (rank >= 1 AND rank <= 251),
+        PRIMARY KEY (slug, register_id)
+    ) WITHOUT ROWID""",
+    """CREATE TABLE IF NOT EXISTS blog_post_referrers (
+        slug TEXT NOT NULL,
+        host TEXT NOT NULL,
+        visits INTEGER NOT NULL DEFAULT 0 CHECK (visits >= 0),
+        last_ts INTEGER NOT NULL DEFAULT 0 CHECK (last_ts >= 0),
+        PRIMARY KEY (slug, host)
+    ) WITHOUT ROWID""",
+    "CREATE INDEX IF NOT EXISTS idx_blog_post_referrers_rank "
+    "ON blog_post_referrers(slug, visits DESC, last_ts DESC)",
+    """CREATE TABLE IF NOT EXISTS world_build_board_items (
+        item_key TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN ('task','issue')),
+        owner TEXT NOT NULL DEFAULT '',
+        repo TEXT NOT NULL DEFAULT '',
+        issue_number INTEGER NOT NULL DEFAULT 0
+            CHECK (issue_number >= 0),
+        title TEXT NOT NULL DEFAULT '' CHECK (length(title) <= 160),
+        priority INTEGER NOT NULL CHECK (priority >= 1 AND priority <= 64),
+        updated_by_bi TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        completed_at INTEGER NOT NULL DEFAULT 0
+            CHECK (completed_at >= 0),
+        completed_by_bi TEXT NOT NULL DEFAULT '')""",
+    "CREATE INDEX IF NOT EXISTS idx_world_build_board_priority "
+    "ON world_build_board_items(priority, item_key)",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the

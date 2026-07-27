@@ -77,8 +77,10 @@
       discussions: { label: "Discussions", icon: "message-square", count: discussionsCount },
       mirrors: { label: "Mirrors", icon: "radio", count: mirrorsCount },
       agents: { label: "Agents", icon: "bot", count: "" },
+      settings: { label: "Settings", icon: "settings", count: "" },
     };
     const canSeeAgentsTab = sessionCanAssignAgent(repo);
+    const canSeeSettingsTab = canEditAbout;
     const actionSeed = repoKey(repo);
     const forkCount = stableMockNumber(`${actionSeed}:fork`, 0, 12);
     // Watch is real: it is the repo's fediverse follower count (see
@@ -89,6 +91,54 @@
     // Deep link that opens this repo's fediverse actor on Mastodon (any
     // instance resolves a remote acct handle; mastodon.social is the default).
     const mastodonUrl = `https://mastodon.social/${fediHandle}`;
+    const settingsPanel = canSeeSettingsTab ? `
+      <section data-dashboard-repo-tab-panel="settings" class="hidden">
+        <div class="mt-4 overflow-hidden rounded-lg border border-border bg-background">
+          <div class="border-b border-border bg-secondary/50 px-4 py-3">
+            <span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="settings" class="h-3.5 w-3.5 text-primary"></i>Repository settings</span>
+          </div>
+          <form data-repo-settings-form class="grid gap-4 p-4">
+            <fieldset class="grid gap-2 rounded-md border border-border p-3 text-xs text-muted-foreground">
+              <legend class="px-1 text-[11px] font-semibold uppercase tracking-wide">ActivityPub federation</legend>
+              <label class="inline-flex items-start gap-2"><input data-repo-ap-federate type="checkbox" class="mt-0.5 h-3.5 w-3.5" checked />Federate this repository (fediverse actor and handle)</label>
+              <label class="inline-flex items-start gap-2"><input data-repo-ap-broadcast type="checkbox" class="mt-0.5 h-3.5 w-3.5" checked />Include meaningful public updates in one automated digest at most every 24 hours</label>
+              <label class="inline-flex items-start gap-2"><input data-repo-ap-comments type="checkbox" class="mt-0.5 h-3.5 w-3.5" checked />Accept fediverse replies as federated comments</label>
+              ${repo.isPrivate ? "" : `
+              <div class="mt-1 rounded-md border border-border bg-secondary/40 p-3">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="font-semibold text-foreground">Daily digest preview</span>
+                  <button type="button" data-repo-digest-preview-refresh class="rounded-md border border-border px-2 py-1 text-[10px] font-semibold text-foreground hover:bg-secondary">Refresh</button>
+                </div>
+                <p class="mt-1 leading-5">Only public titles, stable links, categories and UTC times enter the encrypted bounded queue. Empty digests are never posted.</p>
+                <pre data-repo-digest-preview class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-background p-3 font-mono text-[11px] leading-5 text-foreground">Loading preview…</pre>
+              </div>`}
+            </fieldset>
+            <fieldset class="grid gap-2 rounded-md border border-border p-3 text-xs text-muted-foreground">
+              <legend class="px-1 text-[11px] font-semibold uppercase tracking-wide">Operational alerts</legend>
+              <label class="inline-flex items-start gap-2"><input data-repo-alert-status-emails type="checkbox" class="mt-0.5 h-3.5 w-3.5" />Email this organization's administrators when a ForkMesh system check fails, and again when it recovers</label>
+              <p class="leading-5">Off by default. Nobody receives outage or recovery mail until an organization administrator turns this on.</p>
+            </fieldset>
+            <p class="text-[11px] leading-5 text-muted-foreground">Saved to the relay now and written into the repository's committed <span class="font-mono">.forkmesh/info.json</span> the next time the owner's node syncs.</p>
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <span data-repo-settings-status class="text-[11px] text-muted-foreground"></span>
+              <button type="submit" class="inline-flex h-8 items-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90">Save settings</button>
+            </div>
+          </form>
+        </div>
+        <div data-repo-danger-zone class="mt-5 overflow-hidden rounded-lg border border-destructive/50 bg-background">
+          <div class="border-b border-destructive/30 px-4 py-3">
+            <h3 class="text-sm font-semibold text-destructive">Danger zone</h3>
+          </div>
+          <div class="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p class="text-sm font-medium text-foreground">Delete this repository</p>
+              <p class="mt-1 text-xs leading-5 text-muted-foreground">Removes the repository from ForkMesh, including relay metadata, pending inboxes, agents, mirror presence, and repository chat history. Source files on the owner's device are not erased.</p>
+              <p data-repo-delete-status class="mt-1 text-xs text-muted-foreground"></p>
+            </div>
+            <button type="button" data-repo-delete class="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border border-destructive/60 px-3 text-xs font-semibold text-destructive hover:bg-destructive/10"><i data-lucide="trash-2" class="h-3.5 w-3.5"></i>Delete repository</button>
+          </div>
+        </div>
+      </section>` : "";
     detail.innerHTML = `
       <div data-repo-layout="github-like" class="min-w-0">
         <div data-repo-github-header class="rounded-t-lg border border-border bg-background">
@@ -134,11 +184,11 @@
                 <span data-repo-star-label>Star</span>
                 <span data-repo-star-count class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">${formatCount(0)}</span>
               </button>
-              <span class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs text-muted-foreground"><i data-lucide="radio" class="h-3.5 w-3.5"></i>Mirrors <span data-dashboard-repo-count="mirrors" class="font-mono text-foreground">${tabCountLabel(mirrorsCount)}</span></span>
+              <button type="button" data-dashboard-repo-tab="mirrors" aria-label="Show repository mirror status" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background"><i data-lucide="radio" class="h-3.5 w-3.5 text-muted-foreground"></i>Mirrors <span data-dashboard-repo-count="mirrors" class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">${tabCountLabel(mirrorsCount)}</span></button>
             </div>
           </div>
           <div class="flex min-w-0 overflow-x-auto px-3" role="tablist">
-            ${["code", "commits", "insights", "sizemap", "releases", "issues", "projects", "pulls", "discussions", "mirrors", ...(canSeeAgentsTab ? ["agents"] : [])].map((tab) => {
+            ${["code", "commits", "insights", "sizemap", "releases", "issues", "projects", "pulls", "discussions", "mirrors", ...(canSeeAgentsTab ? ["agents"] : []), ...(canSeeSettingsTab ? ["settings"] : [])].map((tab) => {
               const meta = tabMeta[tab];
               const iconAttr = tab === "issues"
                 ? 'data-lucide="circle-dot"'
@@ -233,6 +283,7 @@
             <section data-dashboard-repo-tab-panel="sizemap" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-pie" class="h-3.5 w-3.5 text-primary"></i>Size map</span><span class="font-mono text-[10px] text-muted-foreground">directory sizes · default branch</span></div><div data-repo-sizemap class="p-4"></div></div></section>
             <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">reachable mirror health</span></div><div data-mirror-request hidden class="border-b border-border px-4 py-3"><label class="mb-1.5 block text-[11px] font-medium text-foreground">Ask a node to mirror this repo</label><div class="flex items-center gap-2"><input data-mirror-request-target type="text" autocomplete="off" spellcheck="false" placeholder="node name" class="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" /><button type="button" data-mirror-request-send class="h-8 shrink-0 rounded-md border border-border bg-secondary px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary/70">Ask to mirror</button></div><p data-mirror-request-hint class="mt-1.5 text-[11px] text-muted-foreground">They get a notification; if they accept, their node starts mirroring your repo.</p></div><div data-repo-mirrors></div></div></section>
             ${canSeeAgentsTab ? `<section data-dashboard-repo-tab-panel="agents" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Agents</span><button type="button" data-repo-agents-refresh class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button></div><div data-workshop-agent-context hidden></div><div data-repo-agents></div></div></section>` : ""}
+            ${settingsPanel}
           </div>
           <aside data-repo-about data-repo-about-rail class="min-w-0 rounded-lg border border-border bg-background p-4">
             ${repo.isPrivate ? "" : `
@@ -249,8 +300,8 @@
             <div class="flex items-center justify-between gap-3">
               <h3 class="text-sm font-semibold text-foreground">About</h3>
               ${canEditAbout
-                ? `<button type="button" data-repo-about-edit aria-label="Edit About" class="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="settings" class="h-3.5 w-3.5"></i></button>`
-                : `<i data-lucide="settings" class="h-3.5 w-3.5 text-muted-foreground"></i>`}
+                ? `<button type="button" data-repo-about-edit aria-label="Edit About" class="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="pencil" class="h-3.5 w-3.5"></i></button>`
+                : `<i data-lucide="pencil" class="h-3.5 w-3.5 text-muted-foreground"></i>`}
             </div>
             <p data-repo-about-description class="mt-3 text-sm leading-6 text-foreground">${escapeHtml(repo.description || "No description published.")}</p>
             <a data-repo-about-website href="#" target="_blank" rel="noopener noreferrer" class="dashboard-accent-link mt-1 hidden min-w-0 items-center gap-1.5 text-xs hover:underline"><i data-lucide="globe" class="h-3.5 w-3.5 shrink-0"></i><span data-repo-about-website-label class="min-w-0 truncate"></span></a>
@@ -269,26 +320,6 @@
                 <label class="inline-flex items-center gap-1.5"><input data-repo-about-logo-clear type="checkbox" class="h-3 w-3" />Remove logo</label>
                 <label class="inline-flex items-center gap-1.5"><input data-repo-about-banner-clear type="checkbox" class="h-3 w-3" />Remove banner</label>
               </span>
-              <fieldset class="grid gap-1.5 rounded-md border border-border p-2 text-[11px] text-muted-foreground">
-                <legend class="px-1 text-[10px] font-semibold uppercase tracking-wide">ActivityPub federation</legend>
-                <label class="inline-flex items-start gap-1.5"><input data-repo-ap-federate type="checkbox" class="mt-0.5 h-3 w-3" checked />Federate this repository (fediverse actor and handle)</label>
-                <label class="inline-flex items-start gap-1.5"><input data-repo-ap-broadcast type="checkbox" class="mt-0.5 h-3 w-3" checked />Include meaningful public updates in one automated digest at most every 24 hours</label>
-                <label class="inline-flex items-start gap-1.5"><input data-repo-ap-comments type="checkbox" class="mt-0.5 h-3 w-3" checked />Accept fediverse replies as federated comments</label>
-                <div class="mt-1 rounded-md border border-border bg-secondary/40 p-2">
-                  <div class="flex items-center justify-between gap-2">
-                    <span class="font-semibold text-foreground">Daily digest preview</span>
-                    <button type="button" data-repo-digest-preview-refresh class="rounded-md border border-border px-2 py-1 text-[10px] font-semibold text-foreground hover:bg-secondary">Refresh</button>
-                  </div>
-                  <p class="mt-1 leading-4">Only public titles, stable links, categories and UTC times enter the encrypted bounded queue. Empty digests are never posted.</p>
-                  <pre data-repo-digest-preview class="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-background p-2 font-mono text-[10px] leading-4 text-foreground">Loading preview…</pre>
-                </div>
-              </fieldset>
-              <fieldset class="grid gap-1.5 rounded-md border border-border p-2 text-[11px] text-muted-foreground">
-                <legend class="px-1 text-[10px] font-semibold uppercase tracking-wide">Operational alerts</legend>
-                <label class="inline-flex items-start gap-1.5"><input data-repo-alert-status-emails type="checkbox" class="mt-0.5 h-3 w-3" />Email this organization's administrators when a ForkMesh system check fails, and again when it recovers</label>
-                <p class="leading-4">Off by default. Nobody receives outage or recovery mail until an organization administrator turns this on.</p>
-              </fieldset>
-              <p class="text-[10px] leading-4 text-muted-foreground">Saved to the relay now and written into the repo's committed <span class="font-mono">.forkmesh/info.json</span> (what the desktop app shows) the next time the owner's node syncs.</p>
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <span data-repo-about-status class="text-[11px] text-muted-foreground"></span>
                 <span class="inline-flex items-center gap-2">
@@ -1334,15 +1365,15 @@
     }
     if (repo) {
       startRepoMirrorPolling();
-      // The owner-only Agents tab is only a recognized route when the session
-      // can assign agents, which is decided from nodes/isAdmin that only land
-      // after hydrateCanonicalProfile resolves. When the refreshed URL points
-      // at /owner/repo/agents and we can't yet confirm ownership, wait for the
-      // hydration so renderRepoDetail restores the tab instead of collapsing to
-      // Code and rewriting the URL back to the repo root (adhoc #93). Every
-      // other tab is unconditional, so only this case pays the wait.
+      // Owner/admin Agents and owner-only Settings depend on nodes/isAdmin
+      // fields that land after canonical profile hydration. On a hard refresh
+      // of either private control route, wait before deciding whether the tab
+      // exists so the URL is not incorrectly collapsed back to Code.
       const routeParts = repoRouteParts();
-      if (routeParts[2] === "agents" && !sessionCanAssignAgent(repo)) {
+      if (
+        (routeParts[2] === "agents" && !sessionCanAssignAgent(repo)) ||
+        (routeParts[2] === "settings" && !sessionOwnsRepo(repo))
+      ) {
         await (canonicalProfileReady || Promise.resolve());
       }
       renderRepoDetail(repo);
@@ -1689,7 +1720,6 @@
       if (aboutEditButton && state.selectedRepo && sessionOwnsRepo(state.selectedRepo)) {
         setRepoAboutStatus("");
         setRepoAboutEditing(true);
-        loadRepoDigestPreview(state.selectedRepo);
         return;
       }
 
@@ -1704,6 +1734,51 @@
       if (event.target.closest("[data-repo-about-cancel]")) {
         setRepoAboutStatus("");
         setRepoAboutEditing(false);
+        return;
+      }
+
+      const deleteRepoButton = event.target.closest("[data-repo-delete]");
+      if (
+        deleteRepoButton &&
+        state.selectedRepo &&
+        sessionOwnsRepo(state.selectedRepo)
+      ) {
+        const repo = state.selectedRepo;
+        const expected = repoKey(repo);
+        const status = $("[data-repo-delete-status]");
+        const confirmation = window.prompt(
+          `Type ${expected} to confirm repository deletion.`,
+          "",
+        );
+        if (confirmation === null) return;
+        if (String(confirmation).trim() !== expected) {
+          if (status) {
+            status.textContent = `Confirmation did not match ${expected}.`;
+            status.className = "mt-1 text-xs text-destructive";
+          }
+          return;
+        }
+        deleteRepoButton.disabled = true;
+        if (status) {
+          status.textContent = "Deleting repository…";
+          status.className = "mt-1 text-xs text-muted-foreground";
+        }
+        try {
+          await deleteRepoFromWeb(repo);
+          location.assign("/dashboard/repos");
+        } catch (error) {
+          const code = String(error?.message || "");
+          if (status) {
+            status.textContent =
+              code === "not_authorized"
+                ? "Only the source node owner can delete this repository."
+                : code === "account_required"
+                  ? "Sign in as the source node owner first."
+                  : "Repository deletion failed. Please try again.";
+            status.className = "mt-1 text-xs text-destructive";
+          }
+          deleteRepoButton.disabled = false;
+        }
         return;
       }
 
@@ -2096,6 +2171,42 @@
       }
       return;
     }
+    const settingsForm = event.target.closest("[data-repo-settings-form]");
+    if (settingsForm && state.selectedRepo) {
+      event.preventDefault();
+      const submit = settingsForm.querySelector('button[type="submit"]');
+      if (submit) submit.disabled = true;
+      setRepoSettingsStatus("Saving…");
+      try {
+        await saveRepoSettingsFromWeb(state.selectedRepo, {
+          fediverse: {
+            federate: Boolean(settingsForm.querySelector("[data-repo-ap-federate]")?.checked),
+            broadcastEvents: Boolean(settingsForm.querySelector("[data-repo-ap-broadcast]")?.checked),
+            acceptComments: Boolean(settingsForm.querySelector("[data-repo-ap-comments]")?.checked),
+          },
+          alerts: {
+            statusEmails: Boolean(settingsForm.querySelector("[data-repo-alert-status-emails]")?.checked),
+          },
+        });
+        setRepoSettingsStatus("Settings saved.", "good");
+        loadRepoFediverse(state.selectedRepo);
+        loadRepoDigestPreview(state.selectedRepo);
+      } catch (error) {
+        const code = String(error?.message || "");
+        setRepoSettingsStatus(
+          code === "not_authorized"
+            ? "Only the source node owner can change repository settings."
+            : code === "account_required"
+              ? "Sign in as the source node owner first."
+              : "Could not save repository settings.",
+          "bad",
+        );
+      } finally {
+        if (submit) submit.disabled = false;
+      }
+      return;
+    }
+
     const aboutForm = event.target.closest("[data-repo-about-form]");
     if (aboutForm && state.selectedRepo) {
       event.preventDefault();
@@ -2126,21 +2237,6 @@
         const website = String(
           aboutForm.querySelector("[data-repo-about-website-input]")?.value || "").trim();
         media.website = website;
-        // Per-repo federation switches ride the same save (loadRepoFediverse
-        // seeded the checkboxes with the stored values, so an untouched form
-        // round-trips unchanged and the worker writes nothing).
-        const federateBox = aboutForm.querySelector("[data-repo-ap-federate]");
-        if (federateBox) {
-          media.fediverse = {
-            federate: federateBox.checked,
-            broadcastEvents: Boolean(aboutForm.querySelector("[data-repo-ap-broadcast]")?.checked),
-            acceptComments: Boolean(aboutForm.querySelector("[data-repo-ap-comments]")?.checked),
-          };
-        }
-        // Same deal for the admin-only operational-alert switches: the worker
-        // defaults them off, so an untouched (unchecked) form keeps them off.
-        const alertBox = aboutForm.querySelector("[data-repo-alert-status-emails]");
-        if (alertBox) media.alerts = { statusEmails: alertBox.checked };
         const body = await saveRepoAboutFromWeb(state.selectedRepo, description, media);
         applyRepoAboutDescription(state.selectedRepo, body.description ?? description);
         applyRepoAboutWebsite(website);
@@ -2149,7 +2245,6 @@
         // Refresh the badge header + watch count so the new logo/banner (and
         // the ?v= cache-buster) show immediately.
         loadRepoFediverse(state.selectedRepo);
-        loadRepoDigestPreview(state.selectedRepo);
       } catch (error) {
         const code = String(error?.message || "");
         setRepoAboutStatus(

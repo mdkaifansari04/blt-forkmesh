@@ -7,7 +7,7 @@ import re
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +15,7 @@ ENTRY_PATH = ROOT / "src" / "entry.py"
 ENTRY = ENTRY_PATH.read_text(encoding="utf-8")
 SCHEMA = (ROOT / "src" / "schema.py").read_text(encoding="utf-8")
 MIGRATION = ROOT / "migrations" / "0084_site_referrers.sql"
+URL_MIGRATION = ROOT / "migrations" / "0095_site_referrer_urls.sql"
 REFERRALS_JS = (ROOT / "public" / "referrals.js").read_text(encoding="utf-8")
 REFERRALS_HTML = (
     ROOT / "public" / "referrals.html"
@@ -71,6 +72,7 @@ def _db():
     db = sqlite3.connect(":memory:")
     db.row_factory = sqlite3.Row
     db.executescript(MIGRATION.read_text(encoding="utf-8"))
+    db.executescript(URL_MIGRATION.read_text(encoding="utf-8"))
     return db
 
 
@@ -111,13 +113,18 @@ def _namespace(db):
         "edge_cache_put": edge_cache_put,
         "json_response": json_response,
         "urlparse": urlparse,
+        "parse_qsl": parse_qsl,
+        "urlencode": urlencode,
+        "urlunparse": urlunparse,
         "re": re,
         "clean_string": lambda value, limit: str(value or "")[:limit],
         "method_name": lambda request: request.method,
         "Date": SimpleNamespace(now=lambda: 1_720_000_000_000),
         "REFERRAL_PREVIEW_AGENTS": _entry_constant("REFERRAL_PREVIEW_AGENTS"),
     }
-    for name in ("MAX_SITE_REFERRER_HOST", "SITE_REFERRER_SELF_HOSTS",
+    for name in ("MAX_SITE_REFERRER_HOST", "MAX_SITE_REFERRER_URL",
+                 "SITE_REFERRER_REDACTED_QUERY_KEYS",
+                 "SITE_REFERRER_SELF_HOSTS",
                  "SITE_REFERRER_LEADERBOARD_CACHE_KEY",
                  "SITE_REFERRER_LEADERBOARD_TTL",
                  "SITE_REFERRER_LEADERBOARD_LIMIT",
@@ -125,7 +132,8 @@ def _namespace(db):
         namespace[name] = _entry_constant(name)
     namespace["_SITE_REFERRER_HOST_RE"] = re.compile(
         _entry_constant("_SITE_REFERRER_HOST_RE"))
-    for name in ("_site_referrer_host", "_is_page_navigation",
+    for name in ("_site_referrer_host", "_site_referrer_url",
+                 "_is_page_navigation",
                  "_is_link_preview_agent", "record_site_referral",
                  "site_referrer_leaderboard", "prune_site_referrers"):
         _load_function(name, namespace)
@@ -147,23 +155,27 @@ def _url(host="forkmesh.com"):
     return urlparse("https://%s/pricing" % host)
 
 
-def _seed(db, host, visits, last_ts=0):
+def _seed(db, host, visits, last_ts=0, last_url=""):
     db.execute(
-        "INSERT INTO site_referrers (host, visits, first_ts, last_ts) "
-        "VALUES (?,?,?,?)", (host, visits, last_ts, last_ts))
+        "INSERT INTO site_referrers "
+        "(host, visits, first_ts, last_ts, last_url) "
+        "VALUES (?,?,?,?,?)",
+        (host, visits, last_ts, last_ts, last_url))
     db.commit()
 
 
-def test_migration_is_host_counters_only_and_matches_lazy_schema():
+def test_migration_adds_one_bounded_latest_url_to_the_aggregate_host_row():
     db = _db()
     columns = {
         row[1] for row in db.execute(
             "PRAGMA table_info(site_referrers)").fetchall()
     }
-    assert columns == {"host", "visits", "first_ts", "last_ts"}
+    assert columns == {"host", "visits", "first_ts", "last_ts", "last_url"}
     assert "CREATE TABLE IF NOT EXISTS site_referrers" in SCHEMA
-    # Privacy contract: a hostname and a count, nothing that is a visitor.
-    for forbidden in ("ip", "url", "path", "user_agent", "session"):
+    assert "last_url TEXT NOT NULL DEFAULT ''" in SCHEMA
+    # Privacy contract: aggregate destination-independent reach, nothing that
+    # identifies the visitor who followed the link.
+    for forbidden in ("ip", "user_agent", "session", "landing_path"):
         assert forbidden not in columns
 
 
@@ -181,6 +193,23 @@ def test_referrer_hosts_are_normalized_and_junk_is_dropped():
         "https://" + "a" * 120 + ".com/x",
     ):
         assert host(junk, "forkmesh.com") == "", junk
+
+
+def test_latest_full_referrer_url_is_safe_bounded_and_redacts_secrets():
+    safe = _namespace(_db())["_site_referrer_url"]
+    assert safe(
+        "https://news.ycombinator.com/item?id=42&utm_source=front",
+        "news.ycombinator.com",
+    ) == "https://news.ycombinator.com/item?id=42&utm_source=front"
+    assert safe(
+        "https://www.reddit.com/r/git/comments/abc?token=secret&q=forkmesh#reply",
+        "reddit.com",
+    ) == (
+        "https://reddit.com/r/git/comments/abc?"
+        "token=%5Bredacted%5D&q=forkmesh"
+    )
+    assert safe("https://user:pass@reddit.com/r/git", "reddit.com") == ""
+    assert safe("https://evil.example/x", "reddit.com") == ""
 
 
 def test_own_deployment_never_counts_as_a_referring_website():
@@ -239,6 +268,7 @@ def test_repeat_visits_bump_the_same_row_and_keep_first_seen():
             object(), _request("https://lobste.rs/s/abc"), _url(), 200))
     row = db.execute("SELECT * FROM site_referrers").fetchone()
     assert (row["host"], row["visits"]) == ("lobste.rs", 3)
+    assert row["last_url"] == "https://lobste.rs/s/abc"
     assert row["first_ts"] == row["last_ts"] == 1_720_000_000_000
     assert db.execute("SELECT COUNT(*) FROM site_referrers").fetchone()[0] == 1
 
@@ -258,9 +288,13 @@ def test_counter_failures_never_break_the_page_load():
 def test_leaderboard_ranks_by_visits_and_reports_totals():
     db = _db()
     ns = _namespace(db)
-    _seed(db, "news.ycombinator.com", 42, 500)
-    _seed(db, "lobste.rs", 9, 400)
-    _seed(db, "mastodon.social", 9, 900)
+    _seed(
+        db, "news.ycombinator.com", 42, 500,
+        "https://news.ycombinator.com/item?id=42")
+    _seed(db, "lobste.rs", 9, 400, "https://lobste.rs/s/abc")
+    _seed(
+        db, "mastodon.social", 9, 900,
+        "https://mastodon.social/@forkmesh/123")
     _seed(db, "quiet.example", 0, 100)
     resp = asyncio.run(ns["site_referrer_leaderboard"](object()))
     assert resp.data["ok"] is True
@@ -268,6 +302,11 @@ def test_leaderboard_ranks_by_visits_and_reports_totals():
         ("news.ycombinator.com", 42),
         ("mastodon.social", 9),
         ("lobste.rs", 9),
+    ]
+    assert [r["url"] for r in resp.data["board"]] == [
+        "https://news.ycombinator.com/item?id=42",
+        "https://mastodon.social/@forkmesh/123",
+        "https://lobste.rs/s/abc",
     ]
     assert (resp.data["sites"], resp.data["visits"]) == (3, 60)
     assert resp.cache_seconds == ns["SITE_REFERRER_LEADERBOARD_TTL"]
@@ -313,8 +352,11 @@ def test_world_has_a_separate_privacy_safe_http_referrer_board():
         '    "site-referrer-leaderboard-sign"' in SCENE
     )
     assert "HTTP REFERER LEADERBOARD" in SCENE
-    assert "EXTERNAL WEBSITES · HOSTNAMES ONLY" in SCENE
-    assert "NO PATHS · NO VISITOR IDENTIFIERS" in SCENE
+    assert "GROUPED BY HOSTNAME · LATEST SAFE FULL URL" in SCENE
+    assert "FULL PAGE URL · SENSITIVE QUERY VALUES REDACTED" in SCENE
+    assert '"site-referrer-link"' in SCENE
+    assert "safeSiteReferrerURL" in SCENE
+    assert "new THREE.PlaneGeometry(3.52, 3.3)" in SCENE
     assert "updateSiteReferrerLeaderboard" in SCENE
     assert (
         "const SITE_REFERRER_LEADERBOARD_POSITION = "
@@ -327,8 +369,9 @@ def test_world_has_a_separate_privacy_safe_http_referrer_board():
 
 
 if __name__ == "__main__":
-    test_migration_is_host_counters_only_and_matches_lazy_schema()
+    test_migration_adds_one_bounded_latest_url_to_the_aggregate_host_row()
     test_referrer_hosts_are_normalized_and_junk_is_dropped()
+    test_latest_full_referrer_url_is_safe_bounded_and_redacts_secrets()
     test_own_deployment_never_counts_as_a_referring_website()
     test_only_served_page_navigations_are_counted()
     test_repeat_visits_bump_the_same_row_and_keep_first_seen()

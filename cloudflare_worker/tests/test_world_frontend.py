@@ -538,10 +538,12 @@ def test_world_welcome_relocates_a_restored_spawn_blocked_by_a_visitor():
     for contract in (
         "const ARRIVAL_CLEARANCE = 0.9",
         "const spawnBlocked =",
+        "this.initialPresenceWelcomePending &&",
         'ownSpace === "town-square"',
         "player.space === ownSpace",
         ") < ARRIVAL_CLEARANCE",
         "(!this.spawnSelected || spawnBlocked)",
+        "this.initialPresenceWelcomePending = false;",
     ):
         assert contract in APP
     assert "arrival_slot_near_position" in ENTRY
@@ -594,7 +596,9 @@ def test_avatar_faces_keyboard_travel_direction_without_an_entry_gate():
     assert "data-world-arrival-dismiss" not in APP
     assert "world-arrival-card" not in APP
     assert "Entering ForkMesh World" not in APP
-    assert "data-world-loading" not in APP
+    assert "data-world-loading" in APP
+    assert 'loading.dataset.ready = "true"' in APP
+    assert "initialWorldLayout: mergedInitialLayout" in APP
     assert ".world-loading-screen" not in CSS
 
 
@@ -828,6 +832,18 @@ def test_mobile_world_stays_stable_while_walking_and_keeps_the_quick_map():
     assert "this.mobileMovementActive = false;" in APP
     assert "this.syncViewportHeight();" in APP
     assert "overscroll-behavior: none;" in CSS
+    assert "position: fixed;" in CSS[
+        CSS.index("body.world-active {"):
+        CSS.index("}", CSS.index("body.world-active {"))
+    ]
+    assert 'this.addEventListener("touchmove", this.blockWorldPullToRefresh' in APP
+    pull_guard = APP[
+        APP.index("  blockWorldPullToRefresh ="):
+        APP.index("\n  syncViewportHeight =", APP.index("  blockWorldPullToRefresh ="))
+    ]
+    assert "event.preventDefault();" in pull_guard
+    assert "[data-world-thumbstick]" in pull_guard
+    assert "[data-world-canvas-wrap]" in pull_guard
     mobile = CSS[CSS.index("@media (max-width: 720px)"):]
     assert ".world-right-rail {" in mobile
     assert "display: grid;" in mobile
@@ -835,6 +851,34 @@ def test_mobile_world_stays_stable_while_walking_and_keeps_the_quick_map():
         CSS.index("@media (max-width: 980px)"):
         CSS.index("@media (max-width: 720px)")
     ]
+
+
+def test_saved_world_views_keep_a_thumbnail_label_position_and_camera():
+    for contract in (
+        'const SAVED_VIEWS_KEY_PREFIX = "forkmesh.world.savedViews.v1."',
+        "const SAVED_VIEWS_MAX = 4;",
+        "function normalizedSavedWorldView(record)",
+        "data-world-save-view",
+        "data-world-saved-view-list",
+        "captureSavedViewThumbnail()",
+        'thumbnail.toDataURL("image/webp", 0.62)',
+        "saveCurrentWorldView()",
+        "editSavedWorldView(id)",
+        "restoreSavedWorldView(id)",
+        "this.officeController?.restoreSavedView?.(view)",
+    ):
+        assert contract in APP
+    for contract in (
+        "function getSavedViewState()",
+        "function restoreSavedViewState(view = {})",
+        "floorId: officeCurrentFloorId",
+        "camera: cameraState",
+        "getSavedViewState,",
+        "restoreSavedViewState,",
+    ):
+        assert contract in SCENE
+    assert ".world-saved-views {" in CSS
+    assert ".world-saved-view img," in CSS
 
 
 def test_toolbar_sound_button_is_the_master_switch_for_all_local_audio():
@@ -1981,7 +2025,7 @@ def test_world_has_no_pale_plaza_and_places_trees_deterministically_clear_of_use
     assert "deterministicFraction(`tree-radius:${landmark.id}:${treeIndex}`)" in SCENE
     assert "pointInsideBounds(x, z, ARRIVAL_GRID_BOUNDS)" in SCENE
     assert "pointInsideBounds(x, z, cabinetBounds)" in SCENE
-    assert "pointInsideBounds(x, z, durableBounds)" in SCENE
+    assert "const durableBounds" not in SCENE
     assert "TREE_MIN_SPACING" in SCENE
     assert "const radius = 20 + (index % 7) * 2.25" not in SCENE
 
@@ -2071,6 +2115,9 @@ def test_system_capacity_scene_combines_service_limits_and_database_rows():
     assert "configuredLimit: metric.limit" in SCENE
     assert "system-capacity-metrics-unavailable" in SCENE
     assert "system-capacity-database-tables" in SCENE
+    assert 'systemCapacityPlatform.userData.officeFloorId = "infrastructure"' in SCENE
+    assert "infrastructureFloor.add(systemCapacityPlatform);" in SCENE
+    assert 'registerMovableObject("system-capacity-platform"' not in SCENE
     assert "Math.log1p(table.rowCount)" in SCENE
     # Every table the Worker counted is drawn, empty ones included, up to the
     # same ceiling the Worker itself enumerates.
@@ -2081,6 +2128,23 @@ def test_system_capacity_scene_combines_service_limits_and_database_rows():
     # The table name is printed on the bar's top face only; the old upright
     # label behind each bar was removed.
     assert "system-capacity-table-name:" not in SCENE
+
+
+def test_infrastructure_floor_has_opt_in_local_redacted_console_display():
+    assert '"forkmesh-infrastructure-local-console"' in SCENE
+    assert '"infrastructure-console-switch"' in SCENE
+    assert '`LOCAL CONSOLE · ${enabled ? "STREAMING" : "OFF"}`' in SCENE
+    assert "THIS SCREEN ONLY · BOUNDED + REDACTED · NOT SENT OR SAVED" in SCENE
+    assert "setInfrastructureConsoleLogs" in SCENE
+    assert "setInfrastructureConsoleEnabled(enabled)" in APP
+    assert "createInfrastructureConsoleCapture" in APP
+    assert "sanitizeInfrastructureConsoleText" in APP
+    assert 'window.addEventListener("unhandledrejection"' in APP
+    assert 'window.removeEventListener("unhandledrejection"' in APP
+    assert "this.infrastructureConsoleCapture.stop();" in APP
+    assert "INFRASTRUCTURE_CONSOLE_MAX_ENTRIES = 40" in APP
+    assert "Bearer [redacted]" in APP
+    assert "[redacted-jwt]" in APP
     assert "metricsAvailable" in SCENE
     assert "metricsSignature" in SCENE
     assert "metricsSignature === signature" in SCENE
@@ -2492,29 +2556,30 @@ def test_world_guests_chat_under_the_name_their_avatar_wears():
     assert "`guest:${guestId()}`" in APP
 
 
-def test_world_updates_arrive_via_a_gentle_in_place_reload():
-    # A deploy flips BUILD_REV on /api/version. The world notices on a slow
-    # watcher, flushes the player's position, and reloads once behind a toast,
-    # so the new build appears in place without anyone touching refresh.
+def test_world_updates_apply_layout_live_and_ask_before_code_refresh():
+    # Layout is data and can be applied to the active scene. A deployed code
+    # revision instead raises an explicit refresh action and never reloads the
+    # visitor out from under an active walk.
     assert "const WORLD_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;" in APP
     assert "startUpdateWatch()" in APP
+    assert "startWorldLayoutWatch()" in APP
+    assert "this.applyFetchedWorldLayout(layout);" in APP
     assert "async checkForWorldUpdate()" in APP
-    assert (
-        "window.setTimeout(() => location.reload(), "
-        "WORLD_UPDATE_RELOAD_DELAY_MS)" in APP
-    )
-    # Gentle means the position survives: it is flushed before the reload so
-    # the restored spawn puts the player exactly where they were.
-    assert "this.captureWorldPosition(true);\n    this.toast(" in APP
-    # Bounded: hidden tabs never poll, visibility bursts are throttled to one
-    # request per minute, and one reload per revision prevents reload loops
-    # behind a stale cache.
+    update = APP[
+        APP.index("  async checkForWorldUpdate()"):
+        APP.index("\n  startDiagnostics()", APP.index("  async checkForWorldUpdate()"))
+    ]
+    assert 'this.$("[data-world-update-notice]")' in update
+    assert "location.reload()" not in update
+    assert "WORLD_UPDATE_RELOAD_DELAY_MS" not in APP
+    assert "data-world-update-refresh" in APP
+    assert "refreshWorldForUpdate" in APP
+    # Bounded: hidden tabs never poll and visibility bursts are throttled.
     assert (
         "if (this.destroyed || this.updateReloadPending || document.hidden) "
         "return;" in APP
     )
     assert "const WORLD_UPDATE_CHECK_MIN_GAP_MS = 60 * 1000;" in APP
-    assert "sessionStorage.getItem(WORLD_UPDATE_RELOADED_REV_KEY)" in APP
     assert "window.clearInterval(this.updateCheckTimer);" in APP
 
 

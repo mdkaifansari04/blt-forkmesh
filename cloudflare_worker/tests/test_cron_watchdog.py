@@ -64,6 +64,15 @@ def _load_watchdog():
         sends.append((email, subject, text, html))
         return True
 
+    async def _cloudflare_attention_log_tail(_env, _now):
+        return "[999] ERROR scheduled simulated bounded log"
+
+    def _attention_email_with_logs(text, html, log_tail):
+        return (
+            text + "\n\nCloudflare logs · prior 2 minutes\n" + log_tail,
+            html + "Cloudflare logs · prior 2 minutes" + log_tail,
+        )
+
     def _flagship_monitor_duration(milliseconds):
         return "%d minutes" % (int(milliseconds) // 60_000)
 
@@ -87,6 +96,8 @@ def _load_watchdog():
         # admin opts in. The transition tests below exercise the on path.
         "_alerts_enabled": True,
         "_send_email": _send_email,
+        "_cloudflare_attention_log_tail": _cloudflare_attention_log_tail,
+        "_attention_email_with_logs": _attention_email_with_logs,
         "_flagship_monitor_duration": _flagship_monitor_duration,
         "_html_escape": _html_escape,
         "_forkmesh_email_card_html": _forkmesh_email_card_html,
@@ -139,6 +150,8 @@ def test_watchdog_alerts_once_and_recovers_once():
     asyncio.run(watchdog.alarm())
     assert len(ns["_sends"]) == 1
     assert ns["_sends"][0][1].startswith("[ForkMesh outage]")
+    assert "Cloudflare logs · prior 2 minutes" in ns["_sends"][0][2]
+    assert "simulated bounded log" in ns["_sends"][0][2]
     assert storage.data["notified_state"] == "down"
     asyncio.run(watchdog.alarm())
     assert len(ns["_sends"]) == 1
@@ -148,6 +161,7 @@ def test_watchdog_alerts_once_and_recovers_once():
     asyncio.run(watchdog.fetch(request))
     assert len(ns["_sends"]) == 2
     assert ns["_sends"][1][1].startswith("[ForkMesh recovered]")
+    assert "Cloudflare logs" not in ns["_sends"][1][2]
     assert storage.data["notified_state"] == "up"
     assert storage.data["outage_started_at"] == 0
     asyncio.run(watchdog.fetch(request))

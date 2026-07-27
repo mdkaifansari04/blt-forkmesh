@@ -462,11 +462,14 @@ QWidget *MainWindow::buildPullsTab()
     auto *diffZoomIn = new QPushButton(QStringLiteral("+"));
     diffZoomIn->setToolTip("Larger diff text");
     connect(diffZoomIn, &QPushButton::clicked, this, [this] { adjustDiffFont(1); });
-    // Auto-mark-viewed toggle: while checked, files scrolled entirely above the
-    // diff viewport get checked off "Viewed" without hand-clicking each one.
+    // Files are marked viewed automatically once their end reaches the viewport.
+    // Keep the preference object for existing settings compatibility, but the PR
+    // review page now consistently follows the requested read-as-you-scroll
+    // behavior instead of making it contingent on a toolbar toggle.
     m_pullAutoViewedButton = new QPushButton;
     m_pullAutoViewedButton->setCheckable(true);
-    m_pullAutoViewedButton->setChecked(autoMarkViewedOnScrollPref());
+    m_pullAutoViewedButton->setChecked(true);
+    m_pullAutoViewedButton->hide();
     setOcticon(m_pullAutoViewedButton, "eye", 14);
     m_pullAutoViewedButton->setToolTip(
         "Automatically mark files as viewed while scrolling");
@@ -489,7 +492,6 @@ QWidget *MainWindow::buildPullsTab()
     filesHeader->addStretch();
     filesHeader->addWidget(diffZoomOut);
     filesHeader->addWidget(diffZoomIn);
-    filesHeader->addWidget(m_pullAutoViewedButton);
     filesHeader->addWidget(m_pullPrevButton);
     filesHeader->addWidget(m_pullNextButton);
 
@@ -550,6 +552,12 @@ QWidget *MainWindow::buildPullsTab()
         m_pullStickyPacman->setToolTip(
             QStringLiteral("How much of this file you've scrolled through"));
         sl->addWidget(m_pullStickyPacman, 0);
+        m_pullStickyPercent = new QLabel(QStringLiteral("0% read"),
+                                         m_pullStickyHeader);
+        m_pullStickyPercent->setObjectName("hintLabel");
+        m_pullStickyPercent->setMinimumWidth(52);
+        m_pullStickyPercent->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        sl->addWidget(m_pullStickyPercent, 0);
         m_pullStickyViewed = new QPushButton(m_pullStickyHeader);
         m_pullStickyViewed->setCursor(Qt::PointingHandCursor);
         m_pullStickyViewed->setToolTip(QStringLiteral("Mark this file as viewed"));
@@ -582,8 +590,7 @@ QWidget *MainWindow::buildPullsTab()
                 // selection so they track the scroll smoothly.
                 updatePullDiffScrollState();
                 // Heavy, debounced: collapse fully-seen files into "Viewed".
-                if (m_pullAutoViewedButton && m_pullAutoViewedButton->isChecked())
-                    m_pullAutoViewedDebounce->start();
+                m_pullAutoViewedDebounce->start();
             });
 
     auto *diffSplit = new QSplitter(Qt::Horizontal);
@@ -1657,8 +1664,8 @@ void MainWindow::showPull(int number)
             PullBadgeWidget::FileEntry entry;
             entry.path = it.key();
             for (const QString &line : it.value().split('\n')) {
-                if (line.startsWith(QLatin1String("+++")) ||
-                    line.startsWith(QLatin1String("---")))
+                if (line.startsWith(QLatin1String("+++ ")) ||
+                    line.startsWith(QLatin1String("--- ")))
                     continue;
                 if (line.startsWith(QLatin1Char('+')))
                     ++entry.adds;
@@ -2188,8 +2195,22 @@ void MainWindow::updatePullDiffScrollState()
                                      ? QColor(0x3f, 0xb9, 0x50)
                                      : QColor(0x58, 0xa6, 0xff));
     m_pullStickyPacman->setProgress(isViewed ? 1.0 : progress);
+    if (m_pullStickyPercent) {
+        const int percent =
+            isViewed ? 100 : qBound(0, qRound(progress * 100.0), 100);
+        m_pullStickyPercent->setText(
+            QStringLiteral("%1% read").arg(percent));
+    }
 
     layoutPullStickyHeader();
+    // Do not cover the real per-file header while it is still visible. This is
+    // what produced the doubled filename/Viewed controls in the old top bar.
+    // The compact sticky bar takes over only after the natural header scrolls
+    // away.
+    if (viewTop <= fileTop + m_pullStickyHeader->sizeHint().height()) {
+        m_pullStickyHeader->hide();
+        return;
+    }
     m_pullStickyHeader->show();
     m_pullStickyHeader->raise();
 }
@@ -2204,8 +2225,6 @@ void MainWindow::updatePullDiffScrollState()
 // files above it shifts the document up.
 void MainWindow::applyAutoMarkViewedOnScroll()
 {
-    if (!m_pullAutoViewedButton || !m_pullAutoViewedButton->isChecked())
-        return;
     if (!m_pullDiff || m_currentPullNumber < 0 || m_pullFileOrder.isEmpty())
         return;
     QScrollBar *vbar = m_pullDiff->verticalScrollBar();
@@ -5384,7 +5403,8 @@ void MainWindow::fixCurrentPullConflictsWithAi(const QString &provider)
     QStringList conflicted;
     bool resolvedClean = false;
     QString error;
-    if (!store->startConflictMerge(number, &conflicted, &resolvedClean, &error)) {
+    if (!store->startConflictAgentEdit(
+            number, &conflicted, &resolvedClean, &error)) {
         delete store;
         QMessageBox::warning(this, "Fix conflicts", error);
         return;
@@ -5423,7 +5443,7 @@ void MainWindow::fixCurrentPullConflictsWithAi(const QString &provider)
     m_aiFix->provider = provider;
     m_aiFix->model = model;
     m_aiFix->apiKey = apiKey;
-    m_aiFix->workTree = workTree;
+    m_aiFix->workTree = store->agentEditWorkTree();
     m_aiFix->files = conflicted;
     m_aiFix->claudeCode = claudeCode;
 
@@ -7725,6 +7745,10 @@ void MainWindow::performRelaySync()
 {
     if (!m_networkAccess)
         return;
+    // A mirror account owns no source repository rows in /api/sync, but it can
+    // securely materialize public issue leases for repos it currently serves.
+    // Run that independent intake on the same push/fallback cadence.
+    pollMirrorIssueInboxes();
     const QString account = m_accountName.isEmpty()
         ? QSettings().value(kAccountNameSetting).toString().trimmed()
         : m_accountName;

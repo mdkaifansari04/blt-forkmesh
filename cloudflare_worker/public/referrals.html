@@ -154,7 +154,7 @@
       }
     </style>
     <link rel="stylesheet" href="/site-header.css" />
-    <script src="/site-header.js?v=f72e1bf39d6f" defer></script>
+    <script src="/site-header.js?v=5b600387dab6" defer></script>
     <link rel="stylesheet" href="/site-footer.css" />
     <script src="/site-footer.js?v=acdada792fa2" defer></script>
   </head>
@@ -189,8 +189,10 @@
           <div class="board-empty"><span class="fm-spinner" aria-hidden="true"></span>Loading referring sites…</div>
         </div>
         <p class="board-note">
-          Only the referring hostname is counted. No visitor, IP address, page
-          path, or referring URL is stored.
+          Each aggregate hostname row also keeps its latest bounded referring
+          page URL. Credentials and fragments are removed and sensitive query
+          values are redacted; no visitor, IP address, user agent, or landing
+          page is stored.
         </p>
       </section>
 

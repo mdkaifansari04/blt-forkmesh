@@ -79,16 +79,103 @@
     } catch (_) {}
   }
 
+  function clearForkMeshBrowserState() {
+    const preserved = new Set([
+      "forkmesh.analyticsConsent.v1",
+      "forkmesh.dashboard.theme",
+      "forkmesh.theme",
+    ]);
+    try {
+      for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+        const key = localStorage.key(index);
+        if (key?.startsWith("forkmesh.") && !preserved.has(key)) {
+          localStorage.removeItem(key);
+        }
+      }
+      for (let index = sessionStorage.length - 1; index >= 0; index -= 1) {
+        const key = sessionStorage.key(index);
+        if (key?.startsWith("forkmesh.")) sessionStorage.removeItem(key);
+      }
+      state.fetchJsonCache = {};
+      state.fetchJsonInflight = {};
+      document.cookie = "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax";
+      document.cookie = "forkmesh_account=; Path=/; Max-Age=0; SameSite=Strict";
+      document.cookie = "forkmesh_admin=; Path=/; Max-Age=0; SameSite=Lax";
+      try {
+        new BroadcastChannel("forkmesh.session").postMessage({
+          type: "signed-out",
+        });
+      } catch (_) {}
+    } catch (_) {}
+    if (!("caches" in window)) return Promise.resolve();
+    return caches.keys()
+      .then((names) => Promise.all(names.map((name) => caches.delete(name))))
+      .catch(() => {});
+  }
+
   function logout() {
+    let serverLogout = Promise.resolve();
     try {
       // The Worker owns session invalidation: this clears the HttpOnly
       // forkmesh_admin cookie so the admin page is unreachable after logout.
       // site-header.js (marketing pages) calls the same endpoint.
-      fetch("/api/accounts/logout", { method: "POST", keepalive: true }).catch(() => {});
-      localStorage.removeItem("forkmesh.session");
-      document.cookie = "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax";
+      serverLogout = fetch("/api/accounts/logout", {
+        method: "POST",
+        keepalive: true,
+        credentials: "same-origin",
+        cache: "no-store",
+      }).catch(() => {});
     } catch (_) {}
-    location.replace("/");
+    const cleanup = clearForkMeshBrowserState();
+    let redirected = false;
+    const finish = () => {
+      if (redirected) return;
+      redirected = true;
+      location.replace("/");
+    };
+    Promise.allSettled([serverLogout, cleanup]).then(finish);
+    window.setTimeout(finish, 1200);
+  }
+
+  function startAccountSessionWatch() {
+    let checking = false;
+    const validate = async () => {
+      if (checking || document.hidden || !readSession()) return;
+      checking = true;
+      try {
+        const session = readSession();
+        const token = String(session?.sessionToken || "");
+        const response = await fetch("/api/accounts/sessions", {
+          headers: {
+            accept: "application/json",
+            ...(token && token !== "cookie"
+              ? { authorization: `Bearer ${token}` }
+              : {}),
+          },
+          credentials: "same-origin",
+          cache: "no-store",
+        });
+        if (response.status === 401) logout();
+      } catch (_) {
+        // Losing the network is not a logout signal. The next bounded check
+        // retries; only an authoritative 401 boots the browser.
+      } finally {
+        checking = false;
+      }
+    };
+    window.setInterval(validate, 20_000);
+    window.addEventListener("focus", validate);
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) void validate();
+    });
+    try {
+      const channel = new BroadcastChannel("forkmesh.session");
+      channel.addEventListener("message", (event) => {
+        if (event.data?.type === "signed-out" && readSession()) {
+          clearForkMeshBrowserState().finally(() => location.replace("/"));
+        }
+      });
+    } catch (_) {}
   }
 
   function escapeHtml(value) {
@@ -474,16 +561,15 @@
   // a tab route (e.g. /owner/repo/issues) apart from a tree/blob code deep link.
   const REPO_TAB_ROUTES = ["commits", "insights", "sizemap", "releases", "issues", "projects", "pulls", "discussions", "mirrors"];
 
-  // The owner-only "Agents" tab (adhoc #182) is only ever a recognized route
-  // for the account that can actually see it - sessionCanAssignAgent gates it
-  // the same way it gates the "Assign to agent" issue checkbox (owner or
-  // admin). A non-owner deep-linking /owner/repo/agents must NOT recognize it
-  // as a tab route (it falls through to the harmless tree/blob path instead),
-  // so the tab is never even addressable, let alone clickable, for them.
+  // Owner/admin Agents and owner-only Settings are only recognized for an
+  // account that can actually see them. A non-owner deep link falls through
+  // to the harmless tree/blob path, so neither private control surface is
+  // addressable merely by guessing its URL.
   function repoTabRoutesFor(repo) {
-    return repo && sessionCanAssignAgent(repo)
-      ? REPO_TAB_ROUTES.concat(["agents"])
-      : REPO_TAB_ROUTES;
+    const routes = REPO_TAB_ROUTES.slice();
+    if (repo && sessionCanAssignAgent(repo)) routes.push("agents");
+    if (repo && sessionOwnsRepo(repo)) routes.push("settings");
+    return routes;
   }
 
   // Splits the current path into segments, stripping a leading /dashboard

@@ -71,8 +71,8 @@ def test_manual_node_layout_mode_and_scene_controls_are_removed():
 def test_live_nodes_are_automatically_ringed_and_face_the_reward_pool():
     assert 'const fountain = landmarkObjects.get("fountain")' in SCENE
     assert "const circleSlots = rewardCircleSlots(" in SCENE
-    assert "usableNodes.length," in SCENE
-    assert "const slot = circleSlots[index]" in SCENE
+    assert "nodeSlotAssignments" in SCENE
+    assert "const slot = circleSlots[nodeSlotAssignments.get(id)]" in SCENE
     assert "cabinet.position.set(slot.x, 0.38, slot.z)" in SCENE
     assert "routingX - slot.x" in SCENE
     assert "routingZ - slot.z" in SCENE
@@ -161,7 +161,12 @@ def test_live_node_layout_reanchors_after_pool_or_obstacle_changes():
 
 
 def test_reward_circle_slots_follow_a_relocated_pool():
-    slots = _reward_circle_slots(6, centre_x=12.0, centre_z=-7.0)
+    slots = _reward_circle_slots(
+        6,
+        centre_x=12.0,
+        centre_z=-7.0,
+        options={"campfirePosition": [1000, 0, 1000]},
+    )
     assert len(slots) == 6
     for slot in slots:
         assert math.hypot(slot["x"] - 12.0, slot["z"] + 7.0) >= 10.7

@@ -1162,7 +1162,7 @@
     // The About right-hand rail only belongs next to the file tree/README
     // (owner decision 2026-07-12, discussion #2): every other tab — commits,
     // releases, issues, projects, pulls, discussions, insights, mirrors,
-    // agents — goes full-width instead of leaving a rail with nothing beside
+    // agents, settings — goes full-width instead of leaving a rail with nothing beside
     // it to explain. The explorer focus mode independently hides the rail
     // (and collapses this same grid) while active on the code tab.
     const contentGrid = detail.querySelector("[data-repo-content-grid]");
@@ -1196,6 +1196,10 @@
     // fallback and coalesced socket signal below).
     if (tab === "mirrors") {
       void loadRepoMirrors(state.selectedRepo, { background: true });
+    }
+    if (tab === "settings") {
+      loadRepoFediverse(state.selectedRepo);
+      loadRepoDigestPreview(state.selectedRepo);
     }
     if (["commits", "issues", "projects", "pulls", "discussions", "releases", "insights", "sizemap", "agents"].includes(tab) && !state.loadedRepoTabs?.[tab]) {
       if (!state.loadedRepoTabs) state.loadedRepoTabs = {};

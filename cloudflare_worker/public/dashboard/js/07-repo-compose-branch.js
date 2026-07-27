@@ -726,6 +726,15 @@
     const commitLabel = commit
       ? commit.slice(0, 7) + (branch ? ` (${branch})` : "")
       : "";
+    const operations = Array.isArray(mirror.operations)
+      ? mirror.operations.map((value) => String(value || "").trim()).filter(Boolean)
+      : [];
+    let endpointHost = "";
+    try {
+      endpointHost = mirror.endpoint ? new URL(String(mirror.endpoint)).host : "";
+    } catch (_) {
+      endpointHost = "";
+    }
     const chips = [
       mirrorChip(
         "Commit",
@@ -734,6 +743,12 @@
         refCommit ? `Source of truth is at ${refCommit.slice(0, 7)}` : "",
       ),
       mirrorChip("Synced", mirror.lastSync ? formatTimeAgo(mirror.lastSync) : "", false, ""),
+      mirrorChip("Endpoint", endpointHost, false, ""),
+      mirrorChip("Health checked", mirror.checkedAt ? formatTimeAgo(mirror.checkedAt) : "", false, ""),
+      mirrorChip("Latency", Number.isFinite(Number(mirror.latencyMs)) ? `${Math.max(0, Number(mirror.latencyMs))} ms` : "", false, ""),
+      mirrorChip("Region", mirror.region || "", false, ""),
+      mirrorChip("Endpoint integrity", mirror.endpointIntegrity || "", mirror.endpointIntegrity && mirror.endpointIntegrity !== "ok", ""),
+      mirrorChip("Capabilities", operations.join(", "), false, ""),
       mirrorChip("Size", mirror.sizeBytes ? formatSize(mirror.sizeBytes) : "", false, ""),
       mirrorChip("Issues", mirrorCountText(mirror.issueCount), mirrorCountMismatch(mirror.issueCount, refMirror?.issueCount), `Source: ${mirrorCountText(refMirror?.issueCount)}`),
       mirrorChip("Commits", mirrorCountText(mirror.commitCount), mirrorCountMismatch(mirror.commitCount, refMirror?.commitCount), `Source: ${mirrorCountText(refMirror?.commitCount)}`),

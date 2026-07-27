@@ -5,6 +5,111 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
+- [ ] Show the latest actual safe full referring URL beneath each hostname on the in-world HTTP referrer board.
+- [ ] Show all available blog-board reach stats: total views, approximate unique views, referrer-site count, referred visits, and network distribution.
+- [ ] Add an Engineering-only Human TODO board beside the repository work boards, populated from actionable Claude/Codex session signals.
+- [ ] Review every currently open pull request and record an evidence-backed disposition for each, beyond the automated board status/score.
+- [x] Stop signed-in mobile World movement from triggering a native page refresh or reconnect position rollback.
+- [x] Move the complete Office elevator shaft into the first bay right of the entrance.
+- [x] Move the System Capacity object onto the Infrastructure floor.
+- [x] Add an opt-in live display for the viewer's local browser console on the Infrastructure floor.
+- [x] Keep local console capture off by default, bounded, redacted, unsaved, and unshared.
+- [x] Make “What we're building” stickies draggable to reprioritize the shared todo order.
+- [x] Number pending todos by priority, with `1` as the highest priority.
+- [x] Add a repo-issues sticky board beside “What we're building”.
+- [x] Let authorized members drag an issue sticky onto the todo board to assign it as work.
+- [x] Add a compact saved-view button to the World right-side control rail.
+- [x] Save a tiny location thumbnail, editable short label, exact position, and camera perspective.
+- [x] Restore a saved view with one click, using normal Office check-in/check-out when applicable.
+- [x] Show relative “days ago” age on every in-world blog-board post.
+- [x] Show each blog post's available cross-network publishing/distribution details on its board card.
+- [x] Keep each newly completed and deployed feature on the World bulletin as a crossed-out Done sticky.
+- [x] Lowest priority: replace seated repository watchers with follower icons around the file circle.
+- [x] Lowest priority: add an issue list matching the World pull-request list.
+- [x] Lowest priority: show up to 25 pull requests and fuller issue/PR metadata in both lists.
+- [x] Move repository federation controls into an owner-only Settings tab beside Agents.
+- [x] Change the About action icon from a gear to a pencil.
+- [x] Add an owner-authorized repository deletion danger zone to Settings.
+- [x] Let Qt agents work on pull requests while unrelated working-tree changes remain uncommitted.
+- [x] Clean up the Qt pull-review file header.
+- [x] Show each reviewed file's read-progress ring and percentage.
+- [x] Mark files viewed as their diff scrolls through the viewport.
+- [x] Keep the left changed-files list highlighted to the diff currently in view.
+- [x] Fix the removed-line count shown for pull-request files.
+- [x] Move the world sticky-task board into the main open area.
+- [x] Place the world sticky-task board directly beside the System Stats display.
+- [x] Show only this new round of tasks on the world sticky-task board.
+- [x] Apply safe world scene and layout updates live without refreshing.
+- [x] Show an explicit refresh button when a world update truly requires a reload.
+- [x] Never auto-refresh the world for an available update.
+- [x] Reduce first-load world layout shifting and make scene startup smoother.
+- [x] Make capacity displays symmetrical with the minute graph on top.
+- [x] Stretch minute/hour capacity timelines across the available width.
+- [x] Give capacity graph cells a consistent shape and aspect ratio.
+- [x] Show every seated member's complete public identity card, including flag.
+- [x] Keep joined/first-seen/activity details visible for newly joined seated members.
+- [x] Add a right-click World action to share an exact location and perspective.
+- [x] Restore shared coordinates and camera perspective when opening the link.
+- [x] Route new issue submissions into an online repository mirror immediately.
+- [x] Replace pending issue placeholders with real mirrored issues after intake.
+- [x] Make the repository-header Mirrors button open the full mirror status list.
+- [x] Show mirror identity, endpoint, health, integrity, last check, and capabilities.
+- [x] Security-review and clean up PR #57, `feat(chat): polish public chat workbench`.
+- [x] Merge PR #57 after focused verification, then delete its merged branch/worktree.
+- [x] Fix the white-on-white “Assign to taskboard” control contrast.
+- [x] Add an organization-admin-only button to delete taskboard tasks.
+- [x] Let assignees and managers mark taskboard tasks done while preserving time.
+- [x] Include the last two minutes of Cloudflare logs in non-green component-attention emails.
+- [x] Keep component-attention email delivery working when log retrieval is unavailable.
+- [x] Make every status-history cell use the same height.
+- [x] Add an organization-member-visible Claude Code bot to repository Agents.
+- [x] Let an organization member start its session on an eligible headless mirror.
+- [x] Let organization members revise and send follow-up prompts to that session.
+- [x] Fail closed until a Haiku intent check approves each submitted prompt.
+- [x] Keep bot authorization, mirror dispatch, session history, and audit data organization-scoped.
+- [x] Give the Claude bot an in-world avatar that walks around using Forkbot's bot-presence pattern.
+- [x] Route `@claude` chat mentions into the same organization-scoped, Haiku-gated bot workflow.
+- [x] Close stale Office attendance rows so absent members never remain “IN BUILDING”.
+- [x] Show each live Office occupant's current floor on the attendance board.
+- [x] Add an in-progress indicator and estimate to each active “What we're building” note.
+- [x] Restore a safe outdoor zoom and camera angle when walking out of the Office.
+- [x] Publish a progress blog post matching the existing ForkMesh cover-art style.
+- [x] Raise the in-world ForkMesh blog stand and show four recent posts.
+- [x] Add Codex beside Claude as an organization-scoped headless-mirror agent.
+- [x] Route authorized `@codex` chat mentions into the agent workflow.
+- [x] When Codex completes a tracked task, walk its World avatar to the board and move the note to Done.
+- [x] Sync saved World views to the signed-in account so they follow the user across devices.
+- [x] Sync player speed and other World preferences to the signed-in account across devices.
+- [x] Keep local World settings as an offline fallback and merge them safely after sign-in.
+- [x] Show organization agent tasks and running/stopped/merged/attention status on each mirror cabinet side.
+- [x] Make the HTTP referrer board taller and show safe clickable referrer URLs grouped under each domain.
+- [x] Open ForkMesh repository issues from the World in a full sidebar workbench with the web issue details, comments, and management actions.
+- [x] Preserve the visitor's heading when leaving the Office instead of rotating them 180 degrees.
+- [x] Add active-account autocomplete to Add member and clearly explain organization role/team access.
+- [x] Boot revoked devices and clear ForkMesh session cookies, local caches, and account-scoped browser storage on sign-out.
+- [x] Remove the repository-circle Add repo control, move issue/PR boards outside the follower orbit, and show follower avatars as circular orbiting icons.
+- [x] Show verified ready/conflict/draft/merged/closed/unavailable status on every World pull-request card and an aggregate board summary.
+- [x] Paginate the World issue and pull-request boards at 25 records per page with visible controls and wheel scrolling.
+- [x] Update the World “What we're building” board as this round is completed and deployed.
+- [x] Add a hashtagged Mastodon toot of at most 500 characters to every blog post, including image alt text in the prefilled share flow.
+- [x] Add a prefilled X/Twitter post of at most 250 characters and a full-length Reddit post to every blog post.
+- [x] Show a safe prefilled network link beneath each blog social draft.
+- [x] Show a prominent World link with the live member count in the shared site header on every page, including every blog post.
+- [x] Show total and unique view counts on every blog post.
+- [x] Show a privacy-safe HTTP referrer leaderboard on a blog post only when that post has referrer traffic.
+- [x] Make the top-right ForkMesh logo in the World an explicit page-refresh control.
+- [x] Reveal the live World behind a small centered startup cover and animate real initialization progress so loading feels fast.
+- [x] Add a bounded post-deploy grace period before transient repository verification failures become alerts.
+- [x] Add a dedicated Worker errors row to the web and in-world system status histories.
+- [x] Add a commit-activity chart beneath the in-world repository graph matching the web repository-list visual language.
+- [x] Show current average commits per hour for today, this week, and this month on that activity chart.
+- [x] Make the World mirror agent-task screen a full interactive prompt and re-prompt session workspace with Qt feature parity.
+- [x] Restrict World agent prompt-session access to Engineering team members, including clear access-denied messaging.
+- [x] Show all available agent/session detail in the World pull-out screen and report missing Claude/Codex binaries or login state.
+- [x] Add a per-PR mergeability score and evidence factors to each in-world pull-request board card.
+- [x] Restrict Claude/Codex chat visibility and invocation to Engineering team members in both server responses and World/chat UI.
+- [x] Extend the Office glass doors to the full building height.
+- [x] Remove the “Walk Right In” doorway sign.
 - [x] Add an in-world bulletin board before continuing the remaining tasks.
 - [x] Show remaining checklist items as marker-drawn sticky notes on the left.
 - [x] Move completed notes to varied positions on the right and mark them with a hand-drawn X.

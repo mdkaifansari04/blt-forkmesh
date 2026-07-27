@@ -219,7 +219,7 @@ def test_attendance_is_one_shared_last_twenty_row_ledger():
         "loadPublicAttendance: !activeSession",
         "loadPublicFallback = true",
         "generation === authorizationGeneration",
-        'const action = direction === "out" ? "out" : "in"',
+        'direction === "heartbeat"',
         "attendanceWrite = attendanceWrite",
     ):
         assert contract in office
@@ -228,6 +228,7 @@ def test_attendance_is_one_shared_last_twenty_row_ledger():
         'context.fillText("USER"',
         'context.fillText("IN"',
         'context.fillText("OUT"',
+        'context.fillText("FLOOR"',
         'context.fillText("TOTAL"',
         "visit?.inAt",
         "visit?.outAt",
@@ -236,8 +237,17 @@ def test_attendance_is_one_shared_last_twenty_row_ledger():
         "updateOfficeAttendanceClock",
         "Math.floor(elapsedMs / 30_000)",
         "IN BUILDING",
+        'String(visit?.floor || "Lobby")',
     ):
         assert contract in scene
+    for contract in (
+        "OFFICE_ATTENDANCE_HEARTBEAT_MS = 30_000",
+        'direction === "heartbeat"',
+        "{ action, floor: attendanceFloorId }",
+        "startAttendanceHeartbeat()",
+        "stopAttendanceHeartbeat()",
+    ):
+        assert contract in office
 
 
 def test_attendance_duration_labels_are_compact_and_reject_bad_values():
@@ -436,9 +446,24 @@ def test_an_arrival_cell_never_drops_a_visitor_off_their_office_floor():
     assert "return true;" in spawn
     welcome = app[app.index("const spawnBlocked ="):]
     welcome = welcome[:welcome.index("window.clearTimeout(this.peerGraceTimer)")]
+    assert "this.initialPresenceWelcomePending &&" in welcome
     assert "const relocated = this.world?.setSpawn?.({" in welcome
     assert "if (relocated !== false) {" in welcome
     assert welcome.index("const relocated") < welcome.index("this.currentSpace =")
+
+
+def test_saved_office_views_use_normal_attendance_entry_and_exit():
+    office = source(OFFICE_PATH)
+    restore = function_body(office, "restoreSavedView")
+    assert 'source: "saved-view"' in restore
+    assert "refreshOfficeAuthorization(" in restore
+    assert 'recordEntry: true' in restore
+    assert "world.leaveOfficeInterior?.();" in restore
+    assert "completeOfficeExit();" in restore
+    assert "world.restoreSavedViewState?.(view)" in restore
+    scene = source(SCENE_PATH)
+    enter = function_body(scene, "enterOffice")
+    assert '["doorway", "saved-view"].includes(source)' in enter
 
 
 def test_town_camera_cannot_orbit_through_the_ground():
@@ -838,7 +863,6 @@ def test_lobby_has_one_noah_attendance_and_the_reflective_logo_fountain():
         "officeReceptionNoah.rotation.y = Math.PI",
         'noahNameplate.name = "forkmesh-office-reception-nameplate-noah"',
         "Walk up to Noah for World and repository tips",
-        "WELCOME · WALK RIGHT IN",
         "officeGreetingBoard.position.set(0, 6.25, -OFFICE_FRONT_Z + 0.5)",
         'officeAttendanceBoard.name = "forkmesh-office-attendance"',
         "OFFICE · LAST 20 VISITS",

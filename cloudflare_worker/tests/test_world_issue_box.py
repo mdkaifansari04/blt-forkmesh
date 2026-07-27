@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""Contracts for the in-world issue box and pull-request review desk.
+"""Contracts for the in-world issue and pull-request review boards.
 
-Beside the selected repository portal the scene stands an open crate of issue
-pages (click one to expand it, click the expanded sheet to open the signed
-issue thread) and a board of pull-request cards that route straight into the
-existing exact-ref diff review. Both are projections of records the shell
-already verified — the scene never invents an issue or pull number and never
-fetches anything of its own.
+Beside the selected repository portal the scene stands matching, two-column
+review boards with up to 25 issue and pull-request cards. Issue records can
+expand before opening the signed thread; pull records route into exact-ref diff
+review. Both are projections of records the shell already verified.
 """
 
 from pathlib import Path
@@ -24,19 +22,39 @@ DESK = SCENE[
 
 
 def test_scene_builds_a_bounded_desk_from_verified_records_only():
-    assert "REPOSITORY_ISSUE_PAGES_VISIBLE = 10" in SCENE
-    assert "REPOSITORY_PULL_CARDS_VISIBLE = 5" in SCENE
+    assert "REPOSITORY_ISSUE_CARDS_VISIBLE = 25" in SCENE
+    assert "REPOSITORY_PULL_CARDS_VISIBLE = 25" in SCENE
     assert "number >= 1 && number <= 10_000_000" in SCENE
     assert 'layer.name = "repository-record-desk"' in DESK
-    assert "repository-issue-box:" in DESK
-    assert "repository-pull-desk:" in DESK
+    assert "addRecordBoard(issues, \"issue\"" in DESK
+    assert "addRecordBoard(pulls, \"pull\"" in DESK
+    assert "const columns = items.length > 13 ? 2 : 1;" in DESK
     assert "repository-issue-page-expanded:" in DESK
     # Pure projection: no network, no storage, no invented records.
     assert "fetch" not in DESK
     assert "localStorage" not in DESK
     assert "sessionStorage" not in DESK
-    assert ".slice(0, REPOSITORY_ISSUE_PAGES_VISIBLE)" in DESK
+    assert ".slice(0, REPOSITORY_ISSUE_CARDS_VISIBLE)" in DESK
     assert ".slice(0, REPOSITORY_PULL_CARDS_VISIBLE)" in DESK
+
+
+def test_issue_and_pull_cards_show_commit_pinned_metadata():
+    assert "function repositoryIssueCardTexture(" in SCENE
+    assert "function repositoryPullCardTexture(" in SCENE
+    for field in ("issue.title", "issue.author", "issue.labels",
+                  "issue.assignees", "issue.metadataAvailable"):
+        assert field in SCENE
+    for field in ("pull.title", "pull.author", "pull.head", "pull.base",
+                  "pull.createdAt", "pull.metadataAvailable"):
+        assert field in SCENE
+    loader = APP[
+        APP.index("  async loadRepositoryEntityRecords("):
+        APP.index("  flagshipCatalogCommits(")
+    ]
+    assert "selectedIssues" in loader
+    assert 'issueQuery.set("ref", commit)' in loader
+    assert "issue metadata batch commit mismatch" in loader
+    assert "record.metadataAvailable = true" in loader
 
 
 def test_desk_layer_is_removed_on_rebuild_and_catalog_replacement():

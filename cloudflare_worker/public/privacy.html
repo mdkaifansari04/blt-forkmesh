@@ -98,7 +98,7 @@
       <link rel="stylesheet" href="/site-footer.css" />
     <script src="/site-footer.js?v=acdada792fa2" defer></script>
     <link rel="stylesheet" href="/site-header.css" />
-    <script src="/site-header.js?v=f72e1bf39d6f" defer></script>
+    <script src="/site-header.js?v=5b600387dab6" defer></script>
   </head>
   <body class="h-full">
     <main class="legal-shell flex min-h-screen flex-col">
@@ -125,7 +125,7 @@
             <h2>Install diagnostics</h2>
             <p>The desktop installer reports anonymous, aggregate diagnostics about each install — which step it reached, whether that step succeeded, and coarse platform facts. Each run uses a fresh random id that is never linked to your account, email, node name, or IP address. Opt out by setting <code>FORKMESH_NO_DIAG=1</code> before running the installer.</p>
             <h2>Referring websites</h2>
-            <p>When another website links a visitor here, ForkMesh increments a public per-hostname counter that powers the referring-site leaderboard on <a class="text-foreground underline decoration-white/25 underline-offset-4 hover:decoration-white" href="/referrals">/referrals</a>. Only the referring hostname and its running visit count are stored — never the referring URL’s path or query string, the page you landed on, your IP address, your user agent, or any per-visit record. If your browser sends no <code>Referer</code> header (links marked <code>rel="noreferrer"</code> do this for you), nothing is counted at all.</p>
+            <p>When another website links a visitor here, ForkMesh increments a public per-hostname counter that powers the referring-site leaderboard on <a class="text-foreground underline decoration-white/25 underline-offset-4 hover:decoration-white" href="/referrals">/referrals</a>. The aggregate row stores the hostname, running visit count, and latest referring page URL. Credentials and fragments are removed, common secret-bearing query values are redacted, and the value is bounded before storage. ForkMesh does not store the page you landed on, your IP address, your user agent, or a per-visit record for this leaderboard. If your browser sends no <code>Referer</code> header (links marked <code>rel="noreferrer"</code> do this for you), nothing is counted at all.</p>
             <h2>Documentation feedback</h2>
             <p>If you use a documentation helpfulness control, ForkMesh stores the like/dislike choice, a generalized <code>/docs/</code> section anchor, an optional message you deliberately submit, a broad client category, and a keyed network token used for abuse control. It does not retain the raw IP, browser user-agent, query string, search value, or a repository path in that record.</p>
             <h2>Wallets and community rewards</h2>

@@ -659,8 +659,12 @@
     }).join("") || '<p class="text-sm text-muted-foreground">No repos linked.</p>';
 
     const memberAdd = canManage
-      ? '<form data-org-member-add class="mt-2 flex flex-wrap items-center gap-2">' +
-          '<input data-member-name placeholder="account name" autocomplete="off" class="' + ORG_INPUT_CLASS + ' flex-1 min-w-[10rem]" />' +
+      ? '<form data-org-member-add class="mt-2 flex flex-wrap items-start gap-2">' +
+          '<div class="min-w-[14rem] flex-1">' +
+            '<input data-member-name list="org-member-suggestions" role="combobox" aria-autocomplete="list" aria-controls="org-member-suggestions" placeholder="Start typing an account name" autocomplete="off" class="' + ORG_INPUT_CLASS + ' w-full" />' +
+            '<datalist id="org-member-suggestions" data-org-member-suggestions></datalist>' +
+            '<p data-org-member-search-status class="mt-1 min-h-4 text-[11px] text-muted-foreground">Type a name to search active ForkMesh accounts.</p>' +
+          "</div>" +
           '<select data-member-role class="' + ORG_INPUT_CLASS + '">' + orgOptionTags(ORG_ROLE_OPTIONS, "member") + "</select>" +
           '<button type="submit" class="' + ORG_BTN_SECONDARY + '">Add member</button></form>'
       : "";
@@ -704,6 +708,37 @@
           '<div class="mt-3 grid gap-2">' + digestRows + "</div>" +
         "</section>"
       : "";
+    const accessSummary =
+      '<aside class="rounded-md border border-[#2f81f7]/30 bg-[#2f81f7]/5 p-4 lg:sticky lg:top-4 lg:self-start" data-org-access-summary>' +
+        '<div class="flex items-center gap-2"><i data-lucide="shield-check" class="h-4 w-4 text-[#2f81f7]"></i>' +
+          '<h4 class="text-sm font-semibold text-foreground">What organization access means</h4></div>' +
+        '<div class="mt-3 grid gap-3 text-xs leading-5 text-muted-foreground">' +
+          '<section><strong class="block text-foreground">Every organization member can</strong>' +
+            '<ul class="mt-1 list-disc space-y-1 pl-5">' +
+              '<li>View the organization, linked repositories, member directory, and teams.</li>' +
+              '<li>Enter member-restricted World floors and see organization agents.</li>' +
+              '<li>Start, review, and continue Claude or Codex sessions on approved headless mirrors.</li>' +
+            "</ul></section>" +
+          '<section><strong class="block text-foreground">Member role cannot</strong>' +
+            '<p class="mt-1">Change organization settings, membership, teams, or repository links. Team permissions can grant repository work, but protected mirror approval and merge remain owner-only.</p></section>' +
+          '<section><strong class="block text-foreground">Admin role adds</strong>' +
+            '<p class="mt-1">Organization settings, members, teams, linked repositories, World access, and federation controls. Admins cannot remove the final owner.</p></section>' +
+          '<section><strong class="block text-foreground">Owner role adds</strong>' +
+            '<p class="mt-1">Owner-only protected mirror approval/merge controls and organization deletion. The organization must always retain one owner.</p></section>' +
+          '<section><strong class="block text-foreground">Team permission</strong>' +
+            '<p class="mt-1"><span class="font-mono text-foreground">read</span> views; <span class="font-mono text-foreground">write</span> changes content; <span class="font-mono text-foreground">maintain</span> manages repository work; <span class="font-mono text-foreground">admin</span> manages repository access. Team permission does not change the member’s organization role.</p></section>' +
+        "</div>" +
+      "</aside>";
+    const memberAndTeamSettings =
+      '<div class="mt-5 grid gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]">' +
+        '<div>' +
+          '<section><h4 class="text-sm font-semibold text-foreground">Members</h4>' +
+            '<div class="mt-2 grid gap-2">' + memberRows + "</div>" + memberAdd + "</section>" +
+          '<section class="mt-6"><h4 class="text-sm font-semibold text-foreground">Teams</h4>' +
+            '<div class="mt-2 grid gap-2">' + teamRows + "</div>" + teamAdd + "</section>" +
+        "</div>" +
+        accessSummary +
+      "</div>";
 
     root.innerHTML =
       '<div class="flex items-center gap-3">' +
@@ -719,10 +754,7 @@
       (profile.description ? '<p class="mt-1 text-sm text-muted-foreground">' + escapeHtml(profile.description) + "</p>" : "") +
       worldSettings +
       '<p data-org-status class="mt-2 min-h-4 text-xs text-muted-foreground"></p>' +
-      '<section class="mt-5"><h4 class="text-sm font-semibold text-foreground">Members</h4>' +
-        '<div class="mt-2 grid gap-2">' + memberRows + "</div>" + memberAdd + "</section>" +
-      '<section class="mt-6"><h4 class="text-sm font-semibold text-foreground">Teams</h4>' +
-        '<div class="mt-2 grid gap-2">' + teamRows + "</div>" + teamAdd + "</section>" +
+      memberAndTeamSettings +
       '<section class="mt-6"><h4 class="text-sm font-semibold text-foreground">Linked repos</h4>' +
         '<div class="mt-2 grid gap-2">' + repoRows + "</div>" + repoAdd + "</section>" +
       digestControls;
@@ -771,6 +803,7 @@
       if (!member) return;
       guard(() => orgApiRequest("POST", "/api/orgs/" + encodeURIComponent(name) + "/members", { member, role }));
     });
+    wireOrgMemberAutocomplete(root, members);
     root.querySelectorAll("[data-org-member-role]").forEach((select) => {
       select.addEventListener("change", () => {
         const member = select.dataset.orgMemberRole;
@@ -831,6 +864,63 @@
           "POST", "/api/orgs/" + encodeURIComponent(name) + "/fediverse",
           { enabled: Boolean(event.target.checked) }));
       });
+  }
+
+  function wireOrgMemberAutocomplete(root, members) {
+    const input = root.querySelector("[data-member-name]");
+    const suggestions = root.querySelector("[data-org-member-suggestions]");
+    const status = root.querySelector("[data-org-member-search-status]");
+    if (!input || !suggestions || !status) return;
+    const existing = new Set(
+      (Array.isArray(members) ? members : [])
+        .map((member) => String(member?.name || "").trim().toLowerCase())
+        .filter(Boolean),
+    );
+    let timer = 0;
+    let generation = 0;
+    input.addEventListener("input", () => {
+      window.clearTimeout(timer);
+      const query = String(input.value || "").trim().toLowerCase();
+      const currentGeneration = ++generation;
+      suggestions.replaceChildren();
+      if (!query) {
+        status.textContent = "Type a name to search active ForkMesh accounts.";
+        return;
+      }
+      status.textContent = "Searching active accounts…";
+      timer = window.setTimeout(async () => {
+        try {
+          const data = await orgApiRequest(
+            "GET",
+            "/api/chat/direct-messages/users?query=" +
+              encodeURIComponent(query),
+          );
+          if (currentGeneration !== generation) return;
+          const names = (Array.isArray(data?.users) ? data.users : [])
+            .map((user) => String(user?.name || "").trim().toLowerCase())
+            .filter((account, index, all) =>
+              account &&
+              !existing.has(account) &&
+              all.indexOf(account) === index
+            )
+            .slice(0, 12);
+          const fragment = document.createDocumentFragment();
+          names.forEach((account) => {
+            const option = document.createElement("option");
+            option.value = account;
+            fragment.appendChild(option);
+          });
+          suggestions.replaceChildren(fragment);
+          status.textContent = names.length
+            ? `${names.length} matching active account${names.length === 1 ? "" : "s"}.`
+            : "No matching account outside this organization.";
+        } catch (_) {
+          if (currentGeneration !== generation) return;
+          status.textContent =
+            "Account search is unavailable; an exact account name still works.";
+        }
+      }, 180);
+    });
   }
 
   async function showOrgTeamDetail(name, team, orgMembers) {
