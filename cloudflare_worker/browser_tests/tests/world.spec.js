@@ -2427,12 +2427,20 @@ test("Local controls carry Work and Security tabs instead of a session card", as
   const workTask = page.locator("[data-world-work-list] > li").first();
   await expect(workTask).toContainText("Write the launch digest");
   await workTask.locator('[data-world-office-task-action="start"]').click();
+  await expect
+    .poll(() =>
+      officeTaskFixture.requests.filter(
+        (request) =>
+          request.path ===
+          `/api/world/office/marketing-tasks/${taskId}/start`,
+      ).length,
+    )
+    .toBeGreaterThan(0);
+  // The row flips to Stop once the server-timed start lands.
+  await expect(
+    page.locator('[data-world-work-list] [data-world-office-task-action="stop"]'),
+  ).toBeVisible();
   await expect(page.locator("[data-world-work-active]")).toHaveText("1");
-  expect(
-    officeTaskFixture.requests.some(
-      (request) => request.path === `/api/world/office/marketing-tasks/${taskId}/start`,
-    ),
-  ).toBe(true);
 
   // The owner-only avatar plate carries the same work, never a session card.
   const board = await page.locator("forkmesh-world").evaluate((shell) =>

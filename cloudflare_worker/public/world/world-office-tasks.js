@@ -288,7 +288,9 @@ export function createWorldOfficeTasksController({
     }
   }
 
-  function renderWorkPane() {
+  // Stats only. The per-second tick calls this instead of renderWorkPane so
+  // the row markup — and the Start/Stop button under the pointer — survives.
+  function updateWorkStats() {
     const own = ownTasks();
     if (workTotal) workTotal.textContent = String(own.length);
     if (workActive) {
@@ -301,6 +303,11 @@ export function createWorldOfficeTasksController({
         own.reduce((sum, task) => sum + currentElapsed(task), 0),
       );
     }
+    return own;
+  }
+
+  function renderWorkPane() {
+    const own = updateWorkStats();
     if (workList) {
       workList.innerHTML = loading
         ? `<li class="world-office-task-empty">Loading your assigned work\u2026</li>`
@@ -333,7 +340,7 @@ export function createWorldOfficeTasksController({
           node.setAttribute("datetime", `PT${Math.floor(elapsed / 1000)}S`);
         });
     });
-    if (personalView) renderWorkPane();
+    if (personalView) updateWorkStats();
     const nextBucket = Math.floor(performance.now() / 5000);
     if (
       officeActive &&
