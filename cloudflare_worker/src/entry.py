@@ -31100,6 +31100,13 @@ HTTPS_MIRROR_REQUIRED_FORKMESH_OPERATIONS = frozenset({
 HTTPS_MIRROR_RETRY_STATUSES = frozenset({
     401, 403, 404, 408, 425, 429, 500, 502, 503, 504,
 })
+# A health endpoint's timeout/rate-limit/server failure is inconclusive: keep a
+# prior signed lease until its normal freshness deadline. Authentication and
+# missing-route responses are definitive for this public control endpoint and
+# therefore still fail closed immediately.
+HTTPS_MIRROR_HEALTH_TRANSIENT_STATUSES = frozenset({
+    408, 425, 429, 500, 502, 503, 504,
+})
 HTTPS_MIRROR_REPO_PROOF_TTL_MS = 60 * 1000
 HTTPS_MIRROR_REPO_PROOF_MEMO_MAX = 500
 _HTTPS_MIRROR_REPO_PROOF_MEMO = {}
@@ -31968,7 +31975,7 @@ async def _https_mirror_health_one(env, row, accepted_forkmesh_refs):
         HTTPS_MIRROR_CONTROL_FETCH_TIMEOUT_SECONDS,
     )
     latency = max(0, min(60_000, int(Date.now()) - started))
-    if status == 0 or status in HTTPS_MIRROR_RETRY_STATUSES:
+    if status == 0 or status in HTTPS_MIRROR_HEALTH_TRANSIENT_STATUSES:
         await _https_mirror_mark_transient(env, row, now)
         return False
     try:

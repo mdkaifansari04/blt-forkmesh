@@ -137,4 +137,3 @@ def test_stale_node_purge_only_removes_orphaned_registration():
         "DELETE FROM repositories" in sql
         for sql, _args in writes
     )
-
