@@ -1,7 +1,10 @@
 name = "forkmesh-relay"
 main = "src/entry.py"
 compatibility_flags = [ "python_workers", "disable_python_external_sdk" ]
-compatibility_date = "2026-06-14"
+# Keep the Python/Pyodide runtime on Cloudflare's current snapshot. The older
+# 2026-06-14 snapshot could re-enter one scheduled wrapper task while another
+# request wrapper was executing ("Cannot enter into task ...").
+compatibility_date = "2026-07-23"
 
 # Runs automatically before every deploy: applies the D1 schema (idempotent).
 [build]
@@ -174,6 +177,10 @@ class_name = "ForkMeshOfficeRoom"
 name = "FORKMESH_NODES"
 class_name = "ForkMeshNodes"
 
+[[durable_objects.bindings]]
+name = "FORKMESH_CRON_WATCHDOG"
+class_name = "ForkMeshCronWatchdog"
+
 # Persistent storage: repo catalog, accounts, and the issue/pull inboxes.
 # Create once with:  uvx --from workers-py pywrangler d1 create forkmesh
 # then paste the printed database_id below.
@@ -215,6 +222,10 @@ class_name = "ForkMeshOfficeRoom"
 [[env.dev.durable_objects.bindings]]
 name = "FORKMESH_NODES"
 class_name = "ForkMeshNodes"
+
+[[env.dev.durable_objects.bindings]]
+name = "FORKMESH_CRON_WATCHDOG"
+class_name = "ForkMeshCronWatchdog"
 
 [[migrations]]
 tag = "v1"
@@ -279,19 +290,26 @@ tag = "v12"
 # Live sockets are runtime state; SQLite registration is still required.
 new_sqlite_classes = ["ForkMeshNodes"]
 
+[[migrations]]
+tag = "v13"
+# A single alarm-backed object watches successful cron completions. Its alarm
+# runs independently of the Cron Trigger, so it can email administrators when
+# the trigger stops completing and again after the first successful recovery.
+new_sqlite_classes = ["ForkMeshCronWatchdog"]
+
 
 [observability]
 enabled = true
-head_sampling_rate = 1
+head_sampling_rate = 0.05
 
-# Logs stay in the Cloudflare dashboard only. The Sentry destinations added in
-# the 2026-07-18 full-sampling round exported an info event for every D1 call,
-# Durable Object websocket wakeup, and request ("d1_run OK",
-# "hibernatableWebSocket OK", "POST OK", ...), flooding Sentry. Real error
-# reporting is unaffected: it goes through capture_sentry_error in src/entry.py.
+# Keep a representative production sample without spending the Workers Free
+# 200k/day observability-event allowance on routine requests. Logs stay in the
+# Cloudflare dashboard only and invocation logs remain off. Real errors are
+# unaffected: capture_sentry_error persists them through the bounded D1/Sentry
+# path independently of this diagnostic sample.
 [observability.logs]
 enabled = true
-head_sampling_rate = 1
+head_sampling_rate = 0.05
 invocation_logs = false
 
 [observability.traces]

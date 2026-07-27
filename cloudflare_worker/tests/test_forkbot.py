@@ -69,6 +69,8 @@ FUNCS = {
     "_forkbot_ai_interpret",
     "_forkbot_next_issue_number",
     "_forkbot_attributed_body",
+    "_ap_org_alias_owner",
+    "_forkbot_rekey_alias_inbox",
     "_forkbot_enqueue_issue",
     "forkbot_chat_handler",
 }
@@ -192,8 +194,12 @@ def _issue_blobs(records):
     return {"ok": True, "blobs": blobs}
 
 
-def _env_and_calls(ai=None, catalog_issue_max=None, host=None, admins=()):
-    calls = {"inserted": [], "contributors": [], "side_effects": []}
+def _env_and_calls(ai=None, catalog_issue_max=None, host=None, admins=(),
+                   org_node=""):
+    # org_node: the account backing forkmesh/forkmesh when that public name is
+    # an organization alias ("" = a plain node name that resolves to itself).
+    calls = {"inserted": [], "contributors": [], "side_effects": [],
+             "hostNotifies": [], "rekeyed": []}
 
     class _Env:
         AI = ai
@@ -233,6 +239,9 @@ def _env_and_calls(ai=None, catalog_issue_max=None, host=None, admins=()):
         if sql.startswith("UPDATE issue_seq"):
             seq[args[1]] = args[0]
             return None
+        if sql.startswith("UPDATE issue_inbox SET repo_bi"):
+            calls["rekeyed"].append(args)
+            return None
         raise AssertionError("unexpected d1_run: " + sql)
 
     async def decrypt_row(_env, data):
@@ -259,6 +268,12 @@ def _env_and_calls(ai=None, catalog_issue_max=None, host=None, admins=()):
     async def is_admin(_env, name):
         return str(name or "").lower() in {str(a).lower() for a in admins}
 
+    async def org_repo_node(_env, _org, _repo):
+        return org_node
+
+    async def notify_repo_host(_env, owner, repo, topic):
+        calls["hostNotifies"].append((owner, repo, topic))
+
     # log_error's real implementation from entry.py fans out to these two;
     # stubbed here (like _load_capture_worker_exception in
     # test_sentry_worker.py) so AI-failure logging doesn't need a live DSN/D1.
@@ -283,6 +298,8 @@ def _env_and_calls(ai=None, catalog_issue_max=None, host=None, admins=()):
         "_inbox_author_over_quota": inbox_author_over_quota,
         "notify_pending_inbox": notify_pending_inbox,
         "notify_mentions": notify_mentions,
+        "_org_repo_node": org_repo_node,
+        "notify_repo_host": notify_repo_host,
         "capture_sentry_error": capture_sentry_error,
         "_write_error_log": write_error_log,
         "_public_base_url": lambda _env: "https://forkmesh.test",
@@ -396,6 +413,71 @@ def test_forkbot_chat_handler_queues_default_repo_issue():
     assert item["event"]["body"] == (
         "make crash logs searchable\n\n"
         "---\n_Filed by ForkBot at @alice's request via chat._")
+    # The owner node is pushed a sync event like every other inbox write, so
+    # the issue lands in the repository now instead of on the slow fallback
+    # poll (or never, if the node happens to be restarting).
+    assert calls["hostNotifies"] == [("forkmesh", "forkmesh", "issues")]
+
+
+def test_forkbot_queues_issues_under_the_org_alias_backing_node():
+    # forkmesh/forkmesh is an organization alias: the repo really lives on the
+    # linked node. Every drain reads the inbox under the NODE's blind index
+    # (/api/repo/... is org_alias_rewrite'd, and /api/sync selects the rows the
+    # account owns), so keying the row on the alias dead-lettered it — the
+    # issue was accepted in chat and never synced back to the repository.
+    env, calls, ns = _env_and_calls(catalog_issue_max=6, org_node="jett")
+
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot create an issue to make crash logs searchable",
+        "sender": "alice",
+    })))
+
+    assert response["status"] == 201
+    repo_bi, item, _submitter_bi = calls["inserted"][0]
+    assert repo_bi == "bi:jett/forkmesh"
+    # The public identity stays on the organization name.
+    assert response["data"]["owner"] == "forkmesh"
+    assert response["data"]["issueUrl"] == "/forkmesh/forkmesh/issues"
+    assert item["titleIfNew"] == "make crash logs searchable"
+    # Owner-directed side effects address the account that actually holds the
+    # inbox and runs the node.
+    assert calls["hostNotifies"] == [("jett", "forkmesh", "issues")]
+    pending = [effect for effect in calls["side_effects"]
+               if effect[0] == "pending"]
+    assert pending and pending[0][1][1] == "jett"
+    # Submissions an earlier release stranded under the alias key are moved
+    # onto the node's key so they finally sync too.
+    assert calls["rekeyed"] == [("bi:jett/forkmesh", "bi:forkmesh/forkmesh")]
+
+
+def test_forkbot_does_not_rekey_when_the_owner_is_a_plain_node():
+    env, calls, ns = _env_and_calls()
+    asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot open an issue about flaky login tests",
+        "sender": "alice",
+    })))
+    assert calls["inserted"][0][0] == "bi:forkmesh/forkmesh"
+    assert calls["rekeyed"] == []
+
+
+def test_forkbot_agent_requests_reach_the_org_alias_backing_node_owner():
+    host = _FakeGateway(
+        tree=_issue_tree([4, 5, 6]),
+        blobs=_issue_blobs([{"number": 6, "title": "Fix relay retries",
+                             "status": "open"}]),
+    )
+    env, calls, ns = _env_and_calls(host=host, org_node="jett")
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot start an agent on the most recent issue",
+        "sender": "jett",  # the account backing the org alias owns the repo
+    })))
+
+    assert response["status"] == 201
+    assert response["data"]["action"] == "agent_requested"
+    repo_bi, item, _submitter_bi = calls["inserted"][0]
+    assert repo_bi == "bi:jett/forkmesh"
+    assert item["meta"]["wantsAgent"] is True
+    assert calls["hostNotifies"] == [("jett", "forkmesh", "issues")]
 
 
 def test_forkbot_uses_workers_ai_for_issue_title_and_body_when_available():

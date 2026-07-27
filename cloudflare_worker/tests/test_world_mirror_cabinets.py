@@ -188,14 +188,72 @@ def test_live_node_builder_uses_the_freshest_repository_state_per_node():
     assert [repo["name"] for repo in mirror2["repositories"]] == ["zeta", "alpha"]
 
 
+def test_live_node_builder_never_promotes_users_or_stale_names_to_cabinets():
+    script = f"""
+      import {{ buildLiveMirrorNodes }} from {json.dumps(MODULE.as_uri())};
+      const network = {{
+        stats: {{ onlineNodes: ["jett", "mirror2", "accidental-name"] }},
+        leaderboards: {{ nodes: [
+          {{ name: "jett", sizeBytes: 999 }},
+          {{ name: "mirror2", sizeBytes: 22 }},
+          {{ name: "accidental-name", sizeBytes: 11 }}
+        ] }}
+      }};
+      const mirrors = {{
+        requestedOwner: "forkmesh", requestedRepo: "forkmesh",
+        mirrors: [
+          {{
+            node: "forkmesh", owner: "jett", machineName: "forkmesh",
+            status: "online", integrity: "ok", cloneAvailable: true,
+            commit: "a".repeat(40), branch: "main"
+          }},
+          {{
+            node: "mirror2", ownerUser: "jett",
+            status: "online", integrity: "ok", cloneAvailable: true,
+            commit: "a".repeat(40), branch: "main"
+          }},
+          {{
+            node: "retired-node", status: "offline", integrity: "unknown",
+            cloneAvailable: false
+          }}
+        ]
+      }};
+      process.stdout.write(JSON.stringify(buildLiveMirrorNodes(network, mirrors)));
+    """
+    result = subprocess.run(
+        [
+            "node",
+            "--experimental-default-type=module",
+            "--input-type=module",
+            "-e",
+            script,
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    nodes = json.loads(result.stdout)
+    assert {node["name"] for node in nodes} == {"forkmesh", "mirror2"}
+    assert all(node["online"] is True for node in nodes)
+    assert all(node["name"] not in {"jett", "accidental-name"} for node in nodes)
+    assert all(
+        repo["status"] == "online"
+        for node in nodes
+        for repo in node["repositories"]
+    )
+
+
 def test_world_fetches_the_flagship_mirror_snapshot_once_and_uses_cabinets():
     # One bootstrap fetch plus one bounded visible-page HTTPS poller. This data
     # never travels on the multiplayer socket.
     assert APP.count('this.fetchJSON("/api/repo/forkmesh/forkmesh/mirrors"') == 1
     assert '"/api/repo/forkmesh/forkmesh/mirrors",' in APP
-    assert "const MIRROR_STATUS_POLL_MS = 5 * 1000" in APP
+    assert "const MIRROR_STATUS_POLL_MS = 60 * 1000" in APP
     assert "document.visibilityState !== \"visible\"" in APP
     assert "startMirrorPolling()" in APP
+    assert "this.inflightRequests = new Map()" in APP
+    assert "this.requestFailures = new Map()" in APP
+    assert "staleIfError: true" in APP
     assert "buildLiveMirrorNodes" in APP
     assert "this.mirrorCatalogs" in APP
     assert "function createMirrorServerCabinet" in SCENE
