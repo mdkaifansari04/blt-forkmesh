@@ -9,9 +9,9 @@ the implementation and its focused verification are complete.
 - [x] Make the walkway, bridge, and Office lobby meet at the same height with no gap.
 - [x] Make the sound button a real master on/off control for active playback.
 - [x] Verify the Office threshold geometry and sound toggle in the running world UI.
-- [ ] Route pending web issues to an eligible online repository mirror.
-- [ ] Prevent duplicate issue intake when multiple mirrors are online.
-- [ ] Sync mirror-created issues back to the repository source of truth.
+- [x] Route pending web issues to an eligible online repository mirror.
+- [x] Prevent duplicate issue intake when multiple mirrors are online.
+- [x] Sync mirror-created issues back to the repository source of truth.
 - [ ] Give pull-request details GitHub-style section tabs.
 - [ ] Show changed files in a left-side file list.
 - [ ] Let reviewers mark individual files as viewed and persist that state.
@@ -58,6 +58,7 @@ task above so they stay recoverable until final verification.
 - [x] Session 398 — variable-based chat theme/cache-buster handling.
 - [x] Session 396 — node-install/provisioning behavior.
 - [x] Session 386 — website referral leaderboard.
+- [ ] Add a separate HTTP `Referer` leaderboard beside the existing referral leaderboard.
 
 ## Final verification
 

@@ -150,6 +150,10 @@ MAX_FILES = 5000
 # of un-merged submissions a repo's inbox will hold.
 MAX_ISSUE_BYTES = 64 * 1024
 MAX_PENDING_ISSUES = 500
+# A mirror gets a bounded window to commit and acknowledge the exact issue
+# rows it read. If that device disappears, another authorized online mirror
+# can reclaim them without operator intervention.
+ISSUE_INBOX_CLAIM_TTL_MS = 5 * 60 * 1000
 # Screenshots a node with no write access attaches to an issue/comment ride
 # along as base64 bytes in the inbox item (it has no working tree to copy them
 # into — see the desktop's IssueStore::readAttachmentsForRemoteSubmit); capped
@@ -7629,6 +7633,10 @@ SCHEMA_ALTER_STATEMENTS = [
     # row, so a per-author quota can be enforced with a COUNT instead of
     # decrypting every pending row.
     "ALTER TABLE issue_inbox ADD COLUMN submitter_bi TEXT",
+    # Mirror drain leases. Deploy migrations add their compound index; the
+    # lazy compatibility path stays correct with the existing repo index.
+    "ALTER TABLE issue_inbox ADD COLUMN claimed_by_bi TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE issue_inbox ADD COLUMN claim_expires_at INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE pull_inbox ADD COLUMN submitter_bi TEXT",
     "ALTER TABLE commit_inbox ADD COLUMN submitter_bi TEXT",
     "ALTER TABLE discussion_inbox ADD COLUMN submitter_bi TEXT",
@@ -24669,25 +24677,33 @@ async def _verify_owner_signature(env, owner, sig, canonical):
     return False
 
 
-async def _authorize_owner(env, request, owner):
+async def _authorized_owner_signing_key(env, request, owner):
     if not owner:
-        return False
+        return ""
     params = parse_qs(urlparse(request.url).query)
     ts = params.get("ts", [""])[0]
     sig = params.get("sig", [""])[0]
     if not ts or not sig:
-        return False
+        return ""
     try:
         skew = abs(int(Date.now()) - int(ts))
     except (TypeError, ValueError):
-        return False
+        return ""
     if skew > LOGIN_MAX_SKEW_MS:
-        return False
+        return ""
     canonical = ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).encode()
-    return await _verify_owner_signature(env, owner, sig, canonical)
+    for public_key in await _owner_signing_pubkeys(env, owner):
+        if await ed25519_verify(public_key, sig, canonical):
+            return public_key
+    return ""
 
 
-async def _authorize_repo_inbox_owner(env, request, owner, repo):
+async def _authorize_owner(env, request, owner):
+    return bool(await _authorized_owner_signing_key(
+        env, request, owner))
+
+
+async def _authorized_repo_inbox_signing_key(env, request, owner, repo):
     """Authorize a repository inbox drain without losing organization context.
 
     Organization repository URLs are rewritten to their backing node before
@@ -24700,15 +24716,17 @@ async def _authorize_repo_inbox_owner(env, request, owner, repo):
     Private repositories deliberately stay on the direct owner-key path:
     organization membership alone is never a plaintext/private-inbox grant.
     """
-    if await _authorize_owner(env, request, owner):
-        return True
+    direct_key = await _authorized_owner_signing_key(
+        env, request, owner)
+    if direct_key:
+        return direct_key
     try:
         original_url = urlparse(request.url)
         match = REPO_API_PREFIX_RE.match(original_url.path)
     except Exception:
-        return False
+        return ""
     if not match:
-        return False
+        return ""
     alias_owner = (safe_segment(match.group(1)) or "").lower()
     alias_repo = (safe_segment(match.group(2)) or "").lower()
     owner_l = str(owner or "").strip().lower()
@@ -24719,13 +24737,13 @@ async def _authorize_repo_inbox_owner(env, request, owner, repo):
         or alias_repo != repo_l
         or await _repo_is_private(env, owner_l, repo_l)
     ):
-        return False
+        return ""
 
     # Re-check the durable link instead of trusting the short-lived alias memo:
     # revoking/unlinking an organization must revoke drain authority at once.
     org_bi, org_row = await _org_row(env, alias_owner)
     if not org_row:
-        return False
+        return ""
     linked = await d1_first(
         env,
         "SELECT 1 AS ok FROM org_repos "
@@ -24733,19 +24751,19 @@ async def _authorize_repo_inbox_owner(env, request, owner, repo):
         org_bi, repo_l, owner_l,
     )
     if not linked:
-        return False
+        return ""
 
     params = parse_qs(original_url.query)
     ts = params.get("ts", [""])[0]
     sig = params.get("sig", [""])[0]
     if not ts or not sig:
-        return False
+        return ""
     try:
         skew = abs(int(Date.now()) - int(ts))
     except (TypeError, ValueError):
-        return False
+        return ""
     if skew > LOGIN_MAX_SKEW_MS:
-        return False
+        return ""
     canonical = (
         "forkmesh-issues-pull-v1\n" + alias_owner + "\n" + ts
     ).encode()
@@ -24762,14 +24780,17 @@ async def _authorize_repo_inbox_owner(env, request, owner, repo):
         account = clean_string(
             member.get("name") or "", MAX_NODE_NAME
         ).strip().lower()
-        if (
-            valid_node_name(account)
-            and await _verify_owner_signature(
-                env, account, sig, canonical
-            )
-        ):
-            return True
-    return False
+        if not valid_node_name(account):
+            continue
+        for public_key in await _owner_signing_pubkeys(env, account):
+            if await ed25519_verify(public_key, sig, canonical):
+                return public_key
+    return ""
+
+
+async def _authorize_repo_inbox_owner(env, request, owner, repo):
+    return bool(await _authorized_repo_inbox_signing_key(
+        env, request, owner, repo))
 
 
 async def _authorize_owner_account(env, owner, data, request=None,
@@ -27072,7 +27093,30 @@ def _drain_ids_from_request(request):
     return ids
 
 
-async def _drain_issue_inbox(env, request, repo_bi):
+async def _claim_issue_inbox(env, repo_bi, signing_key):
+    """Lease every currently available row to one authorized desktop device.
+
+    The UPDATE predicate makes competing drains converge on one winner per row:
+    once one device writes its opaque claimant index, another device cannot
+    overwrite it until the bounded lease expires.
+    """
+    if not signing_key:
+        return ""
+    claimant_bi = await blind_index(
+        env, "issue-inbox-claim:" + signing_key)
+    now = int(Date.now())
+    await d1_run(
+        env,
+        "UPDATE issue_inbox SET claimed_by_bi=?, claim_expires_at=? "
+        "WHERE repo_bi=? AND (claimed_by_bi='' OR claim_expires_at<=? "
+        "OR claimed_by_bi=?)",
+        claimant_bi, now + ISSUE_INBOX_CLAIM_TTL_MS, repo_bi, now,
+        claimant_bi,
+    )
+    return claimant_bi
+
+
+async def _drain_issue_inbox(env, request, repo_bi, claimant_bi=""):
     """Ack (delete) the exact issue-inbox rows named by ?ids=, returning how many
     were removed, and record the drain in inbox_drain_log. Rows the node did not
     ack (including a submission that arrived after it read the queue) are left
@@ -27081,16 +27125,25 @@ async def _drain_issue_inbox(env, request, repo_bi):
     if not ids:
         return 0
     marks = ",".join("?" for _ in ids)
+    claim_clause = " AND claimed_by_bi=?" if claimant_bi else ""
+    args = (repo_bi, *ids, *([claimant_bi] if claimant_bi else []))
     row = await d1_first(
         env,
         "SELECT COUNT(*) AS c FROM issue_inbox WHERE repo_bi=? "
-        "AND id IN (%s)" % marks,
-        repo_bi, *ids)
+        "AND id IN (%s)" % marks + claim_clause,
+        *args)
     removed = int(row.get("c", 0)) if row else 0
-    await d1_run(
-        env,
-        "DELETE FROM issue_inbox WHERE repo_bi=? AND id IN (%s)" % marks,
-        repo_bi, *ids)
+    if claimant_bi:
+        await d1_run(
+            env,
+            "DELETE FROM issue_inbox WHERE repo_bi=? AND id IN (%s) "
+            "AND claimed_by_bi=?" % marks,
+            *args)
+    else:
+        await d1_run(
+            env,
+            "DELETE FROM issue_inbox WHERE repo_bi=? AND id IN (%s)" % marks,
+            repo_bi, *ids)
     await _log_inbox_drain(env, repo_bi, "issues", removed)
     return removed
 
@@ -27257,11 +27310,17 @@ async def issues_handler(env, request, owner, repo):
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
-        if not await _authorize_owner(env, request, owner):
+        signing_key = await _authorized_repo_inbox_signing_key(
+            env, request, owner, repo)
+        if not signing_key:
             return json_response({"error": "unauthorized"}, status=401)
+        claimant_bi = await _claim_issue_inbox(
+            env, repo_bi, signing_key)
         rows = await d1_all(
-            env, "SELECT id, data FROM issue_inbox WHERE repo_bi=? ORDER BY id ASC",
-            repo_bi,
+            env,
+            "SELECT id, data FROM issue_inbox "
+            "WHERE repo_bi=? AND claimed_by_bi=? ORDER BY id ASC",
+            repo_bi, claimant_bi,
         )
         pending = []
         for r in rows:
@@ -27277,11 +27336,16 @@ async def issues_handler(env, request, owner, repo):
         return json_response({"ok": True, "pending": pending})
 
     if method == "DELETE":
-        if not await _authorize_owner(env, request, owner):
+        signing_key = await _authorized_repo_inbox_signing_key(
+            env, request, owner, repo)
+        if not signing_key:
             return json_response({"error": "unauthorized"}, status=401)
+        claimant_bi = await blind_index(
+            env, "issue-inbox-claim:" + signing_key)
         materialized = await _confirm_fediverse_issue_materializations(
             env, request)
-        removed = await _drain_issue_inbox(env, request, repo_bi)
+        removed = await _drain_issue_inbox(
+            env, request, repo_bi, claimant_bi)
         return json_response({
             "ok": True,
             "drained": removed,
@@ -27641,8 +27705,12 @@ async def sync_handler(env, request):
         return json_response({"error": "method_not_allowed"}, status=405)
     params = parse_qs(urlparse(request.url).query)
     owner = safe_segment(params.get("owner", [""])[0])
-    if not await _authorize_owner(env, request, owner):
+    signing_key = await _authorized_owner_signing_key(
+        env, request, owner)
+    if not signing_key:
         return json_response({"error": "unauthorized"}, status=401)
+    issue_claimant_bi = await blind_index(
+        env, "issue-inbox-claim:" + signing_key)
     owner_bi = await blind_index(env, owner)
     rows = await d1_all(
         env, "SELECT key_bi, data FROM repositories WHERE owner_bi=?", owner_bi)
@@ -27657,6 +27725,15 @@ async def sync_handler(env, request):
     by_repo = {}      # repo_bi -> {topic: [decrypted rows...]}
     drain_ids = {}    # repo_bi -> {table: [row ids read]}, for exact deletes
     if repo_bis:
+        now = int(Date.now())
+        await d1_run(
+            env,
+            "UPDATE issue_inbox SET claimed_by_bi=?, claim_expires_at=? "
+            f"WHERE repo_bi IN ({marks}) AND "
+            "(claimed_by_bi='' OR claim_expires_at<=? OR claimed_by_bi=?)",
+            issue_claimant_bi, now + ISSUE_INBOX_CLAIM_TTL_MS,
+            *repo_bis, now, issue_claimant_bi,
+        )
         for topic, table, ordered in (
                 ("issues", "issue_inbox", True),
                 ("pulls", "pull_inbox", True),
@@ -27666,11 +27743,14 @@ async def sync_handler(env, request):
                 ("aboutUpdate", "about_inbox", False)):
             order = " ORDER BY id ASC" if ordered else ""
             id_col = "rowid AS drain_id" if table == "about_inbox" else "id AS drain_id"
+            claim_filter = (
+                " AND claimed_by_bi=?" if table == "issue_inbox" else "")
             table_rows = await d1_all(
                 env,
                 f"SELECT repo_bi, data, {id_col} FROM {table}"
-                f" WHERE repo_bi IN ({marks})" + order,
-                *repo_bis)
+                f" WHERE repo_bi IN ({marks})" + claim_filter + order,
+                *repo_bis,
+                *([issue_claimant_bi] if table == "issue_inbox" else []))
             for r in table_rows or []:
                 owner_crypto = globals().get("security_control")
                 sealed = (

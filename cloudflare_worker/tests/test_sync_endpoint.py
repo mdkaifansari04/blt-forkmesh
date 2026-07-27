@@ -29,6 +29,7 @@ SECURITY_SPEC.loader.exec_module(SECURITY_CONTROL)
 FUNCS = {
     "sync_handler",
     "_authorize_owner",
+    "_authorized_owner_signing_key",
     "_verify_owner_signature",
     "_owner_signing_pubkeys",
     "_owner_pubkey",
@@ -111,8 +112,16 @@ def _harness(owner_e2ee=False):
         want = set(args)
         for table, rows in inboxes.items():
             if "FROM " + table in sql:
-                return [{"repo_bi": r["repo_bi"], "data": r["data"]}
-                        for r in rows if r["repo_bi"] in want]
+                return [
+                    {"repo_bi": r["repo_bi"], "data": r["data"]}
+                    for r in rows
+                    if r["repo_bi"] in want
+                    and (
+                        table != "issue_inbox"
+                        or "claimed_by_bi=?" not in sql
+                        or r.get("claimed_by_bi") in want
+                    )
+                ]
         if "FROM agent_prompts" in sql:
             # The drain path selects row ids too (aliased drain_id) so the
             # delete can target exactly the rows it read.
@@ -124,6 +133,23 @@ def _harness(owner_e2ee=False):
         raise AssertionError("unexpected d1_all: " + sql)
 
     async def d1_run(_env, sql, *args):
+        if sql.startswith(
+                "UPDATE issue_inbox SET claimed_by_bi="):
+            claimant, expires = args[:2]
+            repo_values = set(args[2:-2])
+            now, same_claimant = args[-2:]
+            for row in inboxes["issue_inbox"]:
+                if (
+                    row["repo_bi"] in repo_values
+                    and (
+                        not row.get("claimed_by_bi")
+                        or int(row.get("claim_expires_at") or 0) <= now
+                        or row.get("claimed_by_bi") == same_claimant
+                    )
+                ):
+                    row["claimed_by_bi"] = claimant
+                    row["claim_expires_at"] = expires
+            return
         if sql.startswith("DELETE FROM agent_prompts WHERE id IN"):
             drained = set(args)
             agent_prompts[:] = [r for r in agent_prompts
@@ -158,6 +184,7 @@ def _harness(owner_e2ee=False):
         "unquote": unquote,
         "urlparse": urlparse,
         "LOGIN_MAX_SKEW_MS": 5 * 60 * 1000,
+        "ISSUE_INBOX_CLAIM_TTL_MS": 5 * 60 * 1000,
         "MAX_REPO_SEGMENT": 100,
     }
     if owner_e2ee:

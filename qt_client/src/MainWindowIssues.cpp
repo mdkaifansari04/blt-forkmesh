@@ -7383,7 +7383,10 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
         if (!probe.canWrite())
             return;
     }
-    if (!hasOwnerSigningCapability(repo.owner))
+    // An organization-linked mirror signs the public org alias with the
+    // current member device key. The relay re-checks the durable repo link and
+    // owner/admin role; do not require this device to own the backing node.
+    if (!hasOwnerSigningCapability())
         return;
 
     QUrl url = issuesApiUrl(repo);
@@ -7436,7 +7439,7 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
                                          const QJsonArray &pending,
                                          bool interactive)
 {
-    if (!hasOwnerSigningCapability(repo.owner))
+    if (!hasOwnerSigningCapability())
         return;
     if (pending.isEmpty()) {
         if (interactive)

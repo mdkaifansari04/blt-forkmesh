@@ -10,7 +10,12 @@ from urllib.parse import parse_qs, urlparse
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
 
-FUNCS = {"_drain_ids_from_request", "_drain_issue_inbox", "_log_inbox_drain"}
+FUNCS = {
+    "_claim_issue_inbox",
+    "_drain_ids_from_request",
+    "_drain_issue_inbox",
+    "_log_inbox_drain",
+}
 
 
 def _load(extra_globals):
@@ -31,9 +36,11 @@ class _Request:
 
 
 class _Date:
+    now_value = 1_234
+
     @staticmethod
     def now():
-        return 1_234
+        return _Date.now_value
 
 
 def _env(rows):
@@ -54,6 +61,19 @@ def _env(rows):
         executed.append((sql, args))
         if sql.startswith("INSERT INTO inbox_drain_log"):
             log.append(args)
+        elif sql.startswith("UPDATE issue_inbox SET claimed_by_bi="):
+            claimant, expires, repo_bi, now, same_claimant = args
+            for row in rows:
+                if (
+                    row.get("repo_bi", "bi:o/r") == repo_bi
+                    and (
+                        not row.get("claimed_by_bi")
+                        or row.get("claim_expires_at", 0) <= now
+                        or row.get("claimed_by_bi") == same_claimant
+                    )
+                ):
+                    row["claimed_by_bi"] = claimant
+                    row["claim_expires_at"] = expires
         elif "id IN" in sql:
             keep = [r for r in rows if r["id"] not in set(args[1:])]
             rows[:] = keep
@@ -61,6 +81,39 @@ def _env(rows):
             rows[:] = []
 
     return {"d1_first": d1_first, "d1_run": d1_run}, executed, log
+
+
+def test_issue_claim_is_exclusive_until_lease_expiry():
+    _Date.now_value = 1_234
+    rows = [
+        {"id": 1, "repo_bi": "bi:o/r", "claimed_by_bi": "",
+         "claim_expires_at": 0},
+    ]
+    env_fakes, _executed, _log = _env(rows)
+
+    async def blind_index(_env, value):
+        return "bi:" + value
+
+    ns = _load({
+        "parse_qs": parse_qs,
+        "urlparse": urlparse,
+        "Date": _Date,
+        "blind_index": blind_index,
+        "ISSUE_INBOX_CLAIM_TTL_MS": 300_000,
+        **env_fakes,
+    })
+    first = asyncio.run(ns["_claim_issue_inbox"](
+        object(), "bi:o/r", "device-one"))
+    second = asyncio.run(ns["_claim_issue_inbox"](
+        object(), "bi:o/r", "device-two"))
+    assert rows[0]["claimed_by_bi"] == first
+    assert second != first
+
+    _Date.now_value += 300_001
+    asyncio.run(ns["_claim_issue_inbox"](
+        object(), "bi:o/r", "device-two"))
+    assert rows[0]["claimed_by_bi"] == second
+    _Date.now_value = 1_234
 
 
 def test_exact_id_drain_leaves_untouched_rows_and_logs_count():
