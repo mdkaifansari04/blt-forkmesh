@@ -8407,6 +8407,7 @@ export function createWorldScene({
     campfire.add(ring);
     campfire.userData.seatRing = ring;
     campfire.userData.seatCount = count;
+    campfire.userData.seatRadius = radius;
     campfire.userData.seatOffsets = seatOffsets;
     campfire.userData.seatBenches = benches;
     return seatOffsets;
@@ -10204,6 +10205,12 @@ export function createWorldScene({
   officeElevatorCar.add(elevatorPanel);
   const neighborhoodHomes = new Map();
   const nodeInfrastructure = new Map();
+  // Slot ownership is session-stable: a health refresh, response-time reorder,
+  // or another node joining must not make every cabinet jump to a new place.
+  // Positions remain derived from the live reward-pool location, so moving
+  // the pool still moves the whole ring as one layout.
+  const nodeSlotAssignments = new Map();
+  let networkNodeSnapshot = [];
   const botAgents = new Map();
   const loungeMembers = new Map();
   // Public account facts the member directory publishes but a live presence
@@ -13204,6 +13211,7 @@ export function createWorldScene({
       String(member?.name || "").trim(),
     );
     const guestSeats = Math.max(0, Math.min(64, Math.round(Number(guests) || 0)));
+    const previousSeatRadius = Number(campfire.userData.seatRadius) || 0;
     const seats = rebuildCampfireCircle(
       Math.max(total, roster.length) + guestSeats + 1,
     );
@@ -13320,6 +13328,14 @@ export function createWorldScene({
       disposeObject3D(figure);
       loungeMembers.delete(id);
     });
+    // The member ring grows with the roster. Recompute automatic cabinet
+    // slots only when its physical radius changed, preserving a walkway
+    // without doing layout work on every identical directory refresh.
+    if (
+      previousSeatRadius !== (Number(campfire.userData.seatRadius) || 0)
+    ) {
+      relayoutNetworkNodes();
+    }
   }
 
   function visitNeighborhoodHome(ownerId) {
@@ -13348,17 +13364,42 @@ export function createWorldScene({
     return true;
   }
 
-  // Concentric rings of cabinets around the reward pool, innermost first. The
-  // first ring clears the pool rim and its tree circle; each further ring only
-  // starts once the one inside it is full at walkable spacing.
-  function rewardCircleSlots(centreX, centreZ, count) {
-    const spacing = 3.2;
-    // The campfire keeps its clearing: a ring position that landed on the
-    // bench circle would stand a cabinet through the seating.
-    const campfire = landmarkById("campfire").position;
+  // Concentric rings of cabinets around the reward pool, innermost first.
+  // Every ring is fully ordered before `count` is sliced, so the prefix is
+  // identical for 2, 20, or 64 nodes: adding one node never shifts survivors.
+  // Live scene keep-outs are optional so the geometry stays directly testable
+  // without constructing WebGL.
+  function rewardCircleSlots(centreX, centreZ, count, options = {}) {
+    const spacing = 3.8;
+    const requested = Math.max(0, Math.min(64, Math.round(Number(count) || 0)));
+    const defaultCampfire = landmarkById("campfire").position;
+    const campfirePosition = Array.isArray(options.campfirePosition)
+      ? options.campfirePosition
+      : defaultCampfire;
+    const campfireClearance = Math.max(
+      8.2,
+      Number(options.campfireClearance) || 0,
+    );
+    const circleKeepouts = [
+      {
+        x: Number(campfirePosition[0]) || 0,
+        z: Number(campfirePosition[2]) || 0,
+        radius: campfireClearance,
+      },
+      ...(Array.isArray(options.circleKeepouts)
+        ? options.circleKeepouts
+        : []),
+    ];
+    const rectangleKeepouts = Array.isArray(options.rectangleKeepouts)
+      ? options.rectangleKeepouts
+      : [];
+    const isWalkable =
+      typeof options.isWalkable === "function"
+        ? options.isWalkable
+        : () => true;
     const slots = [];
-    let radius = 9.6;
-    while (slots.length < count && radius < WORLD_RADIUS - 6) {
+    let radius = 10.8;
+    while (slots.length < requested && radius < Math.min(68, WORLD_RADIUS - 6)) {
       const capacity = Math.max(
         1,
         Math.floor((Math.PI * 2 * radius) / spacing),
@@ -13368,22 +13409,74 @@ export function createWorldScene({
         const angle = (index / capacity) * Math.PI * 2;
         const x = centreX + Math.cos(angle) * radius;
         const z = centreZ + Math.sin(angle) * radius;
-        if (Math.hypot(x - campfire[0], z - campfire[2]) < 7.4) continue;
-        open.push({ x, z });
+        if (!isWalkable(x, z)) continue;
+        if (
+          circleKeepouts.some((keepout) => {
+            const clearance = Math.max(0, Number(keepout?.radius) || 0);
+            return (
+              Math.hypot(
+                x - (Number(keepout?.x) || 0),
+                z - (Number(keepout?.z) || 0),
+              ) < clearance
+            );
+          })
+        ) {
+          continue;
+        }
+        if (
+          rectangleKeepouts.some((keepout) => {
+            const padding = Math.max(0, Number(keepout?.padding) || 0);
+            return (
+              x >= (Number(keepout?.minX) || 0) - padding &&
+              x <= (Number(keepout?.maxX) || 0) + padding &&
+              z >= (Number(keepout?.minZ) || 0) - padding &&
+              z <= (Number(keepout?.maxZ) || 0) + padding
+            );
+          })
+        ) {
+          continue;
+        }
+        open.push({ x, z, angle });
       }
-      const take = Math.min(open.length, count - slots.length);
-      // A part-filled ring spreads over its whole circle rather than trailing
-      // off as a lopsided arc.
-      const stride = take > 0 ? open.length / take : 0;
-      for (let index = 0; index < take; index += 1) {
-        slots.push(open[Math.floor(index * stride)]);
+
+      // Farthest-point order gives every prefix a balanced spread. It is
+      // computed from the complete obstacle-filtered ring, independent of
+      // `requested`, which is the stability guarantee membership changes need.
+      const ordered = [];
+      const remaining = open.slice();
+      while (remaining.length) {
+        let bestIndex = 0;
+        let bestDistance = -1;
+        remaining.forEach((candidate, candidateIndex) => {
+          const nearest = ordered.length
+            ? Math.min(
+                ...ordered.map((selected) =>
+                  Math.hypot(
+                    candidate.x - selected.x,
+                    candidate.z - selected.z,
+                  ),
+                ),
+              )
+            : candidate.angle <= Math.PI
+              ? Math.PI - candidate.angle
+              : candidate.angle - Math.PI;
+          if (nearest > bestDistance + 1e-9) {
+            bestIndex = candidateIndex;
+            bestDistance = nearest;
+          }
+        });
+        ordered.push(remaining.splice(bestIndex, 1)[0]);
       }
-      radius += 3.6;
+      slots.push(...ordered.map(({ x, z }) => ({ x, z })));
+      radius += 4.2;
     }
-    return slots;
+    return slots.slice(0, requested);
   }
 
-  function updateNetworkNodes(nodes = []) {
+  function updateNetworkNodes(nodes = networkNodeSnapshot) {
+    networkNodeSnapshot = (Array.isArray(nodes) ? nodes : [])
+      .slice(0, 64)
+      .map((node) => ({ ...node }));
     const fountain = landmarkObjects.get("fountain");
     const fountainPosition = landmarkById("fountain").position;
     const routingX = fountain?.position.x ?? fountainPosition[0];
@@ -13402,7 +13495,7 @@ export function createWorldScene({
     // membership change. A normalized name order keeps every surviving
     // cabinet in the same slot, while a changed member list is laid out again
     // immediately by this existing data-update path.
-    const usableNodes = (Array.isArray(nodes) ? nodes : [])
+    const usableNodes = networkNodeSnapshot
       .map((node) => ({
         node,
         name: String(node?.name || node?.label || "").trim().slice(0, 80),
@@ -13421,16 +13514,66 @@ export function createWorldScene({
           entry.name.toLowerCase() !== entries[index - 1].name.toLowerCase(),
       )
       .slice(0, 64);
+    const usableIds = new Set(
+      usableNodes.map(({ name }) => `node:${name.toLowerCase()}`),
+    );
+    nodeSlotAssignments.forEach((_slotIndex, id) => {
+      if (!usableIds.has(id)) nodeSlotAssignments.delete(id);
+    });
+    const usedSlotIndexes = new Set(nodeSlotAssignments.values());
+    usableNodes.forEach(({ name }) => {
+      const id = `node:${name.toLowerCase()}`;
+      if (nodeSlotAssignments.has(id)) return;
+      let slotIndex = 0;
+      while (usedSlotIndexes.has(slotIndex) && slotIndex < 64) {
+        slotIndex += 1;
+      }
+      if (slotIndex >= 64) return;
+      nodeSlotAssignments.set(id, slotIndex);
+      usedSlotIndexes.add(slotIndex);
+    });
+    const campfireRadius =
+      Math.max(6.2, Number(campfire.userData.seatRadius) || 0) + 2;
     const circleSlots = rewardCircleSlots(
       routingX,
       routingZ,
-      usableNodes.length,
+      64,
+      {
+        campfirePosition: [
+          campfire.position.x,
+          campfire.position.y,
+          campfire.position.z,
+        ],
+        campfireClearance: campfireRadius,
+        circleKeepouts: [
+          {
+            x: swingSet.position.x,
+            z: swingSet.position.z,
+            radius: 6.2,
+          },
+        ],
+        rectangleKeepouts: [
+          {
+            ...ARRIVAL_GRID_BOUNDS,
+            padding: 1.8,
+          },
+        ],
+        isWalkable: (x, z) => worldWalkSurfaceContains(x, z, 1.7),
+      },
     );
-    usableNodes.forEach(({ node, name: nodeName }, index) => {
+    usableNodes.forEach(({ node, name: nodeName }) => {
       const id = `node:${nodeName.toLowerCase()}`;
       const dataKey = nodeDataKey({ ...node, name: nodeName });
       seen.add(id);
       let cabinet = nodeInfrastructure.get(id);
+      const followedPosition = cabinet?.position?.clone?.() || null;
+      const focusFollowsCabinet = Boolean(
+        cameraFocus &&
+        followedPosition &&
+        Math.abs(cameraFocus.x - followedPosition.x) < 0.01 &&
+        Math.abs(cameraFocus.y - (followedPosition.y + 1.65)) < 0.01 &&
+        Math.abs(cameraFocus.z - followedPosition.z) < 0.01
+      );
       // The commit shown before this update, captured ahead of any rebuild.
       // Comparing it against the fresh signed record is what detects "code
       // was just pushed onto this node" — for both the instant socket-driven
@@ -13465,7 +13608,8 @@ export function createWorldScene({
         }
         nodeInfrastructure.set(id, cabinet);
       }
-      const slot = circleSlots[index];
+      const slot = circleSlots[nodeSlotAssignments.get(id)];
+      if (!slot) return;
       cabinet.position.set(slot.x, 0.38, slot.z);
       // The front display faces inward so each cabinet remains individually
       // readable from the surrounding walkway.
@@ -13473,6 +13617,10 @@ export function createWorldScene({
         routingX - slot.x,
         routingZ - slot.z,
       );
+      if (focusFollowsCabinet) {
+        cameraFocus.copy(cabinet.position);
+        cameraFocus.y += 1.65;
+      }
       const nextCommit = String(node?.commit || "");
       if (priorCommit && nextCommit && nextCommit !== priorCommit) {
         spawnPushSurge(cabinet.position);
@@ -13491,6 +13639,11 @@ export function createWorldScene({
       removeCabinet(cabinet);
       nodeInfrastructure.delete(id);
     });
+  }
+
+  function relayoutNetworkNodes() {
+    if (!networkNodeSnapshot.length && !nodeInfrastructure.size) return;
+    updateNetworkNodes(networkNodeSnapshot);
   }
 
   function focusNetworkNode(name) {
@@ -16193,6 +16346,16 @@ export function createWorldScene({
         layoutCommitTimer = 0;
       }
       commitLayoutObject(movedObject);
+      if (
+        ["fountain", "campfire", "swing-set"].includes(
+          String(movedObject.userData.layoutId || "").replace(
+            /^landmark-/,
+            "",
+          ),
+        )
+      ) {
+        relayoutNetworkNodes();
+      }
       lastGestureDragged = true;
       pointerGestureMoved = false;
       return;
@@ -16573,6 +16736,10 @@ export function createWorldScene({
       const object = movableWorldObjects.get(id);
       if (object) applyLockedPlacement(id, object);
     });
+    // Layout and catalog reads race independently. Re-anchor after the full
+    // document is applied so a late pool placement cannot strand the cabinet
+    // ring at the pool's authored coordinates.
+    relayoutNetworkNodes();
   }
 
   function commitLayoutObject(object) {
