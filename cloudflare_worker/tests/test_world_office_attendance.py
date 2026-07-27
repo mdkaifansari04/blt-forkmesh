@@ -1,0 +1,324 @@
+#!/usr/bin/env python3
+"""Contracts for the shared in-world Office attendance board."""
+
+import ast
+import asyncio
+from pathlib import Path
+import re
+import sqlite3
+from types import SimpleNamespace
+
+
+ROOT = Path(__file__).resolve().parents[1]
+ENTRY = ROOT / "src" / "entry.py"
+SCHEMA = ROOT / "src" / "schema.py"
+MIGRATION = ROOT / "migrations" / "0085_world_office_attendance.sql"
+ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+
+
+def _load_handler(extra_globals):
+    names = {
+        "_office_attendance_visit",
+        "_office_attendance_recent",
+        "office_attendance_handler",
+    }
+    tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    nodes = [
+        node for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in names
+    ]
+    assert {node.name for node in nodes} == names
+    namespace = dict(extra_globals)
+    exec(
+        compile(
+            ast.fix_missing_locations(
+                ast.Module(body=nodes, type_ignores=[])),
+            str(ENTRY),
+            "exec",
+        ),
+        namespace,
+    )
+    return namespace["office_attendance_handler"]
+
+
+def _run(value):
+    return asyncio.run(value)
+
+
+class _Clock:
+    value = 1_800_000_000_000
+
+    @classmethod
+    def now(cls):
+        return cls.value
+
+
+class _Request:
+    def __init__(self, data=None, method="POST", invalid_json=False):
+        self.data = {} if data is None else data
+        self.method = method
+        self.invalid_json = invalid_json
+
+
+def _clean_display_name(value, fallback="Guest"):
+    clean = "".join(
+        character for character in str(value or "")[:128]
+        if character.isalnum() or character in (" ", ".", "_", "-")
+    )
+    clean = " ".join(clean.split()).strip(" ._-")[:32].strip()
+    return clean or str(fallback or "Guest")[:32]
+
+
+def _runtime():
+    database = sqlite3.connect(":memory:")
+    database.row_factory = sqlite3.Row
+    database.executescript(MIGRATION.read_text(encoding="utf-8"))
+    state = {
+        "account_bi": "",
+        "account": None,
+        "session_payloads": [],
+        "next_id": 1000,
+    }
+
+    async def bounded_json_request(request):
+        if request.invalid_json:
+            raise ValueError("invalid_json")
+        return request.data
+
+    async def account_session(_env, _request, data):
+        state["session_payloads"].append(data)
+        return state["account_bi"], state["account"]
+
+    async def d1_all(_env, sql, *params):
+        return [
+            dict(row) for row in database.execute(sql, params).fetchall()
+        ]
+
+    async def d1_run(_env, sql, *params):
+        database.execute(sql, params)
+        database.commit()
+
+    def new_id():
+        state["next_id"] += 1
+        return f"{state['next_id']:032x}"
+
+    def response(payload, status=200, **kwargs):
+        return {"payload": payload, "status": status, **kwargs}
+
+    handler = _load_handler({
+        "Date": _Clock,
+        "_account_kind": lambda account: account.get("kind", ""),
+        "_account_session_record": account_session,
+        "bounded_json_request": bounded_json_request,
+        "d1_all": d1_all,
+        "d1_run": d1_run,
+        "ensure_schema": lambda _env: _async_none(),
+        "json_response": response,
+        "method_name": lambda request: request.method,
+        "new_world_peer_id": new_id,
+        "re": re,
+        "world_protocol": SimpleNamespace(
+            clean_display_name=_clean_display_name),
+    })
+    return handler, database, state
+
+
+async def _async_none():
+    return None
+
+
+def _sign_in(state, account_bi="a" * 64, name="alice"):
+    state["account_bi"] = account_bi
+    state["account"] = {
+        "name": name,
+        "status": "active",
+        "kind": "user",
+    }
+
+
+def test_schema_and_idempotent_migration_store_only_bounded_visit_fields():
+    migration = MIGRATION.read_text(encoding="utf-8")
+    schema = SCHEMA.read_text(encoding="utf-8")
+    for source in (migration, schema):
+        assert "CREATE TABLE IF NOT EXISTS world_office_attendance" in source
+        assert "idx_world_office_attendance_open" in source
+        assert "WHERE out_at IS NULL" in source
+        assert "idx_world_office_attendance_recent" in source
+
+    database = sqlite3.connect(":memory:")
+    database.executescript(migration)
+    database.executescript(migration)
+    columns = {
+        row[1] for row in database.execute(
+            "PRAGMA table_info(world_office_attendance)")
+    }
+    assert columns == {
+        "visit_id", "account_bi", "account_name", "in_at", "out_at",
+    }
+    assert not columns.intersection({
+        "ip", "ip_address", "user_agent", "ua", "session", "session_token",
+    })
+
+    database.execute(
+        "INSERT INTO world_office_attendance "
+        "(visit_id,account_bi,account_name,in_at,out_at) "
+        "VALUES (?,?,?,?,NULL)",
+        ("1" * 32, "a" * 64, "alice", 100),
+    )
+    try:
+        database.execute(
+            "INSERT INTO world_office_attendance "
+            "(visit_id,account_bi,account_name,in_at,out_at) "
+            "VALUES (?,?,?,?,NULL)",
+            ("2" * 32, "a" * 64, "alice", 101),
+        )
+    except sqlite3.IntegrityError:
+        pass
+    else:
+        raise AssertionError("an account must have at most one open visit")
+
+
+def test_get_returns_only_the_newest_twenty_bounded_public_visits():
+    handler, database, _state = _runtime()
+    for index in range(25):
+        in_at = 1_700_000_000_000 + index
+        database.execute(
+            "INSERT INTO world_office_attendance "
+            "(visit_id,account_bi,account_name,in_at,out_at) "
+            "VALUES (?,?,?,?,?)",
+            (
+                f"{index + 1:032x}",
+                f"{index + 1:064x}",
+                "visitor-" + str(index),
+                in_at,
+                in_at + 1,
+            ),
+        )
+    database.commit()
+
+    response = _run(handler(None, _Request(method="GET")))
+    assert response["status"] == 200
+    assert response["cache_control"] == (
+        "no-store, max-age=0, must-revalidate")
+    visits = response["payload"]["visits"]
+    assert response["payload"]["ok"] is True
+    assert len(visits) == 20
+    assert [visit["inAt"] for visit in visits] == sorted(
+        (visit["inAt"] for visit in visits), reverse=True)
+    assert visits[0] == {
+        "id": f"{25:032x}",
+        "account": "visitor-24",
+        "inAt": 1_700_000_000_024,
+        "outAt": 1_700_000_000_025,
+    }
+    assert all(
+        set(visit) == {"id", "account", "inAt", "outAt"}
+        for visit in visits
+    )
+
+
+def test_repeated_in_opens_one_visit_and_out_closes_that_same_row_once():
+    handler, database, state = _runtime()
+    _sign_in(state, name="Alice<script>")
+
+    first = _run(handler(None, _Request({
+        "action": "in",
+        "account": "forged-user",
+    })))
+    _Clock.value += 500
+    duplicate = _run(handler(None, _Request({"action": "IN"})))
+
+    rows = database.execute(
+        "SELECT * FROM world_office_attendance").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["account_bi"] == "a" * 64
+    assert rows[0]["account_name"] == "Alicescript"
+    assert rows[0]["out_at"] is None
+    assert first["payload"]["visits"] == duplicate["payload"]["visits"]
+    assert state["session_payloads"][0]["account"] == "forged-user"
+
+    _Clock.value += 500
+    checked_out_at = _Clock.value
+    checked_out = _run(handler(
+        None, _Request({"action": "out", "account": "forged-user"})))
+    _Clock.value += 500
+    repeated_out = _run(handler(None, _Request({"action": "out"})))
+    row = database.execute(
+        "SELECT * FROM world_office_attendance").fetchone()
+    assert row["out_at"] == checked_out_at
+    assert checked_out["payload"]["visits"] == repeated_out["payload"]["visits"]
+    assert checked_out["payload"]["visits"][0]["outAt"] == checked_out_at
+
+
+def test_only_active_user_sessions_can_punch_and_actions_are_validated():
+    handler, database, state = _runtime()
+
+    unauthenticated = _run(handler(
+        None, _Request({"action": "in"})))
+    assert unauthenticated["status"] == 401
+    assert unauthenticated["payload"] == {"error": "login_required"}
+
+    state["account_bi"] = "b" * 64
+    state["account"] = {
+        "name": "build-node",
+        "status": "active",
+        "kind": "node",
+    }
+    assert _run(handler(
+        None, _Request({"action": "in"})))["status"] == 401
+
+    _sign_in(state, account_bi="c" * 64, name="carol")
+    invalid_action = _run(handler(
+        None, _Request({"action": "arrive"})))
+    assert invalid_action["status"] == 400
+    assert invalid_action["payload"] == {"error": "invalid_action"}
+    assert _run(handler(
+        None, _Request(invalid_json=True)))["status"] == 400
+    assert database.execute(
+        "SELECT COUNT(*) FROM world_office_attendance").fetchone()[0] == 0
+
+
+def test_different_accounts_can_hold_independent_open_visits():
+    handler, database, state = _runtime()
+    _sign_in(state, account_bi="d" * 64, name="dana")
+    _run(handler(None, _Request({"action": "in"})))
+    _Clock.value += 1
+    _sign_in(state, account_bi="e" * 64, name="eli")
+    response = _run(handler(None, _Request({"action": "in"})))
+
+    assert database.execute(
+        "SELECT COUNT(*) FROM world_office_attendance "
+        "WHERE out_at IS NULL").fetchone()[0] == 2
+    assert [visit["account"] for visit in response["payload"]["visits"]] == [
+        "eli", "dana",
+    ]
+
+
+def test_route_methods_csrf_helper_and_privacy_boundary_are_explicit():
+    assert '"/api/world/office/attendance"' in ENTRY_TEXT
+    assert "office_attendance_handler(self.env, request)" in ENTRY_TEXT
+
+    tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    handler_node = next(
+        node for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "office_attendance_handler"
+    )
+    source = ast.unparse(handler_node)
+    assert "_account_session_record(env, request, data)" in source
+    lowered = source.lower()
+    for forbidden in (
+        "cf-connecting-ip",
+        "x-forwarded-for",
+        "user-agent",
+        "ip_address",
+    ):
+        assert forbidden not in lowered
+
+    handler, _database, _state = _runtime()
+    rejected = _run(handler(None, _Request(method="DELETE")))
+    assert rejected["status"] == 405
+    assert rejected["extra_headers"]["allow"] == "GET, POST"
+    assert rejected["cache_control"] == (
+        "no-store, max-age=0, must-revalidate")

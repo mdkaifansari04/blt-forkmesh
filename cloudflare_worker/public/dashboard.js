@@ -47,6 +47,7 @@
     claimNode: { pendingNodeId: "" },
     linkGrant: null,
     repoMirrors: [],
+    repoLatestCommit: null,
     repoServedBy: null,
     // Owner-only "Agents" tab (adhoc #225): owner verification by node account,
     // no password required. selectedAgentId (adhoc #259) is the id of the agent
@@ -4749,7 +4750,10 @@
 
   function nativeRepositoryLogoDataUrl(value) {
     const url = String(value || "");
-    return /^data:image\/(?:svg\+xml|png|jpeg|webp)(?:;|,)/i.test(url)
+    return (
+      /^data:image\/(?:svg\+xml|png|jpeg|webp)(?:;|,)/i.test(url)
+      || /^\/api\/repo\/[^/?#]+\/[^/?#]+\/raw\?[^#]+$/i.test(url)
+    )
       ? url
       : "";
   }
@@ -4886,7 +4890,7 @@
                 <i data-lucide="${origin.isPrivate ? "lock" : "globe-2"}" class="h-3 w-3"></i>${escapeHtml(visibility)}
               </span>
               <span class="flex items-center gap-1 text-xs text-muted-foreground">
-                <i data-lucide="radio" class="w-3 h-3"></i>${nodeCount > 1 ? `${nodeCount} nodes` : (viaMirror ? "served by mirror" : live ? "live host" : "host offline")}
+                <i data-lucide="radio" class="w-3 h-3"></i>${nodeCount > 1 ? `${nodeCount} mirrors` : (viaMirror ? "served by mirror" : live ? "mirror online" : "mirror offline")}
               </span>
               <span class="text-xs text-muted-foreground font-mono">updated ${escapeHtml(formatDate(repo.updatedAt || repo.lastSync))}</span>
             </div>
@@ -5317,9 +5321,15 @@
 
   function externalRepositoryCard(repository) {
     const logo = String(repository?.logo?.dataUrl || "");
-    const status = String(repository?.statusLabel || "External repository");
+    const hosted = Boolean(repository?.mirrored && repository?.mirror?.owner && repository?.mirror?.name);
+    const status = hosted
+      ? "Fully hosted by ForkMesh"
+      : String(repository?.statusLabel || "External repository");
     const provider = String(repository?.attribution?.provider || repository?.provider || "Provider");
     const original = String(repository?.originalUrl || "");
+    const forkmeshUrl = hosted
+      ? `/${encodeURIComponent(repository.targetOwner)}/${encodeURIComponent(repository.name)}`
+      : original;
     const canVolunteer = Boolean(state.session?.sessionToken) &&
       !["actively_mirrored", "archived"].includes(String(repository?.status || ""));
     const manageable = Boolean(repository?.canManage);
@@ -5336,18 +5346,18 @@
         <img src="${escapeHtml(logo)}" alt="" class="h-12 w-12 shrink-0 rounded-xl border border-border bg-secondary object-cover" />
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-center gap-2">
-            <a href="${escapeHtml(original)}" target="_blank" rel="noopener noreferrer" class="truncate font-mono text-sm font-semibold text-foreground hover:text-primary hover:underline">${escapeHtml(repository?.fullName || repository?.name || "External repository")}</a>
+            <a href="${escapeHtml(forkmeshUrl)}" ${hosted ? "" : 'target="_blank" rel="noopener noreferrer"'} class="truncate font-mono text-sm font-semibold text-foreground hover:text-primary hover:underline">${escapeHtml(repository?.fullName || repository?.name || "External repository")}</a>
             <span class="rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">${escapeHtml(status)}</span>
             ${repository?.isPrivate ? '<span class="rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">Private · owner only</span>' : ""}
           </div>
           <p class="mt-1 text-xs leading-5 text-muted-foreground">${escapeHtml(repository?.metadata?.description || "No provider description.")}</p>
-          <p class="mt-2 text-[11px] leading-4 text-muted-foreground">${escapeHtml(repository?.mirrorNotice || "This external entry is not mirrored by ForkMesh.")}</p>
+          <p class="mt-2 text-[11px] leading-4 text-muted-foreground">${escapeHtml(hosted ? "The complete Git repository is synced, cloneable, and hosted by ForkMesh." : repository?.mirrorNotice || "This external entry is not mirrored by ForkMesh.")}</p>
           ${incomplete}
           <div class="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
             <a href="${escapeHtml(original)}" target="_blank" rel="noopener noreferrer" class="font-medium text-primary hover:underline">Open on ${escapeHtml(provider)}</a>
             ${repository?.targetOwner ? `<span aria-hidden="true">·</span><span>Listed under ${repository?.targetOwnerType === "organization" ? "organization " : ""}<span class="font-mono text-foreground">${escapeHtml(repository.targetOwner)}</span></span>` : ""}
             <span aria-hidden="true">·</span>
-            <span>ForkMesh does not own or control this repository</span>
+            <span>${hosted ? "Full Git data hosted by ForkMesh" : "ForkMesh does not own or control this repository"}</span>
           </div>
         </div>
         ${canVolunteer ? `
@@ -5944,7 +5954,7 @@
     if (state.repoFileFinder.indexing) {
       status.textContent = "Indexing live mirror...";
     } else if (state.repoFileFinder.error && !state.repoFileFinder.files.length) {
-      status.textContent = "No live desktop host is available to index files.";
+      status.textContent = "No reachable mirror host is available to index files.";
     } else if (state.repoFileFinder.partial) {
       status.textContent = `Showing ${formatCount(matches.length)} matches from the first ${formatCount(state.repoFileFinder.files.length)} indexed files.`;
     } else {
@@ -6562,8 +6572,16 @@
     const subject = commitSummaryField(data, "subject", "message", "commitMessage");
     const author = commitSummaryField(data, "author", "committer", "name")
       || String(repo.maintainer || repo.owner || "maintainer");
-    const date = commitSummaryField(data, "date", "committedAt", "updatedAt")
+    const matchingMirror = (state.repoMirrors || []).find((mirror) => {
+      const mirrorCommit = String(mirror?.commit || "").trim().toLowerCase();
+      return hash && mirrorCommit === hash.trim().toLowerCase()
+        && Number(mirror?.lastCommitAt) > 0;
+    });
+    const exactMirrorDate = matchingMirror?.lastCommitAt || "";
+    const date = exactMirrorDate
+      || commitSummaryField(data, "date", "committedAt", "updatedAt")
       || String(repo.updatedAt || repo.lastSync || "");
+    if (commit && typeof commit === "object") state.repoLatestCommit = commit;
     const avatar = summary.querySelector("[data-repo-commit-avatar]");
     const authorNode = summary.querySelector("[data-repo-commit-author]");
     const messageNode = summary.querySelector("[data-repo-commit-message]");
@@ -6799,7 +6817,7 @@
       // The tree fetch drives the commit summary; if no mirror answered, still
       // resolve the loading skeleton to the repo-derived fallback metadata.
       updateRepoCommitSummary(null, repo);
-      treeBody.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">No live desktop host is serving this repository tree right now.</div>';
+      treeBody.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">No reachable mirror host is serving this repository tree right now.</div>';
       if (!path) {
         const readmeBody = detail.querySelector("[data-repo-readme-body]");
         if (readmeBody) {
@@ -8250,7 +8268,7 @@
       container.innerHTML = renderRepoRecordDetail(repo, kind, number, parsed);
       loadFederatedReplies(repo, kind, number, container);
     } catch (_) {
-      container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">This ${escapeHtml(config.itemLabel)} is unavailable until a live desktop host serves ${escapeHtml(recordPath)}.</div>`;
+      container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">This ${escapeHtml(config.itemLabel)} is unavailable until a reachable mirror host serves ${escapeHtml(recordPath)}.</div>`;
     } finally {
       window.lucide?.createIcons();
     }
@@ -8672,7 +8690,7 @@
       renderRepoIssues();
       applyRemotePendingIssueCount(repo);
     } catch (_) {
-      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Issues are unavailable until a live desktop host serves the .forkmesh/issues/ folder.</div>';
+      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Issues are unavailable until a reachable mirror host serves the .forkmesh/issues/ folder.</div>';
     }
   }
 
@@ -8820,7 +8838,7 @@
       state.projectsView.issues = issues;
       renderRepoProjects();
     } catch (_) {
-      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Projects are unavailable until a live desktop host serves the .forkmesh/projects/ folder.</div>';
+      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Projects are unavailable until a reachable mirror host serves the .forkmesh/projects/ folder.</div>';
     }
   }
 
@@ -9039,7 +9057,7 @@
         setRepoCollectionCounts("pulls", openPulls, items.length - openPulls);
       }
     } catch (_) {
-      container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${escapeHtml(config.label)} are unavailable until a live desktop host serves the ${escapeHtml(config.dir)}/ folder.</div>`;
+      container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${escapeHtml(config.label)} are unavailable until a reachable mirror host serves the ${escapeHtml(config.dir)}/ folder.</div>`;
     } finally {
       window.lucide?.createIcons();
     }
@@ -9496,7 +9514,18 @@
         });
       }
       const logo = $("[data-repo-social-logo]");
-      if (logo) logo.src = body.logoUrl || body.defaultLogoUrl || "/assets/fediverse-avatar.png";
+      if (logo) {
+        const logoUrl = await loadNativeRepositoryLogo(
+          nativeRepositoryLogoEndpoint(repo),
+        );
+        if (logoUrl) {
+          logo.src = logoUrl;
+          logo.classList.remove("hidden");
+        } else {
+          logo.removeAttribute("src");
+          logo.classList.add("hidden");
+        }
+      }
       const banner = $("[data-repo-social-banner]");
       if (banner) {
         const url = body.bannerUrl || body.defaultBannerUrl || "/assets/fediverse-banner.png";
@@ -11166,7 +11195,7 @@
         </div>`;
       }).join("");
     } catch (_) {
-      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Commit history is unavailable until a live desktop host serves this repository.</div>';
+      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Commit history is unavailable until a reachable mirror host serves this repository.</div>';
     } finally {
       window.lucide?.createIcons();
     }
@@ -11232,7 +11261,7 @@
       state.repoCommitDetail = { repo, data };
       container.innerHTML = renderRepoCommitDetail(repo, data);
     } catch (_) {
-      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Commit detail is unavailable until a live desktop host serves this commit.</div>';
+      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Commit detail is unavailable until a reachable mirror host serves this commit.</div>';
     } finally {
       window.lucide?.createIcons();
     }
@@ -11412,7 +11441,7 @@
           <i data-lucide="${online ? "radio" : "circle"}" class="mt-0.5 h-4 w-4 ${online ? "text-primary" : "text-muted-foreground"}"></i>
           <span class="min-w-0">
             <span class="flex min-w-0 flex-wrap items-center gap-1.5">
-              <span class="min-w-0 truncate text-foreground font-mono">${escapeHtml(mirror.owner || mirror.node || mirror.name || "mirror")}</span>
+              <span class="min-w-0 truncate text-foreground font-mono">${escapeHtml(mirror.node || mirror.machineName || mirror.name || "mirror")}</span>
               ${isSource ? '<span class="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">source of truth</span>' : ""}
               ${integrityRejected ? '<span class="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">failing integrity pin</span>' : ""}
             </span>
@@ -11481,7 +11510,7 @@
         const availability = $("[data-repo-availability-status]");
         if (availability) {
           availability.textContent = repo.liveHost
-            ? "host online"
+            ? "mirror online"
             : "served by mirror";
           availability.classList.remove("text-muted-foreground");
           availability.classList.add("text-primary");
@@ -11490,6 +11519,12 @@
       updateRepoLiveCounts(repo, { mirrors: mirrorCount });
       setRepoTabCount("mirrors", mirrors.length);
       state.repoMirrors = mirrors;
+      // Older gateways reported commit dates at day precision. When the
+      // signed mirror record names the same commit, its exact commitAt is the
+      // authoritative timestamp for the repository summary.
+      if (state.repoLatestCommit) {
+        updateRepoCommitSummary(state.repoLatestCommit, repo);
+      }
       if (state.repoServedBy) {
         renderRepoServedBy(state.repoServedBy.name, state.repoServedBy.tookMs);
       }
@@ -11516,7 +11551,9 @@
   // re-fetch host health so the nodes visibly converge without a manual reload.
   let liveMirrorRefreshTimer = null;
   let liveMirrorConfirmTimer = null;
-  const REPO_MIRROR_POLL_MS = 5 * 1000;
+  // Socket mirror signals refresh immediately. This is only a quiet fallback
+  // for dropped frames, so a five-second Worker request loop is unnecessary.
+  const REPO_MIRROR_POLL_MS = 30 * 1000;
   let repoMirrorPollTimer = null;
   function startRepoMirrorPolling() {
     if (repoMirrorPollTimer) return;
@@ -11674,7 +11711,7 @@
       releases.sort((a, b) => (Number(b.created_at) || 0) - (Number(a.created_at) || 0));
       container.innerHTML = releases.map((release) => renderRepoRelease(repo, release, downloads)).join("");
     } catch (_) {
-      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Releases are unavailable until a live desktop host serves the .forkmesh/releases/ folder.</div>';
+      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Releases are unavailable until a reachable mirror host serves the .forkmesh/releases/ folder.</div>';
     } finally {
       window.lucide?.createIcons();
     }
@@ -12077,6 +12114,7 @@
     state.selectedRepo = repo;
     state.repoCollectionPages = { issues: 1, pulls: 1 };
     state.repoMirrors = [];
+    state.repoLatestCommit = null;
     state.repoServedBy = null;
     state.agentsView = { agents: [], selectedAgentId: null };
     // A search left over from the previously-open repo must not carry into
@@ -12165,7 +12203,7 @@
                 <i data-lucide="book-marked" class="h-4 w-4 text-muted-foreground"></i>
                 <h2 class="min-w-0 truncate text-lg font-semibold text-foreground"><span class="text-muted-foreground"><a href="/@${encodeURIComponent(String(repo.owner || "").toLowerCase())}" data-repo-owner-link class="hover:text-foreground hover:underline">${escapeHtml(repo.owner || "owner")}</a>/</span>${escapeHtml(repo.name || "repository")}</h2>
                 <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground">${repo.isPrivate ? "private" : "public"}</span>
-                <span data-repo-availability-status class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono ${live ? "text-primary" : "text-muted-foreground"}">${viaMirror ? "served by mirror" : live ? "host online" : "host offline"}</span>
+                <span data-repo-availability-status class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono ${live ? "text-primary" : "text-muted-foreground"}">${viaMirror ? "served by mirror" : live ? "mirror online" : "mirror offline"}</span>
               </div>
               <p class="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">${escapeHtml(repo.description || "No description published.")}</p>
             </div>
@@ -12298,7 +12336,7 @@
             <section data-dashboard-repo-tab-panel="discussions" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-muted-foreground"></i>Discussions and comments</span><span class="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground">Create from desktop client for signed submissions</span></div><div data-repo-discussions></div></div></section>
             <section data-dashboard-repo-tab-panel="insights" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-no-axes-combined" class="h-3.5 w-3.5 text-muted-foreground"></i>Insights</span><span class="font-mono text-[10px] text-muted-foreground">contributors and activity</span></div><div data-repo-insights></div></div></section>
             <section data-dashboard-repo-tab-panel="sizemap" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-pie" class="h-3.5 w-3.5 text-primary"></i>Size map</span><span class="font-mono text-[10px] text-muted-foreground">directory sizes · default branch</span></div><div data-repo-sizemap class="p-4"></div></div></section>
-            <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">live host health</span></div><div data-mirror-request hidden class="border-b border-border px-4 py-3"><label class="mb-1.5 block text-[11px] font-medium text-foreground">Ask a node to mirror this repo</label><div class="flex items-center gap-2"><input data-mirror-request-target type="text" autocomplete="off" spellcheck="false" placeholder="node name" class="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" /><button type="button" data-mirror-request-send class="h-8 shrink-0 rounded-md border border-border bg-secondary px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary/70">Ask to mirror</button></div><p data-mirror-request-hint class="mt-1.5 text-[11px] text-muted-foreground">They get a notification; if they accept, their node starts mirroring your repo.</p></div><div data-repo-mirrors></div></div></section>
+            <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">reachable mirror health</span></div><div data-mirror-request hidden class="border-b border-border px-4 py-3"><label class="mb-1.5 block text-[11px] font-medium text-foreground">Ask a node to mirror this repo</label><div class="flex items-center gap-2"><input data-mirror-request-target type="text" autocomplete="off" spellcheck="false" placeholder="node name" class="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" /><button type="button" data-mirror-request-send class="h-8 shrink-0 rounded-md border border-border bg-secondary px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary/70">Ask to mirror</button></div><p data-mirror-request-hint class="mt-1.5 text-[11px] text-muted-foreground">They get a notification; if they accept, their node starts mirroring your repo.</p></div><div data-repo-mirrors></div></div></section>
             ${canSeeAgentsTab ? `<section data-dashboard-repo-tab-panel="agents" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Agents</span><button type="button" data-repo-agents-refresh class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button></div><div data-workshop-agent-context hidden></div><div data-repo-agents></div></div></section>` : ""}
           </div>
           <aside data-repo-about data-repo-about-rail class="min-w-0 rounded-lg border border-border bg-background p-4">
@@ -12306,7 +12344,7 @@
             <div data-repo-social-badge class="-mx-4 -mt-4 mb-4 overflow-hidden rounded-t-lg border-b border-border">
               <div data-repo-social-banner class="h-20 w-full bg-secondary bg-cover bg-center" style="background-image:url('/assets/fediverse-banner.png')"></div>
               <div class="flex items-end gap-3 px-4 pb-3">
-                <img data-repo-social-logo src="/assets/fediverse-avatar.png" alt="Repository logo" class="-mt-7 h-14 w-14 shrink-0 rounded-xl border-2 border-background bg-background object-cover shadow" />
+                <img data-repo-social-logo alt="Repository logo" class="-mt-7 hidden h-14 w-14 shrink-0 rounded-xl border-2 border-background bg-background object-cover shadow" />
                 <div class="min-w-0 pb-0.5">
                   <a data-repo-social-handle data-repo-mastodon-link href="${escapeHtml(mastodonUrl)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(fediHandle)}" class="block min-w-0 truncate font-mono text-[11px] text-foreground hover:underline">${escapeHtml(fediHandle)}</a>
                   <div class="text-[11px] text-muted-foreground"><span data-repo-social-followers class="font-mono text-foreground">–</span> fediverse watchers</div>

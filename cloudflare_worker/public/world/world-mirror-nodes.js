@@ -187,18 +187,12 @@ function publicResourceRecord(record) {
 /**
  * Build the bounded, truthful records consumed by the 3D server cabinets.
  *
- * Online membership comes from the live network snapshot. Repository facts come
- * from the public signed mirror payload, with the network leaderboard used only
- * as a fallback. Unknown and opted-out metrics remain null.
+ * Cabinet membership comes only from online records in the public signed mirror
+ * payload. The network overview contains repository-owner aggregates as well as
+ * machines, so it may enrich a matching cabinet but must never create one.
+ * Unknown and opted-out metrics remain null.
  */
 export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
-  const stats = network?.stats || network || {};
-  const onlineNames = Array.isArray(stats?.onlineNodes)
-    ? stats.onlineNodes.map((name) => text(name, "", 80)).filter(Boolean)
-    : [];
-  const onlineLookup = new Map(
-    onlineNames.map((name) => [name.toLowerCase(), name]),
-  );
   const details = Array.isArray(network?.leaderboards?.nodes)
     ? network.leaderboards.nodes
     : Array.isArray(network?.nodes)
@@ -213,23 +207,27 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
   const payloadList = Array.isArray(mirrorPayloads)
     ? mirrorPayloads
     : [mirrorPayloads];
+  const activeNodes = new Map();
   const repositoriesByNode = new Map();
+  const mirrorByNode = new Map();
   payloadList.slice(0, 100).forEach((payload) => {
     if (!Array.isArray(payload?.mirrors)) return;
     payload.mirrors.slice(0, 100).forEach((mirror) => {
-      const name = text(mirror?.node || mirror?.owner, "", 80);
+      if (String(mirror?.status || "").toLowerCase() !== "online") return;
+      // `node` is the canonical machine identity. `owner` can be a user or
+      // repository account and is intentionally only a legacy fallback.
+      const name = text(mirror?.node || mirror?.machineName, "", 80);
       if (!name) return;
       const key = name.toLowerCase();
-      if (String(mirror?.status || "").toLowerCase() === "online") {
-        onlineLookup.set(key, name);
-      }
+      activeNodes.set(key, name);
+      if (!mirrorByNode.has(key)) mirrorByNode.set(key, mirror);
       const items = repositoriesByNode.get(key) || [];
       items.push(publicRepositoryRecord(mirror, payload));
       repositoriesByNode.set(key, items);
     });
   });
 
-  const nodes = [...onlineLookup.entries()]
+  const nodes = [...activeNodes.entries()]
     .map(([key, displayName]) => {
       const detail = detailByName.get(key) || {};
       const repositories = (repositoriesByNode.get(key) || [])
@@ -244,17 +242,7 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
       const hasPrimary = repositories.length > 0;
       const resources = publicResourceRecord({
         ...detail,
-        ...(repositoriesByNode.get(key)?.length
-          ? payloadList
-              .flatMap((payload) =>
-                Array.isArray(payload?.mirrors) ? payload.mirrors : [],
-              )
-              .find(
-                (mirror) =>
-                  text(mirror?.node || mirror?.owner, "", 80).toLowerCase() ===
-                  key,
-              )
-          : {}),
+        ...(mirrorByNode.get(key) || {}),
       });
       const aggregate = nodeAggregateRecord(detail);
       return omitUnknownValues({

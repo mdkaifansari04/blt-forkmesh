@@ -17,7 +17,10 @@ const GENERAL_ROOM = Object.freeze({
   visibility: "public",
   kind: "general",
 });
-const OFFICE_PING_MS = 20000;
+// The room expires a participant after 90 seconds without a frame. A
+// 40-second keepalive leaves ten seconds beyond one missed tick while cutting
+// idle Durable Object wakeups and their authorization reads in half.
+const OFFICE_PING_MS = 40000;
 const OFFICE_MOVEMENT_SEND_INTERVAL_MS = 1000;
 const OFFICE_MOVEMENT_RETRY_MS = 250;
 const OFFICE_SOCKET_BUFFER_HIGH_WATER_BYTES = 64 * 1024;
@@ -203,6 +206,7 @@ export function createWorldOfficeMeeting({
   let leaving = false;
   let entryTicket = "";
   let entryTicketExpiresAt = 0;
+  let entryTicketProvider = null;
   const movementQueue = createOfficeMovementQueue({
     send: (frame) => sendMeeting(frame),
     isReady: () => Boolean(socket && socket.readyState === WebSocket.OPEN),
@@ -308,14 +312,15 @@ export function createWorldOfficeMeeting({
     root.classList.add("world-office-active");
     scene.enterOfficeLobby();
     setOpen(roomPanel, false);
-    setOpen(lobby, true);
-    setLobbyStatus("Choose a room to enter the meeting floor.");
+    // Entry is spatial now: visitors arrive in the physical lobby and use
+    // the glass elevator plus the meeting board on Marketing. Keeping the old
+    // centered room chooser closed preserves the uninterrupted World view.
+    setOpen(lobby, false);
+    setLobbyStatus(
+      "Take the elevator to Marketing and select the meeting board.",
+    );
     onActivity("visiting-office");
     renderRoomBoard();
-    fetchRooms();
-    window.requestAnimationFrame(() => {
-      roomBoard?.querySelector("button")?.focus();
-    });
     return true;
   }
 
@@ -444,20 +449,14 @@ export function createWorldOfficeMeeting({
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(messageId) || seenMessages.has(messageId)) {
       return;
     }
-    seenMessages.add(messageId);
     const participant = await verifiedBubbleParticipant(plain);
-    const senderParticipant = participants.get(
-      String(plain.senderId || "").slice(0, 64),
-    );
-    const claimedSender = String(plain.sender || "").trim().slice(0, 32);
-    // A verified proof wins; otherwise use the sender's currently joined room
-    // identity, then their bounded chat label. The generic fallback made every
-    // valid remote message read as an anonymous participant.
-    const sender =
-      participant?.name ||
-      senderParticipant?.name ||
-      claimedSender ||
-      "Office visitor";
+    // Only the ephemeral key published through the authoritative meeting
+    // socket may bind chat to an avatar. An arbitrary encrypted-room member
+    // cannot claim a live participant's senderId/name, reserve a message id,
+    // or place a bubble over somebody else's head.
+    if (!participant) return;
+    seenMessages.add(messageId);
+    const sender = participant.name;
     const text = String(plain.text || "").slice(0, MAX_MEETING_TEXT);
     const attachment = attachmentFromEntry(plain);
     const item = document.createElement("li");
@@ -714,6 +713,27 @@ export function createWorldOfficeMeeting({
     chatReady = false;
     syncComposer();
     setLobbyStatus(`Opening #${room.name}...`);
+    if (
+      room.kind === "general" &&
+      (
+        !entryTicket ||
+        entryTicketExpiresAt <= Date.now() + 5000
+      )
+    ) {
+      const authorized =
+        typeof entryTicketProvider === "function"
+          ? await entryTicketProvider()
+          : false;
+      if (
+        !authorized ||
+        !entryTicket ||
+        entryTicketExpiresAt <= Date.now() + 5000
+      ) {
+        setLobbyStatus("Sign in to join this meeting.");
+        activeRoom = null;
+        return false;
+      }
+    }
     try {
       meetingBinding = await createMeetingBinding();
     } catch (_) {
@@ -751,6 +771,7 @@ export function createWorldOfficeMeeting({
     setRoomStatus("Joining meeting...");
     scene.enterOfficeMeeting({ roomName: room.name, participants: [] });
     meetingSocket.addEventListener("message", (event) => {
+      if (socket !== meetingSocket) return;
       let frame;
       try {
         frame = JSON.parse(event.data);
@@ -760,6 +781,7 @@ export function createWorldOfficeMeeting({
       receiveMeetingFrame(frame);
     });
     meetingSocket.addEventListener("open", () => {
+      if (socket !== meetingSocket) return;
       window.clearInterval(pingTimer);
       pingTimer = window.setInterval(() => sendMeeting({ type: "ping" }), OFFICE_PING_MS);
     });
@@ -782,10 +804,12 @@ export function createWorldOfficeMeeting({
       clearTranscript();
       setAttachmentFeedback("");
       if (!leaving) {
-        setLobbyStatus("The meeting ended. Choose a room to rejoin.");
+        setLobbyStatus(
+          "The meeting ended. Select the Marketing meeting board to rejoin.",
+        );
         setOpen(roomPanel, false);
-        setOpen(lobby, true);
-        scene.enterOfficeLobby();
+        setOpen(lobby, false);
+        scene.enterOfficeLobby({ floorId: "marketing" });
       }
     });
     meetingSocket.addEventListener("error", () => {
@@ -853,11 +877,10 @@ export function createWorldOfficeMeeting({
     clearTranscript();
     setAttachmentFeedback("");
     syncComposer();
-    scene.enterOfficeLobby();
+    scene.enterOfficeLobby({ floorId: "marketing" });
     setOpen(roomPanel, false);
-    setOpen(lobby, true);
+    setOpen(lobby, false);
     leaving = false;
-    window.requestAnimationFrame(() => roomBoard?.querySelector("button")?.focus());
     return true;
   }
 
@@ -936,6 +959,7 @@ export function createWorldOfficeMeeting({
     socket = null;
     entryTicket = "";
     entryTicketExpiresAt = 0;
+    entryTicketProvider = null;
     clearTranscript();
     participants.clear();
     scene.leaveOfficeInterior();
@@ -960,6 +984,11 @@ export function createWorldOfficeMeeting({
           : "";
       entryTicketExpiresAt = entryTicket ? expiry : 0;
       return Boolean(entryTicket);
+    },
+    setEntryTicketProvider(provider) {
+      entryTicketProvider =
+        typeof provider === "function" ? provider : null;
+      return Boolean(entryTicketProvider);
     },
     openLobby,
     joinRoom,
