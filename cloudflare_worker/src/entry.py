@@ -1850,6 +1850,8 @@ STATUS_MINUTES_SHOWN = 60  # width of the per-minute strip on /status
 # Kept a little past what's shown so a slow reader's page load always has a
 # full 60 buckets to render even a few minutes after the newest cron tick.
 STATUS_MINUTE_RETAIN_MS = 90 * 60 * 1000
+STATUS_MIRROR_PREFIX = "mirror:"
+STATUS_MIRROR_MAX = 50
 FLAGSHIP_REPOSITORY_URL = "https://forkmesh.com/forkmesh/forkmesh"
 FLAGSHIP_MONITOR_ID = "forkmesh/forkmesh"
 INSTALLER_MONITOR_ID = "installer-delivery"
@@ -2197,8 +2199,10 @@ async def _repository_monitor_admin_emails(env):
     return sorted(recipients)
 
 
-async def _record_status_monitor_transitions(env, ok, reason, now):
+async def _record_status_monitor_transitions(
+        env, ok, reason, now, status_systems=None):
     """Deduplicate outage/recovery mail for every system shown on /status."""
+    status_systems = status_systems or STATUS_SYSTEMS
     rows = await d1_all(
         env,
         "SELECT monitor_id,is_up,changed_at,outage_started_at,notified_state "
@@ -2207,7 +2211,7 @@ async def _record_status_monitor_transitions(env, ok, reason, now):
     prior = {str(row.get("monitor_id") or ""): row for row in (rows or [])}
     pending = []
     values = []
-    for system_id, label in STATUS_SYSTEMS:
+    for system_id, label in status_systems:
         monitor_id = "status:" + system_id
         is_up = bool(ok.get(system_id, True))
         state = "up" if is_up else "down"
@@ -2240,7 +2244,7 @@ async def _record_status_monitor_transitions(env, ok, reason, now):
             notified,
         ])
 
-    n = len(STATUS_SYSTEMS)
+    n = len(status_systems)
     await d1_run(
         env,
         "INSERT INTO repository_monitor_state "
@@ -2261,8 +2265,18 @@ async def _record_status_monitor_transitions(env, ok, reason, now):
     for alert in pending:
         system_id = alert["system"]
         label = alert["label"]
-        where, fix = STATUS_MONITOR_GUIDANCE.get(
-            system_id, ("Cloudflare Worker logs", "Inspect the failing check."))
+        if system_id.startswith(STATUS_MIRROR_PREFIX):
+            mirror_name = system_id[len(STATUS_MIRROR_PREFIX):]
+            where, fix = (
+                "the signed direct-HTTPS health record for " + mirror_name,
+                "Check the node process and tunnel, then confirm its signed "
+                "health proof is fresh, integrity is ok, and forkmesh/forkmesh "
+                "matches an accepted source revision.",
+            )
+        else:
+            where, fix = STATUS_MONITOR_GUIDANCE.get(
+                system_id,
+                ("Cloudflare Worker logs", "Inspect the failing check."))
         if alert["is_up"]:
             duration = _flagship_monitor_duration(
                 int(now) - (
@@ -2542,8 +2556,75 @@ async def record_status_sample(env):
         # fabricate a false incident from it.
         ok["website"] = ok["api"] = ok["realtime"] = ok["durable_objects"] = True
 
+    # Each registered mirror that has supplied a valid ForkMesh repository
+    # proof gets its own /status row. This registry contains cryptographically
+    # bound node identities; unlike account_presence or host_presence it cannot
+    # turn a user/chat name or an ad-hoc repository request into a fake node.
+    # Keep recently disconnected mirrors in the sample set for the 30-day
+    # history window so an outage becomes red instead of making the row vanish.
+    status_systems = list(STATUS_SYSTEMS)
     try:
-        await _record_status_monitor_transitions(env, ok, reason, now)
+        mirror_rows = await d1_all(
+            env,
+            """SELECT node_name,checked_at,healthy,integrity,
+                      forkmesh_active,forkmesh_verified_at
+                 FROM mirror_https_endpoints
+                WHERE abuse_blocked=0 AND forkmesh_verified_at>0
+                  AND (forkmesh_active=1 OR forkmesh_verified_at>=?)
+                ORDER BY lower(node_name) LIMIT ?""",
+            now - STATUS_HISTORY_RETAIN_MS,
+            STATUS_MIRROR_MAX,
+        )
+        seen_mirrors = set()
+        for row in mirror_rows:
+            mirror_name = str(row.get("node_name") or "").strip().lower()
+            if (
+                mirror_name in seen_mirrors
+                or not re.fullmatch(
+                    r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?", mirror_name)
+            ):
+                continue
+            seen_mirrors.add(mirror_name)
+            system_id = STATUS_MIRROR_PREFIX + mirror_name
+            status_systems.append(
+                (system_id, "Mirror node — " + mirror_name))
+            checked_at = int(row.get("checked_at") or 0)
+            verified_at = int(row.get("forkmesh_verified_at") or 0)
+            is_fresh = (
+                checked_at >= now - HTTPS_MIRROR_STATUS_FRESH_MS
+                and verified_at >= now - HTTPS_MIRROR_STATUS_FRESH_MS)
+            is_healthy = int(row.get("healthy") or 0) == 1
+            integrity_ok = str(row.get("integrity") or "") == "ok"
+            is_active = int(row.get("forkmesh_active") or 0) == 1
+            mirror_ok = (
+                is_fresh and is_healthy and integrity_ok and is_active)
+            ok[system_id] = mirror_ok
+            if not mirror_ok:
+                if not is_fresh:
+                    reason[system_id] = (
+                        mirror_name + " has not supplied a fresh signed "
+                        "ForkMesh repository proof within the last 10 minutes")
+                elif not is_healthy:
+                    reason[system_id] = (
+                        mirror_name + " failed its signed HTTPS health check")
+                elif not integrity_ok:
+                    reason[system_id] = (
+                        mirror_name + " reported repository integrity " +
+                        (str(row.get("integrity") or "unknown")))
+                else:
+                    reason[system_id] = (
+                        mirror_name + " is reachable but is not serving an "
+                        "accepted forkmesh/forkmesh source revision")
+    except Exception as exc:
+        # The aggregate Git-hosting row already reports a registry query
+        # failure. Do not fabricate per-node identities when the authoritative
+        # registry itself could not be read.
+        console.warn(
+            "status mirror registry query failed: " + _safe_error_text(exc))
+
+    try:
+        await _record_status_monitor_transitions(
+            env, ok, reason, now, status_systems)
     except Exception as exc:
         console.warn(
             "record_status_monitor_transitions failed: " +
@@ -2557,7 +2638,7 @@ async def record_status_sample(env):
     daily_args = []
     hourly_args = []
     minute_args = []
-    for system_id, _label in STATUS_SYSTEMS:
+    for system_id, _label in status_systems:
         failure = 0 if ok.get(system_id, True) else 1
         daily_args.extend([day_ts, system_id, failure])
         # reason is only set when this sample failed; on success it's left NULL
@@ -2569,7 +2650,7 @@ async def record_status_sample(env):
         # tick somehow re-fires for the same minute.
         minute_args.extend(
             [minute_ts, system_id, 0 if failure else 1, reason.get(system_id)])
-    n = len(STATUS_SYSTEMS)
+    n = len(status_systems)
     await d1_run(
         env,
         "INSERT INTO system_status_daily (day_ts, system, checks, failures) "
@@ -2652,8 +2733,25 @@ async def status_history(env):
         by_system_minute.setdefault(system_id, {})[int(row["minute_ts"])] = row
         last_sample_ts = max(last_sample_ts, int(row["minute_ts"]))
 
+    # Dynamic mirror systems are written by record_status_sample only after a
+    # node supplies a valid signed repository proof. Build the public roster
+    # from those recorded IDs, never from user/account presence.
+    recorded_system_ids = set(by_system_hour) | set(by_system_minute)
+    mirror_systems = []
+    for system_id in recorded_system_ids:
+        if not system_id.startswith(STATUS_MIRROR_PREFIX):
+            continue
+        mirror_name = system_id[len(STATUS_MIRROR_PREFIX):]
+        if not re.fullmatch(
+                r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?", mirror_name):
+            continue
+        mirror_systems.append(
+            (system_id, "Mirror node — " + mirror_name))
+    mirror_systems.sort(key=lambda item: item[1].lower())
+    status_systems = list(STATUS_SYSTEMS) + mirror_systems
+
     systems = []
-    for system_id, label in STATUS_SYSTEMS:
+    for system_id, label in status_systems:
         # Uptime is computed over RECORDED samples only; expected-but-missing
         # samples (the sampling cron didn't run) are reported separately as
         # coverage, never counted as downtime. See _status_effective_hour.
@@ -2783,9 +2881,18 @@ async def status_history(env):
             for i in range(STATUS_MINUTES_SHOWN)
         ]
 
+        check_description = STATUS_SYSTEM_CHECKS.get(system_id, "")
+        if system_id.startswith(STATUS_MIRROR_PREFIX):
+            mirror_name = system_id[len(STATUS_MIRROR_PREFIX):]
+            check_description = (
+                "Checks " + mirror_name + " independently once a minute "
+                "using its account-bound direct HTTPS endpoint. Passes only "
+                "when its signed health and forkmesh/forkmesh repository proof "
+                "are fresh, endpoint health is good, integrity is ok, and the "
+                "served refs match an accepted source revision.")
         systems.append({
             "id": system_id, "label": label, "status": status,
-            "checkDescription": STATUS_SYSTEM_CHECKS.get(system_id, ""),
+            "checkDescription": check_description,
             "uptimePct": overall_uptime, "uptime24hPct": uptime_24h,
             "coveragePct": coverage_30d, "coverage24hPct": coverage_24h,
             "checks24h": checks_24h, "failures24h": failures_24h,

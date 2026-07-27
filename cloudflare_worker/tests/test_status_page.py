@@ -40,6 +40,7 @@ def _load(*names, extra_globals=None):
         "STATUS_HISTORY_RETAIN_MS", "STATUS_SAMPLE_WINDOW_MS",
         "STATUS_HOUR_MS", "STATUS_DAY_MS",
         "STATUS_MINUTES_SHOWN", "STATUS_MINUTE_RETAIN_MS",
+        "STATUS_MIRROR_PREFIX", "STATUS_MIRROR_MAX",
     }
     helper_names = {
         "_status_expected_checks_for_hour", "_status_effective_hour",
@@ -77,7 +78,9 @@ class _Clock:
         return cls.value
 
 
-def _sample_env(now, error_paths, host_online=True, db_ok=True, error_rows=None):
+def _sample_env(
+        now, error_paths, host_online=True, db_ok=True, error_rows=None,
+        mirror_rows=None):
     """Stub error rows plus the signed direct-HTTPS mirror health count."""
     inserted = []
     hourly = []
@@ -97,6 +100,8 @@ def _sample_env(now, error_paths, host_online=True, db_ok=True, error_rows=None)
             if error_rows is not None:
                 return error_rows
             return [{"path": p} for p in error_paths]
+        if "mirror_https_endpoints" in sql:
+            return list(mirror_rows or [])
         return []
 
     async def d1_run(_env, sql, *args):
@@ -134,9 +139,12 @@ def _sample_env(now, error_paths, host_online=True, db_ok=True, error_rows=None)
     return extra, inserted, hourly, minutely
 
 
-def _run_sample(error_paths=(), host_online=True, db_ok=True, error_rows=None):
+def _run_sample(
+        error_paths=(), host_online=True, db_ok=True, error_rows=None,
+        mirror_rows=None):
     extra, inserted, hourly, minutely = _sample_env(
-        _Clock.value, error_paths, host_online, db_ok, error_rows=error_rows,
+        _Clock.value, error_paths, host_online, db_ok,
+        error_rows=error_rows, mirror_rows=mirror_rows,
     )
     g = _load("record_status_sample", extra_globals=extra)
     asyncio.run(g["record_status_sample"](object()))
@@ -174,6 +182,41 @@ def test_no_healthy_https_mirror_fails_only_git_hosting():
     assert results["website"] == 0
     assert results["api"] == 0
     assert "no healthy direct https mirror" in reasons["git_hosting"].lower()
+
+
+def test_signed_mirror_endpoints_get_independent_status_samples():
+    fresh = _Clock.value - 30_000
+    rows = [
+        {"node_name": "mirror2", "checked_at": fresh, "healthy": 1,
+         "integrity": "ok", "forkmesh_active": 1,
+         "forkmesh_verified_at": fresh},
+        {"node_name": "mirror3", "checked_at": fresh, "healthy": 0,
+         "integrity": "ok", "forkmesh_active": 1,
+         "forkmesh_verified_at": fresh},
+        # Invalid registry text can never become a public node/system ID.
+        {"node_name": "Jett user", "checked_at": fresh, "healthy": 1,
+         "integrity": "ok", "forkmesh_active": 1,
+         "forkmesh_verified_at": fresh},
+    ]
+    results, reasons, minutes = _run_sample(mirror_rows=rows)
+    assert results["mirror:mirror2"] == 0
+    assert minutes["mirror:mirror2"] == (1, None)
+    assert results["mirror:mirror3"] == 1
+    assert minutes["mirror:mirror3"][0] == 0
+    assert "failed its signed HTTPS health check" in reasons["mirror:mirror3"]
+    assert all("jett" not in system for system in results)
+
+
+def test_stale_signed_mirror_stays_visible_as_down():
+    stale = _Clock.value - 11 * 60_000
+    rows = [
+        {"node_name": "mirror2", "checked_at": stale, "healthy": 1,
+         "integrity": "ok", "forkmesh_active": 1,
+         "forkmesh_verified_at": stale},
+    ]
+    results, reasons, _minutes = _run_sample(mirror_rows=rows)
+    assert results["mirror:mirror2"] == 1
+    assert "within the last 10 minutes" in reasons["mirror:mirror2"]
 
 
 def test_api_error_does_not_fail_website():
@@ -789,6 +832,22 @@ def test_minute_row_reflects_ok_and_carries_its_failure_reason():
     # time), so it reflects that sample rather than reading as "future".
     assert minutes[cur_minute]["status"] == "operational"
     assert minutes[cur_minute]["reason"] is None
+
+
+def test_recorded_signed_mirror_appears_as_a_full_status_system():
+    cur_minute = (_Clock.value // MINUTE_MS) * MINUTE_MS
+    minute_rows = [
+        {"minute_ts": cur_minute, "system": "mirror:mirror2",
+         "ok": 1, "reason": None},
+    ]
+    out = _run_history([], minute_rows=minute_rows)
+    system = next(s for s in out["systems"] if s["id"] == "mirror:mirror2")
+    assert system["label"] == "Mirror node — mirror2"
+    assert system["status"] == "operational"
+    assert len(system["days"]) == 30
+    assert len(system["minutes"]) == 60
+    assert "account-bound direct HTTPS endpoint" in system["checkDescription"]
+    assert all(s["id"] != "mirror:jett" for s in out["systems"])
 
 
 def test_latest_passing_minute_clears_failure_from_hourly_rollup():

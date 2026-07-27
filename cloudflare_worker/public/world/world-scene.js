@@ -6509,11 +6509,15 @@ function systemStatusBannerTexture(THREE, payload = null) {
     }
 
     const rowTop = 325;
-    const rowHeight = 205;
-    systems.slice(0, 8).forEach((system, index) => {
+    const rowHeight = systems.length
+      ? Math.min(205, 1640 / systems.length)
+      : 205;
+    systems.forEach((system, index) => {
       const top = rowTop + index * rowHeight;
+      const scale = Math.min(1, rowHeight / 190);
       context.fillStyle = "#ffffff";
-      roundedRect(context, 56, top, 1424, rowHeight - 12, 14);
+      roundedRect(
+        context, 56, top, 1424, Math.max(24, rowHeight - 10), 14);
       context.fill();
       context.strokeStyle = "#dcdee4";
       context.lineWidth = 2;
@@ -6521,14 +6525,17 @@ function systemStatusBannerTexture(THREE, payload = null) {
 
       context.beginPath();
       context.fillStyle = systemStatusColor(system.status);
-      context.arc(82, top + 34, 9, 0, Math.PI * 2);
+      context.arc(
+        82, top + Math.max(16, 34 * scale), Math.max(4, 9 * scale),
+        0, Math.PI * 2);
       context.fill();
       context.fillStyle = "#202126";
-      context.font = '700 30px "ForkMesh Favorit", sans-serif';
+      context.font =
+        `700 ${Math.max(13, 30 * scale)}px "ForkMesh Favorit", sans-serif`;
       context.fillText(
         clipCanvasText(context, String(system.label || system.id || ""), 650),
         104,
-        top + 44,
+        top + Math.max(21, 44 * scale),
       );
 
       const metric = (value) => Number.isFinite(Number(value))
@@ -6536,35 +6543,43 @@ function systemStatusBannerTexture(THREE, payload = null) {
         : "—";
       context.textAlign = "right";
       context.fillStyle = "#202126";
-      context.font = '700 27px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(metric(system.uptime24hPct), 1100, top + 38);
-      context.fillText(metric(system.uptimePct), 1282, top + 38);
-      context.fillText(metric(system.coverage24hPct), 1452, top + 38);
+      context.font =
+        `700 ${Math.max(12, 27 * scale)}px "ForkMesh Mono", ui-monospace, monospace`;
+      context.fillText(
+        metric(system.uptime24hPct), 1100, top + Math.max(18, 38 * scale));
+      context.fillText(
+        metric(system.uptimePct), 1282, top + Math.max(18, 38 * scale));
+      context.fillText(
+        metric(system.coverage24hPct), 1452, top + Math.max(18, 38 * scale));
       context.fillStyle = "#686b74";
-      context.font = '500 17px "ForkMesh Favorit", sans-serif';
-      context.fillText("24h", 1100, top + 61);
-      context.fillText("30d", 1282, top + 61);
-      context.fillText("coverage", 1452, top + 61);
+      context.font =
+        `500 ${Math.max(9, 17 * scale)}px "ForkMesh Favorit", sans-serif`;
+      context.fillText("24h", 1100, top + Math.max(29, 61 * scale));
+      context.fillText("30d", 1282, top + Math.max(29, 61 * scale));
+      context.fillText(
+        "coverage", 1452, top + Math.max(29, 61 * scale));
       context.textAlign = "left";
 
       // Top strip: one tile per day, with that day's hourly checks inside.
       const days = Array.isArray(system.days) ? system.days.slice(-30) : [];
       const dayX = 76;
-      const dayY = top + 77;
+      const dayY = top + Math.max(34, rowHeight * 0.36);
       const dayWidth = 44;
+      const dayHeight = Math.max(8, rowHeight * 0.24);
       days.forEach((day, dayIndex) => {
         const x = dayX + dayIndex * 46;
         context.fillStyle = "#dedfe4";
-        roundedRect(context, x, dayY, dayWidth, 50, 5);
+        roundedRect(context, x, dayY, dayWidth, dayHeight, 5);
         context.fill();
         const hours = Array.isArray(day?.hours) ? day.hours : [];
         hours.slice(0, 24).forEach((hour, hourIndex) => {
           context.fillStyle = systemStatusColor(hour?.status);
           context.fillRect(
             x + 4 + (hourIndex % 6) * 6,
-            dayY + 5 + Math.floor(hourIndex / 6) * 10,
+            dayY + 2 + Math.floor(hourIndex / 6) *
+              Math.max(1.5, (dayHeight - 4) / 4),
             4,
-            7,
+            Math.max(1, (dayHeight - 7) / 4),
           );
         });
       });
@@ -6574,7 +6589,9 @@ function systemStatusBannerTexture(THREE, payload = null) {
         Array.isArray(day?.hours) ? day.hours : []).slice(-24);
       hours.forEach((hour, hourIndex) => {
         context.fillStyle = systemStatusColor(hour?.status);
-        roundedRect(context, 76 + hourIndex * 29, top + 139, 23, 19, 3);
+        roundedRect(
+          context, 76 + hourIndex * 29, top + rowHeight * 0.69,
+          23, Math.max(4, rowHeight * 0.10), 3);
         context.fill();
       });
 
@@ -6584,7 +6601,9 @@ function systemStatusBannerTexture(THREE, payload = null) {
         : [];
       minutes.forEach((minute, minuteIndex) => {
         context.fillStyle = systemStatusColor(minute?.status);
-        roundedRect(context, 76 + minuteIndex * 18, top + 166, 13, 15, 2);
+        roundedRect(
+          context, 76 + minuteIndex * 18, top + rowHeight * 0.84,
+          13, Math.max(3, rowHeight * 0.08), 2);
         context.fill();
       });
     });
