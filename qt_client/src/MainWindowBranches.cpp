@@ -1379,6 +1379,207 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
     }
 }
 
+void MainWindow::deleteWorktreeBranchAndAgentInBackground(
+    const QString &worktreePath, const QString &branch)
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
+    const QString repoPath = repo.localPath;
+    if (repoPath.isEmpty() || branch.trimmed().isEmpty())
+        return;
+    if (!worktreePath.isEmpty() &&
+        QDir(worktreePath).absolutePath() == QDir(repoPath).absolutePath()) {
+        setRepoDetailNotice("That's the main checkout — it can't be removed here.",
+                            true);
+        return;
+    }
+
+    QList<int> agentIds;
+    QSet<int> issueNumbers;
+    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        if (session.owner != repo.owner || session.name != repo.name ||
+            session.branchName != branch || isExternalSession(session.id))
+            continue;
+        agentIds.append(session.id);
+        if (session.issueNumber > 0)
+            issueNumbers.insert(session.issueNumber);
+    }
+    if (agentIds.isEmpty())
+        return;
+
+    // The visible/session-store deletion is the foreground part. Retaining the
+    // worktree here avoids racing deleteStoredAgentSession's detached teardown
+    // against the explicit worktree + branch cleanup queued below.
+    for (const int id : std::as_const(agentIds)) {
+        if (!deleteStoredAgentSession(id, /*cleanupWorktree=*/false)) {
+            reloadAgents();
+            return;
+        }
+    }
+    reloadAgents();
+    reloadIssues();
+    refreshIssueList();
+    updateIssueActionState();
+    flashMessage(
+        agentIds.size() == 1
+            ? QStringLiteral("Agent session deleted. Cleanup is running in the background.")
+            : QStringLiteral("%1 agent sessions deleted. Cleanup is running in the background.")
+                  .arg(agentIds.size()));
+
+    const quint64 taskId = beginBackgroundTask(
+        QStringLiteral("Deleting %1 worktree and branch").arg(branch));
+    const QString base = repoDefaultBranch(repoBranches());
+    const bool deleteBranch = !branch.isEmpty() && branch != base;
+    auto completed = std::make_shared<bool>(false);
+
+    auto finish = [this, repo, issueNumbers, branch, taskId,
+                   completed](bool success, const QString &error) {
+        if (*completed)
+            return;
+        *completed = true;
+        int closedIssues = 0;
+        if (success && !issueNumbers.isEmpty()) {
+            const RepositoryRecord &writable = writableRecordFor(repo);
+            IssueStore store(writable.localPath, writable.mirrorPath,
+                             &m_profileIdentity, m_userName);
+            if (store.canWrite()) {
+                QHash<int, QString> statusByNumber;
+                for (const Issue &issue : store.loadAll())
+                    statusByNumber.insert(issue.number, issue.status);
+                for (const int number : issueNumbers) {
+                    if (!statusByNumber.contains(number) ||
+                        statusByNumber.value(number) == QLatin1String("closed"))
+                        continue;
+                    QString issueError;
+                    if (store.setStatus(number, QStringLiteral("closed"),
+                                        &issueError)) {
+                        ++closedIssues;
+                        logSystem(
+                            QStringLiteral(
+                                "Closed issue #%1 (agent worktree deleted).")
+                                .arg(number));
+                    } else {
+                        logSystem(
+                            QStringLiteral(
+                                "Issue #%1: could not close on delete: %2")
+                                .arg(number)
+                                .arg(issueError));
+                    }
+                }
+            }
+        }
+        loadWorktreesPanel();
+        if (m_branchesTable)
+            loadBranchesPanel();
+        reloadIssues();
+        refreshIssueList();
+        updateIssueActionState();
+        updateRepoIssueCount();
+        const QString detail =
+            success
+                ? QStringLiteral("Deleted worktree and branch %1%2.")
+                      .arg(branch,
+                           closedIssues > 0
+                               ? QStringLiteral("; closed %1 linked issue%2")
+                                     .arg(closedIssues)
+                                     .arg(closedIssues == 1 ? QString()
+                                                           : QStringLiteral("s"))
+                               : QString())
+                : (error.trimmed().isEmpty()
+                       ? QStringLiteral("Could not finish deleting %1.").arg(branch)
+                       : error.trimmed());
+        finishBackgroundTask(taskId, success, detail);
+    };
+
+    auto deleteBranchNext =
+        std::make_shared<std::function<void()>>();
+    *deleteBranchNext = [this, repoPath, branch, deleteBranch, finish] {
+        if (!deleteBranch || !localBranchExists(repoPath, branch)) {
+            finish(true, QString());
+            return;
+        }
+        auto *git = new QProcess(this);
+        auto handled = std::make_shared<bool>(false);
+        connect(git, &QProcess::errorOccurred, this,
+                [git, branch, finish, handled](QProcess::ProcessError error) {
+                    if (error != QProcess::FailedToStart || *handled)
+                        return;
+                    *handled = true;
+                    git->deleteLater();
+                    finish(false,
+                           QStringLiteral("Could not start branch cleanup for %1.")
+                               .arg(branch));
+                });
+        connect(git, &QProcess::finished, this,
+                [git, branch, finish, handled](int code,
+                                                QProcess::ExitStatus status) {
+                    if (*handled)
+                        return;
+                    *handled = true;
+                    const QString error =
+                        QString::fromUtf8(git->readAllStandardError()).trimmed();
+                    git->deleteLater();
+                    if (status == QProcess::NormalExit && code == 0)
+                        finish(true, QString());
+                    else
+                        finish(false,
+                               error.isEmpty()
+                                   ? QStringLiteral(
+                                         "Could not delete branch %1.")
+                                         .arg(branch)
+                                   : error);
+                });
+        git->start(QStringLiteral("git"),
+                   {QStringLiteral("-C"), repoPath, QStringLiteral("branch"),
+                    QStringLiteral("-D"), branch});
+    };
+
+    if (worktreePath.isEmpty() || !QDir(worktreePath).exists()) {
+        QTimer::singleShot(0, this, [deleteBranchNext] {
+            (*deleteBranchNext)();
+        });
+        return;
+    }
+
+    auto *git = new QProcess(this);
+    auto handled = std::make_shared<bool>(false);
+    connect(git, &QProcess::errorOccurred, this,
+            [git, worktreePath, finish,
+             handled](QProcess::ProcessError error) {
+                if (error != QProcess::FailedToStart || *handled)
+                    return;
+                *handled = true;
+                git->deleteLater();
+                finish(false,
+                       QStringLiteral("Could not start worktree cleanup for %1.")
+                           .arg(worktreePath));
+            });
+    connect(git, &QProcess::finished, this,
+            [git, worktreePath, deleteBranchNext, finish,
+             handled](int code, QProcess::ExitStatus status) {
+                if (*handled)
+                    return;
+                *handled = true;
+                const QString error =
+                    QString::fromUtf8(git->readAllStandardError()).trimmed();
+                git->deleteLater();
+                if (status == QProcess::NormalExit && code == 0) {
+                    (*deleteBranchNext)();
+                    return;
+                }
+                finish(false,
+                       error.isEmpty()
+                           ? QStringLiteral("Could not remove worktree %1.")
+                                 .arg(worktreePath)
+                           : error);
+            });
+    git->start(
+        QStringLiteral("git"),
+        {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
+         QStringLiteral("remove"), QStringLiteral("--force"), worktreePath});
+}
+
 // Batch "Delete all merged": for every merged agent session in the open repo, wipe
 // its worktree folder, branch and stored session — the same cleanup the per-session
 // "Delete all" does, but for the whole merged backlog at once. No confirmation —

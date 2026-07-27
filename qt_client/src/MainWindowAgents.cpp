@@ -989,7 +989,7 @@ QWidget *MainWindow::buildAgentsTab()
         const QString branch = s->branchName;
         const QString wt =
             worktreePathForBranch(m_repositories.at(repoIndex).localPath, branch);
-        deleteWorktreeBranchAndAgent(wt, branch, /*confirm=*/false);
+        deleteWorktreeBranchAndAgentInBackground(wt, branch);
     });
 
     // "View PR" — appears once the session produced a pull request.
@@ -5533,7 +5533,7 @@ void MainWindow::deleteSelectedAgentSession()
     flashMessage("Agent session deleted.");
 }
 
-bool MainWindow::deleteStoredAgentSession(int sessionId)
+bool MainWindow::deleteStoredAgentSession(int sessionId, bool cleanupWorktree)
 {
     if (!m_agentStore || sessionId <= 0)
         return false;
@@ -5554,7 +5554,8 @@ bool MainWindow::deleteStoredAgentSession(int sessionId)
     // so the branch is freed (issue #74).
     if (m_streamSessions.contains(snapshot.id) || m_codexStreams.contains(snapshot.id))
         stopStreamSession(snapshot.id, /*refreshUi=*/false);
-    cleanupStreamWorktree(snapshot.id);
+    if (cleanupWorktree)
+        cleanupStreamWorktree(snapshot.id);
     m_agentQueue.removeAll(snapshot.id);
     m_streamPending.remove(snapshot.id); // drop any queued-but-undelivered messages
 

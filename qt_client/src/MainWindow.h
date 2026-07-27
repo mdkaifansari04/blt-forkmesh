@@ -928,6 +928,11 @@ private:
     void updateNodeOnlineControls();
     // Bottom quick-add issue bar (the network log now lives in its own section).
     QWidget *buildNetworkLogDock();
+    // Compact footer queue between the live log and agent prompt. It exists
+    // only while slow cleanup is running and gives each job a spinner + note.
+    quint64 beginBackgroundTask(const QString &note);
+    void finishBackgroundTask(quint64 id, bool success,
+                              const QString &detail = QString());
     // Refresh the footer's centered git-identity label for the open repo.
     void updateFooterGitIdentity();
     // Live CPU/memory readout + UI-stall watchdog (footer diagnostics).
@@ -1796,7 +1801,11 @@ private:
     // gone; false (after flashing why) when it can't go yet — a running agent
     // still stopping, or no host write access to clear the issue. External
     // (watch-only) sessions aren't handled here.
-    bool deleteStoredAgentSession(int sessionId);
+    bool deleteStoredAgentSession(int sessionId, bool cleanupWorktree = true);
+    // Agent-detail "Delete all": remove the session from the UI/store first,
+    // then clean its worktree, branch, and linked issues asynchronously.
+    void deleteWorktreeBranchAndAgentInBackground(
+        const QString &worktreePath, const QString &branch);
     // Delete everything an agent left behind in one action: its worktree folder,
     // its branch, and the stored agent session(s) that ran on it. Used by the
     // Worktrees-tab "Delete" buttons and the agent detail's "Delete all".
@@ -3618,6 +3627,15 @@ private:
     // variant) so each line can lead with the site favicon <img> the full Log
     // view uses — QPlainTextEdit drops images (adhoc #436).
     QTextEdit *m_footerUpdateLog = nullptr;
+    QFrame *m_backgroundQueue = nullptr;
+    QLabel *m_backgroundQueueTitle = nullptr;
+    QWidget *m_backgroundQueueRowsHost = nullptr;
+    QVBoxLayout *m_backgroundQueueRowsLayout = nullptr;
+    QHash<quint64, QWidget *> m_backgroundTaskRows;
+    QHash<quint64, QLabel *> m_backgroundTaskSpinners;
+    QTimer *m_backgroundTaskSpinTimer = nullptr;
+    quint64 m_nextBackgroundTaskId = 1;
+    int m_backgroundTaskSpinFrame = 0;
     // Set while a root-launched "Update, rebuild & restart" is running so build
     // steps and the relaunch run as this non-root user. Empty = run in-process.
     QString m_updateAsUser;

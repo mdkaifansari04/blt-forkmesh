@@ -1947,16 +1947,6 @@ QString vultrApiKeyFromVariables(const QMap<QString, QString> &variables)
                                        });
 }
 
-bool localBinaryRunsOnVultrMirror(const QString &kernelType,
-                                  const QString &cpuArchitecture)
-{
-    if (kernelType.trimmed().toLower() != QLatin1String("linux"))
-        return false;
-    const QString arch = cpuArchitecture.trimmed().toLower();
-    return arch == QLatin1String("x86_64") || arch == QLatin1String("amd64") ||
-           arch == QLatin1String("x64");
-}
-
 bool vultrInstallNeedsLocalBinary(const QString &installOutput)
 {
     // Matched on the installer's own wording for the two dead ends a retry

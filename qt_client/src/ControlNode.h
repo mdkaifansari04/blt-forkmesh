@@ -407,16 +407,6 @@ QString nextMirrorNodeName(const QStringList &existingNames);
 // variable (same contract as cloudflareApiTokenFromVariables).
 QString vultrApiKeyFromVariables(const QMap<QString, QString> &variables);
 
-// True when this app's own binary can run on the instance the flow deploys —
-// always a Debian x64 image (latestVultrDebianOs), so a linux/x86_64 controller
-// qualifies and nothing else does. A fresh instance has no mirror serving it and
-// a published release may not exist for its platform at all, so when this holds
-// the install uploads this binary straight over the SSH session instead of
-// asking the new host to fetch a prebuilt release (adhoc #408). Takes
-// QSysInfo::kernelType() / QSysInfo::currentCpuArchitecture().
-bool localBinaryRunsOnVultrMirror(const QString &kernelType,
-                                  const QString &cpuArchitecture);
-
 // True when a failed install's output shows the host could not obtain ForkMesh
 // from the mesh at all — no online node to clone from, or no prebuilt release
 // published for its platform. Retrying the same relay download can never fix

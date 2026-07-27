@@ -1082,11 +1082,45 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_footerUpdateLog->installEventFilter(this);
     positionFloatingLogButton();
 
-    // Horizontal split: live-log strip on the left half, prompt card on the right.
+    // Slow cleanup is visible without taking over the app: this narrow queue sits
+    // exactly between the live log and the agent prompt, and disappears when its
+    // last job finishes.
+    m_backgroundQueue = new QFrame;
+    m_backgroundQueue->setObjectName("backgroundTaskQueue");
+    m_backgroundQueue->setFrameShape(QFrame::StyledPanel);
+    m_backgroundQueue->setFixedWidth(250);
+    auto *backgroundLayout = new QVBoxLayout(m_backgroundQueue);
+    backgroundLayout->setContentsMargins(10, 8, 10, 8);
+    backgroundLayout->setSpacing(5);
+    m_backgroundQueueTitle = new QLabel(QStringLiteral("Background"));
+    m_backgroundQueueTitle->setObjectName("backgroundTaskQueueTitle");
+    QFont backgroundTitleFont = m_backgroundQueueTitle->font();
+    backgroundTitleFont.setBold(true);
+    backgroundTitleFont.setPointSizeF(
+        qMax(8.0, backgroundTitleFont.pointSizeF() - 1.0));
+    m_backgroundQueueTitle->setFont(backgroundTitleFont);
+    backgroundLayout->addWidget(m_backgroundQueueTitle);
+    m_backgroundQueueRowsHost = new QWidget;
+    m_backgroundQueueRowsLayout =
+        new QVBoxLayout(m_backgroundQueueRowsHost);
+    m_backgroundQueueRowsLayout->setContentsMargins(0, 0, 0, 0);
+    m_backgroundQueueRowsLayout->setSpacing(4);
+    m_backgroundQueueRowsLayout->addStretch(1);
+    auto *backgroundScroll = new QScrollArea;
+    backgroundScroll->setObjectName("backgroundTaskQueueScroll");
+    backgroundScroll->setFrameShape(QFrame::NoFrame);
+    backgroundScroll->setWidgetResizable(true);
+    backgroundScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    backgroundScroll->setWidget(m_backgroundQueueRowsHost);
+    backgroundLayout->addWidget(backgroundScroll, 1);
+    m_backgroundQueue->hide();
+
+    // Horizontal split: live-log strip, transient background queue, then prompt.
     auto *dockRow = new QHBoxLayout(dock);
     dockRow->setContentsMargins(0, 0, 0, 0);
     dockRow->setSpacing(0);
     dockRow->addWidget(m_footerUpdateLog, 1);
+    dockRow->addWidget(m_backgroundQueue, 0);
     dockRow->addWidget(card, 1);
 
     // Pin the footer to just the compact card's height (adhoc #107): margins +
@@ -1102,6 +1136,91 @@ QWidget *MainWindow::buildNetworkLogDock()
     // since QPlainTextEdit has no returnPressed signal.
     updateVoiceInputButton();
     return dock;
+}
+
+quint64 MainWindow::beginBackgroundTask(const QString &note)
+{
+    if (!m_backgroundQueueRowsLayout || !m_backgroundQueue)
+        return 0;
+    const quint64 id = m_nextBackgroundTaskId++;
+    auto *row = new QWidget(m_backgroundQueueRowsHost);
+    row->setObjectName("backgroundTaskRow");
+    auto *layout = new QHBoxLayout(row);
+    layout->setContentsMargins(0, 2, 0, 2);
+    layout->setSpacing(6);
+    auto *spinner = new QLabel(QString::fromUtf8("\xE2\xA0\x8B"));
+    spinner->setObjectName("backgroundTaskSpinner");
+    spinner->setStyleSheet(QStringLiteral("color:#3fb950;font-weight:700;"));
+    spinner->setFixedWidth(14);
+    auto *label = new QLabel(note.trimmed());
+    label->setObjectName("backgroundTaskNote");
+    label->setToolTip(note.trimmed());
+    label->setWordWrap(true);
+    QFont noteFont = label->font();
+    noteFont.setPointSizeF(qMax(7.0, noteFont.pointSizeF() - 1.0));
+    label->setFont(noteFont);
+    layout->addWidget(spinner, 0, Qt::AlignTop);
+    layout->addWidget(label, 1);
+    m_backgroundQueueRowsLayout->insertWidget(
+        qMax(0, m_backgroundQueueRowsLayout->count() - 1), row);
+    m_backgroundTaskRows.insert(id, row);
+    m_backgroundTaskSpinners.insert(id, spinner);
+    m_backgroundQueueTitle->setText(
+        QStringLiteral("Background \xC2\xB7 %1").arg(m_backgroundTaskRows.size()));
+    m_backgroundQueue->show();
+    if (!m_backgroundTaskSpinTimer) {
+        m_backgroundTaskSpinTimer = new QTimer(this);
+        m_backgroundTaskSpinTimer->setInterval(90);
+        connect(m_backgroundTaskSpinTimer, &QTimer::timeout, this, [this] {
+            static const QStringList frames{
+                QString::fromUtf8("\xE2\xA0\x8B"),
+                QString::fromUtf8("\xE2\xA0\x99"),
+                QString::fromUtf8("\xE2\xA0\xB9"),
+                QString::fromUtf8("\xE2\xA0\xB8"),
+                QString::fromUtf8("\xE2\xA0\xBC"),
+                QString::fromUtf8("\xE2\xA0\xB4"),
+                QString::fromUtf8("\xE2\xA0\xA6"),
+                QString::fromUtf8("\xE2\xA0\xA7"),
+                QString::fromUtf8("\xE2\xA0\x87"),
+                QString::fromUtf8("\xE2\xA0\x8F"),
+            };
+            m_backgroundTaskSpinFrame =
+                (m_backgroundTaskSpinFrame + 1) % frames.size();
+            for (QLabel *spinner : std::as_const(m_backgroundTaskSpinners)) {
+                if (spinner)
+                    spinner->setText(frames.at(m_backgroundTaskSpinFrame));
+            }
+        });
+    }
+    if (!m_backgroundTaskSpinTimer->isActive())
+        m_backgroundTaskSpinTimer->start();
+    return id;
+}
+
+void MainWindow::finishBackgroundTask(quint64 id, bool success,
+                                      const QString &detail)
+{
+    if (!detail.trimmed().isEmpty())
+        logSystem(QStringLiteral("Background: %1").arg(detail.trimmed()));
+    QWidget *row = m_backgroundTaskRows.take(id);
+    m_backgroundTaskSpinners.remove(id);
+    if (row)
+        row->deleteLater();
+    if (m_backgroundTaskRows.isEmpty()) {
+        if (m_backgroundTaskSpinTimer)
+            m_backgroundTaskSpinTimer->stop();
+        if (m_backgroundQueue)
+            m_backgroundQueue->hide();
+        if (m_backgroundQueueTitle)
+            m_backgroundQueueTitle->setText(QStringLiteral("Background"));
+    } else {
+        if (m_backgroundQueueTitle)
+            m_backgroundQueueTitle->setText(
+            QStringLiteral("Background \xC2\xB7 %1")
+                .arg(m_backgroundTaskRows.size()));
+    }
+    if (!success && !detail.trimmed().isEmpty())
+        flashMessage(detail.trimmed(), true);
 }
 
 // Footer slash-actions popup (adhoc #116): opened by the "/" box left of the
