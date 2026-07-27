@@ -1142,9 +1142,10 @@ async function walkIntoOffice(page) {
 
 async function officeSceneState(page) {
   return page.locator("forkmesh-world").evaluate((shell) => {
-    const door = shell.world.scene.getObjectByName(
-      "forkmesh-office-door-pivot",
-    );
+    const slidingDoorCount = [
+      "forkmesh-office-sliding-door-left",
+      "forkmesh-office-sliding-door-right",
+    ].filter((name) => shell.world.scene.getObjectByName(name)).length;
     const island = shell.world.scene.getObjectByName(
       "forkmesh-office-island",
     );
@@ -1152,7 +1153,10 @@ async function officeSceneState(page) {
       "forkmesh-office-interior",
     );
     return {
-      doorRotation: Number((door?.rotation?.y || 0).toFixed(3)),
+      slidingDoorCount,
+      hasHingedDoor: Boolean(
+        shell.world.scene.getObjectByName("forkmesh-office-door-pivot"),
+      ),
       hasKeypad: Boolean(
         shell.world.scene.getObjectByName("forkmesh-office-keypad"),
       ),
@@ -1567,7 +1571,8 @@ test("a signed-in member walks into the continuous ten-story Office without a ga
   await expect(page.locator("[data-world-office-prompt]")).toHaveCount(0);
   await expect(page.locator("[data-world-office-enter]")).toHaveCount(0);
   await expect.poll(() => officeSceneState(page)).toEqual({
-    doorRotation: 1.571,
+    slidingDoorCount: 2,
+    hasHingedDoor: false,
     hasKeypad: false,
     islandVisible: true,
     interiorVisible: true,
@@ -1587,7 +1592,8 @@ test("a signed-in member walks into the continuous ten-story Office without a ga
     }),
   ]);
   await expect.poll(() => officeSceneState(page)).toEqual({
-    doorRotation: 1.571,
+    slidingDoorCount: 2,
+    hasHingedDoor: false,
     hasKeypad: false,
     islandVisible: true,
     interiorVisible: true,
@@ -1612,9 +1618,46 @@ test("guests walk directly into the public Office lobby without network admissio
   expect(officeEntryRequests).toHaveLength(0);
   expect(officeFloorRequests).toHaveLength(0);
   expect(await officeSceneState(page)).toMatchObject({
+    slidingDoorCount: 2,
+    hasHingedDoor: false,
     hasKeypad: false,
     space: "office-lobby",
   });
+});
+
+test("Office entrance doors slide apart on approach and close after departure", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-sliding-doors");
+  await waitForWorld(page);
+  const positions = () =>
+    page.locator("forkmesh-world").evaluate((shell) => {
+      const left = shell.world.scene.getObjectByName(
+        "forkmesh-office-sliding-door-left"
+      );
+      const right = shell.world.scene.getObjectByName(
+        "forkmesh-office-sliding-door-right"
+      );
+      return {
+        left: Number(left?.position.x || 0),
+        right: Number(right?.position.x || 0),
+      };
+    });
+  const closed = await positions();
+  expect(closed.left).toBeLessThan(0);
+  expect(closed.right).toBeGreaterThan(0);
+
+  await moveToOfficeEntrance(page, { unpause: true });
+  await expect.poll(async () => Math.abs((await positions()).right))
+    .toBeGreaterThan(Math.abs(closed.right) + 1);
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.player.position.set(0, 0.38, 0);
+  });
+  await expect.poll(async () => {
+    const next = await positions();
+    return Math.abs(next.right - closed.right);
+  }).toBeLessThan(0.08);
 });
 
 test("walking through the Office doorway hydrates floor access without admission POST", async ({
@@ -1883,11 +1926,27 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
     const maya = scene.getObjectByName("avatar:office-greeter-maya");
     const noah = scene.getObjectByName("avatar:office-greeter-noah");
     const chromeCube = scene.getObjectByName("forkmesh-reflective-fm-cube");
+    const chromeMark = scene.getObjectByName(
+      "forkmesh-reflective-fm-cube-fixed-tilt"
+    );
     const support = scene.getObjectByName(
       "forkmesh-reflective-fm-cube-support"
     );
+    const contact = scene.getObjectByName(
+      "forkmesh-reflective-fm-cube-contact-point"
+    );
     const solidBodies = [];
+    let fFaces = 0;
+    let mFaces = 0;
+    let panels = 0;
+    const throughCutouts = [];
     chromeCube.traverse((object) => {
+      if (object.name.startsWith("forkmesh-reflective-f-face-")) fFaces += 1;
+      if (object.name.startsWith("forkmesh-reflective-m-face-")) mFaces += 1;
+      if (object.name.startsWith("forkmesh-reflective-fm-panel-")) {
+        panels += 1;
+        throughCutouts.push(Number(object.userData.logoThroughCutouts) || 0);
+      }
       const size = object.geometry?.parameters;
       if (
         object.isMesh &&
@@ -1898,6 +1957,14 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
         solidBodies.push(object.name || "solid");
       }
     });
+    const contactWorld = contact.getWorldPosition(contact.position.clone());
+    const supportTop = support.localToWorld(
+      support.position.clone().set(
+        0,
+        support.geometry.parameters.height / 2,
+        0,
+      )
+    );
     const sat = shell.world.sitOnOfficeChair("chair-1");
     const seatedWorld = shell.world.player.getWorldPosition(
       shell.world.player.position.clone()
@@ -1922,13 +1989,16 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
         noah: noah?.position.toArray(),
       },
       logo: {
-        edgeTilt: chromeCube.rotation.z,
-        fFaces: chromeCube.children.filter((object) =>
-          object.name.startsWith("forkmesh-reflective-f-face-")
-        ).length,
-        mFaces: chromeCube.children.filter((object) =>
-          object.name.startsWith("forkmesh-reflective-m-face-")
-        ).length,
+        verticalAxisOnly: {
+          x: chromeCube.rotation.x,
+          z: chromeCube.rotation.z,
+        },
+        fixedTiltQuaternion: chromeMark.quaternion.toArray(),
+        contactSupportDistance: contactWorld.distanceTo(supportTop),
+        fFaces,
+        mFaces,
+        panels,
+        throughCutouts: throughCutouts.sort((left, right) => left - right),
         supportCount: support ? 1 : 0,
         solidBodies,
       },
@@ -1974,10 +2044,16 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
   expect(state.reception.desk).toEqual([0, 1.05, -36.5]);
   expect(state.reception.maya).toEqual([-7, 0.38, -40]);
   expect(state.reception.noah).toEqual([7, 0.38, -40]);
-  expect(state.logo.edgeTilt).toBeCloseTo(Math.PI / 4, 5);
+  expect(state.logo.verticalAxisOnly.x).toBeCloseTo(0, 7);
+  expect(state.logo.verticalAxisOnly.z).toBeCloseTo(0, 7);
+  expect(state.logo.fixedTiltQuaternion.some((value) => Math.abs(value) > 0.1))
+    .toBe(true);
+  expect(state.logo.contactSupportDistance).toBeLessThan(0.03);
   expect(state.logo).toMatchObject({
     fFaces: 2,
     mFaces: 2,
+    panels: 2,
+    throughCutouts: [7, 7],
     supportCount: 1,
     solidBodies: [],
   });
@@ -1988,7 +2064,11 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
   });
   expect(state.seating.seatedLocal[0]).toBeCloseTo(-5.15, 2);
   expect(state.seating.seatedLocal[2]).toBeCloseTo(0, 2);
-  expect(state.seating.seatedLocal[1]).toBeGreaterThan(16.38);
+  // Avatar origins sit below the seat because their hips are modeled above
+  // the origin; the rendered hips remain on the chair and the folded feet
+  // reach the floor.
+  expect(state.seating.seatedLocal[1]).toBeGreaterThan(15.5);
+  expect(state.seating.seatedLocal[1]).toBeLessThan(16.38);
   await page.locator("forkmesh-world").evaluate((shell) => {
     shell.world.setPaused(false);
     shell.world.enterOfficeLobby({ floorId: "lobby" });
@@ -2008,6 +2088,34 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
   });
   await page.screenshot({
     path: "/tmp/forkmesh-office-lobby.png",
+    animations: "disabled",
+  });
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setPaused(false);
+  });
+  await page.waitForTimeout(1200);
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior"
+    );
+    const cameraPosition = interior.localToWorld(
+      shell.world.camera.position.clone().set(-9, 11, 9)
+    );
+    const target = interior.localToWorld(
+      shell.world.camera.position.clone().set(-18, 7.2, -2)
+    );
+    shell.world.scene.getObjectByName(
+      "forkmesh-reflective-fm-cube"
+    ).rotation.y = Math.PI;
+    shell.world.setPaused(true);
+    shell.world.camera.fov = 50;
+    shell.world.camera.updateProjectionMatrix();
+    shell.world.camera.position.copy(cameraPosition);
+    shell.world.camera.lookAt(target);
+    shell.world.renderer.render(shell.world.scene, shell.world.camera);
+  });
+  await page.locator("canvas.world-canvas").screenshot({
+    path: "/tmp/forkmesh-office-logo.png",
     animations: "disabled",
   });
 });
@@ -2093,6 +2201,7 @@ test("Office glass has one stable shell and one elevator-car layer", async ({
 test("Office elevator exposes ten floors while enforcing team access", async ({
   page,
 }) => {
+  test.setTimeout(120_000);
   await prepareWorldPage(page, "office-elevator-access", {
     session: {
       kind: "user",
@@ -2146,7 +2255,10 @@ test("Office elevator exposes ten floors while enforcing team access", async ({
       destinations.set(object.userData.officeFloorId, {
         id: object.userData.officeFloorId,
         level: object.userData.officeFloorLevel,
+        number: object.userData.officeFloorNumber,
+        teamLabel: object.userData.officeFloorTeamLabel,
         allowed: object.userData.officeFloorAllowed === true,
+        y: Number(object.position.y.toFixed(2)),
       });
     });
     return {
@@ -2179,6 +2291,14 @@ test("Office elevator exposes ten floors while enforcing team access", async ({
     "rooftop",
   ]);
   expect(access.buttonCount).toBe(10);
+  expect(access.destinations.map((floor) => floor.number)).toEqual([
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+  ]);
+  expect(access.destinations[0].teamLabel).toBe("LOBBY");
+  expect(access.destinations[2].teamLabel).toBe("ENGINEERING");
+  expect(access.destinations[9].teamLabel).toBe("ROOF");
+  expect(access.destinations[0].y).toBeLessThan(access.destinations[1].y);
+  expect(access.destinations[1].y).toBeLessThan(access.destinations[9].y);
   expect(access.buttonsMoveWithCar).toBe(true);
   expect(access.panelParent).toBe("forkmesh-office-glass-elevator-car");
   expect(access.carPosition).toMatchObject({ x: 70, y: 0 });

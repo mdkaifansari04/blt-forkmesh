@@ -79,6 +79,43 @@ def test_circle_always_keeps_an_open_bench_for_the_next_guest():
     )
 
 
+def test_circle_keeps_a_walk_in_gap_instead_of_closing_the_ring():
+    # adhoc #430: a bench at every angle walled the fire in, so the ring keeps
+    # a doorway-wide arc bench-free and spreads the seats over the rest.
+    assert "const CAMPFIRE_ENTRANCE_WIDTH = 3.4;" in SCENE
+    assert "const CAMPFIRE_ENTRANCE_MAX_ANGLE = Math.PI / 3;" in SCENE
+    # The opening faces the town centre the arrivals walk from, derived from the
+    # fire's own landmark so moving the campfire cannot leave it facing a wall.
+    assert (
+        "const CAMPFIRE_ENTRANCE_ANGLE = Math.atan2(\n"
+        "    -campfire.position.z,\n"
+        "    -campfire.position.x,\n"
+        "  );" in SCENE
+    )
+    ring = SCENE.split("function rebuildCampfireCircle", 1)[1].split(
+        "setShadows(ring);", 1
+    )[0]
+    # The arc is reserved by the radius too, so widening the ring for a new
+    # member never closes the gap back up.
+    assert (
+        "(count * CAMPFIRE_SEAT_SPACING + CAMPFIRE_ENTRANCE_WIDTH) / (2 * Math.PI)"
+        in ring
+    )
+    assert (
+        "const entranceAngle = Math.min(\n"
+        "      CAMPFIRE_ENTRANCE_MAX_ANGLE,\n"
+        "      CAMPFIRE_ENTRANCE_WIDTH / radius,\n"
+        "    );" in ring
+    )
+    assert "const seatStep = (Math.PI * 2 - entranceAngle) / count;" in ring
+    assert (
+        "CAMPFIRE_ENTRANCE_ANGLE + entranceAngle / 2 + (index + 0.5) * seatStep"
+        in ring
+    )
+    # The old full-circle spacing is gone: it is what walled the fire in.
+    assert "(index / count) * Math.PI * 2" not in ring
+
+
 def test_sitters_face_the_flames_not_away_from_them():
     # Avatar fronts face local -Z, so the inward (fire-facing) heading is
     # atan2(x, z); the negated form turned sitters backwards (adhoc #291).

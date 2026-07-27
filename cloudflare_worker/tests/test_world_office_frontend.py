@@ -157,6 +157,46 @@ def test_entry_is_walk_through_for_everyone_and_the_keypad_protocol_is_absent():
     assert "sessionStorage" not in office
 
 
+def test_entrance_uses_two_proximity_sliding_panels_without_a_hinged_door():
+    scene = source(SCENE_PATH)
+    for contract in (
+        'slidingDoors.name = "forkmesh-office-sliding-doors"',
+        "const doorPanels = [-1, 1].map((side) => {",
+        "officeSlidingDoorPanels.forEach((panel, index) => {",
+        "Math.abs(localPosition.z - OFFICE_FRONT_Z) <= 7.5",
+        "officeDoorwayEntryPending || officeExitPending",
+        "THREE.MathUtils.lerp(",
+    ):
+        assert contract in scene
+    assert "forkmesh-office-door-pivot" not in scene
+    assert "officeInteriorDoorPivot" not in scene
+
+
+def test_attendance_is_one_shared_last_twenty_row_ledger():
+    office = source(OFFICE_PATH)
+    scene = source(SCENE_PATH)
+    for contract in (
+        'const OFFICE_ATTENDANCE_PATH = "/api/world/office/attendance"',
+        "async function loadAttendance()",
+        "function recordAttendance(direction)",
+        "visits.slice(0, 20)",
+        "void loadAttendance()",
+        'const action = direction === "out" ? "out" : "in"',
+        "attendanceWrite = attendanceWrite",
+    ):
+        assert contract in office
+    for contract in (
+        "OFFICE · LAST 20 VISITS",
+        'context.fillText("USER"',
+        'context.fillText("IN"',
+        'context.fillText("OUT"',
+        "visit?.inAt",
+        "visit?.outAt",
+        "IN BUILDING",
+    ):
+        assert contract in scene
+
+
 def test_floor_access_is_loaded_once_and_only_server_grants_unlock_buttons():
     office = source(OFFICE_PATH)
     scene = source(SCENE_PATH)
@@ -426,16 +466,22 @@ def test_lobby_has_two_greeters_attendance_and_the_reflective_logo_fountain():
         "WELCOME · WALK RIGHT IN",
         "officeGreetingBoard.position.set(0, 6.25, -OFFICE_FRONT_Z + 0.5)",
         'officeAttendanceBoard.name = "forkmesh-office-attendance"',
+        "OFFICE · LAST 20 VISITS",
+        "visits.slice(0, 20)",
+        "IN BUILDING",
         "function setOfficeAttendance(event = {})",
         'logoFountain.name = "forkmesh-office-logo-fountain"',
         'chromeCube.name = "forkmesh-reflective-fm-cube"',
-        "chromeCube.rotation.set(",
-        "Math.atan(1 / Math.sqrt(2))",
-        "Math.PI / 4",
-        "addFLogoFace(2.8, 0)",
-        "addFLogoFace(-2.8, Math.PI)",
-        "addMLogoFace(2.8, Math.PI / 2)",
-        "addMLogoFace(-2.8, -Math.PI / 2)",
+        'chromeMark.name = "forkmesh-reflective-fm-cube-fixed-tilt"',
+        "chromeMark.quaternion.setFromUnitVectors(",
+        "addFLogoFace(2.68, 0)",
+        "addFLogoFace(-2.68, Math.PI)",
+        "addMLogoFace(2.68, Math.PI / 2)",
+        "addMLogoFace(-2.68, -Math.PI / 2)",
+        "forkmesh-reflective-fm-panel-",
+        "logoPanelShape.holes.push(hole)",
+        "panel.userData.logoThroughCutouts = logoPanelShape.holes.length",
+        'logoContactPoint.name = "forkmesh-reflective-fm-cube-contact-point"',
         'logoSupport.name = "forkmesh-reflective-fm-cube-support"',
         "new THREE.WebGLCubeRenderTarget(",
         "new THREE.CubeCamera(",
@@ -450,6 +496,26 @@ def test_lobby_has_two_greeters_attendance_and_the_reflective_logo_fountain():
     ]
     assert "const cubeBody" not in logo
     assert "new THREE.BoxGeometry(5.6, 5.6, 5.6" not in logo
+    panels = logo[
+        logo.index("// Rounded mirrored top and bottom plates"):
+        logo.index("const logoContactPoint")
+    ]
+    assert panels.count("logoPanelShape.holes.push(hole)") == 2
+    assert "new THREE.CylinderGeometry(0.48" not in panels
+    assert "new THREE.BoxGeometry(0.3, 0.08" not in panels
+    chrome_material = scene[
+        scene.index("const chrome = new THREE.MeshPhysicalMaterial"):
+        scene.index("const darkChrome")
+    ]
+    assert 'color: "#aeb9c8"' in chrome_material
+    assert "metalness: 1" in chrome_material
+    assert "envMap: reflectionTarget.texture" in chrome_material
+    animation = scene[
+        scene.index("const logoReflectionIntervalMs"):
+        scene.index("// One physical selector rides inside")
+    ]
+    assert "chromeMark.rotation" not in animation
+    assert "chromeMark.quaternion" not in animation
 
 
 def test_elevator_animates_between_floors_and_emits_departure_and_arrival_audio():

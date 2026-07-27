@@ -4973,14 +4973,16 @@ class ForkMeshWorld extends HTMLElement {
           .map((table) => {
             const name = String(table?.name || "").trim();
             const rowCount = Number(table?.rowCount);
+            // Empty and single-row tables count too: the inventory is the
+            // point, and dropping them hid most of the database.
             return /^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(name) &&
               Number.isSafeInteger(rowCount) &&
-              rowCount > 1
+              rowCount >= 0
               ? { name, rowCount }
               : null;
           })
           .filter(Boolean)
-          .slice(0, 128)
+          .slice(0, 256)
       : [];
     // Bindings are discovered by the Worker from its own environment, so a
     // newly bound Durable Object class appears here without a client change.
