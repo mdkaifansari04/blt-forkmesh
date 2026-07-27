@@ -1756,6 +1756,156 @@ function officeMarketingTasksBlankTexture(THREE) {
   });
 }
 
+// Public build-progress wall in the Office lobby. This intentionally mirrors
+// todo.md in short, readable phrases: unfinished notes stay on the left and a
+// completed task moves to a varied slot on the right with a hand-drawn X.
+// Keep the ordering stable so a repaint never makes notes jump around.
+const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
+  { task: "Build the in-world task bulletin", done: true },
+  { task: "Make the Office doorway seamless", done: true },
+  { task: "Match the walkway and lobby height", done: true },
+  { task: "Make the music button a real on/off switch", done: true },
+  { task: "Let online mirrors collect pending issues", done: true },
+  { task: "Prevent duplicate mirror issue intake", done: true },
+  { task: "Sync mirror-created issues to the source", done: true },
+  { task: "Stop mobile movement from refreshing", done: true },
+  { task: "Show the quick map on mobile", done: true },
+  { task: "Degrade satellite outages without a 503", done: true },
+  { task: "Point the dashboard globe to /world", done: true },
+  { task: "Add real PR section tabs", done: false },
+  { task: "Put changed PR files in a left list", done: false },
+  { task: "Persist each file's viewed state", done: false },
+  { task: "Let organization owners approve PRs", done: false },
+  { task: "Merge exact reviewed commits into a mirror", done: false },
+  { task: "Sync mirror merges to the source of truth", done: false },
+  { task: "Keep mirror merge owner-only for now", done: false },
+  { task: "Add PR authorization and UI tests", done: false },
+  { task: "Let admins group offline users", done: false },
+  { task: "Put group controls on seated users' backs", done: false },
+  { task: "Integrate the remaining session branches", done: false },
+  { task: "Delete merged session branches and worktrees", done: false },
+  { task: "Restore the preserved user test changes", done: false },
+  { task: "Add the HTTP Referer leaderboard", done: false },
+  { task: "Review and merge mdkaifan direct chat", done: false },
+  { task: "Remove the merged direct-chat branch", done: false },
+  { task: "Run focused worker API tests", done: false },
+  { task: "Run focused Qt pull and issue tests", done: false },
+  { task: "Run relevant build and static checks", done: false },
+  { task: "Confirm only intentional changes remain", done: false },
+]);
+
+function worldTaskBulletinSeed(value) {
+  let seed = 2166136261;
+  for (const character of String(value || "")) {
+    seed ^= character.codePointAt(0);
+    seed = Math.imul(seed, 16777619);
+  }
+  return seed >>> 0;
+}
+
+function worldTaskBulletinTexture(THREE) {
+  const pending = WORLD_TASK_BULLETIN_ITEMS.filter((item) => !item.done);
+  const completed = WORLD_TASK_BULLETIN_ITEMS.filter((item) => item.done);
+  const stickyColors = ["#fff39a", "#ffc9e3", "#bcecff", "#c9f5bd", "#ffd2a8"];
+  return canvasTexture(THREE, 1800, 1120, (context) => {
+    context.fillStyle = "#8a5938";
+    context.fillRect(0, 0, 1800, 1120);
+    context.strokeStyle = "rgba(75,39,20,0.28)";
+    context.lineWidth = 4;
+    for (let y = 18; y < 1120; y += 34) {
+      context.beginPath();
+      context.moveTo(0, y);
+      context.bezierCurveTo(440, y - 8, 1220, y + 10, 1800, y - 3);
+      context.stroke();
+    }
+    context.fillStyle = "rgba(255,250,224,0.94)";
+    context.fillRect(34, 24, 1732, 100);
+    context.fillStyle = "#201812";
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font =
+      '700 60px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
+    context.fillText("FORKMESH · WHAT WE'RE BUILDING", 900, 72);
+    context.font =
+      '700 38px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
+    context.fillText(`TO DO  (${pending.length})`, 445, 155);
+    context.fillText(`DONE  (${completed.length})`, 1355, 155);
+    context.strokeStyle = "rgba(54,31,19,0.72)";
+    context.lineWidth = 7;
+    context.setLineDash([18, 13]);
+    context.beginPath();
+    context.moveTo(900, 132);
+    context.lineTo(900, 1082);
+    context.stroke();
+    context.setLineDash([]);
+
+    const drawNote = (item, index, side) => {
+      const seed = worldTaskBulletinSeed(`${side}:${item.task}`);
+      const column = index % 3;
+      const row = Math.floor(index / 3);
+      const sideStart = side === "pending" ? 52 : 952;
+      const x = sideStart + column * 278 + ((seed >>> 3) % 25) - 12;
+      const y = 194 + row * 126 + ((seed >>> 9) % 15) - 7;
+      const width = 250;
+      const height = 106;
+      const angle = ((((seed >>> 14) % 13) - 6) * Math.PI) / 180;
+      context.save();
+      context.translate(x + width / 2, y + height / 2);
+      context.rotate(angle);
+      context.shadowColor = "rgba(37,19,9,0.36)";
+      context.shadowBlur = 12;
+      context.shadowOffsetX = 5;
+      context.shadowOffsetY = 7;
+      context.fillStyle = stickyColors[seed % stickyColors.length];
+      context.beginPath();
+      context.moveTo(-width / 2 + 4, -height / 2);
+      context.lineTo(width / 2, -height / 2 + 3);
+      context.lineTo(width / 2 - 5, height / 2);
+      context.lineTo(-width / 2, height / 2 - 4);
+      context.closePath();
+      context.fill();
+      context.shadowColor = "transparent";
+      context.fillStyle = "#29221d";
+      context.textAlign = "left";
+      context.textBaseline = "top";
+      context.font =
+        '700 22px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
+      wrapCanvasText(
+        context,
+        item.task,
+        -width / 2 + 16,
+        -height / 2 + 15,
+        width - 32,
+        23,
+        3,
+      );
+      if (item.done) {
+        // Two imperfect marker strokes make the completion mark look drawn,
+        // instead of stamping a typeset glyph over the note.
+        context.strokeStyle = "rgba(164,29,38,0.9)";
+        context.lineCap = "round";
+        context.lineWidth = 10;
+        context.beginPath();
+        context.moveTo(-width / 2 + 10, -height / 2 + 5);
+        context.lineTo(width / 2 - 8, height / 2 - 8);
+        context.stroke();
+        context.lineWidth = 8;
+        context.beginPath();
+        context.moveTo(width / 2 - 14, -height / 2 + 10);
+        context.lineTo(-width / 2 + 7, height / 2 - 3);
+        context.stroke();
+      }
+      context.restore();
+    };
+    pending.slice(0, 21).forEach((item, index) => {
+      drawNote(item, index, "pending");
+    });
+    completed.slice(-21).forEach((item, index) => {
+      drawNote(item, index, "completed");
+    });
+  });
+}
+
 function chatBubbleTexture(THREE, name, text) {
   return canvasTexture(THREE, 768, 256, (context) => {
     context.clearRect(0, 0, 768, 256);
@@ -9559,6 +9709,34 @@ export function createWorldScene({
   officeGreetingBoard.name = "forkmesh-office-greeting-board";
   officeGreetingBoard.position.set(0, 6.25, -OFFICE_FRONT_Z + 0.5);
   officeInterior.add(officeGreetingBoard);
+
+  // Public progress bulletin on the right lobby wall, opposite attendance.
+  // It is deliberately scene-native (not a modal), so a visitor sees current
+  // work simply by walking through the entrance.
+  const officeTaskBulletin = new THREE.Group();
+  officeTaskBulletin.name = "forkmesh-office-task-bulletin";
+  officeTaskBulletin.position.set(84.3, 10.7, 10);
+  officeTaskBulletin.rotation.y = -Math.PI / 2;
+  const officeTaskBulletinFrame = new THREE.Mesh(
+    new THREE.BoxGeometry(45.2, 21.2, 0.34),
+    makeMaterial(THREE, "#3b2416", {
+      metalness: 0.08,
+      roughness: 0.78,
+    }),
+  );
+  officeTaskBulletinFrame.name = "forkmesh-office-task-bulletin-frame";
+  officeTaskBulletin.add(officeTaskBulletinFrame);
+  const officeTaskBulletinFace = new THREE.Mesh(
+    new THREE.PlaneGeometry(44.4, 20.4),
+    new THREE.MeshBasicMaterial({
+      map: worldTaskBulletinTexture(THREE),
+      toneMapped: false,
+    }),
+  );
+  officeTaskBulletinFace.name = "forkmesh-office-task-bulletin-face";
+  officeTaskBulletinFace.position.z = 0.18;
+  officeTaskBulletin.add(officeTaskBulletinFace);
+  officeInterior.add(officeTaskBulletin);
 
   // Shared, bounded time clock on the left lobby wall. Authenticated punches
   // are server-timestamped; the public board exposes only the latest 20 visits.

@@ -5,6 +5,9 @@ the implementation and its focused verification are complete.
 
 ## Current focus
 
+- [x] Add an in-world bulletin board before continuing the remaining tasks.
+- [x] Show remaining checklist items as marker-drawn sticky notes on the left.
+- [x] Move completed notes to varied positions on the right and mark them with a hand-drawn X.
 - [x] Remove the remaining invisible Office doorway collision wall and verify smooth entry/exit.
 - [x] Make the walkway, bridge, and Office lobby meet at the same height with no gap.
 - [x] Make the sound button a real master on/off control for active playback.
@@ -59,6 +62,8 @@ task above so they stay recoverable until final verification.
 - [x] Session 396 — node-install/provisioning behavior.
 - [x] Session 386 — website referral leaderboard.
 - [ ] Add a separate HTTP `Referer` leaderboard beside the existing referral leaderboard.
+- [ ] Review, clean up, and merge mdkaifan's direct-chat pull request.
+- [ ] Remove the direct-chat PR branch/worktree after its merge is verified.
 
 ## Final verification
 
