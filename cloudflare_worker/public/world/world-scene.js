@@ -9100,49 +9100,82 @@ export function createWorldScene({
   officeGreetingBoard.position.set(0, 6.25, -OFFICE_FRONT_Z + 0.5);
   officeInterior.add(officeGreetingBoard);
 
-  // Session-local time clock on the left side of the lobby. Its display is
-  // updated only on authenticated entry/exit; it is not public presence data.
+  // Shared, bounded time clock on the left lobby wall. Authenticated punches
+  // are server-timestamped; the public board exposes only the latest 20 visits.
   const officeAttendanceBoard = new THREE.Mesh(
-    new THREE.PlaneGeometry(20, 8),
+    new THREE.PlaneGeometry(27, 13.2),
     new THREE.MeshBasicMaterial({ toneMapped: false }),
   );
   officeAttendanceBoard.name = "forkmesh-office-attendance";
-  officeAttendanceBoard.position.set(-69, 4.7, 25);
+  officeAttendanceBoard.position.set(-84.5, 7.1, 18);
   officeAttendanceBoard.rotation.y = Math.PI / 2;
   officeInterior.add(officeAttendanceBoard);
 
   function officeAttendanceTexture(snapshot = {}) {
-    return canvasTexture(THREE, 800, 320, (context) => {
+    const visits = Array.isArray(snapshot?.visits)
+      ? snapshot.visits.slice(0, 20)
+      : [];
+    return canvasTexture(THREE, 1600, 800, (context) => {
       const format = (value) => {
         const timestamp = Number(value);
         return Number.isFinite(timestamp) && timestamp > 0
           ? new Date(timestamp).toLocaleString([], {
               month: "short",
               day: "numeric",
-              hour: "numeric",
+              hour: "2-digit",
               minute: "2-digit",
-              second: "2-digit",
             })
           : "—";
       };
       context.fillStyle = "#071714";
-      context.fillRect(0, 0, 800, 320);
+      context.fillRect(0, 0, 1600, 800);
       context.strokeStyle = "#79efb5";
-      context.lineWidth = 10;
-      context.strokeRect(6, 6, 788, 308);
+      context.lineWidth = 14;
+      context.strokeRect(8, 8, 1584, 784);
       context.fillStyle = "#9ef7c6";
-      context.font = '800 38px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("OFFICE TIME CLOCK", 36, 56);
-      context.fillStyle = "#e9fff6";
-      context.font = '700 31px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText(`IN   ${format(snapshot.inAt)}`, 36, 132);
-      context.fillText(`OUT  ${format(snapshot.outAt)}`, 36, 194);
+      context.font = '900 48px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("OFFICE · LAST 20 VISITS", 42, 62);
+      context.fillStyle = "#79a996";
+      context.font = '800 27px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("USER", 42, 112);
+      context.fillText("IN", 570, 112);
+      context.fillText("OUT", 1080, 112);
+      context.strokeStyle = "rgba(121,239,181,0.28)";
+      context.lineWidth = 2;
+      context.beginPath();
+      context.moveTo(38, 130);
+      context.lineTo(1560, 130);
+      context.stroke();
+      context.font = '700 27px "ForkMesh Mono", ui-monospace, monospace';
+      visits.forEach((visit, index) => {
+        const y = 164 + index * 28;
+        if (index % 2 === 0) {
+          context.fillStyle = "rgba(158,247,198,0.045)";
+          context.fillRect(30, y - 20, 1530, 30);
+        }
+        context.fillStyle = "#e9fff6";
+        context.fillText(
+          String(visit?.account || "Contributor").slice(0, 25),
+          42,
+          y,
+        );
+        context.fillStyle = "#a9d7c4";
+        context.fillText(format(visit?.inAt), 570, y);
+        context.fillStyle = visit?.outAt ? "#a9d7c4" : "#f7c96b";
+        context.fillText(
+          visit?.outAt ? format(visit.outAt) : "IN BUILDING",
+          1080,
+          y,
+        );
+      });
       context.fillStyle = "#83bba7";
-      context.font = '500 23px "ForkMesh Mono", ui-monospace, monospace';
+      context.font = '650 25px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(
-        String(snapshot.account || "Sign in to clock in").slice(0, 48),
-        36,
-        258,
+        visits.length
+          ? "One row per visit · authenticated punches only"
+          : "No recorded visits yet · signed-in members clock in automatically",
+        42,
+        760,
       );
     });
   }
@@ -10502,6 +10535,14 @@ export function createWorldScene({
       } else if (avatar.userData.name !== participantIdentity.name) {
         updateAvatarBadge(THREE, avatar, participantIdentity, true);
         officeParticipantLabels.get(id).textContent = participantIdentity.name;
+      }
+      if (id === officeLocalParticipantId) {
+        setAvatarSecurityBadge(
+          THREE,
+          avatar,
+          selfSecurityDetails,
+          selfSecurityBadgeVisible,
+        );
       }
       applyOfficeParticipantPose(avatar, participant);
     });
@@ -16431,6 +16472,8 @@ export function createWorldScene({
     setOfficeFloorHandler,
     setOfficeAccess,
     setOfficeAttendance,
+    setSelfSecurityDetails,
+    setSelfSecurityBadgeVisibility,
     travelToOfficeFloor,
     sitOnOfficeChair,
     setOfficeParticipants,
