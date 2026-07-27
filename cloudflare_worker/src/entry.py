@@ -76,6 +76,16 @@ SENTRY_CRON_MAX_RUNTIME_MINUTES = 5
 CRON_WATCHDOG_GRACE_MS = 3 * 60 * 1000
 CRON_WATCHDOG_RETRY_MS = 5 * 60 * 1000
 CRON_WATCHDOG_NAME = "scheduled-completion-v1"
+# The Cron Trigger only seeds this singleton. Its Durable Object alarm owns the
+# minute loop and re-arms itself before doing any work, so a killed Python
+# scheduled wrapper cannot leave maintenance stopped until the next deploy.
+CRON_RUNNER_NAME = "scheduled-runner-v1"
+CRON_RUNNER_INTERVAL_MS = 60 * 1000
+CRON_RUNNER_KICK_DELAY_MS = 1000
+CRON_RUNNER_ALARM_OFFSET_MS = 1500
+# Native AbortSignal timeouts do not create nested Pyodide asyncio tasks. Keep
+# every cron-reachable control-plane request well inside a minute.
+CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS = 12
 # Retained chat history (encrypted) so late-joining nodes see some backlog.
 CHAT_HISTORY_RETAIN_MS = 7 * 24 * 60 * 60 * 1000  # keep the last 7 days
 CHAT_HISTORY_MAX_PER_ROOM = 500  # hard cap on retained messages per room
@@ -334,6 +344,8 @@ from urls import (  # noqa: E402
     ORG_REPOS_RE,
     ORG_SUCCESSION_RE,
     ORG_FEDIVERSE_RE,
+    BADGES_RE,
+    BADGE_ACCOUNT_RE,
     REPO_API_PREFIX_RE,
     AP_USER_RE,
     AP_USER_SUB_RE,
@@ -529,6 +541,11 @@ import og_card  # noqa: E402
 # The blog's RSS 2.0 feed, derived from the shipped static blog index. Serves
 # /blog/rss.xml and, through world_social_feeds, the world's blog banner.
 import blog_feed  # noqa: E402
+
+# The fixed achievement-badge catalog (slug -> name/description/icon) and slug
+# validation are pure data/logic, so they live in their own js-free sibling
+# module; the D1-backed award/list/grant handlers stay below (adhoc #370).
+import badges as badge_catalog  # noqa: E402
 
 # Largest git-req-chunk (push pack fragment) forwarded to the host in one WS
 # message; matches the host's 256 KiB git-chunk ceiling so neither side trips
@@ -2305,6 +2322,16 @@ async def _cron_watchdog_completion(env):
         raise RuntimeError("cron watchdog rejected completion heartbeat")
 
 
+async def _cron_runner_kick(env):
+    """Seed/reconcile the independent alarm-backed minute runner."""
+    runner_id = env.FORKMESH_CRON_RUNNER.idFromName(CRON_RUNNER_NAME)
+    runner = env.FORKMESH_CRON_RUNNER.get(runner_id)
+    response = await runner.fetch(
+        "https://forkmesh.internal/cron-runner/kick")
+    if int(getattr(response, "status", 0) or 0) != 200:
+        raise RuntimeError("cron runner rejected trigger kick")
+
+
 async def _record_status_monitor_transitions(
         env, ok, reason, now, status_systems=None):
     """Deduplicate outage/recovery mail for every system shown on /status."""
@@ -3604,6 +3631,11 @@ async def _record_referral_signup(env, new_name, raw_ref):
         if not ref_bi or ref_name == new_name:
             return
         await _referral_bump(env, ref_name, ref_bi, "signups")
+        # "Connector" badge: award the referrer the first time one of their
+        # links converts into a real signup.
+        _clicks, signups, _last_ts = await _referral_counts(env, ref_bi)
+        if signups == 1:
+            await _award_badge(env, ref_name, ref_bi, "first_referral")
     except Exception:
         pass  # attribution is best-effort; the account itself already exists
 
@@ -4587,6 +4619,12 @@ async def world_ticket_handler(env, request):
             env, account_bi, now, continuation)
         if activity["creditedMs"] > 0:
             await edge_cache_delete(USERS_DIRECTORY_CACHE_KEY)
+        # "World Explorer" badge: _award_badge is an idempotent INSERT OR
+        # IGNORE, so re-checking this on every ticket past the threshold is
+        # harmless — no need to detect the exact crossing tick.
+        if activity["totalActiveMs"] >= WORLD_FIRST_HOUR_BADGE_MS:
+            await _award_badge(env, claim["name"], account_bi,
+                               "world_first_hour")
     except Exception:
         # Aggregate activity is optional telemetry. Authentication and
         # multiplayer entry must continue while D1 is unavailable or migrating.
@@ -5799,7 +5837,7 @@ async def _chat_channel_socket_handler(env, request, channel_id):
         extra_headers=EXPECTED_DEGRADED_HEADERS)
 
 
-def _office_attendance_visit(row):
+def _office_attendance_visit(row, observed_at=None):
     """Project one D1 attendance row into a bounded public lobby record."""
     if not isinstance(row, dict):
         return None
@@ -5822,15 +5860,29 @@ def _office_attendance_visit(row):
         and (out_at < in_at or out_at > max_safe_integer)
     ):
         return None
+    try:
+        observed_at = int(
+            Date.now() if observed_at is None else observed_at)
+    except (TypeError, ValueError):
+        observed_at = in_at
+    if observed_at <= 0 or observed_at > max_safe_integer:
+        observed_at = in_at
+    duration_end = out_at if out_at is not None else max(in_at, observed_at)
     return {
         "id": visit_id,
         "account": account,
         "inAt": in_at,
         "outAt": out_at,
+        "durationMs": duration_end - in_at,
     }
 
 
-async def _office_attendance_recent(env):
+async def _office_attendance_recent(env, observed_at=None):
+    try:
+        observed_at = int(
+            Date.now() if observed_at is None else observed_at)
+    except (TypeError, ValueError):
+        observed_at = 0
     rows = await d1_all(
         env,
         "SELECT visit_id, account_name, in_at, out_at "
@@ -5839,7 +5891,7 @@ async def _office_attendance_recent(env):
     )
     visits = []
     for row in rows or []:
-        visit = _office_attendance_visit(row)
+        visit = _office_attendance_visit(row, observed_at)
         if visit is not None:
             visits.append(visit)
     return visits
@@ -5860,8 +5912,13 @@ async def office_attendance_handler(env, request):
         )
     if method == "GET":
         await ensure_schema(env)
+        observed_at = int(Date.now())
         return json_response(
-            {"ok": True, "visits": await _office_attendance_recent(env)},
+            {
+                "ok": True,
+                "asOfAt": observed_at,
+                "visits": await _office_attendance_recent(env, observed_at),
+            },
             cache_control="no-store, max-age=0, must-revalidate",
             extra_headers={"x-content-type-options": "nosniff"},
         )
@@ -5939,7 +5996,11 @@ async def office_attendance_handler(env, request):
             str(account_bi),
         )
     return json_response(
-        {"ok": True, "visits": await _office_attendance_recent(env)},
+        {
+            "ok": True,
+            "asOfAt": now,
+            "visits": await _office_attendance_recent(env, now),
+        },
         cache_control="no-store, max-age=0, must-revalidate",
         extra_headers={"x-content-type-options": "nosniff"},
     )
@@ -11449,6 +11510,32 @@ def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
 
 USERS_DIRECTORY_CACHE_KEY = "https://forkmesh.internal/api/accounts/users"
 USERS_DIRECTORY_TTL = 30
+# The World campfire paints its member total straight from this body, so a
+# browser-held copy leaves the fire showing an old count until a hard refresh.
+# The edge copy still collapses the origin decrypt work; the bytes handed to
+# the client are never stored, so a plain reload always repaints the real
+# roster. Every caller already throttles its own polling well past the edge
+# TTL, so dropping the browser copy adds no extra polling.
+USERS_DIRECTORY_CLIENT_CACHE_CONTROL = "no-store, max-age=0, must-revalidate"
+
+
+async def _users_directory_cache_get():
+    # Return the edge-held roster as a fresh no-store response, the same
+    # rebuild git_advert_cache_get does: the stored copy carries a public
+    # max-age so the Cache API will keep it, which must not reach the browser.
+    try:
+        hit = await js_caches.default.match(USERS_DIRECTORY_CACHE_KEY)
+    except Exception:
+        hit = None
+    if hit is None:
+        return None
+    return JsResponse.new(hit.body, to_js({
+        "status": 200,
+        "headers": {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": USERS_DIRECTORY_CLIENT_CACHE_CONTROL,
+        },
+    }))
 
 
 async def _account_users_directory(env, request):
@@ -11458,9 +11545,10 @@ async def _account_users_directory(env, request):
     # Edge-cached: the chat page polls this to surface new signups, and each
     # origin hit decrypts up to 1000 rows — collapse the polls per colo per TTL.
     # A signup deletes the cached copy so the new account shows without waiting
-    # out the TTL.
+    # out the TTL. Edge-only: the response is no-store, so no browser ever
+    # holds a roster of its own (adhoc #434).
     del request
-    cached = await edge_cache_match(USERS_DIRECTORY_CACHE_KEY)
+    cached = await _users_directory_cache_get()
     if cached is not None:
         return cached
     out = []
@@ -11494,10 +11582,15 @@ async def _account_users_directory(env, request):
     # first) rather than left in the query's alphabetical fetch order.
     out.sort(key=lambda user: user.get("createdAt", 0))
 
-    resp = json_response({"ok": True, "users": out},
-                         cache_seconds=USERS_DIRECTORY_TTL)
-    await edge_cache_put(USERS_DIRECTORY_CACHE_KEY, resp)
-    return resp
+    payload = {"ok": True, "users": out}
+    # Two bodies on purpose: the stored one carries the public max-age the
+    # Cache API needs to keep it, the returned one carries no-store.
+    await edge_cache_put(
+        USERS_DIRECTORY_CACHE_KEY,
+        json_response(payload, cache_seconds=USERS_DIRECTORY_TTL),
+    )
+    return json_response(
+        payload, cache_control=USERS_DIRECTORY_CLIENT_CACHE_CONTROL)
 
 
 def _donation_expiry_fields(rec, now):
@@ -12283,6 +12376,14 @@ async def _account_signup(env, request):
     await edge_cache_delete(CHAT_ACTIVITY_CACHE_KEY)
     # Credit the referrer named by the /r/<name> share link, if any.
     await _record_referral_signup(env, name, data.get("ref", ""))
+    # "Founding Member" badge: this account's row is already saved above, so
+    # counting now tells whether it landed inside the first 100 real signups.
+    user_count = await d1_first(
+        env,
+        "SELECT COUNT(*) AS c FROM users "
+        "WHERE email_bi IS NOT NULL AND email_bi <> ''")
+    if user_count and int(user_count.get("c") or 0) <= FIRST_100_USERS_LIMIT:
+        await _award_badge(env, name, name_bi, "first_100_users")
     payload = await _account_public_payload(
         env, rec,
         session_device_label=_account_session_device_label(request))
@@ -13010,10 +13111,15 @@ async def _link_node_to_user(env, node_name, node_bi, node_rec, user_name):
     user_bi, user_rec = await _account_row(env, user_name)
     if user_rec is not None:
         nodes = _owned_nodes(user_rec)
+        was_operator = bool(nodes)
         if node_name not in nodes:
             nodes.append(node_name)
         user_rec["nodes"] = nodes
         await _save_account(env, user_bi, user_rec)
+        if not was_operator:
+            # "Mirror Operator" badge: this is the account's first node, the
+            # real event that makes it a mirror operator.
+            await _award_badge(env, user_name, user_bi, "mirror_operator")
 
 
 async def _account_claim_node(env, request):
@@ -18476,6 +18582,111 @@ async def cleanup_sensitive_audit_records(env):
         now - SECURITY_AUDIT_RETAIN_MS)
 
 
+# --- Achievement badges (adhoc #370) -----------------------------------------
+# Public recognition marks, similar in shape to org teams: a fixed catalog
+# (badges.py) awarded once per account, either automatically at a real
+# platform event (see the call sites of _award_badge below) or by a platform
+# administrator. Awards are permanent — later losing eligibility does not
+# revoke an already-earned badge.
+FIRST_100_USERS_LIMIT = 100
+WORLD_FIRST_HOUR_BADGE_MS = 60 * 60 * 1000
+
+
+async def _award_badge(env, name, name_bi, slug, granted_by="system"):
+    slug = badge_catalog.normalize_badge_slug(slug)
+    if not slug or not name_bi:
+        return
+    await ensure_schema(env)
+    await d1_run(
+        env,
+        "INSERT OR IGNORE INTO badge_awards "
+        "(badge_slug, account_bi, name, granted_by, created_at) "
+        "VALUES (?,?,?,?,?)",
+        slug, name_bi, name, (granted_by or "system"), int(Date.now()))
+
+
+async def _account_badges(env, name_bi):
+    rows = await d1_all(
+        env,
+        "SELECT badge_slug, granted_by, created_at FROM badge_awards "
+        "WHERE account_bi=? ORDER BY created_at", name_bi)
+    out = []
+    for row in rows or []:
+        info = badge_catalog.badge_definition(row.get("badge_slug"))
+        if not info:
+            continue
+        granted_by = str(row.get("granted_by") or "system")
+        out.append({
+            "slug": str(row.get("badge_slug") or ""),
+            "name": info["name"],
+            "description": info["description"],
+            "icon": info["icon"],
+            "grantedBy": "system" if granted_by == "system" else "admin",
+            "awardedAt": int(row.get("created_at") or 0),
+        })
+    return out
+
+
+async def badges_catalog_handler(env, request):
+    if method_name(request) != "GET":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    return json_response(
+        {"ok": True, "badges": badge_catalog.public_catalog()},
+        cache_seconds=3600)
+
+
+async def account_badges_handler(env, request, raw_name):
+    # GET: the badges one account has earned (public — same visibility as the
+    # public account lookup). POST/DELETE: a platform administrator grants or
+    # revokes one badge.
+    await ensure_schema(env)
+    name = clean_string(raw_name or "", MAX_NODE_NAME).strip().lower()
+    if not valid_node_name(name):
+        return json_response({"error": "invalid_account"}, status=400)
+    name_bi, rec = await _account_row(env, name)
+    if not rec:
+        return json_response({"error": "not_found"}, status=404)
+    method = method_name(request)
+    if method == "GET":
+        return json_response(
+            {"ok": True, "account": name,
+             "badges": await _account_badges(env, name_bi)},
+            cache_seconds=30)
+    if method not in ("POST", "DELETE"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        data = {}
+    _, actor_rec = await _account_session_record(env, request, data)
+    actor = (actor_rec.get("name", "") if actor_rec else "").strip().lower()
+    audit_action = "badge.grant" if method == "POST" else "badge.revoke"
+    if not actor or not await _has_role(env, actor, "platform_administrator"):
+        await _audit_sensitive_action(
+            env, actor, audit_action, "account_badge", name, "denied",
+            {"reason": "insufficient_role"})
+        return json_response({"error": "forbidden"}, status=403)
+    slug = badge_catalog.normalize_badge_slug(data.get("slug", ""))
+    if not slug:
+        return json_response({"error": "invalid_badge"}, status=400)
+    if method == "DELETE":
+        await d1_run(
+            env, "DELETE FROM badge_awards WHERE badge_slug=? AND account_bi=?",
+            slug, name_bi)
+        await _audit_sensitive_action(
+            env, actor, audit_action, "account_badge", name + "/" + slug,
+            "success")
+        return json_response(
+            {"ok": True, "account": name, "slug": slug, "revoked": True})
+    await _award_badge(env, name, name_bi, slug, granted_by=actor)
+    await _audit_sensitive_action(
+        env, actor, audit_action, "account_badge", name + "/" + slug,
+        "success")
+    return json_response(
+        {"ok": True, "account": name, "slug": slug, "granted": True},
+        status=201)
+
+
 async def _admin_authorized(env, node, ts, sig, canonical):
     # The requesting admin proves control of their node's key, and the account
     # must have is_admin set. Returns the admin's record on success, else None.
@@ -18552,7 +18763,6 @@ MAILTRAP_SEND_URL = "https://send.api.mailtrap.io/api/send"
 
 async def _send_email(env, to_email, subject, text, html=None,
                       from_email=None, from_name=None):
-    from js import fetch as js_fetch
     token = (getattr(env, "MAILTRAP_API_TOKEN", "") or "").strip()
     if not token or not to_email:
         return False
@@ -18570,12 +18780,18 @@ async def _send_email(env, to_email, subject, text, html=None,
     if html:
         payload["html"] = html
     try:
-        resp = await js_fetch(url, to_js({
-            "method": "POST",
-            "headers": {"content-type": "application/json",
-                        "authorization": "Bearer " + token},
-            "body": json.dumps(payload),
-        }))
+        resp = await js_fetch_with_timeout(
+            url,
+            {
+                "method": "POST",
+                "headers": {
+                    "content-type": "application/json",
+                    "authorization": "Bearer " + token,
+                },
+                "body": json.dumps(payload),
+            },
+            CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS,
+        )
         return 200 <= int(getattr(resp, "status", 0)) < 300
     except Exception:
         return False
@@ -19612,7 +19828,6 @@ async def _relay_sign_headers(env, body_str):
 
 
 async def _call_main_relay(env, path, body_dict):
-    from js import fetch as js_fetch
     base = _main_relay_url(env)
     if not base:
         return None
@@ -19623,8 +19838,11 @@ async def _call_main_relay(env, path, body_dict):
 
     async def _post(target_path):
         try:
-            resp = await js_fetch(base + target_path, to_js(
-                {"method": "POST", "headers": headers, "body": body_str}))
+            resp = await js_fetch_with_timeout(
+                base + target_path,
+                {"method": "POST", "headers": headers, "body": body_str},
+                CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS,
+            )
             text = await resp.text()
             data = json.loads(text) if text else {}
             if not isinstance(data, dict):
@@ -22437,7 +22655,6 @@ async def _ap_signed_request(key_id, priv_b64, method, url, body_str=None,
                              accept="application/activity+json"):
     # One signed outbound HTTP request (draft-cavage). GETs sign
     # (request-target) host date accept; POSTs add digest + content-type.
-    from js import fetch as js_fetch
     parts = urlparse(url)
     if parts.scheme != "https" or not parts.netloc:
         return None
@@ -22465,7 +22682,8 @@ async def _ap_signed_request(key_id, priv_b64, method, url, body_str=None,
         send_headers["content-type"] = headers["content-type"]
         init["body"] = body_str
     try:
-        return await js_fetch(url, to_js(init))
+        return await js_fetch_with_timeout(
+            url, init, CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS)
     except Exception:
         return None
 
@@ -28197,15 +28415,18 @@ async def capture_sentry_error(env, status, method, path, message, ray="",
             "\n" + json.dumps({"type": "event"}) +
             "\n" + json.dumps(event) + "\n"
         )
-        from js import fetch as js_fetch
-        resp = await js_fetch(parts["endpoint"], to_js({
-            "method": "POST",
-            "headers": {
-                "content-type": "application/x-sentry-envelope",
-                "x-sentry-auth": parts["auth"],
+        resp = await js_fetch_with_timeout(
+            parts["endpoint"],
+            {
+                "method": "POST",
+                "headers": {
+                    "content-type": "application/x-sentry-envelope",
+                    "x-sentry-auth": parts["auth"],
+                },
+                "body": envelope,
             },
-            "body": envelope,
-        }))
+            CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS,
+        )
         return 200 <= int(getattr(resp, "status", 0)) < 300
     except Exception:
         return False
@@ -28303,15 +28524,18 @@ async def capture_sentry_cron_check_in(env, status, check_in_id="",
             "\n" + json.dumps({"type": "check_in"}) +
             "\n" + json.dumps(payload) + "\n"
         )
-        from js import fetch as js_fetch
-        resp = await js_fetch(parts["endpoint"], to_js({
-            "method": "POST",
-            "headers": {
-                "content-type": "application/x-sentry-envelope",
-                "x-sentry-auth": parts["auth"],
+        resp = await js_fetch_with_timeout(
+            parts["endpoint"],
+            {
+                "method": "POST",
+                "headers": {
+                    "content-type": "application/x-sentry-envelope",
+                    "x-sentry-auth": parts["auth"],
+                },
+                "body": envelope,
             },
-            "body": envelope,
-        }))
+            CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS,
+        )
         return 200 <= int(getattr(resp, "status", 0)) < 300
     except Exception:
         return False
@@ -30811,8 +31035,12 @@ async def _admin_disburse(env):
 HTTPS_MIRROR_ENDPOINT_PATH = "/api/mirrors/https"
 HTTPS_MIRROR_PRIVATE_ROUTE_PATH = "/api/mirrors/private"
 HTTPS_MIRROR_MANIFEST_MAX_BYTES = 128 * 1024
-HTTPS_MIRROR_HEALTH_BATCH = 8
+# Two oldest endpoints per minute supports twenty mirrors inside the ten-minute
+# routing freshness window while keeping a fully timed-out alarm comfortably
+# below its next wake-up.
+HTTPS_MIRROR_HEALTH_BATCH = 2
 HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS = 20
+HTTPS_MIRROR_CONTROL_FETCH_TIMEOUT_SECONDS = 6
 HTTPS_MIRROR_BODY_MAX_BYTES = 8 * 1024 * 1024
 HTTPS_MIRROR_MERGE_BODY_MAX_BYTES = 8 * 1024
 HTTPS_MIRROR_MERGE_RESULT_MAX_BYTES = 16 * 1024
@@ -30883,21 +31111,18 @@ def _https_mirror_registration_payload(data):
 async def _https_mirror_fetch_text(
         url, max_bytes, timeout_seconds, accept="application/json"):
     """Fetch a bounded control document without forwarding caller metadata."""
-    from js import fetch as js_fetch
     try:
-        response = await asyncio.wait_for(
-            js_fetch(
-                url,
-                to_js({
-                    "method": "GET",
-                    "headers": {
-                        "accept": accept,
-                        "user-agent": "ForkMesh-HTTPS-router/1.0",
-                    },
-                    "redirect": "manual",
-                }),
-            ),
-            timeout=timeout_seconds,
+        response = await js_fetch_with_timeout(
+            url,
+            {
+                "method": "GET",
+                "headers": {
+                    "accept": accept,
+                    "user-agent": "ForkMesh-HTTPS-router/1.0",
+                },
+                "redirect": "manual",
+            },
+            timeout_seconds,
         )
         status = int(getattr(response, "status", 0) or 0)
         try:
@@ -30936,7 +31161,7 @@ async def _cloudflare_edge_range_documents():
             "https://www.cloudflare.com/ips-v4",
             "https://www.cloudflare.com/ips-v6"):
         status, text = await _https_mirror_fetch_text(
-            url, 16 * 1024, HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS)
+            url, 16 * 1024, HTTPS_MIRROR_CONTROL_FETCH_TIMEOUT_SECONDS)
         if status != 200 or not text:
             return ()
         fetched.append(text)
@@ -30989,7 +31214,7 @@ async def _https_mirror_cloudflare_dns_ok(base_url):
         status, text = await _https_mirror_fetch_text(
             target,
             HTTPS_MIRROR_MANIFEST_MAX_BYTES,
-            HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+            HTTPS_MIRROR_CONTROL_FETCH_TIMEOUT_SECONDS,
             "application/dns-json",
         )
         if status != 200 or not text:
@@ -31011,7 +31236,7 @@ async def _https_mirror_manifest_ok(registration):
     status, text = await _https_mirror_fetch_text(
         registration["baseUrl"] + "/forkmesh-mirror.json",
         HTTPS_MIRROR_MANIFEST_MAX_BYTES,
-        HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+        HTTPS_MIRROR_CONTROL_FETCH_TIMEOUT_SECONDS,
     )
     if status != 200 or not text:
         return False
@@ -31672,7 +31897,7 @@ async def _https_mirror_health_one(env, row, accepted_forkmesh_refs):
     status, text = await _https_mirror_fetch_text(
         target,
         HTTPS_MIRROR_MANIFEST_MAX_BYTES,
-        HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+        HTTPS_MIRROR_CONTROL_FETCH_TIMEOUT_SECONDS,
     )
     latency = max(0, min(60_000, int(Date.now()) - started))
     try:
@@ -31800,10 +32025,15 @@ async def https_mirror_health_cron(env):
     if not rows:
         return
     accepted = await _https_mirror_accepted_forkmesh_refs(env)
-    await asyncio.gather(
-        *[_https_mirror_health_one(env, row, accepted) for row in rows],
-        return_exceptions=True,
-    )
+    # Keep the alarm runner on one Python task. Python fan-out/timeout wrappers
+    # create nested Pyodide tasks which can poison a later scheduled wrapper
+    # with "Cannot enter into task" after the invocation has already ended.
+    # Oldest-first ordering plus the bounded batch still rotates every endpoint.
+    for row in rows:
+        try:
+            await _https_mirror_health_one(env, row, accepted)
+        except BaseException:
+            continue
 
 
 async def _https_mirror_private_candidates(
@@ -32352,7 +32582,7 @@ async def _https_mirror_repository_proof(env, endpoint, context, operation):
     status, text = await _https_mirror_fetch_text(
         target,
         HTTPS_MIRROR_MANIFEST_MAX_BYTES,
-        HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+        HTTPS_MIRROR_CONTROL_FETCH_TIMEOUT_SECONDS,
     )
     try:
         data = json.loads(text) if text else {}
@@ -33286,6 +33516,13 @@ async def _https_mirror_proxy(
 
 class Default(WorkerEntrypoint):
     async def scheduled(self, controller, env, ctx):
+        # Keep the platform Cron Trigger deliberately tiny. It starts (and then
+        # once a minute reconciles) a singleton Durable Object alarm. The alarm
+        # re-arms itself before work, so a stateless Python wrapper poisoned by
+        # another request or a killed maintenance batch cannot stop the runner.
+        await _cron_runner_kick(self.env)
+
+    async def _run_scheduled_jobs(self, controller=None, env=None, ctx=None):
         # Cron trigger (every minute, see [triggers] in wrangler.toml).
         #
         # Only the two once-a-minute samples run on every tick; everything else
@@ -34385,6 +34622,16 @@ class Default(WorkerEntrypoint):
                 return json_response({"error": "not_found"}, status=404)
             return await org_handler(self.env, request, org)
 
+        # --- Achievement badges (adhoc #370) ------------------------------
+        if BADGES_RE.match(url.path):
+            return await badges_catalog_handler(self.env, request)
+        badge_account_match = BADGE_ACCOUNT_RE.match(url.path)
+        if badge_account_match:
+            account = safe_segment(badge_account_match.group(1))
+            if not account:
+                return json_response({"error": "not_found"}, status=404)
+            return await account_badges_handler(self.env, request, account)
+
         # Founders-outreach email console (/outreach): admins plus the
         # admin-managed outreach_team roster send from the founders address.
         if url.path == "/api/outreach" or url.path.startswith("/api/outreach/"):
@@ -35414,6 +35661,70 @@ class ForkMeshCronWatchdog(DurableObject):
         # Retry an unavailable email provider/admin-recipient lookup without
         # depending on the still-missing Cron Trigger.
         self.ctx.storage.setAlarm(now + CRON_WATCHDOG_RETRY_MS)
+
+
+class _CronJobEntrypoint:
+    """Minimal receiver for Default._run_scheduled_jobs' self.env contract."""
+
+    def __init__(self, env):
+        self.env = env
+
+
+class ForkMeshCronRunner(DurableObject):
+    """Alarm-backed, self-rearming owner of the scheduled maintenance loop.
+
+    The stateless Cron Trigger is only a seed and liveness reconciliation path.
+    The alarm is persisted for the next minute before the current batch starts.
+    A platform kill therefore loses at most the current idempotent/bounded slot;
+    it cannot erase the next wake-up. Duplicate alarm delivery is suppressed
+    after a slot completes. A catchable failure records bounded diagnostics and
+    advances to the already-armed next minute instead of creating a retry storm.
+    """
+
+    traffic_binding = "FORKMESH_CRON_RUNNER"
+
+    async def fetch(self, request):
+        if urlparse(request.url).path != "/cron-runner/kick":
+            return json_response({"error": "not_found"}, status=404)
+        now = int(Date.now())
+        await self.ctx.storage.put("last_trigger_kick_at", now)
+        self.ctx.storage.setAlarm(now + CRON_RUNNER_KICK_DELAY_MS)
+        return json_response({"ok": True})
+
+    async def alarm(self, alarm_info=None):
+        now = int(Date.now())
+        minute_slot = now // CRON_RUNNER_INTERVAL_MS
+        next_alarm = (
+            (minute_slot + 1) * CRON_RUNNER_INTERVAL_MS
+            + CRON_RUNNER_ALARM_OFFSET_MS
+        )
+        # Persist the successor before any D1, asset, network, or Python task
+        # work. Even an uncatchable runtime/resource-limit kill leaves it armed.
+        self.ctx.storage.setAlarm(next_alarm)
+
+        completed_slot = int(
+            await self.ctx.storage.get("last_completed_slot") or -1)
+        if completed_slot >= minute_slot:
+            return
+        await self.ctx.storage.put("last_started_slot", minute_slot)
+        await self.ctx.storage.put("last_started_at", now)
+        try:
+            await Default._run_scheduled_jobs(
+                _CronJobEntrypoint(self.env))
+        except BaseException as error:
+            await self.ctx.storage.put(
+                "last_failure",
+                _safe_error_text(error)[:1000],
+            )
+            await self.ctx.storage.put("last_failure_at", int(Date.now()))
+            try:
+                print("cron runner alarm failed: " + _safe_error_text(error))
+            except BaseException:
+                pass
+            return
+        await self.ctx.storage.put("last_completed_slot", minute_slot)
+        await self.ctx.storage.put("last_completed_at", int(Date.now()))
+        await self.ctx.storage.put("last_failure", "")
 
 
 class ForkMeshWorld(DurableObject):

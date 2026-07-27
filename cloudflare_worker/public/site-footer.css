@@ -246,6 +246,24 @@ html.light .forkmesh-footer {
   background: var(--fm-footer-panel);
 }
 
+/* Mounted on its own (auth pages), the band sits outside .forkmesh-footer, so
+   it has to carry the same palette variables itself. */
+.site-footer-world-standalone {
+  --fm-footer-panel: #000;
+  --fm-footer-fg: #f5f5f5;
+  --fm-footer-muted: #a3a3a3;
+  --fm-footer-border: #3b3b3b;
+  --fm-footer-social-hover-border: rgba(232, 232, 232, 0.3);
+}
+
+html.light .site-footer-world-standalone {
+  --fm-footer-panel: #ffffff;
+  --fm-footer-fg: #1f2328;
+  --fm-footer-muted: #656d76;
+  --fm-footer-border: #d0d7de;
+  --fm-footer-social-hover-border: #8c959f;
+}
+
 .site-footer-world-intro {
   display: flex;
   max-width: 80rem;

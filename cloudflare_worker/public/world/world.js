@@ -2986,6 +2986,16 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <button
               class="world-top-link"
               type="button"
+              data-world-organize-nodes
+              aria-pressed="false"
+              aria-label="Ring the live mirror nodes around the reward pool"
+              title="Ring the live mirror nodes around the reward pool"
+            >
+              <span aria-hidden="true">◎</span><span data-world-organize-nodes-label>Organize nodes</span>
+            </button>
+            <button
+              class="world-top-link"
+              type="button"
               data-world-screenshot
               title="Capture and annotate a screenshot"
             >
@@ -3790,7 +3800,6 @@ class ForkMeshWorld extends HTMLElement {
     this.socialFeedsLoad = null;
     this.socialFeedsTimer = 0;
     this.socialFeedsRequestedAt = 0;
-    this.socialFeedsFetchedAt = 0;
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
     const requestedLandmark = worldQuery.get("landmark") || "";
@@ -3859,6 +3868,8 @@ class ForkMeshWorld extends HTMLElement {
     this.clockTimer = 0;
     this.distanceTimer = 0;
     this.toastTimer = 0;
+    this.toastPriority = 0;
+    this.toastLockUntil = 0;
     this.inactiveSyncTimer = 0;
     this.inputInactiveTimer = 0;
     this.lastInputInactiveScheduleAt = 0;
@@ -4447,6 +4458,25 @@ class ForkMeshWorld extends HTMLElement {
         },
         onOfficeMeetingBoardSelect: () => {
           void this.officeMeeting?.joinRoom?.("general");
+        },
+        onOfficeRooftopLaptopSelect: () => {
+          // ForkMesh does not expose a browser-side arbitrary source writer.
+          // Open the real repository browser and keep write-capable work on
+          // the owner device through desktop / IDE integration.
+          window.open(
+            "/forkmesh/forkmesh/blob/cloudflare_worker/public/world/world-scene.js",
+            "_blank",
+            "noopener,noreferrer",
+          );
+          this.toast(
+            this.sessionAuthenticated
+              ? "Opening the live ForkMesh source browser. Source edits stay in the desktop app or IDE extension."
+              : "Opening public ForkMesh source. Log in for account features. Source edits stay in the desktop app or IDE extension.",
+            // The same first click may satisfy the browser's pending music
+            // autoplay gesture. Keep that asynchronous playback notice from
+            // immediately replacing this interaction-specific explanation.
+            { priority: 1, lockMs: 1500 },
+          );
         },
         onWorldBulletinSelect: () => this.openLandmark("events"),
         onMastodonBoardSelect: () => this.openMastodonBoard(),
@@ -5994,6 +6024,10 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-swing-dismount]")) {
         this.world?.dismountSwing?.();
+        return;
+      }
+      if (event.target.closest("[data-world-organize-nodes]")) {
+        this.toggleOrganizedNodes();
         return;
       }
       if (event.target.closest("[data-world-screenshot]")) {
@@ -8156,7 +8190,6 @@ class ForkMeshWorld extends HTMLElement {
           throw new Error(`social posts returned ${response.status}`);
         }
         this.socialFeedsSnapshot = await response.json();
-        this.socialFeedsFetchedAt = Date.now();
         this.syncSocialBanners();
       } catch (_) {
         // Keep the previous snapshot — or the static signs — on failure.
@@ -8191,8 +8224,8 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   // Milliseconds since the newest post in a proxied feed, or null when the
-  // feed has no dated posts (unfetched, unavailable, or the blog's undated
-  // feature articles).
+  // feed has no dated posts (unfetched, unavailable, or an item that shipped
+  // without a date).
   socialNewestPostAgo(feed) {
     let latest = 0;
     for (const post of Array.isArray(feed?.posts) ? feed.posts : []) {
@@ -8200,15 +8233,6 @@ class ForkMeshWorld extends HTMLElement {
       if (at > latest) latest = at;
     }
     return latest ? Math.max(0, Date.now() - latest) : null;
-  }
-
-  // Age of the snapshot itself: the server stamps `now` when it builds the
-  // payload, so an edge-cached read still reports how old the data really
-  // is. Feeds the blog board's SYNCED plate.
-  socialSnapshotAge() {
-    const stamp =
-      Number(this.socialFeedsSnapshot?.now) || this.socialFeedsFetchedAt;
-    return stamp ? Math.max(0, Date.now() - stamp) : null;
   }
 
   syncSocialBannerTimers() {
@@ -8228,7 +8252,7 @@ class ForkMeshWorld extends HTMLElement {
     this.world?.updateSocialBannerTimers?.({
       twitter: timers(this.socialNewestPostAgo(snapshot?.twitter)),
       reddit: timers(this.socialNewestPostAgo(snapshot?.reddit)),
-      blog: timers(this.socialSnapshotAge()),
+      blog: timers(this.socialNewestPostAgo(snapshot?.blog)),
     });
   }
 
@@ -8296,10 +8320,10 @@ class ForkMeshWorld extends HTMLElement {
           .filter(Boolean)
           .join(" · "),
       ),
-      // Blog items have no dates or counts: the meta line is the section +
-      // feature number the RSS category carries, the headline is the item
-      // title, and the board prints the item's description as preview text
-      // under its artwork.
+      // Blog items carry no counts: the meta line is the section + feature
+      // number the RSS category carries, the headline is the item title,
+      // and the board prints the item's description as preview text under
+      // its artwork. Their pubDate drives the stand's LAST POST plate.
       blog: bound(
         snapshot.blog,
         (post) => String(post?.meta || ""),
@@ -15712,6 +15736,38 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
+  syncOrganizeNodesButton(state) {
+    const button = this.$("[data-world-organize-nodes]");
+    const label = this.$("[data-world-organize-nodes-label]");
+    const organized = Boolean(
+      state?.organized ?? this.world?.getNodeLayoutState?.().organized,
+    );
+    button?.setAttribute("aria-pressed", String(organized));
+    if (button) {
+      button.title = organized
+        ? "Send the mirror nodes back to the server yard"
+        : "Ring the live mirror nodes around the reward pool";
+      button.setAttribute("aria-label", button.title);
+    }
+    if (label) label.textContent = organized ? "Node yard" : "Organize nodes";
+    return organized;
+  }
+
+  toggleOrganizedNodes() {
+    if (!this.world?.organizeNetworkNodes) return;
+    const state = this.world.organizeNetworkNodes();
+    this.syncOrganizeNodesButton(state);
+    if (!state?.nodes) {
+      this.toast("No live mirror nodes are online to organize yet.");
+      return;
+    }
+    this.toast(
+      state.organized
+        ? `Organized ${state.nodes} node${state.nodes === 1 ? "" : "s"} in a ring around the reward pool.`
+        : `Returned ${state.nodes} node${state.nodes === 1 ? "" : "s"} to the server yard.`,
+    );
+  }
+
   async toggleWorldSound() {
     const button = this.$("[data-world-sound-toggle]");
     const label = this.$("[data-world-sound-label]");
@@ -16453,14 +16509,21 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-  toast(message) {
+  toast(message, { priority = 0, lockMs = 0 } = {}) {
     const element = this.$("[data-world-toast]");
     if (!element) return;
+    const now = performance.now();
+    const safePriority = Number.isFinite(priority) ? priority : 0;
+    if (now < this.toastLockUntil && safePriority < this.toastPriority) return;
     window.clearTimeout(this.toastTimer);
+    this.toastPriority = safePriority;
+    this.toastLockUntil = now + Math.max(0, Number(lockMs) || 0);
     element.textContent = message;
     element.dataset.open = "true";
     this.toastTimer = window.setTimeout(() => {
       element.dataset.open = "false";
+      this.toastPriority = 0;
+      this.toastLockUntil = 0;
     }, 4200);
   }
 
