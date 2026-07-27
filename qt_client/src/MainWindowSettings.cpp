@@ -3129,6 +3129,7 @@ void MainWindow::leaveSession(const QString &)
     m_userName.clear();
 
     m_homeRoster.clear();
+    m_peerLastSeenMs.clear();
     refreshRepositoryList(); // clears node online status from the repos panel
     updateHomeStats();
 }
