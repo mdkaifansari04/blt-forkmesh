@@ -181,6 +181,10 @@ class_name = "ForkMeshNodes"
 name = "FORKMESH_CRON_WATCHDOG"
 class_name = "ForkMeshCronWatchdog"
 
+[[durable_objects.bindings]]
+name = "FORKMESH_CRON_RUNNER"
+class_name = "ForkMeshCronRunner"
+
 # Persistent storage: repo catalog, accounts, and the issue/pull inboxes.
 # Create once with:  uvx --from workers-py pywrangler d1 create forkmesh
 # then paste the printed database_id below.
@@ -226,6 +230,10 @@ class_name = "ForkMeshNodes"
 [[env.dev.durable_objects.bindings]]
 name = "FORKMESH_CRON_WATCHDOG"
 class_name = "ForkMeshCronWatchdog"
+
+[[env.dev.durable_objects.bindings]]
+name = "FORKMESH_CRON_RUNNER"
+class_name = "ForkMeshCronRunner"
 
 [[migrations]]
 tag = "v1"
@@ -296,6 +304,13 @@ tag = "v13"
 # runs independently of the Cron Trigger, so it can email administrators when
 # the trigger stops completing and again after the first successful recovery.
 new_sqlite_classes = ["ForkMeshCronWatchdog"]
+
+[[migrations]]
+tag = "v14"
+# Scheduled maintenance runs from one self-rearming alarm. The Cron Trigger only
+# seeds/reconciles it, so a wedged stateless Python scheduled wrapper cannot
+# stop the minute loop until another deployment happens.
+new_sqlite_classes = ["ForkMeshCronRunner"]
 
 
 [observability]
