@@ -100,6 +100,22 @@ const FORKBOT_GREETING_RANGE = 3.2;
 // If a visitor is out of reach (travelled to another space, moderation walls,
 // …) the greeting still fires from wherever ForkBot got to.
 const FORKBOT_GREETING_TIMEOUT_MS = 12000;
+// Noah speaks only on a genuine outside -> desk-side approach. The wider reset
+// radius adds hysteresis, while the cooldown prevents a visitor pacing on the
+// boundary from creating a new local bubble every frame.
+const OFFICE_RECEPTION_TALK_RANGE = 2.2;
+const OFFICE_RECEPTION_RESET_RANGE = 3.8;
+const OFFICE_RECEPTION_TALK_COOLDOWN_MS = 12000;
+const OFFICE_RECEPTION_GUEST_TIPS = Object.freeze([
+  "The lobby is open to everyone. Log in to use elevator buttons for restricted team floors.",
+  "Guests can browse public repository portals; log in before requesting access to restricted team floors.",
+  "Public mirrors keep source readable. Log in to unlock only the team floors granted to your account.",
+]);
+const OFFICE_RECEPTION_MEMBER_TIPS = Object.freeze([
+  "Elevator buttons reflect your server-verified team access; locked floors stay locked.",
+  "Repository portals show live mirrors, branches, issues, pull requests, and discussions.",
+  "The rooftop laptop opens the real ForkMesh source browser; source edits stay in the desktop or IDE extension.",
+]);
 // A chat mention (exciteForkbot) sends the droid rushing to the speaker at a
 // faster clip than its idle wander. The chest screen echoes the mention alone
 // for a beat before the thinking dots join it, and the wait for a reply is
@@ -7288,6 +7304,7 @@ export function createWorldScene({
   onOfficeEnter = () => {},
   onOfficeTaskBoardSelect = () => {},
   onOfficeMeetingBoardSelect = () => {},
+  onOfficeRooftopLaptopSelect = () => {},
   onWorldBulletinSelect = () => {},
   onMastodonBoardSelect = () => {},
   onMastodonOpenLink = () => {},
