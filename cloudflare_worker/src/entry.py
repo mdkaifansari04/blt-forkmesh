@@ -5717,9 +5717,21 @@ async def world_satellites_handler(env, request):
             raise world_satellites.SatelliteDataError(
                 "satellite_snapshot_digest_mismatch")
     except world_satellites.SatelliteDataError:
+        # Orbit data is optional scenery. A fresh deployment may legitimately
+        # wait for its first scheduled CelesTrak refresh, and a corrupt cached
+        # snapshot must still fail closed, but neither condition should turn the
+        # World's normal GET into a noisy 503. Serve a bounded empty snapshot;
+        # deterministic stars and planets remain visible until cron seeds D1.
         response = json_response(
-            {"ok": False, "status": "warming", "satellites": []},
-            status=503,
+            {
+                "ok": True,
+                "status": "warming",
+                "schemaVersion": 1,
+                "sourceEpoch": 0,
+                "fetchedAt": 0,
+                "recordCount": 0,
+                "satellites": [],
+            },
             cache_control=(
                 "public, max-age=60, stale-while-revalidate=300"),
             extra_headers={
