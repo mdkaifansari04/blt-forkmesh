@@ -9474,6 +9474,11 @@ export function createWorldScene({
       minFilter: THREE.LinearMipmapLinearFilter,
     },
   );
+  // Be explicit about reflection rather than relying on the render target's
+  // library default. The same live cube map then drives the mirrored letters
+  // and panels without ever turning into a refracted/inside-out view.
+  reflectionTarget.texture.mapping = THREE.CubeReflectionMapping;
+  reflectionTarget.texture.name = "forkmesh-office-logo-live-reflection";
   const reflectionCamera = new THREE.CubeCamera(
     0.2,
     180,
@@ -9805,6 +9810,11 @@ export function createWorldScene({
       // The reflection camera is independent, so reveal it for this capture
       // and restore the exact prior state immediately afterwards.
       player.visible = true;
+      // Movement and camera updates happen earlier in this frame. Commit the
+      // avatar's latest pose before the six cube faces render so its mirror
+      // image never trails one settled position behind.
+      player.updateWorldMatrix(true, true);
+      reflectionCamera.updateWorldMatrix(true, true);
       try {
         reflectionCamera.update(renderer, scene);
       } finally {
@@ -9815,6 +9825,8 @@ export function createWorldScene({
       logoReflectionEligibleAt = Infinity;
       reflectionCamera.userData.logoCaptureCount += 1;
       reflectionCamera.userData.logoCapturedPlayer = true;
+      reflectionCamera.userData.logoCapturedPlayerId =
+        String(player.userData?.id || player.name || "local-player");
     }
   }
 
@@ -10359,10 +10371,15 @@ export function createWorldScene({
           const rawOutAt = Math.max(0, Number(visit?.outAt) || 0);
           const outAt = inAt > 0 && rawOutAt >= inAt ? rawOutAt : 0;
           const suppliedDuration = Number(visit?.durationMs);
+          const hasSuppliedDuration =
+            visit?.durationMs !== null &&
+            visit?.durationMs !== undefined &&
+            Number.isFinite(suppliedDuration) &&
+            suppliedDuration >= 0;
           const durationMs =
             inAt <= 0
               ? null
-              : Number.isFinite(suppliedDuration) && suppliedDuration >= 0
+              : hasSuppliedDuration
                 ? suppliedDuration
                 : outAt
                   ? outAt - inAt

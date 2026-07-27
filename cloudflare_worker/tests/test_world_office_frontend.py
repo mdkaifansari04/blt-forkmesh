@@ -206,8 +206,13 @@ def test_attendance_is_one_shared_last_twenty_row_ledger():
         'context.fillText("USER"',
         'context.fillText("IN"',
         'context.fillText("OUT"',
+        'context.fillText("TOTAL"',
         "visit?.inAt",
         "visit?.outAt",
+        "visit?.durationMs",
+        "officeAttendanceDurationLabel",
+        "updateOfficeAttendanceClock",
+        "Math.floor(elapsedMs / 30_000)",
         "IN BUILDING",
     ):
         assert contract in scene
@@ -540,6 +545,7 @@ def test_lobby_has_one_noah_attendance_and_the_reflective_logo_fountain():
         'logoSupport.name = "forkmesh-reflective-fm-cube-support"',
         "new THREE.WebGLCubeRenderTarget(",
         "new THREE.CubeCamera(",
+        "reflectionTarget.texture.mapping = THREE.CubeReflectionMapping",
         "metalness: 0.94",
         "chromeCube.rotation.y = time * 0.00022",
         "reflectionCamera.update(renderer, scene)",
@@ -585,8 +591,11 @@ def test_lobby_has_one_noah_attendance_and_the_reflective_logo_fountain():
         "logoReflectionDirty && time >= logoReflectionEligibleAt",
         "logoReflectionEligibleAt = time + logoReflectionSettleMs",
         "player.visible = true",
+        "player.updateWorldMatrix(true, true)",
+        "reflectionCamera.updateWorldMatrix(true, true)",
         "player.visible = playerWasVisible",
         "reflectionCamera.userData.logoCaptureCount += 1",
+        "reflectionCamera.userData.logoCapturedPlayerId",
     ):
         assert contract in scene
 
