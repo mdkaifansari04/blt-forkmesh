@@ -192,6 +192,55 @@ const WORLD_MOVE_ACCEL_MAX = 1000;
 const WORLD_MOVE_ACCEL_DEFAULT = 100;
 const WORLD_DIAGNOSTICS_INTERVAL_MS = 1000;
 const WORLD_DIAGNOSTICS_COUNTER_MAX = 1_000_000_000;
+// Debug readings are graded green / orange / red so a glance separates a
+// healthy sample from one worth watching. The thresholds are local display
+// heuristics only; nothing about them is measured remotely or transmitted.
+const WORLD_DIAGNOSTICS_THRESHOLDS = {
+  fps: { caution: 50, high: 30, lowerIsWorse: true },
+  frameTimeMs: { caution: 20, high: 34 },
+  calls: { caution: 600, high: 1500 },
+  triangles: { caution: 400_000, high: 1_200_000 },
+  longFrames: { caution: 1, high: 5 },
+  longestFrameMs: { caution: 34, high: 100 },
+  pointerGapMs: { caution: 50, high: 120 },
+  reconnects: { caution: 1, high: 5 },
+  bufferedBytes: { caution: 16 * 1024, high: 256 * 1024 },
+  frameRate: { caution: 30, high: 90 },
+  coalesced: { caution: 30, high: 120 },
+  backpressure: { caution: 1, high: 5 },
+};
+
+// "good" | "caution" | "high" for one reading against its threshold pair.
+function diagnosticLevel(metric, value) {
+  const bounds = WORLD_DIAGNOSTICS_THRESHOLDS[metric];
+  const number = Number(value);
+  if (!bounds || !Number.isFinite(number)) return "good";
+  if (bounds.lowerIsWorse) {
+    if (number < bounds.high) return "high";
+    return number < bounds.caution ? "caution" : "good";
+  }
+  if (number >= bounds.high) return "high";
+  return number >= bounds.caution ? "caution" : "good";
+}
+
+// Graded readings are spans inside the existing text, so the surrounding
+// separators stay plain and the whole line still reads as one sentence.
+function diagnosticReading(text, level) {
+  return `<span class="world-diagnostics-value" data-level="${level}">${escapeHTML(
+    String(text),
+  )}</span>`;
+}
+
+function diagnosticMetric(metric, value, text) {
+  return diagnosticReading(text, diagnosticLevel(metric, value));
+}
+
+function diagnosticStateLevel(state) {
+  if (state === "online") return "good";
+  return ["connecting", "handshaking", "reconnecting"].includes(state)
+    ? "caution"
+    : "high";
+}
 const WORLD_PULL_MERGE_MAX_REQUESTS = 6;
 const WORLD_PULL_MERGE_POLL_MS = 400;
 const WORLD_PULL_MERGE_RESPONSE_MAX_BYTES = 16 * 1024;
@@ -17059,54 +17108,55 @@ class ForkMeshWorld extends HTMLElement {
       if (count >= 1_000) return `${(count / 1_000).toFixed(1)}k`;
       return `${Math.round(count)}`;
     };
-    const setCompactText = (selector, value) => {
+    const setCompactHTML = (selector, value) => {
       const element = this.$(selector);
-      if (element) element.textContent = value;
+      if (element) element.innerHTML = value;
     };
+    const unavailable = (label) => diagnosticReading(label, "high");
     const version = build.version
       ? `${/^v/i.test(build.version) ? "" : "v"}${build.version}`
       : "build pending";
-    setCompactText(
+    setCompactHTML(
       "[data-world-diagnostics-renderer-compact]",
       renderer
         ? renderer.paused
-          ? "R paused"
-          : `R ${renderer.fps.toFixed(0)} FPS/${renderer.frameTimeMs.toFixed(1)} ms · ${formatCompactCount(renderer.calls)}c/${formatCompactCount(renderer.triangles)}△`
-        : "R unavailable",
+          ? `R ${diagnosticReading("paused", "caution")}`
+          : `R ${diagnosticMetric("fps", renderer.fps, `${renderer.fps.toFixed(0)} FPS`)}/${diagnosticMetric("frameTimeMs", renderer.frameTimeMs, `${renderer.frameTimeMs.toFixed(1)} ms`)} · ${diagnosticMetric("calls", renderer.calls, `${formatCompactCount(renderer.calls)}c`)}/${diagnosticMetric("triangles", renderer.triangles, `${formatCompactCount(renderer.triangles)}△`)}`
+        : `R ${unavailable("unavailable")}`,
     );
-    setCompactText(
+    setCompactHTML(
       "[data-world-diagnostics-frame-compact]",
       renderer
-        ? `F ${formatCompactCount(renderer.longFrames)}L/${renderer.longestFrameMs.toFixed(0)}w`
-        : "F unavailable",
+        ? `F ${diagnosticMetric("longFrames", renderer.longFrames, `${formatCompactCount(renderer.longFrames)}L`)}/${diagnosticMetric("longestFrameMs", renderer.longestFrameMs, `${renderer.longestFrameMs.toFixed(0)}w`)}`
+        : `F ${unavailable("unavailable")}`,
     );
-    setCompactText(
+    setCompactHTML(
       "[data-world-diagnostics-input-compact]",
       renderer
-        ? `I ${renderer.dragging ? "drag" : "idle"} · ${formatCompactCount(renderer.pointerMoves)}p/${renderer.pointerWorstGapMs.toFixed(0)}g · ${formatCompactCount(renderer.interactiveObjects)}i/${formatCompactCount(renderer.animations)}a @${renderer.pixelRatio.toFixed(1)}`
-        : "I unavailable",
+        ? `I ${renderer.dragging ? "drag" : "idle"} · ${formatCompactCount(renderer.pointerMoves)}p/${diagnosticMetric("pointerGapMs", renderer.pointerWorstGapMs, `${renderer.pointerWorstGapMs.toFixed(0)}g`)} · ${formatCompactCount(renderer.interactiveObjects)}i/${formatCompactCount(renderer.animations)}a @${renderer.pixelRatio.toFixed(1)}`
+        : `I ${unavailable("unavailable")}`,
     );
-    setCompactText(
+    setCompactHTML(
       "[data-world-diagnostics-world-compact]",
       renderer
-        ? `W ${renderer.moving ? "move" : "still"} · ${renderer.cameraMode === "first-person" ? "1P" : "3P"} · ${renderer.space} · z${renderer.zoom.toFixed(1)}`
-        : "W unavailable",
+        ? `W ${renderer.moving ? "move" : "still"} · ${renderer.cameraMode === "first-person" ? "1P" : "3P"} · ${escapeHTML(renderer.space)} · z${renderer.zoom.toFixed(1)}`
+        : `W ${unavailable("unavailable")}`,
     );
-    setCompactText(
+    setCompactHTML(
       "[data-world-diagnostics-connection-compact]",
-      `N ${connection.state} · ${connection.peers}p/${connection.reconnects}r/${formatCompactCount(connection.bufferedBytes)}B`,
+      `N ${diagnosticReading(connection.state, diagnosticStateLevel(connection.state))} · ${connection.peers}p/${diagnosticMetric("reconnects", connection.reconnects, `${connection.reconnects}r`)}/${diagnosticMetric("bufferedBytes", connection.bufferedBytes, `${formatCompactCount(connection.bufferedBytes)}B`)}`,
     );
-    setCompactText(
+    setCompactHTML(
       "[data-world-diagnostics-traffic-compact]",
-      `IO ${formatCompactCount(traffic.inboundFrames)}↓@${formatRate(traffic.inboundRate)} · ${formatCompactCount(traffic.outboundFrames)}↑@${formatRate(traffic.outboundRate)}`,
+      `IO ${formatCompactCount(traffic.inboundFrames)}↓@${diagnosticMetric("frameRate", traffic.inboundRate, formatRate(traffic.inboundRate))} · ${formatCompactCount(traffic.outboundFrames)}↑@${diagnosticMetric("frameRate", traffic.outboundRate, formatRate(traffic.outboundRate))}`,
     );
-    setCompactText(
+    setCompactHTML(
       "[data-world-diagnostics-queues-compact]",
-      `Q ${queues.movement[0] || "?"}/${queues.profile[0] || "?"} · ${queues.movementCoalesced}+${queues.profileCoalesced}c/${queues.backpressureEvents}bp`,
+      `Q ${queues.movement[0] || "?"}/${queues.profile[0] || "?"} · ${diagnosticMetric("coalesced", queues.movementCoalesced + queues.profileCoalesced, `${queues.movementCoalesced}+${queues.profileCoalesced}c`)}/${diagnosticMetric("backpressure", queues.backpressureEvents, `${queues.backpressureEvents}bp`)}`,
     );
-    setCompactText(
+    setCompactHTML(
       "[data-world-diagnostics-build-compact]",
-      `B ${version}${build.revision ? `/${build.revision.slice(0, 7)}` : ""}`,
+      `B ${escapeHTML(version)}${build.revision ? `/${escapeHTML(build.revision.slice(0, 7))}` : ""}`,
     );
     const musicActive =
       music.state === "playing" || music.state === "paused";
@@ -17155,27 +17205,29 @@ class ForkMeshWorld extends HTMLElement {
     }
     const rendererDetail = this.$("[data-world-diagnostics-renderer]");
     if (rendererDetail) {
-      rendererDetail.textContent = renderer
-        ? `${renderer.paused ? "Paused" : `${renderer.fps.toFixed(1)} FPS · ${renderer.frameTimeMs.toFixed(1)} ms/frame`} · ${Math.round(renderer.calls).toLocaleString()} calls · ${Math.round(renderer.triangles).toLocaleString()} triangles`
-        : "WebGL renderer unavailable";
+      rendererDetail.innerHTML = renderer
+        ? `${renderer.paused ? diagnosticReading("Paused", "caution") : `${diagnosticMetric("fps", renderer.fps, `${renderer.fps.toFixed(1)} FPS`)} · ${diagnosticMetric("frameTimeMs", renderer.frameTimeMs, `${renderer.frameTimeMs.toFixed(1)} ms/frame`)}`} · ${diagnosticMetric("calls", renderer.calls, `${Math.round(renderer.calls).toLocaleString()} calls`)} · ${diagnosticMetric("triangles", renderer.triangles, `${Math.round(renderer.triangles).toLocaleString()} triangles`)}`
+        : unavailable("WebGL renderer unavailable");
     }
     const frameHealth = this.$("[data-world-diagnostics-frame-health]");
     if (frameHealth) {
-      frameHealth.textContent = renderer
-        ? `${Math.round(renderer.longFrames).toLocaleString()} long frames · ${renderer.longestFrameMs.toFixed(1)} ms worst in the last sample`
-        : "WebGL renderer unavailable";
+      frameHealth.innerHTML = renderer
+        ? `${diagnosticMetric("longFrames", renderer.longFrames, `${Math.round(renderer.longFrames).toLocaleString()} long frames`)} · ${diagnosticMetric("longestFrameMs", renderer.longestFrameMs, `${renderer.longestFrameMs.toFixed(1)} ms worst`)} in the last sample`
+        : unavailable("WebGL renderer unavailable");
     }
     const inputDetail = this.$("[data-world-diagnostics-input]");
     if (inputDetail) {
-      inputDetail.textContent = renderer
-        ? `${renderer.dragging ? "Dragging" : "Idle"} · ${Math.round(renderer.pointerMoves).toLocaleString()} pointer moves/s · ${renderer.pointerWorstGapMs.toFixed(1)} ms worst input gap · ${Math.round(renderer.interactiveObjects).toLocaleString()} interactives · ${Math.round(renderer.animations).toLocaleString()} animations · DPR ${renderer.pixelRatio.toFixed(2)}`
-        : "WebGL renderer unavailable";
+      inputDetail.innerHTML = renderer
+        ? `${renderer.dragging ? "Dragging" : "Idle"} · ${Math.round(renderer.pointerMoves).toLocaleString()} pointer moves/s · ${diagnosticMetric("pointerGapMs", renderer.pointerWorstGapMs, `${renderer.pointerWorstGapMs.toFixed(1)} ms worst input gap`)} · ${Math.round(renderer.interactiveObjects).toLocaleString()} interactives · ${Math.round(renderer.animations).toLocaleString()} animations · DPR ${renderer.pixelRatio.toFixed(2)}`
+        : unavailable("WebGL renderer unavailable");
     }
     const worldState = this.$("[data-world-diagnostics-world-state]");
     if (worldState) {
-      worldState.textContent = renderer
-        ? `${renderer.moving ? "Moving" : "Still"} · ${renderer.cameraMode} · ${renderer.space} · zoom ${renderer.zoom.toFixed(2)}`
-        : "World state unavailable";
+      worldState.innerHTML = renderer
+        ? escapeHTML(
+            `${renderer.moving ? "Moving" : "Still"} · ${renderer.cameraMode} · ${renderer.space} · zoom ${renderer.zoom.toFixed(2)}`,
+          )
+        : unavailable("World state unavailable");
     }
     const musicDetail = this.$("[data-world-diagnostics-music]");
     if (musicDetail) {
@@ -17188,21 +17240,23 @@ class ForkMeshWorld extends HTMLElement {
       "[data-world-diagnostics-connection]",
     );
     if (connectionDetail) {
-      connectionDetail.textContent = `${connection.state} · ${connection.peers} ${connection.peers === 1 ? "peer" : "peers"} · ${connection.reconnects} reconnect attempts · ${Math.round(connection.bufferedBytes).toLocaleString()} buffered bytes`;
+      connectionDetail.innerHTML = `${diagnosticReading(connection.state, diagnosticStateLevel(connection.state))} · ${connection.peers} ${connection.peers === 1 ? "peer" : "peers"} · ${diagnosticMetric("reconnects", connection.reconnects, `${connection.reconnects} reconnect attempts`)} · ${diagnosticMetric("bufferedBytes", connection.bufferedBytes, `${Math.round(connection.bufferedBytes).toLocaleString()} buffered bytes`)}`;
     }
     const trafficDetail = this.$("[data-world-diagnostics-traffic]");
     if (trafficDetail) {
-      trafficDetail.textContent = `Inbound ${Math.round(traffic.inboundFrames).toLocaleString()} (${formatRate(traffic.inboundRate)}) · outbound ${Math.round(traffic.outboundFrames).toLocaleString()} (${formatRate(traffic.outboundRate)})`;
+      trafficDetail.innerHTML = `Inbound ${Math.round(traffic.inboundFrames).toLocaleString()} (${diagnosticMetric("frameRate", traffic.inboundRate, formatRate(traffic.inboundRate))}) · outbound ${Math.round(traffic.outboundFrames).toLocaleString()} (${diagnosticMetric("frameRate", traffic.outboundRate, formatRate(traffic.outboundRate))})`;
     }
     const queueDetail = this.$("[data-world-diagnostics-queues]");
     if (queueDetail) {
-      queueDetail.textContent = `Movement ${queues.movement} (${queues.movementCoalesced} coalesced) · profile ${queues.profile} (${queues.profileCoalesced} coalesced) · ${queues.backpressureEvents} backpressure events`;
+      queueDetail.innerHTML = `Movement ${escapeHTML(queues.movement)} (${diagnosticMetric("coalesced", queues.movementCoalesced, `${queues.movementCoalesced} coalesced`)}) · profile ${escapeHTML(queues.profile)} (${diagnosticMetric("coalesced", queues.profileCoalesced, `${queues.profileCoalesced} coalesced`)}) · ${diagnosticMetric("backpressure", queues.backpressureEvents, `${queues.backpressureEvents} backpressure events`)}`;
     }
     const buildDetail = this.$("[data-world-diagnostics-build]");
     if (buildDetail) {
-      buildDetail.textContent = build.version
-        ? `${version}${build.revision ? ` · ${build.revision.slice(0, 12)}` : " · revision unavailable"}`
-        : "Version endpoint unavailable";
+      buildDetail.innerHTML = build.version
+        ? escapeHTML(
+            `${version}${build.revision ? ` · ${build.revision.slice(0, 12)}` : " · revision unavailable"}`,
+          )
+        : unavailable("Version endpoint unavailable");
     }
   }
 
