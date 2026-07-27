@@ -10204,11 +10204,6 @@ export function createWorldScene({
   officeElevatorCar.add(elevatorPanel);
   const neighborhoodHomes = new Map();
   const nodeInfrastructure = new Map();
-  // Cabinets stand in the server yard by default; "Organize nodes" switches the
-  // fleet to rings around the reward pool. The last live list is kept so the
-  // switch can re-place the yard without waiting for the next network poll.
-  let nodeLayoutMode = "yard";
-  let lastNetworkNodes = [];
   const botAgents = new Map();
   const loungeMembers = new Map();
   // Public account facts the member directory publishes but a live presence
@@ -13389,54 +13384,49 @@ export function createWorldScene({
   }
 
   function updateNetworkNodes(nodes = []) {
-    lastNetworkNodes = Array.isArray(nodes) ? nodes : [];
-    const rewardCircle = nodeLayoutMode === "reward-circle";
     const fountain = landmarkObjects.get("fountain");
-    const routingX = rewardCircle
-      ? fountain?.position.x ?? 0
-      : SERVER_CABINET_YARD_ORIGIN[0];
-    const routingZ = rewardCircle
-      ? fountain?.position.z ?? 0
-      : SERVER_CABINET_YARD_ORIGIN[2];
-    // A dedicated 8×8 server yard keeps all 64 bounded live slots separate
-    // without requiring the retired routing-station landmark. Fill the inward
-    // slots first so a small healthy fleet stays closest to the Town Square.
-    const serverSlots = [];
-    for (let column = 0; column < 8; column += 1) {
-      for (let row = 0; row < 8; row += 1) {
-        const x = routingX + 9.5 + column * 3;
-        const z = routingZ - 10.5 + row * 3;
-        serverSlots.push({
-          x,
-          z,
-          distance: Math.hypot(x - routingX, z - routingZ),
-        });
-      }
-    }
-    serverSlots.sort(
-      (left, right) =>
-        left.distance - right.distance || left.z - right.z || left.x - right.x,
-    );
+    const fountainPosition = landmarkById("fountain").position;
+    const routingX = fountain?.position.x ?? fountainPosition[0];
+    const routingZ = fountain?.position.z ?? fountainPosition[2];
     const seen = new Set();
-    const takenLayoutIds = new Set();
     const removeCabinet = (cabinet) => {
       cabinet?.traverse?.((child) => {
         if (!child.userData?.nodeCabinet) return;
         const interactiveIndex = interactive.indexOf(child);
         if (interactiveIndex >= 0) interactive.splice(interactiveIndex, 1);
       });
-      forgetMovableObject(cabinet?.userData?.layoutId);
       world.remove(cabinet);
       disposeObject3D(cabinet);
     };
+    // Mirror health and response times can reorder the live payload without a
+    // membership change. A normalized name order keeps every surviving
+    // cabinet in the same slot, while a changed member list is laid out again
+    // immediately by this existing data-update path.
     const usableNodes = (Array.isArray(nodes) ? nodes : [])
-      .filter((node) => String(node?.name || node?.label || "").trim())
+      .map((node) => ({
+        node,
+        name: String(node?.name || node?.label || "").trim().slice(0, 80),
+      }))
+      .filter((entry) => entry.name)
+      .sort((left, right) => {
+        const leftKey = left.name.toLowerCase();
+        const rightKey = right.name.toLowerCase();
+        if (leftKey !== rightKey) return leftKey < rightKey ? -1 : 1;
+        if (left.name === right.name) return 0;
+        return left.name < right.name ? -1 : 1;
+      })
+      .filter(
+        (entry, index, entries) =>
+          index === 0 ||
+          entry.name.toLowerCase() !== entries[index - 1].name.toLowerCase(),
+      )
       .slice(0, 64);
-    const circleSlots = rewardCircle
-      ? rewardCircleSlots(routingX, routingZ, usableNodes.length)
-      : null;
-    usableNodes.forEach((node, index) => {
-      const nodeName = String(node.name || node.label).trim().slice(0, 80);
+    const circleSlots = rewardCircleSlots(
+      routingX,
+      routingZ,
+      usableNodes.length,
+    );
+    usableNodes.forEach(({ node, name: nodeName }, index) => {
       const id = `node:${nodeName.toLowerCase()}`;
       const dataKey = nodeDataKey({ ...node, name: nodeName });
       seen.add(id);
@@ -13475,29 +13465,14 @@ export function createWorldScene({
         }
         nodeInfrastructure.set(id, cabinet);
       }
-      const slot = circleSlots ? circleSlots[index] : serverSlots[index];
-      const placeInSlot = () => {
-        cabinet.position.set(slot.x, 0.38, slot.z);
-        // The front display faces inward so each cabinet remains individually
-        // readable from the surrounding walkway.
-        cabinet.rotation.y = Math.atan2(
-          routingX - slot.x,
-          routingZ - slot.z,
-        );
-      };
-      placeInSlot();
-      // The yard slot is only the default: registering the cabinet re-applies
-      // any administrator-locked position and turn on top of it, and it has to
-      // happen after the slot assignment above overwrites both.
-      const layoutId = worldLayoutId("node-", nodeName);
-      if (layoutId && !takenLayoutIds.has(layoutId)) {
-        takenLayoutIds.add(layoutId);
-        cabinet.userData.layoutBaseRotation = cabinet.rotation.y;
-        registerMovableObject(layoutId, cabinet);
-      }
-      // "Organize nodes" is an explicit viewer request, so it wins over a
-      // locked placement for as long as the ring stays switched on.
-      if (rewardCircle) placeInSlot();
+      const slot = circleSlots[index];
+      cabinet.position.set(slot.x, 0.38, slot.z);
+      // The front display faces inward so each cabinet remains individually
+      // readable from the surrounding walkway.
+      cabinet.rotation.y = Math.atan2(
+        routingX - slot.x,
+        routingZ - slot.z,
+      );
       const nextCommit = String(node?.commit || "");
       if (priorCommit && nextCommit && nextCommit !== priorCommit) {
         spawnPushSurge(cabinet.position);
@@ -13516,31 +13491,6 @@ export function createWorldScene({
       removeCabinet(cabinet);
       nodeInfrastructure.delete(id);
     });
-  }
-
-  // Arranges every live cabinet in even rings around the reward pool, or puts
-  // the fleet back in the server yard. Returns the resulting arrangement so the
-  // HUD button can label and announce itself from the real scene state.
-  function organizeNetworkNodes(organized) {
-    const next =
-      organized === undefined
-        ? nodeLayoutMode !== "reward-circle"
-        : Boolean(organized);
-    nodeLayoutMode = next ? "reward-circle" : "yard";
-    updateNetworkNodes(lastNetworkNodes);
-    return {
-      organized: next,
-      mode: nodeLayoutMode,
-      nodes: nodeInfrastructure.size,
-    };
-  }
-
-  function getNodeLayoutState() {
-    return {
-      organized: nodeLayoutMode === "reward-circle",
-      mode: nodeLayoutMode,
-      nodes: nodeInfrastructure.size,
-    };
   }
 
   function focusNetworkNode(name) {
@@ -15801,8 +15751,8 @@ export function createWorldScene({
   }
 
   // Freshly pushed code announces itself: a tall light column rises from the
-  // cabinet and a ground shockwave ring expands far past the server yard, so
-  // the arrival reads from anywhere in the town — not just beside the rack.
+  // cabinet and a ground shockwave expands beyond the reward-pool node rings,
+  // so the arrival reads from anywhere in the town — not just beside the rack.
   // Purely cosmetic and driven only by a verified commit change in the signed
   // mirror payload (see updateNetworkNodes), never by an unauthenticated frame.
   function spawnPushSurge(position) {
@@ -15862,7 +15812,7 @@ export function createWorldScene({
       Math.max(1, Number.isFinite(requested) ? requested : 1),
     );
     for (let index = 0; index < wanted; index += 1) {
-      // Bound a busy yard's burst to a fixed effect budget.
+      // Bound a busy fleet's burst to a fixed effect budget.
       if (serveFlights.length >= 12) return;
       const figure = createServedVisitorFigure(
         THREE,
@@ -16709,21 +16659,6 @@ export function createWorldScene({
     return true;
   }
 
-  function forgetMovableObject(id) {
-    const key = String(id || "");
-    const object = movableWorldObjects.get(key);
-    if (!object) return;
-    if (draggedLayoutObject === object) draggedLayoutObject = null;
-    if (activeLayoutObject === object) activeLayoutObject = null;
-    const handle = layoutHandles.get(key);
-    if (handle) {
-      const index = interactive.indexOf(handle);
-      if (index >= 0) interactive.splice(index, 1);
-      layoutHandles.delete(key);
-    }
-    movableWorldObjects.delete(key);
-  }
-
   function ensureLayoutHandles() {
     movableWorldObjects.forEach((object, id) => {
       if (layoutHandles.has(id)) return;
@@ -17529,8 +17464,6 @@ export function createWorldScene({
     updateMemberLounge,
     updateReferralLeaderboard,
     updateNetworkNodes,
-    organizeNetworkNodes,
-    getNodeLayoutState,
     focusNetworkNode,
     updateFederatedInstances,
     updateBots,

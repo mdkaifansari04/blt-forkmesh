@@ -10110,15 +10110,40 @@ async def repo_mirrors_handler(env, request, owner, repo):
             "data": rec,
         })
 
-    presence_rows = await d1_all(env, "SELECT repo_bi, ts FROM host_presence")
-    presence = {
-        str(r.get("repo_bi")): int(r.get("ts") or 0)
-        for r in presence_rows
-        if r.get("repo_bi")
-    }
     now = int(Date.now())
-    presence = await hydrate_repo_group_live_hosts(
-        env, owner, repo, catalog_rows, presence, now)
+    # Repository bytes moved off the retired host WebSocket to signed direct
+    # HTTPS endpoints. Read the fresh endpoint leases once and map them onto
+    # this catalog group directly; the old hydrate path issued up to eight
+    # redundant per-owner D1 probes and memoized a transient zero for 30s,
+    # making a recovered mirror flicker offline after its signed lease was
+    # already healthy again.
+    endpoint_rows = await d1_all(
+        env,
+        """SELECT node_name,checked_at FROM mirror_https_endpoints
+            WHERE checked_at>=? AND forkmesh_verified_at>=?
+              AND healthy=1 AND forkmesh_active=1
+              AND integrity='ok' AND abuse_blocked=0""",
+        now - HTTPS_MIRROR_STATUS_FRESH_MS,
+        now - HTTPS_MIRROR_STATUS_FRESH_MS,
+    )
+    reachable_seen = {
+        clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower():
+        int(row.get("checked_at") or now)
+        for row in endpoint_rows or []
+        if valid_node_name(
+            clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower())
+    }
+    reachable_nodes = set(reachable_seen)
+    presence = {}
+    for row in catalog_rows:
+        record = row.get("data") or {}
+        node_name = clean_string(
+            record.get("machineName") or record.get("owner", ""),
+            MAX_NODE_NAME,
+        ).lower()
+        key = str(row.get("key_bi") or "")
+        if key and node_name in reachable_seen:
+            presence[key] = reachable_seen[node_name]
     first_rows = await d1_all(env, "SELECT repo_bi, ts FROM repo_first_hosted")
     first_hosted = {
         str(r.get("repo_bi")): int(r.get("ts") or 0)
@@ -10149,21 +10174,6 @@ async def repo_mirrors_handler(env, request, owner, repo):
         str(owner or "").strip().lower(),
         str(repo or "").strip().lower(),
     )
-    endpoint_rows = await d1_all(
-        env,
-        """SELECT node_name FROM mirror_https_endpoints
-            WHERE checked_at>=? AND forkmesh_verified_at>=?
-              AND healthy=1 AND forkmesh_active=1
-              AND integrity='ok' AND abuse_blocked=0""",
-        now - HTTPS_MIRROR_STATUS_FRESH_MS,
-        now - HTTPS_MIRROR_STATUS_FRESH_MS,
-    )
-    reachable_nodes = {
-        clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower()
-        for row in endpoint_rows or []
-        if valid_node_name(
-            clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower())
-    }
     payload = build_repo_mirrors_payload(
         owner,
         repo,

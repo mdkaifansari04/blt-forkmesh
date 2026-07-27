@@ -3072,16 +3072,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <button
               class="world-top-link"
               type="button"
-              data-world-organize-nodes
-              aria-pressed="false"
-              aria-label="Ring the live mirror nodes around the reward pool"
-              title="Ring the live mirror nodes around the reward pool"
-            >
-              <span aria-hidden="true">◎</span><span data-world-organize-nodes-label>Organize nodes</span>
-            </button>
-            <button
-              class="world-top-link"
-              type="button"
               data-world-screenshot
               title="Capture and annotate a screenshot"
             >
@@ -6414,10 +6404,6 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-swing-dismount]")) {
         this.world?.dismountSwing?.();
-        return;
-      }
-      if (event.target.closest("[data-world-organize-nodes]")) {
-        this.toggleOrganizedNodes();
         return;
       }
       if (event.target.closest("[data-world-screenshot]")) {
@@ -16323,38 +16309,6 @@ class ForkMeshWorld extends HTMLElement {
       next === "first-person"
         ? "First-person view enabled."
         : "Third-person view restored.",
-    );
-  }
-
-  syncOrganizeNodesButton(state) {
-    const button = this.$("[data-world-organize-nodes]");
-    const label = this.$("[data-world-organize-nodes-label]");
-    const organized = Boolean(
-      state?.organized ?? this.world?.getNodeLayoutState?.().organized,
-    );
-    button?.setAttribute("aria-pressed", String(organized));
-    if (button) {
-      button.title = organized
-        ? "Send the mirror nodes back to the server yard"
-        : "Ring the live mirror nodes around the reward pool";
-      button.setAttribute("aria-label", button.title);
-    }
-    if (label) label.textContent = organized ? "Node yard" : "Organize nodes";
-    return organized;
-  }
-
-  toggleOrganizedNodes() {
-    if (!this.world?.organizeNetworkNodes) return;
-    const state = this.world.organizeNetworkNodes();
-    this.syncOrganizeNodesButton(state);
-    if (!state?.nodes) {
-      this.toast("No live mirror nodes are online to organize yet.");
-      return;
-    }
-    this.toast(
-      state.organized
-        ? `Organized ${state.nodes} node${state.nodes === 1 ? "" : "s"} in a ring around the reward pool.`
-        : `Returned ${state.nodes} node${state.nodes === 1 ? "" : "s"} to the server yard.`,
     );
   }
 
