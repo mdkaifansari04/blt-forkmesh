@@ -1959,12 +1959,14 @@ test("Office doorway stays outside at the jamb and never blocks on access hydrat
       active: shell.officeController.active,
       space: shell.world.getPosition().space,
       status: status.userData.officeDoorStatus,
+      visible: status.visible,
     };
   });
   expect(jambState).toEqual({
     active: false,
     space: "town-square",
     status: "open",
+    visible: false,
   });
   await page.waitForTimeout(150);
   expect(officeFloorRequests).toHaveLength(0);
@@ -1986,10 +1988,12 @@ test("Office doorway stays outside at the jamb and never blocks on access hydrat
             shell.world.player.position.clone(),
           ).z,
           status: status.userData.officeDoorStatus,
+          visible: status.visible,
         };
       },
     );
     expect(whileSyncing.status).toBe("syncing");
+    expect(whileSyncing.visible).toBe(true);
 
     await page.waitForTimeout(250);
     const movingPosition = await page.locator("forkmesh-world").evaluate(
@@ -2014,6 +2018,11 @@ test("Office doorway stays outside at the jamb and never blocks on access hydrat
     await expect.poll(() => officeAttendanceRequests.length).toBe(1);
 
     await page.locator("forkmesh-world").evaluate((shell) => {
+      const status = shell.world.scene.getObjectByName(
+        "forkmesh-office-door-status",
+      );
+      const doorway = status.getWorldPosition(status.position.clone());
+      shell.world.player.position.set(doorway.x, 0.38, doorway.z - 0.8);
       shell.world.setControl("back", true);
     });
     await expect.poll(() =>
@@ -2023,11 +2032,15 @@ test("Office doorway stays outside at the jamb and never blocks on access hydrat
         status: shell.world.scene.getObjectByName(
           "forkmesh-office-door-status",
         ).userData.officeDoorStatus,
+        visible: shell.world.scene.getObjectByName(
+          "forkmesh-office-door-status",
+        ).visible,
       }))
     ).toEqual({
       active: false,
       space: "town-square",
       status: "open",
+      visible: false,
     });
   } finally {
     await page.locator("forkmesh-world").evaluate((shell) => {

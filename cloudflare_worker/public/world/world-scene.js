@@ -7363,7 +7363,7 @@ function officeDoorStatusTexture(THREE, state = "open") {
       ? "SYNCING ACCESS"
       : normalized === "ready"
         ? "ACCESS READY"
-        : "WALK RIGHT IN";
+        : "";
   const accent = normalized === "syncing" ? "#77d9ff" : "#9ef7c6";
   return canvasTexture(THREE, 768, 120, (context) => {
     context.clearRect(0, 0, 768, 120);
@@ -7706,6 +7706,7 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
   doorStatus.position.set(0, 3.25, OFFICE_FRONT_Z + 0.17);
   doorStatus.renderOrder = 4;
   doorStatus.userData.officeDoorStatus = "open";
+  doorStatus.visible = false;
   group.add(doorStatus);
 
   group.position.set(...position);
@@ -9582,12 +9583,14 @@ export function createWorldScene({
     const normalized =
       state === "syncing" ? "syncing" : state === "ready" ? "ready" : "open";
     if (officeDoorStatus.userData.officeDoorStatus === normalized) {
+      officeDoorStatus.visible = normalized !== "open";
       return normalized;
     }
     const previous = officeDoorStatus.material.map;
     officeDoorStatus.material.map = officeDoorStatusTexture(THREE, normalized);
     officeDoorStatus.material.needsUpdate = true;
     officeDoorStatus.userData.officeDoorStatus = normalized;
+    officeDoorStatus.visible = normalized !== "open";
     previous?.dispose?.();
     return normalized;
   }

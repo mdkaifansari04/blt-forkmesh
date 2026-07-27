@@ -707,7 +707,9 @@ def test_office_door_shows_background_access_hydration_without_gating_entry():
     office = source(OFFICE_PATH)
     assert 'doorStatus.name = "forkmesh-office-door-status"' in scene
     assert '"SYNCING ACCESS"' in scene
-    assert '"WALK RIGHT IN"' in scene
+    assert '"WALK RIGHT IN"' not in scene
+    assert "doorStatus.visible = false" in scene
+    assert 'officeDoorStatus.visible = normalized !== "open"' in scene
     assert "function setOfficeDoorStatus(" in scene
     assert 'world.setOfficeDoorStatus?.("syncing")' in office
     assert (
