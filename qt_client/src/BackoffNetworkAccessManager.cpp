@@ -1,5 +1,7 @@
 #include "BackoffNetworkAccessManager.h"
 
+#include "BackgroundActivity.h"
+
 #include <QByteArray>
 #include <QDateTime>
 #include <QIODevice>
@@ -623,6 +625,14 @@ QNetworkReply *BackoffNetworkAccessManager::createRequest(
         QNetworkReply *reply = createNetworkRequest(op, request, outgoingData);
         auto *tracker = new EndpointTransferTracker(reply);
         tracker->uploaded = outgoingKnown;
+        // Footer background strip (adhoc #421): one "net" ticket per in-flight
+        // reply. Retired on destruction rather than on finished() so aborted and
+        // never-finished replies can't leave the spinner running forever.
+        const quint64 activity = forkmesh::BackgroundActivity::begin(
+            QStringLiteral("net"),
+            firewallMethodName(op) + QLatin1Char(' ') + endpointStatsUrl(url));
+        connect(reply, &QObject::destroyed, this,
+                [activity] { forkmesh::BackgroundActivity::end(activity); });
         connect(reply, &QNetworkReply::uploadProgress, this,
                 [tracker](qint64 sent, qint64) {
                     tracker->uploaded = qMax(tracker->uploaded, sent);

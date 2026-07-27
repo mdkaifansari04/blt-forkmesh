@@ -936,11 +936,20 @@ private:
     void updateNodeOnlineControls();
     // Bottom quick-add issue bar (the network log now lives in its own section).
     QWidget *buildNetworkLogDock();
-    // Compact footer queue between the live log and agent prompt. It exists
-    // only while slow cleanup is running and gives each job a spinner + note.
-    quint64 beginBackgroundTask(const QString &note);
+    // Compact footer queue between the live log and agent prompt. It exists only
+    // while background work is running and gives each kind of job a spinner plus
+    // a one-word tag ("git", "net", "fork" …); past five tags it scrolls.
+    quint64 beginBackgroundTask(const QString &kind,
+                                const QString &detail = QString());
     void finishBackgroundTask(quint64 id, bool success,
                               const QString &detail = QString());
+    // BackgroundActivity listener body, always run on the GUI thread.
+    void noteBackgroundActivity(quint64 id, const QString &kind,
+                                const QString &detail, bool started);
+    // Spin the glyphs and reconcile the visible rows with the open tickets.
+    void tickBackgroundQueue();
+    // Collapse a caller's note to the single lowercase word shown in the strip.
+    static QString backgroundTaskWord(const QString &kind);
     // Refresh the footer's centered git-identity label for the open repo.
     void updateFooterGitIdentity();
     // Live CPU/memory readout + UI-stall watchdog (footer diagnostics).
@@ -3657,15 +3666,26 @@ private:
     // variant) so each line can lead with the site favicon <img> the full Log
     // view uses — QPlainTextEdit drops images (adhoc #436).
     QTextEdit *m_footerUpdateLog = nullptr;
+    // Background-activity strip, wedged between the live log and the prompt. One
+    // row per open *kind* of work, not per ticket: dozens of concurrent git reads
+    // collapse into a single "git ×12" line, so the strip stays readable and the
+    // widget churn stays flat no matter how busy the app gets.
     QFrame *m_backgroundQueue = nullptr;
     QLabel *m_backgroundQueueTitle = nullptr;
     QWidget *m_backgroundQueueRowsHost = nullptr;
     QVBoxLayout *m_backgroundQueueRowsLayout = nullptr;
-    QHash<quint64, QWidget *> m_backgroundTaskRows;
-    QHash<quint64, QLabel *> m_backgroundTaskSpinners;
+    QScrollArea *m_backgroundQueueScroll = nullptr;
+    QHash<QString, QWidget *> m_backgroundTaskRows;      // word -> row
+    QHash<QString, QLabel *> m_backgroundTaskSpinners;   // word -> spinner glyph
+    QHash<QString, QLabel *> m_backgroundTaskLabels;     // word -> "git ×3"
+    QHash<QString, int> m_backgroundTaskCounts;          // word -> open tickets
+    QHash<QString, qint64> m_backgroundTaskSince;        // word -> first ticket ms
+    QHash<QString, QString> m_backgroundTaskDetails;     // word -> newest note
+    QHash<quint64, QString> m_backgroundTaskWords;       // ticket -> word
     QTimer *m_backgroundTaskSpinTimer = nullptr;
-    quint64 m_nextBackgroundTaskId = 1;
+    int m_backgroundTaskRowHeight = 18;
     int m_backgroundTaskSpinFrame = 0;
+    int m_backgroundTaskIdleTicks = 0;
     // Set while a root-launched "Update, rebuild & restart" is running so build
     // steps and the relaunch run as this non-root user. Empty = run in-process.
     QString m_updateAsUser;

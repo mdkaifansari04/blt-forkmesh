@@ -1,6 +1,7 @@
 #include "AgentRunner.h"
 
 #include "AgentJail.h"
+#include "BackgroundActivity.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -441,6 +442,15 @@ void AgentRunner::launch(Phase phase, const QString &program,
                 if (error == QProcess::FailedToStart)
                     complete(false, AgentStatus::Failed, m_process->errorString());
             });
+
+    // Footer background strip (adhoc #421): the run shows up as "agent" while
+    // the CLI works and "git" while the worktree is being prepared. The ticket is
+    // tied to the child's destruction, which onProcessFinished/stop() both reach.
+    const quint64 activity = forkmesh::BackgroundActivity::begin(
+        phase == Phase::Agent ? QStringLiteral("agent") : QStringLiteral("git"),
+        QStringLiteral("Agent session #%1: %2").arg(m_session.id).arg(program));
+    connect(m_process, &QObject::destroyed, this,
+            [activity] { forkmesh::BackgroundActivity::end(activity); });
 
     m_process->setProgram(program);
     m_process->setArguments(args);

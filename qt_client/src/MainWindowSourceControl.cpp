@@ -3137,8 +3137,11 @@ void MainWindow::refreshSizeMapTab(bool force)
                     liveChart->setRoot(std::move(root));
                 }
             });
-    watcher->setFuture(QtConcurrent::run(
-        [path, ignored] { return scanDirectorySizes(path, 0, ignored); }));
+    watcher->setFuture(QtConcurrent::run([path, ignored] {
+        const forkmesh::BackgroundScope activity(
+            QStringLiteral("scan"), QStringLiteral("Sizing %1").arg(path));
+        return scanDirectorySizes(path, 0, ignored);
+    }));
 }
 
 QWidget *MainWindow::buildInsightsTab()

@@ -93,6 +93,9 @@ void MainWindow::loadCachedAvatars()
         refreshChatMembers();
     });
     watcher->setFuture(QtConcurrent::run([paths] {
+        const forkmesh::BackgroundScope activity(
+            QStringLiteral("avatars"),
+            QStringLiteral("Decoding %1 avatar image(s)").arg(paths.size()));
         QList<QPair<QString, QImage>> decoded;
         for (const QString &path : paths) {
             QFile f(path);

@@ -1496,6 +1496,9 @@ void MainWindow::mirrorPreviewRepository(int index)
                 setRepoDetailNotice("Could not run git. Install Git and try again.",
                                     true);
             });
+    trackProcessActivity(process, QStringLiteral("fork"),
+                         QStringLiteral("Mirroring %1/%2")
+                             .arg(preview.owner, preview.name));
     process->start(QStringLiteral("git"),
                    {QStringLiteral("clone"), QStringLiteral("--mirror"), source,
                     permanentPath});
@@ -2007,6 +2010,8 @@ void MainWindow::importRemoteRepository()
                 if (m_importUrlEdit)
                     m_importUrlEdit->clear();
             });
+    trackProcessActivity(process, QStringLiteral("clone"),
+                         QStringLiteral("Cloning %1").arg(url));
     process->start();
 }
 
@@ -4103,6 +4108,9 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                 watcher->setFuture(QtConcurrent::run(
                     [snapshotInput, expectedDependencyFingerprint,
                      cachedSnapshotAvailable] {
+                        const forkmesh::BackgroundScope activity(
+                            QStringLiteral("scan"),
+                            QStringLiteral("Preparing the contribution graph"));
                         return prepareRepoContributionSnapshot(
                             snapshotInput, expectedDependencyFingerprint,
                             cachedSnapshotAvailable);
@@ -6211,6 +6219,9 @@ void MainWindow::pushToSshMirrorRemotes(int index)
         // relay's pin history every public read of the repo hard-fails with
         // mirror_unavailable (the gateway hides its internal refs from the
         // push, so prune can only drop refs this node stopped serving).
+        trackProcessActivity(process, QStringLiteral("push"),
+                             QStringLiteral("Pushing %1/%2 to %3")
+                                 .arg(repo.owner, repo.name, url));
         process->start(QStringLiteral("git"),
                        {QStringLiteral("-C"), repo.mirrorPath,
                         QStringLiteral("push"), QStringLiteral("--porcelain"),
@@ -6542,6 +6553,8 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                         "Could not run git. Install Git and try again.",
                         /*error=*/true);
             });
+    trackProcessActivity(process, QStringLiteral("sync"),
+                         QStringLiteral("git ") + args.join(QLatin1Char(' ')));
     process->start("git", args);
 }
 
