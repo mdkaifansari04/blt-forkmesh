@@ -104,7 +104,9 @@ export const OFFICE_FLOORS = Object.freeze([
 export const OFFICE_FLOOR_TEAM_ALIASES = Object.freeze({
   marketing: Object.freeze([
     "marketing",
+    "marketing-team",
     "growth",
+    "brand",
     "communications",
     "comms",
   ]),

@@ -1901,10 +1901,10 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { task: "Add the HTTP Referer leaderboard", done: true },
   { task: "Review and merge mdkaifan direct chat", done: true },
   { task: "Remove the merged direct-chat branch", done: true },
-  { task: "Run focused worker API tests", done: false },
-  { task: "Run focused Qt pull and issue tests", done: false },
-  { task: "Run relevant build and static checks", done: false },
-  { task: "Confirm only intentional changes remain", done: false },
+  { task: "Run focused worker API tests", done: true },
+  { task: "Run focused Qt pull and issue tests", done: true },
+  { task: "Run relevant build and static checks", done: true },
+  { task: "Confirm only intentional changes remain", done: true },
 ]);
 
 function worldTaskBulletinSeed(value) {
@@ -13867,6 +13867,7 @@ export function createWorldScene({
       while (remaining.length) {
         let bestIndex = 0;
         let bestDistance = -1;
+        let bestBalance = Number.POSITIVE_INFINITY;
         remaining.forEach((candidate, candidateIndex) => {
           const nearest = ordered.length
             ? Math.min(
@@ -13880,9 +13881,29 @@ export function createWorldScene({
             : candidate.angle <= Math.PI
               ? Math.PI - candidate.angle
               : candidate.angle - Math.PI;
-          if (nearest > bestDistance + 1e-9) {
+          // Equal-distance candidates are common on a ring. Prefer the one
+          // that keeps this prefix's centroid nearest the relocated pool,
+          // rather than consistently breaking ties toward one semicircle.
+          const balance = Math.hypot(
+            ordered.reduce(
+              (sum, selected) => sum + selected.x - centreX,
+              candidate.x - centreX,
+            ),
+            ordered.reduce(
+              (sum, selected) => sum + selected.z - centreZ,
+              candidate.z - centreZ,
+            ),
+          );
+          if (
+            nearest > bestDistance + 1e-9 ||
+            (
+              Math.abs(nearest - bestDistance) <= 1e-9 &&
+              balance < bestBalance - 1e-9
+            )
+          ) {
             bestIndex = candidateIndex;
             bestDistance = nearest;
+            bestBalance = balance;
           }
         });
         ordered.push(remaining.splice(bestIndex, 1)[0]);

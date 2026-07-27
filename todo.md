@@ -67,7 +67,7 @@ task above so they stay recoverable until final verification.
 
 ## Final verification
 
-- [ ] Run focused worker API tests.
-- [ ] Run focused Qt pull-request and issue-sync tests.
-- [ ] Run the relevant build/static checks.
-- [ ] Confirm the worktree contains only intentional changes.
+- [x] Run focused worker API tests.
+- [x] Run focused Qt pull-request and issue-sync tests.
+- [x] Run the relevant build/static checks.
+- [x] Confirm the worktree contains only intentional changes.
