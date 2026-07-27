@@ -411,6 +411,26 @@ def test_operator_only_payloads_match_worker_canonicals(identity):
         registration_payload,
     )
 
+    deletion = helper.sign_repository_delete(
+        identity["state_dir"],
+        {
+            "schemaVersion": 1,
+            "type": "forkmesh.repository-delete-signing",
+            "owner": "mirror-two",
+            "name": "codeberg-demo",
+            "timestamp": 1784840000001,
+        },
+        clock_ms=lambda: 1784840000001,
+    )
+    deletion_payload = (
+        "forkmesh-catalog-delete-v1\n"
+        "mirror-two\ncodeberg-demo\n1784840000001"
+    ).encode()
+    node_public.verify(
+        base64.urlsafe_b64decode(deletion["signature"] + "=="),
+        deletion_payload,
+    )
+
     state_hash = hashlib.sha256(b"refs").hexdigest()
     record = helper.sign_catalog_v2(
         identity["state_dir"],

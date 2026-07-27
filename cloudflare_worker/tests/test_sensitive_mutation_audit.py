@@ -369,6 +369,8 @@ def _catalog_delete_handler(*, authorized=True, fail_mutation=False):
         "d1_first": d1_first,
         "decrypt_row": lambda env, value: _dict_result({"owner": "alice"}),
         "_owner_pubkey": lambda env, owner: _text_result("owner-public-key"),
+        "_verify_owner_signature": (
+            lambda *args: _bool_result(authorized)),
         "ed25519_verify": (
             lambda *args: _bool_result(authorized)),
         "_delete_repo_scoped_state": _noop,
