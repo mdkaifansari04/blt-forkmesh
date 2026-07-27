@@ -32,8 +32,8 @@ the implementation and its focused verification are complete.
 - [x] Show the quick map on mobile.
 - [x] Return a safe degraded response instead of `503` for unavailable satellites.
 - [x] Point the dashboard globe link to `/world`.
-- [ ] Allow organization admins to assign user groups, including for offline users.
-- [ ] Put each seated user's group control on their back.
+- [x] Allow organization admins to assign user groups, including for offline users.
+- [x] Put each seated user's group control on their back.
 - [ ] Finish reviewing and integrating the remaining session branches from the supplied list.
 - [ ] Delete merged session branches and worktrees after verification.
 - [ ] Restore the preserved pre-existing user test changes from `stash@{0}`.
