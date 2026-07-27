@@ -300,6 +300,36 @@ def test_chest_badge_shows_client_categories_exact_ages_and_status_note():
     assert "def _bounded_joined_at(value, now, fallback):" in WORLD_PROTOCOL
 
 
+def test_chest_badge_shows_the_same_full_record_for_every_avatar():
+    # The world active-time row is an extra line, never a replacement for the
+    # activity·visits line, so no avatar's chest shows less than the badge
+    # knows about that visitor.
+    assert "const activeRow =" in SCENE
+    assert "IN WORLD`" in SCENE
+    assert "`${activity} · ${visits} PUBLIC URL VISITS`" in SCENE
+    assert "sharesActivity || !activeRow" in SCENE
+    # A live presence frame carries no joined date or active-time aggregate, so
+    # every avatar for a known account is filled in from the public directory:
+    # walking peers, office-meeting participants, and the visitor themselves.
+    for contract in (
+        "function withMemberFacts(identity)",
+        "const badgeIdentity = withMemberFacts({",
+        "const participantIdentity = withMemberFacts({",
+        "const badgeIdentity = withMemberFacts(identity);",
+        "memberFacts.clear();",
+    ):
+        assert contract in SCENE
+    # A guest can type any display name, so only a server-stamped account
+    # status may claim the record filed under it.
+    assert 'String(identity.accountStatus || "Guest") === "Guest"' in SCENE
+    # The visitor's own chest wears their live activity-ticket total, repainted
+    # once a minute rather than on every one-second tick.
+    assert "syncOwnBadgeActivity()" in APP
+    assert "this.syncOwnBadgeActivity();" in APP
+    assert "worldActivityRenderedMinute" in APP
+    assert "totalActiveMs: Number.isFinite(Number(identity.totalActiveMs))" in APP
+
+
 def test_chest_fediverse_tab_uses_public_profile_data_and_explicit_follow():
     for contract in (
         "function fediverseBadgeTexture(THREE, identity, accent, profile = {})",

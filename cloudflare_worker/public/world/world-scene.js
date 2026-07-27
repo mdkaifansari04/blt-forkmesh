@@ -404,8 +404,8 @@ function roundedRect(context, x, y, width, height, radius) {
 }
 
 // Directory figures carry the account's public joined timestamp and coarse
-// total active time; live presence identities do not, so the badge falls
-// back to the first-seen and activity·visits lines for them.
+// total active time. A live avatar is handed the same directory reading, so a
+// member wears the identical record whether they are walking around or seated.
 function joinedAgoLabel(joinedAt, now = Date.now()) {
   const timestamp = Number(joinedAt);
   if (!Number.isFinite(timestamp) || timestamp <= 0) return "";
@@ -529,22 +529,38 @@ function badgeTexture(THREE, identity, accent = "#9ef7c6") {
     const activity =
       activityLabels[identity.activityCategory] || activityLabels.hidden;
     const visits = Math.max(0, Math.min(999, Number(identity.visitCount) || 0));
+    // Every reading the badge holds gets its own row. The world active-time
+    // aggregate no longer replaces the shared activity line, so nobody's chest
+    // shows less than what is publicly known about them.
+    const activeRow =
+      identity.totalActiveMs != null &&
+      Number.isFinite(Number(identity.totalActiveMs))
+        ? `ACTIVE ${badgeActiveDurationLabel(identity.totalActiveMs)} IN WORLD`
+        : "";
+    const sharesActivity =
+      Boolean(identity.activityCategory) &&
+      identity.activityCategory !== "hidden";
     const rows = [
       [firstSeen, "#9ef7c6"],
       [joined ? `FIRST ${joined}` : "", "#77d9ff"],
       [badgeClientLabel(identity), "#f7c96b"],
+      [activeRow, "#9ef7c6"],
+      // A directory figure publishes no live activity, so its "hidden · 0
+      // visits" line is the one row worth dropping once the active-time row
+      // carries a real reading.
       [
-        identity.totalActiveMs != null &&
-        Number.isFinite(Number(identity.totalActiveMs))
-          ? `ACTIVE ${badgeActiveDurationLabel(identity.totalActiveMs)} IN WORLD`
-          : `${activity} · ${visits} PUBLIC URL VISITS`,
+        sharesActivity || !activeRow
+          ? `${activity} · ${visits} PUBLIC URL VISITS`
+          : "",
         "#b9cfc4",
       ],
     ].filter(([text]) => text);
+    // Five rows still have to clear the status pill at y=374.
+    const step = rows.length > 4 ? 30 : 34;
     context.font = '700 21px "ForkMesh Mono", ui-monospace, monospace';
     rows.forEach(([text, color], index) => {
       context.fillStyle = color;
-      context.fillText(text, 256, 224 + index * 34);
+      context.fillText(text, 256, 224 + index * step);
     });
 
     // The world status the visitor set for themselves, on the chest rather
@@ -9402,6 +9418,12 @@ export function createWorldScene({
   const nodeInfrastructure = new Map();
   const botAgents = new Map();
   const loungeMembers = new Map();
+  // Public account facts the member directory publishes but a live presence
+  // frame never carries — joined date and total active time — keyed by
+  // lowercased display name and refreshed by updateMemberLounge. Every avatar
+  // drawn for a signed-in account wears them, so nobody's chest badge shows
+  // less than their campfire bench figure does.
+  const memberFacts = new Map();
   const repositoryPortals = new Map();
   const repositoryPortalBornAt = new Map();
   const emoteSprites = [];
@@ -10169,7 +10191,10 @@ export function createWorldScene({
       if (!id) return;
       seenOfficeParticipants.add(id);
       let avatar = officeParticipants.get(id);
-      const participantIdentity = {
+      // Meeting frames carry only a name and account status, so a member in a
+      // room would otherwise wear a barer chest than the same member standing
+      // in the square: fill in their public joined date and active time.
+      const participantIdentity = withMemberFacts({
         id,
         name: String(participant.name || "Office visitor").slice(0, 32),
         flag: "◌",
@@ -10178,7 +10203,7 @@ export function createWorldScene({
         status: participant.pose === "seated" ? "seated" : "in meeting",
         accountStatus: participant.accountStatus || "Guest",
         nodes: [],
-      };
+      });
       if (!avatar) {
         avatar = createAvatar(THREE, participantIdentity, {
           remote: true,
@@ -11756,13 +11781,35 @@ export function createWorldScene({
     moderationControlKeys.set(peerId, key);
   }
 
+  // Fill in the directory-only rows for an avatar's badge. A guest can type
+  // any display name, so only a server-stamped account status may claim the
+  // public record filed under that name.
+  function withMemberFacts(identity) {
+    if (!identity || String(identity.accountStatus || "Guest") === "Guest") {
+      return identity;
+    }
+    const facts = memberFacts.get(
+      String(identity.name || "").trim().toLowerCase(),
+    );
+    if (!facts) return identity;
+    return {
+      ...identity,
+      joinedAt:
+        Number(identity.joinedAt) > 0 ? identity.joinedAt : facts.joinedAt,
+      totalActiveMs:
+        identity.totalActiveMs == null
+          ? facts.totalActiveMs
+          : identity.totalActiveMs,
+    };
+  }
+
   function setRemotePlayers(players = []) {
     const seen = new Set();
     players.forEach((remote) => {
       if (!remote?.id || remote.id === identity.id) return;
       seen.add(remote.id);
       let avatar = remotePlayers.get(remote.id);
-      const badgeIdentity = {
+      const badgeIdentity = withMemberFacts({
         id: remote.id,
         name: remote.name || "visitor",
         flag: remote.flag || "◌",
@@ -11789,10 +11836,16 @@ export function createWorldScene({
         outfitStyle: remote.outfitStyle || "",
         faceImage: remote.faceImage === true,
         activityBucket: remote.activityBucket || "",
+        // The public directory's total-active-time aggregate, forwarded by the
+        // app layer so a live member's chest carries the same row their
+        // campfire bench figure does.
+        totalActiveMs: Number.isFinite(Number(remote.totalActiveMs))
+          ? Math.max(0, Number(remote.totalActiveMs))
+          : null,
         solana: remote.solana || "",
         walletSol: remote.walletSol ?? null,
         walletTxBucket: remote.walletTxBucket || "",
-      };
+      });
       const badgeKey = JSON.stringify(badgeIdentity);
       if (!avatar) {
         avatar = createAvatar(
@@ -12002,6 +12055,20 @@ export function createWorldScene({
     // The flames carry the headline count of registered accounts, plus the
     // name of whoever joined last so the newest member is visible at a glance.
     setCampfireMemberCount(total, newestMemberName(members));
+    // Refresh the badge facts a live presence frame cannot carry, so the same
+    // account reads identically on its bench, on its walking avatar, and in
+    // an office meeting.
+    memberFacts.clear();
+    (Array.isArray(members) ? members : []).forEach((member) => {
+      const name = String(member?.name || "").trim().toLowerCase();
+      if (!name) return;
+      const activeMs = Number(member?.totalActiveMs ?? member?.activeMs);
+      memberFacts.set(name, {
+        joinedAt: Math.max(0, Number(member?.createdAt) || 0),
+        totalActiveMs:
+          Number.isFinite(activeMs) && activeMs >= 0 ? activeMs : null,
+      });
+    });
     const leaderboardFace = activeLeaderboardSign.userData.face;
     const leaderboardKey = JSON.stringify(
       rankedActiveLeaderboardMembers(leaderboardMembers)
@@ -12962,9 +13029,12 @@ export function createWorldScene({
 
   function updateIdentity(nextIdentity) {
     Object.assign(identity, nextIdentity);
-    updateAvatarBadge(THREE, player, identity, false);
+    // The visitor's own chest reads exactly like everyone else's: their live
+    // activity ticket wins, and the directory record fills the rest in.
+    const badgeIdentity = withMemberFacts(identity);
+    updateAvatarBadge(THREE, player, badgeIdentity, false);
     syncOperatorBelt(THREE, player, identity.nodes?.length || 0);
-    updateAvatarBadge(THREE, officeLobbyPlayer, identity, false);
+    updateAvatarBadge(THREE, officeLobbyPlayer, badgeIdentity, false);
     syncOperatorBelt(
       THREE,
       officeLobbyPlayer,
