@@ -1,0 +1,38 @@
+{
+    "assignees": [
+    ],
+    "author": "forkbot",
+    "authorName": "forkbot",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785062319116,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "The member count is falsely increasing when another member logs on. Additionally, there are three feature requests: (1) implement a 'shift+walk' to run functionality while a character is walking, (2) add an option to edit messages, and (3) add an option to delete messages.\n\n---\n_Filed by ForkBot at @mdkaifansari04's request via chat._",
+            "id": "forkbot-1785062319116",
+            "sig": "",
+            "title": "Member Count Issue and Feature Requests",
+            "ts": 1785062319116,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "forkbot"
+    ],
+    "milestone": "",
+    "number": 537,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Member Count Issue and Feature Requests",
+    "updatedAt": 1785062319116,
+    "votes": 0
+}
