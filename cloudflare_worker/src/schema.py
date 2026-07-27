@@ -1949,6 +1949,26 @@ SCHEMA_STATEMENTS = [
         rotation REAL NOT NULL DEFAULT 0,
         updated_by_bi TEXT NOT NULL,
         updated_at INTEGER NOT NULL)""",
+    # One public, last-known-good CelesTrak VISUAL OMM snapshot. A scheduled
+    # refresh owns all upstream traffic; visitor reads never fetch CelesTrak.
+    # This row contains no visitor location, account, session, or wallet data.
+    """CREATE TABLE IF NOT EXISTS world_satellite_snapshot (
+        snapshot_id INTEGER PRIMARY KEY CHECK (snapshot_id = 1),
+        data TEXT NOT NULL CHECK (
+            length(data) > 0 AND length(data) <= 524288
+        ),
+        digest TEXT NOT NULL CHECK (
+            length(digest) = 64
+            AND digest NOT GLOB '*[^0-9a-f]*'
+        ),
+        fetched_at INTEGER NOT NULL CHECK (fetched_at > 0),
+        source_epoch TEXT NOT NULL,
+        last_attempt_at INTEGER NOT NULL CHECK (last_attempt_at > 0),
+        last_status INTEGER NOT NULL DEFAULT 200 CHECK (
+            last_status >= 0 AND last_status <= 599
+        ),
+        last_error TEXT NOT NULL DEFAULT ''
+            CHECK (length(last_error) <= 240))""",
     # Referral-program counters, one row per referring account. referrer_bi is
     # the account blind index and name is the plaintext public username (the
     # same identity already shown on the profile page and leaderboards). Only

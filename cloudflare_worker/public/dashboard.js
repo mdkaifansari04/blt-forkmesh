@@ -11551,7 +11551,9 @@
   // re-fetch host health so the nodes visibly converge without a manual reload.
   let liveMirrorRefreshTimer = null;
   let liveMirrorConfirmTimer = null;
-  const REPO_MIRROR_POLL_MS = 5 * 1000;
+  // Socket mirror signals refresh immediately. This is only a quiet fallback
+  // for dropped frames, so a five-second Worker request loop is unnecessary.
+  const REPO_MIRROR_POLL_MS = 30 * 1000;
   let repoMirrorPollTimer = null;
   function startRepoMirrorPolling() {
     if (repoMirrorPollTimer) return;

@@ -68,6 +68,28 @@ def test_tasks_use_https_polling_and_server_clock_without_world_socket_data():
         assert forbidden not in tasks
 
 
+def test_task_polling_is_visibility_aware_and_adapts_after_leaving_the_office():
+    tasks = source(TASKS)
+    assert "const OFFICE_TASKS_POLL_MS = 60_000" in tasks
+    assert "const OFFICE_TASKS_BACKGROUND_POLL_MS = 5 * 60_000" in tasks
+    schedule = tasks[
+        tasks.index("  function schedulePoll() {"):
+        tasks.index("\n  async function refresh(", tasks.index("  function schedulePoll() {"))
+    ]
+    assert "document.hidden || (!officeActive && !opened)" in schedule
+    assert "if (!document.hidden) await refresh({ quiet: true })" in schedule
+    assert "function onVisibilityChange()" in schedule
+    assert "void refresh({ quiet: true }).finally(schedulePoll)" in schedule
+    assert (
+        'document.addEventListener("visibilitychange", onVisibilityChange)'
+        in tasks
+    )
+    assert (
+        'document.removeEventListener("visibilitychange", onVisibilityChange)'
+        in tasks
+    )
+
+
 def test_random_checkin_window_stays_between_four_and_nine_minutes():
     script = f"""
       import {{ officeTaskCheckinDelay }} from {json.dumps(TASKS.as_uri())};

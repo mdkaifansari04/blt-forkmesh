@@ -50,6 +50,8 @@ import {
 
 const THREE_MODULE_URL =
   "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.min.js";
+const SATELLITE_SGP4_MODULE_URL =
+  "./vendor/satellite-js-7.1.0.esm.js";
 // Kick off the heavy 3D runtime download the moment this module evaluates so it
 // streams in parallel with parsing, the initial data fetches, and scene setup
 // rather than only starting once bootstrap() reaches its await. bootstrap()
@@ -57,6 +59,27 @@ const THREE_MODULE_URL =
 // keeps a CDN failure from surfacing as an unhandled rejection before then.
 const THREE_MODULE = import(THREE_MODULE_URL);
 THREE_MODULE.catch(() => {});
+let satelliteSgp4ModulePromise = null;
+
+function loadSatelliteSgp4Module() {
+  if (!satelliteSgp4ModulePromise) {
+    satelliteSgp4ModulePromise = import(SATELLITE_SGP4_MODULE_URL).then(
+      (module) => {
+        if (
+          typeof module?.json2satrec !== "function" ||
+          typeof module?.sgp4 !== "function"
+        ) {
+          throw new TypeError("The local satellite SGP4 module is invalid");
+        }
+        return Object.freeze({
+          json2satrec: module.json2satrec,
+          sgp4: module.sgp4,
+        });
+      },
+    );
+  }
+  return satelliteSgp4ModulePromise;
+}
 const SETTINGS_KEY = "forkmesh.world.settings.v1";
 const GUEST_ID_KEY = "forkmesh.world.guestId.v1";
 const FIRST_VISIT_KEY = "forkmesh.world.firstVisitAt.v1";
@@ -130,12 +153,17 @@ const WORLD_ACTIVITY_CONTINUATION_HEADER = "x-forkmesh-world-activity";
 // player's position, and reloads once — the restored position makes the new
 // build appear in place without the player ever touching refresh.
 const WORLD_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
-const REPOSITORY_IMPORT_POLL_MS = 15 * 1000;
+const REPOSITORY_IMPORT_POLL_MS = 2 * 60 * 1000;
 const WORLD_UPDATE_CHECK_MIN_GAP_MS = 60 * 1000;
 const WORLD_UPDATE_RELOAD_DELAY_MS = 1400;
 const WORLD_UPDATE_RELOADED_REV_KEY = "forkmesh.world.updateReloadedRev.v1";
-const WORLD_NOTIFICATION_POLL_MS = 30 * 1000;
-const MIRROR_STATUS_POLL_MS = 5 * 1000;
+const WORLD_NOTIFICATION_POLL_MS = 60 * 1000;
+const MIRROR_STATUS_POLL_MS = 60 * 1000;
+const WORLD_EVENT_POLL_MS = 3 * 60 * 1000;
+const WORLD_REWARD_POLL_MS = 5 * 60 * 1000;
+const WORLD_MEDIA_PLAYBACK_POLL_MS = 15 * 1000;
+const WORLD_SOCKET_PING_MS = 40 * 1000;
+const WORLD_STATUS_POLL_MS = 5 * 60 * 1000;
 const WORLD_MANUAL_BLOCK_DURATION_MS = 60 * 60 * 1000;
 const WORLD_SCORE_LOOP_MS = 4 * 60 * 60 * 1000;
 const DEFAULT_FOCUS_MUSIC_TRACK_ID = FOCUS_MUSIC_TRACKS[0].id;
@@ -3136,62 +3164,11 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         >
           <p>
             <span data-world-office-prompt-light aria-hidden="true">●</span>
-            <span data-world-office-prompt-status>Checking the Office door…</span>
+            <span data-world-office-prompt-status>Checking your Office access…</span>
           </p>
           <button type="button" data-world-office-enter>
             Enter ForkMesh Office <kbd>E</kbd>
           </button>
-        </section>
-        <section
-          class="world-office-keypad"
-          data-world-office-keypad
-          data-open="false"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="world-office-keypad-title"
-          aria-hidden="true"
-        >
-          <form data-world-office-keypad-form>
-            <header>
-              <div>
-                <p class="world-eyebrow">OFFICE ACCESS</p>
-                <h2 id="world-office-keypad-title">Enter the four-digit code</h2>
-              </div>
-              <button type="button" data-world-office-keypad-cancel aria-label="Close Office keypad">×</button>
-            </header>
-            <p class="world-office-keypad-status" data-world-office-keypad-status role="status" aria-live="polite">
-              The Office is occupied. Enter the shared coordination code.
-            </p>
-            <label class="world-office-keypad-display">
-              <span>Four-digit code</span>
-              <input
-                type="password"
-                data-world-office-keypad-input
-                inputmode="numeric"
-                autocomplete="off"
-                pattern="[0-9]{4}"
-                minlength="4"
-                maxlength="4"
-                enterkeyhint="go"
-                aria-label="Four-digit Office code"
-                required
-              >
-            </label>
-            <div class="world-office-keypad-grid" aria-label="Office keypad">
-              ${["1", "2", "3", "4", "5", "6", "7", "8", "9"]
-                .map(
-                  (digit) =>
-                    `<button type="button" data-world-office-keypad-digit="${digit}">${digit}</button>`,
-                )
-                .join("")}
-              <button type="button" data-world-office-keypad-clear>Clear</button>
-              <button type="button" data-world-office-keypad-digit="0">0</button>
-              <button type="submit" data-world-office-keypad-submit>Enter</button>
-            </div>
-            <small>
-              This four-digit code is an Office-door coordination check, not account authentication. Room membership and encrypted-channel permissions are still enforced separately.
-            </small>
-          </form>
         </section>
         <section class="world-office-lobby" data-world-office-lobby aria-labelledby="world-office-lobby-title" aria-hidden="true">
           <header class="world-office-panel-heading">
@@ -3723,6 +3700,7 @@ class ForkMeshWorld extends HTMLElement {
     this.notificationsState = "loading";
     this.notificationUnread = 0;
     this.notificationAccount = "";
+    this.notificationToken = "";
     this.rewardState = {};
     this.pendingRewards = [];
     this.pendingContribution = null;
@@ -3859,6 +3837,12 @@ class ForkMeshWorld extends HTMLElement {
     this.mirrorPushRefreshTimer = 0;
     this.eventsTimer = 0;
     this.notificationsTimer = 0;
+    // GETs from bootstrap, visibility recovery, timers, and socket doorbells
+    // share one request. Successful snapshots can be reused briefly and
+    // repeated failures cool down exponentially instead of becoming a storm.
+    this.inflightRequests = new Map();
+    this.responseCache = new Map();
+    this.requestFailures = new Map();
     this.mediaTimer = 0;
     this.seenRewardEvents = new Set();
     this.seenWorldEvents = new Set();
@@ -4503,6 +4487,9 @@ class ForkMeshWorld extends HTMLElement {
         onOfficeMovement: (movement) => {
           this.officeMeeting?.move(movement);
         },
+        onOfficeElevatorSound: (stage, trip) => {
+          this.playOfficeElevatorSound(stage, trip);
+        },
         onLocationChange: (label, id) => this.updateLocation(label, id),
         onRegionChange: (region) => this.updateRegion(region),
         onMovement: (movement) => this.handleMovement(movement),
@@ -4542,6 +4529,7 @@ class ForkMeshWorld extends HTMLElement {
         world: this.world,
         meeting: this.officeMeeting,
         tasks: this.officeTasks,
+        getSession: readSession,
       });
       this.world.setTheme(this.settings.theme);
       this.world.setLightLevel(this.settings.lightLevel);
@@ -4565,6 +4553,10 @@ class ForkMeshWorld extends HTMLElement {
       this.world.updateFediverseDirectory(this.fediverseDirectory);
       this.world.updateMediaSpaces?.(this.mediaSpaces, this.mediaRoom);
       this.world.updateWorldBulletin?.(this.events);
+      // Stars and planets are already scene-native. Satellite OMM data is one
+      // optional, edge-cached read after the essential World data settles;
+      // orbit propagation then stays entirely local for the life of the page.
+      void this.loadSatelliteSky();
       // Populate the Mastodon kiosk billboard on entry; the fetch is public,
       // credential-free, and cached for ten minutes. When a fresh snapshot
       // is already cached the load resolves without refetching, so push the
@@ -4779,24 +4771,100 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async fetchJSON(path, options = {}) {
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), options.timeout || 8000);
+    const {
+      maxAge = 0,
+      dedupe = true,
+      backoff = false,
+      staleIfError = false,
+      ...fetchOptions
+    } = options;
+    const method = String(fetchOptions.method || "GET").toUpperCase();
+    const canDedupe =
+      method === "GET" && dedupe && fetchOptions.headers === undefined;
     const session = readSession();
-    const headers = new Headers(options.headers || {});
-    if (session?.sessionToken && options.auth !== false) {
-      headers.set("Authorization", `Bearer ${session.sessionToken}`);
+    const authScope =
+      session?.sessionToken && fetchOptions.auth !== false
+        ? `account:${String(session.nodeName || "").toLowerCase()}`
+        : "public";
+    const requestKey = `${method}:${authScope}:${path}`;
+    const now = Date.now();
+    const cached = this.responseCache.get(requestKey);
+    if (
+      method === "GET" &&
+      maxAge > 0 &&
+      cached &&
+      now - cached.savedAt <= maxAge
+    ) {
+      return cached.value;
+    }
+    const failure = this.requestFailures.get(requestKey);
+    if (method === "GET" && backoff && failure?.retryAt > now) {
+      if (staleIfError && cached) return cached.value;
+      throw new Error(`${path} is cooling down after a failed request`);
+    }
+    if (canDedupe && this.inflightRequests.has(requestKey)) {
+      return this.inflightRequests.get(requestKey);
+    }
+
+    const request = (async () => {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(
+        () => controller.abort(),
+        fetchOptions.timeout || 8000,
+      );
+      const headers = new Headers(fetchOptions.headers || {});
+      if (session?.sessionToken && fetchOptions.auth !== false) {
+        headers.set("Authorization", `Bearer ${session.sessionToken}`);
+      }
+      try {
+        const response = await fetch(path, {
+          ...fetchOptions,
+          headers,
+          signal: controller.signal,
+          credentials: "same-origin",
+        });
+        if (!response.ok) throw new Error(`${path} returned ${response.status}`);
+        const value = await response.json();
+        if (method === "GET" && (maxAge > 0 || staleIfError)) {
+          if (
+            !this.responseCache.has(requestKey) &&
+            this.responseCache.size >= 64
+          ) {
+            this.responseCache.delete(this.responseCache.keys().next().value);
+          }
+          this.responseCache.set(requestKey, { value, savedAt: Date.now() });
+        }
+        if (method === "GET") {
+          this.requestFailures.delete(requestKey);
+        }
+        return value;
+      } catch (error) {
+        if (method === "GET" && backoff) {
+          const attempts = Math.min(8, Number(failure?.attempts || 0) + 1);
+          const delay = Math.min(
+            5 * 60 * 1000,
+            5000 * (2 ** (attempts - 1)),
+          );
+          this.requestFailures.set(requestKey, {
+            attempts,
+            retryAt: Date.now() + delay,
+          });
+          if (staleIfError && cached) return cached.value;
+        }
+        throw error;
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    })();
+    if (canDedupe) {
+      this.inflightRequests.set(requestKey, request);
     }
     try {
-      const response = await fetch(path, {
-        ...options,
-        headers,
-        signal: controller.signal,
-        credentials: "same-origin",
-      });
-      if (!response.ok) throw new Error(`${path} returned ${response.status}`);
-      return await response.json();
+      return await request;
     } finally {
-      window.clearTimeout(timeout);
+      if (this.inflightRequests.get(requestKey) === request) {
+        this.inflightRequests.delete(requestKey);
+      }
     }
   }
 
@@ -4938,6 +5006,39 @@ class ForkMeshWorld extends HTMLElement {
     this.updateSystemCapacityMetrics();
   }
 
+  async loadSatelliteSky() {
+    try {
+      const snapshot = await this.fetchJSON("/api/world/satellites", {
+        auth: false,
+        timeout: 6000,
+        cache: "force-cache",
+        maxAge: 2 * 60 * 60 * 1000,
+        backoff: true,
+        staleIfError: true,
+      });
+      if (
+        this.destroyed ||
+        snapshot?.ok !== true ||
+        snapshot?.schemaVersion !== 1 ||
+        !Array.isArray(snapshot?.satellites) ||
+        snapshot.satellites.length === 0
+      ) {
+        return;
+      }
+      // SGP4 is deliberately outside the initial World dependency graph. The
+      // local pinned module is requested only after the optional edge-cached
+      // OMM snapshot succeeds, then every record is initialized exactly once.
+      const sgp4Engine = await loadSatelliteSgp4Module();
+      if (!this.destroyed) {
+        this.world?.updateSatelliteSky?.(snapshot, sgp4Engine);
+      }
+    } catch (_) {
+      // The deterministic stars and planets remain available when the public
+      // orbit snapshot has not been seeded yet, CelesTrak is unavailable, or
+      // the deferred local propagator cannot be loaded.
+    }
+  }
+
   async loadWorldData() {
     const session = validWorldSession();
     const hasSession = this.sessionAuthenticated && Boolean(session);
@@ -5063,10 +5164,12 @@ class ForkMeshWorld extends HTMLElement {
           auth: false,
           timeout: 5000,
         }),
-        this.fetchJSON("/api/status", {
+        this.fetchJSON("/api/status?view=world", {
           auth: false,
           timeout: 8000,
-          cache: "no-store",
+          maxAge: 60 * 1000,
+          backoff: true,
+          staleIfError: true,
         }),
       ]);
     this.network = networkResult.status === "fulfilled" ? networkResult.value : {};
@@ -7191,19 +7294,23 @@ class ForkMeshWorld extends HTMLElement {
     });
   }
 
-  async refreshRewardState() {
+  async refreshRewardState({ force = false } = {}) {
     const hasSession =
       this.sessionAuthenticated && Boolean(validWorldSession());
     const [pool, pending] = await Promise.allSettled([
       this.fetchJSON("/api/accounts/central-fund", {
         auth: false,
         timeout: 5000,
-        cache: "no-store",
+        maxAge: force ? 0 : WORLD_REWARD_POLL_MS,
+        backoff: true,
+        staleIfError: true,
       }),
       hasSession
         ? this.fetchJSON("/api/rewards/pending", {
             timeout: 5000,
-            cache: "no-store",
+            maxAge: force ? 0 : WORLD_REWARD_POLL_MS,
+            backoff: true,
+            staleIfError: true,
           })
         : Promise.resolve({ rewards: [] }),
     ]);
@@ -7280,7 +7387,7 @@ class ForkMeshWorld extends HTMLElement {
         ...this.pendingContribution,
         ...result,
       };
-      await this.refreshRewardState();
+      await this.refreshRewardState({ force: true });
       this.openLandmark("fountain");
       this.toast(
         result.status === "awaiting_finality"
@@ -7303,7 +7410,7 @@ class ForkMeshWorld extends HTMLElement {
         rewardId: String(rewardId || ""),
         walletAddress: wallet,
       });
-      await this.refreshRewardState();
+      await this.refreshRewardState({ force: true });
       this.openLandmark("fountain");
       this.toast(
         "Public address accepted. The external local signer must still complete and finalize the exact transfer.",
@@ -7315,8 +7422,8 @@ class ForkMeshWorld extends HTMLElement {
 
   startRewardPolling() {
     window.clearInterval(this.rewardTimer);
-    window.clearInterval(this.eventsTimer);
     this.rewardTimer = window.setInterval(async () => {
+      if (this.destroyed || document.hidden) return;
       try {
         await Promise.all([
           this.refreshRewardState(),
@@ -7329,25 +7436,29 @@ class ForkMeshWorld extends HTMLElement {
           this.openLandmark("fountain");
         }
       } catch (_) {}
-    }, 60000);
+    }, WORLD_REWARD_POLL_MS);
   }
 
   async refreshSystemStatusBoard() {
-    const payload = await this.fetchJSON("/api/status", {
+    const payload = await this.fetchJSON("/api/status?view=world", {
       auth: false,
       timeout: 8000,
-      cache: "no-store",
+      maxAge: WORLD_STATUS_POLL_MS,
+      backoff: true,
+      staleIfError: true,
     });
     this.world?.updateSystemStatusBoard?.(payload);
   }
 
-  async refreshMirrorCatalogs() {
+  async refreshMirrorCatalogs({ force = false } = {}) {
     const payload = await this.fetchJSON(
       "/api/repo/forkmesh/forkmesh/mirrors",
       {
         auth: false,
         timeout: 5000,
-        cache: "no-store",
+        maxAge: force ? 0 : MIRROR_STATUS_POLL_MS - 5000,
+        backoff: true,
+        staleIfError: true,
       },
     );
     this.mirrorCatalogs = [
@@ -7376,21 +7487,33 @@ class ForkMeshWorld extends HTMLElement {
     this.repositoryImportTimer = window.setInterval(async () => {
       if (this.destroyed || document.visibilityState !== "visible") return;
       try {
-        const payload = await this.fetchJSON("/api/repository-imports", {
-          auth: this.sessionAuthenticated && Boolean(validWorldSession()),
-          timeout: 10000,
-          cache: "no-store",
-        });
-        const external = cleanExternalRepositories(payload);
+        const digest = await this.fetchJSON(
+          "/api/repository-imports?view=digest",
+          {
+            auth: this.sessionAuthenticated && Boolean(validWorldSession()),
+            timeout: 5000,
+            backoff: true,
+            staleIfError: true,
+          },
+        );
         const before = this.externalRepositories
           .map((record) => `${record.importId}:${record.updatedAt}:${record.importStatus}`)
           .sort()
           .join("|");
-        const after = external
-          .map((record) => `${record.importId}:${record.updatedAt}:${record.importStatus}`)
+        const after = (Array.isArray(digest?.repositories)
+          ? digest.repositories
+          : [])
+          .map((record) => `${record.id}:${record.updatedAt}:${record.status}`)
           .sort()
           .join("|");
         if (before === after) return;
+        const payload = await this.fetchJSON("/api/repository-imports", {
+          auth: this.sessionAuthenticated && Boolean(validWorldSession()),
+          timeout: 10000,
+          backoff: true,
+          staleIfError: true,
+        });
+        const external = cleanExternalRepositories(payload);
         this.externalRepositories = external;
         this.repositories = mergeHostedRepositoryImports(
           this.nativeRepositories,
@@ -9811,7 +9934,9 @@ class ForkMeshWorld extends HTMLElement {
       const payload = await this.fetchJSON("/api/world/events", {
         auth: false,
         timeout: 5000,
-        cache: "no-store",
+        maxAge: WORLD_EVENT_POLL_MS - 5000,
+        backoff: true,
+        staleIfError: true,
       });
       this.events = normalizeCommunityEvents(payload);
       this.eventsState = this.events.length ? "ready" : "empty";
@@ -9822,8 +9947,10 @@ class ForkMeshWorld extends HTMLElement {
         LANDMARK_CONSTRUCTION_REASONS.events,
       );
     } catch (_) {
-      this.world?.updateWorldBulletin?.([]);
-      this.eventsState = "unavailable";
+      if (!this.events.length) {
+        this.world?.updateWorldBulletin?.([]);
+        this.eventsState = "unavailable";
+      }
       this.setLandmarkCapability(
         "events",
         false,
@@ -9840,11 +9967,7 @@ class ForkMeshWorld extends HTMLElement {
     this.eventsTimer = window.setInterval(() => {
       if (document.hidden) return;
       this.refreshCommunityEvents(this.isEventsPanelOpen());
-      // Rides the same tick so accounts that signed up while this tab has
-      // been open get their bench at the fire without a reload. The endpoint
-      // is edge-cached, and a signup purges that cache.
-      void this.refreshMemberDirectory();
-    }, 60000);
+    }, WORLD_EVENT_POLL_MS);
   }
 
   isEventsPanelOpen() {
@@ -9923,13 +10046,17 @@ class ForkMeshWorld extends HTMLElement {
     if (announcements.length) this.toast(announcements.join(" · "));
   }
 
-  async refreshPersonalNotifications(render = false) {
+  async refreshPersonalNotifications(
+    render = false,
+    { digestOnly = false } = {},
+  ) {
     const session = validWorldSession();
     if (!this.sessionAuthenticated || !session) {
       this.notifications = [];
       this.notificationUnread = 0;
       this.notificationsState = "signed-out";
       this.notificationAccount = "";
+      this.notificationToken = "";
       this.seenNotifications.clear();
       this.updateNotificationBadge();
       if (render || this.isEventsPanelOpen()) this.refreshOpenEventsPanel();
@@ -9940,22 +10067,50 @@ class ForkMeshWorld extends HTMLElement {
       this.notifications = [];
       this.notificationUnread = 0;
       this.notificationAccount = account;
+      this.notificationToken = "";
       this.seenNotifications.clear();
     }
     try {
+      if (digestOnly) {
+        const digest = await this.fetchJSON(
+          `/api/poll?node=${encodeURIComponent(account)}`,
+          {
+            timeout: 5000,
+            maxAge: WORLD_NOTIFICATION_POLL_MS - 5000,
+            backoff: true,
+            staleIfError: true,
+          },
+        );
+        const nextToken = String(digest?.notif?.token || "");
+        this.notificationUnread = Math.max(
+          0,
+          Number(digest?.notif?.unread) || 0,
+        );
+        if (nextToken && nextToken === this.notificationToken) {
+          this.updateNotificationBadge();
+          if (render || this.isEventsPanelOpen()) this.refreshOpenEventsPanel();
+          return;
+        }
+        this.notificationToken = nextToken;
+      }
       const payload = await this.fetchJSON(
         `/api/notifications?node=${encodeURIComponent(
           account,
         )}&limit=100`,
-        { timeout: 5000, cache: "no-store" },
+        {
+          timeout: 5000,
+          backoff: true,
+          staleIfError: true,
+        },
       );
       this.notifications = normalizeWorldNotifications(payload);
       this.notificationUnread = Math.max(0, Number(payload?.unread) || 0);
       this.notificationsState = this.notifications.length ? "ready" : "empty";
     } catch (_) {
-      this.notifications = [];
-      this.notificationUnread = 0;
-      this.notificationsState = "unavailable";
+      if (!this.notifications.length) {
+        this.notificationUnread = 0;
+        this.notificationsState = "unavailable";
+      }
     }
     this.updateNotificationBadge();
     this.announceWorldNotifications();
@@ -9987,7 +10142,9 @@ class ForkMeshWorld extends HTMLElement {
   startNotificationPolling() {
     window.clearInterval(this.notificationsTimer);
     this.notificationsTimer = window.setInterval(() => {
-      if (!document.hidden) this.refreshPersonalNotifications(false);
+      if (!document.hidden) {
+        this.refreshPersonalNotifications(false, { digestOnly: true });
+      }
     }, WORLD_NOTIFICATION_POLL_MS);
   }
 
@@ -10617,10 +10774,17 @@ class ForkMeshWorld extends HTMLElement {
   startMediaPlaybackPolling() {
     window.clearInterval(this.mediaTimer);
     this.mediaTimer = window.setInterval(() => {
-      if (!document.hidden && this.mediaRoom.id) {
+      const broadcastOpen =
+        this.$("[data-world-detail]")?.dataset.open === "true" &&
+        this.$("[data-world-detail]")?.dataset.openLandmark === "broadcast";
+      if (
+        !document.hidden &&
+        this.mediaRoom.id &&
+        (broadcastOpen || this.mediaRoom.playback.state === "playing")
+      ) {
         this.refreshMediaPlayback(false);
       }
-    }, 5000);
+    }, WORLD_MEDIA_PLAYBACK_POLL_MS);
   }
 
   async createMediaSpace() {
@@ -16171,6 +16335,58 @@ class ForkMeshWorld extends HTMLElement {
     });
   }
 
+  playOfficeElevatorSound(stage, trip = {}) {
+    const context = this.soundContext;
+    if (!this.soundEnabled || !context || context.state === "closed") return;
+    const start = context.currentTime + 0.012;
+    if (stage === "depart") {
+      const duration = Math.min(
+        2.4,
+        Math.max(0.75, Number(trip.duration) / 1000 || 1.25),
+      );
+      [82.41, 123.47].forEach((frequency, index) => {
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        oscillator.type = index ? "triangle" : "sine";
+        oscillator.frequency.setValueAtTime(frequency, start);
+        oscillator.frequency.linearRampToValueAtTime(
+          frequency * 1.08,
+          start + duration * 0.72,
+        );
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.exponentialRampToValueAtTime(
+          index ? 0.012 : 0.02,
+          start + 0.055,
+        );
+        gain.gain.setValueAtTime(
+          index ? 0.012 : 0.02,
+          start + Math.max(0.08, duration - 0.16),
+        );
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+        oscillator.connect(gain);
+        gain.connect(context.destination);
+        oscillator.start(start);
+        oscillator.stop(start + duration + 0.02);
+      });
+      return;
+    }
+    if (stage !== "arrive") return;
+    [659.25, 987.77].forEach((frequency, index) => {
+      const toneStart = start + index * 0.12;
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(frequency, toneStart);
+      gain.gain.setValueAtTime(0.0001, toneStart);
+      gain.gain.exponentialRampToValueAtTime(0.045, toneStart + 0.018);
+      gain.gain.exponentialRampToValueAtTime(0.0001, toneStart + 0.42);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start(toneStart);
+      oscillator.stop(toneStart + 0.44);
+    });
+  }
+
   saveSettings() {
     writeJSON(localStorage, SETTINGS_KEY, this.settings);
     // The privacy toggles live here, so a member hiding (or restoring) their
@@ -17228,7 +17444,7 @@ class ForkMeshWorld extends HTMLElement {
       window.clearInterval(this.pingTimer);
       this.pingTimer = window.setInterval(
         () => this.sendPresence({ type: "ping" }),
-        20000,
+        WORLD_SOCKET_PING_MS,
       );
     });
     socket.addEventListener("message", (event) => {
@@ -17585,13 +17801,13 @@ class ForkMeshWorld extends HTMLElement {
     this.toast(
       `Fresh code landed on “${publicOwner ? `${publicOwner}/` : ""}${repo}”.`,
     );
-    // One coalesced refresh replaces waiting out the 30-second mirror poll, so
+    // One coalesced refresh replaces waiting out the steady mirror poll, so
     // the yard updates near-instantly without adding steady-state traffic.
     window.clearTimeout(this.mirrorPushRefreshTimer);
     this.mirrorPushRefreshTimer = window.setTimeout(() => {
       this.mirrorPushRefreshTimer = 0;
       if (this.destroyed) return;
-      void this.refreshMirrorCatalogs().catch(() => {
+      void this.refreshMirrorCatalogs({ force: true }).catch(() => {
         // Preserve the last verified snapshot during a transient HTTPS
         // failure; the regular poll retries on its own cadence.
       });
@@ -17811,12 +18027,15 @@ class ForkMeshWorld extends HTMLElement {
   // to its server-side TTL so a burst of arrivals still costs one request.
   async refreshMemberDirectory() {
     const now = Date.now();
-    if (now - (this.memberDirectoryFetchedAt || 0) < 30000) return;
+    if (now - (this.memberDirectoryFetchedAt || 0) < 5 * 60 * 1000) return;
     this.memberDirectoryFetchedAt = now;
     try {
       const data = await this.fetchJSON("/api/accounts/users", {
         auth: false,
         timeout: 5000,
+        maxAge: 5 * 60 * 1000,
+        backoff: true,
+        staleIfError: true,
       });
       const directory = normalizeMemberDirectory(data);
       if (!directory.length || this.destroyed) return;
@@ -17924,6 +18143,9 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.socialFeedsTimer);
     window.clearTimeout(this.rendererRecoveryTimer);
     this.rendererRecoveryTimer = 0;
+    this.inflightRequests.clear();
+    this.responseCache.clear();
+    this.requestFailures.clear();
     this.peerGraceTimer = 0;
     this.profilePresenceTimer = 0;
     this.movementSendTimer = 0;

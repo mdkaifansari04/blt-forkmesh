@@ -538,6 +538,44 @@ def test_no_data_is_a_red_monitoring_failure_without_fabricated_uptime():
     assert len(by_id["website"]["days"]) == 30
 
 
+def test_world_status_projection_keeps_visual_windows_without_nested_history():
+    cur_day = (_Clock.value // DAY_MS) * DAY_MS
+    cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
+    hour_rows = [
+        {
+            "hour_ts": cur_hour,
+            "system": "website",
+            "checks": 60,
+            "failures": 1,
+            "reason": "one failed check",
+        },
+    ]
+    minute_rows = [
+        {
+            "minute_ts": (_Clock.value // 60000) * 60000,
+            "system": "website",
+            "ok": 1,
+            "reason": None,
+        },
+    ]
+    extra, captured = _history_env(
+        [{"day_ts": cur_day, "system": "website", "checks": 60, "failures": 1}],
+        hour_rows,
+        minute_rows,
+    )
+    g = _load("status_history", extra_globals=extra)
+    asyncio.run(g["status_history"](object(), "world"))
+
+    website = next(
+        system for system in captured["systems"] if system["id"] == "website")
+    assert len(website["days"]) == 30
+    assert all("hours" not in day for day in website["days"])
+    assert website["days"][-1]["status"] == "degraded"
+    assert len(website["hours"]) == 24
+    assert len(website["minutes"]) == 60
+    assert "checkDescription" not in website
+
+
 def test_all_checks_passing_today_is_operational():
     cur_day = (_Clock.value // DAY_MS) * DAY_MS
     cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS

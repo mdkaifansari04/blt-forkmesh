@@ -22,7 +22,7 @@ import hmac
 import html
 import json
 import re
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 
 PROVIDERS = ("github", "gitlab", "codeberg")
@@ -1520,10 +1520,13 @@ class RepositoryImportService:
     async def _list(self, env, request):
         actor, _ = await self._actor(env, request)
         actor_bi = await self.d["blind_index"](env, actor) if actor else ""
+        params = parse_qs(
+            urlparse(str(getattr(request, "url", "") or "")).query)
+        digest_only = params.get("view", [""])[0] == "digest"
         if actor:
             rows = await self.d["d1_all"](
                 env,
-                "SELECT id, owner_bi, is_private, status, data FROM "
+                "SELECT id, owner_bi, is_private, status, data, updated_at FROM "
                 "repository_imports WHERE is_private=0 OR owner_bi=? "
                 "ORDER BY updated_at DESC LIMIT ?",
                 actor_bi, MAX_PUBLIC_IMPORTS,
@@ -1531,10 +1534,32 @@ class RepositoryImportService:
         else:
             rows = await self.d["d1_all"](
                 env,
-                "SELECT id, owner_bi, is_private, status, data FROM "
+                "SELECT id, owner_bi, is_private, status, data, updated_at FROM "
                 "repository_imports WHERE is_private=0 "
                 "ORDER BY updated_at DESC LIMIT ?",
                 MAX_PUBLIC_IMPORTS,
+            )
+        # Pollers only need a change token. Avoid decrypting and serializing up
+        # to 200 rich provider snapshots (hundreds of KiB) every few seconds
+        # merely to discover that nothing changed. Private rows are still
+        # selected only for their authenticated owner by the queries above.
+        if digest_only:
+            return self._json(
+                {
+                    "ok": True,
+                    "repositories": [
+                        {
+                            "id": str(row.get("id") or ""),
+                            "status": str(row.get("status") or ""),
+                            "updatedAt": int(row.get("updated_at") or 0),
+                        }
+                        for row in rows or []
+                        if str(row.get("id") or "")
+                    ],
+                },
+                cache_control=(
+                    "no-store, max-age=0, must-revalidate"
+                    if actor else "public, max-age=30"),
             )
         records = []
         for row in rows or []:

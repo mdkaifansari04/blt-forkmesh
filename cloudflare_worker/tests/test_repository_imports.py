@@ -1406,6 +1406,28 @@ def test_service_creates_truthful_stub_lists_it_and_never_persists_token():
     assert listing["data"]["repositories"][0]["statusLabel"] == "Stub only"
 
 
+def test_service_digest_list_avoids_rich_import_payloads_for_polling():
+    harness = ServiceHarness()
+    created = _create_with(harness)
+    repo = created["data"]["repository"]
+
+    digest = harness.call(Request(
+        "GET",
+        url="https://forkmesh.test/api/repository-imports?view=digest",
+    ))
+
+    assert digest["status"] == 200
+    assert digest["data"] == {
+        "ok": True,
+        "repositories": [{
+            "id": repo["id"],
+            "status": "stub_only",
+            "updatedAt": harness.now,
+        }],
+    }
+    assert len(json.dumps(digest["data"])) < 200
+
+
 def test_service_bulk_delete_primitive_requires_owner_and_removes_import():
     harness = ServiceHarness()
     created = _create_with(harness, actor="alice")
