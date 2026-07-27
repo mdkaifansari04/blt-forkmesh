@@ -9540,18 +9540,21 @@ export function createWorldScene({
   // then continue from this pose around the same world-vertical axis.
   chromeCube.rotation.y = 0;
   // Only this outer mount animates. Its Y rotation is the single vertical
-  // spindle through the fountain; the inner mark remains architecturally
-  // upright so the top is horizontal and the F/M walls stay vertical.
+  // spindle through the fountain; the inner edge-balanced tilt never changes.
   const chromeMark = new THREE.Group();
   chromeMark.name = "forkmesh-reflective-fm-cube-fixed-tilt";
   chromeCube.add(chromeMark);
   const logoHalfSize = 2.92;
-  const logoSupportBaseY = 1.16;
-  const logoSupportTopY = 3.4;
-  const logoSupportHeight = logoSupportTopY - logoSupportBaseY;
-  chromeMark.quaternion.identity();
-  chromeMark.userData.logoUpright = true;
-  chromeCube.position.y = logoSupportTopY + logoHalfSize;
+  const logoSupportTopY = 2.4;
+  // Align the original lower body diagonal with world-down. The selected
+  // corner therefore remains exactly over the sole support while the outer
+  // mount spins around the world-vertical axis.
+  const logoLowerCorner = new THREE.Vector3(-1, -1, -1).normalize();
+  chromeMark.quaternion.setFromUnitVectors(
+    logoLowerCorner,
+    new THREE.Vector3(0, -1, 0),
+  );
+  chromeCube.position.y = logoSupportTopY + logoHalfSize * Math.sqrt(3);
   reflectionCamera.position.y = chromeCube.position.y;
   const logoPiece = (
     parent,
@@ -9733,21 +9736,19 @@ export function createWorldScene({
     chrome,
   );
   logoContactPoint.name = "forkmesh-reflective-fm-cube-contact-point";
-  logoContactPoint.position.set(0, -logoHalfSize, 2.68);
+  logoContactPoint.position.set(
+    -logoHalfSize,
+    -logoHalfSize,
+    -logoHalfSize,
+  );
   chromeMark.add(logoContactPoint);
   const logoSupport = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.28, 0.38, logoSupportHeight, 20),
+    new THREE.CylinderGeometry(0.2, 0.28, 1.28, 20),
     darkChrome,
   );
   logoSupport.name = "forkmesh-reflective-fm-cube-support";
-  // The sole pedestal meets the center of the lower F-side edge and turns
-  // with the yawing sculpture, so the visible contact never drifts away.
-  logoSupport.position.set(
-    0,
-    logoSupportBaseY + logoSupportHeight / 2 - chromeCube.position.y,
-    2.68,
-  );
-  chromeCube.add(logoSupport);
+  logoSupport.position.y = logoSupportTopY - 0.64;
+  logoFountain.add(logoSupport);
   logoFountain.add(chromeCube);
   for (const [x, y, z, intensity] of [
     [-7, 9, 5, 4.8],

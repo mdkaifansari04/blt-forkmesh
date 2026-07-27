@@ -2388,7 +2388,6 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
           z: chromeCube.rotation.z,
         },
         fixedTiltQuaternion: chromeMark.quaternion.toArray(),
-        upright: chromeMark.userData.logoUpright === true,
         contactSupportDistance: contactWorld.distanceTo(supportTop),
         fFaces,
         mFaces,
@@ -2442,8 +2441,9 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
   expect(state.reception.noahCount).toBe(1);
   expect(state.logo.verticalAxisOnly.x).toBeCloseTo(0, 7);
   expect(state.logo.verticalAxisOnly.z).toBeCloseTo(0, 7);
-  expect(state.logo.fixedTiltQuaternion).toEqual([0, 0, 0, 1]);
-  expect(state.logo.upright).toBe(true);
+  expect(state.logo.fixedTiltQuaternion.some(
+    (value) => Math.abs(value) > 0.1
+  )).toBe(true);
   expect(state.logo.contactSupportDistance).toBeLessThan(0.03);
   expect(state.logo).toMatchObject({
     fFaces: 2,
@@ -2774,7 +2774,6 @@ test("FM sculpture uses mirrored through-cut panels at a deterministic yaw", asy
       oldOverlays,
       outerTilt: [cube.rotation.x, cube.rotation.z],
       fixedTilt: mark.quaternion.toArray(),
-      upright: mark.userData.logoUpright === true,
       supportCount: support ? 1 : 0,
       contactSupportDistance: contactWorld.distanceTo(supportTop),
       reflection: {
@@ -2806,8 +2805,7 @@ test("FM sculpture uses mirrored through-cut panels at a deterministic yaw", asy
   expect(logo.oldOverlays).toEqual([]);
   expect(logo.outerTilt[0]).toBeCloseTo(0, 7);
   expect(logo.outerTilt[1]).toBeCloseTo(0, 7);
-  expect(logo.fixedTilt).toEqual([0, 0, 0, 1]);
-  expect(logo.upright).toBe(true);
+  expect(logo.fixedTilt.some((value) => Math.abs(value) > 0.1)).toBe(true);
   expect(logo.supportCount).toBe(1);
   expect(logo.contactSupportDistance).toBeLessThan(0.03);
   expect(logo.reflection).toEqual({

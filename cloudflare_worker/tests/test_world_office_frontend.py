@@ -558,8 +558,9 @@ def test_lobby_has_one_noah_attendance_and_the_reflective_logo_fountain():
         'logoFountain.name = "forkmesh-office-logo-fountain"',
         'chromeCube.name = "forkmesh-reflective-fm-cube"',
         'chromeMark.name = "forkmesh-reflective-fm-cube-fixed-tilt"',
-        "chromeMark.quaternion.identity()",
-        "chromeMark.userData.logoUpright = true",
+        "const logoLowerCorner = new THREE.Vector3(-1, -1, -1).normalize()",
+        "chromeMark.quaternion.setFromUnitVectors(",
+        "logoHalfSize * Math.sqrt(3)",
         "addFLogoFace(2.68, 0)",
         "addFLogoFace(-2.68, Math.PI)",
         "addMLogoFace(2.68, Math.PI / 2)",
@@ -603,8 +604,8 @@ def test_lobby_has_one_noah_attendance_and_the_reflective_logo_fountain():
     assert "const logoPanelChrome = chrome.clone()" in scene
     assert "logoPanelChrome.metalness = 0.8" in scene
     assert "logoInnerFace," in logo
-    assert "chromeCube.add(logoSupport)" in logo
-    assert "chromeMark.quaternion.setFromUnitVectors(" not in logo
+    assert "logoFountain.add(logoSupport)" in logo
+    assert "chromeMark.quaternion.identity()" not in logo
     animation = scene[
         scene.index("const logoReflectionSettleMs"):
         scene.index("// One physical selector rides inside")
