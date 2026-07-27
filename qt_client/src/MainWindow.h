@@ -311,6 +311,19 @@ public:
     void testShowLogSection() { showSection(4); }
     void testShowHostsSection() { showSection(7); }
     void testRebuildNetworkLogView() { rebuildNetworkLogView(); }
+    // Quick log filter (the chip row above the log): the chips currently offered,
+    // and clicking one by category ("" = All).
+    QStringList testLogFilterChipLabels() const;
+    void testSetLogFilter(const QString &category)
+    {
+        m_logFilter = category;
+        rebuildLogFilterButtons();
+        rebuildNetworkLogView();
+    }
+    QString testLogBadgeFor(const QString &storedLine) const
+    {
+        return logBadgeFor(storedLine);
+    }
     QTextBrowser *testNetworkLogView() const { return m_settingsLog; }
     void testScrollNetworkLogToTop() { onNetworkLogScrolled(0); }
     QStringList testQuickUpdatePullArguments(const QString &clientDir) const;
@@ -3199,6 +3212,9 @@ private:
     // themselves mutating the document — clear()/insertHtml() can transiently
     // report the scrollbar at its minimum mid-edit.
     bool m_logViewMutating = false;
+    // True while the view is showing the "No X events recorded." placeholder for
+    // a filter that currently matches nothing (see rebuildNetworkLogView).
+    bool m_logFilterEmptyNotice = false;
     void loadOlderNetworkLogSegment();
     void onNetworkLogScrolled(int value);
     // Compact, centered success/failure banner shown in the top bar between the
