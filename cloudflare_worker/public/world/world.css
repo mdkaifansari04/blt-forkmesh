@@ -1380,6 +1380,11 @@ forkmesh-world {
   overflow-wrap: anywhere;
 }
 
+.world-detail[data-open-landmark="events"] .world-detail-header h2 {
+  font-size: clamp(2.2rem, 5vw, 2.65rem);
+  letter-spacing: -0.04em;
+}
+
 .world-detail-close {
   align-self: start;
   width: 38px;
@@ -1957,137 +1962,6 @@ forkmesh-world {
   padding: 2px 5px;
   font-family: "ForkMesh Mono", monospace;
   font-size: 0.62rem;
-}
-
-.world-office-keypad {
-  position: absolute;
-  z-index: 34;
-  top: 50%;
-  left: 50%;
-  width: min(360px, calc(100vw - var(--safe-left) - var(--safe-right) - 24px));
-  border: 1px solid var(--world-line-strong);
-  background: rgb(6 19 15 / 0.98);
-  box-shadow: 0 28px 90px rgb(0 0 0 / 0.58);
-  padding: 14px;
-  transform: translate(-50%, -46%) scale(0.98);
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-  transition: opacity 150ms ease, transform 180ms ease, visibility 180ms ease;
-}
-
-.world-office-keypad[data-open="true"] {
-  transform: translate(-50%, -50%) scale(1);
-  opacity: 1;
-  visibility: visible;
-  pointer-events: auto;
-}
-
-.world-office-keypad form {
-  display: grid;
-  gap: 12px;
-}
-
-.world-office-keypad header {
-  display: flex;
-  align-items: start;
-  justify-content: space-between;
-  gap: 12px;
-  border-bottom: 1px solid var(--world-line);
-  padding-bottom: 10px;
-}
-
-.world-office-keypad header h2,
-.world-office-keypad header p,
-.world-office-keypad-status {
-  margin: 0;
-}
-
-.world-office-keypad header h2 {
-  margin-top: 4px;
-  font-size: 1rem;
-}
-
-.world-office-keypad header > button {
-  width: 34px;
-  height: 34px;
-  border: 1px solid var(--world-line);
-  background: transparent;
-  color: var(--world-copy);
-  cursor: pointer;
-  font-size: 1rem;
-}
-
-.world-office-keypad-status,
-.world-office-keypad > form > small {
-  color: var(--world-muted);
-  font-size: 0.68rem;
-  line-height: 1.45;
-}
-
-.world-office-keypad-status[data-tone="error"] {
-  color: #ff9298;
-}
-
-.world-office-keypad-display {
-  display: grid;
-  gap: 6px;
-  color: var(--world-muted);
-  font-size: 0.62rem;
-}
-
-.world-office-keypad-display input {
-  width: 100%;
-  min-height: 48px;
-  border: 1px solid var(--world-line-strong);
-  border-radius: 0;
-  background: #071510;
-  color: var(--world-mint);
-  padding: 0 12px;
-  font-family: "ForkMesh Mono", monospace;
-  font-size: 1.3rem;
-  letter-spacing: 0.55em;
-  text-align: center;
-}
-
-.world-office-keypad-display input:focus {
-  border-color: var(--world-mint);
-  outline: none;
-}
-
-.world-office-keypad-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 6px;
-}
-
-.world-office-keypad-grid button {
-  min-height: 44px;
-  border: 1px solid var(--world-line);
-  border-radius: 0;
-  background: #0d211b;
-  color: var(--world-copy);
-  cursor: pointer;
-  font-family: "ForkMesh Mono", monospace;
-}
-
-.world-office-keypad-grid button:hover,
-.world-office-keypad-grid button:focus-visible {
-  border-color: var(--world-mint);
-  color: var(--world-mint);
-  outline: none;
-}
-
-.world-office-keypad-grid button[type="submit"] {
-  border-color: var(--world-mint);
-  background: var(--world-mint);
-  color: var(--world-ink);
-}
-
-.world-office-keypad-grid button:disabled,
-.world-office-keypad input:disabled {
-  cursor: wait;
-  opacity: 0.58;
 }
 
 .world-office-chat {
@@ -6024,8 +5898,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   .world-office-room,
   .world-office-task-panel,
   .world-office-task-checkin,
-  .world-office-prompt,
-  .world-office-keypad {
+  .world-office-prompt {
     transition: none;
   }
 }

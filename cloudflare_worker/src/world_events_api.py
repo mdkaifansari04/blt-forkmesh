@@ -6,6 +6,54 @@ import world_events as policy
 
 
 EVENTS_PREFIX = "/api/world/events"
+PUBLIC_EVENTS_CACHE_MS = 30 * 1000
+
+# Browser clients deliberately bypass their HTTP cache when checking the live
+# bulletin. Keep the identical public list briefly inside a warm Worker isolate
+# so a burst of World tabs shares one D1 read. The scope is the environment
+# object for that isolate; test/runtime adapters without one simply skip this
+# optional cache.
+_PUBLIC_EVENTS_CACHE = {
+    "scope": 0,
+    "expires_at": 0,
+    "payload": None,
+}
+
+
+def _cache_scope(runtime):
+    env = getattr(runtime, "env", None)
+    return id(env) if env is not None else 0
+
+
+def _cached_public_events(runtime, now):
+    scope = _cache_scope(runtime)
+    if (
+        scope
+        and scope == _PUBLIC_EVENTS_CACHE["scope"]
+        and int(now) < int(_PUBLIC_EVENTS_CACHE["expires_at"])
+        and isinstance(_PUBLIC_EVENTS_CACHE["payload"], dict)
+    ):
+        return _PUBLIC_EVENTS_CACHE["payload"]
+    return None
+
+
+def _remember_public_events(runtime, now, payload):
+    scope = _cache_scope(runtime)
+    if not scope or not isinstance(payload, dict):
+        return
+    _PUBLIC_EVENTS_CACHE.update({
+        "scope": scope,
+        "expires_at": int(now) + PUBLIC_EVENTS_CACHE_MS,
+        "payload": payload,
+    })
+
+
+def _invalidate_public_events():
+    _PUBLIC_EVENTS_CACHE.update({
+        "scope": 0,
+        "expires_at": 0,
+        "payload": None,
+    })
 
 
 def _response(runtime, data, status=200, cache_control=None, allow=""):
@@ -68,7 +116,6 @@ async def _authorized(runtime, data, action, target):
 
 async def handle(runtime, path):
     """Serve public future events and admin-only create/update/cancel."""
-    await runtime.ensure_schema()
     target = _target(path)
     if target is None:
         return _response(runtime, {"error": "not_found"}, status=404)
@@ -76,6 +123,16 @@ async def handle(runtime, path):
     now = runtime.now()
 
     if method == "GET":
+        if not target:
+            cached = _cached_public_events(runtime, now)
+            if cached is not None:
+                return _response(
+                    runtime,
+                    cached,
+                    cache_control=(
+                        "public, max-age=30, stale-while-revalidate=120"),
+                )
+        await runtime.ensure_schema()
         if target:
             row = await runtime.d1_first(
                 "SELECT event_id,status,starts_at,ends_at,data,updated_at "
@@ -98,12 +155,15 @@ async def handle(runtime, path):
             "ORDER BY starts_at ASC LIMIT ?",
             now, policy.MAX_EVENTS_RESPONSE,
         )
+        payload = policy.event_list_payload(rows, now)
+        _remember_public_events(runtime, now, payload)
         return _response(
             runtime,
-            policy.event_list_payload(rows, now),
+            payload,
             cache_control="public, max-age=30, stale-while-revalidate=120",
         )
 
+    await runtime.ensure_schema()
     if method not in ("POST", "PATCH", "DELETE"):
         return _response(
             runtime,
@@ -160,6 +220,7 @@ async def handle(runtime, path):
             now,
             now,
         )
+        _invalidate_public_events()
         await runtime.audit(
             actor,
             "world.event.create",
@@ -193,6 +254,7 @@ async def handle(runtime, path):
             "updated_at=? WHERE event_id=? AND status='scheduled'",
             now, now, target,
         )
+        _invalidate_public_events()
         await runtime.audit(
             actor, "world.event.cancel", "world_event", target)
         return _response(runtime, {"ok": True, "cancelled": target})
@@ -218,6 +280,7 @@ async def handle(runtime, path):
         now,
         target,
     )
+    _invalidate_public_events()
     await runtime.audit(
         actor,
         "world.event.update",
@@ -245,4 +308,5 @@ async def cleanup_records(runtime):
         now - policy.EVENT_RETENTION_MS,
         now - policy.EVENT_RETENTION_MS,
     )
+    _invalidate_public_events()
     return {"ok": True, "cleanedAt": now}

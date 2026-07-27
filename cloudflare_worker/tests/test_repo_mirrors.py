@@ -198,6 +198,32 @@ def test_payload_keeps_machine_node_and_user_owner_as_distinct_identities():
     assert mirror["ownerUser"] == "jett"
 
 
+def test_presence_does_not_claim_online_without_a_reachable_mirror_endpoint():
+    now = 1_000_000
+    rows = [
+        _row("a", "mirror2", "forkmesh", root="abc", synced="990000"),
+        _row("b", "mirror3", "forkmesh", root="abc", synced="990000"),
+    ]
+    payload = build_repo_mirrors_payload(
+        "mirror2",
+        "forkmesh",
+        rows,
+        {"a": now - 1_000, "b": now - 1_000},
+        {},
+        now,
+        600_000,
+        5_000,
+        reachable_nodes={"mirror2"},
+    )
+
+    mirrors = {mirror["node"]: mirror for mirror in payload["mirrors"]}
+    assert mirrors["mirror2"]["status"] == "online"
+    assert mirrors["mirror2"]["cloneAvailable"] is True
+    assert mirrors["mirror3"]["status"] == "offline"
+    assert mirrors["mirror3"]["cloneAvailable"] is False
+    assert payload["summary"]["online"] == 1
+
+
 def test_fresh_signed_local_publication_is_source_node_liveness():
     now = 1_000_000
     row = _row(
@@ -721,6 +747,17 @@ def _load_handler(
             return presence or []
         if "FROM repo_first_hosted" in sql:
             return first_hosted or []
+        if "FROM mirror_https_endpoints" in sql:
+            return [
+                {
+                    "node_name": (
+                        item.get("data", {}).get("machineName")
+                        or item.get("data", {}).get("owner")
+                    )
+                }
+                for item in rows
+                if item.get("data", {}).get("visibility", "public") == "public"
+            ]
         return []
 
     async def d1_first(_env, sql, *args):
@@ -746,6 +783,10 @@ def _load_handler(
     namespace = {
         "Date": _Clock,
         "HOST_PRESENCE_STALE_MS": 600_000,
+        "HTTPS_MIRROR_STATUS_FRESH_MS": 600_000,
+        "MAX_NODE_NAME": 64,
+        "valid_node_name": lambda value: bool(value),
+        "clean_string": lambda value, maximum: str(value or "")[:maximum],
         "asyncio": asyncio,
         # Fresh per-load probe memo so tests stay independent of each other.
         "_LIVE_HOST_PROBE_MEMO": {},

@@ -282,16 +282,16 @@ new_sqlite_classes = ["ForkMeshNodes"]
 
 [observability]
 enabled = true
-head_sampling_rate = 1
+head_sampling_rate = 0.05
 
-# Logs stay in the Cloudflare dashboard only. The Sentry destinations added in
-# the 2026-07-18 full-sampling round exported an info event for every D1 call,
-# Durable Object websocket wakeup, and request ("d1_run OK",
-# "hibernatableWebSocket OK", "POST OK", ...), flooding Sentry. Real error
-# reporting is unaffected: it goes through capture_sentry_error in src/entry.py.
+# Keep a representative production sample without spending the Workers Free
+# 200k/day observability-event allowance on routine requests. Logs stay in the
+# Cloudflare dashboard only and invocation logs remain off. Real errors are
+# unaffected: capture_sentry_error persists them through the bounded D1/Sentry
+# path independently of this diagnostic sample.
 [observability.logs]
 enabled = true
-head_sampling_rate = 1
+head_sampling_rate = 0.05
 invocation_logs = false
 
 [observability.traces]

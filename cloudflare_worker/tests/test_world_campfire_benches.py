@@ -277,8 +277,12 @@ def test_member_total_tracks_arrivals_without_waiting_for_the_poll():
     assert "this.pendingDirectoryMembers.add(member.name.toLowerCase())" in note
     refresh = APP.split("async refreshMemberDirectory(force = false) {", 1)[1]
     refresh = refresh.split("\n  }", 1)[0]
-    # The forced fetch bypasses the 30s throttle but still collapses a wave.
-    assert "const throttle = force ? 3000 : 30000;" in refresh
+    # The forced fetch bypasses the idle throttle and the client-side copy,
+    # but never fires inside the endpoint's own edge-cache TTL.
+    assert "? USERS_DIRECTORY_TTL_MS" in refresh
+    assert ": WORLD_MEMBER_DIRECTORY_POLL_MS;" in refresh
+    assert "maxAge: force ? 0 : WORLD_MEMBER_DIRECTORY_POLL_MS," in refresh
+    assert "const USERS_DIRECTORY_TTL_MS = 30 * 1000;" in APP
     # A stale edge-cached snapshot must not drop members already seated from a
     # presence frame, or the total would count back down.
     assert "this.memberDirectory = [...directory, ...pending];" in refresh

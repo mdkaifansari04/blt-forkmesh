@@ -17,7 +17,10 @@ const GENERAL_ROOM = Object.freeze({
   visibility: "public",
   kind: "general",
 });
-const OFFICE_PING_MS = 20000;
+// The room expires a participant after 90 seconds without a frame. A
+// 40-second keepalive leaves ten seconds beyond one missed tick while cutting
+// idle Durable Object wakeups and their authorization reads in half.
+const OFFICE_PING_MS = 40000;
 const OFFICE_MOVEMENT_SEND_INTERVAL_MS = 1000;
 const OFFICE_MOVEMENT_RETRY_MS = 250;
 const OFFICE_SOCKET_BUFFER_HIGH_WATER_BYTES = 64 * 1024;
@@ -308,14 +311,16 @@ export function createWorldOfficeMeeting({
     root.classList.add("world-office-active");
     scene.enterOfficeLobby();
     setOpen(roomPanel, false);
-    setOpen(lobby, true);
-    setLobbyStatus("Choose a room to enter the meeting floor.");
+    // Entry is spatial now: visitors arrive in the physical lobby and use
+    // the glass elevator plus the meeting board on Marketing. Keeping the old
+    // centered room chooser closed preserves the uninterrupted World view.
+    setOpen(lobby, false);
+    setLobbyStatus(
+      "Take the elevator to Marketing and select the meeting board.",
+    );
     onActivity("visiting-office");
     renderRoomBoard();
     fetchRooms();
-    window.requestAnimationFrame(() => {
-      roomBoard?.querySelector("button")?.focus();
-    });
     return true;
   }
 
@@ -782,10 +787,12 @@ export function createWorldOfficeMeeting({
       clearTranscript();
       setAttachmentFeedback("");
       if (!leaving) {
-        setLobbyStatus("The meeting ended. Choose a room to rejoin.");
+        setLobbyStatus(
+          "The meeting ended. Select the Marketing meeting board to rejoin.",
+        );
         setOpen(roomPanel, false);
-        setOpen(lobby, true);
-        scene.enterOfficeLobby();
+        setOpen(lobby, false);
+        scene.enterOfficeLobby({ floorId: "marketing" });
       }
     });
     meetingSocket.addEventListener("error", () => {
@@ -853,11 +860,10 @@ export function createWorldOfficeMeeting({
     clearTranscript();
     setAttachmentFeedback("");
     syncComposer();
-    scene.enterOfficeLobby();
+    scene.enterOfficeLobby({ floorId: "marketing" });
     setOpen(roomPanel, false);
-    setOpen(lobby, true);
+    setOpen(lobby, false);
     leaving = false;
-    window.requestAnimationFrame(() => roomBoard?.querySelector("button")?.focus());
     return true;
   }
 

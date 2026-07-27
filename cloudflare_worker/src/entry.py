@@ -12,6 +12,7 @@ import time
 import traceback
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
+from js import AbortSignal as JsAbortSignal
 from js import Date
 from js import Object
 from js import Request as JsRequest
@@ -48,8 +49,8 @@ ROOM_MSG_MAX_PER_WINDOW = 20
 # and forwarding to it instead of letting ghost peers inflate the roster.
 ROOM_CLIENT_STALE_MS = 3 * 60 * 1000
 # Catalog write throttle per owner, and a hard cap on records an owner may hold.
-CATALOG_WRITE_COOLDOWN_MS = 5 * 1000
-CATALOG_MAX_RECORDS_PER_OWNER = 50
+CATALOG_WRITE_COOLDOWN_MS = 500
+CATALOG_MAX_RECORDS_PER_OWNER = 100
 # Per-repository control-channel request rate limit. Repository bytes use the
 # direct-HTTPS gateway and never consume this socket budget.
 HOST_RATE_WINDOW_MS = 10 * 1000
@@ -85,15 +86,11 @@ CHAT_CHANNEL_DO_RE = re.compile(
     r"^/api/chat/channels/([0-9a-f]{32})/v([1-9][0-9]*)/(ws|revoke)$")
 OFFICE_MEETING_TICKET_TTL_MS = 60 * 1000
 OFFICE_ENTRY_TICKET_TTL_MS = 5 * 60 * 1000
-OFFICE_ENTRY_REQUEST_MAX_BYTES = 128
-OFFICE_ENTRY_RATE_WINDOW_MS = 60 * 1000
-OFFICE_ENTRY_RATE_MAX_PER_WINDOW = 8
-OFFICE_ENTRY_RATE_BUCKETS_MAX = 2048
 OFFICE_CHANNEL_WS_RE = re.compile(
     r"^/api/world/office/channels/([0-9a-f]{32})/ws/?$")
 OFFICE_INTERNAL_RE = re.compile(
     r"^/api/world/office/(world-general|[0-9a-f]{32})/"
-    r"v([1-9][0-9]*)/(ws|revoke|status|entry|code)$")
+    r"v([1-9][0-9]*)/(ws|revoke)$")
 LOCAL_DEMO_EMAIL = "demo@forkmesh.local"
 LOCAL_DEMO_NAME = "demo-node"
 LOCAL_DEMO_PASSWORD = "forkmesh-demo"
@@ -222,6 +219,7 @@ NOTIFICATION_KINDS = frozenset({
     "mirror_request",
     "pending_reward",
     "org_succession",
+    "repository_hosted",
 })
 NOTIFICATION_EMAIL_KINDS = (
     "mention",
@@ -500,6 +498,7 @@ import world_events_api  # noqa: E402
 # Persisted Code Workshop reports and participant events use the same narrow
 # authenticated/encrypted D1 adapter as the other World collaboration APIs.
 import world_social_feeds  # noqa: E402
+import world_satellites  # noqa: E402
 import world_workshops  # noqa: E402
 # Organization-scoped Office marketing tasks use a separate HTTP/D1 subsystem.
 # It never receives platform-admin authorization or an Office Durable Object,
@@ -734,6 +733,14 @@ def to_js(value):
     return _to_js(value, dict_converter=Object.fromEntries)
 
 
+async def js_fetch_with_timeout(resource, init, timeout_seconds):
+    """Fetch with a Workers-native timeout and no nested Pyodide task."""
+    options = dict(init or {})
+    options["signal"] = JsAbortSignal.timeout(
+        max(1, int(float(timeout_seconds) * 1000)))
+    return await js_fetch(resource, to_js(options))
+
+
 def new_socket_id():
     # Stable per-socket id stored in the hibernation attachment, so we can skip
     # the sender on broadcast without relying on object identity (which does not
@@ -903,10 +910,14 @@ async def edge_cache_delete(cache_key):
 # this TTL is only a backstop that lets a colo re-fetch if a state-hash update is
 # ever missed. See git_advert_cache_key and Default._clone_advert_cache_key.
 GIT_ADVERT_CACHE_TTL = 300
-REPOSITORY_METADATA_CACHE_TTL = 300
+# Repository pages are an operational view, so do not let a healthy node's
+# prior branch head mask a just-synchronized commit for five minutes. The
+# attested-state cache key remains the primary invalidation mechanism; this
+# short backstop bounds freshness even if a catalog pin update is delayed.
+REPOSITORY_METADATA_CACHE_TTL = 30
 REPOSITORY_METADATA_CACHE_MAX_BYTES = 8 * 1024 * 1024
 REPOSITORY_METADATA_CACHE_PREFIX = (
-    "https://forkmesh.internal/repository-metadata/v1/"
+    "https://forkmesh.internal/repository-metadata/v2/"
 )
 
 
@@ -1782,6 +1793,8 @@ STATUS_SYSTEMS = [
     ("website", "Website"),
     ("api", "API"),
     ("database", "Database"),
+    ("flagship_repository", "forkmesh/forkmesh repository page"),
+    ("installer", "Installer delivery"),
     ("git_hosting", "Git hosting network"),
     ("realtime", "Realtime sync (chat & tunnels)"),
     ("durable_objects", "Durable Objects (free-tier duration limit)"),
@@ -1806,6 +1819,18 @@ STATUS_SYSTEM_CHECKS = {
         "Runs a real SELECT round trip against the D1 database once a "
         "minute. Passes when the query returns a row; fails on any query "
         "error."),
+    "flagship_repository": (
+        "Loads https://forkmesh.com/forkmesh/forkmesh once a minute, then "
+        "loads the root repository tree and README.md blob through the same "
+        "public API used by the page. Passes only when the page shell renders, "
+        "the root tree contains README.md, and the README body is readable."),
+    "installer": (
+        "Every 10 minutes, loads install.sh, asks the live install-source "
+        "selector for a reachable mirror, and validates either the signed "
+        "Linux x86_64 prebuilt chain or the source-build fallback the installer "
+        "uses when no prebuilt is reachable. Cloudflare cannot execute Bash, so "
+        "this verifies its hosted inputs and fallback rather than claiming the "
+        "Worker ran the installer."),
     "git_hosting": (
         "Checks for at least one account-bound direct HTTPS endpoint with a "
         "signed, integrity-matching ForkMesh repository proof observed within "
@@ -1831,6 +1856,492 @@ STATUS_MINUTES_SHOWN = 60  # width of the per-minute strip on /status
 # Kept a little past what's shown so a slow reader's page load always has a
 # full 60 buckets to render even a few minutes after the newest cron tick.
 STATUS_MINUTE_RETAIN_MS = 90 * 60 * 1000
+STATUS_MIRROR_PREFIX = "mirror:"
+STATUS_MIRROR_MAX = 50
+FLAGSHIP_REPOSITORY_URL = "https://forkmesh.com/forkmesh/forkmesh"
+FLAGSHIP_MONITOR_ID = "forkmesh/forkmesh"
+INSTALLER_MONITOR_ID = "installer-delivery"
+INSTALLER_CHECK_INTERVAL_MS = 10 * 60 * 1000
+
+STATUS_MONITOR_GUIDANCE = {
+    "website": (
+        "Cloudflare Worker logs and the most recent production deployment",
+        "Check the failing page route in Worker logs, then fix or roll back "
+        "the first deployment that introduced its 5xx response."),
+    "api": (
+        "Cloudflare Worker API logs, especially the path named in the reason",
+        "Replay the failing API request, inspect its D1 or upstream call, and "
+        "fix or roll back the responsible handler."),
+    "database": (
+        "Cloudflare D1 health, bindings, migrations, and query errors",
+        "Confirm the production D1 binding and quota, then repair the failed "
+        "migration or query before retrying the health check."),
+    "flagship_repository": (
+        "the forkmesh/forkmesh mirror endpoints, repository integrity pins, "
+        "and root-tree/README responses",
+        "Verify two signed mirror proofs agree with the source revision, "
+        "publish that integrity transition, and confirm README.md loads."),
+    "installer": (
+        "/api/install-source and the latest signed release manifest, "
+        "signature, checksums, and content-addressed release blob",
+        "Republish the release metadata with the trusted release key, sync "
+        "its blob to a reachable mirror, and rerun the installer probe."),
+    "git_hosting": (
+        "direct mirror HTTPS health proofs, DNS/tunnel reachability, and "
+        "repository integrity pins",
+        "Restore at least one signed, account-bound mirror endpoint and "
+        "confirm its active integrity digest matches the source history."),
+    "realtime": (
+        "Cloudflare Durable Object, WebSocket, room, and smart-HTTP logs",
+        "Inspect the first failing realtime route, restore its Durable Object "
+        "or tunnel, and replay the request."),
+    "durable_objects": (
+        "Cloudflare Durable Object logs and duration-limit usage",
+        "Reduce or split the long-running operation, or move it to an "
+        "execution plan with sufficient duration before retrying."),
+}
+
+
+def _flagship_monitor_duration(milliseconds):
+    seconds = max(0, int(milliseconds or 0) // 1000)
+    if seconds < 60:
+        return "%d second%s" % (seconds, "" if seconds == 1 else "s")
+    minutes = seconds // 60
+    if minutes < 60:
+        return "%d minute%s" % (minutes, "" if minutes == 1 else "s")
+    hours = minutes // 60
+    remainder = minutes % 60
+    return "%d hour%s%s" % (
+        hours,
+        "" if hours == 1 else "s",
+        (" %d minute%s" % (
+            remainder, "" if remainder == 1 else "s")) if remainder else "",
+    )
+
+
+async def _routed_repository_read(
+        env, url, operation, release_sha="", bypass_cache=False):
+    request = JsRequest.new(url)
+    route_url = urlparse(request.url)
+    aliased = await org_alias_rewrite(env, request, route_url)
+    if aliased is not None:
+        request, route_url = aliased
+    route = (
+        RELEASE_BLOB_RE.match(route_url.path)
+        if operation == "release-blob"
+        else REPO_HOST_RE.match(route_url.path)
+    )
+    if not route:
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+    return await _https_mirror_proxy(
+        env, request, safe_segment(route.group(1)),
+        safe_segment(route.group(2)), operation,
+        release_sha=release_sha, bypass_cache=bypass_cache)
+
+
+async def _flagship_repository_probe(env):
+    """Exercise the same shell and routed node reads the public URL renders."""
+
+    async def bounded_response(response, maximum):
+        status = int(getattr(response, "status", 0) or 0)
+        try:
+            announced = int(response.headers.get("content-length") or 0)
+        except Exception:
+            announced = 0
+        if announced > maximum:
+            return status, ""
+        body = str(await response.text())
+        return (
+            (status, body)
+            if len(body.encode("utf-8")) <= maximum
+            else (status, "")
+        )
+
+    # Scheduled Workers cannot hairpin through their own public hostname
+    # reliably (Cloudflare returns a synthetic 404/52x before the request
+    # reaches the Worker). Read the same static shell from the bound asset
+    # service and invoke the same authenticated mirror router used by the
+    # public tree/blob endpoints. Repository bytes still come from active
+    # nodes; none are substituted from D1 or a Worker-side copy.
+    shell_response = await env.ASSETS.fetch(JsRequest.new(
+        "https://forkmesh.internal/dashboard/repo.html"))
+    shell_status, shell_text = await bounded_response(
+        shell_response, 512 * 1024)
+    if shell_status != 200 or 'data-page="repo"' not in shell_text:
+        return False, "Repository page shell did not load (HTTP %d)" % shell_status
+
+    tree_response = await _routed_repository_read(
+        env,
+        "https://forkmesh.internal/api/repo/forkmesh/forkmesh/tree?path=",
+        "tree", bypass_cache=True)
+    tree_status, tree_text = await bounded_response(
+        tree_response, 2 * 1024 * 1024)
+    try:
+        tree_data = json.loads(tree_text)
+    except Exception:
+        tree_data = {}
+    entries = tree_data.get("entries") if isinstance(tree_data, dict) else []
+    has_readme = any(
+        isinstance(item, dict)
+        and str(item.get("name") or "").lower() == "readme.md"
+        and str(item.get("type") or "").lower() == "blob"
+        for item in (entries if isinstance(entries, list) else [])
+    )
+    if tree_status != 200:
+        return False, "Root repository tree failed (HTTP %d)" % tree_status
+    if tree_data.get("ok") is not True:
+        return False, "Root repository tree returned an invalid response"
+    if not has_readme:
+        names = ",".join(
+            clean_string(item.get("name", ""), 40)
+            for item in entries[:8] if isinstance(item, dict))
+        return False, (
+            "Root repository tree did not contain README.md"
+            + (": " + names if names else ""))
+
+    blob_response = await _routed_repository_read(
+        env,
+        "https://forkmesh.internal/api/repo/forkmesh/forkmesh/"
+        "blob?path=README.md",
+        "blob", bypass_cache=True)
+    blob_status, blob_text = await bounded_response(
+        blob_response, 512 * 1024)
+    try:
+        blob_data = json.loads(blob_text)
+    except Exception:
+        blob_data = {}
+    if (
+        blob_status != 200
+        or not isinstance(blob_data, dict)
+        or blob_data.get("ok") is not True
+        or not str(blob_data.get("content") or "").strip()
+    ):
+        return False, "README.md body did not load"
+    return True, ""
+
+
+async def _installer_delivery_probe(env):
+    """Verify every hosted input used by curl install.sh | bash."""
+
+    async def response_text(response, maximum):
+        status = int(getattr(response, "status", 0) or 0)
+        text = str(await response.text())
+        if len(text.encode("utf-8")) > maximum:
+            return status, ""
+        return status, text
+
+    shell = await env.ASSETS.fetch(JsRequest.new(
+        "https://forkmesh.internal/install.sh"))
+    shell_status, shell_text = await response_text(shell, 512 * 1024)
+    if (
+        shell_status != 200
+        or not shell_text.startswith("#!/usr/bin/env bash")
+        or "INSTALLER_VERSION=" not in shell_text
+        or "/api/install-source" not in shell_text
+    ):
+        return False, "install.sh did not load as a valid ForkMesh installer"
+
+    source_response = await install_source(env)
+    source_status, source_text = await response_text(
+        source_response, 128 * 1024)
+    try:
+        source_data = json.loads(source_text)
+    except Exception:
+        source_data = {}
+    if (
+        source_status != 200
+        or not isinstance(source_data, dict)
+        or source_data.get("ok") is not True
+        or not source_data.get("nodes")
+    ):
+        return False, "No reachable mirror is available to the installer"
+
+    async def source_fallback():
+        # `install.sh` deliberately falls back to a source build when a
+        # platform binary is unpublished or temporarily unavailable. Validate
+        # the essential build inputs through the same live mirror router so the
+        # status row tracks whether the documented one-liner still has a viable
+        # path, not whether its optional fast path is populated.
+        required = {
+            "qt_client/CMakeLists.txt": "project(ForkMesh",
+            "qt_client/src/main.cpp": "#include <QApplication>",
+        }
+        for path, marker in required.items():
+            response = await _routed_repository_read(
+                env,
+                "https://forkmesh.internal/api/repo/forkmesh/forkmesh/"
+                "blob?path=" + quote(path),
+                "blob",
+                bypass_cache=True,
+            )
+            status, raw = await response_text(response, 1024 * 1024)
+            try:
+                body = json.loads(raw)
+            except Exception:
+                body = {}
+            content = (
+                str(body.get("content") or "")
+                if isinstance(body, dict) else "")
+            if status != 200 or body.get("ok") is not True or marker not in content:
+                return False, "source-build input is unavailable: " + path
+        return True, ""
+
+    async def fallback_or_failure(prebuilt_reason):
+        fallback_ok, fallback_reason = await source_fallback()
+        if fallback_ok:
+            return True, ""
+        return False, (
+            prebuilt_reason + "; installer " + fallback_reason)
+
+    release_files = {}
+    for filename in (
+            "release.json", "release.json.sig", "SHASUMS256.txt"):
+        response = await _routed_repository_read(
+            env,
+            "https://forkmesh.internal/api/repo/forkmesh/forkmesh/"
+            "blob?path=.forkmesh/releases/latest/" + filename,
+            "blob",
+            bypass_cache=True,
+        )
+        status, raw = await response_text(response, 512 * 1024)
+        try:
+            body = json.loads(raw)
+        except Exception:
+            body = {}
+        content = str(body.get("content") or "") if isinstance(body, dict) else ""
+        if status != 200 or body.get("ok") is not True or not content:
+            return await fallback_or_failure(
+                "Installer release metadata is unavailable: " + filename)
+        release_files[filename] = content
+
+    try:
+        manifest = json.loads(release_files["release.json"])
+    except Exception:
+        manifest = {}
+    assets = manifest.get("assets") if isinstance(manifest, dict) else []
+    linux_asset = next((
+        asset for asset in (assets if isinstance(assets, list) else [])
+        if isinstance(asset, dict)
+        and asset.get("os") == "linux"
+        and asset.get("arch") == "x86_64"
+    ), None)
+    digest = str((linux_asset or {}).get("blob_sha256") or "").lower()
+    checksum_line = digest + "  " + str((linux_asset or {}).get("name") or "")
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", digest)
+        or checksum_line not in release_files["SHASUMS256.txt"]
+        or not release_files["release.json.sig"].strip()
+    ):
+        return await fallback_or_failure(
+            "Installer release metadata is incomplete or inconsistent")
+
+    release_response = await _routed_repository_read(
+        env,
+        "https://forkmesh.internal/api/repo/forkmesh/forkmesh/"
+        "releases/blob/sha256/" + digest,
+        "release-blob",
+        release_sha=digest,
+        bypass_cache=True,
+    )
+    if int(getattr(release_response, "status", 0) or 0) != 200:
+        return await fallback_or_failure(
+            "Installer release binary is unreachable")
+    return True, ""
+
+
+async def _installer_delivery_status(env, now):
+    row = await d1_first(
+        env,
+        "SELECT is_up,reason,checked_at FROM repository_monitor_state "
+        "WHERE monitor_id=?",
+        INSTALLER_MONITOR_ID,
+    )
+    if (
+        row
+        and int(row.get("checked_at") or 0) > 0
+        and now - int(row.get("checked_at") or 0) < INSTALLER_CHECK_INTERVAL_MS
+    ):
+        return bool(row.get("is_up")), str(row.get("reason") or "")
+    is_up, reason = await _installer_delivery_probe(env)
+    await d1_run(
+        env,
+        """INSERT INTO repository_monitor_state
+             (monitor_id,is_up,changed_at,outage_started_at,checked_at,reason,
+              notified_state)
+           VALUES (?,?,?,?,?,?,?)
+           ON CONFLICT(monitor_id) DO UPDATE SET
+             is_up=excluded.is_up,
+             changed_at=CASE
+               WHEN repository_monitor_state.is_up!=excluded.is_up
+               THEN excluded.checked_at
+               ELSE repository_monitor_state.changed_at END,
+             checked_at=excluded.checked_at,
+             reason=excluded.reason""",
+        INSTALLER_MONITOR_ID, 1 if is_up else 0, now,
+        0 if is_up else now, now, reason, "",
+    )
+    return is_up, reason
+
+
+async def _repository_monitor_admin_emails(env):
+    recipients = {
+        value.strip().lower()
+        for value in str(
+            getattr(env, "ADMIN_ALERT_EMAILS", "") or ""
+        ).split(",")
+        if "@" in value
+    }
+    rows = await d1_all(
+        env, "SELECT data FROM users WHERE is_admin=1 LIMIT 20")
+    for row in rows or []:
+        try:
+            record = await decrypt_row(env, row.get("data", "")) or {}
+            email = clean_string(record.get("email", ""), 254).strip().lower()
+            if email and "@" in email and record.get("email_verified") is True:
+                recipients.add(email)
+        except Exception:
+            continue
+    return sorted(recipients)
+
+
+async def _record_status_monitor_transitions(
+        env, ok, reason, now, status_systems=None):
+    """Deduplicate outage/recovery mail for every system shown on /status."""
+    status_systems = status_systems or STATUS_SYSTEMS
+    rows = await d1_all(
+        env,
+        "SELECT monitor_id,is_up,changed_at,outage_started_at,notified_state "
+        "FROM repository_monitor_state WHERE monitor_id LIKE 'status:%'",
+    )
+    prior = {str(row.get("monitor_id") or ""): row for row in (rows or [])}
+    pending = []
+    values = []
+    for system_id, label in status_systems:
+        monitor_id = "status:" + system_id
+        is_up = bool(ok.get(system_id, True))
+        state = "up" if is_up else "down"
+        row = prior.get(monitor_id)
+        previous_up = bool(row.get("is_up")) if row else True
+        previous_changed_at = (
+            int(row.get("changed_at") or now) if row else int(now))
+        prior_outage = (
+            int(row.get("outage_started_at") or 0) if row else 0)
+        changed = not row or previous_up != is_up
+        changed_at = int(now) if changed else previous_changed_at
+        outage_started_at = (
+            0 if is_up else int(now) if not row or previous_up
+            else prior_outage or previous_changed_at)
+        notified = (
+            ("up" if is_up else "") if not row else
+            "" if previous_up != is_up else
+            str(row.get("notified_state") or ""))
+        if notified != state:
+            pending.append({
+                "system": system_id, "label": label, "state": state,
+                "is_up": is_up, "reason": clean_string(
+                    reason.get(system_id, "") or "", 240),
+                "outage_started_at": outage_started_at,
+                "previous_changed_at": previous_changed_at,
+            })
+        values.extend([
+            monitor_id, 1 if is_up else 0, changed_at, outage_started_at,
+            int(now), clean_string(reason.get(system_id, "") or "", 240),
+            notified,
+        ])
+
+    n = len(status_systems)
+    await d1_run(
+        env,
+        "INSERT INTO repository_monitor_state "
+        "(monitor_id,is_up,changed_at,outage_started_at,checked_at,reason,"
+        "notified_state) VALUES " + ", ".join(["(?,?,?,?,?,?,?)"] * n) + " "
+        "ON CONFLICT(monitor_id) DO UPDATE SET "
+        "is_up=excluded.is_up,changed_at=excluded.changed_at,"
+        "outage_started_at=excluded.outage_started_at,"
+        "checked_at=excluded.checked_at,reason=excluded.reason,"
+        "notified_state=excluded.notified_state",
+        *values,
+    )
+    if not pending:
+        return
+    recipients = await _repository_monitor_admin_emails(env)
+    if not recipients:
+        return
+    for alert in pending:
+        system_id = alert["system"]
+        label = alert["label"]
+        if system_id.startswith(STATUS_MIRROR_PREFIX):
+            mirror_name = system_id[len(STATUS_MIRROR_PREFIX):]
+            where, fix = (
+                "the signed direct-HTTPS health record for " + mirror_name,
+                "Check the node process and tunnel, then confirm its signed "
+                "health proof is fresh, integrity is ok, and forkmesh/forkmesh "
+                "matches an accepted source revision.",
+            )
+        else:
+            where, fix = STATUS_MONITOR_GUIDANCE.get(
+                system_id,
+                ("Cloudflare Worker logs", "Inspect the failing check."))
+        if alert["is_up"]:
+            duration = _flagship_monitor_duration(
+                int(now) - (
+                    alert["outage_started_at"] or
+                    alert["previous_changed_at"]))
+            subject = "[ForkMesh recovered] " + label + " is green"
+            lead = label + " is passing again after " + duration + "."
+            text = (
+                lead + "\n\nThe current /status probe is green.\n\n"
+                "Status: https://forkmesh.com/status")
+            heading = label + " recovered"
+            body = (
+                "<div class=\"fm-item\" style=\"border:1px solid #d4d4d8;"
+                "border-radius:8px;background:#fafafa;padding:14px;"
+                "margin:0 0 18px\"><p class=\"fm-item-title\" style=\"margin:0;"
+                "color:#18181b;font-size:14px;font-weight:800\">Outage "
+                "duration</p><p class=\"fm-item-body\" style=\"margin:6px 0 0;"
+                "color:#3f3f46;font-size:14px\">" +
+                _html_escape(duration) + "</p></div>")
+        else:
+            observed = alert["reason"] or "The current health check failed."
+            subject = "[ForkMesh outage] " + label + " is not green"
+            lead = label + " failed its /status health check."
+            text = (
+                lead + "\n\nObserved: " + observed + "\n\nLook here: " +
+                where + "\n\nSuggested first step: " + fix +
+                "\n\nA recovery email will be sent when this check is green "
+                "again.\n\nStatus: https://forkmesh.com/status")
+            heading = label + " needs attention"
+            body = (
+                "<div class=\"fm-item\" style=\"border:1px solid #d4d4d8;"
+                "border-radius:8px;background:#fafafa;padding:14px;"
+                "margin:0 0 12px\"><p class=\"fm-item-title\" style=\"margin:0;"
+                "color:#18181b;font-size:14px;font-weight:800\">Observed</p>"
+                "<p class=\"fm-item-body\" style=\"margin:6px 0 0;color:#3f3f46;"
+                "font-size:14px\">" + _html_escape(observed) + "</p></div>"
+                "<p class=\"fm-text\" style=\"margin:0 0 8px;color:#3f3f46;"
+                "font-size:14px\"><strong>Look here:</strong> " +
+                _html_escape(where) + "</p><p class=\"fm-text\" style=\"margin:"
+                "0 0 18px;color:#3f3f46;font-size:14px\"><strong>Suggested "
+                "first step:</strong> " + _html_escape(fix) + "</p>")
+        html = _forkmesh_email_card_html(
+            _html_escape(heading), _html_escape(lead), body,
+            "<p class=\"fm-muted\" style=\"margin:20px 0 0;color:#71717a;"
+            "font-size:12px\"><a class=\"fm-link\" style=\"color:#15803d\" "
+            "href=\"https://forkmesh.com/status\">Open ForkMesh status</a>"
+            "</p>")
+        delivered = True
+        for email in recipients:
+            delivered = bool(await _send_email(
+                env, email, subject, text, html)) and delivered
+        if delivered:
+            await d1_run(
+                env,
+                "UPDATE repository_monitor_state SET notified_state=? "
+                "WHERE monitor_id=? AND is_up=?",
+                alert["state"], "status:" + system_id,
+                1 if alert["is_up"] else 0,
+            )
 
 
 def _status_expected_checks_for_hour(hour_ts, now):
@@ -1873,17 +2384,17 @@ def _status_effective_hour(hour_ts, now, row):
         }
     missing = max(0, expected - checks)
     if checks <= 0:
-        status = "unknown"
+        status = "down"
     elif failures <= 0:
         status = "operational"
     elif failures >= checks:
         status = "down"
     else:
         status = "degraded"
-    if status == "unknown":
+    if checks <= 0:
         hour_reason = (
-            "No health samples were recorded this hour — the sampling cron "
-            "didn't run (monitoring gap), which is not evidence of an outage.")
+            "Monitoring failed: no health samples were recorded for this "
+            "elapsed hour.")
     elif status == "operational":
         hour_reason = None
     else:
@@ -1910,10 +2421,9 @@ def _status_minute(minute_ts, current_minute_ts, row):
         return {"minuteTs": minute_ts, "status": "future", "reason": None}
     if row is None:
         return {
-            "minuteTs": minute_ts, "status": "unknown",
-            "reason": "No health sample was recorded for this minute — the "
-                      "sampling cron didn't run (monitoring gap), which is "
-                      "not evidence of an outage.",
+            "minuteTs": minute_ts, "status": "down",
+            "reason": "Monitoring failed: no health sample was recorded for "
+                      "this elapsed minute.",
         }
     ok = bool(row.get("ok"))
     return {
@@ -1940,6 +2450,27 @@ async def record_status_sample(env):
     except Exception as exc:
         ok["database"] = False
         reason["database"] = "Database query failed: " + str(exc)[:160]
+
+    try:
+        repository_ok, repository_reason = await _flagship_repository_probe(env)
+        ok["flagship_repository"] = repository_ok
+        if not repository_ok:
+            reason["flagship_repository"] = repository_reason
+    except Exception as exc:
+        ok["flagship_repository"] = False
+        reason["flagship_repository"] = (
+            "Repository availability probe failed: " + str(exc)[:160])
+
+    try:
+        installer_ok, installer_reason = await _installer_delivery_status(
+            env, now)
+        ok["installer"] = installer_ok
+        if not installer_ok:
+            reason["installer"] = installer_reason
+    except Exception as exc:
+        ok["installer"] = False
+        reason["installer"] = (
+            "Installer delivery probe failed: " + str(exc)[:160])
 
     try:
         cutoff = now - HTTPS_MIRROR_STATUS_FRESH_MS
@@ -2030,6 +2561,72 @@ async def record_status_sample(env):
         # fabricate a false incident from it.
         ok["website"] = ok["api"] = ok["realtime"] = ok["durable_objects"] = True
 
+    # Each registered mirror that has supplied a valid ForkMesh repository
+    # proof gets its own /status row. This registry contains cryptographically
+    # bound node identities; unlike account_presence or host_presence it cannot
+    # turn a user/chat name or an ad-hoc repository request into a fake node.
+    # Keep recently disconnected mirrors in the sample set for the 30-day
+    # history window so an outage becomes red instead of making the row vanish.
+    status_systems = list(STATUS_SYSTEMS)
+    try:
+        mirror_rows = await d1_all(
+            env,
+            """SELECT node_name,checked_at,healthy,integrity,
+                      forkmesh_active,forkmesh_verified_at
+                 FROM mirror_https_endpoints
+                WHERE abuse_blocked=0 AND forkmesh_verified_at>0
+                  AND (forkmesh_active=1 OR forkmesh_verified_at>=?)
+                ORDER BY lower(node_name) LIMIT ?""",
+            now - STATUS_HISTORY_RETAIN_MS,
+            STATUS_MIRROR_MAX,
+        )
+        seen_mirrors = set()
+        for row in mirror_rows:
+            mirror_name = str(row.get("node_name") or "").strip().lower()
+            if (
+                mirror_name in seen_mirrors
+                or not re.fullmatch(
+                    r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?", mirror_name)
+            ):
+                continue
+            seen_mirrors.add(mirror_name)
+            system_id = STATUS_MIRROR_PREFIX + mirror_name
+            status_systems.append(
+                (system_id, "Mirror node — " + mirror_name))
+            checked_at = int(row.get("checked_at") or 0)
+            verified_at = int(row.get("forkmesh_verified_at") or 0)
+            is_fresh = (
+                checked_at >= now - HTTPS_MIRROR_STATUS_FRESH_MS
+                and verified_at >= now - HTTPS_MIRROR_STATUS_FRESH_MS)
+            is_healthy = int(row.get("healthy") or 0) == 1
+            integrity_ok = str(row.get("integrity") or "") == "ok"
+            is_active = int(row.get("forkmesh_active") or 0) == 1
+            mirror_ok = (
+                is_fresh and is_healthy and integrity_ok and is_active)
+            ok[system_id] = mirror_ok
+            if not mirror_ok:
+                if not is_fresh:
+                    reason[system_id] = (
+                        mirror_name + " has not supplied a fresh signed "
+                        "ForkMesh repository proof within the last 10 minutes")
+                elif not is_healthy:
+                    reason[system_id] = (
+                        mirror_name + " failed its signed HTTPS health check")
+                elif not integrity_ok:
+                    reason[system_id] = (
+                        mirror_name + " reported repository integrity " +
+                        (str(row.get("integrity") or "unknown")))
+                else:
+                    reason[system_id] = (
+                        mirror_name + " is reachable but is not serving an "
+                        "accepted forkmesh/forkmesh source revision")
+    except Exception as exc:
+        # The aggregate Git-hosting row already reports a registry query
+        # failure. Do not fabricate per-node identities when the authoritative
+        # registry itself could not be read.
+        console.warn(
+            "status mirror registry query failed: " + _safe_error_text(exc))
+
     # One multi-row upsert per table (3 statements total) instead of the old
     # 3-statements-per-system loop (15): the per-minute cron runs in a Pyodide
     # worker where every awaited D1 round trip counts against tight per-
@@ -2038,7 +2635,7 @@ async def record_status_sample(env):
     daily_args = []
     hourly_args = []
     minute_args = []
-    for system_id, _label in STATUS_SYSTEMS:
+    for system_id, _label in status_systems:
         failure = 0 if ok.get(system_id, True) else 1
         daily_args.extend([day_ts, system_id, failure])
         # reason is only set when this sample failed; on success it's left NULL
@@ -2050,7 +2647,7 @@ async def record_status_sample(env):
         # tick somehow re-fires for the same minute.
         minute_args.extend(
             [minute_ts, system_id, 0 if failure else 1, reason.get(system_id)])
-    n = len(STATUS_SYSTEMS)
+    n = len(status_systems)
     await d1_run(
         env,
         "INSERT INTO system_status_daily (day_ts, system, checks, failures) "
@@ -2078,6 +2675,15 @@ async def record_status_sample(env):
         "ok = excluded.ok, reason = excluded.reason",
         *minute_args,
     )
+    # Alerts are optional follow-up work. Persist the minute first so a slow
+    # mail provider or notification failure cannot erase public status data.
+    try:
+        await _record_status_monitor_transitions(
+            env, ok, reason, now, status_systems)
+    except Exception as exc:
+        console.warn(
+            "record_status_monitor_transitions failed: " +
+            _safe_error_text(exc))
     # Retention prunes only need to run occasionally, not 60x/hour: sweep on
     # the first sample of each hour.
     if now - hour_ts < STATUS_SAMPLE_WINDOW_MS:
@@ -2095,7 +2701,7 @@ async def record_status_sample(env):
         )
 
 
-async def status_history(env):
+async def status_history(env, view="full"):
     await ensure_schema(env)
     now = int(Date.now())
     cur_day = (now // 86400000) * 86400000
@@ -2133,8 +2739,25 @@ async def status_history(env):
         by_system_minute.setdefault(system_id, {})[int(row["minute_ts"])] = row
         last_sample_ts = max(last_sample_ts, int(row["minute_ts"]))
 
+    # Dynamic mirror systems are written by record_status_sample only after a
+    # node supplies a valid signed repository proof. Build the public roster
+    # from those recorded IDs, never from user/account presence.
+    recorded_system_ids = set(by_system_hour) | set(by_system_minute)
+    mirror_systems = []
+    for system_id in recorded_system_ids:
+        if not system_id.startswith(STATUS_MIRROR_PREFIX):
+            continue
+        mirror_name = system_id[len(STATUS_MIRROR_PREFIX):]
+        if not re.fullmatch(
+                r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?", mirror_name):
+            continue
+        mirror_systems.append(
+            (system_id, "Mirror node — " + mirror_name))
+    mirror_systems.sort(key=lambda item: item[1].lower())
+    status_systems = list(STATUS_SYSTEMS) + mirror_systems
+
     systems = []
-    for system_id, label in STATUS_SYSTEMS:
+    for system_id, label in status_systems:
         # Uptime is computed over RECORDED samples only; expected-but-missing
         # samples (the sampling cron didn't run) are reported separately as
         # coverage, never counted as downtime. See _status_effective_hour.
@@ -2181,13 +2804,41 @@ async def status_history(env):
                 "uptimePct": uptime, "coveragePct": coverage,
                 "hours": hours, "hoursElapsed": len(hours),
             })
-        # Current status comes from the most recent HOUR with recorded
-        # samples, not the whole current day's aggregate — otherwise an
-        # incident that was resolved an hour ago keeps the badge red/yellow
-        # for the rest of the day even once every recent check is green.
-        # And if the newest recorded sample is over an hour stale, the honest
-        # badge is "unknown": we have no current evidence either way, and
-        # claiming operational (or down) from old data would be false info.
+        # Current state comes from the newest RAW MINUTE probe. An hourly
+        # aggregate answers "did anything fail during this hour?", not "is it
+        # reachable now"; using it for the badge left recovered systems yellow
+        # and displayed an hour-old reason as though it were current. A failed
+        # latest probe is a hard red/down state. A passing latest probe is
+        # green and clears the old reason immediately.
+        latest_minute_row = None
+        minute_records = by_system_minute.get(system_id, {})
+        if minute_records:
+            latest_minute_ts = max(minute_records)
+            latest_minute_row = minute_records[latest_minute_ts]
+        reason_text = reason_ts = None
+        if (
+            latest_minute_row is not None
+            and latest_minute_ts >= current_minute - 2 * STATUS_SAMPLE_WINDOW_MS
+        ):
+            if int(latest_minute_row.get("ok") or 0) == 1:
+                status = "operational"
+            else:
+                status = "down"
+                reason_text = (
+                    latest_minute_row.get("reason")
+                    or "The latest reachability check failed")
+                reason_ts = latest_minute_ts
+        elif latest_minute_row is not None:
+            status = "down"
+            reason_text = (
+                "Monitoring failed: no health sample has been recorded in the "
+                "last two minutes.")
+            reason_ts = latest_minute_ts
+        else:
+            # Backward-compatible fallback for an existing deployment while
+            # minute sampling is first being populated.
+            status = None
+
         latest_hour = None
         for d in reversed(days):
             for h in reversed(d["hours"]):
@@ -2196,23 +2847,23 @@ async def status_history(env):
                     break
             if latest_hour:
                 break
-        reason_text = reason_ts = None
-        if latest_hour is not None and (
-                latest_hour["hourTs"] >= current_hour - STATUS_HOUR_MS):
-            status = latest_hour["status"]
-            if status != "operational":
-                reason_text = latest_hour.get("reason")
+        if status is None:
+            if latest_hour is not None and (
+                    latest_hour["hourTs"] >= current_hour - STATUS_HOUR_MS):
+                status = latest_hour["status"]
+                if status != "operational":
+                    reason_text = latest_hour.get("reason")
+                    reason_ts = latest_hour.get("hourTs")
+            elif latest_hour is not None:
+                status = "down"
+                reason_text = (
+                    "Monitoring failed: no recent health samples have been "
+                    "recorded.")
                 reason_ts = latest_hour.get("hourTs")
-        elif latest_hour is not None:
-            status = "unknown"
-            reason_text = (
-                "No health samples have been recorded since the sampling "
-                "cron's last run — monitoring gap; the current state is "
-                "unknown, not a confirmed outage.")
-            reason_ts = latest_hour.get("hourTs")
-        else:
-            # No recorded samples anywhere in the 30-day window.
-            status = "unknown"
+            else:
+                status = "down"
+                reason_text = (
+                    "Monitoring failed: no health samples have been recorded.")
         overall_uptime = (
             round(((total_checks - total_failures) / total_checks) * 100, 2)
             if total_checks else None
@@ -2237,9 +2888,18 @@ async def status_history(env):
             for i in range(STATUS_MINUTES_SHOWN)
         ]
 
+        check_description = STATUS_SYSTEM_CHECKS.get(system_id, "")
+        if system_id.startswith(STATUS_MIRROR_PREFIX):
+            mirror_name = system_id[len(STATUS_MIRROR_PREFIX):]
+            check_description = (
+                "Checks " + mirror_name + " independently once a minute "
+                "using its account-bound direct HTTPS endpoint. Passes only "
+                "when its signed health and forkmesh/forkmesh repository proof "
+                "are fresh, endpoint health is good, integrity is ok, and the "
+                "served refs match an accepted source revision.")
         systems.append({
             "id": system_id, "label": label, "status": status,
-            "checkDescription": STATUS_SYSTEM_CHECKS.get(system_id, ""),
+            "checkDescription": check_description,
             "uptimePct": overall_uptime, "uptime24hPct": uptime_24h,
             "coveragePct": coverage_30d, "coverage24hPct": coverage_24h,
             "checks24h": checks_24h, "failures24h": failures_24h,
@@ -2321,6 +2981,46 @@ async def status_history(env):
         current["mainnodeOnline"] = None
         current["mainnodeLastSeenTs"] = None
         current["mainnodeStaleMs"] = HTTPS_MIRROR_STATUS_FRESH_MS
+
+    if view == "world":
+        # The in-world canvas needs the same current state, 30 daily cells,
+        # latest 24 hourly cells, and latest 60 minute cells as /status. It
+        # does not need every hour nested beneath every one of the 30 days.
+        # Projecting that history here cuts the recurring browser payload by
+        # an order of magnitude without weakening the public status page.
+        projected = []
+        for system in systems:
+            days = list(system.get("days") or [])
+            hours = [
+                hour
+                for day in days
+                for hour in (day.get("hours") or [])
+            ][-24:]
+            compact_system = {
+                key: value
+                for key, value in system.items()
+                if key not in ("days", "minutes", "checkDescription")
+            }
+            compact_system["days"] = []
+            for day in days:
+                compact_day = {
+                    key: value
+                    for key, value in day.items()
+                    if key not in ("hours",)
+                }
+                checks = int(day.get("checks") or 0)
+                failures = int(day.get("failures") or 0)
+                compact_day["status"] = (
+                    "unknown" if checks <= 0
+                    else "down" if failures >= checks
+                    else "degraded" if failures
+                    else "operational"
+                )
+                compact_system["days"].append(compact_day)
+            compact_system["hours"] = hours
+            compact_system["minutes"] = list(system.get("minutes") or [])[-60:]
+            projected.append(compact_system)
+        systems = projected
 
     return json_response(
         {"ok": True, "now": now, "systems": systems, "current": current},
@@ -4299,6 +4999,18 @@ WORLD_SOCIAL_POSTS_CACHE_KEY = (
 # cannot become another 100k-req/day quota pressure.
 WORLD_SOCIAL_POSTS_TTL = 600
 
+# Public orbital elements are refreshed only by the scheduled Worker. Browser
+# reads can use D1's last-known-good copy but can never trigger CelesTrak
+# traffic, which keeps one World tab from multiplying upstream requests.
+WORLD_SATELLITE_CACHE_KEY = (
+    "https://forkmesh.internal/api/world/satellites?v=1"
+)
+WORLD_SATELLITE_CACHE_SECONDS = 2 * 60 * 60
+WORLD_SATELLITE_REFRESH_MIN_MS = 2 * 60 * 60 * 1000
+WORLD_SATELLITE_REFRESH_CRON_MINUTES = 3 * 60
+WORLD_SATELLITE_REFRESH_CRON_OFFSET = 11
+WORLD_SATELLITE_FETCH_TIMEOUT_SECONDS = 20
+
 
 BLOG_RSS_CACHE_KEY = "https://forkmesh.internal/blog/rss.xml"
 # The blog index is a build artifact, so the feed only changes on deploy; half
@@ -4445,6 +5157,198 @@ async def world_social_posts_handler(env, request):
     return resp
 
 
+def _world_satellite_refresh_error_code(value, fallback="refresh_failed"):
+    code = str(getattr(value, "code", "") or value or fallback).lower()
+    code = re.sub(r"[^a-z0-9_:-]+", "_", code).strip("_")
+    return (code or fallback)[:80]
+
+
+async def _world_satellite_refresh_failure(env, now, status, error):
+    """Record one bounded refresh outcome without touching last-good data."""
+    try:
+        safe_status = max(0, min(599, int(status or 0)))
+    except (TypeError, ValueError, OverflowError):
+        safe_status = 0
+    code = _world_satellite_refresh_error_code(error)
+    try:
+        await d1_run(
+            env,
+            """UPDATE world_satellite_snapshot
+                  SET last_attempt_at=?,last_status=?,last_error=?
+                WHERE snapshot_id=1""",
+            int(now), safe_status, code,
+        )
+    except Exception:
+        # An absent row is normal before the first successful refresh. A D1
+        # bookkeeping failure must not turn an upstream outage into a cron
+        # exception storm.
+        pass
+    return {
+        "ok": False,
+        "status": "upstream_error",
+        "upstreamStatus": safe_status,
+        "error": code,
+    }
+
+
+async def refresh_world_satellite_snapshot(env, now_ms=None):
+    """Cron-only fixed-source refresh of the public VISUAL OMM snapshot.
+
+    The caller owns the three-hour schedule; the additional two-hour D1 gate
+    protects manual retries or overlapping scheduled invocations from violating
+    CelesTrak's once-per-update usage policy.
+    """
+    await ensure_schema(env)
+    now = int(now_ms if now_ms is not None else Date.now())
+    row = await d1_first(
+        env,
+        """SELECT fetched_at,last_attempt_at
+             FROM world_satellite_snapshot WHERE snapshot_id=1""",
+    )
+    last_attempt = int((row or {}).get("last_attempt_at") or 0)
+    if last_attempt and now - last_attempt < WORLD_SATELLITE_REFRESH_MIN_MS:
+        return {
+            "ok": True,
+            "status": "fresh",
+            "fetchedAt": int((row or {}).get("fetched_at") or 0),
+        }
+
+    # Keep the valid data/digest untouched while the request is in flight.
+    if row:
+        await d1_run(
+            env,
+            """UPDATE world_satellite_snapshot
+                  SET last_attempt_at=?,last_status=0,last_error=''
+                WHERE snapshot_id=1""",
+            now,
+        )
+    try:
+        upstream = await js_fetch_with_timeout(
+            world_satellites.CELESTRAK_VISUAL_OMM_URL,
+            {
+                "method": "GET",
+                "headers": {"accept": "application/json"},
+                # CelesTrak asks machine clients to stop on a 301 rather than
+                # silently following an obsolete or incorrect URL.
+                "redirect": "manual",
+            },
+            WORLD_SATELLITE_FETCH_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        return await _world_satellite_refresh_failure(
+            env, now, 0, "fetch_failed")
+
+    try:
+        status = int(getattr(upstream, "status", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        status = 0
+    if status != 200:
+        return await _world_satellite_refresh_failure(
+            env, now, status, "upstream_http_status")
+
+    try:
+        announced = int(upstream.headers.get("content-length") or 0)
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        announced = 0
+    if announced > world_satellites.MAX_CELESTRAK_RESPONSE_BYTES:
+        return await _world_satellite_refresh_failure(
+            env, now, 502, "celestrak_body_too_large")
+    try:
+        raw = str(await upstream.text())
+        payload = world_satellites.build_snapshot_from_json(raw, now)
+        document, digest = world_satellites.serialize_snapshot_payload(
+            payload)
+    except world_satellites.SatelliteDataError as error:
+        return await _world_satellite_refresh_failure(
+            env, now, 502, error)
+    except Exception:
+        return await _world_satellite_refresh_failure(
+            env, now, 502, "upstream_read_failed")
+
+    await d1_run(
+        env,
+        """INSERT INTO world_satellite_snapshot
+               (snapshot_id,data,digest,fetched_at,source_epoch,
+                last_attempt_at,last_status,last_error)
+             VALUES (1,?,?,?,?,?,200,'')
+             ON CONFLICT(snapshot_id) DO UPDATE SET
+               data=excluded.data,
+               digest=excluded.digest,
+               fetched_at=excluded.fetched_at,
+               source_epoch=excluded.source_epoch,
+               last_attempt_at=excluded.last_attempt_at,
+               last_status=200,
+               last_error=''""",
+        document,
+        digest,
+        now,
+        payload["sourceEpoch"],
+        now,
+    )
+    await edge_cache_delete(WORLD_SATELLITE_CACHE_KEY)
+    return {
+        "ok": True,
+        "status": "updated",
+        "fetchedAt": now,
+        "recordCount": payload["recordCount"],
+        "digest": digest,
+    }
+
+
+async def world_satellites_handler(env, request):
+    """Serve only the cached last-good snapshot; never fetch per visitor."""
+    if method_name(request) != "GET":
+        return json_response(
+            {"error": "method_not_allowed"},
+            status=405,
+            cache_control="no-store",
+            extra_headers={"allow": "GET"},
+        )
+    cached = await edge_cache_match(WORLD_SATELLITE_CACHE_KEY)
+    if cached is not None:
+        return cached
+
+    await ensure_schema(env)
+    row = await d1_first(
+        env,
+        """SELECT data,digest FROM world_satellite_snapshot
+             WHERE snapshot_id=1""",
+    )
+    try:
+        payload = world_satellites.parse_snapshot_document(
+            str((row or {}).get("data") or ""))
+        _document, digest = world_satellites.serialize_snapshot_payload(
+            payload)
+        stored_digest = str((row or {}).get("digest") or "").lower()
+        if not hmac.compare_digest(digest, stored_digest):
+            raise world_satellites.SatelliteDataError(
+                "satellite_snapshot_digest_mismatch")
+    except world_satellites.SatelliteDataError:
+        response = json_response(
+            {"ok": False, "status": "warming", "satellites": []},
+            status=503,
+            cache_control=(
+                "public, max-age=60, stale-while-revalidate=300"),
+            extra_headers={
+                **EXPECTED_DEGRADED_HEADERS,
+                "x-content-type-options": "nosniff",
+            },
+        )
+        await edge_cache_put(WORLD_SATELLITE_CACHE_KEY, response)
+        return response
+
+    response = json_response(
+        payload,
+        cache_control=(
+            "public, max-age=%d, stale-while-revalidate=86400"
+            % WORLD_SATELLITE_CACHE_SECONDS
+        ),
+        extra_headers={"x-content-type-options": "nosniff"},
+    )
+    await edge_cache_put(WORLD_SATELLITE_CACHE_KEY, response)
+    return response
+
+
 async def _chat_channel_passphrase(env, channel_id, key_version):
     secret = (
         _require_data_secret(env)
@@ -4458,13 +5362,17 @@ async def _chat_channel_passphrase(env, channel_id, key_version):
     return bytes(Uint8Array.new(digest).to_py()).hex()
 
 
-def _office_entry_ticket(env):
-    """Issue a short-lived proof that the Office door policy was satisfied."""
+def _office_entry_ticket(env, account_bi):
+    """Issue a short-lived, account-bound proof of Office admission."""
+    account_bi = str(account_bi or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", account_bi):
+        raise ValueError("registered Office account required")
     expires = int(Date.now()) + OFFICE_ENTRY_TICKET_TTL_MS
     nonce = new_world_peer_id()
     canonical = ".".join((
-        "v1",
+        "v2",
         "world-general",
+        account_bi,
         str(expires),
         nonce,
     ))
@@ -4477,15 +5385,17 @@ def _office_entry_ticket(env):
 
 
 def _office_entry_ticket_claims(env, token):
-    """Verify an Office entry proof without accepting it from a URL."""
+    """Verify an account-bound Office entry proof without URL credentials."""
     raw = str(token or "")
-    if len(raw) > 256:
+    if len(raw) > 384:
         return None
     parts = raw.split(".")
-    if len(parts) != 5:
+    if len(parts) != 6:
         return None
-    version_tag, scope, expires_raw, nonce, signature = parts
-    if version_tag != "v1" or scope != "world-general":
+    version_tag, scope, account_bi, expires_raw, nonce, signature = parts
+    if version_tag != "v2" or scope != "world-general":
+        return None
+    if not re.fullmatch(r"[0-9a-f]{64}", account_bi):
         return None
     if not re.fullmatch(r"[A-Za-z0-9_-]{8,32}", nonce):
         return None
@@ -4501,7 +5411,7 @@ def _office_entry_ticket_claims(env, token):
         or expires - now > OFFICE_ENTRY_TICKET_TTL_MS
     ):
         return None
-    canonical = ".".join(parts[:4])
+    canonical = ".".join(parts[:5])
     expected = hmac.new(
         (_require_data_secret(env) + ":office-entry-ticket-v1").encode(),
         canonical.encode(),
@@ -4511,109 +5421,10 @@ def _office_entry_ticket_claims(env, token):
         return None
     return {
         "scope": scope,
+        "accountBi": account_bi,
         "expires": expires,
         "nonce": nonce,
     }
-
-
-def _office_entry_code_digest(env, code):
-    """Key four transient digits for comparison inside the Office room."""
-    code = str(code or "")
-    if not re.fullmatch(r"[0-9]{4}", code):
-        return ""
-    return hmac.new(
-        _require_data_secret(env).encode(),
-        ("forkmesh-office-entry-code-v1\n" + code).encode(),
-        "sha256",
-    ).hexdigest()
-
-
-def _office_socket_code_state(peers):
-    """Return (configured, canonical digest) from live socket attachments."""
-    digests = []
-    for peer in peers or []:
-        digest = str(_ws_attr(peer, "entry_code_digest", "") or "")
-        digests.append(
-            digest if re.fullmatch(r"[0-9a-f]{64}", digest) else "")
-    configured = any(digests)
-    if not configured:
-        return False, ""
-    first = next(value for value in digests if value)
-    if any(not hmac.compare_digest(first, value) for value in digests):
-        # A partial attachment update fails closed until an occupant sets the
-        # code again; no arbitrarily selected digest becomes authoritative.
-        return True, ""
-    return True, first
-
-
-def _office_entry_digest_approved(
-        configured, stored_digest, candidate_digest, fallback_approved):
-    """Apply session-code precedence without ever receiving plaintext."""
-    if configured:
-        return bool(
-            re.fullmatch(r"[0-9a-f]{64}", str(stored_digest or ""))
-            and re.fullmatch(r"[0-9a-f]{64}", str(candidate_digest or ""))
-            and hmac.compare_digest(
-                str(stored_digest), str(candidate_digest))
-        )
-    return fallback_approved is True
-
-
-def _office_live_account(peers, account_bi):
-    """Whether this registered account currently has a general-Office socket."""
-    account_bi = str(account_bi or "")
-    if not re.fullmatch(r"[0-9a-f]{64}", account_bi):
-        return False
-    return any(
-        str(_ws_attr(peer, "scope", "") or "") == "world-general"
-        and hmac.compare_digest(
-            str(_ws_attr(peer, "account_bi", "") or ""), account_bi)
-        for peer in peers or []
-    )
-
-
-def _office_entry_rate_step(buckets, rate_key, now):
-    """Advance one bounded, opaque-source Office-door rate window."""
-    if (
-        not isinstance(buckets, dict)
-        or not re.fullmatch(r"[0-9a-f]{64}", str(rate_key or ""))
-    ):
-        return False, OFFICE_ENTRY_RATE_WINDOW_MS
-    now = int(now)
-    expired = []
-    for key, value in buckets.items():
-        try:
-            started = int(value[0])
-        except (TypeError, ValueError, IndexError):
-            expired.append(key)
-            continue
-        if now < started or now - started >= OFFICE_ENTRY_RATE_WINDOW_MS:
-            expired.append(key)
-    for key in expired:
-        buckets.pop(key, None)
-
-    current = buckets.get(rate_key)
-    if current is None:
-        if len(buckets) >= OFFICE_ENTRY_RATE_BUCKETS_MAX:
-            return False, OFFICE_ENTRY_RATE_WINDOW_MS
-        started = now
-        count = 1
-    else:
-        try:
-            started = int(current[0])
-            count = min(
-                OFFICE_ENTRY_RATE_MAX_PER_WINDOW + 1,
-                int(current[1]) + 1,
-            )
-        except (TypeError, ValueError, IndexError):
-            started = now
-            count = 1
-    buckets[rate_key] = (started, count)
-    if count > OFFICE_ENTRY_RATE_MAX_PER_WINDOW:
-        retry_ms = max(
-            1000, OFFICE_ENTRY_RATE_WINDOW_MS - (now - started))
-        return False, retry_ms
-    return True, 0
 
 
 def _office_meeting_ticket(env, scope, key_version, account_bi="", name=""):
@@ -4854,243 +5665,8 @@ async def _chat_channel_socket_handler(env, request, channel_id):
         extra_headers=EXPECTED_DEGRADED_HEADERS)
 
 
-# Per-isolate memo of the last door state the Office room actually answered
-# with, keyed by occupant_bi ("" for guests — canSetCode is occupant-specific).
-# The platform can abort the Office Durable Object mid-request (free-tier
-# duration cap, or a co-located DO blowing the isolate's limits); browsers
-# polling the door then saw 503 bursts (2026-07-25 error-log entries) even
-# though nothing about the door had changed. A read-only status probe may fall
-# back to the last confirmed state for a bounded window; entry stays atomic
-# and never uses this.
-_OFFICE_STATUS_MEMO = {}
-OFFICE_STATUS_MEMO_STALE_MS = 5 * 60 * 1000
-OFFICE_STATUS_MEMO_MAX = 256
-
-
-def _office_status_memo_fallback(occupant_bi):
-    hit = _OFFICE_STATUS_MEMO.get(str(occupant_bi or ""))
-    if hit and int(Date.now()) - hit["ts"] < OFFICE_STATUS_MEMO_STALE_MS:
-        return dict(hit["state"])
-    return None
-
-
-def _office_status_memo_store(occupant_bi, state):
-    if len(_OFFICE_STATUS_MEMO) >= OFFICE_STATUS_MEMO_MAX:
-        _OFFICE_STATUS_MEMO.clear()
-    _OFFICE_STATUS_MEMO[str(occupant_bi or "")] = {
-        "ts": int(Date.now()),
-        "state": dict(state),
-    }
-
-
-async def _office_general_room_state(
-        env, rate_key="", code_approved=None, code_digest="",
-        occupant_bi="", request=None):
-    """Read occupancy or atomically ask the Office room to admit an entry."""
-    entry_request = code_approved is not None
-    action = "entry" if entry_request else "status"
-    method = "POST" if entry_request else "GET"
-    headers = {}
-    if entry_request:
-        if not re.fullmatch(r"[0-9a-f]{64}", str(rate_key)):
-            return None, json_response(
-                {"error": "office_unavailable"},
-                status=503,
-                cache_control="no-store, max-age=0, must-revalidate",
-                extra_headers=EXPECTED_DEGRADED_HEADERS,
-            )
-        headers["x-forkmesh-office-rate-key"] = str(rate_key)
-        headers["x-forkmesh-office-code-approved"] = (
-            "1" if code_approved is True else "0")
-        if re.fullmatch(r"[0-9a-f]{64}", str(code_digest or "")):
-            headers["x-forkmesh-office-code-digest"] = str(code_digest)
-    if re.fullmatch(r"[0-9a-f]{64}", str(occupant_bi or "")):
-        headers["x-forkmesh-office-account-bi"] = str(occupant_bi)
-    try:
-        room_id = env.FORKMESH_OFFICE_ROOM.idFromName(
-            "office:world-general:v1")
-        target_url = (
-            "https://forkmesh.internal/api/world/office/"
-            "world-general/v1/" + action
-        )
-        # The platform can abort the Office DO mid-request; a fresh stub lands
-        # on a replacement isolate, so retry once — the same transient-abort
-        # policy as the world/room Durable Object paths. Status is a GET and
-        # entry is an idempotent header-only POST the room applies atomically,
-        # so re-driving either is safe.
-        last_error = None
-        response = None
-        for _attempt in range(2):
-            room_object = env.FORKMESH_OFFICE_ROOM.get(room_id)
-            try:
-                internal_request = JsRequest.new(
-                    target_url,
-                    to_js({"method": method, "headers": headers}),
-                )
-                response = await room_object.fetch(internal_request)
-                last_error = None
-                break
-            except Exception as error:
-                last_error = error
-        if last_error is not None or response is None:
-            raise last_error or Exception("office room unavailable")
-        status = int(getattr(response, "status", 503) or 503)
-        payload = await _response_json(response)
-    except Exception as error:
-        if request is not None:
-            await log_durable_object_abort(
-                env, request, "/api/world/office/general/" + action, error)
-        if not entry_request:
-            stale = _office_status_memo_fallback(occupant_bi)
-            if stale is not None:
-                return stale, None
-        return None, json_response(
-            {"error": "office_unavailable"},
-            status=503,
-            cache_control="no-store, max-age=0, must-revalidate",
-            extra_headers=EXPECTED_DEGRADED_HEADERS,
-        )
-    if not isinstance(payload, dict):
-        payload = {}
-    if status == 429:
-        try:
-            retry_ms = max(1000, int(payload.get("retryAfterMs") or 1000))
-        except (TypeError, ValueError):
-            retry_ms = 1000
-        return None, json_response(
-            {"error": "rate_limited", "retryAfterMs": retry_ms},
-            status=429,
-            cache_control="no-store, max-age=0, must-revalidate",
-            extra_headers={
-                "Retry-After": str(max(1, (retry_ms + 999) // 1000)),
-            },
-        )
-    if status == 403 and entry_request:
-        state = {
-            "occupied": payload.get("occupied") is True,
-            "codeConfigured": payload.get("codeConfigured") is True,
-            "canSetCode": False,
-        }
-        return state, json_response(
-            {"error": "invalid_entry_code"},
-            status=403,
-            cache_control="no-store, max-age=0, must-revalidate",
-        )
-    occupied = payload.get("occupied")
-    code_configured = payload.get("codeConfigured")
-    can_set_code = payload.get("canSetCode")
-    if (
-        status < 200
-        or status >= 300
-        or payload.get("ok") is not True
-        or not isinstance(occupied, bool)
-        or not isinstance(code_configured, bool)
-        or not isinstance(can_set_code, bool)
-    ):
-        # A malformed ANSWER from the room (unlike a platform abort above) is
-        # a real bug signal, so this 503 stays visible to the generic logger.
-        return None, json_response(
-            {"error": "office_unavailable"},
-            status=503,
-            cache_control="no-store, max-age=0, must-revalidate",
-        )
-    state = {
-        "occupied": occupied,
-        "codeConfigured": code_configured,
-        "canSetCode": can_set_code,
-    }
-    if not entry_request:
-        _office_status_memo_store(occupant_bi, state)
-    return state, None
-
-
-async def _office_general_set_code(env, account_bi, code_digest,
-                                   request=None):
-    """Forward only keyed material to the live general-Office room."""
-    if (
-        not re.fullmatch(r"[0-9a-f]{64}", str(account_bi or ""))
-        or not re.fullmatch(r"[0-9a-f]{64}", str(code_digest or ""))
-    ):
-        return None, json_response(
-            {"error": "office_unavailable"},
-            status=503,
-            cache_control="no-store, max-age=0, must-revalidate",
-            extra_headers=EXPECTED_DEGRADED_HEADERS,
-        )
-    headers = {
-        "x-forkmesh-office-account-bi": str(account_bi),
-        "x-forkmesh-office-code-digest": str(code_digest),
-    }
-    try:
-        room_id = env.FORKMESH_OFFICE_ROOM.idFromName(
-            "office:world-general:v1")
-        target_url = (
-            "https://forkmesh.internal/api/world/office/"
-            "world-general/v1/code"
-        )
-        # Same transient-abort retry as the status/entry path: the room
-        # applies the digested code atomically, so re-driving is safe.
-        last_error = None
-        response = None
-        for _attempt in range(2):
-            room_object = env.FORKMESH_OFFICE_ROOM.get(room_id)
-            try:
-                internal_request = JsRequest.new(
-                    target_url,
-                    to_js({"method": "POST", "headers": headers}),
-                )
-                response = await room_object.fetch(internal_request)
-                last_error = None
-                break
-            except Exception as error:
-                last_error = error
-        if last_error is not None or response is None:
-            raise last_error or Exception("office room unavailable")
-        status = int(getattr(response, "status", 503) or 503)
-        payload = await _response_json(response)
-    except Exception as error:
-        if request is not None:
-            await log_durable_object_abort(
-                env, request, "/api/world/office/general/code", error)
-        return None, json_response(
-            {"error": "office_unavailable"},
-            status=503,
-            cache_control="no-store, max-age=0, must-revalidate",
-            extra_headers=EXPECTED_DEGRADED_HEADERS,
-        )
-    if not isinstance(payload, dict):
-        payload = {}
-    if status == 403:
-        return None, json_response(
-            {"error": "office_occupant_required"},
-            status=403,
-            cache_control="no-store, max-age=0, must-revalidate",
-        )
-    occupied = payload.get("occupied")
-    code_configured = payload.get("codeConfigured")
-    can_set_code = payload.get("canSetCode")
-    if (
-        status < 200
-        or status >= 300
-        or payload.get("ok") is not True
-        or occupied is not True
-        or code_configured is not True
-        or can_set_code is not True
-    ):
-        return None, json_response(
-            {"error": "office_unavailable"},
-            status=503,
-            cache_control="no-store, max-age=0, must-revalidate",
-        )
-    return {
-        "occupied": True,
-        "codeConfigured": True,
-        "canSetCode": True,
-    }, None
-
-
 async def office_general_status_handler(env, request):
-    """Return only boolean door state; optionally prove a live occupant."""
+    """Return the login-gate state; the retired coordination code is gone."""
     if method_name(request) != "GET":
         return json_response(
             {"error": "method_not_allowed"},
@@ -5098,35 +5674,20 @@ async def office_general_status_handler(env, request):
             cache_control="no-store, max-age=0, must-revalidate",
             extra_headers={"allow": "GET"},
         )
-    occupant_bi = ""
     try:
-        account_bi, account = await _account_session_record(env, request)
-        if (
-            re.fullmatch(r"[0-9a-f]{64}", str(account_bi or ""))
-            and account
-            and account.get("status") == "active"
-            and _account_kind(account) == "user"
-        ):
-            occupant_bi = str(account_bi)
+        _, account = await _account_session_record(env, request)
     except Exception:
-        occupant_bi = ""
-    state, error = await _office_general_room_state(
-        env, occupant_bi=occupant_bi, request=request)
-    if error is not None:
-        return error
-    fallback = getattr(env, "OFFICE_ENTRY_CODE", None)
-    fallback_configured = bool(
-        isinstance(fallback, str)
-        and re.fullmatch(r"[0-9]{4}", fallback)
+        account = None
+    authenticated = bool(
+        account
+        and account.get("status") == "active"
+        and _account_kind(account) == "user"
     )
     return json_response(
         {
             "ok": True,
-            "occupied": state["occupied"],
-            "codeConfigured": bool(
-                state["codeConfigured"] or fallback_configured),
-            "requiresCode": state["occupied"],
-            "canSetCode": state["canSetCode"],
+            "authenticated": authenticated,
+            "requiresLogin": True,
         },
         cache_control="no-store, max-age=0, must-revalidate",
         extra_headers={"x-content-type-options": "nosniff"},
@@ -5134,123 +5695,7 @@ async def office_general_status_handler(env, request):
 
 
 async def office_general_entry_handler(env, request):
-    """Apply the Office door policy and mint a code-free entry proof."""
-    if method_name(request) != "POST":
-        return json_response(
-            {"error": "method_not_allowed"},
-            status=405,
-            cache_control="no-store, max-age=0, must-revalidate",
-            extra_headers={"allow": "POST"},
-        )
-    if not _request_same_origin(request):
-        return json_response(
-            {"error": "origin_not_allowed"},
-            status=403,
-            cache_control="no-store, max-age=0, must-revalidate",
-        )
-    try:
-        data = await bounded_json_request(
-            request, max_bytes=OFFICE_ENTRY_REQUEST_MAX_BYTES)
-    except RequestBodyTooLarge:
-        return json_response(
-            {"error": "payload_too_large"},
-            status=413,
-            cache_control="no-store, max-age=0, must-revalidate",
-        )
-    except Exception:
-        return json_response(
-            {"error": "invalid_json"},
-            status=400,
-            cache_control="no-store, max-age=0, must-revalidate",
-        )
-    if not isinstance(data, dict):
-        return json_response(
-            {"error": "invalid_json"},
-            status=400,
-            cache_control="no-store, max-age=0, must-revalidate",
-        )
-    configured = getattr(env, "OFFICE_ENTRY_CODE", None)
-    configured_valid = (
-        isinstance(configured, str)
-        and re.fullmatch(r"[0-9]{4}", configured) is not None
-    )
-    submitted = data.get("code")
-    submitted_valid = (
-        isinstance(submitted, str)
-        and re.fullmatch(r"[0-9]{4}", submitted) is not None
-    )
-    comparison = submitted if submitted_valid else "----"
-    code_approved = bool(
-        configured_valid
-        and submitted_valid
-        and hmac.compare_digest(configured, comparison)
-    )
-    try:
-        code_digest = (
-            _office_entry_code_digest(env, submitted)
-            if submitted_valid else ""
-        )
-        rate_key = await blind_index(
-            env,
-            "office-entry-source-v1:"
-            + (_transient_client_address(request) or "unknown"),
-        )
-        state, error = await _office_general_room_state(
-            env,
-            rate_key,
-            code_approved=code_approved,
-            code_digest=code_digest,
-            request=request,
-        )
-    except Exception:
-        return json_response(
-            {"error": "office_unavailable"},
-            status=503,
-            cache_control="no-store, max-age=0, must-revalidate",
-        )
-    if error is not None:
-        if (
-            int(getattr(error, "status", 0) or 0) == 403
-            and not configured_valid
-            and not bool((state or {}).get("codeConfigured"))
-        ):
-            return json_response(
-                {"error": "office_unavailable"},
-                status=503,
-                cache_control="no-store, max-age=0, must-revalidate",
-            )
-        return error
-    try:
-        token = _office_entry_ticket(env)
-        claims = _office_entry_ticket_claims(env, token) or {}
-        expires = int(claims.get("expires") or 0)
-    except Exception:
-        return json_response(
-            {"error": "office_unavailable"},
-            status=503,
-            cache_control="no-store, max-age=0, must-revalidate",
-        )
-    if not expires:
-        return json_response(
-            {"error": "office_unavailable"},
-            status=503,
-            cache_control="no-store, max-age=0, must-revalidate",
-        )
-    return json_response(
-        {
-            "ok": True,
-            "room": "general",
-            "occupied": state["occupied"],
-            "entryTicket": token,
-            "expiresAt": expires,
-        },
-        cache_control="no-store, max-age=0, must-revalidate",
-        extra_headers={"x-content-type-options": "nosniff"},
-    )
-
-
-async def office_general_code_handler(env, request):
-    """Let a live registered occupant set the ephemeral four-digit door code."""
+    """Admit an active registered account and mint its short-lived proof."""
     if method_name(request) != "POST":
         return json_response(
             {"error": "method_not_allowed"},
@@ -5275,67 +5720,71 @@ async def office_general_code_handler(env, request):
         or _account_kind(account) != "user"
     ):
         return json_response(
-            {"error": "registered_user_required"},
+            {"error": "login_required"},
             status=401,
             cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"x-content-type-options": "nosniff"},
         )
     try:
-        data = await bounded_json_request(
-            request, max_bytes=OFFICE_ENTRY_REQUEST_MAX_BYTES)
-    except RequestBodyTooLarge:
-        return json_response(
-            {"error": "payload_too_large"},
-            status=413,
-            cache_control="no-store, max-age=0, must-revalidate",
-        )
+        token = _office_entry_ticket(env, str(account_bi))
+        claims = _office_entry_ticket_claims(env, token) or {}
+        expires = int(claims.get("expires") or 0)
     except Exception:
-        return json_response(
-            {"error": "invalid_json"},
-            status=400,
-            cache_control="no-store, max-age=0, must-revalidate",
-        )
-    if not isinstance(data, dict) or set(data) != {"code"}:
-        return json_response(
-            {"error": "invalid_code"},
-            status=400,
-            cache_control="no-store, max-age=0, must-revalidate",
-        )
-    transient_code = data.get("code")
-    if (
-        not isinstance(transient_code, str)
-        or not re.fullmatch(r"[0-9]{4}", transient_code)
-    ):
-        return json_response(
-            {"error": "invalid_code"},
-            status=400,
-            cache_control="no-store, max-age=0, must-revalidate",
-        )
-    try:
-        code_digest = _office_entry_code_digest(env, transient_code)
-        state, error = await _office_general_set_code(
-            env, str(account_bi), code_digest, request=request)
-    except Exception:
+        token, expires = "", 0
+    if not token or not expires:
         return json_response(
             {"error": "office_unavailable"},
             status=503,
             cache_control="no-store, max-age=0, must-revalidate",
         )
-    if error is not None:
-        return error
     return json_response(
         {
             "ok": True,
-            "occupied": state["occupied"],
-            "codeConfigured": state["codeConfigured"],
-            "canSetCode": state["canSetCode"],
+            "room": "general",
+            "entryTicket": token,
+            "expiresAt": expires,
+            "requiresLogin": True,
         },
         cache_control="no-store, max-age=0, must-revalidate",
         extra_headers={"x-content-type-options": "nosniff"},
     )
 
 
-async def office_general_access_handler(env, request):
-    """Issue an account-bound meeting claim after validating door entry."""
+OFFICE_FLOOR_TEAM_ALIASES = {
+    "engineering": {
+        "engineering", "engineers", "development", "developers",
+        "platform", "frontend", "backend",
+    },
+    "product-design": {
+        "product-design", "product", "design", "ux", "ui-ux",
+    },
+    "security": {
+        "security", "security-team", "trust-safety", "trust-and-safety",
+    },
+    "infrastructure": {
+        "infrastructure", "infra", "devops", "site-reliability", "sre",
+    },
+    "community": {
+        "community", "community-team", "developer-relations", "devrel",
+    },
+    "partnerships": {
+        "partnerships", "partnership", "business-development", "bizdev",
+    },
+    "operations": {
+        "operations", "ops", "people-operations", "finance-operations",
+    },
+}
+
+
+def _office_team_slug(value):
+    return re.sub(
+        r"-+", "-",
+        re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()),
+    ).strip("-")[:64]
+
+
+async def office_floor_access_handler(env, request):
+    """Return only the signed-in viewer's server-derived elevator grants."""
     if method_name(request) != "GET":
         return json_response(
             {"error": "method_not_allowed"},
@@ -5344,39 +5793,93 @@ async def office_general_access_handler(env, request):
             extra_headers={"allow": "GET"},
         )
     try:
+        account_bi, account = await _account_session_record(env, request)
+    except Exception:
+        account_bi, account = "", None
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", str(account_bi or ""))
+        or not account
+        or account.get("status") != "active"
+        or _account_kind(account) != "user"
+    ):
+        return json_response(
+            {
+                "authenticated": False,
+                "allowedFloorIds": [],
+                "teams": [],
+            },
+            status=401,
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    await ensure_schema(env)
+    rows = await d1_all(
+        env,
+        "SELECT DISTINCT team FROM org_team_members "
+        "WHERE member_bi=? ORDER BY team LIMIT 32",
+        str(account_bi),
+    )
+    teams = sorted({
+        slug
+        for slug in (
+            _office_team_slug((row or {}).get("team")) for row in rows or []
+        )
+        if slug
+    })
+    team_set = set(teams)
+    allowed = ["lobby", "marketing", "rooftop"]
+    for floor_id, aliases in OFFICE_FLOOR_TEAM_ALIASES.items():
+        if team_set.intersection(aliases):
+            allowed.append(floor_id)
+    return json_response(
+        {
+            "authenticated": True,
+            "account": clean_string(
+                account.get("name", ""), MAX_NODE_NAME).lower(),
+            "allowedFloorIds": allowed,
+            "teams": teams,
+        },
+        cache_control="private, no-store, max-age=0, must-revalidate",
+        extra_headers={"x-content-type-options": "nosniff"},
+    )
+
+
+async def office_general_access_handler(env, request):
+    """Issue a meeting claim for the same account admitted at the lobby."""
+    if method_name(request) != "GET":
+        return json_response(
+            {"error": "method_not_allowed"},
+            status=405,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"allow": "GET"},
+        )
+    try:
+        account_bi, record = await _account_session_record(env, request)
         entry_claims = _office_entry_ticket_claims(
             env, request.headers.get("x-forkmesh-office-entry") or "")
     except Exception:
-        return json_response(
-            {"error": "office_unavailable"},
-            status=503,
-            cache_control="no-store, max-age=0, must-revalidate",
-        )
+        account_bi, record, entry_claims = "", None, None
     if (
-        not entry_claims
+        not re.fullmatch(r"[0-9a-f]{64}", str(account_bi or ""))
+        or not record
+        or record.get("status") != "active"
+        or _account_kind(record) != "user"
+        or not entry_claims
         or entry_claims.get("scope") != "world-general"
+        or not hmac.compare_digest(
+            str(entry_claims.get("accountBi") or ""),
+            str(account_bi),
+        )
     ):
         return json_response(
-            {"error": "office_entry_required"},
+            {"error": "registered_office_entry_required"},
             status=401,
             cache_control="no-store, max-age=0, must-revalidate",
             extra_headers={"x-content-type-options": "nosniff"},
         )
-    account_bi = ""
-    name = ""
-    account_status = "Guest"
-    try:
-        account_bi, record = await _account_session_record(env, request)
-        if record:
-            name = world_protocol.clean_display_name(
-                record.get("name"), "Contributor")
-            account_status = "Registered"
-        else:
-            account_bi = ""
-    except Exception:
-        account_bi = ""
+    name = world_protocol.clean_display_name(
+        record.get("name"), "Contributor")
     token = _office_meeting_ticket(
-        env, "world-general", 1, account_bi, name)
+        env, "world-general", 1, str(account_bi), name)
     claims = _office_meeting_ticket_claims(env, token) or {}
     return json_response(
         {
@@ -5390,7 +5893,7 @@ async def office_general_access_handler(env, request):
                 + quote(token, safe="")
             ),
             "expiresAt": int(claims.get("expires") or 0),
-            "accountStatus": account_status,
+            "accountStatus": "Registered",
         },
         cache_control="no-store, max-age=0, must-revalidate",
         extra_headers={"x-content-type-options": "nosniff"},
@@ -5431,10 +5934,14 @@ async def _office_general_socket_handler(env, request):
         _office_meeting_ticket_claims(env, ticket_values[0])
         if len(ticket_values) == 1 else None
     )
-    if not claims or claims["scope"] != "world-general":
+    if (
+        not claims
+        or claims["scope"] != "world-general"
+        or not re.fullmatch(
+            r"[0-9a-f]{64}", str(claims.get("account_bi") or ""))
+    ):
         return _private_replica_not_found()
-    claims["accountStatus"] = (
-        "Registered" if claims.get("account_bi") else "Guest")
+    claims["accountStatus"] = "Registered"
     return await _forward_office_socket(
         env,
         request,
@@ -8339,11 +8846,19 @@ async def catalog_handler(env, request):
             env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
         exists = prior_row is not None
         prior_commit = ""
+        prior_state_hash = ""
         # Reject rollbacks: a replayed older record must not be able to repin an
         # earlier (validly-signed) repo state and downgrade the served refs.
         if exists:
             prior = await decrypt_row(env, prior_row["data"]) or {}
             prior_commit = clean_string(prior.get("commit", ""), 64)
+            candidate_prior_state = clean_string(
+                prior.get("stateHash", ""), 64).strip().lower()
+            if (
+                    (prior.get("source") or "local-node") == "local-node"
+                    and re.fullmatch(
+                        r"[0-9a-f]{64}", candidate_prior_state)):
+                prior_state_hash = candidate_prior_state
             try:
                 if int(record["updatedAt"]) < int(prior.get("updatedAt", 0) or 0):
                     return json_response({"error": "stale_update"}, status=409)
@@ -8383,13 +8898,28 @@ async def catalog_handler(env, request):
         # must never fail the publish itself.
         if state_hash and record.get("source") == "local-node":
             try:
-                await d1_run(
-                    env,
-                    "INSERT INTO repo_state_history (key_bi, state_hash, ts) "
-                    "VALUES (?,?,?) ON CONFLICT(key_bi, state_hash) "
-                    "DO UPDATE SET ts=excluded.ts",
-                    key_bi, state_hash.strip().lower(), int(Date.now()),
-                )
+                # Preserve the state being replaced explicitly. Older releases
+                # wrote history best-effort after replacing the catalog row, so
+                # an upgraded repository can otherwise lose its only
+                # last-known-good handoff pin on the first new publication.
+                # The previous record was already owner-signature-verified when
+                # accepted; remote-clone self-pins never enter this path.
+                history_states = [
+                    digest for digest in (
+                        prior_state_hash,
+                        state_hash.strip().lower(),
+                    )
+                    if digest
+                ]
+                for digest in dict.fromkeys(history_states):
+                    await d1_run(
+                        env,
+                        "INSERT INTO repo_state_history "
+                        "(key_bi, state_hash, ts) VALUES (?,?,?) "
+                        "ON CONFLICT(key_bi, state_hash) "
+                        "DO UPDATE SET ts=excluded.ts",
+                        key_bi, digest, int(Date.now()),
+                    )
                 await d1_run(
                     env,
                     "DELETE FROM repo_state_history WHERE key_bi=? "
@@ -8422,6 +8952,16 @@ async def catalog_handler(env, request):
         # never rolls back an otherwise valid catalog publication.
         await _https_mirror_refresh_catalog_publisher_health(env, record)
         await purge_catalog_related_caches()
+        if (
+                record["visibility"] == "public"
+                and record.get("source") == "remote-clone"):
+            try:
+                await _promote_hosted_repository_import(env, record)
+            except Exception:
+                # Import metadata and its notification are useful secondary
+                # effects. The signed native catalog is still authoritative
+                # and must not be rolled back if this bounded linkage fails.
+                pass
         # A public record whose advertised head moved means freshly pushed code
         # just landed on this mirror node. Announce it to the live World room —
         # after the cache purge above, so a viewer's immediate refresh reads
@@ -8499,7 +9039,8 @@ async def catalog_handler(env, request):
         canonical = ("forkmesh-catalog-delete-v1\n" + owner + "\n" + name +
                      "\n" + ts).encode()
         try:
-            authorized = await ed25519_verify(owner_pub, sig, canonical)
+            authorized = await _verify_owner_signature(
+                env, owner, sig, canonical)
         except Exception:
             await _audit_sensitive_action(
                 env, owner, "repository.delete", "repository",
@@ -8601,7 +9142,49 @@ def _native_repository_logo_record(record, owner, repo):
         "metadata": metadata,
         # Missing or malformed visibility stays private/fail-closed.
         "isPrivate": source.get("visibility") != "public",
+        "commit": clean_string(source.get("commit", ""), 64).lower(),
     }
+
+
+def _committed_repository_logo_url(record, owner, repo):
+    """Return the immutable raw URL for a conventional root project logo."""
+    source = record if isinstance(record, dict) else {}
+    if source.get("isPrivate", source.get("visibility") != "public"):
+        return ""
+    commit = clean_string(source.get("commit", ""), 64).strip().lower()
+    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit):
+        return ""
+    metadata = source.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = source.get("logoMetadata")
+    file_structure = (
+        metadata.get("fileStructure")
+        if isinstance(metadata, dict) else None
+    )
+    if not isinstance(file_structure, list):
+        return ""
+    files = {
+        str(path or "").strip().lower(): str(path or "").strip()
+        for path in file_structure
+        if (
+            isinstance(path, str)
+            and "/" not in path.strip().rstrip("/")
+        )
+    }
+    path = next(
+        (
+            files[name]
+            for name in ("logo.png", "logo.webp", "logo.jpg", "logo.jpeg")
+            if name in files
+        ),
+        "",
+    )
+    if not path:
+        return ""
+    return (
+        "/api/repo/%s/%s/raw?path=%s&ref=%s"
+        % (quote(owner), quote(repo), quote(path), quote(commit))
+    )
 
 
 async def _native_repository_logo_context(env, request, owner, repo):
@@ -8635,12 +9218,28 @@ async def native_repository_logo_handler(
     if not suggestions:
         if method_name(request) != "GET":
             return json_response({"error": "method_not_allowed"}, status=405)
+        committed_logo_url = _committed_repository_logo_url(
+            record, owner, repo)
         params = parse_qs(urlparse(request.url).query)
         if params.get("image", [""])[0] == "1":
+            if committed_logo_url:
+                return Response("", status=302, headers={
+                    "location": committed_logo_url,
+                    "cache-control": "public, max-age=300",
+                })
             logo = await service._official_logo(env, repository_id)
             logo = logo or repository_import.deterministic_logo(record)
             return _repository_logo_image_response(
                 logo, public=not bool(record.get("isPrivate")))
+        if committed_logo_url:
+            return json_response({
+                "ok": True,
+                "repositoryId": repository_id,
+                "logo": {
+                    "dataUrl": committed_logo_url,
+                    "source": "repository",
+                },
+            }, cache_control="no-store")
         response = await service.logo_for_record(env, repository_id, record)
         return response
 
@@ -8763,7 +9362,12 @@ async def _repo_about_public(env, request, owner, repo):
             logo_record)
         resolved_logo = approved_logo or generated_logo
     if not logo_url:
-        logo_url = str(resolved_logo.get("dataUrl") or "")
+        committed_logo_resolver = globals().get(
+            "_committed_repository_logo_url")
+        logo_url = (
+            committed_logo_resolver(rec, display_owner, repo)
+            if callable(committed_logo_resolver) else ""
+        ) or str(resolved_logo.get("dataUrl") or "")
     followers = 0
     followers_list = []
     fedi_enabled = await _ap_enabled(env)
@@ -9136,12 +9740,13 @@ async def repo_mirrors_handler(env, request, owner, repo):
     history = {}
     group_keys = [str(r.get("key_bi") or "") for r in catalog_rows
                   if r.get("key_bi")]
-    if group_keys:
+    for offset in range(0, len(group_keys), 80):
+        key_batch = group_keys[offset:offset + 80]
         hist_rows = await d1_all(
             env,
             "SELECT key_bi, state_hash FROM repo_state_history"
-            " WHERE key_bi IN (%s)" % ",".join("?" for _ in group_keys),
-            *group_keys)
+            " WHERE key_bi IN (%s)" % ",".join("?" for _ in key_batch),
+            *key_batch)
         for r in hist_rows:
             history.setdefault(str(r.get("key_bi") or ""), []).append(
                 r.get("state_hash"))
@@ -9152,6 +9757,21 @@ async def repo_mirrors_handler(env, request, owner, repo):
         str(owner or "").strip().lower(),
         str(repo or "").strip().lower(),
     )
+    endpoint_rows = await d1_all(
+        env,
+        """SELECT node_name FROM mirror_https_endpoints
+            WHERE checked_at>=? AND forkmesh_verified_at>=?
+              AND healthy=1 AND forkmesh_active=1
+              AND integrity='ok' AND abuse_blocked=0""",
+        now - HTTPS_MIRROR_STATUS_FRESH_MS,
+        now - HTTPS_MIRROR_STATUS_FRESH_MS,
+    )
+    reachable_nodes = {
+        clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower()
+        for row in endpoint_rows or []
+        if valid_node_name(
+            clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower())
+    }
     payload = build_repo_mirrors_payload(
         owner,
         repo,
@@ -9163,6 +9783,7 @@ async def repo_mirrors_handler(env, request, owner, repo):
         5 * 1000,
         history,
         linked_canonical=bool(linked_row),
+        reachable_nodes=reachable_nodes,
     )
     if payload is None:
         return json_response({"error": "not_found"}, status=404)
@@ -9564,7 +10185,17 @@ async def _repo_is_private(env, owner, repo):
             "SELECT is_private, data FROM repositories WHERE key_bi=?",
             key_bi,
         )
-        if not row or int(row.get("is_private", 1) or 0) != 0:
+        if not row:
+            hosted_resolver = globals().get(
+                "_hosted_repository_import_route")
+            hosted_route = (
+                await hosted_resolver(env, owner, repo)
+                if callable(hosted_resolver) else None)
+            if hosted_route and tuple(hosted_route) != (owner, repo):
+                return await _repo_is_private(
+                    env, hosted_route[0], hosted_route[1])
+            return True
+        if int(row.get("is_private", 1) or 0) != 0:
             return True
         # Migration 0011 historically defaulted existing rows to public.
         # Validate that the signed encrypted record itself explicitly says
@@ -23262,6 +23893,73 @@ async def enqueue_notification(env, recipient, kind, title, body="", repo="",
     return True
 
 
+async def _promote_hosted_repository_import(env, catalog_record):
+    """Link one verified mirror catalog to its public provider import."""
+    mirror_owner = clean_string(
+        catalog_record.get("owner"), MAX_NODE_NAME).lower()
+    repository_name = safe_segment(clean_string(
+        catalog_record.get("name"), MAX_REPO_SEGMENT))
+    if mirror_owner not in ("mirror2", "mirror3") or not repository_name:
+        return False
+    rows = await d1_all(
+        env,
+        "SELECT id, data FROM repository_imports "
+        "WHERE provider='codeberg' AND is_private=0 "
+        "AND status NOT IN ('actively_mirrored','archived') "
+        "ORDER BY updated_at DESC LIMIT ?",
+        repository_import.MAX_PUBLIC_IMPORTS,
+    )
+    for row in rows or []:
+        record = await decrypt_row(env, row.get("data"))
+        if (
+                not isinstance(record, dict)
+                or clean_string(record.get("name"), 100).casefold()
+                != repository_name.casefold()):
+            continue
+        target_owner = clean_string(
+            record.get("targetOwner"), MAX_NODE_NAME).lower()
+        if not valid_node_name(target_owner):
+            continue
+        now = int(Date.now())
+        record["status"] = "actively_mirrored"
+        record["statusLabel"] = "Actively mirrored"
+        record["mirrored"] = True
+        record["sourceCodeFetched"] = True
+        record["mirror"] = {
+            "owner": mirror_owner,
+            "name": repository_name,
+            "live": True,
+        }
+        record["mirrorNotice"] = (
+            "The full Git repository is hosted and served by ForkMesh.")
+        record["updatedAt"] = now
+        await d1_run(
+            env,
+            "UPDATE repository_imports SET status=?, data=?, updated_at=? "
+            "WHERE id=?",
+            "actively_mirrored", await encrypt_row(env, record), now,
+            str(row.get("id") or ""),
+        )
+        await enqueue_notification(
+            env,
+            target_owner,
+            "repository_hosted",
+            repository_name + " is now fully hosted by ForkMesh",
+            body=(
+                "The Codeberg import is synced, cloneable through ForkMesh, "
+                "and available as a size map in the World."),
+            repo=target_owner + "/" + repository_name,
+            href="/" + target_owner + "/" + repository_name,
+            actor=mirror_owner,
+            source="repository_import",
+            dedupe="repository-hosted:" + str(row.get("id") or ""),
+            ts=now,
+            meta={"importId": str(row.get("id") or "")},
+        )
+        return True
+    return False
+
+
 async def notify_mentions(env, owner, repo, actor, title, body, href, source,
                           number=0):
     # number is optional (0 = not a numbered item, e.g. a brand-new PR before
@@ -23857,32 +24555,33 @@ async def send_general_chat_digests(env):
 
 
 def _forkmesh_email_card_html(heading, intro_html, body_html, footer_html=""):
-    # The card is dark, always. It is painted with inline dark styles AND
-    # declares itself dark-only via <meta name="color-scheme" content="dark">,
-    # so mail clients neither auto-invert it (the way they darken plain light
-    # emails in dark mode) nor repaint it to a light theme. An earlier version
-    # advertised "light dark" with a prefers-color-scheme:light override, but
-    # that override fired in readers whose dark theme doesn't set the OS
-    # prefers-color-scheme (e.g. Gmail's dark theme), leaving ForkMesh mail
-    # glaringly white while every other email showed dark. Forcing dark keeps
-    # the brand card consistent with the rest of a dark inbox.
+    # Inline light colors are the reliable fallback for older mail clients;
+    # clients that honor the native setting apply the dark override below.
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-        "<meta name=\"color-scheme\" content=\"dark\">"
-        "<meta name=\"supported-color-schemes\" content=\"dark\">"
+        "<meta name=\"color-scheme\" content=\"light dark\">"
+        "<meta name=\"supported-color-schemes\" content=\"light dark\">"
+        "<style>:root{color-scheme:light dark;supported-color-schemes:light dark}"
+        "@media (prefers-color-scheme:dark){body,.fm-bg{background:#090909!important;"
+        "color:#f5f5f5!important}.fm-card{background:#141416!important;"
+        "border-color:#313134!important}.fm-h1,.fm-strong,.fm-item-title{"
+        "color:#f5f5f5!important}.fm-text,.fm-item-body{color:#d4d4d8!important}"
+        ".fm-brand,.fm-muted{color:#a3a3a3!important}.fm-item{background:#0f0f11"
+        "!important;border-color:#313134!important}.fm-link{color:#4ade80!important}}"
+        "</style>"
         "</head>"
-        "<body style=\"margin:0;padding:0;background:#090909\">"
-        "<div class=\"fm-bg\" style=\"margin:0;padding:28px 16px;background:#090909;"
+        "<body style=\"margin:0;padding:0;background:#f4f4f5\">"
+        "<div class=\"fm-bg\" style=\"margin:0;padding:28px 16px;background:#f4f4f5;"
         "font-family:'ForkMesh Lato',-apple-system,BlinkMacSystemFont,"
-        "Segoe UI,Helvetica,Arial,sans-serif;color:#f5f5f5;line-height:1.55\">"
-        "<div class=\"fm-card\" style=\"max-width:560px;margin:0 auto;border:1px solid #313134;"
-        "border-radius:8px;background:#141416;padding:24px\">"
-        "<p class=\"fm-brand\" style=\"margin:0 0 22px;color:#a3a3a3;font-size:13px;"
+        "Segoe UI,Helvetica,Arial,sans-serif;color:#18181b;line-height:1.55\">"
+        "<div class=\"fm-card\" style=\"max-width:560px;margin:0 auto;border:1px solid #d4d4d8;"
+        "border-radius:8px;background:#ffffff;padding:24px\">"
+        "<p class=\"fm-brand\" style=\"margin:0 0 22px;color:#52525b;font-size:13px;"
         "letter-spacing:0;font-weight:700\">ForkMesh</p>"
-        "<h1 class=\"fm-h1\" style=\"margin:0 0 14px;color:#f5f5f5;font-size:24px;"
+        "<h1 class=\"fm-h1\" style=\"margin:0 0 14px;color:#18181b;font-size:24px;"
         "line-height:1.25;font-weight:800\">" + heading + "</h1>"
-        "<p class=\"fm-text\" style=\"margin:0 0 18px;color:#d4d4d8;font-size:15px\">" +
+        "<p class=\"fm-text\" style=\"margin:0 0 18px;color:#3f3f46;font-size:15px\">" +
         intro_html + "</p>" + body_html +
         (footer_html if footer_html else "") +
         "</div></div></body></html>")
@@ -30407,6 +31106,65 @@ async def _https_mirror_expected_forkmesh_refs(env):
         return ""
 
 
+async def _https_mirror_accepted_forkmesh_refs(env):
+    """Current and recent source-attested states accepted during convergence.
+
+    The source publication and a mirror refresh cannot commit atomically across
+    independent machines.  Keep the direct-HTTPS lease valid while a healthy
+    mirror still serves a recent state that the source genuinely signed; an
+    unknown state remains rejected by the health challenge.
+    """
+    try:
+        owner = await _org_repo_node(env, "forkmesh", "forkmesh") or "forkmesh"
+        key_bi = await blind_index(env, owner + "/forkmesh")
+        row = await d1_first(
+            env,
+            "SELECT data,is_private FROM repositories WHERE key_bi=?",
+            key_bi,
+        )
+        if not row or int(row.get("is_private", 1) or 0) != 0:
+            return frozenset()
+        record = await decrypt_row(env, row.get("data"))
+        if not record or record.get("visibility") != "public":
+            return frozenset()
+        pins = set()
+        current = clean_string(record.get("stateHash", ""), 64).lower()
+        if re.fullmatch(r"[0-9a-f]{64}", current):
+            pins.add(current)
+        history = await d1_all(
+            env,
+            "SELECT state_hash FROM repo_state_history WHERE key_bi=? "
+            "ORDER BY ts DESC LIMIT ?",
+            key_bi,
+            STATE_PIN_HISTORY,
+        )
+        for item in history or []:
+            digest = clean_string(
+                item.get("state_hash", ""), 64).strip().lower()
+            if re.fullmatch(r"[0-9a-f]{64}", digest):
+                pins.add(digest)
+        return frozenset(pins)
+    except Exception:
+        return frozenset()
+
+
+def _https_mirror_refs_match(refs_digest, accepted_refs):
+    """Compare a proof with a bounded set of exact source-signed ref states."""
+    digest = str(refs_digest or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        return False
+    candidates = (
+        (accepted_refs,)
+        if isinstance(accepted_refs, str)
+        else (accepted_refs or ())
+    )
+    return any(
+        re.fullmatch(r"[0-9a-f]{64}", str(item or "").strip().lower())
+        and hmac.compare_digest(digest, str(item).strip().lower())
+        for item in candidates
+    )
+
+
 async def _https_mirror_refresh_registered_health(env, node):
     """Best-effort activation for one exact registered endpoint.
 
@@ -30427,10 +31185,10 @@ async def _https_mirror_refresh_registered_health(env, node):
         )
         if not row:
             return False
-        expected = await _https_mirror_expected_forkmesh_refs(env)
-        if not expected:
+        accepted = await _https_mirror_accepted_forkmesh_refs(env)
+        if not accepted:
             return False
-        return bool(await _https_mirror_health_one(env, row, expected))
+        return bool(await _https_mirror_health_one(env, row, accepted))
     except Exception:
         # Registration remains safely pending. A transient control-plane fetch
         # failure must not roll back its authenticated endpoint record.
@@ -30486,7 +31244,7 @@ async def _https_mirror_mark_failed(env, row, now):
     )
 
 
-async def _https_mirror_health_one(env, row, expected_forkmesh_refs):
+async def _https_mirror_health_one(env, row, accepted_forkmesh_refs):
     """Verify one fresh node-signed health and forkmesh/forkmesh proof."""
     now = int(Date.now())
     node = clean_string(row.get("node_name", ""), MAX_NODE_NAME).lower()
@@ -30583,8 +31341,8 @@ async def _https_mirror_health_one(env, row, expected_forkmesh_refs):
         general_healthy
         and available
         and proof_integrity == "ok"
-        and expected_forkmesh_refs
-        and hmac.compare_digest(refs_digest, expected_forkmesh_refs)
+        and _https_mirror_refs_match(
+            refs_digest, accepted_forkmesh_refs)
         and HTTPS_MIRROR_REQUIRED_FORKMESH_OPERATIONS.issubset(
             set(operations))
     )
@@ -30638,9 +31396,9 @@ async def https_mirror_health_cron(env):
     )
     if not rows:
         return
-    expected = await _https_mirror_expected_forkmesh_refs(env)
+    accepted = await _https_mirror_accepted_forkmesh_refs(env)
     await asyncio.gather(
-        *[_https_mirror_health_one(env, row, expected) for row in rows],
+        *[_https_mirror_health_one(env, row, accepted) for row in rows],
         return_exceptions=True,
     )
 
@@ -30843,6 +31601,42 @@ async def _https_mirror_private_proxy(env, request, private_record):
         cache_control="no-store")
 
 
+async def _hosted_repository_import_route(env, owner, repo):
+    """Resolve one public logical import name to its physical mirror catalog."""
+    owner_l = clean_string(owner, MAX_NODE_NAME).strip().lower()
+    repo_l = clean_string(repo, MAX_REPO_SEGMENT).strip().lower()
+    if not valid_node_name(owner_l) or not safe_segment(repo_l):
+        return None
+    rows = await d1_all(
+        env,
+        "SELECT data FROM repository_imports "
+        "WHERE is_private=0 AND status='actively_mirrored' "
+        "ORDER BY updated_at DESC LIMIT ?",
+        repository_import.MAX_PUBLIC_IMPORTS,
+    )
+    for row in rows or []:
+        record = await decrypt_row(env, row.get("data"))
+        if not isinstance(record, dict):
+            continue
+        target_owner = clean_string(
+            record.get("targetOwner"), MAX_NODE_NAME).strip().lower()
+        name = clean_string(
+            record.get("name"), MAX_REPO_SEGMENT).strip().lower()
+        if target_owner != owner_l or name != repo_l:
+            continue
+        mirror = record.get("mirror") or {}
+        mirror_owner = clean_string(
+            mirror.get("owner"), MAX_NODE_NAME).strip().lower()
+        mirror_name = clean_string(
+            mirror.get("name"), MAX_REPO_SEGMENT).strip()
+        if (
+                mirror_owner in ("mirror2", "mirror3")
+                and valid_node_name(mirror_owner)
+                and safe_segment(mirror_name)):
+            return mirror_owner, mirror_name
+    return None
+
+
 async def _https_mirror_public_context(env, owner, repo):
     """Return canonical public repo identity and integrity-approved node set."""
     owner_l = clean_string(owner, MAX_NODE_NAME).strip().lower()
@@ -30874,7 +31668,21 @@ async def _https_mirror_public_context(env, owner, repo):
                 target_row = row
                 break
         if not target_row:
-            return None
+            hosted_route = await _hosted_repository_import_route(
+                env, owner_l, repo_l)
+            if hosted_route:
+                hosted_owner, hosted_repo = hosted_route
+                for row in rows:
+                    record = row.get("data") or {}
+                    if (
+                            str(record.get("owner") or "").lower()
+                            == hosted_owner
+                            and str(record.get("name") or "").lower()
+                            == hosted_repo.lower()):
+                        target_row = row
+                        break
+            if not target_row:
+                return None
         target = target_row["data"]
         members = [
             row for row in rows
@@ -30885,13 +31693,14 @@ async def _https_mirror_public_context(env, owner, repo):
             for row in members if row.get("key_bi")
         ]
         history = {}
-        if group_keys:
+        for offset in range(0, len(group_keys), 80):
+            key_batch = group_keys[offset:offset + 80]
             history_rows = await d1_all(
                 env,
                 "SELECT key_bi,state_hash FROM repo_state_history"
                 " WHERE key_bi IN (%s)"
-                % ",".join("?" for _ in group_keys),
-                *group_keys,
+                % ",".join("?" for _ in key_batch),
+                *key_batch,
             )
             for item in history_rows or []:
                 history.setdefault(
@@ -30917,10 +31726,12 @@ async def _https_mirror_public_context(env, owner, repo):
             == "remote-clone"
         ):
             pins = set()
+            current_pins = set()
             target_state = clean_string(
                 target.get("stateHash", ""), 64).lower()
             if re.fullmatch(r"[0-9a-f]{64}", target_state):
                 pins.add(target_state)
+                current_pins.add(target_state)
             for state in history.get(
                     str(target_row.get("key_bi") or ""), []):
                 state = clean_string(state, 64).lower()
@@ -30930,12 +31741,24 @@ async def _https_mirror_public_context(env, owner, repo):
         else:
             pins = clone_state_pins(
                 target, target_row.get("key_bi"), members, history)
+            current_pins = set()
+            for row in members:
+                record = row.get("data") or {}
+                state = clean_string(
+                    record.get("stateHash", ""), 64).lower()
+                if (
+                    str(record.get("source") or "local-node")
+                    == "local-node"
+                    and re.fullmatch(r"[0-9a-f]{64}", state)
+                ):
+                    current_pins.add(state)
         # Direct routing never uses the legacy unpinned fail-open behavior. An
         # owner must publish an authenticated refs digest before a remote
         # endpoint can advertise or resolve that repository.
         if not pins:
             return None
         allowed = set()
+        current_nodes = set()
         source = None
         for row in members:
             record = row.get("data") or {}
@@ -30947,6 +31770,8 @@ async def _https_mirror_public_context(env, owner, repo):
             if pins and state not in pins:
                 continue
             allowed.add(node)
+            if state in current_pins:
+                current_nodes.add(node)
             if (
                 source is None
                 and str(record.get("source") or "local-node")
@@ -30969,8 +31794,13 @@ async def _https_mirror_public_context(env, owner, repo):
             "owner": canonical_owner,
             "repo": canonical_repo,
             "nodes": allowed,
+            # Ordinary reads prefer the newest source generation. Recent
+            # signed generations remain available strictly as failover while
+            # their nodes converge.
+            "currentNodes": current_nodes,
             "pins": set(pins),
-            "repoBi": await blind_index(env, owner_l + "/" + repo_l),
+            "repoBi": await blind_index(
+                env, canonical_owner + "/" + canonical_repo.lower()),
         }
     except Exception:
         return None
@@ -31013,6 +31843,17 @@ async def _https_mirror_candidates(env, context, preferred_region, sticky=""):
         preferred_region=preferred_region,
         cursor=int((cursor_row or {}).get("cursor") or 0),
     )
+    current_nodes = {
+        str(node or "").lower()
+        for node in context.get("currentNodes", set())
+    }
+    if current_nodes:
+        selected.sort(
+            key=lambda item: (
+                0 if str(item.get("node") or "").lower()
+                in current_nodes else 1
+            )
+        )
     sticky = str(sticky or "").lower()
     if sticky:
         selected.sort(key=lambda item: 0 if item["node"] == sticky else 1)
@@ -31846,7 +32687,7 @@ async def repository_pull_merge_handler(
 
 
 async def _https_mirror_proxy(
-        env, request, owner, repo, operation, release_sha=""):
+        env, request, owner, repo, operation, release_sha="", bypass_cache=False):
     """Stream a public read through healthy endpoints under the original URL."""
     context = await _https_mirror_public_context(env, owner, repo)
     if context is None:
@@ -31892,7 +32733,9 @@ async def _https_mirror_proxy(
         repository_metadata_cache_key(context, operation, query)
         if method == "GET" else ""
     )
-    cached_metadata = await repository_metadata_cache_get(metadata_cache_key)
+    cached_metadata = (
+        await repository_metadata_cache_get(metadata_cache_key)
+        if not bypass_cache else None)
     if cached_metadata is not None:
         return cached_metadata
     body = b""
@@ -31975,10 +32818,8 @@ async def _https_mirror_proxy(
         if method == "POST":
             init["body"] = Uint8Array.new(_to_js(body))
         try:
-            upstream = await asyncio.wait_for(
-                js_fetch(JsRequest.new(target, to_js(init))),
-                timeout=HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
-            )
+            upstream = await js_fetch_with_timeout(
+                target, init, HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS)
             status = int(getattr(upstream, "status", 0) or 0)
         except Exception:
             status = 0
@@ -32025,8 +32866,9 @@ async def _https_mirror_proxy(
         response_headers["X-ForkMesh-Served-By"] = endpoint["node"]
         await _https_mirror_route_advance(
             env, context, endpoint["node"], operation)
-        await repository_metadata_cache_put(
-            metadata_cache_key, upstream, status)
+        if not bypass_cache:
+            await repository_metadata_cache_put(
+                metadata_cache_key, upstream, status)
         # The private endpoint origin remains masked. The public node identity
         # above is bounded routing provenance; repository bytes still stream
         # without being materialized by the Worker.
@@ -32110,6 +32952,25 @@ class Default(WorkerEntrypoint):
                 "https_mirror_health_cron failed: "
                 + _safe_error_text(error),
                 error=error, failures=cron_failures)
+        # Public CelesTrak VISUAL OMM data changes slowly. One fixed-source
+        # refresh every three hours (with an additional two-hour D1 guard)
+        # keeps positions current without per-visitor upstream traffic or a
+        # quota-burning minute poll. Expected upstream failures retain the
+        # last-good snapshot and return normally; only local runtime/D1 faults
+        # reach the bounded cron error log.
+        if (
+            minute % WORLD_SATELLITE_REFRESH_CRON_MINUTES
+            == WORLD_SATELLITE_REFRESH_CRON_OFFSET
+        ):
+            try:
+                await refresh_world_satellite_snapshot(
+                    self.env, cron_started_ms)
+            except BaseException as error:
+                await log_cron_error(
+                    self.env, "/cron/world-satellites",
+                    "world satellite refresh failed: "
+                    + _safe_error_text(error),
+                    error=error, failures=cron_failures)
         # Confirm externally signed reward plans. This job only reads finalized
         # transactions and checks their exact System Program transfer list; it
         # has no signing key and never broadcasts a transaction.
@@ -32697,6 +33558,10 @@ class Default(WorkerEntrypoint):
                 "/api/world/social-posts", "/api/world/social-posts/"):
             return await world_social_posts_handler(self.env, request)
 
+        if url.path in (
+                "/api/world/satellites", "/api/world/satellites/"):
+            return await world_satellites_handler(self.env, request)
+
         if url.path in ("/api/world/layout", "/api/world/layout/"):
             return await world_layout_handler(self.env, request)
 
@@ -32769,9 +33634,9 @@ class Default(WorkerEntrypoint):
             return await office_general_entry_handler(self.env, request)
 
         if url.path in (
-                "/api/world/office/general/code",
-                "/api/world/office/general/code/"):
-            return await office_general_code_handler(self.env, request)
+                "/api/world/office/floors",
+                "/api/world/office/floors/"):
+            return await office_floor_access_handler(self.env, request)
 
         if url.path in (
                 "/api/world/office/general/access",
@@ -32872,7 +33737,9 @@ class Default(WorkerEntrypoint):
 
         # 30-day per-system uptime history for the public /status page.
         if url.path in ("/api/status", "/api/status/"):
-            return await status_history(self.env)
+            status_view = parse_qs(url.query).get("view", ["full"])[0]
+            return await status_history(
+                self.env, "world" if status_view == "world" else "full")
 
         # Installer clone source: pick the currently-online forkmesh host with
         # the most retained uptime instead of baking one node id into install.sh.
@@ -34622,124 +35489,6 @@ class ForkMeshOfficeRoom(DurableObject):
             self._close_all(1008, "room access revoked")
             return json_response({"ok": True})
         if (
-            action == "code"
-            and method_name(request) == "POST"
-            and scope == "world-general"
-            and int(version_raw) == 1
-        ):
-            account_bi = (
-                request.headers.get("x-forkmesh-office-account-bi") or "")
-            code_digest = (
-                request.headers.get("x-forkmesh-office-code-digest") or "")
-            if (
-                not re.fullmatch(r"[0-9a-f]{64}", account_bi)
-                or not re.fullmatch(r"[0-9a-f]{64}", code_digest)
-            ):
-                return json_response({"error": "not_found"}, status=404)
-            peers = self._live_sockets(cleanup=True)
-            can_set_code = _office_live_account(peers, account_bi)
-            if not peers or not can_set_code:
-                if not peers:
-                    self._clear_session_code_digest()
-                return json_response(
-                    {
-                        "ok": False,
-                        "occupied": bool(peers),
-                        "codeConfigured": bool(
-                            _office_socket_code_state(peers)[0]),
-                        "canSetCode": False,
-                        "error": "office_occupant_required",
-                    },
-                    status=403,
-                    cache_control="no-store, max-age=0, must-revalidate",
-                )
-            if not self._set_session_code_digest(peers, code_digest):
-                return json_response(
-                    {"error": "unavailable"},
-                    status=503,
-                    cache_control="no-store, max-age=0, must-revalidate",
-                )
-            return json_response(
-                {
-                    "ok": True,
-                    "occupied": True,
-                    "codeConfigured": True,
-                    "canSetCode": True,
-                },
-                cache_control="no-store, max-age=0, must-revalidate",
-            )
-        if (
-            action in ("status", "entry")
-            and (
-                (action == "status" and method_name(request) == "GET")
-                or (action == "entry" and method_name(request) == "POST")
-            )
-        ):
-            if action == "entry":
-                rate_key = (
-                    request.headers.get("x-forkmesh-office-rate-key") or "")
-                approved_raw = (
-                    request.headers.get(
-                        "x-forkmesh-office-code-approved") or "")
-                if approved_raw not in ("0", "1"):
-                    return json_response({"error": "not_found"}, status=404)
-                buckets = getattr(self, "_entry_rate_buckets", None)
-                if not isinstance(buckets, dict):
-                    buckets = {}
-                    self._entry_rate_buckets = buckets
-                admitted, retry_ms = _office_entry_rate_step(
-                    buckets, rate_key, int(Date.now()))
-                if not admitted:
-                    return json_response(
-                        {
-                            "error": "rate_limited",
-                            "retryAfterMs": retry_ms,
-                        },
-                        status=429,
-                        cache_control=(
-                            "no-store, max-age=0, must-revalidate"),
-                    )
-            peers = self._live_sockets(cleanup=True)
-            occupied = bool(peers)
-            code_configured, stored_digest = (
-                _office_socket_code_state(peers))
-            if not occupied:
-                self._clear_session_code_digest()
-            account_bi = (
-                request.headers.get("x-forkmesh-office-account-bi") or "")
-            can_set_code = _office_live_account(peers, account_bi)
-            if (
-                action == "entry"
-                and occupied
-                and not _office_entry_digest_approved(
-                    code_configured,
-                    stored_digest,
-                    request.headers.get(
-                        "x-forkmesh-office-code-digest") or "",
-                    approved_raw == "1",
-                )
-            ):
-                return json_response(
-                    {
-                        "ok": False,
-                        "occupied": True,
-                        "codeConfigured": code_configured,
-                        "canSetCode": False,
-                        "error": "entry_code_required",
-                    },
-                    status=403,
-                    cache_control="no-store, max-age=0, must-revalidate",
-                )
-            return json_response(
-                {
-                    "ok": True,
-                    "occupied": occupied,
-                    "codeConfigured": code_configured,
-                    "canSetCode": can_set_code,
-                },
-                cache_control="no-store, max-age=0, must-revalidate",
-            )
-        if (
             action != "ws"
             or method_name(request) != "GET"
             or (request.headers.get("upgrade") or "").lower() != "websocket"
@@ -34757,10 +35506,6 @@ class ForkMeshOfficeRoom(DurableObject):
         peers = self._live_sockets(cleanup=True)
         if len(peers) >= world_protocol.OFFICE_MAX_CONNECTIONS:
             return json_response({"error": "room_full"}, status=429)
-        code_configured, entry_code_digest = (
-            _office_socket_code_state(peers))
-        if code_configured and not entry_code_digest:
-            return json_response({"error": "unavailable"}, status=503)
 
         participant_id = new_world_peer_id()
         state = world_protocol.default_office_presence(participant_id, now)
@@ -34786,7 +35531,6 @@ class ForkMeshOfficeRoom(DurableObject):
             version=int(version_raw),
             trusted_name=claim.get("name", ""),
             trusted_status=claim.get("accountStatus", "Guest"),
-            entry_code_digest=entry_code_digest,
         )
         self._safe_send(server, {
             "type": "welcome",
@@ -34820,7 +35564,7 @@ class ForkMeshOfficeRoom(DurableObject):
                 r"[0-9a-f]{32}", scope):
             return None
         account_bi = str(claim.get("account_bi") or "")
-        if account_bi and not re.fullmatch(r"[0-9a-f]{64}", account_bi):
+        if not re.fullmatch(r"[0-9a-f]{64}", account_bi):
             return None
         try:
             version = int(claim.get("version") or 0)
@@ -34849,8 +35593,7 @@ class ForkMeshOfficeRoom(DurableObject):
 
     def _save_socket(self, ws, state, last, rate_start, rate_count,
                      departed=False, account_bi=None, scope=None, version=None,
-                     trusted_name=None, trusted_status=None,
-                     entry_code_digest=None):
+                     trusted_name=None, trusted_status=None):
         if account_bi is None:
             account_bi = _ws_attr(ws, "account_bi", "")
         if scope is None:
@@ -34861,12 +35604,6 @@ class ForkMeshOfficeRoom(DurableObject):
             trusted_name = _ws_attr(ws, "trusted_name", "")
         if trusted_status is None:
             trusted_status = _ws_attr(ws, "trusted_status", "Guest")
-        if entry_code_digest is None:
-            entry_code_digest = _ws_attr(
-                ws, "entry_code_digest", "")
-        entry_code_digest = str(entry_code_digest or "")
-        if not re.fullmatch(r"[0-9a-f]{64}", entry_code_digest):
-            entry_code_digest = ""
         record = {
             **world_protocol.public_office_presence(state),
             "account_bi": str(account_bi or ""),
@@ -34878,46 +35615,12 @@ class ForkMeshOfficeRoom(DurableObject):
             "rl_start": int(rate_start or 0),
             "rl_count": int(rate_count or 0),
             "departed": bool(departed),
-            # Keyed digest only; plaintext digits never cross this boundary.
-            "entry_code_digest": entry_code_digest,
         }
         try:
             ws.serializeAttachment(to_js(record))
             return True
         except Exception:
             return False
-
-    def _set_session_code_digest(self, peers, code_digest):
-        if not re.fullmatch(r"[0-9a-f]{64}", str(code_digest or "")):
-            return False
-        saved = True
-        for peer in peers or []:
-            saved = self._save_socket(
-                peer,
-                self._socket_state(peer),
-                last=_ws_attr(peer, "last", 0),
-                rate_start=_ws_attr(peer, "rl_start", 0),
-                rate_count=_ws_attr(peer, "rl_count", 0),
-                departed=bool(_ws_attr(peer, "departed", False)),
-                entry_code_digest=code_digest,
-            ) and saved
-        return bool(peers) and saved
-
-    def _clear_session_code_digest(self):
-        try:
-            peers = self.ctx.getWebSockets("office")
-        except Exception:
-            peers = []
-        for peer in peers:
-            self._save_socket(
-                peer,
-                self._socket_state(peer),
-                last=_ws_attr(peer, "last", 0),
-                rate_start=_ws_attr(peer, "rl_start", 0),
-                rate_count=_ws_attr(peer, "rl_count", 0),
-                departed=bool(_ws_attr(peer, "departed", False)),
-                entry_code_digest="",
-            )
 
     def _mark_departed(self, ws):
         self._save_socket(
@@ -34956,8 +35659,6 @@ class ForkMeshOfficeRoom(DurableObject):
             for stale_id in stale_ids:
                 for peer in live:
                     self._safe_send(peer, {"type": "leave", "id": stale_id})
-            if not live:
-                self._clear_session_code_digest()
         return live
 
     def _rate_step(self, ws, state, now):
@@ -34991,7 +35692,7 @@ class ForkMeshOfficeRoom(DurableObject):
         scope = str(_ws_attr(ws, "scope", "") or "")
         version = int(_ws_attr(ws, "version", 0) or 0)
         if not account_bi:
-            return scope == "world-general"
+            return False
         try:
             account = await d1_first(
                 self.env,
@@ -35151,8 +35852,6 @@ class ForkMeshOfficeRoom(DurableObject):
         departed = bool(_ws_attr(ws, "departed", False))
         self._mark_departed(ws)
         self._safe_close(ws, code, reason)
-        if not self._live_sockets(cleanup=False):
-            self._clear_session_code_digest()
         if participant_id and not departed:
             self._broadcast(
                 {"type": "leave", "id": participant_id},
@@ -35186,7 +35885,6 @@ class ForkMeshOfficeRoom(DurableObject):
         for peer in peers:
             self._mark_departed(peer)
             self._safe_close(peer, code, reason)
-        self._clear_session_code_digest()
 
     def _safe_close(self, ws, code, reason):
         try:

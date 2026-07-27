@@ -1,32 +1,24 @@
+import {
+  canAccessOfficeFloor,
+  normalizeOfficeFloorAccess,
+  officeFloorById,
+} from "./world-office-tower.js";
+
 export const OFFICE_ENTER_DISTANCE = 6.5;
 export const OFFICE_EXIT_DISTANCE = 7.5;
+
 const OFFICE_CHAT_PATH = "/chat?embed=office";
 const OFFICE_UNLOAD_DELAY_MS = 2000;
-const OFFICE_STATUS_PATH = "/api/world/office/general/status";
 const OFFICE_ENTRY_PATH = "/api/world/office/general/entry";
-const OFFICE_CODE_PATH = "/api/world/office/general/code";
-const OFFICE_ENTRY_HEADER = "X-ForkMesh-Office-Entry";
-const OFFICE_STATUS_POLL_MS = 12000;
-
-function playOfficeTone(digit) {
-  try {
-    const context = new AudioContext();
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
-    oscillator.frequency.value = 620 + Number(digit || 0) * 38;
-    gain.gain.setValueAtTime(0.035, context.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + 0.09);
-    oscillator.connect(gain).connect(context.destination);
-    oscillator.start();
-    oscillator.stop(context.currentTime + 0.1);
-    oscillator.addEventListener("ended", () => context.close(), { once: true });
-  } catch (_) {}
-}
+const OFFICE_FLOORS_PATH = "/api/world/office/floors";
+const LOGIN_REQUIRED_MESSAGE =
+  "Maya and Noah: please log in to visit the ForkMesh offices.";
 
 export function nextOfficeZoneState(currentState, distance) {
-  const threshold = currentState === "nearby"
-    ? OFFICE_EXIT_DISTANCE
-    : OFFICE_ENTER_DISTANCE;
+  const threshold =
+    currentState === "nearby"
+      ? OFFICE_EXIT_DISTANCE
+      : OFFICE_ENTER_DISTANCE;
   return Number.isFinite(distance) && distance <= threshold
     ? "nearby"
     : "distant";
@@ -39,49 +31,43 @@ function isTypingTarget(target) {
   );
 }
 
+function isAuthenticationError(error) {
+  const status = Number(error?.status || error?.response?.status || 0);
+  if (status === 401) return true;
+  return /(?:^|\D)401(?:\D|$)|invalid_session|login_required|registered_user_required/i
+    .test(String(error?.message || error || ""));
+}
+
 export function createWorldOfficeController({
   root,
   world,
   meeting,
   tasks = null,
   chatPath = OFFICE_CHAT_PATH,
+  getSession = () => null,
 }) {
   const prompt = root.querySelector("[data-world-office-prompt]");
   const promptLight = root.querySelector("[data-world-office-prompt-light]");
   const promptStatus = root.querySelector("[data-world-office-prompt-status]");
   const enterButton = root.querySelector("[data-world-office-enter]");
-  const keypad = root.querySelector("[data-world-office-keypad]");
-  const keypadForm = root.querySelector("[data-world-office-keypad-form]");
-  const keypadTitle = root.querySelector("#world-office-keypad-title");
-  const keypadInput = root.querySelector("[data-world-office-keypad-input]");
-  const keypadStatus = root.querySelector("[data-world-office-keypad-status]");
-  const keypadSubmit = root.querySelector("[data-world-office-keypad-submit]");
-  const keypadHelp = keypad?.querySelector("small");
   const fallbackButton = root.querySelector("[data-world-office-fallback]");
   const panel = root.querySelector("[data-world-office-chat]");
   const heading = root.querySelector("#world-office-chat-title");
   const loading = root.querySelector("[data-world-office-loading]");
   const frame = root.querySelector("[data-world-office-frame]");
+
   let proximity = "distant";
   let active = false;
   let fallbackActive = false;
   let returnFocus = null;
   let unloadTimer = null;
   let frameSuspended = false;
-  let keypadOpen = false;
-  let keypadMode = "entry";
-  let keypadLocation = "exterior";
   let entryPending = false;
   let exitPending = false;
   let officeEntryTicket = "";
   let officeEntryExpiresAt = 0;
-  let occupancy = {
-    available: false,
-    occupied: true,
-    canSetCode: false,
-  };
-  let occupancyRequest = null;
-  let occupancyTimer = null;
+  let officeAccess = normalizeOfficeFloorAccess({});
+  let attendanceAccount = "";
 
   const resolvedChatURL = new URL(chatPath, window.location.origin);
   if (
@@ -93,6 +79,27 @@ export function createWorldOfficeController({
   }
   const safeChatPath = `${resolvedChatURL.pathname}${resolvedChatURL.search}`;
 
+  function session() {
+    try {
+      const value = getSession();
+      return value && typeof value === "object" ? value : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function authenticatedSession() {
+    const value = session();
+    return String(value?.sessionToken || "") ? value : null;
+  }
+
+  function greetGuest() {
+    world.greetOfficeGuest?.(LOGIN_REQUIRED_MESSAGE);
+    root.toast?.(LOGIN_REQUIRED_MESSAGE);
+    root.toggleWorldAccount?.(true, "login", enterButton);
+    return false;
+  }
+
   function clearUnloadTimer() {
     if (!unloadTimer) return;
     window.clearTimeout(unloadTimer);
@@ -101,226 +108,33 @@ export function createWorldOfficeController({
 
   function renderPrompt() {
     if (!prompt) return;
+    const signedIn = Boolean(authenticatedSession());
     prompt.hidden = proximity !== "nearby" || active;
-    prompt.dataset.available = String(occupancy.available);
-    prompt.dataset.occupied = String(occupancy.occupied);
+    prompt.dataset.available = "true";
     if (promptStatus) {
-      promptStatus.textContent = !occupancy.available
-        ? "Office door status unavailable"
-        : occupancy.occupied
-          ? "Office occupied · four-digit code required"
-          : "Office empty · door open";
+      promptStatus.textContent = signedIn
+        ? "Office entrance ready · signed-in members only"
+        : "Please log in to visit the offices";
     }
     if (promptLight) {
       promptLight.setAttribute(
         "aria-label",
-        !occupancy.available
-          ? "Door status unavailable"
-          : occupancy.occupied
-            ? "Office occupied"
-            : "Office empty",
+        signedIn ? "Office entrance ready" : "Login required",
       );
     }
     if (enterButton) {
-      enterButton.disabled = !occupancy.available || entryPending;
-      enterButton.firstChild.textContent = occupancy.occupied
-        ? "Use Office keypad "
-        : "Enter ForkMesh Office ";
+      enterButton.disabled = entryPending;
+      if (enterButton.firstChild) {
+        enterButton.firstChild.textContent = signedIn
+          ? "Enter ForkMesh Office "
+          : "Log in to enter Office ";
+      }
     }
-  }
-
-  function setKeypadStatus(message, tone = "") {
-    if (!keypadStatus) return;
-    keypadStatus.textContent = String(message || "");
-    if (tone) keypadStatus.dataset.tone = tone;
-    else delete keypadStatus.dataset.tone;
   }
 
   function setEntryPending(pending) {
     entryPending = pending === true;
-    if (keypadInput) {
-      keypadInput.disabled = entryPending || keypadMode === "guide";
-    }
-    if (keypadSubmit) keypadSubmit.disabled = entryPending;
     renderPrompt();
-  }
-
-  function closeKeypad({ restoreFocus = true } = {}) {
-    if (!keypadOpen) return false;
-    const previousMode = keypadMode;
-    const previousLocation = keypadLocation;
-    keypadOpen = false;
-    keypadMode = "entry";
-    keypadLocation = "exterior";
-    if (keypad) {
-      keypad.dataset.open = "false";
-      keypad.setAttribute("aria-hidden", "true");
-    }
-    if (keypadInput) keypadInput.value = "";
-    if (keypadInput) keypadInput.disabled = entryPending;
-    if (keypadSubmit) {
-      keypadSubmit.disabled = entryPending;
-      keypadSubmit.textContent = "Enter";
-    }
-    world.setOfficeKeypadDigits?.(
-      "",
-      previousMode,
-      previousLocation,
-    );
-    world.blurOfficeKeypad?.();
-    if (restoreFocus) {
-      window.requestAnimationFrame(() => enterButton?.focus());
-    }
-    return true;
-  }
-
-  function openKeypad(mode = "entry", location = "exterior") {
-    const safeMode =
-      mode === "set" ? "set" : mode === "guide" ? "guide" : "entry";
-    const safeLocation = location === "interior" ? "interior" : "exterior";
-    const ticketValid =
-      Boolean(officeEntryTicket) && officeEntryExpiresAt > Date.now();
-    const entryAllowed =
-      safeMode === "entry" &&
-      safeLocation === "exterior" &&
-      !active &&
-      occupancy.available &&
-      occupancy.occupied;
-    const managementAllowed =
-      safeMode === "set" &&
-      safeLocation === "interior" &&
-      active &&
-      meeting.inRoom &&
-      occupancy.canSetCode &&
-      ticketValid;
-    const guideAllowed =
-      safeMode === "guide" &&
-      safeLocation === "exterior" &&
-      !active &&
-      occupancy.available &&
-      !occupancy.occupied;
-    if (!entryAllowed && !managementAllowed && !guideAllowed) return false;
-    keypadOpen = true;
-    keypadMode = safeMode;
-    keypadLocation = safeLocation;
-    if (keypad) {
-      keypad.dataset.open = "true";
-      keypad.setAttribute("aria-hidden", "false");
-    }
-    if (keypadInput) keypadInput.value = "";
-    if (keypadInput) keypadInput.disabled = safeMode === "guide";
-    if (keypadSubmit) {
-      keypadSubmit.disabled = false;
-      keypadSubmit.textContent =
-        safeMode === "guide" ? "Got it" : safeMode === "set" ? "Set code" : "Enter";
-    }
-    if (keypadTitle) {
-      keypadTitle.textContent =
-        safeMode === "set"
-          ? "Set a new four-digit Office code"
-          : safeMode === "guide"
-            ? "Set the Office code from inside"
-            : "Enter the four-digit code";
-    }
-    if (keypadHelp) {
-      keypadHelp.textContent =
-        safeMode === "set"
-          ? "The code is sent only to the same-origin management endpoint. ForkMesh never stores it in this browser."
-          : safeMode === "guide"
-            ? "Walk through the open door, join an Office room, and use the keypad just inside. Only the current authenticated live occupant can set or change the code."
-            : "This four-digit code is an Office-door coordination check, not account authentication. Room membership and encrypted-channel permissions are still enforced separately.";
-    }
-    setKeypadStatus(
-      safeMode === "set"
-        ? "Choose four digits. The backend will still verify your management permission."
-        : safeMode === "guide"
-          ? "No code is sent from this exterior panel while the Office is empty."
-          : "The Office is occupied. Enter the shared four-digit coordination code.",
-    );
-    world.focusOfficeKeypad?.(safeMode, safeLocation);
-    world.setOfficeKeypadDigits?.("", safeMode, safeLocation);
-    window.requestAnimationFrame(() => {
-      if (safeMode === "guide") keypadSubmit?.focus();
-      else keypadInput?.focus();
-    });
-    return true;
-  }
-
-  function setOccupancy(next = {}) {
-    occupancy = {
-      available: next.available === true,
-      occupied: next.occupied !== false,
-      canSetCode:
-        next.canSetCode === undefined
-          ? occupancy.canSetCode === true
-          : next.canSetCode === true,
-    };
-    world.setOfficeOccupancy?.(occupancy);
-    if (
-      occupancy.available &&
-      !occupancy.occupied &&
-      keypadOpen &&
-      keypadMode === "entry"
-    ) {
-      closeKeypad({ restoreFocus: false });
-    }
-    if (
-      keypadOpen &&
-      keypadMode === "set" &&
-      (!active || !meeting.inRoom || !occupancy.canSetCode)
-    ) {
-      closeKeypad({ restoreFocus: false });
-    }
-    renderPrompt();
-    return { ...occupancy };
-  }
-
-  async function refreshOccupancy() {
-    if (occupancyRequest) return occupancyRequest;
-    occupancyRequest = (async () => {
-      try {
-        let payload = {};
-        if (typeof root.fetchJSON === "function") {
-          payload = await root.fetchJSON(OFFICE_STATUS_PATH, {
-            method: "GET",
-            cache: "no-store",
-            timeout: 8000,
-            headers: { accept: "application/json" },
-          });
-        } else {
-          const response = await fetch(OFFICE_STATUS_PATH, {
-            method: "GET",
-            credentials: "same-origin",
-            cache: "no-store",
-            headers: { accept: "application/json" },
-          });
-          payload = await response.json().catch(() => ({}));
-          if (!response.ok) throw new Error("office_status_unavailable");
-        }
-        if (
-          payload?.ok !== true ||
-          typeof payload.occupied !== "boolean"
-        ) {
-          throw new Error("office_status_unavailable");
-        }
-        return setOccupancy({
-          available: true,
-          occupied: payload.occupied,
-          canSetCode:
-            payload.canSetCode === true ||
-            payload.codeManagement?.canSetCode === true,
-        });
-      } catch (_) {
-        return setOccupancy({
-          available: false,
-          occupied: true,
-          canSetCode: false,
-        });
-      } finally {
-        occupancyRequest = null;
-      }
-    })();
-    return occupancyRequest;
   }
 
   function closeFallback({ restoreFocus = true } = {}) {
@@ -349,170 +163,6 @@ export function createWorldOfficeController({
     return true;
   }
 
-  function setProximity(nextState) {
-    proximity = nextState === "nearby" ? "nearby" : "distant";
-    if (proximity === "distant" && active) collapse();
-    if (proximity === "distant" && keypadOpen) {
-      closeKeypad({ restoreFocus: false });
-    }
-    if (proximity === "nearby") void refreshOccupancy();
-    renderPrompt();
-  }
-
-  function focusOffice(trigger = null) {
-    if (trigger instanceof HTMLElement) returnFocus = trigger;
-    world.focusLandmark("office");
-  }
-
-  function completeOfficeEntry(entryTicket, expiresAt) {
-    if (!world.enterOffice()) return false;
-    officeEntryTicket = String(entryTicket || "").slice(0, 2048);
-    officeEntryExpiresAt = Number(expiresAt) || 0;
-    meeting.setEntryTicket?.(entryTicket, expiresAt);
-    if (!returnFocus) returnFocus = enterButton;
-    active = true;
-    exitPending = false;
-    closeKeypad({ restoreFocus: false });
-    meeting.openLobby();
-    tasks?.setActive?.(true);
-    renderPrompt();
-    return true;
-  }
-
-  async function requestOfficeEntry(code = "") {
-    if (entryPending || active) return false;
-    setEntryPending(true);
-    try {
-      const response = await fetch(OFFICE_ENTRY_PATH, {
-        method: "POST",
-        credentials: "same-origin",
-        cache: "no-store",
-        headers: {
-          accept: "application/json",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify(code ? { code } : {}),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (
-        !response.ok ||
-        payload?.ok !== true ||
-        !String(payload.entryTicket || "") ||
-        !Number.isFinite(Number(payload.expiresAt))
-      ) {
-        const error = new Error(String(payload?.error || "entry_denied"));
-        error.status = response.status;
-        throw error;
-      }
-      setOccupancy({
-        available: true,
-        occupied: payload.occupied === true,
-      });
-      return completeOfficeEntry(
-        String(payload.entryTicket).slice(0, 2048),
-        Number(payload.expiresAt),
-      );
-    } catch (error) {
-      if (error?.status === 403 && !code) {
-        setOccupancy({ available: true, occupied: true });
-        openKeypad("entry", "exterior");
-        setKeypadStatus(
-          "The Office became occupied. Enter the shared four-digit code.",
-        );
-        return false;
-      }
-      const message =
-        error?.status === 429
-          ? "Too many attempts. Wait briefly before trying again."
-          : error?.status === 403
-            ? "That four-digit code was not accepted."
-            : "Office entry is temporarily unavailable.";
-      setKeypadStatus(message, "error");
-      if (!code) world.focusOfficeKeypad?.("entry", "exterior");
-      if (keypadInput) {
-        keypadInput.value = "";
-        world.setOfficeKeypadDigits?.(
-          "",
-          keypadMode,
-          keypadLocation,
-        );
-        window.requestAnimationFrame(() => keypadInput.focus());
-      }
-      return false;
-    } finally {
-      setEntryPending(false);
-    }
-  }
-
-  async function requestOfficeCodeUpdate(code) {
-    if (
-      entryPending ||
-      !active ||
-      !meeting.inRoom ||
-      !occupancy.canSetCode ||
-      !officeEntryTicket ||
-      officeEntryExpiresAt <= Date.now() ||
-      !/^\d{4}$/.test(String(code || "")) ||
-      typeof root.postJSON !== "function"
-    ) {
-      setKeypadStatus(
-        "This deployment has not enabled authorized Office code management.",
-        "error",
-      );
-      return false;
-    }
-    setEntryPending(true);
-    try {
-      await root.postJSON(
-        OFFICE_CODE_PATH,
-        { code: String(code) },
-        {
-          timeout: 8000,
-          headers: {
-            [OFFICE_ENTRY_HEADER]: officeEntryTicket,
-          },
-        },
-      );
-      setKeypadStatus("Office code updated.", "success");
-      root.toast?.("Office code updated.");
-      closeKeypad({ restoreFocus: false });
-      await refreshOccupancy();
-      return true;
-    } catch (_) {
-      setKeypadStatus(
-        "The server did not accept that code-management request.",
-        "error",
-      );
-      return false;
-    } finally {
-      setEntryPending(false);
-    }
-  }
-
-  async function enterOffice(entry = {}) {
-    const doorwayEntry = entry?.source === "doorway";
-    try {
-      if (proximity !== "nearby" || active) return false;
-      if (!occupancy.available) {
-        await refreshOccupancy();
-      }
-      if (!occupancy.available) {
-        setKeypadStatus("Office door status is unavailable.", "error");
-        if (doorwayEntry) world.focusOfficeKeypad?.("entry", "exterior");
-        return false;
-      }
-      if (occupancy.occupied) {
-        return openKeypad("entry", "exterior");
-      }
-      if (entry?.source === "keypad") {
-        return openKeypad("guide", "exterior");
-      }
-      return await requestOfficeEntry("");
-    } finally {
-      if (doorwayEntry) world.setOfficeDoorwayEntryPending?.(false);
-    }
-  }
-
   function openFallback(trigger = null) {
     if (!active || meeting.inRoom || fallbackActive) return false;
     if (trigger instanceof HTMLElement) returnFocus = trigger;
@@ -534,18 +184,165 @@ export function createWorldOfficeController({
     return true;
   }
 
+  function setProximity(nextState) {
+    proximity = nextState === "nearby" ? "nearby" : "distant";
+    renderPrompt();
+  }
+
+  function focusOffice(trigger = null) {
+    if (trigger instanceof HTMLElement) returnFocus = trigger;
+    world.focusLandmark("office");
+  }
+
+  async function loadFloorAccess(activeSession) {
+    let payload;
+    try {
+      payload = await root.fetchJSON(OFFICE_FLOORS_PATH, {
+        timeout: 8000,
+        cache: "no-store",
+      });
+    } catch (error) {
+      if (isAuthenticationError(error)) throw error;
+      // The three shared member floors are safe to expose after the entry
+      // endpoint has authenticated this session. Team floors remain locked
+      // until the authoritative floor projection is available.
+      payload = {
+        authenticated: true,
+        account: String(activeSession?.nodeName || ""),
+        allowedFloorIds: ["lobby", "marketing", "rooftop"],
+        teams: [],
+      };
+    }
+    const normalized = normalizeOfficeFloorAccess({
+      ...(payload && typeof payload === "object" ? payload : {}),
+      account:
+        String(payload?.account || "") ||
+        String(activeSession?.nodeName || ""),
+    });
+    if (!normalized.authenticated) {
+      const error = new Error("login_required");
+      error.status = 401;
+      throw error;
+    }
+    officeAccess = {
+      ...(payload && typeof payload === "object" ? payload : {}),
+      ...normalized,
+    };
+    attendanceAccount = normalized.account;
+    world.setOfficeAccess?.(officeAccess);
+    return officeAccess;
+  }
+
+  function requestedFloorId(value) {
+    const requested =
+      value && typeof value === "object"
+        ? value.floorId || value.id
+        : value;
+    return officeFloorById(requested)?.id || "";
+  }
+
+  function travelToOfficeFloor(value) {
+    const floorId = requestedFloorId(value);
+    const floor = officeFloorById(floorId);
+    if (!active || !floor || !canAccessOfficeFloor(officeAccess, floorId)) {
+      root.toast?.(
+        floor
+          ? `${floor.label} is available only to authorized members of that team.`
+          : "That Office floor is unavailable.",
+      );
+      return false;
+    }
+    const travelled = world.travelToOfficeFloor?.(floorId);
+    if (travelled === false) {
+      root.toast?.(`${floor.label} is temporarily unavailable.`);
+      return false;
+    }
+    return travelled !== undefined ? travelled : true;
+  }
+
+  function recordAttendance(direction) {
+    world.setOfficeAttendance?.({
+      type: direction === "out" ? "out" : "in",
+      at: Date.now(),
+      account: attendanceAccount,
+    });
+  }
+
+  async function completeOfficeEntry(payload, activeSession) {
+    await loadFloorAccess(activeSession);
+    if (!world.enterOffice()) return false;
+    officeEntryTicket = String(payload?.entryTicket || "").slice(0, 2048);
+    officeEntryExpiresAt = Number(payload?.expiresAt) || 0;
+    meeting.setEntryTicket?.(officeEntryTicket, officeEntryExpiresAt);
+    if (!returnFocus) returnFocus = enterButton;
+    active = true;
+    exitPending = false;
+    recordAttendance("in");
+    meeting.openLobby();
+    tasks?.setActive?.(true);
+    renderPrompt();
+    return true;
+  }
+
+  async function requestOfficeEntry() {
+    if (entryPending || active) return false;
+    const activeSession = authenticatedSession();
+    if (!activeSession) return greetGuest();
+    if (
+      typeof root.postJSON !== "function" ||
+      typeof root.fetchJSON !== "function"
+    ) {
+      root.toast?.("Office entry is temporarily unavailable.");
+      return false;
+    }
+    setEntryPending(true);
+    try {
+      const payload = await root.postJSON(
+        OFFICE_ENTRY_PATH,
+        {},
+        { timeout: 8000 },
+      );
+      if (
+        payload?.ok !== true ||
+        !String(payload?.entryTicket || "") ||
+        !Number.isFinite(Number(payload?.expiresAt))
+      ) {
+        throw new Error(String(payload?.error || "office_entry_unavailable"));
+      }
+      return await completeOfficeEntry(payload, activeSession);
+    } catch (error) {
+      if (isAuthenticationError(error)) return greetGuest();
+      root.toast?.("Office entry is temporarily unavailable.");
+      return false;
+    } finally {
+      setEntryPending(false);
+    }
+  }
+
+  async function enterOffice(entry = {}) {
+    const doorwayEntry = entry?.source === "doorway";
+    try {
+      if (proximity !== "nearby" || active) return false;
+      return await requestOfficeEntry();
+    } finally {
+      if (doorwayEntry) world.setOfficeDoorwayEntryPending?.(false);
+    }
+  }
+
   function completeOfficeExit() {
     if (!active) return false;
     closeFallback({ restoreFocus: false });
-    closeKeypad({ restoreFocus: false });
     tasks?.setActive?.(false);
+    recordAttendance("out");
     meeting.leaveOffice();
     meeting.setEntryTicket?.("", 0);
     officeEntryTicket = "";
     officeEntryExpiresAt = 0;
+    officeAccess = normalizeOfficeFloorAccess({});
+    attendanceAccount = "";
+    world.setOfficeAccess?.(officeAccess);
     active = false;
     exitPending = false;
-    void refreshOccupancy();
     renderPrompt();
     const focusTarget = returnFocus?.isConnected ? returnFocus : enterButton;
     window.requestAnimationFrame(() => focusTarget?.focus());
@@ -561,91 +358,11 @@ export function createWorldOfficeController({
       exitPending = false;
       return false;
     }
-    setKeypadStatus(
-      "Walk through the open Office door to return to Town Square.",
-    );
-    root.toast?.("Walk through the open Office door to leave.");
+    root.toast?.("Walk through the Office entrance to return outside.");
     return true;
   }
 
-  async function onSceneKeypadKey(key, context = {}) {
-    const normalized = String(key || "");
-    const location =
-      context?.location === "interior" ? "interior" : "exterior";
-    if (!keypadOpen && location === "interior") {
-      if (!active || !meeting.inRoom) {
-        root.toast?.("Join an Office room before changing its code.");
-        return false;
-      }
-      await refreshOccupancy();
-      if (!openKeypad("set", "interior")) {
-        root.toast?.(
-          officeEntryExpiresAt <= Date.now()
-            ? "The Office entry proof expired. Leave and re-enter before changing the code."
-            : "Only the current authenticated Office occupant can change this code.",
-        );
-        return false;
-      }
-    } else if (!keypadOpen) {
-      await enterOffice({ source: "keypad" });
-    }
-    if (
-      !keypadOpen ||
-      keypadLocation !== location ||
-      entryPending ||
-      !keypadInput
-    ) {
-      return false;
-    }
-    if (normalized === "focus" || keypadMode === "guide") return true;
-    if (normalized === "clear") {
-      keypadInput.value = "";
-      onKeypadInput();
-      keypadInput.focus();
-      return true;
-    }
-    if (normalized === "enter") {
-      keypadForm?.requestSubmit();
-      return true;
-    }
-    if (/^\d$/.test(normalized) && keypadInput.value.length < 4) {
-      keypadInput.value += normalized;
-      playOfficeTone(normalized);
-      onKeypadInput();
-      keypadInput.focus();
-      return true;
-    }
-    return false;
-  }
-
   function onClick(event) {
-    const keypadDigit = event.target.closest(
-      "[data-world-office-keypad-digit]",
-    );
-    if (keypadDigit) {
-      event.preventDefault();
-      if (!keypadInput || entryPending || keypadMode === "guide") return;
-      const digit = String(keypadDigit.dataset.worldOfficeKeypadDigit || "");
-      if (/^\d$/.test(digit) && keypadInput.value.length < 4) {
-        keypadInput.value += digit;
-        playOfficeTone(digit);
-        onKeypadInput();
-      }
-      return;
-    }
-    if (event.target.closest("[data-world-office-keypad-clear]")) {
-      event.preventDefault();
-      if (keypadMode === "guide") return;
-      if (keypadInput) keypadInput.value = "";
-      onKeypadInput();
-      keypadInput?.focus();
-      return;
-    }
-    if (event.target.closest("[data-world-office-keypad-cancel]")) {
-      event.preventDefault();
-      closeKeypad();
-      return;
-    }
     const focusControl = event.target.closest("[data-world-office-focus]");
     if (focusControl) {
       event.preventDefault();
@@ -675,9 +392,6 @@ export function createWorldOfficeController({
       collapse();
       return;
     }
-    // The lobby is a room picker, not a live meeting: no one else can see
-    // you standing there, so its X/"Return to Town Square" exit immediately
-    // rather than sending you to walk through the physical door.
     if (event.target.closest("[data-world-office-lobby-exit]")) {
       event.preventDefault();
       completeOfficeExit();
@@ -685,11 +399,6 @@ export function createWorldOfficeController({
   }
 
   function onKeyDown(event) {
-    if (event.key === "Escape" && keypadOpen) {
-      event.preventDefault();
-      closeKeypad();
-      return;
-    }
     if (event.key === "Escape" && fallbackActive) {
       event.preventDefault();
       closeFallback();
@@ -714,45 +423,6 @@ export function createWorldOfficeController({
     }
   }
 
-  function onKeypadInput() {
-    if (!keypadInput) return;
-    keypadInput.value = keypadInput.value.replace(/\D/g, "").slice(0, 4);
-    world.setOfficeKeypadDigits?.(
-      keypadInput.value,
-      keypadMode,
-      keypadLocation,
-    );
-  }
-
-  function onKeypadSubmit(event) {
-    event.preventDefault();
-    if (!keypadOpen || entryPending || !keypadInput) return;
-    if (keypadMode === "guide") {
-      closeKeypad({ restoreFocus: false });
-      root.toast?.(
-        "Walk through the open door, join a room, then use the keypad inside.",
-      );
-      return;
-    }
-    const code = keypadInput.value.replace(/\D/g, "").slice(0, 4);
-    // Clear the secret from the DOM before the network request starts. It is
-    // sent only in the same-origin POST body and never enters URLs, storage,
-    // analytics, logs, multiplayer presence, or a meeting frame.
-    keypadInput.value = "";
-    world.setOfficeKeypadDigits?.("", keypadMode, keypadLocation);
-    if (!/^\d{4}$/.test(code)) {
-      setKeypadStatus("Enter exactly four digits.", "error");
-      keypadInput.focus();
-      return;
-    }
-    for (const digit of code) playOfficeTone(digit);
-    if (keypadMode === "set") {
-      void requestOfficeCodeUpdate(code);
-      return;
-    }
-    void requestOfficeEntry(code);
-  }
-
   function onMessage(event) {
     if (event.origin !== window.location.origin) return;
     if (!frame || event.source !== frame.contentWindow) return;
@@ -765,49 +435,31 @@ export function createWorldOfficeController({
 
   function destroy() {
     clearUnloadTimer();
-    window.clearInterval(occupancyTimer);
-    occupancyTimer = null;
     tasks?.setActive?.(false);
     world.setOfficeExitHandler?.(null);
     world.setOfficeDoorwayEntryPending?.(false);
-    world.setOfficeKeypadHandler?.(null);
+    world.setOfficeFloorHandler?.(null);
     root.removeEventListener("click", onClick);
     window.removeEventListener("keydown", onKeyDown);
     window.removeEventListener("message", onMessage);
-    keypadForm?.removeEventListener("submit", onKeypadSubmit);
-    keypadInput?.removeEventListener("input", onKeypadInput);
-    closeKeypad({ restoreFocus: false });
     meeting.setEntryTicket?.("", 0);
     officeEntryTicket = "";
     officeEntryExpiresAt = 0;
+    officeAccess = normalizeOfficeFloorAccess({});
+    world.setOfficeAccess?.(officeAccess);
     closeFallback({ restoreFocus: false });
     frame?.removeAttribute("src");
   }
 
   root.addEventListener("click", onClick);
   world.setOfficeExitHandler?.(completeOfficeExit);
-  world.setOfficeKeypadHandler?.((key, context) => {
-    void onSceneKeypadKey(key, context);
-  });
+  world.setOfficeFloorHandler?.(travelToOfficeFloor);
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("message", onMessage);
-  keypadForm?.addEventListener("submit", onKeypadSubmit);
-  keypadInput?.addEventListener("input", onKeypadInput);
-  occupancyTimer = window.setInterval(() => {
-    if (
-      document.visibilityState === "visible" &&
-      (proximity === "nearby" || active)
-    ) {
-      void refreshOccupancy();
-    }
-  }, OFFICE_STATUS_POLL_MS);
-  void refreshOccupancy();
   renderPrompt();
 
   return {
     setProximity,
-    setOccupancy,
-    refreshOccupancy,
     focusOffice,
     enterOffice,
     openFallback,

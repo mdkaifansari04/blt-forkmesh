@@ -407,7 +407,7 @@ def test_presence_client_uses_only_coarse_ephemeral_world_protocol():
     assert (
         'this.fetchJSON("/api/accounts/users", {\n        auth: false,' in APP
     )
-    assert "async refreshMemberDirectory()" in APP
+    assert "async refreshMemberDirectory(force = false)" in APP
     assert 'type: "presence"' in APP
     assert "shareCountry: Boolean(this.settings.privacy.country)" in APP
     assert "shareName: Boolean(this.settings.privacy.name)" in APP
@@ -890,6 +890,11 @@ def test_world_receives_private_notifications_and_global_announcements():
     assert 'this.fetchJSON("/api/world/events"' in APP
     assert 'this.postJSON("/api/notifications"' in APP
     assert "data-world-notification-count" in APP
+    assert "data-world-notifications-open" in APP
+    assert "Show global and personal notifications" in APP
+    assert 'this.openLandmark("events")' in APP
+    assert 'id === "events"' in APP
+    assert 'label: "Notifications"' in APP
     assert "data-world-notifications-refresh" in APP
     assert "data-world-notifications-read" in APP
     assert "World announcement:" in APP
@@ -939,6 +944,13 @@ def test_repository_world_uses_authorized_https_metadata_and_size_aware_nodes():
     assert "updateRepositorySizeMap" in SCENE
     assert "new THREE.ExtrudeGeometry" in SCENE
     assert "active.sizes" in APP
+    assert "hydrateHostedRepositorySizeMaps" in APP
+    assert "repositorySizeTrees" in APP
+    assert "repository-mini-size-map:" in SCENE
+    assert 'record.source === "hosted-import"' in SCENE
+    assert 'repositoryIsland.name = "hosted-repository-island"' in SCENE
+    assert 'repositoryBridge.name = "hosted-repository-bridge"' in SCENE
+    assert "REPOSITORY_ISLAND_CENTER_X" in SCENE
     for entity in (
         "Contributor",
         "Issues",
@@ -1779,7 +1791,7 @@ def test_world_overview_zoom_keeps_the_finite_ground_inside_camera_depth():
 
 
 def test_world_uses_nonhuman_infrastructure_without_the_world_spanning_grid():
-    assert "const WORLD_RADIUS = 72" in SCENE
+    assert "const WORLD_RADIUS = 174" in SCENE
     assert "const WORLD_GROUND_RADIUS = 88" in SCENE
     assert "electric-mesh-city-block-grid" not in SCENE
     assert "electricMeshConduit" not in SCENE

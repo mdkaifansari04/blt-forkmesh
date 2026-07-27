@@ -84,6 +84,18 @@
             "status": "closed",
             "ts": 1784412732016,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "47822217-6c69-432c-9f84-6d386e4a1f83",
+            "sig": "nVaYsM-MIi1feog4tU2VUUvfHNpeFQaoSFAyyHyBSOw2OQaM6bRJl8gLq4zp9U1vUoI8ywUeUvSOa5mkfe-xDA",
+            "ts": 1785102000439,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -98,6 +110,6 @@
     "startDate": 1784347200000,
     "status": "closed",
     "title": "Migrate planning tools to the native signed tracker format",
-    "updatedAt": 1784412732016,
+    "updatedAt": 1785102000439,
     "votes": 0
 }
