@@ -35,8 +35,8 @@ the implementation and its focused verification are complete.
 - [x] Allow organization admins to assign user groups, including for offline users.
 - [x] Put each seated user's group control on their back.
 - [x] Finish reviewing and integrating the remaining session branches from the supplied list.
-- [ ] Delete merged session branches and worktrees after verification.
-- [ ] Restore the preserved pre-existing user test changes from `stash@{0}`.
+- [x] Delete merged session branches and worktrees after verification.
+- [x] Restore the preserved pre-existing user test changes from the preserved stash.
 
 ## Screenshot branch integration
 
