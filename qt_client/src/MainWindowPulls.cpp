@@ -5264,7 +5264,10 @@ void MainWindow::fixCurrentPullFindingsWithAgent()
     }
 
     // Open the PR's branch with the PR applied; the store carries that state
-    // across the async run, so it lives on the heap until finish/fail.
+    // across the async run, so it lives on the heap until finish/fail. The edit
+    // normally lands in a scratch worktree on the PR's branch (adhoc #437), so
+    // the agent runs there rather than in the user's checkout — which may be
+    // dirty or on another branch.
     auto *store = new PullStore(pullStoreForCurrentRepo());
     QString error;
     if (!store->startPullAgentEdit(number, &error)) {
@@ -5272,6 +5275,7 @@ void MainWindow::fixCurrentPullFindingsWithAgent()
         QMessageBox::warning(this, "Fix all with AI", error);
         return;
     }
+    const QString editTree = store->agentEditWorkTree();
 
     AgentSession session;
     session.owner = repo.owner;
@@ -5301,7 +5305,7 @@ void MainWindow::fixCurrentPullFindingsWithAgent()
     m_aiFix->repoIndex = m_repoDetailIndex;
     m_aiFix->sessionId = session.id;
     m_aiFix->provider = QStringLiteral("claude-code");
-    m_aiFix->workTree = workTree;
+    m_aiFix->workTree = editTree.isEmpty() ? workTree : editTree;
     m_aiFix->files = paths;
     m_aiFix->claudeCode = true;
     m_aiFix->agentEdit = true;
