@@ -2600,10 +2600,45 @@ test("FM sculpture uses mirrored through-cut panels at a deterministic yaw", asy
   await prepareWorldPage(page, "office-fm-sculpture");
   await waitForWorld(page);
   const entryCapture = await page.locator("forkmesh-world").evaluate((shell) => {
-    shell.world.enterOfficeLobby();
+    const scene = shell.world.scene;
+    const renderer = shell.world.renderer;
     const reflection = shell.world.scene.getObjectByName(
       "forkmesh-office-logo-reflection-camera"
     );
+    const chromeCube = scene.getObjectByName(
+      "forkmesh-reflective-fm-cube"
+    );
+    const localPlayer = shell.world.player;
+    const originalRender = renderer.render;
+    const renderStates = [];
+    renderer.render = function renderWithLogoReflectionAudit(
+      renderedScene,
+      renderedCamera,
+    ) {
+      if (renderedCamera?.parent === reflection) {
+        let visibleAvatarMeshes = 0;
+        localPlayer.traverse((object) => {
+          if (!object.isMesh || !object.visible) return;
+          let ancestor = object.parent;
+          while (ancestor && ancestor !== localPlayer) {
+            if (!ancestor.visible) return;
+            ancestor = ancestor.parent;
+          }
+          visibleAvatarMeshes += 1;
+        });
+        renderStates.push({
+          playerVisible: localPlayer.visible,
+          visibleAvatarMeshes,
+          sculptureVisible: chromeCube.visible,
+        });
+      }
+      return originalRender.call(this, renderedScene, renderedCamera);
+    };
+    reflection.userData.testLogoReflectionRenderStates = renderStates;
+    reflection.userData.testLogoReflectionRestore = () => {
+      renderer.render = originalRender;
+    };
+    shell.world.enterOfficeLobby();
     return {
       count: Number(reflection?.userData?.logoCaptureCount) || 0,
       settleMs: Number(reflection?.userData?.logoCaptureSettleMs) || 900,
@@ -2633,11 +2668,33 @@ test("FM sculpture uses mirrored through-cut panels at a deterministic yaw", asy
   });
   await page.waitForTimeout(entryCapture.settleMs + 350);
   const settledCapture = await page.locator("forkmesh-world").evaluate(
-    (shell) => Number(shell.world.scene.getObjectByName(
-      "forkmesh-office-logo-reflection-camera"
-    )?.userData?.logoCaptureCount) || 0
+    (shell) => {
+      const reflection = shell.world.scene.getObjectByName(
+        "forkmesh-office-logo-reflection-camera"
+      );
+      const states = [
+        ...(reflection?.userData?.testLogoReflectionRenderStates || []),
+      ];
+      reflection?.userData?.testLogoReflectionRestore?.();
+      delete reflection?.userData?.testLogoReflectionRenderStates;
+      delete reflection?.userData?.testLogoReflectionRestore;
+      return {
+        count: Number(reflection?.userData?.logoCaptureCount) || 0,
+        states,
+        playerRestored:
+          shell.world.player.visible ===
+          (shell.world.getCameraState().mode !== "first-person"),
+      };
+    }
   );
-  expect(settledCapture).toBe(1);
+  expect(settledCapture.count).toBe(1);
+  expect(settledCapture.states).toHaveLength(6);
+  expect(settledCapture.states.every((state) =>
+    state.playerVisible &&
+    state.visibleAvatarMeshes >= 10 &&
+    !state.sculptureVisible
+  )).toBe(true);
+  expect(settledCapture.playerRestored).toBe(true);
   await page.waitForTimeout(entryCapture.settleMs + 200);
   const logo = await page.locator("forkmesh-world").evaluate((shell) => {
     const scene = shell.world.scene;
