@@ -66,13 +66,6 @@ def _load_runner(run_jobs):
     class Default:
         _run_scheduled_jobs = staticmethod(run_jobs)
 
-    class Console:
-        errors = []
-
-        @classmethod
-        def error(cls, value):
-            cls.errors.append(str(value))
-
     def json_response(payload, status=200):
         return SimpleNamespace(status=status, payload=payload)
 
@@ -83,7 +76,6 @@ def _load_runner(run_jobs):
         "urlparse": urlparse,
         "json_response": json_response,
         "_safe_error_text": str,
-        "console": Console,
     }
     module = ast.fix_missing_locations(
         ast.Module(body=selected, type_ignores=[]))
@@ -166,6 +158,46 @@ def test_runner_keeps_successor_alarm_when_a_batch_fails():
         + ns["CRON_RUNNER_ALARM_OFFSET_MS"])
     assert "batch failed" in storage.data["last_failure"]
     assert "last_completed_slot" not in storage.data
+
+
+def test_mid_minute_trigger_kick_reconciles_without_losing_next_slot():
+    observed_slots = []
+
+    async def run_jobs(_receiver):
+        observed_slots.append(
+            ns["Date"].value // ns["CRON_RUNNER_INTERVAL_MS"])
+
+    ns = _load_runner(run_jobs)
+    interval = ns["CRON_RUNNER_INTERVAL_MS"]
+    offset = ns["CRON_RUNNER_ALARM_OFFSET_MS"]
+    ns["Date"].value = 17 * interval + 43_000
+    storage = _Storage()
+    storage.data["last_completed_slot"] = 17
+    expected_minute_18_alarm = 18 * interval + offset
+    storage.alarm_at = expected_minute_18_alarm
+    runner = ns["ForkMeshCronRunner"](
+        SimpleNamespace(storage=storage), object())
+    request = SimpleNamespace(
+        url="https://forkmesh.internal/cron-runner/kick")
+
+    response = asyncio.run(runner.fetch(request))
+    assert response.status == 200
+    assert storage.alarm_at == 17 * interval + 44_000
+
+    # The reconciliation alarm lands in the already-completed minute. It must
+    # deduplicate the jobs while restoring the canonical :01.5 next wake-up.
+    ns["Date"].value = storage.alarm_at
+    asyncio.run(runner.alarm())
+    assert observed_slots == []
+    assert storage.alarm_at == expected_minute_18_alarm
+
+    # The restored alarm owns the following minute exactly once and persists
+    # its successor before work.
+    ns["Date"].value = expected_minute_18_alarm
+    asyncio.run(runner.alarm())
+    assert observed_slots == [18]
+    assert storage.data["last_completed_slot"] == 18
+    assert storage.alarm_at == 19 * interval + offset
 
 
 def test_cron_reachable_fetches_do_not_create_nested_pyodide_tasks():

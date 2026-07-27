@@ -35508,8 +35508,8 @@ class ForkMeshCronRunner(DurableObject):
     The alarm is persisted for the next minute before the current batch starts.
     A platform kill therefore loses at most the current idempotent/bounded slot;
     it cannot erase the next wake-up. Duplicate alarm delivery is suppressed
-    after a slot completes, while an interrupted slot may retry within its
-    minute.
+    after a slot completes. A catchable failure records bounded diagnostics and
+    advances to the already-armed next minute instead of creating a retry storm.
     """
 
     traffic_binding = "FORKMESH_CRON_RUNNER"
@@ -35549,8 +35549,7 @@ class ForkMeshCronRunner(DurableObject):
             )
             await self.ctx.storage.put("last_failure_at", int(Date.now()))
             try:
-                console.error(
-                    "cron runner alarm failed: " + _safe_error_text(error))
+                print("cron runner alarm failed: " + _safe_error_text(error))
             except BaseException:
                 pass
             return
