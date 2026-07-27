@@ -953,6 +953,51 @@ int main(int argc, char *argv[])
               networkLog.contains(QStringLiteral("New Peer")),
           QStringLiteral("newly online peer is logged when node-connect alerts are disabled"));
 
+    // adhoc #404: a browser guest / World visitor that stops sending presence is
+    // forgotten after ten idle minutes, while a real node keeps its offline row
+    // so it stays selectable in the Node dropdown.
+    window.testResetRosterForAlerts();
+    window.testSetNodeAlertGraceUntilMs(0);
+    QList<MemberInfo> visitorRoster;
+    visitorRoster.append(testMember(QStringLiteral("self-node"),
+                                    QStringLiteral("Self Node"), true));
+    visitorRoster.append(testMember(QStringLiteral("real-node"),
+                                    QStringLiteral("Mirror One")));
+    MemberInfo guest = testMember(QStringLiteral("guest-1"),
+                                  QStringLiteral("Guest 1667"));
+    guest.accountKind = QStringLiteral("guest");
+    visitorRoster.append(guest);
+    visitorRoster.append(testMember(
+        QStringLiteral("visitor-1"),
+        QString::fromUtf8("World visitor \xC2\xB7 tobiloba")));
+    window.testSetRoster(visitorRoster);
+
+    // Everyone drops off the live roster (only self remains).
+    QList<MemberInfo> selfOnly;
+    selfOnly.append(testMember(QStringLiteral("self-node"),
+                               QStringLiteral("Self Node"), true));
+    window.testSetRoster(selfOnly);
+    const auto rosterNames = [&] {
+        QStringList names;
+        for (const MemberInfo &m : window.testHomeRoster())
+            names << m.name;
+        return names;
+    };
+    check(rosterNames().contains(QStringLiteral("Guest 1667")) &&
+              rosterNames().contains(QStringLiteral("Mirror One")),
+          QStringLiteral("a just-departed guest is still retained on the roster"));
+
+    // Ten minutes of silence later, only the real node survives.
+    window.testAgePeerSightings(11 * 60 * 1000);
+    window.testSetRoster(selfOnly);
+    const QStringList afterIdle = rosterNames();
+    check(!afterIdle.contains(QStringLiteral("Guest 1667")) &&
+              !afterIdle.contains(QString::fromUtf8("World visitor \xC2\xB7 tobiloba")),
+          QStringLiteral("idle guests and World visitors leave the roster"));
+    check(afterIdle.contains(QStringLiteral("Mirror One")),
+          QStringLiteral("an offline node keeps its roster row"));
+    window.testResetRosterForAlerts();
+
     std::atomic<int> historyDeleteCalls{0};
     QSemaphore historyDeleteStarted;
     QSemaphore finishHistoryDelete;

@@ -147,7 +147,10 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
     // purple merge mark once it lands, a green check on success, a red stop sign
     // when halted, an orange hand while it waits on the user, and a red X circle
     // on failure (issue #322). The running glyph is seeded at frame 0 here;
-    // animateRunningAgentIcons() spins it. Other states carry no icon.
+    // animateRunningAgentIcons() spins it. A queued session gets the amber clock
+    // (adhoc #433) — with the concurrency cap in place it can sit there for a
+    // while, so the list has to say why nothing is happening. Other states carry
+    // no icon.
     if (s.merged)
         cell->setIcon(themedOcticon("git-merge", QColor("#a371f7"), 14));
     else if (s.status == AgentStatus::Running)
@@ -160,6 +163,8 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
         cell->setIcon(themedOcticon("hand", QColor("#e3742f"), 14));
     else if (s.status == AgentStatus::Failed)
         cell->setIcon(themedOcticon("x", QColor("#f85149"), 14));
+    else if (s.status == AgentStatus::Queued)
+        cell->setIcon(themedOcticon("history", QColor("#d29922"), 14));
     else
         cell->setIcon(QIcon());
     // The branch drives the cell's branch button (adhoc #377); AgentBranchButton-
@@ -172,6 +177,10 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
     cell->setData(kAgentBranchDirtyRole, stat.dirty);
     cell->setData(kAgentBranchWorktreeRole, stat.worktree);
     QStringList tip;
+    if (!s.merged && s.status == AgentStatus::Queued)
+        tip << QStringLiteral("Queued \xE2\x80\x94 starts when one of the %1 running "
+                              "agent slots frees up (Settings \xE2\x86\x92 Agents)")
+                   .arg(maxRunningAgents());
     if (s.merged)
         tip << QStringLiteral("Worktree/PR merged into %1%2")
                    .arg(agentMergeBase(s),
@@ -856,10 +865,24 @@ QWidget *MainWindow::buildAgentsTab()
         }
     });
 
+    // "Stop all" halts every ForkMesh-run session in one click (adhoc #433) —
+    // the companion to the concurrency cap, since a full queue can otherwise
+    // only be drained one Stop at a time. Disabled while nothing is in flight.
+    m_agentStopAllButton = new QPushButton("Stop all");
+    m_agentStopAllButton->setObjectName("dangerButton");
+    m_agentStopAllButton->setCursor(Qt::PointingHandCursor);
+    m_agentStopAllButton->setToolTip(
+        "Stop every running agent and cancel the queued ones. External "
+        "Claude Code sessions started outside ForkMesh are left alone.");
+    setOcticon(m_agentStopAllButton, "circle-slash", 16);
+    connect(m_agentStopAllButton, &QPushButton::clicked, this,
+            &MainWindow::stopAllRunningAgents);
+
     auto *agentListToolbar = new QHBoxLayout;
     agentListToolbar->setContentsMargins(0, 0, 0, 0);
     agentListToolbar->setSpacing(8);
     agentListToolbar->addWidget(m_agentSearch, 1);
+    agentListToolbar->addWidget(m_agentStopAllButton, 0);
     agentListToolbar->addWidget(m_agentDeleteMergedButton, 0);
     agentListToolbar->addWidget(m_agentHideDetailButton, 0);
     listLayout->addLayout(agentListToolbar);
@@ -3391,6 +3414,11 @@ void MainWindow::reloadAgents()
     // recheck). Re-check here too so a rebuild queued behind a run doesn't stay
     // stuck on "Waiting for running actions to finish" once it actually goes idle.
     maybeStartQueuedRebuild();
+    // Same reasoning for the run limit (adhoc #433): whatever just finished may
+    // have freed the slot the next queued session is waiting on, and "Stop all"
+    // follows the same running/queued set.
+    updateAgentActionState();
+    scheduleAgentQueuePump();
 }
 
 // Count badge on the top-bar Agents nav button (adhoc #194), same look as the
@@ -5292,6 +5320,21 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
         QStringLiteral("==> Started from a prompt (%1).\n")
             .arg(agentProviderName(provider)));
 
+    // This path launches directly instead of going through processAgentQueue, so
+    // it has to honour the run limit itself (adhoc #433) — the quick-add bar is
+    // where a burst of prompts is most likely to come from. The session keeps its
+    // "queued" status with its prompt and branch already persisted, which is all
+    // processAgentQueue needs to start it once a slot frees.
+    if (runningAgentCount() >= maxRunningAgents()) {
+        m_agentQueue.append(session.id);
+        reloadAgents();
+        switchToAgentsTab(session.id);
+        flashMessage(QStringLiteral("Queued \xE2\x80\x94 %1 agents are already "
+                                    "running (limit set in Settings).")
+                         .arg(maxRunningAgents()));
+        return session.id;
+    }
+
     if (provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) {
         // Both CLI-backed agents render through their structured protocols; the
         // typed prompt is their task verbatim.
@@ -5886,13 +5929,94 @@ AgentRunner *MainWindow::acquireAgentRunner()
     return runner;
 }
 
+// How many sessions currently occupy a run slot (adhoc #433). Only a session
+// actively executing counts: a Claude Code process stays alive between turns
+// (status Success/Waiting) without doing work, and holding its slot would let a
+// finished-but-open session starve the queue forever. External (watch-only)
+// rows are somebody else's `claude` process — ForkMesh can't schedule them, so
+// they don't consume a slot either.
+int MainWindow::runningAgentCount() const
+{
+    // A stored "Running" can go stale — a turn whose terminal event never landed,
+    // a resume that produced nothing (the family of adhoc #157). Blocking the
+    // rebuild on one of those was already a bug; blocking every future agent on
+    // one would be worse, since the queue would never drain again. So a session
+    // that has been completely silent for far longer than any single tool call
+    // takes releases its slot. The window is deliberately much wider than
+    // runningAgentBlockers' 90s: over-counting only delays a queued agent, while
+    // under-counting breaks the cap the user asked for.
+    constexpr qint64 kSlotStaleMs = 600'000;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    auto holdsSlot = [&](int id, qint64 startedAtMs) {
+        const qint64 liveAt =
+            qMax(m_scannerStates.value(id).lastActivityMs, startedAtMs);
+        // No timestamps at all: assume it's working rather than over-starting.
+        return liveAt <= 0 || (now - liveAt) < kSlotStaleMs;
+    };
+    QSet<int> counted;
+    for (const AgentSession &session : m_agentSessions)
+        if (!session.merged && session.status == AgentStatus::Running &&
+            !isExternalSession(session.id) &&
+            holdsSlot(session.id, session.startedAtMs))
+            counted.insert(session.id);
+    // A just-launched stream/codex session doesn't land in m_agentSessions until
+    // the next reloadAgents(); runningAgentBlockers() falls back to the same
+    // creation-time snapshot so a session started moments ago isn't invisible
+    // here either — otherwise two quick-add prompts in a row both see a free
+    // slot and blow past the cap.
+    for (auto it = m_streamSessionInfo.constBegin();
+         it != m_streamSessionInfo.constEnd(); ++it)
+        if (it->status == AgentStatus::Running && !isExternalSession(it.key()) &&
+            holdsSlot(it.key(), it->startedAtMs))
+            counted.insert(it.key());
+    return counted.size();
+}
+
+// Re-drain the queue once a slot frees. Coalesced through a zero-timer because
+// the callers are status/reload hooks that fire in bursts, and skipped outright
+// unless there is both something queued and room to start it — processAgentQueue
+// ends in reloadAgents(), which feeds those same hooks, so an unconditional
+// pump would spin.
+void MainWindow::scheduleAgentQueuePump()
+{
+    if (m_agentQueuePumpScheduled || m_agentQueue.isEmpty())
+        return;
+    if (runningAgentCount() >= maxRunningAgents())
+        return;
+    m_agentQueuePumpScheduled = true;
+    QTimer::singleShot(0, this, [this] {
+        m_agentQueuePumpScheduled = false;
+        // A session started from here was deferred by the cap: the user queued it
+        // (and saw it appear in the list) some time ago and has moved on since,
+        // so borrow the restart-resume flag to keep startCliTranscript from
+        // yanking the view to a transcript nobody asked for right now. A start
+        // the user just triggered goes through processAgentQueue directly and
+        // still jumps.
+        const bool wasQuiet = m_agentQuietResume;
+        m_agentQuietResume = true;
+        processAgentQueue();
+        m_agentQuietResume = wasQuiet;
+    });
+}
+
 void MainWindow::processAgentQueue()
 {
     if (!m_agentStore)
         return;
-    // Start every queued session immediately in its own runner — no serial
-    // queue. (Sessions already running stay put.)
+    // Start queued sessions in their own runners, up to the concurrency cap
+    // (adhoc #433). Whatever doesn't fit stays at the head of m_agentQueue with
+    // its "queued" status and clock icon, and is picked up by
+    // scheduleAgentQueuePump() as running sessions finish. Sessions already
+    // running stay put.
+    const int limit = maxRunningAgents();
+    // Tracked locally rather than re-counting each pass: the headless runner
+    // path only writes "Running" to the store, so m_agentSessions doesn't catch
+    // up until the reloadAgents() below.
+    int active = runningAgentCount();
+    bool changed = false;
     while (!m_agentQueue.isEmpty()) {
+        if (active >= limit)
+            break;
         const int sessionId = m_agentQueue.takeFirst();
         AgentSession *session = findAgentSession(sessionId);
         if (!session || session->status != AgentStatus::Queued)
@@ -5904,6 +6028,7 @@ void MainWindow::processAgentQueue()
             session->status = AgentStatus::Failed;
             session->lastError = QStringLiteral("Repository not found.");
             m_agentStore->saveSession(*session);
+            changed = true;
             continue;
         }
         const RepositoryRecord repo = m_repositories.at(repoIndex);
@@ -5916,6 +6041,7 @@ void MainWindow::processAgentQueue()
             session->status = AgentStatus::Failed;
             session->lastError = QStringLiteral("No local checkout is configured.");
             m_agentStore->saveSession(*session);
+            changed = true;
             continue;
         }
         // Ad-hoc sessions (issueNumber == 0) carry no issue; their task lives in
@@ -5938,6 +6064,7 @@ void MainWindow::processAgentQueue()
                 session->status = AgentStatus::Failed;
                 session->lastError = QStringLiteral("Issue not found.");
                 m_agentStore->saveSession(*session);
+                changed = true;
                 continue;
             }
         }
@@ -5947,6 +6074,8 @@ void MainWindow::processAgentQueue()
         if (session->provider == QLatin1String("claude-code") ||
             agentIsCodexProvider(session->provider)) {
             startCliTranscript(*session, issue, agentGitDir, session->prompt);
+            ++active;
+            changed = true;
             continue;
         }
         const AgentSession snapshot = *session;
@@ -5975,8 +6104,15 @@ void MainWindow::processAgentQueue()
                     : base + QStringLiteral("\n\nAdditional user instruction:\n%1").arg(steer);
         }
         acquireAgentRunner()->start(snapshot, issue, agentGitDir, config);
+        ++active;
+        changed = true;
     }
-    reloadAgents();
+    // Only refresh when this pass actually did something. A pass that started
+    // nothing because every slot is busy must not reload: reloadAgents() calls
+    // back into scheduleAgentQueuePump(), and refreshing on a no-op would turn
+    // a full queue into an endless reload loop.
+    if (changed)
+        reloadAgents();
 }
 
 // Lazily create the IDE bridge that lets the `claude` CLI talk back to the app
@@ -7081,6 +7217,75 @@ void MainWindow::stopStreamSession(int sessionId, bool refreshUi)
     }
 }
 
+// The sessions "Stop all" would act on: everything ForkMesh is driving or is
+// about to drive, in any repository. Queued counts — cancelling the backlog is
+// the point — while merged and external (watch-only) rows never do.
+QList<int> MainWindow::stoppableAgentSessionIds() const
+{
+    QList<int> ids;
+    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        if (session.merged || isExternalSession(session.id))
+            continue;
+        if (session.status == AgentStatus::Running ||
+            session.status == AgentStatus::Waiting ||
+            session.status == AgentStatus::Queued)
+            ids << session.id;
+    }
+    return ids;
+}
+
+// "Stop all" (adhoc #433): halt every session ForkMesh is driving, across all
+// repositories — the run limit is machine-wide, so its escape hatch is too. The
+// pending queue is dropped first: stopping a running session frees a slot, and
+// leaving the queue in place would just start the next one behind it, so the
+// user would be clicking Stop forever. External (watch-only) rows belong to
+// another process and are left alone.
+void MainWindow::stopAllRunningAgents()
+{
+    // Snapshot the ids up front: each stop below reloads m_agentSessions.
+    const QList<int> ids = stoppableAgentSessionIds();
+    if (ids.isEmpty()) {
+        flashMessage(QStringLiteral("No agents are running."));
+        return;
+    }
+    if (QMessageBox::question(
+            this, QStringLiteral("Stop all agents"),
+            QStringLiteral("Stop %1 agent session%2 (running and queued, across "
+                           "every repository)?\n\nTheir work so far is kept — "
+                           "each session can be continued later.")
+                .arg(ids.size())
+                .arg(ids.size() == 1 ? QString() : QStringLiteral("s")),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No) != QMessageBox::Yes)
+        return;
+    m_agentQueue.clear();
+    for (const int sessionId : std::as_const(ids)) {
+        if (AgentRunner *runner = runnerForSession(sessionId))
+            runner->stop();
+        // No stream/codex process attached (a queued session, or a runner that
+        // already settled): mark it stopped here so it doesn't sit "queued"
+        // forever now that its place in the queue is gone.
+        stopStreamSession(sessionId, /*refreshUi=*/false);
+        if (AgentSession *as = findAgentSession(sessionId);
+            as && m_agentStore &&
+            (as->status == AgentStatus::Queued ||
+             as->status == AgentStatus::Running ||
+             as->status == AgentStatus::Waiting)) {
+            as->status = AgentStatus::Stopped;
+            as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+            m_agentStore->saveSession(*as);
+        }
+    }
+    scheduleAgentSessionsPush(); // adhoc #182: mirror the new statuses to the web
+    reloadAgents();
+    if (m_selectedAgentSessionId > 0)
+        showAgentSession(m_selectedAgentSessionId);
+    updateAgentActionState();
+    flashMessage(QStringLiteral("Stopped %1 agent session%2.")
+                     .arg(ids.size())
+                     .arg(ids.size() == 1 ? QString() : QStringLiteral("s")));
+}
+
 // ---- External Claude Code sessions ----------------------------------------
 // Watch-only mirrors of `claude` runs started outside ForkMesh. See the header.
 
@@ -7939,6 +8144,9 @@ void MainWindow::updateAgentStatusCell(int sessionId)
     // that session went idle (Success/Failed/Waiting), since nothing ever
     // re-checked the queue (adhoc #104).
     maybeStartQueuedRebuild();
+    // Same for the run limit (adhoc #433): a stream session leaving Running is
+    // exactly when its slot frees, so let the next queued session start.
+    scheduleAgentQueuePump();
 }
 
 // Rebuild the "Connected · working on the task…" pill in the session detail
@@ -9055,6 +9263,10 @@ void MainWindow::updateAgentActionState()
         externalIsLive(m_externalSurfaced.value(m_selectedAgentSessionId).uuid);
     if (m_agentStopButton)
         m_agentStopButton->setEnabled(running || externalRunning);
+    // "Stop all" doesn't depend on the selection — it's live whenever any
+    // ForkMesh session is running, waiting or queued anywhere (adhoc #433).
+    if (m_agentStopAllButton)
+        m_agentStopAllButton->setEnabled(!stoppableAgentSessionIds().isEmpty());
     AgentSession *session = selected ? findAgentSession(m_selectedAgentSessionId)
                                      : nullptr;
     // Block deleting the session whose working-tree git-am the in-flight AI fix is
