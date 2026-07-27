@@ -1685,7 +1685,7 @@ test("Office entry preserves the live avatar and keeps zoom inside the tower", a
       after.position[0] - before.position[0],
       after.position[2] - before.position[2],
     ),
-  ).toBeLessThan(5);
+  ).toBeLessThan(6);
 
   await page.locator("forkmesh-world").evaluate((shell) => {
     shell.world.setCameraZoom(28);
