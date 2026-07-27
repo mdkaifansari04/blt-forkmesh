@@ -18,6 +18,7 @@ CHAT = (PUBLIC / "dashboard-chat.js").read_text(encoding="utf-8")
 PUBLIC_CHAT = (PUBLIC / "chat.js").read_text(encoding="utf-8")
 DASHBOARD_HTML = (PUBLIC / "dashboard" / "chat" / "index.html").read_text(encoding="utf-8")
 PUBLIC_CHAT_HTML = (PUBLIC / "chat.html").read_text(encoding="utf-8")
+PUBLIC_CHAT_CSS = (PUBLIC / "chat.css").read_text(encoding="utf-8")
 CHAT_VIEW = (
     PUBLIC / "dashboard" / "partials" / "views" / "chat.html"
 ).read_text(encoding="utf-8")
@@ -127,14 +128,16 @@ def test_public_chat_splits_guest_general_from_authenticated_channels():
 def test_public_chat_uses_shared_site_theme_keys():
     assert '"forkmesh.dashboard.theme", "forkmesh.theme"' in PUBLIC_CHAT_HTML
     assert 'meta name="color-scheme" content="light dark"' in PUBLIC_CHAT_HTML
-    assert "html:not(.dark)" in PUBLIC_CHAT_HTML
-    assert 'theme === "light" ? "#f6f8fb" : "#090909"' in PUBLIC_CHAT_HTML
+    assert "html:not(.dark)" in PUBLIC_CHAT_CSS
+    assert 'theme === "light" ? "#f6f8fa" : "#020408"' in PUBLIC_CHAT_HTML
+    assert "--bg: #080d12;" in PUBLIC_CHAT_CSS
+    assert "--surface: #0c1117;" in PUBLIC_CHAT_CSS
+    assert "--fg: #e6edf3;" in PUBLIC_CHAT_CSS
 
 
 def test_web_chat_mentions_link_to_public_profiles_with_hover_cards():
     for source in (CHAT, PUBLIC_CHAT):
         assert "const CHAT_MENTION_RE" in source
-        assert "function appendMentionText" in source
         assert "function renderMessageText" in source
         assert 'fetch("/api/accounts/" + encodeURIComponent(key)' in source
         assert 'anchor.href = mentionProfilePath(name)' in source
@@ -142,7 +145,10 @@ def test_web_chat_mentions_link_to_public_profiles_with_hover_cards():
         assert 'mentionCardEl.className = "chat-mention-card"' in source
         assert "showMentionCard(anchor, name)" in source
 
-    assert "renderMessageText(rec.body, plain.text || \"\")" in PUBLIC_CHAT
+    assert "function appendMentionText" in CHAT
+    assert "function makeMentionAnchor" in PUBLIC_CHAT
+    assert "renderRichText(container, record" in PUBLIC_CHAT
+    assert "renderRecordBody(rec)" in PUBLIC_CHAT
     assert "renderMessageText(rec.textEl, plain.text || \"\")" in CHAT
     assert "sideEntry.text = plain.text || \"\"" in CHAT
 
@@ -165,11 +171,13 @@ def test_dashboard_chat_composer_offers_mention_autocomplete():
     # The mention list owns Enter while it is open, so accepting a name must not
     # also send the half-typed message.
     wire = CHAT[CHAT.index("function wireInput("):CHAT.index("async function initChat(")]
-    assert wire.index("acceptMentionSuggest()") < wire.index("sendFrom(inputEl);\n      }")
+    assert wire.index("acceptMentionSuggest()") < wire.index(
+        "sendFrom(inputEl, attachmentControl);\n      }"
+    )
 
 
 def test_chat_mention_styles_are_available_on_all_chat_surfaces():
-    for source in (DASHBOARD_HTML, PUBLIC_CHAT_HTML, STYLES):
+    for source in (DASHBOARD_HTML, PUBLIC_CHAT_CSS, STYLES):
         assert ".chat-mention {" in source
         assert ".chat-mention-card {" in source
         assert ".chat-mention-card[hidden]" in source
@@ -181,8 +189,8 @@ def test_public_chat_has_rooms_conversation_and_people_panes():
     assert 'id="chat-rooms"' in PUBLIC_CHAT_HTML
     assert 'id="chat-people"' in PUBLIC_CHAT_HTML
     assert 'id="chat-channel-title"' in PUBLIC_CHAT_HTML
-    assert ".chat-rooms-pane" in PUBLIC_CHAT_HTML
-    assert ".chat-people-pane" in PUBLIC_CHAT_HTML
+    assert ".chat-rooms-pane" in PUBLIC_CHAT_CSS
+    assert ".chat-people-pane" in PUBLIC_CHAT_CSS
     # Sends carry the selected display label while private buffers and room
     # access stay keyed by the server-provided opaque channel id.
     assert "channel: channelDisplayLabel(activeChannel)" in PUBLIC_CHAT
@@ -222,8 +230,8 @@ def test_public_chat_reactions_speak_the_desktop_protocol():
     assert "reactorId: selfId" in reaction
     assert "reactorName: displayName()" in reaction
     assert "added: !mine" in reaction
-    assert ".chat-reaction-chip" in PUBLIC_CHAT_HTML
-    assert ".chat-emoji-picker" in PUBLIC_CHAT_HTML
+    assert ".chat-reaction-chip" in PUBLIC_CHAT_CSS
+    assert ".chat-emoji-picker" in PUBLIC_CHAT_CSS
 
 
 def test_public_chat_people_pane_tracks_online_status_from_frame_ts():
@@ -234,7 +242,7 @@ def test_public_chat_people_pane_tracks_online_status_from_frame_ts():
     assert "Math.min(Number(plain.ts) || Date.now(), Date.now())" in PUBLIC_CHAT
     assert "function personIsOnline(" in PUBLIC_CHAT
     assert "chat-presence-dot" in PUBLIC_CHAT
-    assert ".chat-presence-dot.is-online" in PUBLIC_CHAT_HTML
+    assert ".chat-presence-dot.is-online" in PUBLIC_CHAT_CSS
 
 
 def test_public_chat_orders_messages_by_ts_with_avatars_and_time():
@@ -243,8 +251,8 @@ def test_public_chat_orders_messages_by_ts_with_avatars_and_time():
     assert "function makeAvatar(" in PUBLIC_CHAT
     assert "function fmtTime(" in PUBLIC_CHAT
     assert "GROUP_WINDOW_MS" in PUBLIC_CHAT
-    assert ".chat-avatar" in PUBLIC_CHAT_HTML
-    assert ".chat-time" in PUBLIC_CHAT_HTML
+    assert ".chat-avatar" in PUBLIC_CHAT_CSS
+    assert ".chat-time" in PUBLIC_CHAT_CSS
 
 
 def test_public_chat_mention_autocomplete_accepts_with_tab():
@@ -256,9 +264,10 @@ def test_public_chat_mention_autocomplete_accepts_with_tab():
     assert "function acceptMentionSuggest(" in PUBLIC_CHAT
     assert 'event.key === "Tab" || event.key === "Enter"' in PUBLIC_CHAT
     assert "acceptMentionSuggest()" in PUBLIC_CHAT
-    assert 'input.addEventListener("input", updateMentionSuggest)' in PUBLIC_CHAT
-    assert ".chat-mention-suggest" in PUBLIC_CHAT_HTML
-    assert ".chat-mention-suggest-item.is-active" in PUBLIC_CHAT_HTML
+    assert 'input.addEventListener("input", () => {' in PUBLIC_CHAT
+    assert "resizeComposer();\n    updateMentionSuggest();" in PUBLIC_CHAT
+    assert ".chat-mention-suggest" in PUBLIC_CHAT_CSS
+    assert ".chat-mention-suggest-item.is-active" in PUBLIC_CHAT_CSS
 
 
 def test_public_chat_usernames_link_to_relay_profile_pages():
@@ -274,8 +283,8 @@ def test_public_chat_usernames_link_to_relay_profile_pages():
     assert 'document.createElement(isBot ? "span" : "a")' in PUBLIC_CHAT
     assert 'const hasProfile = person.kind === "user"' in PUBLIC_CHAT
     assert 'document.createElement(hasProfile ? "a" : "div")' in PUBLIC_CHAT
-    assert "a.chat-author:hover" in PUBLIC_CHAT_HTML
-    assert "a.chat-person:hover" in PUBLIC_CHAT_HTML
+    assert "a.chat-author:hover" in PUBLIC_CHAT_CSS
+    assert "a.chat-person:hover" in PUBLIC_CHAT_CSS
 
 
 def test_dashboard_side_chat_orders_by_ts_with_avatar_and_time():

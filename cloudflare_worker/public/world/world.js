@@ -82,6 +82,8 @@ function loadSatelliteSgp4Module() {
   return satelliteSgp4ModulePromise;
 }
 const SETTINGS_KEY = "forkmesh.world.settings.v1";
+const WORLD_PREFERENCES_ENDPOINT = "/api/world/preferences";
+const WORLD_PREFERENCES_SYNC_DELAY_MS = 700;
 const GUEST_ID_KEY = "forkmesh.world.guestId.v1";
 const FIRST_VISIT_KEY = "forkmesh.world.firstVisitAt.v1";
 // The edge-derived country is remembered locally so a signed-out visitor keeps
@@ -99,14 +101,16 @@ const FORKBOT_GREETED_KEY = "forkmesh.world.forkbotGreeted.v1";
 // actually forward the mention to /api/forkbot/chat), so the in-world droid
 // gets excited for exactly the messages the bot will answer.
 const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
+const CLAUDE_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@claude\b/i;
+const CODEX_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@codex\b/i;
 const POSITION_KEY_PREFIX = "forkmesh.world.position.v1.";
 const DETAIL_WIDTH_KEY = "forkmesh.world.detailWidth.v1";
 const DETAIL_WIDTH_MIN = 320;
 const DETAIL_WIDTH_STEP = 48;
 const REFRESH_POSITION_KEY = "forkmesh.world.refresh-position.v1";
-const RENDERER_RECOVERY_KEY = "forkmesh.world.renderer-recovery.v1";
+const SAVED_VIEWS_KEY_PREFIX = "forkmesh.world.savedViews.v1.";
+const SAVED_VIEWS_MAX = 4;
 const RENDERER_RECOVERY_DELAY_MS = 1500;
-const RENDERER_RECOVERY_WINDOW_MS = 30 * 1000;
 const POSITION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 // The Mastodon kiosk refetches the public profile on this cadence; the MM:SS
 // timer on the billboard counts the same window down.
@@ -143,21 +147,28 @@ const POSITION_FLOORS = Object.freeze({
 const SOCKET_RETRY_MAX_MS = 20000;
 const SOCKET_STABLE_MS = 5000;
 const SOCKET_PEER_GRACE_MS = 8000;
+// The relay retired this socket because the same account joined from another
+// device. Reconnecting on the usual ladder would just bounce the avatar
+// between the two, so this browser waits for its owner to come back to it.
+const SOCKET_ACCOUNT_TAKEOVER_CODE = 4009;
 const SOCKET_BUFFER_HIGH_WATER_BYTES = 64 * 1024;
 const PRESENCE_PROFILE_DEBOUNCE_MS = 300;
 const MOVEMENT_SEND_INTERVAL_MS = 1000;
 const PRESENCE_STALE_MS = 22000;
 const WORLD_TICKET_REFRESH_MS = 5 * 60 * 1000;
 const WORLD_ACTIVITY_CONTINUATION_HEADER = "x-forkmesh-world-activity";
-// Gentle self-update: the relay stamps a new BUILD_REV on every deploy and
-// echoes it from /api/version. A slow watcher notices the flip, saves the
-// player's position, and reloads once — the restored position makes the new
-// build appear in place without the player ever touching refresh.
+// Code revisions are offered with an explicit refresh button. Shared object
+// placements are data-only updates and are applied to the running scene.
 const WORLD_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+const WORLD_LAYOUT_LIVE_REFRESH_MS = 60 * 1000;
 const REPOSITORY_IMPORT_POLL_MS = 2 * 60 * 1000;
+// forkmesh/forkmesh opens by default, but its commit pin needs the repository
+// catalog and the mirror snapshot to agree. Mirrors that are mid-sync when the
+// World opens converge moments later, so the automatic load is re-attempted
+// alongside the existing import poll for a bounded window instead of only once
+// at boot. Retries stop the moment a repository is open.
+const FLAGSHIP_PORTAL_RETRY_LIMIT = 20;
 const WORLD_UPDATE_CHECK_MIN_GAP_MS = 60 * 1000;
-const WORLD_UPDATE_RELOAD_DELAY_MS = 1400;
-const WORLD_UPDATE_RELOADED_REV_KEY = "forkmesh.world.updateReloadedRev.v1";
 const WORLD_NOTIFICATION_POLL_MS = 60 * 1000;
 const MIRROR_STATUS_POLL_MS = 5 * 60 * 1000;
 const WORLD_EVENT_POLL_MS = 3 * 60 * 1000;
@@ -165,6 +176,8 @@ const WORLD_REWARD_POLL_MS = 5 * 60 * 1000;
 const WORLD_MEDIA_PLAYBACK_POLL_MS = 15 * 1000;
 const WORLD_SOCKET_PING_MS = 40 * 1000;
 const WORLD_STATUS_POLL_MS = 5 * 60 * 1000;
+const WORLD_BUILD_BOARD_POLL_MS = 60 * 1000;
+const WORLD_AGENT_BOT_POLL_MS = 8 * 1000;
 // The member directory is refreshed by arrivals rather than by a timer, so
 // the idle throttle is long; a new face at the fire forces it through, no
 // sooner than the endpoint's own edge-cache TTL.
@@ -291,6 +304,157 @@ function escapeHTML(value) {
     .replace(/'/g, "&#039;");
 }
 
+const INFRASTRUCTURE_CONSOLE_METHODS = Object.freeze([
+  "debug",
+  "info",
+  "log",
+  "warn",
+  "error",
+]);
+const INFRASTRUCTURE_CONSOLE_MAX_ENTRIES = 40;
+const INFRASTRUCTURE_CONSOLE_MAX_TEXT = 240;
+
+function infrastructureConsoleValue(value, seen = new WeakSet(), depth = 0) {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  if (typeof value === "string") return value;
+  if (["number", "boolean", "bigint"].includes(typeof value)) {
+    return String(value);
+  }
+  if (typeof value === "symbol") return value.description || "Symbol";
+  if (typeof value === "function") return `[function ${value.name || "anonymous"}]`;
+  if (value instanceof Error) {
+    return `${value.name || "Error"}: ${value.message || ""}`;
+  }
+  if (typeof Element !== "undefined" && value instanceof Element) {
+    const id = String(value.id || "").slice(0, 40);
+    return `<${String(value.tagName || "element").toLowerCase()}${id ? `#${id}` : ""}>`;
+  }
+  if (!value || typeof value !== "object") return String(value);
+  if (seen.has(value)) return "[circular]";
+  if (depth >= 2) return Array.isArray(value) ? "[array]" : "[object]";
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return `[${value
+        .slice(0, 8)
+        .map((entry) => infrastructureConsoleValue(entry, seen, depth + 1))
+        .join(", ")}${value.length > 8 ? ", …" : ""}]`;
+    }
+    const pairs = Object.entries(value)
+      .slice(0, 8)
+      .map(
+        ([key, entry]) =>
+          `${key}: ${infrastructureConsoleValue(entry, seen, depth + 1)}`,
+      );
+    return `{${pairs.join(", ")}${Object.keys(value).length > 8 ? ", …" : ""}}`;
+  } catch (_) {
+    return Object.prototype.toString.call(value);
+  } finally {
+    seen.delete(value);
+  }
+}
+
+export function sanitizeInfrastructureConsoleText(values) {
+  const source = (Array.isArray(values) ? values : [values])
+    .map((value) => infrastructureConsoleValue(value))
+    .join(" ")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return source
+    .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(
+      /\b(?:password|passwd|secret|token|api[_-]?key|authorization)\b\s*[:=]\s*["']?[^,\s}"']+/gi,
+      (match) => `${match.split(/[:=]/, 1)[0]}=[redacted]`,
+    )
+    .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "[redacted-key]")
+    .replace(
+      /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g,
+      "[redacted-jwt]",
+    )
+    .replace(/\b[A-Fa-f0-9]{32,}\b/g, "[redacted-id]")
+    .replace(
+      /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi,
+      "[redacted-email]",
+    )
+    .replace(/\/home\/[^/\s]+/g, "/home/…")
+    .replace(/\bhttps?:\/\/[^\s]+/gi, (candidate) => {
+      try {
+        const url = new URL(candidate.replace(/[),.;]+$/, ""));
+        return `${url.origin}${url.pathname}`;
+      } catch (_) {
+        return "[redacted-url]";
+      }
+    })
+    .slice(0, INFRASTRUCTURE_CONSOLE_MAX_TEXT);
+}
+
+function createInfrastructureConsoleCapture(onEntries) {
+  const entries = [];
+  const originals = new Map();
+  const wrappers = new Map();
+  let stopped = false;
+  const emit = (level, values) => {
+    if (stopped) return;
+    const text = sanitizeInfrastructureConsoleText(values);
+    if (!text) return;
+    entries.push({
+      level,
+      at: new Date().toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      }),
+      text,
+    });
+    if (entries.length > INFRASTRUCTURE_CONSOLE_MAX_ENTRIES) {
+      entries.splice(
+        0,
+        entries.length - INFRASTRUCTURE_CONSOLE_MAX_ENTRIES,
+      );
+    }
+    onEntries(entries.slice());
+  };
+  INFRASTRUCTURE_CONSOLE_METHODS.forEach((method) => {
+    const original = console[method];
+    if (typeof original !== "function") return;
+    const wrapper = (...values) => {
+      original.apply(console, values);
+      emit(method, values);
+    };
+    originals.set(method, original);
+    wrappers.set(method, wrapper);
+    try {
+      console[method] = wrapper;
+    } catch (_) {}
+  });
+  const onWindowError = (event) => {
+    emit("error", [event?.error || event?.message || "Window error"]);
+  };
+  const onUnhandledRejection = (event) => {
+    emit("error", ["Unhandled rejection", event?.reason]);
+  };
+  window.addEventListener("error", onWindowError);
+  window.addEventListener("unhandledrejection", onUnhandledRejection);
+  emit("info", ["Local console capture enabled"]);
+  return {
+    stop() {
+      if (stopped) return;
+      stopped = true;
+      wrappers.forEach((wrapper, method) => {
+        if (console[method] !== wrapper) return;
+        try {
+          console[method] = originals.get(method);
+        } catch (_) {}
+      });
+      window.removeEventListener("error", onWindowError);
+      window.removeEventListener("unhandledrejection", onUnhandledRejection);
+      entries.splice(0);
+    },
+  };
+}
+
 // Coarse "how long ago" reading for the session rows. Deliberately rounded:
 // the exact millisecond a device was last active is not useful here and a
 // bucketed label reads the same in every locale.
@@ -403,6 +567,108 @@ function readWorldPosition(storage, key, now = Date.now()) {
     } catch (_) {}
   }
   return position;
+}
+
+function sharedWorldView(search = location.search) {
+  const params = new URLSearchParams(search);
+  if (params.get("view") !== "world") return null;
+  const number = (name) => Number(params.get(name));
+  const x = number("x");
+  const z = number("z");
+  const heading = number("heading");
+  const yaw = number("yaw");
+  const pitch = number("pitch");
+  const zoom = number("zoom");
+  const space = String(params.get("space") || "town-square");
+  const mode = params.get("camera") === "first-person"
+    ? "first-person"
+    : "third-person";
+  if (
+    !WORLD_SPACE_IDS.has(space) ||
+    ![x, z, heading, yaw, pitch, zoom].every(Number.isFinite) ||
+    Math.abs(x) > POSITION_RADIUS ||
+    Math.abs(z) > POSITION_RADIUS ||
+    Math.abs(heading) > Math.PI ||
+    Math.abs(yaw) > Math.PI * 2 ||
+    Math.abs(pitch) > Math.PI / 2 ||
+    zoom < 0.2 ||
+    zoom > 8
+  ) {
+    return null;
+  }
+  return {
+    x,
+    y: POSITION_FLOORS[space],
+    z,
+    heading,
+    space,
+    updatedAt: Date.now(),
+    camera: { mode, yaw, pitch, zoom },
+  };
+}
+
+function normalizedSavedWorldView(record) {
+  if (!record || typeof record !== "object") return null;
+  const id = String(record.id || "");
+  const label = String(record.label || "")
+    .replace(/[^\p{L}\p{N} _-]/gu, "")
+    .trim()
+    .slice(0, 14);
+  const x = Number(record.x);
+  const y = Number(record.y);
+  const z = Number(record.z);
+  const heading = Number(record.heading);
+  const floorId = String(record.floorId || "");
+  const office = record.office === true;
+  const camera = {
+    mode:
+      record.camera?.mode === "first-person"
+        ? "first-person"
+        : "third-person",
+    yaw: Number(record.camera?.yaw),
+    pitch: Number(record.camera?.pitch),
+    zoom: Number(record.camera?.zoom),
+  };
+  if (
+    !/^[a-z0-9-]{8,40}$/.test(id) ||
+    !label ||
+    ![x, y, z, heading, camera.yaw, camera.pitch, camera.zoom].every(
+      Number.isFinite,
+    ) ||
+    Math.abs(x) > 100 ||
+    Math.abs(z) > 100 ||
+    Math.abs(heading) > Math.PI ||
+    Math.abs(camera.yaw) > Math.PI * 2 ||
+    Math.abs(camera.pitch) > Math.PI / 2 ||
+    camera.zoom < 0.2 ||
+    camera.zoom > 8 ||
+    (office && !/^[a-z0-9-]{1,30}$/.test(floorId))
+  ) {
+    return null;
+  }
+  const thumbnail = String(record.thumbnail || "");
+  return {
+    id,
+    label,
+    office,
+    floorId: office ? floorId : "",
+    space: office
+      ? "town-square"
+      : WORLD_SPACE_IDS.has(String(record.space || ""))
+        ? String(record.space)
+        : "town-square",
+    x,
+    y,
+    z,
+    heading,
+    camera,
+    thumbnail:
+      /^data:image\/webp;base64,[A-Za-z0-9+/=]+$/.test(thumbnail) &&
+      thumbnail.length <= 48_000
+        ? thumbnail
+        : "",
+    updatedAt: Math.max(0, Number(record.updatedAt) || 0),
+  };
 }
 
 function firstVisitTimestamp(now = Date.now()) {
@@ -1525,6 +1791,7 @@ function normalizeMemberDirectory(value) {
           : null,
       avatar: sanitizePresenceText(user?.avatar, "", 240),
       countryCode: sanitizePresenceText(user?.countryCode, "", 2),
+      flag: sanitizePresenceText(user?.flag, "", 8),
       // The coarse client the account last published, saved server-side so an
       // away member's bench figure keeps their flag shirt and client badge.
       browser: presenceLabel(user?.browser, "Hidden", "Hidden"),
@@ -1532,6 +1799,10 @@ function normalizeMemberDirectory(value) {
       status: sanitizePresenceText(user?.status, "", 80),
       // Coarse recency bucket for the bench figure's chest activity light.
       activityBucket: activityLightBucket(user?.activityBucket),
+      visitCount: Math.max(
+        0,
+        Math.min(999, Number(user?.visitCount) || 0),
+      ),
     }))
     .filter((user) => user.name);
 }
@@ -2259,6 +2530,119 @@ function analyzeWorkshopSnapshot(type, entries, files, stats = {}) {
   };
 }
 
+const REPOSITORY_ACTIVITY_WEEK_COUNT = 52;
+const REPOSITORY_ACTIVITY_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+function normalizeRepositoryActivityWeeks(value) {
+  const raw = Array.isArray(value)
+    ? value.slice(-REPOSITORY_ACTIVITY_WEEK_COUNT)
+    : [];
+  const weeks = raw.map((item) => {
+    const count = Number(item);
+    return Number.isSafeInteger(count) && count > 0
+      ? Math.min(count, 1_000_000)
+      : 0;
+  });
+  while (weeks.length < REPOSITORY_ACTIVITY_WEEK_COUNT) weeks.unshift(0);
+  return weeks;
+}
+
+function repositoryActivityWindowStarts(nowMs = Date.now()) {
+  const now = new Date(nowMs);
+  const today = Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+  );
+  const weekday = new Date(today).getUTCDay();
+  const mondayOffset = (weekday + 6) % 7;
+  return {
+    today,
+    week: today - mondayOffset * 24 * 60 * 60 * 1000,
+    month: Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
+  };
+}
+
+function normalizeRepositoryCommitActivity(
+  payload,
+  publishedWeeks = [],
+  nowMs = Date.now(),
+) {
+  const commits = (Array.isArray(payload?.commits) ? payload.commits : [])
+    .slice(0, 60)
+    .map((commit) => ({
+      date: Date.parse(String(commit?.date || "")),
+    }))
+    .filter((commit) => Number.isFinite(commit.date) && commit.date <= nowMs);
+  let weeks = normalizeRepositoryActivityWeeks(publishedWeeks);
+  let weeksExact = weeks.some((count) => count > 0);
+  if (!weeksExact && commits.length) {
+    const start = nowMs - REPOSITORY_ACTIVITY_WEEK_COUNT * REPOSITORY_ACTIVITY_WEEK_MS;
+    commits.forEach((commit) => {
+      const index = Math.floor(
+        (commit.date - start) / REPOSITORY_ACTIVITY_WEEK_MS,
+      );
+      if (index >= 0 && index < weeks.length) weeks[index] += 1;
+    });
+    weeksExact = commits.length < 60;
+  }
+
+  const defaultStarts = repositoryActivityWindowStarts(nowMs);
+  const reportedWindows =
+    payload?.activity?.windows && typeof payload.activity.windows === "object"
+      ? payload.activity.windows
+      : {};
+  const oldestCommit = commits.length
+    ? Math.min(...commits.map((commit) => commit.date))
+    : Infinity;
+  const metrics = {};
+  ["today", "week", "month"].forEach((key) => {
+    const reported = reportedWindows[key];
+    const reportedStart = Date.parse(String(reported?.start || ""));
+    const start =
+      Number.isFinite(reportedStart) &&
+      reportedStart >= nowMs - 370 * 24 * 60 * 60 * 1000 &&
+      reportedStart <= nowMs
+        ? reportedStart
+        : defaultStarts[key];
+    const reportedCount = Number(reported?.commits);
+    const hasExactCount =
+      Number.isSafeInteger(reportedCount) &&
+      reportedCount >= 0 &&
+      reportedCount <= 100_000_000;
+    const count = hasExactCount
+      ? reportedCount
+      : commits.reduce(
+          (total, commit) => total + Number(commit.date >= start),
+          0,
+        );
+    const elapsedHours = Math.max((nowMs - start) / (60 * 60 * 1000), 1 / 60);
+    metrics[key] = {
+      commits: count,
+      commitsPerHour: count / elapsedHours,
+      exact:
+        hasExactCount ||
+        commits.length < 60 ||
+        oldestCommit <= start,
+      start,
+    };
+  });
+  return {
+    status:
+      weeks.some((count) => count > 0) || commits.length || reportedWindows.today
+        ? "ready"
+        : payload
+          ? "empty"
+          : "unavailable",
+    timezone: "UTC",
+    weekStartsOn: "monday",
+    weeks,
+    weeksExact,
+    totalWeeks: weeks.reduce((total, count) => total + count, 0),
+    metrics,
+  };
+}
+
 function cleanRepositories(payload) {
   const items =
     payload?.repositories ||
@@ -2304,6 +2688,7 @@ function cleanRepositories(payload) {
           pullCount <= 10_000_000
             ? pullCount
             : null,
+        activityWeeks: normalizeRepositoryActivityWeeks(repo.activityWeeks),
         starCount:
           Number.isSafeInteger(starCount) && starCount >= 0
             ? Math.min(starCount, 10_000_000)
@@ -3021,16 +3406,34 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         <a href="/dashboard">Open the standard operations console</a>
       </section>
       <div class="world-canvas-wrap" data-world-canvas-wrap></div>
+      <div class="world-loading-curtain" data-world-loading role="status" aria-live="polite">
+        <img src="/assets/logo.png" alt="" aria-hidden="true" width="44" height="52" />
+        <strong>Opening ForkMesh World</strong>
+        <span data-world-loading-stage>Reading your saved view…</span>
+        <span class="world-loading-track" aria-hidden="true">
+          <span data-world-loading-progress></span>
+        </span>
+        <small data-world-loading-percent>8%</small>
+      </div>
       <div class="world-renderer-recovery" data-world-renderer-recovery role="status" aria-live="polite" hidden>
         <strong data-world-renderer-recovery-title>Reconnecting the 3D renderer…</strong>
         <span data-world-renderer-recovery-copy>Your position is saved on this device while the graphics context recovers.</span>
         <button type="button" data-world-renderer-reload hidden>Reload World</button>
       </div>
+      <div class="world-update-notice" data-world-update-notice role="status" aria-live="polite" hidden>
+        <span><strong>A new World build is ready.</strong> Refresh when you are ready; your position will be preserved.</span>
+        <button type="button" data-world-update-refresh>Refresh World</button>
+      </div>
+      <div class="world-share-menu" data-world-share-menu role="menu" hidden>
+        <button type="button" role="menuitem" data-world-share-view>
+          🔗 Share this exact view
+        </button>
+      </div>
       <div class="world-label-layer" data-world-label-layer></div>
 
       <div class="world-hud">
         <header class="world-topbar">
-          <a class="world-brand brand" href="/" aria-label="ForkMesh World home">
+          <a class="world-brand brand" href="/world/" data-world-logo-refresh aria-label="Refresh ForkMesh World">
             <img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true" />
             <span class="world-connection-ring" data-world-presence-state="connecting">
               <span class="world-visually-hidden" data-world-presence-copy>Joining world</span>
@@ -3119,6 +3522,18 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               >☰</button>
             </div>
             <ul class="world-map-list">${mapItems}</ul>
+          </section>
+          <section class="world-saved-views" data-world-saved-views aria-label="Saved World views">
+            <div class="world-saved-views-heading">
+              <span>Saved views</span>
+              <button
+                type="button"
+                data-world-save-view
+                aria-label="Save this location and perspective"
+                title="Save this view"
+              >＋</button>
+            </div>
+            <div class="world-saved-view-list" data-world-saved-view-list></div>
           </section>
           <section
             class="world-community-placement"
@@ -3546,7 +3961,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         <section class="world-settings" data-world-settings aria-labelledby="world-settings-title" aria-hidden="true">
           <div class="world-settings-heading">
             <div>
-              <p class="world-eyebrow">LOCAL CONTROLS</p>
+              <p class="world-eyebrow">YOUR WORLD PREFERENCES</p>
               <h2 id="world-settings-title">Your view, your signal.</h2>
             </div>
             <button class="world-settings-close" type="button" data-world-settings-close aria-label="Close settings">×</button>
@@ -3612,7 +4027,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
 
           <div class="world-settings-pane" data-world-settings-pane="view">
           <fieldset class="world-setting-group">
-            <legend>Personal environment · only changes this device</legend>
+            <legend>Personal environment · synced to your account</legend>
             <div class="world-theme-grid">${themes}</div>
             <label class="world-light-control">
               <span>
@@ -3629,7 +4044,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 value="${escapeHTML(settings.lightLevel)}"
                 data-world-light-level
               />
-              <small>Full daylight is the default. This adjustment stays on this device and never changes the shared world.</small>
+              <small>Full daylight is the default. Signed-in preferences follow you across devices and never change the shared world for anyone else.</small>
             </label>
             <label class="world-privacy-option">
               <span>Show debug panel</span>
@@ -3642,7 +4057,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </fieldset>
 
           <fieldset class="world-setting-group">
-            <legend>Movement · only changes this device</legend>
+            <legend>Movement · synced to your account</legend>
             <label class="world-light-control">
               <span>
                 <strong>Move speed</strong>
@@ -3820,8 +4235,14 @@ class ForkMeshWorld extends HTMLElement {
     this.landmarkCapabilities = initialLandmarkCapabilities();
     this.repositories = [];
     this.nativeRepositories = [];
+    // The unreconciled /api/repositories records. The organization alias is
+    // derived from these plus the mirror snapshot, so both halves have to be
+    // kept to re-derive the flagship pin from a fresher mirror report.
+    this.rawNativeRepositories = [];
+    this.repositoryAliasSignature = null;
     this.externalRepositories = [];
     this.repositoryCatalogState = "loading";
+    this.flagshipPortalRetries = 0;
     this.network = {};
     this.mirrorCatalogs = [];
     this.federatedInstances = [];
@@ -3861,12 +4282,25 @@ class ForkMeshWorld extends HTMLElement {
     this.systemCapacityDurableObjects = [];
     this.systemCapacityFocus = "";
     this.systemCapacitySort = { key: "rowCount", direction: "desc" };
+    this.buildBoardTimer = 0;
+    this.orgAgentTimer = 0;
+    this.sessionWatchTimer = 0;
+    this.sessionWatchActive = false;
+    this.orgAgentStates = new Map();
+    this.orgAgentSessions = [];
+    this.orgAgentAccess = {
+      state: "loading",
+      requiredTeam: "engineering",
+    };
+    this.infrastructureConsoleCapture = null;
+    this.infrastructureConsoleEntries = [];
     this.detailReturnFocus = null;
     this.activeAudio = null;
     this.focusMusicState = "stopped";
     this.focusMusicError = "";
     this.soundEnabled = false;
     this.soundContext = null;
+    this.mobileMovementActive = false;
     this.joinSoundTimes = [];
     this.mediaSpaces = [];
     this.mediaRoom = normalizeMediaRoom(null);
@@ -3946,6 +4380,9 @@ class ForkMeshWorld extends HTMLElement {
       : "";
     this.socket = null;
     this.presenceConnecting = false;
+    // Set once this account's avatar has been handed to a newer device. It
+    // parks the reconnect ladder until the visitor asks for it back here.
+    this.presenceTakenOver = false;
     this.socketRetry = 1000;
     this.socketTimer = 0;
     this.socketStableTimer = 0;
@@ -3963,6 +4400,15 @@ class ForkMeshWorld extends HTMLElement {
     this.rendererRecoveryTimer = 0;
     this.buildDiagnostics = { version: "", revision: "" };
     this.updateCheckTimer = 0;
+    this.layoutRefreshTimer = 0;
+    this.worldLayoutFingerprint = "";
+    this.pendingWorldShare = null;
+    this.savedViews = [];
+    this.settingsUpdatedAt = 0;
+    this.worldPreferencesLoaded = false;
+    this.worldPreferencesLoading = null;
+    this.worldPreferencesSyncTimer = 0;
+    this.applyingWorldPreferences = false;
     this.lastUpdateCheckAt = 0;
     this.updateReloadPending = false;
     this.peerGraceTimer = 0;
@@ -3978,6 +4424,11 @@ class ForkMeshWorld extends HTMLElement {
     this.positionKey = "";
     this.restoredPosition = null;
     this.spawnSelected = false;
+    // A server arrival cell may resolve a collision only during the first
+    // welcome. Mobile radios routinely reconnect while somebody is walking;
+    // treating every reconnect like a new arrival used to snap signed-in
+    // visitors back to the entrance and looked exactly like a page refresh.
+    this.initialPresenceWelcomePending = true;
     this.rewardTimer = 0;
     this.mirrorTimer = 0;
     this.repositoryImportTimer = 0;
@@ -4035,8 +4486,24 @@ class ForkMeshWorld extends HTMLElement {
     this.identity.firstSeenMinutes = firstSeenMinutes(this.firstVisitAt);
     this.identity.visitCount = this.publicVisitCount;
     this.identity.activityCategory = this.currentActivityCategory;
-    this.settings = mergeSettings(readJSON(localStorage, SETTINGS_KEY, null));
+    const storedSettings = readJSON(localStorage, SETTINGS_KEY, null);
+    this.settings = mergeSettings(storedSettings);
+    this.settingsUpdatedAt = Math.max(
+      0,
+      Number(storedSettings?._updatedAt) || 0,
+    );
     this.positionKey = positionStorageKey(this.identity.id);
+    this.savedViews = (
+      readJSON(
+        localStorage,
+        `${SAVED_VIEWS_KEY_PREFIX}${this.identity.id}`,
+        [],
+      ) || []
+    )
+      .map(normalizedSavedWorldView)
+      .filter(Boolean)
+      .slice(0, SAVED_VIEWS_MAX);
+    this.sharedView = sharedWorldView(location.search);
     let refreshPosition = null;
     try {
       refreshPosition = normalizedWorldPosition(
@@ -4045,7 +4512,9 @@ class ForkMeshWorld extends HTMLElement {
       sessionStorage.removeItem(REFRESH_POSITION_KEY);
     } catch (_) {}
     const restoredPosition =
-      refreshPosition || readWorldPosition(localStorage, this.positionKey);
+      this.sharedView ||
+      refreshPosition ||
+      readWorldPosition(localStorage, this.positionKey);
     if (
       restoredPosition &&
       (!this.requestedSpaceExplicit ||
@@ -4065,6 +4534,7 @@ class ForkMeshWorld extends HTMLElement {
       this.mode,
       this.landmarkCapabilities,
     );
+    this.renderSavedViews();
     this.syncViewportHeight();
     window.visualViewport?.addEventListener("resize", this.syncViewportHeight);
     window.addEventListener("orientationchange", this.syncViewportHeight);
@@ -4075,6 +4545,9 @@ class ForkMeshWorld extends HTMLElement {
     window.addEventListener("pointermove", this.handlePublicInputActivity, {
       passive: true,
     });
+    this.addEventListener("touchmove", this.blockWorldPullToRefresh, {
+      passive: false,
+    });
     window.addEventListener("keydown", this.handlePublicInputActivity);
     window.addEventListener("message", this.handleWorldChatMessage);
     window.addEventListener("pagehide", this.handlePageHide);
@@ -4084,11 +4557,23 @@ class ForkMeshWorld extends HTMLElement {
       "click",
       this.reloadForRendererRecovery,
     );
+    this.$("[data-world-update-refresh]")?.addEventListener(
+      "click",
+      this.refreshWorldForUpdate,
+    );
+    this.$("[data-world-logo-refresh]")?.addEventListener(
+      "click",
+      (event) => {
+        event.preventDefault();
+        location.reload();
+      },
+    );
     this.startClock();
     this.startDiagnostics();
     this.bootstrap();
     this.startWorldTicketRefresh();
     this.startUpdateWatch();
+    this.startWorldLayoutWatch();
   }
 
   disconnectedCallback() {
@@ -4103,8 +4588,15 @@ class ForkMeshWorld extends HTMLElement {
     return Array.from(this.querySelectorAll(selector));
   }
 
-  handlePublicInputActivity = () => {
+  handlePublicInputActivity = (event) => {
     if (this.destroyed || !this.identity) return;
+    // A click or keypress is this device asking for the account's avatar back
+    // after a newer device took it. Pointer movement alone is not an ask —
+    // otherwise a mouse drifting across an idle screen would tug the avatar
+    // away from the device its owner is actually using.
+    if (["pointerdown", "keydown"].includes(String(event?.type || ""))) {
+      this.reclaimPresenceHere();
+    }
     this.recordActivityArrival();
     if (this.focusMusicAutoplayPending) {
       this.focusMusicAutoplayPending = false;
@@ -4132,6 +4624,22 @@ class ForkMeshWorld extends HTMLElement {
         this.sendPresence({ type: "presence" });
         this.broadcastLocalPresence();
       }, 12000);
+    }
+  };
+
+  blockWorldPullToRefresh = (event) => {
+    // iOS WebKit can still begin its native pull-to-refresh gesture despite
+    // touch-action on a descendant. Cancel only gestures owned by the 3D
+    // surface or thumbstick so scrollable sheets and forms remain usable.
+    const target =
+      event.target instanceof Element ? event.target : null;
+    if (
+      this.mobileMovementActive ||
+      target?.closest?.(
+        "[data-world-thumbstick], [data-world-canvas-wrap], .world-canvas",
+      )
+    ) {
+      event.preventDefault();
     }
   };
 
@@ -4176,6 +4684,16 @@ class ForkMeshWorld extends HTMLElement {
       if (FORKBOT_MENTION_RE.test(text)) {
         this.world?.exciteForkbot?.(this.identity?.id, text);
       }
+      if (CLAUDE_MENTION_RE.test(text)) {
+        if (this.orgAgentAccess?.state === "allowed") {
+          this.world?.exciteAgentBot?.(this.identity?.id, "claude", text);
+        }
+      }
+      if (CODEX_MENTION_RE.test(text)) {
+        if (this.orgAgentAccess?.state === "allowed") {
+          this.world?.exciteAgentBot?.(this.identity?.id, "codex", text);
+        }
+      }
       return;
     }
     const senderName = sender.toLowerCase();
@@ -4184,6 +4702,11 @@ class ForkMeshWorld extends HTMLElement {
     // "forkbot"; float them over the wandering ForkBot avatar.
     if (senderName === "forkbot") {
       this.world?.showChatBubble?.("forkbot", text);
+      return;
+    }
+    if (senderName === "claude" || senderName === "codex") {
+      if (this.orgAgentAccess?.state !== "allowed") return;
+      this.world?.showChatBubble?.(senderName, text);
       return;
     }
   };
@@ -4518,6 +5041,7 @@ class ForkMeshWorld extends HTMLElement {
 
   async bootstrap() {
     try {
+      this.setLoadingProgress(12, "Reading your saved view…");
       const contextPromise = this.loadContext();
       // The shared object layout is a tiny, edge-cached public document.
       // Request it immediately so administrator-locked placements are already
@@ -4527,13 +5051,32 @@ class ForkMeshWorld extends HTMLElement {
       // private World reads. This prevents an expired local token from
       // fanning out into a page full of avoidable 401/403 requests.
       const dataPromise = contextPromise.then(() => this.loadWorldData());
-      const THREE = await THREE_MODULE;
+      this.setLoadingProgress(28, "Starting the live renderer…");
+      // Give the tiny shared layout a short head start and feed it into scene
+      // construction. Most visits now build movable objects at their final
+      // positions instead of visibly moving them after first paint.
+      const [THREE, initialLayout] = await Promise.all([
+        THREE_MODULE,
+        Promise.race([
+          layoutPromise,
+          new Promise((resolve) =>
+            window.setTimeout(() => resolve(null), 1200),
+          ),
+        ]),
+      ]);
       if (this.destroyed) return;
+      this.setLoadingProgress(46, "Placing the town square…");
+      const mergedInitialLayout = this.mergedWorldLayout(
+        initialLayout?.objects,
+      );
+      this.worldLayoutFingerprint =
+        this.worldLayoutSignature(mergedInitialLayout);
       this.world = createWorldScene({
         THREE,
         container: this.$("[data-world-canvas-wrap]"),
         labelLayer: this.$("[data-world-label-layer]"),
         identity: publicIdentity(this.identity, this.settings),
+        initialWorldLayout: mergedInitialLayout,
         reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
         onLandmarkSelect: (id, meta = {}) => {
           if (id === "office") {
@@ -4562,7 +5105,7 @@ class ForkMeshWorld extends HTMLElement {
             return;
           }
           if (id === "repositories" && meta.repositoryIssuePage) {
-            this.toggleRepositoryIssuePage(meta.repositoryIssuePage);
+            this.openRepositoryIssueWorkbench(meta.repositoryIssuePage);
             return;
           }
           if (id === "repositories" && meta.repositoryPullPage) {
@@ -4616,13 +5159,34 @@ class ForkMeshWorld extends HTMLElement {
           if (url) window.open(url, "_blank", "noopener,noreferrer");
         },
         onReferralBoardSelect: () => void this.copyReferralLink(),
+        onSiteReferrerOpen: (url) => this.openSiteReferrerLink(url),
         onSystemCapacityTableSelect: (table) =>
           this.openSystemCapacityTables(table),
+        onInfrastructureConsoleToggle: ({ enabled }) =>
+          this.setInfrastructureConsoleEnabled(enabled),
+        onBuildBoardReorder: ({ order }) =>
+          void this.reorderBuildBoard(order),
+        onBuildIssueAssign: ({ key, title }) =>
+          void this.assignBuildIssue(key, title),
+        onRepositoryIssueOpen: (issue) =>
+          this.openRepositoryIssueWorkbench(issue),
         onRendererStateChange: (state) => {
           this.handleRendererStateChange(state);
         },
         onForkbotChat: () => {
           this.openChatTerminal("@forkbot ");
+        },
+        onAgentBotChat: (botId) => {
+          if (this.orgAgentAccess?.state !== "allowed") {
+            this.toast(
+              "Claude and Codex chat is available only to the Engineering team.",
+            );
+            return;
+          }
+          const name = String(botId || "").toLowerCase() === "codex"
+            ? "codex"
+            : "claude";
+          this.openChatTerminal(`@${name} `);
         },
         onPlayForkmeshSong: () => {
           void this.playForkmeshSong();
@@ -4630,6 +5194,8 @@ class ForkMeshWorld extends HTMLElement {
         onCreateRepository: (options) =>
           this.openRepositoryCreateForm(options),
         onSwingRide: (state) => this.handleSwingRide(state),
+        onCameraMode: (state) => this.handleWorldCameraMode(state),
+        onShareLocation: (view) => this.openWorldShareMenu(view),
         onOfficeChairSelect: (chairId) => {
           this.officeMeeting?.requestSeat(chairId);
         },
@@ -4652,7 +5218,22 @@ class ForkMeshWorld extends HTMLElement {
           void this.lockWorldObjectPlacement(move);
         },
       });
+      this.setLoadingProgress(68, "World is live · syncing nearby activity…");
       this.syncWorldCameraModeButton();
+      void this.refreshBuildBoard();
+      this.buildBoardTimer = window.setInterval(
+        () => void this.refreshBuildBoard({ quiet: true }),
+        WORLD_BUILD_BOARD_POLL_MS,
+      );
+      void this.refreshOrgAgentBots();
+      this.orgAgentTimer = window.setInterval(
+        () => void this.refreshOrgAgentBots(),
+        WORLD_AGENT_BOT_POLL_MS,
+      );
+      this.sessionWatchTimer = window.setInterval(
+        () => void this.validateActiveWorldSession(),
+        20_000,
+      );
       this.syncConstructionMarkers();
       this.officeMeeting = createWorldOfficeMeeting({
         root: this,
@@ -4690,9 +5271,10 @@ class ForkMeshWorld extends HTMLElement {
       this.world.setMovementTuning?.(this.movementTuning());
       void layoutPromise.then((layout) => {
         if (this.destroyed) return;
-        this.world?.applyWorldLayout?.(this.mergedWorldLayout(layout?.objects));
+        this.applyFetchedWorldLayout(layout);
       });
       await Promise.allSettled([contextPromise, dataPromise]);
+      this.setLoadingProgress(86, "Adding mirrors, members, and boards…");
       this.world.updateIdentity(publicIdentity(this.identity, this.settings));
       this.syncRecentIssueAssignments();
       this.officeTasks?.prime?.();
@@ -4744,6 +5326,9 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (this.restoredPosition) {
         this.world.setSpawn?.(this.restoredPosition);
+        if (this.sharedView?.camera) {
+          this.world.setCameraView?.(this.sharedView.camera);
+        }
         this.lastMovement = {
           ...this.lastMovement,
           x: this.restoredPosition.x,
@@ -4756,6 +5341,14 @@ class ForkMeshWorld extends HTMLElement {
       } else if (this.currentSpace !== "town-square") {
         const traveled = this.world.travelToRegion?.(this.currentSpace);
         this.spawnSelected = traveled === true;
+      }
+      const loading = this.$("[data-world-loading]");
+      if (loading) {
+        this.setLoadingProgress(100, "Ready · stepping into the World");
+        requestAnimationFrame(() => {
+          loading.dataset.ready = "true";
+          window.setTimeout(() => loading.remove(), 320);
+        });
       }
       this.connectPresence();
       this.updateMetrics();
@@ -4794,6 +5387,254 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  setLoadingProgress(percent, label) {
+    const loading = this.$("[data-world-loading]");
+    if (!loading) return;
+    const value = Math.max(0, Math.min(100, Number(percent) || 0));
+    const progress = loading.querySelector("[data-world-loading-progress]");
+    const copy = loading.querySelector("[data-world-loading-stage]");
+    const count = loading.querySelector("[data-world-loading-percent]");
+    if (progress) progress.style.width = `${value}%`;
+    if (copy && label) copy.textContent = String(label);
+    if (count) count.textContent = `${Math.round(value)}%`;
+  }
+
+  setInfrastructureConsoleEnabled(enabled) {
+    const active = enabled === true;
+    if (active && !this.infrastructureConsoleCapture) {
+      this.infrastructureConsoleEntries = [];
+      this.infrastructureConsoleCapture = createInfrastructureConsoleCapture(
+        (entries) => {
+          this.infrastructureConsoleEntries = entries;
+          this.world?.setInfrastructureConsoleLogs?.({
+            enabled: true,
+            entries,
+          });
+        },
+      );
+      this.toast(
+        "Local console display on. Output is bounded, redacted, and never sent or saved.",
+      );
+      return true;
+    }
+    if (!active && this.infrastructureConsoleCapture) {
+      this.infrastructureConsoleCapture.stop();
+      this.infrastructureConsoleCapture = null;
+      this.infrastructureConsoleEntries = [];
+      this.world?.setInfrastructureConsoleLogs?.({
+        enabled: false,
+        entries: [],
+      });
+      this.toast("Local console display off. Captured entries were cleared.");
+    }
+    return Boolean(this.infrastructureConsoleCapture);
+  }
+
+  async refreshBuildBoard({ quiet = false } = {}) {
+    try {
+      const payload = await this.fetchJSON("/api/world/build-board", {
+        timeout: 12_000,
+        cache: "no-store",
+      });
+      const tree = await this.fetchJSON(
+        "/api/repo/forkmesh/forkmesh/tree?path=.forkmesh%2Fissues%2Fopen",
+        { auth: false, timeout: 12_000, cache: "no-store" },
+      );
+      const numbers = (Array.isArray(tree?.entries) ? tree.entries : [])
+        .filter(
+          (entry) =>
+            entry?.type === "tree" && /^\d+$/.test(String(entry?.name || "")),
+        )
+        .map((entry) => Number(entry.name))
+        .filter((number) => Number.isSafeInteger(number) && number > 0)
+        .sort((left, right) => right - left)
+        .slice(0, 12);
+      if (numbers.length) {
+        const paths = numbers.map(
+          (number) =>
+            `.forkmesh/issues/open/${number}/issue-${number}.json`,
+        );
+        const query = paths
+          .map((path) => `path=${encodeURIComponent(path)}`)
+          .join("&");
+        const blobs = await this.fetchJSON(
+          `/api/repo/forkmesh/forkmesh/blobs?${query}`,
+          { auth: false, timeout: 12_000, cache: "no-store" },
+        );
+        const assigned = new Set(
+          (Array.isArray(payload?.assignedIssues)
+            ? payload.assignedIssues
+            : []
+          ).map((issue) => String(issue?.key || "")),
+        );
+        payload.issues = paths
+          .map((path, index) => {
+            try {
+              const record = JSON.parse(
+                repositoryBlobText(blobs?.blobs?.[path]),
+              );
+              const number = numbers[index];
+              const key = `issue:forkmesh/forkmesh#${number}`;
+              return {
+                key,
+                owner: "forkmesh",
+                repo: "forkmesh",
+                number,
+                title: sanitizePresenceText(
+                  record?.title || `Issue #${number}`,
+                  `Issue #${number}`,
+                  160,
+                ),
+                status: "open",
+                assigned: assigned.has(key),
+              };
+            } catch (_) {
+              return null;
+            }
+          })
+          .filter(Boolean);
+      }
+      this.world?.updateBuildBoard?.(payload);
+      return payload;
+    } catch (_) {
+      if (!quiet) {
+        this.toast("The shared build board is temporarily unavailable.");
+      }
+      return null;
+    }
+  }
+
+  async refreshOrgAgentBots() {
+    if (
+      this.destroyed ||
+      document.hidden ||
+      !this.sessionAuthenticated ||
+      !validWorldSession()
+    ) {
+      this.orgAgentSessions = [];
+      this.orgAgentAccess = {
+        state: "denied",
+        requiredTeam: "engineering",
+      };
+      this.world?.updateMirrorAgentTasks?.([]);
+      this.world?.setAgentBotAccess?.(false);
+      return null;
+    }
+    try {
+      const payload = await this.fetchJSON(
+        "/api/orgs/forkmesh/repos/forkmesh/agent-bots",
+        {
+          timeout: 10_000,
+          cache: "no-store",
+          dedupe: true,
+        },
+      );
+      const next = new Map();
+      const sessions = Array.isArray(payload?.sessions)
+        ? payload.sessions
+        : [];
+      this.orgAgentSessions = sessions;
+      this.orgAgentAccess = {
+        state: payload?.engineeringAccess === true ? "allowed" : "denied",
+        requiredTeam: String(payload?.requiredTeam || "engineering"),
+        memberRole: String(payload?.memberRole || ""),
+      };
+      this.world?.setAgentBotAccess?.(
+        this.orgAgentAccess.state === "allowed",
+      );
+      this.world?.updateMirrorAgentTasks?.(sessions);
+      for (const session of sessions) {
+        const id = String(session?.id || "");
+        if (!id) continue;
+        const status = String(session?.status || "");
+        const previous = this.orgAgentStates.get(id);
+        next.set(id, status);
+        if (
+          previous &&
+          previous !== "completed" &&
+          status === "completed" &&
+          String(session?.provider || "") === "codex" &&
+          String(session?.taskKey || "")
+        ) {
+          this.world?.completeAgentTask?.("codex", session.taskKey);
+          void this.refreshBuildBoard({ quiet: true });
+        }
+      }
+      this.orgAgentStates = next;
+      return payload;
+    } catch (error) {
+      this.orgAgentSessions = [];
+      this.world?.updateMirrorAgentTasks?.([]);
+      this.orgAgentAccess = {
+        state:
+          Number(error?.status || 0) === 403
+            ? "denied"
+            : "unavailable",
+        requiredTeam: "engineering",
+        message:
+          String(error?.message || "") === "engineering_team_required"
+            ? "Only Engineering team members can view or control agent prompt sessions."
+            : "Agent sessions are temporarily unavailable.",
+      };
+      this.world?.setAgentBotAccess?.(false);
+      return null;
+    }
+  }
+
+  async reorderBuildBoard(order) {
+    const keys = Array.isArray(order)
+      ? order.map((key) => String(key || "")).filter(Boolean).slice(0, 64)
+      : [];
+    if (!keys.length) return false;
+    try {
+      const payload = await this.postJSON(
+        "/api/world/build-board",
+        { action: "reorder", order: keys },
+        { timeout: 12_000 },
+      );
+      this.world?.updateBuildBoard?.(payload);
+      this.toast("Build priorities saved. Priority 1 is highest.");
+      return true;
+    } catch (error) {
+      await this.refreshBuildBoard({ quiet: true });
+      this.toast(
+        String(error?.message || "The priority change could not be saved."),
+      );
+      return false;
+    }
+  }
+
+  async assignBuildIssue(key, title) {
+    const issueKey = String(key || "");
+    if (!/^issue:[a-z0-9-]{1,40}\/[a-z0-9._-]{1,60}#[1-9]\d{0,8}$/.test(issueKey)) {
+      return false;
+    }
+    try {
+      const payload = await this.postJSON(
+        "/api/world/build-board",
+        {
+          action: "assign",
+          key: issueKey,
+          title: sanitizePresenceText(
+            title,
+            "Repository issue",
+            160,
+          ),
+        },
+        { timeout: 12_000 },
+      );
+      this.world?.updateBuildBoard?.(payload);
+      this.toast("Issue assigned to What we're building.");
+      return true;
+    } catch (error) {
+      await this.refreshBuildBoard({ quiet: true });
+      this.toast(
+        String(error?.message || "The issue could not be assigned."),
+      );
+      return false;
+    }
+  }
+
   handleVisibility = () => {
     this.world?.setPaused(document.hidden);
     if (document.hidden) {
@@ -4803,11 +5644,15 @@ class ForkMeshWorld extends HTMLElement {
       } catch (_) {}
       return;
     }
+    void this.validateActiveWorldSession();
     void this.checkForWorldUpdate();
     // Nothing refreshes the directory while a tab is hidden — its presence
     // socket is closed, so no arrival can force it — and accounts signed up
     // meanwhile are missing from the fire's total. Coming back is the cue.
     void this.refreshMemberDirectory();
+    // Coming back to this tab is itself the request to bring the account's
+    // one avatar here, so a takeover by another device stops holding it off.
+    this.reclaimPresenceHere();
     if (!this.socket) {
       this.refreshWorldTicket();
       this.connectPresence();
@@ -4822,6 +5667,12 @@ class ForkMeshWorld extends HTMLElement {
   };
 
   syncViewportHeight = () => {
+    // Mobile browser chrome can resize visualViewport continuously while a
+    // thumbstick drag is in progress. Resizing the WebGL canvas on every one
+    // of those samples looks like the whole World is refreshing mid-walk.
+    // Hold the last stable viewport until the gesture ends, then reconcile it
+    // once without interrupting movement.
+    if (this.mobileMovementActive) return;
     const height = Math.max(
       240,
       Math.round(window.visualViewport?.height || window.innerHeight || 0),
@@ -4857,6 +5708,11 @@ class ForkMeshWorld extends HTMLElement {
     location.reload();
   };
 
+  refreshWorldForUpdate = () => {
+    this.preserveWorldPositionForRefresh();
+    location.reload();
+  };
+
   handleRendererStateChange(state) {
     const recovery = this.$("[data-world-renderer-recovery]");
     if (!recovery) return;
@@ -4888,30 +5744,17 @@ class ForkMeshWorld extends HTMLElement {
     this.rendererRecoveryTimer = window.setTimeout(() => {
       this.rendererRecoveryTimer = 0;
       if (!this.world?.renderer?.getContext?.().isContextLost?.()) return;
-      let lastRecovery = 0;
-      try {
-        lastRecovery = Number(sessionStorage.getItem(RENDERER_RECOVERY_KEY)) || 0;
-      } catch (_) {}
-      if (
-        !lastRecovery ||
-        Date.now() - lastRecovery > RENDERER_RECOVERY_WINDOW_MS
-      ) {
-        try {
-          sessionStorage.setItem(RENDERER_RECOVERY_KEY, `${Date.now()}`);
-        } catch (_) {}
-        this.reloadForRendererRecovery();
-        return;
-      }
       if (title) title.textContent = "The 3D renderer needs a fresh start.";
       if (copy) {
         copy.textContent =
-          "The World stayed available and your position remains saved.";
+          "Nothing refreshed automatically. Your position is saved; reload when you are ready.";
       }
       reload?.removeAttribute("hidden");
     }, RENDERER_RECOVERY_DELAY_MS);
   }
 
   renderWebGLFallback() {
+    this.$("[data-world-loading]")?.remove();
     const wrap = this.$("[data-world-canvas-wrap]");
     if (!wrap) return;
     wrap.innerHTML = `
@@ -5365,31 +6208,18 @@ class ForkMeshWorld extends HTMLElement {
         : [];
     this.renderCommunityPlacement();
     this.renderFediverseActivity();
+    this.externalRepositories =
+      externalReposResult.status === "fulfilled"
+        ? cleanExternalRepositories(externalReposResult.value)
+        : [];
+    this.rawNativeRepositories =
+      reposResult.status === "fulfilled"
+        ? cleanRepositories(reposResult.value)
+        : [];
+    this.reconcileRepositoryAliasCatalog();
     if (reposResult.status === "fulfilled") {
-      this.nativeRepositories = reconcileRepositoryAliases(
-        cleanRepositories(reposResult.value),
-        this.mirrorCatalogs,
-      );
-      this.externalRepositories =
-        externalReposResult.status === "fulfilled"
-          ? cleanExternalRepositories(externalReposResult.value)
-          : [];
-      this.repositories = mergeHostedRepositoryImports(
-        this.nativeRepositories,
-        this.externalRepositories,
-      );
       this.repositoryCatalogState = this.repositories.length ? "ready" : "empty";
     } else {
-      this.repositories = [];
-      this.nativeRepositories = [];
-      this.externalRepositories =
-        externalReposResult.status === "fulfilled"
-          ? cleanExternalRepositories(externalReposResult.value)
-          : [];
-      this.repositories = mergeHostedRepositoryImports(
-        this.nativeRepositories,
-        this.externalRepositories,
-      );
       this.repositoryCatalogState = this.repositories.length
         ? "ready"
         : "unavailable";
@@ -6350,12 +7180,36 @@ class ForkMeshWorld extends HTMLElement {
   bindUI() {
     const chatTerminal = this.$("[data-world-chat-terminal]");
     chatTerminal?.addEventListener("toggle", () => {
-      if (chatTerminal.open) this.loadChatTerminalFrame();
+      if (chatTerminal.open) {
+        this.$("[data-world-diagnostics]")?.removeAttribute("open");
+        this.loadChatTerminalFrame();
+      }
     });
     // Load the chat frame immediately so the collapsed CHAT bar always shows
     // the most recent global #general message, not a static placeholder.
     this.loadChatTerminalFrame();
     this.addEventListener("click", (event) => {
+      if (event.target.closest("[data-world-save-view]")) {
+        this.saveCurrentWorldView();
+        return;
+      }
+      const savedViewEdit = event.target.closest("[data-world-saved-view-edit]");
+      if (savedViewEdit) {
+        this.editSavedWorldView(savedViewEdit.dataset.worldSavedViewEdit);
+        return;
+      }
+      const savedView = event.target.closest("[data-world-saved-view]");
+      if (savedView) {
+        void this.restoreSavedWorldView(savedView.dataset.worldSavedView);
+        return;
+      }
+      if (event.target.closest("[data-world-share-view]")) {
+        void this.sharePendingWorldView();
+        return;
+      }
+      if (!event.target.closest("[data-world-share-menu]")) {
+        this.closeWorldShareMenu();
+      }
       // Keep chat inside the World: any /dashboard/chat link (or explicit
       // opener) opens the embedded panel rather than navigating away. The
       // spatial Office is a second, equally valid door to the same chat.
@@ -6975,10 +7829,12 @@ class ForkMeshWorld extends HTMLElement {
       let activePointerId = null;
       const resetThumbstick = () => {
         activePointerId = null;
+        this.mobileMovementActive = false;
         thumbstick.dataset.active = "false";
         thumbstickHandle.style.setProperty("--thumb-x", "0px");
         thumbstickHandle.style.setProperty("--thumb-y", "0px");
         this.world?.setTouchMovement?.(0, 0);
+        this.syncViewportHeight();
       };
       const updateThumbstick = (event) => {
         const rect = thumbstick.getBoundingClientRect();
@@ -7018,6 +7874,7 @@ class ForkMeshWorld extends HTMLElement {
         if (activePointerId !== null) return;
         event.preventDefault();
         activePointerId = event.pointerId;
+        this.mobileMovementActive = true;
         thumbstick.setPointerCapture?.(event.pointerId);
         updateThumbstick(event);
       });
@@ -7057,6 +7914,442 @@ class ForkMeshWorld extends HTMLElement {
         this.stopTour();
       }
     });
+  }
+
+  openWorldShareMenu(view) {
+    const menu = this.$("[data-world-share-menu]");
+    if (!menu || !view) return;
+    this.pendingWorldShare = view;
+    const rootRect = this.getBoundingClientRect();
+    const left = Math.max(
+      8,
+      Math.min(rootRect.width - 220, Number(view.clientX) - rootRect.left),
+    );
+    const top = Math.max(
+      8,
+      Math.min(rootRect.height - 64, Number(view.clientY) - rootRect.top),
+    );
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+    menu.hidden = false;
+    menu.querySelector("button")?.focus();
+  }
+
+  closeWorldShareMenu() {
+    const menu = this.$("[data-world-share-menu]");
+    if (menu) menu.hidden = true;
+  }
+
+  worldShareURL(view) {
+    const url = new URL("/world/", location.origin);
+    const fixed = (value, places = 3) =>
+      Number(value).toFixed(places).replace(/\.?0+$/, "");
+    url.searchParams.set("view", "world");
+    url.searchParams.set("space", String(view.space || "town-square"));
+    url.searchParams.set("x", fixed(view.x, 2));
+    url.searchParams.set("z", fixed(view.z, 2));
+    url.searchParams.set("heading", fixed(view.heading));
+    url.searchParams.set("camera", String(view.cameraMode || "third-person"));
+    url.searchParams.set("yaw", fixed(view.yaw));
+    url.searchParams.set("pitch", fixed(view.pitch));
+    url.searchParams.set("zoom", fixed(view.zoom));
+    return url.toString();
+  }
+
+  async sharePendingWorldView() {
+    const view = this.pendingWorldShare;
+    if (!view) return;
+    const url = this.worldShareURL(view);
+    this.closeWorldShareMenu();
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: "ForkMesh World location",
+          text: "Meet me at this exact view in ForkMesh World.",
+          url,
+        });
+        this.toast("World view shared.");
+        return;
+      }
+      await navigator.clipboard.writeText(url);
+      this.toast("Exact World view link copied.");
+    } catch (error) {
+      if (String(error?.name || "") === "AbortError") return;
+      this.toast(`Share this World view: ${url}`);
+    }
+  }
+
+  savedViewsStorageKey() {
+    return `${SAVED_VIEWS_KEY_PREFIX}${this.identity?.id || "guest"}`;
+  }
+
+  persistSavedViews(sync = true) {
+    writeJSON(
+      localStorage,
+      this.savedViewsStorageKey(),
+      this.savedViews.slice(0, SAVED_VIEWS_MAX),
+    );
+    if (sync) this.queueWorldPreferencesSync();
+  }
+
+  worldPreferencesPayload() {
+    return {
+      settings: this.settings,
+      settingsUpdatedAt: Math.max(0, Number(this.settingsUpdatedAt) || 0),
+      savedViews: this.savedViews.slice(0, SAVED_VIEWS_MAX),
+    };
+  }
+
+  queueWorldPreferencesSync() {
+    if (
+      this.applyingWorldPreferences ||
+      !this.sessionAuthenticated ||
+      !validWorldSession()
+    ) {
+      return;
+    }
+    window.clearTimeout(this.worldPreferencesSyncTimer);
+    this.worldPreferencesSyncTimer = window.setTimeout(
+      () => void this.syncWorldPreferences(),
+      WORLD_PREFERENCES_SYNC_DELAY_MS,
+    );
+  }
+
+  mergeWorldPreferenceSnapshot(payload) {
+    const remoteSettingsAt = Math.max(
+      0,
+      Number(payload?.settingsUpdatedAt) || 0,
+    );
+    if (
+      payload?.settings &&
+      typeof payload.settings === "object" &&
+      remoteSettingsAt > this.settingsUpdatedAt
+    ) {
+      this.settings = mergeSettings(payload.settings);
+      this.settingsUpdatedAt = remoteSettingsAt;
+    }
+    const views = new Map(
+      this.savedViews.map((view) => [view.id, view]),
+    );
+    for (const raw of Array.isArray(payload?.savedViews)
+      ? payload.savedViews
+      : []) {
+      const view = normalizedSavedWorldView(raw);
+      if (!view) continue;
+      const previous = views.get(view.id);
+      if (!previous || view.updatedAt > previous.updatedAt) {
+        views.set(view.id, view);
+      }
+    }
+    this.savedViews = [...views.values()]
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .slice(0, SAVED_VIEWS_MAX);
+  }
+
+  applyWorldPreferenceSnapshot() {
+    this.applyingWorldPreferences = true;
+    try {
+      writeJSON(localStorage, SETTINGS_KEY, {
+        ...this.settings,
+        _updatedAt: this.settingsUpdatedAt,
+      });
+      this.persistSavedViews(false);
+      this.renderSavedViews();
+      this.world?.setTheme?.(this.settings.theme);
+      this.world?.setLightLevel?.(this.settings.lightLevel);
+      this.world?.setMovementTuning?.(this.movementTuning());
+      this.world?.updateIdentity?.(publicIdentity(this.identity, this.settings));
+      const setValue = (selector, value) => {
+        const element = this.$(selector);
+        if (element) element.value = String(value);
+      };
+      const setOutput = (selector, value) => {
+        const element = this.$(selector);
+        if (element) element.textContent = String(value);
+      };
+      setValue("[data-world-light-level]", this.settings.lightLevel);
+      setOutput(
+        "[data-world-light-level-output]",
+        `${this.settings.lightLevel}%`,
+      );
+      setValue("[data-world-move-speed]", this.settings.moveSpeed);
+      setOutput(
+        "[data-world-move-speed-output]",
+        `${this.settings.moveSpeed}%`,
+      );
+      setValue("[data-world-move-accel]", this.settings.moveAccel);
+      setOutput(
+        "[data-world-move-accel-output]",
+        this.settings.moveAccel >= WORLD_MOVE_ACCEL_MAX
+          ? "∞"
+          : `${this.settings.moveAccel}%`,
+      );
+      setValue("[data-world-availability]", this.settings.availability);
+      setValue("[data-world-public-door]", this.settings.publicDoor);
+      setValue("[data-world-status-emoji]", this.settings.statusEmoji);
+      setValue("[data-world-status-note]", this.settings.statusNote);
+      this.$$("[data-world-theme]").forEach((control) => {
+        const selected =
+          String(control.value || control.dataset.worldTheme || "") ===
+          this.settings.theme;
+        control.checked = selected;
+        control.setAttribute("aria-checked", String(selected));
+        control.setAttribute("aria-pressed", String(selected));
+      });
+      this.$$("[data-world-outfit]").forEach((control) => {
+        control.setAttribute(
+          "aria-pressed",
+          String(control.dataset.worldOutfit === this.settings.outfitColor),
+        );
+      });
+      this.$$("[data-world-outfit-style]").forEach((control) => {
+        control.setAttribute(
+          "aria-pressed",
+          String(
+            control.dataset.worldOutfitStyle === this.settings.outfitStyle,
+          ),
+        );
+      });
+      this.$$("[data-world-privacy]").forEach((control) => {
+        const key = String(control.dataset.worldPrivacy || control.value || "");
+        if (Object.hasOwn(this.settings.privacy, key)) {
+          control.checked = Boolean(this.settings.privacy[key]);
+        }
+      });
+      const debug = this.$("[data-world-debug-panel]");
+      if (debug) debug.checked = this.settings.debugPanel === true;
+      const diagnostics = this.$("[data-world-diagnostics]");
+      if (diagnostics) diagnostics.hidden = !this.settings.debugPanel;
+      this.$("[data-world-chat-terminal]")?.classList.toggle(
+        "world-chat-terminal--debug-hidden",
+        !this.settings.debugPanel,
+      );
+      const faceImage = this.$("[data-world-face-image]");
+      if (faceImage) faceImage.checked = this.settings.faceImage === true;
+      setValue("[data-world-focus-volume]", this.settings.focusMusicVolume);
+      setOutput(
+        "[data-world-focus-volume-output]",
+        `${this.settings.focusMusicVolume}%`,
+      );
+      if (this.activeAudio?.kind === "focus-music") {
+        this.activeAudio.element.volume = this.settings.focusMusicVolume / 100;
+        this.activeAudio.element.muted = this.settings.focusMusicMuted;
+      }
+      this.renderFocusMusicPanel();
+      this.updateWorldStatusUI();
+      this.sendPresence({ type: "presence" });
+      this.broadcastLocalPresence();
+    } finally {
+      this.applyingWorldPreferences = false;
+    }
+  }
+
+  async loadWorldPreferences() {
+    if (
+      this.worldPreferencesLoaded ||
+      this.worldPreferencesLoading ||
+      !this.sessionAuthenticated ||
+      !validWorldSession()
+    ) {
+      return this.worldPreferencesLoading;
+    }
+    this.worldPreferencesLoading = (async () => {
+      try {
+        const payload = await this.fetchJSON(WORLD_PREFERENCES_ENDPOINT, {
+          timeout: 10_000,
+          cache: "no-store",
+        });
+        this.mergeWorldPreferenceSnapshot(payload);
+        this.applyWorldPreferenceSnapshot();
+        this.worldPreferencesLoaded = true;
+        await this.syncWorldPreferences();
+        return payload;
+      } catch (_) {
+        // Local storage remains the offline source until a later ticket refresh.
+        return null;
+      } finally {
+        this.worldPreferencesLoading = null;
+      }
+    })();
+    return this.worldPreferencesLoading;
+  }
+
+  async syncWorldPreferences() {
+    window.clearTimeout(this.worldPreferencesSyncTimer);
+    this.worldPreferencesSyncTimer = 0;
+    if (
+      this.destroyed ||
+      !this.sessionAuthenticated ||
+      !validWorldSession()
+    ) {
+      return null;
+    }
+    try {
+      const payload = await this.postJSON(
+        WORLD_PREFERENCES_ENDPOINT,
+        this.worldPreferencesPayload(),
+        { timeout: 12_000 },
+      );
+      this.mergeWorldPreferenceSnapshot(payload);
+      this.applyWorldPreferenceSnapshot();
+      this.worldPreferencesLoaded = true;
+      return payload;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  renderSavedViews() {
+    const list = this.$("[data-world-saved-view-list]");
+    if (!list) return;
+    if (!this.savedViews.length) {
+      list.innerHTML =
+        '<span class="world-saved-view-empty">Tap ＋ to save this spot</span>';
+      return;
+    }
+    list.innerHTML = this.savedViews
+      .map(
+        (view) => `
+          <article class="world-saved-view">
+            <button
+              type="button"
+              data-world-saved-view="${escapeHTML(view.id)}"
+              title="Return to ${escapeHTML(view.label)}"
+            >
+              ${
+                view.thumbnail
+                  ? `<img src="${escapeHTML(view.thumbnail)}" alt="" width="72" height="42" />`
+                  : '<span class="world-saved-view-placeholder" aria-hidden="true">⌖</span>'
+              }
+              <span>${escapeHTML(view.label)}</span>
+            </button>
+            <button
+              type="button"
+              class="world-saved-view-edit"
+              data-world-saved-view-edit="${escapeHTML(view.id)}"
+              aria-label="Rename ${escapeHTML(view.label)}"
+              title="Rename saved view"
+            >✎</button>
+          </article>`,
+      )
+      .join("");
+  }
+
+  captureSavedViewThumbnail() {
+    const world = this.world;
+    const source = world?.renderer?.domElement;
+    if (!source) return "";
+    const badgeWasVisible = world.setSelfWorkBadgeVisibility?.(false);
+    try {
+      world.renderer.render(world.scene, world.camera);
+      const thumbnail = document.createElement("canvas");
+      thumbnail.width = 144;
+      thumbnail.height = 84;
+      const context = thumbnail.getContext("2d");
+      if (!context) return "";
+      const sourceRatio = source.width / Math.max(1, source.height);
+      const targetRatio = thumbnail.width / thumbnail.height;
+      let sx = 0;
+      let sy = 0;
+      let sw = source.width;
+      let sh = source.height;
+      if (sourceRatio > targetRatio) {
+        sw = source.height * targetRatio;
+        sx = (source.width - sw) / 2;
+      } else {
+        sh = source.width / targetRatio;
+        sy = (source.height - sh) / 2;
+      }
+      context.drawImage(
+        source,
+        sx,
+        sy,
+        sw,
+        sh,
+        0,
+        0,
+        thumbnail.width,
+        thumbnail.height,
+      );
+      const encoded = thumbnail.toDataURL("image/webp", 0.62);
+      return encoded.length <= 48_000 ? encoded : "";
+    } catch (_) {
+      return "";
+    } finally {
+      world.setSelfWorkBadgeVisibility?.(badgeWasVisible !== false);
+    }
+  }
+
+  saveCurrentWorldView() {
+    const state = this.world?.getSavedViewState?.();
+    if (!state) {
+      this.toast("This view is still loading. Try again in a moment.");
+      return false;
+    }
+    const labelSource = state.office
+      ? String(state.floorId || "Office")
+      : String(this.$("[data-world-location]")?.textContent || state.space);
+    const id = `view-${crypto
+      .getRandomValues(new Uint32Array(1))[0]
+      .toString(16)
+      .padStart(8, "0")}`;
+    const record = normalizedSavedWorldView({
+      ...state,
+      id,
+      label:
+        labelSource
+          .replace(/\b(floor|campus)\b/gi, "")
+          .trim()
+          .slice(0, 14) || "Saved view",
+      thumbnail: this.captureSavedViewThumbnail(),
+      updatedAt: Date.now(),
+    });
+    if (!record) return false;
+    this.savedViews = [record, ...this.savedViews].slice(0, SAVED_VIEWS_MAX);
+    this.persistSavedViews();
+    this.renderSavedViews();
+    this.toast(`Saved “${record.label}”.`);
+    return true;
+  }
+
+  editSavedWorldView(id) {
+    const view = this.savedViews.find((item) => item.id === String(id || ""));
+    if (!view) return;
+    const label = window.prompt("Name this saved view", view.label);
+    if (label === null) return;
+    const next = String(label)
+      .replace(/[^\p{L}\p{N} _-]/gu, "")
+      .trim()
+      .slice(0, 14);
+    if (!next) {
+      this.toast("Use at least one letter or number.");
+      return;
+    }
+    view.label = next;
+    view.updatedAt = Date.now();
+    this.persistSavedViews();
+    this.renderSavedViews();
+  }
+
+  async restoreSavedWorldView(id) {
+    const view = this.savedViews.find((item) => item.id === String(id || ""));
+    if (!view) return false;
+    const restored =
+      (await this.officeController?.restoreSavedView?.(view)) ??
+      this.world?.restoreSavedViewState?.(view);
+    if (!restored) {
+      this.toast(
+        view.office
+          ? "That Office floor is not available to this account."
+          : "That saved view could not be restored.",
+      );
+      return false;
+    }
+    this.currentSpace = view.office ? "town-square" : view.space;
+    this.spawnSelected = true;
+    this.captureWorldPosition(true);
+    this.toast(`Returned to “${view.label}”.`);
+    return true;
   }
 
   // Detail panels dock to the right edge, so widening one means dragging its
@@ -7667,6 +8960,43 @@ class ForkMeshWorld extends HTMLElement {
     return [...merged.values()];
   }
 
+  worldLayoutSignature(objects) {
+    return JSON.stringify(
+      (Array.isArray(objects) ? objects : [])
+        .map((entry) => ({
+          id: String(entry?.id || ""),
+          x: Number(entry?.x),
+          z: Number(entry?.z),
+          rotation: Number(entry?.rotation) || 0,
+          updatedAt: Number(entry?.updatedAt) || 0,
+        }))
+        .filter((entry) => entry.id)
+        .sort((left, right) => left.id.localeCompare(right.id)),
+    );
+  }
+
+  applyFetchedWorldLayout(layout) {
+    const objects = this.mergedWorldLayout(layout?.objects);
+    const fingerprint = this.worldLayoutSignature(objects);
+    if (!fingerprint || fingerprint === this.worldLayoutFingerprint) return false;
+    this.worldLayoutFingerprint = fingerprint;
+    this.world?.applyWorldLayout?.(objects);
+    return true;
+  }
+
+  startWorldLayoutWatch() {
+    window.clearInterval(this.layoutRefreshTimer);
+    window.clearInterval(this.buildBoardTimer);
+    window.clearInterval(this.orgAgentTimer);
+    window.clearInterval(this.buildBoardTimer);
+    this.layoutRefreshTimer = window.setInterval(async () => {
+      if (this.destroyed || document.hidden) return;
+      const layout = await this.fetchWorldLayout(1);
+      if (this.destroyed || !layout) return;
+      this.applyFetchedWorldLayout(layout);
+    }, WORLD_LAYOUT_LIVE_REFRESH_MS);
+  }
+
   async lockWorldObjectPlacement(move) {
     if (!this.identity?.isAdmin) return;
     const id = String(move?.id || "");
@@ -7682,7 +9012,8 @@ class ForkMeshWorld extends HTMLElement {
         rotation: Number.isFinite(rotation) ? rotation : 0,
       });
       this.rememberWorldLayout(result?.objects);
-      this.world?.applyWorldLayout?.(result?.objects);
+      this.worldLayoutFingerprint = "";
+      this.applyFetchedWorldLayout(result);
       this.toast("Object placement locked in for every visitor.");
     } catch (error) {
       this.toast(`The new object placement was not saved: ${error.message}`);
@@ -7931,26 +9262,30 @@ class ForkMeshWorld extends HTMLElement {
           .map((record) => `${record.id}:${record.updatedAt}:${record.status}`)
           .sort()
           .join("|");
-        if (before === after) return;
-        const payload = await this.fetchJSON("/api/repository-imports", {
-          auth: this.sessionAuthenticated && Boolean(validWorldSession()),
-          timeout: 10000,
-          backoff: true,
-          staleIfError: true,
-        });
-        const external = cleanExternalRepositories(payload);
-        this.externalRepositories = external;
-        this.repositories = mergeHostedRepositoryImports(
-          this.nativeRepositories,
-          external,
-        );
-        this.repositoryCatalogState = this.repositories.length ? "ready" : "empty";
-        this.syncRepositoryScene();
-        void this.hydrateHostedRepositorySizeMaps();
+        if (before !== after) {
+          const payload = await this.fetchJSON("/api/repository-imports", {
+            auth: this.sessionAuthenticated && Boolean(validWorldSession()),
+            timeout: 10000,
+            backoff: true,
+            staleIfError: true,
+          });
+          const external = cleanExternalRepositories(payload);
+          this.externalRepositories = external;
+          this.repositories = mergeHostedRepositoryImports(
+            this.nativeRepositories,
+            external,
+          );
+          this.repositoryCatalogState = this.repositories.length
+            ? "ready"
+            : "empty";
+          this.syncRepositoryScene();
+          void this.hydrateHostedRepositorySizeMaps();
+        }
       } catch (_) {
         // Preserve the most recent visible import catalog through a transient
         // provider/relay failure; the next bounded poll retries automatically.
       }
+      await this.retryFlagshipPortal();
     }, REPOSITORY_IMPORT_POLL_MS);
   }
 
@@ -8053,6 +9388,9 @@ class ForkMeshWorld extends HTMLElement {
     { returnFocus = null, focusDelay = 120 } = {},
   ) {
     if (!detail || !backdrop) return;
+    detail.dataset.issueWorkbench = String(
+      Boolean(detail.querySelector("[data-world-issue-workbench]")),
+    );
     const wasOpen = detail.dataset.open === "true";
     if (
       !wasOpen &&
@@ -8187,6 +9525,7 @@ class ForkMeshWorld extends HTMLElement {
     if (detail) {
       detail.dataset.open = "false";
       detail.dataset.repositoryReview = "false";
+      detail.dataset.issueWorkbench = "false";
       detail.setAttribute("aria-hidden", "true");
     }
     if (backdrop) {
@@ -8249,6 +9588,286 @@ class ForkMeshWorld extends HTMLElement {
       broadcast: () => this.broadcastPanelHTML(),
     };
     return panels[id]?.() || "";
+  }
+
+  organizationAgentEndpoint(sessionId = "") {
+    const base = "/api/orgs/forkmesh/repos/forkmesh/agent-bots";
+    return sessionId
+      ? `${base}/${encodeURIComponent(String(sessionId))}`
+      : base;
+  }
+
+  mirrorNodeAgentSessionsHTML(node) {
+    const requiredTeam = escapeHTML(
+      this.orgAgentAccess?.requiredTeam || "engineering",
+    );
+    if (this.orgAgentAccess?.state !== "allowed") {
+      return `
+        <section class="world-feature-card" data-world-mirror-agent-workspace>
+          <h3>Agent prompt sessions</h3>
+          <div class="world-notice world-notice-warning">
+            <strong>Engineering access required</strong>
+            <span>${escapeHTML(
+              this.orgAgentAccess?.message ||
+                `Only members of the ${requiredTeam} team can view transcripts or start, revise, and re-prompt these sessions.`,
+            )}</span>
+          </div>
+        </section>`;
+    }
+    const nodeName = String(node?.name || node?.machineName || "")
+      .trim()
+      .toLowerCase();
+    const sessions = this.orgAgentSessions
+      .filter(
+        (session) =>
+          String(session?.targetNode || "").trim().toLowerCase() === nodeName,
+      )
+      .slice(0, 50);
+    const date = (value) => {
+      const timestamp = Number(value);
+      return Number.isFinite(timestamp) && timestamp > 0
+        ? new Date(timestamp).toLocaleString()
+        : "Not reported";
+    };
+    const number = (value) => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) && parsed >= 0
+        ? parsed.toLocaleString()
+        : "Not reported";
+    };
+    const duration = (value) => {
+      const seconds = Math.floor(Math.max(0, Number(value) || 0) / 1000);
+      if (!seconds) return "Not reported";
+      if (seconds < 60) return `${seconds}s`;
+      const minutes = Math.floor(seconds / 60);
+      const remainder = seconds % 60;
+      return `${minutes}m ${remainder}s`;
+    };
+    const sessionHTML = sessions.map((session) => {
+      const info =
+        session?.agentInfo && typeof session.agentInfo === "object"
+          ? session.agentInfo
+          : {};
+      const availability =
+        session?.availability && typeof session.availability === "object"
+          ? session.availability
+          : {};
+      const history = Array.isArray(session?.history)
+        ? session.history.slice(-80)
+        : [];
+      const promptable = ["running", "queued"].includes(
+        String(session?.status || ""),
+      );
+      const availabilityBad =
+        availability.binaryFound === false ||
+        availability.loginState === "missing";
+      return `
+        <details class="world-agent-session" ${
+          sessions[0]?.id === session?.id ? "open" : ""
+        }>
+          <summary>
+            <strong>${escapeHTML(
+              session?.title || `${session?.provider || "Agent"} session`,
+            )}</strong>
+            <span>${escapeHTML(session?.status || "unknown")} · ${escapeHTML(
+              session?.provider === "codex" ? "Codex" : "Claude Code",
+            )}</span>
+          </summary>
+          ${
+            availability.message
+              ? `<div class="world-notice ${
+                  availabilityBad
+                    ? "world-notice-warning"
+                    : "world-notice-safe"
+                }"><strong>Runtime availability</strong><span>${escapeHTML(
+                  availability.message,
+                )}</span></div>`
+              : ""
+          }
+          <dl class="world-technical-list">
+            <div><dt>Local session</dt><dd>${escapeHTML(
+              session?.localAgentId || "Pending",
+            )}</dd></div>
+            <div><dt>Created by</dt><dd>@${escapeHTML(
+              session?.createdBy || "member",
+            )}</dd></div>
+            <div><dt>Created</dt><dd>${escapeHTML(
+              date(session?.createdAt),
+            )}</dd></div>
+            <div><dt>Updated</dt><dd>${escapeHTML(
+              date(session?.updatedAt),
+            )}</dd></div>
+            <div><dt>Haiku gate</dt><dd>${escapeHTML(
+              session?.security?.state || "pending",
+            )}${session?.security?.reason ? ` · ${escapeHTML(session.security.reason)}` : ""}</dd></div>
+            <div><dt>Model</dt><dd>${escapeHTML(
+              info.model || "Provider default",
+            )}</dd></div>
+            <div><dt>Permission mode</dt><dd>${escapeHTML(
+              info.mode || "Node default",
+            )}</dd></div>
+            <div><dt>Branch</dt><dd class="world-break">${escapeHTML(
+              info.branchName || "Not created yet",
+            )}</dd></div>
+            <div><dt>Base</dt><dd class="world-break">${escapeHTML(
+              [info.baseBranch, info.baseRef].filter(Boolean).join(" · ") ||
+                "Not reported",
+            )}</dd></div>
+            <div><dt>Pull request</dt><dd>${escapeHTML(
+              info.prNumber
+                ? `#${info.prNumber}${info.merged ? " · merged" : ""}`
+                : info.createPr
+                  ? "Will create"
+                  : "Not requested",
+            )}</dd></div>
+            <div><dt>Tokens</dt><dd>${escapeHTML(
+              `${number(info.totalTokens)} total · ${number(
+                info.promptTokens,
+              )} input · ${number(info.completionTokens)} output`,
+            )}</dd></div>
+            <div><dt>Context</dt><dd>${escapeHTML(
+              `${number(info.contextTokens)} / ${number(info.contextWindow)}`,
+            )}</dd></div>
+            <div><dt>Turns / duration</dt><dd>${escapeHTML(
+              `${number(info.numTurns)} · ${duration(
+                Math.max(0, Number(info.durationMs) || 0),
+              )}`,
+            )}</dd></div>
+            <div><dt>Estimated cost</dt><dd>${escapeHTML(
+              Number(info.costUsd) > 0
+                ? `$${Number(info.costUsd).toFixed(4)}`
+                : "Not reported",
+            )}</dd></div>
+            ${
+              info.lastError
+                ? `<div><dt>Last error</dt><dd class="world-break">${escapeHTML(
+                    info.lastError,
+                  )}</dd></div>`
+                : ""
+            }
+          </dl>
+          <div class="world-agent-transcript" aria-label="Agent transcript">
+            ${
+              history.length
+                ? history
+                    .map(
+                      (entry) => `
+                        <article>
+                          <header>${escapeHTML(
+                            entry?.role || "event",
+                          )} · ${escapeHTML(
+                            entry?.author || "",
+                          )}<span>${escapeHTML(entry?.state || "")}</span></header>
+                          <p>${escapeHTML(entry?.text || "")}</p>
+                        </article>`,
+                    )
+                    .join("")
+                : '<p class="world-empty-state">Waiting for the mirror to report this session.</p>'
+            }
+          </div>
+          ${
+            promptable
+              ? `<form class="world-agent-prompt-form" data-world-agent-followup="${escapeHTML(
+                  session.id || "",
+                )}">
+                  <label>Revise or send another prompt
+                    <textarea name="prompt" maxlength="8000" required rows="3" placeholder="Tell the agent what to change or do next…"></textarea>
+                  </label>
+                  <button class="world-primary-action" type="submit">Send through Haiku check</button>
+                  <span data-world-agent-form-status></span>
+                </form>`
+              : `<p class="world-panel-footnote">This ${escapeHTML(
+                  session?.status || "finished",
+                )} session is not accepting another prompt.</p>`
+          }
+        </details>`;
+    }).join("");
+    return `
+      <section class="world-feature-card" data-world-mirror-agent-workspace>
+        <h3>Engineering agent workspace</h3>
+        <p>Full mirror-reported session detail, transcript, and prompt controls. Every new prompt is re-checked by the tool-free Haiku gate.</p>
+        <form class="world-agent-prompt-form" data-world-agent-start>
+          <label>Start a session on ${escapeHTML(nodeName || "this mirror")}
+            <textarea name="prompt" maxlength="8000" required rows="3" placeholder="Describe the repository task…"></textarea>
+          </label>
+          <div class="world-detail-actions">
+            <button class="world-primary-action" type="submit" name="provider" value="claude-code">Start Claude Code</button>
+            <button class="world-secondary-action" type="submit" name="provider" value="codex">Start Codex</button>
+          </div>
+          <span data-world-agent-form-status></span>
+        </form>
+        <div class="world-agent-session-list">
+          ${sessionHTML || '<p class="world-empty-state">No agent prompt sessions are assigned to this mirror yet.</p>'}
+        </div>
+      </section>`;
+  }
+
+  wireMirrorNodeAgentWorkspace(node) {
+    const workspace = this.$("[data-world-mirror-agent-workspace]");
+    if (!workspace || this.orgAgentAccess?.state !== "allowed") return;
+    const send = async (form, endpoint, extra = {}) => {
+      const prompt = String(new FormData(form).get("prompt") || "").trim();
+      if (!prompt) return;
+      const status = form.querySelector("[data-world-agent-form-status]");
+      const controls = [...form.elements];
+      controls.forEach((control) => { control.disabled = true; });
+      if (status) status.textContent = "Queueing the Haiku security check…";
+      try {
+        await this.postJSON(endpoint, { prompt, ...extra }, { timeout: 12_000 });
+        if (status) status.textContent = "Prompt queued securely.";
+        await this.refreshOrgAgentBots();
+        const nodeName = String(node?.name || node?.machineName || "")
+          .trim()
+          .toLowerCase();
+        this.openMirrorNodeDetail({
+          ...node,
+          agentTasks: this.orgAgentSessions.filter(
+            (session) =>
+              String(session?.targetNode || "").trim().toLowerCase() === nodeName,
+          ),
+        });
+      } catch (error) {
+        controls.forEach((control) => { control.disabled = false; });
+        if (status) {
+          status.textContent =
+            String(error?.message || "") === "no_eligible_headless_mirror"
+              ? "This mirror is not currently eligible to run the session."
+              : `Could not queue the prompt: ${String(
+                  error?.message || "unknown error",
+                )}`;
+        }
+      }
+    };
+    workspace
+      .querySelector("[data-world-agent-start]")
+      ?.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const provider = String(event.submitter?.value || "");
+        if (!["claude-code", "codex"].includes(provider)) return;
+        void send(
+          event.currentTarget,
+          this.organizationAgentEndpoint(),
+          {
+            provider,
+            targetNode: String(node?.name || node?.machineName || "")
+              .trim()
+              .toLowerCase(),
+          },
+        );
+      });
+    workspace
+      .querySelectorAll("[data-world-agent-followup]")
+      .forEach((form) => {
+        form.addEventListener("submit", (event) => {
+          event.preventDefault();
+          void send(
+            form,
+            this.organizationAgentEndpoint(
+              form.dataset.worldAgentFollowup,
+            ),
+          );
+        });
+      });
   }
 
   mirrorNodeTechnicalHTML(node) {
@@ -8423,8 +10042,10 @@ class ForkMeshWorld extends HTMLElement {
       <div class="world-detail-scroll">
         <p class="world-detail-summary">The readable technical equivalent of this server cabinet’s front display.</p>
         ${this.mirrorNodeTechnicalHTML(node)}
+        ${this.mirrorNodeAgentSessionsHTML(node)}
       </div>`;
     this.showDetailOverlay(detail, backdrop, { returnFocus });
+    this.wireMirrorNodeAgentWorkspace(node);
   }
 
   async fetchMastodonJSON(url) {
@@ -8660,6 +10281,49 @@ class ForkMeshWorld extends HTMLElement {
     });
   }
 
+  socialPostAge(createdAt) {
+    const stamp = Number(createdAt) || 0;
+    if (!stamp) return "AGE UNKNOWN";
+    const days = Math.max(
+      0,
+      Math.floor((Date.now() - stamp) / (24 * 60 * 60 * 1000)),
+    );
+    return `${days}D AGO`;
+  }
+
+  socialPostDistribution(value) {
+    if (value?.known !== true || !Array.isArray(value.networks)) {
+      return "SOCIAL STATUS UNKNOWN";
+    }
+    const allowed = new Map([
+      ["mastodon", "Mastodon"],
+      ["twitter", "X"],
+      ["reddit", "Reddit"],
+    ]);
+    const states = new Map();
+    value.networks.slice(0, 6).forEach((network) => {
+      const id = String(network?.id || "").toLowerCase();
+      if (allowed.has(id)) states.set(id, network?.posted === true);
+    });
+    return [...allowed]
+      .map(([id, label]) => `${label} ${states.get(id) ? "POSTED" : "NOT YET"}`)
+      .join(" · ");
+  }
+
+  socialPostReach(value) {
+    const reach = value && typeof value === "object" ? value : {};
+    const views = Math.max(0, Number(reach.views) || 0);
+    const unique = Math.max(0, Number(reach.uniqueViews) || 0);
+    const sites = Math.max(0, Number(reach.referrerSites) || 0);
+    const referred = Math.max(0, Number(reach.referrerVisits) || 0);
+    return [
+      `${views} VIEWS`,
+      `${reach.approximateUnique === false ? "" : "~"}${unique} UNIQUE`,
+      `${sites} REFERRER ${sites === 1 ? "SITE" : "SITES"}`,
+      `${referred} REFERRED`,
+    ].join(" · ");
+  }
+
   // Mirror the proxy snapshot onto the in-world banner boards, reduced to the
   // bounded display strings the canvas painter draws.
   syncSocialBanners() {
@@ -8699,10 +10363,9 @@ class ForkMeshWorld extends HTMLElement {
           .filter(Boolean)
           .join(" · "),
       ),
-      // Blog items carry no counts: the meta line is the section + feature
-      // number the RSS category carries, the headline is the item title,
-      // and the board prints the item's description as preview text under
-      // its artwork. Their pubDate drives the stand's LAST POST plate.
+      // Blog rows include every aggregate reach field already collected for
+      // the public post: views, approximate uniques, referring-site count,
+      // referred visits, and explicit social distribution state.
       blog: bound(
         snapshot.blog,
         (post) => String(post?.meta || ""),
@@ -8710,6 +10373,9 @@ class ForkMeshWorld extends HTMLElement {
         (post) => ({
           detail: String(post?.detail || "").slice(0, 260),
           image: this.socialPostImage(post?.image),
+          age: this.socialPostAge(post?.createdAt),
+          distribution: this.socialPostDistribution(post?.distribution),
+          reach: this.socialPostReach(post?.reach),
         }),
       ),
     });
@@ -11512,6 +13178,43 @@ class ForkMeshWorld extends HTMLElement {
     return branch.commit;
   }
 
+  async loadRepositoryBlobBatches(base, commit, paths = []) {
+    const pullMetadataCommit = immutableGitOid(commit);
+    if (!pullMetadataCommit) {
+      throw new Error("repository metadata commit unavailable");
+    }
+    const unique = [...new Set(
+      (Array.isArray(paths) ? paths : [])
+        .map((path) => String(path || ""))
+        .filter(Boolean),
+    )].slice(0, 250);
+    const chunks = [];
+    for (let offset = 0; offset < unique.length; offset += 60) {
+      chunks.push(unique.slice(offset, offset + 60));
+    }
+    const results = await Promise.all(
+      chunks.map(async (chunk) => {
+        const query = new URLSearchParams();
+        chunk.forEach((path) => query.append("path", path));
+        query.set("ref", pullMetadataCommit);
+        const result = await this.fetchJSON(`${base}/blobs?${query}`, {
+          timeout: REPOSITORY_METADATA_TIMEOUT_MS,
+          cache: "no-store",
+        });
+        if (immutableGitOid(result?.commit) !== pullMetadataCommit) {
+          throw new Error("repository metadata batch commit mismatch");
+        }
+        return result?.blobs && typeof result.blobs === "object"
+          ? result.blobs
+          : {};
+      }),
+    );
+    return {
+      commit: pullMetadataCommit,
+      blobs: Object.assign({}, ...results),
+    };
+  }
+
   async loadRepositoryPullRecords(base) {
     const pullMetadataCommit =
       await this.resolveRepositoryPullMetadataCommit(base);
@@ -11535,18 +13238,16 @@ class ForkMeshWorld extends HTMLElement {
       )
       .map((entry) => safePullNumber(entry.name))
       .sort((left, right) => right - left);
-    const selected = numbered.slice(0, 60);
+    const selected = numbered.slice(0, 250);
     const paths = selected.map((number) => `pulls/${number}/pull.md`);
     let blobs = {};
     if (paths.length) {
-      const query = new URLSearchParams();
-      paths.forEach((path) => query.append("path", path));
-      query.set("ref", pullMetadataCommit);
       try {
-        const result = await this.fetchJSON(`${base}/blobs?${query}`, {
-          timeout: REPOSITORY_METADATA_TIMEOUT_MS,
-          cache: "no-store",
-        });
+        const result = await this.loadRepositoryBlobBatches(
+          base,
+          pullMetadataCommit,
+          paths,
+        );
         if (immutableGitOid(result?.commit) !== pullMetadataCommit) {
           throw new Error("pull metadata batch commit mismatch");
         }
@@ -11582,6 +13283,9 @@ class ForkMeshWorld extends HTMLElement {
           body: "",
           creationBaseOid: "",
           creationHeadOid: "",
+          draft: false,
+          reviewStatus: "",
+          checksStatus: "",
           metadataAvailable: false,
         };
       }
@@ -11598,6 +13302,10 @@ class ForkMeshWorld extends HTMLElement {
         body: parsed.body,
         creationBaseOid: parsed.creationBaseOid,
         creationHeadOid: parsed.creationHeadOid,
+        draft: parsed.draft === true,
+        mergeable: parsed.mergeable,
+        reviewStatus: parsed.reviewStatus,
+        checksStatus: parsed.checksStatus,
         metadataAvailable: true,
       };
     });
@@ -11681,11 +13389,103 @@ class ForkMeshWorld extends HTMLElement {
           number,
           path: `${location.path}/${number}`,
           state: location.state,
+          title: `Issue #${number}`,
+          author: "Unknown",
+          createdAt: 0,
+          updatedAt: 0,
+          labels: [],
+          assignees: [],
+          metadataAvailable: false,
         };
         const previous = issues.get(number);
         if (!previous || location.state) issues.set(number, record);
       });
     });
+    const selectedIssues = [...issues.values()]
+      .sort((left, right) => right.number - left.number)
+      .slice(0, 250);
+    if (selectedIssues.length) {
+      const issuePaths = selectedIssues.map(
+        (record) => `${record.path}/issue-${record.number}.json`,
+      );
+      try {
+        const result = await this.loadRepositoryBlobBatches(
+          base,
+          commit,
+          issuePaths,
+        );
+        if (immutableGitOid(result?.commit) !== commit) {
+          throw new Error("issue metadata batch commit mismatch");
+        }
+        const issueBlobs =
+          result?.blobs && typeof result.blobs === "object"
+            ? result.blobs
+            : {};
+        selectedIssues.forEach((record) => {
+          const path = `${record.path}/issue-${record.number}.json`;
+          const text = repositoryBlobText(issueBlobs[path]);
+          if (!text.trim()) return;
+          try {
+            const parsed = JSON.parse(text);
+            const openEvent = Array.isArray(parsed?.events)
+              ? parsed.events.find((event) => event?.type === "open") || {}
+              : {};
+            record.title = sanitizePresenceText(
+              parsed?.title || openEvent?.title,
+              `Issue #${record.number}`,
+              240,
+            );
+            record.author = sanitizePresenceText(
+              parsed?.authorName ||
+                openEvent?.authorName ||
+                parsed?.author ||
+                openEvent?.author,
+              "Unknown",
+              100,
+            );
+            record.state = ["open", "closed"].includes(
+              String(parsed?.status || parsed?.state || "").toLowerCase(),
+            )
+              ? String(parsed.status || parsed.state).toLowerCase()
+              : record.state;
+            record.createdAt = Math.max(
+              0,
+              Number(parsed?.createdAt || openEvent?.ts) || 0,
+            );
+            record.updatedAt = Math.max(
+              record.createdAt,
+              Number(parsed?.updatedAt) || 0,
+            );
+            record.labels = (Array.isArray(parsed?.labels) ? parsed.labels : [])
+              .map((label) => sanitizePresenceText(label, "", 40))
+              .filter(Boolean)
+              .slice(0, 6);
+            record.assignees = (
+              Array.isArray(parsed?.assignees) ? parsed.assignees : []
+            )
+              .map((assignee) =>
+                sanitizePresenceText(
+                  typeof assignee === "string"
+                    ? assignee
+                    : assignee?.name || assignee?.login,
+                  "",
+                  60,
+                ),
+              )
+              .filter(Boolean)
+              .slice(0, 4);
+            record.metadataAvailable = true;
+          } catch (_) {
+            // A malformed public issue record remains a numbered, clickable
+            // stub. Never synthesize metadata that the pinned commit did not
+            // actually publish.
+          }
+        });
+      } catch (_) {
+        // Issue metadata is useful display context, but the commit-matched
+        // number/state list remains truthful when a mirror cannot batch blobs.
+      }
+    }
     const pullRecords =
       pullResult.status === "fulfilled"
         ? pullResult.value
@@ -11702,9 +13502,7 @@ class ForkMeshWorld extends HTMLElement {
       commit,
       repositoryCommit: commit,
       available: issuesMatched || pullRecords.pullsAvailable,
-      issues: [...issues.values()]
-        .sort((left, right) => right.number - left.number)
-        .slice(0, 40),
+      issues: selectedIssues,
       ...pullRecords,
     };
   }
@@ -12156,6 +13954,71 @@ class ForkMeshWorld extends HTMLElement {
     if (changed && !this.destroyed) this.syncRepositoryScene();
   }
 
+  // The organization alias is derived from two independently refreshed reads:
+  // the repository catalog and the mirror snapshot. Re-derive it whenever
+  // either one arrives so a flagship pin that was ambiguous at boot — mirrors
+  // still mid-sync, so no single healthy commit was attested — can complete
+  // later in the session. Returns whether the derived catalog actually moved,
+  // so a stable poll costs nothing.
+  reconcileRepositoryAliasCatalog() {
+    const natives = reconcileRepositoryAliases(
+      this.rawNativeRepositories,
+      this.mirrorCatalogs,
+    );
+    const signature = natives
+      .map((record) =>
+        [
+          record.owner,
+          record.name,
+          record.source,
+          record.commit,
+          record.stateHash,
+          record.liveHost,
+          record.mirrorState,
+        ].join(":"),
+      )
+      .join("|");
+    if (signature === this.repositoryAliasSignature) return false;
+    this.repositoryAliasSignature = signature;
+    this.nativeRepositories = natives;
+    this.repositories = mergeHostedRepositoryImports(
+      natives,
+      this.externalRepositories,
+    );
+    return true;
+  }
+
+  // Keep working toward the default open portal after entry. The catalog read
+  // is the same public, thirty-second cacheable document the boot path used, so
+  // most of these ticks are served from cache, and the attempt count is bounded
+  // so a mesh that never converges cannot turn this into an endless fan-out.
+  async retryFlagshipPortal() {
+    if (
+      this.destroyed ||
+      this.repositoryManualSelection ||
+      this.activeRepository ||
+      this.flagshipPortalRetries >= FLAGSHIP_PORTAL_RETRY_LIMIT
+    ) {
+      return;
+    }
+    this.flagshipPortalRetries += 1;
+    try {
+      const records = cleanRepositories(
+        await this.fetchJSON("/api/repositories", {
+          auth: this.sessionAuthenticated && Boolean(validWorldSession()),
+        }),
+      );
+      // An empty or failed answer must not retire the portals the scene is
+      // already showing; the alias is still re-derived from the freshest
+      // mirror snapshot below.
+      if (records.length) this.rawNativeRepositories = records;
+    } catch (_) {}
+    if (this.destroyed || !this.reconcileRepositoryAliasCatalog()) return;
+    if (this.repositories.length) this.repositoryCatalogState = "ready";
+    this.syncRepositoryScene();
+    void this.autoLoadFlagshipRepositoryMap();
+  }
+
   syncRepositoryScene() {
     if (!this.world) return;
     const active =
@@ -12169,6 +14032,13 @@ class ForkMeshWorld extends HTMLElement {
     );
     if (!active) {
       this.world.updateRepositoryGraph?.(preview?.entries || [], []);
+      this.world.updateRepositoryActivity?.(
+        preview?.commitActivity || {
+          status: preview ? "loading" : "unavailable",
+          weeks: preview?.activityWeeks || [],
+        },
+        preview || {},
+      );
       this.world.updateRepositorySizeMap?.(
         preview?.sizes || {},
         preview || {},
@@ -12180,6 +14050,11 @@ class ForkMeshWorld extends HTMLElement {
       active.entries,
       buildRepositoryGraphEntities(active),
     );
+    this.world.updateRepositoryActivity?.(active.commitActivity, {
+      owner: active.owner,
+      repo: active.repo,
+      commit: active.commit,
+    });
     this.world.updateRepositorySizeMap?.(active.sizes, {
       owner: active.owner,
       repo: active.repo,
@@ -12242,12 +14117,31 @@ class ForkMeshWorld extends HTMLElement {
       ...selection,
       entries,
       sizes: previewSizes,
+      activityWeeks:
+        this.repositories.find(
+          (record) =>
+            record.owner.toLowerCase() === owner.toLowerCase() &&
+            record.name.toLowerCase() === repo.toLowerCase(),
+        )?.activityWeeks || [],
+      commitActivity: {
+        status: "loading",
+        weeks:
+          this.repositories.find(
+            (record) =>
+              record.owner.toLowerCase() === owner.toLowerCase() &&
+              record.name.toLowerCase() === repo.toLowerCase(),
+          )?.activityWeeks || [],
+      },
     };
     this.world.updateRepositoryCatalog?.(
       this.repositoriesWithLiveSocialState(),
       selection,
     );
     this.world.updateRepositoryGraph?.(entries, []);
+    this.world.updateRepositoryActivity?.(
+      this.repositoryMapPreview.commitActivity,
+      selection,
+    );
     this.world.updateRepositorySizeMap?.(previewSizes, selection);
     this.world.setRepositorySizeLoading?.(true);
   }
@@ -12322,14 +14216,13 @@ class ForkMeshWorld extends HTMLElement {
   revealRepositoryScene() {
     this.closeLandmark();
     const active = this.activeRepository;
+    // Visiting a repository sunburst frames it from the orbital camera; the
+    // camera button is the only way into first person.
+    this.world?.setCameraMode?.("third-person");
     const focused =
       active &&
-      this.world?.enterRepositoryFirstPerson?.(
-        active.owner,
-        active.repo,
-      ) === true;
+      this.world?.focusRepositoryPortal?.(active.owner, active.repo) === true;
     if (!focused) {
-      this.world?.setCameraMode?.("third-person");
       this.world?.focusLandmark?.("repositories");
     }
     this.syncWorldCameraModeButton();
@@ -12395,6 +14288,68 @@ class ForkMeshWorld extends HTMLElement {
     this.toast(
       `Issue #${number}${page?.state ? ` (${page.state})` : ""}: click the expanded page to open the full thread.`,
     );
+  }
+
+  openRepositoryIssueWorkbench(page) {
+    const owner = sanitizePresenceText(page?.owner, "", 40);
+    const name = sanitizePresenceText(page?.name || page?.repo, "", 60);
+    const number = safePullNumber(page?.number);
+    if (!owner || !name || !number) {
+      this.toast("That repository issue could not be opened.");
+      return false;
+    }
+    const path = `/${encodeURIComponent(owner)}/${encodeURIComponent(
+      name,
+    )}/issues/${number}`;
+    const detail = this.$("[data-world-detail]");
+    const backdrop = this.$("[data-world-detail-backdrop]");
+    if (!detail || !backdrop) return false;
+    const repository = `${owner}/${name}`;
+    detail.dataset.openLandmark = "repositories";
+    detail.dataset.repositoryReview = "false";
+    detail.style.setProperty("--detail-color", "var(--world-mint)");
+    detail.innerHTML = `
+      <header class="world-detail-header world-issue-workbench-header">
+        <div>
+          <p class="world-eyebrow">LIVE REPOSITORY ISSUE</p>
+          <h2 id="world-detail-title">${escapeHTML(
+            repository,
+          )} #${number}</h2>
+        </div>
+        <div class="world-issue-workbench-actions">
+          <a
+            href="${escapeHTML(path)}"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Open ${escapeHTML(repository)} issue ${number} in a new tab"
+          >Open tab ↗</a>
+          <button
+            class="world-detail-close"
+            type="button"
+            data-world-detail-close
+            aria-label="Close ${escapeHTML(repository)} issue ${number}"
+          >×</button>
+        </div>
+      </header>
+      <div class="world-detail-scroll world-issue-workbench" data-world-issue-workbench>
+        <iframe
+          src="${escapeHTML(path)}"
+          title="${escapeHTML(repository)} issue ${number}"
+          loading="eager"
+          referrerpolicy="same-origin"
+        ></iframe>
+      </div>`;
+    this.showDetailOverlay(detail, backdrop, {
+      returnFocus:
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null,
+      focusDelay: 80,
+    });
+    this.toast(
+      `Opened issue #${number} in the World sidebar with its live details and controls.`,
+    );
+    return true;
   }
 
   selectRepositorySizeNode(node) {
@@ -12556,6 +14511,10 @@ class ForkMeshWorld extends HTMLElement {
       timeout: REPOSITORY_METADATA_TIMEOUT_MS,
       cache: "no-store",
     });
+    const historyRequest = this.fetchJSON(`${base}/history${ref}`, {
+      timeout: REPOSITORY_METADATA_TIMEOUT_MS,
+      cache: "no-store",
+    });
     sizeRequest.then(
       (value) => {
         if (
@@ -12573,7 +14532,13 @@ class ForkMeshWorld extends HTMLElement {
       },
       () => {},
     );
-    const [sizeResult, statsResult, mirrorsResult, entityRecordsResult] =
+    const [
+      sizeResult,
+      statsResult,
+      mirrorsResult,
+      entityRecordsResult,
+      historyResult,
+    ] =
       await Promise.allSettled([
         sizeRequest,
         this.fetchJSON(`${base}/stats${ref}`, {
@@ -12587,6 +14552,7 @@ class ForkMeshWorld extends HTMLElement {
             pullResult,
           }),
         ),
+        historyRequest,
       ]);
     const sizes =
       sizeResult.status === "fulfilled" &&
@@ -12642,6 +14608,13 @@ class ForkMeshWorld extends HTMLElement {
         : pullCount !== null
           ? "signed-mirror-report"
           : "unavailable";
+    const historyPayload =
+      historyResult.status === "fulfilled" &&
+      historyResult.value?.ok !== false &&
+      (!immutableGitOid(historyResult.value?.commit) ||
+        immutableGitOid(historyResult.value?.commit) === commit)
+        ? historyResult.value
+        : null;
     const snapshot = {
       owner: safeOwner,
       repo: safeRepo,
@@ -12659,6 +14632,10 @@ class ForkMeshWorld extends HTMLElement {
       sizes: sizes || {},
       stats: stats || {},
       mirrors: mirrorPayload,
+      commitActivity: normalizeRepositoryCommitActivity(
+        historyPayload,
+        catalogRecord?.activityWeeks,
+      ),
       entityRecords: entityRecords || {
         commit,
         repositoryCommit: commit,
@@ -13084,7 +15061,7 @@ class ForkMeshWorld extends HTMLElement {
       })
       .filter(Boolean)
       .sort((left, right) => right.number - left.number)
-      .slice(0, 60);
+      .slice(0, 250);
   }
 
   repositoryPullCount(active = this.activeRepository) {
@@ -13354,7 +15331,7 @@ class ForkMeshWorld extends HTMLElement {
       },
       forbidden: {
         title: "Merge not authorized",
-        body: "This signed-in account is not authorized as the repository owner, node owner, or an organization writer.",
+        body: "Mirror merges are currently restricted to an owner of the organization that publishes this repository.",
       },
       unauthenticated: {
         title: "Session no longer valid",
@@ -15153,6 +17130,12 @@ class ForkMeshWorld extends HTMLElement {
 
   async playFocusMusic({ autoplay = false } = {}) {
     const track = this.selectedFocusMusicTrack();
+    if (!this.soundEnabled) {
+      this.focusMusicError =
+        "Enable World sounds from the toolbar before starting focus music.";
+      this.renderFocusMusicPanel();
+      return;
+    }
     const AudioElement = window.Audio;
     if (!AudioElement) {
       this.focusMusicError = "Audio playback is unavailable in this browser.";
@@ -15274,6 +17257,10 @@ class ForkMeshWorld extends HTMLElement {
         : "";
     this.focusMusicAutoplayPending = false;
     this.stopRadio(false);
+    if (!this.soundEnabled) {
+      this.toast("Enable World sounds from the toolbar before playing the ForkMesh song.");
+      return;
+    }
     const song = RADIO_STATIONS.find((station) => station.id === "forkmesh-song");
     const AudioElement = window.Audio;
     if (!song || !AudioElement) {
@@ -15423,6 +17410,13 @@ class ForkMeshWorld extends HTMLElement {
   // consent gesture, so this path never starts on its own and never proxies a
   // third-party stream.
   async playHostedTrack(station, now) {
+    if (!this.soundEnabled) {
+      now.innerHTML = `
+        <span><strong>Sound is off</strong><small>Use the Sound button in the World toolbar first. Audio never starts automatically.</small></span>
+        <button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
+      this.toast("Enable World sounds from the toolbar before starting local audio.");
+      return;
+    }
     const AudioElement = window.Audio;
     if (!AudioElement) {
       now.innerHTML = `<span>Audio playback is unavailable in this browser.</span><button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
@@ -15749,13 +17743,71 @@ class ForkMeshWorld extends HTMLElement {
       // Local logout must still complete if the network is unavailable.
     }
     try {
-      localStorage.removeItem("forkmesh.session");
-      document.cookie =
-        "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax" +
-        (location.protocol === "https:" ? "; Secure" : "");
+      const preserved = new Set([
+        "forkmesh.analyticsConsent.v1",
+        "forkmesh.dashboard.theme",
+        "forkmesh.theme",
+      ]);
+      for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+        const key = localStorage.key(index);
+        if (key?.startsWith("forkmesh.") && !preserved.has(key)) {
+          localStorage.removeItem(key);
+        }
+      }
+      for (let index = sessionStorage.length - 1; index >= 0; index -= 1) {
+        const key = sessionStorage.key(index);
+        if (key?.startsWith("forkmesh.")) sessionStorage.removeItem(key);
+      }
+      document.cookie = "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax";
+      document.cookie = "forkmesh_account=; Path=/; Max-Age=0; SameSite=Strict";
+      document.cookie = "forkmesh_admin=; Path=/; Max-Age=0; SameSite=Lax";
     } catch (_) {}
-    this.preserveWorldPositionForRefresh();
+    this.responseCache.clear();
+    this.inflightRequests.clear();
+    if ("caches" in window) {
+      try {
+        const names = await caches.keys();
+        await Promise.all(names.map((name) => caches.delete(name)));
+      } catch (_) {}
+    }
     location.reload();
+  }
+
+  async validateActiveWorldSession() {
+    if (
+      this.destroyed ||
+      document.hidden ||
+      this.sessionWatchActive ||
+      !validWorldSession()
+    ) {
+      return false;
+    }
+    this.sessionWatchActive = true;
+    try {
+      const session = validWorldSession();
+      const token = String(session?.sessionToken || "");
+      const response = await fetch("/api/accounts/sessions", {
+        headers: {
+          accept: "application/json",
+          ...(token && token !== "cookie"
+            ? { authorization: `Bearer ${token}` }
+            : {}),
+        },
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+      if (response.status === 401) {
+        await this.logoutFromWorld();
+        return false;
+      }
+      return response.ok;
+    } catch (_) {
+      // An offline visitor remains signed in locally. Only an authoritative
+      // invalid-session response boots the device.
+      return false;
+    } finally {
+      this.sessionWatchActive = false;
+    }
   }
 
   toggleSettings(open) {
@@ -16030,7 +18082,7 @@ class ForkMeshWorld extends HTMLElement {
       button.setAttribute("aria-pressed", String(button.dataset.worldTheme === theme));
     });
     const label = THEME_OPTIONS.find((option) => option.id === theme)?.label || theme;
-    this.toast(`${label} is local to this device and never changes shared presence.`);
+    this.toast(`${label} is saved to your account and never changes anyone else's World.`);
   }
 
   setOutfitColor(outfit) {
@@ -16299,6 +18351,15 @@ class ForkMeshWorld extends HTMLElement {
     return firstPerson;
   }
 
+  handleWorldCameraMode(state) {
+    this.syncWorldCameraModeButton();
+    // Only the scene's own decisions need announcing here; the toggle button
+    // and the repository visit already narrate their own switch.
+    if (state?.reason === "zoom-out") {
+      this.toast("Zoomed all the way out — third-person view restored.");
+    }
+  }
+
   toggleWorldCameraMode() {
     if (!this.world?.setCameraMode) return;
     const firstPerson = this.syncWorldCameraModeButton();
@@ -16313,16 +18374,16 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async toggleWorldSound() {
-    const button = this.$("[data-world-sound-toggle]");
-    const label = this.$("[data-world-sound-label]");
     if (this.soundEnabled) {
       this.soundEnabled = false;
+      // The toolbar control is the master switch, not only a switch for the
+      // short synthesized cues. Stop every local soundtrack as well.
+      this.focusMusicAutoplayPending = false;
+      this.stopRadio();
       const context = this.soundContext;
       this.soundContext = null;
       await context?.close?.().catch(() => {});
-      button?.setAttribute("aria-pressed", "false");
-      if (button) button.title = "Enable World sounds";
-      if (label) label.textContent = "Sound";
+      this.syncWorldSoundButton();
       this.toast("World sounds muted.");
       return;
     }
@@ -16337,16 +18398,29 @@ class ForkMeshWorld extends HTMLElement {
       this.soundContext = new AudioContext();
       await this.soundContext.resume();
       this.soundEnabled = true;
-      button?.setAttribute("aria-pressed", "true");
-      if (button) button.title = "Mute World sounds";
-      if (label) label.textContent = "Sound on";
+      this.syncWorldSoundButton();
       this.playCountryJoinSound("FM", true);
       this.toast("World sounds enabled. Join cues use short local tones.");
     } catch (_) {
       this.soundEnabled = false;
       this.soundContext = null;
+      this.syncWorldSoundButton();
       this.toast("World sounds could not be enabled.");
     }
+  }
+
+  syncWorldSoundButton() {
+    const button = this.$("[data-world-sound-toggle]");
+    const label = this.$("[data-world-sound-label]");
+    const enabled = this.soundEnabled === true;
+    button?.setAttribute("aria-pressed", String(enabled));
+    if (button) {
+      const action = enabled ? "Mute World sounds" : "Enable World sounds";
+      button.title = action;
+      button.setAttribute("aria-label", action);
+    }
+    if (label) label.textContent = enabled ? "Sound on" : "Sound";
+    return enabled;
   }
 
   closeScreenshotUI() {
@@ -16505,6 +18579,12 @@ class ForkMeshWorld extends HTMLElement {
       clone.style.width = `${width}px`;
       clone.style.height = `${height}px`;
       clone.style.margin = "0";
+      // The world root paints an opaque backdrop behind the 3D canvas. The HUD
+      // raster is composited *over* the rendered frame, so leaving that fill in
+      // the clone buries the game world and the capture comes back as chrome on
+      // a flat colour.
+      clone.style.background = "transparent";
+      clone.style.backgroundColor = "transparent";
       await this.inlineHudImages(root, clone);
       markup = new XMLSerializer().serializeToString(clone);
     } catch (_) {
@@ -17005,7 +19085,14 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   saveSettings() {
-    writeJSON(localStorage, SETTINGS_KEY, this.settings);
+    if (!this.applyingWorldPreferences) {
+      this.settingsUpdatedAt = Date.now();
+    }
+    writeJSON(localStorage, SETTINGS_KEY, {
+      ...this.settings,
+      _updatedAt: this.settingsUpdatedAt,
+    });
+    this.queueWorldPreferencesSync();
     // The privacy toggles live here, so a member hiding (or restoring) their
     // country, browser, or OS updates their away bench figure right away.
     void this.syncWorldClientProfile();
@@ -17155,21 +19242,10 @@ class ForkMeshWorld extends HTMLElement {
       return;
     }
     if (build.revision === known) return;
-    let reloadedFor = "";
-    try {
-      reloadedFor =
-        sessionStorage.getItem(WORLD_UPDATE_RELOADED_REV_KEY) || "";
-    } catch (_) {}
-    // One reload per revision: if a cache keeps reporting a revision this tab
-    // already reloaded for, stay put rather than reload-looping the player.
-    if (reloadedFor === build.revision) return;
     this.updateReloadPending = true;
-    try {
-      sessionStorage.setItem(WORLD_UPDATE_RELOADED_REV_KEY, build.revision);
-    } catch (_) {}
-    this.preserveWorldPositionForRefresh();
-    this.toast("✨ The World just updated — bringing you along in place…");
-    window.setTimeout(() => location.reload(), WORLD_UPDATE_RELOAD_DELAY_MS);
+    const notice = this.$("[data-world-update-notice]");
+    if (notice) notice.hidden = false;
+    this.toast("✨ A new World build is ready. Refresh when you are ready.");
   }
 
   startDiagnostics() {
@@ -17652,6 +19728,7 @@ class ForkMeshWorld extends HTMLElement {
 
   flushWorldPosition() {
     window.clearTimeout(this.positionWriteTimer);
+    window.clearTimeout(this.worldPreferencesSyncTimer);
     this.positionWriteTimer = 0;
     if (!this.pendingPosition || !this.positionKey) return;
     const { x, y, z, heading, space, updatedAt } = this.pendingPosition;
@@ -17781,6 +19858,7 @@ class ForkMeshWorld extends HTMLElement {
     );
     this.worldTicket = String(ticket.ticket || "");
     this.worldTicketExpires = Number(ticket.expiresAt || 0);
+    void this.loadWorldPreferences();
     return true;
   }
 
@@ -17992,8 +20070,31 @@ class ForkMeshWorld extends HTMLElement {
     }, WORLD_TICKET_REFRESH_MS);
   }
 
+  // The relay handed this account's single avatar to a newer device. Stand
+  // down quietly: no reconnect ladder, no error state, and no second figure
+  // in the world. The visitor's own next click, keypress, or return to this
+  // tab brings it back here.
+  handlePresenceTakeover() {
+    this.presenceTakenOver = true;
+    window.clearTimeout(this.socketTimer);
+    this.socketTimer = 0;
+    this.socketRetry = 1000;
+    this.setPresenceState("offline", "Active on your other device");
+    this.startPeerReconnectGrace();
+    this.toast(
+      "Your avatar moved to the device you just opened the World on. " +
+        "Click or press a key here to bring it back.",
+    );
+  }
+
+  reclaimPresenceHere() {
+    if (!this.presenceTakenOver) return;
+    this.presenceTakenOver = false;
+    void this.connectPresence();
+  }
+
   schedulePresenceReconnect() {
-    if (this.destroyed || document.hidden) return;
+    if (this.destroyed || document.hidden || this.presenceTakenOver) return;
     window.clearTimeout(this.socketTimer);
     const jitter = 0.75 + Math.random() * 0.5;
     const delay = Math.max(250, Math.round(this.socketRetry * jitter));
@@ -18030,6 +20131,7 @@ class ForkMeshWorld extends HTMLElement {
     if (
       this.destroyed ||
       document.hidden ||
+      this.presenceTakenOver ||
       this.presenceConnecting ||
       this.socket?.readyState === WebSocket.OPEN
     ) {
@@ -18111,7 +20213,7 @@ class ForkMeshWorld extends HTMLElement {
       }
       this.receivePresence(message);
     });
-    socket.addEventListener("close", () => {
+    socket.addEventListener("close", (event) => {
       if (this.socket !== socket) return;
       this.presenceConnecting = false;
       this.socket = null;
@@ -18123,6 +20225,10 @@ class ForkMeshWorld extends HTMLElement {
       this.movementSendTimer = 0;
       this.pendingMovement = null;
       if (this.destroyed) return;
+      if (event?.code === SOCKET_ACCOUNT_TAKEOVER_CODE) {
+        this.handlePresenceTakeover();
+        return;
+      }
       this.setPresenceState("offline", "Local world");
       this.startPeerReconnectGrace();
       this.schedulePresenceReconnect();
@@ -18292,6 +20398,7 @@ class ForkMeshWorld extends HTMLElement {
       // back to the fresh open cell the server just assigned.
       const ownSpace = String(this.lastMovement?.space || this.currentSpace);
       const spawnBlocked =
+        this.initialPresenceWelcomePending &&
         this.spawnSelected &&
         ownSpace === "town-square" &&
         message.peers.some((peer) => {
@@ -18310,25 +20417,31 @@ class ForkMeshWorld extends HTMLElement {
         ownPresence?.id === this.serverPeerId &&
         (!this.spawnSelected || spawnBlocked)
       ) {
-        this.currentSpace = ownPresence.space;
-        this.lastMovement = {
-          ...this.lastMovement,
-          x: ownPresence.x,
-          y: ownPresence.y,
-          z: ownPresence.z,
-          heading: ownPresence.heading,
-          space: ownPresence.space,
-        };
-        this.world?.setSpawn?.({
+        // A reconnect hands out a fresh outdoor arrival cell. The scene
+        // declines it while this visitor is inside the Office tower, and the
+        // stored position must not drift to a spot the avatar never took.
+        const relocated = this.world?.setSpawn?.({
           x: ownPresence.x,
           y: ownPresence.y,
           z: ownPresence.z,
           heading: ownPresence.heading,
           space: ownPresence.space,
         });
-        this.spawnSelected = true;
-        this.rememberWorldPosition(this.lastMovement, true);
+        if (relocated !== false) {
+          this.currentSpace = ownPresence.space;
+          this.lastMovement = {
+            ...this.lastMovement,
+            x: ownPresence.x,
+            y: ownPresence.y,
+            z: ownPresence.z,
+            heading: ownPresence.heading,
+            space: ownPresence.space,
+          };
+          this.spawnSelected = true;
+          this.rememberWorldPosition(this.lastMovement, true);
+        }
       }
+      this.initialPresenceWelcomePending = false;
       window.clearTimeout(this.peerGraceTimer);
       this.peerGraceTimer = 0;
       this.peerGraceUntil = 0;
@@ -18629,22 +20742,61 @@ class ForkMeshWorld extends HTMLElement {
     )}`;
   }
 
-  // One fetch at boot (and after each board tap) keeps the sign fresh without
-  // adding another polling loop; the endpoint is edge-cached server-side.
+  // One paired fetch at boot (and after each member-board tap) keeps both
+  // neighboring signs fresh without adding another polling loop. Both public
+  // endpoints are edge-cached server-side and fail independently.
   async loadReferralLeaderboard() {
-    if (!this.world?.updateReferralLeaderboard) return;
-    try {
-      const data = await this.fetchJSON("/api/referrals/leaderboard", {
+    if (
+      !this.world?.updateReferralLeaderboard &&
+      !this.world?.updateSiteReferrerLeaderboard
+    ) {
+      return;
+    }
+    const [memberResult, siteResult] = await Promise.allSettled([
+      this.fetchJSON("/api/referrals/leaderboard", {
         auth: false,
         timeout: 5000,
-      });
-      this.referralBoard = Array.isArray(data?.board) ? data.board : [];
-    } catch (_) {
+      }),
+      this.fetchJSON("/api/referrals/sites", {
+        auth: false,
+        timeout: 5000,
+      }),
+    ]);
+    if (memberResult.status === "fulfilled") {
+      this.referralBoard = Array.isArray(memberResult.value?.board)
+        ? memberResult.value.board
+        : [];
+    } else {
       this.referralBoard = Array.isArray(this.referralBoard)
         ? this.referralBoard
         : [];
     }
-    this.world.updateReferralLeaderboard(this.referralBoard, this.referralLink());
+    if (siteResult.status === "fulfilled") {
+      this.siteReferralBoard = Array.isArray(siteResult.value?.board)
+        ? siteResult.value.board
+        : [];
+      this.siteReferralTotals = {
+        sites: Math.max(0, Number(siteResult.value?.sites) || 0),
+        visits: Math.max(0, Number(siteResult.value?.visits) || 0),
+      };
+    } else {
+      this.siteReferralBoard = Array.isArray(this.siteReferralBoard)
+        ? this.siteReferralBoard
+        : [];
+      this.siteReferralTotals =
+        this.siteReferralTotals &&
+        typeof this.siteReferralTotals === "object"
+          ? this.siteReferralTotals
+          : { sites: 0, visits: 0 };
+    }
+    this.world.updateReferralLeaderboard?.(
+      this.referralBoard,
+      this.referralLink(),
+    );
+    this.world.updateSiteReferrerLeaderboard?.(
+      this.siteReferralBoard,
+      this.siteReferralTotals,
+    );
   }
 
   async copyReferralLink() {
@@ -18660,6 +20812,29 @@ class ForkMeshWorld extends HTMLElement {
       this.toast(`Your referral link: ${link}`);
     }
     void this.loadReferralLeaderboard();
+  }
+
+  openSiteReferrerLink(value) {
+    try {
+      const url = new URL(String(value || ""));
+      if (
+        !["http:", "https:"].includes(url.protocol) ||
+        url.username ||
+        url.password ||
+        !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(
+          url.hostname,
+        )
+      ) {
+        throw new TypeError("unsafe_referrer_origin");
+      }
+      window.open(
+        url.href,
+        "_blank",
+        "noopener,noreferrer",
+      );
+    } catch (_) {
+      this.toast("That referrer link is unavailable.");
+    }
   }
 
   // An account created after this tab loaded is missing from the directory
@@ -18774,6 +20949,11 @@ class ForkMeshWorld extends HTMLElement {
     this.world.updateMemberLounge(
       this.memberDirectory.map((member) => ({
         ...member,
+        // This assignment was derived from the authenticated viewer's
+        // owner/admin organization roster. Hand it to the directory figure
+        // too, so an administrator can manage a member who is offline just as
+        // they can manage the same member's live presence avatar.
+        orgTeam: this.orgTeamAssignmentFor(member.name),
         away: present.has(member.name.toLowerCase()),
       })),
       this.memberDirectory.length,
@@ -18797,6 +20977,7 @@ class ForkMeshWorld extends HTMLElement {
     window.removeEventListener("storage", this.handleStorage);
     window.removeEventListener("pointerdown", this.handlePublicInputActivity);
     window.removeEventListener("pointermove", this.handlePublicInputActivity);
+    this.removeEventListener("touchmove", this.blockWorldPullToRefresh);
     window.removeEventListener("keydown", this.handlePublicInputActivity);
     window.removeEventListener("message", this.handleWorldChatMessage);
     window.removeEventListener("pagehide", this.handlePageHide);
@@ -18804,6 +20985,10 @@ class ForkMeshWorld extends HTMLElement {
     this.$("[data-world-renderer-reload]")?.removeEventListener(
       "click",
       this.reloadForRendererRecovery,
+    );
+    this.$("[data-world-update-refresh]")?.removeEventListener(
+      "click",
+      this.refreshWorldForUpdate,
     );
     window.clearTimeout(this.socketTimer);
     window.clearTimeout(this.socketStableTimer);
@@ -18831,8 +21016,10 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.worldTicketTimer);
     window.clearInterval(this.diagnosticsTimer);
     window.clearInterval(this.updateCheckTimer);
+    window.clearInterval(this.layoutRefreshTimer);
     window.clearInterval(this.mastodonRefreshTimer);
     window.clearInterval(this.socialFeedsTimer);
+    window.clearInterval(this.sessionWatchTimer);
     window.clearTimeout(this.rendererRecoveryTimer);
     this.rendererRecoveryTimer = 0;
     this.inflightRequests.clear();
@@ -18860,6 +21047,7 @@ class ForkMeshWorld extends HTMLElement {
     this.officeController = null;
     this.officeTasks?.destroy();
     this.officeTasks = null;
+    this.setInfrastructureConsoleEnabled(false);
     this.world?.dispose();
     this.world = null;
     if (this.mode === "public") document.body.classList.remove("world-active");

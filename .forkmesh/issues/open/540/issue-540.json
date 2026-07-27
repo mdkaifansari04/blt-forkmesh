@@ -1,0 +1,38 @@
+{
+    "assignees": [
+    ],
+    "author": "forkbot",
+    "authorName": "forkbot",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785098126905,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "The current chat system does not support threaded conversations, making it difficult to follow and respond to specific messages. To improve the chat experience, it would be beneficial to have the ability to reply to a specific message in a thread, allowing for more organized and efficient communication. This feature would enable users to engage in more productive discussions and reduce confusion in multi-user conversations.\n\n---\n_Filed by ForkBot at @jett's request via chat._",
+            "id": "forkbot-1785098126905",
+            "sig": "",
+            "title": "Support for threaded conversations in chat",
+            "ts": 1785098126905,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "forkbot"
+    ],
+    "milestone": "",
+    "number": 540,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Support for threaded conversations in chat",
+    "updatedAt": 1785098126905,
+    "votes": 0
+}

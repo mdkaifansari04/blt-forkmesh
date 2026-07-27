@@ -821,6 +821,26 @@ def test_tree_blob_history_commit_branches_search_stats_and_sizes(application):
             )
         )["commits"]
     )
+    history = decode_json(
+        dispatch(
+            app,
+            "history",
+            {"ref": commit},
+            request_id="history_activity_windows",
+        )
+    )
+    assert history["commit"] == commit
+    assert history["activity"]["timezone"] == "UTC"
+    assert history["activity"]["weekStartsOn"] == "monday"
+    assert set(history["activity"]["windows"]) == {"today", "week", "month"}
+    assert all(
+        window["commits"] == 2
+        for window in history["activity"]["windows"].values()
+    )
+    assert all(
+        window["start"].endswith("+00:00")
+        for window in history["activity"]["windows"].values()
+    )
     raw = dispatch(
         app,
         "raw",

@@ -127,10 +127,10 @@ def test_pricing_page_reuses_landing_header_and_footer_chrome():
 
     for marker in (
         'href="/site-header.css"',
-        'src="/site-header.js"',
+        'src="/site-header.js?v=',
         '<div data-forkmesh-header="simple"></div>',
         'href="/site-footer.css"',
-        'src="/site-footer.js"',
+        'src="/site-footer.js?v=',
         '<div data-forkmesh-footer="landing"></div>',
     ):
         assert marker in PRICING_HTML

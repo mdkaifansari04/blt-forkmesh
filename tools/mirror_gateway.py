@@ -2296,7 +2296,57 @@ class GitRepository:
                         "subject": fields[3],
                     }
                 )
-        return {"ok": True, "commits": commits}
+        now = datetime.now(timezone.utc)
+        today_start = datetime(
+            now.year, now.month, now.day, tzinfo=timezone.utc
+        )
+        week_start_seconds = (
+            int(today_start.timestamp()) - today_start.weekday() * 24 * 60 * 60
+        )
+        month_start = datetime(
+            now.year, now.month, 1, tzinfo=timezone.utc
+        )
+
+        def count_since(start_seconds: int) -> int:
+            value = _run_git(
+                self.git_dir,
+                [
+                    "rev-list",
+                    "--count",
+                    f"--since=@{start_seconds}",
+                    commit,
+                ],
+                max_output=64,
+            ).decode("ascii", "replace").strip()
+            try:
+                return max(0, int(value))
+            except ValueError as exc:
+                raise GitError("repository activity count is invalid") from exc
+
+        windows = {
+            "today": int(today_start.timestamp()),
+            "week": week_start_seconds,
+            "month": int(month_start.timestamp()),
+        }
+        return {
+            "ok": True,
+            "commit": commit,
+            "commits": commits,
+            "activity": {
+                "generatedAt": now.isoformat(),
+                "timezone": "UTC",
+                "weekStartsOn": "monday",
+                "windows": {
+                    name: {
+                        "start": datetime.fromtimestamp(
+                            start_seconds, timezone.utc
+                        ).isoformat(),
+                        "commits": count_since(start_seconds),
+                    }
+                    for name, start_seconds in windows.items()
+                },
+            },
+        }
 
     def commit(self, query: Mapping[str, str]) -> dict[str, Any]:
         requested = str(query.get("path") or "").lower()

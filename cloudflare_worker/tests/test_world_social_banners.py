@@ -80,6 +80,20 @@ def test_repository_status_board_reuses_the_social_sign_format_near_the_office()
     assert "systems.slice(0, 8)" not in scene
     assert "last 24 hours" in scene
     assert "last 60 one-minute checks" in scene
+    banner = scene[
+        scene.index("function systemStatusBannerTexture("):
+        scene.index("\nfunction createSocialBanner", scene.index(
+            "function systemStatusBannerTexture("))
+    ]
+    assert banner.index("// Top strip: the latest 60 raw") < banner.index(
+        "// Middle strip: the latest 24 hourly")
+    assert banner.index("// Middle strip: the latest 24 hourly") < banner.index(
+        "// Bottom strip: one tile per day")
+    assert "const graphWidth = graphRight - graphLeft;" in banner
+    assert "const statusCellHeight = Math.max(" in banner
+    assert "const minuteHeight = statusCellHeight;" in banner
+    assert "const hourHeight = statusCellHeight;" in banner
+    assert "const dayHeight = statusCellHeight;" in banner
     assert 'registerMovableObject("status-banner", statusBanner);' in scene
     assert "updateSystemStatusBoard," in scene
     assert 'this.fetchJSON("/api/status?view=world"' in world
@@ -246,6 +260,26 @@ def test_blog_feed_normalization_carries_preview_text_and_artwork():
     assert feeds.normalize_blog_feed("<rss><channel/></rss>") == []
 
 
+def test_blog_distribution_preserves_explicit_posted_and_empty_slots():
+    distribution = feeds.normalize_blog_distribution(
+        """
+        <section data-blog-social
+          data-reddit=""
+          data-mastodon="https://mastodon.social/@forkmesh/123"
+          data-twitter="javascript:alert(1)"></section>
+        """
+    )
+    assert distribution["known"] is True
+    states = {item["id"]: item for item in distribution["networks"]}
+    assert states["mastodon"]["posted"] is True
+    assert states["mastodon"]["url"].startswith("https://mastodon.social/")
+    assert states["reddit"] == {
+        "id": "reddit", "label": "Reddit", "posted": False, "url": ""}
+    assert states["twitter"]["posted"] is False
+    assert feeds.normalize_blog_distribution("<p>no slots</p>") == {
+        "known": False, "networks": []}
+
+
 def test_blog_feed_is_bounded_to_the_banner_post_limit():
     document = blog_feed.build_feed(_BLOG_CARD_HTML * 20)
     posts = feeds.normalize_blog_feed(document)
@@ -270,6 +304,9 @@ def test_scene_places_the_blog_banner_on_the_social_row():
     assert "position: [19.8, 0, -32.8]" in scene
     assert 'registerMovableObject("blog-banner", blogBanner);' in scene
     assert '"https://forkmesh.com/blog"' in scene
+    assert "visiblePosts: 4" in scene
+    assert "tall: true" in scene
+    assert "const HEIGHT = options.tall ? 2560 : SOCIAL_BANNER_HEIGHT;" in scene
 
 
 def test_banners_carry_sync_and_staleness_plates():
@@ -309,6 +346,10 @@ def test_worker_folds_the_blog_feed_into_the_social_snapshot():
     # The blog read stays inside the Worker's own static assets.
     idx = entry.index("blog_feed.BLOG_INDEX_ASSET")
     assert "env.ASSETS.fetch" in entry[idx - 400:idx]
+    assert "_blog_post_reach_summary" in entry
+    assert '"uniqueViews": world_visitor_metrics.hll_estimate' in entry
+    assert '"referrerSites": int(referrers.get("sites") or 0)' in entry
+    assert '"referrerVisits": int(referrers.get("visits") or 0)' in entry
 
 
 def test_blog_board_draws_feed_artwork_and_preview_text():
@@ -327,3 +368,11 @@ def test_blog_board_draws_feed_artwork_and_preview_text():
     assert "socialPostImage(value)" in world
     assert 'url.pathname.startsWith("/assets/")' in world
     assert "detail: String(post?.detail || \"\")" in world
+    assert "age: this.socialPostAge(post?.createdAt)" in world
+    assert "distribution: this.socialPostDistribution(post?.distribution)" in world
+    assert "reach: this.socialPostReach(post?.reach)" in world
+    assert "socialPostReach(value)" in world
+    assert 'return `${days}D AGO`;' in world
+    assert '`${label} ${states.get(id) ? "POSTED" : "NOT YET"}`' in world
+    assert 'post.distribution || "SOCIAL STATUS UNKNOWN"' in scene
+    assert 'post.reach || "VIEWS 0 · ~0 UNIQUE' in scene

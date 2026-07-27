@@ -73,3 +73,31 @@ def test_org_error_codes_map_to_human_text():
         "forbidden",
     ):
         assert code + ":" in DASHBOARD_JS, code
+
+
+def test_member_picker_autocompletes_active_accounts_and_excludes_members():
+    for contract in (
+        'list="org-member-suggestions"',
+        'role="combobox"',
+        'aria-autocomplete="list"',
+        "function wireOrgMemberAutocomplete(",
+        '"/api/chat/direct-messages/users?query="',
+        "existing.has(account)",
+        "document.createElement(\"option\")",
+        "matching active account",
+    ):
+        assert contract in DASHBOARD_JS
+
+
+def test_org_detail_explains_member_role_and_team_access_on_the_right():
+    for copy in (
+        "What organization access means",
+        "Every organization member can",
+        "Member role cannot",
+        "Admin role adds",
+        "Owner role adds",
+        "Team permission",
+        "lg:grid-cols-[minmax(0,1fr)_22rem]",
+        "data-org-access-summary",
+    ):
+        assert copy in DASHBOARD_JS

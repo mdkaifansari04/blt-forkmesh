@@ -9,6 +9,7 @@
 #include "ForkMeshVersion.h"
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "OfficeChannelMirror.h"
 #include "PrivateMirrorStore.h"
 
 #include <QFutureWatcher>
@@ -1447,6 +1448,9 @@ void MainWindow::sendNodeHeartbeat()
         // Fetch the shared room-chat key once the account identity is available,
         // so it's cached before the user opens chat (no-op once fetched).
         fetchRoomPassphrase();
+        // Bring the World virtual office's channel conversations into the chat
+        // sidebar (adhoc #412). Idempotent, so the heartbeat can just call it.
+        startOfficeChannelMirror();
         if (m_isAdmin) {
             if (!m_adminPollTimer) {
                 m_adminPollTimer = new QTimer(this);
@@ -1757,6 +1761,34 @@ void MainWindow::fetchRoomPassphrase()
                 m_backend->setRoomPassphrase(pass);
         }
     });
+}
+
+void MainWindow::startOfficeChannelMirror()
+{
+    // Same gate as fetchRoomPassphrase: the relay hands the office rooms only
+    // to an account that can sign for itself with this node's identity key.
+    const QString node = accountOwner();
+    if (node.isEmpty() || !hasOwnerSigningCapability(node) ||
+        !m_profileIdentity.isValid())
+        return;
+    if (!m_officeChannelMirror) {
+        m_officeChannelMirror = new OfficeChannelMirror(m_networkAccess, this);
+        m_officeChannelMirror->setSigner([this](const QByteArray &canonical) {
+            return m_profileIdentity.signData(canonical);
+        });
+        connect(m_officeChannelMirror, &OfficeChannelMirror::messageArrived,
+                this, &MainWindow::onMessage);
+        connect(m_officeChannelMirror, &OfficeChannelMirror::conversationsChanged,
+                this, [this](const QStringList &conversations) {
+                    m_officeConversations = conversations;
+                    // setChannels() rebuilds the sidebar from the mesh rooms
+                    // plus these mirrors, so re-entering it merges them in.
+                    setChannels(m_channels);
+                });
+    }
+    m_officeChannelMirror->setApiBase(catalogApiUrl());
+    m_officeChannelMirror->setIdentity(node, m_profileIdentity.publicKey());
+    m_officeChannelMirror->start(); // no-op once polling
 }
 
 void MainWindow::showAdminVerifyDialog()
@@ -3249,9 +3281,38 @@ void MainWindow::styleFooterUpdateLog()
     // comes from the HTML badge that setFooterUpdateLine() renders; the base text
     // stays black so plain messages don't wash out on white.
     m_footerUpdateLog->setStyleSheet(
-        QStringLiteral("QPlainTextEdit#footerUpdateLog{color:#1f2328;border:none;"
+        QStringLiteral("QTextEdit#footerUpdateLog{color:#1f2328;border:none;"
                        "border-right:1px solid #d0d7de;background:#ffffff;"
                        "font-family:monospace;font-size:11px;padding:3px 12px;}"));
+}
+
+// Render the same colored category badge the Log view uses so the always-on
+// strip reads at a glance instead of as a wall of grey text (adhoc #19). The
+// canvas is forced white with black body text by styleFooterUpdateLog(); only
+// the badge carries colour. Lines from logSystem() arrive fully dated
+// ("yyyy-MM-dd HH:mm:ss  message"); other callers pass a bare message.
+QString MainWindow::footerLogLineHtml(const QString &clean)
+{
+    QString time, message = clean;
+    if (clean.size() >= 21 && clean.at(10) == QLatin1Char(' ')) {
+        time = clean.mid(11, 8);
+        message = clean.mid(21);
+    }
+    const QString badge = logBadgeFor(clean);
+    const QString accent = logAccentFor(clean);
+    QString html;
+    // Same leading site icon the full Log view uses (adhoc #436), registered on
+    // this document too so the <img> resolves here.
+    html += logFaviconTag(message, m_footerUpdateLog);
+    if (!time.isEmpty())
+        html += QStringLiteral("<span style='color:#656d76'>%1</span>&nbsp;&nbsp;")
+                    .arg(time);
+    html += QStringLiteral(
+                "<span style='color:%1; font-weight:700'>%2</span>&nbsp;&nbsp;"
+                "<span style='color:#1f2328'>%3</span>")
+                .arg(accent, badge.leftJustified(7).toHtmlEscaped(),
+                     message.toHtmlEscaped());
+    return html;
 }
 
 void MainWindow::setFooterUpdateLine(const QString &line)
@@ -3261,33 +3322,22 @@ void MainWindow::setFooterUpdateLine(const QString &line)
     const QString clean = line.trimmed();
     if (clean.isEmpty())
         return;
-    // Render the same colored category badge the Log view uses so the always-on
-    // strip reads at a glance instead of as a wall of grey text (adhoc #19). The
-    // canvas is forced white with black body text by styleFooterUpdateLog(); only
-    // the badge carries colour. Lines from logSystem() arrive fully dated
-    // ("yyyy-MM-dd HH:mm:ss  message"); other callers pass a bare message.
-    QString time, message = clean;
-    if (clean.size() >= 21 && clean.at(10) == QLatin1Char(' ')) {
-        time = clean.mid(11, 8);
-        message = clean.mid(21);
-    }
-    const QString badge = logBadgeFor(clean);
-    const QString accent = logAccentFor(clean);
-    QString html;
-    if (!time.isEmpty())
-        html += QStringLiteral("<span style='color:#656d76'>%1</span>&nbsp;&nbsp;")
-                    .arg(time);
-    html += QStringLiteral(
-                "<span style='color:%1; font-weight:700'>%2</span>&nbsp;&nbsp;"
-                "<span style='color:#1f2328'>%3</span>")
-                .arg(accent, badge.leftJustified(7).toHtmlEscaped(),
-                     message.toHtmlEscaped());
+    const QString html = footerLogLineHtml(clean);
     // Only auto-scroll to the new line if the view was already at (or very near)
     // the bottom — otherwise a user who scrolled up to search back through
     // history would get yanked back down by every new event.
     QScrollBar *bar = m_footerUpdateLog->verticalScrollBar();
     const bool wasAtBottom = !bar || bar->value() >= bar->maximum() - 2;
-    m_footerUpdateLog->appendHtml(html);
+    m_footerUpdateLog->append(html);
+    // QTextEdit has no setMaximumBlockCount: trim the oldest lines by hand so a
+    // long-running session can't grow the strip without bound.
+    QTextDocument *doc = m_footerUpdateLog->document();
+    while (doc->blockCount() > kFooterLogSeedLines) {
+        QTextCursor trim(doc->firstBlock());
+        trim.select(QTextCursor::BlockUnderCursor);
+        trim.removeSelectedText();
+        trim.deleteChar(); // the block separator left behind by the selection
+    }
     // Remember the full, untruncated line on the block just appended so the
     // no-wrap strip can still show it on hover and open the full Log at it on
     // click (adhoc #133), even though the visible text is clipped at the edge.

@@ -1,0 +1,52 @@
+"""Shared World build-board authorization and drag/drop contracts."""
+
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+API = (ROOT / "src/world_build_board.py").read_text(encoding="utf-8")
+ENTRY = (ROOT / "src/entry.py").read_text(encoding="utf-8")
+SCENE = (ROOT / "public/world/world-scene.js").read_text(encoding="utf-8")
+WORLD = (ROOT / "public/world/world.js").read_text(encoding="utf-8")
+MIGRATION = (ROOT / "migrations/0091_world_build_board.sql").read_text(
+    encoding="utf-8")
+
+
+def test_build_board_has_bounded_public_state_and_authorized_audited_writes():
+    assert "MAX_ITEMS = 64" in API
+    assert 'role in ("owner", "admin")' in API
+    assert 'permission in ("maintain", "admin")' in API
+    assert "origin_not_allowed" in API
+    assert "world.build_board_" in API
+    assert "updated_by_bi" in MIGRATION
+    assert "CHECK (priority >= 1 AND priority <= 64)" in MIGRATION
+    assert "world_build_board_handler" in ENTRY
+    assert "Reject unauthorized mutations before touching a repository mirror" in ENTRY
+
+
+def test_world_renders_and_drags_priority_and_issue_stickies():
+    assert "function updateBuildBoard(payload = {})" in SCENE
+    assert "function buildBoardGridIndex(uv, count)" in SCENE
+    assert "draggedBuildCard" in SCENE
+    assert "onBuildBoardReorder" in SCENE
+    assert "onBuildIssueAssign" in SCENE
+    assert "updateBuildBoard," in SCENE
+    assert '"/api/world/build-board"' in WORLD
+    assert "reorderBuildBoard(order)" in WORLD
+    assert "assignBuildIssue(key, title)" in WORLD
+    assert "`.forkmesh/issues/open/${number}/issue-${number}.json`" in WORLD
+    assert "WORLD_BUILD_BOARD_POLL_MS = 60 * 1000" in WORLD
+
+
+def test_engineering_agent_signals_feed_a_separate_human_todo_board():
+    assert "function humanTodoItemsFromAgentSessions" in SCENE
+    assert "function worldHumanTodoTexture" in SCENE
+    assert "HUMAN TODO · FROM CLAUDE + CODEX" in SCENE
+    assert "ENGINEERING · BOT-REQUESTED MANUAL ACTIONS" in SCENE
+    assert 'humanTodoBoardFace.name = "forkmesh-human-todo-board-face"' in SCENE
+    assert "availability.binaryFound === false" in SCENE
+    assert 'availability.loginState === "missing"' in SCENE
+    assert "session?.agentInfo?.lastError" in SCENE
+    assert "worldHumanTodoTexture(" in SCENE.split(
+        "function updateMirrorAgentTasks", 1
+    )[1]

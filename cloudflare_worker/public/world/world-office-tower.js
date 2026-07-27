@@ -16,9 +16,10 @@ export const OFFICE_TOWER_HEIGHT = OFFICE_FLOOR_HEIGHT * OFFICE_FLOOR_COUNT;
 export const OFFICE_FRONT_Z = OFFICE_DEPTH / 2;
 export const OFFICE_DOOR_WIDTH = 10;
 export const OFFICE_AVATAR_RADIUS = 0.46;
-// The panoramic lift straddles the front curtain wall: its doors open back
-// into each floor while the outward half gives riders a live view of Town.
-export const OFFICE_ELEVATOR_CENTER_X = 70;
+// The panoramic lift straddles the first front curtain-wall bay immediately
+// right of the centered Office entrance. Keeping the complete shaft close to
+// the door makes every floor reachable without a long lobby crossing.
+export const OFFICE_ELEVATOR_CENTER_X = 18;
 export const OFFICE_ELEVATOR_CENTER_Z = OFFICE_FRONT_Z;
 
 export const OFFICE_FLOORS = Object.freeze([
@@ -35,7 +36,6 @@ export const OFFICE_FLOORS = Object.freeze([
     level: 1,
     label: "Marketing",
     team: "marketing",
-    publicForMembers: true,
     description: "Campaign studio, task wall, and encrypted meeting table",
   }),
   Object.freeze({
@@ -103,6 +103,14 @@ export const OFFICE_FLOORS = Object.freeze([
 // unlock after the server accepts the membership change and /office/floors is
 // refreshed.
 export const OFFICE_FLOOR_TEAM_ALIASES = Object.freeze({
+  marketing: Object.freeze([
+    "marketing",
+    "marketing-team",
+    "growth",
+    "brand",
+    "communications",
+    "comms",
+  ]),
   engineering: Object.freeze([
     "engineering",
     "engineers",
@@ -196,10 +204,10 @@ export function normalizeOfficeFloorAccess(payload = {}) {
       : [],
   );
   if (authenticated) {
-    // These are the three member-visible floors required by the physical
-    // design. Restricted floor data remains server-authorized separately.
+    // The lobby and the rooftop patio are the two common floors every member
+    // shares. Every department story — Marketing included — is a team floor:
+    // it only unlocks through the server-issued allowlist above.
     supplied.add("lobby");
-    supplied.add("marketing");
     supplied.add("rooftop");
   }
   return {

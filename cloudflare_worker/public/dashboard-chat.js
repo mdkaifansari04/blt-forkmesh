@@ -74,6 +74,10 @@
   const FORKBOT_ENDPOINT = "/api/forkbot/chat";
   const FORKBOT_SENDER_ID = "forkbot";
   const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
+  const CLAUDE_SENDER_ID = "claude";
+  const CODEX_SENDER_ID = "codex";
+  const CLAUDE_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@claude\b/i;
+  const CODEX_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@codex\b/i;
   // Mainnode base host for the room WebSocket. Defaults to the origin that
   // served the dashboard, so a self-hosted mainnode talks to itself. Override
   // with window.FORKMESH_RELAY_HOST to target a different relay (see
@@ -135,6 +139,11 @@
   let connecting = false;
   let openCallbacks = [];
   let cachedUserSession = null;
+  // Agent conversations are not ordinary room traffic. Access is resolved
+  // against the server-authorized Engineering team before history renders or
+  // the composer offers Claude/Codex mentions. Fail closed on every error.
+  let orgAgentEngineeringAccess = false;
+  let orgAgentAccessLoaded = false;
   const seen = new Set();
   const rows = new Map();
   const sideEntries = [];
@@ -446,6 +455,13 @@
     return PUBLIC_WORLD_GENERAL || Boolean(userSession());
   }
 
+  function orgAgentIdentity(sender, senderId = "") {
+    const names = [sender, senderId].map((value) =>
+      String(value || "").trim().toLowerCase());
+    return names.some((name) =>
+      name === CLAUDE_SENDER_ID || name === CODEX_SENDER_ID);
+  }
+
   function chatAccountKind() {
     return PUBLIC_WORLD_GENERAL && !userSession() ? "guest" : "user";
   }
@@ -724,6 +740,18 @@
       kind: "bot",
       lastSeenMs: Date.now(),
     });
+    if (orgAgentEngineeringAccess) {
+      for (const name of [CLAUDE_SENDER_ID, CODEX_SENDER_ID]) {
+        byName.set(name, {
+          name,
+          kind: "bot",
+          lastSeenMs: Date.now(),
+        });
+      }
+    } else {
+      byName.delete(CLAUDE_SENDER_ID);
+      byName.delete(CODEX_SENDER_ID);
+    }
     byName.delete(self);
     const matches = [...byName.values()].filter(
       (person) => !partial || person.name.includes(partial));
@@ -940,12 +968,34 @@
     return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
 
+  let imagePreviewDialog = null;
+
+  function openImagePreview(src, fileName) {
+    if (!imagePreviewDialog) {
+      imagePreviewDialog = document.createElement("dialog");
+      imagePreviewDialog.id = "dashboard-chat-image-preview-dialog";
+      imagePreviewDialog.className = "max-h-[calc(100vh-1.5rem)] max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-background p-3 shadow-2xl";
+      imagePreviewDialog.innerHTML = '<button type="button" class="absolute right-0 top-0 inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background text-xl leading-none text-foreground" aria-label="Close image preview">×</button><img class="max-h-[calc(100vh-1.5rem)] max-w-full object-contain" />';
+      imagePreviewDialog.querySelector("button").addEventListener("click", () => imagePreviewDialog.close());
+      imagePreviewDialog.addEventListener("click", (event) => {
+        if (event.target === imagePreviewDialog) imagePreviewDialog.close();
+      });
+      document.body.append(imagePreviewDialog);
+    }
+    const image = imagePreviewDialog.querySelector("img");
+    image.src = src;
+    image.alt = fileName;
+    if (!imagePreviewDialog.open) imagePreviewDialog.showModal();
+  }
+
   function renderAttachment(attachment, compact = false) {
     if (!attachment) return null;
     const objectUrl = attachmentObjectUrl(attachment);
     const wrapper = document.createElement("div");
     wrapper.className = compact ? "mt-1 grid gap-1.5" : "mt-2 grid max-w-md gap-2";
     if (attachment.fileMime.startsWith("image/")) {
+      const preview = document.createElement("div");
+      preview.className = "relative w-fit max-w-full";
       const image = document.createElement("img");
       image.className = "chat-attachment-image";
       image.className += compact
@@ -956,7 +1006,26 @@
       image.loading = "lazy";
       image.style.minWidth = compact ? "72px" : "96px";
       image.style.minHeight = compact ? "54px" : "72px";
-      wrapper.append(image);
+      image.tabIndex = 0;
+      image.setAttribute("role", "button");
+      image.setAttribute("aria-label", `Open ${attachment.fileName} full size`);
+      image.addEventListener("click", () => openImagePreview(objectUrl, attachment.fileName));
+      image.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          openImagePreview(objectUrl, attachment.fileName);
+        }
+      });
+      const download = document.createElement("a");
+      download.href = objectUrl;
+      download.download = attachment.fileName;
+      download.setAttribute("aria-label", `Download ${attachment.fileName}`);
+      download.title = `Download ${attachment.fileName}`;
+      download.className = "absolute bottom-2 right-2 inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-background/90 text-muted-foreground shadow-sm hover:text-foreground";
+      download.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"></path></svg>';
+      preview.append(image, download);
+      wrapper.append(preview);
+      return wrapper;
     }
     const card = document.createElement("div");
     card.className = "chat-attachment-card";
@@ -1077,6 +1146,7 @@
   }
 
   function appendMessage(kind, who, text, id, senderId, tsMs, attachment = null) {
+    if (orgAgentIdentity(who, senderId) && !orgAgentEngineeringAccess) return;
     appendFullMessage(kind, who, text, id, senderId, tsMs, attachment);
     appendSideMessage(kind, who, text, id, senderId, tsMs, attachment);
     rememberContext(who, text);
@@ -1138,6 +1208,7 @@
 
   function emitWorldChatBubble(sender, senderId, text, history = false) {
     if (!WORLD_EMBED_BUBBLES) return;
+    if (orgAgentIdentity(sender, senderId) && !orgAgentEngineeringAccess) return;
     const line = String(text || "").trim().slice(0, 200);
     if (!line) return;
     try {
@@ -1183,6 +1254,12 @@
   function renderChatEntry(entry, kind, live = false) {
     if (!entry || !allowedChatAccountKind(entry.accountKind)) return;
     entry = normalizedPublicWorldFrame(entry);
+    if (
+      orgAgentIdentity(entry.sender, entry.senderId) &&
+      !orgAgentEngineeringAccess
+    ) {
+      return;
+    }
     if (!once(entry.id)) return;
     const who = String(entry.sender || "peer").slice(0, MAX_NAME);
     const text = entry.text || "";
@@ -1414,24 +1491,28 @@
     connect();
   }
 
-  function makeForkbotPlain(text) {
+  function makeBotPlain(text, sender = FORKBOT_SENDER_ID) {
+    const botName = [FORKBOT_SENDER_ID, CLAUDE_SENDER_ID, CODEX_SENDER_ID]
+      .includes(sender) ? sender : FORKBOT_SENDER_ID;
     return makePlain("chat", {
       channel: CHANNEL,
       text: String(text || "").slice(0, MAX_TEXT),
-      sender: "forkbot",
-      senderId: FORKBOT_SENDER_ID,
+      sender: botName,
+      senderId: botName,
       accountKind: "user",
     });
   }
 
-  function broadcastForkbotMessage(text) {
-    const plain = makeForkbotPlain(text);
-    send(plain);
+  function broadcastBotMessage(text, sender = FORKBOT_SENDER_ID) {
+    const plain = makeBotPlain(text, sender);
+    // Claude/Codex prompts and replies are intentionally absent from the
+    // shared room. The Engineering-only session endpoint remains the durable
+    // transcript; this local line is merely immediate feedback to its author.
+    if (!orgAgentIdentity(plain.sender, plain.senderId)) send(plain);
     seen.add(plain.id);
     appendMessage("peer", plain.sender, plain.text, plain.id, plain.senderId, plain.ts);
     // The asking client appends directly (not via renderChatEntry), so mirror
-    // the reply to the World embed here too — it floats over the ForkBot
-    // avatar walking the Town Square.
+    // the reply to the World embed here too.
     emitWorldChatBubble(plain.sender, plain.senderId, plain.text);
   }
 
@@ -1460,9 +1541,119 @@
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data || !data.botMessage) return;
-      runWhenConnected(() => broadcastForkbotMessage(data.botMessage));
+      runWhenConnected(() => broadcastBotMessage(data.botMessage));
     } catch (_) {
       appendSystem("forkbot is unavailable");
+    }
+  }
+
+  function orgAgentScope() {
+    if (scopedWorkshop) {
+      return { organization: ROOM_OWNER, owner: ROOM_OWNER, repo: ROOM_REPO };
+    }
+    const organization = requestedOrganization || "forkmesh";
+    return { organization, owner: organization, repo: "forkmesh" };
+  }
+
+  async function loadOrgAgentChatAccess() {
+    orgAgentEngineeringAccess = false;
+    orgAgentAccessLoaded = false;
+    const session = userSession();
+    if (!session) {
+      orgAgentAccessLoaded = true;
+      return false;
+    }
+    const scope = orgAgentScope();
+    const endpoint =
+      `/api/orgs/${encodeURIComponent(scope.organization)}` +
+      `/repos/${encodeURIComponent(scope.repo)}/agent-bots`;
+    const token = String(session.sessionToken || "");
+    const headers = { accept: "application/json" };
+    if (token && token !== "cookie") headers.authorization = `Bearer ${token}`;
+    try {
+      const response = await fetch(endpoint, {
+        cache: "no-store",
+        credentials: "same-origin",
+        headers,
+      });
+      const data = await response.json().catch(() => ({}));
+      orgAgentEngineeringAccess =
+        response.ok && data?.engineeringAccess === true;
+    } catch (_) {
+      orgAgentEngineeringAccess = false;
+    }
+    orgAgentAccessLoaded = true;
+    return orgAgentEngineeringAccess;
+  }
+
+  async function maybeAskOrgAgent(text) {
+    const provider = CLAUDE_MENTION_RE.test(text || "")
+      ? "claude-code"
+      : CODEX_MENTION_RE.test(text || "")
+        ? "codex"
+        : "";
+    if (!provider) return;
+    const session = userSession();
+    if (!session || !orgAgentAccessLoaded || !orgAgentEngineeringAccess) {
+      appendSystem(
+        `Only Engineering team members can use @${provider === "codex" ? "codex" : "claude"}.`,
+      );
+      return;
+    }
+    const botName = provider === "codex" ? CODEX_SENDER_ID : CLAUDE_SENDER_ID;
+    const prompt = String(text || "")
+      .replace(provider === "codex" ? CODEX_MENTION_RE : CLAUDE_MENTION_RE, " ")
+      .trim();
+    if (!prompt) {
+      appendSystem(`Add a task after @${botName}.`);
+      return;
+    }
+    const scope = orgAgentScope();
+    const taskKeyMatch = prompt.match(
+      /\[(task:[a-z0-9-]{1,48}|issue:[a-z0-9-]{1,40}\/[a-z0-9._-]{1,60}#[1-9][0-9]{0,8})\]/i,
+    );
+    const endpoint =
+      `/api/orgs/${encodeURIComponent(scope.organization)}` +
+      `/repos/${encodeURIComponent(scope.repo)}/agent-bots`;
+    const token = String(session.sessionToken || "");
+    const headers = {
+      "content-type": "application/json",
+      accept: "application/json",
+    };
+    if (token && token !== "cookie") headers.authorization = `Bearer ${token}`;
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "same-origin",
+        headers,
+        body: JSON.stringify({
+          provider,
+          prompt: prompt.slice(0, 8000),
+          ...(taskKeyMatch ? { taskKey: taskKeyMatch[1].toLowerCase() } : {}),
+          ...(token && token !== "cookie" ? { sessionToken: token } : {}),
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) {
+        throw new Error(String(data.error || `HTTP ${response.status}`));
+      }
+      const target = String(data.session?.targetNode || "an eligible mirror");
+      broadcastBotMessage(
+        `Queued on ${target}. Claude Haiku is checking the prompt before I start.`,
+        botName,
+      );
+    } catch (error) {
+      const reason = error.message === "no_eligible_headless_mirror"
+        ? "No eligible headless mirror is online."
+        : [
+            "engineering_team_required",
+            "org_member_required",
+            "forbidden",
+          ].includes(error.message)
+          ? "Only Engineering team members can start this agent."
+          : "I could not queue that task.";
+      broadcastBotMessage(reason, botName);
     }
   }
 
@@ -1478,25 +1669,89 @@
     }
   }
 
+  function renderDashboardDraft(control) {
+    if (!control?.queue) return;
+    control.queue.textContent = "";
+    for (const record of control.draft) {
+      const name = safeAttachmentName(record.file.name);
+      const row = document.createElement("div");
+      row.className = "flex min-w-0 max-w-full items-center gap-2 rounded-md border border-border bg-secondary px-2 py-1.5";
+      if (record.previewUrl) {
+        const preview = document.createElement("img");
+        preview.src = record.previewUrl;
+        preview.alt = name;
+        preview.className = "h-8 w-8 shrink-0 rounded object-cover";
+        row.append(preview);
+      }
+      const copy = document.createElement("div");
+      copy.className = "min-w-0 flex-1";
+      const title = document.createElement("div");
+      title.className = "truncate text-xs font-semibold text-foreground";
+      title.textContent = name;
+      const meta = document.createElement("div");
+      meta.className = "truncate text-[10px] text-muted-foreground";
+      meta.textContent = `${safeAttachmentMime(record.file.type)} - ${formatAttachmentSize(record.file.size)}`;
+      copy.append(title, meta);
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "shrink-0 rounded p-1 text-muted-foreground hover:bg-background hover:text-foreground";
+      remove.textContent = "×";
+      remove.setAttribute("aria-label", `Remove ${name}`);
+      remove.addEventListener("click", () => {
+        const index = control.draft.indexOf(record);
+        if (index < 0) return;
+        control.draft.splice(index, 1);
+        if (record.previewUrl) URL.revokeObjectURL(record.previewUrl);
+        renderDashboardDraft(control);
+      });
+      row.append(copy, remove);
+      control.queue.append(row);
+    }
+  }
+
+  function stageDashboardAttachments(control, files) {
+    if (!control) return;
+    const candidates = Array.from(files || []).filter((file) => file instanceof File);
+    const remaining = Math.max(0, 4 - control.draft.length);
+    if (candidates.length > remaining) showAttachmentFeedback(control, "Share up to 4 files in a message.");
+    for (const file of candidates.slice(0, remaining)) {
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        showAttachmentFeedback(control, "Attachments must be 1 MiB or smaller.");
+        continue;
+      }
+      if (!file.size) {
+        showAttachmentFeedback(control, "That file is empty.");
+        continue;
+      }
+      control.draft.push({
+        file,
+        previewUrl: String(file.type || "").startsWith("image/")
+          ? URL.createObjectURL(file)
+          : "",
+      });
+    }
+    renderDashboardDraft(control);
+  }
+
   async function sendAttachment(file, control = null) {
     if (!file || !canJoinChat()) {
       if (!canJoinChat()) showUserOnlyState();
-      return;
+      return false;
     }
     if (file.size > MAX_ATTACHMENT_BYTES) {
       showAttachmentFeedback(control, "Attachments must be 1 MiB or smaller.");
-      return;
+      return false;
     }
     if (!file.size) {
       showAttachmentFeedback(control, "That file is empty.");
-      return;
+      return false;
     }
     let buffer;
     try {
       buffer = await file.arrayBuffer();
     } catch (_) {
       showAttachmentFeedback(control, "Could not read that attachment.");
-      return;
+      return false;
     }
     const fileName = safeAttachmentName(file.name);
     const fileMime = safeAttachmentMime(file.type);
@@ -1526,6 +1781,20 @@
       );
       showAttachmentFeedback(control, `Shared ${fileName}`);
     });
+    return true;
+  }
+
+  async function sendDashboardDraft(control) {
+    const records = [...(control?.draft || [])];
+    if (!records.length) return false;
+    let sent = false;
+    for (const record of records) sent = (await sendAttachment(record.file, control)) || sent;
+    if (sent) {
+      for (const record of control.draft) if (record.previewUrl) URL.revokeObjectURL(record.previewUrl);
+      control.draft = [];
+      renderDashboardDraft(control);
+    }
+    return sent;
   }
 
   function mountAttachmentControl(inputEl) {
@@ -1533,29 +1802,36 @@
     const bar = inputEl.parentElement;
     const fileInput = document.createElement("input");
     fileInput.type = "file";
+    fileInput.multiple = true;
     fileInput.hidden = true;
     fileInput.id = `${inputEl.id}AttachmentInput`;
-    fileInput.setAttribute("aria-label", "Choose image or document");
+    fileInput.setAttribute("aria-label", "Choose image, video, or document");
     const button = document.createElement("button");
     button.type = "button";
     button.className = "shrink-0 inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50";
-    button.setAttribute("aria-label", "Attach image or document");
-    button.title = "Attach image or document (up to 1 MiB)";
+    button.setAttribute("aria-label", "Attach image, video, or document");
+    button.title = "Attach image, video, or document (up to 1 MiB)";
     button.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>';
     const feedback = document.createElement("span");
     feedback.className = "sr-only";
     feedback.setAttribute("role", "status");
     feedback.setAttribute("aria-live", "polite");
-    const control = { button, input: fileInput, feedback };
+    const queue = document.createElement("div");
+    queue.className = "mt-2 flex flex-wrap gap-2";
+    queue.dataset.dashboardChatAttachments = "";
+    queue.setAttribute("aria-live", "polite");
+    queue.setAttribute("aria-label", "Staged attachments");
+    const control = { button, input: fileInput, feedback, queue, draft: [] };
+    bar.parentElement?.insertBefore(queue, bar);
     const sendButton = inputEl === fullInput ? fullSend : sideSend;
     bar.insertBefore(fileInput, sendButton || null);
     bar.insertBefore(button, sendButton || null);
     bar.append(feedback);
     button.addEventListener("click", () => fileInput.click());
     fileInput.addEventListener("change", () => {
-      const file = fileInput.files && fileInput.files[0];
+      const files = Array.from(fileInput.files || []);
       fileInput.value = "";
-      if (file) sendAttachment(file, control);
+      if (files.length) stageDashboardAttachments(control, files);
     });
     control.button.disabled = !canJoinChat();
     control.input.disabled = !canJoinChat();
@@ -1563,30 +1839,54 @@
     return control;
   }
 
-  function sendFrom(inputEl) {
+  function sendFrom(inputEl, attachmentControl) {
     if (!canJoinChat()) {
       showUserOnlyState();
       return;
     }
     const text = (inputEl?.value || "").trim();
-    if (!text) return;
+    if (!text && !attachmentControl?.draft.length) return;
     closeMentionSuggest();
-    if (inputEl) inputEl.value = "";
-    runWhenConnected(() => {
-      const clipped = text.slice(0, MAX_TEXT);
-      const plain = makePlain("chat", { channel: CHANNEL, text: clipped });
-      send(plain);
-      seen.add(plain.id);
-      appendMessage("self", plain.sender, plain.text, plain.id, plain.senderId, plain.ts);
-      emitWorldChatBubble(plain.sender, plain.senderId, plain.text);
-      maybeAskForkbot(clipped);
-    });
+    if (text) {
+      if (inputEl) inputEl.value = "";
+      const isOrgAgentPrompt =
+        CLAUDE_MENTION_RE.test(text) || CODEX_MENTION_RE.test(text);
+      if (isOrgAgentPrompt) {
+        if (!orgAgentAccessLoaded || !orgAgentEngineeringAccess) {
+          appendSystem("Claude and Codex chat is available only to the Engineering team.");
+          return;
+        }
+        if (attachmentControl?.draft.length) {
+          showAttachmentFeedback(
+            attachmentControl,
+            "Agent chat attachments are not sent to the shared room. Add the relevant path in your prompt.",
+          );
+        }
+        const clipped = text.slice(0, MAX_TEXT);
+        const plain = makePlain("chat", { channel: CHANNEL, text: clipped });
+        seen.add(plain.id);
+        appendMessage("self", plain.sender, plain.text, plain.id, plain.senderId, plain.ts);
+        emitWorldChatBubble(plain.sender, plain.senderId, plain.text);
+        void maybeAskOrgAgent(clipped);
+        return;
+      }
+      runWhenConnected(() => {
+        const clipped = text.slice(0, MAX_TEXT);
+        const plain = makePlain("chat", { channel: CHANNEL, text: clipped });
+        send(plain);
+        seen.add(plain.id);
+        appendMessage("self", plain.sender, plain.text, plain.id, plain.senderId, plain.ts);
+        emitWorldChatBubble(plain.sender, plain.senderId, plain.text);
+        void maybeAskForkbot(clipped);
+      });
+    }
+    void sendDashboardDraft(attachmentControl);
   }
 
   function wireInput(inputEl, sendEl) {
     if (!inputEl || !sendEl) return;
     const attachmentControl = mountAttachmentControl(inputEl);
-    sendEl.addEventListener("click", () => sendFrom(inputEl));
+    sendEl.addEventListener("click", () => sendFrom(inputEl, attachmentControl));
     inputEl.addEventListener("paste", (event) => {
       const items = Array.from(event.clipboardData?.items || []);
       const item = items.find((candidate) =>
@@ -1594,7 +1894,7 @@
       const file = item ? item.getAsFile() : null;
       if (!file) return;
       event.preventDefault();
-      sendAttachment(file, attachmentControl);
+      stageDashboardAttachments(attachmentControl, [file]);
     });
     inputEl.addEventListener("keydown", (event) => {
       // While the mention list is open it owns Enter/Tab/arrows, so accepting a
@@ -1623,7 +1923,7 @@
       }
       if (event.key === "Enter") {
         event.preventDefault();
-        sendFrom(inputEl);
+        sendFrom(inputEl, attachmentControl);
       }
     });
     inputEl.addEventListener("input", () => updateMentionSuggest(inputEl));
@@ -1638,6 +1938,21 @@
     inputEl.addEventListener("blur", closeMentionSuggest);
   }
 
+  function mountPrivateChannelsLink() {
+    if (!PUBLIC_WORLD_GENERAL || !fullLog) return;
+    const header = fullLog.previousElementSibling;
+    if (!header || header.querySelector("[data-private-channels-link]")) return;
+    const link = document.createElement("a");
+    link.href = "/chat";
+    link.textContent = "Open private channels";
+    link.dataset.privateChannelsLink = "";
+    link.className =
+      "ml-auto text-xs font-semibold text-primary underline underline-offset-2 " +
+      "hover:text-foreground";
+    const status = header.querySelector("[data-dashboard-chat-status]")?.parentElement;
+    header.insertBefore(link, status || null);
+  }
+
   async function initChat() {
     if (ACTIVE_SPACE) {
       document.title = `${CHANNEL_LABEL} collaboration · ForkMesh`;
@@ -1648,7 +1963,9 @@
         });
     }
     await hydrateUserSession();
+    await loadOrgAgentChatAccess();
     ensureEmptyState();
+    mountPrivateChannelsLink();
     wireInput(fullInput, fullSend);
     wireInput(sideInput, sideSend);
     // Connect right away so the room's message history (replayed by the relay

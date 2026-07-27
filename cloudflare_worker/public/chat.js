@@ -8,11 +8,25 @@ import {
 import {
   MAX_ATTACHMENT_BYTES,
   attachmentFromEntry,
+  attachmentFiles,
   formatAttachmentSize,
   safeAttachmentMime,
   safeAttachmentName,
 } from "./chat-attachments.js";
+import {
+  linkSelection,
+  plainTextFromRichSource,
+  renderRichText,
+  toggleLinePrefix,
+  wrapSelection,
+} from "./chat-rich-text.js";
 import { createChatRoomTransport } from "./chat-room-transport.js";
+import { createThreadStore } from "./chat-thread-model.js";
+import {
+  dateDividerLabel,
+  localDateKey,
+  sameLocalDate,
+} from "./chat-date-groups.js";
 
 // Browser-side ForkMesh room chat. Reimplements the desktop client's room
 // crypto (PBKDF2 + AES-256-GCM) and message envelope so the website can join
@@ -39,6 +53,7 @@ const PUBLIC_WORLD_ROOM_KEY_ENDPOINT =
 const PUBLIC_WORLD_CHAT_WS_PATH =
   "/api/repo/mainnode/forkmesh/rooms/world-general/ws";
 const PRIVATE_CHANNELS_ENDPOINT = "/api/chat/channels";
+const DIRECT_MESSAGES_ENDPOINT = "/api/chat/direct-messages";
 const PRIVATE_CHANNEL_REFRESH_MS = 30000;
 const FORKBOT_ENDPOINT = "/api/forkbot/chat";
 const FORKBOT_SENDER_ID = "forkbot";
@@ -81,6 +96,7 @@ const VISITOR_IDLE_FORGET_MS = 10 * 60 * 1000;
 const GROUP_WINDOW_MS = 5 * 60 * 1000; // same-sender messages collapse under one header
 const REACTION_EMOJI = ["👍", "❤️", "😂", "🎉", "👀", "🚀"];
 const ACTIVE_CHANNEL_KEY = "forkmesh.chat.channel";
+const ACTIVE_DIRECT_KEY = "forkmesh.chat.direct";
 const CHAT_SIGN_IN_REQUIRED = "Sign in again to join chat";
 const OFFICE_SESSION_EXPIRED =
   "Your session expired. Log in again to use authorized channels.";
@@ -89,43 +105,76 @@ const chatQuery = new URLSearchParams(window.location.search);
 const isOfficeEmbed = chatQuery.get("embed") === "office";
 
 const logEl = document.querySelector("#chat-log");
+const mainPane = document.querySelector(".chat-main-pane");
 const nameInput = document.querySelector("#chat-name");
 const input = document.querySelector("#chat-input");
 const sendBtn = document.querySelector("#chat-send");
+const formatButtons = [...document.querySelectorAll("[data-format]")];
 const attachmentInput = document.querySelector("#chat-attachment-input");
 const attachmentBtn = document.querySelector("#chat-attachment-button");
 const attachmentFeedback = document.querySelector("#chat-attachment-feedback");
-const clearBtn = document.querySelector("#chat-clear");
+const attachmentDraftEl = document.querySelector("#chat-composer-attachments");
+const composerEmojiBtn = document.querySelector("#chat-emoji-button");
+const composerEmojiMenu = document.querySelector("#chat-composer-emoji-menu");
+const composerEmojiButtons = [...document.querySelectorAll("[data-composer-emoji]")];
+const composerMentionBtn = document.querySelector("#chat-mention-button");
+const dropOverlay = document.querySelector("#chat-drop-overlay");
 const statusEl = document.querySelector("#chat-status");
 const roomsEl = document.querySelector("#chat-rooms");
 const peopleEl = document.querySelector("#chat-people");
 const peopleTitleEl = document.querySelector("#chat-people-title");
+const panesEl = document.querySelector(".chat-panes");
+const peopleView = document.querySelector(".chat-people-view");
+const threadView = document.querySelector(".chat-thread-view");
+const threadTitleEl = document.querySelector("#chat-thread-title");
+const threadCountEl = document.querySelector("#chat-thread-count");
+const threadRootEl = document.querySelector("#chat-thread-root");
+const threadRepliesEl = document.querySelector("#chat-thread-replies");
+const threadInput = document.querySelector("#chat-thread-input");
+const threadSendBtn = document.querySelector("#chat-thread-send");
+const threadAttachmentInput = document.querySelector("#chat-thread-attachment-input");
+const threadAttachmentBtn = document.querySelector("#chat-thread-attachment-button");
+const threadAttachmentDraftEl = document.querySelector("#chat-thread-attachments");
+const threadCloseBtn = document.querySelector("#chat-thread-close");
 const channelTitleEl = document.querySelector("#chat-channel-title");
 const channelVisibilityBadge = document.querySelector("#chat-channel-visibility-badge");
-const channelCreateBtn = document.querySelector("#chat-channel-create");
 const channelManageBtn = document.querySelector("#chat-channel-manage");
 const channelDialog = document.querySelector("#chat-channel-dialog");
 const channelDialogClose = document.querySelector("#chat-channel-dialog-close");
 const channelError = document.querySelector("#chat-channel-error");
-const channelCreateForm = document.querySelector("#chat-channel-create-form");
-const channelNameInput = document.querySelector("#chat-channel-name");
-const channelVisibilitySelect = document.querySelector("#chat-channel-visibility");
-const channelVisibilityHelp = document.querySelector("#chat-channel-visibility-help");
-const channelInitialMembers = document.querySelector("#chat-channel-initial-members");
-const channelUserSearch = document.querySelector("#chat-channel-user-search");
-const channelUserOptions = document.querySelector("#chat-channel-user-options");
-const channelUserEmpty = document.querySelector("#chat-channel-user-empty");
-const channelSelectedCount = document.querySelector("#chat-channel-selected-count");
 const channelMembersSection = document.querySelector("#chat-channel-members-section");
 const channelMembersTitle = document.querySelector("#chat-channel-members-title");
 const channelInviteForm = document.querySelector("#chat-channel-invite-form");
 const channelUsernameInput = document.querySelector("#chat-channel-username");
 const channelMembersEl = document.querySelector("#chat-channel-members");
+const directSection = document.querySelector("#chat-direct-section");
+const directCreateBtn = document.querySelector("#chat-direct-create");
+const directListEl = document.querySelector("#chat-direct-list");
+const directMoreBtn = document.querySelector("#chat-direct-more");
+const directDialog = document.querySelector("#chat-direct-dialog");
+const directDialogClose = document.querySelector("#chat-direct-dialog-close");
+const directSearch = document.querySelector("#chat-direct-search");
+const directOptions = document.querySelector("#chat-direct-options");
+const directEmpty = document.querySelector("#chat-direct-empty");
+const directError = document.querySelector("#chat-direct-error");
 const officeManageLink = document.querySelector("#chat-office-manage");
 const officeAlert = document.querySelector("#chat-office-alert");
 const officeAlertCopy = document.querySelector("#chat-office-alert-copy");
 const officeLoginLink = document.querySelector("#chat-office-login");
 const officeRetryBtn = document.querySelector("#chat-office-retry");
+const deleteDialog = document.querySelector("#chat-delete-dialog");
+const deleteCancelBtn = document.querySelector("#chat-delete-cancel");
+const deleteConfirmBtn = document.querySelector("#chat-delete-confirm");
+const composerControls = [...new Set([
+  input,
+  sendBtn,
+  attachmentBtn,
+  attachmentInput,
+  composerEmojiBtn,
+  composerMentionBtn,
+  ...formatButtons,
+  ...composerEmojiButtons,
+].filter(Boolean))];
 
 const enc = new TextEncoder();
 // A stable per-browser chat id. The relay holds no roster — every participant
@@ -150,6 +199,12 @@ const selfId = (() => {
 const roomPassphrases = new Map();
 const roomKeys = new Map();
 const privateChannels = new Map();
+const directMessages = new Map();
+const directSearchResults = new Map();
+const directReadPending = new Set();
+let directNextCursor = "";
+let directSearchTimer = null;
+let directSearchRequest = 0;
 let roomTransport = null;
 let openCallbacks = [];
 let cachedUserSession = null;
@@ -161,6 +216,14 @@ const seen = new Set();
 // record's channel is the active one, so an edit or a (regular / admin) delete
 // can find and update or remove the right row.
 const rows = new Map();
+const threads = createThreadStore();
+const threadRenderedRows = new Map();
+const threadDrafts = new Map();
+const attachmentDrafts = new Map();
+let attachmentDraftSequence = 0;
+const threadAttachmentRecords = new Set();
+let activeThreadRootId = "";
+let threadReturnFocus = null;
 // channel -> ts-ordered array of message records (newest last).
 const channelMessages = new Map();
 // channel -> { unread } for the rooms list badges.
@@ -173,9 +236,14 @@ const reactions = new Map();
 const roster = new Map();
 let activeChannel = "#general";
 let savedPrivateChannelId = "";
+let savedDirectMessageId = "";
 try {
   const saved = localStorage.getItem(ACTIVE_CHANNEL_KEY);
   if (/^[0-9a-f]{32}$/.test(saved || "")) savedPrivateChannelId = saved;
+  const savedDirect = localStorage.getItem(ACTIVE_DIRECT_KEY);
+  if (/^[0-9a-f]{32}$/.test(savedDirect || "")) {
+    savedDirectMessageId = savedDirect;
+  }
 } catch (_) {}
 // Rolling per-channel buffer of the most recent decrypted messages, forwarded
 // to ForkBot so it can resolve references like "that bug" from the
@@ -197,6 +265,11 @@ let activeMentionAnchor = null;
 let mentionHideTimer = null;
 let emojiPickerEl = null;
 let emojiPickerTarget = null;
+let pendingDeleteRecord = null;
+let pendingDeleteTrigger = null;
+let dragDepth = 0;
+let dateRefreshTimer = null;
+let activeComposerPopoverTrigger = null;
 
 function setAttachmentFeedback(message) {
   if (!attachmentFeedback) return;
@@ -252,15 +325,40 @@ function privateChannelForKey(channel) {
   return privateChannels.get(String(channel).slice("private:".length)) || null;
 }
 
+function isDirectMessageKey(channel) {
+  return /^direct:[0-9a-f]{32}$/.test(String(channel || ""));
+}
+
+function directMessageKey(conversationId) {
+  return "direct:" + String(conversationId || "");
+}
+
+function directMessageForKey(channel) {
+  if (!isDirectMessageKey(channel)) return null;
+  return directMessages.get(String(channel).slice("direct:".length)) || null;
+}
+
 function channelDisplayLabel(channel = activeChannel) {
   if (channel === "#general") return "#general";
+  const direct = directMessageForKey(channel);
+  if (direct) {
+    const record = direct;
+    return "@" + record.otherUser;
+  }
   const record = privateChannelForKey(channel);
   return record ? "#" + record.name : "Channel";
 }
 
+function channelWireLabel(channel = activeChannel) {
+  const direct = directMessageForKey(channel);
+  return direct ? "direct:" + direct.id : channelDisplayLabel(channel);
+}
+
 function canJoinChannel(channel = activeChannel) {
   return roomScopeForChannel(channel) === "public-world-general" ||
-    Boolean(userSession() && privateChannelForKey(channel));
+    Boolean(userSession() && (
+      privateChannelForKey(channel) || directMessageForKey(channel)
+    ));
 }
 
 // The public World #general passphrase is intentionally available to guests
@@ -334,6 +432,16 @@ async function privateChannelRequest(path, options = {}) {
 }
 
 async function fetchRoomAccess(channelKey = activeChannel) {
+  const direct = directMessageForKey(channelKey);
+  if (direct) {
+    const access = await privateChannelRequest(
+      DIRECT_MESSAGES_ENDPOINT + "/" + direct.id + "/room-access"
+    );
+    if (!access.passphrase || !access.room || !access.webSocketUrl) {
+      throw new Error("Direct message room access unavailable.");
+    }
+    return access;
+  }
   const channel = privateChannelForKey(channelKey);
   if (!channel) throw new Error("Channel unavailable.");
   const access = await privateChannelRequest(
@@ -457,8 +565,12 @@ function displayName() {
     : value;
 }
 
-function setStatus(text) {
-  if (statusEl) statusEl.textContent = text;
+function setStatus(text, state = "idle") {
+  if (!statusEl) return;
+  const compactConnectedStatus = state === "connected" && !isOfficeEmbed;
+  statusEl.textContent = compactConnectedStatus ? "Connected" : text;
+  statusEl.title = compactConnectedStatus ? text : "";
+  statusEl.dataset.state = state;
 }
 
 function showOfficeFailure(kind = "") {
@@ -478,10 +590,11 @@ function showOfficeFailure(kind = "") {
 }
 
 function lockChatForNonUser() {
-  setStatus("User login required for this channel");
-  [input, sendBtn, nameInput, attachmentBtn, attachmentInput].forEach((el) => {
+  setStatus("User login required for this channel", "authorization");
+  [...composerControls, nameInput].forEach((el) => {
     if (el) el.disabled = true;
   });
+  closeComposerPopovers();
   if (logEl) {
     const empty = logEl.querySelector(".chat-empty");
     if (empty) {
@@ -494,7 +607,7 @@ function lockChatForNonUser() {
 }
 
 function unlockChatForUser() {
-  [input, sendBtn, attachmentBtn, attachmentInput].forEach((el) => {
+  composerControls.forEach((el) => {
     if (el) el.disabled = false;
   });
   const session = userSession();
@@ -655,35 +768,25 @@ async function showMentionCard(anchor, name) {
   positionMentionCard(anchor, card);
 }
 
-function appendMentionText(container, text) {
-  const value = String(text || "");
-  const mentionRe = new RegExp(CHAT_MENTION_RE.source, "gi");
-  let cursor = 0;
-  let match;
-  while ((match = mentionRe.exec(value)) !== null) {
-    const prefix = match[1] || "";
-    const name = mentionName(match[2]);
-    const start = match.index + prefix.length;
-    const end = mentionRe.lastIndex;
-    if (start > cursor) container.append(document.createTextNode(value.slice(cursor, start)));
-    const anchor = document.createElement("a");
-    anchor.className = "chat-mention";
-    anchor.href = mentionProfilePath(name);
-    anchor.dataset.chatMention = name;
-    anchor.textContent = value.slice(start, end);
-    anchor.addEventListener("mouseenter", () => showMentionCard(anchor, name));
-    anchor.addEventListener("focus", () => showMentionCard(anchor, name));
-    anchor.addEventListener("mouseleave", hideMentionCardSoon);
-    anchor.addEventListener("blur", hideMentionCardSoon);
-    container.append(anchor);
-    cursor = end;
-  }
-  if (cursor < value.length) container.append(document.createTextNode(value.slice(cursor)));
+function makeMentionAnchor(text, value = text) {
+  const name = mentionName(value);
+  const anchor = document.createElement("a");
+  anchor.className = "chat-mention";
+  anchor.href = mentionProfilePath(name);
+  anchor.dataset.chatMention = name;
+  anchor.textContent = text;
+  anchor.addEventListener("mouseenter", () => showMentionCard(anchor, name));
+  anchor.addEventListener("focus", () => showMentionCard(anchor, name));
+  anchor.addEventListener("mouseleave", hideMentionCardSoon);
+  anchor.addEventListener("blur", hideMentionCardSoon);
+  return anchor;
 }
 
-function renderMessageText(container, text) {
-  container.textContent = "";
-  appendMentionText(container, text);
+function renderMessageText(container, message) {
+  const record = typeof message === "string" ? { text: message } : message;
+  renderRichText(container, record, {
+    renderMention: (_parent, text, name) => makeMentionAnchor(text, name),
+  });
 }
 
 // ---- @mention autocomplete -----------------------------------------------------
@@ -713,7 +816,7 @@ function closeMentionSuggest() {
 
 // The "@partial" token the caret is currently inside, or null. A mention starts
 // at "@" preceded by whitespace/start and uses the same charset the renderer
-// links (CHAT_MENTION_RE): letters, digits, hyphens.
+// links: letters, digits, and hyphens.
 function mentionTokenAtCaret() {
   const caret = input.selectionStart;
   if (caret == null || input.selectionEnd !== caret) return null;
@@ -842,7 +945,9 @@ function moveMentionSuggest(step) {
 function normalizeChannelKey(channel) {
   const value = String(channel || "").trim();
   if (value === "#general") return value;
-  return isPrivateChannelKey(value) && privateChannelForKey(value) ? value : "";
+  if (isPrivateChannelKey(value) && privateChannelForKey(value)) return value;
+  if (isDirectMessageKey(value) && directMessageForKey(value)) return value;
+  return "";
 }
 
 function ensureChannel(channelKey) {
@@ -866,7 +971,9 @@ function bumpUnread(channel) {
 function renderRooms() {
   if (!roomsEl) return;
   roomsEl.textContent = "";
-  const names = [...channelMeta.keys()].sort((a, b) => {
+  const names = [...channelMeta.keys()]
+    .filter((name) => !isDirectMessageKey(name))
+    .sort((a, b) => {
     if (a === "#general" || b === "#general") return a === "#general" ? -1 : 1;
     return channelDisplayLabel(a).localeCompare(channelDisplayLabel(b));
   });
@@ -899,17 +1006,49 @@ function renderRooms() {
     btn.addEventListener("click", () => setActiveChannel(name));
     roomsEl.append(btn);
   }
+  renderDirectMessages();
+}
+
+function renderDirectMessages() {
+  if (!directListEl) return;
+  directListEl.textContent = "";
+  const conversations = [...directMessages.values()]
+    .sort((a, b) => a.otherUser.localeCompare(b.otherUser));
+  for (const direct of conversations) {
+    const key = directMessageKey(direct.id);
+    const meta = channelMeta.get(key) || { unread: 0 };
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className =
+      "chat-room chat-direct-row" + (key === activeChannel ? " is-active" : "");
+    button.setAttribute("aria-label", `Direct message with ${direct.otherUser}`);
+    button.title = `Direct message with ${direct.otherUser}`;
+    button.append(makeAvatar(direct.otherUser, "user"));
+    const label = document.createElement("span");
+    label.className = "chat-room-name";
+    label.textContent = direct.otherUser;
+    button.append(label);
+    if (meta.unread > 0 && key !== activeChannel) {
+      const badge = document.createElement("span");
+      badge.className = "chat-room-unread";
+      badge.textContent = meta.unread > 99 ? "99+" : String(meta.unread);
+      button.append(badge);
+    }
+    button.addEventListener("click", () => setActiveChannel(key));
+    directListEl.append(button);
+  }
 }
 
 function updateChannelHeading() {
   const channel = privateChannelForKey(activeChannel);
+  const direct = directMessageForKey(activeChannel);
   const label = channelDisplayLabel(activeChannel);
   if (channelTitleEl) channelTitleEl.textContent = label;
   if (channelVisibilityBadge) {
-    channelVisibilityBadge.hidden = !channel;
-    channelVisibilityBadge.textContent = channel
-      ? channel.visibility
-      : "";
+    channelVisibilityBadge.hidden = !channel && !direct;
+    channelVisibilityBadge.textContent = direct ? "direct" : (
+      channel ? channel.visibility : ""
+    );
   }
 }
 
@@ -919,7 +1058,8 @@ function updateAdminChannelControls() {
   if (officeManageLink) {
     officeManageLink.hidden = !(isOfficeEmbed && userSession()?.isAdmin);
   }
-  if (channelCreateBtn) channelCreateBtn.hidden = !session?.isAdmin;
+  if (directSection) directSection.hidden = !session || isOfficeEmbed;
+  if (directCreateBtn) directCreateBtn.hidden = !session || isOfficeEmbed;
   if (channelManageBtn) {
     channelManageBtn.hidden = !(
       session?.isAdmin &&
@@ -933,21 +1073,34 @@ function setActiveChannel(name, options = {}) {
   const normalized = normalizeChannelKey(name);
   if (!normalized) return;
   if (!userSession() && normalized !== "#general") {
-    setStatus("Guests can participate only in public World #general");
+    setStatus("Guests can participate only in public World #general", "authorization");
     return;
   }
   const channel = ensureChannel(normalized);
   if (channel === activeChannel) return;
+  clearDropState();
+  closeThread({ restoreFocus: false });
   const previousScope = roomScopeForChannel(activeChannel);
   activeChannel = channel;
+  renderAttachmentDraft();
   try {
     const record = privateChannelForKey(channel);
-    if (record) {
+    const direct = directMessageForKey(channel);
+    if (direct) {
+      savedDirectMessageId = direct.id;
+      savedPrivateChannelId = "";
+      localStorage.setItem(ACTIVE_DIRECT_KEY, direct.id);
+      localStorage.removeItem(ACTIVE_CHANNEL_KEY);
+    } else if (record) {
       savedPrivateChannelId = record.id;
+      savedDirectMessageId = "";
       localStorage.setItem(ACTIVE_CHANNEL_KEY, record.id);
+      localStorage.removeItem(ACTIVE_DIRECT_KEY);
     } else {
       savedPrivateChannelId = "";
+      savedDirectMessageId = "";
       localStorage.removeItem(ACTIVE_CHANNEL_KEY);
+      localStorage.removeItem(ACTIVE_DIRECT_KEY);
     }
   } catch (_) {}
   const meta = channelMeta.get(channel);
@@ -1024,6 +1177,123 @@ function reconcilePrivateChannels(records, options = {}) {
   }
   updateAdminChannelControls();
   renderRooms();
+}
+
+function reconcileDirectMessages(records, options = {}) {
+  const previous = new Map(directMessages);
+  const replace = options.append !== true;
+  if (replace) directMessages.clear();
+  for (const value of Array.isArray(records) ? records : []) {
+    const id = String(value?.id || "");
+    const otherUser = String(value?.otherUser || "").trim().toLowerCase();
+    if (!/^[0-9a-f]{32}$/.test(id) || !otherUser) continue;
+    const unreadCount = Math.max(0, Number(value.unreadCount) || 0);
+    directMessages.set(id, {
+      id,
+      otherUser,
+      updatedAt: Number(value.updatedAt) || 0,
+      keyVersion: Number(value.keyVersion) || 1,
+      unreadCount,
+    });
+    const key = directMessageKey(id);
+    ensureChannel(key);
+    const meta = channelMeta.get(key);
+    if (meta) {
+      meta.unread = key === activeChannel
+        ? 0
+        : unreadCount;
+    }
+  }
+  if (replace) {
+    for (const id of previous.keys()) {
+      if (!directMessages.has(id)) {
+        releaseChannelMessages(directMessageKey(id));
+      }
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(options, "nextCursor")) {
+    directNextCursor = String(options.nextCursor || "");
+  }
+  if (directMoreBtn) directMoreBtn.hidden = !directNextCursor;
+
+  if (savedDirectMessageId && !directMessages.has(savedDirectMessageId)) {
+    savedDirectMessageId = "";
+    try { localStorage.removeItem(ACTIVE_DIRECT_KEY); } catch (_) {}
+  }
+
+  const activeDirect = directMessageForKey(activeChannel);
+  if (isDirectMessageKey(activeChannel) && !activeDirect) {
+    setActiveChannel("#general");
+    return;
+  }
+  if (activeDirect) {
+    const old = previous.get(activeDirect.id);
+    if (old && old.keyVersion !== activeDirect.keyVersion) switchChatRoom();
+  } else if (
+    options.selectSaved !== false &&
+    savedDirectMessageId &&
+    directMessages.has(savedDirectMessageId)
+  ) {
+    setActiveChannel(directMessageKey(savedDirectMessageId), {
+      connect: options.connect,
+    });
+  }
+  updateAdminChannelControls();
+  renderDirectMessages();
+}
+
+async function refreshDirectMessages(options = {}) {
+  if (!userSession()) {
+    directNextCursor = "";
+    reconcileDirectMessages([], { ...options, nextCursor: "" });
+    return;
+  }
+  try {
+    const cursor = String(options.cursor || "");
+    const endpoint = cursor
+      ? DIRECT_MESSAGES_ENDPOINT + "?cursor=" + encodeURIComponent(cursor)
+      : DIRECT_MESSAGES_ENDPOINT;
+    const data = await privateChannelRequest(endpoint);
+    reconcileDirectMessages(data.conversations || [], {
+      ...options,
+      append: Boolean(cursor) || options.preserve === true,
+      nextCursor: data.nextCursor || "",
+    });
+  } catch (error) {
+    if (error?.code === "auth") {
+      directNextCursor = "";
+      reconcileDirectMessages([], { ...options, nextCursor: "" });
+      if (isDirectMessageKey(activeChannel)) setActiveChannel("#general");
+    }
+  }
+}
+
+function loadMoreDirectMessages() {
+  if (!directNextCursor) return;
+  refreshDirectMessages({
+    cursor: directNextCursor,
+    selectSaved: false,
+    connect: false,
+  });
+}
+
+async function markDirectMessageRead(channelKey) {
+  const direct = directMessageForKey(channelKey);
+  if (!direct || directReadPending.has(direct.id)) return;
+  directReadPending.add(direct.id);
+  const meta = channelMeta.get(channelKey);
+  if (meta) meta.unread = 0;
+  renderDirectMessages();
+  try {
+    await privateChannelRequest(
+      DIRECT_MESSAGES_ENDPOINT + "/" + direct.id + "/read",
+      { method: "POST" },
+    );
+  } catch (_) {
+  } finally {
+    directReadPending.delete(direct.id);
+  }
 }
 
 async function refreshPrivateChannels(options = {}) {
@@ -1122,36 +1392,6 @@ async function refreshChannelMembers() {
   }
 }
 
-async function createChannel(name, visibility, members) {
-  setChannelError("");
-  try {
-    const data = await privateChannelRequest(PRIVATE_CHANNELS_ENDPOINT, {
-      method: "POST",
-      body: JSON.stringify({
-        name: String(name || "").trim().toLowerCase(),
-        visibility: visibility === "public" ? "public" : "private",
-        members: Array.isArray(members) ? members : [],
-      }),
-    });
-    await refreshPrivateChannels({ selectSaved: false });
-    const channel = data.channel;
-    if (channel?.id && privateChannels.has(channel.id)) {
-      setActiveChannel(privateChannelKey(channel.id));
-      const created = privateChannels.get(channel.id);
-      const canManageMembers = created?.visibility === "private";
-      if (channelMembersSection) {
-        channelMembersSection.hidden = !canManageMembers;
-      }
-      if (canManageMembers) await refreshChannelMembers();
-    }
-    channelCreateForm?.reset();
-    selectedInitialMembers.clear();
-    if (channelUserSearch) channelUserSearch.value = "";
-    syncInitialMemberVisibility();
-  } catch (error) {
-    setChannelError(privateChannelErrorMessage(error));
-  }
-}
 
 async function inviteChannelMember(username) {
   const channel = activeManageableChannel();
@@ -1187,22 +1427,142 @@ async function removeChannelMember(username) {
 
 function openChannelDialog(showMembers = false) {
   const session = userSession();
-  if (!session?.isAdmin || !channelDialog) return;
-  setChannelError("");
   const channel = activeManageableChannel();
+  if (!session?.isAdmin || !channelDialog || !showMembers || !channel) return;
+  setChannelError("");
   if (channelMembersSection) {
-    channelMembersSection.hidden = !(showMembers && channel);
+    channelMembersSection.hidden = false;
   }
-  syncInitialMemberVisibility();
-  renderInitialMemberPicker();
-  refreshUsersDirectory();
-  if (showMembers && channel) refreshChannelMembers();
+  refreshChannelMembers();
   if (typeof channelDialog.showModal === "function") channelDialog.showModal();
   else channelDialog.setAttribute("open", "");
-  const focusTarget = showMembers && channel
-    ? channelUsernameInput
-    : channelNameInput;
-  focusTarget?.focus();
+  channelUsernameInput?.focus();
+}
+
+function directMessageErrorMessage(error) {
+  const messages = {
+    user_not_found: "That active registered user was not found.",
+    cannot_message_self: "Choose another person to message.",
+    rate_limited: "Too many new conversations. Try again later.",
+    auth: OFFICE_SESSION_EXPIRED,
+    invalid_session: OFFICE_SESSION_EXPIRED,
+    unavailable: OFFICE_RELAY_UNAVAILABLE,
+    request_failed: OFFICE_RELAY_UNAVAILABLE,
+  };
+  return messages[error?.code] || "The direct message could not be opened.";
+}
+
+function setDirectMessageError(message) {
+  if (directError) directError.textContent = String(message || "");
+}
+
+function renderDirectMessagePicker() {
+  if (!directOptions) return;
+  directOptions.textContent = "";
+  const query = String(directSearch?.value || "").trim().toLowerCase();
+  const currentName = String(userSession()?.nodeName || "").trim().toLowerCase();
+  const candidates = new Map(registeredUsers);
+  if (query) {
+    for (const [name, user] of directSearchResults) {
+      candidates.set(name, user);
+    }
+  }
+  const users = [...candidates.values()]
+    .filter((user) => user.name !== currentName)
+    .filter((user) => !query || user.name.includes(query))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  for (const user of users) {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = "chat-direct-option";
+    option.setAttribute("aria-label", `Message ${user.name}`);
+    option.append(makeAvatar(user.name, "user"));
+    const label = document.createElement("span");
+    label.textContent = "@" + user.name;
+    option.append(label);
+    option.addEventListener("click", () => startDirectMessage(user.name));
+    directOptions.append(option);
+  }
+  if (directEmpty) {
+    directEmpty.hidden = users.length > 0;
+    directEmpty.textContent = candidates.size
+      ? "No registered users match your search."
+      : "No registered users are available yet.";
+  }
+}
+
+async function refreshDirectMessageSearch() {
+  const query = String(directSearch?.value || "").trim().toLowerCase();
+  const requestId = ++directSearchRequest;
+  directSearchResults.clear();
+  if (!query) {
+    renderDirectMessagePicker();
+    return;
+  }
+  try {
+    const data = await privateChannelRequest(
+      DIRECT_MESSAGES_ENDPOINT + "/users?query=" + encodeURIComponent(query)
+    );
+    if (requestId !== directSearchRequest) return;
+    for (const value of Array.isArray(data.users) ? data.users : []) {
+      const name = String(value?.name || "").trim().toLowerCase();
+      if (name) directSearchResults.set(name, { name, createdAt: 0 });
+    }
+    setDirectMessageError("");
+  } catch (error) {
+    if (requestId !== directSearchRequest) return;
+    setDirectMessageError(directMessageErrorMessage(error));
+  }
+  renderDirectMessagePicker();
+}
+
+function scheduleDirectMessageSearch() {
+  renderDirectMessagePicker();
+  if (directSearchTimer) clearTimeout(directSearchTimer);
+  directSearchTimer = setTimeout(() => {
+    directSearchTimer = null;
+    refreshDirectMessageSearch();
+  }, 180);
+}
+
+function openDirectMessageDialog() {
+  if (!userSession() || !directDialog || isOfficeEmbed) return;
+  setDirectMessageError("");
+  if (directSearch) directSearch.value = "";
+  directSearchResults.clear();
+  directSearchRequest += 1;
+  renderDirectMessagePicker();
+  refreshUsersDirectory();
+  if (typeof directDialog.showModal === "function") directDialog.showModal();
+  else directDialog.setAttribute("open", "");
+  directSearch?.focus();
+}
+
+async function startDirectMessage(username) {
+  if (!userSession()) return;
+  const normalized = String(username || "").trim().toLowerCase();
+  if (!normalized) return;
+  setDirectMessageError("");
+  try {
+    const data = await privateChannelRequest(DIRECT_MESSAGES_ENDPOINT, {
+      method: "POST",
+      body: JSON.stringify({ username: normalized }),
+    });
+    const conversation = data.conversation;
+    if (!conversation?.id) throw new Error("Direct message unavailable.");
+    reconcileDirectMessages(
+      [...directMessages.values(), conversation],
+      { selectSaved: false, connect: false },
+    );
+    if (directMessages.has(conversation.id)) {
+      setActiveChannel(directMessageKey(conversation.id));
+    }
+    directDialog?.close();
+  } catch (error) {
+    const message = directMessageErrorMessage(error);
+    setDirectMessageError(message);
+    if (!directDialog?.open) setStatus(message);
+  }
 }
 
 // ---- people (right pane) -------------------------------------------------------
@@ -1294,66 +1654,7 @@ function forgetIdleVisitors() {
 
 const directoryKnown = new Set(); // lowercased account names already merged
 const registeredUsers = new Map();
-const selectedInitialMembers = new Set();
 let directorySeeded = false;
-
-function renderInitialMemberPicker() {
-  if (!channelUserOptions) return;
-  channelUserOptions.textContent = "";
-  const query = String(channelUserSearch?.value || "").trim().toLowerCase();
-  const currentName = String(userSession()?.nodeName || "").trim().toLowerCase();
-  const users = [...registeredUsers.values()]
-    .filter((user) => user.name !== currentName)
-    .filter((user) => !query || user.name.includes(query))
-    .sort((a, b) => a.name.localeCompare(b.name));
-
-  for (const user of users) {
-    const option = document.createElement("label");
-    option.className = "chat-channel-user-option";
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.value = user.name;
-    checkbox.checked = selectedInitialMembers.has(user.name);
-    checkbox.addEventListener("change", () => {
-      if (checkbox.checked) selectedInitialMembers.add(user.name);
-      else selectedInitialMembers.delete(user.name);
-      if (channelSelectedCount) {
-        const count = selectedInitialMembers.size;
-        channelSelectedCount.textContent = `${count} selected`;
-      }
-    });
-    const label = document.createElement("span");
-    label.textContent = "@" + user.name;
-    option.append(checkbox, label);
-    channelUserOptions.append(option);
-  }
-
-  if (channelSelectedCount) {
-    const count = selectedInitialMembers.size;
-    channelSelectedCount.textContent = `${count} selected`;
-  }
-  if (channelUserEmpty) {
-    channelUserEmpty.hidden = users.length > 0;
-    channelUserEmpty.textContent = registeredUsers.size
-      ? "No registered users match your search."
-      : "No registered users are available yet.";
-  }
-}
-
-function syncInitialMemberVisibility() {
-  const isPrivate = channelVisibilitySelect?.value !== "public";
-  if (channelInitialMembers) channelInitialMembers.hidden = !isPrivate;
-  if (channelVisibilityHelp) {
-    channelVisibilityHelp.textContent = isPrivate
-      ? "Only selected users and administrators can join."
-      : "Every registered user can discover and join this channel.";
-  }
-  if (!isPrivate) {
-    selectedInitialMembers.clear();
-    if (channelUserSearch) channelUserSearch.value = "";
-  }
-  renderInitialMemberPicker();
-}
 
 async function refreshUsersDirectory() {
   let users;
@@ -1396,7 +1697,7 @@ async function refreshUsersDirectory() {
     }
   }
   directorySeeded = true;
-  renderInitialMemberPicker();
+  renderDirectMessagePicker();
   schedulePeopleRender();
 }
 
@@ -1425,6 +1726,7 @@ function renderPeople() {
   // even in a silent room).
   forgetIdleVisitors();
   peopleEl.textContent = "";
+  const currentName = String(userSession()?.nodeName || "").trim().toLowerCase();
   // Collapse multiple entries for the same person into one row: a person can
   // surface under several ids (history-replayed old senderIds, or the same
   // account from other tabs/devices) that all carry the same display name.
@@ -1485,7 +1787,21 @@ function renderPeople() {
       const dot = document.createElement("span");
       dot.className = "chat-presence-dot" + (online ? " is-online" : "");
       row.append(label, dot);
-      peopleEl.append(row);
+      if (hasProfile && currentName && person.name.toLowerCase() !== currentName) {
+        const wrapper = document.createElement("div");
+        wrapper.className = "chat-person-row";
+        const message = document.createElement("button");
+        message.type = "button";
+        message.className = "chat-person-message";
+        message.textContent = "✉";
+        message.setAttribute("aria-label", `Message ${person.name}`);
+        message.title = `Message ${person.name}`;
+        message.addEventListener("click", () => startDirectMessage(person.name));
+        wrapper.append(row, message);
+        peopleEl.append(wrapper);
+      } else {
+        peopleEl.append(row);
+      }
     }
   };
   renderSection("Users", bySection.user);
@@ -1518,7 +1834,7 @@ function applyReaction(plain) {
 }
 
 function renderReactions(messageId) {
-  const rec = rows.get(messageId);
+  const rec = rows.get(messageId) || threadRenderedRows.get(messageId);
   if (!rec || !rec.reactionsEl) return;
   rec.reactionsEl.textContent = "";
   const perMessage = reactions.get(messageId);
@@ -1545,10 +1861,11 @@ function toggleReaction(messageId, emoji) {
     lockChatForNonUser();
     return;
   }
-  const rec = rows.get(messageId);
+  const rec = rows.get(messageId) || threadRenderedRows.get(messageId) ||
+    threads.target(messageId);
   const mine = Boolean(reactions.get(messageId)?.get(emoji)?.has(selfId));
   const plain = makePlain("reaction", {
-    conversation: channelDisplayLabel((rec && rec.channel) || activeChannel),
+    conversation: channelWireLabel((rec && rec.channel) || activeChannel),
     target: messageId,
     emoji,
     reactorId: selfId,
@@ -1616,6 +1933,43 @@ function revokeAttachmentUrl(record) {
   record.attachmentUrl = "";
 }
 
+let imagePreviewDialog = null;
+
+function openImagePreview(src, fileName) {
+  if (!imagePreviewDialog) {
+    imagePreviewDialog = document.createElement("dialog");
+    imagePreviewDialog.id = "chat-image-preview-dialog";
+    imagePreviewDialog.className = "chat-image-preview-dialog";
+    imagePreviewDialog.innerHTML = '<button type="button" class="chat-image-preview-close" aria-label="Close image preview">×</button><img />';
+    imagePreviewDialog.querySelector("button").addEventListener("click", () => imagePreviewDialog.close());
+    imagePreviewDialog.addEventListener("click", (event) => {
+      if (event.target === imagePreviewDialog) imagePreviewDialog.close();
+    });
+    document.body.append(imagePreviewDialog);
+  }
+  const image = imagePreviewDialog.querySelector("img");
+  image.src = src;
+  image.alt = fileName;
+  imagePreviewDialog.showModal();
+}
+
+function portableMessageRecord(record) {
+  return {
+    id: record.id,
+    rootId: record.rootId || "",
+    channel: record.channel,
+    ts: Number(record.ts) || Date.now(),
+    senderId: record.senderId || "",
+    sender: record.sender || "peer",
+    text: record.text || "",
+    richText: record.richText || null,
+    attachment: record.attachment || null,
+    editedAt: Number(record.editedAt) || 0,
+    self: Boolean(record.self),
+    deleted: Boolean(record.deleted),
+  };
+}
+
 function renderAttachment(record) {
   const attachment = record && record.attachment;
   if (!attachment) return null;
@@ -1633,12 +1987,33 @@ function renderAttachment(record) {
   const wrapper = document.createElement("div");
   wrapper.className = "chat-attachment";
   if (attachment.fileMime.startsWith("image/")) {
+    const preview = document.createElement("div");
+    preview.className = "chat-attachment-image-preview";
     const image = document.createElement("img");
     image.className = "chat-attachment-image";
     image.src = objectUrl;
     image.alt = attachment.fileName;
     image.loading = "lazy";
-    wrapper.append(image);
+    image.tabIndex = 0;
+    image.setAttribute("role", "button");
+    image.setAttribute("aria-label", `Open ${attachment.fileName} full size`);
+    image.addEventListener("click", () => openImagePreview(objectUrl, attachment.fileName));
+    image.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openImagePreview(objectUrl, attachment.fileName);
+      }
+    });
+    const download = document.createElement("a");
+    download.className = "chat-attachment-image-download";
+    download.href = objectUrl;
+    download.download = attachment.fileName;
+    download.setAttribute("aria-label", `Download ${attachment.fileName}`);
+    download.title = `Download ${attachment.fileName}`;
+    download.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"></path></svg>';
+    preview.append(image, download);
+    wrapper.append(preview);
+    return wrapper;
   }
 
   const card = document.createElement("div");
@@ -1667,12 +2042,425 @@ function renderAttachment(record) {
   return wrapper;
 }
 
+function renderRecordBody(record) {
+  if (!record?.body) return;
+  if (record.deleted) {
+    record.body.classList.add("chat-deleted-root");
+    record.body.textContent = "Message deleted";
+    return;
+  }
+  record.body.classList.remove("chat-deleted-root");
+  renderMessageText(record.body, record);
+  if (!record.editedAt) return;
+  record.body.append(document.createTextNode(" "));
+  const edited = document.createElement("span");
+  edited.className = "chat-edited";
+  edited.textContent = "(edited)";
+  edited.title = `Edited ${new Date(record.editedAt).toLocaleString()}`;
+  record.body.append(edited);
+}
+
+function messageAction(label, text, handler, tone = "") {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `chat-message-action${tone ? ` is-${tone}` : ""}`;
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  button.textContent = text;
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    handler(button);
+  });
+  return button;
+}
+
+function dismissTouchMessageActions() {
+  document.querySelectorAll(".chat-msg.show-actions, .chat-thread-message.show-actions")
+    .forEach((row) => {
+      row.classList.remove("show-actions");
+    });
+}
+
+function bindTouchMessageActions(row) {
+  row.addEventListener("pointerup", (event) => {
+    if (event.pointerType !== "touch") return;
+    if (event.target.closest("a, button, input, textarea, select, label")) return;
+    if (!window.getSelection()?.isCollapsed) return;
+    const shouldOpen = !row.classList.contains("show-actions");
+    dismissTouchMessageActions();
+    row.classList.toggle("show-actions", shouldOpen);
+  });
+}
+
+document.addEventListener("pointerdown", (event) => {
+  if (event.pointerType !== "touch") return;
+  if (event.target.closest(".chat-message-actions")) return;
+  if (!event.target.closest(".chat-msg, .chat-thread-message")) {
+    dismissTouchMessageActions();
+  }
+});
+
+function threadCountLabel(count) {
+  return `${count} ${count === 1 ? "reply" : "replies"}`;
+}
+
+function renderThreadSummary(rootId) {
+  const record = rows.get(rootId);
+  const summary = threads.summary(rootId);
+  if (record?.threadSummaryEl) {
+    record.threadSummaryEl.hidden = summary.count === 0;
+    record.threadSummaryEl.textContent = threadCountLabel(summary.count);
+    record.threadSummaryEl.setAttribute(
+      "aria-label",
+      `Open thread with ${threadCountLabel(summary.count)}`,
+    );
+  }
+  if (activeThreadRootId === rootId && threadCountEl) {
+    threadCountEl.textContent = threadCountLabel(summary.count);
+  }
+}
+
+function threadMessageHeader(record) {
+  const header = document.createElement("div");
+  header.className = "chat-thread-message-head";
+  const avatar = makeAvatar(record.sender, record.senderId === FORKBOT_SENDER_ID ? "bot" : "user");
+  const meta = document.createElement("div");
+  meta.className = "chat-thread-message-meta";
+  const author = document.createElement("strong");
+  author.textContent = record.sender;
+  const time = document.createElement("span");
+  time.textContent = fmtTime(record.ts);
+  time.title = new Date(Number(record.ts) || Date.now()).toLocaleString();
+  meta.append(author, time);
+  header.append(avatar, meta);
+  return header;
+}
+
+function renderThreadRoot(record) {
+  const card = document.createElement("article");
+  card.className = "chat-thread-root-message";
+  card.append(threadMessageHeader(record));
+  if (record.deleted) {
+    const deleted = document.createElement("p");
+    deleted.className = "chat-thread-deleted";
+    deleted.textContent = "Message deleted";
+    card.append(deleted);
+    return card;
+  }
+  if (record.text) {
+    const body = document.createElement("div");
+    body.className = "chat-text";
+    renderMessageText(body, record);
+    if (record.editedAt) {
+      body.append(document.createTextNode(" "));
+      const edited = document.createElement("span");
+      edited.className = "chat-edited";
+      edited.textContent = "(edited)";
+      body.append(edited);
+    }
+    card.append(body);
+  }
+  const attachment = renderAttachment(record);
+  if (attachment) {
+    threadAttachmentRecords.add(record);
+    card.append(attachment);
+  }
+  return card;
+}
+
+function buildThreadReply(sourceRecord) {
+  const record = {
+    ...sourceRecord,
+    self: sourceRecord.senderId === selfId,
+  };
+  const row = document.createElement("article");
+  row.className = `chat-thread-message${record.self ? " is-self" : ""}`;
+  row.dataset.id = record.id;
+  row.append(threadMessageHeader(record));
+  const main = document.createElement("div");
+  main.className = "chat-thread-message-main";
+  let body = null;
+  if (record.text || record.deleted) {
+    body = document.createElement("div");
+    body.className = "chat-text";
+    main.append(body);
+  }
+  const attachment = renderAttachment(record);
+  if (attachment) {
+    threadAttachmentRecords.add(record);
+    main.append(attachment);
+  }
+  const reactionsEl = document.createElement("div");
+  reactionsEl.className = "chat-reactions";
+  main.append(reactionsEl);
+  row.append(main);
+  record.el = row;
+  record.body = body;
+  record.reactionsEl = reactionsEl;
+  renderRecordBody(record);
+
+  const actions = document.createElement("div");
+  actions.className = "chat-message-actions";
+  actions.append(messageAction(
+    "Add reaction",
+    "React",
+    (button) => showEmojiPicker(button, record.id),
+  ));
+  if (record.self) {
+    if (record.text) {
+      actions.append(messageAction(
+        "Edit message",
+        "Edit",
+        (button) => beginMessageEdit(record, button),
+      ));
+    }
+    actions.append(messageAction(
+      "Delete message",
+      "Delete",
+      (button) => requestMessageDelete(record, button),
+      "danger",
+    ));
+  }
+  row.append(actions);
+  bindTouchMessageActions(row);
+  threadRenderedRows.set(record.id, record);
+  renderReactions(record.id);
+  return row;
+}
+
+function resizeThreadComposer() {
+  if (!threadInput) return;
+  threadInput.style.height = "auto";
+  threadInput.style.height = `${Math.min(threadInput.scrollHeight, 96)}px`;
+}
+
+function renderThread() {
+  if (!activeThreadRootId || !threadRootEl || !threadRepliesEl) return;
+  for (const record of threadAttachmentRecords) revokeAttachmentUrl(record);
+  threadAttachmentRecords.clear();
+  threadRenderedRows.clear();
+  threadRootEl.textContent = "";
+  threadRepliesEl.textContent = "";
+  const root = rows.get(activeThreadRootId) || threads.root(activeThreadRootId);
+  if (!root) {
+    const unavailable = document.createElement("p");
+    unavailable.className = "chat-thread-deleted";
+    unavailable.textContent = "This message is no longer available.";
+    threadRootEl.append(unavailable);
+  } else {
+    const rootView = portableMessageRecord(root);
+    threadRootEl.append(renderThreadRoot(rootView));
+  }
+  for (const reply of threads.replies(activeThreadRootId)) {
+    threadRepliesEl.append(buildThreadReply(reply));
+  }
+  renderThreadSummary(activeThreadRootId);
+}
+
+function closeThread({ restoreFocus = true } = {}) {
+  if (activeThreadRootId && threadInput) {
+    threadDrafts.set(activeThreadRootId, threadInput.value);
+  }
+  activeThreadRootId = "";
+  if (peopleView) peopleView.hidden = false;
+  if (threadView) threadView.hidden = true;
+  panesEl?.classList.remove("is-thread-open");
+  for (const record of threadAttachmentRecords) revokeAttachmentUrl(record);
+  threadAttachmentRecords.clear();
+  threadRenderedRows.clear();
+  if (threadRootEl) threadRootEl.textContent = "";
+  if (threadRepliesEl) threadRepliesEl.textContent = "";
+  if (restoreFocus) threadReturnFocus?.focus();
+  threadReturnFocus = null;
+}
+
+function openThread(record, trigger = null) {
+  const rootId = String(record?.rootId || record?.id || "");
+  if (!rootId || !threadView || !peopleView) return;
+  if (activeThreadRootId && threadInput) {
+    threadDrafts.set(activeThreadRootId, threadInput.value);
+  }
+  activeThreadRootId = rootId;
+  threadReturnFocus = trigger || record.threadSummaryEl || record.el;
+  peopleView.hidden = false;
+  threadView.hidden = false;
+  panesEl?.classList.add("is-thread-open");
+  if (threadTitleEl) threadTitleEl.textContent = "Thread";
+  if (threadInput) threadInput.value = threadDrafts.get(rootId) || "";
+  renderAttachmentDraft(rootId);
+  resizeThreadComposer();
+  renderThread();
+  threadInput?.focus();
+}
+
+function sendThreadReply() {
+  if (!activeThreadRootId || !threadInput || !canJoinChannel()) return;
+  const rootId = activeThreadRootId;
+  const source = threadInput.value.trim().slice(0, MAX_TEXT);
+  const text = plainTextFromRichSource(source).slice(0, MAX_TEXT);
+  if (!text && !attachmentDraft(rootId).length) return;
+  if (text) {
+    const plain = makePlain("thread-reply", {
+      rootId,
+      channel: channelDisplayLabel(activeChannel),
+      text,
+      richText: { v: 1, source },
+    });
+    const record = portableMessageRecord({
+      ...plain,
+      channel: activeChannel,
+      self: true,
+    });
+    threads.addReply(record);
+    seen.add(plain.id);
+    threadInput.value = "";
+    threadDrafts.set(rootId, "");
+    resizeThreadComposer();
+    renderThread();
+    threadRepliesEl?.lastElementChild?.scrollIntoView({ block: "nearest" });
+    renderThreadSummary(rootId);
+    runWhenConnected(() => send(plain));
+  }
+  void sendAttachmentDraft({ rootId });
+}
+
+function cancelMessageEdit(record, { restoreFocus = true } = {}) {
+  const editor = record?.el?.querySelector(".chat-inline-editor");
+  if (!editor) return;
+  editor.remove();
+  record.el.classList.remove("is-editing");
+  if (record.body) record.body.hidden = false;
+  if (restoreFocus) record.editTrigger?.focus();
+}
+
+function saveMessageEdit(record, source) {
+  if (!record?.self || record.senderId !== selfId) return;
+  const richSource = String(source || "").trim().slice(0, MAX_TEXT);
+  const text = plainTextFromRichSource(richSource).slice(0, MAX_TEXT);
+  if (!text) return;
+  const editedAt = Date.now();
+  const richText = { v: 1, source: richSource };
+  const plain = makePlain("edit", {
+    conversation: channelDisplayLabel(record.channel),
+    target: record.id,
+    text,
+    richText,
+    editedAt,
+  });
+  record.text = text;
+  record.richText = richText;
+  record.editedAt = editedAt;
+  threads.updateTarget(record.id, { text, richText, editedAt });
+  cancelMessageEdit(record, { restoreFocus: false });
+  if (record.rootId) {
+    renderThread();
+    renderThreadSummary(record.rootId);
+  } else {
+    renderRecordBody(record);
+    if (activeThreadRootId === record.id) renderThread();
+  }
+  seen.add(plain.id);
+  runWhenConnected(() => send(plain));
+}
+
+function beginMessageEdit(record, trigger) {
+  if (!record?.self || record.senderId !== selfId || !record.body) return;
+  cancelMessageEdit(record, { restoreFocus: false });
+  record.editTrigger = trigger;
+  record.el.classList.add("is-editing");
+  record.body.hidden = true;
+
+  const editor = document.createElement("div");
+  editor.className = "chat-inline-editor";
+  const textarea = document.createElement("textarea");
+  textarea.className = "chat-edit-input";
+  textarea.rows = 3;
+  textarea.maxLength = MAX_TEXT;
+  textarea.setAttribute("aria-label", "Edit message");
+  textarea.value = record.richText?.source || record.text || "";
+  const controls = document.createElement("div");
+  controls.className = "chat-edit-actions";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "Cancel";
+  cancel.setAttribute("aria-label", "Cancel edit");
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "is-primary";
+  save.textContent = "Save";
+  save.setAttribute("aria-label", "Save edit");
+  cancel.addEventListener("click", () => cancelMessageEdit(record));
+  save.addEventListener("click", () => saveMessageEdit(record, textarea.value));
+  textarea.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      cancelMessageEdit(record);
+    } else if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      saveMessageEdit(record, textarea.value);
+    }
+  });
+  controls.append(cancel, save);
+  editor.append(textarea, controls);
+  record.reactionsEl.before(editor);
+  textarea.focus();
+  textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+}
+
+function requestMessageDelete(record, trigger) {
+  if (!record?.self || record.senderId !== selfId || !deleteDialog) return;
+  pendingDeleteRecord = record;
+  pendingDeleteTrigger = trigger;
+  if (typeof deleteDialog.showModal === "function") deleteDialog.showModal();
+  else deleteDialog.setAttribute("open", "");
+  deleteCancelBtn?.focus();
+}
+
+function confirmMessageDelete() {
+  const record = pendingDeleteRecord;
+  if (!record?.self || record.senderId !== selfId) return;
+  const plain = makePlain("delete", {
+    conversation: channelDisplayLabel(record.channel),
+    target: record.id,
+  });
+  pendingDeleteRecord = null;
+  pendingDeleteTrigger = null;
+  seen.add(plain.id);
+  removeMessage(record.id);
+  runWhenConnected(() => send(plain));
+}
+
+function buildDateDivider(ts) {
+  const divider = document.createElement("div");
+  const timestamp = Number(ts);
+  divider.className = "chat-date-divider";
+  divider.dataset.timestamp = String(
+    Number.isFinite(timestamp) ? timestamp : Date.now()
+  );
+  divider.setAttribute("role", "separator");
+  const label = document.createElement("span");
+  label.textContent = dateDividerLabel(divider.dataset.timestamp);
+  divider.setAttribute("aria-label", label.textContent);
+  divider.append(label);
+  return divider;
+}
+
+function refreshDateDividerLabels() {
+  for (const divider of logEl.querySelectorAll(".chat-date-divider")) {
+    const label = divider.querySelector("span");
+    if (!label) continue;
+    label.textContent = dateDividerLabel(divider.dataset.timestamp);
+    divider.setAttribute("aria-label", label.textContent);
+  }
+}
+
 // Render one message record into the log. `prev` is the record already above
 // it; consecutive same-sender messages within GROUP_WINDOW_MS collapse under a
 // single avatar + name/time header, Discord-style.
 function buildRow(record, prev) {
   const grouped = Boolean(
     prev && !prev.system && prev.senderId === record.senderId &&
+    sameLocalDate(prev.ts, record.ts) &&
     Number(record.ts) - Number(prev.ts) < GROUP_WINDOW_MS);
   const row = document.createElement("div");
   const isBot = record.senderId === FORKBOT_SENDER_ID;
@@ -1717,31 +2505,60 @@ function buildRow(record, prev) {
     main.append(head);
   }
   let body = null;
-  if (record.text) {
-    body = document.createElement("span");
+  if (record.text || record.deleted) {
+    body = document.createElement("div");
     body.className = "chat-text";
-    appendMentionText(body, record.text);
     main.append(body);
   }
   const attachment = renderAttachment(record);
   if (attachment) main.append(attachment);
+  const threadSummary = document.createElement("button");
+  threadSummary.type = "button";
+  threadSummary.className = "chat-thread-summary";
+  threadSummary.hidden = true;
+  threadSummary.addEventListener("click", () => openThread(record, threadSummary));
+  main.append(threadSummary);
   const reactionsEl = document.createElement("div");
   reactionsEl.className = "chat-reactions";
   main.append(reactionsEl);
   row.append(main);
-  const reactBtn = document.createElement("button");
-  reactBtn.type = "button";
-  reactBtn.className = "chat-react-btn";
-  reactBtn.textContent = "☺+";
-  reactBtn.title = "Add reaction";
-  reactBtn.addEventListener("click", (event) => {
-    event.stopPropagation();
-    showEmojiPicker(reactBtn, record.id);
-  });
-  row.append(reactBtn);
   record.el = row;
   record.body = body;
   record.reactionsEl = reactionsEl;
+  record.threadSummaryEl = threadSummary;
+  renderRecordBody(record);
+  renderThreadSummary(record.id);
+  const actions = document.createElement("div");
+  actions.className = "chat-message-actions";
+  actions.append(messageAction(
+    "Reply in thread",
+    "Reply",
+    (button) => openThread(record, button),
+  ));
+  if (!record.deleted) {
+    actions.append(messageAction(
+      "Add reaction",
+      "React",
+      (button) => showEmojiPicker(button, record.id),
+    ));
+  }
+  if (!record.deleted && record.self && record.senderId === selfId) {
+    if (record.text) {
+      actions.append(messageAction(
+        "Edit message",
+        "Edit",
+        (button) => beginMessageEdit(record, button),
+      ));
+    }
+    actions.append(messageAction(
+      "Delete message",
+      "Delete",
+      (button) => requestMessageDelete(record, button),
+      "danger",
+    ));
+  }
+  row.append(actions);
+  bindTouchMessageActions(row);
   return row;
 }
 
@@ -1762,7 +2579,14 @@ function renderActiveChannel() {
     return;
   }
   let prev = null;
+  let previousDateKey = "";
   for (const record of list) {
+    const dateKey = localDateKey(record.ts);
+    if (dateKey !== previousDateKey) {
+      logEl.append(buildDateDivider(record.ts));
+      prev = null;
+      previousDateKey = dateKey;
+    }
     logEl.append(buildRow(record, prev));
     renderReactions(record.id);
     prev = record;
@@ -1781,11 +2605,17 @@ function insertMessage(record) {
   while (index > 0 && Number(list[index - 1].ts) > Number(record.ts)) index -= 1;
   list.splice(index, 0, record);
   rows.set(record.id, record);
+  threads.registerRoot(portableMessageRecord(record));
   if (channel === activeChannel) {
     const pinned = logNearBottom();
     if (index === list.length - 1) {
       clearEmpty();
-      logEl.append(buildRow(record, list.length > 1 ? list[index - 1] : null));
+      const previous = list.length > 1 ? list[index - 1] : null;
+      const groupedPrevious = previous && sameLocalDate(previous.ts, record.ts)
+        ? previous
+        : null;
+      if (!groupedPrevious) logEl.append(buildDateDivider(record.ts));
+      logEl.append(buildRow(record, groupedPrevious));
       renderReactions(record.id);
       if (pinned || record.self) scrollLogToBottom();
     } else {
@@ -1796,7 +2626,17 @@ function insertMessage(record) {
   }
 }
 
-function appendMessage(kind, who, text, id, senderId, ts, channel, attachment = null) {
+function appendMessage(
+  kind,
+  who,
+  text,
+  id,
+  senderId,
+  ts,
+  channel,
+  attachment = null,
+  richText = null,
+) {
   const channelKey = normalizeChannelKey(channel) || activeChannel;
   const record = {
     id: id || String(Math.random()).slice(2) + Date.now(),
@@ -1805,6 +2645,7 @@ function appendMessage(kind, who, text, id, senderId, ts, channel, attachment = 
     senderId: senderId || "",
     sender: who,
     text,
+    richText,
     attachment,
     self: kind === "self",
   };
@@ -1816,30 +2657,36 @@ function appendMessage(kind, who, text, id, senderId, ts, channel, attachment = 
 // the desktop client). Keep its id in `seen` so a late duplicate can't reappear.
 function removeMessage(id) {
   const rec = rows.get(id);
-  if (!rec) return;
+  if (!rec) {
+    const reply = threads.target(id);
+    if (!reply?.rootId) return;
+    threads.deleteTarget(id);
+    reactions.delete(id);
+    if (activeThreadRootId === reply.rootId) renderThread();
+    renderThreadSummary(reply.rootId);
+    return;
+  }
   revokeAttachmentUrl(rec);
+  if (threads.summary(id).count > 0) {
+    rec.text = "";
+    rec.richText = null;
+    rec.attachment = null;
+    rec.deleted = true;
+    reactions.delete(id);
+    threads.deleteTarget(id);
+    if (rec.channel === activeChannel) renderActiveChannel();
+    if (activeThreadRootId === id) renderThread();
+    return;
+  }
   rows.delete(id);
   reactions.delete(id);
+  threads.deleteTarget(id);
   const list = channelMessages.get(rec.channel) || [];
   const index = list.indexOf(rec);
   if (index >= 0) list.splice(index, 1);
+  if (activeThreadRootId === id) closeThread({ restoreFocus: false });
   // Re-render so grouping headers stay correct around the gap.
   if (rec.channel === activeChannel) renderActiveChannel();
-}
-
-// Wipe the active room's local transcript and restore the empty placeholder.
-// This is a local view-only clear: it doesn't delete anything on the relay or
-// for other clients. Cleared ids stay in `seen` so a replayed history can't
-// bring them back, while genuinely new incoming messages still appear.
-function clearChat() {
-  const list = channelMessages.get(activeChannel) || [];
-  for (const record of list) {
-    revokeAttachmentUrl(record);
-    rows.delete(record.id);
-    reactions.delete(record.id);
-  }
-  channelMessages.set(activeChannel, []);
-  renderActiveChannel();
 }
 
 function appendSystem(text) {
@@ -1849,6 +2696,16 @@ function appendSystem(text) {
   row.textContent = text;
   logEl.append(row);
   if (logNearBottom()) scrollLogToBottom();
+}
+
+function scheduleDateDividerRefresh() {
+  if (dateRefreshTimer) clearTimeout(dateRefreshTimer);
+  const now = new Date();
+  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  dateRefreshTimer = setTimeout(() => {
+    refreshDateDividerLabels();
+    scheduleDateDividerRefresh();
+  }, Math.max(1, next.getTime() - now.getTime() + 50));
 }
 
 // ---- protocol ---------------------------------------------------------------
@@ -1897,11 +2754,11 @@ function normalizedPublicWorldFrame(
 
 function frameMatchesScope(plain, scope) {
   if (scope !== "public-world-general") {
-    if (!isPrivateChannelKey(scope)) return false;
+    if (!isPrivateChannelKey(scope) && !isDirectMessageKey(scope)) return false;
     if (plain.type === "history" || plain.type === "hello" ||
         plain.type === "presence" || plain.type === "bye") return true;
-    return plain.channel === channelDisplayLabel(scope) ||
-      plain.conversation === channelDisplayLabel(scope);
+    return plain.channel === channelWireLabel(scope) ||
+      plain.conversation === channelWireLabel(scope);
   }
   if (plain.type === "history") return true;
   if (plain.type === "hello" || plain.type === "presence" ||
@@ -1923,7 +2780,8 @@ function renderChatEntry(entry, kind, scope = roomScopeForChannel()) {
   entry = normalizedPublicWorldFrame(entry, scope);
   const channelKey = scope === "public-world-general" ? "#general" : scope;
   if (scope === "public-world-general" && entry.channel !== "#general") return;
-  if (isPrivateChannelKey(scope) && entry.channel !== channelDisplayLabel(scope)) return;
+  if ((isPrivateChannelKey(scope) || isDirectMessageKey(scope)) &&
+      entry.channel !== channelWireLabel(scope)) return;
   // A private-room message from a room we weren't invited to is ignored, the
   // same honour-model as the desktop client.
   if (entry.private) return;
@@ -1945,8 +2803,33 @@ function renderChatEntry(entry, kind, scope = roomScopeForChannel()) {
       entry.ts,
       channelKey,
       attachment,
+      entry.richText || null,
     );
   }
+}
+
+function renderThreadEntry(entry, scope = roomScopeForChannel()) {
+  if (!entry || !allowedChatAccountKind(entry.accountKind, scope)) return;
+  entry = normalizedPublicWorldFrame(entry, scope);
+  const channelKey = scope === "public-world-general" ? "#general" : scope;
+  if (scope === "public-world-general" && entry.channel !== "#general") return;
+  if (isPrivateChannelKey(scope) && entry.channel !== channelDisplayLabel(scope)) return;
+  if (entry.private || !entry.rootId || !once(entry.id)) return;
+  noteRoster(entry);
+  const attachment = attachmentFromEntry(entry);
+  const text = entry.text || "";
+  if (!text && !attachment) return;
+  const record = portableMessageRecord({
+    ...entry,
+    channel: channelKey,
+    sender: (entry.sender || "peer").slice(0, MAX_NAME),
+    text,
+    attachment,
+    self: entry.senderId === selfId,
+  });
+  threads.addReply(record);
+  renderThreadSummary(record.rootId);
+  if (activeThreadRootId === record.rootId) renderThread();
 }
 
 // An admin-delete frame is signed by the admin's identity key over a canonical
@@ -1996,10 +2879,17 @@ function handlePlain(plain, scope = roomScopeForChannel()) {
   const sender = (plain.sender || "peer").slice(0, MAX_NAME);
   if (type === "chat") {
     renderChatEntry(plain, "peer", scope);
+  } else if (type === "thread-reply") {
+    renderThreadEntry(plain, scope);
   } else if (type === "history") {
     for (const entry of plain.entries || []) {
-      if (entry && (entry.channel || entry.text || entry.fileName)) {
+      if (!entry) continue;
+      if (entry.type === "thread-reply") {
+        renderThreadEntry(entry, scope);
+      } else if (!entry.type || entry.type === "chat") {
         renderChatEntry(entry, "peer", scope);
+      } else if (entry.type !== "history") {
+        handlePlain(entry, scope);
       }
     }
   } else if (type === "reaction") {
@@ -2007,13 +2897,30 @@ function handlePlain(plain, scope = roomScopeForChannel()) {
   } else if (type === "edit") {
     // The author edited their own message; only honour it from that author.
     const rec = rows.get(plain.target);
-    if (rec && rec.senderId === plain.senderId && rec.body) {
+    const reply = rec ? null : threads.target(plain.target);
+    const target = rec || reply;
+    if (target && target.senderId === plain.senderId) {
+      const patch = {
+        text: plain.text || "",
+        richText: plain.richText || null,
+        editedAt: Number(plain.editedAt) || Number(plain.ts) || Date.now(),
+      };
+      if (reply?.rootId) {
+        threads.updateTarget(plain.target, patch);
+        if (activeThreadRootId === reply.rootId) renderThread();
+        renderThreadSummary(reply.rootId);
+        return;
+      }
       rec.text = plain.text || "";
-      renderMessageText(rec.body, plain.text || "");
+      rec.richText = plain.richText || null;
+      rec.editedAt = Number(plain.editedAt) || Number(plain.ts) || Date.now();
+      threads.updateTarget(rec.id, patch);
+      renderRecordBody(rec);
+      if (activeThreadRootId === rec.id) renderThread();
     }
   } else if (type === "delete") {
     // A plain delete is only valid from the message's own author.
-    const rec = rows.get(plain.target);
+    const rec = rows.get(plain.target) || threads.target(plain.target);
     if (rec && rec.senderId === plain.senderId) removeMessage(plain.target);
   } else if (type === "admin-delete") {
     // Moderation: remove any message once the admin signature checks out.
@@ -2027,6 +2934,12 @@ function handlePlain(plain, scope = roomScopeForChannel()) {
     // message timeline or push the composer upward.
   } else if (type === "bye") {
     appendSystem(sender + " left");
+  }
+  if (
+    isDirectMessageKey(scope)
+    && (type === "chat" || type === "history")
+  ) {
+    markDirectMessageRead(scope);
   }
 }
 
@@ -2043,7 +2956,14 @@ async function onFrame(event, key = null, scope = roomScopeForChannel()) {
   handlePlain(plain, scope);
 }
 
-const DURABLE_TYPES = new Set(["chat", "edit", "delete", "reaction", "admin-delete"]);
+const DURABLE_TYPES = new Set([
+  "chat",
+  "thread-reply",
+  "edit",
+  "delete",
+  "reaction",
+  "admin-delete",
+]);
 
 function send(plain) {
   if (!canJoinChannel()) {
@@ -2083,7 +3003,7 @@ function broadcastForkbotMessage(text) {
 
 async function maybeAskForkbot(text) {
   if (!userSession()) return;
-  if (isPrivateChannelKey(activeChannel)) return;
+  if (isPrivateChannelKey(activeChannel) || isDirectMessageKey(activeChannel)) return;
   if (!FORKBOT_MENTION_RE.test(text || "")) return;
   // The triggering line is the last buffer entry (appendMessage ran just
   // before this) and is sent separately as `message`; drop it, drop ForkBot's
@@ -2122,7 +3042,7 @@ function switchChatRoom() {
 function scheduleReconnect() {
   if (chatSuspended) return;
   if (!canJoinChannel()) return;
-  setStatus("Disconnected · reconnecting…");
+  setStatus("Disconnected · reconnecting…", "reconnecting");
   if (!roomTransport || roomTransport.state === "unauthorized") connect();
 }
 
@@ -2152,15 +3072,18 @@ function handleTransportState(state, detail) {
       return;
     }
     if (!officeAuthorizationExpired) showOfficeFailure("");
-    setStatus(
-      scope === "public-world-general"
-        ? "Connected · public World #general"
+    const direct = directMessageForKey(scope);
+    setStatus(scope === "public-world-general"
+      ? "Connected · public World #general"
+      : direct
+        ? `Connected · direct ${channelDisplayLabel(scope)}`
         : `Connected · ${
           privateChannelForKey(scope)?.visibility || "private"
-        } ${channelDisplayLabel(scope)}`
+        } ${channelDisplayLabel(scope)}`,
+      "connected",
     );
     send(makePlain("hello", {
-      channels: [channelDisplayLabel(activeChannel)],
+      channels: [channelWireLabel(activeChannel)],
     }));
     noteSelfRoster();
     const callbacks = openCallbacks;
@@ -2169,20 +3092,20 @@ function handleTransportState(state, detail) {
     return;
   }
   if (state === "authorizing" || state === "connecting") {
-    setStatus("Connecting...");
+    setStatus("Connecting...", "connecting");
     return;
   }
   if (state === "reconnecting") {
-    setStatus("Disconnected · reconnecting…");
+    setStatus("Disconnected · reconnecting…", "reconnecting");
     return;
   }
   if (state === "unauthorized") {
-    setStatus(CHAT_SIGN_IN_REQUIRED);
+    setStatus(CHAT_SIGN_IN_REQUIRED, "authorization");
     showOfficeFailure("auth");
     return;
   }
   if (state === "unavailable") {
-    setStatus(OFFICE_RELAY_UNAVAILABLE);
+    setStatus(OFFICE_RELAY_UNAVAILABLE, "unavailable");
     showOfficeFailure("relay");
   }
 }
@@ -2207,7 +3130,7 @@ async function connect() {
   // plain HTTP - a self-hosted node or LAN IP opened on mobile - it is
   // undefined, so the room key can never derive. Say so plainly.
   if (!window.isSecureContext || !(window.crypto && window.crypto.subtle)) {
-    setStatus("Chat needs a secure (HTTPS) connection");
+    setStatus("Chat needs a secure (HTTPS) connection", "insecure");
     return;
   }
   if (roomTransport?.room?.scope === scope) {
@@ -2236,32 +3159,137 @@ function runWhenConnected(callback) {
   connect();
 }
 
-async function sendAttachment(file) {
+function attachmentDraftKey(rootId = "") {
+  return rootId ? `thread:${rootId}` : `channel:${activeChannel}`;
+}
+
+function attachmentDraft(rootId = "") {
+  const key = attachmentDraftKey(rootId);
+  if (!attachmentDrafts.has(key)) attachmentDrafts.set(key, []);
+  return attachmentDrafts.get(key);
+}
+
+function attachmentDraftContainer(rootId = "") {
+  return rootId ? threadAttachmentDraftEl : attachmentDraftEl;
+}
+
+function renderAttachmentDraft(rootId = "") {
+  const container = attachmentDraftContainer(rootId);
+  if (!container) return;
+  container.textContent = "";
+  for (const record of attachmentDraft(rootId)) {
+    const fileName = safeAttachmentName(record.file.name);
+    const fileMime = safeAttachmentMime(record.file.type);
+    const item = document.createElement("div");
+    item.className = "chat-composer-attachment";
+    if (record.previewUrl) {
+      const preview = document.createElement("img");
+      preview.className = "chat-composer-attachment-preview";
+      preview.src = record.previewUrl;
+      preview.alt = fileName;
+      item.append(preview);
+    }
+    const copy = document.createElement("div");
+    copy.className = "chat-composer-attachment-copy";
+    const name = document.createElement("div");
+    name.className = "chat-composer-attachment-name";
+    name.textContent = fileName;
+    name.title = fileName;
+    const meta = document.createElement("div");
+    meta.className = "chat-composer-attachment-meta";
+    meta.textContent = `${fileMime} · ${formatAttachmentSize(record.file.size)}`;
+    copy.append(name, meta);
+    const remove = document.createElement("button");
+    remove.className = "chat-composer-attachment-remove";
+    remove.type = "button";
+    remove.textContent = "×";
+    remove.setAttribute("aria-label", `Remove ${fileName}`);
+    remove.title = `Remove ${fileName}`;
+    remove.addEventListener("click", () => removeDraftAttachment(record.id, { rootId }));
+    item.append(copy, remove);
+    container.append(item);
+  }
+}
+
+function removeDraftAttachment(id, { rootId = "" } = {}) {
+  const key = attachmentDraftKey(rootId);
+  const records = attachmentDrafts.get(key) || [];
+  const index = records.findIndex((record) => record.id === id);
+  if (index < 0) return;
+  const [record] = records.splice(index, 1);
+  if (record.previewUrl) URL.revokeObjectURL(record.previewUrl);
+  if (!records.length) attachmentDrafts.delete(key);
+  renderAttachmentDraft(rootId);
+}
+
+function clearAttachmentDraft(rootId = "") {
+  const key = attachmentDraftKey(rootId);
+  for (const record of attachmentDrafts.get(key) || []) {
+    if (record.previewUrl) URL.revokeObjectURL(record.previewUrl);
+  }
+  attachmentDrafts.delete(key);
+  renderAttachmentDraft(rootId);
+}
+
+function stageAttachments(files, { rootId = "" } = {}) {
+  const records = attachmentDraft(rootId);
+  const candidates = Array.from(files || []);
+  const remaining = Math.max(0, 4 - records.length);
+  const accepted = attachmentFiles(candidates, remaining);
+  if (candidates.length > accepted.length) {
+    setAttachmentFeedback("Share up to 4 files in a message.");
+  }
+  for (const file of accepted) {
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      setAttachmentFeedback("Attachments must be 1 MiB or smaller.");
+      continue;
+    }
+    if (!file.size) {
+      setAttachmentFeedback("That file is empty.");
+      continue;
+    }
+    records.push({
+      id: `draft-${++attachmentDraftSequence}`,
+      file,
+      previewUrl: String(file.type || "").startsWith("image/")
+        ? URL.createObjectURL(file)
+        : "",
+    });
+  }
+  if (!records.length) attachmentDrafts.delete(attachmentDraftKey(rootId));
+  renderAttachmentDraft(rootId);
+}
+
+async function sendAttachment(file, { rootId = "" } = {}) {
   if (!file || !canJoinChannel()) {
     if (!canJoinChannel()) lockChatForNonUser();
-    return;
+    return false;
   }
   if (file.size > MAX_ATTACHMENT_BYTES) {
     setAttachmentFeedback("Attachments must be 1 MiB or smaller.");
-    return;
+    return false;
   }
   if (!file.size) {
     setAttachmentFeedback("That file is empty.");
-    return;
+    return false;
   }
   let buffer;
   try {
     buffer = await file.arrayBuffer();
   } catch (_) {
     setAttachmentFeedback("Could not read that attachment.");
-    return;
+    return false;
   }
+  const channelAtSend = activeChannel;
+  if (rootId && rootId !== activeThreadRootId) return false;
   const fileName = safeAttachmentName(file.name);
   const fileMime = safeAttachmentMime(file.type);
   const encodedFile = bytesToB64(buffer);
   runWhenConnected(() => {
-    const plain = makePlain("chat", {
-      channel: channelDisplayLabel(activeChannel),
+    if (channelAtSend !== activeChannel) return;
+    const plain = makePlain(rootId ? "thread-reply" : "chat", {
+      ...(rootId ? { rootId } : {}),
+      channel: channelWireLabel(channelAtSend),
       fileName,
       fileMime,
       file: encodedFile,
@@ -2273,17 +3301,99 @@ async function sendAttachment(file) {
     }
     send(plain);
     seen.add(plain.id);
-    appendMessage(
-      "self",
-      plain.sender,
-      "",
-      plain.id,
-      plain.senderId,
-      plain.ts,
-      activeChannel,
-      attachment,
-    );
+    if (rootId) {
+      threads.addReply(portableMessageRecord({
+        ...plain,
+        channel: channelAtSend,
+        attachment,
+        self: true,
+      }));
+      if (activeThreadRootId === rootId) renderThread();
+      renderThreadSummary(rootId);
+    } else {
+      appendMessage(
+        "self",
+        plain.sender,
+        "",
+        plain.id,
+        plain.senderId,
+        plain.ts,
+        channelAtSend,
+        attachment,
+      );
+    }
     setAttachmentFeedback(`Shared ${fileName}`);
+  });
+  return true;
+}
+
+async function sendAttachments(files, { rootId = "" } = {}) {
+  const candidates = Array.from(files || []);
+  const accepted = attachmentFiles(candidates, 4);
+  if (candidates.length > accepted.length) {
+    setAttachmentFeedback("Share up to 4 files at a time.");
+  }
+  for (const file of accepted) {
+    await sendAttachment(file, { rootId });
+  }
+}
+
+async function sendAttachmentDraft({ rootId = "" } = {}) {
+  const records = [...attachmentDraft(rootId)];
+  if (!records.length) return false;
+  let sent = false;
+  for (const record of records) {
+    sent = (await sendAttachment(record.file, { rootId })) || sent;
+  }
+  if (sent) clearAttachmentDraft(rootId);
+  return sent;
+}
+
+function dataTransferHasFiles(dataTransfer) {
+  return Array.from(dataTransfer?.types || []).includes("Files");
+}
+
+function showDropOverlay(rootId = "") {
+  if (!dropOverlay) return;
+  const title = dropOverlay.querySelector("strong");
+  if (title) title.textContent = rootId ? "Drop files into this thread" : "Drop files to share";
+  dropOverlay.hidden = false;
+  dropOverlay.setAttribute("aria-hidden", "false");
+}
+
+function clearDropState() {
+  dragDepth = 0;
+  if (!dropOverlay) return;
+  dropOverlay.hidden = true;
+  dropOverlay.setAttribute("aria-hidden", "true");
+}
+
+function installDropTarget(element, rootIdForDrop = () => "") {
+  if (!element) return;
+  element.addEventListener("dragenter", (event) => {
+    if (!dataTransferHasFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    dragDepth += 1;
+    showDropOverlay(rootIdForDrop());
+  });
+  element.addEventListener("dragover", (event) => {
+    if (!dataTransferHasFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    showDropOverlay(rootIdForDrop());
+  });
+  element.addEventListener("dragleave", (event) => {
+    if (!dataTransferHasFiles(event.dataTransfer)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (!dragDepth) clearDropState();
+  });
+  element.addEventListener("drop", (event) => {
+    if (!dataTransferHasFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    const rootId = rootIdForDrop();
+    const files = event.dataTransfer?.files || [];
+    clearDropState();
+    stageAttachments(files, { rootId });
   });
 }
 
@@ -2294,25 +3404,154 @@ function clipboardImage(event) {
   return item ? item.getAsFile() : null;
 }
 
+function resizeComposer() {
+  if (!input) return;
+  input.style.height = "auto";
+  input.style.height = `${Math.min(input.scrollHeight, 140)}px`;
+}
+
+function setComposerPopover(button, menu, open) {
+  if (!button || !menu) return;
+  menu.hidden = !open;
+  button.setAttribute("aria-expanded", String(open));
+  if (open) activeComposerPopoverTrigger = button;
+}
+
+function closeComposerPopovers({ restoreFocus = false } = {}) {
+  const trigger = activeComposerPopoverTrigger;
+  const wasOpen = Boolean(composerEmojiMenu && !composerEmojiMenu.hidden);
+  setComposerPopover(composerEmojiBtn, composerEmojiMenu, false);
+  activeComposerPopoverTrigger = null;
+  if (restoreFocus && wasOpen) trigger?.focus();
+  return wasOpen;
+}
+
+function composerMenuItems(menu) {
+  return menu
+    ? [...menu.querySelectorAll('[role="menuitem"]:not(:disabled)')]
+    : [];
+}
+
+function handleComposerMenuKeydown(event) {
+  const items = composerMenuItems(event.currentTarget);
+  if (!items.length) return;
+  const currentIndex = Math.max(0, items.indexOf(document.activeElement));
+  let nextIndex = null;
+  if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+    nextIndex = (currentIndex + 1) % items.length;
+  } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+    nextIndex = (currentIndex - 1 + items.length) % items.length;
+  } else if (event.key === "Home") {
+    nextIndex = 0;
+  } else if (event.key === "End") {
+    nextIndex = items.length - 1;
+  }
+  if (nextIndex === null) return;
+  event.preventDefault();
+  items[nextIndex].focus();
+}
+
+function toggleComposerPopover(button, menu) {
+  if (!button || !menu || button.disabled) return;
+  const shouldOpen = menu.hidden;
+  closeComposerPopovers();
+  if (shouldOpen) {
+    setComposerPopover(button, menu, true);
+    composerMenuItems(menu)[0]?.focus();
+  }
+}
+
+function insertComposerText(value) {
+  if (!input || input.disabled) return;
+  const start = input.selectionStart ?? input.value.length;
+  const end = input.selectionEnd ?? start;
+  input.focus();
+  const capacity = MAX_TEXT - (input.value.length - (end - start));
+  if (capacity <= 0) return;
+  const text = String(value || "");
+  if (!text || text.length > capacity) return;
+  input.setRangeText(text, start, end, "end");
+  resizeComposer();
+  updateMentionSuggest();
+}
+
+function insertComposerMention() {
+  if (!input || input.disabled) return;
+  const start = input.selectionStart ?? input.value.length;
+  const before = input.value.slice(0, start);
+  insertComposerText(before && !/\s$/.test(before) ? " @" : "@");
+}
+
+function applyComposerFormat(type) {
+  if (!input) return;
+  const start = input.selectionStart ?? input.value.length;
+  const end = input.selectionEnd ?? start;
+  let result;
+  if (type === "link") {
+    result = linkSelection(input.value, start, end);
+  } else if (type === "bullet") {
+    result = toggleLinePrefix(input.value, start, end, "- ");
+  } else if (type === "number") {
+    result = toggleLinePrefix(input.value, start, end, "1. ");
+  } else if (type === "quote") {
+    result = toggleLinePrefix(input.value, start, end, "> ");
+  } else {
+    const markers = {
+      bold: ["**", "**"],
+      italic: ["*", "*"],
+      underline: ["++", "++"],
+      strike: ["~~", "~~"],
+      code: ["`", "`"],
+    };
+    const pair = markers[type];
+    if (!pair) return;
+    result = wrapSelection(input.value, start, end, pair[0], pair[1]);
+  }
+  input.value = result.value.slice(0, MAX_TEXT);
+  input.focus();
+  input.setSelectionRange(
+    Math.min(result.selectionStart, input.value.length),
+    Math.min(result.selectionEnd, input.value.length),
+  );
+  resizeComposer();
+  updateMentionSuggest();
+}
+
 function sendCurrentMessage() {
   if (!canJoinChannel()) {
     lockChatForNonUser();
     return;
   }
-  const text = input.value.trim();
-  if (!text) return;
-  input.value = "";
-  runWhenConnected(() => {
-    const clipped = text.slice(0, MAX_TEXT);
-    const plain = makePlain("chat", {
-      channel: channelDisplayLabel(activeChannel),
-      text: clipped,
+  const source = input.value.trim().slice(0, MAX_TEXT);
+  const text = plainTextFromRichSource(source).slice(0, MAX_TEXT);
+  if (!text && !attachmentDraft().length) return;
+  if (text) {
+    input.value = "";
+    resizeComposer();
+    closeMentionSuggest();
+    runWhenConnected(() => {
+      const plain = makePlain("chat", {
+        channel: channelWireLabel(activeChannel),
+        text,
+        richText: { v: 1, source },
+      });
+      send(plain);
+      seen.add(plain.id); // we render it here; ignore the echo if one comes back
+      appendMessage(
+        "self",
+        plain.sender,
+        text,
+        plain.id,
+        plain.senderId,
+        plain.ts,
+        activeChannel,
+        null,
+        plain.richText,
+      );
+      maybeAskForkbot(text);
     });
-    send(plain);
-    seen.add(plain.id); // we render it here; ignore the echo if one comes back
-    appendMessage("self", plain.sender, clipped, plain.id, plain.senderId, plain.ts, activeChannel);
-    maybeAskForkbot(clipped);
-  });
+  }
+  void sendAttachmentDraft();
 }
 
 function suspendOfficeChat() {
@@ -2320,7 +3559,8 @@ function suspendOfficeChat() {
   chatSuspended = true;
   roomTransport?.suspend();
   openCallbacks = [];
-  setStatus("Chat paused outside ForkMesh Office");
+  clearDropState();
+  setStatus("Chat paused outside ForkMesh Office", "paused");
 }
 
 function receiveOfficeMessage(event) {
@@ -2340,6 +3580,7 @@ async function initChat() {
   await hydrateUserSession();
   ensureChannel("#general");
   await refreshPrivateChannels({ connect: false });
+  await refreshDirectMessages({ connect: false });
   const label = channelDisplayLabel(activeChannel);
   updateChannelHeading();
   if (input) input.placeholder = `Message ${label}…`;
@@ -2354,7 +3595,10 @@ async function initChat() {
     refreshUsersDirectory();
     markChatActivitySeen();
   }, USERS_DIRECTORY_REFRESH_MS);
-  setInterval(refreshPrivateChannels, PRIVATE_CHANNEL_REFRESH_MS);
+  setInterval(() => {
+    refreshPrivateChannels();
+    refreshDirectMessages({ preserve: true, selectSaved: false });
+  }, PRIVATE_CHANNEL_REFRESH_MS);
   // Public World #general connects for everyone. Private channels remain
   // session-gated and each uses its own ticketed room and current key version.
   if (canJoinChannel()) {
@@ -2366,20 +3610,65 @@ async function initChat() {
   }
   sendBtn.addEventListener("click", sendCurrentMessage);
   if (clearBtn) clearBtn.addEventListener("click", clearChat);
-  channelCreateBtn?.addEventListener("click", () => openChannelDialog(false));
+  directCreateBtn?.addEventListener("click", openDirectMessageDialog);
+  directMoreBtn?.addEventListener("click", loadMoreDirectMessages);
+  directDialogClose?.addEventListener("click", () => directDialog?.close());
+  directSearch?.addEventListener("input", scheduleDirectMessageSearch);
+  threadSendBtn?.addEventListener("click", sendThreadReply);
+  threadCloseBtn?.addEventListener("click", () => closeThread());
+  threadInput?.addEventListener("input", resizeThreadComposer);
+  threadInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !threadInput.value) {
+      event.preventDefault();
+      closeThread();
+    } else if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      sendThreadReply();
+    }
+  });
+  for (const button of formatButtons) {
+    button.addEventListener("mousedown", (event) => event.preventDefault());
+    button.addEventListener("click", () => {
+      applyComposerFormat(button.dataset.format);
+    });
+  }
+  composerEmojiBtn?.addEventListener("click", () => {
+    toggleComposerPopover(composerEmojiBtn, composerEmojiMenu);
+  });
+  for (const menu of [composerEmojiMenu]) {
+    menu?.addEventListener("keydown", handleComposerMenuKeydown);
+  }
+  composerMentionBtn?.addEventListener("click", () => {
+    closeComposerPopovers();
+    insertComposerMention();
+  });
+  for (const button of composerEmojiButtons) {
+    button.addEventListener("click", () => {
+      closeComposerPopovers();
+      insertComposerText(button.dataset.composerEmoji || button.textContent);
+    });
+  }
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    const insideEmoji = composerEmojiBtn?.contains(target) || composerEmojiMenu?.contains(target);
+    if (!insideEmoji) closeComposerPopovers();
+  });
+  document.addEventListener("focusin", (event) => {
+    const trigger = activeComposerPopoverTrigger;
+    if (!trigger) return;
+    const menu = composerEmojiMenu;
+    if (trigger.contains(event.target) || menu?.contains(event.target)) return;
+    closeComposerPopovers();
+  });
   channelManageBtn?.addEventListener("click", () => openChannelDialog(true));
   channelDialogClose?.addEventListener("click", () => channelDialog?.close());
-  channelCreateForm?.addEventListener("submit", (event) => {
-    event.preventDefault();
-    createChannel(
-      channelNameInput?.value || "",
-      channelVisibilitySelect?.value || "private",
-      [...selectedInitialMembers],
-    );
+  deleteConfirmBtn?.addEventListener("click", confirmMessageDelete);
+  deleteDialog?.addEventListener("close", () => {
+    const trigger = pendingDeleteTrigger;
+    pendingDeleteRecord = null;
+    pendingDeleteTrigger = null;
+    trigger?.focus();
   });
-  channelVisibilitySelect?.addEventListener(
-    "change", syncInitialMemberVisibility);
-  channelUserSearch?.addEventListener("input", renderInitialMemberPicker);
   channelInviteForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     inviteChannelMember(channelUsernameInput?.value || "");
@@ -2391,23 +3680,49 @@ async function initChat() {
   if (attachmentBtn && attachmentInput) {
     attachmentBtn.addEventListener("click", () => attachmentInput.click());
     attachmentInput.addEventListener("change", () => {
-      const file = attachmentInput.files && attachmentInput.files[0];
+      const files = Array.from(attachmentInput.files || []);
       attachmentInput.value = "";
-      if (file) sendAttachment(file);
+      if (files.length) stageAttachments(files);
+    });
+  }
+  if (threadAttachmentBtn && threadAttachmentInput) {
+    threadAttachmentBtn.addEventListener("click", () => threadAttachmentInput.click());
+    threadAttachmentInput.addEventListener("change", () => {
+      const files = Array.from(threadAttachmentInput.files || []);
+      threadAttachmentInput.value = "";
+      if (files.length && activeThreadRootId) {
+        stageAttachments(files, { rootId: activeThreadRootId });
+      }
     });
   }
   input.addEventListener("paste", (event) => {
     const file = clipboardImage(event);
     if (!file) return;
     event.preventDefault();
-    sendAttachment(file);
+    stageAttachments([file]);
+  });
+  threadInput?.addEventListener("paste", (event) => {
+    const file = clipboardImage(event);
+    if (!file || !activeThreadRootId) return;
+    event.preventDefault();
+    stageAttachments([file], { rootId: activeThreadRootId });
+  });
+  installDropTarget(mainPane);
+  installDropTarget(threadView, () => activeThreadRootId);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && closeComposerPopovers({ restoreFocus: true })) {
+      event.preventDefault();
+      return;
+    }
+    if (event.key === "Escape" && dragDepth) clearDropState();
   });
   input.addEventListener("keydown", (event) => {
     // While the @mention popup is open it owns the keyboard: Tab (or Enter)
     // accepts the highlighted name, arrows move, Escape dismisses — only then
     // does Enter fall through to send.
     if (mentionSuggest) {
-      if (event.key === "Tab" || event.key === "Enter") {
+      const acceptsMention = event.key === "Tab" || event.key === "Enter";
+      if (acceptsMention && !event.shiftKey) {
         event.preventDefault();
         acceptMentionSuggest();
         return;
@@ -2423,7 +3738,7 @@ async function initChat() {
         return;
       }
     }
-    if (event.key === "Enter") {
+    if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       sendCurrentMessage();
     }
@@ -2431,7 +3746,10 @@ async function initChat() {
   // Track the "@partial" token under the caret as it changes — typing, caret
   // moves (arrows/click), and focus loss (delayed so a suggestion mousedown
   // still lands).
-  input.addEventListener("input", updateMentionSuggest);
+  input.addEventListener("input", () => {
+    resizeComposer();
+    updateMentionSuggest();
+  });
   input.addEventListener("click", updateMentionSuggest);
   input.addEventListener("keyup", (event) => {
     if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
@@ -2441,6 +3759,8 @@ async function initChat() {
   input.addEventListener("blur", () => {
     setTimeout(closeMentionSuggest, 120);
   });
+  resizeComposer();
+  scheduleDateDividerRefresh();
   // Presence beat, matching the desktop's cadence: keeps our roster entry
   // fresh for peers AND keeps the room DO from closing the socket as stale
   // (it reaps sockets that send nothing for 3 minutes — the old web client's

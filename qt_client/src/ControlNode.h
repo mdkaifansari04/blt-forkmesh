@@ -370,6 +370,14 @@ QString vultrPlanRegion(const QJsonObject &plan);
 // name; ties break toward the higher os id).
 QJsonObject latestVultrDebianOs(const QJsonArray &osList);
 
+// True when this machine's own ForkMesh binary can run on a freshly created
+// Vultr mirror (always x64 Debian, see latestVultrDebianOs), so the provisioner
+// can upload it straight over the SSH session instead of asking the new host to
+// clone from an online mirror that may not exist yet. Takes QSysInfo's
+// kernelType() ("linux"/"darwin"/"winnt") and currentCpuArchitecture().
+bool localBinaryRunsOnVultrMirror(const QString &kernelType,
+                                  const QString &cpuArch);
+
 // Exact POST /v2/instances body for a ForkMesh mirror: chosen plan/region/OS,
 // the managed SSH key, no backups, no activation email, tagged so the instance
 // is recognizable in the Vultr panel.
@@ -398,16 +406,6 @@ QString nextMirrorNodeName(const QStringList &existingNames);
 // Resolve a Vultr API key this node already stores as a device-local Actions
 // variable (same contract as cloudflareApiTokenFromVariables).
 QString vultrApiKeyFromVariables(const QMap<QString, QString> &variables);
-
-// True when this app's own binary can run on the instance the flow deploys —
-// always a Debian x64 image (latestVultrDebianOs), so a linux/x86_64 controller
-// qualifies and nothing else does. A fresh instance has no mirror serving it and
-// a published release may not exist for its platform at all, so when this holds
-// the install uploads this binary straight over the SSH session instead of
-// asking the new host to fetch a prebuilt release (adhoc #408). Takes
-// QSysInfo::kernelType() / QSysInfo::currentCpuArchitecture().
-bool localBinaryRunsOnVultrMirror(const QString &kernelType,
-                                  const QString &cpuArchitecture);
 
 // True when a failed install's output shows the host could not obtain ForkMesh
 // from the mesh at all — no online node to clone from, or no prebuilt release

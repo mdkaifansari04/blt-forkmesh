@@ -900,6 +900,22 @@ int main(int argc, char **argv)
                   .toInt() == 477,
           "latest Vultr Debian selection picks the newest x64 Debian only");
 
+    // A freshly created mirror has nothing mirroring it yet, so the provisioner
+    // must direct-upload this app's binary rather than let the installer look
+    // for an online mirror — but only when that binary can actually run there.
+    check(forkmesh::control::localBinaryRunsOnVultrMirror(
+              QStringLiteral("linux"), QStringLiteral("x86_64")),
+          "linux/x86_64 desktop uploads its own binary to a new Vultr mirror");
+    check(forkmesh::control::localBinaryRunsOnVultrMirror(
+              QStringLiteral("Linux"), QStringLiteral("amd64")),
+          "amd64/x64 spellings count as x86_64 for the upload decision");
+    check(!forkmesh::control::localBinaryRunsOnVultrMirror(
+              QStringLiteral("darwin"), QStringLiteral("x86_64")),
+          "macOS desktop does not upload a binary the Debian mirror can't run");
+    check(!forkmesh::control::localBinaryRunsOnVultrMirror(
+              QStringLiteral("linux"), QStringLiteral("arm64")),
+          "arm64 desktop does not upload a binary the x64 mirror can't run");
+
     const QJsonObject instancePayload =
         forkmesh::control::vultrInstanceCreatePayload(
             QStringLiteral("vultr-mirror-1"), QStringLiteral("vhp-1c-2gb"),

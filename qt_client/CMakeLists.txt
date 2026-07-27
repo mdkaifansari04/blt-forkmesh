@@ -135,6 +135,8 @@ set(FORKMESH_APP_SOURCES
     src/ChatVisitorPresence.h
     src/ServerNode.h
     src/ServerNode.cpp
+    src/OfficeChannelMirror.h
+    src/OfficeChannelMirror.cpp
     src/NodeEventSocket.h
     src/NodeEventSocket.cpp
     src/NetworkBackoff.h
@@ -288,6 +290,7 @@ qt_wrap_cpp(FORKMESH_MOC_SOURCES
     src/MarkupCanvas.h
     src/MessageRow.h
     src/NodeEventSocket.h
+    src/OfficeChannelMirror.h
     src/RepoHost.h
     src/ScreenCaptureOverlay.h
     src/ScreenDrawOverlay.h
@@ -351,6 +354,7 @@ set_source_files_properties(
     src/MarkupCanvas.h
     src/MessageRow.h
     src/NodeEventSocket.h
+    src/OfficeChannelMirror.h
     src/RepoHost.h
     src/ScreenCaptureOverlay.h
     src/ScreenDrawOverlay.h
@@ -537,6 +541,8 @@ if(FORKMESH_BUILD_TESTS)
         src/SystemStats.cpp
         src/ServerNode.h
         src/ServerNode.cpp
+        src/OfficeChannelMirror.h
+        src/OfficeChannelMirror.cpp
     )
     target_include_directories(forkmesh-chat-transport-tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src)

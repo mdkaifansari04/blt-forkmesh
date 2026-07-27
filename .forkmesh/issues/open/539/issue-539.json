@@ -1,0 +1,38 @@
+{
+    "assignees": [
+    ],
+    "author": "forkbot",
+    "authorName": "forkbot",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785096546005,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "The user is requesting the ability to create links within the chat text, similar to how links can be shared in messages. This feature would allow users to easily reference and share specific parts of conversations, making it easier to navigate and discuss topics. Currently, users can only share links as separate messages, which can make it difficult to keep track of conversations and relevant information.\n\n---\n_Filed by ForkBot at @mdkaifansari04's request via chat._",
+            "id": "forkbot-1785096546005",
+            "sig": "",
+            "title": "Support for linking inside chat text",
+            "ts": 1785096546005,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "forkbot"
+    ],
+    "milestone": "",
+    "number": 539,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Support for linking inside chat text",
+    "updatedAt": 1785096546005,
+    "votes": 0
+}

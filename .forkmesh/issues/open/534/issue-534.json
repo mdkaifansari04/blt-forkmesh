@@ -1,0 +1,38 @@
+{
+    "assignees": [
+    ],
+    "author": "forkbot",
+    "authorName": "forkbot",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785061754187,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "The user is experiencing difficulty while trying to create an issue, specifically when the member count falsely increases when another member logs on.\n\n---\n_Filed by ForkBot at @mdkaifansari04's request via chat._",
+            "id": "forkbot-1785061754187",
+            "sig": "",
+            "title": "Investigate issue creation problem",
+            "ts": 1785061754187,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "forkbot"
+    ],
+    "milestone": "",
+    "number": 534,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Investigate issue creation problem",
+    "updatedAt": 1785061754187,
+    "votes": 0
+}

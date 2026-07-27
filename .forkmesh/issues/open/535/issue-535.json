@@ -1,0 +1,38 @@
+{
+    "assignees": [
+    ],
+    "author": "forkbot",
+    "authorName": "forkbot",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785061875759,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "The character starts running when the shift key is pressed while walking, instead of the expected behavior.\n\n---\n_Filed by ForkBot at @mdkaifansari04's request via chat._",
+            "id": "forkbot-1785061875759",
+            "sig": "",
+            "title": "Character runs when using shift+walk while walking",
+            "ts": 1785061875759,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "forkbot"
+    ],
+    "milestone": "",
+    "number": 535,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Character runs when using shift+walk while walking",
+    "updatedAt": 1785061875759,
+    "votes": 0
+}

@@ -39,9 +39,9 @@ def test_press_page_uses_shared_simple_header_and_standard_footer():
     for marker in (
         'href="/styles.css"',
         'href="/site-header.css"',
-        'src="/site-header.js"',
+        'src="/site-header.js?v=',
         'href="/site-footer.css"',
-        'src="/site-footer.js"',
+        'src="/site-footer.js?v=',
         '<div data-forkmesh-header="simple"></div>',
         '<div data-forkmesh-footer="standard"></div>',
     ):

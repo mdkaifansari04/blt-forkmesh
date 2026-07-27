@@ -75,18 +75,37 @@ const CAMERA_PITCH_MIN = -Math.PI / 2 + 0.01;
 // Stop just shy of vertical so the camera stays numerically stable while a
 // player can still look directly into the sky.
 const CAMERA_PITCH_MAX = Math.PI / 2 - 0.01;
+const WORLD_GROUND_Y = 0;
+const CAMERA_GROUND_CLEARANCE = 0.6;
 const FIRST_PERSON_EYE_HEIGHT = 2.2;
+const FIRST_PERSON_ZOOM_MIN = 0.25;
+const FIRST_PERSON_ZOOM_MAX = 5;
 const FIRST_PERSON_PITCH_MIN = -Math.PI / 2 + 0.01;
 const FIRST_PERSON_PITCH_MAX = Math.PI / 2 - 0.01;
 const REPOSITORY_FIRST_PERSON_DISTANCE = 5.5;
 const REPOSITORY_FIRST_PERSON_PITCH = -0.08;
 const OFFICE_HEIGHT = OFFICE_FLOOR_HEIGHT;
+const OFFICE_LOBBY_SURFACE_Y = 0.38;
 const OFFICE_INTERIOR_WALL_LIMIT = OFFICE_FRONT_Z - 0.54;
-const OFFICE_INTERIOR_EXIT_Z = OFFICE_FRONT_Z + 0.18;
-const OFFICE_DOOR_HEIGHT = 4.4;
-const OFFICE_DOOR_SILL_Y = 0.34;
+const OFFICE_DOOR_HEIGHT = OFFICE_HEIGHT;
+// Commit entry only after the avatar's complete collision capsule has cleared
+// the inner face of the jamb. The old trigger sat outside the facade, which
+// counted visitors as indoors and switched colliders before physical entry.
 const OFFICE_DOORWAY_ENTRY_Z =
-  OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS;
+  OFFICE_FRONT_Z - OFFICE_AVATAR_RADIUS - 0.06;
+// This open tunnel spans both sides of the facade and gives a rejected entry
+// callback several inward frames to retry without ever creating a wall.
+const OFFICE_DOORWAY_APPROACH_Z =
+  OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS + 0.9;
+const OFFICE_DOORWAY_PASSAGE_MIN_Z = OFFICE_DOORWAY_ENTRY_Z - 2;
+// The generic interior rectangle stops 0.65 units shy of the wall. Overlap
+// the doorway tunnel with that exact edge so there is no disconnected sliver
+// for the lobby collider to reject just after the entry handoff.
+const OFFICE_DOORWAY_INTERIOR_JOIN_Z =
+  OFFICE_FRONT_Z - OFFICE_AVATAR_RADIUS - 0.7;
+// Leaving is counted only after the whole avatar clears the outer jamb.
+const OFFICE_INTERIOR_EXIT_Z =
+  OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS + 0.06;
 const OFFICE_ELEVATOR_HALF_WIDTH = 5;
 const OFFICE_ELEVATOR_HALF_DEPTH = 4;
 const OFFICE_ELEVATOR_CUT_MARGIN = 0.35;
@@ -127,6 +146,22 @@ const OFFICE_RECEPTION_MEMBER_TIPS = Object.freeze([
 const FORKBOT_EXCITED_SPEED = 5.6;
 const FORKBOT_ECHO_MS = 2500;
 const FORKBOT_THINKING_TIMEOUT_MS = 45000;
+const WORLD_AGENT_BOTS = Object.freeze([
+  {
+    id: "claude",
+    label: "CLAUDE",
+    home: Object.freeze([12, 0.38, 11]),
+    shell: "#d8895b",
+    glow: "#ffb37f",
+  },
+  {
+    id: "codex",
+    label: "CODEX",
+    home: Object.freeze([17, 0.38, 10]),
+    shell: "#75cbb4",
+    glow: "#8fffe0",
+  },
+]);
 // The public World has one shared ground plane plus three regional labels.
 // Deprecated off-world destinations are deliberately not valid spawn spaces.
 const WORLD_SPACE_FLOORS = Object.freeze({
@@ -174,7 +209,15 @@ const MOVEMENT_KEYS = new Set([
 const ACTIVE_LEADERBOARD_POSITION = Object.freeze([-11.5, 0, 25]);
 // Beside the active leaderboard, just west of the arrival grid.
 const REFERRAL_LEADERBOARD_POSITION = Object.freeze([-13.5, 0, 30]);
-const SYSTEM_CAPACITY_PLATFORM_POSITION = Object.freeze([8, 0, -27]);
+// The HTTP Referer board is a distinct, privacy-safe hostname leaderboard.
+// Keep it directly beside the member referral board so the two meanings are
+// visually related without mixing their unrelated counters.
+const SITE_REFERRER_LEADERBOARD_POSITION = Object.freeze([-19, 0, 30]);
+// Floor-local positions on the Infrastructure story. These are deliberately
+// not part of the shared Town layout: a saved outdoor object placement must
+// never pull an interior observatory fixture back out of the building.
+const SYSTEM_CAPACITY_INFRASTRUCTURE_POSITION = Object.freeze([-24, 0, 7]);
+const INFRASTRUCTURE_CONSOLE_POSITION = Object.freeze([18, 0, -44.2]);
 const SERVER_CABINET_YARD_ORIGIN = Object.freeze([18, 0, 0]);
 const ARRIVAL_GRID_BOUNDS = Object.freeze({
   minX: -10.8,
@@ -358,12 +401,6 @@ function deterministicTreeLayout() {
     minZ: SERVER_CABINET_YARD_ORIGIN[2] - 14,
     maxZ: SERVER_CABINET_YARD_ORIGIN[2] + 14,
   };
-  const durableBounds = {
-    minX: SYSTEM_CAPACITY_PLATFORM_POSITION[0] - 10,
-    maxX: SYSTEM_CAPACITY_PLATFORM_POSITION[0] + 10,
-    minZ: SYSTEM_CAPACITY_PLATFORM_POSITION[2] - 8,
-    maxZ: SYSTEM_CAPACITY_PLATFORM_POSITION[2] + 8,
-  };
   LANDMARKS.forEach((landmark) => {
     // The campfire's clearing is filled by its bench circle, whose radius
     // reaches past where these trees would stand.
@@ -377,8 +414,7 @@ function deterministicTreeLayout() {
       const z = landmark.position[2] + Math.sin(angle) * radius;
     if (
       pointInsideBounds(x, z, ARRIVAL_GRID_BOUNDS) ||
-      pointInsideBounds(x, z, cabinetBounds) ||
-      pointInsideBounds(x, z, durableBounds)
+      pointInsideBounds(x, z, cabinetBounds)
     ) {
         continue;
     }
@@ -461,7 +497,8 @@ function badgeActiveDurationLabel(value) {
 // shares generalized activity; the coarse bucket label remains the fallback.
 function firstSeenAgoLabel(minutes) {
   const total = Number(minutes);
-  if (!Number.isFinite(total) || total <= 0) return "";
+  if (!Number.isFinite(total) || total < 0) return "";
+  if (total === 0) return "FIRST SEEN JUST NOW";
   const units = [
     [365 * 24 * 60, "YEAR"],
     [30 * 24 * 60, "MONTH"],
@@ -505,6 +542,7 @@ function badgeTexture(THREE, identity, accent = "#9ef7c6") {
     "reading-documentation": "DOCUMENTATION",
     "viewing-repository": "REPOSITORY",
     "visiting-organization": "ORGANIZATION",
+    "sitting-at-member-fire": "MEMBER FIRE",
     hidden: "ACTIVITY HIDDEN",
   };
   const firstSeenLabels = {
@@ -565,7 +603,7 @@ function badgeTexture(THREE, identity, accent = "#9ef7c6") {
       identity.activityCategory !== "hidden";
     const rows = [
       [firstSeen, "#9ef7c6"],
-      [joined ? `FIRST ${joined}` : "", "#77d9ff"],
+      [joined, "#77d9ff"],
       [badgeClientLabel(identity), "#f7c96b"],
       [activeRow, "#9ef7c6"],
       // A directory figure publishes no live activity, so its "hidden · 0
@@ -1607,6 +1645,158 @@ function makeReferralLeaderboardSign(THREE) {
   return sign;
 }
 
+function rankedSiteReferrerRows(rows = []) {
+  return (Array.isArray(rows) ? rows : [])
+    .filter(
+      (row) =>
+        String(row?.host || "").trim() && Number(row?.visits) > 0,
+    )
+    .sort((left, right) => {
+      const visitDifference =
+        (Number(right?.visits) || 0) - (Number(left?.visits) || 0);
+      if (visitDifference) return visitDifference;
+      return String(left?.host || "").localeCompare(
+        String(right?.host || ""),
+        undefined,
+        { sensitivity: "base" },
+      );
+    })
+    .slice(0, 5);
+}
+
+function safeSiteReferrerURL(row) {
+  const host = String(row?.host || "").trim().toLowerCase();
+  if (
+    !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(
+      host,
+    )
+  ) {
+    return "";
+  }
+  try {
+    const candidate = new URL(String(row?.url || ""));
+    const candidateHost = candidate.hostname
+      .toLowerCase()
+      .replace(/^www\./, "");
+    if (
+      !["http:", "https:"].includes(candidate.protocol) ||
+      candidateHost !== host ||
+      candidate.username ||
+      candidate.password ||
+      candidate.hash
+    ) {
+      return "";
+    }
+    return candidate.href.slice(0, 1024);
+  } catch (_) {
+    return "";
+  }
+}
+
+function siteReferrerLeaderboardTexture(THREE, rows = [], totals = {}) {
+  const ranked = rankedSiteReferrerRows(rows);
+  const siteCount = Math.max(0, Number(totals?.sites) || 0);
+  const visitCount = Math.max(0, Number(totals?.visits) || 0);
+  return canvasTexture(THREE, 768, 720, (context) => {
+    context.clearRect(0, 0, 768, 720);
+    roundedRect(context, 4, 4, 760, 712, 16);
+    context.fillStyle = "rgba(6,17,14,0.95)";
+    context.fill();
+    context.strokeStyle = "#77d9ff";
+    context.lineWidth = 5;
+    context.stroke();
+    context.textBaseline = "middle";
+    context.fillStyle = "#f1fff6";
+    context.font = '700 43px "ForkMesh Favorit", system-ui, sans-serif';
+    context.fillText("HTTP REFERER LEADERBOARD", 38, 58);
+    context.fillStyle = "#77d9ff";
+    context.font = '400 19px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("GROUPED BY HOSTNAME · LATEST SAFE FULL URL", 38, 102);
+    ranked.forEach((row, index) => {
+      const top = 142 + index * 96;
+      const host = String(row.host).trim().slice(0, 30);
+      context.fillStyle = "#d9ffea";
+      context.font = '700 24px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(`${index + 1}. ${host}`, 38, top, 510);
+      context.fillStyle = "#9ef7c6";
+      context.font = '400 20px "ForkMesh Mono", ui-monospace, monospace';
+      const value = `${Number(row.visits) || 0} VISITS`;
+      context.fillText(value, 768 - 38 - context.measureText(value).width, top);
+      const href = safeSiteReferrerURL(row);
+      context.fillStyle = href ? "#77d9ff" : "#91a39a";
+      context.font = '500 17px "ForkMesh Mono", ui-monospace, monospace';
+      const linkLabel = href || "FULL URL CAPTURES ON THE NEXT REFERRAL";
+      context.fillText(linkLabel, 70, top + 35, 630);
+      if (href) {
+        const width = Math.min(630, context.measureText(linkLabel).width);
+        context.strokeStyle = "rgba(119,217,255,0.72)";
+        context.lineWidth = 1;
+        context.beginPath();
+        context.moveTo(70, top + 48);
+        context.lineTo(70 + width, top + 48);
+        context.stroke();
+      }
+    });
+    if (!ranked.length) {
+      context.fillStyle = "#91a39a";
+      context.font = '400 24px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("NO EXTERNAL REFERRERS COUNTED YET", 38, 200);
+    }
+    context.strokeStyle = "rgba(119,217,255,0.4)";
+    context.lineWidth = 2;
+    context.beginPath();
+    context.moveTo(38, 624);
+    context.lineTo(730, 624);
+    context.stroke();
+    context.fillStyle = "#77d9ff";
+    context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(`${siteCount} SITES · ${visitCount} VISITS`, 38, 658);
+    context.fillStyle = "#91a39a";
+    context.font = '400 17px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      "FULL PAGE URL · SENSITIVE QUERY VALUES REDACTED",
+      38,
+      692,
+    );
+  });
+}
+
+function makeSiteReferrerLeaderboardSign(THREE) {
+  const sign = new THREE.Group();
+  sign.name = "world-site-referrer-leaderboard";
+  const base = new THREE.Mesh(
+    new THREE.BoxGeometry(4.8, 0.25, 1.35),
+    makeMaterial(THREE, "#1a3032", { roughness: 0.8 }),
+  );
+  base.position.y = 0.13;
+  sign.add(base);
+  for (const x of [-1.72, 1.72]) {
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(0.16, 4.45, 0.16),
+      makeMaterial(THREE, "#234d4a", { metalness: 0.22, roughness: 0.52 }),
+    );
+    post.position.set(x, 2.225, 0);
+    sign.add(post);
+  }
+  const board = new THREE.Mesh(
+    new THREE.BoxGeometry(3.72, 3.42, 0.12),
+    makeMaterial(THREE, "#071712", { roughness: 0.55 }),
+  );
+  board.position.set(0, 2.38, 0.08);
+  sign.add(board);
+  const face = new THREE.Mesh(
+    new THREE.PlaneGeometry(3.52, 3.3),
+    new THREE.MeshBasicMaterial({
+      map: siteReferrerLeaderboardTexture(THREE),
+      transparent: true,
+    }),
+  );
+  face.position.set(0, 2.38, 0.151);
+  sign.add(face);
+  sign.userData.face = face;
+  return sign;
+}
+
 const OFFICE_MARKETING_TASK_LIMIT = 6;
 
 function boundedOfficeMarketingTaskText(value, maxLength, fallback = "") {
@@ -1732,6 +1922,399 @@ function officeMarketingTasksTexture(THREE, payload = {}) {
       context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(task.status.toUpperCase(), 954, top + 10, 260);
       context.textAlign = "left";
+    });
+  });
+}
+
+function officeMarketingTasksBlankTexture(THREE) {
+  return canvasTexture(THREE, 1024, 768, (context) => {
+    context.clearRect(0, 0, 1024, 768);
+    context.fillStyle = "rgba(5,17,14,0.97)";
+    context.fillRect(0, 0, 1024, 768);
+  });
+}
+
+// Public build-progress wall in the Office lobby. This intentionally mirrors
+// todo.md in short, readable phrases: unfinished notes stay on the left and a
+// completed task moves to a varied slot on the right with a hand-drawn X.
+// Keep the ordering stable so a repaint never makes notes jump around.
+const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
+  { key: "task:referrer-full-url", task: "Show latest full HTTP referrer URLs", estimate: "in progress", done: false },
+  { key: "task:blog-board-reach", task: "Show every blog reach statistic", estimate: "in progress", done: false },
+  { key: "task:human-todo-board", task: "Bot-driven Human TODO board", estimate: "in progress", done: false },
+  { key: "task:review-open-prs", task: "Review every open PR + disposition", estimate: "queued", done: false },
+  { key: "done:infrastructure-capacity", task: "Capacity moved to Infrastructure", estimate: "deployed", done: true },
+  { key: "done:local-console", task: "Opt-in local console observatory", estimate: "deployed", done: true },
+  { key: "done:near-elevator", task: "Elevator moved beside entrance", estimate: "deployed", done: true },
+  { key: "done:priority-board", task: "Drag priorities with #1 highest", estimate: "deployed", done: true },
+  { key: "done:repo-issues-board", task: "Repo issues drag-to-assign board", estimate: "deployed", done: true },
+  { key: "done:mobile-stable", task: "Mobile walking stays in place", estimate: "deployed", done: true },
+  { key: "done:live-world-update", task: "Live layouts + explicit code refresh", estimate: "deployed", done: true },
+  { key: "done:capacity-symmetry", task: "Equal full-width status timelines", estimate: "deployed", done: true },
+  { key: "done:member-cards", task: "Full seated member identity cards", estimate: "deployed", done: true },
+  { key: "done:share-world-view", task: "Share exact World place + camera", estimate: "deployed", done: true },
+  { key: "done:repo-settings", task: "Owner repo Settings + delete zone", estimate: "deployed", done: true },
+  { key: "done:qt-pr-worktree", task: "PR agents use isolated worktrees", estimate: "deployed", done: true },
+  { key: "done:qt-pr-reading", task: "PR scroll progress + viewed files", estimate: "deployed", done: true },
+  { key: "task:saved-views", task: "Editable exact saved World views", estimate: "deployed", done: true },
+  { key: "task:blog-board-detail", task: "Blog age + network details", estimate: "deployed", done: true },
+  { key: "task:repo-circle-lists", task: "Follower icons + 25-item issue/PR boards", estimate: "deployed", done: true },
+  { key: "task:mirror-issue-intake", task: "Land issues on online mirrors now", estimate: "deployed", done: true },
+  { key: "task:mirror-status", task: "Open full mirror status from repo header", estimate: "deployed", done: true },
+  { key: "task:pr-57", task: "Securely review and merge chat PR 57", estimate: "deployed", done: true },
+  { key: "task:claude-agent", task: "Add org Claude bot on headless mirrors", estimate: "deployed", done: true },
+  { key: "task:claude-world", task: "Let Claude walk and answer @claude", estimate: "deployed", done: true },
+  { key: "task:codex-agent", task: "Add org Codex bot on headless mirrors", estimate: "deployed", done: true },
+  { key: "task:codex-world", task: "Let Codex walk and answer @codex", estimate: "deployed", done: true },
+  { key: "task:codex-board-done", task: "Codex moves completed notes to Done", estimate: "deployed", done: true },
+  { key: "task:account-saved-views", task: "Sync saved World views across devices", estimate: "deployed", done: true },
+  { key: "task:account-world-settings", task: "Sync speed and World preferences", estimate: "deployed", done: true },
+  { key: "task:offline-settings-merge", task: "Keep offline settings and merge safely", estimate: "deployed", done: true },
+  { key: "task:mirror-agent-status", task: "Mirror sides show live agent task status", estimate: "deployed", done: true },
+  { key: "task:referrer-links", task: "Taller clickable HTTP referrer board", estimate: "deployed", done: true },
+  { key: "task:world-issue-workbench", task: "Full issue workbench inside the World", estimate: "deployed", done: true },
+  { key: "task:office-exit-heading", task: "Office exit keeps visitor heading", estimate: "deployed", done: true },
+  { key: "task:org-member-access", task: "Member autocomplete + access guide", estimate: "deployed", done: true },
+  { key: "task:device-signout", task: "Revoked devices clear session + caches", estimate: "deployed", done: true },
+  { key: "task:repo-record-status", task: "PR status summary + 25-item pages", estimate: "deployed", done: true },
+  { key: "task:blog-share-drafts", task: "Prefilled social drafts on every post", estimate: "deployed", done: true },
+  { key: "task:blog-reach", task: "Blog views, uniques + referrer rank", estimate: "deployed", done: true },
+  { key: "task:world-global-link", task: "World + member count on every page", estimate: "deployed", done: true },
+  { key: "task:world-fast-loader", task: "Live World preview + fast progress cover", estimate: "deployed", done: true },
+  { key: "task:deploy-alert-grace", task: "5-minute deploy health-alert grace", estimate: "deployed", done: true },
+  { key: "task:status-errors-row", task: "Dedicated Worker errors status row", estimate: "deployed", done: true },
+  { key: "task:repo-commit-activity", task: "Repo activity + hourly commit rates", estimate: "deployed", done: true },
+  { key: "task:engineering-agent-workspace", task: "Engineering-only agent prompt workspace", estimate: "deployed", done: true },
+  { key: "task:pr-mergeability-score", task: "Evidence-based PR mergeability scores", estimate: "deployed", done: true },
+  { key: "task:engineering-agent-chat", task: "Engineering-only Claude/Codex chat", estimate: "deployed", done: true },
+]);
+
+function worldTaskBulletinSeed(value) {
+  let seed = 2166136261;
+  for (const character of String(value || "")) {
+    seed ^= character.codePointAt(0);
+    seed = Math.imul(seed, 16777619);
+  }
+  return seed >>> 0;
+}
+
+function worldTaskBulletinTexture(THREE, source = WORLD_TASK_BULLETIN_ITEMS) {
+  const pending = (Array.isArray(source) ? source : [])
+    .filter((item) => !item.done)
+    .slice(0, 12);
+  const stickyColors = ["#fff39a", "#ffc9e3", "#bcecff", "#c9f5bd", "#ffd2a8"];
+  return canvasTexture(THREE, 1800, 1120, (context) => {
+    context.fillStyle = "#8a5938";
+    context.fillRect(0, 0, 1800, 1120);
+    context.strokeStyle = "rgba(75,39,20,0.28)";
+    context.lineWidth = 4;
+    for (let y = 18; y < 1120; y += 34) {
+      context.beginPath();
+      context.moveTo(0, y);
+      context.bezierCurveTo(440, y - 8, 1220, y + 10, 1800, y - 3);
+      context.stroke();
+    }
+    context.fillStyle = "rgba(255,250,224,0.94)";
+    context.fillRect(34, 24, 1732, 100);
+    context.fillStyle = "#201812";
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font =
+      '700 60px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
+    context.fillText("FORKMESH · WHAT WE'RE BUILDING", 900, 72);
+    context.font =
+      '700 38px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
+    context.fillText(`DRAG TO PRIORITIZE · 1 IS HIGHEST`, 900, 155);
+
+    const drawNote = (item, index, side) => {
+      const seed = worldTaskBulletinSeed(`${side}:${item.task}`);
+      const column = index % 3;
+      const row = Math.floor(index / 3);
+      const x = 58 + column * 574 + ((seed >>> 3) % 19) - 9;
+      const y = 200 + row * 218 + ((seed >>> 9) % 13) - 6;
+      const width = 530;
+      const height = 188;
+      const angle = ((((seed >>> 14) % 13) - 6) * Math.PI) / 180;
+      context.save();
+      context.translate(x + width / 2, y + height / 2);
+      context.rotate(angle);
+      context.shadowColor = "rgba(37,19,9,0.36)";
+      context.shadowBlur = 12;
+      context.shadowOffsetX = 5;
+      context.shadowOffsetY = 7;
+      context.fillStyle = stickyColors[seed % stickyColors.length];
+      context.beginPath();
+      context.moveTo(-width / 2 + 4, -height / 2);
+      context.lineTo(width / 2, -height / 2 + 3);
+      context.lineTo(width / 2 - 5, height / 2);
+      context.lineTo(-width / 2, height / 2 - 4);
+      context.closePath();
+      context.fill();
+      context.shadowColor = "transparent";
+      context.fillStyle = "#29221d";
+      context.textAlign = "left";
+      context.textBaseline = "top";
+      context.font =
+        '700 35px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
+      context.fillText(
+        `#${index + 1}`,
+        -width / 2 + 18,
+        -height / 2 + 15,
+      );
+      wrapCanvasText(
+        context,
+        item.task,
+        -width / 2 + 16,
+        -height / 2 + 58,
+        width - 32,
+        36,
+        2,
+      );
+      if (!item.done) {
+        context.fillStyle = "#22634f";
+        context.font =
+          '800 25px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
+        context.fillText(
+          `◌ IN PROGRESS · ${String(item.estimate || "estimating")}`,
+          -width / 2 + 16,
+          height / 2 - 25,
+        );
+      }
+      context.restore();
+    };
+    pending.forEach((item, index) => {
+      drawNote(item, index, "pending");
+    });
+  });
+}
+
+function worldRepoIssuesTexture(THREE, issues = []) {
+  const visible = (Array.isArray(issues) ? issues : []).slice(0, 12);
+  return canvasTexture(THREE, 1800, 1120, (context) => {
+    context.fillStyle = "#315b52";
+    context.fillRect(0, 0, 1800, 1120);
+    context.fillStyle = "#effff7";
+    context.fillRect(34, 24, 1732, 100);
+    context.fillStyle = "#13241e";
+    context.textAlign = "center";
+    context.font =
+      '700 60px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
+    context.fillText("FORKMESH · OPEN REPO ISSUES", 900, 90);
+    context.font =
+      '700 35px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
+    context.fillText("DRAG AN ISSUE ONTO THE BUILD BOARD TO ASSIGN IT", 900, 158);
+    if (!visible.length) {
+      context.fillStyle = "#c9e8dc";
+      context.font = '600 45px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("NO OPEN ISSUES AVAILABLE", 900, 330);
+      return;
+    }
+    visible.forEach((issue, index) => {
+      const column = index % 3;
+      const row = Math.floor(index / 3);
+      const x = 58 + column * 574;
+      const y = 200 + row * 218;
+      context.save();
+      context.translate(x + 265, y + 94);
+      context.fillStyle = issue.assigned ? "#b8c7c0" : "#fff39a";
+      context.shadowColor = "rgba(13,31,25,0.38)";
+      context.shadowBlur = 12;
+      context.fillRect(-265, -94, 530, 188);
+      context.shadowColor = "transparent";
+      context.fillStyle = "#29221d";
+      context.textAlign = "left";
+      context.font =
+        '800 32px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
+      context.fillText(
+        `#${Number(issue.number) || "?"}${issue.assigned ? " · ASSIGNED" : ""}`,
+        -245,
+        -70,
+      );
+      context.font =
+        '700 34px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
+      wrapCanvasText(
+        context,
+        String(issue.title || "Untitled issue"),
+        -245,
+        -28,
+        490,
+        36,
+        3,
+      );
+      context.restore();
+    });
+  });
+}
+
+function humanTodoItemsFromAgentSessions(sessions = []) {
+  const items = [];
+  const seen = new Set();
+  const add = (session, text, reason) => {
+    const action = String(text || "")
+      .replace(/[\u0000-\u001f\u007f]/g, " ")
+      .replace(/^[\s>*#-]*(?:\[[ xX]\]\s*)?/, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 180);
+    if (!action) return;
+    const key = action.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    items.push({
+      id: String(session?.id || "").slice(0, 64),
+      provider:
+        String(session?.provider || "").toLowerCase() === "codex"
+          ? "CODEX"
+          : "CLAUDE",
+      title: String(session?.title || "Agent session")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 90),
+      action,
+      reason: String(reason || "ACTION").slice(0, 24).toUpperCase(),
+      updatedAt: Math.max(0, Number(session?.updatedAt) || 0),
+    });
+  };
+  for (const session of Array.isArray(sessions) ? sessions : []) {
+    const availability =
+      session?.availability && typeof session.availability === "object"
+        ? session.availability
+        : {};
+    if (
+      availability.binaryFound === false ||
+      availability.loginState === "missing"
+    ) {
+      add(
+        session,
+        availability.message ||
+          `${session?.provider === "codex" ? "Codex" : "Claude Code"} needs installation or login on ${session?.targetNode || "the mirror"}.`,
+        "SETUP",
+      );
+    }
+    const error = String(session?.agentInfo?.lastError || "").trim();
+    if (error) add(session, error, "ATTENTION");
+    const status = String(session?.status || "").toLowerCase();
+    const history = Array.isArray(session?.history) ? session.history : [];
+    if (["failed", "rejected", "blocked", "attention"].includes(status)) {
+      const latest = [...history]
+        .reverse()
+        .find((entry) => String(entry?.text || "").trim());
+      add(
+        session,
+        latest?.text || `${session?.title || "Agent task"} needs human review.`,
+        status,
+      );
+    }
+    history.slice(-12).forEach((entry) => {
+      if (!["assistant", "agent", "security"].includes(
+        String(entry?.role || "").toLowerCase(),
+      )) {
+        return;
+      }
+      String(entry?.text || "")
+        .split(/\r?\n/)
+        .filter((line) =>
+          /\b(?:todo|action required|needs? human|human action|manual(?:ly)?|blocked|please (?:review|approve|login|install|configure|provide|decide|merge|resolve))\b/i.test(
+            line,
+          ),
+        )
+        .slice(0, 4)
+        .forEach((line) => add(session, line, "BOT REQUEST"));
+    });
+  }
+  return items
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .slice(0, 12);
+}
+
+function worldHumanTodoTexture(THREE, sessions = []) {
+  const items = humanTodoItemsFromAgentSessions(sessions);
+  return canvasTexture(THREE, 1800, 1120, (context) => {
+    context.fillStyle = "#322b4d";
+    context.fillRect(0, 0, 1800, 1120);
+    context.fillStyle = "#f4efff";
+    context.fillRect(34, 24, 1732, 100);
+    context.fillStyle = "#211b36";
+    context.textAlign = "center";
+    context.font =
+      '700 58px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
+    context.fillText("HUMAN TODO · FROM CLAUDE + CODEX", 900, 90);
+    context.font =
+      '700 34px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
+    context.fillStyle = "#d5b6ff";
+    context.fillText(
+      "ENGINEERING · BOT-REQUESTED MANUAL ACTIONS",
+      900,
+      158,
+    );
+    if (!items.length) {
+      context.fillStyle = "#cfc5e8";
+      context.font = '600 43px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("NO HUMAN ACTIONS REQUESTED", 900, 330);
+      context.font = '500 28px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        "Blocked runs, setup needs, and explicit agent TODOs appear here.",
+        900,
+        390,
+      );
+      return;
+    }
+    items.forEach((item, index) => {
+      const column = index % 3;
+      const row = Math.floor(index / 3);
+      const x = 58 + column * 574;
+      const y = 200 + row * 218;
+      context.save();
+      context.translate(x + 265, y + 94);
+      context.fillStyle = ["#ffd0d8", "#d8d0ff", "#ffdca8"][index % 3];
+      context.shadowColor = "rgba(13,8,31,0.42)";
+      context.shadowBlur = 12;
+      context.fillRect(-265, -94, 530, 188);
+      context.shadowColor = "transparent";
+      context.textAlign = "left";
+      context.fillStyle = "#3c2141";
+      context.font =
+        '800 27px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
+      context.fillText(
+        `${item.provider} · ${item.reason}`,
+        -245,
+        -68,
+        490,
+      );
+      context.fillStyle = "#29221d";
+      context.font =
+        '700 31px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
+      wrapCanvasText(
+        context,
+        item.action,
+        -245,
+        -24,
+        490,
+        34,
+        3,
+      );
+      context.restore();
+    });
+  });
+}
+
+function worldTaskDoneTexture(THREE, source = WORLD_TASK_BULLETIN_ITEMS) {
+  const completed = (Array.isArray(source) ? source : [])
+    .filter((item) => item.done)
+    .slice(-5);
+  return canvasTexture(THREE, 1800, 220, (context) => {
+    context.fillStyle = "#eff3dc";
+    context.fillRect(0, 0, 1800, 220);
+    context.fillStyle = "#2c3328";
+    context.font =
+      '800 37px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
+    context.fillText("DONE + DEPLOYED", 34, 48);
+    context.font =
+      '700 29px "Marker Felt", "Segoe Print", "Comic Sans MS", cursive';
+    completed.forEach((item, index) => {
+      const x = 35 + (index % 3) * 585;
+      const y = 94 + Math.floor(index / 3) * 58;
+      context.fillText(`✕ ${item.task}`, x, y, 545);
     });
   });
 }
@@ -1945,8 +2528,7 @@ function sanitizedOrgTeamAssignment(remote) {
   const assignment = remote?.orgTeam;
   if (
     !peerId ||
-    /^(?:inactive|local|node|bot):/.test(peerId) ||
-    remote?.persistedInactive === true ||
+    /^(?:node|bot):/.test(peerId) ||
     remote?.accountStatus === "Verified bot" ||
     String(remote?.accountStatus || "Guest") === "Guest" ||
     !assignment ||
@@ -3063,7 +3645,9 @@ function normalizeSelfWorkBoard(board = {}) {
     items: items.slice(0, WORK_BADGE_ROWS).map((item) => ({
       kind: item?.kind === "issue" ? "issue" : "task",
       title: String(item?.title || "").replace(/\s+/g, " ").trim().slice(0, 64),
-      status: item?.status === "active" ? "active" : "idle",
+      status: ["active", "done"].includes(item?.status)
+        ? item.status
+        : "idle",
       elapsed: String(item?.elapsed || "").trim().slice(0, 12),
       checkin: String(item?.checkin || "").trim().slice(0, 24),
     })).filter((item) => item.title),
@@ -3150,6 +3734,8 @@ function avatarWorkBadgeTexture(THREE, board = {}) {
           ? "#77d9ff"
           : item.status === "active"
             ? "#1f9c6a"
+            : item.status === "done"
+              ? "#9ef7c6"
             : "#3a4b45";
       context.beginPath();
       context.arc(60, top, 13, 0, Math.PI * 2);
@@ -3162,6 +3748,8 @@ function avatarWorkBadgeTexture(THREE, board = {}) {
           ? "#77d9ff"
           : item.status === "active"
             ? "#9ef7c6"
+            : item.status === "done"
+              ? "#9ef7c6"
             : "#7fb9a5";
       context.font = '650 26px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(
@@ -3169,7 +3757,13 @@ function avatarWorkBadgeTexture(THREE, board = {}) {
           context,
           item.kind === "issue"
             ? `ISSUE${item.checkin ? ` \u00b7 ${item.checkin}` : ""}`
-            : `${item.status === "active" ? "RUNNING" : "TO DO"} \u00b7 ${
+            : `${
+                item.status === "active"
+                  ? "RUNNING"
+                  : item.status === "done"
+                    ? "DONE"
+                    : "TO DO"
+              } \u00b7 ${
                 item.elapsed || "0:00"
               }${item.checkin ? ` \u00b7 ${item.checkin}` : ""}`,
           580,
@@ -3468,6 +4062,7 @@ function nodeDataKey(node) {
     diskUsedBytes: node?.diskUsedBytes,
     diskTotalBytes: node?.diskTotalBytes,
     repositories: node?.repositories,
+    agentTasks: node?.agentTasks,
   });
 }
 
@@ -3797,6 +4392,140 @@ function serverPanelTexture(THREE, node) {
   });
 }
 
+const MIRROR_AGENT_TASK_STATUS = Object.freeze({
+  running: { label: "RUNNING", color: "#77d9ff" },
+  stopped: { label: "STOPPED", color: "#91a39a" },
+  merged: { label: "MERGED", color: "#73f0ad" },
+  attention: { label: "ATTENTION", color: "#ffb56b" },
+});
+
+function normalizeMirrorAgentTask(task) {
+  if (!task || typeof task !== "object") return null;
+  const title = String(task.title || task.task || "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 84);
+  if (!title) return null;
+  const rawStatus = String(task.status || "").toLowerCase();
+  const history = Array.isArray(task.history) ? task.history : [];
+  const merged =
+    rawStatus === "merged" ||
+    history.some(
+      (entry) =>
+        String(entry?.state || "").toLowerCase() === "merged" ||
+        /\bmerged\b/i.test(String(entry?.text || "").slice(0, 240)),
+    );
+  let status = "stopped";
+  if (merged) {
+    status = "merged";
+  } else if (
+    ["running", "queued", "security_pending", "starting"].includes(rawStatus)
+  ) {
+    status = "running";
+  } else if (
+    ["failed", "rejected", "attention", "blocked", "error"].includes(rawStatus)
+  ) {
+    status = "attention";
+  }
+  return {
+    id: String(task.id || "").slice(0, 64),
+    title,
+    provider:
+      String(task.provider || "").toLowerCase() === "codex"
+        ? "CODEX"
+        : "CLAUDE",
+    status,
+    updatedAt: Math.max(0, Number(task.updatedAt) || 0),
+  };
+}
+
+function mirrorAgentTaskPanelTexture(THREE, node) {
+  const tasks = (Array.isArray(node?.agentTasks) ? node.agentTasks : [])
+    .map(normalizeMirrorAgentTask)
+    .filter(Boolean)
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .slice(0, 5);
+  return canvasTexture(THREE, 512, 1024, (context, canvas) => {
+    context.fillStyle = "#07110f";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.strokeStyle = "#526c61";
+    context.lineWidth = 8;
+    roundedRect(context, 8, 8, canvas.width - 16, canvas.height - 16, 22);
+    context.stroke();
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    context.font = '800 36px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#f1fff6";
+    context.fillText("AGENT TASKS", 28, 48);
+    context.font = '700 17px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#73f0ad";
+    context.fillText("ENGINEERING TEAM VIEW · CLICK TO OPEN", 28, 82);
+    context.strokeStyle = "#294339";
+    context.lineWidth = 2;
+    context.beginPath();
+    context.moveTo(28, 108);
+    context.lineTo(484, 108);
+    context.stroke();
+
+    if (!tasks.length) {
+      context.font = '700 25px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillStyle = "#91a39a";
+      context.textAlign = "center";
+      context.fillText("NO AGENT TASKS", canvas.width / 2, 230);
+      context.font = '600 18px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("Start Claude or Codex from Agents", canvas.width / 2, 270);
+      return;
+    }
+
+    tasks.forEach((task, index) => {
+      const y = 128 + index * 168;
+      const status = MIRROR_AGENT_TASK_STATUS[task.status];
+      context.fillStyle = index % 2 ? "#0b1915" : "#0d1e19";
+      roundedRect(context, 20, y, 472, 148, 12);
+      context.fill();
+      context.fillStyle = status.color;
+      context.fillRect(20, y, 8, 148);
+      context.font = '800 20px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillStyle = "#91a39a";
+      context.fillText(task.provider, 44, y + 28);
+      const badgeWidth = Math.max(108, context.measureText(status.label).width + 24);
+      context.fillStyle = `${status.color}26`;
+      roundedRect(context, 472 - badgeWidth, y + 12, badgeWidth, 32, 8);
+      context.fill();
+      context.strokeStyle = status.color;
+      context.lineWidth = 2;
+      context.stroke();
+      context.fillStyle = status.color;
+      context.textAlign = "center";
+      context.fillText(status.label, 472 - badgeWidth / 2, y + 29);
+      context.textAlign = "left";
+      context.font = '700 24px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillStyle = "#f1fff6";
+      const words = task.title.split(/\s+/);
+      const lines = ["", ""];
+      for (const word of words) {
+        const target = !lines[0] || context.measureText(
+          `${lines[0]} ${word}`.trim(),
+        ).width <= 418 ? 0 : 1;
+        if (target === 1 && context.measureText(
+          `${lines[1]} ${word}`.trim(),
+        ).width > 418) {
+          lines[1] = `${lines[1]}…`;
+          break;
+        }
+        lines[target] = `${lines[target]} ${word}`.trim();
+      }
+      context.fillText(lines[0], 44, y + 76);
+      if (lines[1]) context.fillText(lines[1], 44, y + 110);
+    });
+
+    context.font = '600 16px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#6f8579";
+    context.fillText("LIVE FROM THE AUTHORIZED AGENT SESSION FEED", 28, 990);
+  });
+}
+
 // A pocket-sized stand-in for the agent a node just answered: the little
 // figure that shoots up out of a cabinet when it serves a clone or a
 // repository page. Unlit and self-owning — every launch builds its own
@@ -3899,6 +4628,25 @@ function createMirrorServerCabinet(THREE, node, id) {
   rearPanel.name = "mirror-server-rear-panel";
   rearPanel.userData.nodeCabinet = { ...node };
   group.add(rearPanel);
+
+  const agentTaskPanelMaterial = new THREE.MeshBasicMaterial({
+    map: mirrorAgentTaskPanelTexture(THREE, node),
+    toneMapped: false,
+  });
+  for (const side of [-1, 1]) {
+    const agentTaskPanel = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.27, 2.72),
+      agentTaskPanelMaterial,
+    );
+    agentTaskPanel.position.set(side * 1.125, 1.72, 0);
+    agentTaskPanel.rotation.y = side * Math.PI / 2;
+    agentTaskPanel.name =
+      side > 0
+        ? "mirror-server-agent-panel-right"
+        : "mirror-server-agent-panel-left";
+    agentTaskPanel.userData.nodeCabinet = { ...node };
+    group.add(agentTaskPanel);
+  }
 
   const integrity = String(node?.integrity || "unknown").toLowerCase();
   const activity = String(node?.activity || "unknown").toLowerCase();
@@ -4065,7 +4813,6 @@ function createSystemCapacityPlatform(THREE) {
   district.name = "system-capacity-infrastructure";
   district.userData.infrastructureKind = "system-capacity";
   district.userData.metricsAvailable = false;
-  district.position.set(...SYSTEM_CAPACITY_PLATFORM_POSITION);
   const base = new THREE.Mesh(
     new THREE.BoxGeometry(13.5, 0.36, 9.5),
     makeMaterial(THREE, "#102d32", {
@@ -4079,11 +4826,11 @@ function createSystemCapacityPlatform(THREE) {
   addSectionPlaque(
     THREE,
     district,
-    SYSTEM_CAPACITY_PLATFORM_POSITION,
+    [0, 0, 0],
     "SYSTEM CAPACITY",
     "durable objects + database rows",
     "#80e8ff",
-    9,
+    6,
   );
   const emptyMarker = new THREE.Mesh(
     new THREE.TorusGeometry(1.2, 0.08, 8, 36),
@@ -4100,6 +4847,162 @@ function createSystemCapacityPlatform(THREE) {
   district.add(emptyMarker);
   setShadows(district);
   return district;
+}
+
+function infrastructureConsoleTexture(THREE, enabled, entries = []) {
+  const safeEntries = Array.isArray(entries)
+    ? entries
+        .slice(-14)
+        .map((entry) => ({
+          level: ["debug", "info", "log", "warn", "error"].includes(
+            String(entry?.level || ""),
+          )
+            ? String(entry.level)
+            : "log",
+          at: String(entry?.at || "").replace(/[^\d:.APM -]/gi, "").slice(0, 16),
+          text: String(entry?.text || "")
+            .replace(/[\u0000-\u001f\u007f]/g, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 190),
+        }))
+        .filter((entry) => entry.text)
+    : [];
+  return canvasTexture(THREE, 1600, 900, (context) => {
+    context.fillStyle = "#03110f";
+    context.fillRect(0, 0, 1600, 900);
+    context.strokeStyle = enabled ? "#79f7b7" : "#59736a";
+    context.lineWidth = 18;
+    context.strokeRect(12, 12, 1576, 876);
+    context.fillStyle = enabled ? "#79f7b7" : "#9ab0a8";
+    context.font = '800 58px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      `LOCAL CONSOLE · ${enabled ? "STREAMING" : "OFF"}`,
+      58,
+      84,
+    );
+    context.fillStyle = "#80a99a";
+    context.font = '600 27px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      enabled
+        ? "THIS SCREEN ONLY · BOUNDED + REDACTED · NOT SENT OR SAVED"
+        : "FLIP THE SWITCH TO SHOW THIS BROWSER'S LOGS",
+      58,
+      132,
+    );
+    context.strokeStyle = "#21443a";
+    context.lineWidth = 3;
+    context.beginPath();
+    context.moveTo(58, 158);
+    context.lineTo(1542, 158);
+    context.stroke();
+    if (!enabled) {
+      context.fillStyle = "#5e776f";
+      context.font = '700 48px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("CAPTURE DISABLED", 58, 260);
+      context.font = '500 31px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        "Turning capture off restores console methods and clears memory.",
+        58,
+        320,
+      );
+      return;
+    }
+    if (!safeEntries.length) {
+      context.fillStyle = "#6f9185";
+      context.font = '600 38px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText("Waiting for local console output…", 58, 238);
+      return;
+    }
+    safeEntries.forEach((entry, index) => {
+      const y = 202 + index * 47;
+      const colors = {
+        debug: "#829892",
+        info: "#80e8ff",
+        log: "#cde9df",
+        warn: "#ffd477",
+        error: "#ff8898",
+      };
+      context.fillStyle = "#688078";
+      context.font = '500 24px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(entry.at || "--:--:--", 58, y);
+      context.fillStyle = colors[entry.level] || colors.log;
+      context.font = '700 24px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(entry.level.toUpperCase().padEnd(5, " "), 230, y);
+      context.font = '500 25px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(entry.text, 345, y, 1190);
+    });
+  });
+}
+
+function createInfrastructureConsoleDisplay(THREE, interactive) {
+  const display = new THREE.Group();
+  display.name = "forkmesh-infrastructure-local-console";
+  display.userData.officeFloorId = "infrastructure";
+  display.userData.enabled = false;
+
+  const frame = new THREE.Mesh(
+    new THREE.BoxGeometry(23.6, 11.1, 0.42),
+    makeMaterial(THREE, "#183b34", {
+      emissive: "#17523f",
+      emissiveIntensity: 0.46,
+      metalness: 0.62,
+      roughness: 0.3,
+    }),
+  );
+  frame.position.y = 8.15;
+  display.add(frame);
+  const face = new THREE.Mesh(
+    new THREE.PlaneGeometry(22.8, 10.3),
+    new THREE.MeshBasicMaterial({
+      map: infrastructureConsoleTexture(THREE, false, []),
+      toneMapped: false,
+    }),
+  );
+  face.name = "forkmesh-infrastructure-local-console-face";
+  face.position.set(0, 8.15, 0.23);
+  display.add(face);
+
+  const switchBase = new THREE.Mesh(
+    new THREE.BoxGeometry(4.6, 2.5, 0.7),
+    makeMaterial(THREE, "#1a2b29", {
+      metalness: 0.72,
+      roughness: 0.34,
+    }),
+  );
+  switchBase.position.set(-14.3, 4.2, 0.12);
+  display.add(switchBase);
+  const switchHandle = new THREE.Mesh(
+    new THREE.BoxGeometry(1.25, 2.6, 0.9),
+    makeMaterial(THREE, "#aabbb5", {
+      emissive: "#3a4944",
+      emissiveIntensity: 0.26,
+      metalness: 0.66,
+      roughness: 0.26,
+    }),
+  );
+  switchHandle.name = "forkmesh-infrastructure-console-switch";
+  switchHandle.position.set(-14.3, 4.2, 0.62);
+  switchHandle.rotation.z = 0.58;
+  switchHandle.userData.interactive = "infrastructure-console-switch";
+  switchHandle.userData.officeFloorId = "infrastructure";
+  interactive.push(switchHandle);
+  display.add(switchHandle);
+  const switchLabel = makeOfficeWallPlacard(
+    THREE,
+    "LOCAL LOGS",
+    "OFF BY DEFAULT · CLICK SWITCH",
+    "#80e8ff",
+    8,
+    1.4,
+  );
+  switchLabel.position.set(-14.3, 6.6, 0.38);
+  display.add(switchLabel);
+  display.userData.face = face;
+  display.userData.switchHandle = switchHandle;
+  setShadows(display);
+  face.castShadow = false;
+  return display;
 }
 
 function formatCapacityBytes(bytes) {
@@ -4570,6 +5473,54 @@ function repositorySizeLabelSprite(THREE, title, subtitle, color) {
   return sprite;
 }
 
+function repositoryRecordCaptionSprite(THREE, title, subtitle, color) {
+  const texture = canvasTexture(THREE, 1024, 180, (context) => {
+    context.clearRect(0, 0, 1024, 180);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.shadowColor = "rgba(0, 0, 0, 0.9)";
+    context.shadowBlur = 10;
+    context.shadowOffsetY = 2;
+    context.fillStyle = "#ffffff";
+    context.font = '800 42px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(String(title || "").slice(0, 58), 512, 66, 990);
+    context.fillStyle = color || "#d9ffea";
+    context.font = '700 28px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(String(subtitle || "").slice(0, 82), 512, 128, 990);
+  });
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      depthTest: true,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  sprite.renderOrder = 12;
+  return sprite;
+}
+
+function repositoryRecordPagerTexture(THREE, title, subtitle, color) {
+  return canvasTexture(THREE, 512, 160, (context) => {
+    context.clearRect(0, 0, 512, 160);
+    roundedRect(context, 8, 8, 496, 144, 22);
+    context.fillStyle = "rgba(7, 17, 14, 0.96)";
+    context.fill();
+    context.lineWidth = 7;
+    context.strokeStyle = color || "#59655f";
+    context.stroke();
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillStyle = "#f8fff9";
+    context.font = '800 46px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(String(title || "").slice(0, 12), 256, 62);
+    context.fillStyle = color || "#91a39a";
+    context.font = '700 25px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(String(subtitle || "").slice(0, 12), 256, 116);
+  });
+}
+
 function repositoryStarPlaneTexture(THREE, count, starred = false) {
   // A single, fixed upright plane avoids the chunky extruded-star silhouette
   // at close range. Its transparent texture preserves the actual star shape
@@ -4623,11 +5574,267 @@ function repositoryStonePlaqueTexture(THREE, repositoryName) {
   });
 }
 
+function repositoryCommitActivityTexture(THREE, activity = {}) {
+  const weeks = Array.isArray(activity?.weeks)
+    ? activity.weeks.slice(-52).map((value) => {
+        const count = Number(value);
+        return Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+      })
+    : [];
+  while (weeks.length < 52) weeks.unshift(0);
+  const metrics =
+    activity?.metrics && typeof activity.metrics === "object"
+      ? activity.metrics
+      : {};
+  const status = String(activity?.status || "unavailable");
+  const max = Math.max(1, ...weeks);
+  const total = weeks.reduce((sum, count) => sum + count, 0);
+  const rateLabel = (metric) => {
+    const rate = Number(metric?.commitsPerHour);
+    if (!Number.isFinite(rate) || rate < 0) return "—";
+    const formatted =
+      rate >= 100
+        ? rate.toFixed(0)
+        : rate >= 10
+          ? rate.toFixed(1)
+          : rate.toFixed(2);
+    return `${metric?.exact === false ? "≥" : ""}${formatted}/HR`;
+  };
+  return canvasTexture(THREE, 1536, 512, (context) => {
+    context.clearRect(0, 0, 1536, 512);
+    roundedRect(context, 8, 8, 1520, 496, 28);
+    context.fillStyle = "rgba(5, 17, 14, 0.98)";
+    context.fill();
+    context.lineWidth = 8;
+    context.strokeStyle = "#77d9ff";
+    context.stroke();
+
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    context.fillStyle = "#f8fff9";
+    context.font = '800 48px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("COMMIT ACTIVITY", 54, 62);
+    context.fillStyle = "#9ef7c6";
+    context.font = '700 25px "ForkMesh Mono", ui-monospace, monospace';
+    const subtitle =
+      status === "loading"
+        ? "READING PINNED MIRROR HISTORY…"
+        : status === "unavailable"
+          ? "LIVE COMMIT HISTORY UNAVAILABLE"
+          : status === "empty"
+            ? "NO COMMIT ACTIVITY IN THIS WINDOW"
+            : `52 WEEKS · ${total.toLocaleString("en-US")} COMMITS`;
+    context.fillText(subtitle, 56, 108);
+
+    const chartLeft = 58;
+    const chartTop = 144;
+    const chartWidth = 1420;
+    const chartHeight = 166;
+    const gap = 5;
+    const barWidth = (chartWidth - gap * 51) / 52;
+    context.fillStyle = "rgba(119, 217, 255, 0.09)";
+    roundedRect(context, chartLeft - 12, chartTop - 12, chartWidth + 24, chartHeight + 24, 14);
+    context.fill();
+    weeks.forEach((count, index) => {
+      const height = count > 0
+        ? Math.max(10, Math.round((count / max) * chartHeight))
+        : 6;
+      const x = chartLeft + index * (barWidth + gap);
+      const y = chartTop + chartHeight - height;
+      roundedRect(context, x, y, barWidth, height, Math.min(5, barWidth / 2));
+      context.fillStyle = count > 0
+        ? "#77d9ff"
+        : status === "loading"
+          ? "rgba(145, 163, 154, 0.42)"
+          : "rgba(145, 163, 154, 0.24)";
+      context.fill();
+    });
+    context.fillStyle = "#91a39a";
+    context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("52 WEEKS AGO", 58, 340);
+    context.textAlign = "right";
+    context.fillText("NOW", 1478, 340);
+
+    const metricRows = [
+      ["TODAY", metrics.today],
+      ["THIS WEEK", metrics.week],
+      ["THIS MONTH", metrics.month],
+    ];
+    metricRows.forEach(([label, metric], index) => {
+      const x = 54 + index * 490;
+      roundedRect(context, x, 370, 460, 102, 16);
+      context.fillStyle = "rgba(119, 217, 255, 0.08)";
+      context.fill();
+      context.textAlign = "left";
+      context.fillStyle = "#91a39a";
+      context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(`${label} · UTC`, x + 22, 400);
+      context.fillStyle = "#f8fff9";
+      context.font = '800 38px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(rateLabel(metric), x + 22, 444);
+      context.textAlign = "right";
+      context.fillStyle = "#9ef7c6";
+      context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
+      const commits = Number(metric?.commits);
+      context.fillText(
+        Number.isFinite(commits)
+          ? `${metric?.exact === false ? "≥" : ""}${Math.max(0, commits).toLocaleString("en-US")} COMMIT${commits === 1 ? "" : "S"}`
+          : "NO DATA",
+        x + 438,
+        444,
+      );
+    });
+  });
+}
+
 const REPOSITORY_RECORD_STATE_COLORS = {
   open: "#9ef7c6",
+  ready: "#70d99d",
+  conflict: "#ff7189",
+  draft: "#f7c96b",
   closed: "#8fa39a",
   merged: "#d5b6ff",
+  unavailable: "#91a39a",
 };
+
+function repositoryPullReviewStatus(pull = {}) {
+  const state = String(pull?.state || "").toLowerCase();
+  const explicit = String(
+    pull?.reviewStatus ||
+      pull?.mergeStatus ||
+      pull?.mergeability ||
+      "",
+  ).toLowerCase();
+  if (state === "merged" || explicit === "merged") return "merged";
+  if (pull?.metadataAvailable === false) return "unavailable";
+  if (
+    pull?.hasConflicts === true ||
+    pull?.conflict === true ||
+    /\b(conflict|conflicting|dirty|blocked)\b/.test(explicit)
+  ) {
+    return "conflict";
+  }
+  if (pull?.draft === true || explicit === "draft") return "draft";
+  if (state === "closed" || explicit === "closed") return "closed";
+  if (
+    pull?.mergeable === true ||
+    /\b(ready|clean|mergeable)\b/.test(explicit)
+  ) {
+    return "ready";
+  }
+  // An immutable open record is truthful, but it is not proof that a merge
+  // simulation is conflict-free. Keep the status OPEN until a mirror reports
+  // an explicit readiness/conflict result.
+  if (state === "open") return "open";
+  return "unavailable";
+}
+
+function repositoryPullMergeabilityScore(pull = {}) {
+  const state = String(pull?.state || "").toLowerCase();
+  const review = String(
+    pull?.reviewStatus || pull?.mergeStatus || pull?.mergeability || "",
+  ).toLowerCase();
+  const checks = String(
+    pull?.checksStatus || pull?.checkStatus || pull?.ciStatus || "",
+  ).toLowerCase();
+  const factors = [];
+  if (state === "merged") {
+    return { score: 100, label: "MERGED", factors: ["MERGED+"], terminal: true };
+  }
+  if (state === "closed") {
+    return { score: 0, label: "CLOSED", factors: ["CLOSED"], terminal: true };
+  }
+  if (pull?.metadataAvailable === false) {
+    return {
+      score: 0,
+      label: "NO DATA",
+      factors: ["META-", "REFS?", "CLEAN?", "REVIEW?", "CI?"],
+      terminal: false,
+    };
+  }
+
+  let score = 10;
+  factors.push("META+");
+  if (state === "open") {
+    score += 10;
+    factors.push("OPEN+");
+  } else {
+    factors.push("OPEN?");
+  }
+
+  const base = String(pull?.base || "").trim();
+  const head = String(pull?.head || "").trim();
+  if (base && head && base !== head) {
+    score += 10;
+    factors.push("REFS+");
+  } else {
+    factors.push("REFS-");
+  }
+
+  const oidPattern = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
+  if (
+    oidPattern.test(String(pull?.creationBaseOid || "")) &&
+    oidPattern.test(String(pull?.creationHeadOid || ""))
+  ) {
+    score += 15;
+    factors.push("OIDS+");
+  } else {
+    factors.push("OIDS?");
+  }
+
+  if (pull?.draft === true) {
+    factors.push("DRAFT-");
+  } else {
+    score += 10;
+    factors.push("DRAFT+");
+  }
+
+  const conflicts =
+    pull?.hasConflicts === true ||
+    pull?.conflict === true ||
+    pull?.mergeable === false ||
+    /\b(conflict|conflicting|dirty|blocked)\b/.test(review);
+  const clean =
+    pull?.hasConflicts === false ||
+    pull?.mergeable === true ||
+    /\b(clean|mergeable)\b/.test(review);
+  if (conflicts) {
+    factors.push("CLEAN-");
+  } else if (clean) {
+    score += 25;
+    factors.push("CLEAN+");
+  } else {
+    factors.push("CLEAN?");
+  }
+
+  if (/\b(approved|approval|ready)\b/.test(review)) {
+    score += 10;
+    factors.push("REVIEW+");
+  } else if (/\b(changes|rejected|blocked)\b/.test(review)) {
+    factors.push("REVIEW-");
+  } else {
+    factors.push("REVIEW?");
+  }
+
+  const checksPassing = /\b(pass|passed|passing|success|successful|green)\b/.test(checks);
+  const checksFailing = /\b(fail|failed|failing|error|red|cancel)\b/.test(checks);
+  if (checksPassing) {
+    score += 10;
+    factors.push("CI+");
+  } else if (checksFailing) {
+    factors.push("CI-");
+  } else {
+    factors.push("CI?");
+  }
+
+  if (conflicts) score = Math.min(score, 24);
+  if (checksFailing) score = Math.min(score, 49);
+  if (pull?.draft === true) score = Math.min(score, 59);
+  score = Math.max(0, Math.min(100, Math.round(score)));
+  const label =
+    score >= 85 ? "HIGH" : score >= 65 ? "GOOD" : score >= 45 ? "CHECK" : "LOW";
+  return { score, label, factors, terminal: false };
+}
 
 function repositoryIssuePageTexture(THREE, issue, expanded, repositoryName) {
   const width = expanded ? 512 : 256;
@@ -4666,6 +5873,16 @@ function repositoryIssuePageTexture(THREE, issue, expanded, repositoryName) {
       context.stroke();
     }
     if (expanded) {
+      context.fillStyle = "#17251d";
+      context.font = '800 30px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(String(issue.title || `Issue #${issue.number}`).slice(0, 28), 256, 214);
+      context.fillStyle = "#3d4a41";
+      context.font = '700 24px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        `BY ${String(issue.author || "Unknown").slice(0, 24)}`,
+        256,
+        260,
+      );
       context.fillStyle = "#3d4a41";
       context.font = '700 26px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(String(repositoryName || "").slice(0, 30), 256, 580);
@@ -4676,27 +5893,117 @@ function repositoryIssuePageTexture(THREE, issue, expanded, repositoryName) {
   });
 }
 
-function repositoryPullCardTexture(THREE, pull) {
-  return canvasTexture(THREE, 1024, 232, (context) => {
-    context.fillStyle = "#171429";
-    context.fillRect(0, 0, 1024, 232);
+function repositoryRecordDateLabel(value) {
+  const stamp = Number(value);
+  if (!Number.isFinite(stamp) || stamp <= 0) return "";
+  const date = new Date(stamp);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString().slice(0, 10);
+}
+
+function repositoryIssueCardTexture(THREE, issue) {
+  return canvasTexture(THREE, 1024, 300, (context) => {
+    context.fillStyle = "#101f1a";
+    context.fillRect(0, 0, 1024, 300);
     const accent =
-      REPOSITORY_RECORD_STATE_COLORS[pull.state] || "#d5b6ff";
+      REPOSITORY_RECORD_STATE_COLORS[issue.state] || "#f7c96b";
     context.fillStyle = accent;
-    context.fillRect(0, 0, 18, 232);
+    context.fillRect(0, 0, 18, 300);
+    context.textBaseline = "middle";
+    context.textAlign = "left";
+    context.fillStyle = "#f7c96b";
+    context.font = '900 56px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(`#${issue.number}`, 52, 58);
+    context.textAlign = "right";
+    context.fillStyle = accent;
+    context.font = '800 34px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText((issue.state || "recorded").toUpperCase(), 980, 58);
+    context.textAlign = "left";
+    context.fillStyle = "#f1fff6";
+    context.font = '800 42px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      String(issue.title || `Issue #${issue.number}`).slice(0, 43),
+      52,
+      138,
+    );
+    context.fillStyle = "#9fb8ad";
+    context.font = '700 29px "ForkMesh Mono", ui-monospace, monospace';
+    const meta = [
+      `BY ${String(issue.author || "Unknown").slice(0, 22)}`,
+      repositoryRecordDateLabel(issue.updatedAt || issue.createdAt),
+      Array.isArray(issue.labels) && issue.labels.length
+        ? issue.labels.slice(0, 2).join(", ")
+        : "",
+      Array.isArray(issue.assignees) && issue.assignees.length
+        ? `→ ${issue.assignees.slice(0, 2).join(", ")}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    context.fillText(meta.slice(0, 62), 52, 220);
+    context.fillStyle = issue.metadataAvailable === false ? "#f0c66f" : "#70d99d";
+    context.font = '700 24px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      issue.metadataAvailable === false
+        ? "NUMBER/STATE ONLY"
+        : "COMMIT-PINNED ISSUE RECORD",
+      52,
+      270,
+    );
+  });
+}
+
+function repositoryPullCardTexture(THREE, pull) {
+  return canvasTexture(THREE, 1024, 300, (context) => {
+    context.fillStyle = "#171429";
+    context.fillRect(0, 0, 1024, 300);
+    const reviewStatus = repositoryPullReviewStatus(pull);
+    const mergeability = repositoryPullMergeabilityScore(pull);
+    const accent =
+      REPOSITORY_RECORD_STATE_COLORS[reviewStatus] || "#d5b6ff";
+    context.fillStyle = accent;
+    context.fillRect(0, 0, 18, 300);
     context.textAlign = "left";
     context.textBaseline = "middle";
     context.fillStyle = "#d5b6ff";
-    context.font = '900 62px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(`#${pull.number}`, 52, 66);
+    context.font = '900 56px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(`#${pull.number}`, 52, 58);
     context.fillStyle = accent;
-    context.font = '800 40px "ForkMesh Mono", ui-monospace, monospace';
+    context.font = '800 26px "ForkMesh Mono", ui-monospace, monospace';
     context.textAlign = "right";
-    context.fillText((pull.state || "recorded").toUpperCase(), 984, 66);
+    context.fillText(reviewStatus.toUpperCase(), 790, 50);
+    context.fillStyle =
+      mergeability.score >= 65
+        ? "#70d99d"
+        : mergeability.score >= 45
+          ? "#f7c96b"
+          : "#ff7189";
+    context.font = '900 34px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(`${mergeability.score}%`, 980, 46);
+    context.font = '800 18px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(`${mergeability.label} MERGE`, 980, 78);
     context.textAlign = "left";
     context.fillStyle = "#f1edff";
-    context.font = '700 44px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(String(pull.title || "").slice(0, 40), 52, 164);
+    context.font = '800 42px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(String(pull.title || "").slice(0, 43), 52, 138);
+    context.fillStyle = "#b9b3d4";
+    context.font = '700 29px "ForkMesh Mono", ui-monospace, monospace';
+    const branch = pull.head && pull.base ? `${pull.head} → ${pull.base}` : "";
+    const meta = [
+      `BY ${String(pull.author || "Unknown").slice(0, 22)}`,
+      repositoryRecordDateLabel(pull.createdAt),
+      branch,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    context.fillText(meta.slice(0, 62), 52, 220);
+    context.fillStyle =
+      reviewStatus === "unavailable" ? "#f0c66f" : "#9e8cff";
+    context.font = '700 21px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      mergeability.factors.join(" · ").slice(0, 86),
+      52,
+      270,
+    );
   });
 }
 
@@ -4857,6 +6164,50 @@ function repositoryFollowerCardTexture(THREE, follower, accent, image = null) {
     }
     if (row < 3 && line) context.fillText(line, 32, 196 + row * 36);
   });
+}
+
+function repositoryFollowerIconTexture(THREE, follower, accent, image = null) {
+  // A pure circular avatar belongs in the orbit. The previous tall profile
+  // card hid the file wedges and read like another repository control.
+  return canvasTexture(THREE, 256, 256, (context) => {
+    context.clearRect(0, 0, 256, 256);
+    drawRepositoryFollowerAvatar(
+      context,
+      follower,
+      accent,
+      image,
+      20,
+      20,
+      216,
+    );
+  });
+}
+
+function makeRepositoryFollowerIcon(THREE, follower) {
+  const seed = repositoryFollowerSeed(follower);
+  const accent =
+    REPOSITORY_FOLLOWER_ACCENTS[seed % REPOSITORY_FOLLOWER_ACCENTS.length];
+  const icon = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: repositoryFollowerIconTexture(THREE, follower, accent),
+      transparent: true,
+      depthTest: true,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  icon.name = `repository-follower-icon:${follower.handle || follower.profileUrl}`;
+  icon.scale.set(0.82, 0.82, 1);
+  icon.renderOrder = 13;
+  icon.userData.repositoryFollower = { ...follower };
+  loadRepositoryFollowerAvatar(follower.avatar, (image) => {
+    if (!icon.parent) return;
+    const next = repositoryFollowerIconTexture(THREE, follower, accent, image);
+    icon.material.map?.dispose?.();
+    icon.material.map = next;
+    icon.material.needsUpdate = true;
+  });
+  return icon;
 }
 
 function makeRepositoryFollowerFigure(THREE, follower) {
@@ -6660,6 +8011,8 @@ const BLOG_BANNER_OPTIONS = Object.freeze({
   host: "every feature, explained",
   feedHeading: "FROM THE BLOG",
   postArt: true,
+  tall: true,
+  visiblePosts: 4,
   lines: [
     "FEATURE DEEP DIVES",
     "MIRRORS · AGENTS · CI · CHAT",
@@ -6710,26 +8063,52 @@ function drawSocialBannerPostCard(context, post, top, resolveImage) {
   }
   context.restore();
   context.fillStyle = "#8b9bf4";
-  context.font = '600 34px "ForkMesh Mono", ui-monospace, monospace';
+  context.font = '600 31px "ForkMesh Mono", ui-monospace, monospace';
   context.fillText(
-    clipCanvasText(context, post.meta, textWidth),
+    clipCanvasText(
+      context,
+      [post.age, post.meta].filter(Boolean).join(" · "),
+      textWidth,
+    ),
     textX,
-    top + 36,
+    top + 32,
+  );
+  context.fillStyle = "#65d892";
+  context.font = '700 23px "ForkMesh Mono", ui-monospace, monospace';
+  context.fillText(
+    clipCanvasText(
+      context,
+      post.distribution || "SOCIAL STATUS UNKNOWN",
+      textWidth,
+    ),
+    textX,
+    top + 72,
+  );
+  context.fillStyle = "#f7c96b";
+  context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
+  context.fillText(
+    clipCanvasText(
+      context,
+      post.reach || "VIEWS 0 · ~0 UNIQUE · 0 REFERRER SITES · 0 REFERRED",
+      textWidth,
+    ),
+    textX,
+    top + 112,
   );
   context.fillStyle = "#e8e9ff";
-  context.font = '500 50px "ForkMesh Favorit", sans-serif';
+  context.font = '500 46px "ForkMesh Favorit", sans-serif';
   const headlines = wrapCanvasText(
-    context, post.text, textX, top + 104, textWidth, 58, 2);
+    context, post.text, textX, top + 164, textWidth, 52, 2);
   context.fillStyle = "#a9abd4";
-  context.font = '400 36px "ForkMesh Favorit", sans-serif';
+  context.font = '400 32px "ForkMesh Favorit", sans-serif';
   wrapCanvasText(
     context,
     post.detail,
     textX,
-    top + 120 + headlines * 58,
+    top + 178 + headlines * 52,
     textWidth,
-    44,
-    3,
+    38,
+    2,
   );
 }
 
@@ -6740,7 +8119,7 @@ function socialBannerTexture(
   resolveImage = null,
 ) {
   const WIDTH = SOCIAL_BANNER_WIDTH;
-  const HEIGHT = SOCIAL_BANNER_HEIGHT;
+  const HEIGHT = options.tall ? 2560 : SOCIAL_BANNER_HEIGHT;
   return canvasTexture(THREE, WIDTH, HEIGHT, (context) => {
     context.fillStyle = "#191a2e";
     context.fillRect(0, 0, WIDTH, HEIGHT);
@@ -6782,7 +8161,10 @@ function socialBannerTexture(
       const posts = (Array.isArray(snapshot.posts) ? snapshot.posts : [])
         .slice(
           0,
-          art ? SOCIAL_BANNER_ART_VISIBLE_POSTS : SOCIAL_BANNER_VISIBLE_POSTS,
+          Number(options.visiblePosts) ||
+            (art
+              ? SOCIAL_BANNER_ART_VISIBLE_POSTS
+              : SOCIAL_BANNER_VISIBLE_POSTS),
         );
       context.fillStyle = "#8b9bf4";
       context.font = '700 48px "ForkMesh Mono", ui-monospace, monospace';
@@ -6822,18 +8204,18 @@ function socialBannerTexture(
       });
       context.fillStyle = "#8b9bf4";
       context.font = '800 68px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("TAP / CLICK TO OPEN", 96, 1920);
+      context.fillText("TAP / CLICK TO OPEN", 96, HEIGHT - 128);
       context.fillStyle = "#7a7ca8";
       context.font = '600 44px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(
         "LIVE · REFRESHED EVERY 10 MINUTES · " + options.footer,
         96,
-        2000,
+        HEIGHT - 48,
       );
     }
     context.strokeStyle = options.accent;
     context.lineWidth = 16;
-    context.strokeRect(12, 12, 1512, 2024);
+    context.strokeRect(12, 12, 1512, HEIGHT - 24);
   });
 }
 
@@ -6870,7 +8252,7 @@ function systemStatusBannerTexture(THREE, payload = null) {
     context.fillStyle = "#686b74";
     context.font = '500 25px "ForkMesh Favorit", sans-serif';
     context.fillText(
-      "30 days  ·  last 24 hours  ·  last 60 one-minute checks",
+      "last 60 one-minute checks  ·  last 24 hours  ·  30 days",
       72,
       292,
     );
@@ -6934,14 +8316,69 @@ function systemStatusBannerTexture(THREE, payload = null) {
         "coverage", 1452, top + Math.max(29, 61 * scale));
       context.textAlign = "left";
 
-      // Top strip: one tile per day, with that day's hourly checks inside.
       const days = Array.isArray(system.days) ? system.days.slice(-30) : [];
-      const dayX = 76;
-      const dayY = top + Math.max(34, rowHeight * 0.36);
-      const dayWidth = 44;
-      const dayHeight = Math.max(8, rowHeight * 0.24);
+      const graphLeft = 76;
+      const graphRight = 1452;
+      const graphWidth = graphRight - graphLeft;
+      const statusCellHeight = Math.max(
+        6,
+        Math.min(16, rowHeight * 0.075),
+      );
+
+      // Top strip: the latest 60 raw one-minute reachability checks. It now
+      // spans the same full graph width as the other time scales.
+      const minutes = Array.isArray(system.minutes)
+        ? system.minutes.slice(-60)
+        : [];
+      const minuteSlot = graphWidth / 60;
+      const minuteWidth = Math.max(5, minuteSlot - 3);
+      const minuteHeight = statusCellHeight;
+      const minuteY = top + Math.max(34, rowHeight * 0.36);
+      minutes.forEach((minute, minuteIndex) => {
+        context.fillStyle = systemStatusColor(minute?.status);
+        roundedRect(
+          context,
+          graphLeft + minuteIndex * minuteSlot,
+          minuteY,
+          minuteWidth,
+          minuteHeight,
+          Math.min(3, minuteHeight / 3),
+        );
+        context.fill();
+      });
+
+      // Middle strip: the latest 24 hourly checks. Every time scale uses the
+      // same visual height so none of the three rows looks heavier.
+      const hours = (
+        Array.isArray(system.hours)
+          ? system.hours
+          : days.flatMap((day) =>
+              Array.isArray(day?.hours) ? day.hours : [])
+      ).slice(-24);
+      const hourSlot = graphWidth / 24;
+      const hourWidth = Math.max(8, hourSlot - 7);
+      const hourHeight = statusCellHeight;
+      const hourY = top + rowHeight * 0.56;
+      hours.forEach((hour, hourIndex) => {
+        context.fillStyle = systemStatusColor(hour?.status);
+        roundedRect(
+          context,
+          graphLeft + hourIndex * hourSlot,
+          hourY,
+          hourWidth,
+          hourHeight,
+          Math.min(5, hourHeight / 4),
+        );
+        context.fill();
+      });
+
+      // Bottom strip: one tile per day, at the same height as minute/hour cells.
+      const daySlot = graphWidth / 30;
+      const dayWidth = Math.max(8, daySlot - 4);
+      const dayHeight = statusCellHeight;
+      const dayY = top + rowHeight * 0.78;
       days.forEach((day, dayIndex) => {
-        const x = dayX + dayIndex * 46;
+        const x = graphLeft + dayIndex * daySlot;
         context.fillStyle = day?.status
           ? systemStatusColor(day.status)
           : "#dedfe4";
@@ -6951,40 +8388,13 @@ function systemStatusBannerTexture(THREE, payload = null) {
         hours.slice(0, 24).forEach((hour, hourIndex) => {
           context.fillStyle = systemStatusColor(hour?.status);
           context.fillRect(
-            x + 4 + (hourIndex % 6) * 6,
+            x + 3 + (hourIndex % 6) * ((dayWidth - 6) / 6),
             dayY + 2 + Math.floor(hourIndex / 6) *
               Math.max(1.5, (dayHeight - 4) / 4),
-            4,
+            Math.max(2, (dayWidth - 12) / 6),
             Math.max(1, (dayHeight - 7) / 4),
           );
         });
-      });
-
-      // Middle strip: the latest 24 hourly checks.
-      const hours = (
-        Array.isArray(system.hours)
-          ? system.hours
-          : days.flatMap((day) =>
-              Array.isArray(day?.hours) ? day.hours : [])
-      ).slice(-24);
-      hours.forEach((hour, hourIndex) => {
-        context.fillStyle = systemStatusColor(hour?.status);
-        roundedRect(
-          context, 76 + hourIndex * 29, top + rowHeight * 0.69,
-          23, Math.max(4, rowHeight * 0.10), 3);
-        context.fill();
-      });
-
-      // Bottom strip: the latest 60 raw one-minute reachability checks.
-      const minutes = Array.isArray(system.minutes)
-        ? system.minutes.slice(-60)
-        : [];
-      minutes.forEach((minute, minuteIndex) => {
-        context.fillStyle = systemStatusColor(minute?.status);
-        roundedRect(
-          context, 76 + minuteIndex * 18, top + rowHeight * 0.84,
-          13, Math.max(3, rowHeight * 0.08), 2);
-        context.fill();
       });
     });
 
@@ -7016,13 +8426,16 @@ function createSocialBanner(THREE, interactive, options) {
     makeMaterial(THREE, "#2c2d4d", { metalness: 0.4, roughness: 0.5 }),
   );
   post.position.y = 1.3;
+  const faceHeight = options.tall ? 12 : 9.6;
+  const frameHeight = faceHeight + 0.4;
+  const frameY = 1.75 + frameHeight / 2;
   const frame = new THREE.Mesh(
-    new THREE.BoxGeometry(7.9, 10.0, 0.36),
+    new THREE.BoxGeometry(7.9, frameHeight, 0.36),
     makeMaterial(THREE, options.frameColor, { metalness: 0.35, roughness: 0.45 }),
   );
-  frame.position.y = 6.75;
+  frame.position.y = frameY;
   const face = new THREE.Mesh(
-    new THREE.PlaneGeometry(7.2, 9.6),
+    new THREE.PlaneGeometry(7.2, faceHeight),
     new THREE.MeshBasicMaterial({
       map: options.id === "status"
         ? systemStatusBannerTexture(THREE)
@@ -7031,7 +8444,7 @@ function createSocialBanner(THREE, interactive, options) {
     }),
   );
   face.name = `forkmesh-${options.id}-banner-face`;
-  face.position.set(0, 6.75, 0.2);
+  face.position.set(0, frameY, 0.2);
   // The same stand plates the Mastodon kiosk carries: the MM:SS countdown to
   // the next feed sync on the left, the staleness readout on the right.
   const countdown = new THREE.Mesh(
@@ -7063,6 +8476,40 @@ function createSocialBanner(THREE, interactive, options) {
   });
   setShadows(group);
   return group;
+}
+
+function officeDoorStatusTexture(THREE, state = "open") {
+  const normalized =
+    state === "syncing" ? "syncing" : state === "ready" ? "ready" : "open";
+  const label =
+    normalized === "syncing"
+      ? "SYNCING ACCESS"
+      : normalized === "ready"
+        ? "ACCESS READY"
+        : "";
+  const accent = normalized === "syncing" ? "#77d9ff" : "#9ef7c6";
+  return canvasTexture(THREE, 768, 120, (context) => {
+    context.clearRect(0, 0, 768, 120);
+    roundedRect(context, 3, 3, 762, 114, 20);
+    context.fillStyle = "rgba(5,20,16,0.92)";
+    context.fill();
+    context.strokeStyle = accent;
+    context.lineWidth = 6;
+    context.stroke();
+    context.fillStyle = accent;
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = '800 42px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(label, 384, 61, 690);
+    if (normalized === "syncing") {
+      context.textAlign = "left";
+      for (let index = 0; index < 3; index += 1) {
+        context.beginPath();
+        context.arc(665 + index * 22, 61, 6, 0, Math.PI * 2);
+        context.fill();
+      }
+    }
+  });
 }
 
 function createForkMeshOffice(THREE, position, interactive, animated) {
@@ -7151,8 +8598,12 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
   }
 
   const frontZ = OFFICE_FRONT_Z - wallThickness / 2;
+  // Keep the entrance opening flush with the lobby floor. The old continuous
+  // 0.62-unit concrete base crossed the doorway and rendered as a shin-high
+  // ledge even while the movement code treated the opening as walkable.
   for (const [minX, maxX] of [
-    [-OFFICE_WIDTH / 2, elevatorFacadeMinX],
+    [-OFFICE_WIDTH / 2, -doorWidth / 2],
+    [doorWidth / 2, elevatorFacadeMinX],
     [elevatorFacadeMaxX, OFFICE_WIDTH / 2],
   ]) {
     addFacadeSegment(
@@ -7164,6 +8615,11 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
       frontZ,
       concrete,
     );
+  }
+  for (const [minX, maxX] of [
+    [-OFFICE_WIDTH / 2, elevatorFacadeMinX],
+    [elevatorFacadeMaxX, OFFICE_WIDTH / 2],
+  ]) {
     addFacadeSegment(
       minX,
       maxX,
@@ -7349,7 +8805,7 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
       `forkmesh-office-sliding-door-${side < 0 ? "left" : "right"}`;
     panel.position.set(
       side * doorClosedX,
-      doorHeight / 2 + OFFICE_DOOR_SILL_Y,
+      doorHeight / 2,
       0,
     );
     slidingDoors.add(panel);
@@ -7357,12 +8813,32 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
   });
   group.add(slidingDoors);
 
+  // A status panel rides on the glass but never participates in collision.
+  // Access hydration is intentionally background-only; this makes that
+  // network activity visible without turning the doorway into a loading gate.
+  const doorStatus = new THREE.Mesh(
+    new THREE.PlaneGeometry(4.6, 0.72),
+    new THREE.MeshBasicMaterial({
+      map: officeDoorStatusTexture(THREE, "open"),
+      transparent: true,
+      toneMapped: false,
+      depthWrite: false,
+    }),
+  );
+  doorStatus.name = "forkmesh-office-door-status";
+  doorStatus.position.set(0, 3.25, OFFICE_FRONT_Z + 0.17);
+  doorStatus.renderOrder = 4;
+  doorStatus.userData.officeDoorStatus = "open";
+  doorStatus.visible = false;
+  group.add(doorStatus);
+
   group.position.set(...position);
   group.userData.landmark = "office";
   group.userData.officeSlidingDoors = slidingDoors;
   group.userData.officeDoorPanels = doorPanels;
   group.userData.officeDoorClosedX = doorClosedX;
   group.userData.officeDoorOpenX = doorOpenX;
+  group.userData.officeDoorStatus = doorStatus;
   group.traverse((child) => {
     if (!child.isMesh) return;
     child.userData.landmark = "office";
@@ -7378,6 +8854,8 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
     child.receiveShadow = false;
   });
   sign.castShadow = false;
+  doorStatus.castShadow = false;
+  doorStatus.receiveShadow = false;
   return group;
 }
 
@@ -7504,6 +8982,7 @@ export function createWorldScene({
   container,
   labelLayer,
   identity,
+  initialWorldLayout = [],
   reducedMotion = false,
   onLandmarkSelect = () => {},
   onOfficeProximity = () => {},
@@ -7515,7 +8994,12 @@ export function createWorldScene({
   onMastodonBoardSelect = () => {},
   onMastodonOpenLink = () => {},
   onReferralBoardSelect = () => {},
+  onSiteReferrerOpen = () => {},
   onSystemCapacityTableSelect = () => {},
+  onInfrastructureConsoleToggle = () => {},
+  onBuildBoardReorder = () => {},
+  onBuildIssueAssign = () => {},
+  onRepositoryIssueOpen = () => {},
   onRendererStateChange = () => {},
   onOfficeChairSelect = () => {},
   onOfficeMovement = () => {},
@@ -7529,9 +9013,12 @@ export function createWorldScene({
   onFediverseFollow = () => {},
   onLayoutObjectMoved = () => {},
   onForkbotChat = () => {},
+  onAgentBotChat = () => {},
   onPlayForkmeshSong = () => {},
   onCreateRepository = () => {},
   onSwingRide = () => {},
+  onCameraMode = () => {},
+  onShareLocation = () => {},
 }) {
   // Phones frequently expose a high-density screen to a comparatively small
   // GPU.  Use the same scene, but avoid allocating multisample and shadow-map
@@ -7630,6 +9117,19 @@ export function createWorldScene({
   // exist after live data arrives (node cabinets) can adopt their locked spot
   // the moment they are built.
   const lockedWorldLayout = new Map();
+  (Array.isArray(initialWorldLayout) ? initialWorldLayout : []).forEach(
+    (entry) => {
+      const id = String(entry?.id || "");
+      const x = Number(entry?.x);
+      const z = Number(entry?.z);
+      if (!id || !Number.isFinite(x) || !Number.isFinite(z)) return;
+      lockedWorldLayout.set(id, {
+        x,
+        z,
+        rotation: Number(entry?.rotation) || 0,
+      });
+    },
+  );
   // One R press is a 15° step: fine enough to line a placard up with a path,
   // coarse enough that a quarter turn is six taps.
   const LAYOUT_ROTATION_STEP = Math.PI / 12;
@@ -7823,7 +9323,8 @@ export function createWorldScene({
       roughness: 0.35,
     }),
   );
-  officeBridgeDeck.position.y = 0.14;
+  officeBridgeDeck.name = "forkmesh-office-bridge-deck";
+  officeBridgeDeck.position.y = OFFICE_LOBBY_SURFACE_Y - 0.15;
   officeBridgeDeck.receiveShadow = true;
   officeBridgeDeck.userData.ground = true;
   officeBridge.add(officeBridgeDeck);
@@ -7841,25 +9342,20 @@ export function createWorldScene({
       new THREE.BoxGeometry(0.18, 2.4, officeBridgeLength),
       bridgeGlass,
     );
-    rail.position.set(x, 1.35, 0);
+    rail.position.set(x, OFFICE_LOBBY_SURFACE_Y + 1.2, 0);
     officeBridge.add(rail);
   }
   world.add(officeBridge);
+  const officeEntranceZ =
+    OFFICE_ISLAND_CENTER[2] + OFFICE_FRONT_Z;
   const officeApproachLength =
-    Math.abs(
-      OFFICE_ISLAND_CENTER[2] +
-        OFFICE_FRONT_Z -
-        OFFICE_BRIDGE_END_Z,
-    ) - 1.5;
+    Math.abs(officeEntranceZ - OFFICE_BRIDGE_END_Z);
   const officeApproach = new THREE.Group();
   officeApproach.name = "forkmesh-office-island-approach";
   officeApproach.position.set(
     OFFICE_ISLAND_CENTER[0],
     0,
-    (OFFICE_BRIDGE_END_Z +
-      OFFICE_ISLAND_CENTER[2] +
-      OFFICE_FRONT_Z) /
-      2,
+    (OFFICE_BRIDGE_END_Z + officeEntranceZ) / 2,
   );
   const approachDeck = new THREE.Mesh(
     new THREE.BoxGeometry(
@@ -7872,7 +9368,11 @@ export function createWorldScene({
       roughness: 0.62,
     }),
   );
-  approachDeck.position.y = 0.09;
+  approachDeck.name = "forkmesh-office-island-approach-deck";
+  // The bridge, approach, and lobby slab all terminate at the same plane.
+  // Computing the approach directly to the facade removes the old 0.75-unit
+  // void and matching its top to the slab removes the visible doorway step.
+  approachDeck.position.y = OFFICE_LOBBY_SURFACE_Y - 0.09;
   approachDeck.receiveShadow = true;
   approachDeck.userData.ground = true;
   officeApproach.add(approachDeck);
@@ -7889,7 +9389,7 @@ export function createWorldScene({
         roughness: 0.28,
       }),
     );
-    guideLight.position.set(x, 0.22, 0);
+    guideLight.position.set(x, OFFICE_LOBBY_SURFACE_Y + 0.03, 0);
     officeApproach.add(guideLight);
   }
   world.add(officeApproach);
@@ -8407,6 +9907,7 @@ export function createWorldScene({
     campfire.add(ring);
     campfire.userData.seatRing = ring;
     campfire.userData.seatCount = count;
+    campfire.userData.seatRadius = radius;
     campfire.userData.seatOffsets = seatOffsets;
     campfire.userData.seatBenches = benches;
     return seatOffsets;
@@ -8576,6 +10077,22 @@ export function createWorldScene({
   referralLeaderboardSign.userData.face.userData.interactive =
     "referral-leaderboard";
   interactive.push(referralLeaderboardSign.userData.face);
+  const siteReferrerLeaderboardSign = makeSiteReferrerLeaderboardSign(THREE);
+  siteReferrerLeaderboardSign.position.set(
+    ...SITE_REFERRER_LEADERBOARD_POSITION,
+  );
+  siteReferrerLeaderboardSign.rotation.y = Math.atan2(
+    -SITE_REFERRER_LEADERBOARD_POSITION[0],
+    -SITE_REFERRER_LEADERBOARD_POSITION[2],
+  );
+  world.add(siteReferrerLeaderboardSign);
+  registerMovableObject(
+    "site-referrer-leaderboard-sign",
+    siteReferrerLeaderboardSign,
+  );
+  siteReferrerLeaderboardSign.userData.face.userData.interactive =
+    "site-referrer-link";
+  interactive.push(siteReferrerLeaderboardSign.userData.face);
 
   // Repaints the referral sign only when the ranked rows or the viewer's own
   // share link actually changed, mirroring the active-leaderboard swap.
@@ -8595,9 +10112,26 @@ export function createWorldScene({
     face.material.needsUpdate = true;
     referralLeaderboardSign.userData.key = key;
   }
+  function updateSiteReferrerLeaderboard(rows = [], totals = {}) {
+    const face = siteReferrerLeaderboardSign.userData.face;
+    const ranked = rankedSiteReferrerRows(rows);
+    const key = JSON.stringify([
+      ranked.map((row) => [
+        String(row?.host || ""),
+        safeSiteReferrerURL(row),
+        Number(row?.visits) || 0,
+      ]),
+      Math.max(0, Number(totals?.sites) || 0),
+      Math.max(0, Number(totals?.visits) || 0),
+    ]);
+    if (!face || siteReferrerLeaderboardSign.userData.key === key) return;
+    face.material.map?.dispose?.();
+    face.material.map = siteReferrerLeaderboardTexture(THREE, rows, totals);
+    face.material.needsUpdate = true;
+    siteReferrerLeaderboardSign.userData.key = key;
+    siteReferrerLeaderboardSign.userData.rows = ranked;
+  }
   const systemCapacityPlatform = createSystemCapacityPlatform(THREE);
-  world.add(systemCapacityPlatform);
-  registerMovableObject("system-capacity-platform", systemCapacityPlatform);
 
   // Every placard is individually movable, not just the section it belongs to:
   // a sign that reads well from the path is often a step away from where the
@@ -8712,6 +10246,94 @@ export function createWorldScene({
   });
   world.add(forkbot);
 
+  // Organization coding agents use their own fixed identities. They wander
+  // like ForkBot, but their task execution stays on an authorized headless
+  // mirror; these avatars are only a visible chat/status surface.
+  const agentBots = new Map();
+  const agentBotStates = new Map();
+  let agentBotAccessAllowed = false;
+  for (const config of WORLD_AGENT_BOTS) {
+    const avatar = new THREE.Group();
+    avatar.name = `${config.id}-agent-droid`;
+    avatar.userData.name = config.label;
+    avatar.userData.id = config.id;
+    avatar.userData.accountStatus = "Organization agent";
+    avatar.userData.phase = hashNumber(config.id) * 0.0001;
+    avatar.position.set(...config.home);
+    avatar.visible = false;
+    const ball = new THREE.Mesh(
+      new THREE.SphereGeometry(0.5, 22, 15),
+      makeMaterial(THREE, "#162d32", {
+        metalness: 0.7,
+        roughness: 0.24,
+        emissive: config.shell,
+        emissiveIntensity: 0.25,
+      }),
+    );
+    ball.position.y = 0.58;
+    avatar.add(ball);
+    const shell = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.48, 0.54, 0.72, 18),
+      makeMaterial(THREE, config.shell, {
+        metalness: 0.45,
+        roughness: 0.3,
+        emissive: config.shell,
+        emissiveIntensity: 0.22,
+      }),
+    );
+    shell.position.y = 1.08;
+    avatar.add(shell);
+    const eye = new THREE.Mesh(
+      new THREE.SphereGeometry(0.1, 12, 8),
+      makeMaterial(THREE, config.glow, {
+        emissive: config.glow,
+        emissiveIntensity: 1.8,
+      }),
+    );
+    eye.position.set(0, 1.27, 0.5);
+    avatar.add(eye);
+    const screenTexture = canvasTexture(THREE, 512, 176, (context, canvas) => {
+      context.fillStyle = "#071917";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.strokeStyle = config.glow;
+      context.lineWidth = 10;
+      context.strokeRect(6, 6, canvas.width - 12, canvas.height - 12);
+      context.fillStyle = config.glow;
+      context.textAlign = "center";
+      context.textBaseline = "middle";
+      context.font = '800 62px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(config.label, canvas.width / 2, canvas.height / 2);
+    });
+    const screen = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.82, 0.28),
+      new THREE.MeshBasicMaterial({ map: screenTexture, toneMapped: false }),
+    );
+    screen.position.set(0, 1.02, 0.57);
+    avatar.add(screen);
+    avatar.userData.rollingBall = ball;
+    avatar.traverse((child) => {
+      if (!child.isMesh) return;
+      child.userData.agentBotChat = config.id;
+      interactive.push(child);
+    });
+    animated.push((time) => {
+      const active = Boolean(agentBotStates.get(config.id)?.excitement);
+      eye.material.emissiveIntensity = active
+        ? 2.1 + (Math.sin(time * 0.025) + 1) * 0.9
+        : 1.2 + (Math.sin(time * 0.007) + 1) * 0.55;
+    });
+    agentBots.set(config.id, avatar);
+    agentBotStates.set(config.id, {
+      config,
+      avatar,
+      target: new THREE.Vector3(...config.home),
+      nextWanderAt: 0,
+      excitement: null,
+      completion: null,
+    });
+    world.add(avatar);
+  }
+
   const remotePlayers = new Map();
   const remoteLabels = new Map();
   const moderationActions = new WeakMap();
@@ -8726,6 +10348,10 @@ export function createWorldScene({
   const officeParticipantLabels = new Map();
   const officeBubbles = new Map();
   const officeChairs = new Map();
+  let officeMarketingTaskSnapshot = normalizeOfficeMarketingTasks({
+    authorized: false,
+    state: "locked",
+  });
   const officeInterior = new THREE.Group();
   officeInterior.name = "forkmesh-office-interior";
   officeInterior.position.set(
@@ -8795,7 +10421,7 @@ export function createWorldScene({
       const slab = new THREE.Mesh(
         new THREE.BoxGeometry(
           segment.maxX - segment.minX,
-          0.38,
+          OFFICE_LOBBY_SURFACE_Y,
           segment.maxZ - segment.minZ,
         ),
         material,
@@ -8805,7 +10431,7 @@ export function createWorldScene({
         `${parent.userData.officeFloorId || "lobby"}-${index + 1}`;
       slab.position.set(
         (segment.minX + segment.maxX) / 2,
-        0.19,
+        OFFICE_LOBBY_SURFACE_Y / 2,
         (segment.minZ + segment.maxZ) / 2,
       );
       slab.receiveShadow = true;
@@ -8849,6 +10475,40 @@ export function createWorldScene({
     officeInterior.add(floorGroup);
     officeFloorGroups.set(floor.id, floorGroup);
   });
+  const infrastructureFloor = officeFloorGroups.get("infrastructure");
+  systemCapacityPlatform.position.set(
+    ...SYSTEM_CAPACITY_INFRASTRUCTURE_POSITION,
+  );
+  systemCapacityPlatform.userData.officeFloorId = "infrastructure";
+  infrastructureFloor.add(systemCapacityPlatform);
+  const infrastructureConsoleDisplay =
+    createInfrastructureConsoleDisplay(THREE, interactive);
+  infrastructureConsoleDisplay.position.set(
+    ...INFRASTRUCTURE_CONSOLE_POSITION,
+  );
+  infrastructureFloor.add(infrastructureConsoleDisplay);
+
+  function setInfrastructureConsoleLogs({ enabled = false, entries = [] } = {}) {
+    const active = enabled === true;
+    const face = infrastructureConsoleDisplay.userData.face;
+    const switchHandle =
+      infrastructureConsoleDisplay.userData.switchHandle;
+    const previous = face.material.map;
+    face.material.map = infrastructureConsoleTexture(
+      THREE,
+      active,
+      entries,
+    );
+    face.material.needsUpdate = true;
+    previous?.dispose?.();
+    infrastructureConsoleDisplay.userData.enabled = active;
+    switchHandle.rotation.z = active ? -0.58 : 0.58;
+    switchHandle.material.color.set(active ? "#79f7b7" : "#aabbb5");
+    switchHandle.material.emissive.set(active ? "#24945f" : "#3a4944");
+    switchHandle.material.emissiveIntensity = active ? 0.92 : 0.26;
+    switchHandle.material.needsUpdate = true;
+    return active;
+  }
 
   function addOfficeFunFloorProps() {
     const metal = makeMaterial(THREE, "#315e56", {
@@ -9179,6 +10839,8 @@ export function createWorldScene({
   const officeBuilding = landmarkObjects.get("office");
   const officeSlidingDoorPanels =
     officeBuilding?.userData?.officeDoorPanels || [];
+  const officeDoorStatus =
+    officeBuilding?.userData?.officeDoorStatus || null;
   const officeDoorClosedX =
     Number(officeBuilding?.userData?.officeDoorClosedX) ||
     OFFICE_DOOR_WIDTH / 4;
@@ -9186,6 +10848,22 @@ export function createWorldScene({
     Number(officeBuilding?.userData?.officeDoorOpenX) ||
     OFFICE_DOOR_WIDTH * 0.76;
   let officeSlidingDoorOpen = 0;
+  function setOfficeDoorStatus(state = "open") {
+    if (!officeDoorStatus) return "open";
+    const normalized =
+      state === "syncing" ? "syncing" : state === "ready" ? "ready" : "open";
+    if (officeDoorStatus.userData.officeDoorStatus === normalized) {
+      officeDoorStatus.visible = normalized !== "open";
+      return normalized;
+    }
+    const previous = officeDoorStatus.material.map;
+    officeDoorStatus.material.map = officeDoorStatusTexture(THREE, normalized);
+    officeDoorStatus.material.needsUpdate = true;
+    officeDoorStatus.userData.officeDoorStatus = normalized;
+    officeDoorStatus.visible = normalized !== "open";
+    previous?.dispose?.();
+    return normalized;
+  }
   function updateOfficeSlidingDoors(_time, delta = 0.016) {
     const localPosition = officeAvatarLocalPosition(
       player,
@@ -9213,6 +10891,13 @@ export function createWorldScene({
           officeSlidingDoorOpen,
         );
     });
+    if (officeDoorStatus) {
+      const syncing =
+        officeDoorStatus.userData.officeDoorStatus === "syncing";
+      officeDoorStatus.material.opacity = syncing
+        ? 0.74 + (Math.sin(performance.now() * 0.009) + 1) * 0.13
+        : 1;
+    }
   }
 
   function officeReceptionDeskDistance(localPosition) {
@@ -9368,10 +11053,7 @@ export function createWorldScene({
   const officeMarketingTaskBoardFace = new THREE.Mesh(
     new THREE.PlaneGeometry(18.12, 11.02),
     new THREE.MeshBasicMaterial({
-      map: officeMarketingTasksTexture(THREE, {
-        authorized: false,
-        state: "locked",
-      }),
+      map: officeMarketingTasksBlankTexture(THREE),
     }),
   );
   officeMarketingTaskBoardFace.name =
@@ -9382,7 +11064,7 @@ export function createWorldScene({
     "office-marketing-task-board";
   officeMarketingTaskBoard.add(officeMarketingTaskBoardFace);
   officeMarketingTaskBoard.userData.face = officeMarketingTaskBoardFace;
-  officeMarketingTaskBoard.userData.taskState = "locked";
+  officeMarketingTaskBoard.userData.taskState = "vacant";
   officeMarketingTaskBoard.userData.taskCount = 0;
   interactive.push(
     officeMarketingTaskBoardFrame,
@@ -9517,7 +11199,7 @@ export function createWorldScene({
         context.fillStyle = "#eafff6";
         context.font = '800 54px "ForkMesh Mono", ui-monospace, monospace';
         context.textAlign = "center";
-        context.fillText("WELCOME · WALK RIGHT IN", 600, 92);
+        context.fillText("WELCOME TO THE FORKMESH OFFICE", 600, 92);
         context.fillStyle = "#8ecdb6";
         context.font = '600 30px "ForkMesh Mono", ui-monospace, monospace';
         context.fillText("Walk up to Noah for World and repository tips", 600, 145);
@@ -9528,6 +11210,223 @@ export function createWorldScene({
   officeGreetingBoard.name = "forkmesh-office-greeting-board";
   officeGreetingBoard.position.set(0, 6.25, -OFFICE_FRONT_Z + 0.5);
   officeInterior.add(officeGreetingBoard);
+
+  // Public progress bulletin in the open Town Square. Keep it directly beside
+  // the System Status display so operational health and the current work round
+  // are visible together without entering the Office.
+  const officeTaskBulletin = new THREE.Group();
+  officeTaskBulletin.name = "forkmesh-office-task-bulletin";
+  officeTaskBulletin.position.set(34, 3.1, -17.5);
+  officeTaskBulletin.rotation.y = Math.atan2(
+    -officeTaskBulletin.position.x,
+    -officeTaskBulletin.position.z,
+  );
+  const officeTaskBulletinFrame = new THREE.Mesh(
+    new THREE.BoxGeometry(12.5, 5.9, 0.34),
+    makeMaterial(THREE, "#3b2416", {
+      metalness: 0.08,
+      roughness: 0.78,
+    }),
+  );
+  officeTaskBulletinFrame.name = "forkmesh-office-task-bulletin-frame";
+  officeTaskBulletin.add(officeTaskBulletinFrame);
+  const officeTaskBulletinFace = new THREE.Mesh(
+    new THREE.PlaneGeometry(12.1, 5.5),
+    new THREE.MeshBasicMaterial({
+      map: worldTaskBulletinTexture(THREE),
+      toneMapped: false,
+    }),
+  );
+  officeTaskBulletinFace.name = "forkmesh-office-task-bulletin-face";
+  officeTaskBulletinFace.position.z = 0.18;
+  officeTaskBulletinFace.userData.interactive = "build-task-board";
+  officeTaskBulletin.add(officeTaskBulletinFace);
+  const officeTaskDoneFace = new THREE.Mesh(
+    new THREE.PlaneGeometry(12.1, 1.48),
+    new THREE.MeshBasicMaterial({
+      map: worldTaskDoneTexture(THREE),
+      toneMapped: false,
+    }),
+  );
+  officeTaskDoneFace.name = "forkmesh-office-task-bulletin-done";
+  officeTaskDoneFace.position.set(0, -3.85, 0.18);
+  officeTaskBulletin.add(officeTaskDoneFace);
+  const officeTaskBulletinBase = new THREE.Mesh(
+    new THREE.BoxGeometry(13.1, 0.25, 1.35),
+    makeMaterial(THREE, "#3b2416", { roughness: 0.82 }),
+  );
+  officeTaskBulletinBase.position.y = -3.03;
+  officeTaskBulletin.add(officeTaskBulletinBase);
+  for (const x of [-5.4, 5.4]) {
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(0.22, 6.2, 0.22),
+      makeMaterial(THREE, "#3b2416", { roughness: 0.76 }),
+    );
+    post.position.set(x, -0.05, -0.08);
+    officeTaskBulletin.add(post);
+  }
+  const repoIssuesBoardFrame = officeTaskBulletinFrame.clone();
+  repoIssuesBoardFrame.name = "forkmesh-repo-issues-board-frame";
+  repoIssuesBoardFrame.position.x = 13.4;
+  officeTaskBulletin.add(repoIssuesBoardFrame);
+  const repoIssuesBoardFace = new THREE.Mesh(
+    new THREE.PlaneGeometry(12.1, 5.5),
+    new THREE.MeshBasicMaterial({
+      map: worldRepoIssuesTexture(THREE, []),
+      toneMapped: false,
+    }),
+  );
+  repoIssuesBoardFace.name = "forkmesh-repo-issues-board-face";
+  repoIssuesBoardFace.position.set(13.4, 0, 0.18);
+  repoIssuesBoardFace.userData.interactive = "repo-issues-board";
+  officeTaskBulletin.add(repoIssuesBoardFace);
+  const repoIssuesBoardBase = officeTaskBulletinBase.clone();
+  repoIssuesBoardBase.position.x = 13.4;
+  officeTaskBulletin.add(repoIssuesBoardBase);
+  for (const x of [8, 18.8]) {
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(0.22, 6.2, 0.22),
+      makeMaterial(THREE, "#315b52", { roughness: 0.76 }),
+    );
+    post.position.set(x, -0.05, -0.08);
+    officeTaskBulletin.add(post);
+  }
+  const humanTodoBoardFrame = officeTaskBulletinFrame.clone();
+  humanTodoBoardFrame.name = "forkmesh-human-todo-board-frame";
+  humanTodoBoardFrame.position.x = 26.8;
+  officeTaskBulletin.add(humanTodoBoardFrame);
+  const humanTodoBoardFace = new THREE.Mesh(
+    new THREE.PlaneGeometry(12.1, 5.5),
+    new THREE.MeshBasicMaterial({
+      map: worldHumanTodoTexture(THREE, []),
+      toneMapped: false,
+    }),
+  );
+  humanTodoBoardFace.name = "forkmesh-human-todo-board-face";
+  humanTodoBoardFace.position.set(26.8, 0, 0.18);
+  officeTaskBulletin.add(humanTodoBoardFace);
+  const humanTodoBoardBase = officeTaskBulletinBase.clone();
+  humanTodoBoardBase.position.x = 26.8;
+  officeTaskBulletin.add(humanTodoBoardBase);
+  for (const x of [21.4, 32.2]) {
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(0.22, 6.2, 0.22),
+      makeMaterial(THREE, "#4b3c68", { roughness: 0.76 }),
+    );
+    post.position.set(x, -0.05, -0.08);
+    officeTaskBulletin.add(post);
+  }
+  interactive.push(officeTaskBulletinFace, repoIssuesBoardFace);
+  let humanTodoSessions = [];
+  let buildBoardState = {
+    canManage: false,
+    items: WORLD_TASK_BULLETIN_ITEMS.map((item) => ({ ...item })),
+    completed: WORLD_TASK_BULLETIN_ITEMS
+      .filter((item) => item.done)
+      .map((item) => ({ ...item })),
+    issues: [],
+  };
+  let draggedBuildCard = null;
+
+  function repaintBuildBoards() {
+    const previousTasks = officeTaskBulletinFace.material.map;
+    officeTaskBulletinFace.material.map = worldTaskBulletinTexture(
+      THREE,
+      buildBoardState.items,
+    );
+    officeTaskBulletinFace.material.needsUpdate = true;
+    previousTasks?.dispose?.();
+    const previousDone = officeTaskDoneFace.material.map;
+    officeTaskDoneFace.material.map = worldTaskDoneTexture(
+      THREE,
+      buildBoardState.completed,
+    );
+    officeTaskDoneFace.material.needsUpdate = true;
+    previousDone?.dispose?.();
+    const previousIssues = repoIssuesBoardFace.material.map;
+    repoIssuesBoardFace.material.map = worldRepoIssuesTexture(
+      THREE,
+      buildBoardState.issues,
+    );
+    repoIssuesBoardFace.material.needsUpdate = true;
+    previousIssues?.dispose?.();
+  }
+
+  function updateBuildBoard(payload = {}) {
+    const order = Array.isArray(payload?.order)
+      ? payload.order.map((key) => String(key || ""))
+      : [];
+    const assigned = Array.isArray(payload?.assignedIssues)
+      ? payload.assignedIssues
+      : [];
+    const completedKeys = new Set(
+      (Array.isArray(payload?.completedKeys) ? payload.completedKeys : [])
+        .map((key) => String(key || ""))
+        .filter(Boolean),
+    );
+    const byKey = new Map(
+      WORLD_TASK_BULLETIN_ITEMS
+        .filter((item) => !item.done && !completedKeys.has(item.key))
+        .map((item) => [item.key, { ...item }]),
+    );
+    assigned.forEach((issue) => {
+      const key = String(issue?.key || "");
+      if (!key) return;
+      byKey.set(key, {
+        key,
+        task: `#${Number(issue?.number) || "?"} ${String(
+          issue?.title || "Repository issue",
+        ).slice(0, 92)}`,
+        estimate: "repo issue",
+        done: false,
+      });
+    });
+    const items = [];
+    order.forEach((key) => {
+      const item = byKey.get(key);
+      if (!item) return;
+      items.push(item);
+      byKey.delete(key);
+    });
+    items.push(...byKey.values());
+    const completed = WORLD_TASK_BULLETIN_ITEMS
+      .filter((item) => item.done || completedKeys.has(item.key))
+      .map((item) => ({ ...item, done: true, estimate: "deployed" }));
+    assigned.forEach((issue) => {
+      const key = String(issue?.key || "");
+      if (!completedKeys.has(key)) return;
+      completed.push({
+        key,
+        task: `#${Number(issue?.number) || "?"} ${String(
+          issue?.title || "Repository issue",
+        ).slice(0, 92)}`,
+        estimate: "completed",
+        done: true,
+      });
+    });
+    buildBoardState = {
+      canManage: payload?.canManage === true,
+      items: items.slice(0, 12),
+      completed,
+      issues: (Array.isArray(payload?.issues) ? payload.issues : [])
+        .filter((issue) => issue && issue.key)
+        .slice(0, 12),
+    };
+    repaintBuildBoards();
+    return buildBoardState.items.length;
+  }
+
+  function buildBoardGridIndex(uv, count) {
+    if (!uv || count <= 0) return -1;
+    const fromTop = 1 - clamp(Number(uv.y) || 0, 0, 1);
+    if (fromTop < 0.17) return -1;
+    const column = clamp(Math.floor(clamp(Number(uv.x) || 0, 0, 0.999) * 3), 0, 2);
+    const row = clamp(Math.floor((fromTop - 0.17) / 0.205), 0, 3);
+    const index = row * 3 + column;
+    return index < count ? index : -1;
+  }
+  world.add(officeTaskBulletin);
+  registerMovableObject("office-task-bulletin", officeTaskBulletin);
 
   // Shared, bounded time clock on the left lobby wall. Authenticated punches
   // are server-timestamped; the public board exposes only the latest 20 visits.
@@ -9569,8 +11468,9 @@ export function createWorldScene({
       context.font = '800 27px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText("USER", 42, 112);
       context.fillText("IN", 500, 112);
-      context.fillText("OUT", 900, 112);
-      context.fillText("TOTAL", 1350, 112);
+      context.fillText("OUT", 790, 112);
+      context.fillText("FLOOR", 1195, 112);
+      context.fillText("TOTAL", 1435, 112);
       context.strokeStyle = "rgba(121,239,181,0.28)";
       context.lineWidth = 2;
       context.beginPath();
@@ -9591,11 +11491,17 @@ export function createWorldScene({
           y,
         );
         context.fillStyle = "#a9d7c4";
-        context.fillText(format(visit?.inAt), 500, y);
+        context.fillText(format(visit?.inAt), 420, y);
         context.fillStyle = visit?.outAt ? "#a9d7c4" : "#f7c96b";
         context.fillText(
           visit?.outAt ? format(visit.outAt) : "IN BUILDING",
-          900,
+          790,
+          y,
+        );
+        context.fillStyle = visit?.outAt ? "#6f9d8b" : "#9ef7c6";
+        context.fillText(
+          visit?.outAt ? "—" : String(visit?.floor || "Lobby").slice(0, 18),
+          1195,
           y,
         );
         const durationMs =
@@ -9606,7 +11512,7 @@ export function createWorldScene({
         context.fillStyle = visit?.outAt ? "#a9d7c4" : "#f7c96b";
         context.fillText(
           officeAttendanceDurationLabel(durationMs),
-          1350,
+          1435,
           y,
         );
       });
@@ -10204,6 +12110,14 @@ export function createWorldScene({
   officeElevatorCar.add(elevatorPanel);
   const neighborhoodHomes = new Map();
   const nodeInfrastructure = new Map();
+  // Slot ownership is session-stable: a health refresh, response-time reorder,
+  // or another node joining must not make every cabinet jump to a new place.
+  // Positions remain derived from the live reward-pool location, so moving
+  // the pool still moves the whole ring as one layout.
+  const nodeSlotAssignments = new Map();
+  let networkNodeSnapshot = [];
+  const mirrorAgentTasksByNode = new Map();
+  let mirrorAgentTasksKey = "";
   const botAgents = new Map();
   const loungeMembers = new Map();
   // Public account facts the member directory publishes but a live presence
@@ -10316,7 +12230,6 @@ export function createWorldScene({
   let officeWasMoving = false;
   let officeExitPending = false;
   let officeDoorwayEntryPending = false;
-  let officeDoorwayEntryArmed = true;
   let officeExitHandler = null;
   const weather = createWeather(THREE, scene);
 
@@ -10568,6 +12481,10 @@ export function createWorldScene({
             inAt,
             outAt,
             durationMs,
+            floor: String(visit?.floor || "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, 32),
           };
         })
       : [];
@@ -10650,6 +12567,29 @@ export function createWorldScene({
     if (!office) return false;
     const localX = player.position.x - office.position.x;
     const localZ = player.position.z - office.position.z;
+    const previousZ = previousPosition.z - office.position.z;
+    const doorClearance = OFFICE_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS;
+    const movingInward = localZ < previousZ - 1e-5;
+    const inDoorwayPassage =
+      Math.abs(localX) <= doorClearance &&
+      localZ <= OFFICE_DOORWAY_APPROACH_Z &&
+      localZ >= OFFICE_DOORWAY_PASSAGE_MIN_Z;
+    const readyToCommitEntry =
+      inDoorwayPassage &&
+      localZ <= OFFICE_DOORWAY_ENTRY_Z &&
+      movingInward;
+    if (readyToCommitEntry && !officeDoorwayEntryPending) {
+      officeDoorwayEntryPending = true;
+      onOfficeEnter({
+        source: "doorway",
+      });
+    }
+    if (officeSceneMode !== "town") {
+      // The lobby now owns this same position and velocity immediately after
+      // the full avatar clears the jamb, with no collision or threshold pause.
+      return false;
+    }
+
     const halfWidth = OFFICE_WIDTH / 2 + OFFICE_AVATAR_RADIUS;
     const halfDepth = OFFICE_DEPTH / 2 + OFFICE_AVATAR_RADIUS;
     if (Math.abs(localX) >= halfWidth || Math.abs(localZ) >= halfDepth) {
@@ -10657,40 +12597,11 @@ export function createWorldScene({
     }
 
     const previousX = previousPosition.x - office.position.x;
-    const previousZ = previousPosition.z - office.position.z;
-    const doorClearance = OFFICE_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS;
-    const doorwayThreshold = OFFICE_DOORWAY_ENTRY_Z;
-    if (
-      localZ > doorwayThreshold + 0.32 &&
-      localZ > previousZ + 0.01
-    ) {
-      officeDoorwayEntryArmed = true;
-    }
-    const crossedDoorway =
-      Math.abs(localX) <= doorClearance &&
-      previousZ >= doorwayThreshold &&
-      localZ < doorwayThreshold;
-    // Crossing the threshold switches into the continuous lobby immediately.
-    // The armed/pending pair prevents a held movement key from firing the
-    // controller more than once before that scene-mode handoff completes.
-    if (
-      Math.abs(localX) <= doorClearance &&
-      previousZ >= OFFICE_FRONT_Z
-    ) {
-      player.position.z = office.position.z + doorwayThreshold;
-      cancelDash();
-      if (
-        crossedDoorway &&
-        officeDoorwayEntryArmed &&
-        !officeDoorwayEntryPending
-      ) {
-        officeDoorwayEntryArmed = false;
-        officeDoorwayEntryPending = true;
-        onOfficeEnter({
-          source: "doorway",
-        });
-      }
-      return true;
+    // The doorway is a real open tunnel, not a collider with a callback carved
+    // into it. Movement continues on every frame while the synchronous mode
+    // handoff occurs; a transient rejection simply retries farther inside.
+    if (inDoorwayPassage) {
+      return false;
     }
 
     const candidates = [
@@ -10759,20 +12670,27 @@ export function createWorldScene({
       position.z >= OFFICE_INTERIOR_EXIT_Z &&
       Math.abs(position.x) <= doorClearance
     ) {
-      position.z = OFFICE_INTERIOR_EXIT_Z;
-      commitPosition();
       if (!officeExitPending && officeExitHandler) {
         officeExitPending = true;
         officeExitHandler();
       }
+      if (officeSceneMode !== "lobby") {
+        // The exit handoff completed. The town walker inherits this exact
+        // doorway pose and velocity instead of being teleported outward.
+        return false;
+      }
+      // A missing/rejected controller must not let the avatar walk through
+      // the tower shell.
+      position.z = OFFICE_INTERIOR_EXIT_Z;
+      commitPosition();
       return true;
     }
     const walkableAt = (x, z) => {
       const inLobbyDoorway =
         officeCurrentFloorId === "lobby" &&
         Math.abs(x) <= doorClearance &&
-        z >= OFFICE_INTERIOR_WALL_LIMIT &&
-        z <= OFFICE_DOORWAY_ENTRY_Z + 0.08;
+        z >= OFFICE_DOORWAY_INTERIOR_JOIN_Z &&
+        z <= OFFICE_DOORWAY_APPROACH_Z + 0.08;
       return (
         inLobbyDoorway ||
         officeInteriorPointIsWalkable(
@@ -10943,15 +12861,20 @@ export function createWorldScene({
   }
 
   function enterOffice({ source = "" } = {}) {
-    // A doorway callback is emitted only after the town collider verifies the
-    // avatar crossed the real opening. Trust that physical proof even when a
-    // fast dash reaches it one frame before nearestLandmark updates proximity.
-    if (source !== "doorway" && officeZoneState !== "nearby") return false;
+    // A doorway callback is emitted only after the town walker verifies the
+    // full avatar crossed the real opening. Trust that physical proof even when
+    // a fast dash reaches it one frame before nearestLandmark updates proximity.
+    if (
+      !["doorway", "saved-view"].includes(source) &&
+      officeZoneState !== "nearby"
+    ) {
+      return false;
+    }
     selectedLandmark = "office";
     officeExitPending = false;
     officeDoorwayEntryPending = false;
     cameraFocus = null;
-    cancelDash();
+    if (source !== "doorway") cancelDash();
     return true;
   }
 
@@ -11009,8 +12932,9 @@ export function createWorldScene({
     officeLobbyPlayer.visible = false;
     player.visible = cameraMode !== "first-person";
     lastPosition.copy(player.position);
-    keyboardMovementSpeed = baseMoveSpeed();
+    if (!enteringFromTown) keyboardMovementSpeed = baseMoveSpeed();
     officeExitPending = false;
+    renderOfficeMarketingTasks();
     return true;
   }
 
@@ -11187,20 +13111,45 @@ export function createWorldScene({
     if (localParticipant && officeSceneMode === "meeting") {
       localParticipant.visible = cameraMode !== "first-person";
     }
+    renderOfficeMarketingTasks();
+  }
+
+  function officeMarketingRoomOccupied() {
+    return (
+      officeParticipants.size > 0 ||
+      (officeSceneMode === "lobby" &&
+        officeCurrentFloorId === "marketing")
+    );
+  }
+
+  function renderOfficeMarketingTasks() {
+    const occupied = officeMarketingRoomOccupied();
+    const key = JSON.stringify({
+      occupied,
+      snapshot: officeMarketingTaskSnapshot,
+    });
+    if (officeMarketingTaskBoard.userData.taskKey === key) {
+      return officeMarketingTaskSnapshot;
+    }
+    const face = officeMarketingTaskBoard.userData.face;
+    face.material.map?.dispose?.();
+    face.material.map = occupied
+      ? officeMarketingTasksTexture(THREE, officeMarketingTaskSnapshot)
+      : officeMarketingTasksBlankTexture(THREE);
+    face.material.needsUpdate = true;
+    officeMarketingTaskBoard.userData.taskKey = key;
+    officeMarketingTaskBoard.userData.taskState = occupied
+      ? officeMarketingTaskSnapshot.state
+      : "vacant";
+    officeMarketingTaskBoard.userData.taskCount = occupied
+      ? officeMarketingTaskSnapshot.tasks.length
+      : 0;
+    return officeMarketingTaskSnapshot;
   }
 
   function updateOfficeMarketingTasks(payload = {}) {
-    const snapshot = normalizeOfficeMarketingTasks(payload);
-    const key = JSON.stringify(snapshot);
-    if (officeMarketingTaskBoard.userData.taskKey === key) return snapshot;
-    const face = officeMarketingTaskBoard.userData.face;
-    face.material.map?.dispose?.();
-    face.material.map = officeMarketingTasksTexture(THREE, snapshot);
-    face.material.needsUpdate = true;
-    officeMarketingTaskBoard.userData.taskKey = key;
-    officeMarketingTaskBoard.userData.taskState = snapshot.state;
-    officeMarketingTaskBoard.userData.taskCount = snapshot.tasks.length;
-    return snapshot;
+    officeMarketingTaskSnapshot = normalizeOfficeMarketingTasks(payload);
+    return renderOfficeMarketingTasks();
   }
 
   function updateWorldBulletin(events = []) {
@@ -11395,6 +13344,10 @@ export function createWorldScene({
     participants = [],
     participantId = "",
   } = {}) {
+    // The meeting table stands on the Marketing floor, so joining a room is
+    // another way onto that storey: it stays closed to everyone the server
+    // did not put on the team.
+    if (!canAccessOfficeFloor(officeFloorAccess, "marketing")) return false;
     enterOfficeLobby({ floorId: "marketing" });
     officeSceneMode = "meeting";
     officeCurrentFloorId = "marketing";
@@ -11450,6 +13403,12 @@ export function createWorldScene({
   function leaveOfficeInterior() {
     standUpFromOfficeChair();
     const localPosition = officeAvatarLocalPosition(player);
+    const crossedLobbyDoorway =
+      officeSceneMode === "lobby" &&
+      officeCurrentFloorId === "lobby" &&
+      Math.abs(localPosition.x) <=
+        OFFICE_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS &&
+      localPosition.z >= OFFICE_INTERIOR_EXIT_Z;
     officeSceneMode = "town";
     officeCurrentFloorId = "lobby";
     officeElevatorRide = null;
@@ -11460,7 +13419,11 @@ export function createWorldScene({
       OFFICE_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS,
     );
     localPosition.y = 0.38;
-    localPosition.z = Math.max(localPosition.z, OFFICE_FRONT_Z + 0.82);
+    if (!crossedLobbyDoorway) {
+      // Non-spatial teardown (for example page destruction) still needs a
+      // safe outdoor position. A real doorway exit keeps its exact Z.
+      localPosition.z = Math.max(localPosition.z, OFFICE_FRONT_Z + 0.82);
+    }
     applyOfficeAvatarLocalPosition(player, localPosition);
     lastPosition.copy(player.position);
     officeLocalParticipantId = "";
@@ -11470,6 +13433,18 @@ export function createWorldScene({
     officeLobbyPlayer.visible = false;
     player.visible = cameraMode !== "first-person";
     cameraFocus = null;
+    // The interior orbit can be very close, so restore the safe outdoor chase
+    // distance as the avatar clears the jamb. Preserve the doorway heading,
+    // though: forcing yaw to zero made "forward" point back into the building
+    // and visibly spun the visitor 180 degrees on checkout.
+    setCameraMode("third-person", "office-exit");
+    cameraZoom = 1;
+    cameraYaw = Math.atan2(
+      Math.sin(player.rotation.y),
+      Math.cos(player.rotation.y),
+    );
+    cameraPitch = Math.asin(CAMERA_OFFSET[1] / CAMERA_DISTANCE);
+    pinchStartZoom = cameraZoom;
     setOfficeParticipants([]);
     officeBubbles.forEach((element) => element.remove());
     officeBubbles.clear();
@@ -11494,22 +13469,19 @@ export function createWorldScene({
     }
     officeExitPending = false;
     officeSlidingDoorOpen = 1;
-    const avatar =
-      officeSceneMode === "meeting"
-        ? officeParticipants.get(officeLocalParticipantId)
-        : player;
-    if (avatar && avatar.userData?.officePresence?.pose !== "seated") {
-      avatar.rotation.y = 0;
-    }
+    // Do not rewrite the avatar heading here. The visitor may already be
+    // walking through the doorway, and preserving that pose lets the same
+    // forward input continue smoothly outside.
     return true;
   }
 
-  function setCameraMode(mode) {
+  function setCameraMode(mode, reason = "request") {
     const wantsFirstPerson =
       mode === true ||
       String(mode || "").trim().toLocaleLowerCase() === "first-person";
     const nextMode = wantsFirstPerson ? "first-person" : "third-person";
-    if (nextMode !== cameraMode) cancelDash();
+    const changed = nextMode !== cameraMode;
+    if (changed) cancelDash();
     cameraMode = nextMode;
     if (cameraMode === "first-person") {
       cameraFocus = null;
@@ -11528,11 +13500,113 @@ export function createWorldScene({
           officeParticipants.get(officeLocalParticipantId);
         if (localParticipant) localParticipant.visible = true;
       }
+      // Leave the eyes at their neutral field of view so the next first-person
+      // visit does not start already pinned against the zoom-out floor.
+      firstPersonZoom = 1;
       camera.fov = 44;
       camera.updateProjectionMatrix();
     }
     renderer.domElement.dataset.cameraMode = cameraMode;
+    if (changed) onCameraMode({ mode: cameraMode, reason });
     return cameraMode;
+  }
+
+  function setCameraView(view = {}) {
+    setCameraMode(
+      view.mode === "first-person" ? "first-person" : "third-person",
+      "shared-link",
+    );
+    const yaw = Number(view.yaw);
+    const pitch = Number(view.pitch);
+    const zoom = Number(view.zoom);
+    if (Number.isFinite(yaw)) {
+      cameraYaw = Math.atan2(Math.sin(yaw), Math.cos(yaw));
+    }
+    if (cameraMode === "first-person") {
+      if (Number.isFinite(pitch)) {
+        firstPersonPitch = clamp(
+          pitch,
+          FIRST_PERSON_PITCH_MIN,
+          FIRST_PERSON_PITCH_MAX,
+        );
+      }
+    } else if (Number.isFinite(pitch)) {
+      cameraPitch = clamp(pitch, CAMERA_PITCH_MIN, CAMERA_PITCH_MAX);
+    }
+    if (Number.isFinite(zoom)) setCameraZoom(zoom);
+  }
+
+  function getSavedViewState() {
+    const cameraState = {
+      mode: cameraMode,
+      yaw: cameraYaw,
+      pitch:
+        cameraMode === "first-person" ? firstPersonPitch : cameraPitch,
+      zoom: cameraMode === "first-person" ? firstPersonZoom : cameraZoom,
+    };
+    if (officeSceneMode !== "town") {
+      const avatar =
+        officeSceneMode === "meeting"
+          ? officeParticipants.get(officeLocalParticipantId) || player
+          : player;
+      const local = officeAvatarLocalPosition(avatar, new THREE.Vector3());
+      return {
+        office: true,
+        floorId: officeCurrentFloorId,
+        x: Number(local.x.toFixed(3)),
+        y: Number(local.y.toFixed(3)),
+        z: Number(local.z.toFixed(3)),
+        heading: Number(avatar.rotation.y.toFixed(4)),
+        camera: cameraState,
+      };
+    }
+    return {
+      office: false,
+      floorId: "",
+      x: Number(player.position.x.toFixed(3)),
+      y: Number(player.position.y.toFixed(3)),
+      z: Number(player.position.z.toFixed(3)),
+      heading: Number(player.rotation.y.toFixed(4)),
+      space: currentSpace,
+      camera: cameraState,
+    };
+  }
+
+  function restoreSavedViewState(view = {}) {
+    if (view.office === true) {
+      const floor = officeFloorById(String(view.floorId || ""));
+      if (
+        officeSceneMode === "town" ||
+        !floor ||
+        !canAccessOfficeFloor(officeFloorAccess, floor.id)
+      ) {
+        return false;
+      }
+      enterOfficeLobby({ floorId: floor.id });
+      const local = nearestOfficeWalkablePosition(
+        floor.id,
+        new THREE.Vector3(
+          Number(view.x) || 0,
+          officeFloorY(floor.id) + 0.38,
+          Number(view.z) || 0,
+        ),
+      );
+      local.y = officeFloorY(floor.id) + 0.38;
+      applyOfficeAvatarLocalPosition(player, local);
+      player.rotation.y = clamp(
+        Number(view.heading) || 0,
+        -Math.PI,
+        Math.PI,
+      );
+      lastPosition.copy(player.position);
+      cameraFocus = null;
+      setCameraView(view.camera);
+      return true;
+    }
+    if (officeSceneMode !== "town") return false;
+    const restored = setSpawn(view);
+    if (restored) setCameraView(view.camera);
+    return restored;
   }
 
   function focusRepositoryPortal(owner, name) {
@@ -11553,48 +13627,6 @@ export function createWorldScene({
     cameraYaw = -record.angle - Math.PI / 2;
     cameraPitch = 0.16;
     cameraZoom = Math.min(cameraZoom, 0.55);
-    return true;
-  }
-
-  function enterRepositoryFirstPerson(owner, name) {
-    if (officeSceneMode !== "town") return false;
-    const key = `${String(owner || "").toLocaleLowerCase()}/${String(
-      name || "",
-    ).toLocaleLowerCase()}`;
-    const record = repositoryPortals.get(key);
-    if (!record?.group || !focusRepositoryPortal(owner, name)) return false;
-
-    const portalPosition = new THREE.Vector3();
-    record.group.getWorldPosition(portalPosition);
-    // focusRepositoryPortal points the view from the portal's inward normal
-    // toward its face. Put the actual avatar on that normal so this remains a
-    // true first-person view and multiplayer peers see the same spatial visit.
-    player.position.set(
-      portalPosition.x +
-        Math.sin(cameraYaw) * REPOSITORY_FIRST_PERSON_DISTANCE,
-      currentFloorY,
-      portalPosition.z +
-        Math.cos(cameraYaw) * REPOSITORY_FIRST_PERSON_DISTANCE,
-    );
-    player.rotation.y = cameraYaw;
-    jumpQueued = false;
-    jumpVelocity = 0;
-    keyboardMovementSpeed = baseMoveSpeed();
-    lastPosition.copy(player.position);
-    wasWalking = false;
-    lastMovementEmit = performance.now();
-    firstPersonPitch = REPOSITORY_FIRST_PERSON_PITCH;
-    setCameraMode("first-person");
-    focusedRepositoryKey = key;
-    onMovement({
-      x: Number(player.position.x.toFixed(2)),
-      y: Number(player.position.y.toFixed(2)),
-      z: Number(player.position.z.toFixed(2)),
-      heading: Number(player.rotation.y.toFixed(3)),
-      activity: "exploring a repository graph",
-      space: currentSpace,
-      moving: false,
-    });
     return true;
   }
 
@@ -11835,6 +13867,7 @@ export function createWorldScene({
     officeElevatorDoors[1].position.x = 4.36;
     currentSpace = `office-${ride.floorId}`;
     officeElevatorRide = null;
+    renderOfficeMarketingTasks();
     onOfficeElevatorSound("arrive", {
       floor: ride.floorId,
       duration: ride.duration,
@@ -12368,6 +14401,132 @@ export function createWorldScene({
         : FORKBOT_HOME[1];
   }
 
+  function updateAgentBots(delta, time) {
+    for (const state of agentBotStates.values()) {
+      const { avatar, config } = state;
+      if (!agentBotAccessAllowed || !avatar.visible) continue;
+      let target = state.target;
+      let speed = FORKBOT_SPEED * 0.9;
+      if (state.completion) {
+        target = state.completion.target;
+        speed = FORKBOT_EXCITED_SPEED;
+      } else if (state.excitement) {
+        target = state.excitement.avatar.position;
+        speed = FORKBOT_EXCITED_SPEED;
+        if (
+          performance.now() - state.excitement.startedAt >=
+          FORKBOT_THINKING_TIMEOUT_MS
+        ) {
+          state.excitement = null;
+          state.target.copy(avatar.position);
+          state.nextWanderAt = time + 9000;
+          target = state.target;
+        }
+      } else if (time >= state.nextWanderAt) {
+        const angle = Math.random() * Math.PI * 2;
+        const radius = 3 + Math.random() * (FORKBOT_WANDER_RADIUS * 0.78);
+        state.target.set(
+          clamp(config.home[0] + Math.cos(angle) * radius, -WORLD_RADIUS, WORLD_RADIUS),
+          config.home[1],
+          clamp(config.home[2] + Math.sin(angle) * radius, -WORLD_RADIUS, WORLD_RADIUS),
+        );
+        state.nextWanderAt = time + 5000 + Math.random() * 8500;
+      }
+      const dx = target.x - avatar.position.x;
+      const dz = target.z - avatar.position.z;
+      const distance = Math.hypot(dx, dz);
+      const arrive = state.excitement ? FORKBOT_GREETING_RANGE * 0.8 : 0.75;
+      const walking = distance > arrive;
+      if (walking) {
+        const step = Math.min(distance - arrive, speed * delta);
+        avatar.position.x += (dx / distance) * step;
+        avatar.position.z += (dz / distance) * step;
+      }
+      if (distance > 0.05) {
+        avatar.userData.targetHeading = Math.atan2(dx, dz);
+      }
+      let headingDelta = avatar.userData.targetHeading - avatar.rotation.y;
+      headingDelta = Math.atan2(Math.sin(headingDelta), Math.cos(headingDelta));
+      avatar.rotation.y += headingDelta * (1 - Math.pow(0.01, delta));
+      if (walking) {
+        avatar.userData.rollingBall.rotation.x -= speed * delta * 1.8;
+      }
+      avatar.position.y =
+        (state.excitement || state.completion) && !reducedMotion
+          ? config.home[1] +
+            Math.abs(Math.sin(time * 0.011 + avatar.userData.phase)) * 0.12
+          : config.home[1];
+      if (state.completion && !walking) {
+        const taskLabel = state.completion.taskKey.startsWith("issue:")
+          ? state.completion.taskKey.replace(/^issue:/, "")
+          : state.completion.taskKey.replace(/^task:/, "");
+        showAvatarChatBubble(
+          avatar,
+          `Completed ${taskLabel}. Moving it to Done.`,
+        );
+        state.completion = null;
+        state.target.copy(avatar.position);
+        state.nextWanderAt = time + 9000;
+      }
+    }
+  }
+
+  function worldSpeakerAvatar(peerId) {
+    return peerId === identity.id
+      ? player
+      : remotePlayers.get(String(peerId || "")) ||
+        loungeMembers.get(String(peerId || ""));
+  }
+
+  function exciteAgentBot(peerId, botId, text) {
+    if (!agentBotAccessAllowed) return false;
+    const state = agentBotStates.get(String(botId || "").toLowerCase());
+    const avatar = worldSpeakerAvatar(peerId);
+    const message = String(text || "").replace(/\s+/g, " ").trim().slice(0, 90);
+    if (!state || !avatar || !message) return false;
+    state.completion = null;
+    state.excitement = {
+      avatar,
+      message,
+      startedAt: performance.now(),
+    };
+    return true;
+  }
+
+  function completeAgentTask(botId, taskKey) {
+    if (!agentBotAccessAllowed) return false;
+    const state = agentBotStates.get(String(botId || "").toLowerCase());
+    const key = String(taskKey || "");
+    if (!state || !key) return false;
+    state.excitement = null;
+    state.completion = {
+      taskKey: key,
+      target: new THREE.Vector3(
+        officeTaskBulletin.position.x,
+        state.config.home[1],
+        officeTaskBulletin.position.z + 2.5,
+      ),
+    };
+    return true;
+  }
+
+  function setAgentBotAccess(allowed) {
+    agentBotAccessAllowed = allowed === true;
+    for (const [botId, avatar] of agentBots.entries()) {
+      avatar.visible = agentBotAccessAllowed;
+      avatar.traverse((child) => {
+        if (!child.isMesh) return;
+        child.userData.agentBotChat = agentBotAccessAllowed ? botId : "";
+      });
+      const state = agentBotStates.get(botId);
+      if (!state || agentBotAccessAllowed) continue;
+      state.excitement = null;
+      state.completion = null;
+      state.target.copy(avatar.position);
+    }
+    return agentBotAccessAllowed;
+  }
+
   function paintForkbotScreen(state) {
     const canvas = forkbotScreenTexture.image;
     drawForkbotScreen(canvas.getContext("2d"), canvas, state);
@@ -12381,11 +14540,7 @@ export function createWorldScene({
   function exciteForkbot(peerId, text) {
     const message = String(text || "").replace(/\s+/g, " ").trim().slice(0, 90);
     if (!message) return false;
-    const avatar =
-      peerId === identity.id
-        ? player
-        : remotePlayers.get(String(peerId || "")) ||
-          loungeMembers.get(String(peerId || ""));
+    const avatar = worldSpeakerAvatar(peerId);
     if (!avatar) return false;
     forkbotGreeting = null;
     forkbotExcitement = {
@@ -12488,9 +14643,8 @@ export function createWorldScene({
       frontDirection > 1e-6 &&
       Number.isFinite(portalDistance) &&
       Math.abs(portalX) <= OFFICE_DOOR_WIDTH / 2 - 0.08 &&
-      portalY >= OFFICE_DOOR_SILL_Y + 0.08 &&
-      portalY <=
-        OFFICE_DOOR_SILL_Y + OFFICE_DOOR_HEIGHT - 0.08;
+      portalY >= 0.08 &&
+      portalY <= OFFICE_DOOR_HEIGHT - 0.08;
     const axes = [
       ["x", "minX", "maxX"],
       ["y", "minY", "maxY"],
@@ -12516,6 +14670,26 @@ export function createWorldScene({
     });
     if (!Number.isFinite(boundaryDistance)) return requested;
     return Math.min(requested, Math.max(0, boundaryDistance - 0.24));
+  }
+
+  function groundCameraDistanceLimit(target, direction, requestedDistance) {
+    const requested = Math.max(0, Number(requestedDistance) || 0);
+    if (
+      officeSceneMode !== "town" ||
+      !target ||
+      !direction ||
+      requested <= 0
+    ) {
+      return requested;
+    }
+    const rise = Number(direction.y) || 0;
+    if (rise > -1e-6) return requested;
+    const headroom = Math.max(
+      0,
+      (Number(target.y) || 0) -
+        (WORLD_GROUND_Y + CAMERA_GROUND_CLEARANCE),
+    );
+    return Math.min(requested, headroom / -rise);
   }
 
   function updateCamera(delta) {
@@ -12569,10 +14743,14 @@ export function createWorldScene({
       Math.sin(cameraPitch),
       Math.cos(cameraYaw) * Math.cos(cameraPitch),
     );
-    const distance = officeCameraDistanceLimit(
+    const distance = groundCameraDistanceLimit(
       target,
       offsetDirection,
-      requestedDistance,
+      officeCameraDistanceLimit(
+        target,
+        offsetDirection,
+        requestedDistance,
+      ),
     );
     const desired = target
       .clone()
@@ -12600,6 +14778,12 @@ export function createWorldScene({
     }
     if (reducedMotion) camera.position.copy(desired);
     else camera.position.lerp(desired, 1 - Math.pow(0.0008, delta));
+    if (officeSceneMode === "town") {
+      camera.position.y = Math.max(
+        camera.position.y,
+        WORLD_GROUND_Y + CAMERA_GROUND_CLEARANCE,
+      );
+    }
     if (rooftopPatioCamera) {
       // Clamp the actual eased camera as well as its destination. Otherwise a
       // prior below-slab frame could lerp through the roof on its way back up.
@@ -12638,6 +14822,11 @@ export function createWorldScene({
   }
 
   function setSpawn(spawn = {}) {
+    // An arrival cell is always a ground-level outdoor spot. Applying one to a
+    // visitor who is standing inside the tower would drop them from their
+    // current story onto the lobby slab, so the correction is declined until
+    // they walk back out of the Office.
+    if (officeSceneMode !== "town") return false;
     const requestedSpace = String(spawn.space || "");
     const space = Object.hasOwn(WORLD_SPACE_FLOORS, requestedSpace)
       ? requestedSpace
@@ -12666,6 +14855,7 @@ export function createWorldScene({
         .join(" ");
       onLocationChange(currentLocation, "");
     }
+    return true;
   }
 
   // The chest is clickable on the local player and on live peers: the two
@@ -12851,6 +15041,9 @@ export function createWorldScene({
   // per member avatar, opening the team multi-select the app layer owns. The
   // app only supplies `orgTeam` for members of an organization the viewer
   // owns or administers, so a plain member never sees another back plaque.
+  // Registered inactive and same-browser peers are intentionally accepted:
+  // login state does not change organization membership, and every write is
+  // re-authorized by the worker.
   function syncRemoteOrgTeamControl(avatar, remote) {
     const peerId = String(remote?.id || "");
     const name = String(remote?.name || "visitor").slice(0, 32);
@@ -12897,8 +15090,38 @@ export function createWorldScene({
       String(identity.name || "").trim().toLowerCase(),
     );
     if (!facts) return identity;
+    const countryCode = String(identity.countryCode || facts.countryCode || "")
+      .toUpperCase();
+    const currentFlag = String(identity.flag || "");
+    const browser = String(identity.browser || "");
+    const os = String(identity.os || "");
     return {
       ...identity,
+      countryCode,
+      flag:
+        currentFlag && currentFlag !== "◌"
+          ? currentFlag
+          : facts.flag || (countryCode ? flagEmoji(countryCode) : "◌"),
+      browser:
+        browser && !["browser", "hidden"].includes(browser.toLowerCase())
+          ? browser
+          : facts.browser || browser,
+      os:
+        os && !["device", "hidden"].includes(os.toLowerCase())
+          ? os
+          : facts.os || os,
+      firstSeenMinutes:
+        Number(identity.firstSeenMinutes) > 0
+          ? identity.firstSeenMinutes
+          : facts.firstSeenMinutes,
+      firstVisitAge:
+        identity.firstVisitAge && identity.firstVisitAge !== "hidden"
+          ? identity.firstVisitAge
+          : facts.firstVisitAge,
+      visitCount: Math.max(
+        Number(identity.visitCount) || 0,
+        Number(facts.visitCount) || 0,
+      ),
       joinedAt:
         Number(identity.joinedAt) > 0 ? identity.joinedAt : facts.joinedAt,
       totalActiveMs:
@@ -12925,7 +15148,9 @@ export function createWorldScene({
         accountStatus: remote.accountStatus || "Guest",
         localTime: remote.localTime || "",
         activityCategory:
-          remote.category || remote.activityCategory || "hidden",
+          String(remote.activity || "") === CAMPFIRE_SEATED_ACTIVITY
+            ? "sitting-at-member-fire"
+            : remote.category || remote.activityCategory || "hidden",
         inputActive: remote.inputActive === true,
         visitCount: Math.max(
           0,
@@ -13170,11 +15395,43 @@ export function createWorldScene({
       const name = String(member?.name || "").trim().toLowerCase();
       if (!name) return;
       const activeMs = Number(member?.totalActiveMs ?? member?.activeMs);
+      const joinedAt = Math.max(0, Number(member?.createdAt) || 0);
+      const countryCode = /^[A-Z]{2}$/.test(
+        String(member?.countryCode || "").toUpperCase(),
+      )
+        ? String(member.countryCode).toUpperCase()
+        : "";
       memberFacts.set(name, {
-        joinedAt: Math.max(0, Number(member?.createdAt) || 0),
+        joinedAt,
+        countryCode,
+        flag:
+          String(member?.flag || "") ||
+          (countryCode ? flagEmoji(countryCode) : "◌"),
+        browser: String(member?.browser || ""),
+        os: String(member?.os || ""),
+        firstSeenMinutes:
+          joinedAt > 0
+            ? Math.max(0, Math.floor((Date.now() - joinedAt) / 60_000))
+            : 0,
+        firstVisitAge: joinedAt > 0 ? "this-session" : "hidden",
+        visitCount: Math.max(
+          0,
+          Math.min(999, Number(member?.visitCount) || 0),
+        ),
         totalActiveMs:
           Number.isFinite(activeMs) && activeMs >= 0 ? activeMs : null,
       });
+    });
+    // A live presence frame can arrive before the public directory catches up.
+    // Repaint any already-created member avatar now that the full directory
+    // facts are available, rather than waiting for another movement frame.
+    remotePlayers.forEach((avatar) => {
+      const enriched = withMemberFacts(avatar.userData.badgeIdentity || {});
+      const badgeKey = JSON.stringify(enriched);
+      if (avatar.userData.badgeKey === badgeKey) return;
+      updateAvatarBadge(THREE, avatar, enriched, true);
+      syncOperatorBelt(THREE, avatar, enriched.nodes?.length || 0);
+      avatar.userData.badgeKey = badgeKey;
     });
     const leaderboardFace = activeLeaderboardSign.userData.face;
     const leaderboardKey = JSON.stringify(
@@ -13204,6 +15461,7 @@ export function createWorldScene({
       String(member?.name || "").trim(),
     );
     const guestSeats = Math.max(0, Math.min(64, Math.round(Number(guests) || 0)));
+    const previousSeatRadius = Number(campfire.userData.seatRadius) || 0;
     const seats = rebuildCampfireCircle(
       Math.max(total, roster.length) + guestSeats + 1,
     );
@@ -13227,6 +15485,7 @@ export function createWorldScene({
         if (member.away === true) {
           const parked = loungeMembers.get(id);
           if (parked) {
+            removeRemoteOrgTeamControl(parked, id);
             unregisterAvatarChestControls(parked);
             world.remove(parked);
             disposeObject3D(parked);
@@ -13235,49 +15494,55 @@ export function createWorldScene({
           return;
         }
         seen.add(id);
+        const memberCountry = /^[A-Z]{2}$/.test(
+          String(member.countryCode || "").toUpperCase(),
+        )
+          ? String(member.countryCode).toUpperCase()
+          : "";
+        const joinedAt = Number(member.createdAt) || 0;
+        const memberIdentity = {
+          id,
+          name,
+          flag:
+            String(member.flag || "") ||
+            (memberCountry ? flagEmoji(memberCountry) : "◌"),
+          countryCode: memberCountry,
+          browser: String(member.browser || "Hidden"),
+          os: String(member.os || "Hidden"),
+          status: "sitting around the campfire",
+          accountStatus: "Registered",
+          localTime: "",
+          activityCategory: "sitting-at-member-fire",
+          inputActive: false,
+          visitCount: Math.max(
+            0,
+            Math.min(999, Number(member.visitCount) || 0),
+          ),
+          firstVisitAge: joinedAt > 0 ? "this-session" : "hidden",
+          firstSeenMinutes:
+            joinedAt > 0
+              ? Math.max(0, Math.floor((Date.now() - joinedAt) / 60_000))
+              : 0,
+          joinedAt,
+          totalActiveMs: Math.max(
+            0,
+            Number(member.totalActiveMs ?? member.activeMs) || 0,
+          ),
+          nodes: Array.isArray(member.nodes)
+            ? member.nodes.slice(0, 6)
+            : [],
+          statusEmoji: "",
+          statusNote: String(member.status || ""),
+          activityBucket: member.activityBucket || "",
+        };
         let figure = loungeMembers.get(id);
         if (!figure) {
           // The directory carries the coarse country/browser/OS the member
           // saved on their account, so an away member's bench figure wears
           // their own flag shirt and client badge instead of a blank one.
-          const memberCountry = /^[A-Z]{2}$/.test(
-            String(member.countryCode || "").toUpperCase(),
-          )
-            ? String(member.countryCode).toUpperCase()
-            : "";
           figure = createAvatar(
             THREE,
-            {
-              id,
-              name,
-              flag: memberCountry ? flagEmoji(memberCountry) : "◌",
-              countryCode: memberCountry,
-              browser: String(member.browser || "Hidden"),
-              os: String(member.os || "Hidden"),
-              status: "sitting around the campfire",
-              accountStatus: "Registered",
-              localTime: "",
-              activityCategory: "hidden",
-              inputActive: false,
-              visitCount: 0,
-              firstVisitAge: "hidden",
-              // The public directory shares the joined timestamp and coarse
-              // active-time aggregate, so the nameplate can show "JOINED …
-              // AGO" and "ACTIVE … IN WORLD" instead of the hidden labels.
-              joinedAt: Number(member.createdAt) || 0,
-              totalActiveMs: Math.max(
-                0,
-                Number(member.totalActiveMs ?? member.activeMs) || 0,
-              ),
-              nodes: Array.isArray(member.nodes)
-                ? member.nodes.slice(0, 6)
-                : [],
-              statusEmoji: "",
-              statusNote: "",
-              // The directory's coarse recency bucket drives the bench
-              // figure's chest activity light.
-              activityBucket: member.activityBucket || "",
-            },
+            memberIdentity,
             { remote: true, scale: 0.88 },
           );
           world.add(figure);
@@ -13285,6 +15550,17 @@ export function createWorldScene({
           // Directory figures are real accounts, so their chest tabs work the
           // same way a live peer's do.
           registerAvatarChestControls(figure, id);
+        } else {
+          const badgeKey = JSON.stringify(memberIdentity);
+          if (figure.userData.badgeKey !== badgeKey) {
+            updateAvatarBadge(THREE, figure, memberIdentity, true);
+            syncOperatorBelt(
+              THREE,
+              figure,
+              memberIdentity.nodes.length,
+            );
+            figure.userData.badgeKey = badgeKey;
+          }
         }
         // The 30s directory refresh can age a seated member's recency bucket
         // without recreating the figure, so re-sync the chest light in place.
@@ -13292,6 +15568,16 @@ export function createWorldScene({
           inputActive: false,
           accountStatus: "Registered",
           activityBucket: member.activityBucket || "",
+        });
+        // Directory figures stand in for registered accounts that are not
+        // currently present. Give them the same viewer-local organization
+        // control as a live avatar so admins can assign teams independent of
+        // whether the target member is logged in.
+        syncRemoteOrgTeamControl(figure, {
+          id,
+          name,
+          accountStatus: "Registered",
+          orgTeam: member?.orgTeam,
         });
         const seat = seats[index % Math.max(1, seats.length)];
         figure.position.copy(campfire.position);
@@ -13315,11 +15601,20 @@ export function createWorldScene({
     campfire.userData.memberFigureCount = Math.min(roster.length, seats.length);
     loungeMembers.forEach((figure, id) => {
       if (seen.has(id)) return;
+      removeRemoteOrgTeamControl(figure, id);
       unregisterAvatarChestControls(figure);
       world.remove(figure);
       disposeObject3D(figure);
       loungeMembers.delete(id);
     });
+    // The member ring grows with the roster. Recompute automatic cabinet
+    // slots only when its physical radius changed, preserving a walkway
+    // without doing layout work on every identical directory refresh.
+    if (
+      previousSeatRadius !== (Number(campfire.userData.seatRadius) || 0)
+    ) {
+      relayoutNetworkNodes();
+    }
   }
 
   function visitNeighborhoodHome(ownerId) {
@@ -13348,17 +15643,42 @@ export function createWorldScene({
     return true;
   }
 
-  // Concentric rings of cabinets around the reward pool, innermost first. The
-  // first ring clears the pool rim and its tree circle; each further ring only
-  // starts once the one inside it is full at walkable spacing.
-  function rewardCircleSlots(centreX, centreZ, count) {
-    const spacing = 3.2;
-    // The campfire keeps its clearing: a ring position that landed on the
-    // bench circle would stand a cabinet through the seating.
-    const campfire = landmarkById("campfire").position;
+  // Concentric rings of cabinets around the reward pool, innermost first.
+  // Every ring is fully ordered before `count` is sliced, so the prefix is
+  // identical for 2, 20, or 64 nodes: adding one node never shifts survivors.
+  // Live scene keep-outs are optional so the geometry stays directly testable
+  // without constructing WebGL.
+  function rewardCircleSlots(centreX, centreZ, count, options = {}) {
+    const spacing = 3.8;
+    const requested = Math.max(0, Math.min(64, Math.round(Number(count) || 0)));
+    const defaultCampfire = landmarkById("campfire").position;
+    const campfirePosition = Array.isArray(options.campfirePosition)
+      ? options.campfirePosition
+      : defaultCampfire;
+    const campfireClearance = Math.max(
+      8.2,
+      Number(options.campfireClearance) || 0,
+    );
+    const circleKeepouts = [
+      {
+        x: Number(campfirePosition[0]) || 0,
+        z: Number(campfirePosition[2]) || 0,
+        radius: campfireClearance,
+      },
+      ...(Array.isArray(options.circleKeepouts)
+        ? options.circleKeepouts
+        : []),
+    ];
+    const rectangleKeepouts = Array.isArray(options.rectangleKeepouts)
+      ? options.rectangleKeepouts
+      : [];
+    const isWalkable =
+      typeof options.isWalkable === "function"
+        ? options.isWalkable
+        : () => true;
     const slots = [];
-    let radius = 9.6;
-    while (slots.length < count && radius < WORLD_RADIUS - 6) {
+    let radius = 10.8;
+    while (slots.length < requested && radius < Math.min(68, WORLD_RADIUS - 6)) {
       const capacity = Math.max(
         1,
         Math.floor((Math.PI * 2 * radius) / spacing),
@@ -13368,22 +15688,105 @@ export function createWorldScene({
         const angle = (index / capacity) * Math.PI * 2;
         const x = centreX + Math.cos(angle) * radius;
         const z = centreZ + Math.sin(angle) * radius;
-        if (Math.hypot(x - campfire[0], z - campfire[2]) < 7.4) continue;
-        open.push({ x, z });
+        if (!isWalkable(x, z)) continue;
+        if (
+          circleKeepouts.some((keepout) => {
+            const clearance = Math.max(0, Number(keepout?.radius) || 0);
+            return (
+              Math.hypot(
+                x - (Number(keepout?.x) || 0),
+                z - (Number(keepout?.z) || 0),
+              ) < clearance
+            );
+          })
+        ) {
+          continue;
+        }
+        if (
+          rectangleKeepouts.some((keepout) => {
+            const padding = Math.max(0, Number(keepout?.padding) || 0);
+            return (
+              x >= (Number(keepout?.minX) || 0) - padding &&
+              x <= (Number(keepout?.maxX) || 0) + padding &&
+              z >= (Number(keepout?.minZ) || 0) - padding &&
+              z <= (Number(keepout?.maxZ) || 0) + padding
+            );
+          })
+        ) {
+          continue;
+        }
+        open.push({ x, z, angle });
       }
-      const take = Math.min(open.length, count - slots.length);
-      // A part-filled ring spreads over its whole circle rather than trailing
-      // off as a lopsided arc.
-      const stride = take > 0 ? open.length / take : 0;
-      for (let index = 0; index < take; index += 1) {
-        slots.push(open[Math.floor(index * stride)]);
+
+      // Farthest-point order gives every prefix a balanced spread. It is
+      // computed from the complete obstacle-filtered ring, independent of
+      // `requested`, which is the stability guarantee membership changes need.
+      const ordered = [];
+      const remaining = open.slice();
+      while (remaining.length) {
+        let bestIndex = 0;
+        let bestDistance = -1;
+        let bestBalance = Number.POSITIVE_INFINITY;
+        remaining.forEach((candidate, candidateIndex) => {
+          const nearest = ordered.length
+            ? Math.min(
+                ...ordered.map((selected) =>
+                  Math.hypot(
+                    candidate.x - selected.x,
+                    candidate.z - selected.z,
+                  ),
+                ),
+              )
+            : candidate.angle <= Math.PI
+              ? Math.PI - candidate.angle
+              : candidate.angle - Math.PI;
+          // Equal-distance candidates are common on a ring. Prefer the one
+          // that keeps this prefix's centroid nearest the relocated pool,
+          // rather than consistently breaking ties toward one semicircle.
+          const balance = Math.hypot(
+            ordered.reduce(
+              (sum, selected) => sum + selected.x - centreX,
+              candidate.x - centreX,
+            ),
+            ordered.reduce(
+              (sum, selected) => sum + selected.z - centreZ,
+              candidate.z - centreZ,
+            ),
+          );
+          if (
+            nearest > bestDistance + 1e-9 ||
+            (
+              Math.abs(nearest - bestDistance) <= 1e-9 &&
+              balance < bestBalance - 1e-9
+            )
+          ) {
+            bestIndex = candidateIndex;
+            bestDistance = nearest;
+            bestBalance = balance;
+          }
+        });
+        ordered.push(remaining.splice(bestIndex, 1)[0]);
       }
-      radius += 3.6;
+      slots.push(...ordered.map(({ x, z }) => ({ x, z })));
+      radius += 4.2;
     }
-    return slots;
+    return slots.slice(0, requested);
   }
 
-  function updateNetworkNodes(nodes = []) {
+  function updateNetworkNodes(nodes = networkNodeSnapshot) {
+    networkNodeSnapshot = (Array.isArray(nodes) ? nodes : [])
+      .slice(0, 64)
+      .map((node) => {
+        const nodeName = String(node?.name || node?.label || "")
+          .trim()
+          .toLowerCase();
+        return {
+          ...node,
+          agentTasks: (
+            mirrorAgentTasksByNode.get(nodeName) || []
+          ).map((task) => ({ ...task })),
+        };
+      });
     const fountain = landmarkObjects.get("fountain");
     const fountainPosition = landmarkById("fountain").position;
     const routingX = fountain?.position.x ?? fountainPosition[0];
@@ -13402,7 +15805,7 @@ export function createWorldScene({
     // membership change. A normalized name order keeps every surviving
     // cabinet in the same slot, while a changed member list is laid out again
     // immediately by this existing data-update path.
-    const usableNodes = (Array.isArray(nodes) ? nodes : [])
+    const usableNodes = networkNodeSnapshot
       .map((node) => ({
         node,
         name: String(node?.name || node?.label || "").trim().slice(0, 80),
@@ -13421,16 +15824,66 @@ export function createWorldScene({
           entry.name.toLowerCase() !== entries[index - 1].name.toLowerCase(),
       )
       .slice(0, 64);
+    const usableIds = new Set(
+      usableNodes.map(({ name }) => `node:${name.toLowerCase()}`),
+    );
+    nodeSlotAssignments.forEach((_slotIndex, id) => {
+      if (!usableIds.has(id)) nodeSlotAssignments.delete(id);
+    });
+    const usedSlotIndexes = new Set(nodeSlotAssignments.values());
+    usableNodes.forEach(({ name }) => {
+      const id = `node:${name.toLowerCase()}`;
+      if (nodeSlotAssignments.has(id)) return;
+      let slotIndex = 0;
+      while (usedSlotIndexes.has(slotIndex) && slotIndex < 64) {
+        slotIndex += 1;
+      }
+      if (slotIndex >= 64) return;
+      nodeSlotAssignments.set(id, slotIndex);
+      usedSlotIndexes.add(slotIndex);
+    });
+    const campfireRadius =
+      Math.max(6.2, Number(campfire.userData.seatRadius) || 0) + 2;
     const circleSlots = rewardCircleSlots(
       routingX,
       routingZ,
-      usableNodes.length,
+      64,
+      {
+        campfirePosition: [
+          campfire.position.x,
+          campfire.position.y,
+          campfire.position.z,
+        ],
+        campfireClearance: campfireRadius,
+        circleKeepouts: [
+          {
+            x: swingSet.position.x,
+            z: swingSet.position.z,
+            radius: 6.2,
+          },
+        ],
+        rectangleKeepouts: [
+          {
+            ...ARRIVAL_GRID_BOUNDS,
+            padding: 1.8,
+          },
+        ],
+        isWalkable: (x, z) => worldWalkSurfaceContains(x, z, 1.7),
+      },
     );
-    usableNodes.forEach(({ node, name: nodeName }, index) => {
+    usableNodes.forEach(({ node, name: nodeName }) => {
       const id = `node:${nodeName.toLowerCase()}`;
       const dataKey = nodeDataKey({ ...node, name: nodeName });
       seen.add(id);
       let cabinet = nodeInfrastructure.get(id);
+      const followedPosition = cabinet?.position?.clone?.() || null;
+      const focusFollowsCabinet = Boolean(
+        cameraFocus &&
+        followedPosition &&
+        Math.abs(cameraFocus.x - followedPosition.x) < 0.01 &&
+        Math.abs(cameraFocus.y - (followedPosition.y + 1.65)) < 0.01 &&
+        Math.abs(cameraFocus.z - followedPosition.z) < 0.01
+      );
       // The commit shown before this update, captured ahead of any rebuild.
       // Comparing it against the fresh signed record is what detects "code
       // was just pushed onto this node" — for both the instant socket-driven
@@ -13459,13 +15912,16 @@ export function createWorldScene({
         for (const panelName of [
           "mirror-server-front-panel",
           "mirror-server-rear-panel",
+          "mirror-server-agent-panel-left",
+          "mirror-server-agent-panel-right",
         ]) {
           const panel = cabinet.getObjectByName(panelName);
           if (panel) interactive.push(panel);
         }
         nodeInfrastructure.set(id, cabinet);
       }
-      const slot = circleSlots[index];
+      const slot = circleSlots[nodeSlotAssignments.get(id)];
+      if (!slot) return;
       cabinet.position.set(slot.x, 0.38, slot.z);
       // The front display faces inward so each cabinet remains individually
       // readable from the surrounding walkway.
@@ -13473,6 +15929,10 @@ export function createWorldScene({
         routingX - slot.x,
         routingZ - slot.z,
       );
+      if (focusFollowsCabinet) {
+        cameraFocus.copy(cabinet.position);
+        cameraFocus.y += 1.65;
+      }
       const nextCommit = String(node?.commit || "");
       if (priorCommit && nextCommit && nextCommit !== priorCommit) {
         spawnPushSurge(cabinet.position);
@@ -13491,6 +15951,50 @@ export function createWorldScene({
       removeCabinet(cabinet);
       nodeInfrastructure.delete(id);
     });
+  }
+
+  function relayoutNetworkNodes() {
+    if (!networkNodeSnapshot.length && !nodeInfrastructure.size) return;
+    updateNetworkNodes(networkNodeSnapshot);
+  }
+
+  function updateMirrorAgentTasks(sessions = []) {
+    humanTodoSessions = Array.isArray(sessions) ? sessions.slice(0, 80) : [];
+    const previousHumanTodos = humanTodoBoardFace.material.map;
+    humanTodoBoardFace.material.map = worldHumanTodoTexture(
+      THREE,
+      humanTodoSessions,
+    );
+    humanTodoBoardFace.material.needsUpdate = true;
+    previousHumanTodos?.dispose?.();
+    const next = new Map();
+    for (const session of Array.isArray(sessions) ? sessions.slice(0, 80) : []) {
+      const node = String(session?.targetNode || "").trim().toLowerCase();
+      const task = normalizeMirrorAgentTask(session);
+      if (!node || !task) continue;
+      const tasks = next.get(node) || [];
+      if (tasks.length < 8) tasks.push({ ...session, ...task });
+      next.set(node, tasks);
+    }
+    const key = JSON.stringify(
+      [...next.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([node, tasks]) => [
+          node,
+          tasks.map((task) => [
+            task.id,
+            task.title,
+            task.status,
+            task.updatedAt,
+          ]),
+        ]),
+    );
+    if (key === mirrorAgentTasksKey) return false;
+    mirrorAgentTasksKey = key;
+    mirrorAgentTasksByNode.clear();
+    next.forEach((tasks, node) => mirrorAgentTasksByNode.set(node, tasks));
+    updateNetworkNodes(networkNodeSnapshot);
+    return true;
   }
 
   function focusNetworkNode(name) {
@@ -14302,6 +16806,8 @@ export function createWorldScene({
     world.userData.repositoryRecordDeskLayer = null;
     world.userData.repositoryRecordDeskMount = null;
     world.userData.repositoryRecordDeskData = null;
+    world.userData.repositoryActivityLayer = null;
+    world.userData.repositoryActivityMount = null;
     world.userData.repositoryPortalMeshes = [];
     world.userData.repositoryCatalogSignature = catalogSignature;
     repositoryPortals.clear();
@@ -14631,26 +17137,6 @@ export function createWorldScene({
         starCaption.position.set(0, 2.92, 0.5);
         node.add(starCaption);
       }
-      if (isActive) {
-        const createButton = new THREE.Mesh(
-          new THREE.BoxGeometry(0.9, 0.34, 0.18),
-          makeMaterial(THREE, "#9ef7c6", {
-            emissive: "#2ca76c",
-            emissiveIntensity: 0.9,
-            metalness: 0.28,
-          }),
-        );
-        createButton.name = "repository-create-button";
-        createButton.position.set(1.45, 0, 0.24);
-        createButton.userData.createRepository = true;
-        node.add(createButton);
-        interactive.push(createButton);
-        const createLabel = makeLabelSprite(THREE, "+ REPO", "CREATE", "#9ef7c6");
-        createLabel.scale.set(0.9, 0.3, 1);
-        createLabel.position.set(1.45, 0, 0.38);
-        node.add(createLabel);
-      }
-
       const base = new THREE.Mesh(baseGeometry, materials.base);
       base.name = `repository-portal-base:${record.owner}/${record.name}`;
       base.position.set(0, -2.38, 0);
@@ -14688,10 +17174,10 @@ export function createWorldScene({
         interactive.push(plaqueStone, plaqueFace);
         node.add(plaqueStone, plaqueFace);
       }
-      // Who follows this repository over ActivityPub, seated on the ground
-      // inside the ring and looking back up at the circle. Only the selected
-      // repository draws its gallery: these are real remote accounts read from
-      // ap_followers, not a decoration, and 200 crowds would bury the district.
+      // Who follows this repository over ActivityPub, shown as compact avatar
+      // icons orbiting the selected file circle. These are real remote accounts
+      // read from ap_followers; using icons keeps the repository graph visible
+      // and avoids mistaking follower records for people physically present.
       if (isActive && !record.isPrivate) {
         const followers = Array.isArray(record.fediverseFollowers)
           ? record.fediverseFollowers.filter(
@@ -14707,33 +17193,26 @@ export function createWorldScene({
           : followers.length;
         const followerStatus = String(record.fediverseFollowerStatus || "idle");
         const gallery = new THREE.Group();
-        gallery.name = `repository-fediverse-followers:${record.owner}/${record.name}`;
-        // Ground level for this portal (the plinth sits at -2.38) and inside
-        // the perimeter ring, so the crowd faces back out at the circle.
-        const seated = followers.slice(0, REPOSITORY_FOLLOWERS_VISIBLE);
-        seated.forEach((follower, followerIndex) => {
-          // Two per row, rows stepping inward: each card then sits at its own
-          // depth, so eight of them never overlap into an unreadable pile.
-          const column = followerIndex % 2;
-          const row = Math.floor(followerIndex / 2);
-          const figure = makeRepositoryFollowerFigure(THREE, follower);
-          figure.position.set(
-            // Odd rows sit in the gaps of the row in front of them, so a
-            // head-on view never buries one card behind another.
-            (column - 0.5) * 2.72 + (row % 2 ? 1.36 : 0),
-            // The portal plinth ends at -2.38; -2.53 puts them on the ground.
-            -2.53,
-            2.2 + row * 2.4,
+        gallery.name = `repository-fediverse-follower-icons:${record.owner}/${record.name}`;
+        gallery.position.z = 0.46;
+        const visibleFollowers = followers.slice(
+          0,
+          REPOSITORY_FOLLOWERS_VISIBLE,
+        );
+        visibleFollowers.forEach((follower, followerIndex) => {
+          const icon = makeRepositoryFollowerIcon(THREE, follower);
+          const orbitAngle =
+            -Math.PI / 2 +
+            (followerIndex / Math.max(1, visibleFollowers.length)) *
+              Math.PI *
+              2;
+          const orbitRadius = nodeRadius * 2.65;
+          icon.position.set(
+            Math.cos(orbitAngle) * orbitRadius,
+            Math.sin(orbitAngle) * orbitRadius,
+            0,
           );
-          // Turn around to look back up at the circle they follow.
-          figure.rotation.y = Math.PI;
-          const card = figure.getObjectByName(
-            `repository-follower-card:${follower.handle || follower.profileUrl}`,
-          );
-          // Each row further back holds its card a little higher, so the whole
-          // gallery reads as tiers rather than one overlapping pile.
-          if (card) card.position.y += row * 0.62;
-          gallery.add(figure);
+          gallery.add(icon);
         });
         const caption = repositorySizeLabelSprite(
           THREE,
@@ -14746,19 +17225,19 @@ export function createWorldScene({
             ? "FOLLOWER LIST UNAVAILABLE"
             : followerStatus === "loading"
               ? "READING ap_followers…"
-              : reportedFollowers > seated.length
-                ? `WATCHING · SHOWING ${seated.length}`
+              : reportedFollowers > visibleFollowers.length
+                ? `AROUND FILE CIRCLE · SHOWING ${visibleFollowers.length}`
                 : reportedFollowers
-                  ? "WATCHING THIS REPOSITORY"
+                  ? "AROUND THE FILE CIRCLE"
                   : "NOBODY FOLLOWS THIS REPOSITORY YET",
           "#d5b6ff",
         );
         caption.name = `repository-fediverse-follower-caption:${record.owner}/${record.name}`;
-        caption.scale.set(3.4, 0.96, 1);
-        caption.position.set(0, -1.86, 1.1);
+        caption.scale.set(2.8, 0.74, 1);
+        caption.position.set(0, -nodeRadius * 2.85, 0);
         gallery.add(caption);
-        node.add(gallery);
-        node.userData.fediverseFollowers = seated;
+        face.add(gallery);
+        node.userData.fediverseFollowers = visibleFollowers;
       }
       node.userData.repositoryPortal = repositoryPortal;
       node.userData.repositoryFace = face;
@@ -14803,6 +17282,65 @@ export function createWorldScene({
       spark.material.color.set(color);
       spark.material.emissive?.set?.(color);
     }
+  }
+
+  function updateRepositoryActivity(activity = {}, selection = {}) {
+    const previousLayer = world.userData.repositoryActivityLayer;
+    const previousMount =
+      world.userData.repositoryActivityMount || previousLayer?.parent;
+    removeGeneratedLayer(previousMount, previousLayer, interactive);
+    world.userData.repositoryActivityLayer = null;
+    world.userData.repositoryActivityMount = null;
+
+    const owner = String(selection?.owner || "").slice(0, 40);
+    const name = String(selection?.repo || selection?.name || "").slice(0, 60);
+    const repositoryKey =
+      `${owner.toLocaleLowerCase()}/${name.toLocaleLowerCase()}`;
+    const mount = repositoryPortals.get(repositoryKey)?.group;
+    if (!mount) return;
+
+    const layer = new THREE.Group();
+    layer.name = "repository-commit-activity";
+    layer.userData.repositoryKey = repositoryKey;
+    layer.userData.commit = String(selection?.commit || "").slice(0, 64);
+
+    // The selected file graph nearly reaches the ground. Lay its activity
+    // panel flat directly in front of the portal so it reads as the graph's
+    // lower section without covering file wedges, follower icons, or controls.
+    const backing = new THREE.Mesh(
+      new THREE.BoxGeometry(6.25, 0.12, 2.25),
+      makeMaterial(THREE, "#102a32", {
+        emissive: "#123d49",
+        emissiveIntensity: 0.36,
+        metalness: 0.16,
+        roughness: 0.68,
+      }),
+    );
+    backing.position.set(0, -2.38, 2.75);
+    layer.add(backing);
+    const chart = new THREE.Mesh(
+      new THREE.PlaneGeometry(6.05, 2.02),
+      new THREE.MeshBasicMaterial({
+        map: repositoryCommitActivityTexture(THREE, activity),
+        side: THREE.DoubleSide,
+        toneMapped: false,
+      }),
+    );
+    chart.name = "repository-commit-activity-chart";
+    chart.rotation.x = -Math.PI / 2;
+    chart.position.set(0, -2.31, 2.75);
+    chart.userData.landmark = "repositories";
+    chart.userData.repositoryCommitActivity = {
+      owner,
+      name,
+      commit: String(selection?.commit || "").slice(0, 64),
+      timezone: "UTC",
+    };
+    layer.add(chart);
+
+    mount.add(layer);
+    world.userData.repositoryActivityLayer = layer;
+    world.userData.repositoryActivityMount = mount;
   }
 
   function updateRepositorySizeMap(sizeTree = {}, selection = {}) {
@@ -15071,14 +17609,86 @@ export function createWorldScene({
     if (perimeter) perimeter.userData.loading = Boolean(loading);
   }
 
-  const REPOSITORY_ISSUE_PAGES_VISIBLE = 10;
-  const REPOSITORY_PULL_CARDS_VISIBLE = 5;
+  const REPOSITORY_ISSUE_CARDS_VISIBLE = 25;
+  const REPOSITORY_PULL_CARDS_VISIBLE = 25;
+  const REPOSITORY_RECORDS_MAX = 250;
 
   function safeRecordNumber(value) {
     const number = Number(value);
     return Number.isSafeInteger(number) && number >= 1 && number <= 10_000_000
       ? number
       : 0;
+  }
+
+  function repositoryRecordStatusSummary(kind, items = []) {
+    const counts = new Map();
+    items.forEach((item) => {
+      const status =
+        kind === "pull"
+          ? repositoryPullReviewStatus(item)
+          : item?.state === "closed"
+            ? "closed"
+            : "open";
+      counts.set(status, (counts.get(status) || 0) + 1);
+    });
+    const ranked = [...counts.entries()].sort(
+      (left, right) =>
+        right[1] - left[1] || left[0].localeCompare(right[0]),
+    );
+    const mostly = ranked[0]?.[0] || "unavailable";
+    const detail = ranked
+      .slice(0, 4)
+      .map(([status, count]) => `${status.toUpperCase()} ${count}`)
+      .join(" · ");
+    return { mostly, detail };
+  }
+
+  function repositoryRecordPage(kind, count) {
+    const perPage =
+      kind === "issue"
+        ? REPOSITORY_ISSUE_CARDS_VISIBLE
+        : REPOSITORY_PULL_CARDS_VISIBLE;
+    const pages = Math.max(1, Math.ceil(count / perPage));
+    const requested = Number(
+      world.userData.repositoryRecordPages?.[kind],
+    );
+    const page = clamp(
+      Number.isSafeInteger(requested) ? requested : 0,
+      0,
+      pages - 1,
+    );
+    world.userData.repositoryRecordPages = {
+      ...(world.userData.repositoryRecordPages || {}),
+      [kind]: page,
+    };
+    return {
+      page,
+      pages,
+      perPage,
+      start: page * perPage,
+      end: Math.min(count, (page + 1) * perPage),
+    };
+  }
+
+  function changeRepositoryRecordPage(kind, direction) {
+    const data = world.userData.repositoryRecordDeskData;
+    if (!data || !["issue", "pull"].includes(kind)) return false;
+    const items =
+      kind === "issue" ? data.records?.issues : data.records?.pulls;
+    const count = Array.isArray(items) ? items.length : 0;
+    const current = repositoryRecordPage(kind, count);
+    const next = clamp(
+      current.page + Math.sign(Number(direction) || 0),
+      0,
+      current.pages - 1,
+    );
+    if (next === current.page) return false;
+    world.userData.repositoryRecordPages = {
+      ...(world.userData.repositoryRecordPages || {}),
+      [kind]: next,
+    };
+    updateRepositoryRecordDesk(data.selection, data.records);
+    return true;
   }
 
   // The open crate of issue pages and the pull-request review board that stand
@@ -15099,10 +17709,29 @@ export function createWorldScene({
     const repositoryKey =
       `${owner.toLocaleLowerCase()}/${name.toLocaleLowerCase()}`;
     const mount = repositoryPortals.get(repositoryKey)?.group;
+    if (world.userData.repositoryRecordPageKey !== repositoryKey) {
+      world.userData.repositoryRecordPageKey = repositoryKey;
+      world.userData.repositoryRecordPages = { issue: 0, pull: 0 };
+    }
     const issues = (Array.isArray(records?.issues) ? records.issues : [])
       .map((record) => ({
         number: safeRecordNumber(record?.number),
         state: ["open", "closed"].includes(record?.state) ? record.state : "",
+        title: String(record?.title || "").slice(0, 240),
+        author: String(record?.author || "").slice(0, 100),
+        createdAt: Math.max(0, Number(record?.createdAt) || 0),
+        updatedAt: Math.max(0, Number(record?.updatedAt) || 0),
+        labels: (Array.isArray(record?.labels) ? record.labels : [])
+          .map((label) => String(label || "").slice(0, 40))
+          .filter(Boolean)
+          .slice(0, 6),
+        assignees: (
+          Array.isArray(record?.assignees) ? record.assignees : []
+        )
+          .map((assignee) => String(assignee || "").slice(0, 60))
+          .filter(Boolean)
+          .slice(0, 4),
+        metadataAvailable: record?.metadataAvailable !== false,
       }))
       .filter((record) => record.number)
       .sort((left, right) =>
@@ -15112,7 +17741,7 @@ export function createWorldScene({
             ? 1
             : -1,
       )
-      .slice(0, REPOSITORY_ISSUE_PAGES_VISIBLE);
+      .slice(0, REPOSITORY_RECORDS_MAX);
     const pulls = (Array.isArray(records?.pulls) ? records.pulls : [])
       .map((record) => ({
         number: safeRecordNumber(record?.number),
@@ -15120,6 +17749,33 @@ export function createWorldScene({
           ? record.state
           : "",
         title: String(record?.title || "").slice(0, 80),
+        author: String(record?.author || "").slice(0, 100),
+        base: String(record?.base || "").slice(0, 160),
+        head: String(record?.head || "").slice(0, 160),
+        createdAt: Math.max(0, Number(record?.createdAt) || 0),
+        metadataAvailable: record?.metadataAvailable !== false,
+        draft: record?.draft === true,
+        creationBaseOid: String(record?.creationBaseOid || "").slice(0, 64),
+        creationHeadOid: String(record?.creationHeadOid || "").slice(0, 64),
+        mergeable:
+          typeof record?.mergeable === "boolean"
+            ? record.mergeable
+            : undefined,
+        hasConflicts:
+          typeof record?.hasConflicts === "boolean"
+            ? record.hasConflicts
+            : typeof record?.conflict === "boolean"
+              ? record.conflict
+              : undefined,
+        reviewStatus: String(record?.reviewStatus || "").slice(0, 24),
+        mergeStatus: String(record?.mergeStatus || "").slice(0, 24),
+        mergeability: String(record?.mergeability || "").slice(0, 24),
+        checksStatus: String(
+          record?.checksStatus ||
+            record?.checkStatus ||
+            record?.ciStatus ||
+            "",
+        ).slice(0, 24),
       }))
       .filter((record) => record.number)
       .sort((left, right) =>
@@ -15129,7 +17785,7 @@ export function createWorldScene({
             ? -1
             : 1,
       )
-      .slice(0, REPOSITORY_PULL_CARDS_VISIBLE);
+      .slice(0, REPOSITORY_RECORDS_MAX);
     if (!mount || (!issues.length && !pulls.length)) return;
 
     const expandedIssue = safeRecordNumber(records?.expandedIssue);
@@ -15140,117 +17796,33 @@ export function createWorldScene({
     // the follower gallery stands on -2.53.
     const groundY = -2.53;
 
-    if (issues.length) {
-      const box = new THREE.Group();
-      // The portal face points at the ring centre, so the visitor's left is
-      // the portal's +x: the issue crate keeps clear of the follower gallery.
-      box.name = `repository-issue-box:${repositoryKey}`;
-      box.position.set(4.4, 0, 1.35);
-      const crateMaterial = makeMaterial(THREE, "#8a6b4a", {
-        roughness: 0.86,
-        metalness: 0.04,
-      });
-      const floor = new THREE.Mesh(
-        new THREE.BoxGeometry(2.5, 0.12, 1.3),
-        crateMaterial,
-      );
-      floor.position.y = groundY + 0.06;
-      box.add(floor);
-      [
-        // An open box: four walls, no lid, pages standing up out of it.
-        { size: [2.5, 1.0, 0.1], position: [0, groundY + 0.56, 0.6] },
-        { size: [2.5, 1.0, 0.1], position: [0, groundY + 0.56, -0.6] },
-        { size: [0.1, 1.0, 1.3], position: [-1.2, groundY + 0.56, 0] },
-        { size: [0.1, 1.0, 1.3], position: [1.2, groundY + 0.56, 0] },
-      ].forEach(({ size, position }) => {
-        const wall = new THREE.Mesh(
-          new THREE.BoxGeometry(...size),
-          crateMaterial,
-        );
-        wall.position.set(...position);
-        box.add(wall);
-      });
-      issues.forEach((issue, index) => {
-        const page = new THREE.Mesh(
-          new THREE.PlaneGeometry(0.72, 0.96),
-          new THREE.MeshBasicMaterial({
-            map: repositoryIssuePageTexture(THREE, issue, false, repositoryName),
-            side: THREE.DoubleSide,
-            toneMapped: false,
-          }),
-        );
-        page.name = `repository-issue-page:${issue.number}`;
-        const spread = issues.length > 1 ? index / (issues.length - 1) : 0.5;
-        page.position.set(
-          -0.95 + spread * 1.9,
-          groundY + 1.06,
-          -0.34 + (index % 3) * 0.34,
-        );
-        page.rotation.y = (spread - 0.5) * -0.5;
-        page.rotation.z = (index % 2 ? -1 : 1) * 0.05;
-        page.userData.landmark = "repositories";
-        page.userData.repositoryIssuePage = {
-          owner,
-          name,
-          number: issue.number,
-          state: issue.state,
-        };
-        box.add(page);
-        interactive.push(page);
-      });
-      if (expandedIssue && issues.some((issue) => issue.number === expandedIssue)) {
-        const issue = issues.find((candidate) => candidate.number === expandedIssue);
-        const sheet = new THREE.Mesh(
-          new THREE.PlaneGeometry(2.5, 3.28),
-          new THREE.MeshBasicMaterial({
-            map: repositoryIssuePageTexture(THREE, issue, true, repositoryName),
-            side: THREE.DoubleSide,
-            toneMapped: false,
-          }),
-        );
-        sheet.name = `repository-issue-page-expanded:${issue.number}`;
-        sheet.position.set(0, groundY + 3.1, 0.75);
-        sheet.userData.landmark = "repositories";
-        sheet.userData.repositoryIssuePage = {
-          owner,
-          name,
-          number: issue.number,
-          state: issue.state,
-          expanded: true,
-        };
-        box.add(sheet);
-        interactive.push(sheet);
-      }
-      const caption = repositorySizeLabelSprite(
-        THREE,
-        `${issues.length} ISSUE ${issues.length === 1 ? "PAGE" : "PAGES"}`,
-        expandedIssue ? "CLICK AGAIN TO OPEN" : "CLICK A PAGE TO EXPAND",
-        "#f7c96b",
-      );
-      caption.name = `repository-issue-box-caption:${repositoryKey}`;
-      caption.scale.set(2.9, 0.82, 1);
-      caption.position.set(0, groundY + 1.86, 0.9);
-      box.add(caption);
-      layer.add(box);
-    }
-
-    if (pulls.length) {
+    const addRecordBoard = (allItems, kind, x, accent) => {
+      if (!allItems.length) return null;
       const desk = new THREE.Group();
-      // Mirrored to the visitor's right: the review board for pull requests.
-      desk.name = `repository-pull-desk:${repositoryKey}`;
-      desk.position.set(-4.4, 0, 1.35);
-      const boardHeight = 0.62 + pulls.length * 0.6;
+      const isIssue = kind === "issue";
+      const pageInfo = repositoryRecordPage(kind, allItems.length);
+      const items = allItems.slice(pageInfo.start, pageInfo.end);
+      const statusSummary = repositoryRecordStatusSummary(kind, allItems);
+      desk.name = `repository-${kind}-desk:${repositoryKey}`;
+      desk.position.set(x, 0, 1.35);
+      const columns = items.length > 13 ? 2 : 1;
+      const rows = Math.ceil(items.length / columns);
+      const boardWidth = columns === 2 ? 7.15 : 3.65;
+      const boardHeight = 0.74 + rows * 0.62;
       const board = new THREE.Mesh(
-        new THREE.BoxGeometry(2.75, boardHeight, 0.12),
-        makeMaterial(THREE, "#171429", {
-          emissive: "#241d45",
+        new THREE.BoxGeometry(boardWidth, boardHeight, 0.12),
+        makeMaterial(THREE, isIssue ? "#10231b" : "#171429", {
+          emissive: isIssue ? "#163c2a" : "#241d45",
           emissiveIntensity: 0.32,
           roughness: 0.6,
         }),
       );
       board.position.set(0, groundY + 0.8 + boardHeight / 2, 0);
+      board.userData.landmark = "repositories";
+      board.userData.repositoryRecordPageKind = kind;
       desk.add(board);
-      [-1.05, 1.05].forEach((legX) => {
+      interactive.push(board);
+      [-boardWidth / 2 + 0.28, boardWidth / 2 - 0.28].forEach((legX) => {
         const leg = new THREE.Mesh(
           new THREE.BoxGeometry(0.14, 0.9, 0.14),
           makeMaterial(THREE, "#0e0c1c", { roughness: 0.7 }),
@@ -15258,41 +17830,141 @@ export function createWorldScene({
         leg.position.set(legX, groundY + 0.45, 0);
         desk.add(leg);
       });
-      pulls.forEach((pull, index) => {
+      items.forEach((record, index) => {
+        const column = Math.floor(index / rows);
+        const row = index % rows;
         const card = new THREE.Mesh(
-          new THREE.PlaneGeometry(2.45, 0.54),
+          new THREE.PlaneGeometry(3.28, 0.56),
           new THREE.MeshBasicMaterial({
-            map: repositoryPullCardTexture(THREE, pull),
+            map: isIssue
+              ? repositoryIssueCardTexture(THREE, record)
+              : repositoryPullCardTexture(THREE, record),
             toneMapped: false,
           }),
         );
-        card.name = `repository-pull-card:${pull.number}`;
+        card.name = `repository-${kind}-card:${record.number}`;
         card.position.set(
-          0,
-          groundY + 0.8 + boardHeight - 0.56 - index * 0.6,
+          columns === 2 ? (column - 0.5) * 3.5 : 0,
+          groundY + 0.8 + boardHeight - 0.62 - row * 0.62,
           0.08,
         );
         card.userData.landmark = "repositories";
-        card.userData.repositoryPullPage = {
+        card.userData.repositoryRecordPageKind = kind;
+        const page = {
           owner,
           name,
-          number: pull.number,
-          state: pull.state,
+          number: record.number,
+          state: record.state,
         };
+        if (isIssue) card.userData.repositoryIssuePage = page;
+        else card.userData.repositoryPullPage = page;
         desk.add(card);
         interactive.push(card);
       });
-      const caption = repositorySizeLabelSprite(
+      const caption = repositoryRecordCaptionSprite(
         THREE,
-        `${pulls.length} PULL ${pulls.length === 1 ? "REQUEST" : "REQUESTS"}`,
-        "CLICK TO REVIEW THE DIFF",
-        "#d5b6ff",
+        `${allItems.length} ${
+          isIssue ? "ISSUES" : "PULL REQUESTS"
+        } · MOSTLY ${statusSummary.mostly.toUpperCase()}`,
+        `PAGE ${pageInfo.page + 1}/${pageInfo.pages} · ${
+          pageInfo.start + 1
+        }–${pageInfo.end} · ${statusSummary.detail}`,
+        accent,
       );
-      caption.name = `repository-pull-desk-caption:${repositoryKey}`;
-      caption.scale.set(2.9, 0.82, 1);
+      caption.name = `repository-${kind}-desk-caption:${repositoryKey}`;
+      caption.scale.set(columns === 2 ? 4.5 : 3.2, 0.82, 1);
       caption.position.set(0, groundY + boardHeight + 1.4, 0.4);
       desk.add(caption);
+
+      const addPagerButton = (direction, label, buttonX, enabled) => {
+        const button = new THREE.Mesh(
+          new THREE.PlaneGeometry(1.5, 0.48),
+          new THREE.MeshBasicMaterial({
+            map: repositoryRecordPagerTexture(
+              THREE,
+              label,
+              enabled ? "SCROLL" : "END",
+              enabled ? accent : "#59655f",
+            ),
+            transparent: true,
+            toneMapped: false,
+          }),
+        );
+        button.name =
+          `repository-${kind}-page-${direction < 0 ? "prev" : "next"}`;
+        button.position.set(
+          buttonX,
+          groundY + boardHeight + 2.04,
+          0.42,
+        );
+        button.userData.landmark = "repositories";
+        button.userData.repositoryRecordPageKind = kind;
+        button.userData.repositoryRecordPage = {
+          kind,
+          direction,
+          enabled,
+        };
+        desk.add(button);
+        if (enabled) interactive.push(button);
+      };
+      addPagerButton(
+        -1,
+        "◀ PREV",
+        -0.86,
+        pageInfo.page > 0,
+      );
+      addPagerButton(
+        1,
+        "NEXT ▶",
+        0.86,
+        pageInfo.page + 1 < pageInfo.pages,
+      );
       layer.add(desk);
+      return { desk, boardHeight, items };
+    };
+
+    // Keep both record boards outside the follower orbit and file wedges.
+    // Their inner edges now start beyond five local units from the sunburst.
+    const issueBoard = addRecordBoard(issues, "issue", 9.4, "#f7c96b");
+    addRecordBoard(pulls, "pull", -9.4, "#d5b6ff");
+
+    if (
+      issueBoard &&
+      expandedIssue &&
+      issueBoard.items.some((issue) => issue.number === expandedIssue)
+    ) {
+      const issue = issueBoard.items.find(
+        (candidate) => candidate.number === expandedIssue,
+      );
+      const sheet = new THREE.Mesh(
+        new THREE.PlaneGeometry(3.1, 4.08),
+        new THREE.MeshBasicMaterial({
+          map: repositoryIssuePageTexture(
+            THREE,
+            issue,
+            true,
+            repositoryName,
+          ),
+          side: THREE.DoubleSide,
+          toneMapped: false,
+        }),
+      );
+      sheet.name = `repository-issue-page-expanded:${issue.number}`;
+      sheet.position.set(
+        0,
+        groundY + 0.8 + issueBoard.boardHeight / 2,
+        0.34,
+      );
+      sheet.userData.landmark = "repositories";
+      sheet.userData.repositoryIssuePage = {
+        owner,
+        name,
+        number: issue.number,
+        state: issue.state,
+        expanded: true,
+      };
+      issueBoard.desk.add(sheet);
+      interactive.push(sheet);
     }
 
     mount.add(layer);
@@ -15712,12 +18384,19 @@ export function createWorldScene({
         ? player
         : peerId === FORKBOT_PEER_ID
           ? forkbot
-          : remotePlayers.get(String(peerId || "")) ||
+          : agentBots.get(String(peerId || "").toLowerCase()) ||
+            remotePlayers.get(String(peerId || "")) ||
             loungeMembers.get(String(peerId || ""));
     if (!avatar) return false;
     // ForkBot's own line is the reply the thinking dots were waiting for.
     if (avatar === forkbot && forkbotExcitement) {
       settleForkbot(performance.now());
+    }
+    const agentState = agentBotStates.get(String(peerId || "").toLowerCase());
+    if (agentState?.excitement) {
+      agentState.excitement = null;
+      agentState.target.copy(agentState.avatar.position);
+      agentState.nextWanderAt = performance.now() + 9000;
     }
     return showAvatarChatBubble(avatar, text);
   }
@@ -15895,7 +18574,28 @@ export function createWorldScene({
     const next = Number(value);
     if (!Number.isFinite(next)) return cameraZoom;
     if (cameraMode === "first-person") {
-      firstPersonZoom = clamp(next, 0.25, 5);
+      // Once the eyes are already as wide as they go, another notch backwards
+      // steps out of the avatar's head entirely — that is where the gesture
+      // was heading anyway.
+      if (
+        next < FIRST_PERSON_ZOOM_MIN &&
+        firstPersonZoom <= FIRST_PERSON_ZOOM_MIN
+      ) {
+        setCameraMode("third-person", "zoom-out");
+        if (pinchActive) {
+          // Re-anchor a live pinch, otherwise the orbital camera inherits the
+          // scale the gesture started at inside first person.
+          pinchStartZoom = cameraZoom;
+          const spread = touchDistance();
+          if (spread > 0) pinchStartDistance = spread;
+        }
+        return cameraZoom;
+      }
+      firstPersonZoom = clamp(
+        next,
+        FIRST_PERSON_ZOOM_MIN,
+        FIRST_PERSON_ZOOM_MAX,
+      );
       camera.fov = clamp(44 / firstPersonZoom, 10, 110);
       camera.updateProjectionMatrix();
       return firstPersonZoom;
@@ -15999,6 +18699,38 @@ export function createWorldScene({
       draggedCampfireLog.material.emissive?.set?.("#d88a43");
       draggedCampfireLog.material.emissiveIntensity = 0.5;
     }
+    if (!draggedLayoutObject && !draggedCampfireLog) {
+      const boardHit = pressHits.find(
+        ({ object }) =>
+          object === officeTaskBulletinFace ||
+          object === repoIssuesBoardFace,
+      );
+      if (boardHit) {
+        const source =
+          boardHit.object === officeTaskBulletinFace ? "task" : "issue";
+        const list =
+          source === "task"
+            ? buildBoardState.items
+            : buildBoardState.issues;
+        const index = buildBoardGridIndex(boardHit.uv, list.length);
+        if (
+          index >= 0 &&
+          list[index]?.key &&
+          (source === "issue" ||
+            (buildBoardState.canManage && source === "task"))
+        ) {
+          draggedBuildCard = {
+            source,
+            key: String(list[index].key),
+            index,
+            canDrag:
+              buildBoardState.canManage &&
+              !(source === "issue" && list[index].assigned),
+            moved: false,
+          };
+        }
+      }
+    }
     primaryPointerId = event.pointerId;
     pointerStart.set(event.clientX, event.clientY);
     pointerLast.copy(pointerStart);
@@ -16094,6 +18826,41 @@ export function createWorldScene({
         );
       }
       pointerGestureMoved = true;
+      return;
+    }
+    if (draggedBuildCard) {
+      const movedDistance = pointerStart.distanceTo(
+        new THREE.Vector2(event.clientX, event.clientY),
+      );
+      if (!draggedBuildCard.canDrag || movedDistance <= 8) {
+        return;
+      }
+      draggedBuildCard.moved = true;
+      pointerCoordinates(event);
+      raycaster.setFromCamera(pointer, camera);
+      const boardHit = raycaster
+        .intersectObjects(
+          [officeTaskBulletinFace, repoIssuesBoardFace],
+          false,
+        )
+        .find(({ object }) => object === officeTaskBulletinFace);
+      if (draggedBuildCard.source === "task" && boardHit) {
+        const nextIndex = buildBoardGridIndex(
+          boardHit.uv,
+          buildBoardState.items.length,
+        );
+        if (nextIndex >= 0 && nextIndex !== draggedBuildCard.index) {
+          const [item] = buildBoardState.items.splice(
+            draggedBuildCard.index,
+            1,
+          );
+          buildBoardState.items.splice(nextIndex, 0, item);
+          draggedBuildCard.index = nextIndex;
+          repaintBuildBoards();
+        }
+      }
+      pointerGestureMoved = true;
+      event.preventDefault();
       return;
     }
     const currentPointer = new THREE.Vector2(event.clientX, event.clientY);
@@ -16193,6 +18960,16 @@ export function createWorldScene({
         layoutCommitTimer = 0;
       }
       commitLayoutObject(movedObject);
+      if (
+        ["fountain", "campfire", "swing-set"].includes(
+          String(movedObject.userData.layoutId || "").replace(
+            /^landmark-/,
+            "",
+          ),
+        )
+      ) {
+        relayoutNetworkNodes();
+      }
       lastGestureDragged = true;
       pointerGestureMoved = false;
       return;
@@ -16205,6 +18982,49 @@ export function createWorldScene({
         droppedLog.visible = false;
         droppedLog.userData.campfireCarried = false;
         fireLevel = Math.min(2.4, fireLevel + 0.28);
+      }
+      lastGestureDragged = true;
+      pointerGestureMoved = false;
+      return;
+    }
+    if (draggedBuildCard) {
+      const card = draggedBuildCard;
+      draggedBuildCard = null;
+      const issue = buildBoardState.issues.find(
+        (item) => item.key === card.key,
+      );
+      if (!cancelled && card.source === "issue" && !card.moved) {
+        onRepositoryIssueOpen({
+          owner: String(issue?.owner || "forkmesh").slice(0, 40),
+          name: String(issue?.repo || "forkmesh").slice(0, 60),
+          number: safeRecordNumber(issue?.number),
+          state: String(issue?.status || "open").slice(0, 16),
+        });
+        lastGestureDragged = false;
+        pointerGestureMoved = false;
+        return;
+      }
+      pointerCoordinates(event);
+      raycaster.setFromCamera(pointer, camera);
+      const onBuildBoard = raycaster
+        .intersectObject(officeTaskBulletinFace, false)
+        .some(({ object }) => object === officeTaskBulletinFace);
+      if (!cancelled && card.source === "task" && onBuildBoard) {
+        onBuildBoardReorder({
+          order: buildBoardState.items.map((item) => item.key),
+        });
+      } else if (
+        !cancelled &&
+        card.canDrag &&
+        card.source === "issue" &&
+        onBuildBoard
+      ) {
+        onBuildIssueAssign({
+          key: card.key,
+          title: String(issue?.title || "Repository issue").slice(0, 160),
+        });
+      } else {
+        repaintBuildBoards();
       }
       lastGestureDragged = true;
       pointerGestureMoved = false;
@@ -16256,6 +19076,14 @@ export function createWorldScene({
       onWorldBulletinSelect();
       return;
     }
+    const recordPage = hit?.object?.userData?.repositoryRecordPage;
+    if (recordPage?.enabled === true) {
+      changeRepositoryRecordPage(
+        String(recordPage.kind || ""),
+        Number(recordPage.direction) || 0,
+      );
+      return;
+    }
     if (hit?.object?.userData?.interactive === "mastodon-kiosk-scroll-up") {
       scrollMastodonKiosk(-1);
       return;
@@ -16286,6 +19114,15 @@ export function createWorldScene({
       onReferralBoardSelect();
       return;
     }
+    if (hit?.object?.userData?.interactive === "site-referrer-link") {
+      const canvasY = (1 - (Number(hit.uv?.y) || 0)) * 720;
+      const index = Math.floor((canvasY - 118) / 96);
+      const row = siteReferrerLeaderboardSign.userData.rows?.[index];
+      const href =
+        index >= 0 && index < 5 ? safeSiteReferrerURL(row) : "";
+      if (href) onSiteReferrerOpen(href);
+      return;
+    }
     if (hit?.object?.userData?.interactive === "system-capacity-table") {
       onSystemCapacityTableSelect({
         name: String(hit.object.userData.tableName || ""),
@@ -16294,9 +19131,22 @@ export function createWorldScene({
       return;
     }
     if (
-      officeSceneMode !== "town" &&
-      hit?.object?.userData?.interactive === "office-meeting-board"
+      hit?.object?.userData?.interactive ===
+      "infrastructure-console-switch"
     ) {
+      onInfrastructureConsoleToggle({
+        enabled: !infrastructureConsoleDisplay.userData.enabled,
+      });
+      return;
+    }
+    if (
+      hit?.object?.userData?.interactive === "office-meeting-board" &&
+      (officeSceneMode === "meeting" ||
+        (officeSceneMode === "lobby" &&
+          officeCurrentFloorId === "marketing"))
+    ) {
+      // The board hangs on the Marketing floor. Clicking it through the glass
+      // from another storey must not hand a visitor a seat at that table.
       onOfficeMeetingBoardSelect();
       return;
     }
@@ -16366,6 +19216,10 @@ export function createWorldScene({
     }
     if (hit?.object?.userData?.forkbotChat) {
       onForkbotChat();
+      return;
+    }
+    if (hit?.object?.userData?.agentBotChat) {
+      onAgentBotChat(String(hit.object.userData.agentBotChat));
       return;
     }
     if (hit?.object?.userData?.playForkmeshSong) {
@@ -16573,6 +19427,10 @@ export function createWorldScene({
       const object = movableWorldObjects.get(id);
       if (object) applyLockedPlacement(id, object);
     });
+    // Layout and catalog reads race independently. Re-anchor after the full
+    // document is applied so a late pool placement cannot strand the cabinet
+    // ring at the pool's authored coordinates.
+    relayoutNetworkNodes();
   }
 
   function commitLayoutObject(object) {
@@ -16799,6 +19657,22 @@ export function createWorldScene({
       scrollWorldBulletin(Math.sign(deltaPixels));
       return;
     }
+    const repositoryRecordHit = raycaster
+      .intersectObjects(interactive, false)
+      .find(
+        ({ object }) =>
+          objectIsEffectivelyVisible(object) &&
+          ["issue", "pull"].includes(
+            String(object.userData?.repositoryRecordPageKind || ""),
+          ),
+      );
+    if (repositoryRecordHit) {
+      changeRepositoryRecordPage(
+        String(repositoryRecordHit.object.userData.repositoryRecordPageKind),
+        Math.sign(deltaPixels),
+      );
+      return;
+    }
     if (mastodonKioskMaxOffset() > 0) {
       const kioskHit = raycaster
         .intersectObjects(mastodonKioskWheelTargets, false)
@@ -16878,7 +19752,49 @@ export function createWorldScene({
     renderer.domElement.dataset.dragging = "false";
   }
 
+  function handleContextMenu(event) {
+    event.preventDefault();
+    pointerCoordinates(event);
+    raycaster.setFromCamera(pointer, camera);
+    const plane = new THREE.Plane(
+      new THREE.Vector3(0, 1, 0),
+      -currentFloorY,
+    );
+    const point = raycaster.ray.intersectPlane(
+      plane,
+      new THREE.Vector3(),
+    ) || player.position.clone();
+    point.x = clamp(point.x, -WORLD_RADIUS, WORLD_RADIUS);
+    point.z = clamp(point.z, -WORLD_RADIUS, WORLD_RADIUS);
+    if (officeSceneMode === "town" && currentSpace === "town-square") {
+      constrainTownOfficeWalls(point);
+    }
+    onShareLocation({
+      clientX: event.clientX,
+      clientY: event.clientY,
+      x: Number(point.x.toFixed(2)),
+      z: Number(point.z.toFixed(2)),
+      heading: Number(player.rotation.y.toFixed(3)),
+      space: Object.hasOwn(WORLD_SPACE_FLOORS, currentSpace)
+        ? currentSpace
+        : "town-square",
+      cameraMode,
+      yaw: Number(cameraYaw.toFixed(3)),
+      pitch: Number(
+        (cameraMode === "first-person"
+          ? firstPersonPitch
+          : cameraPitch).toFixed(3),
+      ),
+      zoom: Number(
+        (cameraMode === "first-person"
+          ? firstPersonZoom
+          : cameraZoom).toFixed(3),
+      ),
+    });
+  }
+
   renderer.domElement.addEventListener("pointerdown", handlePointerDown);
+  renderer.domElement.addEventListener("contextmenu", handleContextMenu);
   renderer.domElement.addEventListener("dblclick", handleDoubleClick);
   renderer.domElement.addEventListener("pointermove", handlePointerMove, {
     passive: false,
@@ -17012,6 +19928,7 @@ export function createWorldScene({
     // the landscape visible through its glass walls.
     updateRemotePlayers(delta, time);
     updateForkbot(delta, time);
+    updateAgentBots(delta, time);
     const repositoryLoadingTail = world.userData.repositorySizeLoadingTail;
     if (repositoryLoadingTail?.visible) {
       repositoryLoadingTail.rotation.z = time * 0.008;
@@ -17355,6 +20272,7 @@ export function createWorldScene({
     window.removeEventListener("resize", resize);
     window.visualViewport?.removeEventListener("resize", resize);
     renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
+    renderer.domElement.removeEventListener("contextmenu", handleContextMenu);
     renderer.domElement.removeEventListener("dblclick", handleDoubleClick);
     renderer.domElement.removeEventListener("pointermove", handlePointerMove);
     renderer.domElement.removeEventListener("wheel", handleWheel);
@@ -17412,6 +20330,7 @@ export function createWorldScene({
     beginOfficeExit,
     setOfficeExitHandler,
     setOfficeDoorwayEntryPending,
+    setOfficeDoorStatus,
     setOfficeFloorHandler,
     setOfficeAccess,
     setOfficeAttendance,
@@ -17433,9 +20352,11 @@ export function createWorldScene({
     showOfficeBubble,
     leaveOfficeInterior,
     focusRepositoryPortal,
-    enterRepositoryFirstPerson,
     clearFocus,
     setCameraMode,
+    setCameraView,
+    getSavedViewState,
+    restoreSavedViewState,
     setTheme,
     setLightLevel,
     setMovementTuning,
@@ -17463,17 +20384,22 @@ export function createWorldScene({
     updateArrivalStats,
     updateMemberLounge,
     updateReferralLeaderboard,
+    updateSiteReferrerLeaderboard,
     updateNetworkNodes,
     focusNetworkNode,
     updateFederatedInstances,
     updateBots,
+    updateMirrorAgentTasks,
     updateSystemCapacity,
+    setInfrastructureConsoleLogs,
+    updateBuildBoard,
     updateOrganizations,
     updateFediverseDirectory,
     updateMediaSpaces,
     updateIdentity,
     updateRepositoryCatalog,
     updateRepositoryGraph,
+    updateRepositoryActivity,
     setRepositoryImportState,
     updateRepositorySizeMap,
     updateRepositoryRecordDesk,
@@ -17486,6 +20412,9 @@ export function createWorldScene({
     showMemberChatBubble,
     greetForkbot,
     exciteForkbot,
+    setAgentBotAccess,
+    exciteAgentBot,
+    completeAgentTask,
     updateRewardPool,
     playRewardEvent,
     setPaused,
@@ -17495,8 +20424,14 @@ export function createWorldScene({
       mode: cameraMode,
       firstPerson: cameraMode === "first-person",
       zoom: cameraMode === "first-person" ? firstPersonZoom : cameraZoom,
-      minZoom: cameraMode === "first-person" ? 0.25 : CAMERA_ZOOM_MIN,
-      maxZoom: cameraMode === "first-person" ? 5 : CAMERA_ZOOM_MAX,
+      minZoom:
+        cameraMode === "first-person"
+          ? FIRST_PERSON_ZOOM_MIN
+          : CAMERA_ZOOM_MIN,
+      maxZoom:
+        cameraMode === "first-person"
+          ? FIRST_PERSON_ZOOM_MAX
+          : CAMERA_ZOOM_MAX,
       yaw: cameraYaw,
       pitch:
         cameraMode === "first-person" ? firstPersonPitch : cameraPitch,

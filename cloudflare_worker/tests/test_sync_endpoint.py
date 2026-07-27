@@ -13,7 +13,9 @@ import asyncio
 import base64
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
+import re
 from urllib.parse import parse_qs, unquote, urlparse
 
 
@@ -29,6 +31,7 @@ SECURITY_SPEC.loader.exec_module(SECURITY_CONTROL)
 FUNCS = {
     "sync_handler",
     "_authorize_owner",
+    "_authorized_owner_signing_key",
     "_verify_owner_signature",
     "_owner_signing_pubkeys",
     "_owner_pubkey",
@@ -67,6 +70,7 @@ def _harness(owner_e2ee=False):
         "pull_inbox": [],
         "discussion_inbox": [],
         "commit_inbox": [],
+        "repo_merge_jobs": [],
     }
     agent_prompts = []  # {"id","repo_bi","data"}
 
@@ -106,13 +110,30 @@ def _harness(owner_e2ee=False):
             owner_bi = args[0]
             return [{"key_bi": r["key_bi"], "data": r["data"]}
                     for r in repositories if r["owner_bi"] == owner_bi]
+        if "FROM repo_merge_jobs" in sql:
+            repo_values = set(args[:-1])
+            now = args[-1]
+            return [
+                dict(row) for row in inboxes["repo_merge_jobs"]
+                if row["repo_bi"] in repo_values
+                and row.get("status") == "succeeded"
+                and int(row.get("expires_at") or 0) > now
+            ]
         # sync_handler now selects each inbox table once across all of the
         # owner's repos with `repo_bi IN (?,...)`, returning repo_bi + data.
         want = set(args)
         for table, rows in inboxes.items():
             if "FROM " + table in sql:
-                return [{"repo_bi": r["repo_bi"], "data": r["data"]}
-                        for r in rows if r["repo_bi"] in want]
+                return [
+                    {"repo_bi": r["repo_bi"], "data": r["data"]}
+                    for r in rows
+                    if r["repo_bi"] in want
+                    and (
+                        table != "issue_inbox"
+                        or "claimed_by_bi=?" not in sql
+                        or r.get("claimed_by_bi") in want
+                    )
+                ]
         if "FROM agent_prompts" in sql:
             # The drain path selects row ids too (aliased drain_id) so the
             # delete can target exactly the rows it read.
@@ -124,6 +145,23 @@ def _harness(owner_e2ee=False):
         raise AssertionError("unexpected d1_all: " + sql)
 
     async def d1_run(_env, sql, *args):
+        if sql.startswith(
+                "UPDATE issue_inbox SET claimed_by_bi="):
+            claimant, expires = args[:2]
+            repo_values = set(args[2:-2])
+            now, same_claimant = args[-2:]
+            for row in inboxes["issue_inbox"]:
+                if (
+                    row["repo_bi"] in repo_values
+                    and (
+                        not row.get("claimed_by_bi")
+                        or int(row.get("claim_expires_at") or 0) <= now
+                        or row.get("claimed_by_bi") == same_claimant
+                    )
+                ):
+                    row["claimed_by_bi"] = claimant
+                    row["claim_expires_at"] = expires
+            return
         if sql.startswith("DELETE FROM agent_prompts WHERE id IN"):
             drained = set(args)
             agent_prompts[:] = [r for r in agent_prompts
@@ -158,7 +196,12 @@ def _harness(owner_e2ee=False):
         "unquote": unquote,
         "urlparse": urlparse,
         "LOGIN_MAX_SKEW_MS": 5 * 60 * 1000,
+        "ISSUE_INBOX_CLAIM_TTL_MS": 5 * 60 * 1000,
         "MAX_REPO_SEGMENT": 100,
+        "HTTPS_MIRROR_MERGE_REQUEST_RE": re.compile(
+            r"^[A-Za-z0-9_-]{12,80}$"),
+        "json": json,
+        "re": re,
     }
     if owner_e2ee:
         globals_for_handler["security_control"] = SECURITY_CONTROL
@@ -222,11 +265,60 @@ def test_sync_returns_all_topics_and_drains_prompts():
     assert entry["pulls"] == [{"number": 2}]
     assert entry["discussions"] == []
     assert entry["commits"] == []
+    assert entry["mirrorMerges"] == []
     assert entry["agentPrompts"] == [{"agentId": "new", "text": "fix it"}]
     # Prompts drain on read (same contract as GET /agents); inbox items do
     # NOT — the node still acks a merged inbox with its per-topic DELETE.
     assert agent_prompts == []
     assert len(inboxes["issue_inbox"]) == 1
+
+
+def test_sync_queues_published_mirror_merge_receipt_for_source_truth():
+    ns, repositories, inboxes, _agent_prompts = _harness()
+    repositories.append({
+        "key_bi": "bi:alice/repo-one",
+        "owner_bi": "bi:alice",
+        "data": {"name": "repo-one", "owner": "alice"},
+    })
+    request_id = "merge_request_0001"
+    receipt = {
+        "ok": True,
+        "status": "merged",
+        "requestId": request_id,
+        "published": True,
+        "baseBefore": "a" * 40,
+        "head": "b" * 40,
+        "pullsBefore": "c" * 40,
+        "baseAfter": "d" * 40,
+        "pullsAfter": "e" * 40,
+    }
+    inboxes["repo_merge_jobs"].append({
+        "repo_bi": "bi:alice/repo-one",
+        "request_id": request_id,
+        "pull_number": 7,
+        "result": json.dumps(receipt),
+        "updated_at": 900_000_000,
+        "expires_at": 1_100_000_000,
+        "status": "succeeded",
+        # These sensitive routing fields must not appear in the response.
+        "selected_node": "private-mirror-name",
+        "actor_bi": "blind-owner-id",
+    })
+
+    response = asyncio.run(
+        ns["sync_handler"](object(), _Request(_sync_url())))
+    queued = response["data"]["repos"][0]["mirrorMerges"]
+    assert queued == [{
+        "requestId": request_id,
+        "pullNumber": 7,
+        "baseBefore": "a" * 40,
+        "head": "b" * 40,
+        "pullsBefore": "c" * 40,
+        "baseAfter": "d" * 40,
+        "pullsAfter": "e" * 40,
+    }]
+    assert "private-mirror-name" not in str(queued)
+    assert "blind-owner-id" not in str(queued)
 
 
 def test_sync_returns_owner_sealed_prompt_and_waits_for_explicit_ack():

@@ -261,6 +261,35 @@ html.light .fm-header-mobile-account .fm-header-signup {
   transition: color 150ms ease, background-color 150ms ease;
 }
 
+.fm-header-world {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--fm-header-accent) 72%, var(--fm-header-border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--fm-header-accent) 14%, transparent);
+  color: var(--fm-header-fg);
+  font-size: 12px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.fm-header-world:hover {
+  background: color-mix(in srgb, var(--fm-header-accent) 24%, transparent);
+  text-decoration: none;
+}
+
+.fm-header-world > span:first-child {
+  color: #5eea8b;
+}
+
+.fm-header-world-count {
+  color: var(--fm-header-muted);
+  font-size: 11px;
+}
+
 .fm-header-payout:hover {
   background: rgba(127, 127, 127, 0.1);
   color: var(--fm-header-fg);
@@ -425,4 +454,7 @@ html.light .fm-header-mobile-account .fm-header-signup {
 @media (max-width: 639.9px) {
   .fm-header-context { display: none; }
   .fm-header-payout { display: none; }
+  .fm-header-world strong { display: none; }
+  .fm-header-world { padding: 0 8px; }
+  .fm-header-world-count { font-size: 10px; }
 }

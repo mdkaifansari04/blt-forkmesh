@@ -7,6 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "OfficeChannelMirror.h"
 
 #include "ChatVisitorPresence.h"
 
@@ -85,7 +86,7 @@ MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
         row->setReactions(m_reactions.value(message.id));
     connect(row, &MessageRow::reactionToggled, this,
             [this](const QString &messageId, const QString &emoji) {
-                if (m_backend)
+                if (m_backend && !isReadOnlyConversation(m_currentConversation))
                     m_backend->sendReaction(m_currentConversation, messageId, emoji);
             });
     connect(row, &MessageRow::editRequested, this, &MainWindow::promptEditMessage);
@@ -311,7 +312,8 @@ void MainWindow::onMessageDeleted(const QString &conversation, const QString &me
 
 void MainWindow::promptEditMessage(const QString &messageId, const QString &currentText)
 {
-    if (!m_backend || messageId.isEmpty())
+    if (!m_backend || messageId.isEmpty() ||
+        isReadOnlyConversation(m_currentConversation))
         return;
     bool ok = false;
     const QString text = QInputDialog::getMultiLineText(
@@ -324,7 +326,8 @@ void MainWindow::promptEditMessage(const QString &messageId, const QString &curr
 
 void MainWindow::confirmDeleteMessage(const QString &messageId)
 {
-    if (!m_backend || messageId.isEmpty())
+    if (!m_backend || messageId.isEmpty() ||
+        isReadOnlyConversation(m_currentConversation))
         return;
     const int result = QMessageBox::question(
         this, "Delete message", "Delete this message for everyone?");
@@ -458,7 +461,17 @@ void MainWindow::onTypingChanged(const QString &conversation, const QString &pee
 
 void MainWindow::setChannels(const QStringList &channels)
 {
-    m_channels = channels;
+    m_channels.clear();
+    for (const QString &channel : channels)
+        if (!forkmesh::office::isOfficeConversation(channel))
+            m_channels.append(channel);
+    // The World office's channel rooms sit in the same sidebar as the mesh
+    // rooms. They are read-only mirrors polled by OfficeChannelMirror, so the
+    // chat backend never carries them and they are merged in here instead —
+    // including when this is re-entered with m_channels itself (adhoc #412).
+    for (const QString &conversation : std::as_const(m_officeConversations))
+        if (!m_channels.contains(conversation))
+            m_channels.append(conversation);
     if (m_currentConversation.startsWith('#') &&
         !m_channels.contains(m_currentConversation))
         m_currentConversation.clear();
@@ -1485,7 +1498,12 @@ void MainWindow::switchConversation(const QString &conversation)
         title = kDmPrefix + m_dmNames.value(dmPeerId(conversation),
                                             QStringLiteral("unknown"));
     m_channelTitle->setText(title);
-    m_messageInput->setPlaceholderText("Message " + title);
+    const bool readOnly = isReadOnlyConversation(conversation);
+    m_messageInput->setReadOnly(readOnly);
+    m_messageInput->setPlaceholderText(
+        readOnly ? QStringLiteral("Read-only mirror \xE2\x80\x94 reply from the "
+                                  "World office")
+                 : "Message " + title);
     if (m_inviteButton)
         m_inviteButton->setVisible(m_privateChannels.contains(conversation));
     rebuildConversationView();
@@ -1647,11 +1665,26 @@ void MainWindow::persistPrivateChannels()
     QSettings().setValue(QStringLiteral("chat/privateChannels"), list);
 }
 
+// A conversation this client can read but not publish into. The World office's
+// channel rooms are mirrored over a read-only relay endpoint (the desktop holds
+// no room socket for them), so an outbound frame here would either go nowhere
+// or, worse, be misrouted into the mesh room under the office room's name.
+bool MainWindow::isReadOnlyConversation(const QString &conversation) const
+{
+    return forkmesh::office::isOfficeConversation(conversation);
+}
+
 void MainWindow::sendCurrentMessage()
 {
     const QString text = m_messageInput->text().trimmed();
     if (text.isEmpty() || !m_backend || m_currentConversation.isEmpty())
         return;
+    if (isReadOnlyConversation(m_currentConversation)) {
+        logSystem(m_currentConversation +
+                  " is a read-only mirror of a World office room. Join it in "
+                  "the World to reply.");
+        return;
+    }
     sendTypingState(false);
     if (isDirectConversation(m_currentConversation)) {
         m_backend->sendDirect(dmPeerId(m_currentConversation), text);
@@ -1892,6 +1925,8 @@ void MainWindow::sendTypingState(bool active)
 {
     if (!m_backend)
         return;
+    if (active && isReadOnlyConversation(m_currentConversation))
+        return;
     if (active) {
         if (m_currentConversation.isEmpty())
             return;
@@ -1933,7 +1968,8 @@ void MainWindow::refreshTypingLabel()
 
 void MainWindow::attachFile()
 {
-    if (!m_backend || m_currentConversation.isEmpty())
+    if (!m_backend || m_currentConversation.isEmpty() ||
+        isReadOnlyConversation(m_currentConversation))
         return;
     const QString path =
         QFileDialog::getOpenFileName(this, "Share a file", QString(), "All files (*)");
@@ -2033,7 +2069,8 @@ void MainWindow::showChatImageDetail(const QString &fileName,
 // the composer; returns false so a normal text paste proceeds as usual.
 bool MainWindow::trySendClipboardImage()
 {
-    if (!m_backend || m_currentConversation.isEmpty())
+    if (!m_backend || m_currentConversation.isEmpty() ||
+        isReadOnlyConversation(m_currentConversation))
         return false;
     const QMimeData *mime = QGuiApplication::clipboard()->mimeData();
     if (!mime || !mime->hasImage())

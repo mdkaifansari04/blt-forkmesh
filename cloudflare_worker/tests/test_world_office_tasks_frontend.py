@@ -153,6 +153,18 @@ def test_manager_assignment_control_renders_every_returned_active_user():
     assert "<datalist" not in world
 
 
+def test_assignment_control_has_explicit_contrast_and_tasks_can_finish_or_delete():
+    tasks = source(TASKS)
+    css = source(CSS)
+    assert 'data-world-office-task-action="complete"' in tasks
+    assert 'data-world-office-task-action="delete"' in tasks
+    assert '{ method: "DELETE" }' in tasks
+    assert 'window.confirm("Delete this task' in tasks
+    assert ".world-office-task-manager select option" in css
+    assert "background: #071713" in css
+    assert '.world-office-task[data-status="done"]' in css
+
+
 def test_task_text_is_bounded_and_html_escaped_before_rendering():
     tasks = source(TASKS)
     assert "function escapeHTML" in tasks

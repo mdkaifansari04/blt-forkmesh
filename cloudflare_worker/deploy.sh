@@ -566,8 +566,22 @@ push_secrets() {
         key="$(trim "${line%%=*}")"
         value="$(trim "${line#*=}")"
         [ -z "$key" ] && continue
-        # CLOUDFLARE_* are wrangler config (exported above), not Worker secrets.
-        case "$key" in CLOUDFLARE_*) continue ;; esac
+        # Cloudflare credentials normally configure Wrangler and never enter
+        # the Worker. Two narrow exceptions support outage-log excerpts:
+        # publish the public account id and an explicitly separate
+        # Observability-only token under runtime-specific secret names. Never
+        # map the broad CLOUDFLARE_API_TOKEN used for deployments.
+        case "$key" in
+            CLOUDFLARE_ACCOUNT_ID)
+                key="WORKERS_OBSERVABILITY_ACCOUNT_ID"
+                ;;
+            CLOUDFLARE_OBSERVABILITY_API_TOKEN)
+                key="WORKERS_OBSERVABILITY_API_TOKEN"
+                ;;
+            CLOUDFLARE_*)
+                continue
+                ;;
+        esac
         # Never push an empty value: it sets a blank secret, which looks "set" in
         # the dashboard but locks out the admin path / basic auth at runtime.
         if [ -z "$value" ]; then
@@ -908,6 +922,7 @@ case "${1:-deploy}" in
         build_dashboard_assets
         BUILD_REV="$(build_rev)"
         APP_VERSION="$(app_version)"
+        DEPLOYED_AT_MS="$(date -u +%s)000"
         echo "Deploying ForkMesh website + relay to Cloudflare (build $BUILD_REV, version ${APP_VERSION:-unknown})..."
         # wrangler.toml defines [env.dev] alongside the top-level (production)
         # config, so wrangler warns "no target environment specified" unless we
@@ -920,7 +935,10 @@ case "${1:-deploy}" in
         # report it. --var is MERGED with wrangler.toml [vars] (it does not wipe
         # them) and we re-pass it every deploy, so it persists; secrets are
         # untouched. This is the marker verify_deploy checks below.
-        pywrangler deploy --env "" --var "BUILD_REV:${BUILD_REV}" --var "APP_VERSION:${APP_VERSION}"
+        pywrangler deploy --env "" \
+            --var "BUILD_REV:${BUILD_REV}" \
+            --var "APP_VERSION:${APP_VERSION}" \
+            --var "DEPLOYED_AT_MS:${DEPLOYED_AT_MS}"
         # Secrets are set after the Worker exists; unlike plaintext vars they
         # survive this and future deploys, so the admin dashboard keeps working.
         push_secrets

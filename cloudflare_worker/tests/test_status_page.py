@@ -160,7 +160,7 @@ def _run_sample(
 def test_all_systems_recorded_ok_with_no_errors_and_a_live_https_mirror():
     results, reasons, _minutes = _run_sample(error_paths=[], host_online=True, db_ok=True)
     assert set(results) == {
-        "website", "api", "database", "flagship_repository",
+        "website", "api", "errors", "database", "flagship_repository",
         "installer", "git_hosting", "realtime", "durable_objects",
     }
     assert all(failure == 0 for failure in results.values())
@@ -172,6 +172,7 @@ def test_database_failure_is_isolated_to_the_database_system():
     assert results["database"] == 1
     assert results["website"] == 0
     assert results["api"] == 0
+    assert results["errors"] == 0
     assert "db down" in reasons["database"]
     assert reasons["website"] is None
 
@@ -222,6 +223,7 @@ def test_stale_signed_mirror_stays_visible_as_down():
 def test_api_error_does_not_fail_website():
     results, reasons, _minutes = _run_sample(error_paths=["/api/repositories"])
     assert results["api"] == 1
+    assert results["errors"] == 1
     assert results["website"] == 0
     assert results["realtime"] == 0
     assert "/api/repositories" in reasons["api"]
@@ -232,6 +234,7 @@ def test_static_page_error_does_not_fail_api():
     results, reasons, _minutes = _run_sample(error_paths=["/dashboard/index.html"])
     assert results["website"] == 1
     assert results["api"] == 0
+    assert results["errors"] == 1
     assert "/dashboard/index.html" in reasons["website"]
 
 
@@ -241,6 +244,7 @@ def test_git_clone_and_room_errors_are_bucketed_as_realtime():
         "/api/repo/owner/repo/rooms/main/ws",
     ])
     assert results["realtime"] == 1
+    assert results["errors"] == 1
     assert results["website"] == 0
     assert results["api"] == 0
     assert "info/refs" in reasons["realtime"]
@@ -258,6 +262,7 @@ def test_do_duration_abort_fails_its_own_bucket_and_realtime():
     ])
     assert results["durable_objects"] == 1
     assert results["realtime"] == 1
+    assert results["errors"] == 1
     assert results["api"] == 0
     assert "Exceeded allowed duration" in reasons["durable_objects"]
 
@@ -268,7 +273,9 @@ def test_reason_includes_status_and_message_and_extra_count():
         {"path": "/api/other", "status": 502, "message": "boom2"},
     ])
     assert results["api"] == 1
+    assert results["errors"] == 1
     assert reasons["api"] == "500 on /api/repositories: boom (+1 more)"
+    assert reasons["errors"] == "500 on /api/repositories: boom (+1 more)"
 
 
 def test_offline_direct_mirror_503s_do_not_fail_any_system():
@@ -288,6 +295,7 @@ def test_offline_direct_mirror_503s_do_not_fail_any_system():
     assert results["api"] == 0
     assert results["realtime"] == 0
     assert results["website"] == 0
+    assert results["errors"] == 0
     assert reasons["api"] is None
 
 
@@ -299,6 +307,7 @@ def test_a_500_on_a_direct_mirror_path_still_fails_the_api_bucket():
         {"path": blob, "status": 500, "message": "boom"},
     ])
     assert results["api"] == 1
+    assert results["errors"] == 1
     assert "boom" in reasons["api"]
 
 
@@ -777,6 +786,8 @@ def test_each_system_describes_exactly_what_its_check_tests():
     assert "D1" in descriptions["database"]
     assert "10 minutes" in descriptions["git_hosting"]
     assert "/api/" in descriptions["api"]
+    assert "error log" in descriptions["errors"]
+    assert "Expected degraded" in descriptions["errors"]
     assert "Exceeded allowed duration" in descriptions["durable_objects"]
     assert "not an external HTTP probe" in descriptions["website"]
 
@@ -1152,7 +1163,7 @@ def test_current_snapshot_survives_a_failing_read():
     assert out["current"]["catalogRepos"] is None
     assert out["current"]["onlineNodes"] == 0
     # systems still rendered despite the failed metric
-    assert len(out["systems"]) == 8
+    assert len(out["systems"]) == 9
 
 
 def test_flagship_repository_monitor_is_public_and_deduplicates_email_states():

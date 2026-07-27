@@ -23,28 +23,23 @@ using namespace forkmesh::ui;
 static QString branchMergeTree(const QString &dir, const QString &base,
                                const QString &branch);
 
-// Split rendered diff HTML into its self-contained per-file blocks. Each file's
-// block begins with its `<a name="file-N"></a>` anchor (see diffFileHeaderHtml)
-// and ends before the next one, so these chunks can be streamed into the view a
-// few at a time instead of laid out in one blocking pass (adhoc #51). Any
-// preamble before the first anchor rides along with the first block.
-static QStringList splitDiffFileBlocks(const QString &html)
-{
-    static const QString marker = QStringLiteral("<a name=\"file-");
-    int pos = html.indexOf(marker);
-    if (pos < 0)
-        return {html}; // no per-file anchors (e.g. an empty/notice body)
-    QStringList blocks;
-    if (pos > 0)
-        blocks.append(html.left(pos)); // preamble before the first file (if any)
-    while (pos >= 0) {
-        const int next = html.indexOf(marker, pos + marker.size());
-        blocks.append(html.mid(pos, next < 0 ? -1 : next - pos));
-        pos = next;
-    }
-    return blocks;
-}
+// Suffix the Status cell / detail label carry for a branch that can't be merged
+// into base cleanly. Shared so the background probe (adhoc #416) appends exactly
+// what the inline pass would have written — and can tell it's already there.
+static const QString kBranchConflictsSuffix =
+    QString::fromUtf8(" \xC2\xB7 conflicts");
 
+// Cache key for an in-memory merge probe: the exact commit pair it merges, so a
+// verdict is only ever reused while both tips are unchanged (a new commit on
+// either side misses and re-probes). Empty when a tip sha is unknown, which the
+// callers treat as "not cacheable".
+static QString branchConflictKey(const QString &dir, const QString &baseSha,
+                                 const QString &branchSha)
+{
+    if (dir.isEmpty() || baseSha.isEmpty() || branchSha.isEmpty())
+        return QString();
+    return dir + QLatin1Char('\n') + baseSha + QLatin1Char('\n') + branchSha;
+}
 // Worktrees tab (next to Branches): lists this repo's git worktrees — the main
 // checkout plus each agent's isolated worktree+branch — with open/remove/prune.
 QWidget *MainWindow::buildWorktreesTab()
@@ -139,8 +134,11 @@ QWidget *MainWindow::buildWorktreesTab()
     m_worktreeFileList->setMinimumWidth(170);
     connect(m_worktreeFileList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {
-                if (item && m_worktreeDiffView)
+                if (item && m_worktreeDiffView) {
+                    // The file may still be queued behind the visible window.
+                    flushDiffStream(m_worktreeDiffView);
                     m_worktreeDiffView->scrollToAnchor(item->data(Qt::UserRole).toString());
+                }
             });
     auto *filesPane = new QWidget;
     auto *filesLayout = new QVBoxLayout(filesPane);
@@ -1381,6 +1379,207 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
     }
 }
 
+void MainWindow::deleteWorktreeBranchAndAgentInBackground(
+    const QString &worktreePath, const QString &branch)
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
+    const QString repoPath = repo.localPath;
+    if (repoPath.isEmpty() || branch.trimmed().isEmpty())
+        return;
+    if (!worktreePath.isEmpty() &&
+        QDir(worktreePath).absolutePath() == QDir(repoPath).absolutePath()) {
+        setRepoDetailNotice("That's the main checkout — it can't be removed here.",
+                            true);
+        return;
+    }
+
+    QList<int> agentIds;
+    QSet<int> issueNumbers;
+    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        if (session.owner != repo.owner || session.name != repo.name ||
+            session.branchName != branch || isExternalSession(session.id))
+            continue;
+        agentIds.append(session.id);
+        if (session.issueNumber > 0)
+            issueNumbers.insert(session.issueNumber);
+    }
+    if (agentIds.isEmpty())
+        return;
+
+    // The visible/session-store deletion is the foreground part. Retaining the
+    // worktree here avoids racing deleteStoredAgentSession's detached teardown
+    // against the explicit worktree + branch cleanup queued below.
+    for (const int id : std::as_const(agentIds)) {
+        if (!deleteStoredAgentSession(id, /*cleanupWorktree=*/false)) {
+            reloadAgents();
+            return;
+        }
+    }
+    reloadAgents();
+    reloadIssues();
+    refreshIssueList();
+    updateIssueActionState();
+    flashMessage(
+        agentIds.size() == 1
+            ? QStringLiteral("Agent session deleted. Cleanup is running in the background.")
+            : QStringLiteral("%1 agent sessions deleted. Cleanup is running in the background.")
+                  .arg(agentIds.size()));
+
+    const quint64 taskId = beginBackgroundTask(
+        QStringLiteral("Deleting %1 worktree and branch").arg(branch));
+    const QString base = repoDefaultBranch(repoBranches());
+    const bool deleteBranch = !branch.isEmpty() && branch != base;
+    auto completed = std::make_shared<bool>(false);
+
+    auto finish = [this, repo, issueNumbers, branch, taskId,
+                   completed](bool success, const QString &error) {
+        if (*completed)
+            return;
+        *completed = true;
+        int closedIssues = 0;
+        if (success && !issueNumbers.isEmpty()) {
+            const RepositoryRecord &writable = writableRecordFor(repo);
+            IssueStore store(writable.localPath, writable.mirrorPath,
+                             &m_profileIdentity, m_userName);
+            if (store.canWrite()) {
+                QHash<int, QString> statusByNumber;
+                for (const Issue &issue : store.loadAll())
+                    statusByNumber.insert(issue.number, issue.status);
+                for (const int number : issueNumbers) {
+                    if (!statusByNumber.contains(number) ||
+                        statusByNumber.value(number) == QLatin1String("closed"))
+                        continue;
+                    QString issueError;
+                    if (store.setStatus(number, QStringLiteral("closed"),
+                                        &issueError)) {
+                        ++closedIssues;
+                        logSystem(
+                            QStringLiteral(
+                                "Closed issue #%1 (agent worktree deleted).")
+                                .arg(number));
+                    } else {
+                        logSystem(
+                            QStringLiteral(
+                                "Issue #%1: could not close on delete: %2")
+                                .arg(number)
+                                .arg(issueError));
+                    }
+                }
+            }
+        }
+        loadWorktreesPanel();
+        if (m_branchesTable)
+            loadBranchesPanel();
+        reloadIssues();
+        refreshIssueList();
+        updateIssueActionState();
+        updateRepoIssueCount();
+        const QString detail =
+            success
+                ? QStringLiteral("Deleted worktree and branch %1%2.")
+                      .arg(branch,
+                           closedIssues > 0
+                               ? QStringLiteral("; closed %1 linked issue%2")
+                                     .arg(closedIssues)
+                                     .arg(closedIssues == 1 ? QString()
+                                                           : QStringLiteral("s"))
+                               : QString())
+                : (error.trimmed().isEmpty()
+                       ? QStringLiteral("Could not finish deleting %1.").arg(branch)
+                       : error.trimmed());
+        finishBackgroundTask(taskId, success, detail);
+    };
+
+    auto deleteBranchNext =
+        std::make_shared<std::function<void()>>();
+    *deleteBranchNext = [this, repoPath, branch, deleteBranch, finish] {
+        if (!deleteBranch || !localBranchExists(repoPath, branch)) {
+            finish(true, QString());
+            return;
+        }
+        auto *git = new QProcess(this);
+        auto handled = std::make_shared<bool>(false);
+        connect(git, &QProcess::errorOccurred, this,
+                [git, branch, finish, handled](QProcess::ProcessError error) {
+                    if (error != QProcess::FailedToStart || *handled)
+                        return;
+                    *handled = true;
+                    git->deleteLater();
+                    finish(false,
+                           QStringLiteral("Could not start branch cleanup for %1.")
+                               .arg(branch));
+                });
+        connect(git, &QProcess::finished, this,
+                [git, branch, finish, handled](int code,
+                                                QProcess::ExitStatus status) {
+                    if (*handled)
+                        return;
+                    *handled = true;
+                    const QString error =
+                        QString::fromUtf8(git->readAllStandardError()).trimmed();
+                    git->deleteLater();
+                    if (status == QProcess::NormalExit && code == 0)
+                        finish(true, QString());
+                    else
+                        finish(false,
+                               error.isEmpty()
+                                   ? QStringLiteral(
+                                         "Could not delete branch %1.")
+                                         .arg(branch)
+                                   : error);
+                });
+        git->start(QStringLiteral("git"),
+                   {QStringLiteral("-C"), repoPath, QStringLiteral("branch"),
+                    QStringLiteral("-D"), branch});
+    };
+
+    if (worktreePath.isEmpty() || !QDir(worktreePath).exists()) {
+        QTimer::singleShot(0, this, [deleteBranchNext] {
+            (*deleteBranchNext)();
+        });
+        return;
+    }
+
+    auto *git = new QProcess(this);
+    auto handled = std::make_shared<bool>(false);
+    connect(git, &QProcess::errorOccurred, this,
+            [git, worktreePath, finish,
+             handled](QProcess::ProcessError error) {
+                if (error != QProcess::FailedToStart || *handled)
+                    return;
+                *handled = true;
+                git->deleteLater();
+                finish(false,
+                       QStringLiteral("Could not start worktree cleanup for %1.")
+                           .arg(worktreePath));
+            });
+    connect(git, &QProcess::finished, this,
+            [git, worktreePath, deleteBranchNext, finish,
+             handled](int code, QProcess::ExitStatus status) {
+                if (*handled)
+                    return;
+                *handled = true;
+                const QString error =
+                    QString::fromUtf8(git->readAllStandardError()).trimmed();
+                git->deleteLater();
+                if (status == QProcess::NormalExit && code == 0) {
+                    (*deleteBranchNext)();
+                    return;
+                }
+                finish(false,
+                       error.isEmpty()
+                           ? QStringLiteral("Could not remove worktree %1.")
+                                 .arg(worktreePath)
+                           : error);
+            });
+    git->start(
+        QStringLiteral("git"),
+        {QStringLiteral("-C"), repoPath, QStringLiteral("worktree"),
+         QStringLiteral("remove"), QStringLiteral("--force"), worktreePath});
+}
+
 // Batch "Delete all merged": for every merged agent session in the open repo, wipe
 // its worktree folder, branch and stored session — the same cleanup the per-session
 // "Delete all" does, but for the whole merged backlog at once. No confirmation —
@@ -1774,9 +1973,12 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchFileList->setMinimumWidth(180);
     connect(m_branchFileList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {
-                if (item && m_branchDiffView)
+                if (item && m_branchDiffView) {
+                    // The file may still be queued behind the visible window.
+                    flushDiffStream(m_branchDiffView);
                     m_branchDiffView->scrollToAnchor(
                         item->data(Qt::UserRole).toString());
+                }
             });
     auto *filesPane = new QWidget;
     auto *filesLayout = new QVBoxLayout(filesPane);
@@ -2137,6 +2339,33 @@ void MainWindow::loadBranchesPanel()
         }
     }
 
+    // The same batched read for the local heads. Each row used to shell its own
+    // `git rev-list --left-right --count`, so a repo with dozens of branches ran
+    // dozens of git processes serially on the GUI thread every time the panel
+    // rebuilt (adhoc #416). One for-each-ref answers them all. The atom needs
+    // git 2.41+; where it's missing the hash stays empty and the rows fall back
+    // to their own rev-list below, so older git still reports the right counts.
+    QHash<QString, QPair<int, int>> localAheadBehind; // branch -> (ahead, behind)
+    if (!dir.isEmpty() && !base.isEmpty()) {
+        QByteArray ab;
+        if (runGitCapture(
+                dir,
+                {"for-each-ref",
+                 QStringLiteral("--format=%(refname:short) %(ahead-behind:%1)").arg(base),
+                 "refs/heads/"},
+                &ab, nullptr)) {
+            for (const QString &line :
+                 QString::fromUtf8(ab).split('\n', Qt::SkipEmptyParts)) {
+                const QStringList parts = line.split(
+                    QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+                if (parts.size() >= 3)
+                    localAheadBehind.insert(
+                        parts.first(),
+                        qMakePair(parts.at(1).toInt(), parts.at(2).toInt()));
+            }
+        }
+    }
+
     // Map each branch to the agent session working it (if any), scoped to the
     // current repo, so the per-row "Issue / Agent" column can name the issue the
     // branch is attached to (or flag an ad-hoc agent run) (adhoc #191). A branch
@@ -2205,6 +2434,9 @@ void MainWindow::loadBranchesPanel()
     int actionWidth = 0;
     bool anyBehind = false;
     bool anyMerged = false; // fully-merged branches the "Delete merged" action can remove
+    // Branches whose merge verdict isn't memoised yet, as (branch, cache key).
+    // Probed on a worker thread once the table is built (adhoc #416).
+    QList<QPair<QString, QString>> conflictProbes;
     for (const QString &branch : branches) {
         const int row = m_branchesTable->rowCount();
         m_branchesTable->insertRow(row);
@@ -2238,8 +2470,16 @@ void MainWindow::loadBranchesPanel()
         qint64 ts = 0;
         if (!dir.isEmpty()) {
             if (branch != base) {
+                bool counted = false;
+                const auto abIt = localAheadBehind.constFind(branch);
+                if (abIt != localAheadBehind.constEnd()) {
+                    ahead = abIt->first;
+                    behind = abIt->second;
+                    counted = true;
+                }
                 QByteArray counts;
-                if (runGitCapture(dir,
+                if (!counted &&
+                    runGitCapture(dir,
                                   {"rev-list", "--left-right", "--count",
                                    base + "..." + branch},
                                   &counts, nullptr)) {
@@ -2249,17 +2489,31 @@ void MainWindow::loadBranchesPanel()
                     if (parts.size() >= 2) {
                         behind = parts.at(0).toInt();
                         ahead = parts.at(1).toInt();
-                        status = QString::fromUtf8("%1 behind \xC2\xB7 %2 ahead")
-                                     .arg(parts.at(0), parts.at(1));
+                        counted = true;
                     }
                 }
+                if (counted)
+                    status = QString::fromUtf8("%1 behind \xC2\xB7 %2 ahead")
+                                 .arg(behind)
+                                 .arg(ahead);
                 // Only a branch with its own commits *and* base commits it lacks
                 // can conflict; probe that case with an in-memory merge so the row
-                // can flag it and offer "Fix with agent".
-                if (behind > 0 && ahead > 0)
-                    hasConflict = branchMergeTree(dir, base, branch).isEmpty();
+                // can flag it and offer "Fix with agent". The probe is the slow
+                // part of this loop, so it only runs inline when a previous sweep
+                // already answered it for these exact two tips; otherwise the row
+                // renders now and a worker thread paints the flag in when it lands
+                // (adhoc #416).
+                if (behind > 0 && ahead > 0) {
+                    const QString key = branchConflictKey(
+                        dir, branchShortShas.value(base), branchShortShas.value(branch));
+                    const auto cached = m_branchConflictCache.constFind(key);
+                    if (!key.isEmpty() && cached != m_branchConflictCache.constEnd())
+                        hasConflict = *cached;
+                    else if (!key.isEmpty())
+                        conflictProbes.append(qMakePair(branch, key));
+                }
                 if (hasConflict)
-                    status += QString::fromUtf8(" \xC2\xB7 conflicts");
+                    status += kBranchConflictsSuffix;
             }
             ts = branchTimes.value(branch, 0);
         }
@@ -2563,6 +2817,13 @@ void MainWindow::loadBranchesPanel()
                             .arg(base));
     }
 
+    // Kick off the merge-conflict probes the rows couldn't answer from the memo.
+    // Started before the diff pane is re-rendered below so updateBranchDetailActions
+    // sees the selected branch's probe as in flight and skips its own inline
+    // merge-tree — that one call is what stalled the GUI for ~1s after a delete
+    // (adhoc #416).
+    startBranchConflictProbes(dir, base, conflictProbes);
+
     if (m_branchesTable->rowCount() == 0) {
         m_branchesTable->insertRow(0);
         auto *empty = new QTableWidgetItem("No branches in this repository.");
@@ -2852,8 +3113,30 @@ void MainWindow::updateBranchDetailActions(const QString &branch)
             }
         }
         // Only a branch with its own commits and base commits it lacks can conflict.
-        if (behind > 0 && ahead > 0)
-            hasConflict = branchMergeTree(dir, base, branch).isEmpty();
+        // Reuse the panel's memo when it already holds the verdict for these two
+        // tips, and leave the flag off while a background sweep is still computing
+        // it — that sweep calls back here once it lands (adhoc #416). Only a truly
+        // cold selection pays for an inline merge-tree.
+        if (behind > 0 && ahead > 0 && !m_branchConflictProbes.contains(branch)) {
+            QByteArray shas;
+            QString key;
+            if (runGitCapture(dir, {"rev-parse", "--short", base, branch}, &shas,
+                              nullptr)) {
+                const QStringList tips =
+                    QString::fromUtf8(shas).split('\n', Qt::SkipEmptyParts);
+                if (tips.size() >= 2)
+                    key = branchConflictKey(dir, tips.at(0).trimmed(),
+                                            tips.at(1).trimmed());
+            }
+            const auto cached = m_branchConflictCache.constFind(key);
+            if (!key.isEmpty() && cached != m_branchConflictCache.constEnd()) {
+                hasConflict = *cached;
+            } else {
+                hasConflict = branchMergeTree(dir, base, branch).isEmpty();
+                if (!key.isEmpty())
+                    m_branchConflictCache.insert(key, hasConflict);
+            }
+        }
     }
 
     if (m_branchDetailLabel) {
@@ -3054,8 +3337,13 @@ void MainWindow::showBranchDiff(const QString &branch)
     // rebuild of this panel while the branch stays selected. Deferred a tick so
     // it runs after this call's own render rather than recursing into it (the
     // pull re-renders itself via showBranchDiff() once it succeeds).
+    // Also held off while a background sweep is still deciding whether the branch
+    // conflicts: the Fix button is hidden until that verdict lands, and pulling a
+    // conflicting branch on the strength of a not-yet-known answer would surface a
+    // "couldn't update cleanly" notice the user never asked for (adhoc #416).
     if (m_branchPullButton && m_branchPullButton->isEnabled() &&
         (!m_branchFixButton || !m_branchFixButton->isVisible()) &&
+        !m_branchConflictProbes.contains(branch) &&
         m_branchAutoPullAttempted != branch) {
         m_branchAutoPullAttempted = branch;
         startButtonSpin(m_branchPullButton);
@@ -3293,9 +3581,6 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
         return;
     m_branchDiffViewedContext = viewedContext;
     m_branchDiffFileSpans.clear();
-    // Supersede any progressive render still streaming in from a prior scope.
-    ++m_branchDiffRenderGen;
-    m_branchDiffPendingBlocks.clear();
     if (m_branchFileList) {
         QSignalBlocker block(m_branchFileList);
         m_branchFileList->clear();
@@ -3312,34 +3597,14 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
 
     // Handing an enormous diff to QTextEdit::setHtml() in one go parses, styles
     // and lays it all out on the GUI thread at once, freezing the window for
-    // seconds (issue #187). Rather than refuse to render a large commit, split it
-    // into per-file blocks and stream them in: paint enough to fill the viewport
-    // now (so the commit shows immediately), then append the rest a batch at a
-    // time off the event loop, keeping the window responsive while it fills in
-    // (adhoc #51).
-    constexpr int kStreamDiffHtmlChars = 1'000'000;  // stream, don't block, above this
-    constexpr int kFirstPaintChars = 250'000;        // fill the viewport synchronously
-    if (html.isEmpty()) {
-        setDiffHtml(m_branchDiffView,
-            QStringLiteral("<p style='color:#8b949e'>%1</p>")
-                .arg(emptyMessage.toHtmlEscaped()));
-    } else if (html.size() > kStreamDiffHtmlChars && longDiffsPref()) {
-        QStringList blocks = splitDiffFileBlocks(html);
-        QString firstChunk;
-        while (!blocks.isEmpty() &&
-               (firstChunk.isEmpty() || firstChunk.size() < kFirstPaintChars))
-            firstChunk += blocks.takeFirst();
-        // A streamed diff is assembled incrementally; don't let a
-        // Ctrl+wheel zoom re-render a partial copy (issue #254).
-        m_branchDiffView->setProperty("fm_diffSource", QString());
-        m_branchDiffView->document()->setDefaultStyleSheet(
-            diffStyleSheet(m_diffFontPt));
-        m_branchDiffView->setHtml(firstChunk);
-        m_branchDiffPendingBlocks = blocks;
-        appendBranchDiffBlocks(m_branchDiffRenderGen);
-    } else {
-        setDiffHtml(m_branchDiffView, html);
-    }
+    // seconds (issue #187). setDiffHtml renders progressively for exactly that
+    // reason: the visible window now, the rest a batch at a time off the event
+    // loop (adhoc #51/#421).
+    setDiffHtml(m_branchDiffView,
+                html.isEmpty()
+                    ? QStringLiteral("<p style='color:#8b949e'>%1</p>")
+                          .arg(emptyMessage.toHtmlEscaped())
+                    : html);
 
     // Changed-files list: a status-coloured row per file; click to scroll the
     // diff to it (mirrors the commit/PR diff viewers).
@@ -3374,39 +3639,11 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
         fitFileListToWidestEntry(m_branchFileList);
     }
 
-    // Map each file header to its document position for the sticky bar. When the
-    // diff is being streamed in (above), only the first blocks are in the document
-    // now; appendBranchDiffBlocks() rebuilds the full map once the last batch
-    // lands. Either way this covers whatever is currently shown.
+    // Map each file header to its document position for the sticky bar. While the
+    // diff is still streaming in only the first blocks are in the document now;
+    // the stream-finished hook (onDiffStreamFinished) rebuilds the full map once
+    // the last batch lands. Either way this covers whatever is currently shown.
     rebuildBranchDiffSpans();
-}
-
-// Stream the next queued batch of per-file diff blocks into the branch diff view,
-// then reschedule until the queue drains (see renderBranchDiffPatch). A batch
-// from a superseded scope selection (m_branchDiffRenderGen bumped) bails.
-void MainWindow::appendBranchDiffBlocks(int gen)
-{
-    if (gen != m_branchDiffRenderGen || !m_branchDiffView)
-        return;
-    if (m_branchDiffPendingBlocks.isEmpty()) {
-        rebuildBranchDiffSpans(); // every file is in the document now
-        return;
-    }
-    QTimer::singleShot(0, this, [this, gen] {
-        if (gen != m_branchDiffRenderGen || !m_branchDiffView)
-            return;
-        constexpr int kAppendBatchChars = 400'000;
-        QString batch;
-        while (!m_branchDiffPendingBlocks.isEmpty() &&
-               (batch.isEmpty() || batch.size() < kAppendBatchChars))
-            batch += m_branchDiffPendingBlocks.takeFirst();
-        // Append at the document's end via a private cursor so the user's current
-        // scroll position is left untouched as the rest fills in below.
-        QTextCursor cur(m_branchDiffView->document());
-        cur.movePosition(QTextCursor::End);
-        cur.insertHtml(batch);
-        appendBranchDiffBlocks(gen);
-    });
 }
 
 // Rebuild the sticky-bar file-span map from whatever is currently in the branch
@@ -3895,6 +4132,86 @@ static QString branchMergeTree(const QString &dir, const QString &base,
                        nullptr))
         return QString(); // non-zero exit == conflicts (or error)
     return QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts).value(0);
+}
+
+// Answer the branches panel's outstanding merge-conflict probes on a worker
+// thread (adhoc #416). `merge-tree` costs ~0.5-1s per branch on a busy repo, so
+// running one per row while building the table froze the GUI for seconds every
+// time the panel rebuilt — which it does after every delete, merge and pull. The
+// rows go up immediately without the flag instead and this paints it in as each
+// verdict lands. `branchMergeTree` is pure git reads over value-copied strings,
+// so it is safe off the GUI thread (runGitCapture only pumps the event loop when
+// it is on it).
+void MainWindow::startBranchConflictProbes(
+    const QString &dir, const QString &base,
+    const QList<QPair<QString, QString>> &probes)
+{
+    if (dir.isEmpty() || base.isEmpty() || probes.isEmpty())
+        return;
+    // Skip branches an earlier sweep is still working on: a rebuild landing
+    // mid-flight would otherwise re-run the same merge for the same commit pair.
+    QList<QPair<QString, QString>> pending;
+    for (const QPair<QString, QString> &probe : probes) {
+        if (probe.second.isEmpty() || m_branchConflictProbes.contains(probe.first))
+            continue;
+        m_branchConflictProbes.insert(probe.first);
+        pending.append(probe);
+    }
+    if (pending.isEmpty())
+        return;
+
+    auto verdicts = std::make_shared<QList<bool>>(); // parallel to `pending`
+    QThread *worker = QThread::create([dir, base, pending, verdicts] {
+        for (const QPair<QString, QString> &probe : pending)
+            verdicts->append(branchMergeTree(dir, base, probe.first).isEmpty());
+    });
+    connect(worker, &QThread::finished, this,
+            [this, worker, pending, verdicts, dir] {
+                worker->deleteLater();
+                for (const QPair<QString, QString> &probe : pending)
+                    m_branchConflictProbes.remove(probe.first);
+                // The memo grows a fresh key every time a branch or the base gains
+                // a commit; it is a pure speed-up, so dropping the lot once it gets
+                // large is always safe.
+                if (m_branchConflictCache.size() > 512)
+                    m_branchConflictCache.clear();
+                const int answered = qMin(pending.size(), verdicts->size());
+                for (int i = 0; i < answered; ++i)
+                    m_branchConflictCache.insert(pending.at(i).second,
+                                                 verdicts->at(i));
+                // Paint the conflicting rows, as long as the panel still shows the
+                // repo we probed. Rows are matched by branch name rather than by
+                // the index they had when the sweep started, so a rebuild in
+                // between can't flag the wrong one.
+                if (!m_branchesTable || repoGitDir() != dir)
+                    return;
+                bool refreshDetail = false;
+                for (int i = 0; i < answered; ++i) {
+                    const QString branch = pending.at(i).first;
+                    if (branch == m_branchDiffBranch)
+                        refreshDetail = true;
+                    if (!verdicts->at(i))
+                        continue;
+                    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
+                        const QTableWidgetItem *name = m_branchesTable->item(row, 0);
+                        QTableWidgetItem *status = m_branchesTable->item(row, 1);
+                        if (!name || !status || name->text() != branch)
+                            continue;
+                        if (!status->text().endsWith(kBranchConflictsSuffix)) {
+                            status->setText(status->text() + kBranchConflictsSuffix);
+                            status->setForeground(QColor("#f85149"));
+                            status->setIcon(themedOcticon("alert", QColor("#f85149"), 13));
+                        }
+                        break;
+                    }
+                }
+                // The detail pane rendered before its verdict was known, so its
+                // label and "Fix with agent" button need the answer too. It reads
+                // the memo we just filled, so this doesn't re-shell merge-tree.
+                if (refreshDetail && !m_branchDiffBranch.isEmpty())
+                    updateBranchDetailActions(m_branchDiffBranch);
+            });
+    worker->start();
 }
 
 void MainWindow::pullBaseIntoAllBranches()

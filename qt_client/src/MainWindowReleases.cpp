@@ -966,16 +966,6 @@ void MainWindow::loadReleasesPanel()
     if (m_repoReleasesTab)
         m_repoReleasesTab->setText(
             QStringLiteral("Releases (%1)").arg(formatCount(count)));
-    // Keep the current-release pill floating above the Releases tab (adhoc #69)
-    // in sync after drafting/deleting a tag reloads this panel.
-    if (m_releaseStrip) {
-        m_releaseStrip->setText(currentTag);
-        m_releaseStrip->setToolTip(
-            currentTag.isEmpty()
-                ? QString()
-                : QStringLiteral("Current release: %1").arg(currentTag));
-        positionReleaseStrip();
-    }
     if (count == 0) {
         m_releasesTable->insertRow(0);
         auto *empty = new QTableWidgetItem(
@@ -1066,9 +1056,10 @@ QWidget *MainWindow::buildMirrorNodesTab()
     blurb->setWordWrap(true);
     layout->addWidget(blurb);
 
-    // The live activity dots no longer sit in this page as a "Live ›" row; they
-    // float just above the Mirror nodes tab instead (adhoc #197). The strip is
-    // created with the tab row and anchored by positionMirrorActivityStrip.
+    // Per-node activity used to be a "Live ›" dot row here, then a strip floating
+    // just above the Mirror nodes tab (adhoc #197). Both are gone (adhoc #420);
+    // the same dots still show as blips in the relay radar, and this table's own
+    // status lights carry each node's online/behind/integrity state.
 
     m_mirrorNodesTable = new QTableWidget(0, MirrorNodeColumnCount);
     installColumnHeaderMenu(m_mirrorNodesTable); // 3-dots per-column menu (issue #318)
@@ -1248,10 +1239,6 @@ void MainWindow::loadMirrorNodesPanel()
             m_mirrorNodesSummary->clear();
         if (m_mirrorResetPinButton)
             m_mirrorResetPinButton->hide();
-        if (m_mirrorActivityStrip) {
-            static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip)->setNodes({});
-            positionMirrorActivityStrip(); // hides the now-empty strip
-        }
         if (m_relayRadar)
             static_cast<RelayRadarWidget *>(m_relayRadar)->setBlips({});
         m_mirrorNodesTable->setSortingEnabled(true);
@@ -1577,7 +1564,7 @@ void MainWindow::loadMirrorNodesPanel()
     // former name doesn't add a second row for the same identity (adhoc #46).
     QSet<QString> shownIds;
     // One activity dot per active node, fed to the live strip atop the panel.
-    QVector<MirrorActivityStrip::Dot> activityDots;
+    QVector<MirrorNodeDot> activityDots;
     // Build a right-aligned numeric count cell (Commits/Branches/Pulls/
     // Discussions): the figure, an em-dash when the node doesn't advertise it (-1, an
     // older peer), and a singular/plural tooltip. Shared by the live-roster rows and
@@ -1720,7 +1707,7 @@ void MainWindow::loadMirrorNodesPanel()
 
         // Only online nodes normally get a dot; keep an offline one too when
         // it's failing the integrity pin, so the warning doesn't just vanish
-        // from the strip (adhoc #196).
+        // from the radar (adhoc #196).
         if (online || integrityFailing)
             activityDots.append(
                 {node.id, nodeLabel, online, node.self, behind, integrityFailing});
@@ -1960,7 +1947,7 @@ void MainWindow::loadMirrorNodesPanel()
     // Collect catalog-only mirrors (not in roster) for activity dots so the dots
     // reflect the server's canonical mirror order, making it clear which dot
     // represents which node when they pulse (adhoc #218).
-    QVector<MirrorActivityStrip::Dot> catalogOnlyDots;
+    QVector<MirrorNodeDot> catalogOnlyDots;
     if (m_catalogMirrorsSource == source) {
         for (const QJsonValue &value : std::as_const(m_catalogMirrorsCache)) {
             const QJsonObject m = value.toObject();
@@ -2216,19 +2203,11 @@ void MainWindow::loadMirrorNodesPanel()
 
     m_mirrorNodesTable->setSortingEnabled(true);
 
-    if (m_mirrorActivityStrip) {
-        static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip)
-            ->setNodes(activityDots);
-        // Re-anchor over the Mirror nodes tab and (re)size to the new dot count.
-        positionMirrorActivityStrip();
-    }
-
-    // Echo the same mirror-node dots as blips inside the relay radar, reusing
-    // their colours/shapes so the two read as one thing (adhoc #122).
+    // Show the mirror-node dots as blips inside the relay radar (adhoc #122).
     if (m_relayRadar) {
         QVector<RelayRadarWidget::Blip> blips;
         blips.reserve(activityDots.size());
-        for (const MirrorActivityStrip::Dot &d : activityDots)
+        for (const MirrorNodeDot &d : activityDots)
             blips.append(RelayRadarWidget::Blip{d.id, d.online, d.behind,
                                                 d.integrityFailing});
         static_cast<RelayRadarWidget *>(m_relayRadar)->setBlips(blips);

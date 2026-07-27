@@ -190,6 +190,20 @@ def clean_display_name(value, fallback="Guest"):
     return (" ".join(safe_fallback.split()).strip(" ._-")[:32] or "Guest")
 
 
+def account_presence_key(name):
+    """Fold one ticket-verified account name into a single presence identity.
+
+    Two sockets share an identity only when the relay itself verified the same
+    account behind both. An empty value means "no verified account" — guests,
+    and anyone whose ticket did not check out, are never combined.
+    """
+    raw = str(name or "").strip()
+    clean = clean_display_name(raw, "")
+    # Anything that did not survive sanitizing unchanged collapsed onto a
+    # generic fallback label; folding on that would combine unrelated people.
+    return clean.casefold() if raw and clean == raw else ""
+
+
 def _emoji_base(character):
     codepoint = ord(character)
     return (

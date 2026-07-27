@@ -21,7 +21,7 @@ CSS = (ROOT / "public" / "world" / "world.css").read_text(encoding="utf-8")
 
 def test_local_controls_expose_three_labelled_tabs():
     for contract in (
-        "LOCAL CONTROLS",
+        "YOUR WORLD PREFERENCES",
         'role="tablist" aria-label="Local controls section"',
         'data-world-settings-tab="view"',
         'data-world-settings-tab="work"',

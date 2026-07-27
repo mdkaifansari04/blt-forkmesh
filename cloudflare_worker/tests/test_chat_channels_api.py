@@ -42,12 +42,20 @@ class FakeRuntime:
         self.revoked_rooms = []
         self.ids = 0
         self.fail_batch_at = None
+        # room key -> [(ts, encrypted body)], as the room Durable Object
+        # retained it. Bodies are opaque here exactly as they are in D1.
+        self.retained = {}
+        self.request_query = {}
 
-    def use(self, method, actor="", data=None):
+    def use(self, method, actor="", data=None, query=None):
         self.request_method = method
         self.actor = actor
         self.request_data = {} if data is None else data
+        self.request_query = dict(query or {})
         return self
+
+    def query_params(self):
+        return dict(self.request_query)
 
     def method(self):
         return self.request_method
@@ -131,6 +139,17 @@ class FakeRuntime:
 
     async def revoke_room(self, channel_id, key_version):
         self.revoked_rooms.append((channel_id, key_version))
+
+    async def channel_passphrase(self, channel_id, key_version):
+        return f"key:{channel_id}:{key_version}"
+
+    async def history(self, channel_id, key_version, since_ts=0):
+        room = f"chat-channel:{channel_id}:v{key_version}"
+        return [
+            {"ts": ts, "body": body}
+            for ts, body in self.retained.get(room, [])
+            if ts > int(since_ts or 0)
+        ]
 
     async def d1_all(self, sql, *args):
         return [dict(row) for row in self.db.execute(sql, args).fetchall()]
@@ -535,3 +554,100 @@ async def test_all_admins_have_implicit_access_without_membership_rows():
         "SELECT COUNT(*) FROM chat_channel_members"
     ).fetchone()[0]
     assert count == 0
+
+
+async def read_history(runtime, actor, channel_id, since=None):
+    return await api.handle(
+        runtime.use(
+            "GET", actor,
+            query={} if since is None else {"since": str(since)}),
+        f"/api/chat/channels/{channel_id}/history",
+    )
+
+
+@run_async_test
+async def test_history_replays_encrypted_backlog_to_a_reader():
+    runtime = FakeRuntime()
+    created = await create_channel(
+        runtime, "design", visibility="private", members=["alice"])
+    channel_id = created["data"]["channel"]["id"]
+    runtime.retained[f"chat-channel:{channel_id}:v1"] = [
+        (100, '{"iv":"a","data":"first"}'),
+        (200, '{"iv":"b","data":"second"}'),
+    ]
+
+    replayed = await read_history(runtime, "alice", channel_id)
+    assert replayed["status"] == 200
+    assert replayed["data"]["room"] == f"chat-channel:{channel_id}:v1"
+    assert replayed["data"]["keyVersion"] == 1
+    assert replayed["data"]["passphrase"] == f"key:{channel_id}:1"
+    assert replayed["data"]["channel"]["name"] == "design"
+    assert replayed["data"]["messages"] == [
+        {"ts": 100, "body": '{"iv":"a","data":"first"}'},
+        {"ts": 200, "body": '{"iv":"b","data":"second"}'},
+    ]
+    assert replayed["data"]["latestTs"] == 200
+    assert replayed["cache_control"] == "no-store, max-age=0, must-revalidate"
+
+    tail = await read_history(runtime, "alice", channel_id, since=100)
+    assert [m["ts"] for m in tail["data"]["messages"]] == [200]
+    assert tail["data"]["latestTs"] == 200
+    caught_up = await read_history(runtime, "alice", channel_id, since=200)
+    assert caught_up["data"]["messages"] == []
+    assert caught_up["data"]["latestTs"] == 200
+
+
+@run_async_test
+async def test_history_is_gated_by_the_same_membership_as_room_access():
+    runtime = FakeRuntime()
+    created = await create_channel(
+        runtime, "design", visibility="private", members=["alice"])
+    channel_id = created["data"]["channel"]["id"]
+    runtime.retained[f"chat-channel:{channel_id}:v1"] = [
+        (100, '{"iv":"a","data":"first"}'),
+    ]
+
+    denied = await read_history(runtime, "bob", channel_id)
+    assert denied["status"] == 404
+    assert denied["data"] == {"error": "not_found"}
+    assert (await read_history(runtime, "admin", channel_id))["status"] == 200
+    unauthenticated = await read_history(runtime, "nobody", channel_id)
+    assert unauthenticated["status"] == 401
+    assert unauthenticated["data"] == {"error": "invalid_session"}
+    missing = await read_history(runtime, "alice", "f" * 32)
+    assert missing["status"] == 404
+
+
+@run_async_test
+async def test_public_channel_history_is_readable_without_membership():
+    runtime = FakeRuntime()
+    created = await create_channel(runtime, "lobby", visibility="public")
+    channel_id = created["data"]["channel"]["id"]
+    runtime.retained[f"chat-channel:{channel_id}:v1"] = [
+        (100, '{"iv":"a","data":"first"}'),
+    ]
+
+    read = await read_history(runtime, "bob", channel_id)
+    assert read["status"] == 200
+    assert [m["ts"] for m in read["data"]["messages"]] == [100]
+
+
+@run_async_test
+async def test_history_rejects_writes_and_malformed_since():
+    runtime = FakeRuntime()
+    created = await create_channel(runtime, "lobby", visibility="public")
+    channel_id = created["data"]["channel"]["id"]
+    runtime.retained[f"chat-channel:{channel_id}:v1"] = [
+        (100, '{"iv":"a","data":"first"}'),
+    ]
+
+    posted = await api.handle(
+        runtime.use("POST", "admin", {}),
+        f"/api/chat/channels/{channel_id}/history",
+    )
+    assert posted["status"] == 405
+    assert posted["headers"]["allow"] == "GET"
+
+    junk = await read_history(runtime, "bob", channel_id, since="tomorrow")
+    assert junk["status"] == 200
+    assert [m["ts"] for m in junk["data"]["messages"]] == [100]

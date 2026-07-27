@@ -86,19 +86,20 @@ def _json_response(data, status=200, cache_seconds=None, cache_control=None,
     return {"status": status, "data": data}
 
 
-def _defaults_constant():
-    # AP_REPO_SETTING_DEFAULTS is a module-level assignment, not a function,
-    # so the AST extraction above never picks it up — evaluate it directly.
+def _defaults_constant(name="AP_REPO_SETTING_DEFAULTS"):
+    # These defaults are module-level assignments, not functions, so the AST
+    # extraction above never picks them up — evaluate them directly.
     tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
     for node in tree.body:
         if (isinstance(node, ast.Assign) and
-                any(getattr(t, "id", "") == "AP_REPO_SETTING_DEFAULTS"
-                    for t in node.targets)):
+                any(getattr(t, "id", "") == name for t in node.targets)):
             return ast.literal_eval(node.value)
-    raise AssertionError("AP_REPO_SETTING_DEFAULTS not found")
+    raise AssertionError(name + " not found")
 
 
 AP_REPO_SETTING_DEFAULTS = _defaults_constant()
+REPO_ALERT_SETTING_DEFAULTS = _defaults_constant(
+    "REPO_ALERT_SETTING_DEFAULTS")
 
 
 def _settings_ns(settings_rows):
@@ -196,6 +197,10 @@ def test_about_get_returns_followers_list_and_settings():
             return {"c": 2}
         if "FROM ap_repo_settings" in sql:
             return {"data": json.dumps({"acceptComments": False})}
+        # Operational-alert switches (adhoc #445) ride the same About payload;
+        # no row means every alert email stays off.
+        if "FROM repo_alert_settings" in sql:
+            return None
         raise AssertionError("unexpected d1_first: " + sql)
 
     async def d1_all(env, sql, *args):
@@ -238,8 +243,11 @@ def test_about_get_returns_followers_list_and_settings():
         return ""
 
     ns = _load("_repo_about_public", "_ap_repo_settings_get",
-               "_ap_repo_settings_bi",
+               "_ap_repo_settings_bi", "_repo_alert_settings_get",
+               "_repo_alert_settings_bi",
                extra_globals={
+                   "REPO_ALERT_SETTING_DEFAULTS":
+                       REPO_ALERT_SETTING_DEFAULTS,
                    "json_response": _json_response,
                    "_repo_is_private": _repo_is_private,
                    "blind_index": blind_index,
@@ -304,11 +312,14 @@ def test_about_get_returns_followers_list_and_settings():
                                      "broadcastEvents": True,
                                      "acceptComments": False}
     assert fediverse["enabled"] is True
+    # No repo_alert_settings row: every operational alert email reads back off.
+    assert resp["data"]["alerts"] == {"statusEmails": False}
 
 
 # --- POST /about: owner-key auth + settings save -------------------------------
 
-def _about_post_env(log, stored_settings=None, good_sig="GOODSIG"):
+def _about_post_env(log, stored_settings=None, good_sig="GOODSIG",
+                    stored_alerts=None):
     async def ensure_schema(env):
         return None
 
@@ -346,6 +357,10 @@ def _about_post_env(log, stored_settings=None, good_sig="GOODSIG"):
             if stored_settings is None:
                 return None
             return {"data": json.dumps(stored_settings)}
+        if "FROM repo_alert_settings" in sql:
+            if stored_alerts is None:
+                return None
+            return {"data": json.dumps(stored_alerts)}
         raise AssertionError("unexpected d1_first: " + sql)
 
     async def d1_run(env, sql, *args):
@@ -362,7 +377,10 @@ def _about_post_env(log, stored_settings=None, good_sig="GOODSIG"):
 
     return _load("repo_about_handler", "_ap_repo_settings_get",
                  "_ap_repo_settings_bi", "_ts_ok",
+                 "_repo_alert_settings_get", "_repo_alert_settings_bi",
                  extra_globals={
+                     "REPO_ALERT_SETTING_DEFAULTS":
+                         REPO_ALERT_SETTING_DEFAULTS,
                      "json_response": _json_response,
                      "method_name": lambda request: request.method,
                      "ensure_schema": ensure_schema,
@@ -447,6 +465,45 @@ def test_owner_key_signed_settings_save_writes_and_purges():
 
 def _writes(log):
     return [e for e in log if isinstance(e, tuple) and e[0] == "d1_run"]
+
+
+def _alert_writes(log):
+    return [e for e in _writes(log) if "repo_alert_settings" in e[1]]
+
+
+def test_admin_can_switch_status_alert_mail_on_and_back_off():
+    # Off is the stored default, so turning it on is the only write the first
+    # save makes; re-saving the same value writes nothing.
+    log = []
+    ns = _about_post_env(log)
+    resp = _run(ns["repo_about_handler"](
+        None, _post({"ts": "1750000000000", "ownerSig": "GOODSIG",
+                     "alerts": {"statusEmails": True}}),
+        "alice", "proj"))
+    assert resp["status"] == 200
+    writes = _alert_writes(log)
+    assert len(writes) == 1
+    assert writes[0][2][0] == "bi:repo-alert-settings:alice/proj"
+    assert json.loads(writes[0][2][1]) == {"statusEmails": True}
+    assert resp["data"]["alerts"] == {"statusEmails": True}
+    # Federation is untouched by an alerts-only save.
+    assert _settings_writes(log) == []
+
+    log = []
+    ns = _about_post_env(log, stored_alerts={"statusEmails": True})
+    _run(ns["repo_about_handler"](
+        None, _post({"ts": "1750000000000", "ownerSig": "GOODSIG",
+                     "alerts": {"statusEmails": True}}),
+        "alice", "proj"))
+    assert _alert_writes(log) == []
+
+    log = []
+    ns = _about_post_env(log, stored_alerts={"statusEmails": True})
+    _run(ns["repo_about_handler"](
+        None, _post({"ts": "1750000000000", "ownerSig": "GOODSIG",
+                     "alerts": {"statusEmails": False}}),
+        "alice", "proj"))
+    assert json.loads(_alert_writes(log)[0][2][1]) == {"statusEmails": False}
 
 
 def test_bad_signature_is_rejected_before_any_write():

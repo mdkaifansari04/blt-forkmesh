@@ -61,6 +61,7 @@ async function prepareWorldPage(
     officeAttendanceRequests = [],
     officeAttendanceFixture = null,
     officeFloorAccess = null,
+    officeFloorDelayMs = 0,
     officeTaskFixture = null,
     accountSessionFixture = null,
   } = {},
@@ -662,6 +663,11 @@ async function prepareWorldPage(
           teams: [],
           ...(officeFloorAccess || {}),
         };
+      }
+      if (Number(officeFloorDelayMs) > 0) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, Number(officeFloorDelayMs)),
+        );
       }
     } else if (url.pathname === "/api/world/office/general/entry") {
       let requestBody = {};
@@ -1825,6 +1831,46 @@ test("Office entrance doors slide apart on approach and close after departure", 
   }).toBeLessThan(0.08);
 });
 
+test("Office bridge, approach, and lobby meet on one continuous plane", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-level-threshold");
+  await waitForWorld(page);
+  const surfaces = await page.locator("forkmesh-world").evaluate((shell) => {
+    const bounds = (name) => {
+      const object = shell.world.scene.getObjectByName(name);
+      object.geometry.computeBoundingBox();
+      const box = object.geometry.boundingBox;
+      const corners = [];
+      for (const x of [box.min.x, box.max.x]) {
+        for (const y of [box.min.y, box.max.y]) {
+          for (const z of [box.min.z, box.max.z]) {
+            corners.push(
+              object.localToWorld(object.position.clone().set(x, y, z)),
+            );
+          }
+        }
+      }
+      return {
+        top: Math.max(...corners.map((point) => point.y)),
+        minZ: Math.min(...corners.map((point) => point.z)),
+        maxZ: Math.max(...corners.map((point) => point.z)),
+      };
+    };
+    return {
+      bridge: bounds("forkmesh-office-bridge-deck"),
+      approach: bounds("forkmesh-office-island-approach-deck"),
+      lobby: bounds("forkmesh-office-floor-slab-lobby-2"),
+    };
+  });
+
+  expect(surfaces.bridge.top).toBeCloseTo(0.38, 6);
+  expect(surfaces.approach.top).toBeCloseTo(0.38, 6);
+  expect(surfaces.lobby.top).toBeCloseTo(0.38, 6);
+  expect(surfaces.approach.minZ).toBeCloseTo(surfaces.lobby.maxZ, 6);
+  expect(surfaces.bridge.minZ).toBeLessThan(surfaces.approach.maxZ);
+});
+
 test("a first-frame doorway crossing enters before proximity catches up", async ({
   page,
 }) => {
@@ -1879,6 +1925,165 @@ test("walking through the Office doorway hydrates floor access without admission
   await walkIntoOffice(page);
   await expect.poll(() => officeFloorRequests.length).toBe(1);
   expect(officeEntryRequests).toHaveLength(0);
+});
+
+test("Office doorway stays outside at the jamb and never blocks on access hydration", async ({
+  page,
+}) => {
+  test.slow();
+  const officeFloorRequests = [];
+  const officeAttendanceRequests = [];
+  await prepareWorldPage(page, "office-doorway-background-access", {
+    session: {
+      kind: "user",
+      nodeName: "alice",
+      email: "alice@example.test",
+      sessionToken: "alice-office-token",
+    },
+    officeFloorRequests,
+    officeAttendanceRequests,
+    officeFloorDelayMs: 5_000,
+  });
+  await waitForWorld(page);
+
+  const jambState = await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setPaused(false);
+    const status = shell.world.scene.getObjectByName(
+      "forkmesh-office-door-status",
+    );
+    const doorway = status.getWorldPosition(status.position.clone());
+    // The avatar's center is just through the glass, but its full collision
+    // body has not cleared the inner jamb yet.
+    shell.world.player.position.set(doorway.x, 0.38, doorway.z - 0.26);
+    return {
+      active: shell.officeController.active,
+      space: shell.world.getPosition().space,
+      status: status.userData.officeDoorStatus,
+      visible: status.visible,
+    };
+  });
+  expect(jambState).toEqual({
+    active: false,
+    space: "town-square",
+    status: "open",
+    visible: false,
+  });
+  await page.waitForTimeout(150);
+  expect(officeFloorRequests).toHaveLength(0);
+  expect(officeAttendanceRequests).toHaveLength(0);
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setControl("forward", true);
+  });
+  try {
+    await waitForOfficeEntry(page);
+    await expect.poll(() => officeFloorRequests.length).toBe(1);
+    const whileSyncing = await page.locator("forkmesh-world").evaluate(
+      (shell) => {
+        const status = shell.world.scene.getObjectByName(
+          "forkmesh-office-door-status",
+        );
+        return {
+          position: shell.world.player.getWorldPosition(
+            shell.world.player.position.clone(),
+          ).z,
+          status: status.userData.officeDoorStatus,
+          visible: status.visible,
+        };
+      },
+    );
+    expect(whileSyncing.status).toBe("syncing");
+    expect(whileSyncing.visible).toBe(true);
+
+    await page.waitForTimeout(250);
+    const movingPosition = await page.locator("forkmesh-world").evaluate(
+      (shell) =>
+        shell.world.player.getWorldPosition(
+          shell.world.player.position.clone(),
+        ).z,
+    );
+    expect(movingPosition).toBeLessThan(whileSyncing.position - 0.05);
+    expect(officeAttendanceRequests).toHaveLength(0);
+    await page.locator("forkmesh-world").evaluate((shell) => {
+      shell.world.setControl("forward", false);
+    });
+
+    await expect.poll(() =>
+      page.locator("forkmesh-world").evaluate((shell) =>
+        shell.world.scene.getObjectByName(
+          "forkmesh-office-door-status",
+        ).userData.officeDoorStatus
+      )
+    ).toBe("ready");
+    await expect.poll(() => officeAttendanceRequests.length).toBe(1);
+
+    await page.locator("forkmesh-world").evaluate((shell) => {
+      const status = shell.world.scene.getObjectByName(
+        "forkmesh-office-door-status",
+      );
+      const doorway = status.getWorldPosition(status.position.clone());
+      shell.world.player.position.set(doorway.x, 0.38, doorway.z - 0.8);
+      shell.world.setControl("back", true);
+    });
+    await expect.poll(() =>
+      page.locator("forkmesh-world").evaluate((shell) => ({
+        active: shell.officeController.active,
+        space: shell.world.getPosition().space,
+        status: shell.world.scene.getObjectByName(
+          "forkmesh-office-door-status",
+        ).userData.officeDoorStatus,
+        visible: shell.world.scene.getObjectByName(
+          "forkmesh-office-door-status",
+        ).visible,
+      }))
+    ).toEqual({
+      active: false,
+      space: "town-square",
+      status: "open",
+      visible: false,
+    });
+  } finally {
+    await page.locator("forkmesh-world").evaluate((shell) => {
+      shell.world.setControl("forward", false);
+      shell.world.setControl("back", false);
+    });
+  }
+});
+
+test("Office doorway retries a rejected crossing without requiring backward movement", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "office-doorway-no-twitch");
+  await waitForWorld(page);
+  await moveToOfficeEntrance(page, { unpause: true });
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    const original =
+      shell.officeController.enterOffice.bind(shell.officeController);
+    shell.__officeEntryAttempts = 0;
+    shell.officeController.enterOffice = async (entry = {}) => {
+      shell.__officeEntryAttempts += 1;
+      if (shell.__officeEntryAttempts === 1) {
+        // Match a transient rejected/interrupted handoff. The controller's
+        // normal finally path clears pending; movement remains inward.
+        shell.world.setOfficeDoorwayEntryPending(false);
+        return false;
+      }
+      return original(entry);
+    };
+    shell.world.setControl("forward", true);
+  });
+  try {
+    await waitForOfficeEntry(page);
+    const result = await page.locator("forkmesh-world").evaluate((shell) => ({
+      attempts: shell.__officeEntryAttempts,
+      space: shell.world.getPosition().space,
+    }));
+    expect(result).toEqual({ attempts: 2, space: "office-lobby" });
+  } finally {
+    await page.locator("forkmesh-world").evaluate((shell) => {
+      shell.world.setControl("forward", false);
+    });
+  }
 });
 
 test("Office entry preserves the live avatar and keeps zoom inside the tower", async ({
@@ -1966,7 +2171,8 @@ test("Office entry preserves the live avatar and keeps zoom inside the tower", a
   expect(after.cloneVisible).toBe(false);
   expect(after.handoff.before.uuid).toBe(before.uuid);
   expect(after.handoff.after.uuid).toBe(before.uuid);
-  expect(after.handoff.before.local[2]).toBeCloseTo(45.46, 2);
+  expect(after.handoff.before.local[2]).toBeGreaterThan(45.46);
+  expect(after.handoff.before.local[2]).toBeLessThan(46.5);
   expect(after.handoff.after.local[0])
     .toBeCloseTo(after.handoff.before.local[0], 7);
   expect(after.handoff.after.local[2])
@@ -5477,6 +5683,54 @@ test("disagreeing eligible mirrors leave the automatic flagship map unpinned", a
   ).toHaveLength(0);
 });
 
+test("the flagship portal opens once mid-sync mirrors converge after entry", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const repositoryFixture = { conflictingHealthyAlias: true };
+  await prepareWorldPage(page, "world-late-flagship-pin", {
+    repositoryFixture,
+  });
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.repositoryMapState === "unavailable";
+  });
+
+  // The lagging mirror finishes syncing: both eligible nodes now publish the
+  // same commit, so the alias becomes pinned. The portal must open from the
+  // bounded retry, without the visitor reloading or picking the repository.
+  repositoryFixture.conflictingHealthyAlias = false;
+
+  await page.waitForFunction(
+    () => {
+      const shell = document.querySelector("forkmesh-world");
+      return shell?.repositoryMapState === "ready";
+    },
+    undefined,
+    { timeout: 90_000 },
+  );
+
+  const opened = await page.locator("forkmesh-world").evaluate((shell) => {
+    const sizeLayer = shell.world.scene.getObjectByName(
+      "repository-3d-size-map",
+    );
+    return {
+      active: `${shell.activeRepository?.owner}/${shell.activeRepository?.repo}`,
+      manualSelection: shell.repositoryManualSelection,
+      mount: sizeLayer?.parent?.name || "",
+      faceHidden:
+        sizeLayer?.parent?.userData?.repositoryFace?.visible === false,
+    };
+  });
+  expect(opened).toEqual({
+    active: "forkmesh/forkmesh",
+    manualSelection: "",
+    mount: "repository-portal:forkmesh/forkmesh",
+    faceHidden: true,
+  });
+});
+
 test("an incomplete healthy-mirror state attestation cannot auto-load the flagship map", async ({
   page,
 }) => {
@@ -5814,34 +6068,81 @@ test("camera toggle enters first-person and restores the local player", async ({
   });
 });
 
-test("visiting the repository sunburst enters first-person and can exit", async ({
+test("visiting the repository sunburst frames it in third-person", async ({
   page,
 }) => {
-  await prepareWorldPage(page, "world-repository-first-person", {
+  await prepareWorldPage(page, "world-repository-third-person", {
     repositoryFixture: {},
   });
   await openWorldRepositoryExplorer(page);
 
   await page.locator("[data-world-repo-scene]").click();
   const toggle = page.locator("[data-world-camera-toggle]");
-  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
   await expect(toggle).toHaveAttribute(
     "aria-label",
-    "Exit first-person view",
+    "Enter first-person view",
   );
+  const framed = await page.locator("forkmesh-world").evaluate((shell) => ({
+    camera: shell.world.getCameraState(),
+    playerVisible: shell.world.player.visible,
+    canvasMode: shell.world.renderer.domElement.dataset.cameraMode,
+  }));
+  expect(framed).toMatchObject({
+    camera: { mode: "third-person", firstPerson: false },
+    playerVisible: true,
+    canvasMode: "third-person",
+  });
+  expect(framed.camera.zoom).toBeLessThanOrEqual(0.55);
+
+  // First person stays available, just never automatic.
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
   expect(
     await page.locator("forkmesh-world").evaluate((shell) => ({
-      camera: shell.world.getCameraState(),
+      mode: shell.world.getCameraState().mode,
       playerVisible: shell.world.player.visible,
-      canvasMode: shell.world.renderer.domElement.dataset.cameraMode,
     })),
-  ).toMatchObject({
-    camera: { mode: "first-person", firstPerson: true },
-    playerVisible: false,
-    canvasMode: "first-person",
-  });
+  ).toEqual({ mode: "first-person", playerVisible: false });
+});
 
+test("zooming first-person all the way back restores third-person", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "world-first-person-zoom-out");
+  await waitForWorld(page);
+
+  const toggle = page.locator("[data-world-camera-toggle]");
   await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+
+  const canvas = page.locator("[data-world-canvas-wrap] canvas");
+  const box = await canvas.boundingBox();
+  expect(box).not.toBeNull();
+  const centre = {
+    x: Math.round(box.x + box.width / 2),
+    y: Math.round(box.y + box.height / 2),
+  };
+  await page.mouse.move(centre.x, centre.y);
+
+  // Widening the eyes stays in first person right up to the zoom-out floor.
+  await page.mouse.wheel(0, 480);
+  await expect
+    .poll(() =>
+      page
+        .locator("forkmesh-world")
+        .evaluate((shell) => shell.world.getCameraState().mode),
+    )
+    .toBe("first-person");
+  await page.mouse.wheel(0, 480);
+  const floored = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.getCameraState(),
+  );
+  expect(floored.mode).toBe("first-person");
+  expect(floored.zoom).toBeCloseTo(floored.minZoom, 5);
+
+  // One more notch back steps out of the avatar's head entirely.
+  await page.mouse.wheel(0, 480);
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
   await expect(toggle).toHaveAttribute(
     "aria-label",
@@ -5851,8 +6152,15 @@ test("visiting the repository sunburst enters first-person and can exit", async 
     await page.locator("forkmesh-world").evaluate((shell) => ({
       mode: shell.world.getCameraState().mode,
       playerVisible: shell.world.player.visible,
+      canvasMode: shell.world.renderer.domElement.dataset.cameraMode,
+      fov: shell.world.camera.fov,
     })),
-  ).toEqual({ mode: "third-person", playerVisible: true });
+  ).toEqual({
+    mode: "third-person",
+    playerVisible: true,
+    canvasMode: "third-person",
+    fov: 44,
+  });
 });
 
 test("pull requests open and become viewed entirely inside the repository World", async ({
@@ -6706,7 +7014,7 @@ test("tracked public replies open a separate read-only fediverse thread", async 
     .toHaveAttribute("referrerpolicy", "no-referrer");
 });
 
-test("four-hour procedural soundtrack starts only after consent and stops locally", async ({
+test("sound button is the master switch for local playback", async ({
   page,
 }) => {
   const mediaRequests = [];
@@ -6760,10 +7068,12 @@ test("four-hour procedural soundtrack starts only after consent and stops locall
     await page.locator("forkmesh-world").evaluate((shell) => shell.activeAudio),
   ).toBeNull();
 
-  await page.locator("forkmesh-world").evaluate((shell) =>
-    shell.openLandmark("broadcast"),
-  );
-  await page.locator("[data-world-radio='forkmesh-focus']").click();
+  await page.locator("forkmesh-world").evaluate(async (shell) => {
+    const now = document.createElement("div");
+    now.dataset.worldMediaNow = "";
+    shell.append(now);
+    await shell.playRadio("forkmesh-focus");
+  });
   await expect(page.locator("[data-world-media-now]")).toContainText(
     "Use the Sound button",
   );
@@ -6775,7 +7085,9 @@ test("four-hour procedural soundtrack starts only after consent and stops locall
     "aria-pressed",
     "true",
   );
-  await page.locator("[data-world-radio='forkmesh-focus']").click();
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.playRadio("forkmesh-focus"),
+  );
   const playback = await page.locator("forkmesh-world").evaluate((shell) => ({
     durationMs: shell.activeAudio?.durationMs,
     scoreOffsetMs: shell.activeAudio?.scoreOffsetMs,
@@ -6790,10 +7102,32 @@ test("four-hour procedural soundtrack starts only after consent and stops locall
   );
   expect(mediaRequests).toEqual([]);
 
-  await page.locator("[data-world-radio-stop]").click();
+  await page.locator("[data-world-sound-toggle]").click();
+  await expect(page.locator("[data-world-sound-toggle]")).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  await expect(page.locator("[data-world-media-now]")).toContainText(
+    "Nothing is playing",
+  );
   expect(
-    await page.locator("forkmesh-world").evaluate((shell) => shell.activeAudio),
-  ).toBeNull();
+    await page.locator("forkmesh-world").evaluate((shell) => ({
+      soundEnabled: shell.soundEnabled,
+      activeAudio: shell.activeAudio,
+      soundContext: shell.soundContext,
+    })),
+  ).toEqual({
+    soundEnabled: false,
+    activeAudio: null,
+    soundContext: null,
+  });
+
+  // The same button can turn audio consent back on after a full shutdown.
+  await page.locator("[data-world-sound-toggle]").click();
+  await expect(page.locator("[data-world-sound-toggle]")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
 });
 
 test("the ForkMesh song button plays the first-party track only on request", async ({
